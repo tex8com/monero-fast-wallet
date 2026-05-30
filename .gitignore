@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+build/
+dist/
+target/
+*.log
+.env
+.env.*
+!.env.example
+
+# Wallet material must never be committed.
+*.keys
+*-seed.txt
+*.wallet
+*.wallet.*
+*.address.txt
