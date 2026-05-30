@@ -1,0 +1,36 @@
+import React from "react";
+import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+
+import HomeScreen from "../screens/HomeScreen";
+import SendScreen from "../screens/SendScreen";
+import ReceiveScreen from "../screens/ReceiveScreen";
+import MarketplaceScreen from "../screens/MarketplaceScreen";
+import MenuScreen from "../screens/MenuScreen";
+import LocalMoneroScreen from "../screens/LocalMoneroScreen";
+import SettingsScreen from "../screens/SettingsScreen";
+import WelcomeScreen from "../screens/WelcomeScreen";
+import WalletSetupScreen from "../screens/WalletSetupScreen";
+import CustomTabBar from "../components/CustomTabBar";
+
+const Tab = createBottomTabNavigator();
+
+export default function TabNavigator() {
+  return (
+    <Tab.Navigator
+      tabBar={(props) => <CustomTabBar {...props} />}
+      screenOptions={{ headerShown: false }}
+    >
+      {/* Visible tabs */}
+      <Tab.Screen name="Home" component={HomeScreen} />
+      <Tab.Screen name="Send" component={SendScreen} />
+      <Tab.Screen name="Receive" component={ReceiveScreen} />
+      <Tab.Screen name="Marketplace" component={MarketplaceScreen} />
+      <Tab.Screen name="Menu" component={MenuScreen} />
+      {/* Hidden screens — accessible via Menu */}
+      <Tab.Screen name="LocalMonero" component={LocalMoneroScreen} />
+      <Tab.Screen name="Settings" component={SettingsScreen} />
+      <Tab.Screen name="Welcome" component={WelcomeScreen} />
+      <Tab.Screen name="WalletSetup" component={WalletSetupScreen} />
+    </Tab.Navigator>
+  );
+}

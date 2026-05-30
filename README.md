@@ -22,28 +22,29 @@ server-side scanner. The private spend key never leaves the phone.
 
 ```text
 apps/
-  mobile/              React Native app
+  mobile/              React Native wallet app
 native/
   monero-bridge/       iOS/Android bridge to wallet core
 services/
   notify-scanner/      view-key scanner and push notification service
   wallet-api/          device registration and opt-in API
 node/
+  cuprate/             Cuprate node fork source
   cuprate-deploy/      node deployment, configs, benchmarks
 third_party/
   monero/              pinned upstream/fork reference
-  cuprate/             pinned Cuprate fork reference
 docs/
   ROADMAP.md
   ARCHITECTURE.md
   PRIVACY_MODEL.md
+  SOURCES.md
 ```
 
-## Existing Local Sources
+## Imported Local Sources
 
-- Prototype app: `$HOME/Documents/tex8/prototypes/monero-wallet`
-- Cuprate checkout: `$HOME/Documents/cuprate`
+- Wallet app imported from `$HOME/Documents/tex8/prototypes/monero-wallet/app`
+- Cuprate node source imported from `$HOME/Documents/cuprate`
 - Monero GUI/Core checkout: `$HOME/Documents/monero-gui`
 
-These are not moved yet. This repository starts as the product planning and
-integration home.
+Generated dependencies and build output are intentionally not imported:
+`node_modules`, iOS `Pods`, iOS builds, Ruby vendor bundles, and Rust `target`.

@@ -1,0 +1,23 @@
+import React from "react";
+import Svg, { Path, Circle } from "react-native-svg";
+
+interface Props {
+  size?: number;
+}
+
+// 1:1 from monero_coin_bg.svg (CSS classes inlined)
+export default function MoneroCoinBg({ size = 200 }: Props) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 3756.1 3756.5">
+      <Circle cx="1878" cy="1878.2" r="1804.9" fill="#000" />
+      <Path
+        fill="#fff"
+        d="M1878,321.6c-859.4,0-1557.4,697.9-1556.3,1556.5.2,171.8,27.6,337,79,491.6h465.7v-1309.4l1011.6,1011.6,1011.5-1011.6v1309.4h465.8c51.5-154.6,78.7-319.8,79-491.6,1.5-859.5-696.9-1556.3-1556.4-1556.3v-.2Z"
+      />
+      <Path
+        fill="#fff"
+        d="M1645.4,2304.4l-441.5-441.5v823.9h-656c273.2,448.3,766.9,748.1,1330.1,748.1s1057-299.9,1330.2-748.1h-656.2v-823.9l-441.5,441.5-232.6,232.6-232.6-232.6h0Z"
+      />
+    </Svg>
+  );
+}
