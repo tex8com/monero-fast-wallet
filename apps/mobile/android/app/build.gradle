@@ -71,6 +71,18 @@ def enableProguardInReleaseBuilds = false
  * this variant is about 6MiB larger per architecture than default.
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
+def moneroWalletBridgeWithMonero =
+        (findProperty("moneroWalletBridgeWithMonero") ?: "false").toString().toBoolean()
+def moneroSourceDir = (findProperty("moneroSourceDir") ?: "").toString()
+def moneroWalletLinkManifest = (findProperty("moneroWalletLinkManifest") ?: "").toString()
+def moneroWalletLinkRoot = (findProperty("moneroWalletLinkRoot") ?: "").toString()
+def moneroWalletApiLibrary = (findProperty("moneroWalletApiLibrary") ?: "").toString()
+def moneroWalletApiRoot = (findProperty("moneroWalletApiRoot") ?: "").toString()
+def moneroFastCryptoLibrary = (findProperty("moneroFastCryptoLibrary") ?: "").toString()
+def moneroFastCryptoRoot = (findProperty("moneroFastCryptoRoot") ?: "").toString()
+def moneroWalletExtraLibraries = (findProperty("moneroWalletExtraLibraries") ?: "").toString()
+def moneroWalletExtraLibraryDirs = (findProperty("moneroWalletExtraLibraryDirs") ?: "").toString()
+def moneroWalletExtraLinkOptions = (findProperty("moneroWalletExtraLinkOptions") ?: "").toString()
 
 android {
     ndkVersion rootProject.ext.ndkVersion
@@ -84,6 +96,23 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++17 -fexceptions -frtti"
+                arguments "-DMONERO_WALLET_BRIDGE_WITH_MONERO=${moneroWalletBridgeWithMonero ? "ON" : "OFF"}",
+                        "-DMONERO_SOURCE_DIR=${moneroSourceDir}",
+                        "-DMONERO_WALLET_LINK_MANIFEST=${moneroWalletLinkManifest}",
+                        "-DMONERO_WALLET_LINK_ROOT=${moneroWalletLinkRoot}",
+                        "-DMONERO_WALLET_API_LIBRARY=${moneroWalletApiLibrary}",
+                        "-DMONERO_WALLET_API_ROOT=${moneroWalletApiRoot}",
+                        "-DMONERO_FAST_CRYPTO_LIBRARY=${moneroFastCryptoLibrary}",
+                        "-DMONERO_FAST_CRYPTO_ROOT=${moneroFastCryptoRoot}",
+                        "-DMONERO_WALLET_EXTRA_LIBRARIES=${moneroWalletExtraLibraries}",
+                        "-DMONERO_WALLET_EXTRA_LIBRARY_DIRS=${moneroWalletExtraLibraryDirs}",
+                        "-DMONERO_WALLET_EXTRA_LINK_OPTIONS=${moneroWalletExtraLinkOptions}"
+            }
+        }
     }
     signingConfigs {
         debug {
@@ -105,11 +134,21 @@ android {
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
     }
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+        }
+    }
 }
 
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("junit:junit:4.13.2")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

@@ -1,97 +1,173 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Monero Fast Wallet Mobile App
 
-# Getting Started
+React Native shell for the Monero Fast Wallet.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+## Role
 
-## Step 1: Start Metro
+This app owns the user experience: onboarding, wallet setup screens, sync
+status, balance display, send/receive flows, marketplace screens, settings, and
+fast receive opt-in copy.
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+It is not the wallet brain. Production wallet operations must go through the
+native bridge:
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+```text
+React Native
+  -> WalletService.ts
+  -> NativeMoneroWallet
+  -> native/monero-bridge
+  -> forked Monero libwallet_api / wallet2
+```
 
-```sh
-# Using npm
+Do not implement wallet behavior by parsing `monero-wallet-cli` output or by
+making `monero-wallet-rpc` the in-app core. Those tools are allowed only for
+development comparison and harness tests.
+
+## Current State
+
+- Imported from the tex8 React Native prototype.
+- Uses local mock wallet data.
+- Uses CoinGecko for public XMR price/chart data.
+- Has a typed `WalletService` / `NativeMoneroWallet` contract.
+- Has typed node connection profiles in Settings. The default profile points at
+  the deployed server-side Cuprate node and uses the optimized Cuprate gRPC
+  stream plus normal daemon RPC, while the original Monero profile clears the
+  gRPC endpoint and uses daemon RPC only. Node profile settings persist across
+  app restarts; daemon passwords are not persisted in JavaScript storage.
+- Has a React Native new-architecture TurboModule spec at
+  `specs/NativeMoneroWallet.ts`.
+- iOS has an Objective-C++ module that calls the shared C++ `WalletEngine`.
+- Android has a Kotlin/JNI module that calls the shared C++ `WalletEngine`.
+- iOS simulator/device builds now link the Objective-C++ bridge against the
+  real forked Monero wallet core.
+- Android shell mode still exists for normal app builds, and a gRPC-enabled
+  `arm64-v8a` link smoke now succeeds against real forked Monero wallet
+  archives.
+- Android has an instrumentation runtime smoke that creates an offline stagenet
+  wallet through JNI and the real `libwallet_api` backend.
+
+## Commands
+
+```bash
+npm install
 npm start
-
-# OR using Yarn
-yarn start
-```
-
-## Step 2: Build and run your app
-
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
-
-```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
-```
-
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
-```
-
-Then, and every time you update your native dependencies, run:
-
-```sh
-bundle exec pod install
-```
-
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
-
-```sh
-# Using npm
 npm run ios
-
-# OR using Yarn
-yarn ios
+npm run android
+npm test
+npm run lint
 ```
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+After changing `specs/NativeMoneroWallet.ts`, regenerate native Codegen:
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+```bash
+cd ios
+bundle exec pod install
 
-## Step 3: Modify your app
+cd ../android
+./gradlew generateCodegenArtifactsFromSchema
+```
 
-Now that you have successfully run the app, let's make changes!
+Local native verification used for the current bridge work:
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+```bash
+npx tsc --noEmit
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+cd android
+JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
+  ANDROID_HOME=/opt/homebrew/share/android-commandlinetools \
+  ./gradlew :app:compileDebugKotlin
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+cd ../ios
+bundle install
+bundle exec pod install
+node ../node_modules/react-native/scripts/generate-codegen-artifacts.js \
+  -p .. -t ios -o .
+xcodebuild -workspace MoneroWallet.xcworkspace \
+  -scheme MoneroWallet \
+  -configuration Debug \
+  -sdk iphonesimulator \
+  -destination 'generic/platform=iOS Simulator' \
+  ARCHS=arm64 \
+  ONLY_ACTIVE_ARCH=YES build
 
-## Congratulations! :tada:
+xcodebuild -workspace MoneroWallet.xcworkspace \
+  -scheme MoneroWallet \
+  -configuration Debug \
+  -sdk iphoneos \
+  -destination 'generic/platform=iOS' \
+  ARCHS=arm64 \
+  ONLY_ACTIVE_ARCH=YES \
+  CODE_SIGNING_ALLOWED=NO build
+```
 
-You've successfully run and modified your React Native App. :partying_face:
+Build the iOS Monero archives and Xcode link manifests from the repository root
+before the real-backend iOS app build:
 
-### Now what?
+```bash
+TARGETS=ios-sim-arm64,ios-device CLEAN_AFTER_INSTALL=1 \
+  native/monero-bridge/scripts/build-ios-monero-deps.sh
 
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
+TARGETS=ios-sim-arm64,ios-device \
+  native/monero-bridge/scripts/build-ios-monero-wallet-api.sh
 
-# Troubleshooting
+TARGETS=ios-sim-arm64,ios-device \
+  native/monero-bridge/scripts/generate-ios-monero-link-manifests.sh
+```
 
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
+The generated `iphonesimulator` and `iphoneos` aliases are consumed by the
+Xcode project through `$(PLATFORM_NAME)`.
 
-# Learn More
+Current gRPC-enabled Android Monero link smoke:
 
-To learn more about React Native, take a look at the following resources:
+```bash
+cd ../../
+native/monero-bridge/scripts/build-host-protobuf-tools.sh
 
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+TARGETS=android-arm64 \
+  native/monero-bridge/scripts/build-android-monero-deps.sh
+
+TARGETS=android-arm64 SKIP_FAST_CRYPTO=1 \
+  native/monero-bridge/scripts/build-android-monero-wallet-api.sh
+
+cd apps/mobile/android
+./gradlew :app:externalNativeBuildDebug \
+  -PreactNativeArchitectures=arm64-v8a \
+  -PmoneroWalletBridgeWithMonero=true \
+  -PmoneroSourceDir=$HOME/Documents/Projects/monero-gui/monero \
+  -PmoneroWalletLinkRoot=$HOME/Documents/Projects/monero-fast-wallet/build/android-monero-link-manifests
+```
+
+Build the Android runtime smoke APKs:
+
+```bash
+cd apps/mobile/android
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest \
+  -PreactNativeArchitectures=arm64-v8a \
+  -PmoneroWalletBridgeWithMonero=true \
+  -PmoneroSourceDir=$HOME/Documents/Projects/monero-gui/monero \
+  -PmoneroWalletLinkRoot=$HOME/Documents/Projects/monero-fast-wallet/build/android-monero-link-manifests
+```
+
+Run it on a connected arm64 device/emulator:
+
+```bash
+cd apps/mobile/android
+PATH=/opt/homebrew/share/android-commandlinetools/platform-tools:$PATH \
+  ./gradlew :app:connectedDebugAndroidTest \
+    -PreactNativeArchitectures=arm64-v8a \
+    -PmoneroWalletBridgeWithMonero=true \
+    -PmoneroSourceDir=$HOME/Documents/Projects/monero-gui/monero \
+    -PmoneroWalletLinkRoot=$HOME/Documents/Projects/monero-fast-wallet/build/android-monero-link-manifests
+```
+
+## Native Bridge Contract
+
+The bridge contract is documented in:
+
+```text
+../../docs/NATIVE_WALLET_BRIDGE.md
+```
+
+React Native should receive sanitized DTOs and events only. Seed words, private
+spend keys, main wallet private view keys, wallet files, and sensitive logs must
+stay native.
