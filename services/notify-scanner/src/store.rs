@@ -1,4 +1,4 @@
-use crate::model::WatchRegistration;
+use crate::model::{key_image_status_id, KeyImageStatusRecord, MatchedOutput, WatchRegistration};
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chacha20poly1305::{
@@ -19,11 +19,22 @@ pub trait WatchStore: Send + Sync {
     fn remove(&self, identity_id: &str) -> Result<Option<WatchRegistration>>;
     fn get(&self, identity_id: &str) -> Result<Option<WatchRegistration>>;
     fn list(&self) -> Result<Vec<WatchRegistration>>;
+    fn upsert_match(&self, output: MatchedOutput) -> Result<MatchedOutput>;
+    fn list_matches(&self, identity_id: &str) -> Result<Vec<MatchedOutput>>;
+    fn upsert_key_image_status(&self, status: KeyImageStatusRecord)
+        -> Result<KeyImageStatusRecord>;
+    fn get_key_image_statuses(
+        &self,
+        identity_id: &str,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatusRecord>>;
 }
 
 #[derive(Default)]
 pub struct InMemoryWatchStore {
     records: RwLock<BTreeMap<String, WatchRegistration>>,
+    matches: RwLock<BTreeMap<String, MatchedOutput>>,
+    key_image_statuses: RwLock<BTreeMap<String, KeyImageStatusRecord>>,
 }
 
 impl WatchStore for InMemoryWatchStore {
@@ -35,7 +46,16 @@ impl WatchStore for InMemoryWatchStore {
 
     fn remove(&self, identity_id: &str) -> Result<Option<WatchRegistration>> {
         let mut records = self.records.write().expect("watch store poisoned");
-        Ok(records.remove(identity_id))
+        let removed = records.remove(identity_id);
+        self.matches
+            .write()
+            .expect("watch store poisoned")
+            .retain(|_, output| output.identity_id != identity_id);
+        self.key_image_statuses
+            .write()
+            .expect("watch store poisoned")
+            .retain(|_, status| status.identity_id != identity_id);
+        Ok(removed)
     }
 
     fn get(&self, identity_id: &str) -> Result<Option<WatchRegistration>> {
@@ -47,32 +67,114 @@ impl WatchStore for InMemoryWatchStore {
         let records = self.records.read().expect("watch store poisoned");
         Ok(records.values().cloned().collect())
     }
+
+    fn upsert_match(&self, output: MatchedOutput) -> Result<MatchedOutput> {
+        let mut matches = self.matches.write().expect("watch store poisoned");
+        let mut stored = output.clone();
+        if let Some(existing) = matches.get(&output.id) {
+            stored.created_at_ms = existing.created_at_ms;
+        }
+        matches.insert(stored.id.clone(), stored.clone());
+        Ok(stored)
+    }
+
+    fn list_matches(&self, identity_id: &str) -> Result<Vec<MatchedOutput>> {
+        let matches = self.matches.read().expect("watch store poisoned");
+        Ok(matches
+            .values()
+            .filter(|output| output.identity_id == identity_id)
+            .cloned()
+            .collect())
+    }
+
+    fn upsert_key_image_status(
+        &self,
+        status: KeyImageStatusRecord,
+    ) -> Result<KeyImageStatusRecord> {
+        let mut statuses = self
+            .key_image_statuses
+            .write()
+            .expect("watch store poisoned");
+        statuses.insert(
+            key_image_status_id(&status.identity_id, &status.key_image),
+            status.clone(),
+        );
+        Ok(status)
+    }
+
+    fn get_key_image_statuses(
+        &self,
+        identity_id: &str,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatusRecord>> {
+        let statuses = self
+            .key_image_statuses
+            .read()
+            .expect("watch store poisoned");
+        Ok(key_images
+            .iter()
+            .filter_map(|key_image| statuses.get(&key_image_status_id(identity_id, key_image)))
+            .cloned()
+            .collect())
+    }
 }
 
 pub struct EncryptedJsonFileStore {
     path: PathBuf,
     cipher: XChaCha20Poly1305,
     records: RwLock<BTreeMap<String, WatchRegistration>>,
+    matches: RwLock<BTreeMap<String, MatchedOutput>>,
+    key_image_statuses: RwLock<BTreeMap<String, KeyImageStatusRecord>>,
 }
 
 impl EncryptedJsonFileStore {
     pub fn open(path: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self> {
         let path = path.into();
         let cipher = XChaCha20Poly1305::new((&key).into());
-        let records = if path.exists() {
+        let stored = if path.exists() {
             read_records(&path, &cipher)?
         } else {
-            BTreeMap::new()
+            StoredRecords::default()
         };
 
         Ok(Self {
             path,
             cipher,
-            records: RwLock::new(records),
+            records: RwLock::new(
+                stored
+                    .records
+                    .into_iter()
+                    .map(|record| (record.identity_id.clone(), record))
+                    .collect(),
+            ),
+            matches: RwLock::new(
+                stored
+                    .matches
+                    .into_iter()
+                    .map(|output| (output.id.clone(), output))
+                    .collect(),
+            ),
+            key_image_statuses: RwLock::new(
+                stored
+                    .key_image_statuses
+                    .into_iter()
+                    .map(|status| {
+                        (
+                            key_image_status_id(&status.identity_id, &status.key_image),
+                            status,
+                        )
+                    })
+                    .collect(),
+            ),
         })
     }
 
-    fn persist_locked(&self, records: &BTreeMap<String, WatchRegistration>) -> Result<()> {
+    fn persist(
+        &self,
+        records: &BTreeMap<String, WatchRegistration>,
+        matches: &BTreeMap<String, MatchedOutput>,
+        key_image_statuses: &BTreeMap<String, KeyImageStatusRecord>,
+    ) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create watch db parent {}", parent.display()))?;
@@ -80,6 +182,8 @@ impl EncryptedJsonFileStore {
 
         let plaintext = serde_json::to_vec(&StoredRecords {
             records: records.values().cloned().collect(),
+            matches: matches.values().cloned().collect(),
+            key_image_statuses: key_image_statuses.values().cloned().collect(),
         })?;
         let sealed = seal(&self.cipher, &plaintext)?;
         let serialized = serde_json::to_vec_pretty(&sealed)?;
@@ -93,14 +197,26 @@ impl WatchStore for EncryptedJsonFileStore {
     fn upsert(&self, registration: WatchRegistration) -> Result<WatchRegistration> {
         let mut records = self.records.write().expect("watch store poisoned");
         records.insert(registration.identity_id.clone(), registration.clone());
-        self.persist_locked(&records)?;
+        let matches = self.matches.read().expect("watch store poisoned");
+        let key_image_statuses = self
+            .key_image_statuses
+            .read()
+            .expect("watch store poisoned");
+        self.persist(&records, &matches, &key_image_statuses)?;
         Ok(registration)
     }
 
     fn remove(&self, identity_id: &str) -> Result<Option<WatchRegistration>> {
         let mut records = self.records.write().expect("watch store poisoned");
         let removed = records.remove(identity_id);
-        self.persist_locked(&records)?;
+        let mut matches = self.matches.write().expect("watch store poisoned");
+        matches.retain(|_, output| output.identity_id != identity_id);
+        let mut key_image_statuses = self
+            .key_image_statuses
+            .write()
+            .expect("watch store poisoned");
+        key_image_statuses.retain(|_, status| status.identity_id != identity_id);
+        self.persist(&records, &matches, &key_image_statuses)?;
         Ok(removed)
     }
 
@@ -112,6 +228,65 @@ impl WatchStore for EncryptedJsonFileStore {
     fn list(&self) -> Result<Vec<WatchRegistration>> {
         let records = self.records.read().expect("watch store poisoned");
         Ok(records.values().cloned().collect())
+    }
+
+    fn upsert_match(&self, output: MatchedOutput) -> Result<MatchedOutput> {
+        let records = self.records.read().expect("watch store poisoned");
+        let mut matches = self.matches.write().expect("watch store poisoned");
+        let key_image_statuses = self
+            .key_image_statuses
+            .read()
+            .expect("watch store poisoned");
+        let mut stored = output.clone();
+        if let Some(existing) = matches.get(&output.id) {
+            stored.created_at_ms = existing.created_at_ms;
+        }
+        matches.insert(stored.id.clone(), stored.clone());
+        self.persist(&records, &matches, &key_image_statuses)?;
+        Ok(stored)
+    }
+
+    fn list_matches(&self, identity_id: &str) -> Result<Vec<MatchedOutput>> {
+        let matches = self.matches.read().expect("watch store poisoned");
+        Ok(matches
+            .values()
+            .filter(|output| output.identity_id == identity_id)
+            .cloned()
+            .collect())
+    }
+
+    fn upsert_key_image_status(
+        &self,
+        status: KeyImageStatusRecord,
+    ) -> Result<KeyImageStatusRecord> {
+        let records = self.records.read().expect("watch store poisoned");
+        let matches = self.matches.read().expect("watch store poisoned");
+        let mut key_image_statuses = self
+            .key_image_statuses
+            .write()
+            .expect("watch store poisoned");
+        key_image_statuses.insert(
+            key_image_status_id(&status.identity_id, &status.key_image),
+            status.clone(),
+        );
+        self.persist(&records, &matches, &key_image_statuses)?;
+        Ok(status)
+    }
+
+    fn get_key_image_statuses(
+        &self,
+        identity_id: &str,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatusRecord>> {
+        let statuses = self
+            .key_image_statuses
+            .read()
+            .expect("watch store poisoned");
+        Ok(key_images
+            .iter()
+            .filter_map(|key_image| statuses.get(&key_image_status_id(identity_id, key_image)))
+            .cloned()
+            .collect())
     }
 }
 
@@ -128,19 +303,12 @@ pub fn parse_storage_key(value: &str) -> Result<[u8; 32]> {
         .map_err(|_| anyhow!("storage key must decode to exactly 32 bytes"))
 }
 
-fn read_records(
-    path: &Path,
-    cipher: &XChaCha20Poly1305,
-) -> Result<BTreeMap<String, WatchRegistration>> {
+fn read_records(path: &Path, cipher: &XChaCha20Poly1305) -> Result<StoredRecords> {
     let value = fs::read(path).with_context(|| format!("read watch db {}", path.display()))?;
     let sealed: SealedFile = serde_json::from_slice(&value)?;
     let plaintext = open(cipher, &sealed)?;
     let stored: StoredRecords = serde_json::from_slice(&plaintext)?;
-    Ok(stored
-        .records
-        .into_iter()
-        .map(|record| (record.identity_id.clone(), record))
-        .collect())
+    Ok(stored)
 }
 
 fn seal(cipher: &XChaCha20Poly1305, plaintext: &[u8]) -> Result<SealedFile> {
@@ -167,9 +335,14 @@ fn open(cipher: &XChaCha20Poly1305, sealed: &SealedFile) -> Result<Vec<u8>> {
         .map_err(|_| anyhow!("decrypt watch db"))
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Default, Deserialize, Serialize)]
 struct StoredRecords {
+    #[serde(default)]
     records: Vec<WatchRegistration>,
+    #[serde(default)]
+    matches: Vec<MatchedOutput>,
+    #[serde(default)]
+    key_image_statuses: Vec<KeyImageStatusRecord>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -182,7 +355,7 @@ struct SealedFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Network;
+    use crate::model::{DetectionStatus, Network, NotificationStatus, SpentStatus};
 
     fn registration() -> WatchRegistration {
         WatchRegistration {
@@ -196,6 +369,23 @@ mod tests {
             created_at_ms: 1,
             updated_at_ms: 1,
             last_scanned_height: 49,
+        }
+    }
+
+    fn matched_output() -> MatchedOutput {
+        MatchedOutput {
+            id: format!("fast-receive-0:{}:1", "1".repeat(64)),
+            identity_id: "fast-receive-0".to_owned(),
+            tx_id: "1".repeat(64),
+            block_height: 99,
+            output_index: 1,
+            block_timestamp_ms: 1000,
+            amount_atomic: Some(123),
+            key_image: Some("2".repeat(64)),
+            detection_status: DetectionStatus::Detected,
+            notification_status: NotificationStatus::Pending,
+            created_at_ms: 2,
+            updated_at_ms: 2,
         }
     }
 
@@ -215,14 +405,73 @@ mod tests {
         let view_key = record.private_view_key.clone();
 
         store.upsert(record).unwrap();
+        store.upsert_match(matched_output()).unwrap();
+        store
+            .upsert_key_image_status(KeyImageStatusRecord {
+                identity_id: "fast-receive-0".to_owned(),
+                key_image: "2".repeat(64),
+                status: SpentStatus::Unspent,
+                checked_height: 99,
+                updated_at_ms: 3,
+            })
+            .unwrap();
 
         let bytes = fs::read(&path).unwrap();
         let raw = String::from_utf8_lossy(&bytes);
         assert!(!raw.contains(&view_key));
         assert!(!raw.contains("push-token"));
+        assert!(!raw.contains(&"2".repeat(64)));
 
         let reopened = EncryptedJsonFileStore::open(&path, key).unwrap();
         let loaded = reopened.get("fast-receive-0").unwrap().unwrap();
         assert_eq!(loaded.private_view_key, view_key);
+        assert_eq!(reopened.list_matches("fast-receive-0").unwrap().len(), 1);
+        assert_eq!(
+            reopened
+                .get_key_image_statuses("fast-receive-0", &["2".repeat(64)])
+                .unwrap()[0]
+                .status,
+            SpentStatus::Unspent
+        );
+    }
+
+    #[test]
+    fn match_inserts_are_idempotent_and_remove_cleans_identity_data() {
+        let store = InMemoryWatchStore::default();
+        store.upsert(registration()).unwrap();
+        let output = matched_output();
+
+        store.upsert_match(output.clone()).unwrap();
+        let mut updated = output;
+        updated.updated_at_ms = 10;
+        updated.notification_status = NotificationStatus::Sent;
+        let stored = store.upsert_match(updated).unwrap();
+
+        assert_eq!(stored.created_at_ms, 2);
+        assert_eq!(store.list_matches("fast-receive-0").unwrap().len(), 1);
+
+        store
+            .upsert_key_image_status(KeyImageStatusRecord {
+                identity_id: "fast-receive-0".to_owned(),
+                key_image: "2".repeat(64),
+                status: SpentStatus::Spent,
+                checked_height: 100,
+                updated_at_ms: 11,
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .get_key_image_statuses("fast-receive-0", &["2".repeat(64)])
+                .unwrap()[0]
+                .status,
+            SpentStatus::Spent
+        );
+
+        store.remove("fast-receive-0").unwrap();
+        assert!(store.list_matches("fast-receive-0").unwrap().is_empty());
+        assert!(store
+            .get_key_image_statuses("fast-receive-0", &["2".repeat(64)])
+            .unwrap()
+            .is_empty());
     }
 }
