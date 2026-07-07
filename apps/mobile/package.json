@@ -4,7 +4,16 @@
   "private": true,
   "scripts": {
     "android": "react-native run-android",
+    "android:build": "bash scripts/android-build.sh",
+    "android:build-install": "bash scripts/android-build-install.sh",
+    "android:diagnostics": "bash scripts/android-diagnostics.sh",
+    "android:logs": "bash scripts/android-logs.sh",
+    "check:node": "bash scripts/check-node.sh",
     "ios": "react-native run-ios",
+    "ios:build-install": "bash scripts/ios-build-install.sh",
+    "ios:diagnostics": "bash scripts/ios-diagnostics.sh",
+    "ios:logs": "bash scripts/ios-logs.sh",
+    "ios:metro": "bash scripts/ios-ensure-metro.sh",
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest"

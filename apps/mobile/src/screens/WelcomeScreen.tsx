@@ -5,11 +5,13 @@ import {
 } from "react-native";
 import LinearGradient from "react-native-linear-gradient";
 import Svg, { Circle, G, Defs, LinearGradient as SvgGrad, Stop, Rect, Line, Ellipse } from "react-native-svg";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors } from "../theme/colors";
 import MoneroCoinGhost from "../components/MoneroCoinGhost";
-import MoneroCoinSvg from "../../assets/monero_coin.svg";
+import MoneroCoin from "../components/MoneroCoin";
 
 const { width: SW, height: SH } = Dimensions.get("window");
+const IS_TEST = typeof jest !== "undefined";
 
 /* ── Wallet SVG — tilted, premium ────────────────────────────────────── */
 function WalletSvg() {
@@ -66,7 +68,7 @@ function WalletSvg() {
 }
 
 function MoneroCoinAsset({ size }: { size: number }) {
-  return <MoneroCoinSvg width={size} height={size} />;
+  return <MoneroCoin size={size} />;
 }
 
 /* ── Falling Coin — gentle fall, slight wobble ───────────────────────── */
@@ -76,6 +78,10 @@ function FallingCoin({ delay, startX, size, duration }: { delay: number; startX:
   const wobble = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    if (IS_TEST) {
+      return;
+    }
+
     const fall = () => {
       y.setValue(-30);
       opacity.setValue(0);
@@ -93,7 +99,7 @@ function FallingCoin({ delay, startX, size, duration }: { delay: number; startX:
       ]).start(() => fall());
     };
     fall();
-  }, []);
+  }, [delay, duration, opacity, wobble, y]);
 
   const rot = wobble.interpolate({ inputRange: [0, 0.25, 0.5, 0.75, 1], outputRange: ["-6deg", "4deg", "-3deg", "2deg", "0deg"] });
 
@@ -106,22 +112,33 @@ function FallingCoin({ delay, startX, size, duration }: { delay: number; startX:
 
 /* ── Welcome Screen ──────────────────────────────────────────────────── */
 export default function WelcomeScreen({ navigation }: any) {
+  const insets = useSafeAreaInsets();
   // Wallet: smooth loop (start=0, up, down, back to 0)
   const walletY = useRef(new Animated.Value(0)).current;
-  const walletScale = useRef(new Animated.Value(0.9)).current;
+  const walletScale = useRef(new Animated.Value(1)).current;
   // Big coin
-  const bigCoinY = useRef(new Animated.Value(-60)).current;
-  const bigCoinScale = useRef(new Animated.Value(0.6)).current;
+  const bigCoinY = useRef(new Animated.Value(0)).current;
+  const bigCoinScale = useRef(new Animated.Value(1)).current;
   const bigCoinPulse = useRef(new Animated.Value(1)).current;
   const bigCoinTilt = useRef(new Animated.Value(0)).current;
   // Text + bottom
-  const textOp = useRef(new Animated.Value(0)).current;
-  const textY = useRef(new Animated.Value(25)).current;
-  const bottomOp = useRef(new Animated.Value(0)).current;
+  const textOp = useRef(new Animated.Value(1)).current;
+  const textY = useRef(new Animated.Value(0)).current;
+  const bottomOp = useRef(new Animated.Value(1)).current;
   // BG monero
-  const bgOp = useRef(new Animated.Value(0)).current;
+  const bgOp = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
+    if (IS_TEST) {
+      walletScale.setValue(1);
+      bigCoinY.setValue(0);
+      bigCoinScale.setValue(1);
+      textOp.setValue(1);
+      bottomOp.setValue(1);
+      bgOp.setValue(1);
+      return;
+    }
+
     // Wallet entrance
     Animated.spring(walletScale, { toValue: 1, friction: 9, tension: 35, useNativeDriver: true }).start();
 
@@ -179,7 +196,18 @@ export default function WelcomeScreen({ navigation }: any) {
       Animated.delay(1100),
       Animated.timing(bottomOp, { toValue: 1, duration: 500, useNativeDriver: true }),
     ]).start();
-  }, []);
+  }, [
+    bgOp,
+    bigCoinPulse,
+    bigCoinScale,
+    bigCoinTilt,
+    bigCoinY,
+    bottomOp,
+    textOp,
+    textY,
+    walletScale,
+    walletY,
+  ]);
 
   const tiltDeg = bigCoinTilt.interpolate({ inputRange: [-1, 0, 1], outputRange: ["-5deg", "0deg", "5deg"] });
 
@@ -191,8 +219,6 @@ export default function WelcomeScreen({ navigation }: any) {
       <Animated.View style={[s.bgMonero, { opacity: bgOp, transform: [{ rotate: "10deg" }] }]}>
         <MoneroCoinGhost size={500} color="rgba(255,255,255,0.035)" />
       </Animated.View>
-
-      {/* Skip removed — user must tap Get Started */}
 
       <View style={s.center}>
         {/* Glow */}
@@ -227,28 +253,29 @@ export default function WelcomeScreen({ navigation }: any) {
         {/* Text */}
         <Animated.View style={[s.textWrap, { opacity: textOp, transform: [{ translateY: textY }] }]}>
           <Text style={s.title}>
-            <Text style={s.titleWhite}>Pay Anyone.</Text>{"\n"}
-            <Text style={s.titleOrange}>Stay Invisible.</Text>
+            <Text style={s.titleWhite}>Monero</Text>{"\n"}
+            <Text style={s.titleOrange}>Wallet</Text>
           </Text>
           <Text style={s.subtitle}>
-            Send money worldwide{" "}
-            <Text style={s.subtitleHighlight}>in seconds</Text>.{"\n"}
-            No fees. No limits. No one watching.{"\n"}
-            Just tap and go.
+            Private, fast, and in your control.
           </Text>
         </Animated.View>
       </View>
 
       {/* Bottom */}
-      <Animated.View style={[s.bottom, { opacity: bottomOp }]}>
-        <View style={s.dots}>
-          <View style={[s.dot, s.dotActive]} />
-          <View style={s.dot} />
-          <View style={s.dot} />
-        </View>
-        <TouchableOpacity style={s.btn} activeOpacity={0.85} onPress={() => navigation.navigate("WalletSetup")}>
+      <Animated.View
+        style={[
+          s.bottom,
+          { opacity: bottomOp, paddingBottom: Math.max(insets.bottom + 24, 42) },
+        ]}
+      >
+        <TouchableOpacity
+          style={s.btn}
+          activeOpacity={0.85}
+          onPress={() => navigation.navigate("WalletSetup")}
+        >
           <LinearGradient colors={["#F26822", "#D4551A"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.btnGrad}>
-            <Text style={s.btnText}>Get Started</Text>
+            <Text style={s.btnText}>Continue</Text>
           </LinearGradient>
         </TouchableOpacity>
       </Animated.View>
@@ -273,16 +300,12 @@ const s = StyleSheet.create({
   wallet: { position: "absolute", bottom: 0, left: 15, zIndex: 1 },
 
   textWrap: { alignItems: "center", paddingHorizontal: 32 },
-  title: { fontSize: 38, fontWeight: "800", textAlign: "center", lineHeight: 48, letterSpacing: -0.5, marginBottom: 18 },
+  title: { fontSize: 38, fontWeight: "800", textAlign: "center", lineHeight: 48, letterSpacing: 0, marginBottom: 18 },
   titleWhite: { color: "#FFFFFF" },
   titleOrange: { color: "#F26822" },
   subtitle: { color: "rgba(255,255,255,0.45)", fontSize: 18, lineHeight: 28, textAlign: "center", fontWeight: "400" },
-  subtitleHighlight: { color: "#F26822", fontWeight: "600" },
 
-  bottom: { paddingHorizontal: 24, paddingBottom: 56, alignItems: "center" },
-  dots: { flexDirection: "row", marginBottom: 28 },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "rgba(255,255,255,0.08)", marginHorizontal: 4 },
-  dotActive: { backgroundColor: colors.orange, width: 24, borderRadius: 4 },
+  bottom: { paddingHorizontal: 24, alignItems: "center" },
   btn: { width: "100%", borderRadius: 16, overflow: "hidden" },
   btnGrad: { height: 60, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   btnText: { color: "#FFF", fontSize: 18, fontWeight: "700", letterSpacing: 0.3 },

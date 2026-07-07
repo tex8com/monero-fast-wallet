@@ -2,16 +2,19 @@ import React, { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, StatusBar, Dimensions, ActivityIndicator } from "react-native";
 import Svg, { Path, Defs, LinearGradient as SvgGrad, Stop, Circle } from "react-native-svg";
 import { colors } from "../theme/colors";
-import { WALLET, TRANSACTIONS } from "../data/mock";
 import MoneroLogo from "../components/MoneroLogo";
 import { useXmrPrice, useXmrChart, xmrToUsd } from "../data/priceService";
+import { useWalletState } from "../services/WalletState";
+import {
+  atomicXmrToNumber,
+  formatAtomicXmr,
+  subtractAtomic,
+} from "../services/WalletFormat";
 
 const W = Dimensions.get("window").width;
 const CHART_W = W - 40;
 const CHART_H = 160;
 const TIMEFRAMES = ["Today", "24H", "7D", "1M", "1Y", "Max"];
-
-const xmrBalance = parseFloat(WALLET.balance);
 
 /* ── SVG Chart ─────────────────────────────────────────────────────── */
 function PriceChart({ points, positive }: { points: number[]; positive: boolean }) {
@@ -72,6 +75,47 @@ export default function HomeScreen({ navigation }: any) {
   const [tf, setTf] = useState("24H");
   const { price, change24h, loading: priceLoading } = useXmrPrice();
   const { points, loading: chartLoading } = useXmrChart(tf);
+  const {
+    error,
+    registeredWallet,
+    snapshot,
+    status,
+    syncProgress,
+    transactions,
+  } = useWalletState();
+  const hasOpenWallet = Boolean(snapshot);
+  const balanceXmr = snapshot
+    ? formatAtomicXmr(snapshot.balanceAtomic, {
+        maxFractionDigits: 4,
+        minFractionDigits: 2,
+      })
+    : "0.00";
+  const balanceNumber = snapshot
+    ? atomicXmrToNumber(snapshot.balanceAtomic)
+    : 0;
+  const pendingAtomic = snapshot
+    ? subtractAtomic(snapshot.balanceAtomic, snapshot.unlockedBalanceAtomic)
+    : 0n;
+  const pendingXmr = formatAtomicXmr(pendingAtomic, {
+    maxFractionDigits: 4,
+  });
+  const showPending = pendingAtomic > 0n;
+  const syncColor =
+    status === "open"
+      ? colors.success
+      : status === "syncing"
+        ? colors.warning
+        : colors.orange;
+  const syncText =
+    status === "open"
+      ? "Live"
+      : status === "syncing"
+        ? `${syncProgress ?? 0}%`
+        : status === "opening"
+          ? "Opening"
+          : status === "locked"
+            ? "Locked"
+            : "Setup";
 
   const positive = tf === "24H" || tf === "Today"
     ? change24h >= 0
@@ -84,7 +128,14 @@ export default function HomeScreen({ navigation }: any) {
       : 0;
 
   const changeUsd = price > 0 ? Math.abs(changePercent / 100 * price) : 0;
-  const balanceUsd = price > 0 ? xmrToUsd(xmrBalance, price) : "—";
+  const balanceUsd = price > 0 && snapshot
+    ? xmrToUsd(balanceNumber, price)
+    : "—";
+  const openWalletSetup = () =>
+    navigation.navigate(registeredWallet ? "WalletSetup" : "Welcome");
+  const openWalletRoute = (screen: string) => {
+    navigation.navigate(hasOpenWallet ? screen : "WalletSetup");
+  };
 
   return (
     <View style={s.container}>
@@ -97,9 +148,9 @@ export default function HomeScreen({ navigation }: any) {
             <MoneroLogo size={26} />
             <Text style={s.headerT}>Monero<Text style={s.headerTOrange}>-Wallet</Text></Text>
           </View>
-          <View style={s.syncBadge}>
-            <View style={s.syncDot} />
-            <Text style={s.syncTxt}>Live</Text>
+          <View style={[s.syncBadge, { backgroundColor: `${syncColor}1A` }]}>
+            <View style={[s.syncDot, { backgroundColor: syncColor }]} />
+            <Text style={[s.syncTxt, { color: syncColor }]}>{syncText}</Text>
           </View>
         </View>
 
@@ -144,12 +195,12 @@ export default function HomeScreen({ navigation }: any) {
 
         {/* Action Buttons */}
         <View style={s.actRow}>
-          <TouchableOpacity style={s.actBtn} onPress={() => navigation.navigate("Send")} activeOpacity={0.7}>
-            <View style={s.actCircle}><IcoUp c="#FFF" /></View>
+          <TouchableOpacity style={s.actBtn} onPress={() => openWalletRoute("Send")} activeOpacity={0.7}>
+            <View style={[s.actCircle, !hasOpenWallet && s.actCircleDisabled]}><IcoUp c="#FFF" /></View>
             <Text style={s.actLabel}>Send</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={s.actBtn} onPress={() => navigation.navigate("Receive")} activeOpacity={0.7}>
-            <View style={s.actCircle}><IcoDown c="#FFF" /></View>
+          <TouchableOpacity style={s.actBtn} onPress={() => openWalletRoute("Receive")} activeOpacity={0.7}>
+            <View style={[s.actCircle, !hasOpenWallet && s.actCircleDisabled]}><IcoDown c="#FFF" /></View>
             <Text style={s.actLabel}>Receive</Text>
           </TouchableOpacity>
           <TouchableOpacity style={s.actBtn} onPress={() => navigation.navigate("Marketplace")} activeOpacity={0.7}>
@@ -160,17 +211,33 @@ export default function HomeScreen({ navigation }: any) {
 
         {/* Balance Card */}
         <View style={s.balCard}>
-          <Text style={s.balLabel}>My Balance</Text>
+          <Text style={s.balLabel}>
+            {hasOpenWallet ? "My Balance" : registeredWallet ? "Wallet Locked" : "Wallet"}
+          </Text>
           <View style={s.balRow}>
-            <Text style={s.balXmr}>{WALLET.balance} XMR</Text>
-            <Text style={s.balUsd}>${balanceUsd}</Text>
+            <Text style={s.balXmr}>
+              {hasOpenWallet
+                ? `${balanceXmr} XMR`
+                : registeredWallet?.walletName ?? "No wallet"}
+            </Text>
+            <Text style={s.balUsd}>
+              {hasOpenWallet ? `$${balanceUsd}` : registeredWallet?.network ?? ""}
+            </Text>
           </View>
-          {WALLET.pendingBalance !== "0" && (
+          {showPending && (
             <View style={s.pendRow}>
               <View style={s.pendDot} />
-              <Text style={s.pendTxt}>{WALLET.pendingBalance} XMR pending</Text>
+              <Text style={s.pendTxt}>{pendingXmr} XMR pending</Text>
             </View>
           )}
+          {!hasOpenWallet ? (
+            <TouchableOpacity style={s.balOpenButton} onPress={openWalletSetup}>
+              <Text style={s.balOpenButtonText}>
+                {registeredWallet ? "Open Wallet" : "Create or Import"}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
+          {error ? <Text style={s.statusError} numberOfLines={2}>{error}</Text> : null}
         </View>
 
         {/* Transactions */}
@@ -179,33 +246,71 @@ export default function HomeScreen({ navigation }: any) {
           <TouchableOpacity><Text style={s.secLink}>All</Text></TouchableOpacity>
         </View>
 
-        {TRANSACTIONS.map(tx => {
-          const isIn = tx.type === "received";
-          const txXmr = parseFloat(tx.xmrAmount);
-          const txUsdVal = price > 0 ? `$${Math.abs(txXmr * price).toFixed(2)}` : tx.amount;
-          return (
-            <View key={tx.id} style={s.txCard}>
-              <View style={[s.txDot, { backgroundColor: isIn ? "rgba(0,214,143,0.12)" : "rgba(255,68,102,0.12)" }]}>
-                <Text style={{ fontSize: 14, color: isIn ? colors.textGreen : colors.textRed }}>{isIn ? "↓" : "↑"}</Text>
+        {hasOpenWallet && transactions.length > 0 ? (
+          transactions.slice(0, 5).map(transaction => {
+            const incoming = transaction.direction === "in";
+            const xmr = formatAtomicXmr(transaction.amountAtomic, {
+              maxFractionDigits: 4,
+              minFractionDigits: 2,
+            });
+            const fiat = price > 0
+              ? xmrToUsd(atomicXmrToNumber(transaction.amountAtomic), price)
+              : "—";
+            const statusLabel = transaction.failed
+              ? "Failed"
+              : transaction.pending
+                ? "Pending"
+                : `${transaction.confirmations} conf.`;
+
+            return (
+              <View style={s.txCard} key={transaction.hash || `${transaction.timestamp}-${transaction.amountAtomic}`}>
+                <View style={[s.txDot, incoming ? s.txDotIn : s.txDotOut]}>
+                  {incoming ? <IcoDown c={colors.success} /> : <IcoUp c={colors.error} />}
+                </View>
+                <View style={s.txMid}>
+                  <Text style={s.txType}>
+                    {incoming ? "Received" : "Sent"}
+                  </Text>
+                  <Text style={s.txMeta}>
+                    {transactionTimestampLabel(transaction.timestamp)} · {statusLabel}
+                  </Text>
+                </View>
+                <View style={s.txRight}>
+                  <Text style={[s.txXmr, incoming && s.txXmrIn]}>
+                    {incoming ? "+" : "-"}{xmr}
+                  </Text>
+                  <Text style={s.txFiat}>${fiat}</Text>
+                </View>
               </View>
-              <View style={s.txMid}>
-                <Text style={s.txType}>{isIn ? "Received" : "Sent"}</Text>
-                <Text style={s.txMeta} numberOfLines={1}>
-                  <Text style={{ fontFamily: "monospace" }}>{tx.address.slice(0, -5)}<Text style={{ color: colors.orange }}>{tx.address.slice(-5)}</Text></Text>
-                  {" · "}{tx.date}
-                </Text>
-              </View>
-              <View style={{ alignItems: "flex-end" }}>
-                <Text style={[s.txXmr, isIn && { color: colors.textGreen }]}>{tx.xmrAmount}</Text>
-                <Text style={s.txFiat}>{isIn ? "+" : "-"}{txUsdVal}</Text>
-              </View>
-            </View>
-          );
-        })}
-        <View style={{ height: 100 }} />
+            );
+          })
+        ) : (
+          <View style={s.emptyTxCard}>
+            <Text style={s.emptyTxTitle}>
+              {hasOpenWallet ? "No transactions yet" : "Wallet not open"}
+            </Text>
+            <Text style={s.emptyTxText}>
+              {hasOpenWallet
+                ? "Activity appears here after the wallet has scanned matching outputs."
+                : "Open or create a wallet to load private activity."}
+            </Text>
+          </View>
+        )}
+        <View style={{ height: 150 }} />
       </ScrollView>
     </View>
   );
+}
+
+function transactionTimestampLabel(timestamp: number): string {
+  if (!timestamp) {
+    return "Unconfirmed";
+  }
+
+  return new Date(timestamp * 1000).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 const s = StyleSheet.create({
@@ -235,6 +340,7 @@ const s = StyleSheet.create({
   actRow: { flexDirection: "row", paddingHorizontal: 20, marginBottom: 24 },
   actBtn: { flex: 1, alignItems: "center" },
   actCircle: { width: 56, height: 56, borderRadius: 28, backgroundColor: colors.orange, alignItems: "center", justifyContent: "center" },
+  actCircleDisabled: { opacity: 0.45 },
   actCircleAlt: { backgroundColor: "transparent", borderWidth: 2, borderColor: colors.orange },
   actLabel: { color: "rgba(255,255,255,0.6)", fontSize: 13, fontWeight: "600", marginTop: 10 },
 
@@ -246,15 +352,25 @@ const s = StyleSheet.create({
   pendRow: { flexDirection: "row", alignItems: "center", marginTop: 10 },
   pendDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.warning, marginRight: 6 },
   pendTxt: { color: colors.warning, fontSize: 12, fontWeight: "500" },
+  balOpenButton: { alignSelf: "flex-start", marginTop: 14, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 10, backgroundColor: colors.orange },
+  balOpenButtonText: { color: "#FFF", fontSize: 13, fontWeight: "800" },
+  statusError: { color: colors.error, fontSize: 12, lineHeight: 17, marginTop: 10 },
 
   secRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12, paddingHorizontal: 20 },
   secTitle: { color: "#FFF", fontSize: 17, fontWeight: "700" },
   secLink: { color: colors.orange, fontSize: 13, fontWeight: "600" },
   txCard: { flexDirection: "row", alignItems: "center", backgroundColor: colors.bgCard, borderRadius: 14, paddingVertical: 14, paddingHorizontal: 14, marginBottom: 8, marginHorizontal: 20, borderWidth: 1, borderColor: colors.border },
   txDot: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", marginRight: 12 },
+  txDotIn: { backgroundColor: "rgba(0,214,143,0.12)" },
+  txDotOut: { backgroundColor: "rgba(255,68,102,0.12)" },
   txMid: { flex: 1, marginRight: 8 },
   txType: { color: "#FFF", fontSize: 14, fontWeight: "600" },
   txMeta: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
+  txRight: { alignItems: "flex-end" },
   txXmr: { color: "#FFF", fontSize: 14, fontWeight: "700" },
+  txXmrIn: { color: colors.success },
   txFiat: { color: colors.textMuted, fontSize: 11, marginTop: 1 },
+  emptyTxCard: { backgroundColor: colors.bgCard, borderRadius: 14, paddingVertical: 18, paddingHorizontal: 16, marginHorizontal: 20, borderWidth: 1, borderColor: colors.border },
+  emptyTxTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: "800", marginBottom: 4 },
+  emptyTxText: { color: colors.textSecondary, fontSize: 12, lineHeight: 18 },
 });

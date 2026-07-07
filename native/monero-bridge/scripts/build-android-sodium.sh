@@ -103,13 +103,28 @@ fi
 
 archive_name="libsodium-${sodium_version}.tar.gz"
 archive_path="${sources_dir}/${archive_name}"
-download_url="https://download.libsodium.org/libsodium/releases/old/${archive_name}"
+download_urls=(
+  "https://download.libsodium.org/libsodium/releases/old/${archive_name}"
+  "https://github.com/jedisct1/libsodium/releases/download/${sodium_version}-RELEASE/${archive_name}"
+)
 
 mkdir -p "${sources_dir}" "${work_dir}" "${output_root}"
 
 if [[ ! -f "${archive_path}" ]]; then
   echo "==> download ${archive_name}"
-  curl -L "${download_url}" -o "${archive_path}"
+  downloaded=0
+  for download_url in "${download_urls[@]}"; do
+    if curl -fL "${download_url}" -o "${archive_path}.tmp"; then
+      mv "${archive_path}.tmp" "${archive_path}"
+      downloaded=1
+      break
+    fi
+    rm -f "${archive_path}.tmp"
+  done
+  if [[ "${downloaded}" != "1" ]]; then
+    echo "failed to download ${archive_name}" >&2
+    exit 1
+  fi
 fi
 verify_sha256 "${archive_path}" "${sodium_sha256}"
 

@@ -235,11 +235,9 @@ async fn handle_incoming_txs(
             "passing tx to tx-pool manager"
         );
 
-        // TODO: take into account `do_not_relay` in the tx-pool manager.
-
         if txpool_manager_handle
             .tx_tx
-            .send((tx, state.clone()))
+            .send((tx, state.clone(), do_not_relay))
             .await
             .is_err()
         {

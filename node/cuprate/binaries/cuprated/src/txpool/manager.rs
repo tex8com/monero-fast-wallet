@@ -109,12 +109,16 @@ pub async fn start_txpool_manager(
 
     let (tx_tx, tx_rx) = mpsc::channel(INCOMING_TX_QUEUE_SIZE);
     let (spent_kis_tx, spent_kis_rx) = mpsc::channel(1);
+    let (relay_tx, relay_rx) = mpsc::channel(8);
+    let (flush_tx, flush_rx) = mpsc::channel(8);
 
-    tokio::spawn(manager.run(tx_rx, spent_kis_rx));
+    tokio::spawn(manager.run(tx_rx, spent_kis_rx, relay_rx, flush_rx));
 
     TxpoolManagerHandle {
         tx_tx,
         spent_kis_tx,
+        relay_tx,
+        flush_tx,
     }
 }
 
@@ -125,10 +129,17 @@ pub struct TxpoolManagerHandle {
     pub tx_tx: mpsc::Sender<(
         TransactionVerificationData,
         TxState<CrossNetworkInternalPeerId>,
+        bool,
     )>,
 
     /// The spent key images in a new block tx.
     spent_kis_tx: mpsc::Sender<(Vec<[u8; 32]>, oneshot::Sender<()>)>,
+
+    /// Explicit relay requests from RPC.
+    relay_tx: mpsc::Sender<(Vec<[u8; 32]>, oneshot::Sender<anyhow::Result<()>>)>,
+
+    /// Explicit flush requests from RPC.
+    flush_tx: mpsc::Sender<(Vec<[u8; 32]>, oneshot::Sender<anyhow::Result<()>>)>,
 }
 
 impl TxpoolManagerHandle {
@@ -139,6 +150,8 @@ impl TxpoolManagerHandle {
     pub fn mock() -> Self {
         let (spent_kis_tx, mut spent_kis_rx) = mpsc::channel(1);
         let (tx_tx, mut tx_rx) = mpsc::channel(100);
+        let (relay_tx, mut relay_rx) = mpsc::channel(8);
+        let (flush_tx, mut flush_rx) = mpsc::channel(8);
 
         tokio::spawn(async move {
             loop {
@@ -158,9 +171,35 @@ impl TxpoolManagerHandle {
             }
         });
 
+        tokio::spawn(async move {
+            loop {
+                let Some((_, reply)): Option<(_, oneshot::Sender<anyhow::Result<()>>)> =
+                    relay_rx.recv().await
+                else {
+                    return;
+                };
+
+                drop(reply.send(Ok(())));
+            }
+        });
+
+        tokio::spawn(async move {
+            loop {
+                let Some((_, reply)): Option<(_, oneshot::Sender<anyhow::Result<()>>)> =
+                    flush_rx.recv().await
+                else {
+                    return;
+                };
+
+                drop(reply.send(Ok(())));
+            }
+        });
+
         Self {
             tx_tx,
             spent_kis_tx,
+            relay_tx,
+            flush_tx,
         }
     }
 
@@ -172,6 +211,32 @@ impl TxpoolManagerHandle {
 
         rx.await
             .map_err(|_| anyhow::anyhow!("txpool manager stopped"))
+    }
+
+    /// Relay transactions already in the tx-pool.
+    pub async fn relay_txs(&mut self, tx_hashes: Vec<[u8; 32]>) -> anyhow::Result<()> {
+        let (tx, rx) = oneshot::channel();
+
+        self.relay_tx
+            .send((tx_hashes, tx))
+            .await
+            .map_err(|_| anyhow::anyhow!("txpool manager stopped"))?;
+
+        rx.await
+            .map_err(|_| anyhow::anyhow!("txpool manager stopped"))?
+    }
+
+    /// Remove transactions from the tx-pool. An empty list flushes all tracked txs.
+    pub async fn flush_txs(&mut self, tx_hashes: Vec<[u8; 32]>) -> anyhow::Result<()> {
+        let (tx, rx) = oneshot::channel();
+
+        self.flush_tx
+            .send((tx_hashes, tx))
+            .await
+            .map_err(|_| anyhow::anyhow!("txpool manager stopped"))?;
+
+        rx.await
+            .map_err(|_| anyhow::anyhow!("txpool manager stopped"))?
     }
 }
 
@@ -225,7 +290,10 @@ impl TxpoolManager {
     async fn remove_tx_from_pool(&mut self, tx: [u8; 32], remove_from_db: bool) {
         tracing::debug!("removing tx from pool");
 
-        let tx_info = self.current_txs.swap_remove(&tx).unwrap();
+        let Some(tx_info) = self.current_txs.swap_remove(&tx) else {
+            tracing::debug!("tx not in pool, ignoring remove request");
+            return;
+        };
 
         tx_info
             .timeout_key
@@ -248,7 +316,7 @@ impl TxpoolManager {
     ///
     /// This function will panic if the tx is not in the tx-pool.
     #[instrument(level = "debug", skip_all, fields(tx_id = hex::encode(tx)))]
-    async fn rerelay_tx(&mut self, tx: [u8; 32]) {
+    async fn rerelay_tx(&mut self, tx: [u8; 32]) -> anyhow::Result<()> {
         tracing::debug!("re-relaying tx to network");
 
         let TxpoolReadResponse::TxBlob {
@@ -258,10 +326,10 @@ impl TxpoolManager {
             .txpool_read_handle
             .ready()
             .await
-            .expect(PANIC_CRITICAL_SERVICE_ERROR)
+            .map_err(|_| anyhow::anyhow!("txpool read service stopped"))?
             .call(TxpoolReadRequest::TxBlob(tx))
             .await
-            .expect(PANIC_CRITICAL_SERVICE_ERROR)
+            .map_err(|e| anyhow::anyhow!(e))?
         else {
             unreachable!()
         };
@@ -269,7 +337,9 @@ impl TxpoolManager {
         self.diffuse_service
             .call(DiffuseRequest(DandelionTx(Bytes::from(tx_blob))))
             .await
-            .expect(PANIC_CRITICAL_SERVICE_ERROR);
+            .map_err(|e| anyhow::anyhow!(e))?;
+
+        Ok(())
     }
 
     /// Handles a transaction timeout, be either rebroadcasting or dropping the tx from the pool.
@@ -295,7 +365,10 @@ impl TxpoolManager {
 
         tracing::debug!(time_in_pool, "tx timed out, resending to network");
 
-        self.rerelay_tx(tx).await;
+        if let Err(e) = self.rerelay_tx(tx).await {
+            tracing::warn!(err = %e, "failed to re-relay tx");
+            return;
+        }
 
         let tx_info = self.current_txs.get_mut(&tx).unwrap();
 
@@ -342,6 +415,7 @@ impl TxpoolManager {
         &mut self,
         tx: TransactionVerificationData,
         state: TxState<CrossNetworkInternalPeerId>,
+        do_not_relay: bool,
     ) {
         tracing::debug!("handling new tx");
 
@@ -375,6 +449,11 @@ impl TxpoolManager {
 
         self.track_tx(tx_hash, tx_weight, tx_fee, state.is_stem_stage());
 
+        if do_not_relay {
+            tracing::debug!("tx accepted into txpool without relay");
+            return;
+        }
+
         let incoming_tx = incoming_tx
             .with_routing_state(state)
             .with_state_in_db(None)
@@ -388,6 +467,29 @@ impl TxpoolManager {
             .call(incoming_tx)
             .await
             .expect(PANIC_CRITICAL_SERVICE_ERROR);
+    }
+
+    async fn relay_txs(&mut self, txs: Vec<[u8; 32]>) -> anyhow::Result<()> {
+        for tx in txs {
+            self.promote_tx(tx).await;
+            self.rerelay_tx(tx).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn flush_txs(&mut self, txs: Vec<[u8; 32]>) -> anyhow::Result<()> {
+        let txs = if txs.is_empty() {
+            self.current_txs.keys().copied().collect::<Vec<_>>()
+        } else {
+            txs
+        };
+
+        for tx in txs {
+            self.remove_tx_from_pool(tx, true).await;
+        }
+
+        Ok(())
     }
 
     /// Promote a tx to the public pool.
@@ -454,16 +556,19 @@ impl TxpoolManager {
         mut tx_rx: mpsc::Receiver<(
             TransactionVerificationData,
             TxState<CrossNetworkInternalPeerId>,
+            bool,
         )>,
         mut block_rx: mpsc::Receiver<(Vec<[u8; 32]>, oneshot::Sender<()>)>,
+        mut relay_rx: mpsc::Receiver<(Vec<[u8; 32]>, oneshot::Sender<anyhow::Result<()>>)>,
+        mut flush_rx: mpsc::Receiver<(Vec<[u8; 32]>, oneshot::Sender<anyhow::Result<()>>)>,
     ) {
         loop {
             tokio::select! {
                 Some(tx) = self.tx_timeouts.next() => {
                     self.handle_tx_timeout(tx.into_inner()).await;
                 }
-                Some((tx, state)) = tx_rx.recv() => {
-                    self.handle_incoming_tx(tx, state).await;
+                Some((tx, state, do_not_relay)) = tx_rx.recv() => {
+                    self.handle_incoming_tx(tx, state, do_not_relay).await;
                 }
                 Some(tx) = self.promote_tx_channel.recv() => {
                     self.promote_tx(tx).await;
@@ -471,6 +576,12 @@ impl TxpoolManager {
                 Some((spent_kis, tx)) = block_rx.recv() => {
                     self.new_block(spent_kis).await;
                     let _ = tx.send(());
+                }
+                Some((txs, tx)) = relay_rx.recv() => {
+                    drop(tx.send(self.relay_txs(txs).await));
+                }
+                Some((txs, tx)) = flush_rx.recv() => {
+                    drop(tx.send(self.flush_txs(txs).await));
                 }
             }
         }

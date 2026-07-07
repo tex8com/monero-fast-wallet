@@ -1,18 +1,290 @@
 package com.monerowallet
 
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.hardware.biometrics.BiometricManager
+import android.hardware.biometrics.BiometricPrompt
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.os.Build
+import android.os.CancellationSignal
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
+import java.io.File
+import java.security.SecureRandom
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 class NativeMoneroWalletModule(
   reactContext: ReactApplicationContext,
 ) : NativeMoneroWalletSpec(reactContext) {
+  private var pendingLedgerUsbPermissionPromise: Promise? = null
+  private var pendingLedgerUsbPermissionReceiver: BroadcastReceiver? = null
+  private var pendingBiometricPromise: Promise? = null
 
   override fun getName(): String = NAME
 
   override fun linkedWithMonero(promise: Promise) {
     promise.resolve(NativeMoneroWalletJni.linkedWithMonero())
+  }
+
+  override fun logDiagnostics(message: String, promise: Promise) {
+    Log.i(NAME, message)
+    promise.resolve(null)
+  }
+
+  override fun getLedgerTransportStatus(promise: Promise) {
+    promise.resolve(ledgerTransportStatusToWritableMap(ledgerUsbTransportStatus()))
+  }
+
+  override fun requestLedgerTransportAccess(promise: Promise) {
+    val status = ledgerUsbTransportStatus()
+    if (!status.supported || !status.available || status.permissionGranted) {
+      promise.resolve(ledgerTransportStatusToWritableMap(status))
+      return
+    }
+
+    if (pendingLedgerUsbPermissionPromise != null) {
+      promise.reject(
+        "monero_wallet_ledger_usb_permission_pending",
+        "A Ledger USB permission request is already pending",
+      )
+      return
+    }
+
+    val device = firstLedgerUsbDevice()
+    if (device == null) {
+      promise.resolve(ledgerTransportStatusToWritableMap(ledgerUsbTransportStatus()))
+      return
+    }
+
+    val usbManager = usbManager()
+    pendingLedgerUsbPermissionPromise = promise
+
+    val permissionIntent = PendingIntent.getBroadcast(
+      reactApplicationContext,
+      0,
+      Intent(ACTION_LEDGER_USB_PERMISSION).setPackage(
+        reactApplicationContext.packageName,
+      ),
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+    )
+
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != ACTION_LEDGER_USB_PERMISSION) {
+          return
+        }
+
+        unregisterLedgerUsbPermissionReceiver()
+        val pendingPromise = pendingLedgerUsbPermissionPromise
+        pendingLedgerUsbPermissionPromise = null
+        pendingPromise?.resolve(
+          ledgerTransportStatusToWritableMap(ledgerUsbTransportStatus()),
+        )
+      }
+    }
+    pendingLedgerUsbPermissionReceiver = receiver
+
+    val filter = IntentFilter(ACTION_LEDGER_USB_PERMISSION)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      reactApplicationContext.registerReceiver(
+        receiver,
+        filter,
+        Context.RECEIVER_NOT_EXPORTED,
+      )
+    } else {
+      reactApplicationContext.registerReceiver(receiver, filter)
+    }
+
+    usbManager.requestPermission(device, permissionIntent)
+  }
+
+  override fun getBiometricAuthStatus(promise: Promise) {
+    promise.resolve(biometricAuthStatusToWritableMap(biometricAuthStatus()))
+  }
+
+  override fun authenticateBiometric(reason: String, promise: Promise) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+      promise.resolve(
+        biometricAuthResultToWritableMap(
+          success = false,
+          biometryType = "none",
+          message = "Biometric unlock requires Android 9 or newer",
+        ),
+      )
+      return
+    }
+
+    val status = biometricAuthStatus()
+    if (!status.supported || !status.available || !status.enrolled) {
+      promise.resolve(
+        biometricAuthResultToWritableMap(
+          success = false,
+          biometryType = status.biometryType,
+          message = status.message,
+        ),
+      )
+      return
+    }
+
+    val activity = reactApplicationContext.currentActivity
+    if (activity == null) {
+      promise.reject(
+        "monero_wallet_android_biometric_activity_missing",
+        "Biometric unlock requires an active Android activity",
+      )
+      return
+    }
+
+    if (pendingBiometricPromise != null) {
+      promise.reject(
+        "monero_wallet_android_biometric_pending",
+        "A biometric unlock request is already pending",
+      )
+      return
+    }
+
+    pendingBiometricPromise = promise
+    activity.runOnUiThread {
+      runCatching {
+        val prompt = BiometricPrompt.Builder(activity)
+          .setTitle("Monero Wallet")
+          .setSubtitle(
+            reason.ifBlank {
+              "Confirm biometrics to unlock your local wallet"
+            },
+          )
+          .setNegativeButton("Cancel", activity.mainExecutor) { _, _ ->
+            resolvePendingBiometric(
+              success = false,
+              biometryType = status.biometryType,
+              message = "Biometric unlock was cancelled",
+            )
+          }
+          .build()
+
+        prompt.authenticate(
+          CancellationSignal(),
+          activity.mainExecutor,
+          object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(
+              result: BiometricPrompt.AuthenticationResult,
+            ) {
+              resolvePendingBiometric(
+                success = true,
+                biometryType = status.biometryType,
+                message = "Biometric unlock confirmed",
+              )
+            }
+
+            override fun onAuthenticationError(
+              errorCode: Int,
+              errString: CharSequence,
+            ) {
+              resolvePendingBiometric(
+                success = false,
+                biometryType = status.biometryType,
+                message = errString.toString(),
+              )
+            }
+          },
+        )
+      }.onFailure { error ->
+        val pending = pendingBiometricPromise
+        pendingBiometricPromise = null
+        pending?.reject(
+          "monero_wallet_android_biometric_error",
+          error.message ?: "Biometric unlock failed",
+          error,
+        )
+      }
+    }
+  }
+
+  override fun storeSecret(key: String, value: String, promise: Promise) {
+    runCatching {
+      if (value.isEmpty()) {
+        deleteSecretValue(key)
+      } else {
+        storeSecretValue(key, value)
+      }
+    }
+      .onSuccess { promise.resolve(null) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_secret_error",
+          error.message ?: "Failed to store native secret",
+          error,
+        )
+      }
+  }
+
+  override fun ensureSecret(key: String, promise: Promise) {
+    runCatching {
+      if (readSecretValue(key) == null) {
+        storeSecretValue(key, generateSecretValue())
+      }
+    }
+      .onSuccess { promise.resolve(null) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_secret_error",
+          error.message ?: "Failed to ensure native secret",
+          error,
+        )
+      }
+  }
+
+  override fun deleteSecret(key: String, promise: Promise) {
+    runCatching { deleteSecretValue(key) }
+      .onSuccess { promise.resolve(null) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_secret_error",
+          error.message ?: "Failed to delete native secret",
+          error,
+        )
+      }
+  }
+
+  override fun defaultWalletPath(walletName: String, network: String, promise: Promise) {
+    runCatching {
+      val checkedWalletName = checkedPathSegment(walletName, "walletName")
+      val checkedNetwork = checkedPathSegment(network, "network")
+      val walletDir = File(
+        reactApplicationContext.noBackupFilesDir,
+        "monero-wallets/wallets/$checkedNetwork",
+      )
+
+      if (!walletDir.exists() && !walletDir.mkdirs()) {
+        error("Failed to create wallet directory: ${walletDir.absolutePath}")
+      }
+
+      File(walletDir, checkedWalletName).absolutePath
+    }
+      .onSuccess { path -> promise.resolve(path) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_path_error",
+          error.message ?: "Failed to resolve wallet path",
+          error,
+        )
+      }
   }
 
   override fun createWallet(
@@ -24,6 +296,23 @@ class NativeMoneroWalletModule(
   ) {
     resolveNativeString(promise) {
       NativeMoneroWalletJni.createWallet(path, password, language, network)
+    }
+  }
+
+  override fun createWalletWithStoredSecret(
+    path: String,
+    secretKey: String,
+    language: String,
+    network: String,
+    promise: Promise,
+  ) {
+    resolveNativeString(promise) {
+      NativeMoneroWalletJni.createWallet(
+        path,
+        readRequiredSecretValue(secretKey),
+        language,
+        network,
+      )
     }
   }
 
@@ -59,6 +348,140 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun openWalletWithStoredSecret(
+    path: String,
+    secretKey: String,
+    network: String,
+    promise: Promise,
+  ) {
+    resolveNativeString(promise) {
+      NativeMoneroWalletJni.openWallet(
+        path,
+        readRequiredSecretValue(secretKey),
+        network,
+      )
+    }
+  }
+
+  override fun createWalletFromDevice(
+    path: String,
+    password: String,
+    network: String,
+    deviceName: String,
+    restoreHeight: Double,
+    subaddressLookahead: String,
+    promise: Promise,
+  ) {
+    resolveNativeString(promise) {
+      NativeMoneroWalletJni.createWalletFromDevice(
+        path,
+        password,
+        network,
+        if (deviceName.isBlank()) "Ledger" else deviceName,
+        restoreHeight,
+        subaddressLookahead,
+      )
+    }
+  }
+
+  override fun createWalletFromDeviceWithStoredSecret(
+    path: String,
+    secretKey: String,
+    network: String,
+    deviceName: String,
+    restoreHeight: Double,
+    subaddressLookahead: String,
+    promise: Promise,
+  ) {
+    resolveNativeString(promise) {
+      NativeMoneroWalletJni.createWalletFromDevice(
+        path,
+        readRequiredSecretValue(secretKey),
+        network,
+        if (deviceName.isBlank()) "Ledger" else deviceName,
+        restoreHeight,
+        subaddressLookahead,
+      )
+    }
+  }
+
+  override fun createFastReceiveIdentity(
+    sourceWalletId: String,
+    identityId: String,
+    path: String,
+    password: String,
+    label: String,
+    restoreHeight: Double,
+    derivationIndex: Double,
+    promise: Promise,
+  ) {
+    resolveNativeMap(promise) {
+      fastReceiveIdentityToWritableMap(
+        NativeMoneroWalletJni.createFastReceiveIdentity(
+          sourceWalletId,
+          identityId,
+          path,
+          password,
+          label,
+          restoreHeight,
+          derivationIndex,
+        ),
+      )
+    }
+  }
+
+  override fun createFastReceiveIdentityWithStoredSecret(
+    sourceWalletId: String,
+    identityId: String,
+    path: String,
+    secretKey: String,
+    label: String,
+    restoreHeight: Double,
+    derivationIndex: Double,
+    promise: Promise,
+  ) {
+    resolveNativeMap(promise) {
+      fastReceiveIdentityToWritableMap(
+        NativeMoneroWalletJni.createFastReceiveIdentity(
+          sourceWalletId,
+          identityId,
+          path,
+          readRequiredSecretValue(secretKey),
+          label,
+          restoreHeight,
+          derivationIndex,
+        ),
+      )
+    }
+  }
+
+  override fun enableFastReceiveIdentity(
+    identityId: String,
+    path: String,
+    password: String,
+    scannerUrl: String,
+    scannerAuthToken: String,
+    pushToken: String,
+    promise: Promise,
+  ) {
+    promise.reject(
+      "monero_wallet_fast_receive_scanner_unavailable",
+      "Fast receive scanner registration API exists, but native upload plumbing is not wired yet",
+    )
+  }
+
+  override fun disableFastReceiveIdentity(
+    identityId: String,
+    scannerUrl: String,
+    scannerAuthToken: String,
+    promise: Promise,
+  ) {
+    promise.reject(
+      "monero_wallet_fast_receive_scanner_unavailable",
+      "Fast receive scanner removal API exists, but native removal plumbing is not wired yet",
+    )
+  }
+
   override fun closeWallet(walletId: String, storeFlag: Double, promise: Promise) {
     resolveNativeVoid(promise) {
       NativeMoneroWalletJni.closeWallet(walletId, storeFlag != 0.0)
@@ -76,6 +499,31 @@ class NativeMoneroWalletModule(
     promise: Promise,
   ) {
     resolveNativeVoid(promise) {
+      NativeMoneroWalletJni.setDaemon(
+        walletId,
+        address,
+        trustedFlag != 0.0,
+        useSslFlag != 0.0,
+        username,
+        password,
+        proxyAddress,
+      )
+    }
+  }
+
+  override fun setDaemonWithStoredPassword(
+    walletId: String,
+    address: String,
+    trustedFlag: Double,
+    useSslFlag: Double,
+    username: String,
+    passwordKey: String,
+    proxyAddress: String,
+    promise: Promise,
+  ) {
+    resolveNativeVoid(promise) {
+      val password = readSecretValue(passwordKey)
+        ?: error("Stored daemon password is missing")
       NativeMoneroWalletJni.setDaemon(
         walletId,
         address,
@@ -117,6 +565,12 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun getSeed(walletId: String, seedOffset: String, promise: Promise) {
+    resolveNativeString(promise) {
+      NativeMoneroWalletJni.getSeed(walletId, seedOffset)
+    }
+  }
+
   override fun getBalance(walletId: String, accountIndex: Double, promise: Promise) {
     resolveNativeString(promise) {
       NativeMoneroWalletJni.getBalance(walletId, accountIndex)
@@ -136,6 +590,80 @@ class NativeMoneroWalletModule(
   override fun snapshot(walletId: String, promise: Promise) {
     resolveNativeMap(promise) {
       snapshotToWritableMap(NativeMoneroWalletJni.snapshot(walletId))
+    }
+  }
+
+  override fun getTransactions(walletId: String, limit: Double, promise: Promise) {
+    resolveNativeArray(promise) {
+      transactionsToWritableArray(
+        NativeMoneroWalletJni.getTransactions(walletId, limit),
+      )
+    }
+  }
+
+  override fun prepareTransaction(
+    walletId: String,
+    address: String,
+    amountAtomic: String,
+    paymentId: String,
+    priority: String,
+    accountIndex: Double,
+    promise: Promise,
+  ) {
+    resolveNativeMap(promise) {
+      preparedTransactionToWritableMap(
+        NativeMoneroWalletJni.prepareTransaction(
+          walletId,
+          address,
+          amountAtomic,
+          paymentId,
+          priority,
+          accountIndex,
+        ),
+      )
+    }
+  }
+
+  override fun commitTransaction(walletId: String, pendingId: String, promise: Promise) {
+    resolveNativeMap(promise) {
+      preparedTransactionToWritableMap(
+        NativeMoneroWalletJni.commitTransaction(walletId, pendingId),
+      )
+    }
+  }
+
+  override fun getHardwareWalletStatus(walletId: String, promise: Promise) {
+    resolveNativeMap(promise) {
+      hardwareWalletStatusToWritableMap(
+        NativeMoneroWalletJni.getHardwareWalletStatus(walletId),
+      )
+    }
+  }
+
+  override fun reconnectHardwareWallet(walletId: String, promise: Promise) {
+    resolveNativeMap(promise) {
+      hardwareWalletStatusToWritableMap(
+        NativeMoneroWalletJni.reconnectHardwareWallet(walletId),
+      )
+    }
+  }
+
+  override fun showHardwareWalletAddress(
+    walletId: String,
+    accountIndex: Double,
+    addressIndex: Double,
+    paymentId: String,
+    promise: Promise,
+  ) {
+    resolveNativeMap(promise) {
+      hardwareWalletStatusToWritableMap(
+        NativeMoneroWalletJni.showHardwareWalletAddress(
+          walletId,
+          accountIndex,
+          addressIndex,
+          paymentId,
+        ),
+      )
     }
   }
 
@@ -160,6 +688,16 @@ class NativeMoneroWalletModule(
   }
 
   private inline fun resolveNativeMap(promise: Promise, block: () -> WritableMap) {
+    if (!requireLinked(promise)) {
+      return
+    }
+
+    runCatching { block() }
+      .onSuccess { value -> promise.resolve(value) }
+      .onFailure { error -> rejectNativeError(promise, error) }
+  }
+
+  private inline fun resolveNativeArray(promise: Promise, block: () -> WritableArray) {
     if (!requireLinked(promise)) {
       return
     }
@@ -197,6 +735,103 @@ class NativeMoneroWalletModule(
     )
   }
 
+  private fun checkedPathSegment(value: String, name: String): String {
+    val trimmed = value.trim()
+    require(trimmed.isNotEmpty()) { "$name must not be empty" }
+    require(trimmed.all { it.isLetterOrDigit() || it == '_' || it == '-' }) {
+      "$name contains unsupported characters"
+    }
+    return trimmed
+  }
+
+  private fun checkedSecretKey(value: String): String {
+    val trimmed = value.trim()
+    require(trimmed.isNotEmpty()) { "secret key must not be empty" }
+    require(trimmed.length <= 128) { "secret key is too long" }
+    require(trimmed.all { it.isLetterOrDigit() || it == '.' || it == '_' || it == '-' }) {
+      "secret key contains unsupported characters"
+    }
+    return trimmed
+  }
+
+  private fun storeSecretValue(key: String, value: String) {
+    val checkedKey = checkedSecretKey(key)
+    val cipher = Cipher.getInstance(SECRET_CIPHER_TRANSFORMATION)
+    cipher.init(Cipher.ENCRYPT_MODE, secretEncryptionKey())
+    val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+    val encoded = "${encodeSecretBytes(cipher.iv)}:${encodeSecretBytes(encrypted)}"
+    secretPreferences().edit().putString(checkedKey, encoded).apply()
+  }
+
+  private fun readSecretValue(key: String): String? {
+    val checkedKey = checkedSecretKey(key)
+    val encoded = secretPreferences().getString(checkedKey, null) ?: return null
+    val parts = encoded.split(":", limit = 2)
+    if (parts.size != 2) {
+      return null
+    }
+
+    val iv = decodeSecretBytes(parts[0])
+    val encrypted = decodeSecretBytes(parts[1])
+    val cipher = Cipher.getInstance(SECRET_CIPHER_TRANSFORMATION)
+    cipher.init(
+      Cipher.DECRYPT_MODE,
+      secretEncryptionKey(),
+      GCMParameterSpec(SECRET_GCM_TAG_BITS, iv),
+    )
+    return String(cipher.doFinal(encrypted), Charsets.UTF_8)
+  }
+
+  private fun readRequiredSecretValue(key: String): String =
+    readSecretValue(key) ?: error("stored native secret is missing")
+
+  private fun deleteSecretValue(key: String) {
+    secretPreferences().edit().remove(checkedSecretKey(key)).apply()
+  }
+
+  private fun generateSecretValue(): String {
+    val bytes = ByteArray(32)
+    SecureRandom().nextBytes(bytes)
+    return encodeSecretBytes(bytes)
+  }
+
+  private fun secretPreferences() =
+    reactApplicationContext.getSharedPreferences(
+      SECRET_PREFERENCES_NAME,
+      Context.MODE_PRIVATE,
+    )
+
+  private fun secretEncryptionKey(): SecretKey {
+    val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE_PROVIDER).apply {
+      load(null)
+    }
+    val existing = keyStore.getKey(SECRET_KEY_ALIAS, null) as? SecretKey
+    if (existing != null) {
+      return existing
+    }
+
+    val keyGenerator = KeyGenerator.getInstance(
+      KeyProperties.KEY_ALGORITHM_AES,
+      ANDROID_KEYSTORE_PROVIDER,
+    )
+    val keySpec = KeyGenParameterSpec.Builder(
+      SECRET_KEY_ALIAS,
+      KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+    )
+      .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+      .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+      .setRandomizedEncryptionRequired(true)
+      .build()
+    keyGenerator.init(keySpec)
+    return keyGenerator.generateKey()
+  }
+
+  private fun encodeSecretBytes(bytes: ByteArray): String =
+    Base64.encodeToString(bytes, Base64.NO_WRAP)
+
+  private fun decodeSecretBytes(value: String): ByteArray =
+    Base64.decode(value, Base64.NO_WRAP)
+
   private fun snapshotToWritableMap(snapshot: Map<String, Any>): WritableMap =
     Arguments.createMap().apply {
       putString("id", snapshot.stringValue("id"))
@@ -213,6 +848,284 @@ class NativeMoneroWalletModule(
       putBoolean("synchronized", snapshot.booleanValue("synchronized"))
     }
 
+  private fun hardwareWalletStatusToWritableMap(status: Map<String, Any>): WritableMap =
+    Arguments.createMap().apply {
+      putString("walletId", status.stringValue("walletId"))
+      putString("deviceName", status.stringValue("deviceName"))
+      putString("deviceType", status.stringValue("deviceType"))
+      putBoolean("connected", status.booleanValue("connected"))
+      putBoolean("requiresUserAction", status.booleanValue("requiresUserAction"))
+      putString("promptKind", status.stringValue("promptKind"))
+      putDouble("promptCode", status.numberValue("promptCode"))
+      putDouble("progress", status.numberValue("progress"))
+      putBoolean("indeterminate", status.booleanValue("indeterminate"))
+    }
+
+  private fun fastReceiveIdentityToWritableMap(identity: Map<String, Any>): WritableMap =
+    Arguments.createMap().apply {
+      putString("id", identity.stringValue("id"))
+      putString("label", identity.stringValue("label"))
+      putString("path", identity.stringValue("path"))
+      putString("address", identity.stringValue("address"))
+      putString("network", identity.stringValue("network"))
+      putDouble("restoreHeight", identity.numberValue("restoreHeight"))
+      putDouble("derivationIndex", identity.numberValue("derivationIndex"))
+      putString("scannerStatus", identity.stringValue("scannerStatus"))
+    }
+
+  private fun transactionsToWritableArray(
+    transactions: List<Map<String, Any>>,
+  ): WritableArray =
+    Arguments.createArray().apply {
+      transactions.forEach { transaction ->
+        pushMap(transactionToWritableMap(transaction))
+      }
+    }
+
+  private fun transactionToWritableMap(transaction: Map<String, Any>): WritableMap =
+    Arguments.createMap().apply {
+      putString("hash", transaction.stringValue("hash"))
+      putString("paymentId", transaction.stringValue("paymentId"))
+      putString("description", transaction.stringValue("description"))
+      putString("label", transaction.stringValue("label"))
+      putString("direction", transaction.stringValue("direction"))
+      putBoolean("pending", transaction.booleanValue("pending"))
+      putBoolean("failed", transaction.booleanValue("failed"))
+      putBoolean("coinbase", transaction.booleanValue("coinbase"))
+      putString("amountAtomic", transaction.stringValue("amountAtomic"))
+      putString("feeAtomic", transaction.stringValue("feeAtomic"))
+      putDouble("blockHeight", transaction.numberValue("blockHeight"))
+      putDouble("confirmations", transaction.numberValue("confirmations"))
+      putDouble("unlockTime", transaction.numberValue("unlockTime"))
+      putDouble("timestamp", transaction.numberValue("timestamp"))
+      putDouble("subaddrAccount", transaction.numberValue("subaddrAccount"))
+      putArray("subaddrIndices", numberListToWritableArray(transaction.listValue("subaddrIndices")))
+      putArray("transfers", transferListToWritableArray(transaction.listValue("transfers")))
+    }
+
+  private fun preparedTransactionToWritableMap(
+    transaction: Map<String, Any>,
+  ): WritableMap =
+    Arguments.createMap().apply {
+      putString("id", transaction.stringValue("id"))
+      putString("status", transaction.stringValue("status"))
+      putString("error", transaction.stringValue("error"))
+      putString("amountAtomic", transaction.stringValue("amountAtomic"))
+      putString("dustAtomic", transaction.stringValue("dustAtomic"))
+      putString("feeAtomic", transaction.stringValue("feeAtomic"))
+      putDouble("txCount", transaction.numberValue("txCount"))
+      putArray("txIds", stringListToWritableArray(transaction.listValue("txIds")))
+      putArray("subaddrAccounts", numberListToWritableArray(transaction.listValue("subaddrAccounts")))
+      putArray("subaddrIndices", numberListToWritableArray(transaction.listValue("subaddrIndices")))
+    }
+
+  private fun stringListToWritableArray(values: List<*>): WritableArray =
+    Arguments.createArray().apply {
+      values.forEach { value -> pushString(value as? String ?: "") }
+    }
+
+  private fun numberListToWritableArray(values: List<*>): WritableArray =
+    Arguments.createArray().apply {
+      values.forEach { value -> pushDouble((value as? Number)?.toDouble() ?: 0.0) }
+    }
+
+  private fun transferListToWritableArray(values: List<*>): WritableArray =
+    Arguments.createArray().apply {
+      values.forEach { value ->
+        val transfer = value as? Map<*, *> ?: emptyMap<String, Any>()
+        pushMap(
+          Arguments.createMap().apply {
+            putString("amountAtomic", transfer["amountAtomic"] as? String ?: "0")
+            putString("address", transfer["address"] as? String ?: "")
+          },
+        )
+      }
+    }
+
+  private fun biometricAuthStatusToWritableMap(status: BiometricAuthStatus): WritableMap =
+    Arguments.createMap().apply {
+      putString("platform", status.platform)
+      putBoolean("supported", status.supported)
+      putBoolean("available", status.available)
+      putBoolean("enrolled", status.enrolled)
+      putString("biometryType", status.biometryType)
+      putString("message", status.message)
+    }
+
+  private fun biometricAuthResultToWritableMap(
+    success: Boolean,
+    biometryType: String,
+    message: String,
+  ): WritableMap =
+    Arguments.createMap().apply {
+      putBoolean("success", success)
+      putString("biometryType", biometryType)
+      putString("message", message)
+    }
+
+  private fun resolvePendingBiometric(
+    success: Boolean,
+    biometryType: String,
+    message: String,
+  ) {
+    val pending = pendingBiometricPromise ?: return
+    pendingBiometricPromise = null
+    pending.resolve(
+      biometricAuthResultToWritableMap(
+        success = success,
+        biometryType = biometryType,
+        message = message,
+      ),
+    )
+  }
+
+  private fun biometricAuthStatus(): BiometricAuthStatus {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+      return BiometricAuthStatus(
+        supported = false,
+        available = false,
+        enrolled = false,
+        biometryType = "none",
+        message = "Biometric unlock requires Android 9 or newer",
+      )
+    }
+
+    if (Build.VERSION.SDK_INT == Build.VERSION_CODES.P) {
+      val supported = reactApplicationContext.packageManager.hasSystemFeature(
+        PackageManager.FEATURE_FINGERPRINT,
+      )
+      return BiometricAuthStatus(
+        supported = supported,
+        available = supported,
+        enrolled = supported,
+        biometryType = if (supported) "fingerprint" else "none",
+        message = if (supported) {
+          "Fingerprint unlock is available"
+        } else {
+          "No biometric hardware is available on this device"
+        },
+      )
+    }
+
+    val manager = reactApplicationContext.getSystemService(
+      BiometricManager::class.java,
+    )
+    val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+    } else {
+      @Suppress("DEPRECATION")
+      manager.canAuthenticate()
+    }
+
+    return when (result) {
+      BiometricManager.BIOMETRIC_SUCCESS -> BiometricAuthStatus(
+        supported = true,
+        available = true,
+        enrolled = true,
+        biometryType = "biometric",
+        message = "Biometric unlock is available",
+      )
+      BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> BiometricAuthStatus(
+        supported = true,
+        available = true,
+        enrolled = false,
+        biometryType = "biometric",
+        message = "Set up fingerprint or face unlock in Android settings first",
+      )
+      BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> BiometricAuthStatus(
+        supported = false,
+        available = false,
+        enrolled = false,
+        biometryType = "none",
+        message = "No biometric hardware is available on this device",
+      )
+      BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE -> BiometricAuthStatus(
+        supported = true,
+        available = false,
+        enrolled = false,
+        biometryType = "biometric",
+        message = "Biometric hardware is temporarily unavailable",
+      )
+      else -> BiometricAuthStatus(
+        supported = true,
+        available = false,
+        enrolled = false,
+        biometryType = "biometric",
+        message = "Biometric unlock is unavailable",
+      )
+    }
+  }
+
+  private fun ledgerTransportStatusToWritableMap(status: LedgerUsbTransportStatus): WritableMap =
+    Arguments.createMap().apply {
+      putString("platform", status.platform)
+      putString("transport", status.transport)
+      putBoolean("supported", status.supported)
+      putBoolean("available", status.available)
+      putBoolean("permissionGranted", status.permissionGranted)
+      putBoolean("requiresUserAction", status.requiresUserAction)
+      putDouble("deviceCount", status.deviceCount.toDouble())
+      putString("deviceName", status.deviceName)
+      putDouble("vendorId", status.vendorId.toDouble())
+      putDouble("productId", status.productId.toDouble())
+      putString("message", status.message)
+    }
+
+  private fun ledgerUsbTransportStatus(): LedgerUsbTransportStatus {
+    val supported = reactApplicationContext.packageManager.hasSystemFeature(
+      PackageManager.FEATURE_USB_HOST,
+    )
+    if (!supported) {
+      return LedgerUsbTransportStatus(
+        supported = false,
+        message = "Android USB host mode is not available on this device",
+      )
+    }
+
+    val devices = ledgerUsbDevices()
+    val selectedDevice = devices.firstOrNull()
+    val permissionGranted = selectedDevice?.let { usbManager().hasPermission(it) } ?: false
+
+    return LedgerUsbTransportStatus(
+      available = selectedDevice != null,
+      permissionGranted = permissionGranted,
+      requiresUserAction = selectedDevice != null && !permissionGranted,
+      deviceCount = devices.size,
+      deviceName = selectedDevice?.productName ?: selectedDevice?.deviceName ?: "",
+      vendorId = selectedDevice?.vendorId ?: 0,
+      productId = selectedDevice?.productId ?: 0,
+      message = when {
+        selectedDevice == null ->
+          "Connect and unlock a Ledger Nano, then open the Monero app on the device"
+        permissionGranted ->
+          "Android USB permission is granted for the Ledger device"
+        else ->
+          "Android USB permission is required for the Ledger device"
+      },
+    )
+  }
+
+  private fun firstLedgerUsbDevice(): UsbDevice? = ledgerUsbDevices().firstOrNull()
+
+  private fun ledgerUsbDevices(): List<UsbDevice> =
+    usbManager().deviceList.values
+      .filter { device ->
+        device.vendorId == LEDGER_VENDOR_ID &&
+          LEDGER_PRODUCT_IDS.contains(device.productId)
+      }
+      .sortedWith(compareBy({ it.productId }, { it.deviceName }))
+
+  private fun usbManager(): UsbManager =
+    reactApplicationContext.getSystemService(Context.USB_SERVICE) as UsbManager
+
+  private fun unregisterLedgerUsbPermissionReceiver() {
+    val receiver = pendingLedgerUsbPermissionReceiver ?: return
+    pendingLedgerUsbPermissionReceiver = null
+    runCatching {
+      reactApplicationContext.unregisterReceiver(receiver)
+    }
+  }
+
   private fun Map<String, Any>.stringValue(key: String): String =
     this[key] as? String ?: ""
 
@@ -222,7 +1135,49 @@ class NativeMoneroWalletModule(
   private fun Map<String, Any>.booleanValue(key: String): Boolean =
     this[key] as? Boolean ?: false
 
+  private fun Map<String, Any>.listValue(key: String): List<*> =
+    this[key] as? List<*> ?: emptyList<Any>()
+
   companion object {
     const val NAME = "NativeMoneroWallet"
+    private const val ANDROID_KEYSTORE_PROVIDER = "AndroidKeyStore"
+    private const val SECRET_KEY_ALIAS = "monero_wallet_native_secrets_v1"
+    private const val SECRET_PREFERENCES_NAME = "monero_wallet_native_secrets"
+    private const val SECRET_CIPHER_TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val SECRET_GCM_TAG_BITS = 128
+    private const val ACTION_LEDGER_USB_PERMISSION =
+      "com.monerowallet.action.LEDGER_USB_PERMISSION"
+    private const val LEDGER_VENDOR_ID = 0x2C97
+    private val LEDGER_PRODUCT_IDS = setOf(
+      0x0001,
+      0x0004,
+      0x0005,
+      0x0006,
+      0x0007,
+      0x0008,
+    )
   }
 }
+
+private data class LedgerUsbTransportStatus(
+  val platform: String = "android",
+  val transport: String = "usb",
+  val supported: Boolean = true,
+  val available: Boolean = false,
+  val permissionGranted: Boolean = false,
+  val requiresUserAction: Boolean = false,
+  val deviceCount: Int = 0,
+  val deviceName: String = "",
+  val vendorId: Int = 0,
+  val productId: Int = 0,
+  val message: String = "",
+)
+
+private data class BiometricAuthStatus(
+  val platform: String = "android",
+  val supported: Boolean,
+  val available: Boolean,
+  val enrolled: Boolean,
+  val biometryType: String,
+  val message: String,
+)

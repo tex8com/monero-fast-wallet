@@ -23,12 +23,32 @@ skip_fast_crypto="${SKIP_FAST_CRYPTO:-0}"
 generate_link_manifests="${GENERATE_LINK_MANIFESTS:-1}"
 monero_enable_grpc_stream="${MONERO_ENABLE_GRPC_STREAM:-ON}"
 randomx_enable_jit="${RANDOMX_ENABLE_JIT:-OFF}"
-host_tools_root="$(abs_path "${MONERO_ANDROID_HOST_TOOLS_ROOT:-${repo_root}/build/android-host-tools}")"
+host_tools_root="$(abs_path "${MONERO_ANDROID_HOST_TOOLS_ROOT:-${MONERO_HOST_TOOLS_ROOT:-${repo_root}/build/host-protobuf-tools}}")"
 protoc_path="${PROTOC_PATH:-${host_tools_root}/protobuf-v31.1/bin/protoc}"
 grpc_cpp_plugin_path="${GRPC_CPP_PLUGIN_PATH:-}"
 
+if [[ ! -x "${protoc_path}" && -x "${repo_root}/build/android-host-tools/protobuf-v31.1/bin/protoc" ]]; then
+  protoc_path="${repo_root}/build/android-host-tools/protobuf-v31.1/bin/protoc"
+fi
 if [[ -z "${grpc_cpp_plugin_path}" ]] && command -v grpc_cpp_plugin >/dev/null 2>&1; then
   grpc_cpp_plugin_path="$(command -v grpc_cpp_plugin)"
+fi
+if [[ "${monero_enable_grpc_stream}" == "ON" ]]; then
+  if [[ ! -x "${protoc_path}" ]]; then
+    echo "Missing host protoc for gRPC stream build: ${protoc_path}" >&2
+    echo "Run build-host-protobuf-tools.sh first, or set PROTOC_PATH." >&2
+    exit 1
+  fi
+  if [[ "$("${protoc_path}" --version)" != "libprotoc 31.1" ]]; then
+    echo "Incompatible protoc for Android gRPC stream build: ${protoc_path}" >&2
+    echo "Expected libprotoc 31.1 to match android-deps protobuf headers." >&2
+    exit 1
+  fi
+  if [[ ! -x "${grpc_cpp_plugin_path}" ]]; then
+    echo "Missing grpc_cpp_plugin for gRPC stream build." >&2
+    echo "Install grpc or set GRPC_CPP_PLUGIN_PATH." >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -f "${monero_source_dir}/CMakeLists.txt" ]]; then
@@ -166,6 +186,17 @@ for label in "${targets[@]}"; do
       "-DUNBOUND_INCLUDE_DIR=${dependency_prefix}/include"
       "-DUNBOUND_LIBRARIES=${dependency_prefix}/lib/libunbound.a"
     )
+    if [[ -f "${dependency_prefix}/lib/libhidapi-libusb.a" ]]; then
+      cmake_args+=(
+        "-DHIDAPI_INCLUDE_DIR=${dependency_prefix}/include/hidapi"
+        "-DHIDAPI_LIBRARY=${dependency_prefix}/lib/libhidapi-libusb.a"
+      )
+    fi
+    if [[ -f "${dependency_prefix}/lib/libusb-1.0.a" ]]; then
+      cmake_args+=(
+        "-DLIBUSB-1.0_LIBRARY=${dependency_prefix}/lib/libusb-1.0.a"
+      )
+    fi
     add_boost_library_args CHRONO boost_chrono "${boost_lib_dir}/libboost_chrono.a"
     add_boost_library_args DATE_TIME boost_date_time "${boost_lib_dir}/libboost_date_time.a"
     add_boost_library_args FILESYSTEM boost_filesystem "${boost_lib_dir}/libboost_filesystem.a"

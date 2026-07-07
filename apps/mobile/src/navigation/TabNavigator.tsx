@@ -11,12 +11,20 @@ import SettingsScreen from "../screens/SettingsScreen";
 import WelcomeScreen from "../screens/WelcomeScreen";
 import WalletSetupScreen from "../screens/WalletSetupScreen";
 import CustomTabBar from "../components/CustomTabBar";
+import { useWalletState } from "../services/WalletState";
 
 const Tab = createBottomTabNavigator();
 
 export default function TabNavigator() {
+  const { status } = useWalletState();
+  const initialRouteName =
+    status === "locked" || status === "opening" || status === "syncing" || status === "open"
+      ? "Home"
+      : "Welcome";
+
   return (
     <Tab.Navigator
+      initialRouteName={initialRouteName}
       tabBar={(props) => <CustomTabBar {...props} />}
       screenOptions={{ headerShown: false }}
     >

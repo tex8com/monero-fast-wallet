@@ -14,6 +14,7 @@
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		B4D87E000000000000000001 /* RCTNativeMoneroWallet.mm in Sources */ = {isa = PBXBuildFile; fileRef = B4D87E000000000000000004 /* RCTNativeMoneroWallet.mm */; };
 		B4D87E000000000000000002 /* WalletEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B4D87E000000000000000005 /* WalletEngine.cpp */; };
+		B4D87E000000000000000008 /* LocalAuthentication.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B4D87E000000000000000007 /* LocalAuthentication.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -29,6 +30,7 @@
 		B4D87E000000000000000003 /* RCTNativeMoneroWallet.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RCTNativeMoneroWallet.h; sourceTree = "<group>"; };
 		B4D87E000000000000000004 /* RCTNativeMoneroWallet.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = RCTNativeMoneroWallet.mm; sourceTree = "<group>"; };
 		B4D87E000000000000000005 /* WalletEngine.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = WalletEngine.cpp; path = "../../../native/monero-bridge/cpp/WalletEngine.cpp"; sourceTree = SOURCE_ROOT; };
+		B4D87E000000000000000007 /* LocalAuthentication.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = LocalAuthentication.framework; path = System/Library/Frameworks/LocalAuthentication.framework; sourceTree = SDKROOT; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -37,6 +39,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B4D87E000000000000000008 /* LocalAuthentication.framework in Frameworks */,
 				0C80B921A6F3F58F76C31292 /* libPods-MoneroWallet.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -60,6 +63,7 @@
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				B4D87E000000000000000007 /* LocalAuthentication.framework */,
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
 				5DCACB8F33CDC322A6C60F78 /* libPods-MoneroWallet.a */,
 			);
@@ -279,6 +283,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
 					"TEX8_WALLET_BRIDGE_WITH_MONERO=1",
@@ -301,6 +306,7 @@
 					"$(SRCROOT)/../../../build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a",
 					"-lc++",
 					"-lz",
+					"-lresolv",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = MoneroWallet;
@@ -319,6 +325,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
 					"TEX8_WALLET_BRIDGE_WITH_MONERO=1",
@@ -341,6 +348,7 @@
 					"$(SRCROOT)/../../../build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a",
 					"-lc++",
 					"-lz",
+					"-lresolv",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = MoneroWallet;

@@ -11,7 +11,9 @@ import {
 import { colors, spacing, radius } from "../theme/colors";
 import MoneroLogo from "../components/MoneroLogo";
 import { Icon, IconName } from "../components/Icon";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { MoneroNetwork } from "../services/NativeMoneroWallet";
+import type { FastReceiveIdentityRecord } from "../services/FastReceiveRegistry";
 import {
   applyNodeModeDefaults,
   applyNodeNetworkDefaults,
@@ -26,7 +28,9 @@ import type {
   NodeConnectionDraft,
   NodeConnectionMode,
 } from "../services/NodeConnectionSettings";
+import { runWalletDiagnostics } from "../services/WalletDiagnostics";
 import { walletService } from "../services/WalletService";
+import { useWalletState } from "../services/WalletState";
 
 type Item = {
   label: string;
@@ -35,6 +39,14 @@ type Item = {
   toggle?: boolean;
   defaultOn?: boolean;
 };
+
+type DiagnosticRow = {
+  label: string;
+  value: string;
+  warning?: boolean;
+};
+
+type WalletDiagnosticsResult = Awaited<ReturnType<typeof runWalletDiagnostics>>;
 
 const SECTIONS: { title: string; items: Item[] }[] = [
   {
@@ -82,6 +94,9 @@ const NETWORKS: { value: MoneroNetwork; label: string }[] = [
 ];
 
 export default function SettingsScreen() {
+  const insets = useSafeAreaInsets();
+  const { session } = useWalletState();
+  const bottomPadding = Math.max(180, insets.bottom + 150);
   const [draft, setDraft] = useState<NodeConnectionDraft>(() =>
     nodeConnectionSettingsToDraft(getActiveNodeConnectionSettings()),
   );
@@ -91,6 +106,17 @@ export default function SettingsScreen() {
   const [isLoadingNodeSettings, setIsLoadingNodeSettings] = useState(true);
   const [isSavingNodeSettings, setIsSavingNodeSettings] = useState(false);
   const [nodeStatusText, setNodeStatusText] = useState("Loading");
+  const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
+    FastReceiveIdentityRecord[]
+  >([]);
+  const [fastReceivePassword, setFastReceivePassword] = useState("");
+  const [isCreatingFastReceive, setIsCreatingFastReceive] = useState(false);
+  const [fastReceiveStatusText, setFastReceiveStatusText] =
+    useState("Loading");
+  const [diagnosticsStatusText, setDiagnosticsStatusText] =
+    useState("Ready");
+  const [diagnosticRows, setDiagnosticRows] = useState<DiagnosticRow[]>([]);
+  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -121,6 +147,32 @@ export default function SettingsScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+
+    walletService
+      .loadFastReceiveIdentities()
+      .then(identities => {
+        if (!mounted) {
+          return;
+        }
+
+        setFastReceiveIdentities(identities);
+        setFastReceiveStatusText(
+          identities.length > 0 ? `${identities.length} local` : "Off",
+        );
+      })
+      .catch(() => {
+        if (mounted) {
+          setFastReceiveStatusText("Error");
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const resolvedSettings = useMemo(
     () => nodeConnectionDraftToSettings(draft),
     [draft],
@@ -136,6 +188,10 @@ export default function SettingsScreen() {
   const showAdvancedFields = draft.mode === "custom";
   const nodeStatus =
     hasChanges && !isLoadingNodeSettings ? "Unsaved" : nodeStatusText;
+  const canCreateFastReceive =
+    Boolean(session && !session.hardwareDevice) &&
+    fastReceivePassword.length > 0 &&
+    !isCreatingFastReceive;
 
   function updateDraft<K extends keyof NodeConnectionDraft>(
     key: K,
@@ -144,6 +200,22 @@ export default function SettingsScreen() {
     setDraft(current => ({
       ...current,
       [key]: value,
+    }));
+  }
+
+  function updateDaemonPassword(value: string) {
+    setDraft(current => ({
+      ...current,
+      password: value,
+      passwordStored: value.length > 0 ? false : current.passwordStored,
+    }));
+  }
+
+  function clearStoredDaemonPassword() {
+    setDraft(current => ({
+      ...current,
+      password: "",
+      passwordStored: false,
     }));
   }
 
@@ -185,9 +257,57 @@ export default function SettingsScreen() {
     }
   }
 
+  async function createFastReceiveIdentity() {
+    if (!canCreateFastReceive) {
+      return;
+    }
+
+    setIsCreatingFastReceive(true);
+    setFastReceiveStatusText("Creating");
+
+    try {
+      const result = await walletService.createFastReceiveIdentity({
+        password: fastReceivePassword,
+      });
+      setFastReceiveIdentities(result.identities);
+      setFastReceivePassword("");
+      setFastReceiveStatusText(`${result.identities.length} local`);
+    } catch {
+      setFastReceiveStatusText("Error");
+    } finally {
+      setIsCreatingFastReceive(false);
+    }
+  }
+
+  async function runSettingsDiagnostics() {
+    if (isRunningDiagnostics) {
+      return;
+    }
+
+    setIsRunningDiagnostics(true);
+    setDiagnosticsStatusText("Running");
+
+    try {
+      const diagnostics = await runWalletDiagnostics("settings");
+      setDiagnosticRows(createDiagnosticRows(diagnostics));
+      setDiagnosticsStatusText(diagnostics.errors.length > 0 ? "Warnings" : "Ready");
+    } catch (error) {
+      setDiagnosticRows([
+        {
+          label: "Error",
+          value: errorMessage(error),
+          warning: true,
+        },
+      ]);
+      setDiagnosticsStatusText("Error");
+    } finally {
+      setIsRunningDiagnostics(false);
+    }
+  }
+
   return (
     <View style={s.container}>
-      <ScrollView contentContainerStyle={s.scroll}>
+      <ScrollView contentContainerStyle={[s.scroll, { paddingBottom: bottomPadding }]}>
         <View style={s.header}>
           <MoneroLogo size={44} />
           <Text style={s.title}>Settings</Text>
@@ -306,10 +426,24 @@ export default function SettingsScreen() {
                 <NodeInput
                   label="Password"
                   value={draft.password}
-                  onChangeText={value => updateDraft("password", value)}
-                  placeholder="Optional"
+                  onChangeText={updateDaemonPassword}
+                  placeholder={
+                    draft.passwordStored ? "Stored securely" : "Optional"
+                  }
                   secureTextEntry
                 />
+                {draft.passwordStored && draft.password.length === 0 ? (
+                  <View style={s.secretRow}>
+                    <Text style={s.secretText}>Stored in device secure storage</Text>
+                    <TouchableOpacity
+                      style={s.secretButton}
+                      activeOpacity={0.75}
+                      onPress={clearStoredDaemonPassword}
+                    >
+                      <Text style={s.secretButtonText}>Clear</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
                 <NodeInput
                   label="Proxy"
                   value={draft.proxyAddress}
@@ -343,6 +477,117 @@ export default function SettingsScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+
+        <View style={s.section}>
+          <View style={s.sectionHeaderRow}>
+            <Text style={s.sectionTitle}>Fast Receive</Text>
+            <Text style={s.nodeStatus}>{fastReceiveStatusText}</Text>
+          </View>
+          <View style={s.nodePanel}>
+            {fastReceiveIdentities.length > 0 ? (
+              <View style={s.identityList}>
+                {fastReceiveIdentities.map(identity => (
+                  <View key={identity.id} style={s.identityRow}>
+                    <View style={s.identityIcon}>
+                      <Icon name="key" size={17} color={colors.orange} />
+                    </View>
+                    <View style={s.identityText}>
+                      <Text style={s.identityLabel}>{identity.label}</Text>
+                      <Text
+                        style={s.identityAddress}
+                        numberOfLines={1}
+                        ellipsizeMode="middle"
+                      >
+                        {identity.address}
+                      </Text>
+                    </View>
+                    <Text style={s.identityStatus}>{identity.status}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            <NodeInput
+              label="Wallet Password"
+              value={fastReceivePassword}
+              onChangeText={setFastReceivePassword}
+              placeholder={
+                session
+                  ? session.hardwareDevice
+                    ? "Software wallet required"
+                    : "Required"
+                  : "Open wallet first"
+              }
+              editable={Boolean(session && !session.hardwareDevice)}
+              secureTextEntry
+            />
+
+            <TouchableOpacity
+              style={[
+                s.primaryButton,
+                !canCreateFastReceive && s.primaryButtonDisabled,
+              ]}
+              activeOpacity={0.8}
+              disabled={!canCreateFastReceive}
+              onPress={createFastReceiveIdentity}
+            >
+              <Icon name="key" size={18} color="#FFF" />
+              <Text style={s.primaryButtonText}>
+                {isCreatingFastReceive ? "Creating" : "Create Identity"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={s.section}>
+          <View style={s.sectionHeaderRow}>
+            <Text style={s.sectionTitle}>Diagnostics</Text>
+            <Text
+              style={[
+                s.nodeStatus,
+                diagnosticsStatusText !== "Ready" && s.nodeStatusDirty,
+              ]}
+            >
+              {diagnosticsStatusText}
+            </Text>
+          </View>
+          <View style={s.nodePanel}>
+            {diagnosticRows.length > 0 ? (
+              <View style={s.diagnosticList}>
+                {diagnosticRows.map(row => (
+                  <View key={row.label} style={s.diagnosticRow}>
+                    <Text style={s.diagnosticLabel}>{row.label}</Text>
+                    <Text
+                      style={[
+                        s.diagnosticValue,
+                        row.warning && s.diagnosticValueWarning,
+                      ]}
+                      numberOfLines={1}
+                      ellipsizeMode="middle"
+                    >
+                      {row.value}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            <TouchableOpacity
+              style={[
+                s.primaryButton,
+                isRunningDiagnostics && s.primaryButtonDisabled,
+              ]}
+              activeOpacity={0.8}
+              disabled={isRunningDiagnostics}
+              onPress={runSettingsDiagnostics}
+            >
+              <Icon name="info" size={18} color="#FFF" />
+              <Text style={s.primaryButtonText}>
+                {isRunningDiagnostics ? "Running" : "Run Diagnostics"}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -414,6 +659,128 @@ function NodeInput({
   );
 }
 
+function createDiagnosticRows(
+  diagnostics: WalletDiagnosticsResult,
+): DiagnosticRow[] {
+  const rows: DiagnosticRow[] = [
+    {
+      label: "Mode",
+      value: diagnostics.settings?.mode ?? "Default",
+    },
+    {
+      label: "Daemon",
+      value: formatDaemonDiagnostic(diagnostics.daemon.getInfo),
+      warning: isDaemonWarning(diagnostics.daemon.getInfo),
+    },
+    {
+      label: "JSON RPC",
+      value: formatDaemonDiagnostic(diagnostics.daemon.jsonRpcGetInfo),
+      warning: isDaemonWarning(diagnostics.daemon.jsonRpcGetInfo),
+    },
+    {
+      label: "gRPC",
+      value: diagnostics.settings?.grpcEndpoint || "Disabled",
+    },
+    {
+      label: "Native",
+      value: diagnostics.native.linkedWithMonero ? "Linked" : "Missing",
+      warning: !diagnostics.native.linkedWithMonero,
+    },
+    {
+      label: "Wallet",
+      value: formatWalletDiagnostic(diagnostics),
+    },
+    {
+      label: "Ledger",
+      value: formatLedgerDiagnostic(diagnostics.ledgerTransport),
+      warning: diagnostics.ledgerTransport
+        ? diagnostics.ledgerTransport.requiresUserAction
+        : false,
+    },
+  ];
+
+  if (diagnostics.errors.length > 0) {
+    rows.push({
+      label: "Errors",
+      value: String(diagnostics.errors.length),
+      warning: true,
+    });
+  }
+
+  return rows;
+}
+
+function formatDaemonDiagnostic(
+  result: WalletDiagnosticsResult["daemon"]["getInfo"],
+): string {
+  if (!result) {
+    return "Not configured";
+  }
+  if (result.error) {
+    return "Error";
+  }
+  if (!result.ok) {
+    return result.httpStatus ? `HTTP ${result.httpStatus}` : "Unavailable";
+  }
+
+  const status = toDisplayValue(result.status, "OK");
+  const height = toDisplayValue(result.height, "?");
+  const sync = result.synchronized === true ? "synced" : "syncing";
+  return `${status} ${sync} ${height}`;
+}
+
+function isDaemonWarning(
+  result: WalletDiagnosticsResult["daemon"]["getInfo"],
+): boolean {
+  return !result || Boolean(result.error) || !result.ok;
+}
+
+function formatWalletDiagnostic(
+  diagnostics: WalletDiagnosticsResult,
+): string {
+  if (diagnostics.snapshot) {
+    const walletHeight = toDisplayValue(diagnostics.snapshot.walletHeight, "?");
+    const daemonHeight = toDisplayValue(diagnostics.snapshot.daemonHeight, "?");
+    return diagnostics.snapshot.synchronized
+      ? `Synced ${walletHeight}`
+      : `${walletHeight}/${daemonHeight}`;
+  }
+
+  return diagnostics.registeredWallet ? "Registered" : "None";
+}
+
+function formatLedgerDiagnostic(
+  status: WalletDiagnosticsResult["ledgerTransport"],
+): string {
+  if (!status) {
+    return "Unknown";
+  }
+  if (!status.supported) {
+    return "Unsupported";
+  }
+  if (!status.available) {
+    return "Not connected";
+  }
+  if (status.permissionGranted) {
+    return status.deviceName || "Ready";
+  }
+  return status.message || "Permission";
+}
+
+function toDisplayValue(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return fallback;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   scroll: { paddingHorizontal: spacing.lg, paddingTop: 60 },
@@ -441,17 +808,33 @@ const s = StyleSheet.create({
   switchTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: "600" },
   switchValue: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
   advancedFields: { gap: 12 },
+  secretRow: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingHorizontal: 2 },
+  secretText: { flex: 1, color: colors.textMuted, fontSize: 12, fontWeight: "600" },
+  secretButton: { minHeight: 34, paddingHorizontal: 12, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, borderWidth: 1, borderColor: colors.borderLight, backgroundColor: colors.bgInput },
+  secretButtonText: { color: colors.textPrimary, fontSize: 12, fontWeight: "800" },
   nodeActions: { flexDirection: "row", gap: 10, marginTop: 2 },
   secondaryButton: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.md, borderWidth: 1, borderColor: colors.borderLight, backgroundColor: colors.bgInput },
   secondaryButtonText: { color: colors.textPrimary, fontSize: 14, fontWeight: "700" },
   primaryButton: { flex: 1, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, backgroundColor: colors.orange },
   primaryButtonDisabled: { opacity: 0.45 },
   primaryButtonText: { color: "#FFF", fontSize: 14, fontWeight: "800" },
+  identityList: { gap: 8 },
+  identityRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 10, borderRadius: radius.md, backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12 },
+  identityIcon: { width: 28, alignItems: "center", justifyContent: "center" },
+  identityText: { flex: 1, minWidth: 0 },
+  identityLabel: { color: colors.textPrimary, fontSize: 14, fontWeight: "700" },
+  identityAddress: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
+  identityStatus: { color: colors.textSecondary, fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
+  diagnosticList: { gap: 8 },
+  diagnosticRow: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, borderRadius: radius.md, backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12 },
+  diagnosticLabel: { color: colors.textSecondary, fontSize: 12, fontWeight: "800", textTransform: "uppercase" },
+  diagnosticValue: { flex: 1, color: colors.textPrimary, fontSize: 13, fontWeight: "700", textAlign: "right" },
+  diagnosticValueWarning: { color: colors.warning },
   row: { flexDirection: "row", alignItems: "center", paddingVertical: 16, paddingHorizontal: spacing.md, gap: 12 },
   rowBorder: { borderBottomWidth: 1, borderBottomColor: colors.border },
   rowIconWrap: { width: 28, alignItems: "center", justifyContent: "center" },
   rowLabel: { flex: 1, color: colors.textPrimary, fontSize: 15, fontWeight: "500" },
   logoutBtn: { marginTop: 8, paddingVertical: 16, alignItems: "center", backgroundColor: "rgba(255,68,102,0.1)", borderRadius: radius.md, borderWidth: 1, borderColor: "rgba(255,68,102,0.2)" },
   logoutText: { color: colors.error, fontSize: 16, fontWeight: "600" },
-  bottomSpacer: { height: 100 },
+  bottomSpacer: { height: 24 },
 });

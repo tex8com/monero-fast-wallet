@@ -5,7 +5,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
 
 protobuf_version="${PROTOBUF_VERSION:-v31.1}"
-output_root="${OUTPUT_ROOT:-${repo_root}/build/android-host-tools}"
+output_root="${OUTPUT_ROOT:-${repo_root}/build/host-protobuf-tools}"
 sources_dir="${SOURCES_DIR:-${repo_root}/build/host-sources}"
 build_root="${BUILD_ROOT:-${repo_root}/build/host-protobuf-${protobuf_version}}"
 jobs="${JOBS:-4}"

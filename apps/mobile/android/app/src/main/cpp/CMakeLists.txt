@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(monero_wallet_bridge_jni LANGUAGES CXX)
+project(appmodules LANGUAGES CXX)
+
+if(REACT_ANDROID_DIR AND EXISTS "${REACT_ANDROID_DIR}/cmake-utils/ReactNative-application.cmake")
+  add_subdirectory(appmodules)
+endif()
 
 option(
   MONERO_WALLET_BRIDGE_WITH_MONERO

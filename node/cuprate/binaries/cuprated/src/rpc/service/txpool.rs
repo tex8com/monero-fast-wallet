@@ -2,7 +2,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    convert::Infallible,
     num::NonZero,
 };
 
@@ -23,6 +22,8 @@ use cuprate_types::{
     rpc::{PoolInfo, PoolInfoFull, PoolInfoIncremental, PoolTxInfo, TxpoolStats},
     TransactionVerificationData, TxInPool, TxRelayChecks,
 };
+
+use crate::txpool::TxpoolManagerHandle;
 
 // FIXME: use `anyhow::Error` over `tower::BoxError` in txpool.
 
@@ -245,14 +246,16 @@ pub async fn txs_for_block(
     Ok((txs, missing))
 }
 
-/// TODO: impl txpool manager.
-pub async fn flush(txpool_manager: &mut Infallible, tx_hashes: Vec<[u8; 32]>) -> Result<(), Error> {
-    todo!();
-    Ok(())
+pub async fn flush(
+    txpool_manager: &mut TxpoolManagerHandle,
+    tx_hashes: Vec<[u8; 32]>,
+) -> Result<(), Error> {
+    txpool_manager.flush_txs(tx_hashes).await
 }
 
-/// TODO: impl txpool manager.
-pub async fn relay(txpool_manager: &mut Infallible, tx_hashes: Vec<[u8; 32]>) -> Result<(), Error> {
-    todo!();
-    Ok(())
+pub async fn relay(
+    txpool_manager: &mut TxpoolManagerHandle,
+    tx_hashes: Vec<[u8; 32]>,
+) -> Result<(), Error> {
+    txpool_manager.relay_txs(tx_hashes).await
 }

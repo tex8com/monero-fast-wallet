@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+import { requireNativeMoneroWallet } from "./NativeMoneroWallet";
 import type { DaemonConfig, MoneroNetwork } from "./NativeMoneroWallet";
 
 export type NodeConnectionMode = "optimized-grpc" | "original-rpc" | "custom";
@@ -20,12 +21,21 @@ export interface NodeConnectionDraft {
   useSsl: boolean;
   username: string;
   password: string;
+  passwordStored: boolean;
   proxyAddress: string;
 }
 
 const CUPRATE_DEFAULT_HOST = "152.53.133.188";
+const LEGACY_CUPRATE_DEFAULT_HOSTS = ["private-node-ip", "private-node-ip"];
+const LEGACY_MONEROD_RPC_PORT_BY_CUPRATE_PORT: Record<string, string> = {
+  "18089": "18081",
+  "28089": "28081",
+  "38089": "38081",
+};
 export const NODE_CONNECTION_SETTINGS_STORAGE_KEY =
   "monero-fast-wallet.node-connection.v1";
+export const NODE_DAEMON_PASSWORD_SECRET_KEY =
+  "monero-fast-wallet.node-connection.daemon-password.v1";
 
 const DAEMON_PORTS: Record<MoneroNetwork, number> = {
   mainnet: 18089,
@@ -59,7 +69,7 @@ export function createDefaultNodeConnectionSettings(
     network,
     daemon: {
       address: daemonAddress,
-      trusted: false,
+      trusted: true,
       useSsl: false,
       username: "",
       password: "",
@@ -98,7 +108,8 @@ export async function loadActiveNodeConnectionSettings(
 export async function saveActiveNodeConnectionSettings(
   settings: NodeConnectionSettings,
 ): Promise<NodeConnectionSettings> {
-  const saved = setActiveNodeConnectionSettings(settings);
+  const saved = await prepareSettingsForSave(settings);
+  setActiveNodeConnectionSettings(saved);
   await AsyncStorage.setItem(
     NODE_CONNECTION_SETTINGS_STORAGE_KEY,
     JSON.stringify(toPersistedSettings(saved)),
@@ -117,7 +128,8 @@ export function nodeConnectionSettingsToDraft(
     trusted: settings.daemon.trusted,
     useSsl: settings.daemon.useSsl ?? false,
     username: settings.daemon.username ?? "",
-    password: settings.daemon.password ?? "",
+    password: "",
+    passwordStored: Boolean(settings.daemon.passwordSecretKey),
     proxyAddress: settings.daemon.proxyAddress ?? "",
   };
 }
@@ -134,6 +146,10 @@ export function nodeConnectionDraftToSettings(
       useSsl: draft.useSsl,
       username: draft.username,
       password: draft.password,
+      passwordSecretKey:
+        draft.mode === "custom" && (draft.password.length > 0 || draft.passwordStored)
+          ? NODE_DAEMON_PASSWORD_SECRET_KEY
+          : undefined,
       proxyAddress: draft.proxyAddress,
     },
     grpcEndpoint:
@@ -155,6 +171,7 @@ export function normalizeNodeConnectionSettings(
       useSsl: daemon.useSsl ?? false,
       username: (daemon.username ?? "").trim(),
       password: daemon.password ?? "",
+      passwordSecretKey: normalizeSecretKey(daemon.passwordSecretKey),
       proxyAddress: (daemon.proxyAddress ?? "").trim(),
     },
     grpcEndpoint:
@@ -207,6 +224,9 @@ function cloneNodeConnectionSettings(
 
 function toPersistedSettings(settings: NodeConnectionSettings) {
   const normalized = normalizeNodeConnectionSettings(settings);
+  const passwordSecretKey = normalizeSecretKey(
+    normalized.daemon.passwordSecretKey,
+  );
 
   return {
     mode: normalized.mode,
@@ -216,6 +236,7 @@ function toPersistedSettings(settings: NodeConnectionSettings) {
       trusted: normalized.daemon.trusted,
       useSsl: normalized.daemon.useSsl ?? false,
       username: normalized.daemon.username ?? "",
+      ...(passwordSecretKey ? { passwordSecretKey } : {}),
       proxyAddress: normalized.daemon.proxyAddress ?? "",
     },
     grpcEndpoint: normalized.grpcEndpoint,
@@ -272,12 +293,24 @@ function parsePersistedSettings(
     }
 
     const defaults = createDefaultNodeConnectionSettings(network, mode);
+    const daemonAddress = parseString(
+      parsed.daemon.address,
+      defaults.daemon.address,
+    );
+    const grpcEndpoint =
+      mode === "original-rpc"
+        ? ""
+        : parseString(parsed.grpcEndpoint, defaults.grpcEndpoint);
+
     return normalizeNodeConnectionSettings({
       mode,
       network,
       daemon: {
         ...defaults.daemon,
-        address: parseString(parsed.daemon.address, defaults.daemon.address),
+        address: migrateLegacyDefaultEndpoint(
+          daemonAddress,
+          defaults.daemon.address,
+        ),
         trusted: parseBoolean(
           parsed.daemon.trusted,
           defaults.daemon.trusted,
@@ -288,16 +321,34 @@ function parsePersistedSettings(
         ),
         username: parseString(parsed.daemon.username, ""),
         password: "",
+        passwordSecretKey: parseSecretKey(parsed.daemon.passwordSecretKey),
         proxyAddress: parseString(parsed.daemon.proxyAddress, ""),
       },
       grpcEndpoint:
         mode === "original-rpc"
           ? ""
-          : parseString(parsed.grpcEndpoint, defaults.grpcEndpoint),
+          : migrateLegacyDefaultEndpoint(grpcEndpoint, defaults.grpcEndpoint),
     });
   } catch {
     return undefined;
   }
+}
+
+function migrateLegacyDefaultEndpoint(
+  endpoint: string,
+  defaultEndpoint: string,
+): string {
+  const [host, port] = endpoint.split(":");
+  const [, defaultPort] = defaultEndpoint.split(":");
+  const legacyRpcPort = LEGACY_MONEROD_RPC_PORT_BY_CUPRATE_PORT[defaultPort];
+  if (
+    LEGACY_CUPRATE_DEFAULT_HOSTS.includes(host) &&
+    (port === defaultPort || port === legacyRpcPort)
+  ) {
+    return defaultEndpoint;
+  }
+
+  return endpoint;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -330,4 +381,62 @@ function parseString(value: unknown, fallback: string): string {
 
 function parseBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+async function prepareSettingsForSave(
+  settings: NodeConnectionSettings,
+): Promise<NodeConnectionSettings> {
+  const normalized = normalizeNodeConnectionSettings(settings);
+  const password = normalized.daemon.password ?? "";
+  const existingSecretKey = activeSettings.daemon.passwordSecretKey;
+  const wantsStoredPassword =
+    normalized.daemon.passwordSecretKey === NODE_DAEMON_PASSWORD_SECRET_KEY;
+
+  if (password.length > 0) {
+    await requireNativeMoneroWallet().storeSecret(
+      NODE_DAEMON_PASSWORD_SECRET_KEY,
+      password,
+    );
+    return withDaemonPasswordSecretKey(
+      normalized,
+      NODE_DAEMON_PASSWORD_SECRET_KEY,
+    );
+  }
+
+  if (wantsStoredPassword) {
+    return withDaemonPasswordSecretKey(
+      normalized,
+      NODE_DAEMON_PASSWORD_SECRET_KEY,
+    );
+  }
+
+  if (existingSecretKey === NODE_DAEMON_PASSWORD_SECRET_KEY) {
+    await requireNativeMoneroWallet().deleteSecret(
+      NODE_DAEMON_PASSWORD_SECRET_KEY,
+    );
+  }
+
+  return withDaemonPasswordSecretKey(normalized, undefined);
+}
+
+function withDaemonPasswordSecretKey(
+  settings: NodeConnectionSettings,
+  passwordSecretKey: string | undefined,
+): NodeConnectionSettings {
+  return normalizeNodeConnectionSettings({
+    ...settings,
+    daemon: {
+      ...settings.daemon,
+      password: "",
+      passwordSecretKey,
+    },
+  });
+}
+
+function normalizeSecretKey(value: string | undefined): string | undefined {
+  return value === NODE_DAEMON_PASSWORD_SECRET_KEY ? value : undefined;
+}
+
+function parseSecretKey(value: unknown): string | undefined {
+  return typeof value === "string" ? normalizeSecretKey(value) : undefined;
 }

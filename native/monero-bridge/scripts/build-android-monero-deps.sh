@@ -26,5 +26,6 @@ run_dep_builder build-android-zeromq.sh
 run_dep_builder build-android-expat.sh
 run_dep_builder build-android-unbound.sh
 run_dep_builder build-android-grpc.sh
+run_dep_builder build-android-libusb-hidapi.sh
 
 echo "Built Android Monero dependency prefix for: ${targets_csv}"

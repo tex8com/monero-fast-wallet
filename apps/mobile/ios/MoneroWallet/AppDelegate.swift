@@ -40,10 +40,13 @@ class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {
 
   override func bundleURL() -> URL? {
 #if DEBUG
-    // RN 0.85 default ist :8081. Der `--port` Flag von run-ios wird
-    // nicht in den Swift-AppDelegate gebaked, daher hier explizit setzen.
+    if let bundled = Bundle.main.url(forResource: "main", withExtension: "jsbundle") {
+      return bundled
+    }
+
+    // Keep the wallet dev server isolated from other local React Native apps.
     let provider = RCTBundleURLProvider.sharedSettings()
-    provider.jsLocation = "localhost:9001"
+    provider.jsLocation = "localhost:9101"
     return provider.jsBundleURL(forBundleRoot: "index")
 #else
     return Bundle.main.url(forResource: "main", withExtension: "jsbundle")

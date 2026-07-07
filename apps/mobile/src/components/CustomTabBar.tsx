@@ -1,6 +1,7 @@
 import React from "react";
 import { View, Text, TouchableOpacity, StyleSheet, Platform } from "react-native";
-import Svg, { Path, Rect, Line, Circle } from "react-native-svg";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import Svg, { Path, Line, Circle } from "react-native-svg";
 import { colors } from "../theme/colors";
 
 function IconHome({ color }: { color: string }) {
@@ -30,11 +31,22 @@ const TABS = [
 const HIDDEN_SCREENS = ["Welcome", "WalletSetup"];
 
 export default function CustomTabBar({ state, navigation }: any) {
+  const insets = useSafeAreaInsets();
   const currentRoute = state.routes[state.index]?.name;
   if (HIDDEN_SCREENS.includes(currentRoute)) return null;
 
   return (
-    <View style={s.bar}>
+    <View
+      style={[
+        s.bar,
+        {
+          paddingBottom: Math.max(
+            insets.bottom + 12,
+            Platform.OS === "ios" ? 30 : 34,
+          ),
+        },
+      ]}
+    >
       {state.routes.map((route: any, index: number) => {
         const tab = TABS.find(t => t.key === route.name);
         if (!tab) return null;
@@ -52,8 +64,8 @@ export default function CustomTabBar({ state, navigation }: any) {
 }
 
 const s = StyleSheet.create({
-  bar: { flexDirection: "row", backgroundColor: colors.tabBar, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10, paddingBottom: Platform.OS === "ios" ? 30 : 10 },
-  tab: { flex: 1, alignItems: "center", justifyContent: "center" },
+  bar: { minHeight: 94, flexDirection: "row", backgroundColor: colors.tabBar, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 },
+  tab: { flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center" },
   label: { fontSize: 10, fontWeight: "600", color: colors.tabInactive, marginTop: 4 },
   labelActive: { color: colors.orange },
 });

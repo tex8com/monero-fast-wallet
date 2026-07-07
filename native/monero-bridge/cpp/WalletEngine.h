@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace tex8::wallet {
 
@@ -23,6 +24,9 @@ class WalletEngine {
   WalletId createWallet(const CreateWalletRequest& request);
   WalletId restoreWallet(const RestoreWalletRequest& request);
   WalletId openWallet(const OpenWalletRequest& request);
+  WalletId createWalletFromDevice(const CreateWalletFromDeviceRequest& request);
+  FastReceiveIdentity createFastReceiveIdentity(
+      const CreateFastReceiveIdentityRequest& request);
   void closeWallet(const WalletId& walletId, bool store = true);
 
   void setDaemon(const WalletId& walletId, const DaemonConfig& config);
@@ -35,11 +39,29 @@ class WalletEngine {
       const WalletId& walletId,
       uint32_t accountIndex = 0,
       uint32_t addressIndex = 0) const;
+  std::string getSeed(
+      const WalletId& walletId,
+      const std::string& seedOffset = "") const;
   uint64_t getBalance(const WalletId& walletId, uint32_t accountIndex = 0) const;
   uint64_t getUnlockedBalance(
       const WalletId& walletId,
       uint32_t accountIndex = 0) const;
   WalletSnapshot snapshot(const WalletId& walletId) const;
+  std::vector<WalletTransaction> getTransactions(
+      const WalletId& walletId,
+      uint32_t limit = 25) const;
+  PreparedTransaction prepareTransaction(
+      const PrepareTransactionRequest& request);
+  PreparedTransaction commitTransaction(
+      const WalletId& walletId,
+      const std::string& pendingId);
+  HardwareWalletStatus getHardwareWalletStatus(const WalletId& walletId) const;
+  HardwareWalletStatus reconnectHardwareWallet(const WalletId& walletId);
+  HardwareWalletStatus showHardwareWalletAddress(
+      const WalletId& walletId,
+      uint32_t accountIndex = 0,
+      uint32_t addressIndex = 0,
+      const std::string& paymentId = "");
 
  private:
   class Impl;

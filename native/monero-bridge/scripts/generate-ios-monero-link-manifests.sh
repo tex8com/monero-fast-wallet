@@ -15,6 +15,7 @@ monero_source_dir="${MONERO_SOURCE_DIR:-$HOME/Documents/Projects/monero-gui/mone
 monero_ios_build_root="$(abs_path "${MONERO_IOS_BUILD_ROOT:-${repo_root}/build/ios-monero-wallet}")"
 fast_crypto_root="$(abs_path "${MONERO_FAST_CRYPTO_ROOT:-${repo_root}/build/mobile-fast-crypto}")"
 dependency_root="$(abs_path "${MONERO_IOS_DEPENDENCY_ROOT:-${repo_root}/build/ios-deps}")"
+grpc_dependency_root="$(abs_path "${MONERO_IOS_GRPC_DEPENDENCY_ROOT:-${dependency_root}}")"
 output_dir="$(abs_path "${OUTPUT_DIR:-${repo_root}/build/ios-monero-link-manifests}")"
 targets_csv="${TARGETS:-ios-sim-arm64}"
 strict="${STRICT:-1}"
@@ -101,6 +102,67 @@ write_list() {
   done
 }
 
+append_pkg_config_static_libs() {
+  local dependency_prefix="$1"
+  local pkg_config_dir="${dependency_prefix}/lib/pkgconfig"
+
+  if [[ ! -f "${pkg_config_dir}/grpc++.pc" ]]; then
+    return 0
+  fi
+  if ! command -v pkg-config >/dev/null 2>&1; then
+    echo "warning: pkg-config not found; cannot add iOS gRPC static libraries" >&2
+    return 0
+  fi
+
+  local pkg_libs
+  if ! pkg_libs="$(PKG_CONFIG_LIBDIR="${pkg_config_dir}" PKG_CONFIG_PATH="${pkg_config_dir}" pkg-config --libs --static grpc++ grpc protobuf)"; then
+    echo "warning: pkg-config could not resolve iOS gRPC static libraries" >&2
+    return 0
+  fi
+
+  local lib_dirs=("${dependency_prefix}/lib")
+  local tokens=()
+  read -r -a tokens <<< "${pkg_libs}"
+
+  local i token
+  for ((i = 0; i < ${#tokens[@]}; i++)); do
+    token="${tokens[$i]}"
+    case "${token}" in
+      -L*)
+        lib_dirs+=("${token#-L}")
+        ;;
+      -l*)
+        local lib_name="${token#-l}"
+        local lib_path=""
+        local lib_dir
+        for lib_dir in "${lib_dirs[@]}"; do
+          if [[ -f "${lib_dir}/lib${lib_name}.a" ]]; then
+            lib_path="${lib_dir}/lib${lib_name}.a"
+            break
+          fi
+        done
+        if [[ -n "${lib_path}" ]]; then
+          libraries+=("${lib_path}")
+        else
+          system_libraries+=("${token}")
+        fi
+        ;;
+      -framework)
+        system_libraries+=("${token}")
+        if (( i + 1 < ${#tokens[@]} )); then
+          i=$((i + 1))
+          system_libraries+=("${tokens[$i]}")
+        fi
+        ;;
+      -pthread)
+        ;;
+      *)
+        system_libraries+=("${token}")
+        ;;
+    esac
+  done
+}
+
 if [[ ! -f "${monero_source_dir}/src/wallet/api/wallet2_api.h" ]]; then
   echo "Monero source checkout not found at ${monero_source_dir}" >&2
   exit 1
@@ -114,6 +176,7 @@ for label in "${targets[@]}"; do
   platform_name="$(target_sdk "${label}")"
   monero_build_dir="${monero_ios_build_root}/${label}"
   dependency_prefix="${MONERO_IOS_DEPENDENCY_PREFIX:-${dependency_root}/${label}}"
+  grpc_dependency_prefix="${MONERO_IOS_GRPC_DEPENDENCY_PREFIX:-${grpc_dependency_root}/${label}}"
   fast_crypto_lib="${fast_crypto_root}/${label}/libmonero_fast_crypto.a"
   manifest_dir="${output_dir}/${label}"
   aggregate_lib="${manifest_dir}/libtex8_monero_wallet_core.a"
@@ -121,6 +184,7 @@ for label in "${targets[@]}"; do
   libraries_path="${manifest_dir}/libraries.txt"
   missing_count=0
   libraries=()
+  system_libraries=("-lc++" "-lz")
 
   mkdir -p "${manifest_dir}"
 
@@ -148,6 +212,11 @@ for label in "${targets[@]}"; do
     warn_missing "${lib_path}" || missing_count=$((missing_count + 1))
   done
 
+  append_pkg_config_static_libs "${dependency_prefix}"
+  if [[ "${grpc_dependency_prefix}" != "${dependency_prefix}" ]]; then
+    append_pkg_config_static_libs "${grpc_dependency_prefix}"
+  fi
+
   if [[ "${strict}" == "1" && "${missing_count}" -gt 0 ]]; then
     echo "missing ${missing_count} expected iOS link inputs for ${label}" >&2
     exit 1
@@ -162,7 +231,7 @@ for label in "${targets[@]}"; do
     echo "MONERO_WALLET_CORE_LIBRARY = ${aggregate_lib}"
     echo "MONERO_WALLET_API_INCLUDE_DIR = ${monero_source_dir}/src/wallet/api"
     echo "MONERO_WALLET_BRIDGE_INCLUDE_DIR = ${repo_root}/native/monero-bridge/cpp"
-    echo "MONERO_WALLET_SYSTEM_LIBRARIES = -lc++ -lz"
+    echo "MONERO_WALLET_SYSTEM_LIBRARIES = ${system_libraries[*]}"
   } > "${xcconfig_path}"
 
   {

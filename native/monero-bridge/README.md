@@ -16,6 +16,28 @@ apps/mobile
 C++ types from React Native and keeps wallet files, seed material, spend keys,
 and sensitive logs on the native side.
 
+Android and iOS are one mobile target for this bridge. A wallet feature should
+not be considered complete on the native side until both platform bindings
+expose matching behavior, or the remaining platform gap is documented.
+
+Ledger Nano support for Monero is mandatory. It must use the forked `wallet2` /
+`libwallet_api` path and be exposed by `WalletEngine` to both Android and iOS.
+The private spend key and signing authority stay on the Ledger; React Native
+receives only sanitized status, prompt, address, balance, and transaction DTOs.
+The bridge now exposes create-from-device, status, reconnect, and
+show-address-on-device methods, and the app can route setup/address-confirmation
+flows through those methods. Android now builds the official Monero Ledger HID
+driver path through `hidapi`/`libusb` and gates wallet creation on Android USB
+host permission. iOS exposes the same bridge contract, but still needs a real
+CoreBluetooth APDU transport before Ledger Nano can work there. Transaction
+prompt/signing UI and connected Ledger tests are still pending.
+
+The bridge also exposes wallet history and software-wallet sending through
+`getTransactions`, `prepareTransaction`, and `commitTransaction`.
+`prepareTransaction` keeps the Monero `PendingTransaction` object native and
+returns only a review DTO with fee, tx count, and tx ids; `commitTransaction`
+broadcasts and disposes the pending object.
+
 ## Platform Bindings
 
 - iOS: `apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm`
@@ -99,10 +121,20 @@ TARGETS=ios-sim-arm64,ios-device CLEAN_AFTER_INSTALL=1 \
   native/monero-bridge/scripts/build-ios-monero-deps.sh
 ```
 
-Build the forked iOS wallet API archives:
+Build target gRPC/protobuf archives and matching host protobuf tools:
 
 ```bash
-TARGETS=ios-sim-arm64,ios-device \
+TARGETS=ios-sim-arm64,ios-device JOBS=2 CLEAN_AFTER_INSTALL=1 \
+  native/monero-bridge/scripts/build-ios-grpc.sh
+
+native/monero-bridge/scripts/build-host-protobuf-tools.sh
+```
+
+Build the forked iOS wallet API archives with the Cuprate gRPC stream enabled:
+
+```bash
+TARGETS=ios-sim-arm64,ios-device SKIP_FAST_CRYPTO=1 \
+  MONERO_ENABLE_GRPC_STREAM=ON OUTPUT_ROOT=build/ios-monero-wallet-grpc \
   native/monero-bridge/scripts/build-ios-monero-wallet-api.sh
 ```
 
@@ -111,6 +143,7 @@ Xcode:
 
 ```bash
 TARGETS=ios-sim-arm64,ios-device \
+  MONERO_IOS_BUILD_ROOT=build/ios-monero-wallet-grpc \
   native/monero-bridge/scripts/generate-ios-monero-link-manifests.sh
 ```
 
@@ -120,18 +153,22 @@ creates platform aliases named `iphonesimulator` and `iphoneos`. The Xcode app
 target links through `$(PLATFORM_NAME)` so simulator and device use the correct
 archive automatically.
 
-Configure/build Android Monero wallet archives with the NDK:
+Build the Android dependency and wallet archives:
 
 ```bash
-TARGETS=android-arm64 \
-  native/monero-bridge/scripts/build-android-monero-wallet-api.sh
-```
+native/monero-bridge/scripts/build-host-protobuf-tools.sh
 
-Build the Android dependency archives first:
-
-```bash
 TARGETS=android-arm64 \
   native/monero-bridge/scripts/build-android-monero-deps.sh
+
+TARGETS=android-arm64 \
+  native/monero-bridge/scripts/build-android-libusb-hidapi.sh
+
+TARGETS=android-arm64 \
+  native/monero-bridge/scripts/build-mobile-fast-crypto.sh
+
+TARGETS=android-arm64 SKIP_FAST_CRYPTO=1 \
+  native/monero-bridge/scripts/build-android-monero-wallet-api.sh
 ```
 
 The Android builder passes the target-specific `MONERO_FAST_CRYPTO_LIBRARY` into
@@ -139,34 +176,49 @@ the Monero fork so `cncrypto` never accidentally links the host macOS Rust
 archive. If Android dependency archives are installed under one prefix, pass it
 with `MONERO_ANDROID_DEPENDENCY_PREFIX=/path/to/prefix`.
 
-Current Android status on 2026-06-04:
+Current Android status on 2026-06-11 local:
 
 - `build-android-monero-deps.sh` builds OpenSSL, libiconv, Boost, libsodium,
   ZeroMQ, Expat, Unbound, gRPC, protobuf, absl, c-ares, re2, and zlib for
   `android-arm64`.
+- `build-android-libusb-hidapi.sh` builds static `libusb-1.0.a` and
+  `libhidapi-libusb.a` for `android-arm64`.
 - `build-host-protobuf-tools.sh` builds host `protoc 31.1`, matching the
   Android protobuf runtime used by gRPC.
 - gRPC-enabled `wallet_api` archives build for `android-arm64`, including
   `libcuprate_grpc_stream.a`.
+- The Android Monero `libdevice.a` now includes `device_ledger.cpp` and
+  `device_io_hid.cpp`, with `hid_*` symbols resolved by generated
+  `hidapi`/`libusb` link manifest entries.
+- Android `monero-fast-crypto` builds for `android-arm64`.
 - gRPC-enabled archives link successfully into the Android JNI library.
-- Android debug and instrumentation-test APKs build with the gRPC-enabled JNI
-  backend.
+- Android release APK builds with the gRPC-enabled JNI backend through
+  `npm run android:build`.
+- The Android native module exposes Ledger USB transport status and USB
+  permission requests before `createWalletFromDevice`.
 - `NativeMoneroWalletRuntimeSmokeTest` exercises Android `System.loadLibrary`,
   JNI, `WalletEngine`, forked `libwallet_api`, offline stagenet wallet
   creation, snapshot reads, and `setGrpcEndpoint`.
+- Runtime execution still requires a connected Android arm64 device/emulator.
 
-Current iOS status on 2026-06-04:
+Current iOS status on 2026-06-11:
 
 - `ios-sim-arm64` and `ios-device` dependency archives build locally.
-- `ios-sim-arm64` and `ios-device` forked `wallet_api` archives build locally.
+- `build-ios-grpc.sh` builds target gRPC/protobuf static archives under
+  `build/ios-deps/<target>` for both simulator and device.
+- `build-host-protobuf-tools.sh` builds host `protoc 31.1` under
+  `build/host-protobuf-tools/protobuf-v31.1`, matching the target protobuf
+  runtime used by gRPC.
+- `ios-sim-arm64` and `ios-device` forked gRPC-enabled `wallet_api` archives
+  build locally, including `libcuprate_grpc_stream.a`.
 - `libtex8_monero_wallet_core.a` aggregates the iOS Monero and dependency
   static archives for each platform.
-- Native link smokes pass for both simulator and device.
 - React Native iOS Debug builds pass for arm64 simulator and unsigned
-  `iphoneos`.
-- iOS currently uses `MONERO_ENABLE_GRPC_STREAM=OFF`; the Cuprate gRPC stream
-  path still needs iOS gRPC/protobuf dependency archives before it can match
-  Android's gRPC-enabled graph.
+  `iphoneos` with the real gRPC-enabled backend.
+- iOS exposes Ledger transport status through the same TurboModule contract and
+  declares Bluetooth usage strings, but currently reports that BLE transport is
+  not linked. A CoreBluetooth APDU transport is required before Ledger Nano can
+  work on iOS.
 
 Verified gRPC-enabled Android JNI link:
 
@@ -175,6 +227,9 @@ native/monero-bridge/scripts/build-host-protobuf-tools.sh
 
 TARGETS=android-arm64 \
   native/monero-bridge/scripts/build-android-monero-deps.sh
+
+TARGETS=android-arm64 \
+  native/monero-bridge/scripts/build-android-libusb-hidapi.sh
 
 TARGETS=android-arm64 SKIP_FAST_CRYPTO=1 \
   native/monero-bridge/scripts/build-android-monero-wallet-api.sh

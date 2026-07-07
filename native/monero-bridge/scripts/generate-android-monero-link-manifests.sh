@@ -68,6 +68,8 @@ dependency_library_rel_paths=(
   lib/libsodium.a
   lib/libexpat.a
   lib/libiconv.a
+  lib/libhidapi-libusb.a
+  lib/libusb-1.0.a
 )
 
 android_abi_for_label() {

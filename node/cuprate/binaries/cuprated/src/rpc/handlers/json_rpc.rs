@@ -104,7 +104,9 @@ pub async fn map_request(
         Req::SetBans(r) => Resp::SetBans(not_available()?),
         Req::GetBans(r) => Resp::GetBans(not_available()?),
         Req::Banned(r) => Resp::Banned(not_available()?),
-        Req::FlushTransactionPool(r) => Resp::FlushTransactionPool(not_available()?),
+        Req::FlushTransactionPool(r) => {
+            Resp::FlushTransactionPool(flush_transaction_pool(state, r).await?)
+        }
         Req::GetOutputHistogram(r) => Resp::GetOutputHistogram(not_available()?),
         Req::GetCoinbaseTxSum(r) => Resp::GetCoinbaseTxSum(not_available()?),
         Req::GetVersion(r) => Resp::GetVersion(get_version(state, r).await?),
@@ -112,7 +114,7 @@ pub async fn map_request(
         Req::GetAlternateChains(r) => {
             Resp::GetAlternateChains(get_alternate_chains(state, r).await?)
         }
-        Req::RelayTx(r) => Resp::RelayTx(not_available()?),
+        Req::RelayTx(r) => Resp::RelayTx(relay_tx(state, r).await?),
         Req::SyncInfo(r) => Resp::SyncInfo(sync_info(state, r).await?),
         Req::GetTransactionPoolBacklog(r) => Resp::GetTransactionPoolBacklog(not_available()?),
         Req::GetMinerData(r) => Resp::GetMinerData(not_available()?),
@@ -731,7 +733,7 @@ async fn flush_transaction_pool(
         .map(|h| h.0)
         .collect::<Vec<[u8; 32]>>();
 
-    txpool::flush(todo!(), tx_hashes).await?;
+    txpool::flush(&mut state.tx_handler.txpool_manager, tx_hashes).await?;
 
     Ok(FlushTransactionPoolResponse { status: Status::Ok })
 }
@@ -873,7 +875,7 @@ async fn relay_tx(
         .map(|h| h.0)
         .collect::<Vec<[u8; 32]>>();
 
-    txpool::relay(todo!(), tx_hashes).await?;
+    txpool::relay(&mut state.tx_handler.txpool_manager, tx_hashes).await?;
 
     Ok(RelayTxResponse { status: Status::Ok })
 }

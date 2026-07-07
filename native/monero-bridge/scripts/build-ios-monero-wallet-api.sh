@@ -14,6 +14,7 @@ abs_path() {
 monero_source_dir="${MONERO_SOURCE_DIR:-$HOME/Documents/Projects/monero-gui/monero}"
 output_root="$(abs_path "${OUTPUT_ROOT:-${repo_root}/build/ios-monero-wallet}")"
 dependency_root="$(abs_path "${MONERO_IOS_DEPENDENCY_ROOT:-${repo_root}/build/ios-deps}")"
+grpc_dependency_root="$(abs_path "${MONERO_IOS_GRPC_DEPENDENCY_ROOT:-${dependency_root}}")"
 fast_crypto_root="$(abs_path "${MONERO_FAST_CRYPTO_ROOT:-${repo_root}/build/mobile-fast-crypto}")"
 targets_csv="${TARGETS:-ios-sim-arm64}"
 jobs="${JOBS:-8}"
@@ -22,6 +23,33 @@ configure_only="${CONFIGURE_ONLY:-0}"
 skip_fast_crypto="${SKIP_FAST_CRYPTO:-0}"
 monero_enable_grpc_stream="${MONERO_ENABLE_GRPC_STREAM:-OFF}"
 randomx_enable_jit="${RANDOMX_ENABLE_JIT:-OFF}"
+host_tools_root="$(abs_path "${MONERO_IOS_HOST_TOOLS_ROOT:-${MONERO_HOST_TOOLS_ROOT:-${repo_root}/build/host-protobuf-tools}}")"
+protoc_path="${PROTOC_PATH:-${host_tools_root}/protobuf-v31.1/bin/protoc}"
+grpc_cpp_plugin_path="${GRPC_CPP_PLUGIN_PATH:-}"
+
+if [[ ! -x "${protoc_path}" && -x "${repo_root}/build/android-host-tools/protobuf-v31.1/bin/protoc" ]]; then
+  protoc_path="${repo_root}/build/android-host-tools/protobuf-v31.1/bin/protoc"
+fi
+if [[ -z "${grpc_cpp_plugin_path}" ]] && command -v grpc_cpp_plugin >/dev/null 2>&1; then
+  grpc_cpp_plugin_path="$(command -v grpc_cpp_plugin)"
+fi
+if [[ "${monero_enable_grpc_stream}" == "ON" ]]; then
+  if [[ ! -x "${protoc_path}" ]]; then
+    echo "Missing host protoc for gRPC stream build: ${protoc_path}" >&2
+    echo "Run build-host-protobuf-tools.sh first, or set PROTOC_PATH." >&2
+    exit 1
+  fi
+  if [[ "$("${protoc_path}" --version)" != "libprotoc 31.1" ]]; then
+    echo "Incompatible protoc for iOS gRPC stream build: ${protoc_path}" >&2
+    echo "Expected libprotoc 31.1 to match mobile protobuf headers." >&2
+    exit 1
+  fi
+  if [[ ! -x "${grpc_cpp_plugin_path}" ]]; then
+    echo "Missing grpc_cpp_plugin for gRPC stream build." >&2
+    echo "Install grpc or set GRPC_CPP_PLUGIN_PATH." >&2
+    exit 1
+  fi
+fi
 
 if [[ ! -f "${monero_source_dir}/CMakeLists.txt" ]]; then
   echo "Monero source checkout not found at ${monero_source_dir}" >&2
@@ -70,6 +98,16 @@ add_boost_library_args() {
   )
 }
 
+join_by_colon() {
+  local IFS=:
+  echo "$*"
+}
+
+join_by_semicolon() {
+  local IFS=';'
+  echo "$*"
+}
+
 IFS=',' read -r -a targets <<< "${targets_csv}"
 
 if [[ "${skip_fast_crypto}" != "1" ]]; then
@@ -82,6 +120,7 @@ fi
 for label in "${targets[@]}"; do
   build_dir="${output_root}/${label}"
   dependency_prefix="${MONERO_IOS_DEPENDENCY_PREFIX:-${dependency_root}/${label}}"
+  grpc_dependency_prefix="${MONERO_IOS_GRPC_DEPENDENCY_PREFIX:-${grpc_dependency_root}/${label}}"
   fast_crypto_lib="${fast_crypto_root}/${label}/libmonero_fast_crypto.a"
   sdk_name="$(target_sdk "${label}")"
   sdk_path="$(xcrun --sdk "${sdk_name}" --show-sdk-path)"
@@ -98,6 +137,18 @@ for label in "${targets[@]}"; do
 
   boost_lib_dir="${dependency_prefix}/lib"
   pkg_config_dir="${dependency_prefix}/lib/pkgconfig"
+  cmake_prefixes=("${dependency_prefix}")
+  pkg_config_dirs=("${pkg_config_dir}")
+
+  if [[ "${monero_enable_grpc_stream}" == "ON" ]]; then
+    if [[ ! -f "${grpc_dependency_prefix}/lib/pkgconfig/grpc++.pc" ]]; then
+      echo "Missing iOS gRPC pkg-config file for ${label}: ${grpc_dependency_prefix}/lib/pkgconfig/grpc++.pc" >&2
+      echo "Run build-ios-grpc.sh first, or set MONERO_IOS_GRPC_DEPENDENCY_PREFIX." >&2
+      exit 1
+    fi
+    cmake_prefixes+=("${grpc_dependency_prefix}")
+    pkg_config_dirs+=("${grpc_dependency_prefix}/lib/pkgconfig")
+  fi
 
   cmake_args=(
     -S "${monero_source_dir}"
@@ -121,8 +172,8 @@ for label in "${targets[@]}"; do
     "-DRANDOMX_ENABLE_JIT=${randomx_enable_jit}"
     "-DMONERO_FAST_CRYPTO_LIBRARY=${fast_crypto_lib}"
     -DMANUAL_SUBMODULES=1
-    "-DCMAKE_PREFIX_PATH=${dependency_prefix}"
-    "-DCMAKE_FIND_ROOT_PATH=${dependency_prefix}"
+    "-DCMAKE_PREFIX_PATH=$(join_by_semicolon "${cmake_prefixes[@]}")"
+    "-DCMAKE_FIND_ROOT_PATH=$(join_by_semicolon "${cmake_prefixes[@]}")"
     -DBOOST_IGNORE_SYSTEM_PATHS=ON
     "-DBOOST_ROOT=${dependency_prefix}"
     "-DBoost_NO_SYSTEM_PATHS=ON"
@@ -144,6 +195,12 @@ for label in "${targets[@]}"; do
     "-DUNBOUND_INCLUDE_DIR=${dependency_prefix}/include"
     "-DUNBOUND_LIBRARIES=${dependency_prefix}/lib/libunbound.a"
   )
+  if [[ -x "${protoc_path}" ]]; then
+    cmake_args+=("-DPROTOC_PATH=${protoc_path}")
+  fi
+  if [[ -x "${grpc_cpp_plugin_path}" ]]; then
+    cmake_args+=("-DGRPC_CPP_PLUGIN_PATH=${grpc_cpp_plugin_path}")
+  fi
   add_boost_library_args CHRONO "${boost_lib_dir}/libboost_chrono.a"
   add_boost_library_args DATE_TIME "${boost_lib_dir}/libboost_date_time.a"
   add_boost_library_args FILESYSTEM "${boost_lib_dir}/libboost_filesystem.a"
@@ -156,8 +213,8 @@ for label in "${targets[@]}"; do
 
   echo "==> configure ${label} ($(target_platform_name "${label}"))"
   env \
-    "PKG_CONFIG_LIBDIR=${pkg_config_dir}" \
-    "PKG_CONFIG_PATH=${pkg_config_dir}" \
+    "PKG_CONFIG_LIBDIR=$(join_by_colon "${pkg_config_dirs[@]}")" \
+    "PKG_CONFIG_PATH=$(join_by_colon "${pkg_config_dirs[@]}")" \
     cmake "${cmake_args[@]}"
 
   if [[ "${configure_only}" != "1" ]]; then

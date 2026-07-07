@@ -1,9 +1,9 @@
 import React from "react";
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
-import Svg, { Path, Circle, Line, Rect } from "react-native-svg";
-import { colors, spacing, radius } from "../theme/colors";
-import { WALLET } from "../data/mock";
+import Svg, { Path, Circle } from "react-native-svg";
+import { colors } from "../theme/colors";
 import MoneroLogo from "../components/MoneroLogo";
+import { useWalletState } from "../services/WalletState";
 
 /* ── SVG Icons ────────────────────────────────────────────────────── */
 function IcoP2P({ c }: { c: string }) {
@@ -45,6 +45,15 @@ const DEV_SCREENS = [
 ];
 
 export default function MenuScreen({ navigation }: any) {
+  const { registeredWallet, snapshot, status } = useWalletState();
+  const walletName = registeredWallet?.walletName ?? "My Wallet";
+  const address = snapshot?.primaryAddress;
+  const addressLabel = address
+    ? `${address.slice(0, 6)}...${address.slice(-5)}`
+    : status === "locked"
+      ? "Locked"
+      : "No wallet open";
+
   return (
     <View style={s.container}>
       <ScrollView contentContainerStyle={s.scroll}>
@@ -52,10 +61,18 @@ export default function MenuScreen({ navigation }: any) {
         <View style={s.profileCard}>
           <MoneroLogo size={48} />
           <View style={s.profileInfo}>
-            <Text style={s.profileName}>My Wallet</Text>
+            <Text style={s.profileName}>{walletName}</Text>
             <Text style={s.profileAddr}>
-              {WALLET.address.slice(0, 6)}...
-              <Text style={{ color: colors.orange }}>{WALLET.address.slice(-5)}</Text>
+              {address ? (
+                <>
+                  {address.slice(0, 6)}...
+                  <Text style={{ color: colors.orange }}>
+                    {address.slice(-5)}
+                  </Text>
+                </>
+              ) : (
+                addressLabel
+              )}
             </Text>
           </View>
         </View>

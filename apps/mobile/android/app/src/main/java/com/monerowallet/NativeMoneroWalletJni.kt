@@ -50,6 +50,46 @@ internal object NativeMoneroWalletJni {
     return nativeOpenWallet(path, password, network)
   }
 
+  fun createWalletFromDevice(
+    path: String,
+    password: String,
+    network: String,
+    deviceName: String,
+    restoreHeight: Double,
+    subaddressLookahead: String,
+  ): String {
+    requireLoaded()
+    return nativeCreateWalletFromDevice(
+      path,
+      password,
+      network,
+      deviceName,
+      restoreHeight,
+      subaddressLookahead,
+    )
+  }
+
+  fun createFastReceiveIdentity(
+    sourceWalletId: String,
+    identityId: String,
+    path: String,
+    password: String,
+    label: String,
+    restoreHeight: Double,
+    derivationIndex: Double,
+  ): Map<String, Any> {
+    requireLoaded()
+    return nativeCreateFastReceiveIdentity(
+      sourceWalletId,
+      identityId,
+      path,
+      password,
+      label,
+      restoreHeight,
+      derivationIndex,
+    )
+  }
+
   fun closeWallet(walletId: String, store: Boolean) {
     requireLoaded()
     nativeCloseWallet(walletId, store)
@@ -96,6 +136,11 @@ internal object NativeMoneroWalletJni {
     return nativeGetAddress(walletId, accountIndex, addressIndex)
   }
 
+  fun getSeed(walletId: String, seedOffset: String): String {
+    requireLoaded()
+    return nativeGetSeed(walletId, seedOffset)
+  }
+
   fun getBalance(walletId: String, accountIndex: Double): String {
     requireLoaded()
     return nativeGetBalance(walletId, accountIndex)
@@ -109,6 +154,60 @@ internal object NativeMoneroWalletJni {
   fun snapshot(walletId: String): Map<String, Any> {
     requireLoaded()
     return nativeSnapshot(walletId)
+  }
+
+  fun getTransactions(walletId: String, limit: Double): List<Map<String, Any>> {
+    requireLoaded()
+    return nativeGetTransactions(walletId, limit)
+  }
+
+  fun prepareTransaction(
+    walletId: String,
+    address: String,
+    amountAtomic: String,
+    paymentId: String,
+    priority: String,
+    accountIndex: Double,
+  ): Map<String, Any> {
+    requireLoaded()
+    return nativePrepareTransaction(
+      walletId,
+      address,
+      amountAtomic,
+      paymentId,
+      priority,
+      accountIndex,
+    )
+  }
+
+  fun commitTransaction(walletId: String, pendingId: String): Map<String, Any> {
+    requireLoaded()
+    return nativeCommitTransaction(walletId, pendingId)
+  }
+
+  fun getHardwareWalletStatus(walletId: String): Map<String, Any> {
+    requireLoaded()
+    return nativeGetHardwareWalletStatus(walletId)
+  }
+
+  fun reconnectHardwareWallet(walletId: String): Map<String, Any> {
+    requireLoaded()
+    return nativeReconnectHardwareWallet(walletId)
+  }
+
+  fun showHardwareWalletAddress(
+    walletId: String,
+    accountIndex: Double,
+    addressIndex: Double,
+    paymentId: String,
+  ): Map<String, Any> {
+    requireLoaded()
+    return nativeShowHardwareWalletAddress(
+      walletId,
+      accountIndex,
+      addressIndex,
+      paymentId,
+    )
   }
 
   private fun requireLoaded() {
@@ -143,6 +242,25 @@ internal object NativeMoneroWalletJni {
     network: String,
   ): String
 
+  @JvmStatic private external fun nativeCreateWalletFromDevice(
+    path: String,
+    password: String,
+    network: String,
+    deviceName: String,
+    restoreHeight: Double,
+    subaddressLookahead: String,
+  ): String
+
+  @JvmStatic private external fun nativeCreateFastReceiveIdentity(
+    sourceWalletId: String,
+    identityId: String,
+    path: String,
+    password: String,
+    label: String,
+    restoreHeight: Double,
+    derivationIndex: Double,
+  ): Map<String, Any>
+
   @JvmStatic private external fun nativeCloseWallet(walletId: String, store: Boolean)
 
   @JvmStatic private external fun nativeSetDaemon(
@@ -169,6 +287,11 @@ internal object NativeMoneroWalletJni {
     addressIndex: Double,
   ): String
 
+  @JvmStatic private external fun nativeGetSeed(
+    walletId: String,
+    seedOffset: String,
+  ): String
+
   @JvmStatic private external fun nativeGetBalance(
     walletId: String,
     accountIndex: Double,
@@ -180,4 +303,38 @@ internal object NativeMoneroWalletJni {
   ): String
 
   @JvmStatic private external fun nativeSnapshot(walletId: String): Map<String, Any>
+
+  @JvmStatic private external fun nativeGetTransactions(
+    walletId: String,
+    limit: Double,
+  ): List<Map<String, Any>>
+
+  @JvmStatic private external fun nativePrepareTransaction(
+    walletId: String,
+    address: String,
+    amountAtomic: String,
+    paymentId: String,
+    priority: String,
+    accountIndex: Double,
+  ): Map<String, Any>
+
+  @JvmStatic private external fun nativeCommitTransaction(
+    walletId: String,
+    pendingId: String,
+  ): Map<String, Any>
+
+  @JvmStatic private external fun nativeGetHardwareWalletStatus(
+    walletId: String,
+  ): Map<String, Any>
+
+  @JvmStatic private external fun nativeReconnectHardwareWallet(
+    walletId: String,
+  ): Map<String, Any>
+
+  @JvmStatic private external fun nativeShowHardwareWalletAddress(
+    walletId: String,
+    accountIndex: Double,
+    addressIndex: Double,
+    paymentId: String,
+  ): Map<String, Any>
 }

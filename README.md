@@ -14,6 +14,10 @@ creates a separate notification receive identity whose private view key can be
 hosted by our server-side scanner. The private spend key never leaves the
 phone.
 
+Android and iOS are one mobile product target. A wallet feature is not complete
+until both platforms expose the same user-facing behavior, or the remaining
+platform gap is explicitly documented.
+
 ## Architecture Decision
 
 Use our Monero fork from the beginning:
@@ -54,6 +58,9 @@ Allowed for development only:
 - Use Cuprate as a fast node/scanner path without changing Monero consensus.
 - Default mobile node mode is optimized Cuprate gRPC, while Settings can switch
   the same wallet core back to original Monero-compatible daemon RPC.
+- Ledger Nano hardware-wallet support is required for Monero. Hardware signing
+  must go through the native wallet core on both Android and iOS; seed/private
+  spend key material must never enter JavaScript or the server.
 
 ## Repository Shape
 
@@ -63,7 +70,7 @@ apps/
 native/
   monero-bridge/       C++ facade plus iOS/Android bridge to our wallet core
 services/
-  notify-scanner/      view-key scanner and push notification service
+  notify-scanner/      hosted view-key registration/removal API and scanner
   wallet-api/          device registration and opt-in API
 node/
   cuprate/             Cuprate node fork source
@@ -74,6 +81,7 @@ docs/
   ROADMAP.md
   ARCHITECTURE.md
   NATIVE_WALLET_BRIDGE.md
+  BACKEND_TESTING.md
   PRIVACY_MODEL.md
   REPOSITORY_STRATEGY.md
   SOURCES.md
@@ -90,24 +98,44 @@ Generated dependencies and build output are intentionally not imported:
 
 ## Native Bridge Status
 
-Current local status on 2026-06-04:
+Current mobile-native status on 2026-06-14 local:
 
 - The React Native app has iOS and Android native modules backed by the shared
   C++ `WalletEngine` facade.
+- Node profile metadata stays in AsyncStorage, but daemon passwords now go
+  through native secure storage: iOS Keychain and Android Keystore-backed
+  AES-GCM storage. Wallet daemon application can use the stored password
+  without returning it back to JavaScript.
 - Local macOS bridge smoke links against the forked Monero `libwallet_api`.
 - Android `arm64-v8a` dependency archives and forked Monero `wallet_api`
   archives build locally.
 - Android JNI links successfully against real gRPC-enabled Monero wallet
   archives, including `libcuprate_grpc_stream.a`.
-- Android debug and instrumentation-test APKs build with the gRPC-enabled
-  backend, and the debug APK packages
-  `lib/arm64-v8a/libmonero_wallet_bridge_jni.so`.
+- Android Monero wallet archives now build with `hidapi`/`libusb`, so the
+  official Monero `device_ledger` and `device_io_hid` code is present in
+  `libdevice.a`.
+- Android release APKs build with the gRPC-enabled backend through
+  `npm run android:build`, and the APK packages
+  `lib/arm64-v8a/libmonero_wallet_bridge_jni.so` plus the bundled JavaScript.
+- Android exposes Ledger USB transport diagnostics and can request Android USB
+  host permission before creating a Ledger-backed wallet.
 - Android runtime smoke is implemented as an instrumentation test; execution on
   a real device/emulator is pending.
-- iOS `ios-sim-arm64` and `ios-device` dependency archives and forked Monero
-  `wallet_api` archives build locally.
+- iOS `ios-sim-arm64` and `ios-device` dependency archives, gRPC/protobuf
+  dependency archives, fast-crypto archives, and forked Monero `wallet_api`
+  archives build locally.
 - iOS links the React Native app against the real forked Monero wallet core via
   `build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a`.
 - iOS arm64 simulator and unsigned `iphoneos` Debug builds succeed with the
-  real backend. iOS gRPC stream support is still disabled until iOS gRPC static
-  dependencies are added.
+  real gRPC-enabled backend, including `libcuprate_grpc_stream.a`.
+- The bridge now exposes real transaction history and a two-step software send
+  path through `getTransactions`, `prepareTransaction`, and
+  `commitTransaction`; Home/Send render wallet history from `wallet2` instead
+  of static placeholders.
+- Ledger Nano support is mandatory. The shared bridge contract now has
+  create-from-device, status, reconnect, and show-address-on-device methods,
+  and the app has a Ledger setup path plus Receive-screen address confirmation.
+  Android has the first real USB/HID build and permission gate. iOS exposes the
+  same transport-status API and Bluetooth permission strings, but the actual
+  CoreBluetooth APDU transport is still pending. Transaction prompt/signing UI
+  and connected Ledger tests are still pending before mainnet beta.

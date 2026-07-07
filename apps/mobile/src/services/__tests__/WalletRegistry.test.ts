@@ -1,0 +1,212 @@
+jest.mock("@react-native-async-storage/async-storage", () => {
+  const storage = new Map<string, string>();
+  const mock = {
+    clear: jest.fn(async () => {
+      storage.clear();
+    }),
+    getItem: jest.fn(async (key: string) => storage.get(key) ?? null),
+    setItem: jest.fn(async (key: string, value: string) => {
+      storage.set(key, value);
+    }),
+  };
+
+  return {
+    __esModule: true,
+    default: mock,
+  };
+});
+
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+import {
+  createRegisteredWallet,
+  loadRegisteredWallet,
+  loadRegisteredWallets,
+  loadWalletRegistry,
+  markRegisteredWalletSeedBackedUp,
+  saveRegisteredWallet,
+  setActiveRegisteredWallet,
+  touchRegisteredWallet,
+  WALLET_REGISTRY_STORAGE_KEY,
+} from "../WalletRegistry";
+
+describe("WalletRegistry", () => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+  });
+
+  it("persists wallet metadata without secrets", async () => {
+    const registration = createRegisteredWallet({
+      walletName: "primary",
+      path: "/app/wallets/mainnet/primary",
+      network: "mainnet",
+      now: "2026-06-08T00:00:00.000Z",
+    });
+
+    await saveRegisteredWallet(registration);
+
+    const persisted = await AsyncStorage.getItem(WALLET_REGISTRY_STORAGE_KEY);
+    expect(persisted).not.toBeNull();
+    expect(JSON.parse(persisted ?? "{}")).toEqual({
+      version: 2,
+      activeWalletId: "software-mainnet-primary-20260608T000000",
+      wallets: [
+        {
+          id: "software-mainnet-primary-20260608T000000",
+          walletName: "primary",
+          path: "/app/wallets/mainnet/primary",
+          network: "mainnet",
+          kind: "software",
+          seedBackupStatus: "pending",
+          createdAt: "2026-06-08T00:00:00.000Z",
+          lastOpenedAt: "2026-06-08T00:00:00.000Z",
+        },
+      ],
+    });
+    expect(persisted).not.toContain("password");
+    expect(persisted).not.toContain("mnemonic");
+    expect(persisted).not.toContain("private");
+  });
+
+  it("loads and touches the registered wallet", async () => {
+    await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: "primary",
+        path: "/app/wallets/stagenet/primary",
+        network: "stagenet",
+        now: "2026-06-08T00:00:00.000Z",
+      }),
+    );
+
+    const loaded = await loadRegisteredWallet();
+    expect(loaded?.network).toBe("stagenet");
+    expect(loaded?.seedBackupStatus).toBe("pending");
+
+    const touched = touchRegisteredWallet(
+      loaded!,
+      "2026-06-08T01:00:00.000Z",
+    );
+    expect(touched.createdAt).toBe("2026-06-08T00:00:00.000Z");
+    expect(touched.lastOpenedAt).toBe("2026-06-08T01:00:00.000Z");
+  });
+
+  it("persists Ledger metadata for hardware wallets without secrets", async () => {
+    const registration = createRegisteredWallet({
+      walletName: "ledger",
+      path: "/app/wallets/mainnet/ledger",
+      network: "mainnet",
+      kind: "hardware",
+      hardwareDeviceName: "Ledger",
+      hardwareDeviceType: "ledger",
+      now: "2026-06-08T00:00:00.000Z",
+    });
+
+    await saveRegisteredWallet(registration);
+
+    const loaded = await loadRegisteredWallet();
+    expect(loaded).toMatchObject({
+      walletName: "ledger",
+      kind: "hardware",
+      seedBackupStatus: "not-required",
+      hardwareDeviceName: "Ledger",
+      hardwareDeviceType: "ledger",
+    });
+
+    const persisted = await AsyncStorage.getItem(WALLET_REGISTRY_STORAGE_KEY);
+    expect(persisted).not.toContain("password");
+    expect(persisted).not.toContain("mnemonic");
+    expect(persisted).not.toContain("private");
+  });
+
+  it("persists native credential references for biometric software wallets", async () => {
+    const registration = createRegisteredWallet({
+      walletName: "primary",
+      path: "/app/wallets/mainnet/primary",
+      network: "mainnet",
+      credentialKey: "monero.wallet.software.mainnet.primary.v1",
+      now: "2026-06-08T00:00:00.000Z",
+    });
+
+    await saveRegisteredWallet(registration);
+
+    const loaded = await loadRegisteredWallet();
+    expect(loaded).toMatchObject({
+      walletName: "primary",
+      kind: "software",
+      credentialKey: "monero.wallet.software.mainnet.primary.v1",
+    });
+
+    const persisted = await AsyncStorage.getItem(WALLET_REGISTRY_STORAGE_KEY);
+    expect(persisted).not.toContain("password");
+    expect(persisted).not.toContain("mnemonic");
+    expect(persisted).not.toContain("private");
+  });
+
+  it("keeps multiple wallets and switches the active wallet", async () => {
+    const primary = await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: "primary",
+        path: "/app/wallets/mainnet/primary",
+        network: "mainnet",
+        now: "2026-06-08T00:00:00.000Z",
+      }),
+    );
+    const second = await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: "primary-2",
+        path: "/app/wallets/mainnet/primary-2",
+        network: "mainnet",
+        now: "2026-06-08T00:01:00.000Z",
+      }),
+    );
+
+    expect(await loadRegisteredWallets()).toHaveLength(2);
+    expect((await loadRegisteredWallet())?.id).toBe(second.id);
+
+    await setActiveRegisteredWallet(primary.id);
+
+    expect((await loadRegisteredWallet())?.id).toBe(primary.id);
+    expect((await loadWalletRegistry()).activeWalletId).toBe(primary.id);
+  });
+
+  it("marks a software wallet seed as backed up after confirmation", async () => {
+    const registration = await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: "primary",
+        path: "/app/wallets/mainnet/primary",
+        network: "mainnet",
+        now: "2026-06-08T00:00:00.000Z",
+      }),
+    );
+
+    const updated = await markRegisteredWalletSeedBackedUp(
+      registration.id,
+      "2026-06-08T00:05:00.000Z",
+    );
+
+    expect(updated).toMatchObject({
+      id: registration.id,
+      seedBackupStatus: "verified",
+      seedBackedUpAt: "2026-06-08T00:05:00.000Z",
+    });
+  });
+
+  it("loads old registry entries as software wallets", async () => {
+    await AsyncStorage.setItem(
+      WALLET_REGISTRY_STORAGE_KEY,
+      JSON.stringify({
+        walletName: "primary",
+        path: "/app/wallets/mainnet/primary",
+        network: "mainnet",
+        createdAt: "2026-06-08T00:00:00.000Z",
+        lastOpenedAt: "2026-06-08T00:00:00.000Z",
+      }),
+    );
+
+    const loaded = await loadRegisteredWallet();
+    expect(loaded?.kind).toBe("software");
+    expect(loaded?.id).toBe("software-mainnet-primary-20260608T000000");
+    expect(loaded?.seedBackupStatus).toBe("verified");
+    expect(loaded?.hardwareDeviceName).toBeUndefined();
+  });
+});

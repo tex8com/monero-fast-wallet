@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
@@ -12,10 +12,19 @@ import {
 } from "react-native";
 import LinearGradient from "react-native-linear-gradient";
 import { colors, radius, spacing } from "../theme/colors";
-import { TRANSACTIONS, WALLET } from "../data/mock";
 import { Icon } from "../components/Icon";
+import { useXmrPrice } from "../data/priceService";
+import type { PreparedTransaction } from "../services/NativeMoneroWallet";
+import {
+  atomicXmrToNumber,
+  formatAtomicXmr,
+  parseXmrToAtomic,
+  toAtomicBigInt,
+} from "../services/WalletFormat";
+import { useWalletState } from "../services/WalletState";
+import { walletService } from "../services/WalletService";
 
-type Step = "form" | "confirm" | "done";
+type Step = "form" | "confirm";
 
 const CONTACTS = [
   { id: "1", name: "Alice", label: "Design", address: "48aBcD3fGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh" },
@@ -25,7 +34,6 @@ const CONTACTS = [
 ];
 
 const QUICK_AMOUNTS = ["0.10", "0.25", "0.50", "1.00"];
-const XMR_PRICE = 161.3;
 
 function shortAddress(value: string) {
   if (!value) {
@@ -42,41 +50,116 @@ export default function SendScreen() {
   const [amount, setAmount] = useState("");
   const [step, setStep] = useState<Step>("form");
   const [selectedContact, setSelectedContact] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<string | undefined>();
+  const [sendStatus, setSendStatus] = useState<string | undefined>();
+  const [preparedTx, setPreparedTx] = useState<PreparedTransaction | undefined>();
+  const [sending, setSending] = useState(false);
+  const { price } = useXmrPrice();
+  const {
+    refreshSnapshot,
+    refreshTransactions,
+    session,
+    snapshot,
+    status,
+    transactions,
+  } = useWalletState();
 
-  const amountNumber = Number.parseFloat(amount);
-  const hasAmount = Number.isFinite(amountNumber) && amountNumber > 0;
-  const usd = hasAmount ? (amountNumber * XMR_PRICE).toFixed(2) : "0.00";
-  const sendEnabled = address.trim().length > 0 && hasAmount;
-  const fee = "0.000012";
-  const recentTransactions = useMemo(() => TRANSACTIONS.slice(0, 3), []);
+  const unlockedAtomic = toAtomicBigInt(snapshot?.unlockedBalanceAtomic);
+  const amountAtomic = parseXmrToAtomic(amount);
+  const hasAmount = amountAtomic !== undefined && amountAtomic > 0n;
+  const amountNumber = hasAmount ? atomicXmrToNumber(amountAtomic) : 0;
+  const amountAvailable =
+    amountAtomic !== undefined &&
+    amountAtomic > 0n &&
+    amountAtomic <= unlockedAtomic;
+  const usd = hasAmount && price > 0 ? (amountNumber * price).toFixed(2) : "0.00";
+  const sendEnabled =
+    Boolean(snapshot && session) && address.trim().length > 0 && amountAvailable;
+  const availableXmr = snapshot
+    ? formatAtomicXmr(snapshot.unlockedBalanceAtomic, {
+        maxFractionDigits: 4,
+        minFractionDigits: 2,
+      })
+    : status === "locked"
+      ? "Locked"
+      : "0.00";
+  const maxAmount = snapshot
+    ? formatAtomicXmr(snapshot.unlockedBalanceAtomic, {
+        maxFractionDigits: 12,
+      })
+    : "";
+  const preparedFee = preparedTx
+    ? formatAtomicXmr(preparedTx.feeAtomic, { maxFractionDigits: 12 })
+    : undefined;
+  const totalXmr =
+    amountAtomic !== undefined && preparedTx
+      ? formatAtomicXmr(amountAtomic + toAtomicBigInt(preparedTx.feeAtomic), {
+          maxFractionDigits: 12,
+        })
+      : amount || "0";
 
-  const reset = () => {
-    setStep("form");
-    setAddress("");
-    setAmount("");
-    setSelectedContact(null);
+  const clearPreparedTransaction = () => {
+    setPreparedTx(undefined);
+    setSendStatus(undefined);
   };
 
   const selectContact = (contact: typeof CONTACTS[number]) => {
     setSelectedContact(contact.id);
     setAddress(contact.address);
+    setSendError(undefined);
+    clearPreparedTransaction();
   };
 
-  if (step === "done") {
-    return (
-      <View style={s.containerCenter}>
-        <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
-        <View style={s.doneCircle}>
-          <Icon name="check" size={54} color={colors.success} strokeWidth={3} />
-        </View>
-        <Text style={s.doneTitle}>Payment Sent</Text>
-        <Text style={s.doneSub}>{amount} XMR is on its way.</Text>
-        <TouchableOpacity style={s.doneBtn} onPress={reset} activeOpacity={0.75}>
-          <Text style={s.doneBtnText}>Back to Send</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
+  const handleSend = async () => {
+    if (!session) {
+      setSendError("Open or create a wallet before sending.");
+      return;
+    }
+    if (amountAtomic === undefined || amountAtomic <= 0n) {
+      setSendError("Enter a valid XMR amount.");
+      return;
+    }
+
+    setSending(true);
+    setSendError(undefined);
+    try {
+      if (!preparedTx) {
+        const nextTransaction = await walletService.prepareTransaction(session, {
+          address: address.trim(),
+          amountAtomic: amountAtomic.toString(),
+          priority: "low",
+        });
+        if (nextTransaction.status !== "ok" || !nextTransaction.id) {
+          throw new Error(
+            nextTransaction.error || "Transaction preparation failed",
+          );
+        }
+        setPreparedTx(nextTransaction);
+        setSendStatus("Fee prepared. Review once more, then send.");
+        return;
+      }
+
+      const committed = await walletService.commitTransaction(
+        session,
+        preparedTx.id,
+      );
+      if (committed.status !== "ok") {
+        throw new Error(committed.error || "Transaction broadcast failed");
+      }
+
+      setAddress("");
+      setAmount("");
+      setSelectedContact(null);
+      setPreparedTx(undefined);
+      setSendStatus("Transaction broadcast.");
+      setStep("form");
+      await Promise.all([refreshSnapshot(), refreshTransactions()]);
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSending(false);
+    }
+  };
 
   if (step === "confirm") {
     return (
@@ -99,11 +182,14 @@ export default function SendScreen() {
           <View style={s.card}>
             <ReviewRow label="Recipient" value={shortAddress(address)} mono />
             <Divider />
-            <ReviewRow label="Network fee" value={`~${fee} XMR`} />
+            <ReviewRow
+              label="Network fee"
+              value={preparedFee ? `${preparedFee} XMR` : "Prepared next"}
+            />
             <Divider />
             <ReviewRow label="Privacy" value="Stealth address" />
             <Divider />
-            <ReviewRow label="Total" value={`${amount} XMR`} strong />
+            <ReviewRow label="Total" value={`${totalXmr} XMR`} strong />
           </View>
 
           <View style={s.privacyBox}>
@@ -111,10 +197,22 @@ export default function SendScreen() {
             <Text style={s.privacyText}>Sender, recipient, and amount stay hidden on-chain.</Text>
           </View>
 
-          <TouchableOpacity onPress={() => setStep("done")} activeOpacity={0.86}>
-            <LinearGradient colors={[colors.orange, colors.orangeDark]} style={s.primaryBtn}>
+          {sendStatus ? <Text style={s.statusText}>{sendStatus}</Text> : null}
+          {sendError ? <Text style={s.errorText}>{sendError}</Text> : null}
+
+          <TouchableOpacity
+            onPress={handleSend}
+            activeOpacity={0.86}
+            disabled={sending}
+          >
+            <LinearGradient
+              colors={[colors.orange, colors.orangeDark]}
+              style={[s.primaryBtn, sending && s.primaryBtnDisabled]}
+            >
               <Icon name="send" size={20} color="#FFF" strokeWidth={2} />
-              <Text style={s.primaryBtnText}>Confirm Send</Text>
+              <Text style={s.primaryBtnText}>
+                {sending ? "Working..." : preparedTx ? "Send Now" : "Prepare Send"}
+              </Text>
             </LinearGradient>
           </TouchableOpacity>
         </ScrollView>
@@ -133,7 +231,7 @@ export default function SendScreen() {
           </View>
           <View style={s.balanceBadge}>
             <Text style={s.balanceBadgeLabel}>Available</Text>
-            <Text style={s.balanceBadgeValue}>{WALLET.balance}</Text>
+            <Text style={s.balanceBadgeValue}>{availableXmr}</Text>
           </View>
         </View>
 
@@ -179,6 +277,8 @@ export default function SendScreen() {
             onChangeText={(value) => {
               setAddress(value);
               setSelectedContact(null);
+              setSendError(undefined);
+              clearPreparedTransaction();
             }}
             autoCapitalize="none"
             autoCorrect={false}
@@ -189,7 +289,15 @@ export default function SendScreen() {
         <View style={s.amountCard}>
           <View style={s.cardHeader}>
             <Text style={s.fieldLabel}>Amount</Text>
-            <TouchableOpacity onPress={() => setAmount(WALLET.balance)} activeOpacity={0.7}>
+            <TouchableOpacity
+              onPress={() => {
+                setAmount(maxAmount);
+                setSendError(undefined);
+                clearPreparedTransaction();
+              }}
+              activeOpacity={0.7}
+              disabled={!snapshot}
+            >
               <Text style={s.maxText}>MAX</Text>
             </TouchableOpacity>
           </View>
@@ -199,7 +307,11 @@ export default function SendScreen() {
               placeholder="0.0000"
               placeholderTextColor={colors.textMuted}
               value={amount}
-              onChangeText={setAmount}
+              onChangeText={value => {
+                setAmount(value);
+                setSendError(undefined);
+                clearPreparedTransaction();
+              }}
               keyboardType="decimal-pad"
             />
             <Text style={s.xmrLabel}>XMR</Text>
@@ -208,17 +320,36 @@ export default function SendScreen() {
 
           <View style={s.quickRow}>
             {QUICK_AMOUNTS.map(value => (
-              <TouchableOpacity key={value} style={s.quickBtn} onPress={() => setAmount(value)} activeOpacity={0.72}>
+              <TouchableOpacity
+                key={value}
+                style={s.quickBtn}
+                onPress={() => {
+                  setAmount(value);
+                  setSendError(undefined);
+                  clearPreparedTransaction();
+                }}
+                activeOpacity={0.72}
+              >
                 <Text style={s.quickBtnText}>{value}</Text>
               </TouchableOpacity>
             ))}
           </View>
         </View>
 
+        {!snapshot ? (
+          <Text style={s.errorText}>
+            Open or create a wallet before preparing a transfer.
+          </Text>
+        ) : hasAmount && !amountAvailable ? (
+          <Text style={s.errorText}>Amount is above unlocked balance.</Text>
+        ) : null}
+
         <View style={s.summaryCard}>
           <View>
             <Text style={s.summaryTitle}>Private transfer</Text>
-            <Text style={s.summaryText}>Fee ~{fee} XMR · Recipient hidden</Text>
+            <Text style={s.summaryText}>
+              {preparedFee ? `Fee ${preparedFee} XMR` : "Fee prepared before broadcast"} · Recipient hidden
+            </Text>
           </View>
           <Icon name="lock" size={22} color={colors.orange} />
         </View>
@@ -240,24 +371,50 @@ export default function SendScreen() {
           </TouchableOpacity>
         </View>
 
-        {recentTransactions.map(tx => {
-          const isIn = tx.type === "received";
-          return (
-            <View key={tx.id} style={s.txCard}>
-              <View style={[s.txIcon, isIn ? s.txIconIn : s.txIconOut]}>
-                <Icon name={isIn ? "arrow-down" : "arrow-up"} size={18} color={isIn ? colors.success : colors.error} />
+        {transactions.length > 0 ? (
+          transactions.slice(0, 3).map(transaction => {
+            const incoming = transaction.direction === "in";
+            const xmr = formatAtomicXmr(transaction.amountAtomic, {
+              maxFractionDigits: 4,
+              minFractionDigits: 2,
+            });
+            return (
+              <View
+                style={s.txCard}
+                key={transaction.hash || `${transaction.timestamp}-${transaction.amountAtomic}`}
+              >
+                <View style={[s.txIcon, incoming ? s.txIconIn : s.txIconOut]}>
+                  <Icon
+                    name={incoming ? "arrow-down" : "arrow-up"}
+                    size={18}
+                    color={incoming ? colors.success : colors.error}
+                  />
+                </View>
+                <View style={s.txMid}>
+                  <Text style={s.txTitle}>{incoming ? "Received" : "Sent"}</Text>
+                  <Text style={s.txMeta}>
+                    {transactionTimestampLabel(transaction.timestamp)}
+                  </Text>
+                </View>
+                <View style={s.txRight}>
+                  <Text style={[s.txAmount, incoming && s.txAmountIn]}>
+                    {incoming ? "+" : "-"}{xmr}
+                  </Text>
+                  <Text style={s.txStatus}>
+                    {transaction.pending ? "Pending" : `${transaction.confirmations} conf.`}
+                  </Text>
+                </View>
               </View>
-              <View style={s.txMid}>
-                <Text style={s.txTitle}>{isIn ? "Received" : "Sent"}</Text>
-                <Text style={s.txMeta} numberOfLines={1}>{tx.address} · {tx.date}</Text>
-              </View>
-              <View style={s.txRight}>
-                <Text style={[s.txAmount, isIn && s.txAmountIn]}>{tx.xmrAmount}</Text>
-                <Text style={s.txStatus}>{tx.status}</Text>
-              </View>
-            </View>
-          );
-        })}
+            );
+          })
+        ) : (
+          <View style={s.emptyTxCard}>
+            <Text style={s.emptyTxTitle}>No recent transfers</Text>
+            <Text style={s.emptyTxText}>
+              Synced wallet activity appears here after the wallet is opened.
+            </Text>
+          </View>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -278,9 +435,19 @@ function Divider() {
   return <View style={s.divider} />;
 }
 
+function transactionTimestampLabel(timestamp: number): string {
+  if (!timestamp) {
+    return "Unconfirmed";
+  }
+
+  return new Date(timestamp * 1000).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  containerCenter: { flex: 1, backgroundColor: colors.bg, justifyContent: "center", alignItems: "center", paddingHorizontal: spacing.lg },
   scroll: { paddingHorizontal: spacing.lg, paddingTop: 56, paddingBottom: 132 },
   confirmScroll: { paddingHorizontal: spacing.lg, paddingTop: 60, paddingBottom: 120 },
 
@@ -356,10 +523,9 @@ const s = StyleSheet.create({
   divider: { height: 1, backgroundColor: colors.border },
   privacyBox: { backgroundColor: colors.orangeMuted, borderRadius: radius.md, padding: spacing.md, marginBottom: 28, flexDirection: "row", alignItems: "center", gap: 10 },
   privacyText: { color: colors.orange, fontSize: 13, fontWeight: "700", lineHeight: 19, flex: 1 },
-
-  doneCircle: { width: 104, height: 104, borderRadius: 52, backgroundColor: "rgba(0,214,143,0.12)", alignItems: "center", justifyContent: "center", marginBottom: 24 },
-  doneTitle: { color: colors.success, fontSize: 30, fontWeight: "900", marginBottom: 8 },
-  doneSub: { color: colors.textSecondary, fontSize: 16, marginBottom: 40, textAlign: "center" },
-  doneBtn: { paddingVertical: 16, paddingHorizontal: 34, backgroundColor: colors.surface, borderRadius: radius.md },
-  doneBtnText: { color: colors.textPrimary, fontSize: 16, fontWeight: "800" },
+  statusText: { color: colors.success, fontSize: 13, lineHeight: 19, marginBottom: 14 },
+  errorText: { color: colors.error, fontSize: 13, lineHeight: 19, marginBottom: 14 },
+  emptyTxCard: { backgroundColor: colors.bgCard, borderRadius: radius.md, padding: spacing.md, borderWidth: 1, borderColor: colors.border, marginBottom: 9 },
+  emptyTxTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: "800", marginBottom: 4 },
+  emptyTxText: { color: colors.textSecondary, fontSize: 12, lineHeight: 18 },
 });

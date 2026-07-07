@@ -1,0 +1,109 @@
+jest.mock("@react-native-async-storage/async-storage", () => {
+  const storage = new Map<string, string>();
+  const mock = {
+    clear: jest.fn(async () => {
+      storage.clear();
+    }),
+    getItem: jest.fn(async (key: string) => storage.get(key) ?? null),
+    setItem: jest.fn(async (key: string, value: string) => {
+      storage.set(key, value);
+    }),
+  };
+
+  return {
+    __esModule: true,
+    default: mock,
+  };
+});
+
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+import {
+  createFastReceiveIdentityId,
+  createFastReceiveIdentityRecord,
+  FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
+  loadFastReceiveIdentities,
+  nextFastReceiveDerivationIndex,
+  upsertFastReceiveIdentity,
+} from "../FastReceiveRegistry";
+
+describe("FastReceiveRegistry", () => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+  });
+
+  it("persists fast receive metadata without private keys", async () => {
+    const record = createFastReceiveIdentityRecord(
+      {
+        id: "fast-receive-0",
+        label: "Fast Receive",
+        path: "/app/wallets/stagenet/fast-receive-0",
+        address: "54A1testAddress",
+        network: "stagenet",
+        restoreHeight: 123,
+        derivationIndex: 0,
+        scannerStatus: "local-only",
+      },
+      "2026-06-17T00:00:00.000Z",
+    );
+
+    await upsertFastReceiveIdentity(record);
+
+    const persisted = await AsyncStorage.getItem(
+      FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
+    );
+    expect(persisted).not.toBeNull();
+    expect(JSON.parse(persisted ?? "[]")).toEqual([
+      {
+        id: "fast-receive-0",
+        label: "Fast Receive",
+        path: "/app/wallets/stagenet/fast-receive-0",
+        address: "54A1testAddress",
+        network: "stagenet",
+        restoreHeight: 123,
+        derivationIndex: 0,
+        status: "local-only",
+        scannerStatus: "local-only",
+        createdAt: "2026-06-17T00:00:00.000Z",
+        updatedAt: "2026-06-17T00:00:00.000Z",
+      },
+    ]);
+    expect(persisted).not.toContain("private");
+    expect(persisted).not.toContain("viewKey");
+    expect(persisted).not.toContain("spend");
+    expect(persisted).not.toContain("seed");
+    expect(persisted).not.toContain("password");
+  });
+
+  it("loads records and derives the next identity index", async () => {
+    await upsertFastReceiveIdentity(
+      createFastReceiveIdentityRecord(
+        {
+          id: "fast-receive-0",
+          label: "Fast Receive",
+          path: "/app/wallets/stagenet/fast-receive-0",
+          address: "54A1testAddress",
+          network: "stagenet",
+          restoreHeight: 10,
+          derivationIndex: 0,
+          scannerStatus: "local-only",
+        },
+        "2026-06-17T00:00:00.000Z",
+      ),
+    );
+
+    const loaded = await loadFastReceiveIdentities();
+
+    expect(loaded).toHaveLength(1);
+    expect(nextFastReceiveDerivationIndex(loaded)).toBe(1);
+  });
+
+  it("creates stable path-safe identity ids", () => {
+    expect(
+      createFastReceiveIdentityId(
+        2,
+        new Date("2026-06-17T12:34:56.000Z"),
+      ),
+    ).toBe("fast-receive-2-20260617T123456");
+  });
+});
