@@ -123,8 +123,8 @@ gate_native_offline_roundtrip() {
 
 gate_cuprate_refresh() {
   build_linked_runner_if_possible || return 2
-  local rpc="${CUPRATE_RPC:-tex8.com:18089}"
-  local grpc="${CUPRATE_GRPC:-tex8.com:18091}"
+  local rpc="${CUPRATE_RPC:-152.53.133.188:18089}"
+  local grpc="${CUPRATE_GRPC:-152.53.133.188:18091}"
   local workdir="${work_root}/cuprate-refresh"
   rm -rf "${workdir}"
   mkdir -p "${workdir}"
@@ -146,26 +146,120 @@ gate_official_node_refresh() {
     grep -q "daemon_height="
 }
 
+password_arg() {
+  local password_value="$1"
+  local password_file="$2"
+
+  if [[ -n "${password_file}" ]]; then
+    printf '@%s' "${password_file}"
+  else
+    printf '%s' "${password_value}"
+  fi
+}
+
+extract_field() {
+  local field="$1"
+  awk -F= -v wanted="${field}" '$1 == wanted { print substr($0, length($1) + 2); exit }'
+}
+
 gate_real_send() {
   build_linked_runner_if_possible || return 2
   if [[ "${TESTBENCH_ALLOW_REAL_SEND:-0}" != "1" ||
         -z "${TESTBENCH_SEND_SOURCE_WALLET:-}" ||
-        -z "${TESTBENCH_SEND_PASSWORD:-}" ||
-        -z "${TESTBENCH_SEND_DEST_ADDRESS:-}" ||
         -z "${TESTBENCH_SEND_AMOUNT_ATOMIC:-}" ]]; then
     return 2
   fi
 
-  local rpc="${CUPRATE_RPC:-tex8.com:18089}"
-  local grpc="${CUPRATE_GRPC:-tex8.com:18091}"
-  "${linked_runner}" send mainnet \
+  if [[ -z "${TESTBENCH_SEND_PASSWORD:-}" &&
+        -z "${TESTBENCH_SEND_PASSWORD_FILE:-}" ]]; then
+    return 2
+  fi
+
+  local rpc="${CUPRATE_RPC:-152.53.133.188:18089}"
+  local grpc="${CUPRATE_GRPC:-152.53.133.188:18091}"
+  local source_password_arg
+  source_password_arg="$(
+    password_arg \
+      "${TESTBENCH_SEND_PASSWORD:-}" \
+      "${TESTBENCH_SEND_PASSWORD_FILE:-}"
+  )"
+  local destination_address="${TESTBENCH_SEND_DEST_ADDRESS:-}"
+  local destination_wallet="${TESTBENCH_SEND_DEST_WALLET:-}"
+  local destination_password_arg=""
+
+  if [[ -n "${destination_wallet}" ]]; then
+    if [[ -z "${TESTBENCH_SEND_DEST_PASSWORD:-}" &&
+          -z "${TESTBENCH_SEND_DEST_PASSWORD_FILE:-}" ]]; then
+      return 2
+    fi
+    destination_password_arg="$(
+      password_arg \
+        "${TESTBENCH_SEND_DEST_PASSWORD:-}" \
+        "${TESTBENCH_SEND_DEST_PASSWORD_FILE:-}"
+    )"
+    if [[ -z "${destination_address}" ]]; then
+      destination_address="$(
+        "${linked_runner}" address mainnet \
+          "${destination_wallet}" \
+          "${destination_password_arg}" |
+          extract_field "address"
+      )"
+    fi
+  fi
+
+  if [[ -z "${destination_address}" ]]; then
+    if [[ "${TESTBENCH_SEND_CREATE_DESTINATION:-1}" != "1" ]]; then
+      return 2
+    fi
+    destination_wallet="${work_root}/real-send-destination/wallet"
+    rm -rf "${work_root}/real-send-destination"
+    mkdir -p "${work_root}/real-send-destination"
+    destination_password_arg="${password}"
+    destination_address="$(
+      "${linked_runner}" create mainnet \
+        "${destination_wallet}" \
+        "${destination_password_arg}" |
+        extract_field "address"
+    )"
+  fi
+
+  if [[ -z "${destination_address}" ]]; then
+    return 1
+  fi
+
+  local send_output
+  send_output="$(
+    "${linked_runner}" send mainnet \
     "${TESTBENCH_SEND_SOURCE_WALLET}" \
-    "${TESTBENCH_SEND_PASSWORD}" \
+      "${source_password_arg}" \
     "${rpc}" \
     "${grpc}" \
-    "${TESTBENCH_SEND_DEST_ADDRESS}" \
-    "${TESTBENCH_SEND_AMOUNT_ATOMIC}" |
-    grep -q "commit_status=ok"
+      "${destination_address}" \
+      "${TESTBENCH_SEND_AMOUNT_ATOMIC}"
+  )"
+
+  printf '%s\n' "${send_output}" | grep -q "commit_status=ok" || return 1
+  local txid
+  txid="$(printf '%s\n' "${send_output}" | extract_field "txid")"
+  if [[ -z "${txid}" ]]; then
+    return 1
+  fi
+  log "real_send_txid=${txid}"
+
+  if [[ -z "${destination_wallet}" ]]; then
+    return 2
+  fi
+
+  "${linked_runner}" wait-tx mainnet \
+    "${destination_wallet}" \
+    "${destination_password_arg}" \
+    "${rpc}" \
+    "${grpc}" \
+    "${txid}" \
+    "${TESTBENCH_SEND_VISIBILITY_ATTEMPTS:-12}" \
+    "${TESTBENCH_SEND_VISIBILITY_SECONDS:-5}" |
+    grep -q "tx_seen=true"
+  log "real_send_destination_seen=true"
 }
 
 gate_ledger_probe() {

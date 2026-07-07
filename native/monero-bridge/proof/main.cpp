@@ -3,6 +3,7 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -16,24 +17,39 @@ void printUsage(const char* binary) {
       << "Usage:\n"
       << "  " << binary << "\n"
       << "  " << binary
+      << " create <mainnet|testnet|stagenet> <wallet-path> <password|@file>\n"
+      << "  " << binary
+      << " address <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file>\n"
+      << "  " << binary
       << " create-stagenet-offline <wallet-path> <password>\n"
       << "  " << binary
       << " create-stagenet <wallet-path> <password> <daemon-host:port>\n"
       << "  " << binary
-      << " self-test-offline <mainnet|testnet|stagenet> <workdir> <password>\n"
+      << " self-test-offline <mainnet|testnet|stagenet> <workdir>"
+         " <password|@file>\n"
       << "  " << binary
-      << " inspect <mainnet|testnet|stagenet> <wallet-path> <password>"
+      << " inspect <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file>"
          " [daemon-host:port] [grpc-host:port|-]\n"
       << "  " << binary
-      << " refresh <mainnet|testnet|stagenet> <wallet-path> <password>"
+      << " refresh <mainnet|testnet|stagenet> <wallet-path> <password|@file>"
          " <daemon-host:port> [grpc-host:port|-] [seconds]\n"
       << "  " << binary
-      << " send <mainnet|testnet|stagenet> <wallet-path> <password>"
+      << " send <mainnet|testnet|stagenet> <wallet-path> <password|@file>"
          " <daemon-host:port> <grpc-host:port|-> <recipient> <amount-atomic>"
          " [priority]\n"
       << "  " << binary
-      << " ledger-probe <mainnet|testnet|stagenet> <wallet-path> <password>"
-         " [device-name]\n";
+      << " wait-tx <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> <daemon-host:port> <grpc-host:port|-> <txid>"
+         " [attempts] [seconds-per-attempt]\n"
+      << "  " << binary
+      << " list-txs <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> [daemon-host:port] [grpc-host:port|-] [limit]"
+         " [refresh-seconds]\n"
+      << "  " << binary
+      << " ledger-probe <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> [device-name]\n";
 }
 
 tex8::wallet::NetworkType parseNetwork(const std::string& value) {
@@ -96,6 +112,28 @@ size_t countWords(const std::string& value) {
 
 std::string childPath(const std::string& workdir, const std::string& name) {
   return (std::filesystem::path(workdir) / name).string();
+}
+
+std::string readFileTrimmed(const std::string& path) {
+  std::ifstream in(path);
+  if (!in) {
+    throw tex8::wallet::WalletEngineError("failed to open secret file: " + path);
+  }
+
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  auto value = buffer.str();
+  while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) {
+    value.pop_back();
+  }
+  return value;
+}
+
+std::string resolveSecretArgument(const std::string& value) {
+  if (value.size() > 1 && value.front() == '@') {
+    return readFileTrimmed(value.substr(1));
+  }
+  return value;
 }
 
 void requireLinked() {
@@ -163,7 +201,7 @@ int main(int argc, char** argv) {
 
       CreateWalletRequest request;
       request.path = argv[2];
-      request.password = argv[3];
+      request.password = resolveSecretArgument(argv[3]);
       request.network = NetworkType::Stagenet;
 
       const WalletId walletId = engine.createWallet(request);
@@ -183,7 +221,7 @@ int main(int argc, char** argv) {
 
       CreateWalletRequest request;
       request.path = argv[2];
-      request.password = argv[3];
+      request.password = resolveSecretArgument(argv[3]);
       request.network = NetworkType::Stagenet;
 
       const WalletId walletId = engine.createWallet(request);
@@ -203,6 +241,47 @@ int main(int argc, char** argv) {
       return 0;
     }
 
+    if (command == "create") {
+      if (argc != 5) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+
+      CreateWalletRequest request;
+      request.network = parseNetwork(argv[2]);
+      request.path = argv[3];
+      request.password = resolveSecretArgument(argv[4]);
+
+      const WalletId walletId = engine.createWallet(request);
+      std::cout << "wallet_id=" << walletId << "\n";
+      std::cout << "address=" << engine.getAddress(walletId) << "\n";
+
+      engine.closeWallet(walletId);
+      return 0;
+    }
+
+    if (command == "address") {
+      if (argc != 5) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+
+      OpenWalletRequest request;
+      request.network = parseNetwork(argv[2]);
+      request.path = argv[3];
+      request.password = resolveSecretArgument(argv[4]);
+
+      const WalletId walletId = engine.openWallet(request);
+      std::cout << "address=" << engine.getAddress(walletId) << "\n";
+
+      engine.closeWallet(walletId);
+      return 0;
+    }
+
     if (command == "self-test-offline") {
       if (argc != 5) {
         printUsage(argv[0]);
@@ -213,7 +292,7 @@ int main(int argc, char** argv) {
 
       const auto network = parseNetwork(argv[2]);
       const std::string workdir = argv[3];
-      const std::string password = argv[4];
+      const std::string password = resolveSecretArgument(argv[4]);
       std::filesystem::create_directories(workdir);
 
       CreateWalletRequest createRequest;
@@ -289,7 +368,7 @@ int main(int argc, char** argv) {
       OpenWalletRequest request;
       request.network = parseNetwork(argv[2]);
       request.path = argv[3];
-      request.password = argv[4];
+      request.password = resolveSecretArgument(argv[4]);
 
       const WalletId walletId = engine.openWallet(request);
       const std::string daemon = argc >= 6 ? argv[5] : "";
@@ -315,7 +394,7 @@ int main(int argc, char** argv) {
       OpenWalletRequest request;
       request.network = parseNetwork(argv[2]);
       request.path = argv[3];
-      request.password = argv[4];
+      request.password = resolveSecretArgument(argv[4]);
 
       const WalletId walletId = engine.openWallet(request);
       const std::string grpc = argc >= 7 ? argv[6] : "";
@@ -344,7 +423,7 @@ int main(int argc, char** argv) {
       OpenWalletRequest openRequest;
       openRequest.network = parseNetwork(argv[2]);
       openRequest.path = argv[3];
-      openRequest.password = argv[4];
+      openRequest.password = resolveSecretArgument(argv[4]);
 
       const WalletId walletId = engine.openWallet(openRequest);
       applyNode(engine, walletId, argv[5], argv[6]);
@@ -376,6 +455,102 @@ int main(int argc, char** argv) {
       return committed.status == "ok" ? 0 : 1;
     }
 
+    if (command == "wait-tx") {
+      if (argc < 8 || argc > 10) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+
+      OpenWalletRequest request;
+      request.network = parseNetwork(argv[2]);
+      request.path = argv[3];
+      request.password = resolveSecretArgument(argv[4]);
+
+      const WalletId walletId = engine.openWallet(request);
+      applyNode(engine, walletId, argv[5], argv[6]);
+
+      const std::string txid = argv[7];
+      const uint64_t attempts = argc >= 9 ? parseSeconds(argv[8]) : 12;
+      const uint64_t secondsPerAttempt =
+          argc >= 10 ? parseSeconds(argv[9]) : 5;
+
+      for (uint64_t attempt = 1; attempt <= attempts; ++attempt) {
+        engine.startRefresh(walletId);
+        std::this_thread::sleep_for(
+            std::chrono::seconds(secondsPerAttempt));
+        engine.stopRefresh(walletId);
+
+        const auto transactions = engine.getTransactions(walletId, 100);
+        for (const auto& transaction : transactions) {
+          if (transaction.hash == txid) {
+            std::cout << "tx_seen=true\n";
+            std::cout << "attempt=" << attempt << "\n";
+            std::cout << "direction=" << transaction.direction << "\n";
+            std::cout << "amount_atomic=" << transaction.amountAtomic << "\n";
+            std::cout << "confirmations=" << transaction.confirmations << "\n";
+            std::cout << "block_height=" << transaction.blockHeight << "\n";
+
+            engine.closeWallet(walletId);
+            return 0;
+          }
+        }
+
+        std::cout << "tx_seen=false attempt=" << attempt << "\n";
+      }
+
+      engine.closeWallet(walletId);
+      return 1;
+    }
+
+    if (command == "list-txs") {
+      if (argc < 5 || argc > 9) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+
+      OpenWalletRequest request;
+      request.network = parseNetwork(argv[2]);
+      request.path = argv[3];
+      request.password = resolveSecretArgument(argv[4]);
+
+      const WalletId walletId = engine.openWallet(request);
+      const std::string daemon = argc >= 6 ? argv[5] : "";
+      const std::string grpc = argc >= 7 ? argv[6] : "";
+      const uint64_t limit = argc >= 8 ? parseSeconds(argv[7]) : 20;
+      const uint64_t refreshSeconds = argc >= 9 ? parseSeconds(argv[8]) : 0;
+      applyNode(engine, walletId, daemon, grpc);
+
+      if (refreshSeconds > 0) {
+        engine.startRefresh(walletId);
+        std::this_thread::sleep_for(std::chrono::seconds(refreshSeconds));
+        engine.stopRefresh(walletId);
+      }
+
+      const auto transactions =
+          engine.getTransactions(walletId, static_cast<uint32_t>(limit));
+      std::cout << "transaction_count=" << transactions.size() << "\n";
+      for (const auto& transaction : transactions) {
+        std::cout << "txid=" << transaction.hash << "\n";
+        std::cout << "direction=" << transaction.direction << "\n";
+        std::cout << "amount_atomic=" << transaction.amountAtomic << "\n";
+        std::cout << "fee_atomic=" << transaction.feeAtomic << "\n";
+        std::cout << "pending=" << (transaction.pending ? "true" : "false")
+                  << "\n";
+        std::cout << "failed=" << (transaction.failed ? "true" : "false")
+                  << "\n";
+        std::cout << "confirmations=" << transaction.confirmations << "\n";
+        std::cout << "block_height=" << transaction.blockHeight << "\n";
+        std::cout << "---\n";
+      }
+
+      engine.closeWallet(walletId);
+      return 0;
+    }
+
     if (command == "ledger-probe") {
       if (argc < 5 || argc > 6) {
         printUsage(argv[0]);
@@ -387,7 +562,7 @@ int main(int argc, char** argv) {
       CreateWalletFromDeviceRequest request;
       request.network = parseNetwork(argv[2]);
       request.path = argv[3];
-      request.password = argv[4];
+      request.password = resolveSecretArgument(argv[4]);
       request.deviceName = argc >= 6 ? argv[5] : "Ledger";
 
       const WalletId walletId = engine.createWalletFromDevice(request);
