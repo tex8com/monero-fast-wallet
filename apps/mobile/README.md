@@ -60,9 +60,9 @@ explicitly documented.
 - Android exposes matching build/install, diagnostics, and log scripts. The
   Android build script fails closed if the real Monero link manifest is missing,
   so normal CLI builds do not silently fall back to shell mode.
-- Android shell mode still exists for normal app builds, and a gRPC-enabled
-  `arm64-v8a` link smoke now succeeds against real forked Monero wallet
-  archives.
+- Android shell mode still exists for lightweight development builds. The
+  release `android:build` gate now links the real gRPC-enabled forked Monero
+  wallet archives into the Android JNI bridge for `arm64-v8a`.
 - Android Monero wallet archives now include the official Monero Ledger HID
   device code via `hidapi`/`libusb`; the Android native module detects Ledger
   USB devices and requests Android USB host permission before Ledger wallet
@@ -134,6 +134,11 @@ builds the APK and works without a connected device. `android:build-install`
 also installs and launches on a connected Android device/emulator.
 `android:diagnostics` uses the `monerowallet://diagnostics/run` deep link and
 reads matching logcat JSON lines.
+The current Android build gate produces a release APK containing
+`lib/arm64-v8a/libmonero_wallet_bridge_jni.so` linked against the real Monero
+wallet core, Cuprate gRPC stream code, Fast-Crypto, and Ledger
+`hidapi`/`libusb` support. Connected runtime diagnostics still require an
+Android device or emulator.
 
 The Android Gradle wrapper is pinned to Gradle 8.14.3. Gradle 9.3.1 currently
 breaks the React Native 0.85.1 Gradle plugin build in this checkout.
