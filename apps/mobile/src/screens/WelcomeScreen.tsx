@@ -65,10 +65,10 @@ export default function WelcomeScreen({ navigation }: any) {
         </View>
 
         <View style={s.textWrap}>
-          <Text style={s.title}>
-            <Text style={s.titleWhite}>Monero</Text>
-            <Text style={s.titleOrange}> Wallet</Text>
-          </Text>
+          <View style={s.titleRow}>
+            <Text style={[s.titleWord, s.titleWhite]}>Monero</Text>
+            <Text style={[s.titleWord, s.titleOrange]}> Wallet</Text>
+          </View>
           <Text style={s.subtitle}>Private, fast, and in your control.</Text>
         </View>
       </Animated.View>
@@ -136,14 +136,19 @@ const s = StyleSheet.create({
     alignSelf: "stretch",
     paddingHorizontal: 16,
   },
-  title: {
-    fontSize: 32,
-    fontWeight: "800",
-    textAlign: "center",
+  titleRow: {
+    alignSelf: "stretch",
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
     width: "100%",
-    lineHeight: 39,
-    letterSpacing: 0,
     marginBottom: 12,
+  },
+  titleWord: {
+    fontSize: 30,
+    fontWeight: "800",
+    lineHeight: 38,
+    letterSpacing: 0,
   },
   titleWhite: {
     color: "#FFFFFF",

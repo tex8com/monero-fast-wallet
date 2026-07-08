@@ -16,6 +16,10 @@ import type {
 import type { RegisteredWallet } from "./WalletRegistry";
 import { walletService, type WalletSession } from "./WalletService";
 
+type RegisterOpenedSessionOptions = {
+  refresh?: boolean;
+};
+
 export type WalletRuntimeStatus =
   | "loading"
   | "empty"
@@ -39,6 +43,7 @@ interface WalletStateValue {
   registerOpenedSession: (
     session: WalletSession,
     registration?: RegisteredWallet,
+    options?: RegisterOpenedSessionOptions,
   ) => Promise<void>;
   reloadRegisteredWallet: () => Promise<RegisteredWallet | undefined>;
   reloadRegisteredWallets: () => Promise<RegisteredWallet[]>;
@@ -271,7 +276,11 @@ export function WalletStateProvider({
   );
 
   const registerOpenedSession = useCallback(
-    async (openedSession: WalletSession, registration?: RegisteredWallet) => {
+    async (
+      openedSession: WalletSession,
+      registration?: RegisteredWallet,
+      options?: RegisterOpenedSessionOptions,
+    ) => {
       sessionRef.current = openedSession;
       setSession(openedSession);
       setSnapshot(undefined);
@@ -291,6 +300,10 @@ export function WalletStateProvider({
         setLoadingRegistry(false);
       } else {
         await reloadRegisteredWallet();
+      }
+
+      if (options?.refresh === false) {
+        return;
       }
 
       await refreshSnapshot();

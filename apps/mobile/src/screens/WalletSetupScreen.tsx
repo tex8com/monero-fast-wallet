@@ -416,20 +416,20 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
     scanLoop.current = Animated.loop(
       Animated.sequence([
-        Animated.timing(scanY, { toValue: 1, duration: 900, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(scanY, { toValue: 1, duration: 520, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
         Animated.timing(scanY, { toValue: 0, duration: 0, useNativeDriver: true }),
       ]),
     );
     scanLoop.current.start();
 
     Animated.parallel([
-      Animated.timing(createOp, { toValue: 1, duration: 260, useNativeDriver: true }),
+      Animated.timing(createOp, { toValue: 1, duration: 140, useNativeDriver: true }),
       Animated.spring(createScale, { toValue: 1, friction: 8, tension: 80, useNativeDriver: true }),
-      Animated.timing(createProgress, { toValue: 1, duration: 2300, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
+      Animated.timing(createProgress, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
     ]).start();
 
     steps.slice(1).forEach((step, index) => {
-      timers.current.push(setTimeout(() => setCreateStep(step), 520 + index * 520));
+      timers.current.push(setTimeout(() => setCreateStep(step), 180 + index * 180));
     });
   };
 
@@ -463,11 +463,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         setCreateStep("Creating fast receive");
         await walletService.createFastReceiveIdentity({
           password,
+          restoreHeight: 0,
         });
       }
       const seed = await walletService.getSeed(result.session);
-      await walletService.startRefresh(result.session).catch(() => undefined);
-      await registerOpenedSession(result.session, result.registration);
+      await registerOpenedSession(result.session, result.registration, {
+        refresh: false,
+      });
+      walletService.startRefresh(result.session).catch(() => undefined);
 
       finishCreateAnimation();
       setCreatedSeedWalletId(result.registration.id);
@@ -504,11 +507,15 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
       if (createFastReceiveOnSetup) {
         setCreateStep("Creating fast receive");
-        await walletService.createFastReceiveIdentity({});
+        await walletService.createFastReceiveIdentity({
+          restoreHeight: 0,
+        });
       }
       const seed = await walletService.getSeed(result.session);
-      await walletService.startRefresh(result.session).catch(() => undefined);
-      await registerOpenedSession(result.session, result.registration);
+      await registerOpenedSession(result.session, result.registration, {
+        refresh: false,
+      });
+      walletService.startRefresh(result.session).catch(() => undefined);
 
       finishCreateAnimation();
       setCreatedSeedWalletId(result.registration.id);
@@ -545,8 +552,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         mnemonic: normalizedRestoreSeed,
         restoreHeight: Math.floor(restoreHeightNumber),
       });
-      await walletService.startRefresh(result.session).catch(() => undefined);
-      await registerOpenedSession(result.session, result.registration);
+      await registerOpenedSession(result.session, result.registration, {
+        refresh: false,
+      });
+      walletService.startRefresh(result.session).catch(() => undefined);
 
       finishCreateAnimation();
       setWalletPassword("");
@@ -593,8 +602,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         walletName: DEFAULT_HARDWARE_WALLET_NAME,
         deviceName: "Ledger",
       });
-      await walletService.startRefresh(result.session).catch(() => undefined);
-      await registerOpenedSession(result.session, result.registration);
+      await registerOpenedSession(result.session, result.registration, {
+        refresh: false,
+      });
+      walletService.startRefresh(result.session).catch(() => undefined);
 
       finishCreateAnimation();
       setLedgerPromptVisible(false);
@@ -630,9 +641,11 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
     try {
       const session = await walletService.openRegisteredWallet(walletPassword);
-      await walletService.startRefresh(session).catch(() => undefined);
       const wallet = await walletService.loadRegisteredWallet();
-      await registerOpenedSession(session, wallet);
+      await registerOpenedSession(session, wallet, {
+        refresh: false,
+      });
+      walletService.startRefresh(session).catch(() => undefined);
       finishCreateAnimation();
       setWalletPassword("");
       navigation.navigate("Home");
