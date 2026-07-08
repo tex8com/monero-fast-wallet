@@ -356,22 +356,25 @@ export class WalletService {
         throw new Error("No registered wallet found on this device");
       }
 
+      const resolvedRegistration =
+        await this.resolveRegisteredWalletContainerPath(registration);
+
       logWalletEvent("WalletService", "openRegisteredWallet.registration", {
-        hasCredentialKey: Boolean(registration.credentialKey),
-        kind: registration.kind,
-        network: registration.network,
-        registrationId: maskIdentifier(registration.id),
-        walletFile: walletFileName(registration.path),
-        walletName: registration.walletName,
+        hasCredentialKey: Boolean(resolvedRegistration.credentialKey),
+        kind: resolvedRegistration.kind,
+        network: resolvedRegistration.network,
+        registrationId: maskIdentifier(resolvedRegistration.id),
+        walletFile: walletFileName(resolvedRegistration.path),
+        walletName: resolvedRegistration.walletName,
       });
 
       const session =
-        registration.kind === "hardware"
-          ? await this.openHardwareRegisteredWallet(registration)
-          : registration.credentialKey
-            ? await this.openStoredSecretRegisteredWallet(registration)
-            : await this.openSoftwareRegisteredWallet(registration, password);
-      const hardwareDevice = hardwareDeviceFromRegistration(registration);
+        resolvedRegistration.kind === "hardware"
+          ? await this.openHardwareRegisteredWallet(resolvedRegistration)
+          : resolvedRegistration.credentialKey
+            ? await this.openStoredSecretRegisteredWallet(resolvedRegistration)
+            : await this.openSoftwareRegisteredWallet(resolvedRegistration, password);
+      const hardwareDevice = hardwareDeviceFromRegistration(resolvedRegistration);
       const registeredSession = hardwareDevice
         ? {
             ...session,
@@ -379,7 +382,7 @@ export class WalletService {
           }
         : session;
 
-      await saveRegisteredWallet(touchRegisteredWallet(registration));
+      await saveRegisteredWallet(touchRegisteredWallet(resolvedRegistration));
       this.activeSession = {
         ...registeredSession,
       };
@@ -1044,6 +1047,33 @@ export class WalletService {
       });
 
     return session;
+  }
+
+  private async resolveRegisteredWalletContainerPath(
+    registration: RegisteredWallet,
+  ): Promise<RegisteredWallet> {
+    const currentPath = await this.defaultWalletPath(
+      registration.walletName,
+      registration.network,
+    );
+
+    if (currentPath === registration.path) {
+      return registration;
+    }
+
+    logWalletEvent("WalletService", "registeredWallet.pathRelocated", {
+      fromWalletFile: walletFileName(registration.path),
+      kind: registration.kind,
+      network: registration.network,
+      registrationId: maskIdentifier(registration.id),
+      toWalletFile: walletFileName(currentPath),
+      walletName: registration.walletName,
+    });
+
+    return {
+      ...registration,
+      path: currentPath,
+    };
   }
 
   private async openHardwareRegisteredWallet(
