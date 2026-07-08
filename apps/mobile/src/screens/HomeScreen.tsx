@@ -78,12 +78,14 @@ export default function HomeScreen({ navigation }: any) {
   const {
     error,
     registeredWallet,
+    session,
     snapshot,
     status,
     syncProgress,
     transactions,
   } = useWalletState();
-  const hasOpenWallet = Boolean(snapshot);
+  const hasOpenWallet = Boolean(session);
+  const hasSnapshot = Boolean(snapshot);
   const balanceXmr = snapshot
     ? formatAtomicXmr(snapshot.balanceAtomic, {
         maxFractionDigits: 4,
@@ -101,7 +103,7 @@ export default function HomeScreen({ navigation }: any) {
   });
   const showPending = pendingAtomic > 0n;
   const syncColor =
-    status === "open"
+    status === "open" || status === "opening"
       ? colors.success
       : status === "syncing"
         ? colors.warning
@@ -112,7 +114,7 @@ export default function HomeScreen({ navigation }: any) {
       : status === "syncing"
         ? `${syncProgress ?? 0}%`
         : status === "opening"
-          ? "Opening"
+          ? "Open"
           : status === "locked"
             ? "Locked"
             : "Setup";
@@ -216,12 +218,14 @@ export default function HomeScreen({ navigation }: any) {
           </Text>
           <View style={s.balRow}>
             <Text style={s.balXmr}>
-              {hasOpenWallet
+              {hasSnapshot
                 ? `${balanceXmr} XMR`
-                : registeredWallet?.walletName ?? "No wallet"}
+                : hasOpenWallet
+                  ? "Loading balance"
+                  : registeredWallet?.walletName ?? "No wallet"}
             </Text>
             <Text style={s.balUsd}>
-              {hasOpenWallet ? `$${balanceUsd}` : registeredWallet?.network ?? ""}
+              {hasSnapshot ? `$${balanceUsd}` : registeredWallet?.network ?? ""}
             </Text>
           </View>
           {showPending && (

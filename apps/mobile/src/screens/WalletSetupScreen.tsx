@@ -9,7 +9,7 @@ import Svg, { Path, Rect, Circle, Line } from "react-native-svg";
 import { colors } from "../theme/colors";
 import MoneroCoinGhost from "../components/MoneroCoinGhost";
 import MoneroCoin from "../components/MoneroCoin";
-import { walletService } from "../services/WalletService";
+import { walletService, type WalletSession } from "../services/WalletService";
 import { useWalletState } from "../services/WalletState";
 import { logWalletEvent } from "../services/WalletLogger";
 import type {
@@ -39,12 +39,18 @@ const RESTORE_STEPS = [
   "Preparing scan",
   "Starting scan",
 ];
+const OPEN_STEPS = [
+  "Opening wallet",
+  "Reading local state",
+  "Loading wallet",
+  "Preparing sync",
+];
 const DEFAULT_WALLET_NAME = "primary";
 const DEFAULT_HARDWARE_WALLET_NAME = "ledger";
 const MONERO_SEED_WORD_COUNT = 25;
 const HEX = "0123456789ABCDEF";
 type PasswordPromptMode = "create" | "open" | "restore";
-type CreationKind = "software" | "hardware" | "restore";
+type CreationKind = "software" | "hardware" | "restore" | "open";
 type CreateCredentialMode = "device" | "password";
 
 function makeCipherLine() {
@@ -155,6 +161,8 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const scanY = useRef(new Animated.Value(0)).current;
   const scanLoop = useRef<Animated.CompositeAnimation | null>(null);
   const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const backgroundRefreshTimers =
+    useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const cipherInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const initialModeHandled = useRef(false);
   const [creating, setCreating] = useState(false);
@@ -188,6 +196,8 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const {
     registeredWallet,
     registeredWallets,
+    refreshSnapshot,
+    refreshTransactions,
     registerOpenedSession,
     reloadRegisteredWallet,
   } = useWalletState();
@@ -350,6 +360,8 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   useEffect(() => () => {
     stopCreateEffects();
+    backgroundRefreshTimers.current.forEach(clearTimeout);
+    backgroundRefreshTimers.current = [];
   }, []);
 
   const openPasswordPrompt = useCallback((mode: PasswordPromptMode) => {
@@ -498,6 +510,33 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     createProgress.setValue(1);
   };
 
+  const scheduleBackgroundRefresh = (
+    session: WalletSession,
+    source: string,
+    delayMs = 1200,
+  ) => {
+    setupLog(`${source}.backgroundRefresh.scheduled`, {
+      delayMs,
+      walletId: session.walletId,
+    });
+    const timer = setTimeout(() => {
+      setupLog(`${source}.backgroundRefresh.start`, {
+        walletId: session.walletId,
+      });
+      walletService.startRefresh(session)
+        .then(() => setupLog(`${source}.backgroundRefresh.success`, {
+          walletId: session.walletId,
+        }))
+        .catch(error => {
+          setupLog(`${source}.backgroundRefresh.error`, {
+            error: errorMessage(error),
+            walletId: session.walletId,
+          });
+        });
+    }, delayMs);
+    backgroundRefreshTimers.current.push(timer);
+  };
+
   const startCreateWallet = async () => {
     if (creating || !passwordReady) {
       setupLog("startCreateWallet.skipped", {
@@ -548,13 +587,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         registrationId: result.registration.id,
         walletName: result.registration.walletName,
       });
-      walletService.startRefresh(result.session)
-        .then(() => setupLog("startCreateWallet.backgroundRefresh.success"))
-        .catch(error => {
-          setupLog("startCreateWallet.backgroundRefresh.error", {
-            error: errorMessage(error),
-          });
-        });
+      scheduleBackgroundRefresh(result.session, "startCreateWallet");
 
       finishCreateAnimation();
       setCreatedSeedWalletId(result.registration.id);
@@ -624,13 +657,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         registrationId: result.registration.id,
         walletName: result.registration.walletName,
       });
-      walletService.startRefresh(result.session)
-        .then(() => setupLog("startCreateWalletWithBiometric.backgroundRefresh.success"))
-        .catch(error => {
-          setupLog("startCreateWalletWithBiometric.backgroundRefresh.error", {
-            error: errorMessage(error),
-          });
-        });
+      scheduleBackgroundRefresh(
+        result.session,
+        "startCreateWalletWithBiometric",
+      );
 
       finishCreateAnimation();
       setCreatedSeedWalletId(result.registration.id);
@@ -692,13 +722,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         registrationId: result.registration.id,
         walletName: result.registration.walletName,
       });
-      walletService.startRefresh(result.session)
-        .then(() => setupLog("startRestoreWallet.backgroundRefresh.success"))
-        .catch(error => {
-          setupLog("startRestoreWallet.backgroundRefresh.error", {
-            error: errorMessage(error),
-          });
-        });
+      scheduleBackgroundRefresh(result.session, "startRestoreWallet");
 
       finishCreateAnimation();
       setWalletPassword("");
@@ -771,13 +795,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         registrationId: result.registration.id,
         walletName: result.registration.walletName,
       });
-      walletService.startRefresh(result.session)
-        .then(() => setupLog("startCreateHardwareWallet.backgroundRefresh.success"))
-        .catch(error => {
-          setupLog("startCreateHardwareWallet.backgroundRefresh.error", {
-            error: errorMessage(error),
-          });
-        });
+      scheduleBackgroundRefresh(result.session, "startCreateHardwareWallet");
 
       finishCreateAnimation();
       setLedgerPromptVisible(false);
@@ -815,7 +833,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     });
     setCreating(true);
     setCreatingKind(
-      registeredWallet?.kind === "hardware" ? "hardware" : "software",
+      registeredWallet?.kind === "hardware" ? "hardware" : "open",
     );
     setPasswordPromptMode(undefined);
     setCreateError(undefined);
@@ -823,7 +841,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     setCreatedSeedWalletId(undefined);
     setSeedConfirmed(false);
     beginCreateAnimation(
-      registeredWallet?.kind === "hardware" ? HARDWARE_STEPS : CREATE_STEPS,
+      registeredWallet?.kind === "hardware" ? HARDWARE_STEPS : OPEN_STEPS,
     );
     setCreateStep("Opening wallet");
 
@@ -836,13 +854,17 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setupLog("openExistingWallet.registered", {
         walletName: wallet?.walletName,
       });
-      walletService.startRefresh(session)
-        .then(() => setupLog("openExistingWallet.backgroundRefresh.success"))
-        .catch(error => {
-          setupLog("openExistingWallet.backgroundRefresh.error", {
-            error: errorMessage(error),
-          });
-        });
+      refreshSnapshot()
+        .then(() => setupLog("openExistingWallet.localSnapshot.success"))
+        .catch(error => setupLog("openExistingWallet.localSnapshot.error", {
+          error: errorMessage(error),
+        }));
+      refreshTransactions()
+        .then(() => setupLog("openExistingWallet.localTransactions.success"))
+        .catch(error => setupLog("openExistingWallet.localTransactions.error", {
+          error: errorMessage(error),
+        }));
+      scheduleBackgroundRefresh(session, "openExistingWallet", 2500);
       finishCreateAnimation();
       setWalletPassword("");
       navigation.navigate("Home");
@@ -1276,7 +1298,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     ? "Connecting Ledger"
                     : creatingKind === "restore"
                       ? "Importing Wallet"
-                      : "Creating Wallet"}
+                      : creatingKind === "open"
+                        ? "Opening Wallet"
+                        : "Creating Wallet"}
                 </Text>
                 <Text style={s.createStep}>{createStep}</Text>
 
@@ -1404,11 +1428,13 @@ const s = StyleSheet.create({
   promptScroll: {
     flexGrow: 1,
     justifyContent: "center",
-    paddingVertical: SH < 720 ? 24 : 42,
+    paddingTop: SH < 720 ? 20 : 34,
+    paddingBottom: SH < 720 ? 44 : 124,
   },
   promptCard: {
     width: "100%",
     maxWidth: 520,
+    maxHeight: SH - 170,
     alignSelf: "center",
     borderRadius: 22,
     paddingTop: 22,

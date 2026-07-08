@@ -133,6 +133,8 @@ export interface PrepareWalletTransactionInput {
   accountIndex?: number;
 }
 
+const NODE_APPLY_TIMEOUT_MS = 12_000;
+
 export class WalletService {
   private activeSession: WalletSession | undefined;
 
@@ -860,9 +862,14 @@ export class WalletService {
   }
 
   async startRefresh(session: WalletSession): Promise<void> {
-    await traceWalletOperation("startRefresh", sessionLogFields(session), () =>
-      requireNativeMoneroWallet().startRefresh(session.walletId),
-    );
+    await traceWalletOperation("startRefresh", sessionLogFields(session), async () => {
+      await withTimeout(
+        this.applyNodeConnection(session),
+        NODE_APPLY_TIMEOUT_MS,
+        "Node connection timed out while starting wallet sync",
+      );
+      await requireNativeMoneroWallet().startRefresh(session.walletId);
+    });
   }
 
   async stopRefresh(session: WalletSession): Promise<void> {
@@ -1033,19 +1040,6 @@ export class WalletService {
       ...sessionLogFields(session),
     });
 
-    this.applyNodeConnection(session)
-      .then(() => {
-        logWalletEvent("WalletService", "configureOpenedSession.nodeApplied", {
-          ...sessionLogFields(session),
-        });
-      })
-      .catch(error => {
-        logWalletEvent("WalletService", "configureOpenedSession.nodeError", {
-          error: errorMessage(error),
-          ...sessionLogFields(session),
-        });
-      });
-
     return session;
   }
 
@@ -1208,6 +1202,25 @@ export class WalletService {
 }
 
 export const walletService = new WalletService();
+
+function withTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+  });
+
+  return Promise.race([operation, timeoutPromise]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+}
 
 async function traceWalletOperation<T>(
   operation: string,

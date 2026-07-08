@@ -15,6 +15,7 @@ import type {
 } from "./NativeMoneroWallet";
 import type { RegisteredWallet } from "./WalletRegistry";
 import { walletService, type WalletSession } from "./WalletService";
+import { logWalletEvent } from "./WalletLogger";
 
 type RegisterOpenedSessionOptions = {
   refresh?: boolean;
@@ -109,6 +110,9 @@ export function WalletStateProvider({
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [error, setError] = useState<string | undefined>();
   const sessionRef = useRef<WalletSession | undefined>(undefined);
+  const snapshotRefreshInFlight = useRef(false);
+  const transactionRefreshInFlight = useRef(false);
+  const hardwareRefreshInFlight = useRef(false);
 
   const reloadRegisteredWallet = useCallback(async () => {
     const [wallet, wallets] = await Promise.all([
@@ -178,7 +182,15 @@ export function WalletStateProvider({
     if (!activeSession) {
       return undefined;
     }
+    if (snapshotRefreshInFlight.current) {
+      logWalletEvent("WalletState", "refreshSnapshot.skipped", {
+        reason: "inFlight",
+        walletId: activeSession.walletId,
+      });
+      return snapshot;
+    }
 
+    snapshotRefreshInFlight.current = true;
     try {
       const nextSnapshot = await walletService.snapshot(activeSession);
       setSnapshot(nextSnapshot);
@@ -187,8 +199,10 @@ export function WalletStateProvider({
     } catch (reason) {
       setError(errorMessage(reason));
       return undefined;
+    } finally {
+      snapshotRefreshInFlight.current = false;
     }
-  }, []);
+  }, [snapshot]);
 
   const refreshTransactions = useCallback(async () => {
     const activeSession = sessionRef.current;
@@ -196,7 +210,15 @@ export function WalletStateProvider({
       setTransactions([]);
       return [];
     }
+    if (transactionRefreshInFlight.current) {
+      logWalletEvent("WalletState", "refreshTransactions.skipped", {
+        reason: "inFlight",
+        walletId: activeSession.walletId,
+      });
+      return transactions;
+    }
 
+    transactionRefreshInFlight.current = true;
     try {
       const nextTransactions = await walletService.getTransactions(
         activeSession,
@@ -208,8 +230,10 @@ export function WalletStateProvider({
     } catch (reason) {
       setError(errorMessage(reason));
       return [];
+    } finally {
+      transactionRefreshInFlight.current = false;
     }
-  }, []);
+  }, [transactions]);
 
   const refreshHardwareWalletStatus = useCallback(async () => {
     const activeSession = sessionRef.current;
@@ -217,7 +241,15 @@ export function WalletStateProvider({
       setHardwareStatus(undefined);
       return undefined;
     }
+    if (hardwareRefreshInFlight.current) {
+      logWalletEvent("WalletState", "refreshHardwareWalletStatus.skipped", {
+        reason: "inFlight",
+        walletId: activeSession.walletId,
+      });
+      return hardwareStatus;
+    }
 
+    hardwareRefreshInFlight.current = true;
     try {
       const nextStatus =
         await walletService.getHardwareWalletStatus(activeSession);
@@ -227,8 +259,10 @@ export function WalletStateProvider({
     } catch (reason) {
       setError(errorMessage(reason));
       return undefined;
+    } finally {
+      hardwareRefreshInFlight.current = false;
     }
-  }, []);
+  }, [hardwareStatus]);
 
   const reconnectHardwareWallet = useCallback(async () => {
     const activeSession = sessionRef.current;
