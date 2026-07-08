@@ -15,6 +15,7 @@ using tex8::wallet::CreateWalletFromDeviceRequest;
 using tex8::wallet::CreateFastReceiveIdentityRequest;
 using tex8::wallet::DaemonConfig;
 using tex8::wallet::FastReceiveIdentity;
+using tex8::wallet::FastReceiveRegistrationPayload;
 using tex8::wallet::HardwareWalletStatus;
 using tex8::wallet::NetworkType;
 using tex8::wallet::OpenWalletRequest;
@@ -435,6 +436,20 @@ jobject toJavaMap(JNIEnv* env, const FastReceiveIdentity& identity) {
   return map;
 }
 
+jobject toJavaMap(
+    JNIEnv* env,
+    const FastReceiveRegistrationPayload& payload) {
+  jobject map = toJavaMap(env, payload.identity);
+  jmethodID putMethod = hashMapPutMethod(env);
+  putMapString(
+      env,
+      map,
+      putMethod,
+      "privateViewKey",
+      payload.privateViewKey);
+  return map;
+}
+
 } // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -558,6 +573,28 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCreateFastReceiveIdentity(
     request.restoreHeight = toUInt64(restoreHeight, "restoreHeight");
     request.derivationIndex = toUInt64(derivationIndex, "derivationIndex");
     return toJavaMap(env, walletEngine().createFastReceiveIdentity(request));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeFastReceiveRegistrationPayload(
+    JNIEnv* env,
+    jclass,
+    jstring identityId,
+    jstring path,
+    jstring password,
+    jstring network) {
+  try {
+    return toJavaMap(
+        env,
+        walletEngine().fastReceiveRegistrationPayload(
+            toStdString(env, identityId),
+            toStdString(env, path),
+            toStdString(env, password),
+            parseNetwork(toStdString(env, network))));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;

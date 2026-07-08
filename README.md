@@ -1,5 +1,7 @@
 # Monero Fast Wallet
 
+GitHub: `https://github.com/tex8com/monero-fast-wallet`
+
 Self-custodial Monero mobile wallet powered by our forked Monero
 `libwallet_api` / `wallet2` core, with optional fast receive notifications.
 
@@ -64,6 +66,33 @@ Allowed for development only:
 
 ## Repository Shape
 
+This repository is the product integration monorepo. It should contain the
+mobile app, native bridge, scanner services, testbench, deployment notes, and
+release documentation.
+
+Monero and Cuprate should remain separately updateable forks. The product repo
+pins the exact fork revisions used for a release instead of becoming the only
+source of truth for upstream fork history.
+
+Current remotes:
+
+```text
+product:      https://github.com/tex8com/monero-fast-wallet.git
+Monero fork:  https://github.com/tex8com/monero.git
+Cuprate fork: https://github.com/tex8com/cuprate.git
+```
+
+Recommended public-source shape:
+
+- `monero-fast-wallet`: app, native bridge, scanner, docs, testbench, release
+  manifests.
+- `tex8com/monero`: forked Monero wallet core, kept close to official Monero
+  tags.
+- `tex8com/cuprate`: forked Cuprate node, kept close to upstream Cuprate where
+  possible.
+- Release tags in `monero-fast-wallet` record the exact Monero and Cuprate
+  commits used by the app.
+
 ```text
 apps/
   mobile/              React Native wallet app
@@ -71,12 +100,10 @@ native/
   monero-bridge/       C++ facade plus iOS/Android bridge to our wallet core
 services/
   notify-scanner/      hosted view-key registration/removal API and scanner
-  wallet-api/          device registration and opt-in API
 node/
-  cuprate/             Cuprate node fork source
-  cuprate-deploy/      node deployment, configs, benchmarks
+  cuprate/             pinned Cuprate fork source snapshot
 third_party/
-  monero/              pinned Monero fork with libwallet_api/wallet2
+  monero/              recorded Monero fork pin or future submodule
 docs/
   ROADMAP.md
   ARCHITECTURE.md
@@ -95,6 +122,47 @@ docs/
 
 Generated dependencies and build output are intentionally not imported:
 `node_modules`, iOS `Pods`, iOS builds, Ruby vendor bundles, and Rust `target`.
+
+## Wallet Core Source
+
+The wallet core comes from the official Monero implementation through our fork.
+
+- Official wallet engine: `src/wallet/wallet2.*`
+- Official C++ library API: `src/wallet/api/*`, including `libwallet_api`
+- Our local fork checkout: `$HOME/Documents/Projects/monero-gui/monero`
+- Fork remote: `https://github.com/tex8com/monero.git`
+- Current pinned commit:
+  `e7fe4ff6f0a0fef58ca031d2a75c168a42242b42`
+
+The app does not shell out to `monero-wallet-cli`. The production path is:
+
+```text
+React Native -> native module -> WalletEngine -> forked libwallet_api/wallet2
+```
+
+`monero-wallet-cli` remains a development and acceptance-test tool because it
+uses the same underlying wallet code path.
+
+## Open Source Plan
+
+The repo should be prepared as an open-source product from the start:
+
+- keep secrets, wallet files, build outputs, and server env files out of Git
+- document exactly which fork commits are used for each release
+- keep user-facing wallet code separate from production server secrets
+- preserve upstream license notices for Monero, Cuprate, RandomX, and mobile
+  dependencies
+- keep Tex8-specific wallet changes small, named, and testbench-covered
+- publish only reproducible source states: commit, push, tag, then build
+
+Before the first public release, add or verify:
+
+- `LICENSE` and third-party license summary
+- security disclosure policy
+- build instructions for Android, iOS, scanner, and forked wallet core
+- privacy model and fast receive warning text
+- testbench instructions and latest passing gate matrix
+- release checklist with pinned Monero/Cuprate commits
 
 ## Native Bridge Status
 

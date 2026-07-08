@@ -19,6 +19,7 @@ using tex8::wallet::CreateWalletFromDeviceRequest;
 using tex8::wallet::CreateFastReceiveIdentityRequest;
 using tex8::wallet::DaemonConfig;
 using tex8::wallet::FastReceiveIdentity;
+using tex8::wallet::FastReceiveRegistrationPayload;
 using tex8::wallet::HardwareWalletStatus;
 using tex8::wallet::NetworkType;
 using tex8::wallet::OpenWalletRequest;
@@ -419,6 +420,102 @@ NSDictionary *biometricAuthResultDictionary(BOOL success,
   };
 }
 
+NSString *normalizeScannerBaseUrl(NSString *scannerUrl) {
+  NSString *trimmed = [scannerUrl stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  while ([trimmed hasSuffix:@"/"]) {
+    trimmed = [trimmed substringToIndex:trimmed.length - 1];
+  }
+
+  if (![trimmed hasPrefix:@"https://"] && ![trimmed hasPrefix:@"http://"]) {
+    throw WalletEngineError("scannerUrl must start with http:// or https://");
+  }
+
+  return trimmed;
+}
+
+void scannerRequest(NSString *method,
+                    NSString *scannerUrl,
+                    NSString *route,
+                    NSString *scannerAuthToken,
+                    NSDictionary *body) {
+  NSString *urlString = [normalizeScannerBaseUrl(scannerUrl) stringByAppendingString:route];
+  NSURL *url = [NSURL URLWithString:urlString];
+  if (url == nil) {
+    throw WalletEngineError("scannerUrl is invalid");
+  }
+
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  request.HTTPMethod = method;
+  request.timeoutInterval = 15.0;
+  [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
+
+  NSString *token = [scannerAuthToken stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (token.length > 0) {
+    [request setValue:[@"Bearer " stringByAppendingString:token]
+        forHTTPHeaderField:@"Authorization"];
+  }
+
+  if (body != nil) {
+    NSError *jsonError = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:&jsonError];
+    if (data == nil) {
+      throw WalletEngineError("failed to encode scanner request body: " +
+                              toStdString(jsonError.localizedDescription ?: @"unknown error"));
+    }
+    request.HTTPBody = data;
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  }
+
+  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+  __block NSError *requestError = nil;
+  __block NSInteger statusCode = 0;
+
+  NSURLSessionDataTask *task =
+      [[NSURLSession sharedSession] dataTaskWithRequest:request
+                                      completionHandler:
+          ^(NSData *data, NSURLResponse *response, NSError *error) {
+            (void)data;
+            requestError = error;
+            NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+            if ([httpResponse isKindOfClass:[NSHTTPURLResponse class]]) {
+              statusCode = httpResponse.statusCode;
+            }
+            dispatch_semaphore_signal(semaphore);
+          }];
+  [task resume];
+  dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+
+  if (requestError != nil) {
+    throw WalletEngineError("Fast receive scanner request failed: " +
+                            toStdString(requestError.localizedDescription ?: @"unknown error"));
+  }
+  if (statusCode < 200 || statusCode > 299) {
+    throw WalletEngineError("Fast receive scanner request failed with HTTP " +
+                            std::to_string(statusCode));
+  }
+}
+
+NSDictionary *watchRegistrationBody(const FastReceiveRegistrationPayload &payload,
+                                    NSString *pushToken) {
+  NSMutableDictionary *body = [@{
+    @"identity_id": toNSString(payload.identity.id),
+    @"address": toNSString(payload.identity.address),
+    @"private_view_key": toNSString(payload.privateViewKey),
+    @"network": networkName(payload.identity.network),
+    @"restore_height": toNSNumber(payload.identity.restoreHeight),
+  } mutableCopy];
+
+  NSString *trimmedPushToken = [pushToken stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  if (trimmedPushToken.length > 0) {
+    body[@"push_token"] = trimmedPushToken;
+  }
+
+  return body;
+}
+
 void rejectWithException(RCTPromiseRejectBlock reject, const std::exception &error) {
   NSString *message = toNSString(error.what());
   NSError *nativeError = [NSError errorWithDomain:@"NativeMoneroWallet"
@@ -812,25 +909,27 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
 - (void)enableFastReceiveIdentity:(NSString *)identityId
                              path:(NSString *)path
                          password:(NSString *)password
+                           network:(NSString *)network
                        scannerUrl:(NSString *)scannerUrl
                  scannerAuthToken:(NSString *)scannerAuthToken
                         pushToken:(NSString *)pushToken
                           resolve:(RCTPromiseResolveBlock)resolve
                            reject:(RCTPromiseRejectBlock)reject
 {
-  (void)identityId;
-  (void)path;
-  (void)password;
-  (void)scannerUrl;
-  (void)scannerAuthToken;
-  (void)pushToken;
-  (void)resolve;
-  NSString *message =
-      @"Fast receive scanner registration API exists, but native upload plumbing is not wired yet";
-  NSError *nativeError = [NSError errorWithDomain:@"NativeMoneroWallet"
-                                             code:3
-                                         userInfo:@{NSLocalizedDescriptionKey: message}];
-  reject(@"monero_wallet_fast_receive_scanner_unavailable", message, nativeError);
+  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+    FastReceiveRegistrationPayload payload = engine.fastReceiveRegistrationPayload(
+        toStdString(identityId),
+        toStdString(path),
+        toStdString(password),
+        toNetworkType(network));
+    scannerRequest(@"POST",
+                   scannerUrl,
+                   @"/v1/fast-receive/watch",
+                   scannerAuthToken,
+                   watchRegistrationBody(payload, pushToken));
+    payload.identity.scannerStatus = "enabled";
+    return toDictionary(payload.identity);
+  }];
 }
 
 - (void)disableFastReceiveIdentity:(NSString *)identityId
@@ -839,16 +938,28 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                            resolve:(RCTPromiseResolveBlock)resolve
                             reject:(RCTPromiseRejectBlock)reject
 {
-  (void)identityId;
-  (void)scannerUrl;
-  (void)scannerAuthToken;
-  (void)resolve;
-  NSString *message =
-      @"Fast receive scanner removal API exists, but native removal plumbing is not wired yet";
-  NSError *nativeError = [NSError errorWithDomain:@"NativeMoneroWallet"
-                                             code:4
-                                         userInfo:@{NSLocalizedDescriptionKey: message}];
-  reject(@"monero_wallet_fast_receive_scanner_unavailable", message, nativeError);
+  dispatch_async(_walletQueue, ^{
+    try {
+      NSString *encodedIdentityId =
+          [identityId stringByAddingPercentEncodingWithAllowedCharacters:
+              [NSCharacterSet URLPathAllowedCharacterSet]] ?: identityId;
+      NSString *route =
+          [@"/v1/fast-receive/watch/" stringByAppendingString:encodedIdentityId];
+      scannerRequest(@"DELETE", scannerUrl, route, scannerAuthToken, nil);
+      resolve(@{
+        @"id": identityId ?: @"",
+        @"label": @"",
+        @"path": @"",
+        @"address": @"",
+        @"network": @"stagenet",
+        @"restoreHeight": @0,
+        @"derivationIndex": @0,
+        @"scannerStatus": @"disabled",
+      });
+    } catch (const std::exception &error) {
+      rejectWithException(reject, error);
+    }
+  });
 }
 
 - (void)closeWallet:(NSString *)walletId

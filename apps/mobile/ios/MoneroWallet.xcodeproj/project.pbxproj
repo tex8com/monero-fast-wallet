@@ -286,7 +286,7 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
-					"TEX8_WALLET_BRIDGE_WITH_MONERO=1",
+					"TEX8_WALLET_BRIDGE_WITH_MONERO=$(TEX8_WALLET_BRIDGE_WITH_MONERO)",
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
@@ -300,10 +300,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				MONERO_WALLET_CORE_LIBRARY = "$(SRCROOT)/../../../build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
-					"$(SRCROOT)/../../../build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a",
+					"$(MONERO_WALLET_CORE_LIBRARY)",
 					"-lc++",
 					"-lz",
 					"-lresolv",
@@ -314,6 +315,7 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TEX8_WALLET_BRIDGE_WITH_MONERO = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
@@ -328,7 +330,7 @@
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
-					"TEX8_WALLET_BRIDGE_WITH_MONERO=1",
+					"TEX8_WALLET_BRIDGE_WITH_MONERO=$(TEX8_WALLET_BRIDGE_WITH_MONERO)",
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
@@ -342,10 +344,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				MONERO_WALLET_CORE_LIBRARY = "$(SRCROOT)/../../../build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
-					"$(SRCROOT)/../../../build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a",
+					"$(MONERO_WALLET_CORE_LIBRARY)",
 					"-lc++",
 					"-lz",
 					"-lresolv",
@@ -355,6 +358,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				TEX8_WALLET_BRIDGE_WITH_MONERO = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;

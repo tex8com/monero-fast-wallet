@@ -22,12 +22,16 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.security.SecureRandom
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import org.json.JSONObject
 
 class NativeMoneroWalletModule(
   reactContext: ReactApplicationContext,
@@ -459,15 +463,24 @@ class NativeMoneroWalletModule(
     identityId: String,
     path: String,
     password: String,
+    network: String,
     scannerUrl: String,
     scannerAuthToken: String,
     pushToken: String,
     promise: Promise,
   ) {
-    promise.reject(
-      "monero_wallet_fast_receive_scanner_unavailable",
-      "Fast receive scanner registration API exists, but native upload plumbing is not wired yet",
-    )
+    resolveNativeMap(promise) {
+      val payload = NativeMoneroWalletJni.fastReceiveRegistrationPayload(
+        identityId,
+        path,
+        password,
+        network,
+      )
+      registerFastReceiveWatch(payload, scannerUrl, scannerAuthToken, pushToken)
+      fastReceiveIdentityToWritableMap(
+        fastReceiveIdentityWithoutSecret(payload, "enabled"),
+      )
+    }
   }
 
   override fun disableFastReceiveIdentity(
@@ -476,10 +489,27 @@ class NativeMoneroWalletModule(
     scannerAuthToken: String,
     promise: Promise,
   ) {
-    promise.reject(
-      "monero_wallet_fast_receive_scanner_unavailable",
-      "Fast receive scanner removal API exists, but native removal plumbing is not wired yet",
-    )
+    runCatching {
+      removeFastReceiveWatch(identityId, scannerUrl, scannerAuthToken)
+      Arguments.createMap().apply {
+        putString("id", identityId)
+        putString("label", "")
+        putString("path", "")
+        putString("address", "")
+        putString("network", "stagenet")
+        putDouble("restoreHeight", 0.0)
+        putDouble("derivationIndex", 0.0)
+        putString("scannerStatus", "disabled")
+      }
+    }
+      .onSuccess { value -> promise.resolve(value) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_fast_receive_scanner_error",
+          error.message ?: "Fast receive scanner removal failed",
+          error,
+        )
+      }
   }
 
   override fun closeWallet(walletId: String, storeFlag: Double, promise: Promise) {
@@ -734,6 +764,107 @@ class NativeMoneroWalletModule(
       error,
     )
   }
+
+  private fun registerFastReceiveWatch(
+    payload: Map<String, Any>,
+    scannerUrl: String,
+    scannerAuthToken: String,
+    pushToken: String,
+  ) {
+    val body = JSONObject().apply {
+      put("identity_id", payload.stringValue("id"))
+      put("address", payload.stringValue("address"))
+      put("private_view_key", payload.stringValue("privateViewKey"))
+      put("network", payload.stringValue("network"))
+      put("restore_height", payload.numberValue("restoreHeight").toLong())
+      val trimmedPushToken = pushToken.trim()
+      if (trimmedPushToken.isNotEmpty()) {
+        put("push_token", trimmedPushToken)
+      }
+    }
+
+    scannerRequest(
+      method = "POST",
+      scannerUrl = scannerUrl,
+      route = "/v1/fast-receive/watch",
+      scannerAuthToken = scannerAuthToken,
+      body = body,
+    )
+  }
+
+  private fun removeFastReceiveWatch(
+    identityId: String,
+    scannerUrl: String,
+    scannerAuthToken: String,
+  ) {
+    val encodedIdentityId = URLEncoder.encode(identityId, "UTF-8")
+      .replace("+", "%20")
+    scannerRequest(
+      method = "DELETE",
+      scannerUrl = scannerUrl,
+      route = "/v1/fast-receive/watch/$encodedIdentityId",
+      scannerAuthToken = scannerAuthToken,
+      body = null,
+    )
+  }
+
+  private fun scannerRequest(
+    method: String,
+    scannerUrl: String,
+    route: String,
+    scannerAuthToken: String,
+    body: JSONObject?,
+  ) {
+    val baseUrl = normalizeScannerBaseUrl(scannerUrl)
+    val connection = (URL("$baseUrl$route").openConnection() as HttpURLConnection).apply {
+      requestMethod = method
+      connectTimeout = SCANNER_CONNECT_TIMEOUT_MS
+      readTimeout = SCANNER_READ_TIMEOUT_MS
+      setRequestProperty("Accept", "application/json")
+      val trimmedToken = scannerAuthToken.trim()
+      if (trimmedToken.isNotEmpty()) {
+        setRequestProperty("Authorization", "Bearer $trimmedToken")
+      }
+      if (body != null) {
+        doOutput = true
+        setRequestProperty("Content-Type", "application/json")
+      }
+    }
+
+    try {
+      if (body != null) {
+        connection.outputStream.use { stream ->
+          stream.write(body.toString().toByteArray(Charsets.UTF_8))
+        }
+      }
+
+      val responseCode = connection.responseCode
+      if (responseCode !in 200..299) {
+        connection.errorStream?.close()
+        error("Fast receive scanner request failed with HTTP $responseCode")
+      }
+      connection.inputStream?.close()
+    } finally {
+      connection.disconnect()
+    }
+  }
+
+  private fun normalizeScannerBaseUrl(scannerUrl: String): String {
+    val trimmed = scannerUrl.trim().trimEnd('/')
+    require(trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
+      "scannerUrl must start with http:// or https://"
+    }
+    return trimmed
+  }
+
+  private fun fastReceiveIdentityWithoutSecret(
+    payload: Map<String, Any>,
+    scannerStatus: String,
+  ): Map<String, Any> =
+    payload
+      .filterKeys { key -> key != "privateViewKey" }
+      .toMutableMap()
+      .apply { this["scannerStatus"] = scannerStatus }
 
   private fun checkedPathSegment(value: String, name: String): String {
     val trimmed = value.trim()
@@ -1147,6 +1278,8 @@ class NativeMoneroWalletModule(
     private const val SECRET_GCM_TAG_BITS = 128
     private const val ACTION_LEDGER_USB_PERMISSION =
       "com.monerowallet.action.LEDGER_USB_PERMISSION"
+    private const val SCANNER_CONNECT_TIMEOUT_MS = 15_000
+    private const val SCANNER_READ_TIMEOUT_MS = 15_000
     private const val LEDGER_VENDOR_ID = 0x2C97
     private val LEDGER_PRODUCT_IDS = setOf(
       0x0001,

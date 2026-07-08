@@ -89,6 +89,7 @@ export interface EnableFastReceiveIdentityInput {
   identityId: string;
   path: string;
   password: string;
+  network: MoneroNetwork;
   scannerUrl: string;
   scannerAuthToken?: string;
   pushToken?: string;
@@ -309,6 +310,7 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.identityId,
           input.path,
           input.password,
+          input.network,
           input.scannerUrl,
           input.scannerAuthToken ?? "",
           input.pushToken ?? "",

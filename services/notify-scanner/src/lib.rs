@@ -1,12 +1,25 @@
 pub mod api;
+pub mod cuprate;
 pub mod model;
+pub mod scanner;
 pub mod store;
 
-pub use api::{router, ApiState};
+pub use api::{router, router_with_key_image_status_source, ApiState};
+pub use cuprate::{
+    decode_get_blocks_payload, decode_get_blocks_response, decode_key_image_spent_response,
+    decode_mempool_transaction_blob, CheckedKeyImageStatus, CuprateGrpcBlockSource,
+    CuprateHttpKeyImageStatusSource, CuprateHttpMempoolSource, DecodedCuprateBlocks,
+    HostedViewKeyBlockMatcher, HostedViewKeyMempoolMatcher, KeyImageStatusSource,
+};
 pub use model::{
     DetectionStatus, KeyImageStatusItem, KeyImageStatusRecord, KeyImageStatusRequest,
     KeyImageStatusResponse, MatchedOutput, MatchedOutputResponse, Network, NotificationStatus,
     RegisterMatchedOutputRequest, RegisterWatchRequest, SpentStatus, WatchRegistration,
     WatchResponse,
+};
+pub use scanner::{
+    BlockSource, MatchedOutputCandidate, MempoolOutputMatcher, MempoolRun, MempoolScannerWorker,
+    MempoolSource, OutputMatcher, ScannedBlock, ScannedMempoolTx, ScannedOutput, ScannerRun,
+    ScannerWorker,
 };
 pub use store::{parse_storage_key, EncryptedJsonFileStore, InMemoryWatchStore, WatchStore};

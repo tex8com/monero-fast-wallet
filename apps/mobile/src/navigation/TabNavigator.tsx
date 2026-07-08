@@ -8,6 +8,8 @@ import MarketplaceScreen from "../screens/MarketplaceScreen";
 import MenuScreen from "../screens/MenuScreen";
 import LocalMoneroScreen from "../screens/LocalMoneroScreen";
 import SettingsScreen from "../screens/SettingsScreen";
+import SharedModulesScreen from "../screens/SharedModulesScreen";
+import Tex8AssistantScreen from "../screens/Tex8AssistantScreen";
 import WelcomeScreen from "../screens/WelcomeScreen";
 import WalletSetupScreen from "../screens/WalletSetupScreen";
 import CustomTabBar from "../components/CustomTabBar";
@@ -37,6 +39,8 @@ export default function TabNavigator() {
       {/* Hidden screens — accessible via Menu */}
       <Tab.Screen name="LocalMonero" component={LocalMoneroScreen} />
       <Tab.Screen name="Settings" component={SettingsScreen} />
+      <Tab.Screen name="Tex8Assistant" component={Tex8AssistantScreen} />
+      <Tab.Screen name="SharedModules" component={SharedModulesScreen} />
       <Tab.Screen name="Welcome" component={WelcomeScreen} />
       <Tab.Screen name="WalletSetup" component={WalletSetupScreen} />
     </Tab.Navigator>

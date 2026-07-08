@@ -105,6 +105,28 @@ gate_notify_scanner_tests() {
   cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml"
 }
 
+gate_notify_scanner_worker_tests() {
+  cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" scanner::tests::scanner_
+}
+
+gate_notify_scanner_mempool_tests() {
+  cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" mempool
+}
+
+gate_notify_scanner_cuprate_adapter_tests() {
+  cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" cuprate
+}
+
+gate_notify_scanner_live_cuprate_sources() {
+  if [[ "${TESTBENCH_NOTIFY_SCANNER_LIVE_SOURCES:-0}" != "1" ]]; then
+    return 2
+  fi
+  NOTIFY_SCANNER_TEST_GRPC_ENDPOINT="${CUPRATE_GRPC:-152.53.133.188:18091}" \
+    NOTIFY_SCANNER_TEST_RPC_ENDPOINT="${CUPRATE_RPC:-152.53.133.188:18089}" \
+    NOTIFY_SCANNER_TEST_FROM_HEIGHT="${TESTBENCH_NOTIFY_SCANNER_FROM_HEIGHT:-3000000}" \
+    cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" live_cuprate -- --ignored
+}
+
 gate_mobile_unit_tests() {
   if [[ ! -d "${repo_root}/apps/mobile/node_modules" ]]; then
     return 2
@@ -318,6 +340,10 @@ log "wallet-core-testbench suite=${suite} strict=${strict}"
 handle_gate_result "fork pins recorded" gate_pin_files
 handle_gate_result "native bridge shell build" gate_shell_bridge_build
 handle_gate_result "notify-scanner unit/store tests" gate_notify_scanner_tests
+handle_gate_result "notify-scanner block worker tests" gate_notify_scanner_worker_tests
+handle_gate_result "notify-scanner mempool worker tests" gate_notify_scanner_mempool_tests
+handle_gate_result "notify-scanner Cuprate adapter tests" gate_notify_scanner_cuprate_adapter_tests
+handle_gate_result "notify-scanner live Cuprate source tests" gate_notify_scanner_live_cuprate_sources
 handle_gate_result "mobile TypeScript/unit tests" gate_mobile_unit_tests
 handle_gate_result "native linked offline create/seed/restore/fast-receive" gate_native_offline_roundtrip
 handle_gate_result "Cuprate RPC+gRPC refresh smoke" gate_cuprate_refresh

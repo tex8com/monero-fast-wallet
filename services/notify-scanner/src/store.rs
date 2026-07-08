@@ -1,4 +1,7 @@
-use crate::model::{key_image_status_id, KeyImageStatusRecord, MatchedOutput, WatchRegistration};
+use crate::model::{
+    key_image_status_id, DetectionStatus, KeyImageStatusRecord, MatchedOutput, NotificationStatus,
+    WatchRegistration,
+};
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chacha20poly1305::{
@@ -72,7 +75,7 @@ impl WatchStore for InMemoryWatchStore {
         let mut matches = self.matches.write().expect("watch store poisoned");
         let mut stored = output.clone();
         if let Some(existing) = matches.get(&output.id) {
-            stored.created_at_ms = existing.created_at_ms;
+            stored = merge_matched_output(existing, output);
         }
         matches.insert(stored.id.clone(), stored.clone());
         Ok(stored)
@@ -239,7 +242,7 @@ impl WatchStore for EncryptedJsonFileStore {
             .expect("watch store poisoned");
         let mut stored = output.clone();
         if let Some(existing) = matches.get(&output.id) {
-            stored.created_at_ms = existing.created_at_ms;
+            stored = merge_matched_output(existing, output);
         }
         matches.insert(stored.id.clone(), stored.clone());
         self.persist(&records, &matches, &key_image_statuses)?;
@@ -288,6 +291,48 @@ impl WatchStore for EncryptedJsonFileStore {
             .cloned()
             .collect())
     }
+}
+
+fn merge_matched_output(existing: &MatchedOutput, incoming: MatchedOutput) -> MatchedOutput {
+    let mut stored = incoming;
+    stored.created_at_ms = existing.created_at_ms;
+
+    if stored.mempool_first_seen_ms.is_none() {
+        stored.mempool_first_seen_ms = existing.mempool_first_seen_ms;
+    } else if let Some(existing_first) = existing.mempool_first_seen_ms {
+        stored.mempool_first_seen_ms = stored
+            .mempool_first_seen_ms
+            .map(|incoming_first| incoming_first.min(existing_first));
+    }
+
+    if stored.mempool_last_seen_ms.is_none() {
+        stored.mempool_last_seen_ms = existing.mempool_last_seen_ms;
+    } else if let Some(existing_last) = existing.mempool_last_seen_ms {
+        stored.mempool_last_seen_ms = stored
+            .mempool_last_seen_ms
+            .map(|incoming_last| incoming_last.max(existing_last));
+    }
+
+    if stored.confirmed_height.is_none() {
+        stored.confirmed_height = existing.confirmed_height;
+    }
+
+    if existing.detection_status == DetectionStatus::Confirmed
+        && stored.detection_status != DetectionStatus::Reorged
+    {
+        stored.detection_status = DetectionStatus::Confirmed;
+        stored.block_height = existing.block_height;
+        stored.block_timestamp_ms = existing.block_timestamp_ms;
+        stored.confirmed_height = existing.confirmed_height;
+    }
+
+    if existing.notification_status != NotificationStatus::Pending
+        && stored.notification_status == NotificationStatus::Pending
+    {
+        stored.notification_status = existing.notification_status.clone();
+    }
+
+    stored
 }
 
 pub fn parse_storage_key(value: &str) -> Result<[u8; 32]> {
@@ -386,6 +431,9 @@ mod tests {
             notification_status: NotificationStatus::Pending,
             created_at_ms: 2,
             updated_at_ms: 2,
+            mempool_first_seen_ms: None,
+            mempool_last_seen_ms: None,
+            confirmed_height: None,
         }
     }
 

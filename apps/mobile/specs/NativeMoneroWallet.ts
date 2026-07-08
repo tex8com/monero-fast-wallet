@@ -197,6 +197,7 @@ export interface Spec extends TurboModule {
     identityId: string,
     path: string,
     password: string,
+    network: string,
     scannerUrl: string,
     scannerAuthToken: string,
     pushToken: string,

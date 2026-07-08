@@ -1,8 +1,9 @@
 use crate::{
+    cuprate::KeyImageStatusSource,
     model::{
-        KeyImageStatusItem, KeyImageStatusRequest, KeyImageStatusResponse, MatchedOutput,
-        MatchedOutputResponse, RegisterMatchedOutputRequest, RegisterWatchRequest, SpentStatus,
-        WatchRegistration, WatchResponse,
+        KeyImageStatusItem, KeyImageStatusRecord, KeyImageStatusRequest, KeyImageStatusResponse,
+        MatchedOutput, MatchedOutputResponse, RegisterMatchedOutputRequest, RegisterWatchRequest,
+        SpentStatus, WatchRegistration, WatchResponse,
     },
     store::WatchStore,
 };
@@ -23,9 +24,18 @@ use std::{
 pub struct ApiState {
     pub store: Arc<dyn WatchStore>,
     pub auth_token: Option<String>,
+    pub key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
 }
 
 pub fn router(store: Arc<dyn WatchStore>, auth_token: Option<String>) -> Router {
+    router_with_key_image_status_source(store, auth_token, None)
+}
+
+pub fn router_with_key_image_status_source(
+    store: Arc<dyn WatchStore>,
+    auth_token: Option<String>,
+    key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
+) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/fast-receive/watch", post(register_watch))
@@ -36,7 +46,11 @@ pub fn router(store: Arc<dyn WatchStore>, auth_token: Option<String>) -> Router 
         )
         .route("/v1/fast-receive/matches", post(register_match))
         .route("/v1/fast-receive/key-images/status", post(key_image_status))
-        .with_state(ApiState { store, auth_token })
+        .with_state(ApiState {
+            store,
+            auth_token,
+            key_image_status_source,
+        })
 }
 
 async fn healthz() -> Json<HealthResponse> {
@@ -117,6 +131,19 @@ async fn key_image_status(
 ) -> Result<Json<KeyImageStatusResponse>, ApiError> {
     authenticate(&state, &headers)?;
     request.validate()?;
+    if let Some(source) = &state.key_image_status_source {
+        let now_ms = now_ms();
+        for checked in source.check_key_images(&request.key_images)? {
+            state.store.upsert_key_image_status(KeyImageStatusRecord {
+                identity_id: request.identity_id.clone(),
+                key_image: checked.key_image,
+                status: checked.status,
+                checked_height: checked.checked_height,
+                updated_at_ms: now_ms,
+            })?;
+        }
+    }
+
     let known = state
         .store
         .get_key_image_statuses(&request.identity_id, &request.key_images)?;
@@ -219,12 +246,36 @@ struct ErrorResponse {
 mod tests {
     use super::*;
     use crate::{
+        cuprate::{CheckedKeyImageStatus, KeyImageStatusSource},
         model::{KeyImageStatusRecord, Network},
         store::InMemoryWatchStore,
     };
-    use axum::body::Body;
+    use axum::body::{to_bytes, Body};
     use http::{Request, StatusCode};
     use tower::ServiceExt;
+
+    #[derive(Clone)]
+    struct StaticKeyImageStatusSource;
+
+    impl KeyImageStatusSource for StaticKeyImageStatusSource {
+        fn check_key_images(
+            &self,
+            key_images: &[String],
+        ) -> anyhow::Result<Vec<CheckedKeyImageStatus>> {
+            Ok(key_images
+                .iter()
+                .map(|key_image| CheckedKeyImageStatus {
+                    key_image: key_image.trim().to_lowercase(),
+                    status: if key_image.starts_with('4') {
+                        SpentStatus::Spent
+                    } else {
+                        SpentStatus::Unspent
+                    },
+                    checked_height: 123,
+                })
+                .collect())
+        }
+    }
 
     #[tokio::test]
     async fn registers_and_removes_watch_record() {
@@ -409,5 +460,50 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn refreshes_key_image_status_from_live_source_and_persists_it() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        let app = router_with_key_image_status_source(
+            store.clone(),
+            Some("secret".to_owned()),
+            Some(Arc::new(StaticKeyImageStatusSource)),
+        );
+        let body = serde_json::json!({
+            "identity_id": "fast-receive-0",
+            "key_images": ["4".repeat(64), "5".repeat(64)]
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/fast-receive/key-images/status")
+                    .header("authorization", "Bearer secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let response: KeyImageStatusResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(response.items[0].status, SpentStatus::Spent);
+        assert_eq!(response.items[1].status, SpentStatus::Unspent);
+        assert_eq!(response.items[0].checked_height, 123);
+
+        let stored = store
+            .get_key_image_statuses("fast-receive-0", &["4".repeat(64), "5".repeat(64)])
+            .unwrap();
+        assert_eq!(stored.len(), 2);
+        assert!(stored
+            .iter()
+            .any(|record| record.status == SpentStatus::Spent));
+        assert!(stored
+            .iter()
+            .all(|record| record.checked_height == 123 && record.updated_at_ms > 0));
     }
 }

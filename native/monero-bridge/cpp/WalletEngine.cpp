@@ -38,6 +38,19 @@ Monero::NetworkType toMoneroNetwork(NetworkType network) {
   throw WalletEngineError("unknown wallet network");
 }
 
+NetworkType fromMoneroNetwork(Monero::NetworkType network) {
+  switch (network) {
+    case Monero::MAINNET:
+      return NetworkType::Mainnet;
+    case Monero::TESTNET:
+      return NetworkType::Testnet;
+    case Monero::STAGENET:
+      return NetworkType::Stagenet;
+  }
+
+  throw WalletEngineError("unknown Monero wallet network");
+}
+
 void throwIfWalletFailed(Monero::Wallet* wallet, const std::string& context) {
   if (wallet == nullptr) {
     throw WalletEngineError(context + ": Monero returned a null wallet");
@@ -72,6 +85,34 @@ std::string fastReceiveSeedOffset(uint64_t derivationIndex) {
   std::ostringstream out;
   out << "tex8-monero-fast-receive-v1:" << derivationIndex;
   return out.str();
+}
+
+uint64_t fastReceiveDerivationIndexFromId(const std::string& identityId) {
+  const std::string prefix = "fast-receive-";
+  if (identityId.rfind(prefix, 0) != 0) {
+    return 0;
+  }
+
+  uint64_t result = 0;
+  bool sawDigit = false;
+  for (size_t i = prefix.size(); i < identityId.size(); ++i) {
+    const char ch = identityId[i];
+    if (ch == '-') {
+      break;
+    }
+    if (ch < '0' || ch > '9') {
+      return 0;
+    }
+    sawDigit = true;
+    const uint64_t digit = static_cast<uint64_t>(ch - '0');
+    if (result >
+        (std::numeric_limits<uint64_t>::max() - digit) / 10) {
+      return 0;
+    }
+    result = result * 10 + digit;
+  }
+
+  return sawDigit ? result : 0;
 }
 
 std::string lowercase(std::string value) {
@@ -420,6 +461,72 @@ class WalletEngine::Impl {
       }
       wallet = nullptr;
       return identity;
+    } catch (...) {
+      if (wallet != nullptr) {
+        manager_->closeWallet(wallet, false);
+      }
+      throw;
+    }
+  }
+
+  FastReceiveRegistrationPayload fastReceiveRegistrationPayload(
+      const std::string& identityId,
+      const std::string& path,
+      const std::string& password,
+      NetworkType network) {
+    if (identityId.empty()) {
+      throw WalletEngineError("fast receive identity id must not be empty");
+    }
+    if (path.empty()) {
+      throw WalletEngineError("fast receive wallet path must not be empty");
+    }
+
+    auto* wallet = manager_->openWallet(
+        path,
+        password,
+        toMoneroNetwork(network),
+        1);
+    try {
+      int status = Monero::Wallet::Status_Error;
+      std::string error;
+      if (wallet != nullptr) {
+        wallet->statusWithErrorString(status, error);
+      }
+
+      if (wallet != nullptr && status == Monero::Wallet::Status_Ok) {
+        FastReceiveRegistrationPayload payload;
+        payload.identity.id = identityId;
+        payload.identity.label = "Fast Receive";
+        payload.identity.path = path;
+        payload.identity.address = wallet->address(0, 0);
+        payload.identity.network = fromMoneroNetwork(wallet->nettype());
+        payload.identity.restoreHeight = wallet->getRefreshFromBlockHeight();
+        payload.identity.derivationIndex =
+            fastReceiveDerivationIndexFromId(identityId);
+        payload.identity.scannerStatus = "registration-pending";
+        payload.privateViewKey = wallet->secretViewKey();
+        if (payload.privateViewKey.empty()) {
+          throw WalletEngineError(
+              "fast receive identity has no secret view key");
+        }
+
+        if (!manager_->closeWallet(wallet, true)) {
+          throw WalletEngineError(
+              "failed to close fast receive identity wallet");
+        }
+        wallet = nullptr;
+        return payload;
+      }
+
+      if (wallet != nullptr) {
+        manager_->closeWallet(wallet, false);
+        wallet = nullptr;
+      }
+
+      throw WalletEngineError(
+          error.empty()
+              ? "failed to open fast receive identity wallet"
+              : "failed to open fast receive identity wallet: " + error);
     } catch (...) {
       if (wallet != nullptr) {
         manager_->closeWallet(wallet, false);
@@ -826,6 +933,26 @@ FastReceiveIdentity WalletEngine::createFastReceiveIdentity(
   return impl_->createFastReceiveIdentity(request);
 #else
   (void)request;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+FastReceiveRegistrationPayload WalletEngine::fastReceiveRegistrationPayload(
+    const std::string& identityId,
+    const std::string& path,
+    const std::string& password,
+    NetworkType network) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->fastReceiveRegistrationPayload(
+      identityId,
+      path,
+      password,
+      network);
+#else
+  (void)identityId;
+  (void)path;
+  (void)password;
+  (void)network;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }

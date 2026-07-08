@@ -53,6 +53,26 @@ const mockNativeMoneroWalletTurboModule = {
     derivationIndex: 0,
     scannerStatus: "local-only",
   })),
+  enableFastReceiveIdentity: jest.fn(async () => ({
+    id: "fast-receive-0",
+    label: "Fast Receive",
+    path: "/tmp/fast-receive-0",
+    address: "54A1testAddress",
+    network: "stagenet",
+    restoreHeight: 10,
+    derivationIndex: 0,
+    scannerStatus: "enabled",
+  })),
+  disableFastReceiveIdentity: jest.fn(async () => ({
+    id: "fast-receive-0",
+    label: "Fast Receive",
+    path: "/tmp/fast-receive-0",
+    address: "54A1testAddress",
+    network: "stagenet",
+    restoreHeight: 10,
+    derivationIndex: 0,
+    scannerStatus: "disabled",
+  })),
   getBiometricAuthStatus: jest.fn(async () => ({
     platform: "android",
     supported: true,
@@ -224,6 +244,44 @@ describe("NativeMoneroWallet hardware bridge", () => {
       10,
       0,
     );
+  });
+
+  it("passes fast receive scanner registration inputs without a JavaScript view key", async () => {
+    const { requireNativeMoneroWallet } =
+      require("../NativeMoneroWallet") as typeof import("../NativeMoneroWallet");
+    const nativeWallet = requireNativeMoneroWallet();
+
+    await expect(
+      nativeWallet.enableFastReceiveIdentity({
+        identityId: "fast-receive-0",
+        path: "/tmp/fast-receive-0",
+        password: "local-wallet-password",
+        network: "stagenet",
+        scannerUrl: "https://scanner.tex8.com",
+        scannerAuthToken: "secret-token",
+        pushToken: "push-token",
+      }),
+    ).resolves.toMatchObject({
+      id: "fast-receive-0",
+      scannerStatus: "enabled",
+    });
+
+    expect(
+      mockNativeMoneroWalletTurboModule.enableFastReceiveIdentity,
+    ).toHaveBeenCalledWith(
+      "fast-receive-0",
+      "/tmp/fast-receive-0",
+      "local-wallet-password",
+      "stagenet",
+      "https://scanner.tex8.com",
+      "secret-token",
+      "push-token",
+    );
+    expect(
+      JSON.stringify(
+        mockNativeMoneroWalletTurboModule.enableFastReceiveIdentity.mock.calls,
+      ),
+    ).not.toContain("privateViewKey");
   });
 
   it("passes transaction history and prepared send DTOs through the wrapper", async () => {

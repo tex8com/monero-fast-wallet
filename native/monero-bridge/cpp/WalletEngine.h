@@ -27,6 +27,11 @@ class WalletEngine {
   WalletId createWalletFromDevice(const CreateWalletFromDeviceRequest& request);
   FastReceiveIdentity createFastReceiveIdentity(
       const CreateFastReceiveIdentityRequest& request);
+  FastReceiveRegistrationPayload fastReceiveRegistrationPayload(
+      const std::string& identityId,
+      const std::string& path,
+      const std::string& password,
+      NetworkType network);
   void closeWallet(const WalletId& walletId, bool store = true);
 
   void setDaemon(const WalletId& walletId, const DaemonConfig& config);

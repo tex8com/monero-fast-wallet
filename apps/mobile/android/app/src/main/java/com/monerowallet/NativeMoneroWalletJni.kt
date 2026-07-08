@@ -90,6 +90,16 @@ internal object NativeMoneroWalletJni {
     )
   }
 
+  fun fastReceiveRegistrationPayload(
+    identityId: String,
+    path: String,
+    password: String,
+    network: String,
+  ): Map<String, Any> {
+    requireLoaded()
+    return nativeFastReceiveRegistrationPayload(identityId, path, password, network)
+  }
+
   fun closeWallet(walletId: String, store: Boolean) {
     requireLoaded()
     nativeCloseWallet(walletId, store)
@@ -259,6 +269,13 @@ internal object NativeMoneroWalletJni {
     label: String,
     restoreHeight: Double,
     derivationIndex: Double,
+  ): Map<String, Any>
+
+  @JvmStatic private external fun nativeFastReceiveRegistrationPayload(
+    identityId: String,
+    path: String,
+    password: String,
+    network: String,
   ): Map<String, Any>
 
   @JvmStatic private external fun nativeCloseWallet(walletId: String, store: Boolean)

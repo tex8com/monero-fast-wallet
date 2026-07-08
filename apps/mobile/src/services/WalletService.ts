@@ -8,6 +8,10 @@ import {
 } from "./FastReceiveRegistry";
 import type { FastReceiveIdentityRecord } from "./FastReceiveRegistry";
 import {
+  checkFastReceiveKeyImages,
+  type KeyImageStatusResult,
+} from "./FastReceiveScannerClient";
+import {
   loadActiveNodeConnectionSettings,
   normalizeNodeConnectionSettings,
 } from "./NodeConnectionSettings";
@@ -111,6 +115,13 @@ export interface DisableFastReceiveIdentityInput {
   identityId: string;
   scannerUrl: string;
   scannerAuthToken?: string;
+}
+
+export interface CheckFastReceiveKeyImagesInput {
+  identityId: string;
+  scannerUrl: string;
+  scannerAuthToken?: string;
+  keyImages: string[];
 }
 
 export interface PrepareWalletTransactionInput {
@@ -574,13 +585,16 @@ export class WalletService {
         identityId: existing.id,
         path: existing.path,
         password: input.password,
+        network: existing.network,
         scannerUrl: input.scannerUrl,
         scannerAuthToken: input.scannerAuthToken,
         pushToken: input.pushToken,
       });
 
     const identity = {
-      ...createFastReceiveIdentityRecord(nativeIdentity, existing.createdAt),
+      ...existing,
+      address: nativeIdentity.address || existing.address,
+      scannerStatus: nativeIdentity.scannerStatus || "enabled",
       status: "enabled" as const,
       updatedAt: new Date().toISOString(),
     };
@@ -600,15 +614,15 @@ export class WalletService {
       throw new Error("Unknown fast receive identity");
     }
 
-    const nativeIdentity =
-      await requireNativeMoneroWallet().disableFastReceiveIdentity({
-        identityId: existing.id,
-        scannerUrl: input.scannerUrl,
-        scannerAuthToken: input.scannerAuthToken,
-      });
+    await requireNativeMoneroWallet().disableFastReceiveIdentity({
+      identityId: existing.id,
+      scannerUrl: input.scannerUrl,
+      scannerAuthToken: input.scannerAuthToken,
+    });
 
     const identity = {
-      ...createFastReceiveIdentityRecord(nativeIdentity, existing.createdAt),
+      ...existing,
+      scannerStatus: "disabled",
       status: "disabled" as const,
       updatedAt: new Date().toISOString(),
     };
@@ -617,6 +631,12 @@ export class WalletService {
       identity,
       identities: next,
     };
+  }
+
+  async checkFastReceiveKeyImages(
+    input: CheckFastReceiveKeyImagesInput,
+  ): Promise<KeyImageStatusResult> {
+    return checkFastReceiveKeyImages(input);
   }
 
   getActiveSession(): WalletSession | undefined {

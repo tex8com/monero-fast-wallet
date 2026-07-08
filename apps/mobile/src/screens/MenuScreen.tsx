@@ -12,6 +12,12 @@ function IcoP2P({ c }: { c: string }) {
 function IcoGear({ c }: { c: string }) {
   return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Circle cx="12" cy="12" r="3" stroke={c} strokeWidth={1.8} /><Path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1.08-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1.08 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9c.26.6.84 1 1.51 1.08H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" stroke={c} strokeWidth={1.5} /></Svg>);
 }
+function IcoSpark({ c }: { c: string }) {
+  return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16zM5 15l.7 1.8L7.5 17.5l-1.8.7L5 20l-.7-1.8-1.8-.7 1.8-.7L5 15z" stroke={c} strokeWidth={1.6} strokeLinejoin="round" /></Svg>);
+}
+function IcoModules({ c }: { c: string }) {
+  return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Path d="M4 4h7v7H4V4zM13 4h7v7h-7V4zM4 13h7v7H4v-7zM13 13h7v7h-7v-7z" stroke={c} strokeWidth={1.8} strokeLinejoin="round" /></Svg>);
+}
 function IcoGlobe({ c }: { c: string }) {
   return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Circle cx="12" cy="12" r="9" stroke={c} strokeWidth={1.8} /><Path d="M3 12h18M12 3c2.5 3 4 6 4 9s-1.5 6-4 9c-2.5-3-4-6-4-9s1.5-6 4-9z" stroke={c} strokeWidth={1.8} /></Svg>);
 }
@@ -31,6 +37,8 @@ function IcoCode({ c }: { c: string }) {
 const MENU_ITEMS = [
   { label: "Local Monero", desc: "P2P Trading", screen: "LocalMonero", Icon: IcoP2P },
   { label: "Settings",     desc: "Configure wallet", screen: "Settings",  Icon: IcoGear },
+  { label: "Tex8 Assistant", desc: "Shared AI module", screen: "Tex8Assistant", Icon: IcoSpark },
+  { label: "Shared Modules", desc: "Tex8 app elements", screen: "SharedModules", Icon: IcoModules },
   { label: "Node Status",  desc: "Connection status", screen: null,     Icon: IcoGlobe },
   { label: "Address Book",  desc: "Saved addresses", screen: null,     Icon: IcoBook },
   { label: "Export",        desc: "Export transactions", screen: null,  Icon: IcoDownload },
@@ -42,6 +50,8 @@ const DEV_SCREENS = [
   { label: "Wallet Setup",   screen: "WalletSetup" },
   { label: "Local Monero",   screen: "LocalMonero" },
   { label: "Settings",       screen: "Settings" },
+  { label: "Tex8 Assistant",  screen: "Tex8Assistant" },
+  { label: "Shared Modules",  screen: "SharedModules" },
 ];
 
 export default function MenuScreen({ navigation }: any) {

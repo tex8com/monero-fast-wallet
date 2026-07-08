@@ -21,6 +21,26 @@ Strict full acceptance:
 tools/wallet-testbench/run-wallet-core-testbench.sh full
 ```
 
+Funded wallet terminal control:
+
+```sh
+tools/wallet-testbench/run-funded-wallet-terminal-harness.sh cli-status all
+tools/wallet-testbench/run-funded-wallet-terminal-harness.sh native-status all
+```
+
+The funded harness controls the current mainnet test wallets under
+`~/Documents/Monero/tex8-send-tests` without printing secrets. It uses the
+forked CLI for black-box parity and the native proof runner for the same
+`libwallet_api` path that the mobile bridge uses.
+
+Broadcast is guarded and requires an explicit amount:
+
+```sh
+TESTBENCH_ALLOW_REAL_SEND=1 \
+FUNDED_SEND_AMOUNT_ATOMIC=100000000 \
+tools/wallet-testbench/run-funded-wallet-terminal-harness.sh real-send b a
+```
+
 `full` requires real node/device/funded-wallet configuration and exits non-zero
 when any required gate is missing.
 
@@ -60,3 +80,10 @@ internal disk is too tight for repeat wallet-core builds.
 
 Use the public server IP for node tests. `tex8.com` is routed through
 Cloudflare and is not suitable for raw Monero RPC/gRPC ports.
+
+Current funded wallet inventory:
+
+- `wallet-a` holds the user-funded mainnet test wallet. The 0.025 XMR incoming
+  tx is `249cf9d2c5f4cf9e145ef9aef01f0be288ae03b230d88751e988e19c52be68d4`.
+- `wallet-b` is the paired mainnet send/receive test wallet.
+- Password files stay local beside the wallet files and must never be printed.

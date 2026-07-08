@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Network {
     Mainnet,
@@ -185,8 +185,10 @@ impl fmt::Debug for RegisterMatchedOutputRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DetectionStatus {
+    PendingMempool,
     Detected,
     Confirmed,
+    Dropped,
     Reorged,
 }
 
@@ -212,6 +214,12 @@ pub struct MatchedOutput {
     pub notification_status: NotificationStatus,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+    #[serde(default)]
+    pub mempool_first_seen_ms: Option<u64>,
+    #[serde(default)]
+    pub mempool_last_seen_ms: Option<u64>,
+    #[serde(default)]
+    pub confirmed_height: Option<u64>,
 }
 
 impl fmt::Debug for MatchedOutput {
@@ -229,6 +237,9 @@ impl fmt::Debug for MatchedOutput {
             .field("notification_status", &self.notification_status)
             .field("created_at_ms", &self.created_at_ms)
             .field("updated_at_ms", &self.updated_at_ms)
+            .field("mempool_first_seen_ms", &self.mempool_first_seen_ms)
+            .field("mempool_last_seen_ms", &self.mempool_last_seen_ms)
+            .field("confirmed_height", &self.confirmed_height)
             .finish()
     }
 }
@@ -251,11 +262,61 @@ impl MatchedOutput {
             block_timestamp_ms: request.block_timestamp_ms,
             amount_atomic: request.amount_atomic,
             key_image: request.key_image.map(|value| value.trim().to_lowercase()),
-            detection_status: DetectionStatus::Detected,
+            detection_status: DetectionStatus::Confirmed,
             notification_status: NotificationStatus::Pending,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
+            mempool_first_seen_ms: None,
+            mempool_last_seen_ms: None,
+            confirmed_height: Some(request.block_height),
         })
+    }
+
+    pub fn from_mempool_candidate(
+        identity_id: &str,
+        tx_id: String,
+        output_index: u64,
+        amount_atomic: Option<u64>,
+        key_image: Option<String>,
+        seen_ms: u64,
+    ) -> Result<Self, WatchValidationError> {
+        let request = RegisterMatchedOutputRequest {
+            identity_id: identity_id.to_owned(),
+            tx_id,
+            block_height: 0,
+            output_index,
+            block_timestamp_ms: 0,
+            amount_atomic,
+            key_image,
+        };
+        request.validate()?;
+        let identity_id = request.identity_id.trim().to_owned();
+        let tx_id = request.tx_id.trim().to_lowercase();
+        Ok(Self {
+            id: matched_output_id(&identity_id, &tx_id, output_index),
+            identity_id,
+            tx_id,
+            block_height: 0,
+            output_index,
+            block_timestamp_ms: 0,
+            amount_atomic: request.amount_atomic,
+            key_image: request.key_image.map(|value| value.trim().to_lowercase()),
+            detection_status: DetectionStatus::PendingMempool,
+            notification_status: NotificationStatus::Pending,
+            created_at_ms: seen_ms,
+            updated_at_ms: seen_ms,
+            mempool_first_seen_ms: Some(seen_ms),
+            mempool_last_seen_ms: Some(seen_ms),
+            confirmed_height: None,
+        })
+    }
+
+    pub fn dropped_mempool(mut self, now_ms: u64) -> Self {
+        if self.detection_status != DetectionStatus::Confirmed {
+            self.detection_status = DetectionStatus::Dropped;
+            self.updated_at_ms = now_ms;
+        }
+        self
     }
 }
 
@@ -280,6 +341,9 @@ pub struct MatchedOutputResponse {
     pub block_timestamp_ms: u64,
     pub detection_status: DetectionStatus,
     pub notification_status: NotificationStatus,
+    pub mempool_first_seen_ms: Option<u64>,
+    pub mempool_last_seen_ms: Option<u64>,
+    pub confirmed_height: Option<u64>,
 }
 
 impl MatchedOutput {
@@ -293,6 +357,9 @@ impl MatchedOutput {
             block_timestamp_ms: self.block_timestamp_ms,
             detection_status: self.detection_status.clone(),
             notification_status: self.notification_status.clone(),
+            mempool_first_seen_ms: self.mempool_first_seen_ms,
+            mempool_last_seen_ms: self.mempool_last_seen_ms,
+            confirmed_height: self.confirmed_height,
         }
     }
 }
@@ -506,10 +573,31 @@ mod tests {
         };
         let output = MatchedOutput::from_request(request, 1234).unwrap();
         assert_eq!(output.id, format!("fast-receive-0:{}:7", "1".repeat(64)));
+        assert_eq!(output.detection_status, DetectionStatus::Confirmed);
+        assert_eq!(output.confirmed_height, Some(42));
 
         let debug = format!("{output:?}");
         assert!(debug.contains("<redacted>"));
         assert!(!debug.contains(&"2".repeat(64)));
+    }
+
+    #[test]
+    fn creates_pending_mempool_output_without_block_height() {
+        let output = MatchedOutput::from_mempool_candidate(
+            "fast-receive-0",
+            "1".repeat(64),
+            7,
+            Some(5),
+            Some("2".repeat(64)),
+            1234,
+        )
+        .unwrap();
+
+        assert_eq!(output.detection_status, DetectionStatus::PendingMempool);
+        assert_eq!(output.block_height, 0);
+        assert_eq!(output.mempool_first_seen_ms, Some(1234));
+        assert_eq!(output.mempool_last_seen_ms, Some(1234));
+        assert_eq!(output.confirmed_height, None);
     }
 
     #[test]

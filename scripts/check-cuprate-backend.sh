@@ -33,6 +33,7 @@ GRPC_ENDPOINT="${MONERO_WALLET_GRPC_ENDPOINT:-$HOST:$GRPC_PORT}"
 CHECK_GRPC="${CUPRATE_CHECK_GRPC:-1}"
 CHECK_SEND_RAW="${CUPRATE_CHECK_SEND_RAW:-1}"
 CHECK_TXPOOL_STATS="${CUPRATE_CHECK_TXPOOL_STATS:-1}"
+CHECK_GET_TRANSACTIONS="${CUPRATE_CHECK_GET_TRANSACTIONS:-1}"
 WALLET_RPC_URL="${MONERO_WALLET_RPC_URL:-}"
 WALLET_RPC_USER="${MONERO_WALLET_RPC_USER:-}"
 WALLET_RPC_PASSWORD="${MONERO_WALLET_RPC_PASSWORD:-}"
@@ -173,6 +174,18 @@ if [ "$CHECK_TXPOOL_STATS" = "1" ]; then
   pool_stats="$(json_request txpool_stats POST "$DAEMON_URL/get_transaction_pool_stats" '{}')"
   assert_jq get_transaction_pool_stats "$pool_stats" '.status == "OK"'
   echo "ok get_transaction_pool_stats txs=$(echo "$pool_stats" | jq -r '.pool_stats.txs_total // 0')"
+
+  pool="$(json_request txpool POST "$DAEMON_URL/get_transaction_pool" '{}')"
+  assert_jq get_transaction_pool "$pool" '.status == "OK"'
+  echo "ok get_transaction_pool txs=$(echo "$pool" | jq -r '.transactions | length')"
+fi
+
+if [ "$CHECK_GET_TRANSACTIONS" = "1" ]; then
+  fake_tx_hash="0000000000000000000000000000000000000000000000000000000000000000"
+  get_transactions="$(json_request get_transactions POST "$DAEMON_URL/get_transactions" "{\"txs_hashes\":[\"$fake_tx_hash\"],\"decode_as_json\":false}")"
+  assert_jq get_transactions "$get_transactions" '.status == "OK"'
+  assert_jq get_transactions "$get_transactions" '(.missed_tx // [] | index("'"$fake_tx_hash"'")) != null'
+  echo "ok get_transactions missing-tx compatibility"
 fi
 
 fake_key_image="0000000000000000000000000000000000000000000000000000000000000000"

@@ -146,6 +146,11 @@ struct FastReceiveIdentity {
   std::string scannerStatus{"local-only"};
 };
 
+struct FastReceiveRegistrationPayload {
+  FastReceiveIdentity identity;
+  std::string privateViewKey;
+};
+
 struct HardwareWalletStatus {
   WalletId walletId;
   std::string deviceName;
