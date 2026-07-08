@@ -53,6 +53,10 @@ explicitly documented.
 - iOS exposes CLI diagnostics through `npm run ios:diagnostics`; it launches the
   simulator app and prints a single `MONERO_WALLET_DIAGNOSTICS` JSON line with
   native-link and daemon `/get_info` status.
+- iOS allows direct HTTP daemon access for user-selected Monero nodes. Keep
+  `NSAllowsArbitraryLoads=true` without `NSAllowsLocalNetworking`, because on
+  modern iOS the local-networking ATS key can cause external HTTP daemon
+  requests to be blocked again.
 - Android exposes matching build/install, diagnostics, and log scripts. The
   Android build script fails closed if the real Monero link manifest is missing,
   so normal CLI builds do not silently fall back to shell mode.
@@ -119,6 +123,8 @@ npm run android:logs
 `ios:build-install` bundles JavaScript into the Debug simulator app, installs
 it, and launches it. `ios:diagnostics` restarts the app and reads only
 `MONERO_WALLET_DIAGNOSTICS` JSON lines from the iOS system log.
+The current simulator gate confirms the app can reach the live Cuprate daemon
+at `152.53.133.188:18089` through both `/get_info` and `/json_rpc`.
 
 `android:build` and `android:build-install` default to the `release` variant so
 the APK contains the JavaScript bundle. They expect
