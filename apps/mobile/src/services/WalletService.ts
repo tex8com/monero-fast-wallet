@@ -69,6 +69,7 @@ export interface CreateNamedWalletWithStoredSecretInput {
   walletName: string;
   language?: string;
   network?: MoneroNetwork;
+  authentication?: DeviceSecretAuthenticationMode;
 }
 
 export interface CreateNamedWalletResult {
@@ -134,6 +135,8 @@ export interface PrepareWalletTransactionInput {
 }
 
 const NODE_APPLY_TIMEOUT_MS = 12_000;
+export type DeviceSecretAuthenticationMode =
+  "if-available" | "required" | "none";
 
 export class WalletService {
   private activeSession: WalletSession | undefined;
@@ -296,7 +299,10 @@ export class WalletService {
       );
 
       await this.ensureSecret(credentialKey);
-      await this.authorizeBiometric("Create and unlock your Monero wallet.");
+      await this.authorizeDeviceSecretAccess(
+        "Create and unlock your Monero wallet.",
+        input.authentication ?? "if-available",
+      );
       const session = await this.createWalletWithStoredSecret({
         path,
         secretKey: credentialKey,
@@ -1113,7 +1119,10 @@ export class WalletService {
       walletFile: walletFileName(registration.path),
       walletName: registration.walletName,
     });
-    await this.authorizeBiometric("Unlock your Monero wallet.");
+    await this.authorizeDeviceSecretAccess(
+      "Unlock your Monero wallet.",
+      "if-available",
+    );
     const session = await this.openWalletWithStoredSecret({
       path: registration.path,
       secretKey: registration.credentialKey,
@@ -1151,20 +1160,41 @@ export class WalletService {
     });
   }
 
-  private async authorizeBiometric(reason: string): Promise<void> {
-    await traceWalletOperation("authorizeBiometric", {
+  private async authorizeDeviceSecretAccess(
+    reason: string,
+    mode: DeviceSecretAuthenticationMode,
+  ): Promise<void> {
+    await traceWalletOperation("authorizeDeviceSecretAccess", {
+      mode,
       reasonLength: reason.length,
     }, async () => {
       const status = await this.getBiometricAuthStatus();
-      logWalletEvent("WalletService", "authorizeBiometric.status", {
+      logWalletEvent("WalletService", "authorizeDeviceSecretAccess.status", {
         available: status.available,
         biometryType: status.biometryType,
         enrolled: status.enrolled,
+        mode,
         platform: status.platform,
         supported: status.supported,
       });
+
+      if (mode === "none") {
+        logWalletEvent("WalletService", "authorizeDeviceSecretAccess.skipped", {
+          mode,
+          reason: "disabled",
+        });
+        return;
+      }
+
       if (!status.supported || !status.available || !status.enrolled) {
-        throw new Error(status.message || "Biometric unlock is not available");
+        if (mode === "required") {
+          throw new Error(status.message || "Biometric unlock is not available");
+        }
+        logWalletEvent("WalletService", "authorizeDeviceSecretAccess.skipped", {
+          mode,
+          reason: "biometricUnavailable",
+        });
+        return;
       }
 
       const result = await this.authenticateBiometric(reason);

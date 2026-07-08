@@ -6,6 +6,7 @@ APP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEVICE="${IOS_SIMULATOR_UDID:-}"
 APP_ID="${MONERO_WALLET_IOS_BUNDLE_ID:-org.reactjs.native.example.MoneroWallet}"
 SHELL_MODE="${MONERO_WALLET_IOS_SHELL:-0}"
+CONFIGURATION="${MONERO_WALLET_IOS_CONFIGURATION:-Release}"
 
 if [ -z "$DEVICE" ]; then
   DEVICE="$(xcrun simctl list devices booted | awk -F '[()]' '/Booted/ { print $2; exit }')"
@@ -19,7 +20,7 @@ fi
 xcodebuild_args=(
   -workspace "$APP_ROOT/ios/MoneroWallet.xcworkspace" \
   -scheme MoneroWallet \
-  -configuration Debug \
+  -configuration "$CONFIGURATION" \
   -sdk iphonesimulator \
   -destination "id=$DEVICE" \
   FORCE_BUNDLING=1 \
@@ -35,9 +36,9 @@ fi
 
 xcodebuild "${xcodebuild_args[@]}"
 
-APP_PATH="$HOME/Library/Developer/Xcode/DerivedData/MoneroWallet-byznwenyrgxejocmyfkublakkkks/Build/Products/Debug-iphonesimulator/MoneroWallet.app"
+APP_PATH="$HOME/Library/Developer/Xcode/DerivedData/MoneroWallet-byznwenyrgxejocmyfkublakkkks/Build/Products/$CONFIGURATION-iphonesimulator/MoneroWallet.app"
 if [ ! -d "$APP_PATH" ]; then
-  APP_PATH="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug-iphonesimulator/MoneroWallet.app' -type d -print -quit)"
+  APP_PATH="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/$CONFIGURATION-iphonesimulator/MoneroWallet.app" -type d -print -quit)"
 fi
 
 if [ ! -d "$APP_PATH" ]; then
