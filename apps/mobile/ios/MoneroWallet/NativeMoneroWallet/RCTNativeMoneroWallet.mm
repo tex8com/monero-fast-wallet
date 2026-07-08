@@ -3,6 +3,7 @@
 #import "../../../../../native/monero-bridge/cpp/WalletEngine.h"
 #import "../../../../../native/monero-bridge/cpp/WalletEngineTypes.h"
 
+#import <CoreBluetooth/CoreBluetooth.h>
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <Security/Security.h>
 
@@ -11,6 +12,162 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+namespace {
+
+NSDictionary *ledgerBleStatusDictionary(BOOL supported,
+                                        BOOL available,
+                                        BOOL permissionGranted,
+                                        BOOL requiresUserAction,
+                                        NSInteger deviceCount,
+                                        NSString *deviceName,
+                                        NSString *message) {
+  return @{
+    @"platform": @"ios",
+    @"transport": @"ble",
+    @"supported": @(supported),
+    @"available": @(available),
+    @"permissionGranted": @(permissionGranted),
+    @"requiresUserAction": @(requiresUserAction),
+    @"deviceCount": @(deviceCount),
+    @"deviceName": deviceName ?: @"",
+    @"vendorId": @0,
+    @"productId": @0,
+    @"message": message ?: @"",
+  };
+}
+
+NSArray<CBUUID *> *ledgerBleServiceUUIDs() {
+  static NSArray<CBUUID *> *uuids;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    uuids = @[
+      // Nano X.
+      [CBUUID UUIDWithString:@"13d63400-2c97-0004-0000-4c6564676572"],
+      // Stax.
+      [CBUUID UUIDWithString:@"13d63400-2c97-6004-0000-4c6564676572"],
+      // Flex.
+      [CBUUID UUIDWithString:@"13d63400-2c97-3004-0000-4c6564676572"],
+      // Nano S Plus / alternate main mode.
+      [CBUUID UUIDWithString:@"13d63400-2c97-8004-0000-4c6564676572"],
+      // Rare bootloader identifier set.
+      [CBUUID UUIDWithString:@"13d63400-2c97-9004-0000-4c6564676572"],
+    ];
+  });
+  return uuids;
+}
+
+NSMutableSet *activeLedgerBleProbes() {
+  static NSMutableSet *probes;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    probes = [NSMutableSet set];
+  });
+  return probes;
+}
+
+} // namespace
+
+@interface LedgerBleProbe : NSObject <CBCentralManagerDelegate>
+- (instancetype)initWithResolve:(RCTPromiseResolveBlock)resolve scan:(BOOL)scan;
+- (void)start;
+@end
+
+@implementation LedgerBleProbe {
+  CBCentralManager *_central;
+  RCTPromiseResolveBlock _resolve;
+  BOOL _scan;
+  BOOL _finished;
+  NSInteger _foundCount;
+  NSString *_deviceName;
+}
+
+- (instancetype)initWithResolve:(RCTPromiseResolveBlock)resolve scan:(BOOL)scan {
+  self = [super init];
+  if (self) {
+    _resolve = [resolve copy];
+    _scan = scan;
+  }
+  return self;
+}
+
+- (void)start {
+  [activeLedgerBleProbes() addObject:self];
+  _central = [[CBCentralManager alloc] initWithDelegate:self
+                                                  queue:dispatch_get_main_queue()];
+}
+
+- (void)centralManagerDidUpdateState:(CBCentralManager *)central {
+  switch (central.state) {
+    case CBManagerStateUnsupported:
+      [self finish:ledgerBleStatusDictionary(NO, NO, NO, NO, 0, @"",
+                                             @"Bluetooth LE is not available on this iOS device.")];
+      return;
+    case CBManagerStateUnauthorized:
+      [self finish:ledgerBleStatusDictionary(YES, NO, NO, YES, 0, @"",
+                                             @"Bluetooth permission is required before scanning for Ledger Nano X.")];
+      return;
+    case CBManagerStatePoweredOff:
+      [self finish:ledgerBleStatusDictionary(YES, NO, YES, YES, 0, @"",
+                                             @"Turn on Bluetooth to search for Ledger Nano X.")];
+      return;
+    case CBManagerStatePoweredOn:
+      if (_scan) {
+        [_central scanForPeripheralsWithServices:ledgerBleServiceUUIDs()
+                                         options:@{CBCentralManagerScanOptionAllowDuplicatesKey: @NO}];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+          if (self->_finished) {
+            return;
+          }
+          const BOOL walletCoreBleBridgeLinked = NO;
+          [self finish:ledgerBleStatusDictionary(self->_foundCount > 0 ? walletCoreBleBridgeLinked : YES,
+                                                 self->_foundCount > 0, YES,
+                                                 self->_foundCount == 0,
+                                                 self->_foundCount,
+                                                 self->_deviceName ?: @"",
+                                                 self->_foundCount > 0
+                                                   ? @"Ledger BLE device found. Monero BLE APDU bridge is pending; use USB until the wallet-core BLE bridge is linked."
+                                                   : @"No Ledger Nano X BLE device found. Unlock it, enable Bluetooth, and open the Monero app.")];
+        });
+      } else {
+        [self finish:ledgerBleStatusDictionary(YES, NO, YES, YES, 0, @"",
+                                               @"Ready to scan for Ledger Nano X over Bluetooth.")];
+      }
+      return;
+    case CBManagerStateResetting:
+    case CBManagerStateUnknown:
+    default:
+      return;
+  }
+}
+
+- (void)centralManager:(CBCentralManager *)central
+ didDiscoverPeripheral:(CBPeripheral *)peripheral
+     advertisementData:(NSDictionary<NSString *, id> *)advertisementData
+                  RSSI:(NSNumber *)RSSI {
+  (void)central;
+  (void)RSSI;
+  _foundCount += 1;
+  NSString *advertisedName = advertisementData[CBAdvertisementDataLocalNameKey];
+  _deviceName = advertisedName.length > 0 ? advertisedName : (peripheral.name ?: @"Ledger Nano X");
+}
+
+- (void)finish:(NSDictionary *)status {
+  if (_finished) {
+    return;
+  }
+  _finished = YES;
+  [_central stopScan];
+  RCTPromiseResolveBlock resolve = _resolve;
+  _resolve = nil;
+  if (resolve) {
+    resolve(status);
+  }
+  [activeLedgerBleProbes() removeObject:self];
+}
+
+@end
 
 namespace {
 
@@ -330,22 +487,6 @@ NSDictionary *toDictionary(const PreparedTransaction &transaction) {
   };
 }
 
-NSDictionary *ledgerTransportStatusDictionary() {
-  return @{
-    @"platform": @"ios",
-    @"transport": @"ble",
-    @"supported": @NO,
-    @"available": @NO,
-    @"permissionGranted": @NO,
-    @"requiresUserAction": @YES,
-    @"deviceCount": @0,
-    @"deviceName": @"",
-    @"vendorId": @0,
-    @"productId": @0,
-    @"message": @"Ledger BLE transport is not linked yet. iOS needs a CoreBluetooth APDU transport before Ledger Nano can be used.",
-  };
-}
-
 NSString *biometryTypeName(LAContext *context) {
   switch (context.biometryType) {
     case LABiometryTypeFaceID:
@@ -604,14 +745,16 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                           reject:(RCTPromiseRejectBlock)reject
 {
   (void)reject;
-  resolve(ledgerTransportStatusDictionary());
+  LedgerBleProbe *probe = [[LedgerBleProbe alloc] initWithResolve:resolve scan:NO];
+  [probe start];
 }
 
 - (void)requestLedgerTransportAccess:(RCTPromiseResolveBlock)resolve
                               reject:(RCTPromiseRejectBlock)reject
 {
   (void)reject;
-  resolve(ledgerTransportStatusDictionary());
+  LedgerBleProbe *probe = [[LedgerBleProbe alloc] initWithResolve:resolve scan:YES];
+  [probe start];
 }
 
 - (void)getBiometricAuthStatus:(RCTPromiseResolveBlock)resolve

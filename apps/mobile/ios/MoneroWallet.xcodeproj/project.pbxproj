@@ -15,6 +15,7 @@
 		B4D87E000000000000000001 /* RCTNativeMoneroWallet.mm in Sources */ = {isa = PBXBuildFile; fileRef = B4D87E000000000000000004 /* RCTNativeMoneroWallet.mm */; };
 		B4D87E000000000000000002 /* WalletEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = B4D87E000000000000000005 /* WalletEngine.cpp */; };
 		B4D87E000000000000000008 /* LocalAuthentication.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B4D87E000000000000000007 /* LocalAuthentication.framework */; };
+		B4D87E000000000000000009 /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B4D87E00000000000000000A /* CoreBluetooth.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -31,6 +32,7 @@
 		B4D87E000000000000000004 /* RCTNativeMoneroWallet.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = RCTNativeMoneroWallet.mm; sourceTree = "<group>"; };
 		B4D87E000000000000000005 /* WalletEngine.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = WalletEngine.cpp; path = "../../../native/monero-bridge/cpp/WalletEngine.cpp"; sourceTree = SOURCE_ROOT; };
 		B4D87E000000000000000007 /* LocalAuthentication.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = LocalAuthentication.framework; path = System/Library/Frameworks/LocalAuthentication.framework; sourceTree = SDKROOT; };
+		B4D87E00000000000000000A /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -40,6 +42,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B4D87E000000000000000008 /* LocalAuthentication.framework in Frameworks */,
+				B4D87E000000000000000009 /* CoreBluetooth.framework in Frameworks */,
 				0C80B921A6F3F58F76C31292 /* libPods-MoneroWallet.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -64,6 +67,7 @@
 			isa = PBXGroup;
 			children = (
 				B4D87E000000000000000007 /* LocalAuthentication.framework */,
+				B4D87E00000000000000000A /* CoreBluetooth.framework */,
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
 				5DCACB8F33CDC322A6C60F78 /* libPods-MoneroWallet.a */,
 			);

@@ -70,6 +70,9 @@ function ledgerStatusTitle(status: LedgerTransportStatus | undefined): string {
   if (!status) {
     return "Searching for Ledger Nano";
   }
+  if (status.transport === "ble" && status.available && !status.supported) {
+    return "Ledger BLE found";
+  }
   if (!status.supported) {
     return "Ledger transport unavailable";
   }

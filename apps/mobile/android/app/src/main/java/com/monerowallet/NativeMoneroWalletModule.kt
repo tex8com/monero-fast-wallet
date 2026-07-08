@@ -1,6 +1,13 @@
 package com.monerowallet
 
+import android.Manifest
 import android.app.PendingIntent
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -12,6 +19,9 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.CancellationSignal
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelUuid
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -21,12 +31,14 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
+import com.facebook.react.modules.core.PermissionAwareActivity
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.security.SecureRandom
 import java.security.KeyStore
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -38,7 +50,10 @@ class NativeMoneroWalletModule(
 ) : NativeMoneroWalletSpec(reactContext) {
   private var pendingLedgerUsbPermissionPromise: Promise? = null
   private var pendingLedgerUsbPermissionReceiver: BroadcastReceiver? = null
+  private var pendingLedgerBleScanPromise: Promise? = null
+  private var pendingLedgerBleScanCallback: ScanCallback? = null
   private var pendingBiometricPromise: Promise? = null
+  private val mainHandler = Handler(Looper.getMainLooper())
 
   override fun getName(): String = NAME
 
@@ -52,12 +67,29 @@ class NativeMoneroWalletModule(
   }
 
   override fun getLedgerTransportStatus(promise: Promise) {
-    promise.resolve(ledgerTransportStatusToWritableMap(ledgerUsbTransportStatus()))
+    val usbStatus = ledgerUsbTransportStatus()
+    promise.resolve(
+      ledgerTransportStatusToWritableMap(
+        if (usbStatus.available) usbStatus else ledgerBleTransportStatus(),
+      ),
+    )
   }
 
   override fun requestLedgerTransportAccess(promise: Promise) {
     val status = ledgerUsbTransportStatus()
-    if (!status.supported || !status.available || status.permissionGranted) {
+    if (status.available) {
+      requestLedgerUsbTransportAccess(status, promise)
+      return
+    }
+
+    requestLedgerBleTransportAccess(promise)
+  }
+
+  private fun requestLedgerUsbTransportAccess(
+    status: LedgerTransportStatus,
+    promise: Promise,
+  ) {
+    if (!status.supported || status.permissionGranted) {
       promise.resolve(ledgerTransportStatusToWritableMap(status))
       return
     }
@@ -116,6 +148,142 @@ class NativeMoneroWalletModule(
     }
 
     usbManager.requestPermission(device, permissionIntent)
+  }
+
+  private fun requestLedgerBleTransportAccess(promise: Promise) {
+    val baseStatus = ledgerBleTransportStatus()
+    if (!baseStatus.supported) {
+      promise.resolve(ledgerTransportStatusToWritableMap(baseStatus))
+      return
+    }
+    if (!baseStatus.permissionGranted) {
+      requestLedgerBlePermissions(promise)
+      return
+    }
+    if (!baseStatus.available) {
+      promise.resolve(ledgerTransportStatusToWritableMap(baseStatus))
+      return
+    }
+
+    scanLedgerBleDevices(promise)
+  }
+
+  private fun requestLedgerBlePermissions(promise: Promise) {
+    val permissions = missingLedgerBlePermissions()
+    if (permissions.isEmpty()) {
+      scanLedgerBleDevices(promise)
+      return
+    }
+
+    val activity = reactApplicationContext.currentActivity
+    if (activity !is PermissionAwareActivity) {
+      promise.resolve(
+        ledgerTransportStatusToWritableMap(
+          ledgerBleTransportStatus(
+            messageOverride =
+              "Bluetooth permission is required before scanning for Ledger Nano X",
+          ),
+        ),
+      )
+      return
+    }
+
+    activity.requestPermissions(
+      permissions.toTypedArray(),
+      REQUEST_LEDGER_BLE_PERMISSIONS,
+    ) { _, _, _ ->
+      scanLedgerBleDevices(promise)
+      true
+    }
+  }
+
+  private fun scanLedgerBleDevices(promise: Promise) {
+    if (pendingLedgerBleScanPromise != null) {
+      promise.reject(
+        "monero_wallet_ledger_ble_scan_pending",
+        "A Ledger BLE scan is already pending",
+      )
+      return
+    }
+
+    val baseStatus = ledgerBleTransportStatus()
+    if (!baseStatus.supported || !baseStatus.permissionGranted || !baseStatus.available) {
+      promise.resolve(ledgerTransportStatusToWritableMap(baseStatus))
+      return
+    }
+
+    val scanner = bluetoothAdapter()?.bluetoothLeScanner
+    if (scanner == null) {
+      promise.resolve(
+        ledgerTransportStatusToWritableMap(
+          ledgerBleTransportStatus(messageOverride = "Bluetooth scanner is unavailable"),
+        ),
+      )
+      return
+    }
+
+    pendingLedgerBleScanPromise = promise
+    var selectedResult: ScanResult? = null
+    val callback = object : ScanCallback() {
+      override fun onScanResult(callbackType: Int, result: ScanResult) {
+        if (selectedResult == null && result.matchesLedgerBleService()) {
+          selectedResult = result
+        }
+      }
+
+      override fun onBatchScanResults(results: MutableList<ScanResult>) {
+        if (selectedResult != null) {
+          return
+        }
+        selectedResult = results.firstOrNull { it.matchesLedgerBleService() }
+      }
+
+      override fun onScanFailed(errorCode: Int) {
+        finishLedgerBleScan(
+          status = ledgerBleTransportStatus(
+            messageOverride = "Ledger BLE scan failed with Android error $errorCode",
+          ),
+        )
+      }
+    }
+    pendingLedgerBleScanCallback = callback
+
+    val filters = LEDGER_BLE_SERVICE_UUIDS.map { uuid ->
+      ScanFilter.Builder().setServiceUuid(ParcelUuid(uuid)).build()
+    }
+    val settings = ScanSettings.Builder()
+      .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+      .build()
+
+    runCatching {
+      scanner.startScan(filters, settings, callback)
+    }.onFailure { error ->
+      pendingLedgerBleScanCallback = null
+      pendingLedgerBleScanPromise = null
+      promise.resolve(
+        ledgerTransportStatusToWritableMap(
+          ledgerBleTransportStatus(
+            messageOverride =
+              "Ledger BLE scan could not start: ${error.message ?: "unknown error"}",
+          ),
+        ),
+      )
+      return
+    }
+
+    mainHandler.postDelayed({
+      val result = selectedResult
+      finishLedgerBleScan(
+        status = if (result != null) {
+          ledgerBleDetectedStatus(result)
+        } else {
+          ledgerBleTransportStatus(
+            messageOverride =
+              "No Ledger Nano X BLE device found. Unlock it, enable Bluetooth, and open the Monero app.",
+          )
+        },
+      )
+    }, LEDGER_BLE_SCAN_TIMEOUT_MS)
   }
 
   override fun getBiometricAuthStatus(promise: Promise) {
@@ -1187,7 +1355,7 @@ class NativeMoneroWalletModule(
     }
   }
 
-  private fun ledgerTransportStatusToWritableMap(status: LedgerUsbTransportStatus): WritableMap =
+  private fun ledgerTransportStatusToWritableMap(status: LedgerTransportStatus): WritableMap =
     Arguments.createMap().apply {
       putString("platform", status.platform)
       putString("transport", status.transport)
@@ -1202,12 +1370,13 @@ class NativeMoneroWalletModule(
       putString("message", status.message)
     }
 
-  private fun ledgerUsbTransportStatus(): LedgerUsbTransportStatus {
+  private fun ledgerUsbTransportStatus(): LedgerTransportStatus {
     val supported = reactApplicationContext.packageManager.hasSystemFeature(
       PackageManager.FEATURE_USB_HOST,
     )
     if (!supported) {
-      return LedgerUsbTransportStatus(
+      return LedgerTransportStatus(
+        transport = "usb",
         supported = false,
         message = "Android USB host mode is not available on this device",
       )
@@ -1217,7 +1386,8 @@ class NativeMoneroWalletModule(
     val selectedDevice = devices.firstOrNull()
     val permissionGranted = selectedDevice?.let { usbManager().hasPermission(it) } ?: false
 
-    return LedgerUsbTransportStatus(
+    return LedgerTransportStatus(
+      transport = "usb",
       available = selectedDevice != null,
       permissionGranted = permissionGranted,
       requiresUserAction = selectedDevice != null && !permissionGranted,
@@ -1234,6 +1404,123 @@ class NativeMoneroWalletModule(
           "Android USB permission is required for the Ledger device"
       },
     )
+  }
+
+  private fun ledgerBleTransportStatus(messageOverride: String? = null): LedgerTransportStatus {
+    val bluetoothSupported = reactApplicationContext.packageManager.hasSystemFeature(
+      PackageManager.FEATURE_BLUETOOTH_LE,
+    )
+    if (!bluetoothSupported) {
+      return LedgerTransportStatus(
+        transport = "ble",
+        supported = false,
+        message = messageOverride ?: "Bluetooth LE is not available on this Android device",
+      )
+    }
+
+    val adapter = bluetoothAdapter()
+    val permissionsGranted = missingLedgerBlePermissions().isEmpty()
+    val bluetoothEnabled =
+      if (permissionsGranted || Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+        adapter?.isEnabled == true
+      } else {
+        false
+      }
+    val message = messageOverride ?: when {
+      !permissionsGranted ->
+        "Bluetooth permission is required before scanning for Ledger Nano X"
+      !bluetoothEnabled ->
+        "Turn on Bluetooth to search for Ledger Nano X"
+      else ->
+        "Ready to scan for Ledger Nano X over Bluetooth"
+    }
+
+    return LedgerTransportStatus(
+      platform = "android",
+      transport = "ble",
+      supported = bluetoothSupported,
+      available = bluetoothEnabled,
+      permissionGranted = permissionsGranted,
+      requiresUserAction = !permissionsGranted || !bluetoothEnabled,
+      deviceCount = 0,
+      deviceName = "",
+      message = message,
+    )
+  }
+
+  private fun ledgerBleDetectedStatus(result: ScanResult): LedgerTransportStatus {
+    val deviceName = ledgerBleDeviceName(result)
+    return LedgerTransportStatus(
+      platform = "android",
+      transport = "ble",
+      // Discovery is implemented, but Monero wallet-core APDU exchange is not
+      // routed over BLE yet. Keep this false so UI cannot create a broken
+      // hardware wallet from a BLE-only status.
+      supported = false,
+      available = true,
+      permissionGranted = missingLedgerBlePermissions().isEmpty(),
+      requiresUserAction = true,
+      deviceCount = 1,
+      deviceName = deviceName,
+      message =
+        "Ledger BLE device found. Monero BLE APDU bridge is pending; use USB until the wallet-core BLE bridge is linked.",
+    )
+  }
+
+  private fun finishLedgerBleScan(status: LedgerTransportStatus) {
+    val scanner = bluetoothAdapter()?.bluetoothLeScanner
+    val callback = pendingLedgerBleScanCallback
+    if (callback != null && scanner != null && missingLedgerBlePermissions().isEmpty()) {
+      runCatching { scanner.stopScan(callback) }
+    }
+    pendingLedgerBleScanCallback = null
+
+    val promise = pendingLedgerBleScanPromise
+    pendingLedgerBleScanPromise = null
+    promise?.resolve(ledgerTransportStatusToWritableMap(status))
+  }
+
+  private fun bluetoothAdapter(): BluetoothAdapter? =
+    (reactApplicationContext.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)
+      ?.adapter
+
+  private fun missingLedgerBlePermissions(): List<String> {
+    val permissions =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        listOf(
+          Manifest.permission.BLUETOOTH_SCAN,
+          Manifest.permission.BLUETOOTH_CONNECT,
+        )
+      } else {
+        listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+      }
+
+    return permissions.filter { permission ->
+      reactApplicationContext.checkSelfPermission(permission) !=
+        PackageManager.PERMISSION_GRANTED
+    }
+  }
+
+  private fun ledgerBleDeviceName(result: ScanResult): String {
+    val scanName = result.scanRecord?.deviceName
+    if (!scanName.isNullOrBlank()) {
+      return scanName
+    }
+    if (
+      Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+      reactApplicationContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+        PackageManager.PERMISSION_GRANTED
+    ) {
+      return result.device?.name ?: "Ledger Nano X"
+    }
+    return "Ledger Nano X"
+  }
+
+  private fun ScanResult.matchesLedgerBleService(): Boolean {
+    val advertisedServices = scanRecord?.serviceUuids ?: return false
+    return advertisedServices.any { serviceUuid ->
+      LEDGER_BLE_SERVICE_UUIDS.contains(serviceUuid.uuid)
+    }
   }
 
   private fun firstLedgerUsbDevice(): UsbDevice? = ledgerUsbDevices().firstOrNull()
@@ -1281,6 +1568,8 @@ class NativeMoneroWalletModule(
     private const val SCANNER_CONNECT_TIMEOUT_MS = 15_000
     private const val SCANNER_READ_TIMEOUT_MS = 15_000
     private const val LEDGER_VENDOR_ID = 0x2C97
+    private const val REQUEST_LEDGER_BLE_PERMISSIONS = 0x4C58
+    private const val LEDGER_BLE_SCAN_TIMEOUT_MS = 4_000L
     private val LEDGER_PRODUCT_IDS = setOf(
       0x0001,
       0x0004,
@@ -1289,12 +1578,24 @@ class NativeMoneroWalletModule(
       0x0007,
       0x0008,
     )
+    private val LEDGER_BLE_SERVICE_UUIDS = listOf(
+      // Nano X.
+      UUID.fromString("13d63400-2c97-0004-0000-4c6564676572"),
+      // Stax.
+      UUID.fromString("13d63400-2c97-6004-0000-4c6564676572"),
+      // Flex.
+      UUID.fromString("13d63400-2c97-3004-0000-4c6564676572"),
+      // Nano S Plus / alternate main mode.
+      UUID.fromString("13d63400-2c97-8004-0000-4c6564676572"),
+      // Rare bootloader identifier set.
+      UUID.fromString("13d63400-2c97-9004-0000-4c6564676572"),
+    )
   }
 }
 
-private data class LedgerUsbTransportStatus(
+private data class LedgerTransportStatus(
   val platform: String = "android",
-  val transport: String = "usb",
+  val transport: String,
   val supported: Boolean = true,
   val available: Boolean = false,
   val permissionGranted: Boolean = false,

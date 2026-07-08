@@ -166,7 +166,7 @@ Before the first public release, add or verify:
 
 ## Native Bridge Status
 
-Current mobile-native status on 2026-06-14 local:
+Current mobile-native status on 2026-07-08 local:
 
 - The React Native app has iOS and Android native modules backed by the shared
   C++ `WalletEngine` facade.
@@ -186,7 +186,9 @@ Current mobile-native status on 2026-06-14 local:
   `npm run android:build`, and the APK packages
   `lib/arm64-v8a/libmonero_wallet_bridge_jni.so` plus the bundled JavaScript.
 - Android exposes Ledger USB transport diagnostics and can request Android USB
-  host permission before creating a Ledger-backed wallet.
+  host permission before creating a Ledger-backed wallet. Android also declares
+  Bluetooth LE permissions and can scan for Ledger Nano X BLE service UUIDs,
+  but BLE wallet creation is blocked until the Monero APDU bridge is linked.
 - Android runtime smoke is implemented as an instrumentation test; execution on
   a real device/emulator is pending.
 - iOS `ios-sim-arm64` and `ios-device` dependency archives, gRPC/protobuf
@@ -196,6 +198,8 @@ Current mobile-native status on 2026-06-14 local:
   `build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a`.
 - iOS arm64 simulator and unsigned `iphoneos` Debug builds succeed with the
   real gRPC-enabled backend, including `libcuprate_grpc_stream.a`.
+- iOS links `CoreBluetooth.framework` and exposes native Ledger Nano X BLE
+  permission/discovery status. The simulator correctly reports no BLE hardware.
 - The bridge now exposes real transaction history and a two-step software send
   path through `getTransactions`, `prepareTransaction`, and
   `commitTransaction`; Home/Send render wallet history from `wallet2` instead
@@ -203,7 +207,8 @@ Current mobile-native status on 2026-06-14 local:
 - Ledger Nano support is mandatory. The shared bridge contract now has
   create-from-device, status, reconnect, and show-address-on-device methods,
   and the app has a Ledger setup path plus Receive-screen address confirmation.
-  Android has the first real USB/HID build and permission gate. iOS exposes the
-  same transport-status API and Bluetooth permission strings, but the actual
-  CoreBluetooth APDU transport is still pending. Transaction prompt/signing UI
-  and connected Ledger tests are still pending before mainnet beta.
+  Android has the first real USB/HID build and permission gate. Android and iOS
+  both expose native Ledger Nano X BLE discovery/permission status, but BLE is
+  not allowed to create a wallet until a native BLE APDU transport is connected
+  to the forked Monero `device_ledger` path. Transaction prompt/signing UI and
+  connected Ledger tests are still pending before mainnet beta.

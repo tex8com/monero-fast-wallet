@@ -66,7 +66,9 @@ explicitly documented.
 - Android Monero wallet archives now include the official Monero Ledger HID
   device code via `hidapi`/`libusb`; the Android native module detects Ledger
   USB devices and requests Android USB host permission before Ledger wallet
-  creation.
+  creation. Android also declares Bluetooth LE permissions and can scan for
+  Ledger Nano X BLE service UUIDs, but it intentionally does not create a BLE
+  Ledger wallet until the Monero APDU bridge is linked.
 - New software-wallet creation uses platform biometrics when available. The app
   generates the local wallet-file credential natively, stores it through Android
   Keystore or iOS Keychain, and asks for Face ID, Touch ID, fingerprint, or
@@ -89,9 +91,11 @@ explicitly documented.
   instead of asking for a local password first. The local Ledger wallet cache is
   protected with an internal credential stored through Android Keystore or iOS
   Keychain. The Receive screen can request address confirmation on the device.
-  Android has the first USB/HID transport gate. iOS exposes the same API and
-  Bluetooth permission strings, but still returns a clear "BLE transport not
-  linked yet" status until a CoreBluetooth APDU transport is implemented.
+  Android has the first USB/HID transport gate. Android and iOS now both expose
+  native BLE permission/discovery gates for Ledger Nano X service UUIDs. The
+  official Monero GUI/Core path gives us Ledger HID/USB device support, not a
+  mobile BLE transport, so BLE discovery stays blocked from wallet creation
+  until a native BLE APDU bridge is routed into `wallet2`/`device_ledger`.
   Transaction prompt/signing UI and connected Ledger tests are still pending.
 
 ## Commands
