@@ -1,8 +1,11 @@
 import { loadActiveNodeConnectionSettings } from "./NodeConnectionSettings";
-import { requireNativeMoneroWallet } from "./NativeMoneroWallet";
 import { walletService } from "./WalletService";
+import {
+  emitWalletDiagnosticsLine,
+  WALLET_DIAGNOSTIC_LOG_PREFIX,
+} from "./WalletLogger";
 
-const DIAGNOSTIC_LOG_PREFIX = "MONERO_WALLET_DIAGNOSTICS";
+export { emitWalletDiagnosticsLine };
 
 type JsonRecord = Record<string, unknown>;
 
@@ -107,7 +110,7 @@ export async function runWalletDiagnostics(trigger = "manual") {
   };
 
   await emitWalletDiagnosticsLine(
-    `${DIAGNOSTIC_LOG_PREFIX} ${JSON.stringify(diagnostics)}`,
+    `${WALLET_DIAGNOSTIC_LOG_PREFIX} ${JSON.stringify(diagnostics)}`,
   );
   return diagnostics;
 }
@@ -192,16 +195,6 @@ function summarizeGetInfo(result: HttpDiagnosticResult | undefined) {
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null;
-}
-
-export async function emitWalletDiagnosticsLine(line: string) {
-  console.log(line);
-
-  try {
-    await requireNativeMoneroWallet().logDiagnostics(line);
-  } catch {
-    // Console logging is enough when the native module is unavailable in tests.
-  }
 }
 
 function errorMessage(error: unknown): string {

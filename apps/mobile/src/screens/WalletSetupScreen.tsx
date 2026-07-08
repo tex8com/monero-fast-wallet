@@ -11,6 +11,7 @@ import MoneroCoinGhost from "../components/MoneroCoinGhost";
 import MoneroCoin from "../components/MoneroCoin";
 import { walletService } from "../services/WalletService";
 import { useWalletState } from "../services/WalletState";
+import { logWalletEvent } from "../services/WalletLogger";
 import type {
   BiometricAuthStatus,
   LedgerTransportStatus,
@@ -54,6 +55,10 @@ function makeCipherLine() {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function setupLog(event: string, fields: Record<string, unknown> = {}) {
+  logWalletEvent("WalletSetup", event, fields);
 }
 
 function normalizeSeed(seed: string): string {
@@ -291,12 +296,23 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const refreshBiometricStatus = useCallback(async () => {
     setBiometricError(undefined);
+    setupLog("refreshBiometricStatus.start");
     try {
       const status = await walletService.getBiometricAuthStatus();
       setBiometricStatus(status);
+      setupLog("refreshBiometricStatus.success", {
+        available: status.available,
+        biometryType: status.biometryType,
+        enrolled: status.enrolled,
+        platform: status.platform,
+        supported: status.supported,
+      });
       return status;
     } catch (error) {
       setBiometricError(errorMessage(error));
+      setupLog("refreshBiometricStatus.error", {
+        error: errorMessage(error),
+      });
       return undefined;
     }
   }, []);
@@ -338,9 +354,19 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const openPasswordPrompt = useCallback((mode: PasswordPromptMode) => {
     if (creating) {
+      setupLog("openPasswordPrompt.skipped", {
+        mode,
+        reason: "creating",
+      });
       return;
     }
 
+    setupLog("openPasswordPrompt.start", {
+      canUseBiometric,
+      createCredentialMode,
+      mode,
+      registeredWalletCount: registeredWallets.length,
+    });
     setCreateError(undefined);
     setWalletPassword("");
     setWalletPasswordConfirm("");
@@ -359,19 +385,42 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       refreshBiometricStatus().catch(() => undefined);
     }
     setPasswordPromptMode(mode);
-  }, [biometricStatus, creating, refreshBiometricStatus]);
+  }, [
+    biometricStatus,
+    canUseBiometric,
+    createCredentialMode,
+    creating,
+    refreshBiometricStatus,
+    registeredWallets.length,
+  ]);
 
   const refreshLedgerTransport = async (requestAccess = false) => {
     setLedgerBusy(true);
     setLedgerError(undefined);
+    setupLog("refreshLedgerTransport.start", {
+      requestAccess,
+    });
     try {
       const nextStatus = requestAccess
         ? await walletService.requestLedgerTransportAccess()
         : await walletService.getLedgerTransportStatus();
       setLedgerStatus(nextStatus);
+      setupLog("refreshLedgerTransport.success", {
+        available: nextStatus.available,
+        deviceCount: nextStatus.deviceCount,
+        permissionGranted: nextStatus.permissionGranted,
+        platform: nextStatus.platform,
+        requiresUserAction: nextStatus.requiresUserAction,
+        supported: nextStatus.supported,
+        transport: nextStatus.transport,
+      });
       return nextStatus;
     } catch (error) {
       setLedgerError(errorMessage(error));
+      setupLog("refreshLedgerTransport.error", {
+        error: errorMessage(error),
+        requestAccess,
+      });
       return undefined;
     } finally {
       setLedgerBusy(false);
@@ -380,9 +429,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const openLedgerPrompt = () => {
     if (creating) {
+      setupLog("openLedgerPrompt.skipped", {
+        reason: "creating",
+      });
       return;
     }
 
+    setupLog("openLedgerPrompt.start");
     setLedgerPromptVisible(true);
     setLedgerStatus(undefined);
     setLedgerError(undefined);
@@ -402,6 +455,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   }, [openPasswordPrompt, route?.params?.mode]);
 
   const beginCreateAnimation = (steps = CREATE_STEPS) => {
+    setupLog("beginCreateAnimation", {
+      firstStep: steps[0],
+      stepCount: steps.length,
+    });
     stopCreateEffects();
     setCreateStep(steps[0]);
     setCipherLines(Array.from({ length: 8 }, makeCipherLine));
@@ -434,16 +491,28 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   };
 
   const finishCreateAnimation = () => {
+    setupLog("finishCreateAnimation", {
+      currentStep: createStep,
+    });
     stopCreateEffects();
     createProgress.setValue(1);
   };
 
   const startCreateWallet = async () => {
     if (creating || !passwordReady) {
+      setupLog("startCreateWallet.skipped", {
+        creating,
+        passwordReady,
+      });
       return;
     }
 
     const password = walletPassword;
+    const startedAt = Date.now();
+    setupLog("startCreateWallet.start", {
+      createFastReceiveOnSetup,
+      credentialMode: "password",
+    });
     setCreating(true);
     setCreatingKind("software");
     setPasswordPromptMode(undefined);
@@ -461,26 +530,48 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
       if (createFastReceiveOnSetup) {
         setCreateStep("Creating fast receive");
+        setupLog("startCreateWallet.fastReceive.start");
         await walletService.createFastReceiveIdentity({
           password,
           restoreHeight: 0,
         });
+        setupLog("startCreateWallet.fastReceive.success");
       }
       const seed = await walletService.getSeed(result.session);
+      setupLog("startCreateWallet.seedLoaded", {
+        seedWordCount: seed.trim().split(/\s+/).filter(Boolean).length,
+      });
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
-      walletService.startRefresh(result.session).catch(() => undefined);
+      setupLog("startCreateWallet.registered", {
+        registrationId: result.registration.id,
+        walletName: result.registration.walletName,
+      });
+      walletService.startRefresh(result.session)
+        .then(() => setupLog("startCreateWallet.backgroundRefresh.success"))
+        .catch(error => {
+          setupLog("startCreateWallet.backgroundRefresh.error", {
+            error: errorMessage(error),
+          });
+        });
 
       finishCreateAnimation();
       setCreatedSeedWalletId(result.registration.id);
       setCreatedSeed(seed);
       setWalletPassword("");
       setWalletPasswordConfirm("");
+      setupLog("startCreateWallet.success", {
+        elapsedMs: Date.now() - startedAt,
+      });
     } catch (error) {
       finishCreateAnimation();
       setCreateError(errorMessage(error));
       setPasswordPromptMode("create");
+      setupLog("startCreateWallet.error", {
+        elapsedMs: Date.now() - startedAt,
+        error: errorMessage(error),
+      });
     } finally {
       setCreating(false);
     }
@@ -488,9 +579,18 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const startCreateWalletWithBiometric = async () => {
     if (creating || !canUseBiometric) {
+      setupLog("startCreateWalletWithBiometric.skipped", {
+        canUseBiometric,
+        creating,
+      });
       return;
     }
 
+    const startedAt = Date.now();
+    setupLog("startCreateWalletWithBiometric.start", {
+      biometryType: biometricStatus?.biometryType,
+      createFastReceiveOnSetup,
+    });
     setCreating(true);
     setCreatingKind("software");
     setPasswordPromptMode(undefined);
@@ -507,24 +607,46 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
       if (createFastReceiveOnSetup) {
         setCreateStep("Creating fast receive");
+        setupLog("startCreateWalletWithBiometric.fastReceive.start");
         await walletService.createFastReceiveIdentity({
           restoreHeight: 0,
         });
+        setupLog("startCreateWalletWithBiometric.fastReceive.success");
       }
       const seed = await walletService.getSeed(result.session);
+      setupLog("startCreateWalletWithBiometric.seedLoaded", {
+        seedWordCount: seed.trim().split(/\s+/).filter(Boolean).length,
+      });
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
-      walletService.startRefresh(result.session).catch(() => undefined);
+      setupLog("startCreateWalletWithBiometric.registered", {
+        registrationId: result.registration.id,
+        walletName: result.registration.walletName,
+      });
+      walletService.startRefresh(result.session)
+        .then(() => setupLog("startCreateWalletWithBiometric.backgroundRefresh.success"))
+        .catch(error => {
+          setupLog("startCreateWalletWithBiometric.backgroundRefresh.error", {
+            error: errorMessage(error),
+          });
+        });
 
       finishCreateAnimation();
       setCreatedSeedWalletId(result.registration.id);
       setCreatedSeed(seed);
+      setupLog("startCreateWalletWithBiometric.success", {
+        elapsedMs: Date.now() - startedAt,
+      });
     } catch (error) {
       finishCreateAnimation();
       setCreateError(errorMessage(error));
       setPasswordPromptMode("create");
       refreshBiometricStatus().catch(() => undefined);
+      setupLog("startCreateWalletWithBiometric.error", {
+        elapsedMs: Date.now() - startedAt,
+        error: errorMessage(error),
+      });
     } finally {
       setCreating(false);
     }
@@ -532,10 +654,21 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const startRestoreWallet = async () => {
     if (creating || !passwordReady) {
+      setupLog("startRestoreWallet.skipped", {
+        creating,
+        passwordReady,
+        restoreHeightReady,
+        restoreSeedWordCount,
+      });
       return;
     }
 
     const password = walletPassword;
+    const startedAt = Date.now();
+    setupLog("startRestoreWallet.start", {
+      restoreHeight: Math.floor(restoreHeightNumber),
+      restoreSeedWordCount,
+    });
     setCreating(true);
     setCreatingKind("restore");
     setPasswordPromptMode(undefined);
@@ -555,7 +688,17 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
-      walletService.startRefresh(result.session).catch(() => undefined);
+      setupLog("startRestoreWallet.registered", {
+        registrationId: result.registration.id,
+        walletName: result.registration.walletName,
+      });
+      walletService.startRefresh(result.session)
+        .then(() => setupLog("startRestoreWallet.backgroundRefresh.success"))
+        .catch(error => {
+          setupLog("startRestoreWallet.backgroundRefresh.error", {
+            error: errorMessage(error),
+          });
+        });
 
       finishCreateAnimation();
       setWalletPassword("");
@@ -563,10 +706,17 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setRestoreSeed("");
       setRestoreHeight("");
       navigation.navigate("Home");
+      setupLog("startRestoreWallet.success", {
+        elapsedMs: Date.now() - startedAt,
+      });
     } catch (error) {
       finishCreateAnimation();
       setCreateError(errorMessage(error));
       setPasswordPromptMode("restore");
+      setupLog("startRestoreWallet.error", {
+        elapsedMs: Date.now() - startedAt,
+        error: errorMessage(error),
+      });
     } finally {
       setCreating(false);
     }
@@ -574,9 +724,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const startCreateHardwareWallet = async () => {
     if (creating) {
+      setupLog("startCreateHardwareWallet.skipped", {
+        reason: "creating",
+      });
       return;
     }
 
+    const startedAt = Date.now();
+    setupLog("startCreateHardwareWallet.start");
     setCreating(true);
     setCreatingKind("hardware");
     setPasswordPromptMode(undefined);
@@ -590,6 +745,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       const transportStatus =
         await walletService.requestLedgerTransportAccess();
       setLedgerStatus(transportStatus);
+      setupLog("startCreateHardwareWallet.transport", {
+        available: transportStatus.available,
+        deviceCount: transportStatus.deviceCount,
+        permissionGranted: transportStatus.permissionGranted,
+        supported: transportStatus.supported,
+        transport: transportStatus.transport,
+      });
       if (
         !transportStatus.supported ||
         !transportStatus.available ||
@@ -605,16 +767,33 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
-      walletService.startRefresh(result.session).catch(() => undefined);
+      setupLog("startCreateHardwareWallet.registered", {
+        registrationId: result.registration.id,
+        walletName: result.registration.walletName,
+      });
+      walletService.startRefresh(result.session)
+        .then(() => setupLog("startCreateHardwareWallet.backgroundRefresh.success"))
+        .catch(error => {
+          setupLog("startCreateHardwareWallet.backgroundRefresh.error", {
+            error: errorMessage(error),
+          });
+        });
 
       finishCreateAnimation();
       setLedgerPromptVisible(false);
       navigation.navigate("Home");
+      setupLog("startCreateHardwareWallet.success", {
+        elapsedMs: Date.now() - startedAt,
+      });
     } catch (error) {
       finishCreateAnimation();
       setCreateError(errorMessage(error));
       setLedgerError(errorMessage(error));
       setLedgerPromptVisible(true);
+      setupLog("startCreateHardwareWallet.error", {
+        elapsedMs: Date.now() - startedAt,
+        error: errorMessage(error),
+      });
     } finally {
       setCreating(false);
     }
@@ -622,9 +801,18 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const openExistingWallet = async () => {
     if (creating || !passwordReady) {
+      setupLog("openExistingWallet.skipped", {
+        creating,
+        passwordReady,
+      });
       return;
     }
 
+    const startedAt = Date.now();
+    setupLog("openExistingWallet.start", {
+      kind: registeredWallet?.kind,
+      walletName: registeredWallet?.walletName,
+    });
     setCreating(true);
     setCreatingKind(
       registeredWallet?.kind === "hardware" ? "hardware" : "software",
@@ -645,21 +833,42 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       await registerOpenedSession(session, wallet, {
         refresh: false,
       });
-      walletService.startRefresh(session).catch(() => undefined);
+      setupLog("openExistingWallet.registered", {
+        walletName: wallet?.walletName,
+      });
+      walletService.startRefresh(session)
+        .then(() => setupLog("openExistingWallet.backgroundRefresh.success"))
+        .catch(error => {
+          setupLog("openExistingWallet.backgroundRefresh.error", {
+            error: errorMessage(error),
+          });
+        });
       finishCreateAnimation();
       setWalletPassword("");
       navigation.navigate("Home");
+      setupLog("openExistingWallet.success", {
+        elapsedMs: Date.now() - startedAt,
+      });
     } catch (error) {
       finishCreateAnimation();
       setCreateError(errorMessage(error));
       setPasswordPromptMode("open");
       refreshBiometricStatus().catch(() => undefined);
+      setupLog("openExistingWallet.error", {
+        elapsedMs: Date.now() - startedAt,
+        error: errorMessage(error),
+      });
     } finally {
       setCreating(false);
     }
   };
 
   const submitPasswordPrompt = () => {
+    setupLog("submitPasswordPrompt", {
+      createCredentialMode,
+      mode: passwordPromptMode,
+      passwordReady,
+    });
     if (passwordPromptMode === "open") {
       openExistingWallet();
       return;
@@ -680,10 +889,16 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const finishSeedBackup = async () => {
     if (!seedConfirmed) {
+      setupLog("finishSeedBackup.skipped", {
+        reason: "notConfirmed",
+      });
       return;
     }
 
     try {
+      setupLog("finishSeedBackup.start", {
+        createdSeedWalletId,
+      });
       if (createdSeedWalletId) {
         await walletService.markRegisteredWalletSeedBackedUp(createdSeedWalletId);
         await reloadRegisteredWallet();
@@ -691,8 +906,15 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setCreatedSeed("");
       setCreatedSeedWalletId(undefined);
       navigation.navigate("Home");
+      setupLog("finishSeedBackup.success", {
+        createdSeedWalletId,
+      });
     } catch (error) {
       setCreateError(errorMessage(error));
+      setupLog("finishSeedBackup.error", {
+        createdSeedWalletId,
+        error: errorMessage(error),
+      });
     }
   };
 

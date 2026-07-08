@@ -22,6 +22,7 @@ import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -466,7 +467,11 @@ class NativeMoneroWalletModule(
     network: String,
     promise: Promise,
   ) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "createWallet",
+      walletPathFields(path, network) + mapOf("language" to language.ifBlank { "English" }),
+    ) {
       NativeMoneroWalletJni.createWallet(path, password, language, network)
     }
   }
@@ -478,7 +483,14 @@ class NativeMoneroWalletModule(
     network: String,
     promise: Promise,
   ) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "createWalletWithStoredSecret",
+      walletPathFields(path, network) + mapOf(
+        "hasStoredSecret" to true,
+        "language" to language.ifBlank { "English" },
+      ),
+    ) {
       NativeMoneroWalletJni.createWallet(
         path,
         readRequiredSecretValue(secretKey),
@@ -497,7 +509,15 @@ class NativeMoneroWalletModule(
     restoreHeight: Double,
     promise: Promise,
   ) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "restoreWallet",
+      walletPathFields(path, network) + mapOf(
+        "hasSeedOffset" to seedOffset.isNotBlank(),
+        "restoreHeight" to restoreHeight,
+        "seedWordCount" to mnemonic.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.size,
+      ),
+    ) {
       NativeMoneroWalletJni.restoreWallet(
         path,
         password,
@@ -515,7 +535,7 @@ class NativeMoneroWalletModule(
     network: String,
     promise: Promise,
   ) {
-    resolveNativeString(promise) {
+    resolveNativeString(promise, "openWallet", walletPathFields(path, network)) {
       NativeMoneroWalletJni.openWallet(path, password, network)
     }
   }
@@ -526,7 +546,11 @@ class NativeMoneroWalletModule(
     network: String,
     promise: Promise,
   ) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "openWalletWithStoredSecret",
+      walletPathFields(path, network) + mapOf("hasStoredSecret" to true),
+    ) {
       NativeMoneroWalletJni.openWallet(
         path,
         readRequiredSecretValue(secretKey),
@@ -544,7 +568,15 @@ class NativeMoneroWalletModule(
     subaddressLookahead: String,
     promise: Promise,
   ) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "createWalletFromDevice",
+      walletPathFields(path, network) + mapOf(
+        "deviceName" to if (deviceName.isBlank()) "Ledger" else deviceName,
+        "restoreHeight" to restoreHeight,
+        "subaddressLookahead" to subaddressLookahead,
+      ),
+    ) {
       NativeMoneroWalletJni.createWalletFromDevice(
         path,
         password,
@@ -565,7 +597,16 @@ class NativeMoneroWalletModule(
     subaddressLookahead: String,
     promise: Promise,
   ) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "createWalletFromDeviceWithStoredSecret",
+      walletPathFields(path, network) + mapOf(
+        "deviceName" to if (deviceName.isBlank()) "Ledger" else deviceName,
+        "hasStoredSecret" to true,
+        "restoreHeight" to restoreHeight,
+        "subaddressLookahead" to subaddressLookahead,
+      ),
+    ) {
       NativeMoneroWalletJni.createWalletFromDevice(
         path,
         readRequiredSecretValue(secretKey),
@@ -587,7 +628,18 @@ class NativeMoneroWalletModule(
     derivationIndex: Double,
     promise: Promise,
   ) {
-    resolveNativeMap(promise) {
+    resolveNativeMap(
+      promise,
+      "createFastReceiveIdentity",
+      mapOf(
+        "derivationIndex" to derivationIndex,
+        "identityId" to identityId,
+        "label" to label,
+        "restoreHeight" to restoreHeight,
+        "sourceWalletId" to maskIdentifier(sourceWalletId),
+        "walletFile" to File(path).name,
+      ),
+    ) {
       fastReceiveIdentityToWritableMap(
         NativeMoneroWalletJni.createFastReceiveIdentity(
           sourceWalletId,
@@ -612,7 +664,19 @@ class NativeMoneroWalletModule(
     derivationIndex: Double,
     promise: Promise,
   ) {
-    resolveNativeMap(promise) {
+    resolveNativeMap(
+      promise,
+      "createFastReceiveIdentityWithStoredSecret",
+      mapOf(
+        "derivationIndex" to derivationIndex,
+        "hasStoredSecret" to true,
+        "identityId" to identityId,
+        "label" to label,
+        "restoreHeight" to restoreHeight,
+        "sourceWalletId" to maskIdentifier(sourceWalletId),
+        "walletFile" to File(path).name,
+      ),
+    ) {
       fastReceiveIdentityToWritableMap(
         NativeMoneroWalletJni.createFastReceiveIdentity(
           sourceWalletId,
@@ -637,7 +701,16 @@ class NativeMoneroWalletModule(
     pushToken: String,
     promise: Promise,
   ) {
-    resolveNativeMap(promise) {
+    resolveNativeMap(
+      promise,
+      "enableFastReceiveIdentity",
+      mapOf(
+        "identityId" to identityId,
+        "network" to network,
+        "scannerUrl" to scannerUrl,
+        "walletFile" to File(path).name,
+      ),
+    ) {
       val payload = NativeMoneroWalletJni.fastReceiveRegistrationPayload(
         identityId,
         path,
@@ -658,16 +731,24 @@ class NativeMoneroWalletModule(
     promise: Promise,
   ) {
     runCatching {
-      removeFastReceiveWatch(identityId, scannerUrl, scannerAuthToken)
-      Arguments.createMap().apply {
-        putString("id", identityId)
-        putString("label", "")
-        putString("path", "")
-        putString("address", "")
-        putString("network", "stagenet")
-        putDouble("restoreHeight", 0.0)
-        putDouble("derivationIndex", 0.0)
-        putString("scannerStatus", "disabled")
+      timedNativeOperation(
+        "disableFastReceiveIdentity",
+        mapOf(
+          "identityId" to identityId,
+          "scannerUrl" to scannerUrl,
+        ),
+      ) {
+        removeFastReceiveWatch(identityId, scannerUrl, scannerAuthToken)
+        Arguments.createMap().apply {
+          putString("id", identityId)
+          putString("label", "")
+          putString("path", "")
+          putString("address", "")
+          putString("network", "stagenet")
+          putDouble("restoreHeight", 0.0)
+          putDouble("derivationIndex", 0.0)
+          putString("scannerStatus", "disabled")
+        }
       }
     }
       .onSuccess { value -> promise.resolve(value) }
@@ -681,7 +762,11 @@ class NativeMoneroWalletModule(
   }
 
   override fun closeWallet(walletId: String, storeFlag: Double, promise: Promise) {
-    resolveNativeVoid(promise) {
+    resolveNativeVoid(
+      promise,
+      "closeWallet",
+      mapOf("store" to (storeFlag != 0.0), "walletId" to maskIdentifier(walletId)),
+    ) {
       NativeMoneroWalletJni.closeWallet(walletId, storeFlag != 0.0)
     }
   }
@@ -696,7 +781,18 @@ class NativeMoneroWalletModule(
     proxyAddress: String,
     promise: Promise,
   ) {
-    resolveNativeVoid(promise) {
+    resolveNativeVoid(
+      promise,
+      "setDaemon",
+      mapOf(
+        "address" to address,
+        "hasPassword" to password.isNotEmpty(),
+        "hasUsername" to username.isNotEmpty(),
+        "trusted" to (trustedFlag != 0.0),
+        "useSsl" to (useSslFlag != 0.0),
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
       NativeMoneroWalletJni.setDaemon(
         walletId,
         address,
@@ -719,7 +815,18 @@ class NativeMoneroWalletModule(
     proxyAddress: String,
     promise: Promise,
   ) {
-    resolveNativeVoid(promise) {
+    resolveNativeVoid(
+      promise,
+      "setDaemonWithStoredPassword",
+      mapOf(
+        "address" to address,
+        "hasPassword" to true,
+        "hasUsername" to username.isNotEmpty(),
+        "trusted" to (trustedFlag != 0.0),
+        "useSsl" to (useSslFlag != 0.0),
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
       val password = readSecretValue(passwordKey)
         ?: error("Stored daemon password is missing")
       NativeMoneroWalletJni.setDaemon(
@@ -735,19 +842,31 @@ class NativeMoneroWalletModule(
   }
 
   override fun setGrpcEndpoint(walletId: String, endpoint: String, promise: Promise) {
-    resolveNativeVoid(promise) {
+    resolveNativeVoid(
+      promise,
+      "setGrpcEndpoint",
+      mapOf("endpoint" to endpoint, "walletId" to maskIdentifier(walletId)),
+    ) {
       NativeMoneroWalletJni.setGrpcEndpoint(walletId, endpoint)
     }
   }
 
   override fun startRefresh(walletId: String, promise: Promise) {
-    resolveNativeVoid(promise) {
+    resolveNativeVoid(
+      promise,
+      "startRefresh",
+      mapOf("walletId" to maskIdentifier(walletId)),
+    ) {
       NativeMoneroWalletJni.startRefresh(walletId)
     }
   }
 
   override fun stopRefresh(walletId: String, promise: Promise) {
-    resolveNativeVoid(promise) {
+    resolveNativeVoid(
+      promise,
+      "stopRefresh",
+      mapOf("walletId" to maskIdentifier(walletId)),
+    ) {
       NativeMoneroWalletJni.stopRefresh(walletId)
     }
   }
@@ -758,19 +877,38 @@ class NativeMoneroWalletModule(
     addressIndex: Double,
     promise: Promise,
   ) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "getAddress",
+      mapOf(
+        "accountIndex" to accountIndex,
+        "addressIndex" to addressIndex,
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
       NativeMoneroWalletJni.getAddress(walletId, accountIndex, addressIndex)
     }
   }
 
   override fun getSeed(walletId: String, seedOffset: String, promise: Promise) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "getSeed",
+      mapOf(
+        "hasSeedOffset" to seedOffset.isNotBlank(),
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
       NativeMoneroWalletJni.getSeed(walletId, seedOffset)
     }
   }
 
   override fun getBalance(walletId: String, accountIndex: Double, promise: Promise) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "getBalance",
+      mapOf("accountIndex" to accountIndex, "walletId" to maskIdentifier(walletId)),
+    ) {
       NativeMoneroWalletJni.getBalance(walletId, accountIndex)
     }
   }
@@ -780,19 +918,31 @@ class NativeMoneroWalletModule(
     accountIndex: Double,
     promise: Promise,
   ) {
-    resolveNativeString(promise) {
+    resolveNativeString(
+      promise,
+      "getUnlockedBalance",
+      mapOf("accountIndex" to accountIndex, "walletId" to maskIdentifier(walletId)),
+    ) {
       NativeMoneroWalletJni.getUnlockedBalance(walletId, accountIndex)
     }
   }
 
   override fun snapshot(walletId: String, promise: Promise) {
-    resolveNativeMap(promise) {
+    resolveNativeMap(
+      promise,
+      "snapshot",
+      mapOf("walletId" to maskIdentifier(walletId)),
+    ) {
       snapshotToWritableMap(NativeMoneroWalletJni.snapshot(walletId))
     }
   }
 
   override fun getTransactions(walletId: String, limit: Double, promise: Promise) {
-    resolveNativeArray(promise) {
+    resolveNativeArray(
+      promise,
+      "getTransactions",
+      mapOf("limit" to limit, "walletId" to maskIdentifier(walletId)),
+    ) {
       transactionsToWritableArray(
         NativeMoneroWalletJni.getTransactions(walletId, limit),
       )
@@ -808,7 +958,18 @@ class NativeMoneroWalletModule(
     accountIndex: Double,
     promise: Promise,
   ) {
-    resolveNativeMap(promise) {
+    resolveNativeMap(
+      promise,
+      "prepareTransaction",
+      mapOf(
+        "accountIndex" to accountIndex,
+        "amountAtomic" to amountAtomic,
+        "destination" to maskIdentifier(address),
+        "hasPaymentId" to paymentId.isNotBlank(),
+        "priority" to priority,
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
       preparedTransactionToWritableMap(
         NativeMoneroWalletJni.prepareTransaction(
           walletId,
@@ -823,7 +984,14 @@ class NativeMoneroWalletModule(
   }
 
   override fun commitTransaction(walletId: String, pendingId: String, promise: Promise) {
-    resolveNativeMap(promise) {
+    resolveNativeMap(
+      promise,
+      "commitTransaction",
+      mapOf(
+        "pendingId" to maskIdentifier(pendingId),
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
       preparedTransactionToWritableMap(
         NativeMoneroWalletJni.commitTransaction(walletId, pendingId),
       )
@@ -831,7 +999,11 @@ class NativeMoneroWalletModule(
   }
 
   override fun getHardwareWalletStatus(walletId: String, promise: Promise) {
-    resolveNativeMap(promise) {
+    resolveNativeMap(
+      promise,
+      "getHardwareWalletStatus",
+      mapOf("walletId" to maskIdentifier(walletId)),
+    ) {
       hardwareWalletStatusToWritableMap(
         NativeMoneroWalletJni.getHardwareWalletStatus(walletId),
       )
@@ -839,7 +1011,11 @@ class NativeMoneroWalletModule(
   }
 
   override fun reconnectHardwareWallet(walletId: String, promise: Promise) {
-    resolveNativeMap(promise) {
+    resolveNativeMap(
+      promise,
+      "reconnectHardwareWallet",
+      mapOf("walletId" to maskIdentifier(walletId)),
+    ) {
       hardwareWalletStatusToWritableMap(
         NativeMoneroWalletJni.reconnectHardwareWallet(walletId),
       )
@@ -853,7 +1029,16 @@ class NativeMoneroWalletModule(
     paymentId: String,
     promise: Promise,
   ) {
-    resolveNativeMap(promise) {
+    resolveNativeMap(
+      promise,
+      "showHardwareWalletAddress",
+      mapOf(
+        "accountIndex" to accountIndex,
+        "addressIndex" to addressIndex,
+        "hasPaymentId" to paymentId.isNotBlank(),
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
       hardwareWalletStatusToWritableMap(
         NativeMoneroWalletJni.showHardwareWalletAddress(
           walletId,
@@ -865,45 +1050,131 @@ class NativeMoneroWalletModule(
     }
   }
 
-  private inline fun resolveNativeString(promise: Promise, block: () -> String) {
+  private inline fun resolveNativeString(
+    promise: Promise,
+    operation: String? = null,
+    fields: Map<String, Any?> = emptyMap(),
+    block: () -> String,
+  ) {
     if (!requireLinked(promise)) {
       return
     }
 
-    runCatching { block() }
+    runCatching { timedNativeOperation(operation, fields, block) }
       .onSuccess { value -> promise.resolve(value) }
       .onFailure { error -> rejectNativeError(promise, error) }
   }
 
-  private inline fun resolveNativeVoid(promise: Promise, block: () -> Unit) {
+  private inline fun resolveNativeVoid(
+    promise: Promise,
+    operation: String? = null,
+    fields: Map<String, Any?> = emptyMap(),
+    block: () -> Unit,
+  ) {
     if (!requireLinked(promise)) {
       return
     }
 
-    runCatching { block() }
+    runCatching { timedNativeOperation(operation, fields, block) }
       .onSuccess { promise.resolve(null) }
       .onFailure { error -> rejectNativeError(promise, error) }
   }
 
-  private inline fun resolveNativeMap(promise: Promise, block: () -> WritableMap) {
+  private inline fun resolveNativeMap(
+    promise: Promise,
+    operation: String? = null,
+    fields: Map<String, Any?> = emptyMap(),
+    block: () -> WritableMap,
+  ) {
     if (!requireLinked(promise)) {
       return
     }
 
-    runCatching { block() }
+    runCatching { timedNativeOperation(operation, fields, block) }
       .onSuccess { value -> promise.resolve(value) }
       .onFailure { error -> rejectNativeError(promise, error) }
   }
 
-  private inline fun resolveNativeArray(promise: Promise, block: () -> WritableArray) {
+  private inline fun resolveNativeArray(
+    promise: Promise,
+    operation: String? = null,
+    fields: Map<String, Any?> = emptyMap(),
+    block: () -> WritableArray,
+  ) {
     if (!requireLinked(promise)) {
       return
     }
 
-    runCatching { block() }
+    runCatching { timedNativeOperation(operation, fields, block) }
       .onSuccess { value -> promise.resolve(value) }
       .onFailure { error -> rejectNativeError(promise, error) }
   }
+
+  private inline fun <T> timedNativeOperation(
+    operation: String?,
+    fields: Map<String, Any?> = emptyMap(),
+    block: () -> T,
+  ): T {
+    if (operation == null) {
+      return block()
+    }
+
+    val startedAt = SystemClock.elapsedRealtime()
+    logNativeEvent("$operation.start", fields)
+    return try {
+      val value = block()
+      logNativeEvent(
+        "$operation.success",
+        fields + mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - startedAt)),
+      )
+      value
+    } catch (error: Throwable) {
+      logNativeEvent(
+        "$operation.error",
+        fields + mapOf(
+          "elapsedMs" to (SystemClock.elapsedRealtime() - startedAt),
+          "error" to (error.message ?: error::class.java.simpleName),
+        ),
+      )
+      throw error
+    }
+  }
+
+  private fun logNativeEvent(event: String, fields: Map<String, Any?> = emptyMap()) {
+    val details = fields.entries
+      .joinToString(separator = " ") { (key, value) -> "$key=${sanitizeLogValue(key, value)}" }
+    val suffix = if (details.isBlank()) "" else " $details"
+    Log.i(NAME, "MONERO_WALLET_DIAGNOSTICS native=android event=$event$suffix")
+  }
+
+  private fun sanitizeLogValue(key: String, value: Any?): String {
+    val normalized = key.lowercase()
+    if (
+      normalized == "password" ||
+      normalized == "mnemonic" ||
+      normalized == "seed" ||
+      normalized == "secretkey" ||
+      normalized == "privateviewkey" ||
+      normalized == "scannerauthtoken" ||
+      normalized == "token"
+    ) {
+      return "[redacted]"
+    }
+    return value?.toString() ?: ""
+  }
+
+  private fun walletPathFields(path: String, network: String): Map<String, Any?> =
+    mapOf(
+      "network" to network,
+      "walletFile" to File(path).name,
+    )
+
+  private fun maskIdentifier(value: String): String =
+    if (value.length <= 14) {
+      value
+    } else {
+      "${value.take(8)}...${value.takeLast(6)}"
+    }
 
   private fun requireLinked(promise: Promise): Boolean {
     if (NativeMoneroWalletJni.linkedWithMonero()) {

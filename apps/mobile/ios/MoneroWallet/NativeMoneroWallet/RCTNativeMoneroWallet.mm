@@ -204,6 +204,41 @@ std::string toStdString(NSString *value) {
   return utf8 == nullptr ? std::string{} : std::string{utf8};
 }
 
+uint64_t diagnosticNowMs() {
+  return static_cast<uint64_t>(
+      [[NSProcessInfo processInfo] systemUptime] * 1000.0);
+}
+
+NSString *walletFileName(NSString *path) {
+  return path.length == 0 ? @"" : [path lastPathComponent];
+}
+
+NSString *maskIdentifier(NSString *value) {
+  if (value.length == 0 || value.length <= 14) {
+    return value ?: @"";
+  }
+  NSString *prefix = [value substringToIndex:8];
+  NSString *suffix = [value substringFromIndex:value.length - 6];
+  return [NSString stringWithFormat:@"%@...%@", prefix, suffix];
+}
+
+NSDictionary *diagnosticFields(NSDictionary *fields, NSDictionary *extra) {
+  NSMutableDictionary *result = [NSMutableDictionary dictionary];
+  if (fields != nil) {
+    [result addEntriesFromDictionary:fields];
+  }
+  if (extra != nil) {
+    [result addEntriesFromDictionary:extra];
+  }
+  return result;
+}
+
+void logNativeEvent(NSString *event, NSDictionary *fields) {
+  NSLog(@"MONERO_WALLET_DIAGNOSTICS native=ios event=%@ fields=%@",
+        event ?: @"",
+        fields ?: @{});
+}
+
 NetworkType toNetworkType(NSString *network) {
   if ([network isEqualToString:@"mainnet"]) {
     return NetworkType::Mainnet;
@@ -704,11 +739,42 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                   reject:(RCTPromiseRejectBlock)reject
                     work:(WalletWorkBlock)work
 {
+  [self runOnWalletQueue:resolve reject:reject operation:nil fields:nil work:work];
+}
+
+- (void)runOnWalletQueue:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject
+               operation:(NSString *)operation
+                  fields:(NSDictionary *)fields
+                    work:(WalletWorkBlock)work
+{
+  uint64_t queuedAt = diagnosticNowMs();
+  if (operation.length > 0) {
+    logNativeEvent([operation stringByAppendingString:@".queued"], fields);
+  }
+
   dispatch_async(_walletQueue, ^{
+    uint64_t startedAt = diagnosticNowMs();
+    if (operation.length > 0) {
+      logNativeEvent(
+          [operation stringByAppendingString:@".start"],
+          diagnosticFields(fields, @{
+            @"queuedMs": @(startedAt - queuedAt),
+          }));
+    }
+
     if (!_engine) {
       NSString *message = _engineInitError.empty()
           ? @"WalletEngine failed to initialize"
           : toNSString(_engineInitError);
+      if (operation.length > 0) {
+        logNativeEvent(
+            [operation stringByAppendingString:@".error"],
+            diagnosticFields(fields, @{
+              @"elapsedMs": @(diagnosticNowMs() - startedAt),
+              @"error": message,
+            }));
+      }
       NSError *nativeError = [NSError errorWithDomain:@"NativeMoneroWallet"
                                                  code:2
                                              userInfo:@{NSLocalizedDescriptionKey: message}];
@@ -718,8 +784,23 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
 
     try {
       id result = work(*_engine);
+      if (operation.length > 0) {
+        logNativeEvent(
+            [operation stringByAppendingString:@".success"],
+            diagnosticFields(fields, @{
+              @"elapsedMs": @(diagnosticNowMs() - startedAt),
+            }));
+      }
       resolve(result ?: [NSNull null]);
     } catch (const std::exception &error) {
+      if (operation.length > 0) {
+        logNativeEvent(
+            [operation stringByAppendingString:@".error"],
+            diagnosticFields(fields, @{
+              @"elapsedMs": @(diagnosticNowMs() - startedAt),
+              @"error": toNSString(error.what()),
+            }));
+      }
       rejectWithException(reject, error);
     }
   });
@@ -883,7 +964,15 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
              resolve:(RCTPromiseResolveBlock)resolve
               reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"createWallet"
+                  fields:@{
+                    @"language": language.length == 0 ? @"English" : language,
+                    @"network": network ?: @"",
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     CreateWalletRequest request;
     request.path = toStdString(path);
     request.password = toStdString(password);
@@ -900,7 +989,16 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                              resolve:(RCTPromiseResolveBlock)resolve
                               reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"createWalletWithStoredSecret"
+                  fields:@{
+                    @"hasStoredSecret": @YES,
+                    @"language": language.length == 0 ? @"English" : language,
+                    @"network": network ?: @"",
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     CreateWalletRequest request;
     request.path = toStdString(path);
     request.password = toStdString(readRequiredKeychainSecret(secretKey));
@@ -919,7 +1017,26 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
               resolve:(RCTPromiseResolveBlock)resolve
                reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  NSArray<NSString *> *seedWords = [[mnemonic stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]]
+      componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSPredicate *nonEmpty =
+      [NSPredicate predicateWithBlock:^BOOL(NSString *word,
+                                            NSDictionary<NSString *, id> *bindings) {
+    (void)bindings;
+    return word.length > 0;
+  }];
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"restoreWallet"
+                  fields:@{
+                    @"hasSeedOffset": @(seedOffset.length > 0),
+                    @"network": network ?: @"",
+                    @"restoreHeight": @(restoreHeight),
+                    @"seedWordCount": @([[seedWords filteredArrayUsingPredicate:nonEmpty] count]),
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     RestoreWalletRequest request;
     request.path = toStdString(path);
     request.password = toStdString(password);
@@ -937,7 +1054,14 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
            resolve:(RCTPromiseResolveBlock)resolve
             reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"openWallet"
+                  fields:@{
+                    @"network": network ?: @"",
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     OpenWalletRequest request;
     request.path = toStdString(path);
     request.password = toStdString(password);
@@ -952,7 +1076,15 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                            resolve:(RCTPromiseResolveBlock)resolve
                             reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"openWalletWithStoredSecret"
+                  fields:@{
+                    @"hasStoredSecret": @YES,
+                    @"network": network ?: @"",
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     OpenWalletRequest request;
     request.path = toStdString(path);
     request.password = toStdString(readRequiredKeychainSecret(secretKey));
@@ -970,7 +1102,17 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                        resolve:(RCTPromiseResolveBlock)resolve
                         reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"createWalletFromDevice"
+                  fields:@{
+                    @"deviceName": deviceName.length == 0 ? @"Ledger" : deviceName,
+                    @"network": network ?: @"",
+                    @"restoreHeight": @(restoreHeight),
+                    @"subaddressLookahead": subaddressLookahead ?: @"",
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     CreateWalletFromDeviceRequest request;
     request.path = toStdString(path);
     request.password = toStdString(password);
@@ -991,7 +1133,18 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                                        resolve:(RCTPromiseResolveBlock)resolve
                                         reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"createWalletFromDeviceWithStoredSecret"
+                  fields:@{
+                    @"deviceName": deviceName.length == 0 ? @"Ledger" : deviceName,
+                    @"hasStoredSecret": @YES,
+                    @"network": network ?: @"",
+                    @"restoreHeight": @(restoreHeight),
+                    @"subaddressLookahead": subaddressLookahead ?: @"",
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     CreateWalletFromDeviceRequest request;
     request.path = toStdString(path);
     request.password = toStdString(readRequiredKeychainSecret(secretKey));
@@ -1013,7 +1166,18 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                           resolve:(RCTPromiseResolveBlock)resolve
                            reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"createFastReceiveIdentity"
+                  fields:@{
+                    @"derivationIndex": @(derivationIndex),
+                    @"identityId": identityId ?: @"",
+                    @"label": label ?: @"",
+                    @"restoreHeight": @(restoreHeight),
+                    @"sourceWalletId": maskIdentifier(sourceWalletId),
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     CreateFastReceiveIdentityRequest request;
     request.sourceWalletId = toStdString(sourceWalletId);
     request.identityId = toStdString(identityId);
@@ -1036,7 +1200,19 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                                           resolve:(RCTPromiseResolveBlock)resolve
                                            reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"createFastReceiveIdentityWithStoredSecret"
+                  fields:@{
+                    @"derivationIndex": @(derivationIndex),
+                    @"hasStoredSecret": @YES,
+                    @"identityId": identityId ?: @"",
+                    @"label": label ?: @"",
+                    @"restoreHeight": @(restoreHeight),
+                    @"sourceWalletId": maskIdentifier(sourceWalletId),
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     CreateFastReceiveIdentityRequest request;
     request.sourceWalletId = toStdString(sourceWalletId);
     request.identityId = toStdString(identityId);
@@ -1059,7 +1235,16 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                           resolve:(RCTPromiseResolveBlock)resolve
                            reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"enableFastReceiveIdentity"
+                  fields:@{
+                    @"identityId": identityId ?: @"",
+                    @"network": network ?: @"",
+                    @"scannerUrl": scannerUrl ?: @"",
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
     FastReceiveRegistrationPayload payload = engine.fastReceiveRegistrationPayload(
         toStdString(identityId),
         toStdString(path),
@@ -1081,6 +1266,11 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                            resolve:(RCTPromiseResolveBlock)resolve
                             reject:(RCTPromiseRejectBlock)reject
 {
+  uint64_t startedAt = diagnosticNowMs();
+  logNativeEvent(@"disableFastReceiveIdentity.start", @{
+    @"identityId": identityId ?: @"",
+    @"scannerUrl": scannerUrl ?: @"",
+  });
   dispatch_async(_walletQueue, ^{
     try {
       NSString *encodedIdentityId =
@@ -1089,6 +1279,11 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
       NSString *route =
           [@"/v1/fast-receive/watch/" stringByAppendingString:encodedIdentityId];
       scannerRequest(@"DELETE", scannerUrl, route, scannerAuthToken, nil);
+      logNativeEvent(@"disableFastReceiveIdentity.success", @{
+        @"elapsedMs": @(diagnosticNowMs() - startedAt),
+        @"identityId": identityId ?: @"",
+        @"scannerUrl": scannerUrl ?: @"",
+      });
       resolve(@{
         @"id": identityId ?: @"",
         @"label": @"",
@@ -1100,6 +1295,12 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
         @"scannerStatus": @"disabled",
       });
     } catch (const std::exception &error) {
+      logNativeEvent(@"disableFastReceiveIdentity.error", @{
+        @"elapsedMs": @(diagnosticNowMs() - startedAt),
+        @"error": toNSString(error.what()),
+        @"identityId": identityId ?: @"",
+        @"scannerUrl": scannerUrl ?: @"",
+      });
       rejectWithException(reject, error);
     }
   });
@@ -1110,7 +1311,14 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
             resolve:(RCTPromiseResolveBlock)resolve
              reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"closeWallet"
+                  fields:@{
+                    @"store": @(storeFlag != 0),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     engine.closeWallet(toStdString(walletId), storeFlag != 0);
     return nil;
   }];
@@ -1126,7 +1334,18 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
           resolve:(RCTPromiseResolveBlock)resolve
            reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"setDaemon"
+                  fields:@{
+                    @"address": address ?: @"",
+                    @"hasPassword": @(password.length > 0),
+                    @"hasUsername": @(username.length > 0),
+                    @"trusted": @(trustedFlag != 0),
+                    @"useSsl": @(useSslFlag != 0),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     DaemonConfig config;
     config.address = toStdString(address);
     config.trusted = trustedFlag != 0;
@@ -1149,7 +1368,18 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                             resolve:(RCTPromiseResolveBlock)resolve
                              reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"setDaemonWithStoredPassword"
+                  fields:@{
+                    @"address": address ?: @"",
+                    @"hasPassword": @YES,
+                    @"hasUsername": @(username.length > 0),
+                    @"trusted": @(trustedFlag != 0),
+                    @"useSsl": @(useSslFlag != 0),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     NSString *storedPassword = readKeychainSecret(passwordKey);
     if (storedPassword == nil) {
       throw WalletEngineError("Stored daemon password is missing");
@@ -1172,7 +1402,14 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                 resolve:(RCTPromiseResolveBlock)resolve
                  reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"setGrpcEndpoint"
+                  fields:@{
+                    @"endpoint": endpoint ?: @"",
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     engine.setGrpcEndpoint(toStdString(walletId), toStdString(endpoint));
     return nil;
   }];
@@ -1182,7 +1419,13 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
              resolve:(RCTPromiseResolveBlock)resolve
               reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"startRefresh"
+                  fields:@{
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     engine.startRefresh(toStdString(walletId));
     return nil;
   }];
@@ -1192,7 +1435,13 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
             resolve:(RCTPromiseResolveBlock)resolve
              reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"stopRefresh"
+                  fields:@{
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     engine.stopRefresh(toStdString(walletId));
     return nil;
   }];
@@ -1204,7 +1453,15 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
            resolve:(RCTPromiseResolveBlock)resolve
             reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"getAddress"
+                  fields:@{
+                    @"accountIndex": @(accountIndex),
+                    @"addressIndex": @(addressIndex),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     return toNSString(engine.getAddress(
         toStdString(walletId),
         toIndex(accountIndex, "accountIndex"),
@@ -1217,7 +1474,14 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
         resolve:(RCTPromiseResolveBlock)resolve
          reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"getSeed"
+                  fields:@{
+                    @"hasSeedOffset": @(seedOffset.length > 0),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     return toNSString(engine.getSeed(
         toStdString(walletId),
         toStdString(seedOffset)));
@@ -1229,7 +1493,14 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
            resolve:(RCTPromiseResolveBlock)resolve
             reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"getBalance"
+                  fields:@{
+                    @"accountIndex": @(accountIndex),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     const auto balance = engine.getBalance(
         toStdString(walletId),
         toIndex(accountIndex, "accountIndex"));
@@ -1242,7 +1513,14 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                    resolve:(RCTPromiseResolveBlock)resolve
                     reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"getUnlockedBalance"
+                  fields:@{
+                    @"accountIndex": @(accountIndex),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     const auto balance = engine.getUnlockedBalance(
         toStdString(walletId),
         toIndex(accountIndex, "accountIndex"));
@@ -1254,7 +1532,13 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
          resolve:(RCTPromiseResolveBlock)resolve
           reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"snapshot"
+                  fields:@{
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     return toDictionary(engine.snapshot(toStdString(walletId)));
   }];
 }
@@ -1264,7 +1548,14 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                 resolve:(RCTPromiseResolveBlock)resolve
                  reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"getTransactions"
+                  fields:@{
+                    @"limit": @(limit),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     return toTransactionArray(engine.getTransactions(
         toStdString(walletId),
         toIndex(limit, "limit")));
@@ -1280,7 +1571,18 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                    resolve:(RCTPromiseResolveBlock)resolve
                     reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"prepareTransaction"
+                  fields:@{
+                    @"accountIndex": @(accountIndex),
+                    @"amountAtomic": amountAtomic ?: @"",
+                    @"destination": maskIdentifier(address),
+                    @"hasPaymentId": @(paymentId.length > 0),
+                    @"priority": priority ?: @"",
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     PrepareTransactionRequest request;
     request.walletId = toStdString(walletId);
     request.address = toStdString(address);
@@ -1297,7 +1599,14 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                   resolve:(RCTPromiseResolveBlock)resolve
                    reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"commitTransaction"
+                  fields:@{
+                    @"pendingId": maskIdentifier(pendingId),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     return toDictionary(engine.commitTransaction(
         toStdString(walletId),
         toStdString(pendingId)));
@@ -1308,7 +1617,13 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                          resolve:(RCTPromiseResolveBlock)resolve
                           reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"getHardwareWalletStatus"
+                  fields:@{
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     return toDictionary(engine.getHardwareWalletStatus(toStdString(walletId)));
   }];
 }
@@ -1317,7 +1632,13 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                         resolve:(RCTPromiseResolveBlock)resolve
                          reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"reconnectHardwareWallet"
+                  fields:@{
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     return toDictionary(engine.reconnectHardwareWallet(toStdString(walletId)));
   }];
 }
@@ -1329,7 +1650,16 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                            resolve:(RCTPromiseResolveBlock)resolve
                             reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve reject:reject work:^id(WalletEngine &engine) {
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"showHardwareWalletAddress"
+                  fields:@{
+                    @"accountIndex": @(accountIndex),
+                    @"addressIndex": @(addressIndex),
+                    @"hasPaymentId": @(paymentId.length > 0),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
     return toDictionary(engine.showHardwareWalletAddress(
         toStdString(walletId),
         toIndex(accountIndex, "accountIndex"),
