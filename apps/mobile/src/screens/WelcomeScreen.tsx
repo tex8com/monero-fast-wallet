@@ -59,7 +59,6 @@ export default function WelcomeScreen({ navigation }: any) {
           },
         ]}
       >
-        <View style={s.glow} pointerEvents="none" />
         <View style={s.logoWrap}>
           <MoneroCoin size={116} />
         </View>
@@ -114,14 +113,6 @@ const s = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 24,
-  },
-  glow: {
-    position: "absolute",
-    top: "34%",
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: "rgba(242,104,34,0.05)",
   },
   logoWrap: {
     width: 144,
