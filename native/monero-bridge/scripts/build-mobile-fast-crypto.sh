@@ -38,19 +38,6 @@ find_android_ndk_home() {
   return 1
 }
 
-android_ndk_home="${ANDROID_NDK_HOME:-}"
-if [[ -z "${android_ndk_home}" || ! -d "${android_ndk_home}/toolchains/llvm/prebuilt" ]]; then
-  if ! android_ndk_home="$(find_android_ndk_home)"; then
-    echo "Android NDK not found. Set ANDROID_NDK_HOME to an installed NDK." >&2
-    exit 1
-  fi
-fi
-
-android_toolchain_bin="${android_ndk_home}/toolchains/llvm/prebuilt/darwin-aarch64/bin"
-if [[ ! -d "${android_toolchain_bin}" ]]; then
-  android_toolchain_bin="${android_ndk_home}/toolchains/llvm/prebuilt/darwin-x86_64/bin"
-fi
-
 manifest="${output_dir}/manifest.env"
 mkdir -p "${output_dir}"
 {
@@ -114,6 +101,32 @@ target_requested() {
   done
   return 1
 }
+
+android_target_requested() {
+  local target
+  for target in "${targets[@]}"; do
+    case "${target}" in
+      android-*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+android_toolchain_bin=""
+if android_target_requested; then
+  android_ndk_home="${ANDROID_NDK_HOME:-}"
+  if [[ -z "${android_ndk_home}" || ! -d "${android_ndk_home}/toolchains/llvm/prebuilt" ]]; then
+    if ! android_ndk_home="$(find_android_ndk_home)"; then
+      echo "Android NDK not found. Set ANDROID_NDK_HOME to an installed NDK." >&2
+      exit 1
+    fi
+  fi
+
+  android_toolchain_bin="${android_ndk_home}/toolchains/llvm/prebuilt/darwin-aarch64/bin"
+  if [[ ! -d "${android_toolchain_bin}" ]]; then
+    android_toolchain_bin="${android_ndk_home}/toolchains/llvm/prebuilt/darwin-x86_64/bin"
+  fi
+fi
 
 for target in "${targets[@]}"; do
   case "${target}" in
