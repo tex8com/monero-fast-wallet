@@ -11,7 +11,7 @@ abs_path() {
   esac
 }
 
-monero_source_dir="${MONERO_SOURCE_DIR:-$HOME/Documents/Projects/monero-gui/monero}"
+monero_source_dir="${MONERO_SOURCE_DIR:-${repo_root}/../monero-gui/monero}"
 monero_ios_build_root="$(abs_path "${MONERO_IOS_BUILD_ROOT:-${repo_root}/build/ios-monero-wallet}")"
 fast_crypto_root="$(abs_path "${MONERO_FAST_CRYPTO_ROOT:-${repo_root}/build/mobile-fast-crypto}")"
 dependency_root="$(abs_path "${MONERO_IOS_DEPENDENCY_ROOT:-${repo_root}/build/ios-deps}")"

@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
-monero_source_dir="${MONERO_SOURCE_DIR:-$HOME/Documents/Projects/monero-gui/monero}"
+monero_source_dir="${MONERO_SOURCE_DIR:-${repo_root}/../monero-gui/monero}"
 
 zeromq_version="${ZEROMQ_VERSION:-4.3.4}"
 zeromq_sha256="${ZEROMQ_SHA256:-c593001a89f5a85dd2ddf564805deb860e02471171b3f204944857336295c3e5}"

@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
-monero_source_dir="${MONERO_SOURCE_DIR:-$HOME/Documents/Projects/monero-gui/monero}"
+monero_source_dir="${MONERO_SOURCE_DIR:-${repo_root}/../monero-gui/monero}"
 
 sodium_version="${SODIUM_VERSION:-1.0.18}"
 sodium_sha256="${SODIUM_SHA256:-6f504490b342a4f8a4c4a02fc9b866cbef8622d5df4e5452b46be121e46636c1}"

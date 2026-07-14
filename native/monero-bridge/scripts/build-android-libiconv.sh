@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
-monero_source_dir="${MONERO_SOURCE_DIR:-$HOME/Documents/Projects/monero-gui/monero}"
+monero_source_dir="${MONERO_SOURCE_DIR:-${repo_root}/../monero-gui/monero}"
 
 libiconv_version="${LIBICONV_VERSION:-1.15}"
 libiconv_sha256="${LIBICONV_SHA256:-ccf536620a45458d26ba83887a983b96827001e92a13847b45e4925cc8913178}"
