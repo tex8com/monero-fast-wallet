@@ -21,19 +21,6 @@ export interface MarketplaceService {
   featured?: boolean;
 }
 
-export interface LocalMoneroOffer {
-  id: string;
-  type: "buy" | "sell";
-  user: string;
-  reputation: number;
-  trades: number;
-  price: string;
-  currency: string;
-  limits: string;
-  paymentMethod: string;
-  lastSeen: string;
-}
-
 export const WALLET = {
   balance: "4.8521",
   balanceUsd: "782.40",
@@ -64,13 +51,4 @@ export const MARKETPLACE_SERVICES: MarketplaceService[] = [
   { id: "6", title: "Smart Contract Audit", provider: "ZeroTrace",   category: "Security",    price: "5.00 XMR", rating: 5.0, reviews: 18,  deliveryTime: "10 days", avatar: "ZT", featured: true },
   { id: "7", title: "Privacy Consulting",   provider: "VaultMind",   category: "Consulting",  price: "0.30/h",   rating: 4.9, reviews: 72,  deliveryTime: "Instant", avatar: "VM" },
   { id: "8", title: "UI/UX Redesign",       provider: "NeonAnon",    category: "Design",      price: "1.20 XMR", rating: 4.8, reviews: 64,  deliveryTime: "7 days", avatar: "NA" },
-];
-
-export const LOCAL_MONERO_OFFERS: LocalMoneroOffer[] = [
-  { id: "1", type: "sell", user: "XMR_Whale",    reputation: 99,  trades: 1420, price: "$162.30", currency: "USD", limits: "$50 – $5,000",   paymentMethod: "Bank Transfer", lastSeen: "3 min ago" },
-  { id: "2", type: "sell", user: "PrivacyFirst",  reputation: 100, trades: 892,  price: "€149.80", currency: "EUR", limits: "€100 – €2,000",  paymentMethod: "SEPA",          lastSeen: "1 min ago" },
-  { id: "3", type: "sell", user: "CashNode",      reputation: 97,  trades: 345,  price: "$165.00", currency: "USD", limits: "$20 – $500",     paymentMethod: "Cash by Mail",  lastSeen: "12 min ago" },
-  { id: "4", type: "buy",  user: "AnonBuyer",     reputation: 98,  trades: 567,  price: "$158.50", currency: "USD", limits: "$100 – $10,000", paymentMethod: "Bank Transfer", lastSeen: "5 min ago" },
-  { id: "5", type: "buy",  user: "DarkPool",      reputation: 100, trades: 2100, price: "€145.00", currency: "EUR", limits: "€500 – €50,000", paymentMethod: "SEPA",          lastSeen: "Online" },
-  { id: "6", type: "sell", user: "SwiftXMR",      reputation: 96,  trades: 210,  price: "$163.50", currency: "USD", limits: "$50 – $1,000",   paymentMethod: "PayPal",        lastSeen: "8 min ago" },
 ];

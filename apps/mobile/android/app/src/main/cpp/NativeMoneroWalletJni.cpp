@@ -3,7 +3,9 @@
 #include <jni.h>
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -17,6 +19,7 @@ using tex8::wallet::DaemonConfig;
 using tex8::wallet::FastReceiveIdentity;
 using tex8::wallet::FastReceiveRegistrationPayload;
 using tex8::wallet::HardwareWalletStatus;
+using tex8::wallet::LedgerBleTransportCallbacks;
 using tex8::wallet::NetworkType;
 using tex8::wallet::OpenWalletRequest;
 using tex8::wallet::PreparedTransaction;
@@ -31,6 +34,130 @@ using tex8::wallet::WalletTransactionTransfer;
 WalletEngine& walletEngine() {
   static WalletEngine engine;
   return engine;
+}
+
+JavaVM* ledgerJavaVm = nullptr;
+jclass ledgerBridgeClass = nullptr;
+jmethodID ledgerConnectMethod = nullptr;
+jmethodID ledgerDisconnectMethod = nullptr;
+jmethodID ledgerConnectedMethod = nullptr;
+jmethodID ledgerExchangeMethod = nullptr;
+std::mutex ledgerBridgeMutex;
+
+JNIEnv* ledgerEnvironment(bool& attached) {
+  attached = false;
+  if (ledgerJavaVm == nullptr) {
+    return nullptr;
+  }
+  JNIEnv* env = nullptr;
+  const jint status = ledgerJavaVm->GetEnv(
+      reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+  if (status == JNI_OK) {
+    return env;
+  }
+  if (status != JNI_EDETACHED ||
+      ledgerJavaVm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+    return nullptr;
+  }
+  attached = true;
+  return env;
+}
+
+void clearLedgerJavaException(JNIEnv* env) {
+  if (env != nullptr && env->ExceptionCheck()) {
+    env->ExceptionClear();
+  }
+}
+
+bool androidLedgerConnect(void*) {
+  bool attached = false;
+  JNIEnv* env = ledgerEnvironment(attached);
+  if (env == nullptr || ledgerBridgeClass == nullptr || ledgerConnectMethod == nullptr) {
+    return false;
+  }
+  const bool result = env->CallStaticBooleanMethod(
+      ledgerBridgeClass, ledgerConnectMethod) == JNI_TRUE;
+  if (env->ExceptionCheck()) {
+    clearLedgerJavaException(env);
+    if (attached) ledgerJavaVm->DetachCurrentThread();
+    return false;
+  }
+  if (attached) ledgerJavaVm->DetachCurrentThread();
+  return result;
+}
+
+void androidLedgerDisconnect(void*) {
+  bool attached = false;
+  JNIEnv* env = ledgerEnvironment(attached);
+  if (env != nullptr && ledgerBridgeClass != nullptr && ledgerDisconnectMethod != nullptr) {
+    env->CallStaticVoidMethod(ledgerBridgeClass, ledgerDisconnectMethod);
+    clearLedgerJavaException(env);
+  }
+  if (attached) ledgerJavaVm->DetachCurrentThread();
+}
+
+bool androidLedgerConnected(void*) {
+  bool attached = false;
+  JNIEnv* env = ledgerEnvironment(attached);
+  if (env == nullptr || ledgerBridgeClass == nullptr || ledgerConnectedMethod == nullptr) {
+    return false;
+  }
+  const bool result = env->CallStaticBooleanMethod(
+      ledgerBridgeClass, ledgerConnectedMethod) == JNI_TRUE;
+  if (env->ExceptionCheck()) {
+    clearLedgerJavaException(env);
+    if (attached) ledgerJavaVm->DetachCurrentThread();
+    return false;
+  }
+  if (attached) ledgerJavaVm->DetachCurrentThread();
+  return result;
+}
+
+int androidLedgerExchange(
+    void*,
+    const unsigned char* command,
+    unsigned int commandLength,
+    unsigned char* response,
+    unsigned int responseCapacity,
+    bool userInput) {
+  bool attached = false;
+  JNIEnv* env = ledgerEnvironment(attached);
+  if (env == nullptr || ledgerBridgeClass == nullptr || ledgerExchangeMethod == nullptr) {
+    return -1;
+  }
+
+  jbyteArray javaCommand = env->NewByteArray(static_cast<jsize>(commandLength));
+  if (javaCommand == nullptr) {
+    if (attached) ledgerJavaVm->DetachCurrentThread();
+    return -1;
+  }
+  env->SetByteArrayRegion(
+      javaCommand, 0, static_cast<jsize>(commandLength),
+      reinterpret_cast<const jbyte*>(command));
+  auto javaResponse = static_cast<jbyteArray>(env->CallStaticObjectMethod(
+      ledgerBridgeClass,
+      ledgerExchangeMethod,
+      javaCommand,
+      userInput ? JNI_TRUE : JNI_FALSE));
+  env->DeleteLocalRef(javaCommand);
+  if (env->ExceptionCheck() || javaResponse == nullptr) {
+    clearLedgerJavaException(env);
+    if (attached) ledgerJavaVm->DetachCurrentThread();
+    return -1;
+  }
+
+  const jsize responseLength = env->GetArrayLength(javaResponse);
+  if (responseLength < 0 ||
+      static_cast<unsigned int>(responseLength) > responseCapacity) {
+    env->DeleteLocalRef(javaResponse);
+    if (attached) ledgerJavaVm->DetachCurrentThread();
+    return -1;
+  }
+  env->GetByteArrayRegion(
+      javaResponse, 0, responseLength, reinterpret_cast<jbyte*>(response));
+  env->DeleteLocalRef(javaResponse);
+  if (attached) ledgerJavaVm->DetachCurrentThread();
+  return static_cast<int>(responseLength);
 }
 
 std::string toStdString(JNIEnv* env, jstring value) {
@@ -201,6 +328,39 @@ jobject toJavaStringList(
     env->DeleteLocalRef(javaValue);
   }
   return list;
+}
+
+std::vector<std::string> toStdStringVector(
+    JNIEnv* env,
+    jobjectArray values) {
+  if (values == nullptr) {
+    return {};
+  }
+  const jsize count = env->GetArrayLength(values);
+  std::vector<std::string> result;
+  result.reserve(static_cast<size_t>(count));
+  for (jsize index = 0; index < count; ++index) {
+    auto* value = static_cast<jstring>(
+        env->GetObjectArrayElement(values, index));
+    result.push_back(toStdString(env, value));
+    env->DeleteLocalRef(value);
+  }
+  return result;
+}
+
+std::vector<bool> toBoolVector(JNIEnv* env, jbooleanArray values) {
+  if (values == nullptr) {
+    return {};
+  }
+  const jsize count = env->GetArrayLength(values);
+  std::vector<jboolean> buffer(static_cast<size_t>(count));
+  env->GetBooleanArrayRegion(values, 0, count, buffer.data());
+  std::vector<bool> result;
+  result.reserve(static_cast<size_t>(count));
+  for (const auto value : buffer) {
+    result.push_back(value == JNI_TRUE);
+  }
+  return result;
 }
 
 jobject toJavaDoubleList(JNIEnv* env, const std::vector<uint32_t>& values) {
@@ -459,6 +619,46 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeLinkedWithMonero(
   return WalletEngine::linkedWithMonero();
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeInstallLedgerBleTransport(
+    JNIEnv* env,
+    jclass bridgeClass) {
+  std::lock_guard<std::mutex> lock(ledgerBridgeMutex);
+  if (env->GetJavaVM(&ledgerJavaVm) != JNI_OK) {
+    return JNI_FALSE;
+  }
+  if (ledgerBridgeClass != nullptr) {
+    env->DeleteGlobalRef(ledgerBridgeClass);
+  }
+  ledgerBridgeClass = static_cast<jclass>(env->NewGlobalRef(bridgeClass));
+  if (ledgerBridgeClass == nullptr) {
+    return JNI_FALSE;
+  }
+
+  ledgerConnectMethod = env->GetStaticMethodID(
+      ledgerBridgeClass, "ledgerBleConnect", "()Z");
+  ledgerDisconnectMethod = env->GetStaticMethodID(
+      ledgerBridgeClass, "ledgerBleDisconnect", "()V");
+  ledgerConnectedMethod = env->GetStaticMethodID(
+      ledgerBridgeClass, "ledgerBleConnected", "()Z");
+  ledgerExchangeMethod = env->GetStaticMethodID(
+      ledgerBridgeClass, "ledgerBleExchange", "([BZ)[B");
+  if (env->ExceptionCheck() || ledgerConnectMethod == nullptr ||
+      ledgerDisconnectMethod == nullptr || ledgerConnectedMethod == nullptr ||
+      ledgerExchangeMethod == nullptr) {
+    clearLedgerJavaException(env);
+    return JNI_FALSE;
+  }
+
+  LedgerBleTransportCallbacks callbacks;
+  callbacks.connect = androidLedgerConnect;
+  callbacks.disconnect = androidLedgerDisconnect;
+  callbacks.connected = androidLedgerConnected;
+  callbacks.exchange = androidLedgerExchange;
+  WalletEngine::setLedgerBleTransportCallbacks(callbacks);
+  return WalletEngine::ledgerBleTransportAvailable() ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeCreateWallet(
     JNIEnv* env,
@@ -511,12 +711,14 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeOpenWallet(
     jclass,
     jstring path,
     jstring password,
-    jstring network) {
+    jstring network,
+    jdouble restoreHeight) {
   try {
     OpenWalletRequest request;
     request.path = toStdString(env, path);
     request.password = toStdString(env, password);
     request.network = parseNetwork(toStdString(env, network));
+    request.restoreHeight = toUInt64(restoreHeight, "restoreHeight");
     return toJavaString(env, walletEngine().openWallet(request));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
@@ -586,7 +788,8 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeFastReceiveRegistrationPayload
     jstring identityId,
     jstring path,
     jstring password,
-    jstring network) {
+    jstring network,
+    jdouble restoreHeight) {
   try {
     return toJavaMap(
         env,
@@ -594,7 +797,8 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeFastReceiveRegistrationPayload
             toStdString(env, identityId),
             toStdString(env, path),
             toStdString(env, password),
-            parseNetwork(toStdString(env, network))));
+            parseNetwork(toStdString(env, network)),
+            toUInt64(restoreHeight, "restoreHeight")));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;
@@ -780,6 +984,41 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeGetTransactions(
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeGetOwnedOutputKeyImages(
+    JNIEnv* env,
+    jclass,
+    jstring walletId) {
+  try {
+    return toJavaStringList(
+        env,
+        walletEngine().getOwnedOutputKeyImages(toStdString(env, walletId)));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jdouble JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeReconcileOutputKeyImages(
+    JNIEnv* env,
+    jclass,
+    jstring walletId,
+    jobjectArray keyImages,
+    jbooleanArray spentStates,
+    jdouble checkedHeight) {
+  try {
+    return static_cast<jdouble>(walletEngine().reconcileOutputKeyImages(
+        toStdString(env, walletId),
+        toStdStringVector(env, keyImages),
+        toBoolVector(env, spentStates),
+        toUInt64(checkedHeight, "checkedHeight")));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return 0;
   }
 }
 

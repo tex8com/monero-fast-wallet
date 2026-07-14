@@ -11,11 +11,13 @@ import LinearGradient from "react-native-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import MoneroCoinGhost from "../components/MoneroCoinGhost";
 import MoneroCoin from "../components/MoneroCoin";
+import { useI18n } from "../i18n";
 
 const IS_TEST = typeof jest !== "undefined";
 
 export default function WelcomeScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
+  const { t } = useI18n();
   const contentOp = useRef(new Animated.Value(IS_TEST ? 1 : 0)).current;
   const contentY = useRef(new Animated.Value(IS_TEST ? 0 : 10)).current;
 
@@ -68,7 +70,7 @@ export default function WelcomeScreen({ navigation }: any) {
             <Text style={[s.titleWord, s.titleWhite]}>Monero</Text>
             <Text style={[s.titleWord, s.titleOrange]}> Wallet</Text>
           </View>
-          <Text style={s.subtitle}>Private, fast, and in your control.</Text>
+          <Text style={s.subtitle}>{t("welcome.subtitle")}</Text>
         </View>
       </Animated.View>
 
@@ -89,7 +91,7 @@ export default function WelcomeScreen({ navigation }: any) {
             end={{ x: 1, y: 0 }}
             style={s.btnGrad}
           >
-            <Text style={s.btnText}>Continue</Text>
+            <Text style={s.btnText}>{t("action.continue")}</Text>
           </LinearGradient>
         </TouchableOpacity>
       </View>

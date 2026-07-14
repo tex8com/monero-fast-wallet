@@ -20,6 +20,7 @@ fi
 
 work_root="${TESTBENCH_WORK_ROOT:-${repo_root}/build/wallet-testbench}"
 shell_build_dir="${TESTBENCH_SHELL_BUILD_DIR:-${work_root}/native-bridge-shell}"
+default_funded_wallet_dir="${FUNDED_WALLET_DIR:-$HOME/Documents/Monero/tex8-send-tests}"
 default_monero_source_dir="$HOME/Documents/Projects/monero-gui/monero"
 default_monero_build_dir="${default_monero_source_dir}/build/tex8-wallet-api"
 if [[ -d "/Volumes/4TB/monero-gui-build/tex8-wallet-api" ]]; then
@@ -105,6 +106,10 @@ gate_notify_scanner_tests() {
   cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml"
 }
 
+gate_enthusiast_discovery_tests() {
+  cargo test --manifest-path "${repo_root}/services/enthusiast-discovery/Cargo.toml"
+}
+
 gate_notify_scanner_worker_tests() {
   cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" scanner::tests::scanner_
 }
@@ -121,10 +126,43 @@ gate_notify_scanner_live_cuprate_sources() {
   if [[ "${TESTBENCH_NOTIFY_SCANNER_LIVE_SOURCES:-0}" != "1" ]]; then
     return 2
   fi
-  NOTIFY_SCANNER_TEST_GRPC_ENDPOINT="${CUPRATE_GRPC:-152.53.133.188:18091}" \
-    NOTIFY_SCANNER_TEST_RPC_ENDPOINT="${CUPRATE_RPC:-152.53.133.188:18089}" \
+  NOTIFY_SCANNER_TEST_GRPC_ENDPOINT="${CUPRATE_GRPC:-xmr.tex8.com:18091}" \
+    NOTIFY_SCANNER_TEST_RPC_ENDPOINT="${CUPRATE_RPC:-xmr.tex8.com:18089}" \
     NOTIFY_SCANNER_TEST_FROM_HEIGHT="${TESTBENCH_NOTIFY_SCANNER_FROM_HEIGHT:-3000000}" \
     cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" live_cuprate -- --ignored
+}
+
+gate_cuprate_backend_compatibility() {
+  local rpc="${CUPRATE_RPC:-xmr.tex8.com:18089}"
+  local grpc="${CUPRATE_GRPC:-xmr.tex8.com:18091}"
+
+  MONERO_WALLET_DAEMON_URL="${MONERO_WALLET_DAEMON_URL:-http://${rpc}}" \
+    MONERO_WALLET_GRPC_ENDPOINT="${MONERO_WALLET_GRPC_ENDPOINT:-${grpc}}" \
+    "${repo_root}/scripts/check-cuprate-backend.sh"
+}
+
+gate_deployed_scanner_api() {
+  local scanner_url="${TESTBENCH_SCANNER_URL:-}"
+  if [[ -z "${scanner_url}" ]]; then
+    log "deployed_scanner_api_url=missing"
+    if [[ "${TESTBENCH_REQUIRE_DEPLOYED_SCANNER:-0}" == "1" ]]; then
+      return 1
+    fi
+    return 2
+  fi
+
+  scanner_url="${scanner_url%/}"
+  log "deployed_scanner_api_url=${scanner_url}"
+  local health
+  if ! health="$(curl -fsS --max-time 8 "${scanner_url}/healthz" 2>&1)"; then
+    log "deployed_scanner_api_error=${health}"
+    return 1
+  fi
+  if ! printf '%s\n' "${health}" | grep -Eq '"status":"ok"|"ok":true'; then
+    log "deployed_scanner_api_health=${health}"
+    return 1
+  fi
+  log "deployed_scanner_api_health=${health}"
 }
 
 gate_mobile_unit_tests() {
@@ -145,14 +183,67 @@ gate_native_offline_roundtrip() {
 
 gate_cuprate_refresh() {
   build_linked_runner_if_possible || return 2
-  local rpc="${CUPRATE_RPC:-152.53.133.188:18089}"
-  local grpc="${CUPRATE_GRPC:-152.53.133.188:18091}"
+  local rpc="${CUPRATE_RPC:-xmr.tex8.com:18089}"
+  local grpc="${CUPRATE_GRPC:-xmr.tex8.com:18091}"
   local workdir="${work_root}/cuprate-refresh"
   rm -rf "${workdir}"
   mkdir -p "${workdir}"
   "${linked_runner}" self-test-offline mainnet "${workdir}" "${password}" >/dev/null
   "${linked_runner}" refresh mainnet "${workdir}/software-a" "${password}" "${rpc}" "${grpc}" 5 |
     grep -q "daemon_height="
+}
+
+gate_fast_wallet_restore_height_refresh() {
+  build_linked_runner_if_possible || return 2
+  local rpc="${CUPRATE_RPC:-xmr.tex8.com:18089}"
+  local grpc="${CUPRATE_GRPC:-xmr.tex8.com:18091}"
+  local workdir="${work_root}/fast-wallet-restore-height"
+  rm -rf "${workdir}"
+  mkdir -p "${workdir}"
+
+  local create_output
+  create_output="$(
+    "${linked_runner}" self-test-offline mainnet "${workdir}" "${password}"
+  )"
+  local restore_height
+  restore_height="$(
+    printf '%s\n' "${create_output}" |
+      awk -F= '$1 == "fast_receive_restore_height" { print $2; exit }'
+  )"
+  if [[ -z "${restore_height}" || ! "${restore_height}" =~ ^[0-9]+$ ||
+        "${restore_height}" -le 1 ]]; then
+    return 1
+  fi
+
+  local daemon_height
+  daemon_height="$(
+    curl -fsS --max-time 8 "http://${rpc}/get_info" |
+      sed -n 's/.*"height"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' |
+      head -1
+  )"
+  if [[ -z "${daemon_height}" || ! "${daemon_height}" =~ ^[0-9]+$ ||
+        "${restore_height}" -gt "${daemon_height}" ]]; then
+    return 1
+  fi
+
+  local test_restore_height="${daemon_height}"
+  if [[ "${test_restore_height}" -gt 10 ]]; then
+    test_restore_height=$((test_restore_height - 10))
+  fi
+
+  local refresh_output
+  refresh_output="$(
+    "${linked_runner}" refresh mainnet \
+      "${workdir}/fast-receive-0" \
+      "${password}" \
+      "${rpc}" \
+      "${grpc}" \
+      1 \
+      "${test_restore_height}"
+  )"
+  printf '%s\n' "${refresh_output}" | grep -q "synchronized=true" || return 1
+  printf '%s\n' "${refresh_output}" |
+    grep -q "requested_restore_height=${test_restore_height}"
 }
 
 gate_official_node_refresh() {
@@ -187,37 +278,57 @@ extract_field() {
 gate_real_send() {
   build_linked_runner_if_possible || return 2
   if [[ "${TESTBENCH_ALLOW_REAL_SEND:-0}" != "1" ||
-        -z "${TESTBENCH_SEND_SOURCE_WALLET:-}" ||
         -z "${TESTBENCH_SEND_AMOUNT_ATOMIC:-}" ]]; then
     return 2
   fi
 
-  if [[ -z "${TESTBENCH_SEND_PASSWORD:-}" &&
-        -z "${TESTBENCH_SEND_PASSWORD_FILE:-}" ]]; then
+  local source_wallet="${TESTBENCH_SEND_SOURCE_WALLET:-}"
+  local source_password_file="${TESTBENCH_SEND_PASSWORD_FILE:-}"
+  local destination_wallet="${TESTBENCH_SEND_DEST_WALLET:-}"
+  local destination_password_file="${TESTBENCH_SEND_DEST_PASSWORD_FILE:-}"
+
+  if [[ -z "${source_wallet}" &&
+        -f "${default_funded_wallet_dir}/wallet-a" &&
+        -f "${default_funded_wallet_dir}/wallet-a.pass" ]]; then
+    source_wallet="${default_funded_wallet_dir}/wallet-a"
+    source_password_file="${default_funded_wallet_dir}/wallet-a.pass"
+  fi
+  if [[ -z "${destination_wallet}" &&
+        -f "${default_funded_wallet_dir}/wallet-b" &&
+        -f "${default_funded_wallet_dir}/wallet-b.pass" ]]; then
+    destination_wallet="${default_funded_wallet_dir}/wallet-b"
+    destination_password_file="${default_funded_wallet_dir}/wallet-b.pass"
+  fi
+
+  if [[ -z "${source_wallet}" ]]; then
     return 2
   fi
 
-  local rpc="${CUPRATE_RPC:-152.53.133.188:18089}"
-  local grpc="${CUPRATE_GRPC:-152.53.133.188:18091}"
+  if [[ -z "${TESTBENCH_SEND_PASSWORD:-}" &&
+        -z "${source_password_file}" ]]; then
+    return 2
+  fi
+
+  local rpc="${CUPRATE_RPC:-xmr.tex8.com:18089}"
+  local grpc="${CUPRATE_GRPC:-xmr.tex8.com:18091}"
   local source_password_arg
   source_password_arg="$(
     password_arg \
       "${TESTBENCH_SEND_PASSWORD:-}" \
-      "${TESTBENCH_SEND_PASSWORD_FILE:-}"
+      "${source_password_file}"
   )"
   local destination_address="${TESTBENCH_SEND_DEST_ADDRESS:-}"
-  local destination_wallet="${TESTBENCH_SEND_DEST_WALLET:-}"
   local destination_password_arg=""
 
   if [[ -n "${destination_wallet}" ]]; then
     if [[ -z "${TESTBENCH_SEND_DEST_PASSWORD:-}" &&
-          -z "${TESTBENCH_SEND_DEST_PASSWORD_FILE:-}" ]]; then
+          -z "${destination_password_file}" ]]; then
       return 2
     fi
     destination_password_arg="$(
       password_arg \
         "${TESTBENCH_SEND_DEST_PASSWORD:-}" \
-        "${TESTBENCH_SEND_DEST_PASSWORD_FILE:-}"
+        "${destination_password_file}"
     )"
     if [[ -z "${destination_address}" ]]; then
       destination_address="$(
@@ -249,16 +360,40 @@ gate_real_send() {
     return 1
   fi
 
+  local refresh_output
+  refresh_output="$(
+    "${linked_runner}" refresh mainnet \
+      "${source_wallet}" \
+      "${source_password_arg}" \
+      "${rpc}" \
+      "${grpc}" \
+      "${TESTBENCH_SEND_PREFLIGHT_REFRESH_SECONDS:-6}"
+  )"
+  local unlocked_balance
+  unlocked_balance="$(printf '%s\n' "${refresh_output}" | extract_field "unlocked_balance_atomic")"
+  if [[ -z "${unlocked_balance}" || ! "${unlocked_balance}" =~ ^[0-9]+$ ]]; then
+    return 1
+  fi
+  local required_unlocked=$((TESTBENCH_SEND_AMOUNT_ATOMIC + ${TESTBENCH_SEND_MIN_FEE_ATOMIC:-100000000}))
+  if (( unlocked_balance < required_unlocked )); then
+    log "real_send_skip_reason=insufficient_unlocked_balance"
+    log "real_send_skipped_unlocked_balance_atomic=${unlocked_balance}"
+    log "real_send_required_unlocked_atomic=${required_unlocked}"
+    return 2
+  fi
+
   local send_output
   send_output="$(
     "${linked_runner}" send mainnet \
-    "${TESTBENCH_SEND_SOURCE_WALLET}" \
+    "${source_wallet}" \
       "${source_password_arg}" \
     "${rpc}" \
     "${grpc}" \
       "${destination_address}" \
       "${TESTBENCH_SEND_AMOUNT_ATOMIC}"
   )"
+  printf '%s\n' "${send_output}" |
+    grep -E '^(prepare_status|prepare_error|fee_atomic|tx_count|commit_status|commit_error|txid)=' >&2 || true
 
   printf '%s\n' "${send_output}" | grep -q "commit_status=ok" || return 1
   local txid
@@ -272,15 +407,20 @@ gate_real_send() {
     return 2
   fi
 
-  "${linked_runner}" wait-tx mainnet \
-    "${destination_wallet}" \
-    "${destination_password_arg}" \
-    "${rpc}" \
-    "${grpc}" \
-    "${txid}" \
-    "${TESTBENCH_SEND_VISIBILITY_ATTEMPTS:-12}" \
-    "${TESTBENCH_SEND_VISIBILITY_SECONDS:-5}" |
-    grep -q "tx_seen=true"
+  local visibility_output
+  visibility_output="$(
+    "${linked_runner}" wait-tx mainnet \
+      "${destination_wallet}" \
+      "${destination_password_arg}" \
+      "${rpc}" \
+      "${grpc}" \
+      "${txid}" \
+      "${TESTBENCH_SEND_VISIBILITY_ATTEMPTS:-12}" \
+      "${TESTBENCH_SEND_VISIBILITY_SECONDS:-5}"
+  )"
+  printf '%s\n' "${visibility_output}" >&2
+  printf '%s\n' "${visibility_output}" | grep -q "tx_seen=true"
+  printf '%s\n' "${visibility_output}" | grep -q "tx_match_count=1"
   log "real_send_destination_seen=true"
 }
 
@@ -340,13 +480,17 @@ log "wallet-core-testbench suite=${suite} strict=${strict}"
 handle_gate_result "fork pins recorded" gate_pin_files
 handle_gate_result "native bridge shell build" gate_shell_bridge_build
 handle_gate_result "notify-scanner unit/store tests" gate_notify_scanner_tests
+handle_gate_result "enthusiast discovery privacy/API tests" gate_enthusiast_discovery_tests
 handle_gate_result "notify-scanner block worker tests" gate_notify_scanner_worker_tests
 handle_gate_result "notify-scanner mempool worker tests" gate_notify_scanner_mempool_tests
 handle_gate_result "notify-scanner Cuprate adapter tests" gate_notify_scanner_cuprate_adapter_tests
 handle_gate_result "notify-scanner live Cuprate source tests" gate_notify_scanner_live_cuprate_sources
+handle_gate_result "Cuprate backend RPC compatibility" gate_cuprate_backend_compatibility
+handle_gate_result "deployed Fast Receive scanner API" gate_deployed_scanner_api
 handle_gate_result "mobile TypeScript/unit tests" gate_mobile_unit_tests
 handle_gate_result "native linked offline create/seed/restore/fast-receive" gate_native_offline_roundtrip
 handle_gate_result "Cuprate RPC+gRPC refresh smoke" gate_cuprate_refresh
+handle_gate_result "Fast Wallet restore-height cache reset" gate_fast_wallet_restore_height_refresh
 handle_gate_result "official Monero RPC compatibility refresh smoke" gate_official_node_refresh
 handle_gate_result "real send over Cuprate RPC+gRPC" gate_real_send
 handle_gate_result "Ledger Nano native probe" gate_ledger_probe

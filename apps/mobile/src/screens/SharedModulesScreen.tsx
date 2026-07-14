@@ -73,8 +73,8 @@ function moduleStatus(
     }
     case "monero_privacy":
       return { label: "Native/local key boundary", tone: "good" };
-    case "xmr_marketplace":
-      return { label: "Marketplace screen active", tone: "good" };
+    case "monero_community":
+      return { label: "Optional approximate-area discovery", tone: "neutral" };
   }
 }
 

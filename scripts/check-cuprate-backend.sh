@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 NETWORK="${MONERO_WALLET_NETWORK:-mainnet}"
-HOST="${MONERO_WALLET_NODE_HOST:-152.53.133.188}"
+HOST="${MONERO_WALLET_NODE_HOST:-xmr.tex8.com}"
 
 case "$NETWORK" in
   mainnet)

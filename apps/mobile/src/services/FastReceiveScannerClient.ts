@@ -11,6 +11,16 @@ export interface KeyImageStatusResult {
   items: KeyImageStatusItem[];
 }
 
+export interface FastReceiveWatchStatusResult {
+  identityId: string;
+  registered: boolean;
+  scannerStatus: string;
+  notificationsEnabled: boolean;
+  network?: string;
+  restoreHeight?: number;
+  lastScannedHeight?: number;
+}
+
 export interface CheckKeyImageStatusInput {
   scannerUrl: string;
   scannerAuthToken?: string;
@@ -18,12 +28,18 @@ export interface CheckKeyImageStatusInput {
   keyImages: string[];
 }
 
+export interface CheckWatchRegistrationInput {
+  scannerUrl: string;
+  scannerAuthToken?: string;
+  identityId: string;
+}
+
 export type ScannerFetch = (
   url: string,
   init: {
     method: string;
     headers: Record<string, string>;
-    body: string;
+    body?: string;
   },
 ) => Promise<{
   ok: boolean;
@@ -65,6 +81,37 @@ export async function checkFastReceiveKeyImages(
   return parseKeyImageStatusResponse(bodyText, identityId, keyImages);
 }
 
+export async function checkFastReceiveWatchRegistration(
+  input: CheckWatchRegistrationInput,
+  fetchImpl: ScannerFetch = defaultFetch(),
+): Promise<FastReceiveWatchStatusResult> {
+  const scannerUrl = normalizeScannerUrl(input.scannerUrl);
+  const identityId = cleanRequired(input.identityId, "identityId");
+  const headers = scannerHeaders(input.scannerAuthToken);
+
+  const response = await fetchImpl(
+    `${scannerUrl}/v1/fast-receive/watch/${encodeURIComponent(identityId)}`,
+    {
+      method: "GET",
+      headers,
+    },
+  );
+  const bodyText = await response.text();
+  if (response.status === 404) {
+    return {
+      identityId,
+      registered: false,
+      scannerStatus: "missing",
+      notificationsEnabled: false,
+    };
+  }
+  if (!response.ok) {
+    throw new Error(`Fast receive scanner watch check failed with HTTP ${response.status}`);
+  }
+
+  return parseWatchStatusResponse(bodyText, identityId);
+}
+
 export function parseKeyImageStatusResponse(
   bodyText: string,
   expectedIdentityId: string,
@@ -93,6 +140,32 @@ export function parseKeyImageStatusResponse(
   return {
     identityId,
     items,
+  };
+}
+
+export function parseWatchStatusResponse(
+  bodyText: string,
+  expectedIdentityId: string,
+): FastReceiveWatchStatusResult {
+  const parsed: unknown = JSON.parse(bodyText);
+  if (!isRecord(parsed)) {
+    throw new Error("Fast receive scanner returned an invalid watch response");
+  }
+
+  const identityId = parseString(parsed.identity_id);
+  if (identityId !== expectedIdentityId) {
+    throw new Error("Fast receive scanner returned a mismatched watch identity");
+  }
+
+  return {
+    identityId,
+    registered: true,
+    scannerStatus:
+      parseString(parsed.scanner_status) ?? parseString(parsed.status) ?? "enabled",
+    notificationsEnabled: parsed.notifications_enabled === true,
+    network: parseString(parsed.network),
+    restoreHeight: parseNonNegativeNumber(parsed.restore_height),
+    lastScannedHeight: parseNonNegativeNumber(parsed.last_scanned_height),
   };
 }
 
@@ -176,4 +249,15 @@ function defaultFetch(): ScannerFetch {
     throw new Error("fetch is not available for fast receive scanner calls");
   }
   return fetchImpl;
+}
+
+function scannerHeaders(scannerAuthToken?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  const token = scannerAuthToken?.trim();
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  return headers;
 }

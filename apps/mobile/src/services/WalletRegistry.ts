@@ -1,12 +1,12 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import type { MoneroNetwork } from "./NativeMoneroWallet";
+import type { MoneroNetwork } from './NativeMoneroWallet';
 
 export const WALLET_REGISTRY_STORAGE_KEY =
-  "monero-fast-wallet.wallet-registry.v1";
+  'monero-fast-wallet.wallet-registry.v1';
 
-export type RegisteredWalletKind = "software" | "hardware";
-export type SeedBackupStatus = "pending" | "verified" | "not-required";
+export type RegisteredWalletKind = 'software' | 'hardware' | 'fast';
+export type SeedBackupStatus = 'pending' | 'verified' | 'not-required';
 
 export interface RegisteredWallet {
   id: string;
@@ -17,6 +17,7 @@ export interface RegisteredWallet {
   seedBackupStatus: SeedBackupStatus;
   seedBackedUpAt?: string;
   credentialKey?: string;
+  restoreHeight?: number;
   hardwareDeviceName?: string;
   hardwareDeviceType?: string;
   createdAt: string;
@@ -60,15 +61,27 @@ export async function saveWalletRegistry(
 export async function saveRegisteredWallet(
   wallet: RegisteredWallet,
 ): Promise<RegisteredWallet> {
+  return upsertRegisteredWallet(wallet, true);
+}
+
+export async function upsertRegisteredWallet(
+  wallet: RegisteredWallet,
+  makeActive = false,
+): Promise<RegisteredWallet> {
   const normalized = normalizeRegisteredWallet(wallet);
   const current = await loadWalletRegistry();
   const nextWallets = current.wallets.some(item => item.id === normalized.id)
-    ? current.wallets.map(item => (item.id === normalized.id ? normalized : item))
+    ? current.wallets.map(item =>
+        item.id === normalized.id ? normalized : item,
+      )
     : [...current.wallets, normalized];
 
   await saveWalletRegistry({
     version: 2,
-    activeWalletId: normalized.id,
+    activeWalletId:
+      makeActive || !current.activeWalletId
+        ? normalized.id
+        : current.activeWalletId,
     wallets: nextWallets,
   });
   return normalized;
@@ -83,12 +96,13 @@ export function createRegisteredWallet(input: {
   seedBackupStatus?: SeedBackupStatus;
   seedBackedUpAt?: string;
   credentialKey?: string;
+  restoreHeight?: number;
   hardwareDeviceName?: string;
   hardwareDeviceType?: string;
   now?: string;
 }): RegisteredWallet {
   const now = input.now ?? new Date().toISOString();
-  const kind = input.kind ?? "software";
+  const kind = input.kind ?? 'software';
   return normalizeRegisteredWallet({
     id:
       input.id ??
@@ -98,9 +112,11 @@ export function createRegisteredWallet(input: {
     network: input.network,
     kind,
     seedBackupStatus:
-      input.seedBackupStatus ?? (kind === "hardware" ? "not-required" : "pending"),
+      input.seedBackupStatus ??
+      (kind === 'software' ? 'pending' : 'not-required'),
     seedBackedUpAt: input.seedBackedUpAt,
     credentialKey: input.credentialKey,
+    restoreHeight: input.restoreHeight,
     hardwareDeviceName: input.hardwareDeviceName,
     hardwareDeviceType: input.hardwareDeviceType,
     createdAt: now,
@@ -163,9 +179,8 @@ export async function markRegisteredWalletSeedBackedUp(
 
   const updated = normalizeRegisteredWallet({
     ...wallet,
-    seedBackupStatus:
-      wallet.kind === "hardware" ? "not-required" : "verified",
-    seedBackedUpAt: wallet.kind === "hardware" ? undefined : now,
+    seedBackupStatus: wallet.kind === 'software' ? 'verified' : 'not-required',
+    seedBackedUpAt: wallet.kind === 'software' ? now : undefined,
   });
 
   await saveWalletRegistry({
@@ -184,7 +199,7 @@ export function createRegisteredWalletId(
   network: MoneroNetwork,
   now = new Date().toISOString(),
 ): string {
-  const stamp = now.replace(/[^0-9A-Za-z]/g, "").slice(0, 15);
+  const stamp = now.replace(/[^0-9A-Za-z]/g, '').slice(0, 15);
   return `${kind}-${network}-${pathSafeName(walletName)}-${stamp}`;
 }
 
@@ -223,27 +238,27 @@ function normalizeWalletRegistry(
 }
 
 function normalizeRegisteredWallet(wallet: RegisteredWallet): RegisteredWallet {
-  const kind = wallet.kind === "hardware" ? "hardware" : "software";
+  const kind = normalizeKind(wallet.kind);
   const walletName = wallet.walletName.trim();
-  const createdAt = cleanRequired(wallet.createdAt, "createdAt");
+  const createdAt = cleanRequired(wallet.createdAt, 'createdAt');
   const seedBackupStatus =
-    kind === "hardware"
-      ? "not-required"
-      : normalizeSeedBackupStatus(wallet.seedBackupStatus);
+    kind === 'software'
+      ? normalizeSeedBackupStatus(wallet.seedBackupStatus)
+      : 'not-required';
   const normalized: RegisteredWallet = {
     id:
       wallet.id?.trim() ||
       createRegisteredWalletId(kind, walletName, wallet.network, createdAt),
     walletName,
-    path: cleanRequired(wallet.path, "path"),
+    path: cleanRequired(wallet.path, 'path'),
     network: wallet.network,
     kind,
     seedBackupStatus,
     createdAt,
-    lastOpenedAt: cleanRequired(wallet.lastOpenedAt, "lastOpenedAt"),
+    lastOpenedAt: cleanRequired(wallet.lastOpenedAt, 'lastOpenedAt'),
   };
 
-  if (seedBackupStatus === "verified" && wallet.seedBackedUpAt?.trim()) {
+  if (seedBackupStatus === 'verified' && wallet.seedBackedUpAt?.trim()) {
     normalized.seedBackedUpAt = wallet.seedBackedUpAt.trim();
   }
 
@@ -251,11 +266,15 @@ function normalizeRegisteredWallet(wallet: RegisteredWallet): RegisteredWallet {
     normalized.credentialKey = wallet.credentialKey.trim();
   }
 
-  if (kind === "hardware") {
+  if (kind === 'fast') {
+    normalized.restoreHeight = normalizeRestoreHeight(wallet.restoreHeight);
+  }
+
+  if (kind === 'hardware') {
     normalized.hardwareDeviceName =
-      wallet.hardwareDeviceName?.trim() || "Ledger";
+      wallet.hardwareDeviceName?.trim() || 'Ledger';
     normalized.hardwareDeviceType =
-      wallet.hardwareDeviceType?.trim() || "ledger";
+      wallet.hardwareDeviceType?.trim() || 'ledger';
   }
 
   return normalized;
@@ -308,11 +327,12 @@ function parseRegisteredWalletRecord(
   const walletName = parseString(value.walletName);
   const path = parseString(value.path);
   const network = parseNetwork(value.network);
-  const kind = parseKind(value.kind) ?? "software";
+  const kind = parseKind(value.kind) ?? 'software';
   const id = parseString(value.id);
   const seedBackupStatus = parseSeedBackupStatus(value.seedBackupStatus);
   const seedBackedUpAt = parseString(value.seedBackedUpAt);
   const credentialKey = parseString(value.credentialKey);
+  const restoreHeight = parseNumber(value.restoreHeight);
   const hardwareDeviceName = parseString(value.hardwareDeviceName);
   const hardwareDeviceType = parseString(value.hardwareDeviceType);
   const createdAt = parseString(value.createdAt);
@@ -329,9 +349,10 @@ function parseRegisteredWalletRecord(
     network,
     kind,
     seedBackupStatus:
-      seedBackupStatus ?? (kind === "hardware" ? "not-required" : "verified"),
+      seedBackupStatus ?? (kind === 'software' ? 'verified' : 'not-required'),
     seedBackedUpAt,
     credentialKey,
+    restoreHeight,
     hardwareDeviceName,
     hardwareDeviceType,
     createdAt,
@@ -347,15 +368,21 @@ function emptyRegistry(): WalletRegistryState {
 }
 
 function parseString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+  return typeof value === 'string' ? value : undefined;
 }
 
 function parseNumber(value: unknown): number | undefined {
-  return typeof value === "number" ? value : undefined;
+  return typeof value === 'number' ? value : undefined;
+}
+
+function normalizeRestoreHeight(value: number | undefined): number {
+  return value !== undefined && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : 0;
 }
 
 function parseNetwork(value: unknown): MoneroNetwork | undefined {
-  if (value === "mainnet" || value === "testnet" || value === "stagenet") {
+  if (value === 'mainnet' || value === 'testnet' || value === 'stagenet') {
     return value;
   }
 
@@ -363,19 +390,19 @@ function parseNetwork(value: unknown): MoneroNetwork | undefined {
 }
 
 function parseKind(value: unknown): RegisteredWalletKind | undefined {
-  if (value === "software" || value === "hardware") {
+  if (value === 'software' || value === 'hardware' || value === 'fast') {
     return value;
   }
 
   return undefined;
 }
 
+function normalizeKind(value: RegisteredWalletKind): RegisteredWalletKind {
+  return parseKind(value) ?? 'software';
+}
+
 function parseSeedBackupStatus(value: unknown): SeedBackupStatus | undefined {
-  if (
-    value === "pending" ||
-    value === "verified" ||
-    value === "not-required"
-  ) {
+  if (value === 'pending' || value === 'verified' || value === 'not-required') {
     return value;
   }
 
@@ -383,15 +410,15 @@ function parseSeedBackupStatus(value: unknown): SeedBackupStatus | undefined {
 }
 
 function normalizeSeedBackupStatus(status: SeedBackupStatus): SeedBackupStatus {
-  if (status === "verified" || status === "not-required") {
+  if (status === 'verified' || status === 'not-required') {
     return status;
   }
 
-  return "pending";
+  return 'pending';
 }
 
 function pathSafeName(value: string): string {
-  return value.trim().replace(/[^A-Za-z0-9_-]/g, "_") || "wallet";
+  return value.trim().replace(/[^A-Za-z0-9_-]/g, '_') || 'wallet';
 }
 
 function cleanRequired(value: string, fieldName: string): string {
@@ -404,5 +431,5 @@ function cleanRequired(value: string, fieldName: string): string {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === 'object' && value !== null;
 }

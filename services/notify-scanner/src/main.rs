@@ -1,8 +1,9 @@
 use notify_scanner::{
-    parse_storage_key, router_with_key_image_status_source, CuprateGrpcBlockSource,
-    CuprateHttpKeyImageStatusSource, CuprateHttpMempoolSource, EncryptedJsonFileStore,
-    HostedViewKeyBlockMatcher, HostedViewKeyMempoolMatcher, KeyImageStatusSource,
-    MempoolScannerWorker, ScannerWorker, WatchStore,
+    dispatch_pending_notifications, parse_storage_key, router_with_key_image_status_source,
+    CuprateGrpcBlockSource, CuprateHttpKeyImageStatusSource, CuprateHttpMempoolSource,
+    EncryptedJsonFileStore, HostedViewKeyBlockMatcher, HostedViewKeyMempoolMatcher,
+    KeyImageStatusSource, MempoolScannerWorker, NotificationSink, ScannerWorker,
+    Tex8PushNotificationSink, WatchStore,
 };
 use std::{
     env,
@@ -57,14 +58,18 @@ fn spawn_block_scanner_if_configured(store: Arc<dyn WatchStore>) -> anyhow::Resu
         .transpose()?;
     let block_source =
         CuprateGrpcBlockSource::new_with_chunk_blocks_hint(endpoint.clone(), chunk_blocks_hint)?;
+    let push_sink = push_notification_sink_from_env()?;
     let block_store = store.clone();
     let mempool_store = store.clone();
 
     thread::Builder::new()
         .name("notify-scanner-blocks".to_owned())
         .spawn(move || {
-            let mut worker =
-                ScannerWorker::new(block_store, block_source, HostedViewKeyBlockMatcher);
+            let mut worker = ScannerWorker::new(
+                block_store.clone(),
+                block_source,
+                HostedViewKeyBlockMatcher,
+            );
             let mut mempool_worker = mempool_source.map(|source| {
                 MempoolScannerWorker::new(
                     mempool_store,
@@ -103,6 +108,27 @@ fn spawn_block_scanner_if_configured(store: Arc<dyn WatchStore>) -> anyhow::Resu
                         }
                     }
                 }
+                if let Some(push_sink) = push_sink.as_deref() {
+                    match dispatch_pending_notifications(
+                        block_store.clone(),
+                        push_sink,
+                        now_ms(),
+                    ) {
+                        Ok(run) if run.sent > 0 || run.failed > 0 => {
+                            eprintln!(
+                                "notify-scanner push dispatch: pending={} sent={} failed={} skipped={}",
+                                run.pending,
+                                run.sent,
+                                run.failed,
+                                run.skipped_without_subscription
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!("notify-scanner push dispatch error: {error:#}");
+                        }
+                    }
+                }
                 thread::sleep(Duration::from_millis(interval_ms));
             }
         })?;
@@ -111,6 +137,31 @@ fn spawn_block_scanner_if_configured(store: Arc<dyn WatchStore>) -> anyhow::Resu
         "notify-scanner block scanner enabled endpoint={endpoint} max_blocks={max_blocks} interval_ms={interval_ms}"
     );
     Ok(())
+}
+
+fn push_notification_sink_from_env() -> anyhow::Result<Option<Arc<dyn NotificationSink>>> {
+    let Ok(endpoint) = env::var("NOTIFY_SCANNER_PUSH_ENDPOINT") else {
+        return Ok(None);
+    };
+    let token = env::var("NOTIFY_SCANNER_PUSH_AUTH_TOKEN")
+        .map_err(|_| anyhow::anyhow!("NOTIFY_SCANNER_PUSH_AUTH_TOKEN is required"))?;
+    let tenant_id =
+        env::var("NOTIFY_SCANNER_PUSH_TENANT_ID").unwrap_or_else(|_| "monero-wallet".to_owned());
+    let shop_id =
+        env::var("NOTIFY_SCANNER_PUSH_SHOP_ID").unwrap_or_else(|_| "monero-wallet".to_owned());
+    let app_id =
+        env::var("NOTIFY_SCANNER_PUSH_APP_ID").unwrap_or_else(|_| "monero-wallet".to_owned());
+    let timeout_ms = env_u64("NOTIFY_SCANNER_PUSH_TIMEOUT_MS", 10_000)?;
+    let sink = Tex8PushNotificationSink::new(
+        endpoint,
+        token,
+        tenant_id,
+        shop_id,
+        app_id,
+        Duration::from_millis(timeout_ms),
+    )?;
+    eprintln!("notify-scanner Fast Wallet push dispatcher enabled");
+    Ok(Some(Arc::new(sink)))
 }
 
 fn env_usize(name: &str, default: usize) -> anyhow::Result<usize> {

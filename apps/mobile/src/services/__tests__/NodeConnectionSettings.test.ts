@@ -31,6 +31,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   applyNodeModeDefaults,
   createDefaultNodeConnectionSettings,
+  deriveOptimizedGrpcEndpointFromDaemonAddress,
+  fastReceiveScannerUrlForSettings,
   loadActiveNodeConnectionSettings,
   NODE_DAEMON_PASSWORD_SECRET_KEY,
   NODE_CONNECTION_SETTINGS_STORAGE_KEY,
@@ -51,19 +53,19 @@ describe("NodeConnectionSettings", () => {
       mode: "optimized-grpc",
       network: "mainnet",
       daemon: {
-        address: "152.53.133.188:18089",
+        address: "xmr.tex8.com:18089",
         trusted: true,
         useSsl: false,
         username: "",
         password: "",
         proxyAddress: "",
       },
-      grpcEndpoint: "152.53.133.188:18091",
+      grpcEndpoint: "xmr.tex8.com:18091",
     });
 
     expect(
       createDefaultNodeConnectionSettings("stagenet").grpcEndpoint,
-    ).toBe("152.53.133.188:38091");
+    ).toBe("xmr.tex8.com:38091");
   });
 
   it("disables gRPC for original Monero RPC mode", () => {
@@ -72,11 +74,11 @@ describe("NodeConnectionSettings", () => {
       "original-rpc",
     );
 
-    expect(original.daemon.address).toBe("152.53.133.188:28089");
+    expect(original.daemon.address).toBe("xmr.tex8.com:28081");
     expect(original.grpcEndpoint).toBe("");
   });
 
-  it("migrates persisted VPN defaults to the public Cuprate host", async () => {
+  it("migrates persisted VPN defaults to the fast wallet server domain", async () => {
     await AsyncStorage.setItem(
       NODE_CONNECTION_SETTINGS_STORAGE_KEY,
       JSON.stringify({
@@ -95,11 +97,11 @@ describe("NodeConnectionSettings", () => {
 
     const settings = await loadActiveNodeConnectionSettings();
 
-    expect(settings.daemon.address).toBe("152.53.133.188:18089");
-    expect(settings.grpcEndpoint).toBe("152.53.133.188:18091");
+    expect(settings.daemon.address).toBe("xmr.tex8.com:18089");
+    expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
   });
 
-  it("migrates an old VPN monerod RPC port to the public Cuprate daemon port", async () => {
+  it("migrates an old VPN monerod RPC port to the fast wallet daemon port", async () => {
     await AsyncStorage.setItem(
       NODE_CONNECTION_SETTINGS_STORAGE_KEY,
       JSON.stringify({
@@ -118,8 +120,31 @@ describe("NodeConnectionSettings", () => {
 
     const settings = await loadActiveNodeConnectionSettings();
 
-    expect(settings.daemon.address).toBe("152.53.133.188:18089");
-    expect(settings.grpcEndpoint).toBe("152.53.133.188:18091");
+    expect(settings.daemon.address).toBe("xmr.tex8.com:18089");
+    expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
+  });
+
+  it("migrates a previously persisted direct IP default to the fast wallet server domain", async () => {
+    await AsyncStorage.setItem(
+      NODE_CONNECTION_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        mode: "optimized-grpc",
+        network: "mainnet",
+        daemon: {
+          address: "152.53.133.188:18089",
+          trusted: true,
+          useSsl: false,
+          username: "",
+          proxyAddress: "",
+        },
+        grpcEndpoint: "152.53.133.188:18091",
+      }),
+    );
+
+    const settings = await loadActiveNodeConnectionSettings();
+
+    expect(settings.daemon.address).toBe("xmr.tex8.com:18089");
+    expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
   });
 
   it("clears gRPC when a draft is saved as original RPC", () => {
@@ -133,6 +158,46 @@ describe("NodeConnectionSettings", () => {
     expect(nodeConnectionDraftToSettings(draft).grpcEndpoint).toBe("");
   });
 
+  it("adds optimized Cuprate ports when a bare host is saved", () => {
+    const draft = nodeConnectionSettingsToDraft(
+      createDefaultNodeConnectionSettings("mainnet"),
+    );
+
+    draft.daemonAddress = "xmr.tex8.com";
+    draft.grpcEndpoint = "xmr.tex8.com";
+
+    const settings = nodeConnectionDraftToSettings(draft);
+
+    expect(settings.daemon.address).toBe("xmr.tex8.com:18089");
+    expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
+  });
+
+  it("adds original Monero RPC ports when a bare IP is saved in original mode", () => {
+    const draft = nodeConnectionSettingsToDraft(
+      createDefaultNodeConnectionSettings("mainnet", "original-rpc"),
+    );
+
+    draft.daemonAddress = "node.example.test";
+
+    const settings = nodeConnectionDraftToSettings(draft);
+
+    expect(settings.daemon.address).toBe("node.example.test:18081");
+    expect(settings.grpcEndpoint).toBe("");
+  });
+
+  it("derives the optimized gRPC endpoint from the daemon host", () => {
+    expect(
+      deriveOptimizedGrpcEndpointFromDaemonAddress(
+        "xmr.tex8.com:18089",
+        "mainnet",
+      ),
+    ).toBe("xmr.tex8.com:18091");
+
+    expect(
+      deriveOptimizedGrpcEndpointFromDaemonAddress("fast.tex8.test", "testnet"),
+    ).toBe("fast.tex8.test:28091");
+  });
+
   it("preserves custom endpoints when switching to custom mode", () => {
     const draft = nodeConnectionSettingsToDraft(
       createDefaultNodeConnectionSettings("mainnet"),
@@ -144,6 +209,32 @@ describe("NodeConnectionSettings", () => {
 
     expect(custom.daemonAddress).toBe("node.example.test:18089");
     expect(custom.grpcEndpoint).toBe("fast.example.test:18091");
+  });
+
+  it("derives the fast receive scanner URL from the active fast wallet endpoint", () => {
+    expect(
+      fastReceiveScannerUrlForSettings({
+        mode: "optimized-grpc",
+        network: "mainnet",
+        daemon: {
+          address: "152.53.133.188:18089",
+          trusted: true,
+        },
+        grpcEndpoint: "152.53.133.188:18091",
+      }),
+    ).toBe("https://xmr.tex8.com");
+
+    expect(
+      fastReceiveScannerUrlForSettings({
+        mode: "custom",
+        network: "mainnet",
+        daemon: {
+          address: "127.0.0.1:18089",
+          trusted: true,
+        },
+        grpcEndpoint: "127.0.0.1:8087",
+      }),
+    ).toBe("https://127.0.0.1:8087");
   });
 
   it("persists node settings without the daemon password", async () => {

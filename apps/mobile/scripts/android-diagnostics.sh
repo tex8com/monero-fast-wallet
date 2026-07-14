@@ -5,8 +5,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/android-common.sh"
 
 ADB_BIN="$(resolve_adb)"
 DEVICE="$(select_android_device "$ADB_BIN")"
-APP_ID="${MONERO_WALLET_ANDROID_APP_ID:-com.monerowallet}"
-URL="${MONERO_WALLET_DIAGNOSTICS_URL:-monerowallet://diagnostics/run}"
+APP_ID="${MONERO_WALLET_ANDROID_APP_ID:-com.tex8.monerowallet}"
+URL="${MONERO_WALLET_DIAGNOSTICS_URL:-tex8monero://diagnostics/run}"
 WAIT_SECONDS="${MONERO_WALLET_DIAGNOSTICS_WAIT:-6}"
 
 echo "Launching ${APP_ID} diagnostics on ${DEVICE} and waiting ${WAIT_SECONDS}s..." >&2

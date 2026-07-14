@@ -4,7 +4,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/android-common.sh"
 
 ADB_BIN="$(resolve_adb)"
-APP_ID="${MONERO_WALLET_ANDROID_APP_ID:-com.monerowallet}"
+APP_ID="${MONERO_WALLET_ANDROID_APP_ID:-com.tex8.monerowallet}"
 VARIANT="${MONERO_WALLET_ANDROID_VARIANT:-release}"
 VARIANT_CAPITALIZED="$(capitalize_variant "$VARIANT")"
 ARCHITECTURES="${MONERO_WALLET_ANDROID_ARCHITECTURES:-arm64-v8a}"

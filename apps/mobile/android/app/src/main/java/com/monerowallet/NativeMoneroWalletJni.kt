@@ -16,6 +16,22 @@ internal object NativeMoneroWalletJni {
 
   fun unavailableReason(): String? = loadError?.message
 
+  fun initializeLedgerBleTransport(): Boolean {
+    if (loadError != null) {
+      return false
+    }
+    return runCatching { nativeInstallLedgerBleTransport() }.getOrDefault(false)
+  }
+
+  @JvmStatic fun ledgerBleConnect(): Boolean = LedgerBleTransport.connect()
+
+  @JvmStatic fun ledgerBleDisconnect() = LedgerBleTransport.disconnect()
+
+  @JvmStatic fun ledgerBleConnected(): Boolean = LedgerBleTransport.isConnected()
+
+  @JvmStatic fun ledgerBleExchange(command: ByteArray, userInput: Boolean): ByteArray =
+    LedgerBleTransport.exchange(command, userInput)
+
   fun createWallet(
     path: String,
     password: String,
@@ -45,9 +61,14 @@ internal object NativeMoneroWalletJni {
     )
   }
 
-  fun openWallet(path: String, password: String, network: String): String {
+  fun openWallet(
+    path: String,
+    password: String,
+    network: String,
+    restoreHeight: Double,
+  ): String {
     requireLoaded()
-    return nativeOpenWallet(path, password, network)
+    return nativeOpenWallet(path, password, network, restoreHeight)
   }
 
   fun createWalletFromDevice(
@@ -95,9 +116,16 @@ internal object NativeMoneroWalletJni {
     path: String,
     password: String,
     network: String,
+    restoreHeight: Double,
   ): Map<String, Any> {
     requireLoaded()
-    return nativeFastReceiveRegistrationPayload(identityId, path, password, network)
+    return nativeFastReceiveRegistrationPayload(
+      identityId,
+      path,
+      password,
+      network,
+      restoreHeight,
+    )
   }
 
   fun closeWallet(walletId: String, store: Boolean) {
@@ -171,6 +199,26 @@ internal object NativeMoneroWalletJni {
     return nativeGetTransactions(walletId, limit)
   }
 
+  fun getOwnedOutputKeyImages(walletId: String): List<String> {
+    requireLoaded()
+    return nativeGetOwnedOutputKeyImages(walletId)
+  }
+
+  fun reconcileOutputKeyImages(
+    walletId: String,
+    keyImages: Array<String>,
+    spentStates: BooleanArray,
+    checkedHeight: Double,
+  ): Double {
+    requireLoaded()
+    return nativeReconcileOutputKeyImages(
+      walletId,
+      keyImages,
+      spentStates,
+      checkedHeight,
+    )
+  }
+
   fun prepareTransaction(
     walletId: String,
     address: String,
@@ -230,6 +278,7 @@ internal object NativeMoneroWalletJni {
   }
 
   @JvmStatic private external fun nativeLinkedWithMonero(): Boolean
+  @JvmStatic private external fun nativeInstallLedgerBleTransport(): Boolean
   @JvmStatic private external fun nativeCreateWallet(
     path: String,
     password: String,
@@ -250,6 +299,7 @@ internal object NativeMoneroWalletJni {
     path: String,
     password: String,
     network: String,
+    restoreHeight: Double,
   ): String
 
   @JvmStatic private external fun nativeCreateWalletFromDevice(
@@ -276,6 +326,7 @@ internal object NativeMoneroWalletJni {
     path: String,
     password: String,
     network: String,
+    restoreHeight: Double,
   ): Map<String, Any>
 
   @JvmStatic private external fun nativeCloseWallet(walletId: String, store: Boolean)
@@ -325,6 +376,17 @@ internal object NativeMoneroWalletJni {
     walletId: String,
     limit: Double,
   ): List<Map<String, Any>>
+
+  @JvmStatic private external fun nativeGetOwnedOutputKeyImages(
+    walletId: String,
+  ): List<String>
+
+  @JvmStatic private external fun nativeReconcileOutputKeyImages(
+    walletId: String,
+    keyImages: Array<String>,
+    spentStates: BooleanArray,
+    checkedHeight: Double,
+  ): Double
 
   @JvmStatic private external fun nativePrepareTransaction(
     walletId: String,

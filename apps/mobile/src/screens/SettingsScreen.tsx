@@ -11,13 +11,19 @@ import {
 import { colors, spacing, radius } from "../theme/colors";
 import MoneroLogo from "../components/MoneroLogo";
 import { Icon, IconName } from "../components/Icon";
+import {
+  languageNames,
+  supportedLanguages,
+  type TranslationKey,
+  useI18n,
+} from "../i18n";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { MoneroNetwork } from "../services/NativeMoneroWallet";
-import type { FastReceiveIdentityRecord } from "../services/FastReceiveRegistry";
 import {
   applyNodeModeDefaults,
   applyNodeNetworkDefaults,
   createDefaultNodeConnectionSettings,
+  deriveOptimizedGrpcEndpointFromDaemonAddress,
   getActiveNodeConnectionSettings,
   loadActiveNodeConnectionSettings,
   nodeConnectionDraftToSettings,
@@ -30,10 +36,9 @@ import type {
 } from "../services/NodeConnectionSettings";
 import { runWalletDiagnostics } from "../services/WalletDiagnostics";
 import { walletService } from "../services/WalletService";
-import { useWalletState } from "../services/WalletState";
 
 type Item = {
-  label: string;
+  labelKey: TranslationKey;
   icon: IconName;
   danger?: boolean;
   toggle?: boolean;
@@ -48,43 +53,40 @@ type DiagnosticRow = {
 
 type WalletDiagnosticsResult = Awaited<ReturnType<typeof runWalletDiagnostics>>;
 
-const SECTIONS: { title: string; items: Item[] }[] = [
+const SECTIONS: { titleKey: TranslationKey; items: Item[] }[] = [
   {
-    title: "Wallet",
+    titleKey: "settings.wallet",
     items: [
-      { label: "Show backup seed", icon: "key", danger: true },
-      { label: "Change wallet password", icon: "lock" },
+      { labelKey: "settings.showBackupSeed", icon: "key", danger: true },
+      { labelKey: "settings.changeWalletPassword", icon: "lock" },
     ],
   },
   {
-    title: "Security",
+    titleKey: "settings.security",
     items: [
-      { label: "Enable biometrics", icon: "fingerprint", toggle: true },
-      { label: "Auto-lock (5 min)", icon: "clock", toggle: true, defaultOn: true },
-      { label: "Use Tor", icon: "onion", toggle: true },
+      { labelKey: "settings.enableBiometrics", icon: "fingerprint", toggle: true },
+      { labelKey: "settings.autoLock", icon: "clock", toggle: true, defaultOn: true },
+      { labelKey: "settings.useTor", icon: "onion", toggle: true },
     ],
   },
   {
-    title: "Appearance",
+    titleKey: "settings.appearance",
     items: [
-      { label: "Currency: USD", icon: "dollar" },
-      { label: "Language: English", icon: "language" },
+      { labelKey: "settings.currencyUsd", icon: "dollar" },
     ],
   },
   {
-    title: "Info",
+    titleKey: "settings.info",
     items: [
-      { label: "About Monero Wallet", icon: "info" },
-      { label: "Privacy policy", icon: "file" },
-      { label: "Open source licenses", icon: "package" },
+      { labelKey: "settings.privacyPolicy", icon: "file" },
+      { labelKey: "settings.openSourceLicenses", icon: "package" },
     ],
   },
 ];
 
-const NODE_MODES: { value: NodeConnectionMode; label: string }[] = [
-  { value: "optimized-grpc", label: "Optimized gRPC" },
-  { value: "original-rpc", label: "Original RPC" },
-  { value: "custom", label: "Custom" },
+const NODE_MODES: { value: NodeConnectionMode; labelKey: TranslationKey }[] = [
+  { value: "optimized-grpc", labelKey: "settings.nodeModeTex8" },
+  { value: "original-rpc", labelKey: "settings.nodeModeOriginal" },
 ];
 
 const NETWORKS: { value: MoneroNetwork; label: string }[] = [
@@ -95,7 +97,7 @@ const NETWORKS: { value: MoneroNetwork; label: string }[] = [
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { session } = useWalletState();
+  const { language, setLanguage, t } = useI18n();
   const bottomPadding = Math.max(180, insets.bottom + 150);
   const [draft, setDraft] = useState<NodeConnectionDraft>(() =>
     nodeConnectionSettingsToDraft(getActiveNodeConnectionSettings()),
@@ -106,13 +108,6 @@ export default function SettingsScreen() {
   const [isLoadingNodeSettings, setIsLoadingNodeSettings] = useState(true);
   const [isSavingNodeSettings, setIsSavingNodeSettings] = useState(false);
   const [nodeStatusText, setNodeStatusText] = useState("Loading");
-  const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
-    FastReceiveIdentityRecord[]
-  >([]);
-  const [fastReceivePassword, setFastReceivePassword] = useState("");
-  const [isCreatingFastReceive, setIsCreatingFastReceive] = useState(false);
-  const [fastReceiveStatusText, setFastReceiveStatusText] =
-    useState("Loading");
   const [diagnosticsStatusText, setDiagnosticsStatusText] =
     useState("Ready");
   const [diagnosticRows, setDiagnosticRows] = useState<DiagnosticRow[]>([]);
@@ -127,8 +122,13 @@ export default function SettingsScreen() {
           return;
         }
 
-        setSavedSettings(settings);
-        setDraft(nodeConnectionSettingsToDraft(settings));
+        const visibleSettings =
+          settings.mode === "custom"
+            ? createDefaultNodeConnectionSettings(settings.network, "optimized-grpc")
+            : settings;
+
+        setSavedSettings(visibleSettings);
+        setDraft(nodeConnectionSettingsToDraft(visibleSettings));
         setNodeStatusText("Saved");
       })
       .catch(() => {
@@ -139,32 +139,6 @@ export default function SettingsScreen() {
       .finally(() => {
         if (mounted) {
           setIsLoadingNodeSettings(false);
-        }
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-
-    walletService
-      .loadFastReceiveIdentities()
-      .then(identities => {
-        if (!mounted) {
-          return;
-        }
-
-        setFastReceiveIdentities(identities);
-        setFastReceiveStatusText(
-          identities.length > 0 ? `${identities.length} local` : "Off",
-        );
-      })
-      .catch(() => {
-        if (mounted) {
-          setFastReceiveStatusText("Error");
         }
       });
 
@@ -185,13 +159,13 @@ export default function SettingsScreen() {
   const hasChanges =
     JSON.stringify(resolvedSettings) !== JSON.stringify(savedSettings);
   const isOriginalRpc = draft.mode === "original-rpc";
-  const showAdvancedFields = draft.mode === "custom";
   const nodeStatus =
     hasChanges && !isLoadingNodeSettings ? "Unsaved" : nodeStatusText;
-  const canCreateFastReceive =
-    Boolean(session && !session.hardwareDevice) &&
-    fastReceivePassword.length > 0 &&
-    !isCreatingFastReceive;
+  const displayedNodeStatus = translateStatusText(nodeStatus, t);
+  const displayedDiagnosticsStatus = translateStatusText(
+    diagnosticsStatusText,
+    t,
+  );
 
   function updateDraft<K extends keyof NodeConnectionDraft>(
     key: K,
@@ -203,20 +177,24 @@ export default function SettingsScreen() {
     }));
   }
 
-  function updateDaemonPassword(value: string) {
-    setDraft(current => ({
-      ...current,
-      password: value,
-      passwordStored: value.length > 0 ? false : current.passwordStored,
-    }));
-  }
+  function updateFastWalletServerAddress(value: string) {
+    setDraft(current => {
+      const currentDerivedGrpc = deriveOptimizedGrpcEndpointFromDaemonAddress(
+        current.daemonAddress,
+        current.network,
+      );
+      const shouldFollowDaemon =
+        current.grpcEndpoint.trim().length === 0 ||
+        current.grpcEndpoint.trim() === currentDerivedGrpc;
 
-  function clearStoredDaemonPassword() {
-    setDraft(current => ({
-      ...current,
-      password: "",
-      passwordStored: false,
-    }));
+      return {
+        ...current,
+        daemonAddress: value,
+        grpcEndpoint: shouldFollowDaemon
+          ? deriveOptimizedGrpcEndpointFromDaemonAddress(value, current.network)
+          : current.grpcEndpoint,
+      };
+    });
   }
 
   function setMode(mode: NodeConnectionMode) {
@@ -246,6 +224,7 @@ export default function SettingsScreen() {
     try {
       const saved = await saveActiveNodeConnectionSettings(resolvedSettings);
       const applied = await walletService.applyNodeConnectionToActive(saved);
+      await walletService.refreshFastReceiveRegistrationStatusesForSettings(saved);
 
       setSavedSettings(saved);
       setDraft(nodeConnectionSettingsToDraft(saved));
@@ -254,28 +233,6 @@ export default function SettingsScreen() {
       setNodeStatusText("Error");
     } finally {
       setIsSavingNodeSettings(false);
-    }
-  }
-
-  async function createFastReceiveIdentity() {
-    if (!canCreateFastReceive) {
-      return;
-    }
-
-    setIsCreatingFastReceive(true);
-    setFastReceiveStatusText("Creating");
-
-    try {
-      const result = await walletService.createFastReceiveIdentity({
-        password: fastReceivePassword,
-      });
-      setFastReceiveIdentities(result.identities);
-      setFastReceivePassword("");
-      setFastReceiveStatusText(`${result.identities.length} local`);
-    } catch {
-      setFastReceiveStatusText("Error");
-    } finally {
-      setIsCreatingFastReceive(false);
     }
   }
 
@@ -310,19 +267,59 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={[s.scroll, { paddingBottom: bottomPadding }]}>
         <View style={s.header}>
           <MoneroLogo size={44} />
-          <Text style={s.title}>Settings</Text>
+          <Text style={s.title}>{t("settings.title")}</Text>
           <Text style={s.version}>Version 1.0.0 (MVP)</Text>
         </View>
 
         <View style={s.section}>
           <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>Node</Text>
-            <Text style={[s.nodeStatus, hasChanges && s.nodeStatusDirty]}>
-              {nodeStatus}
+            <Text style={s.sectionTitle}>{t("settings.language")}</Text>
+            <Text style={s.nodeStatus}>
+              {languageNames[language]}
             </Text>
           </View>
           <View style={s.nodePanel}>
-            <Text style={s.fieldLabel}>Mode</Text>
+            <Text style={s.languageHelp}>
+              {t("settings.languageSubtitle")}
+            </Text>
+            <View style={s.segmented}>
+              {supportedLanguages.map(code => (
+                <TouchableOpacity
+                  key={code}
+                  style={[
+                    s.segment,
+                    language === code && s.segmentActive,
+                  ]}
+                  activeOpacity={0.75}
+                  onPress={() => {
+                    setLanguage(code).catch(() => undefined);
+                  }}
+                >
+                  <Text
+                    style={[
+                      s.segmentText,
+                      language === code && s.segmentTextActive,
+                    ]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                  >
+                    {languageNames[code]}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        </View>
+
+        <View style={s.section}>
+          <View style={s.sectionHeaderRow}>
+            <Text style={s.sectionTitle}>{t("settings.node")}</Text>
+            <Text style={[s.nodeStatus, hasChanges && s.nodeStatusDirty]}>
+              {displayedNodeStatus}
+            </Text>
+          </View>
+          <View style={s.nodePanel}>
+            <Text style={s.fieldLabel}>{t("settings.mode")}</Text>
             <View style={s.segmented}>
               {NODE_MODES.map(mode => (
                 <TouchableOpacity
@@ -342,13 +339,13 @@ export default function SettingsScreen() {
                     numberOfLines={1}
                     adjustsFontSizeToFit
                   >
-                    {mode.label}
+                    {t(mode.labelKey)}
                   </Text>
                 </TouchableOpacity>
               ))}
             </View>
 
-            <Text style={s.fieldLabel}>Network</Text>
+            <Text style={s.fieldLabel}>{t("settings.network")}</Text>
             <View style={s.segmented}>
               {NETWORKS.map(network => (
                 <TouchableOpacity
@@ -374,25 +371,47 @@ export default function SettingsScreen() {
               ))}
             </View>
 
-            <NodeInput
-              label="Daemon RPC"
-              value={draft.daemonAddress}
-              onChangeText={value => updateDraft("daemonAddress", value)}
-              placeholder="host:port"
-            />
+            <View style={s.nodeHintBox}>
+              <Icon
+                name="info"
+                size={16}
+                color={isOriginalRpc ? colors.warning : colors.orange}
+              />
+              <Text style={s.nodeHintText}>
+                {isOriginalRpc
+                  ? t("settings.originalNodeHelp")
+                  : t("settings.tex8NodeHelp")}
+              </Text>
+            </View>
 
-            <NodeInput
-              label="Cuprate gRPC"
-              value={isOriginalRpc ? "" : draft.grpcEndpoint}
-              onChangeText={value => updateDraft("grpcEndpoint", value)}
-              placeholder={isOriginalRpc ? "Disabled" : "host:port"}
-              editable={!isOriginalRpc}
-            />
+            {isOriginalRpc ? (
+              <NodeInput
+                label={t("settings.originalNodeAddress")}
+                value={draft.daemonAddress}
+                onChangeText={value => updateDraft("daemonAddress", value)}
+                placeholder="host:port"
+              />
+            ) : (
+              <>
+                <NodeInput
+                  label={t("settings.fastWalletServerAddress")}
+                  value={draft.daemonAddress}
+                  onChangeText={updateFastWalletServerAddress}
+                  placeholder="xmr.tex8.com:18089"
+                />
+                <NodeInput
+                  label={t("settings.grpcEndpoint")}
+                  value={draft.grpcEndpoint}
+                  onChangeText={value => updateDraft("grpcEndpoint", value)}
+                  placeholder="xmr.tex8.com:18091"
+                />
+              </>
+            )}
 
             <View style={s.switchRow}>
               <View style={s.switchText}>
-                <Text style={s.switchTitle}>Trusted daemon</Text>
-                <Text style={s.switchValue}>{draft.trusted ? "On" : "Off"}</Text>
+                <Text style={s.switchTitle}>{t("settings.trustedDaemon")}</Text>
+                <Text style={s.switchValue}>{draft.trusted ? t("common.on") : t("common.off")}</Text>
               </View>
               <Switch
                 value={draft.trusted}
@@ -404,8 +423,8 @@ export default function SettingsScreen() {
 
             <View style={s.switchRow}>
               <View style={s.switchText}>
-                <Text style={s.switchTitle}>Daemon TLS</Text>
-                <Text style={s.switchValue}>{draft.useSsl ? "On" : "Off"}</Text>
+                <Text style={s.switchTitle}>{t("settings.daemonTls")}</Text>
+                <Text style={s.switchValue}>{draft.useSsl ? t("common.on") : t("common.off")}</Text>
               </View>
               <Switch
                 value={draft.useSsl}
@@ -415,51 +434,13 @@ export default function SettingsScreen() {
               />
             </View>
 
-            {showAdvancedFields && (
-              <View style={s.advancedFields}>
-                <NodeInput
-                  label="Username"
-                  value={draft.username}
-                  onChangeText={value => updateDraft("username", value)}
-                  placeholder="Optional"
-                />
-                <NodeInput
-                  label="Password"
-                  value={draft.password}
-                  onChangeText={updateDaemonPassword}
-                  placeholder={
-                    draft.passwordStored ? "Stored securely" : "Optional"
-                  }
-                  secureTextEntry
-                />
-                {draft.passwordStored && draft.password.length === 0 ? (
-                  <View style={s.secretRow}>
-                    <Text style={s.secretText}>Stored in device secure storage</Text>
-                    <TouchableOpacity
-                      style={s.secretButton}
-                      activeOpacity={0.75}
-                      onPress={clearStoredDaemonPassword}
-                    >
-                      <Text style={s.secretButtonText}>Clear</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : null}
-                <NodeInput
-                  label="Proxy"
-                  value={draft.proxyAddress}
-                  onChangeText={value => updateDraft("proxyAddress", value)}
-                  placeholder="Optional"
-                />
-              </View>
-            )}
-
             <View style={s.nodeActions}>
               <TouchableOpacity
                 style={s.secondaryButton}
                 activeOpacity={0.75}
                 onPress={resetNodeDefaults}
               >
-                <Text style={s.secondaryButtonText}>Reset</Text>
+                <Text style={s.secondaryButtonText}>{t("action.reset")}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
@@ -473,7 +454,7 @@ export default function SettingsScreen() {
               >
                 <Icon name="check" size={18} color="#FFF" />
                 <Text style={s.primaryButtonText}>
-                  {isSavingNodeSettings ? "Saving" : "Save"}
+                  {isSavingNodeSettings ? t("action.saving") : t("action.save")}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -482,75 +463,14 @@ export default function SettingsScreen() {
 
         <View style={s.section}>
           <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>Fast Receive</Text>
-            <Text style={s.nodeStatus}>{fastReceiveStatusText}</Text>
-          </View>
-          <View style={s.nodePanel}>
-            {fastReceiveIdentities.length > 0 ? (
-              <View style={s.identityList}>
-                {fastReceiveIdentities.map(identity => (
-                  <View key={identity.id} style={s.identityRow}>
-                    <View style={s.identityIcon}>
-                      <Icon name="key" size={17} color={colors.orange} />
-                    </View>
-                    <View style={s.identityText}>
-                      <Text style={s.identityLabel}>{identity.label}</Text>
-                      <Text
-                        style={s.identityAddress}
-                        numberOfLines={1}
-                        ellipsizeMode="middle"
-                      >
-                        {identity.address}
-                      </Text>
-                    </View>
-                    <Text style={s.identityStatus}>{identity.status}</Text>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-
-            <NodeInput
-              label="Wallet Password"
-              value={fastReceivePassword}
-              onChangeText={setFastReceivePassword}
-              placeholder={
-                session
-                  ? session.hardwareDevice
-                    ? "Software wallet required"
-                    : "Required"
-                  : "Open wallet first"
-              }
-              editable={Boolean(session && !session.hardwareDevice)}
-              secureTextEntry
-            />
-
-            <TouchableOpacity
-              style={[
-                s.primaryButton,
-                !canCreateFastReceive && s.primaryButtonDisabled,
-              ]}
-              activeOpacity={0.8}
-              disabled={!canCreateFastReceive}
-              onPress={createFastReceiveIdentity}
-            >
-              <Icon name="key" size={18} color="#FFF" />
-              <Text style={s.primaryButtonText}>
-                {isCreatingFastReceive ? "Creating" : "Create Identity"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={s.section}>
-          <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>Diagnostics</Text>
+            <Text style={s.sectionTitle}>{t("settings.diagnostics")}</Text>
             <Text
               style={[
                 s.nodeStatus,
                 diagnosticsStatusText !== "Ready" && s.nodeStatusDirty,
               ]}
             >
-              {diagnosticsStatusText}
+              {displayedDiagnosticsStatus}
             </Text>
           </View>
           <View style={s.nodePanel}>
@@ -585,22 +505,22 @@ export default function SettingsScreen() {
             >
               <Icon name="info" size={18} color="#FFF" />
               <Text style={s.primaryButtonText}>
-                {isRunningDiagnostics ? "Running" : "Run Diagnostics"}
+                {isRunningDiagnostics ? t("status.running") : t("action.runDiagnostics")}
               </Text>
             </TouchableOpacity>
           </View>
         </View>
 
         {SECTIONS.map(section => (
-          <View key={section.title} style={s.section}>
-            <Text style={s.sectionTitle}>{section.title}</Text>
+          <View key={section.titleKey} style={s.section}>
+            <Text style={s.sectionTitle}>{t(section.titleKey)}</Text>
             <View style={s.sectionCard}>
               {section.items.map((item, i) => (
-                <TouchableOpacity key={item.label} style={[s.row, i < section.items.length - 1 && s.rowBorder]} activeOpacity={0.6}>
+                <TouchableOpacity key={item.labelKey} style={[s.row, i < section.items.length - 1 && s.rowBorder]} activeOpacity={0.6}>
                   <View style={s.rowIconWrap}>
                     <Icon name={item.icon} size={20} color={item.danger ? colors.error : colors.textSecondary} />
                   </View>
-                  <Text style={[s.rowLabel, item.danger && { color: colors.error }]}>{item.label}</Text>
+                  <Text style={[s.rowLabel, item.danger && { color: colors.error }]}>{t(item.labelKey)}</Text>
                   {item.toggle ? (
                     <Switch
                       value={item.defaultOn ?? false}
@@ -617,13 +537,49 @@ export default function SettingsScreen() {
         ))}
 
         <TouchableOpacity style={s.logoutBtn}>
-          <Text style={s.logoutText}>Close wallet</Text>
+          <Text style={s.logoutText}>{t("action.closeWallet")}</Text>
         </TouchableOpacity>
 
         <View style={s.bottomSpacer} />
       </ScrollView>
     </View>
   );
+}
+
+type Translator = (
+  key: TranslationKey,
+  params?: Record<string, string | number>,
+) => string;
+
+function translateStatusText(value: string, t: Translator): string {
+  switch (value) {
+    case "Applied":
+      return t("status.applied");
+    case "Creating":
+      return t("status.creating");
+    case "Default":
+      return t("settings.default");
+    case "Error":
+      return t("status.error");
+    case "Loading":
+      return t("settings.loading");
+    case "Off":
+      return t("common.off");
+    case "Ready":
+      return t("status.ready");
+    case "Running":
+      return t("status.running");
+    case "Saved":
+      return t("status.saved");
+    case "Saving":
+      return t("action.saving");
+    case "Unsaved":
+      return t("settings.unsaved");
+    case "Warnings":
+      return t("status.warnings");
+    default:
+      return value;
+  }
 }
 
 function NodeInput({
@@ -794,6 +750,9 @@ const s = StyleSheet.create({
   nodeStatus: { color: colors.success, fontSize: 12, fontWeight: "700", marginBottom: 8, paddingRight: 4 },
   nodeStatusDirty: { color: colors.warning },
   nodePanel: { backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, gap: 12 },
+  languageHelp: { color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
+  nodeHintBox: { flexDirection: "row", alignItems: "flex-start", gap: 9, borderRadius: radius.md, borderWidth: 1, borderColor: "rgba(242,104,34,0.18)", backgroundColor: "rgba(242,104,34,0.08)", padding: spacing.md },
+  nodeHintText: { flex: 1, color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
   segmented: { flexDirection: "row", backgroundColor: colors.bgInput, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: 4, gap: 4 },
   segment: { flex: 1, minHeight: 38, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, paddingHorizontal: 6 },
   segmentActive: { backgroundColor: colors.orange },

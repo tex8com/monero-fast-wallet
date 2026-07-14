@@ -4,9 +4,14 @@ import Svg, { Path } from "react-native-svg";
 interface Props {
   size?: number;
   color?: string;
+  bottomColor?: string;
 }
 
-export default function MoneroLogo({ size = 40, color = "#FF6600" }: Props) {
+export default function MoneroLogo({
+  size = 40,
+  color = "#FF6600",
+  bottomColor = "#4D4D4D",
+}: Props) {
   return (
     <Svg width={size} height={size} viewBox="0 0 75 75">
       <Path
@@ -15,8 +20,7 @@ export default function MoneroLogo({ size = 40, color = "#FF6600" }: Props) {
       />
       <Path
         d="M21.316 36.896v19.537H5.766c6.478 10.628 18.178 17.726 31.533 17.726 13.355 0 25.056-7.098 31.533-17.726H53.283V36.896L37.3 52.88 21.316 36.896z"
-        fill="#FFFFFF"
-        opacity={0.9}
+        fill={bottomColor}
       />
     </Svg>
   );

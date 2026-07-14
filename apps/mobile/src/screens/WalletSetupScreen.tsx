@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, StatusBar,
-  Animated, Easing, Dimensions, Modal, TextInput,
+  Animated, Dimensions, Modal, TextInput,
   KeyboardAvoidingView, Platform, ScrollView, Switch, ActivityIndicator,
+  useWindowDimensions,
 } from "react-native";
 import LinearGradient from "react-native-linear-gradient";
 import Svg, { Path, Rect, Circle, Line } from "react-native-svg";
@@ -10,8 +11,19 @@ import { colors } from "../theme/colors";
 import MoneroCoinGhost from "../components/MoneroCoinGhost";
 import MoneroCoin from "../components/MoneroCoin";
 import { walletService } from "../services/WalletService";
+import { type TranslationKey, useI18n } from "../i18n";
 import { useWalletState } from "../services/WalletState";
 import { logWalletEvent } from "../services/WalletLogger";
+import { FastWalletPushService } from "../services/FastWalletPushService";
+import {
+  loadEnthusiastDiscoveryPreference,
+  refreshApproximateEnthusiastLocation,
+  setEnthusiastDiscoveryEnabled,
+} from "../services/EnthusiastDiscoveryService";
+import {
+  fastReceiveScannerUrlForSettings,
+  loadActiveNodeConnectionSettings,
+} from "../services/NodeConnectionSettings";
 import type {
   BiometricAuthStatus,
   LedgerTransportStatus,
@@ -19,49 +31,48 @@ import type {
 
 const { width: SW, height: SH } = Dimensions.get("window");
 const CREATE_STEPS = [
-  "Preparing storage",
-  "Generating entropy",
-  "Encrypting seed",
-  "Deriving keys",
-  "Preparing backup",
-];
+  "setup.step.preparingStorage",
+  "setup.step.generatingEntropy",
+  "setup.step.encryptingSeed",
+  "setup.step.derivingKeys",
+  "setup.step.preparingBackup",
+] as const satisfies readonly TranslationKey[];
 const HARDWARE_STEPS = [
-  "Preparing wallet file",
-  "Waiting for Ledger Nano",
-  "Opening Monero app",
-  "Reading public keys",
-  "Saving wallet",
-];
+  "setup.step.preparingWalletFile",
+  "setup.step.waitingForLedger",
+  "setup.step.openingMoneroApp",
+  "setup.step.readingPublicKeys",
+  "setup.step.savingWallet",
+] as const satisfies readonly TranslationKey[];
 const RESTORE_STEPS = [
-  "Preparing storage",
-  "Restoring seed",
-  "Deriving keys",
-  "Preparing scan",
-  "Starting scan",
-];
+  "setup.step.preparingStorage",
+  "setup.step.restoringSeed",
+  "setup.step.derivingKeys",
+  "setup.step.preparingScan",
+  "setup.step.startingScan",
+] as const satisfies readonly TranslationKey[];
 const OPEN_STEPS = [
-  "Opening wallet",
-  "Reading local state",
-  "Loading wallet",
-  "Preparing sync",
-];
+  "setup.step.openingWallet",
+  "setup.step.readingLocalState",
+  "setup.step.loadingWallet",
+  "setup.step.preparingSync",
+] as const satisfies readonly TranslationKey[];
 const DEFAULT_WALLET_NAME = "primary";
 const DEFAULT_HARDWARE_WALLET_NAME = "ledger";
 const MONERO_SEED_WORD_COUNT = 25;
-const HEX = "0123456789ABCDEF";
+const CREATE_CARD_HORIZONTAL_MARGIN = 20;
+const CREATE_CARD_MAX_WIDTH = 360;
 type PasswordPromptMode = "create" | "open" | "restore";
 type CreationKind = "software" | "hardware" | "restore" | "open";
 type CreateCredentialMode = "device" | "password";
+type FastReceiveRegistrationCredentials = {
+  password?: string;
+  secretKey?: string;
+};
 type PendingSeedBackup = {
   registrationId: string;
   seed: string;
 };
-
-function makeCipherLine() {
-  return Array.from({ length: 3 }, () =>
-    Array.from({ length: 8 }, () => HEX[Math.floor(Math.random() * HEX.length)]).join(""),
-  ).join("  ");
-}
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -81,23 +92,26 @@ function ledgerTransportReady(
   return Boolean(status?.supported && status.available && status.permissionGranted);
 }
 
-function ledgerStatusTitle(status: LedgerTransportStatus | undefined): string {
+function ledgerStatusTitle(
+  status: LedgerTransportStatus | undefined,
+  t: (key: TranslationKey) => string,
+): string {
   if (!status) {
-    return "Searching for Ledger Nano";
+    return t("setup.hardware.searchingTitle");
   }
   if (status.transport === "ble" && status.available && !status.supported) {
-    return "Ledger BLE found";
+    return t("setup.hardware.bleFound");
   }
   if (!status.supported) {
-    return "Ledger transport unavailable";
+    return t("setup.hardware.transportUnavailable");
   }
   if (!status.available) {
-    return "Waiting for Ledger Nano";
+    return t("setup.hardware.waiting");
   }
   if (status.requiresUserAction || !status.permissionGranted) {
-    return "Permission required";
+    return t("setup.hardware.permissionRequired");
   }
-  return status.deviceName || "Ledger Nano found";
+  return status.deviceName || t("setup.hardware.found");
 }
 
 function biometricReady(status: BiometricAuthStatus | undefined): boolean {
@@ -156,18 +170,17 @@ function SetupOption({
 
 /* ── Screen ─────────────────────────────────────────────────────────── */
 export default function WalletSetupScreen({ navigation, route }: any) {
+  const { t } = useI18n();
+  const { width: windowWidth } = useWindowDimensions();
+  const createCardWidth = Math.min(
+    CREATE_CARD_MAX_WIDTH,
+    Math.max(280, windowWidth - CREATE_CARD_HORIZONTAL_MARGIN * 2),
+  );
   const fadeIn = useRef(new Animated.Value(0)).current;
   const slideUp = useRef(new Animated.Value(30)).current;
   const bgOp = useRef(new Animated.Value(0)).current;
-  const createOp = useRef(new Animated.Value(0)).current;
-  const createScale = useRef(new Animated.Value(0.96)).current;
-  const createProgress = useRef(new Animated.Value(0)).current;
-  const scanY = useRef(new Animated.Value(0)).current;
-  const scanLoop = useRef<Animated.CompositeAnimation | null>(null);
-  const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const seedBackupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cipherInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const initialModeHandled = useRef(false);
+  const handledModeRequest = useRef<string | undefined>(undefined);
   const [creating, setCreating] = useState(false);
   const [creatingKind, setCreatingKind] =
     useState<CreationKind>("software");
@@ -187,8 +200,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const [walletPasswordConfirm, setWalletPasswordConfirm] = useState("");
   const [restoreSeed, setRestoreSeed] = useState("");
   const [restoreHeight, setRestoreHeight] = useState("");
-  const [createStep, setCreateStep] = useState(CREATE_STEPS[0]);
-  const [cipherLines, setCipherLines] = useState(() => Array.from({ length: 8 }, makeCipherLine));
+  const [createStep, setCreateStep] = useState(() => t(CREATE_STEPS[0]));
   const [createError, setCreateError] = useState<string | undefined>();
   const [createdSeed, setCreatedSeed] = useState("");
   const [createdSeedWalletId, setCreatedSeedWalletId] =
@@ -197,7 +209,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     useState<PendingSeedBackup | undefined>();
   const [seedConfirmed, setSeedConfirmed] = useState(false);
   const [createFastReceiveOnSetup, setCreateFastReceiveOnSetup] =
-    useState(false);
+    useState(true);
+  const [enableEnthusiastDiscoveryOnSetup, setEnableEnthusiastDiscoveryOnSetup] =
+    useState(true);
   const {
     registeredWallet,
     registeredWallets,
@@ -205,7 +219,22 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     refreshTransactions,
     registerOpenedSession,
     reloadRegisteredWallet,
+    reloadRegisteredWallets,
   } = useWalletState();
+
+  useEffect(() => {
+    let mounted = true;
+    loadEnthusiastDiscoveryPreference()
+      .then(preference => {
+        if (mounted && preference.updatedAt) {
+          setEnableEnthusiastDiscoveryOnSetup(preference.enabled);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
   const normalizedRestoreSeed = normalizeSeed(restoreSeed);
   const restoreSeedWordCount = normalizedRestoreSeed
     ? normalizedRestoreSeed.split(" ").length
@@ -259,43 +288,43 @@ export default function WalletSetupScreen({ navigation, route }: any) {
             walletPassword === walletPasswordConfirm;
   const passwordPromptTitle =
     passwordPromptMode === "open"
-      ? "Open Wallet"
+      ? t("action.openWallet")
       : passwordPromptMode === "restore"
-          ? "Import Wallet"
-          : "Create Wallet";
+          ? t("setup.importWallet")
+          : t("action.createWallet");
   const passwordPromptSubtitle =
     passwordPromptMode === "open"
       ? openUsesStoredSecret
-        ? `Confirm ${currentBiometricLabel} to unlock the local wallet file.`
+        ? t("setup.prompt.openStored", { biometric: currentBiometricLabel })
         : openUsesHardwareWallet
-          ? "Connect Ledger Nano, unlock it, and open the Monero app on the device."
-          : "Enter the password for the local wallet file."
+          ? t("setup.prompt.openHardware")
+          : t("setup.prompt.openPassword")
       : passwordPromptMode === "restore"
-          ? "Paste your 25-word Monero seed and choose a local password."
+          ? t("setup.prompt.restore")
           : createCredentialMode === "device"
             ? canUseBiometric
-              ? `Use ${currentBiometricLabel}. You will back up a 25-word seed.`
-              : "Create with a local secure device key. You will back up a 25-word seed."
-            : "Choose a local password. You will back up a 25-word seed.";
+              ? t("setup.prompt.createDeviceWithBiometric", { biometric: currentBiometricLabel })
+              : t("setup.prompt.createDeviceNoBiometric")
+            : t("setup.prompt.createPassword");
   const passwordPromptAction =
     passwordPromptMode === "open"
       ? openUsesStoredSecret
-        ? "Unlock"
-        : "Open"
+        ? t("action.unlock")
+        : t("action.open")
       : passwordPromptMode === "restore"
-          ? "Import"
-          : "Create";
+          ? t("action.import")
+          : t("action.create");
   const seedWords = createdSeed.trim().split(/\s+/).filter(Boolean);
   const seedSubtitle =
     seedWords.length === MONERO_SEED_WORD_COUNT
-      ? "Write down all 25 words before using the wallet."
-      : `Write down all ${seedWords.length} words exactly as shown.`;
+      ? t("setup.seedSubtitle")
+      : t("setup.seedSubtitleDynamic", { count: seedWords.length });
   const setupOverlayVisible =
     creating || Boolean(pendingSeedBackup) || createdSeed.length > 0;
   const openWalletDescription =
     registeredWallets.length > 1
-      ? `${registeredWallet?.walletName ?? "Wallet"} on ${registeredWallet?.network ?? "mainnet"} (${registeredWallets.length} wallets)`
-      : `${registeredWallet?.walletName ?? "Wallet"} on ${registeredWallet?.network ?? "mainnet"}`;
+      ? `${registeredWallet?.walletName ?? t("common.wallet")} on ${registeredWallet?.network ?? "mainnet"} (${registeredWallets.length} wallets)`
+      : `${registeredWallet?.walletName ?? t("common.wallet")} on ${registeredWallet?.network ?? "mainnet"}`;
 
   useEffect(() => {
     Animated.timing(bgOp, { toValue: 1, duration: 1000, useNativeDriver: true }).start();
@@ -336,17 +365,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     refreshBiometricStatus().catch(() => undefined);
   }, [refreshBiometricStatus]);
 
-  const stopCreateEffects = () => {
-    scanLoop.current?.stop();
-    scanLoop.current = null;
-    timers.current.forEach(clearTimeout);
-    timers.current = [];
-    if (cipherInterval.current) {
-      clearInterval(cipherInterval.current);
-      cipherInterval.current = null;
-    }
-  };
-
   const clearSeedBackupTimer = () => {
     if (seedBackupTimer.current) {
       clearTimeout(seedBackupTimer.current);
@@ -354,10 +372,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     }
   };
 
-  useEffect(() => () => {
-    stopCreateEffects();
-    clearSeedBackupTimer();
-  }, []);
+  useEffect(() => () => clearSeedBackupTimer(), []);
 
   const openPasswordPrompt = useCallback((mode: PasswordPromptMode) => {
     if (creating) {
@@ -389,13 +404,22 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     }
     setPasswordPromptMode(mode);
   }, [
-    biometricStatus,
     canUseBiometric,
     createCredentialMode,
     creating,
     refreshBiometricStatus,
     registeredWallets.length,
   ]);
+
+  const closePasswordPrompt = useCallback(() => {
+    const shouldReturnHome =
+      passwordPromptMode === "open" && route?.params?.mode === "open";
+    handledModeRequest.current = undefined;
+    setPasswordPromptMode(undefined);
+    if (shouldReturnHome) {
+      navigation.navigate("Home");
+    }
+  }, [navigation, passwordPromptMode, route?.params?.mode]);
 
   const refreshLedgerTransport = async (requestAccess = false) => {
     setLedgerBusy(true);
@@ -446,59 +470,44 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   };
 
   useEffect(() => {
-    if (initialModeHandled.current) {
+    const requestedMode = route?.params?.mode;
+    const requestKey = `${requestedMode ?? "none"}:${route?.params?.openRequestId ?? "once"}:${registeredWallet?.id ?? "none"}`;
+    if (handledModeRequest.current === requestKey) {
       return;
     }
 
-    const requestedMode = route?.params?.mode;
+    if (requestedMode === "open") {
+      if (!registeredWallet) {
+        return;
+      }
+      handledModeRequest.current = requestKey;
+      openPasswordPrompt("open");
+      return;
+    }
+
     if (requestedMode === "create" || requestedMode === "restore") {
-      initialModeHandled.current = true;
+      handledModeRequest.current = requestKey;
       openPasswordPrompt(requestedMode);
     }
-  }, [openPasswordPrompt, route?.params?.mode]);
+  }, [
+    openPasswordPrompt,
+    registeredWallet,
+    route?.params?.mode,
+    route?.params?.openRequestId,
+  ]);
 
-  const beginCreateAnimation = (steps = CREATE_STEPS) => {
+  const beginCreateAnimation = (steps: readonly TranslationKey[] = CREATE_STEPS) => {
     setupLog("beginCreateAnimation", {
       firstStep: steps[0],
       stepCount: steps.length,
     });
-    stopCreateEffects();
-    setCreateStep(steps[0]);
-    setCipherLines(Array.from({ length: 8 }, makeCipherLine));
-    createOp.setValue(0);
-    createScale.setValue(0.96);
-    createProgress.setValue(0);
-    scanY.setValue(0);
-
-    cipherInterval.current = setInterval(() => {
-      setCipherLines(Array.from({ length: 8 }, makeCipherLine));
-    }, 80);
-
-    scanLoop.current = Animated.loop(
-      Animated.sequence([
-        Animated.timing(scanY, { toValue: 1, duration: 520, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-        Animated.timing(scanY, { toValue: 0, duration: 0, useNativeDriver: true }),
-      ]),
-    );
-    scanLoop.current.start();
-
-    Animated.parallel([
-      Animated.timing(createOp, { toValue: 1, duration: 140, useNativeDriver: true }),
-      Animated.spring(createScale, { toValue: 1, friction: 8, tension: 80, useNativeDriver: true }),
-      Animated.timing(createProgress, { toValue: 1, duration: 700, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
-    ]).start();
-
-    steps.slice(1).forEach((step, index) => {
-      timers.current.push(setTimeout(() => setCreateStep(step), 180 + index * 180));
-    });
+    setCreateStep(t(steps[0]));
   };
 
   const finishCreateAnimation = () => {
     setupLog("finishCreateAnimation", {
       currentStep: createStep,
     });
-    stopCreateEffects();
-    createProgress.setValue(1);
   };
 
   const queueSeedBackupAfterCreate = (
@@ -578,6 +587,109 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     setPendingSeedBackup(undefined);
   };
 
+  const enableFastReceiveOnActiveScanner = async (
+    identityId: string,
+    credentials: FastReceiveRegistrationCredentials,
+  ) => {
+    const settings = await loadActiveNodeConnectionSettings();
+    const scannerUrl = fastReceiveScannerUrlForSettings(settings);
+    if (!scannerUrl) {
+      setupLog("fastReceiveScannerRegistration.skipped", {
+        identityId,
+        reason: "noScannerUrl",
+      });
+      return;
+    }
+
+    setupLog("fastReceiveScannerRegistration.start", {
+      identityId,
+      scannerUrl,
+    });
+    const pushSubscriptionId = await FastWalletPushService
+      .enableFastWalletNotifications()
+      .then(registration => registration.subscriptionId)
+      .catch(error => {
+        setupLog("fastReceivePushRegistration.skipped", {
+          error: errorMessage(error),
+          identityId,
+        });
+        return undefined;
+      });
+    await walletService.enableFastReceiveIdentity({
+      identityId,
+      password: credentials.password,
+      secretKey: credentials.secretKey,
+      scannerUrl,
+      pushSubscriptionId,
+    });
+    setupLog("fastReceiveScannerRegistration.success", {
+      identityId,
+      scannerUrl,
+    });
+  };
+
+  const registerFastReceiveInBackground = (
+    source: string,
+    identityId: string,
+    credentials: FastReceiveRegistrationCredentials,
+  ) => {
+    const startedAt = Date.now();
+    setupLog(`${source}.fastReceive.registrationQueued`, { identityId });
+
+    reloadRegisteredWallets()
+      .then(() => {
+        setupLog(`${source}.fastReceive.localReady`, { identityId });
+      })
+      .catch(error => {
+        setupLog(`${source}.fastReceive.localRegistryError`, {
+          error: errorMessage(error),
+          identityId,
+        });
+      });
+
+    const register = async () => {
+      try {
+        await enableFastReceiveOnActiveScanner(identityId, credentials);
+        await reloadRegisteredWallets();
+        setupLog(`${source}.fastReceive.registrationSuccess`, {
+          elapsedMs: Date.now() - startedAt,
+          identityId,
+        });
+      } catch (error) {
+        await reloadRegisteredWallets().catch(() => undefined);
+        setupLog(`${source}.fastReceive.registrationError`, {
+          elapsedMs: Date.now() - startedAt,
+          error: errorMessage(error),
+          identityId,
+        });
+      }
+    };
+
+    register().catch(error => {
+      setupLog(`${source}.fastReceive.unhandledRegistrationError`, {
+        error: errorMessage(error),
+        identityId,
+      });
+    });
+  };
+
+  const fastReceiveSetupToggle = (
+    <View style={s.fastReceiveRow}>
+      <View style={s.fastReceiveText}>
+        <Text style={s.fastReceiveTitle}>{t("setup.fastWalletTitle")}</Text>
+        <Text style={s.fastReceiveValue}>
+          {t("setup.fastWalletDescription")}
+        </Text>
+      </View>
+      <Switch
+        value={createFastReceiveOnSetup}
+        onValueChange={setCreateFastReceiveOnSetup}
+        trackColor={{ false: "rgba(255,255,255,0.12)", true: colors.orange }}
+        thumbColor="#FFF"
+      />
+    </View>
+  );
+
   const startCreateWallet = async () => {
     if (creating || !passwordReady) {
       setupLog("startCreateWallet.skipped", {
@@ -592,6 +704,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     setupLog("startCreateWallet.start", {
       createFastReceiveOnSetup,
       credentialMode: "password",
+      enableEnthusiastDiscoveryOnSetup,
     });
     setCreating(true);
     setCreatingKind("software");
@@ -609,14 +722,22 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         password,
         language: "English",
       });
+      setupLog("startCreateWallet.primaryCreated", {
+        elapsedMs: Date.now() - startedAt,
+      });
+      let fastReceiveIdentityId: string | undefined;
       if (createFastReceiveOnSetup) {
-        setCreateStep("Creating fast receive");
+        setCreateStep(t("setup.createFastReceive"));
         setupLog("startCreateWallet.fastReceive.start");
-        await walletService.createFastReceiveIdentity({
+        const fastReceive = await walletService.createFastReceiveIdentity({
           password,
           restoreHeight: 0,
         });
-        setupLog("startCreateWallet.fastReceive.success");
+        fastReceiveIdentityId = fastReceive.identity.id;
+        setupLog("startCreateWallet.fastReceive.localReady", {
+          elapsedMs: Date.now() - startedAt,
+          identityId: fastReceive.identity.id,
+        });
       }
       const seed = await walletService.getSeed(result.session);
       setupLog("startCreateWallet.seedLoaded", {
@@ -638,6 +759,11 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       queueSeedBackupAfterCreate(result.registration.id, seed);
       setWalletPassword("");
       setWalletPasswordConfirm("");
+      if (fastReceiveIdentityId) {
+        registerFastReceiveInBackground("startCreateWallet", fastReceiveIdentityId, {
+          password,
+        });
+      }
       setupLog("startCreateWallet.success", {
         elapsedMs: Date.now() - startedAt,
       });
@@ -667,6 +793,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     setupLog("startCreateWalletWithDeviceSecret.start", {
       biometryType: biometricStatus?.biometryType,
       createFastReceiveOnSetup,
+      enableEnthusiastDiscoveryOnSetup,
       usesBiometric: canUseBiometric,
     });
     setCreating(true);
@@ -685,13 +812,21 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         language: "English",
         authentication: "if-available",
       });
+      setupLog("startCreateWalletWithDeviceSecret.primaryCreated", {
+        elapsedMs: Date.now() - startedAt,
+      });
+      let fastReceiveIdentityId: string | undefined;
       if (createFastReceiveOnSetup) {
-        setCreateStep("Creating fast receive");
+        setCreateStep(t("setup.createFastReceive"));
         setupLog("startCreateWalletWithDeviceSecret.fastReceive.start");
-        await walletService.createFastReceiveIdentity({
+        const fastReceive = await walletService.createFastReceiveIdentity({
           restoreHeight: 0,
         });
-        setupLog("startCreateWalletWithDeviceSecret.fastReceive.success");
+        fastReceiveIdentityId = fastReceive.identity.id;
+        setupLog("startCreateWalletWithDeviceSecret.fastReceive.localReady", {
+          elapsedMs: Date.now() - startedAt,
+          identityId: fastReceive.identity.id,
+        });
       }
       const seed = await walletService.getSeed(result.session);
       setupLog("startCreateWalletWithDeviceSecret.seedLoaded", {
@@ -711,6 +846,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
       finishCreateAnimation();
       queueSeedBackupAfterCreate(result.registration.id, seed);
+      if (fastReceiveIdentityId) {
+        registerFastReceiveInBackground(
+          "startCreateWalletWithDeviceSecret",
+          fastReceiveIdentityId,
+          { secretKey: result.session.credentialKey },
+        );
+      }
       setupLog("startCreateWalletWithDeviceSecret.success", {
         elapsedMs: Date.now() - startedAt,
       });
@@ -742,6 +884,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     const password = walletPassword;
     const startedAt = Date.now();
     setupLog("startRestoreWallet.start", {
+      createFastReceiveOnSetup,
       restoreHeight: Math.floor(restoreHeightNumber),
       restoreSeedWordCount,
     });
@@ -762,6 +905,20 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         mnemonic: normalizedRestoreSeed,
         restoreHeight: Math.floor(restoreHeightNumber),
       });
+      let fastReceiveIdentityId: string | undefined;
+      if (createFastReceiveOnSetup) {
+        setCreateStep(t("setup.createFastReceive"));
+        setupLog("startRestoreWallet.fastReceive.start");
+        const fastReceive = await walletService.createFastReceiveIdentity({
+          password,
+          restoreHeight: Math.floor(restoreHeightNumber),
+        });
+        fastReceiveIdentityId = fastReceive.identity.id;
+        setupLog("startRestoreWallet.fastReceive.localReady", {
+          elapsedMs: Date.now() - startedAt,
+          identityId: fastReceive.identity.id,
+        });
+      }
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
@@ -779,6 +936,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setWalletPasswordConfirm("");
       setRestoreSeed("");
       setRestoreHeight("");
+      if (fastReceiveIdentityId) {
+        registerFastReceiveInBackground(
+          "startRestoreWallet",
+          fastReceiveIdentityId,
+          { password },
+        );
+      }
       navigation.navigate("Home");
       setupLog("startRestoreWallet.success", {
         elapsedMs: Date.now() - startedAt,
@@ -805,7 +969,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     }
 
     const startedAt = Date.now();
-    setupLog("startCreateHardwareWallet.start");
+    setupLog("startCreateHardwareWallet.start", {
+      createFastReceiveOnSetup,
+    });
     setCreating(true);
     setCreatingKind("hardware");
     setPasswordPromptMode(undefined);
@@ -837,8 +1003,22 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
       const result = await walletService.createNamedWalletFromDevice({
         walletName: DEFAULT_HARDWARE_WALLET_NAME,
-        deviceName: "Ledger",
+        deviceName:
+          transportStatus.transport === "ble" ? "Ledger:ble" : "Ledger",
       });
+      let fastReceiveIdentityId: string | undefined;
+      if (createFastReceiveOnSetup) {
+        setCreateStep(t("setup.createFastReceive"));
+        setupLog("startCreateHardwareWallet.fastReceive.start");
+        const fastReceive = await walletService.createFastReceiveIdentity({
+          restoreHeight: result.registration.restoreHeight ?? 0,
+        });
+        fastReceiveIdentityId = fastReceive.identity.id;
+        setupLog("startCreateHardwareWallet.fastReceive.localReady", {
+          elapsedMs: Date.now() - startedAt,
+          identityId: fastReceive.identity.id,
+        });
+      }
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
@@ -853,6 +1033,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
       finishCreateAnimation();
       setLedgerPromptVisible(false);
+      if (fastReceiveIdentityId) {
+        registerFastReceiveInBackground(
+          "startCreateHardwareWallet",
+          fastReceiveIdentityId,
+          { secretKey: result.session.credentialKey },
+        );
+      }
       navigation.navigate("Home");
       setupLog("startCreateHardwareWallet.success", {
         elapsedMs: Date.now() - startedAt,
@@ -898,7 +1085,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     beginCreateAnimation(
       registeredWallet?.kind === "hardware" ? HARDWARE_STEPS : OPEN_STEPS,
     );
-    setCreateStep("Opening wallet");
+    setCreateStep(t("setup.step.openingWallet"));
 
     try {
       const session = await walletService.openRegisteredWallet(walletPassword);
@@ -987,6 +1174,23 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setCreatedSeed("");
       setCreatedSeedWalletId(undefined);
       navigation.navigate("Home");
+      setEnthusiastDiscoveryEnabled(enableEnthusiastDiscoveryOnSetup)
+        .then(preference =>
+          preference.enabled
+            ? refreshApproximateEnthusiastLocation()
+            : preference,
+        )
+        .then(preference => {
+          setupLog("finishSeedBackup.enthusiastDiscovery", {
+            enabled: preference.enabled,
+            locationStatus: preference.locationStatus,
+          });
+        })
+        .catch(error => {
+          setupLog("finishSeedBackup.enthusiastDiscoveryError", {
+            error: errorMessage(error),
+          });
+        });
       setupLog("finishSeedBackup.success", {
         createdSeedWalletId,
       });
@@ -998,15 +1202,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
     }
   };
-
-  const progressWidth = createProgress.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0%", "100%"],
-  });
-  const scanTranslateY = scanY.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 154],
-  });
 
   return (
     <LinearGradient colors={["#12082A", "#0A0A18", "#07071A"]} locations={[0, 0.5, 1]} style={s.container}>
@@ -1023,15 +1218,15 @@ export default function WalletSetupScreen({ navigation, route }: any) {
           <MoneroCoin size={64} />
         </View>
 
-        <Text style={s.title}>Wallet Setup</Text>
-        <Text style={s.subtitle}>Create, import, or connect Ledger Nano.</Text>
+        <Text style={s.title}>{t("setup.title")}</Text>
+        <Text style={s.subtitle}>{t("setup.subtitle")}</Text>
 
         {/* Options */}
         <View style={s.options}>
           {registeredWallet ? (
             <SetupOption
               icon={<IcoImport c={colors.orange} />}
-              title="Open Wallet"
+              title={t("action.openWallet")}
               desc={openWalletDescription}
               onPress={() => openPasswordPrompt("open")}
               disabled={creating}
@@ -1039,22 +1234,22 @@ export default function WalletSetupScreen({ navigation, route }: any) {
           ) : null}
           <SetupOption
             icon={<IcoPlus c={colors.orange} />}
-            title="Create Wallet"
-            desc="Generate a new Monero wallet"
+            title={t("action.createWallet")}
+            desc={t("setup.createDesc")}
             onPress={() => openPasswordPrompt("create")}
             disabled={creating}
           />
           <SetupOption
             icon={<IcoUsb c={colors.orange} />}
             title="Ledger Nano"
-            desc="Create a hardware-backed Monero wallet"
+            desc={t("setup.hardware.desc")}
             onPress={openLedgerPrompt}
             disabled={creating}
           />
           <SetupOption
             icon={<IcoImport c={colors.orange} />}
-            title="Import Wallet"
-            desc="Restore from Monero seed"
+            title={t("setup.importWallet")}
+            desc={t("setup.importDesc")}
             onPress={() => openPasswordPrompt("restore")}
             disabled={creating}
           />
@@ -1062,13 +1257,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       </Animated.View>
 
       {/* Footer */}
-      <Text style={s.footer}>Your keys never leave this device.</Text>
+      <Text style={s.footer}>{t("setup.footer")}</Text>
 
       <Modal
         visible={passwordPromptMode !== undefined}
         transparent
         animationType="fade"
-        onRequestClose={() => setPasswordPromptMode(undefined)}
+        onRequestClose={closePasswordPrompt}
       >
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -1093,7 +1288,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     <TextInput
                       value={restoreSeed}
                       onChangeText={setRestoreSeed}
-                      placeholder="Seed phrase"
+                      placeholder={t("setup.seedPhrase")}
                       placeholderTextColor="rgba(255,255,255,0.28)"
                       multiline
                       autoCapitalize="none"
@@ -1103,7 +1298,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     <TextInput
                       value={restoreHeight}
                       onChangeText={setRestoreHeight}
-                      placeholder="Restore height (optional)"
+                      placeholder={t("setup.restoreHeight")}
                       placeholderTextColor="rgba(255,255,255,0.28)"
                       keyboardType="number-pad"
                       style={s.input}
@@ -1128,7 +1323,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                             s.createMethodTextActive,
                         ]}
                       >
-                        Device
+                        {t("setup.device")}
                       </Text>
                     </TouchableOpacity>
                     <TouchableOpacity
@@ -1147,7 +1342,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                             s.createMethodTextActive,
                         ]}
                       >
-                        Password
+                        {t("setup.method.password")}
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -1165,10 +1360,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                       ]} />
                       <Text style={s.biometricTitle}>
                         {waitingForBiometricStatus
-                          ? "Checking device security"
+                          ? t("setup.biometric.checking")
                           : canUseBiometric
                             ? currentBiometricLabel
-                            : "Secure device key"}
+                            : t("setup.biometric.secureDeviceKey")}
                       </Text>
                       {waitingForBiometricStatus ? (
                         <ActivityIndicator color={colors.orange} />
@@ -1178,8 +1373,8 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                       {canUseBiometric
                         ? biometricError ??
                           biometricStatus?.message ??
-                          "Waiting for device security status."
-                        : "A random local wallet password is generated and stored in this device's secure storage."}
+                          t("setup.biometric.waiting")
+                        : t("setup.biometric.storedSecret")}
                     </Text>
                   </View>
                 ) : null}
@@ -1190,7 +1385,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                       <Text style={s.biometricTitle}>Ledger Nano</Text>
                     </View>
                     <Text style={s.biometricText}>
-                      Ready to open with the connected hardware wallet.
+                      {t("setup.hardware.openReady")}
                     </Text>
                   </View>
                 ) : null}
@@ -1199,7 +1394,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     <TextInput
                       value={walletPassword}
                       onChangeText={setWalletPassword}
-                      placeholder="Password"
+                      placeholder={t("settings.password")}
                       placeholderTextColor="rgba(255,255,255,0.28)"
                       secureTextEntry
                       style={s.input}
@@ -1208,7 +1403,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                       <TextInput
                         value={walletPasswordConfirm}
                         onChangeText={setWalletPasswordConfirm}
-                        placeholder="Confirm password"
+                        placeholder={t("setup.passwordConfirm")}
                         placeholderTextColor="rgba(255,255,255,0.28)"
                         secureTextEntry
                         style={s.input}
@@ -1218,37 +1413,42 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 ) : null}
                 {createError ? <Text style={s.errorText}>{createError}</Text> : null}
                 {showPasswordFields && passwordPromptMode !== "open" && walletPasswordConfirm.length > 0 && walletPassword !== walletPasswordConfirm ? (
-                  <Text style={s.errorText}>Passwords do not match.</Text>
+                  <Text style={s.errorText}>{t("setup.passwordMismatch")}</Text>
                 ) : null}
                 {passwordPromptMode === "restore" && restoreSeed.length > 0 && restoreSeedWordCount !== MONERO_SEED_WORD_COUNT ? (
-                  <Text style={s.errorText}>Enter the full 25-word Monero seed.</Text>
+                  <Text style={s.errorText}>{t("setup.seedFullError")}</Text>
                 ) : null}
                 {passwordPromptMode === "restore" && !restoreHeightReady ? (
-                  <Text style={s.errorText}>Restore height must be a number.</Text>
+                  <Text style={s.errorText}>{t("setup.restoreHeightError")}</Text>
                 ) : null}
-                {passwordPromptMode === "create" ? (
-                  <View style={s.fastReceiveRow}>
-                    <View style={s.fastReceiveText}>
-                      <Text style={s.fastReceiveTitle}>Fast Receive</Text>
-                      <Text style={s.fastReceiveValue}>
-                        {createFastReceiveOnSetup ? "On" : "Off"}
-                      </Text>
-                    </View>
-                    <Switch
-                      value={createFastReceiveOnSetup}
-                      onValueChange={setCreateFastReceiveOnSetup}
-                      trackColor={{ false: "rgba(255,255,255,0.12)", true: colors.orange }}
-                      thumbColor="#FFF"
-                    />
-                  </View>
+                {passwordPromptMode === "create" || passwordPromptMode === "restore" ? (
+                  <>
+                    {fastReceiveSetupToggle}
+                    {passwordPromptMode === "create" ? (
+                      <View style={s.fastReceiveRow}>
+                        <View style={s.fastReceiveText}>
+                          <Text style={s.fastReceiveTitle}>{t("setup.enthusiastsTitle")}</Text>
+                          <Text style={s.fastReceiveValue}>
+                            {t("setup.enthusiastsDescription")}
+                          </Text>
+                        </View>
+                        <Switch
+                          value={enableEnthusiastDiscoveryOnSetup}
+                          onValueChange={setEnableEnthusiastDiscoveryOnSetup}
+                          trackColor={{ false: "rgba(255,255,255,0.12)", true: colors.orange }}
+                          thumbColor="#FFF"
+                        />
+                      </View>
+                    ) : null}
+                  </>
                 ) : null}
                 <View style={s.promptActions}>
-                  <TouchableOpacity
-                    style={s.secondaryButton}
-                    onPress={() => setPasswordPromptMode(undefined)}
-                    disabled={creating}
-                  >
-                    <Text style={s.secondaryButtonText}>Cancel</Text>
+	                  <TouchableOpacity
+	                    style={s.secondaryButton}
+	                    onPress={closePasswordPrompt}
+	                    disabled={creating}
+	                  >
+                    <Text style={s.secondaryButtonText}>{t("action.cancel")}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[s.primaryButton, !passwordReady && s.primaryButtonDisabled]}
@@ -1287,7 +1487,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
             <View style={s.promptCard}>
               <Text style={s.promptTitle}>Ledger Nano</Text>
               <Text style={s.promptSubtitle}>
-                Connect Ledger Nano with Bluetooth or USB, unlock it, and open the Monero app on the device.
+                {t("setup.hardware.instructions")}
               </Text>
 
               <View style={s.ledgerStatusBox}>
@@ -1297,12 +1497,12 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     ledgerTransportReady(ledgerStatus) && s.ledgerStatusDotReady,
                   ]} />
                   <Text style={s.ledgerStatusTitle}>
-                    {ledgerBusy ? "Searching..." : ledgerStatusTitle(ledgerStatus)}
+                    {ledgerBusy ? t("setup.hardware.searching") : ledgerStatusTitle(ledgerStatus, t)}
                   </Text>
                   {ledgerBusy ? <ActivityIndicator color={colors.orange} /> : null}
                 </View>
                 <Text style={s.ledgerStatusText}>
-                  {ledgerError ?? ledgerStatus?.message ?? "Looking for an available Ledger transport."}
+                  {ledgerError ?? ledgerStatus?.message ?? t("setup.hardware.looking")}
                 </Text>
                 {ledgerStatus ? (
                   <View style={s.ledgerMetaRow}>
@@ -1316,13 +1516,15 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 ) : null}
               </View>
 
+              {fastReceiveSetupToggle}
+
               <View style={s.promptActions}>
                 <TouchableOpacity
                   style={s.secondaryButton}
                   onPress={() => setLedgerPromptVisible(false)}
                   disabled={ledgerBusy || creating}
                 >
-                  <Text style={s.secondaryButtonText}>Cancel</Text>
+                  <Text style={s.secondaryButtonText}>{t("action.cancel")}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[
@@ -1339,7 +1541,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                   disabled={ledgerBusy || creating}
                 >
                   <Text style={s.primaryButtonText}>
-                    {ledgerTransportReady(ledgerStatus) ? "Create Wallet" : "Search"}
+                    {ledgerTransportReady(ledgerStatus) ? t("action.createWallet") : t("action.search")}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1360,7 +1562,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
             <StatusBar barStyle="light-content" backgroundColor="#12082A" />
             <ScrollView contentContainerStyle={s.seedContent}>
               <MoneroCoin size={62} />
-              <Text style={s.seedTitle}>Recovery Seed</Text>
+              <Text style={s.seedTitle}>{t("setup.seedTitle")}</Text>
               <Text style={s.seedSubtitle}>{seedSubtitle}</Text>
 
               <View style={s.seedGrid}>
@@ -1380,7 +1582,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 <View style={[s.seedCheckBox, seedConfirmed && s.seedCheckBoxOn]}>
                   {seedConfirmed ? <Text style={s.seedCheckText}>OK</Text> : null}
                 </View>
-                <Text style={s.seedConfirmText}>I saved these 25 words offline.</Text>
+                <Text style={s.seedConfirmText}>{t("setup.seedConfirm")}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1388,49 +1590,35 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 onPress={finishSeedBackup}
                 disabled={!seedConfirmed}
               >
-                <Text style={s.primaryButtonText}>Continue</Text>
+                <Text style={s.primaryButtonText}>{t("action.continue")}</Text>
               </TouchableOpacity>
             </ScrollView>
           </LinearGradient>
         ) : (
           <View style={s.createModal}>
             <StatusBar barStyle="light-content" backgroundColor="#12082A" />
-            <Animated.View style={[s.createOverlay, { opacity: createOp }]}>
+            <View style={s.createOverlay}>
               <LinearGradient colors={["#12082A", "#0A0A18", "#07071A"]} locations={[0, 0.5, 1]} style={s.createOverlayFill}>
-                <Animated.View style={[s.createCard, { transform: [{ scale: createScale }] }]}>
-                  <MoneroCoin size={70} />
-                  <Text style={s.createTitle}>
-                    {creatingKind === "hardware"
-                      ? "Connecting Ledger"
-                      : creatingKind === "restore"
-                        ? "Importing Wallet"
-                        : creatingKind === "open"
-                          ? "Opening Wallet"
-                          : "Creating Wallet"}
-                  </Text>
-                  <Text style={s.createStep}>{createStep}</Text>
-
-                  <View style={s.cipherBox}>
-                    {cipherLines.map((line, index) => (
-                      <Text
-                        key={`${index}-${line}`}
-                        style={[s.cipherLine, index % 2 === 0 && s.cipherLineDim]}
-                        numberOfLines={1}
-                        adjustsFontSizeToFit
-                        minimumFontScale={0.82}
-                      >
-                        {line}
-                      </Text>
-                    ))}
-                    <Animated.View style={[s.scanLine, { transform: [{ translateY: scanTranslateY }] }]} />
+                <View style={s.createCardSlot}>
+                  <View style={[s.createCard, { width: createCardWidth }]}>
+                    <MoneroCoin size={70} />
+                    <Text style={s.createTitle}>
+                      {creatingKind === "hardware"
+                        ? t("setup.hardware.connecting")
+                        : creatingKind === "restore"
+                          ? t("setup.importing")
+                          : creatingKind === "open"
+                            ? t("setup.opening")
+                            : t("action.createWallet")}
+                    </Text>
+                    <View style={s.createLoader}>
+                      <ActivityIndicator color={colors.orange} size="large" />
+                    </View>
+                    <Text style={s.createStep}>{createStep}</Text>
                   </View>
-
-                  <View style={s.progressTrack}>
-                    <Animated.View style={[s.progressFill, { width: progressWidth }]} />
-                  </View>
-                </Animated.View>
+                </View>
               </LinearGradient>
-            </Animated.View>
+            </View>
           </View>
         )}
       </Modal>
@@ -1526,12 +1714,13 @@ const s = StyleSheet.create({
   },
   errorText: { color: "#FF8A80", fontSize: 13, lineHeight: 18, marginBottom: 10 },
   fastReceiveRow: {
-    minHeight: 52,
+    minHeight: 68,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     borderRadius: 14,
     paddingHorizontal: 14,
+    paddingVertical: 10,
     marginBottom: 12,
     backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: 1,
@@ -1539,7 +1728,7 @@ const s = StyleSheet.create({
   },
   fastReceiveText: { flex: 1, paddingRight: 12 },
   fastReceiveTitle: { color: "#FFF", fontSize: 14, fontWeight: "700" },
-  fastReceiveValue: { color: "rgba(255,255,255,0.42)", fontSize: 12, marginTop: 2 },
+  fastReceiveValue: { color: "rgba(255,255,255,0.42)", fontSize: 12, lineHeight: 17, marginTop: 3 },
   createMethodRow: {
     minHeight: 48,
     flexDirection: "row",
@@ -1671,59 +1860,53 @@ const s = StyleSheet.create({
 
   createModal: { flex: 1, backgroundColor: "#0A0A18" },
   createOverlay: { flex: 1, overflow: "hidden", backgroundColor: "#0A0A18" },
-  createOverlayFill: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 24 },
-  createCard: {
+  createOverlayFill: {
+    flex: 1,
     width: "100%",
-    maxWidth: 345,
-    borderRadius: 24,
-    padding: 24,
     alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: CREATE_CARD_HORIZONTAL_MARGIN,
+  },
+  createCardSlot: {
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  createCard: {
+    alignSelf: "center",
+    borderRadius: 20,
+    minHeight: 228,
+    paddingHorizontal: 20,
+    paddingVertical: 28,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.055)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
   },
-  createTitle: { color: "#FFF", fontSize: 28, fontWeight: "800", marginTop: 18, marginBottom: 8 },
-  createStep: { color: colors.orange, fontSize: 15, fontWeight: "700", marginBottom: 18 },
-  cipherBox: {
+  createTitle: {
     width: "100%",
-    height: 176,
-    overflow: "hidden",
-    borderRadius: 16,
-    paddingVertical: 16,
-    paddingHorizontal: 18,
-    backgroundColor: "rgba(0,0,0,0.26)",
-    borderWidth: 1,
-    borderColor: "rgba(242,104,34,0.18)",
-  },
-  cipherLine: {
-    color: "rgba(255,255,255,0.62)",
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: "700",
-    letterSpacing: 0.6,
+    color: "#FFF",
+    fontSize: 26,
+    fontWeight: "800",
+    marginTop: 16,
+    marginBottom: 18,
     textAlign: "center",
   },
-  cipherLineDim: { color: "rgba(242,104,34,0.58)" },
-  scanLine: {
-    position: "absolute",
-    left: 18,
-    right: 18,
-    top: 12,
-    height: 2,
-    backgroundColor: "rgba(242,104,34,0.9)",
-    shadowColor: colors.orange,
-    shadowOpacity: 0.75,
-    shadowRadius: 12,
+  createLoader: {
+    height: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
   },
-  progressTrack: {
+  createStep: {
     width: "100%",
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "rgba(255,255,255,0.09)",
-    marginTop: 18,
-    overflow: "hidden",
+    minHeight: 20,
+    color: colors.orange,
+    fontSize: 15,
+    fontWeight: "700",
+    textAlign: "center",
   },
-  progressFill: { height: "100%", borderRadius: 3, backgroundColor: colors.orange },
 
   seedModal: { flex: 1 },
   seedContent: {

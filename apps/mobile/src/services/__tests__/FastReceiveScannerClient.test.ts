@@ -1,6 +1,8 @@
 import {
+  checkFastReceiveWatchRegistration,
   checkFastReceiveKeyImages,
   parseKeyImageStatusResponse,
+  parseWatchStatusResponse,
   type ScannerFetch,
 } from "../FastReceiveScannerClient";
 
@@ -24,7 +26,7 @@ describe("FastReceiveScannerClient", () => {
 
     const result = await checkFastReceiveKeyImages(
       {
-        scannerUrl: "https://scanner.tex8.com/",
+        scannerUrl: "https://xmr.tex8.com/",
         scannerAuthToken: "secret-token",
         identityId: "fast-receive-0",
         keyImages: ["A".repeat(64)],
@@ -33,7 +35,7 @@ describe("FastReceiveScannerClient", () => {
     );
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://scanner.tex8.com/v1/fast-receive/key-images/status",
+      "https://xmr.tex8.com/v1/fast-receive/key-images/status",
       {
         method: "POST",
         headers: {
@@ -64,7 +66,7 @@ describe("FastReceiveScannerClient", () => {
     await expect(
       checkFastReceiveKeyImages(
         {
-          scannerUrl: "https://scanner.tex8.com",
+          scannerUrl: "https://xmr.tex8.com",
           identityId: "fast-receive-0",
           keyImages: ["not-a-key-image"],
         },
@@ -73,6 +75,75 @@ describe("FastReceiveScannerClient", () => {
     ).rejects.toThrow("64-character hex");
 
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("checks whether a watch is registered on the scanner", async () => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          identity_id: "fast-receive-0",
+          status: "enabled",
+          scanner_status: "enabled",
+          network: "mainnet",
+          restore_height: 42,
+          last_scanned_height: 100,
+          notifications_enabled: true,
+        }),
+    })) as ScannerFetch & jest.Mock;
+
+    const result = await checkFastReceiveWatchRegistration(
+      {
+        scannerUrl: "https://xmr.tex8.com/",
+        scannerAuthToken: "secret-token",
+        identityId: "fast-receive-0",
+      },
+      fetchImpl,
+    );
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://xmr.tex8.com/v1/fast-receive/watch/fast-receive-0",
+      {
+        method: "GET",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer secret-token",
+        },
+      },
+    );
+    expect(result).toEqual({
+      identityId: "fast-receive-0",
+      registered: true,
+      scannerStatus: "enabled",
+      notificationsEnabled: true,
+      network: "mainnet",
+      restoreHeight: 42,
+      lastScannedHeight: 100,
+    });
+  });
+
+  it("treats missing watch registration as a normal scanner state", async () => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: false,
+      status: 404,
+      text: async () => JSON.stringify({ error: "not found" }),
+    })) as ScannerFetch & jest.Mock;
+
+    await expect(
+      checkFastReceiveWatchRegistration(
+        {
+          scannerUrl: "https://xmr.tex8.com",
+          identityId: "fast-receive-0",
+        },
+        fetchImpl,
+      ),
+    ).resolves.toEqual({
+      identityId: "fast-receive-0",
+      registered: false,
+      scannerStatus: "missing",
+      notificationsEnabled: false,
+    });
   });
 
   it("rejects mismatched scanner responses", () => {
@@ -86,6 +157,16 @@ describe("FastReceiveScannerClient", () => {
         [],
       ),
     ).toThrow("mismatched identity");
+
+    expect(() =>
+      parseWatchStatusResponse(
+        JSON.stringify({
+          identity_id: "other",
+          status: "enabled",
+        }),
+        "fast-receive-0",
+      ),
+    ).toThrow("mismatched watch identity");
   });
 
   it("does not include key images in HTTP error messages", async () => {
@@ -102,7 +183,7 @@ describe("FastReceiveScannerClient", () => {
     try {
       await checkFastReceiveKeyImages(
         {
-          scannerUrl: "https://scanner.tex8.com",
+          scannerUrl: "https://xmr.tex8.com",
           identityId: "fast-receive-0",
           keyImages: ["b".repeat(64)],
         },

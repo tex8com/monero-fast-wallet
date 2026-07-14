@@ -1,6 +1,7 @@
 pub mod api;
 pub mod cuprate;
 pub mod model;
+pub mod notifications;
 pub mod scanner;
 pub mod store;
 
@@ -16,6 +17,10 @@ pub use model::{
     KeyImageStatusResponse, MatchedOutput, MatchedOutputResponse, Network, NotificationStatus,
     RegisterMatchedOutputRequest, RegisterWatchRequest, SpentStatus, WatchRegistration,
     WatchResponse,
+};
+pub use notifications::{
+    dispatch_pending_notifications, NotificationDispatchRun, NotificationSink,
+    Tex8PushNotificationSink,
 };
 pub use scanner::{
     BlockSource, MatchedOutputCandidate, MempoolOutputMatcher, MempoolRun, MempoolScannerWorker,

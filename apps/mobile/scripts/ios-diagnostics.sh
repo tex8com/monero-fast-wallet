@@ -2,10 +2,11 @@
 set -euo pipefail
 
 DEVICE="${IOS_SIMULATOR_UDID:-}"
-APP_ID="${MONERO_WALLET_IOS_BUNDLE_ID:-org.reactjs.native.example.MoneroWallet}"
-URL="${MONERO_WALLET_DIAGNOSTICS_URL:-monerowallet://diagnostics/run}"
+APP_ID="${MONERO_WALLET_IOS_BUNDLE_ID:-com.tex8.monerowallet}"
+URL_SCHEME="${MONERO_WALLET_IOS_URL_SCHEME:-tex8monero}"
+URL="${MONERO_WALLET_DIAGNOSTICS_URL:-${URL_SCHEME}://diagnostics/run}"
 WAIT_SECONDS="${MONERO_WALLET_DIAGNOSTICS_WAIT:-6}"
-OPEN_URL="${MONERO_WALLET_DIAGNOSTICS_OPENURL:-0}"
+OPEN_URL="${MONERO_WALLET_DIAGNOSTICS_OPENURL:-1}"
 START_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
 
 if [ -z "$DEVICE" ]; then

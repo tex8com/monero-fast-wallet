@@ -34,11 +34,15 @@ void printUsage(const char* binary) {
          " [daemon-host:port] [grpc-host:port|-]\n"
       << "  " << binary
       << " refresh <mainnet|testnet|stagenet> <wallet-path> <password|@file>"
-         " <daemon-host:port> [grpc-host:port|-] [seconds]\n"
+         " <daemon-host:port> [grpc-host:port|-] [seconds] [restore-height]\n"
       << "  " << binary
       << " send <mainnet|testnet|stagenet> <wallet-path> <password|@file>"
          " <daemon-host:port> <grpc-host:port|-> <recipient> <amount-atomic>"
          " [priority]\n"
+      << "  " << binary
+      << " prepare-sweep <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> <daemon-host:port> <grpc-host:port|->"
+         " <recipient> [priority]\n"
       << "  " << binary
       << " wait-tx <mainnet|testnet|stagenet> <wallet-path>"
          " <password|@file> <daemon-host:port> <grpc-host:port|-> <txid>"
@@ -328,6 +332,26 @@ int main(int argc, char** argv) {
             "fast receive identity address must differ from main wallet");
       }
 
+      const auto ownedKeyImages = engine.getOwnedOutputKeyImages(walletA);
+      if (!ownedKeyImages.empty()) {
+        throw WalletEngineError(
+            "new offline wallet unexpectedly contains owned outputs");
+      }
+      if (engine.reconcileOutputKeyImages(walletA, {}, {}, 0) != 0) {
+        throw WalletEngineError(
+            "empty key-image reconciliation unexpectedly changed wallet state");
+      }
+      bool mismatchedReconciliationRejected = false;
+      try {
+        engine.reconcileOutputKeyImages(walletA, {}, {false}, 0);
+      } catch (const WalletEngineError&) {
+        mismatchedReconciliationRejected = true;
+      }
+      if (!mismatchedReconciliationRejected) {
+        throw WalletEngineError(
+            "mismatched key-image reconciliation was not rejected");
+      }
+
       engine.closeWallet(walletA);
 
       RestoreWalletRequest restoreRequest;
@@ -351,6 +375,10 @@ int main(int argc, char** argv) {
       std::cout << "fast_receive_address=" << identity.address << "\n";
       std::cout << "fast_receive_scanner_status=" << identity.scannerStatus
                 << "\n";
+      std::cout << "fast_receive_restore_height=" << identity.restoreHeight
+                << "\n";
+      std::cout << "empty_key_image_reconciliation=true\n";
+      std::cout << "mismatched_key_image_reconciliation_rejected=true\n";
       std::cout << "proof_result=pass\n";
 
       engine.closeWallet(walletB);
@@ -384,7 +412,7 @@ int main(int argc, char** argv) {
     }
 
     if (command == "refresh") {
-      if (argc < 6 || argc > 8) {
+      if (argc < 6 || argc > 9) {
         printUsage(argv[0]);
         return 2;
       }
@@ -395,6 +423,7 @@ int main(int argc, char** argv) {
       request.network = parseNetwork(argv[2]);
       request.path = argv[3];
       request.password = resolveSecretArgument(argv[4]);
+      request.restoreHeight = argc >= 9 ? parseSeconds(argv[8]) : 0;
 
       const WalletId walletId = engine.openWallet(request);
       const std::string grpc = argc >= 7 ? argv[6] : "";
@@ -407,6 +436,8 @@ int main(int argc, char** argv) {
 
       printSnapshot(engine.snapshot(walletId));
       std::cout << "refresh_seconds=" << seconds << "\n";
+      std::cout << "requested_restore_height=" << request.restoreHeight
+                << "\n";
 
       engine.closeWallet(walletId);
       return 0;
@@ -455,6 +486,42 @@ int main(int argc, char** argv) {
       return committed.status == "ok" ? 0 : 1;
     }
 
+    if (command == "prepare-sweep") {
+      if (argc < 8 || argc > 9) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+
+      OpenWalletRequest openRequest;
+      openRequest.network = parseNetwork(argv[2]);
+      openRequest.path = argv[3];
+      openRequest.password = resolveSecretArgument(argv[4]);
+
+      const WalletId walletId = engine.openWallet(openRequest);
+      applyNode(engine, walletId, argv[5], argv[6]);
+
+      PrepareTransactionRequest txRequest;
+      txRequest.walletId = walletId;
+      txRequest.address = argv[7];
+      txRequest.priority = argc >= 9 ? argv[8] : "low";
+
+      const auto prepared = engine.prepareTransaction(txRequest);
+      std::cout << "prepare_status=" << prepared.status << "\n";
+      std::cout << "prepare_error=" << prepared.error << "\n";
+      std::cout << "sweep_amount_atomic=" << prepared.amountAtomic << "\n";
+      std::cout << "fee_atomic=" << prepared.feeAtomic << "\n";
+      std::cout << "dust_atomic=" << prepared.dustAtomic << "\n";
+      std::cout << "tx_count=" << prepared.txCount << "\n";
+
+      const bool ok = prepared.status == "ok" && !prepared.id.empty() &&
+          prepared.amountAtomic > 0 && prepared.feeAtomic > 0;
+      engine.closeWallet(walletId, false);
+      std::cout << "broadcast=false\n";
+      return ok ? 0 : 1;
+    }
+
     if (command == "wait-tx") {
       if (argc < 8 || argc > 10) {
         printUsage(argv[0]);
@@ -476,30 +543,46 @@ int main(int argc, char** argv) {
       const uint64_t secondsPerAttempt =
           argc >= 10 ? parseSeconds(argv[9]) : 5;
 
+      engine.startRefresh(walletId);
       for (uint64_t attempt = 1; attempt <= attempts; ++attempt) {
-        engine.startRefresh(walletId);
         std::this_thread::sleep_for(
             std::chrono::seconds(secondsPerAttempt));
-        engine.stopRefresh(walletId);
 
+        const auto snapshot = engine.snapshot(walletId);
         const auto transactions = engine.getTransactions(walletId, 100);
+        const tex8::wallet::WalletTransaction* matchedTransaction = nullptr;
+        size_t matchingTransactionCount = 0;
         for (const auto& transaction : transactions) {
           if (transaction.hash == txid) {
-            std::cout << "tx_seen=true\n";
-            std::cout << "attempt=" << attempt << "\n";
-            std::cout << "direction=" << transaction.direction << "\n";
-            std::cout << "amount_atomic=" << transaction.amountAtomic << "\n";
-            std::cout << "confirmations=" << transaction.confirmations << "\n";
-            std::cout << "block_height=" << transaction.blockHeight << "\n";
-
-            engine.closeWallet(walletId);
-            return 0;
+            if (matchedTransaction == nullptr) {
+              matchedTransaction = &transaction;
+            }
+            ++matchingTransactionCount;
           }
         }
 
+        if (matchedTransaction != nullptr) {
+          engine.stopRefresh(walletId);
+          std::cout << "tx_seen=true\n";
+          std::cout << "tx_match_count=" << matchingTransactionCount << "\n";
+          std::cout << "attempt=" << attempt << "\n";
+          std::cout << "direction=" << matchedTransaction->direction << "\n";
+          std::cout << "amount_atomic=" << matchedTransaction->amountAtomic << "\n";
+          std::cout << "confirmations=" << matchedTransaction->confirmations << "\n";
+          std::cout << "block_height=" << matchedTransaction->blockHeight << "\n";
+
+          engine.closeWallet(walletId);
+          return matchingTransactionCount == 1 ? 0 : 1;
+        }
+
         std::cout << "tx_seen=false attempt=" << attempt << "\n";
+        std::cout << "wallet_height=" << snapshot.walletHeight << "\n";
+        std::cout << "daemon_height=" << snapshot.daemonHeight << "\n";
+        std::cout << "synchronized="
+                  << (snapshot.synchronized ? "true" : "false") << "\n";
       }
 
+      engine.stopRefresh(walletId);
       engine.closeWallet(walletId);
       return 1;
     }

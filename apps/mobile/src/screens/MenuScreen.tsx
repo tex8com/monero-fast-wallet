@@ -3,10 +3,12 @@ import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-nati
 import Svg, { Path, Circle } from "react-native-svg";
 import { colors } from "../theme/colors";
 import MoneroLogo from "../components/MoneroLogo";
+import { Icon } from "../components/Icon";
+import { useI18n } from "../i18n";
 import { useWalletState } from "../services/WalletState";
 
 /* ── SVG Icons ────────────────────────────────────────────────────── */
-function IcoP2P({ c }: { c: string }) {
+function IcoCommunity({ c }: { c: string }) {
   return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Circle cx="7" cy="8" r="3" stroke={c} strokeWidth={1.8} /><Circle cx="17" cy="8" r="3" stroke={c} strokeWidth={1.8} /><Path d="M4 19c0-3 2-5 5-5h6c3 0 5 2 5 5" stroke={c} strokeWidth={1.8} strokeLinecap="round" /></Svg>);
 }
 function IcoGear({ c }: { c: string }) {
@@ -33,36 +35,41 @@ function IcoHelp({ c }: { c: string }) {
 function IcoCode({ c }: { c: string }) {
   return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke={c} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /></Svg>);
 }
+function IcoWallet({ c }: { c: string }) {
+  return <Icon name="wallet" size={20} color={c} />;
+}
 
 const MENU_ITEMS = [
-  { label: "Local Monero", desc: "P2P Trading", screen: "LocalMonero", Icon: IcoP2P },
-  { label: "Settings",     desc: "Configure wallet", screen: "Settings",  Icon: IcoGear },
-  { label: "Tex8 Assistant", desc: "Shared AI module", screen: "Tex8Assistant", Icon: IcoSpark },
-  { label: "Shared Modules", desc: "Tex8 app elements", screen: "SharedModules", Icon: IcoModules },
-  { label: "Node Status",  desc: "Connection status", screen: null,     Icon: IcoGlobe },
-  { label: "Address Book",  desc: "Saved addresses", screen: null,     Icon: IcoBook },
-  { label: "Export",        desc: "Export transactions", screen: null,  Icon: IcoDownload },
-  { label: "Help",          desc: "FAQ & Support", screen: null,       Icon: IcoHelp },
-];
+  { labelKey: "wallets.manage", descKey: "wallets.subtitle", screen: "Wallets", Icon: IcoWallet },
+  { labelKey: "enthusiasts.title", descKey: "enthusiasts.menuDescription", screen: "FindEnthusiasts", Icon: IcoCommunity },
+  { labelKey: "settings.title", descKey: "menu.configureWallet", screen: "Settings", Icon: IcoGear },
+  { label: "Tex8 Assistant", descKey: "menu.sharedAiModule", screen: "Tex8Assistant", Icon: IcoSpark },
+  { label: "Shared Modules", descKey: "menu.sharedModulesDesc", screen: "SharedModules", Icon: IcoModules },
+  { labelKey: "menu.nodeStatus", descKey: "menu.connectionStatus", screen: null, Icon: IcoGlobe },
+  { labelKey: "menu.addressBook", descKey: "menu.addressBookDesc", screen: null, Icon: IcoBook },
+  { labelKey: "menu.export", descKey: "menu.exportDesc", screen: null, Icon: IcoDownload },
+  { labelKey: "menu.help", descKey: "menu.helpDesc", screen: null, Icon: IcoHelp },
+] as const;
 
 const DEV_SCREENS = [
   { label: "Welcome Screen", screen: "Welcome" },
   { label: "Wallet Setup",   screen: "WalletSetup" },
-  { label: "Local Monero",   screen: "LocalMonero" },
+  { label: "Find Monero Enthusiasts", screen: "FindEnthusiasts" },
   { label: "Settings",       screen: "Settings" },
   { label: "Tex8 Assistant",  screen: "Tex8Assistant" },
   { label: "Shared Modules",  screen: "SharedModules" },
 ];
 
 export default function MenuScreen({ navigation }: any) {
+  const { t } = useI18n();
   const { registeredWallet, snapshot, status } = useWalletState();
-  const walletName = registeredWallet?.walletName ?? "My Wallet";
+  const walletName = registeredWallet?.walletName ?? t("menu.myWallet");
   const address = snapshot?.primaryAddress;
   const addressLabel = address
     ? `${address.slice(0, 6)}...${address.slice(-5)}`
     : status === "locked"
-      ? "Locked"
-      : "No wallet open";
+      ? t("menu.locked")
+      : t("menu.noWalletOpen");
 
   return (
     <View style={s.container}>
@@ -90,7 +97,7 @@ export default function MenuScreen({ navigation }: any) {
         {/* Menu Items */}
         {MENU_ITEMS.map(item => (
           <TouchableOpacity
-            key={item.label}
+            key={"label" in item ? item.label : item.labelKey}
             style={s.menuItem}
             activeOpacity={0.6}
             onPress={() => item.screen && navigation.navigate(item.screen)}
@@ -99,8 +106,10 @@ export default function MenuScreen({ navigation }: any) {
               <item.Icon c={colors.orange} />
             </View>
             <View style={s.menuInfo}>
-              <Text style={s.menuLabel}>{item.label}</Text>
-              <Text style={s.menuDesc}>{item.desc}</Text>
+              <Text style={s.menuLabel}>
+                {"labelKey" in item ? t(item.labelKey) : item.label}
+              </Text>
+              <Text style={s.menuDesc}>{t(item.descKey)}</Text>
             </View>
             <Text style={s.menuArrow}>›</Text>
           </TouchableOpacity>
@@ -123,7 +132,7 @@ export default function MenuScreen({ navigation }: any) {
           ))}
         </View>
 
-        <Text style={s.footer}>Monero Wallet v1.0.0{"\n"}Privacy by Default</Text>
+        <Text style={s.footer}>{t("menu.footer")}</Text>
         <View style={{ height: 100 }} />
       </ScrollView>
     </View>

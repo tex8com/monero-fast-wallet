@@ -1,7 +1,8 @@
 import React from "react";
 import { View, Text, TouchableOpacity, StyleSheet, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Path, Line, Circle } from "react-native-svg";
+import Svg, { Path, Line } from "react-native-svg";
+import { useI18n } from "../i18n";
 import { colors } from "../theme/colors";
 
 function IconHome({ color }: { color: string }) {
@@ -13,27 +14,39 @@ function IconSend({ color }: { color: string }) {
 function IconReceive({ color }: { color: string }) {
   return (<Svg width={22} height={22} viewBox="0 0 24 24" fill="none"><Path d="M12 5v14M5 12l7 7 7-7" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /></Svg>);
 }
-function IconMarket({ color }: { color: string }) {
-  return (<Svg width={22} height={22} viewBox="0 0 24 24" fill="none"><Path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 4.6a1 1 0 00.9 1.4h12.8" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /><Circle cx="9" cy="21" r="1.5" stroke={color} strokeWidth={1.8} /><Circle cx="18" cy="21" r="1.5" stroke={color} strokeWidth={1.8} /></Svg>);
-}
 function IconMenu({ color }: { color: string }) {
   return (<Svg width={22} height={22} viewBox="0 0 24 24" fill="none"><Line x1="4" y1="6" x2="20" y2="6" stroke={color} strokeWidth={1.8} strokeLinecap="round" /><Line x1="4" y1="12" x2="20" y2="12" stroke={color} strokeWidth={1.8} strokeLinecap="round" /><Line x1="4" y1="18" x2="20" y2="18" stroke={color} strokeWidth={1.8} strokeLinecap="round" /></Svg>);
 }
 
 const TABS = [
-  { key: "Home",        label: "Home",    Icon: IconHome },
-  { key: "Send",        label: "Send",    Icon: IconSend },
-  { key: "Receive",     label: "Receive", Icon: IconReceive },
-  { key: "Marketplace", label: "Market",  Icon: IconMarket },
-  { key: "Menu",        label: "Menu",    Icon: IconMenu },
-];
+  { key: "Home",        labelKey: "tabs.home",    Icon: IconHome },
+  { key: "Send",        labelKey: "tabs.send",    Icon: IconSend },
+  { key: "Receive",     labelKey: "tabs.receive", Icon: IconReceive },
+  { key: "Menu",        labelKey: "tabs.menu",    Icon: IconMenu },
+] as const;
 
-const HIDDEN_SCREENS = ["Welcome", "WalletSetup"];
+const HIDDEN_SCREENS = [
+  "Welcome",
+  "WalletSetup",
+  "Transactions",
+  "TransactionDetail",
+];
+const MENU_CHILD_SCREENS = [
+  "FindEnthusiasts",
+  "Settings",
+  "Tex8Assistant",
+  "SharedModules",
+  "Wallets",
+];
 
 export default function CustomTabBar({ state, navigation }: any) {
   const insets = useSafeAreaInsets();
+  const { t } = useI18n();
   const currentRoute = state.routes[state.index]?.name;
   if (HIDDEN_SCREENS.includes(currentRoute)) return null;
+  const focusedRoute = MENU_CHILD_SCREENS.includes(currentRoute)
+    ? "Menu"
+    : currentRoute;
 
   return (
     <View
@@ -47,15 +60,15 @@ export default function CustomTabBar({ state, navigation }: any) {
         },
       ]}
     >
-      {state.routes.map((route: any, index: number) => {
-        const tab = TABS.find(t => t.key === route.name);
+      {state.routes.map((route: any) => {
+        const tab = TABS.find(item => item.key === route.name);
         if (!tab) return null;
-        const focused = state.index === index;
+        const focused = route.name === focusedRoute;
         const clr = focused ? colors.orange : colors.tabInactive;
         return (
           <TouchableOpacity key={route.key} style={s.tab} activeOpacity={0.7} onPress={() => navigation.navigate(route.name)}>
             <tab.Icon color={clr} />
-            <Text style={[s.label, focused && s.labelActive]}>{tab.label}</Text>
+            <Text style={[s.label, focused && s.labelActive]}>{t(tab.labelKey)}</Text>
           </TouchableOpacity>
         );
       })}

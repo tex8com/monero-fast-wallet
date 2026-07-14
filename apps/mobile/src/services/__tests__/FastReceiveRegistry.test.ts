@@ -1,4 +1,4 @@
-jest.mock("@react-native-async-storage/async-storage", () => {
+jest.mock('@react-native-async-storage/async-storage', () => {
   const storage = new Map<string, string>();
   const mock = {
     clear: jest.fn(async () => {
@@ -16,7 +16,7 @@ jest.mock("@react-native-async-storage/async-storage", () => {
   };
 });
 
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   createFastReceiveIdentityId,
@@ -24,27 +24,32 @@ import {
   FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
   loadFastReceiveIdentities,
   nextFastReceiveDerivationIndex,
+  removeFastReceiveIdentity,
   upsertFastReceiveIdentity,
-} from "../FastReceiveRegistry";
+} from '../FastReceiveRegistry';
 
-describe("FastReceiveRegistry", () => {
+describe('FastReceiveRegistry', () => {
   beforeEach(async () => {
     await AsyncStorage.clear();
   });
 
-  it("persists fast receive metadata without private keys", async () => {
+  it('persists fast receive metadata without private keys', async () => {
     const record = createFastReceiveIdentityRecord(
       {
-        id: "fast-receive-0",
-        label: "Fast Receive",
-        path: "/app/wallets/stagenet/fast-receive-0",
-        address: "54A1testAddress",
-        network: "stagenet",
+        id: 'fast-receive-0',
+        label: 'Fast Receive',
+        path: '/app/wallets/stagenet/fast-receive-0',
+        address: '54A1testAddress',
+        network: 'stagenet',
         restoreHeight: 123,
         derivationIndex: 0,
-        scannerStatus: "local-only",
+        scannerStatus: 'local-only',
       },
-      "2026-06-17T00:00:00.000Z",
+      '2026-06-17T00:00:00.000Z',
+      {
+        credentialKey: 'monero.wallet.software.stagenet.primary.v1',
+        sourceWalletId: 'software-stagenet-primary',
+      },
     );
 
     await upsertFastReceiveIdentity(record);
@@ -53,42 +58,46 @@ describe("FastReceiveRegistry", () => {
       FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
     );
     expect(persisted).not.toBeNull();
-    expect(JSON.parse(persisted ?? "[]")).toEqual([
+    expect(JSON.parse(persisted ?? '[]')).toEqual([
       {
-        id: "fast-receive-0",
-        label: "Fast Receive",
-        path: "/app/wallets/stagenet/fast-receive-0",
-        address: "54A1testAddress",
-        network: "stagenet",
+        id: 'fast-receive-0',
+        label: 'Fast Wallet',
+        path: '/app/wallets/stagenet/fast-receive-0',
+        address: '54A1testAddress',
+        network: 'stagenet',
+        credentialKey: 'monero.wallet.software.stagenet.primary.v1',
+        sourceWalletId: 'software-stagenet-primary',
         restoreHeight: 123,
         derivationIndex: 0,
-        status: "local-only",
-        scannerStatus: "local-only",
-        createdAt: "2026-06-17T00:00:00.000Z",
-        updatedAt: "2026-06-17T00:00:00.000Z",
+        status: 'local-only',
+        scannerStatus: 'local-only',
+        scannerUrl: '',
+        notificationsEnabled: false,
+        createdAt: '2026-06-17T00:00:00.000Z',
+        updatedAt: '2026-06-17T00:00:00.000Z',
       },
     ]);
-    expect(persisted).not.toContain("private");
-    expect(persisted).not.toContain("viewKey");
-    expect(persisted).not.toContain("spend");
-    expect(persisted).not.toContain("seed");
-    expect(persisted).not.toContain("password");
+    expect(persisted).not.toContain('private');
+    expect(persisted).not.toContain('viewKey');
+    expect(persisted).not.toContain('spend');
+    expect(persisted).not.toContain('seed');
+    expect(persisted).not.toContain('password');
   });
 
-  it("loads records and derives the next identity index", async () => {
+  it('loads records and derives the next identity index', async () => {
     await upsertFastReceiveIdentity(
       createFastReceiveIdentityRecord(
         {
-          id: "fast-receive-0",
-          label: "Fast Receive",
-          path: "/app/wallets/stagenet/fast-receive-0",
-          address: "54A1testAddress",
-          network: "stagenet",
+          id: 'fast-receive-0',
+          label: 'Fast Receive',
+          path: '/app/wallets/stagenet/fast-receive-0',
+          address: '54A1testAddress',
+          network: 'stagenet',
           restoreHeight: 10,
           derivationIndex: 0,
-          scannerStatus: "local-only",
+          scannerStatus: 'local-only',
         },
-        "2026-06-17T00:00:00.000Z",
+        '2026-06-17T00:00:00.000Z',
       ),
     );
 
@@ -98,12 +107,32 @@ describe("FastReceiveRegistry", () => {
     expect(nextFastReceiveDerivationIndex(loaded)).toBe(1);
   });
 
-  it("creates stable path-safe identity ids", () => {
+  it('creates stable path-safe identity ids', () => {
     expect(
-      createFastReceiveIdentityId(
-        2,
-        new Date("2026-06-17T12:34:56.000Z"),
+      createFastReceiveIdentityId(2, new Date('2026-06-17T12:34:56.000Z')),
+    ).toBe('fast-receive-2-20260617T123456');
+  });
+
+  it('removes a fast receive identity from the local registry', async () => {
+    await upsertFastReceiveIdentity(
+      createFastReceiveIdentityRecord(
+        {
+          id: 'fast-receive-0',
+          label: 'Fast Receive',
+          path: '/app/wallets/stagenet/fast-receive-0',
+          address: '54A1testAddress',
+          network: 'stagenet',
+          restoreHeight: 10,
+          derivationIndex: 0,
+          scannerStatus: 'local-only',
+        },
+        '2026-06-17T00:00:00.000Z',
       ),
-    ).toBe("fast-receive-2-20260617T123456");
+    );
+
+    const next = await removeFastReceiveIdentity('fast-receive-0');
+
+    expect(next).toEqual([]);
+    expect(await loadFastReceiveIdentities()).toEqual([]);
   });
 });

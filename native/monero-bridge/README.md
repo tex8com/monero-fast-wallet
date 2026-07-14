@@ -25,15 +25,16 @@ Ledger Nano support for Monero is mandatory. It must use the forked `wallet2` /
 The private spend key and signing authority stay on the Ledger; React Native
 receives only sanitized status, prompt, address, balance, and transaction DTOs.
 The bridge now exposes create-from-device, status, reconnect, and
-show-address-on-device methods, and the app can route setup/address-confirmation
-flows through those methods. Android now builds the official Monero Ledger HID
-driver path through `hidapi`/`libusb` and gates wallet creation on Android USB
-host permission. Android and iOS also expose native Ledger Nano X BLE
-permission/discovery status. The official Monero GUI/Core implementation gives
-us `device_ledger` over HID/USB, not a mobile BLE APDU transport, so BLE
-discovery remains intentionally unsupported for wallet creation until a native
-BLE APDU bridge is linked into the forked wallet core. Transaction
-prompt/signing UI and connected Ledger tests are still pending.
+show-address-on-device methods, and the app routes setup/address-confirmation
+flows through those methods. Android still builds the official Monero Ledger
+HID path through `hidapi`/`libusb` for USB. The Monero fork additionally exposes
+a callback transport for `Ledger:ble`; Android and iOS implement that transport
+natively with Ledger's `0x05` BLE framing and route complete APDU responses back
+into the existing `device_ledger` state machine. Raw APDUs never cross the
+React Native boundary and are never logged. The fork, shared bridge, Android
+Kotlin/JNI path, and iOS Objective-C++ path build with BLE enabled. Connected
+Nano X address-confirmation and signing acceptance still require a physical,
+unlocked Ledger running the Monero app.
 
 The bridge also exposes wallet history and software-wallet sending through
 `getTransactions`, `prepareTransaction`, and `commitTransaction`.
@@ -179,7 +180,7 @@ the Monero fork so `cncrypto` never accidentally links the host macOS Rust
 archive. If Android dependency archives are installed under one prefix, pass it
 with `MONERO_ANDROID_DEPENDENCY_PREFIX=/path/to/prefix`.
 
-Current Android status on 2026-07-08 local:
+Current Android status on 2026-07-12 local:
 
 - `build-android-monero-deps.sh` builds OpenSSL, libiconv, Boost, libsodium,
   ZeroMQ, Expat, Unbound, gRPC, protobuf, absl, c-ares, re2, and zlib for
@@ -199,15 +200,18 @@ Current Android status on 2026-07-08 local:
   `npm run android:build`.
 - The Android native module exposes Ledger USB transport status and USB
   permission requests before `createWalletFromDevice`.
-- The Android native module declares Bluetooth LE permissions and can scan for
-  Ledger Nano X BLE service UUIDs. A found BLE device is reported as present
-  but unsupported until the Monero APDU bridge exists.
+- The Android native module declares Bluetooth LE permissions, scans the
+  official Ledger Nano X service UUID families, retains the selected device,
+  enables notifications, and exchanges Ledger `0x05` BLE frames through the
+  forked `device_ledger` callback transport.
+- Android unit tests cover one-frame and multi-frame Ledger BLE APDU framing;
+  raw command/response bytes are deliberately absent from logs.
 - `NativeMoneroWalletRuntimeSmokeTest` exercises Android `System.loadLibrary`,
   JNI, `WalletEngine`, forked `libwallet_api`, offline stagenet wallet
   creation, snapshot reads, and `setGrpcEndpoint`.
 - Runtime execution still requires a connected Android arm64 device/emulator.
 
-Current iOS status on 2026-07-08:
+Current iOS status on 2026-07-12:
 
 - `ios-sim-arm64` and `ios-device` dependency archives build locally.
 - `build-ios-grpc.sh` builds target gRPC/protobuf static archives under
@@ -222,9 +226,12 @@ Current iOS status on 2026-07-08:
 - React Native iOS Debug builds pass for arm64 simulator and unsigned
   `iphoneos` with the real gRPC-enabled backend.
 - iOS exposes Ledger transport status through the same TurboModule contract,
-  links `CoreBluetooth.framework`, and can request Bluetooth permission/scan
-  for Ledger Nano X BLE service UUIDs. A found BLE device is reported as
-  present but unsupported until the Monero APDU bridge exists.
+  links `CoreBluetooth.framework`, scans for Ledger Nano X BLE services, and
+  exchanges Ledger `0x05` frames through the same forked `device_ledger`
+  callback transport as Android.
+- A real-wallet-core arm64 simulator build passes with the BLE-enabled Monero
+  archive. The simulator cannot replace physical Nano X pairing, address
+  confirmation, disconnect/retry, and signing acceptance.
 
 Verified gRPC-enabled Android JNI link:
 

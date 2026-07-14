@@ -1,0 +1,4 @@
+<resources>
+    <string name="monero_transaction_channel_name">Monero-Transaktionen</string>
+    <string name="monero_transaction_channel_description">Hinweise zu Fast-Wallet-Zahlungen und Bestätigungen</string>
+</resources>

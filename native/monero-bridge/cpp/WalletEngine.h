@@ -20,6 +20,10 @@ class WalletEngine {
   WalletEngine& operator=(const WalletEngine&) = delete;
 
   static bool linkedWithMonero();
+  static void setLedgerBleTransportCallbacks(
+      const LedgerBleTransportCallbacks& callbacks);
+  static void clearLedgerBleTransportCallbacks();
+  static bool ledgerBleTransportAvailable();
 
   WalletId createWallet(const CreateWalletRequest& request);
   WalletId restoreWallet(const RestoreWalletRequest& request);
@@ -31,7 +35,8 @@ class WalletEngine {
       const std::string& identityId,
       const std::string& path,
       const std::string& password,
-      NetworkType network);
+      NetworkType network,
+      uint64_t restoreHeightHint = 0);
   void closeWallet(const WalletId& walletId, bool store = true);
 
   void setDaemon(const WalletId& walletId, const DaemonConfig& config);
@@ -55,6 +60,13 @@ class WalletEngine {
   std::vector<WalletTransaction> getTransactions(
       const WalletId& walletId,
       uint32_t limit = 25) const;
+  std::vector<std::string> getOwnedOutputKeyImages(
+      const WalletId& walletId) const;
+  size_t reconcileOutputKeyImages(
+      const WalletId& walletId,
+      const std::vector<std::string>& keyImages,
+      const std::vector<bool>& spentStates,
+      uint64_t checkedHeight);
   PreparedTransaction prepareTransaction(
       const PrepareTransactionRequest& request);
   PreparedTransaction commitTransaction(

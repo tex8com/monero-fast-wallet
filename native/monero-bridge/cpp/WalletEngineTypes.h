@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -42,6 +43,7 @@ struct OpenWalletRequest {
   std::string path;
   std::string password;
   NetworkType network{NetworkType::Stagenet};
+  uint64_t restoreHeight{0};
   uint64_t kdfRounds{1};
 };
 
@@ -161,6 +163,19 @@ struct HardwareWalletStatus {
   uint64_t promptCode{0};
   double progress{0};
   bool indeterminate{false};
+};
+
+struct LedgerBleTransportCallbacks {
+  void* context{nullptr};
+  bool (*connect)(void* context){nullptr};
+  void (*disconnect)(void* context){nullptr};
+  bool (*connected)(void* context){nullptr};
+  int (*exchange)(void* context,
+                  const unsigned char* command,
+                  unsigned int commandLength,
+                  unsigned char* response,
+                  unsigned int responseCapacity,
+                  bool userInput){nullptr};
 };
 
 } // namespace tex8::wallet

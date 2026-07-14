@@ -1,9 +1,9 @@
-import { loadActiveNodeConnectionSettings } from "./NodeConnectionSettings";
-import { walletService } from "./WalletService";
+import { loadActiveNodeConnectionSettings } from './NodeConnectionSettings';
+import { walletService } from './WalletService';
 import {
   emitWalletDiagnosticsLine,
   WALLET_DIAGNOSTIC_LOG_PREFIX,
-} from "./WalletLogger";
+} from './WalletLogger';
 
 export { emitWalletDiagnosticsLine };
 
@@ -16,7 +16,7 @@ interface HttpDiagnosticResult {
   status?: number;
 }
 
-export async function runWalletDiagnostics(trigger = "manual") {
+export async function runWalletDiagnostics(trigger = 'manual') {
   const errors: string[] = [];
   const settings = await loadActiveNodeConnectionSettings().catch(error => {
     errors.push(errorMessage(error));
@@ -28,6 +28,18 @@ export async function runWalletDiagnostics(trigger = "manual") {
       errors.push(errorMessage(error));
       return undefined;
     });
+  const registeredWallets = await walletService
+    .loadRegisteredWallets()
+    .catch(error => {
+      errors.push(errorMessage(error));
+      return [];
+    });
+  const fastWallets = await walletService
+    .loadFastReceiveIdentities()
+    .catch(error => {
+      errors.push(errorMessage(error));
+      return [];
+    });
   const activeSession = walletService.getActiveSession();
   const snapshot = activeSession
     ? await walletService.snapshot(activeSession).catch(error => {
@@ -36,10 +48,12 @@ export async function runWalletDiagnostics(trigger = "manual") {
       })
     : undefined;
   const hardwareStatus = activeSession?.hardwareDevice
-    ? await walletService.getHardwareWalletStatus(activeSession).catch(error => {
-        errors.push(errorMessage(error));
-        return undefined;
-      })
+    ? await walletService
+        .getHardwareWalletStatus(activeSession)
+        .catch(error => {
+          errors.push(errorMessage(error));
+          return undefined;
+        })
     : undefined;
   const linkedWithMonero = await walletService
     .linkedWithMonero()
@@ -62,15 +76,15 @@ export async function runWalletDiagnostics(trigger = "manual") {
   const daemonJsonRpcGetInfo = daemonBaseUrl
     ? await fetchJsonWithTimeout(`${daemonBaseUrl}/json_rpc`, {
         body: JSON.stringify({
-          id: "diagnostics",
-          jsonrpc: "2.0",
-          method: "get_info",
+          id: 'diagnostics',
+          jsonrpc: '2.0',
+          method: 'get_info',
           params: {},
         }),
         headers: {
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
         },
-        method: "POST",
+        method: 'POST',
       })
     : undefined;
   const diagnostics = {
@@ -110,6 +124,27 @@ export async function runWalletDiagnostics(trigger = "manual") {
   };
 
   await emitWalletDiagnosticsLine(
+    `${WALLET_DIAGNOSTIC_LOG_PREFIX} ${JSON.stringify({
+      activeWalletId: registeredWallet?.id,
+      event: 'walletInventory',
+      fastWallets: fastWallets.map(wallet => ({
+        hasCredential: Boolean(wallet.credentialKey),
+        id: wallet.id,
+        network: wallet.network,
+        scannerStatus: wallet.status,
+      })),
+      registeredWallets: registeredWallets.map(wallet => ({
+        hasCredential: Boolean(wallet.credentialKey),
+        id: wallet.id,
+        kind: wallet.kind,
+        network: wallet.network,
+      })),
+      timestamp: new Date().toISOString(),
+      trigger,
+    })}`,
+  );
+
+  await emitWalletDiagnosticsLine(
     `${WALLET_DIAGNOSTIC_LOG_PREFIX} ${JSON.stringify(diagnostics)}`,
   );
   return diagnostics;
@@ -120,7 +155,7 @@ function createDaemonBaseUrl(address: string, useSsl?: boolean): string {
     return address;
   }
 
-  return `${useSsl ? "https" : "http"}://${address}`;
+  return `${useSsl ? 'https' : 'http'}://${address}`;
 }
 
 async function fetchJsonWithTimeout(
@@ -162,7 +197,7 @@ async function fetchJsonWithTimeout(
 function parseJson(value: string): JsonRecord | undefined {
   try {
     const parsed: unknown = JSON.parse(value);
-    if (typeof parsed === "object" && parsed !== null) {
+    if (typeof parsed === 'object' && parsed !== null) {
       return parsed as JsonRecord;
     }
   } catch {
@@ -177,7 +212,9 @@ function summarizeGetInfo(result: HttpDiagnosticResult | undefined) {
     return undefined;
   }
 
-  const payload = isRecord(result.json?.result) ? result.json.result : result.json;
+  const payload = isRecord(result.json?.result)
+    ? result.json.result
+    : result.json;
   return {
     error: result.error,
     height: payload?.height,
@@ -194,7 +231,7 @@ function summarizeGetInfo(result: HttpDiagnosticResult | undefined) {
 }
 
 function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === "object" && value !== null;
+  return typeof value === 'object' && value !== null;
 }
 
 function errorMessage(error: unknown): string {

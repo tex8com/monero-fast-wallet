@@ -1,12 +1,12 @@
-import { useEffect } from "react";
-import { Linking } from "react-native";
+import { useEffect } from 'react';
+import { Linking } from 'react-native';
 
 import {
   emitWalletDiagnosticsLine,
   runWalletDiagnostics,
-} from "./WalletDiagnostics";
+} from './WalletDiagnostics';
 
-const DIAGNOSTICS_URL_PREFIX = "monerowallet://diagnostics";
+const DIAGNOSTICS_URL_PATTERN = /^[a-z][a-z0-9+.-]*:\/\/diagnostics(?:\/|$)/i;
 const BOOT_DIAGNOSTICS_DELAY_MS = 1500;
 
 export function WalletDiagnosticsController() {
@@ -19,7 +19,7 @@ export function WalletDiagnosticsController() {
 
     const bootDiagnosticsTimeout = shouldRunBootDiagnostics()
       ? setTimeout(() => {
-          runDiagnostics("boot");
+          runDiagnostics('boot');
         }, BOOT_DIAGNOSTICS_DELAY_MS)
       : undefined;
 
@@ -28,14 +28,14 @@ export function WalletDiagnosticsController() {
         return;
       }
 
-      runDiagnostics("url");
+      runDiagnostics('url');
     };
 
     Linking.getInitialURL()
       .then(handleUrl)
       .catch(() => undefined);
 
-    const subscription = Linking.addEventListener("url", event => {
+    const subscription = Linking.addEventListener('url', event => {
       handleUrl(event.url);
     });
 
@@ -51,11 +51,11 @@ export function WalletDiagnosticsController() {
 }
 
 function isDiagnosticsUrl(url: string): boolean {
-  return url.toLowerCase().startsWith(DIAGNOSTICS_URL_PREFIX);
+  return DIAGNOSTICS_URL_PATTERN.test(url);
 }
 
 function shouldRunBootDiagnostics(): boolean {
-  return __DEV__ && typeof jest === "undefined";
+  return __DEV__ && typeof jest === 'undefined';
 }
 
 function logDiagnosticsError(trigger: string, error: unknown) {

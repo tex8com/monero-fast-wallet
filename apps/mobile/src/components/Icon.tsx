@@ -33,7 +33,12 @@ export type IconName =
   | 'info'
   | 'file'
   | 'package'
+  | 'plus'
+  | 'trash'
   | 'chevron-right'
+  | 'map-pin'
+  | 'message-circle'
+  | 'users'
   | 'lightbulb';
 
 interface IconProps {
@@ -157,6 +162,25 @@ const RENDERERS: Record<IconName, (color: string, sw: number) => React.ReactNode
       <Path d="M12 3 Q16 7.5 16 12 Q16 16.5 12 21 Q8 16.5 8 12 Q8 7.5 12 3" />
     </G>
   ),
+  'map-pin': (c, sw) => (
+    <G {...stroke(c, sw)}>
+      <Path d="M20 10 C20 16 12 22 12 22 C12 22 4 16 4 10 C4 5.6 7.6 2 12 2 C16.4 2 20 5.6 20 10 Z" />
+      <Circle cx={12} cy={10} r={2.5} />
+    </G>
+  ),
+  'message-circle': (c, sw) => (
+    <G {...stroke(c, sw)}>
+      <Path d="M21 11.5 A8.5 8.5 0 0 1 7.2 18.2 L3 20 L4.8 15.8 A8.5 8.5 0 1 1 21 11.5 Z" />
+    </G>
+  ),
+  users: (c, sw) => (
+    <G {...stroke(c, sw)}>
+      <Circle cx={9} cy={8} r={3} />
+      <Path d="M3.5 20 C3.5 16.5 5.5 14 9 14 C12.5 14 14.5 16.5 14.5 20" />
+      <Path d="M15 5.5 C17.2 5.5 18.5 6.8 18.5 8.5 C18.5 10.2 17.2 11.5 15 11.5" />
+      <Path d="M16 14 C19 14 21 16 21 19" />
+    </G>
+  ),
   fingerprint: (c, sw) => (
     <G {...stroke(c, sw)}>
       <Path d="M6 11 Q6 6 12 6 Q18 6 18 11 Q18 16 16 20" />
@@ -214,6 +238,21 @@ const RENDERERS: Record<IconName, (color: string, sw: number) => React.ReactNode
       <Path d="M3 7 L12 11 L21 7" />
       <Line x1={12} y1={11} x2={12} y2={21} />
       <Path d="M7.5 5 L16.5 9" />
+    </G>
+  ),
+  plus: (c, sw) => (
+    <G {...stroke(c, sw)}>
+      <Line x1={12} y1={5} x2={12} y2={19} />
+      <Line x1={5} y1={12} x2={19} y2={12} />
+    </G>
+  ),
+  trash: (c, sw) => (
+    <G {...stroke(c, sw)}>
+      <Path d="M4 7 H20" />
+      <Path d="M10 11 V17" />
+      <Path d="M14 11 V17" />
+      <Path d="M6 7 L7 21 H17 L18 7" />
+      <Path d="M9 7 V4 H15 V7" />
     </G>
   ),
   'chevron-right': (c, sw) => (

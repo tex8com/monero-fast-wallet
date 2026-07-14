@@ -1,4 +1,4 @@
-jest.mock("@react-native-async-storage/async-storage", () => {
+jest.mock('@react-native-async-storage/async-storage', () => {
   const storage = new Map<string, string>();
   const mock = {
     clear: jest.fn(async () => {
@@ -16,7 +16,7 @@ jest.mock("@react-native-async-storage/async-storage", () => {
   };
 });
 
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   createRegisteredWallet,
@@ -24,139 +24,138 @@ import {
   loadRegisteredWallets,
   loadWalletRegistry,
   markRegisteredWalletSeedBackedUp,
+  removeRegisteredWallet,
   saveRegisteredWallet,
   setActiveRegisteredWallet,
   touchRegisteredWallet,
+  upsertRegisteredWallet,
   WALLET_REGISTRY_STORAGE_KEY,
-} from "../WalletRegistry";
+} from '../WalletRegistry';
 
-describe("WalletRegistry", () => {
+describe('WalletRegistry', () => {
   beforeEach(async () => {
     await AsyncStorage.clear();
   });
 
-  it("persists wallet metadata without secrets", async () => {
+  it('persists wallet metadata without secrets', async () => {
     const registration = createRegisteredWallet({
-      walletName: "primary",
-      path: "/app/wallets/mainnet/primary",
-      network: "mainnet",
-      now: "2026-06-08T00:00:00.000Z",
+      walletName: 'primary',
+      path: '/app/wallets/mainnet/primary',
+      network: 'mainnet',
+      now: '2026-06-08T00:00:00.000Z',
     });
 
     await saveRegisteredWallet(registration);
 
     const persisted = await AsyncStorage.getItem(WALLET_REGISTRY_STORAGE_KEY);
     expect(persisted).not.toBeNull();
-    expect(JSON.parse(persisted ?? "{}")).toEqual({
+    expect(JSON.parse(persisted ?? '{}')).toEqual({
       version: 2,
-      activeWalletId: "software-mainnet-primary-20260608T000000",
+      activeWalletId: 'software-mainnet-primary-20260608T000000',
       wallets: [
         {
-          id: "software-mainnet-primary-20260608T000000",
-          walletName: "primary",
-          path: "/app/wallets/mainnet/primary",
-          network: "mainnet",
-          kind: "software",
-          seedBackupStatus: "pending",
-          createdAt: "2026-06-08T00:00:00.000Z",
-          lastOpenedAt: "2026-06-08T00:00:00.000Z",
+          id: 'software-mainnet-primary-20260608T000000',
+          walletName: 'primary',
+          path: '/app/wallets/mainnet/primary',
+          network: 'mainnet',
+          kind: 'software',
+          seedBackupStatus: 'pending',
+          createdAt: '2026-06-08T00:00:00.000Z',
+          lastOpenedAt: '2026-06-08T00:00:00.000Z',
         },
       ],
     });
-    expect(persisted).not.toContain("password");
-    expect(persisted).not.toContain("mnemonic");
-    expect(persisted).not.toContain("private");
+    expect(persisted).not.toContain('password');
+    expect(persisted).not.toContain('mnemonic');
+    expect(persisted).not.toContain('private');
   });
 
-  it("loads and touches the registered wallet", async () => {
+  it('loads and touches the registered wallet', async () => {
     await saveRegisteredWallet(
       createRegisteredWallet({
-        walletName: "primary",
-        path: "/app/wallets/stagenet/primary",
-        network: "stagenet",
-        now: "2026-06-08T00:00:00.000Z",
+        walletName: 'primary',
+        path: '/app/wallets/stagenet/primary',
+        network: 'stagenet',
+        now: '2026-06-08T00:00:00.000Z',
       }),
     );
 
     const loaded = await loadRegisteredWallet();
-    expect(loaded?.network).toBe("stagenet");
-    expect(loaded?.seedBackupStatus).toBe("pending");
+    expect(loaded?.network).toBe('stagenet');
+    expect(loaded?.seedBackupStatus).toBe('pending');
 
-    const touched = touchRegisteredWallet(
-      loaded!,
-      "2026-06-08T01:00:00.000Z",
-    );
-    expect(touched.createdAt).toBe("2026-06-08T00:00:00.000Z");
-    expect(touched.lastOpenedAt).toBe("2026-06-08T01:00:00.000Z");
+    const touched = touchRegisteredWallet(loaded!, '2026-06-08T01:00:00.000Z');
+    expect(touched.createdAt).toBe('2026-06-08T00:00:00.000Z');
+    expect(touched.lastOpenedAt).toBe('2026-06-08T01:00:00.000Z');
   });
 
-  it("persists Ledger metadata for hardware wallets without secrets", async () => {
+  it('persists Ledger metadata for hardware wallets without secrets', async () => {
     const registration = createRegisteredWallet({
-      walletName: "ledger",
-      path: "/app/wallets/mainnet/ledger",
-      network: "mainnet",
-      kind: "hardware",
-      hardwareDeviceName: "Ledger",
-      hardwareDeviceType: "ledger",
-      now: "2026-06-08T00:00:00.000Z",
+      walletName: 'ledger',
+      path: '/app/wallets/mainnet/ledger',
+      network: 'mainnet',
+      kind: 'hardware',
+      hardwareDeviceName: 'Ledger',
+      hardwareDeviceType: 'ledger',
+      now: '2026-06-08T00:00:00.000Z',
     });
 
     await saveRegisteredWallet(registration);
 
     const loaded = await loadRegisteredWallet();
     expect(loaded).toMatchObject({
-      walletName: "ledger",
-      kind: "hardware",
-      seedBackupStatus: "not-required",
-      hardwareDeviceName: "Ledger",
-      hardwareDeviceType: "ledger",
+      walletName: 'ledger',
+      kind: 'hardware',
+      seedBackupStatus: 'not-required',
+      hardwareDeviceName: 'Ledger',
+      hardwareDeviceType: 'ledger',
     });
 
     const persisted = await AsyncStorage.getItem(WALLET_REGISTRY_STORAGE_KEY);
-    expect(persisted).not.toContain("password");
-    expect(persisted).not.toContain("mnemonic");
-    expect(persisted).not.toContain("private");
+    expect(persisted).not.toContain('password');
+    expect(persisted).not.toContain('mnemonic');
+    expect(persisted).not.toContain('private');
   });
 
-  it("persists native credential references for biometric software wallets", async () => {
+  it('persists native credential references for biometric software wallets', async () => {
     const registration = createRegisteredWallet({
-      walletName: "primary",
-      path: "/app/wallets/mainnet/primary",
-      network: "mainnet",
-      credentialKey: "monero.wallet.software.mainnet.primary.v1",
-      now: "2026-06-08T00:00:00.000Z",
+      walletName: 'primary',
+      path: '/app/wallets/mainnet/primary',
+      network: 'mainnet',
+      credentialKey: 'monero.wallet.software.mainnet.primary.v1',
+      now: '2026-06-08T00:00:00.000Z',
     });
 
     await saveRegisteredWallet(registration);
 
     const loaded = await loadRegisteredWallet();
     expect(loaded).toMatchObject({
-      walletName: "primary",
-      kind: "software",
-      credentialKey: "monero.wallet.software.mainnet.primary.v1",
+      walletName: 'primary',
+      kind: 'software',
+      credentialKey: 'monero.wallet.software.mainnet.primary.v1',
     });
 
     const persisted = await AsyncStorage.getItem(WALLET_REGISTRY_STORAGE_KEY);
-    expect(persisted).not.toContain("password");
-    expect(persisted).not.toContain("mnemonic");
-    expect(persisted).not.toContain("private");
+    expect(persisted).not.toContain('password');
+    expect(persisted).not.toContain('mnemonic');
+    expect(persisted).not.toContain('private');
   });
 
-  it("keeps multiple wallets and switches the active wallet", async () => {
+  it('keeps multiple wallets and switches the active wallet', async () => {
     const primary = await saveRegisteredWallet(
       createRegisteredWallet({
-        walletName: "primary",
-        path: "/app/wallets/mainnet/primary",
-        network: "mainnet",
-        now: "2026-06-08T00:00:00.000Z",
+        walletName: 'primary',
+        path: '/app/wallets/mainnet/primary',
+        network: 'mainnet',
+        now: '2026-06-08T00:00:00.000Z',
       }),
     );
     const second = await saveRegisteredWallet(
       createRegisteredWallet({
-        walletName: "primary-2",
-        path: "/app/wallets/mainnet/primary-2",
-        network: "mainnet",
-        now: "2026-06-08T00:01:00.000Z",
+        walletName: 'primary-2',
+        path: '/app/wallets/mainnet/primary-2',
+        network: 'mainnet',
+        now: '2026-06-08T00:01:00.000Z',
       }),
     );
 
@@ -169,44 +168,101 @@ describe("WalletRegistry", () => {
     expect((await loadWalletRegistry()).activeWalletId).toBe(primary.id);
   });
 
-  it("marks a software wallet seed as backed up after confirmation", async () => {
+  it('registers a spendable Fast Wallet without replacing the active wallet', async () => {
+    const primary = await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: 'primary',
+        path: '/app/wallets/mainnet/primary',
+        network: 'mainnet',
+        credentialKey: 'monero.wallet.software.mainnet.primary.v1',
+        now: '2026-06-08T00:00:00.000Z',
+      }),
+    );
+    const fast = await upsertRegisteredWallet(
+      createRegisteredWallet({
+        id: 'fast-receive-0',
+        walletName: 'Fast Wallet',
+        path: '/app/wallets/mainnet/fast-receive-0',
+        network: 'mainnet',
+        kind: 'fast',
+        credentialKey: 'monero.wallet.software.mainnet.primary.v1',
+        restoreHeight: 3714305,
+        now: '2026-06-08T00:01:00.000Z',
+      }),
+    );
+
+    expect(fast).toMatchObject({
+      id: 'fast-receive-0',
+      kind: 'fast',
+      seedBackupStatus: 'not-required',
+      restoreHeight: 3714305,
+    });
+    expect((await loadRegisteredWallet())?.id).toBe(primary.id);
+    expect(await loadRegisteredWallets()).toEqual([primary, fast]);
+  });
+
+  it('removes a registered wallet and moves active wallet to the next one', async () => {
+    const primary = await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: 'primary',
+        path: '/app/wallets/mainnet/primary',
+        network: 'mainnet',
+        now: '2026-06-08T00:00:00.000Z',
+      }),
+    );
+    const second = await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: 'primary-2',
+        path: '/app/wallets/mainnet/primary-2',
+        network: 'mainnet',
+        now: '2026-06-08T00:01:00.000Z',
+      }),
+    );
+
+    await removeRegisteredWallet(second.id);
+
+    expect(await loadRegisteredWallets()).toEqual([primary]);
+    expect((await loadRegisteredWallet())?.id).toBe(primary.id);
+  });
+
+  it('marks a software wallet seed as backed up after confirmation', async () => {
     const registration = await saveRegisteredWallet(
       createRegisteredWallet({
-        walletName: "primary",
-        path: "/app/wallets/mainnet/primary",
-        network: "mainnet",
-        now: "2026-06-08T00:00:00.000Z",
+        walletName: 'primary',
+        path: '/app/wallets/mainnet/primary',
+        network: 'mainnet',
+        now: '2026-06-08T00:00:00.000Z',
       }),
     );
 
     const updated = await markRegisteredWalletSeedBackedUp(
       registration.id,
-      "2026-06-08T00:05:00.000Z",
+      '2026-06-08T00:05:00.000Z',
     );
 
     expect(updated).toMatchObject({
       id: registration.id,
-      seedBackupStatus: "verified",
-      seedBackedUpAt: "2026-06-08T00:05:00.000Z",
+      seedBackupStatus: 'verified',
+      seedBackedUpAt: '2026-06-08T00:05:00.000Z',
     });
   });
 
-  it("loads old registry entries as software wallets", async () => {
+  it('loads old registry entries as software wallets', async () => {
     await AsyncStorage.setItem(
       WALLET_REGISTRY_STORAGE_KEY,
       JSON.stringify({
-        walletName: "primary",
-        path: "/app/wallets/mainnet/primary",
-        network: "mainnet",
-        createdAt: "2026-06-08T00:00:00.000Z",
-        lastOpenedAt: "2026-06-08T00:00:00.000Z",
+        walletName: 'primary',
+        path: '/app/wallets/mainnet/primary',
+        network: 'mainnet',
+        createdAt: '2026-06-08T00:00:00.000Z',
+        lastOpenedAt: '2026-06-08T00:00:00.000Z',
       }),
     );
 
     const loaded = await loadRegisteredWallet();
-    expect(loaded?.kind).toBe("software");
-    expect(loaded?.id).toBe("software-mainnet-primary-20260608T000000");
-    expect(loaded?.seedBackupStatus).toBe("verified");
+    expect(loaded?.kind).toBe('software');
+    expect(loaded?.id).toBe('software-mainnet-primary-20260608T000000');
+    expect(loaded?.seedBackupStatus).toBe('verified');
     expect(loaded?.hardwareDeviceName).toBeUndefined();
   });
 });

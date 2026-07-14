@@ -7,8 +7,8 @@ wallet_dir="${FUNDED_WALLET_DIR:-$HOME/Documents/Monero/tex8-send-tests}"
 wallet_cli="${MONERO_WALLET_CLI:-/Volumes/4TB/monero-gui-build/release/bin/monero-wallet-cli}"
 proof_runner="${BRIDGE_RUNNER:-${repo_root}/build/native-bridge-monero/monero_wallet_bridge_smoke}"
 network="${FUNDED_WALLET_NETWORK:-mainnet}"
-cuprate_rpc="${CUPRATE_RPC:-152.53.133.188:18089}"
-cuprate_grpc="${CUPRATE_GRPC:-152.53.133.188:18091}"
+cuprate_rpc="${CUPRATE_RPC:-xmr.tex8.com:18089}"
+cuprate_grpc="${CUPRATE_GRPC:-xmr.tex8.com:18091}"
 status_seconds="${FUNDED_STATUS_REFRESH_SECONDS:-6}"
 visibility_attempts="${FUNDED_SEND_VISIBILITY_ATTEMPTS:-12}"
 visibility_seconds="${FUNDED_SEND_VISIBILITY_SECONDS:-5}"
@@ -18,6 +18,7 @@ usage() {
 Usage:
   $0 cli-status [a|b|all]
   $0 native-status [a|b|all]
+  $0 prepare-sweep <a|b> <a|b>
   $0 real-send <a|b> <a|b>
 
 Environment:
@@ -188,6 +189,30 @@ real_send() {
     "${txid}" "${visibility_attempts}" "${visibility_seconds}"
 }
 
+prepare_sweep() {
+  local from="$1"
+  local to="$2"
+  local dest
+
+  require_executable "${proof_runner}"
+  require_file "$(wallet_path "${from}")"
+  require_file "$(password_file "${from}")"
+  require_file "$(wallet_path "${to}")"
+  require_file "$(password_file "${to}")"
+
+  dest="$(address_for "${to}")"
+  [[ -n "${dest}" ]] || die "failed to resolve destination address"
+
+  printf 'prepare_sweep_from=%s\n' "${from}"
+  printf 'prepare_sweep_to=%s\n' "${to}"
+  printf 'prepare_sweep_rpc=%s\n' "${cuprate_rpc}"
+  printf 'prepare_sweep_grpc=%s\n' "${cuprate_grpc}"
+
+  "${proof_runner}" prepare-sweep "${network}" "$(wallet_path "${from}")" \
+    "$(secret_arg "${from}")" "${cuprate_rpc}" "${cuprate_grpc}" \
+    "${dest}"
+}
+
 command="${1:-}"
 case "${command}" in
   cli-status)
@@ -199,6 +224,13 @@ case "${command}" in
     for alias in $(aliases_for "${2:-all}"); do
       native_status_one "${alias}"
     done
+    ;;
+  prepare-sweep)
+    [[ $# -eq 3 ]] || {
+      usage
+      exit 2
+    }
+    prepare_sweep "$2" "$3"
     ;;
   real-send)
     [[ $# -eq 3 ]] || {

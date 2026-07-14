@@ -36,10 +36,11 @@ describe("Tex8SharedAssistant", () => {
         "monero_ledger",
         "monero_hosted_scan",
         "monero_privacy",
-        "xmr_marketplace",
+        "monero_community",
       ]),
     );
     expect(MONERO_SHARED_ELEMENTS).toHaveLength(7);
+    expect(manifest.screens).not.toContain("Marketplace");
   });
 
   it("parses Tex8 shared assistant control payloads", () => {

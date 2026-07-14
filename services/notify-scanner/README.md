@@ -10,20 +10,25 @@ The module accepts opt-in watch records for isolated Fast Receive identities:
 - private view key for that isolated identity
 - network
 - restore height
-- optional push token
+- optional anonymous Tex8 push subscription id
 
 It never accepts a seed, private spend key, or main-wallet private view key.
 
 ## API
 
 ```text
+GET    /
 GET    /healthz
 POST   /v1/fast-receive/watch
+GET    /v1/fast-receive/watch/:identity_id
 DELETE /v1/fast-receive/watch/:identity_id
 GET    /v1/fast-receive/watch/:identity_id/matches
 POST   /v1/fast-receive/matches
 POST   /v1/fast-receive/key-images/status
 ```
+
+`GET /` is a public human-readable service page with GitHub and documentation
+links. It does not expose watches, matches, keys, tokens, or node internals.
 
 `POST /v1/fast-receive/watch` body:
 
@@ -34,9 +39,14 @@ POST   /v1/fast-receive/key-images/status
   "private_view_key": "64 hex chars",
   "network": "stagenet",
   "restore_height": 123456,
-  "push_token": "optional push provider token"
+  "device_id": "optional anonymous push subscription id"
 }
 ```
+
+`device_id` is the anonymous `subscriptionId` returned by the shared Tex8
+mobile push service. It is not an FCM/APNs token. The legacy `push_token`
+field remains readable for storage compatibility but is never used for
+delivery.
 
 If `NOTIFY_SCANNER_AUTH_TOKEN` is set, clients must send:
 
@@ -44,23 +54,30 @@ If `NOTIFY_SCANNER_AUTH_TOKEN` is set, clients must send:
 Authorization: Bearer <token>
 ```
 
+`GET /v1/fast-receive/watch/:identity_id` returns only non-secret scanner
+state for that watch record. Mobile clients use it after node/server switches
+to verify whether the active Tex8 scanner already has the hosted private view
+key for that isolated Fast Receive identity. `notifications_enabled` is true
+only when that watch carries an anonymous Tex8 push subscription id.
+
 `POST /v1/fast-receive/matches` is the internal scanner write path used after a
-block output matches a registered hosted identity:
+block output matches a registered hosted identity. Transaction fields are used
+only long enough to derive a one-way event fingerprint:
 
 ```json
 {
   "identity_id": "fast-receive-0-20260701T120000",
   "tx_id": "64 hex chars",
-  "block_height": 3712787,
-  "output_index": 3,
-  "block_timestamp_ms": 1783440572804,
-  "amount_atomic": 100000000,
-  "key_image": "optional 64 hex chars"
+  "output_index": 3
 }
 ```
 
-The store key is `identity_id + tx_id + output_index`, so processing the same
-block twice updates the same match instead of creating duplicates.
+The raw transaction id and output index are immediately hashed into an opaque
+`evt_...` id and discarded. Amounts, transaction ids, output indexes, block
+timestamps, addresses, and key images are not stored in match records or
+returned by the match API. Unknown detail fields are rejected. Processing the
+same output twice still updates the same opaque event instead of creating a
+duplicate.
 
 `POST /v1/fast-receive/key-images/status` is the fast spend-reconciliation
 query. The app derives key images locally and asks the server for known spent
@@ -87,16 +104,26 @@ return `unknown` from the local cache.
 export NOTIFY_SCANNER_STORAGE_KEY=<32-byte hex or base64 key>
 export NOTIFY_SCANNER_WATCH_DB=./notify-scanner-watch.json.enc
 export NOTIFY_SCANNER_BIND=127.0.0.1:8087
-export NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT=152.53.133.188:18091
-export NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT=152.53.133.188:18089
+export NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT=xmr.tex8.com:18091
+export NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT=xmr.tex8.com:18089
+export NOTIFY_SCANNER_PUSH_ENDPOINT=http://127.0.0.1:4020/api/v1/internal/mobile/fast-wallet-push-events
+export NOTIFY_SCANNER_PUSH_AUTH_TOKEN=<scanner-to-cloud-secret>
+export NOTIFY_SCANNER_PUSH_TENANT_ID=monero-wallet
+export NOTIFY_SCANNER_PUSH_SHOP_ID=monero-wallet
+export NOTIFY_SCANNER_PUSH_APP_ID=monero-wallet
+export NOTIFY_SCANNER_PUSH_TIMEOUT_MS=10000
 cargo run --manifest-path services/notify-scanner/Cargo.toml
 ```
 
 The scanner database is encrypted at rest with XChaCha20-Poly1305. It stores
-watch records, matched outputs, and key-image status records in one sealed
+watch records, opaque detection events, and key-image status records in one sealed
 JSON file. If `NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT` is set, the service starts
 an optional background block scanner. If `NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT`
 is also set, the same loop scans the txpool for early pending hints.
+
+Opening an existing database rewrites it immediately to the current schema.
+Legacy raw match ids become one-way `evt_...` fingerprints, and old transaction,
+output, amount, and block fields are omitted from the newly sealed file.
 
 Optional scanner tuning:
 
@@ -108,9 +135,20 @@ export NOTIFY_SCANNER_CUPRATE_GRPC_CHUNK_BLOCKS=200
 
 The crate decodes Cuprate `GetBlocksResponse` Epee payloads into Monero blocks
 and transactions, then builds `monero-rpc` `ScannableBlock` values for hosted
-view-key scanning. The crate also checks key-image spent state through Cuprate
-RPC for fast spend reconciliation. The remaining production work is push
-delivery, lag/health metrics, and operational deployment wiring.
+view-key scanning. Ownership is checked without reading or retaining the
+decoded amount from the matched output. The crate also checks key-image spent
+state through Cuprate RPC for fast spend reconciliation. The push dispatcher
+sends the same generic `incoming_transaction` signal to Tex8 Cloud after a new
+mempool match, confirmation, drop, or reorg.
+It marks a notification as sent only after the cloud endpoint accepts it and
+retries failures on the next scanner pass.
+
+The app sends the anonymous cloud `subscriptionId` as `device_id` during watch
+registration. The scanner never needs an FCM token. Legacy `push_token` values
+are intentionally ignored by the dispatcher. The v2 cloud event contains only
+an opaque event id, anonymous subscription id, app routing scope, and the
+generic signal. It has no optional detail mode. Addresses and private view keys
+never leave the encrypted scanner database through the push path.
 
 ## Scanner Worker
 
@@ -140,9 +178,8 @@ Fast Receive also needs a mempool path for early notifications:
 - `MempoolOutputMatcher` checks unconfirmed transaction outputs against hosted
   identities.
 - `MempoolScannerWorker` stores matching outputs as `pending_mempool`.
-- The later block scanner uses the same match id
-  `identity_id + tx_id + output_index`, so a confirmed block match updates the
-  pending record instead of creating a duplicate.
+- The later block scanner derives the same one-way fingerprint, so a confirmed
+  block match updates the pending record instead of creating a duplicate.
 - If a pending mempool match disappears before confirmation, it is marked
   `dropped`.
 

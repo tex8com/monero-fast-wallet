@@ -291,8 +291,6 @@ impl OutputMatcher for HostedViewKeyBlockMatcher {
             .map(|output| MatchedOutputCandidate {
                 tx_id: hex::encode(output.transaction()),
                 output_index: output.index_in_transaction(),
-                amount_atomic: Some(output.commitment().amount),
-                key_image: None,
             })
             .collect())
     }
@@ -306,15 +304,14 @@ impl MempoolOutputMatcher for HostedViewKeyMempoolMatcher {
     ) -> Result<Vec<MatchedOutputCandidate>> {
         let scannable_block = tx.scannable_block.as_ref().ok_or_else(|| {
             anyhow!(
-                "mempool tx {} has no monero scannable payload; use Cuprate txpool decoding for hosted mempool scanning",
-                tx.tx_id
+                "mempool transaction has no scannable payload; use Cuprate txpool decoding for hosted mempool scanning"
             )
         })?;
         let view_pair = view_pair_from_watch(watch)?;
         let mut scanner = Scanner::new(view_pair);
         let outputs = scanner
             .scan((**scannable_block).clone())
-            .with_context(|| format!("failed to scan mempool tx {}", tx.tx_id))?
+            .context("failed to scan mempool transaction")?
             .ignore_additional_timelock();
 
         Ok(outputs
@@ -322,8 +319,6 @@ impl MempoolOutputMatcher for HostedViewKeyMempoolMatcher {
             .map(|output| MatchedOutputCandidate {
                 tx_id: hex::encode(output.transaction()),
                 output_index: output.index_in_transaction(),
-                amount_atomic: Some(output.commitment().amount),
-                key_image: None,
             })
             .collect())
     }
@@ -364,11 +359,7 @@ pub fn decode_mempool_transaction_blob(
     let tx = read_full_transaction(tx_blob).context("failed to parse mempool transaction")?;
     let actual_hash = tx.hash();
     if actual_hash != tx_hash {
-        bail!(
-            "mempool transaction hash mismatch: expected {} got {}",
-            hex::encode(tx_hash),
-            hex::encode(actual_hash)
-        );
+        bail!("mempool transaction hash mismatch");
     }
 
     Ok(ScannedMempoolTx {
@@ -567,12 +558,7 @@ fn build_scanned_block(
             read_full_transaction(tx_blob.as_ref()).context("failed to parse block transaction")?;
         let actual_hash = tx.hash();
         if &actual_hash != expected_hash {
-            bail!(
-                "block {} transaction hash mismatch: expected {} got {}",
-                height,
-                hex::encode(expected_hash),
-                hex::encode(actual_hash)
-            );
+            bail!("block {} transaction hash mismatch", height);
         }
         full_txs.push(tx);
     }
@@ -637,8 +623,6 @@ fn scanned_outputs_for_transaction(
                 output_index: u64::try_from(index).context("output index exceeded u64")?,
                 output_public_key: hex::encode(output.key.to_bytes()),
                 view_tag: output.view_tag.map(|tag| format!("{tag:02x}")),
-                amount_atomic: output.amount,
-                key_image: None,
             })
         })
         .collect()
@@ -728,15 +712,12 @@ fn first_ringct_output_index_in_tx(
 
 fn view_pair_from_watch(watch: &WatchRegistration) -> Result<ViewPair> {
     let address = MoneroAddress::from_str(monero_address_network(watch.network), &watch.address)
-        .with_context(|| format!("invalid hosted address for identity {}", watch.identity_id))?;
+        .context("invalid hosted address")?;
     let private_view = parse_private_view_key(&watch.private_view_key)?;
     let pair = ViewPair::new(address.spend(), Zeroizing::new(private_view))
-        .with_context(|| format!("invalid view pair for identity {}", watch.identity_id))?;
+        .context("invalid hosted view pair")?;
     if pair.view() != address.view() {
-        bail!(
-            "private view key does not match address public view key for identity {}",
-            watch.identity_id
-        );
+        bail!("private view key does not match hosted address public view key");
     }
     Ok(pair)
 }
@@ -851,8 +832,8 @@ mod tests {
     #[test]
     fn normalizes_cuprate_endpoints() {
         assert_eq!(
-            normalize_grpc_endpoint("152.53.133.188:18091").unwrap(),
-            "http://152.53.133.188:18091"
+            normalize_grpc_endpoint("xmr.tex8.com:18091").unwrap(),
+            "http://xmr.tex8.com:18091"
         );
         assert_eq!(
             normalize_http_endpoint("http://tex8.com:18089/").unwrap(),
@@ -984,14 +965,14 @@ mod tests {
         let error = HostedViewKeyMempoolMatcher
             .match_mempool_tx(&watch, &tx)
             .unwrap_err();
-        assert!(error.to_string().contains("no monero scannable payload"));
+        assert!(error.to_string().contains("no scannable payload"));
     }
 
     #[test]
     #[ignore = "requires live Cuprate gRPC endpoint"]
     fn live_cuprate_grpc_source_fetches_block() {
         let endpoint = env::var("NOTIFY_SCANNER_TEST_GRPC_ENDPOINT")
-            .unwrap_or_else(|_| "152.53.133.188:18091".to_owned());
+            .unwrap_or_else(|_| "xmr.tex8.com:18091".to_owned());
         let from_height_exclusive = env::var("NOTIFY_SCANNER_TEST_FROM_HEIGHT")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -1011,7 +992,7 @@ mod tests {
     #[ignore = "requires live Cuprate RPC endpoint"]
     fn live_cuprate_txpool_source_decodes_snapshot() {
         let endpoint = env::var("NOTIFY_SCANNER_TEST_RPC_ENDPOINT")
-            .unwrap_or_else(|_| "152.53.133.188:18089".to_owned());
+            .unwrap_or_else(|_| "xmr.tex8.com:18089".to_owned());
         let mut source = CuprateHttpMempoolSource::new(endpoint).unwrap();
 
         let txs = MempoolSource::current_transactions(&mut source, Network::Mainnet).unwrap();
@@ -1024,7 +1005,7 @@ mod tests {
     #[ignore = "requires live Cuprate RPC endpoint"]
     fn live_cuprate_key_image_status_source_checks_unknown_key() {
         let endpoint = env::var("NOTIFY_SCANNER_TEST_RPC_ENDPOINT")
-            .unwrap_or_else(|_| "152.53.133.188:18089".to_owned());
+            .unwrap_or_else(|_| "xmr.tex8.com:18089".to_owned());
         let source = CuprateHttpKeyImageStatusSource::new(endpoint).unwrap();
         let key_images = vec!["11".repeat(32)];
 

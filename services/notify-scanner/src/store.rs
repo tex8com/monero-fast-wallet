@@ -1,6 +1,6 @@
 use crate::model::{
-    key_image_status_id, DetectionStatus, KeyImageStatusRecord, MatchedOutput, NotificationStatus,
-    WatchRegistration,
+    key_image_status_id, privacy_safe_detection_id, DetectionStatus, KeyImageStatusRecord,
+    MatchedOutput, NotificationStatus, WatchRegistration,
 };
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -134,13 +134,17 @@ impl EncryptedJsonFileStore {
     pub fn open(path: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self> {
         let path = path.into();
         let cipher = XChaCha20Poly1305::new((&key).into());
-        let stored = if path.exists() {
+        let rewrite_existing = path.exists();
+        let mut stored = if rewrite_existing {
             read_records(&path, &cipher)?
         } else {
             StoredRecords::default()
         };
+        for output in &mut stored.matches {
+            output.id = privacy_safe_detection_id(&output.id);
+        }
 
-        Ok(Self {
+        let store = Self {
             path,
             cipher,
             records: RwLock::new(
@@ -169,7 +173,19 @@ impl EncryptedJsonFileStore {
                     })
                     .collect(),
             ),
-        })
+        };
+
+        if rewrite_existing {
+            let records = store.records.read().expect("watch store poisoned");
+            let matches = store.matches.read().expect("watch store poisoned");
+            let key_image_statuses = store
+                .key_image_statuses
+                .read()
+                .expect("watch store poisoned");
+            store.persist(&records, &matches, &key_image_statuses)?;
+        }
+
+        Ok(store)
     }
 
     fn persist(
@@ -313,20 +329,14 @@ fn merge_matched_output(existing: &MatchedOutput, incoming: MatchedOutput) -> Ma
             .map(|incoming_last| incoming_last.max(existing_last));
     }
 
-    if stored.confirmed_height.is_none() {
-        stored.confirmed_height = existing.confirmed_height;
-    }
-
     if existing.detection_status == DetectionStatus::Confirmed
         && stored.detection_status != DetectionStatus::Reorged
     {
         stored.detection_status = DetectionStatus::Confirmed;
-        stored.block_height = existing.block_height;
-        stored.block_timestamp_ms = existing.block_timestamp_ms;
-        stored.confirmed_height = existing.confirmed_height;
     }
 
-    if existing.notification_status != NotificationStatus::Pending
+    if existing.detection_status == stored.detection_status
+        && existing.notification_status != NotificationStatus::Pending
         && stored.notification_status == NotificationStatus::Pending
     {
         stored.notification_status = existing.notification_status.clone();
@@ -421,19 +431,12 @@ mod tests {
         MatchedOutput {
             id: format!("fast-receive-0:{}:1", "1".repeat(64)),
             identity_id: "fast-receive-0".to_owned(),
-            tx_id: "1".repeat(64),
-            block_height: 99,
-            output_index: 1,
-            block_timestamp_ms: 1000,
-            amount_atomic: Some(123),
-            key_image: Some("2".repeat(64)),
             detection_status: DetectionStatus::Detected,
             notification_status: NotificationStatus::Pending,
             created_at_ms: 2,
             updated_at_ms: 2,
             mempool_first_seen_ms: None,
             mempool_last_seen_ms: None,
-            confirmed_height: None,
         }
     }
 
@@ -473,7 +476,10 @@ mod tests {
         let reopened = EncryptedJsonFileStore::open(&path, key).unwrap();
         let loaded = reopened.get("fast-receive-0").unwrap().unwrap();
         assert_eq!(loaded.private_view_key, view_key);
-        assert_eq!(reopened.list_matches("fast-receive-0").unwrap().len(), 1);
+        let matches = reopened.list_matches("fast-receive-0").unwrap();
+        assert_eq!(matches.len(), 1);
+        assert!(matches[0].id.starts_with("evt_"));
+        assert!(!matches[0].id.contains(&"1".repeat(64)));
         assert_eq!(
             reopened
                 .get_key_image_statuses("fast-receive-0", &["2".repeat(64)])
@@ -481,6 +487,56 @@ mod tests {
                 .status,
             SpentStatus::Unspent
         );
+    }
+
+    #[test]
+    fn opening_a_legacy_store_removes_transaction_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy-watch.json.enc");
+        let key = [9u8; 32];
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        let tx_id = "3".repeat(64);
+        let legacy_id = format!("fast-receive-0:{tx_id}:4");
+        let legacy_plaintext = serde_json::to_vec(&serde_json::json!({
+            "records": [registration()],
+            "matches": [{
+                "id": legacy_id,
+                "identity_id": "fast-receive-0",
+                "detection_status": "confirmed",
+                "notification_status": "pending",
+                "created_at_ms": 2,
+                "updated_at_ms": 3,
+                "mempool_first_seen_ms": 2,
+                "mempool_last_seen_ms": 3,
+                "tx_id": tx_id,
+                "output_index": 4,
+                "amount_atomic": "50000000",
+                "block_height": 100,
+                "block_timestamp": 200
+            }],
+            "key_image_statuses": []
+        }))
+        .unwrap();
+        let sealed = seal(&cipher, &legacy_plaintext).unwrap();
+        fs::write(&path, serde_json::to_vec(&sealed).unwrap()).unwrap();
+
+        let store = EncryptedJsonFileStore::open(&path, key).unwrap();
+        let migrated = store.list_matches("fast-receive-0").unwrap();
+        assert_eq!(migrated.len(), 1);
+        assert!(migrated[0].id.starts_with("evt_"));
+
+        let rewritten: SealedFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let plaintext = String::from_utf8(open(&cipher, &rewritten).unwrap()).unwrap();
+        for forbidden in [
+            "tx_id",
+            "output_index",
+            "amount_atomic",
+            "block_height",
+            "block_timestamp",
+            tx_id.as_str(),
+        ] {
+            assert!(!plaintext.contains(forbidden));
+        }
     }
 
     #[test]

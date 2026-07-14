@@ -49,6 +49,13 @@ Allowed for development only:
 ## Core Principles
 
 - Self-custody by default.
+- Usability is a primary security feature; the product must be usable by
+  non-technical people without understanding Monero internals.
+- Trust and reputation are first-class product concerns for contact and payment
+  flows.
+- Nearby Monero enthusiast discovery is an optional social feature for
+  conversation and private meetups, not a P2P trading service. Exact location
+  and wallet identity must never be linked.
 - Our forked `libwallet_api` / `wallet2` is the native wallet core.
 - React Native owns UX only; wallet secrets and wallet state stay native.
 - `monero-wallet-cli` and `monero-wallet-rpc` are not the product core.
@@ -63,6 +70,10 @@ Allowed for development only:
 - Ledger Nano hardware-wallet support is required for Monero. Hardware signing
   must go through the native wallet core on both Android and iOS; seed/private
   spend key material must never enter JavaScript or the server.
+- Product direction for community discovery, phone-number sending, reputation,
+  escrow, and Fast Wallet positioning is tracked in
+  `docs/PRODUCT_TRUST_USABILITY_PLAN.md`. Marketplace UI is retained only as an
+  unrouted prototype and is not part of the current wallet experience.
 
 ## Repository Shape
 
@@ -100,12 +111,14 @@ native/
   monero-bridge/       C++ facade plus iOS/Android bridge to our wallet core
 services/
   notify-scanner/      hosted view-key registration/removal API and scanner
+  enthusiast-discovery/ anonymous approximate-area community API
 node/
   cuprate/             pinned Cuprate fork source snapshot
 third_party/
   monero/              recorded Monero fork pin or future submodule
 docs/
   ROADMAP.md
+  PRODUCT_TRUST_USABILITY_PLAN.md
   ARCHITECTURE.md
   NATIVE_WALLET_BRIDGE.md
   BACKEND_TESTING.md
@@ -166,7 +179,7 @@ Before the first public release, add or verify:
 
 ## Native Bridge Status
 
-Current mobile-native status on 2026-07-08 local:
+Current mobile-native status on 2026-07-10 local:
 
 - The React Native app has iOS and Android native modules backed by the shared
   C++ `WalletEngine` facade.
@@ -186,9 +199,9 @@ Current mobile-native status on 2026-07-08 local:
   `npm run android:build`, and the APK packages
   `lib/arm64-v8a/libmonero_wallet_bridge_jni.so` plus the bundled JavaScript.
 - Android exposes Ledger USB transport diagnostics and can request Android USB
-  host permission before creating a Ledger-backed wallet. Android also declares
-  Bluetooth LE permissions and can scan for Ledger Nano X BLE service UUIDs,
-  but BLE wallet creation is blocked until the Monero APDU bridge is linked.
+  host permission before creating a Ledger-backed wallet. Its native BLE path
+  scans Ledger Nano X service UUIDs, exchanges official `0x05` GATT frames, and
+  routes APDUs into the forked Monero `device_ledger` callback transport.
 - Android runtime smoke is implemented as an instrumentation test; execution on
   a real device/emulator is pending.
 - iOS `ios-sim-arm64` and `ios-device` dependency archives, gRPC/protobuf
@@ -198,17 +211,40 @@ Current mobile-native status on 2026-07-08 local:
   `build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a`.
 - iOS arm64 simulator and unsigned `iphoneos` Debug builds succeed with the
   real gRPC-enabled backend, including `libcuprate_grpc_stream.a`.
-- iOS links `CoreBluetooth.framework` and exposes native Ledger Nano X BLE
-  permission/discovery status. The simulator correctly reports no BLE hardware.
+- iOS links `CoreBluetooth.framework` and implements the matching Ledger Nano X
+  BLE transport. The real-wallet-core simulator app links successfully; the
+  simulator correctly reports that physical BLE hardware is unavailable.
+- The iOS Release simulator build links the real wallet core and Firebase
+  Messaging under bundle id `com.tex8.monerowallet`; native diagnostics open
+  the registered Mainnet wallet, apply Cuprate RPC/gRPC, and confirm the hosted
+  Fast Wallet registration without errors.
+- Android and iOS share the Firebase Messaging lifecycle, anonymous Tex8 push
+  subscription registration, token refresh, foreground/background event
+  parsing, and Fast Wallet status plumbing. Real FCM/APNs delivery remains a
+  physical-device/provider-credential acceptance gate.
 - The bridge now exposes real transaction history and a two-step software send
   path through `getTransactions`, `prepareTransaction`, and
   `commitTransaction`; Home/Send render wallet history from `wallet2` instead
   of static placeholders.
+- Fast Wallet identities are first-class spendable wallets in the same wallet
+  registry as privacy and Ledger wallets. Their restore height is persisted and
+  supplied when reopening. If an old cache is behind that height, the bridge
+  performs one guarded soft rescan before enabling send; subsequent blocks are
+  followed continuously. Offline height fallback now uses Monero's
+  conservative estimate instead of a future-prone raw clock estimate.
 - Ledger Nano support is mandatory. The shared bridge contract now has
   create-from-device, status, reconnect, and show-address-on-device methods,
   and the app has a Ledger setup path plus Receive-screen address confirmation.
-  Android has the first real USB/HID build and permission gate. Android and iOS
-  both expose native Ledger Nano X BLE discovery/permission status, but BLE is
-  not allowed to create a wallet until a native BLE APDU transport is connected
-  to the forked Monero `device_ledger` path. Transaction prompt/signing UI and
-  connected Ledger tests are still pending before mainnet beta.
+  Android retains its USB/HID build and permission gate. Android and iOS both
+  implement native Ledger Nano X BLE discovery, `0x05` framing, response
+  assembly, timeout handling, and the callback connection to forked Monero
+  `device_ledger`. Physical Nano X creation, address confirmation, signing, and
+  reconnect acceptance are still pending before mainnet beta.
+- The 2026-07-10 Mainnet Fast Receive E2E sent a small payment through Cuprate,
+  detected it in the mempool, confirmed it, found it through the native gRPC
+  wallet core, and removed the temporary hosted watch.
+- The same encrypted Fast Wallet later sent a smaller payment back to an owned
+  funded test wallet through Cuprate RPC + gRPC. It reached
+  `commit_status=ok`, appeared as outgoing and pending in the Fast Wallet, and
+  was detected by the destination wallet in the mempool. Exact transaction
+  evidence remains in local, non-versioned acceptance logs.

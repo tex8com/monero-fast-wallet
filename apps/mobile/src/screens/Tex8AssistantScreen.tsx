@@ -58,7 +58,6 @@ function commandRoute(command: AppControlCommand): string | undefined {
   if (target.includes("send")) return "Send";
   if (target.includes("receive")) return "Receive";
   if (target.includes("setting")) return "Settings";
-  if (target.includes("market")) return "Marketplace";
   if (target.includes("ledger")) return "WalletSetup";
   if (target.includes("wallet") || target.includes("home")) return "Home";
   return undefined;

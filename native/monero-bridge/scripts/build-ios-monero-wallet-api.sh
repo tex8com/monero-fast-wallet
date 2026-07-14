@@ -167,6 +167,7 @@ for label in "${targets[@]}"; do
     -DSTATIC=ON
     -DUSE_DEVICE_TREZOR=OFF
     -DUSE_DEVICE_TREZOR_LIBUSB=OFF
+    -DMONERO_ENABLE_LEDGER_BLE=ON
     -DUSE_READLINE=OFF
     "-DMONERO_ENABLE_GRPC_STREAM=${monero_enable_grpc_stream}"
     "-DRANDOMX_ENABLE_JIT=${randomx_enable_jit}"

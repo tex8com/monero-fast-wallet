@@ -14,7 +14,7 @@ export type MoneroSharedElementType =
   | "monero_ledger"
   | "monero_hosted_scan"
   | "monero_privacy"
-  | "xmr_marketplace";
+  | "monero_community";
 
 export interface MoneroSharedElement {
   type: MoneroSharedElementType;
@@ -91,10 +91,10 @@ export const MONERO_SHARED_ELEMENTS: MoneroSharedElement[] = [
     enabled: true,
   },
   {
-    type: "xmr_marketplace",
-    label: "XMR Marketplace",
-    description: "Service marketplace entry point for XMR-native payments.",
-    route: "Marketplace",
+    type: "monero_community",
+    label: "Monero Enthusiasts",
+    description: "Opt-in discovery using only an approximate area for private conversations and meetups.",
+    route: "FindEnthusiasts",
     enabled: true,
   },
 ];
@@ -107,10 +107,9 @@ export function createTex8SharedManifestSnapshot() {
       "Home",
       "Send",
       "Receive",
-      "Marketplace",
       "Settings",
       "WalletSetup",
-      "LocalMonero",
+      "FindEnthusiasts",
       "Tex8Assistant",
       "SharedModules",
     ],
@@ -218,16 +217,25 @@ export function createMoneroAssistantReply(
     );
   }
 
-  if (matches(normalized, ["market", "marketplace", "service", "localmonero"])) {
+  if (
+    matches(normalized, [
+      "enthusiast",
+      "community",
+      "nearby",
+      "meet",
+      "treffen",
+      "umgebung",
+    ])
+  ) {
     return localReply(
-      "The XMR marketplace module is exposed as a Tex8 shared element so the assistant can route service discovery separately from wallet custody.",
-      "xmr_marketplace",
+      "Nearby discovery is optional and uses only an approximate area. Exact location and wallet addresses are not part of the public profile.",
+      "monero_community",
     );
   }
 
   return {
     text:
-      `I can route Tex8 shared wallet elements for Wallet, Send, Receive, Ledger Nano, Hosted Scan, Privacy, and XMR Marketplace. Current wallet status: ${context.walletStatus}; network: ${context.network || "unknown"}.`,
+      `I can route Tex8 shared wallet elements for Wallet, Send, Receive, Ledger Nano, Hosted Scan, Privacy, and Monero Enthusiasts. Current wallet status: ${context.walletStatus}; network: ${context.network || "unknown"}.`,
     commands: [],
     source: "monero-local-assistant",
   };

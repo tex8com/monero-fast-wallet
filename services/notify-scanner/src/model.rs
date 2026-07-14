@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
 
@@ -50,8 +51,8 @@ pub struct RegisterWatchRequest {
 impl fmt::Debug for RegisterWatchRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RegisterWatchRequest")
-            .field("identity_id", &self.identity_id)
-            .field("address", &self.address)
+            .field("identity_id", &"<redacted>")
+            .field("address", &"<redacted>")
             .field("private_view_key", &"<redacted>")
             .field("network", &self.network)
             .field("restore_height", &self.restore_height)
@@ -59,7 +60,7 @@ impl fmt::Debug for RegisterWatchRequest {
                 "push_token",
                 &self.push_token.as_ref().map(|_| "<redacted>"),
             )
-            .field("device_id", &self.device_id)
+            .field("device_id", &self.device_id.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }
@@ -81,8 +82,8 @@ pub struct WatchRegistration {
 impl fmt::Debug for WatchRegistration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WatchRegistration")
-            .field("identity_id", &self.identity_id)
-            .field("address", &self.address)
+            .field("identity_id", &"<redacted>")
+            .field("address", &"<redacted>")
             .field("private_view_key", &"<redacted>")
             .field("network", &self.network)
             .field("restore_height", &self.restore_height)
@@ -90,7 +91,7 @@ impl fmt::Debug for WatchRegistration {
                 "push_token",
                 &self.push_token.as_ref().map(|_| "<redacted>"),
             )
-            .field("device_id", &self.device_id)
+            .field("device_id", &self.device_id.as_ref().map(|_| "<redacted>"))
             .field("created_at_ms", &self.created_at_ms)
             .field("updated_at_ms", &self.updated_at_ms)
             .field("last_scanned_height", &self.last_scanned_height)
@@ -132,6 +133,7 @@ impl WatchRegistration {
             network: self.network,
             restore_height: self.restore_height,
             last_scanned_height: self.last_scanned_height,
+            notifications_enabled: self.device_id.is_some(),
         }
     }
 }
@@ -153,31 +155,23 @@ pub struct WatchResponse {
     pub network: Network,
     pub restore_height: u64,
     pub last_scanned_height: u64,
+    pub notifications_enabled: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegisterMatchedOutputRequest {
     pub identity_id: String,
     pub tx_id: String,
-    pub block_height: u64,
     pub output_index: u64,
-    pub block_timestamp_ms: u64,
-    #[serde(default)]
-    pub amount_atomic: Option<u64>,
-    #[serde(default)]
-    pub key_image: Option<String>,
 }
 
 impl fmt::Debug for RegisterMatchedOutputRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RegisterMatchedOutputRequest")
-            .field("identity_id", &self.identity_id)
-            .field("tx_id", &self.tx_id)
-            .field("block_height", &self.block_height)
-            .field("output_index", &self.output_index)
-            .field("block_timestamp_ms", &self.block_timestamp_ms)
-            .field("amount_atomic", &self.amount_atomic)
-            .field("key_image", &self.key_image.as_ref().map(|_| "<redacted>"))
+            .field("identity_id", &"<redacted>")
+            .field("tx_id", &"<transient-redacted>")
+            .field("output_index", &"<transient-redacted>")
             .finish()
     }
 }
@@ -204,12 +198,6 @@ pub enum NotificationStatus {
 pub struct MatchedOutput {
     pub id: String,
     pub identity_id: String,
-    pub tx_id: String,
-    pub block_height: u64,
-    pub output_index: u64,
-    pub block_timestamp_ms: u64,
-    pub amount_atomic: Option<u64>,
-    pub key_image: Option<String>,
     pub detection_status: DetectionStatus,
     pub notification_status: NotificationStatus,
     pub created_at_ms: u64,
@@ -218,28 +206,19 @@ pub struct MatchedOutput {
     pub mempool_first_seen_ms: Option<u64>,
     #[serde(default)]
     pub mempool_last_seen_ms: Option<u64>,
-    #[serde(default)]
-    pub confirmed_height: Option<u64>,
 }
 
 impl fmt::Debug for MatchedOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MatchedOutput")
-            .field("id", &self.id)
-            .field("identity_id", &self.identity_id)
-            .field("tx_id", &self.tx_id)
-            .field("block_height", &self.block_height)
-            .field("output_index", &self.output_index)
-            .field("block_timestamp_ms", &self.block_timestamp_ms)
-            .field("amount_atomic", &self.amount_atomic)
-            .field("key_image", &self.key_image.as_ref().map(|_| "<redacted>"))
+            .field("id", &"<redacted>")
+            .field("identity_id", &"<redacted>")
             .field("detection_status", &self.detection_status)
             .field("notification_status", &self.notification_status)
             .field("created_at_ms", &self.created_at_ms)
             .field("updated_at_ms", &self.updated_at_ms)
             .field("mempool_first_seen_ms", &self.mempool_first_seen_ms)
             .field("mempool_last_seen_ms", &self.mempool_last_seen_ms)
-            .field("confirmed_height", &self.confirmed_height)
             .finish()
     }
 }
@@ -256,19 +235,12 @@ impl MatchedOutput {
         Ok(Self {
             id: matched_output_id(&identity_id, &tx_id, output_index),
             identity_id,
-            tx_id,
-            block_height: request.block_height,
-            output_index,
-            block_timestamp_ms: request.block_timestamp_ms,
-            amount_atomic: request.amount_atomic,
-            key_image: request.key_image.map(|value| value.trim().to_lowercase()),
             detection_status: DetectionStatus::Confirmed,
             notification_status: NotificationStatus::Pending,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             mempool_first_seen_ms: None,
             mempool_last_seen_ms: None,
-            confirmed_height: Some(request.block_height),
         })
     }
 
@@ -276,18 +248,12 @@ impl MatchedOutput {
         identity_id: &str,
         tx_id: String,
         output_index: u64,
-        amount_atomic: Option<u64>,
-        key_image: Option<String>,
         seen_ms: u64,
     ) -> Result<Self, WatchValidationError> {
         let request = RegisterMatchedOutputRequest {
             identity_id: identity_id.to_owned(),
             tx_id,
-            block_height: 0,
             output_index,
-            block_timestamp_ms: 0,
-            amount_atomic,
-            key_image,
         };
         request.validate()?;
         let identity_id = request.identity_id.trim().to_owned();
@@ -295,19 +261,12 @@ impl MatchedOutput {
         Ok(Self {
             id: matched_output_id(&identity_id, &tx_id, output_index),
             identity_id,
-            tx_id,
-            block_height: 0,
-            output_index,
-            block_timestamp_ms: 0,
-            amount_atomic: request.amount_atomic,
-            key_image: request.key_image.map(|value| value.trim().to_lowercase()),
             detection_status: DetectionStatus::PendingMempool,
             notification_status: NotificationStatus::Pending,
             created_at_ms: seen_ms,
             updated_at_ms: seen_ms,
             mempool_first_seen_ms: Some(seen_ms),
             mempool_last_seen_ms: Some(seen_ms),
-            confirmed_height: None,
         })
     }
 
@@ -324,42 +283,25 @@ impl RegisterMatchedOutputRequest {
     pub fn validate(&self) -> Result<(), WatchValidationError> {
         validate_identity_id(&self.identity_id)?;
         validate_hex_32("tx_id", &self.tx_id)?;
-        if let Some(key_image) = &self.key_image {
-            validate_hex_32("key_image", key_image)?;
-        }
         Ok(())
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MatchedOutputResponse {
-    pub id: String,
-    pub identity_id: String,
-    pub tx_id: String,
-    pub block_height: u64,
-    pub output_index: u64,
-    pub block_timestamp_ms: u64,
+    pub event_id: String,
     pub detection_status: DetectionStatus,
     pub notification_status: NotificationStatus,
-    pub mempool_first_seen_ms: Option<u64>,
-    pub mempool_last_seen_ms: Option<u64>,
-    pub confirmed_height: Option<u64>,
+    pub detected_at_ms: u64,
 }
 
 impl MatchedOutput {
     pub fn response(&self) -> MatchedOutputResponse {
         MatchedOutputResponse {
-            id: self.id.clone(),
-            identity_id: self.identity_id.clone(),
-            tx_id: self.tx_id.clone(),
-            block_height: self.block_height,
-            output_index: self.output_index,
-            block_timestamp_ms: self.block_timestamp_ms,
+            event_id: self.id.clone(),
             detection_status: self.detection_status.clone(),
             notification_status: self.notification_status.clone(),
-            mempool_first_seen_ms: self.mempool_first_seen_ms,
-            mempool_last_seen_ms: self.mempool_last_seen_ms,
-            confirmed_height: self.confirmed_height,
+            detected_at_ms: self.updated_at_ms,
         }
     }
 }
@@ -515,7 +457,29 @@ fn clean_optional(value: String) -> String {
 }
 
 pub fn matched_output_id(identity_id: &str, tx_id: &str, output_index: u64) -> String {
-    format!("{identity_id}:{tx_id}:{output_index}")
+    let mut digest = Sha256::new();
+    digest.update(b"monero-fast-wallet-detection-v2\0");
+    digest.update(identity_id.trim().as_bytes());
+    digest.update([0]);
+    digest.update(tx_id.trim().to_ascii_lowercase().as_bytes());
+    digest.update([0]);
+    digest.update(output_index.to_be_bytes());
+    format!("evt_{}", hex::encode(digest.finalize()))
+}
+
+pub fn privacy_safe_detection_id(value: &str) -> String {
+    let value = value.trim();
+    if value.len() == 68
+        && value.starts_with("evt_")
+        && value[4..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return value.to_ascii_lowercase();
+    }
+
+    let mut digest = Sha256::new();
+    digest.update(b"monero-fast-wallet-stored-detection-v2\0");
+    digest.update(value.as_bytes());
+    format!("evt_{}", hex::encode(digest.finalize()))
 }
 
 pub fn key_image_status_id(identity_id: &str, key_image: &str) -> String {
@@ -545,6 +509,8 @@ mod tests {
 
         let debug = format!("{request:?}");
         assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains(&request.identity_id));
+        assert!(!debug.contains(&request.address));
         assert!(!debug.contains(&request.private_view_key));
         assert!(!debug.contains("push-token"));
     }
@@ -561,43 +527,30 @@ mod tests {
     }
 
     #[test]
-    fn validates_match_and_redacts_key_image_debug() {
+    fn validates_transient_match_and_stores_only_an_opaque_signal() {
+        let tx_id = "1".repeat(64);
         let request = RegisterMatchedOutputRequest {
             identity_id: "fast-receive-0".to_owned(),
-            tx_id: "1".repeat(64),
-            block_height: 42,
+            tx_id: tx_id.clone(),
             output_index: 7,
-            block_timestamp_ms: 1000,
-            amount_atomic: Some(5),
-            key_image: Some("2".repeat(64)),
         };
+        assert!(!format!("{request:?}").contains(&tx_id));
         let output = MatchedOutput::from_request(request, 1234).unwrap();
-        assert_eq!(output.id, format!("fast-receive-0:{}:7", "1".repeat(64)));
+        assert_eq!(output.id, matched_output_id("fast-receive-0", &tx_id, 7));
+        assert!(output.id.starts_with("evt_"));
+        assert!(!output.id.contains(&tx_id));
         assert_eq!(output.detection_status, DetectionStatus::Confirmed);
-        assert_eq!(output.confirmed_height, Some(42));
-
-        let debug = format!("{output:?}");
-        assert!(debug.contains("<redacted>"));
-        assert!(!debug.contains(&"2".repeat(64)));
     }
 
     #[test]
     fn creates_pending_mempool_output_without_block_height() {
-        let output = MatchedOutput::from_mempool_candidate(
-            "fast-receive-0",
-            "1".repeat(64),
-            7,
-            Some(5),
-            Some("2".repeat(64)),
-            1234,
-        )
-        .unwrap();
+        let output =
+            MatchedOutput::from_mempool_candidate("fast-receive-0", "1".repeat(64), 7, 1234)
+                .unwrap();
 
         assert_eq!(output.detection_status, DetectionStatus::PendingMempool);
-        assert_eq!(output.block_height, 0);
         assert_eq!(output.mempool_first_seen_ms, Some(1234));
         assert_eq!(output.mempool_last_seen_ms, Some(1234));
-        assert_eq!(output.confirmed_height, None);
     }
 
     #[test]

@@ -92,8 +92,7 @@ where
 
                 let candidates = self.matcher.match_block(&watch, &block)?;
                 for candidate in candidates {
-                    let output =
-                        candidate.into_matched_output(&watch.identity_id, &block, now_ms)?;
+                    let output = candidate.into_matched_output(&watch.identity_id, now_ms)?;
                     self.store.upsert_match(output)?;
                     run.matched_outputs += 1;
                 }
@@ -202,34 +201,25 @@ pub struct ScannedOutput {
     pub output_index: u64,
     pub output_public_key: String,
     pub view_tag: Option<String>,
-    pub amount_atomic: Option<u64>,
-    pub key_image: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MatchedOutputCandidate {
     pub tx_id: String,
     pub output_index: u64,
-    pub amount_atomic: Option<u64>,
-    pub key_image: Option<String>,
 }
 
 impl MatchedOutputCandidate {
     fn into_matched_output(
         self,
         identity_id: &str,
-        block: &ScannedBlock,
         now_ms: u64,
     ) -> Result<MatchedOutput, WatchValidationError> {
         MatchedOutput::from_request(
             RegisterMatchedOutputRequest {
                 identity_id: identity_id.to_owned(),
                 tx_id: self.tx_id,
-                block_height: block.height,
                 output_index: self.output_index,
-                block_timestamp_ms: block.timestamp_ms,
-                amount_atomic: self.amount_atomic,
-                key_image: self.key_image,
             },
             now_ms,
         )
@@ -245,8 +235,6 @@ impl MatchedOutputCandidate {
             identity_id,
             self.tx_id,
             self.output_index,
-            self.amount_atomic,
-            self.key_image,
             first_seen_ms,
         )?;
         output.updated_at_ms = now_ms;
@@ -321,8 +309,6 @@ mod tests {
             output_index,
             output_public_key: marker.to_owned(),
             view_tag: None,
-            amount_atomic: Some(100 + output_index),
-            key_image: Some("a".repeat(64)),
         }
     }
 
@@ -405,8 +391,6 @@ mod tests {
                 .map(|output| MatchedOutputCandidate {
                     tx_id: output.tx_id.clone(),
                     output_index: output.output_index,
-                    amount_atomic: output.amount_atomic,
-                    key_image: output.key_image.clone(),
                 })
                 .collect())
         }
@@ -427,8 +411,6 @@ mod tests {
                 .map(|output| MatchedOutputCandidate {
                     tx_id: output.tx_id.clone(),
                     output_index: output.output_index,
-                    amount_atomic: output.amount_atomic,
-                    key_image: output.key_image.clone(),
                 })
                 .collect())
         }
@@ -572,7 +554,6 @@ mod tests {
         assert_eq!(matches[0].detection_status, DetectionStatus::PendingMempool);
         assert_eq!(matches[0].mempool_first_seen_ms, Some(1500));
         assert_eq!(matches[0].mempool_last_seen_ms, Some(2000));
-        assert_eq!(matches[0].confirmed_height, None);
     }
 
     #[test]
@@ -586,6 +567,9 @@ mod tests {
             MempoolMarkerMatcher,
         );
         mempool_worker.scan_once(2000).unwrap();
+        let mut notified = store.list_matches("fast-a").unwrap().remove(0);
+        notified.notification_status = NotificationStatus::Sent;
+        store.upsert_match(notified).unwrap();
 
         let blocks = vec![block(10, vec![output('1', 0, "fast-a")])];
         let mut block_worker = ScannerWorker::new(
@@ -598,10 +582,9 @@ mod tests {
         let matches = store.list_matches("fast-a").unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].detection_status, DetectionStatus::Confirmed);
-        assert_eq!(matches[0].block_height, 10);
-        assert_eq!(matches[0].confirmed_height, Some(10));
         assert_eq!(matches[0].mempool_first_seen_ms, Some(1500));
         assert_eq!(matches[0].mempool_last_seen_ms, Some(2000));
+        assert_eq!(matches[0].notification_status, NotificationStatus::Pending);
     }
 
     #[test]

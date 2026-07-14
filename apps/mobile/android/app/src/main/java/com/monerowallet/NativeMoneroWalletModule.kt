@@ -29,6 +29,7 @@ import android.util.Base64
 import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
@@ -55,6 +56,11 @@ class NativeMoneroWalletModule(
   private var pendingLedgerBleScanCallback: ScanCallback? = null
   private var pendingBiometricPromise: Promise? = null
   private val mainHandler = Handler(Looper.getMainLooper())
+
+  init {
+    LedgerBleTransport.initialize(reactContext)
+    NativeMoneroWalletJni.initializeLedgerBleTransport()
+  }
 
   override fun getName(): String = NAME
 
@@ -533,10 +539,15 @@ class NativeMoneroWalletModule(
     path: String,
     password: String,
     network: String,
+    restoreHeight: Double,
     promise: Promise,
   ) {
-    resolveNativeString(promise, "openWallet", walletPathFields(path, network)) {
-      NativeMoneroWalletJni.openWallet(path, password, network)
+    resolveNativeString(
+      promise,
+      "openWallet",
+      walletPathFields(path, network) + mapOf("restoreHeight" to restoreHeight),
+    ) {
+      NativeMoneroWalletJni.openWallet(path, password, network, restoreHeight)
     }
   }
 
@@ -544,17 +555,23 @@ class NativeMoneroWalletModule(
     path: String,
     secretKey: String,
     network: String,
+    restoreHeight: Double,
     promise: Promise,
   ) {
     resolveNativeString(
       promise,
       "openWalletWithStoredSecret",
-      walletPathFields(path, network) + mapOf("hasStoredSecret" to true),
+      walletPathFields(path, network) +
+        mapOf(
+          "hasStoredSecret" to true,
+          "restoreHeight" to restoreHeight,
+        ),
     ) {
       NativeMoneroWalletJni.openWallet(
         path,
         readRequiredSecretValue(secretKey),
         network,
+        restoreHeight,
       )
     }
   }
@@ -696,6 +713,7 @@ class NativeMoneroWalletModule(
     path: String,
     password: String,
     network: String,
+    restoreHeight: Double,
     scannerUrl: String,
     scannerAuthToken: String,
     pushToken: String,
@@ -707,6 +725,7 @@ class NativeMoneroWalletModule(
       mapOf(
         "identityId" to identityId,
         "network" to network,
+        "restoreHeight" to restoreHeight,
         "scannerUrl" to scannerUrl,
         "walletFile" to File(path).name,
       ),
@@ -716,6 +735,44 @@ class NativeMoneroWalletModule(
         path,
         password,
         network,
+        restoreHeight,
+      )
+      registerFastReceiveWatch(payload, scannerUrl, scannerAuthToken, pushToken)
+      fastReceiveIdentityToWritableMap(
+        fastReceiveIdentityWithoutSecret(payload, "enabled"),
+      )
+    }
+  }
+
+  override fun enableFastReceiveIdentityWithStoredSecret(
+    identityId: String,
+    path: String,
+    secretKey: String,
+    network: String,
+    restoreHeight: Double,
+    scannerUrl: String,
+    scannerAuthToken: String,
+    pushToken: String,
+    promise: Promise,
+  ) {
+    resolveNativeMap(
+      promise,
+      "enableFastReceiveIdentityWithStoredSecret",
+      mapOf(
+        "hasStoredSecret" to true,
+        "identityId" to identityId,
+        "network" to network,
+        "restoreHeight" to restoreHeight,
+        "scannerUrl" to scannerUrl,
+        "walletFile" to File(path).name,
+      ),
+    ) {
+      val payload = NativeMoneroWalletJni.fastReceiveRegistrationPayload(
+        identityId,
+        path,
+        readRequiredSecretValue(secretKey),
+        network,
+        restoreHeight,
       )
       registerFastReceiveWatch(payload, scannerUrl, scannerAuthToken, pushToken)
       fastReceiveIdentityToWritableMap(
@@ -949,6 +1006,53 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun getOwnedOutputKeyImages(walletId: String, promise: Promise) {
+    resolveNativeArray(
+      promise,
+      "getOwnedOutputKeyImages",
+      mapOf("walletId" to maskIdentifier(walletId)),
+    ) {
+      Arguments.createArray().apply {
+        NativeMoneroWalletJni.getOwnedOutputKeyImages(walletId).forEach(::pushString)
+      }
+    }
+  }
+
+  override fun reconcileOutputKeyImages(
+    walletId: String,
+    keyImages: ReadableArray,
+    spentStates: ReadableArray,
+    checkedHeight: Double,
+    promise: Promise,
+  ) {
+    resolveNativeDouble(
+      promise,
+      "reconcileOutputKeyImages",
+      mapOf(
+        "checkedHeight" to checkedHeight,
+        "count" to keyImages.size(),
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
+      require(keyImages.size() == spentStates.size()) {
+        "Key image and spent-state counts do not match"
+      }
+      val nativeKeyImages = Array(keyImages.size()) { index ->
+        keyImages.getString(index)
+          ?: throw IllegalArgumentException("Key image must be a string")
+      }
+      val nativeSpentStates = BooleanArray(spentStates.size()) { index ->
+        spentStates.getBoolean(index)
+      }
+      NativeMoneroWalletJni.reconcileOutputKeyImages(
+        walletId,
+        nativeKeyImages,
+        nativeSpentStates,
+        checkedHeight,
+      )
+    }
+  }
+
   override fun prepareTransaction(
     walletId: String,
     address: String,
@@ -1110,6 +1214,21 @@ class NativeMoneroWalletModule(
       .onFailure { error -> rejectNativeError(promise, error) }
   }
 
+  private inline fun resolveNativeDouble(
+    promise: Promise,
+    operation: String? = null,
+    fields: Map<String, Any?> = emptyMap(),
+    block: () -> Double,
+  ) {
+    if (!requireLinked(promise)) {
+      return
+    }
+
+    runCatching { timedNativeOperation(operation, fields, block) }
+      .onSuccess { value -> promise.resolve(value) }
+      .onFailure { error -> rejectNativeError(promise, error) }
+  }
+
   private inline fun <T> timedNativeOperation(
     operation: String?,
     fields: Map<String, Any?> = emptyMap(),
@@ -1216,9 +1335,9 @@ class NativeMoneroWalletModule(
       put("private_view_key", payload.stringValue("privateViewKey"))
       put("network", payload.stringValue("network"))
       put("restore_height", payload.numberValue("restoreHeight").toLong())
-      val trimmedPushToken = pushToken.trim()
-      if (trimmedPushToken.isNotEmpty()) {
-        put("push_token", trimmedPushToken)
+      val pushSubscriptionId = pushToken.trim()
+      if (pushSubscriptionId.isNotEmpty()) {
+        put("device_id", pushSubscriptionId)
       }
     }
 
@@ -1720,21 +1839,18 @@ class NativeMoneroWalletModule(
   }
 
   private fun ledgerBleDetectedStatus(result: ScanResult): LedgerTransportStatus {
+    LedgerBleTransport.selectDevice(result.device)
     val deviceName = ledgerBleDeviceName(result)
     return LedgerTransportStatus(
       platform = "android",
       transport = "ble",
-      // Discovery is implemented, but Monero wallet-core APDU exchange is not
-      // routed over BLE yet. Keep this false so UI cannot create a broken
-      // hardware wallet from a BLE-only status.
-      supported = false,
+      supported = NativeMoneroWalletJni.linkedWithMonero(),
       available = true,
       permissionGranted = missingLedgerBlePermissions().isEmpty(),
-      requiresUserAction = true,
+      requiresUserAction = false,
       deviceCount = 1,
       deviceName = deviceName,
-      message =
-        "Ledger BLE device found. Monero BLE APDU bridge is pending; use USB until the wallet-core BLE bridge is linked.",
+      message = "Ledger Nano found. Keep it unlocked with the Monero app open.",
     )
   }
 

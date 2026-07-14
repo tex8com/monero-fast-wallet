@@ -4,9 +4,13 @@
 #import "../../../../../native/monero-bridge/cpp/WalletEngineTypes.h"
 
 #import <CoreBluetooth/CoreBluetooth.h>
+#import <CoreLocation/CoreLocation.h>
 #import <LocalAuthentication/LocalAuthentication.h>
+#import <React/RCTBridgeModule.h>
 #import <Security/Security.h>
 
+#include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -66,11 +70,513 @@ NSMutableSet *activeLedgerBleProbes() {
   return probes;
 }
 
+NSArray<NSData *> *ledgerBleFrames(NSData *command) {
+  static const NSUInteger mtu = 20;
+  static const uint8_t tag = 0x05;
+  if (command.length > UINT16_MAX) {
+    return @[];
+  }
+
+  NSMutableArray<NSData *> *frames = [NSMutableArray array];
+  NSUInteger offset = 0;
+  uint16_t index = 0;
+  do {
+    const NSUInteger headerSize = index == 0 ? 5 : 3;
+    const NSUInteger payloadSize = MIN(mtu - headerSize, command.length - offset);
+    NSMutableData *frame = [NSMutableData dataWithLength:headerSize + payloadSize];
+    uint8_t *bytes = static_cast<uint8_t *>(frame.mutableBytes);
+    bytes[0] = tag;
+    bytes[1] = static_cast<uint8_t>((index >> 8) & 0xff);
+    bytes[2] = static_cast<uint8_t>(index & 0xff);
+    if (index == 0) {
+      bytes[3] = static_cast<uint8_t>((command.length >> 8) & 0xff);
+      bytes[4] = static_cast<uint8_t>(command.length & 0xff);
+    }
+    if (payloadSize > 0) {
+      memcpy(bytes + headerSize,
+             static_cast<const uint8_t *>(command.bytes) + offset,
+             payloadSize);
+    }
+    [frames addObject:frame];
+    offset += payloadSize;
+    index += 1;
+  } while (offset < command.length);
+  return frames;
+}
+
 } // namespace
+
+@interface LedgerBleTransport : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate>
++ (instancetype)shared;
+- (void)selectCentral:(CBCentralManager *)central peripheral:(CBPeripheral *)peripheral;
+- (BOOL)connect;
+- (void)disconnect;
+- (BOOL)isConnected;
+- (NSData *)exchange:(NSData *)command userInput:(BOOL)userInput;
+@end
+
+@implementation LedgerBleTransport {
+  NSCondition *_condition;
+  NSLock *_exchangeLock;
+  CBCentralManager *_central;
+  CBPeripheral *_peripheral;
+  CBCharacteristic *_writeCharacteristic;
+  CBCharacteristic *_notifyCharacteristic;
+  BOOL _ready;
+  NSString *_connectionError;
+  BOOL _writeFinished;
+  NSString *_writeError;
+  NSMutableData *_responseData;
+  NSData *_completedResponse;
+  NSString *_responseError;
+  NSUInteger _expectedResponseLength;
+  uint16_t _nextResponseIndex;
+}
+
++ (instancetype)shared {
+  static LedgerBleTransport *transport;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    transport = [[LedgerBleTransport alloc] init];
+  });
+  return transport;
+}
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _condition = [[NSCondition alloc] init];
+    _exchangeLock = [[NSLock alloc] init];
+  }
+  return self;
+}
+
+- (void)selectCentral:(CBCentralManager *)central peripheral:(CBPeripheral *)peripheral {
+  [_condition lock];
+  const BOOL changed = _peripheral != nil &&
+      ![_peripheral.identifier isEqual:peripheral.identifier];
+  [_condition unlock];
+  if (changed) {
+    [self disconnect];
+  }
+  [_condition lock];
+  _central = central;
+  _peripheral = peripheral;
+  [_condition unlock];
+}
+
+- (BOOL)connect {
+  if ([NSThread isMainThread]) {
+    return NO;
+  }
+
+  [_condition lock];
+  if (_ready && _peripheral.state == CBPeripheralStateConnected) {
+    [_condition unlock];
+    return YES;
+  }
+  CBCentralManager *central = _central;
+  CBPeripheral *peripheral = _peripheral;
+  _ready = NO;
+  _connectionError = nil;
+  [_condition unlock];
+  if (central == nil || peripheral == nil) {
+    return NO;
+  }
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    central.delegate = self;
+    peripheral.delegate = self;
+    if (peripheral.state == CBPeripheralStateConnected) {
+      [peripheral discoverServices:ledgerBleServiceUUIDs()];
+    } else {
+      [central connectPeripheral:peripheral options:nil];
+    }
+  });
+
+  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:20.0];
+  [_condition lock];
+  while (!_ready && _connectionError == nil) {
+    if (![_condition waitUntilDate:deadline]) {
+      _connectionError = @"Ledger BLE connection timed out";
+      break;
+    }
+  }
+  const BOOL connected = _ready && _connectionError == nil;
+  [_condition unlock];
+  return connected;
+}
+
+- (void)disconnect {
+  [_condition lock];
+  CBCentralManager *central = _central;
+  CBPeripheral *peripheral = _peripheral;
+  _ready = NO;
+  _writeCharacteristic = nil;
+  _notifyCharacteristic = nil;
+  [_condition broadcast];
+  [_condition unlock];
+  if (central != nil && peripheral != nil) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [central cancelPeripheralConnection:peripheral];
+    });
+  }
+}
+
+- (BOOL)isConnected {
+  [_condition lock];
+  const BOOL connected = _ready && _peripheral.state == CBPeripheralStateConnected;
+  [_condition unlock];
+  return connected;
+}
+
+- (NSData *)exchange:(NSData *)command userInput:(BOOL)userInput {
+  [_exchangeLock lock];
+  if (![self connect]) {
+    [_exchangeLock unlock];
+    return nil;
+  }
+
+  NSArray<NSData *> *frames = ledgerBleFrames(command);
+  if (frames.count == 0) {
+    [_exchangeLock unlock];
+    return nil;
+  }
+
+  [_condition lock];
+  _responseData = [NSMutableData data];
+  _completedResponse = nil;
+  _responseError = nil;
+  _expectedResponseLength = NSNotFound;
+  _nextResponseIndex = 0;
+  CBPeripheral *peripheral = _peripheral;
+  CBCharacteristic *writeCharacteristic = _writeCharacteristic;
+  [_condition unlock];
+
+  BOOL succeeded = peripheral != nil && writeCharacteristic != nil;
+  for (NSData *frame in frames) {
+    if (!succeeded) {
+      break;
+    }
+    [_condition lock];
+    _writeFinished = NO;
+    _writeError = nil;
+    [_condition unlock];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [peripheral writeValue:frame
+           forCharacteristic:writeCharacteristic
+                        type:CBCharacteristicWriteWithResponse];
+    });
+
+    NSDate *writeDeadline = [NSDate dateWithTimeIntervalSinceNow:30.0];
+    [_condition lock];
+    while (!_writeFinished && _writeError == nil) {
+      if (![_condition waitUntilDate:writeDeadline]) {
+        _writeError = @"Ledger BLE write timed out";
+        break;
+      }
+    }
+    succeeded = _writeFinished && _writeError == nil;
+    [_condition unlock];
+  }
+
+  NSData *result = nil;
+  if (succeeded) {
+    NSDate *responseDeadline = [NSDate dateWithTimeIntervalSinceNow:userInput ? 180.0 : 30.0];
+    [_condition lock];
+    while (_completedResponse == nil && _responseError == nil) {
+      if (![_condition waitUntilDate:responseDeadline]) {
+        _responseError = @"Ledger BLE response timed out";
+        break;
+      }
+    }
+    result = _completedResponse;
+    [_condition unlock];
+  }
+
+  [_exchangeLock unlock];
+  return result;
+}
+
+- (void)centralManagerDidUpdateState:(CBCentralManager *)central {
+  if (central.state != CBManagerStatePoweredOn) {
+    [self failConnection:@"Bluetooth is unavailable"];
+  }
+}
+
+- (void)centralManager:(CBCentralManager *)central
+  didConnectPeripheral:(CBPeripheral *)peripheral {
+  peripheral.delegate = self;
+  [peripheral discoverServices:ledgerBleServiceUUIDs()];
+}
+
+- (void)centralManager:(CBCentralManager *)central
+  didFailToConnectPeripheral:(CBPeripheral *)peripheral
+                   error:(NSError *)error {
+  [self failConnection:error.localizedDescription ?: @"Ledger BLE connection failed"];
+}
+
+- (void)centralManager:(CBCentralManager *)central
+  didDisconnectPeripheral:(CBPeripheral *)peripheral
+                     error:(NSError *)error {
+  (void)central;
+  (void)peripheral;
+  [_condition lock];
+  _ready = NO;
+  _connectionError = error.localizedDescription ?: @"Ledger BLE device disconnected";
+  _responseError = _connectionError;
+  [_condition broadcast];
+  [_condition unlock];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error {
+  if (error != nil) {
+    [self failConnection:error.localizedDescription];
+    return;
+  }
+  CBService *service = nil;
+  for (CBService *candidate in peripheral.services) {
+    if ([ledgerBleServiceUUIDs() containsObject:candidate.UUID]) {
+      service = candidate;
+      break;
+    }
+  }
+  if (service == nil) {
+    [self failConnection:@"Ledger BLE service was not found"];
+    return;
+  }
+
+  NSString *serviceUuid = service.UUID.UUIDString.lowercaseString;
+  NSString *notifyUuid = [serviceUuid stringByReplacingOccurrencesOfString:@"-0000-"
+                                                                 withString:@"-0001-"];
+  NSString *writeUuid = [serviceUuid stringByReplacingOccurrencesOfString:@"-0000-"
+                                                                withString:@"-0002-"];
+  [peripheral discoverCharacteristics:@[
+    [CBUUID UUIDWithString:notifyUuid],
+    [CBUUID UUIDWithString:writeUuid],
+  ] forService:service];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral
+  didDiscoverCharacteristicsForService:(CBService *)service
+                              error:(NSError *)error {
+  if (error != nil) {
+    [self failConnection:error.localizedDescription];
+    return;
+  }
+  NSString *serviceUuid = service.UUID.UUIDString.lowercaseString;
+  CBUUID *notifyUuid = [CBUUID UUIDWithString:
+      [serviceUuid stringByReplacingOccurrencesOfString:@"-0000-" withString:@"-0001-"]];
+  CBUUID *writeUuid = [CBUUID UUIDWithString:
+      [serviceUuid stringByReplacingOccurrencesOfString:@"-0000-" withString:@"-0002-"]];
+  for (CBCharacteristic *characteristic in service.characteristics) {
+    if ([characteristic.UUID isEqual:notifyUuid]) {
+      _notifyCharacteristic = characteristic;
+    } else if ([characteristic.UUID isEqual:writeUuid]) {
+      _writeCharacteristic = characteristic;
+    }
+  }
+  if (_notifyCharacteristic == nil || _writeCharacteristic == nil) {
+    [self failConnection:@"Ledger BLE characteristics were not found"];
+    return;
+  }
+  [peripheral setNotifyValue:YES forCharacteristic:_notifyCharacteristic];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral
+  didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic
+                                      error:(NSError *)error {
+  if (error != nil || !characteristic.isNotifying) {
+    [self failConnection:error.localizedDescription ?: @"Ledger BLE notifications could not be enabled"];
+    return;
+  }
+  [_condition lock];
+  _ready = YES;
+  _connectionError = nil;
+  [_condition broadcast];
+  [_condition unlock];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral
+  didWriteValueForCharacteristic:(CBCharacteristic *)characteristic
+                         error:(NSError *)error {
+  (void)peripheral;
+  (void)characteristic;
+  [_condition lock];
+  _writeFinished = error == nil;
+  _writeError = error.localizedDescription;
+  [_condition broadcast];
+  [_condition unlock];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral
+  didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
+                         error:(NSError *)error {
+  (void)peripheral;
+  [_condition lock];
+  if (error != nil) {
+    _responseError = error.localizedDescription;
+    [_condition broadcast];
+    [_condition unlock];
+    return;
+  }
+  NSData *frame = characteristic.value;
+  const uint8_t *bytes = static_cast<const uint8_t *>(frame.bytes);
+  if (frame.length < 3 || bytes[0] != 0x05) {
+    _responseError = @"Ledger BLE response frame is invalid";
+  } else {
+    const uint16_t index = static_cast<uint16_t>((bytes[1] << 8) | bytes[2]);
+    if (index != _nextResponseIndex) {
+      _responseError = @"Ledger BLE response sequence is invalid";
+    } else {
+      NSUInteger payloadOffset = 3;
+      if (index == 0) {
+        if (frame.length < 5) {
+          _responseError = @"Ledger BLE first response frame is invalid";
+        } else {
+          _expectedResponseLength = static_cast<NSUInteger>((bytes[3] << 8) | bytes[4]);
+          payloadOffset = 5;
+          if (_expectedResponseLength == 0 || _expectedResponseLength > 262) {
+            _responseError = @"Ledger BLE response length is invalid";
+          }
+        }
+      }
+      if (_responseError == nil) {
+        [_responseData appendBytes:bytes + payloadOffset
+                            length:frame.length - payloadOffset];
+        _nextResponseIndex += 1;
+        if (_responseData.length > _expectedResponseLength) {
+          _responseError = @"Ledger BLE response exceeds declared length";
+        } else if (_responseData.length == _expectedResponseLength) {
+          _completedResponse = [_responseData copy];
+        }
+      }
+    }
+  }
+  [_condition broadcast];
+  [_condition unlock];
+}
+
+- (void)failConnection:(NSString *)message {
+  [_condition lock];
+  _ready = NO;
+  _connectionError = message ?: @"Ledger BLE connection failed";
+  [_condition broadcast];
+  [_condition unlock];
+}
+
+@end
 
 @interface LedgerBleProbe : NSObject <CBCentralManagerDelegate>
 - (instancetype)initWithResolve:(RCTPromiseResolveBlock)resolve scan:(BOOL)scan;
 - (void)start;
+@end
+
+@interface RCTNearbyLocation : NSObject <RCTBridgeModule, CLLocationManagerDelegate>
+@property(nonatomic, strong) CLLocationManager *locationManager;
+@property(nonatomic, copy) RCTPromiseResolveBlock locationResolve;
+@property(nonatomic, copy) RCTPromiseRejectBlock locationReject;
+@end
+
+@implementation RCTNearbyLocation
+
+RCT_EXPORT_MODULE(NearbyLocation)
+
++ (BOOL)requiresMainQueueSetup
+{
+  return YES;
+}
+
+RCT_REMAP_METHOD(getCurrentLocation,
+                 getCurrentLocationWithResolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (self.locationResolve != nil) {
+      reject(@"LOCATION_BUSY", @"A location request is already running", nil);
+      return;
+    }
+
+    self.locationResolve = resolve;
+    self.locationReject = reject;
+    self.locationManager = [[CLLocationManager alloc] init];
+    self.locationManager.delegate = self;
+    self.locationManager.desiredAccuracy = kCLLocationAccuracyKilometer;
+
+    CLAuthorizationStatus status = self.locationManager.authorizationStatus;
+    if (status == kCLAuthorizationStatusDenied ||
+        status == kCLAuthorizationStatusRestricted) {
+      [self rejectLocation:@"LOCATION_PERMISSION_DENIED"
+                   message:@"Location permission is not granted"];
+      return;
+    }
+    if (status == kCLAuthorizationStatusNotDetermined) {
+      [self.locationManager requestWhenInUseAuthorization];
+      return;
+    }
+    [self.locationManager requestLocation];
+  });
+}
+
+- (void)locationManagerDidChangeAuthorization:(CLLocationManager *)manager
+{
+  CLAuthorizationStatus status = manager.authorizationStatus;
+  if (status == kCLAuthorizationStatusAuthorizedAlways ||
+      status == kCLAuthorizationStatusAuthorizedWhenInUse) {
+    [manager requestLocation];
+  } else if (status == kCLAuthorizationStatusDenied ||
+             status == kCLAuthorizationStatusRestricted) {
+    [self rejectLocation:@"LOCATION_PERMISSION_DENIED"
+                 message:@"Location permission is not granted"];
+  }
+}
+
+- (void)locationManager:(CLLocationManager *)manager
+     didUpdateLocations:(NSArray<CLLocation *> *)locations
+{
+  CLLocation *location = locations.lastObject;
+  if (location == nil || self.locationResolve == nil) {
+    [self rejectLocation:@"LOCATION_UNAVAILABLE"
+                 message:@"No location is currently available"];
+    return;
+  }
+
+  RCTPromiseResolveBlock resolve = self.locationResolve;
+  [self clearLocationRequest];
+  resolve(@{
+    @"latitude": @(location.coordinate.latitude),
+    @"longitude": @(location.coordinate.longitude),
+    @"accuracy": @(location.horizontalAccuracy),
+    @"timestamp": @([location.timestamp timeIntervalSince1970] * 1000.0),
+  });
+}
+
+- (void)locationManager:(CLLocationManager *)manager
+        didFailWithError:(NSError *)error
+{
+  [self rejectLocation:@"LOCATION_UNAVAILABLE"
+               message:error.localizedDescription ?: @"Location is unavailable"];
+}
+
+- (void)rejectLocation:(NSString *)code message:(NSString *)message
+{
+  if (self.locationReject == nil) {
+    [self clearLocationRequest];
+    return;
+  }
+  RCTPromiseRejectBlock reject = self.locationReject;
+  [self clearLocationRequest];
+  reject(code, message, nil);
+}
+
+- (void)clearLocationRequest
+{
+  self.locationManager.delegate = nil;
+  self.locationManager = nil;
+  self.locationResolve = nil;
+  self.locationReject = nil;
+}
+
 @end
 
 @implementation LedgerBleProbe {
@@ -120,14 +626,17 @@ NSMutableSet *activeLedgerBleProbes() {
           if (self->_finished) {
             return;
           }
-          const BOOL walletCoreBleBridgeLinked = NO;
+          const BOOL walletCoreBleBridgeLinked =
+              tex8::wallet::WalletEngine::ledgerBleTransportAvailable();
           [self finish:ledgerBleStatusDictionary(self->_foundCount > 0 ? walletCoreBleBridgeLinked : YES,
                                                  self->_foundCount > 0, YES,
-                                                 self->_foundCount == 0,
+                                                 self->_foundCount == 0 || !walletCoreBleBridgeLinked,
                                                  self->_foundCount,
                                                  self->_deviceName ?: @"",
                                                  self->_foundCount > 0
-                                                   ? @"Ledger BLE device found. Monero BLE APDU bridge is pending; use USB until the wallet-core BLE bridge is linked."
+                                                   ? (walletCoreBleBridgeLinked
+                                                        ? @"Ledger Nano found. Keep it unlocked with the Monero app open."
+                                                        : @"Ledger BLE transport is unavailable in this build.")
                                                    : @"No Ledger Nano X BLE device found. Unlock it, enable Bluetooth, and open the Monero app.")];
         });
       } else {
@@ -151,6 +660,7 @@ NSMutableSet *activeLedgerBleProbes() {
   _foundCount += 1;
   NSString *advertisedName = advertisementData[CBAdvertisementDataLocalNameKey];
   _deviceName = advertisedName.length > 0 ? advertisedName : (peripheral.name ?: @"Ledger Nano X");
+  [[LedgerBleTransport shared] selectCentral:central peripheral:peripheral];
 }
 
 - (void)finish:(NSDictionary *)status {
@@ -178,6 +688,7 @@ using tex8::wallet::DaemonConfig;
 using tex8::wallet::FastReceiveIdentity;
 using tex8::wallet::FastReceiveRegistrationPayload;
 using tex8::wallet::HardwareWalletStatus;
+using tex8::wallet::LedgerBleTransportCallbacks;
 using tex8::wallet::NetworkType;
 using tex8::wallet::OpenWalletRequest;
 using tex8::wallet::PreparedTransaction;
@@ -188,6 +699,39 @@ using tex8::wallet::WalletEngineError;
 using tex8::wallet::WalletSnapshot;
 using tex8::wallet::WalletTransaction;
 using tex8::wallet::WalletTransactionTransfer;
+
+bool iosLedgerBleConnect(void *context) {
+  (void)context;
+  return [[LedgerBleTransport shared] connect];
+}
+
+void iosLedgerBleDisconnect(void *context) {
+  (void)context;
+  [[LedgerBleTransport shared] disconnect];
+}
+
+bool iosLedgerBleConnected(void *context) {
+  (void)context;
+  return [[LedgerBleTransport shared] isConnected];
+}
+
+int iosLedgerBleExchange(void *context,
+                         const unsigned char *command,
+                         unsigned int commandLength,
+                         unsigned char *response,
+                         unsigned int responseCapacity,
+                         bool userInput) {
+  (void)context;
+  NSData *commandData = [NSData dataWithBytes:command length:commandLength];
+  NSData *responseData = [[LedgerBleTransport shared]
+      exchange:commandData
+      userInput:userInput ? YES : NO];
+  if (responseData == nil || responseData.length > responseCapacity) {
+    return -1;
+  }
+  memcpy(response, responseData.bytes, responseData.length);
+  return static_cast<int>(responseData.length);
+}
 
 NSString *toNSString(const std::string &value) {
   return [[NSString alloc] initWithBytes:value.data()
@@ -462,6 +1006,30 @@ NSArray *toNSArray(const std::vector<uint32_t> &values) {
   return result;
 }
 
+std::vector<std::string> toStringVector(NSArray *values) {
+  std::vector<std::string> result;
+  result.reserve(values.count);
+  for (id value in values) {
+    if (![value isKindOfClass:[NSString class]]) {
+      throw WalletEngineError("key image must be a string");
+    }
+    result.push_back(toStdString((NSString *)value));
+  }
+  return result;
+}
+
+std::vector<bool> toBoolVector(NSArray *values) {
+  std::vector<bool> result;
+  result.reserve(values.count);
+  for (id value in values) {
+    if (![value isKindOfClass:[NSNumber class]]) {
+      throw WalletEngineError("spent state must be a boolean");
+    }
+    result.push_back([(NSNumber *)value boolValue]);
+  }
+  return result;
+}
+
 NSDictionary *toDictionary(const WalletTransactionTransfer &transfer) {
   return @{
     @"amountAtomic": toNSString(std::to_string(transfer.amountAtomic)),
@@ -683,10 +1251,10 @@ NSDictionary *watchRegistrationBody(const FastReceiveRegistrationPayload &payloa
     @"restore_height": toNSNumber(payload.identity.restoreHeight),
   } mutableCopy];
 
-  NSString *trimmedPushToken = [pushToken stringByTrimmingCharactersInSet:
+  NSString *pushSubscriptionId = [pushToken stringByTrimmingCharactersInSet:
       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-  if (trimmedPushToken.length > 0) {
-    body[@"push_token"] = trimmedPushToken;
+  if (pushSubscriptionId.length > 0) {
+    body[@"device_id"] = pushSubscriptionId;
   }
 
   return body;
@@ -716,6 +1284,12 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
   if (self) {
     _walletQueue = dispatch_queue_create("org.tex8.NativeMoneroWallet", DISPATCH_QUEUE_SERIAL);
     try {
+      LedgerBleTransportCallbacks callbacks;
+      callbacks.connect = iosLedgerBleConnect;
+      callbacks.disconnect = iosLedgerBleDisconnect;
+      callbacks.connected = iosLedgerBleConnected;
+      callbacks.exchange = iosLedgerBleExchange;
+      WalletEngine::setLedgerBleTransportCallbacks(callbacks);
       _engine = std::make_unique<WalletEngine>();
     } catch (const std::exception &error) {
       _engineInitError = error.what();
@@ -1051,6 +1625,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
 - (void)openWallet:(NSString *)path
           password:(NSString *)password
            network:(NSString *)network
+     restoreHeight:(double)restoreHeight
            resolve:(RCTPromiseResolveBlock)resolve
             reject:(RCTPromiseRejectBlock)reject
 {
@@ -1059,6 +1634,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                operation:@"openWallet"
                   fields:@{
                     @"network": network ?: @"",
+                    @"restoreHeight": @(restoreHeight),
                     @"walletFile": walletFileName(path),
                   }
                     work:^id(WalletEngine &engine) {
@@ -1066,6 +1642,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     request.path = toStdString(path);
     request.password = toStdString(password);
     request.network = toNetworkType(network);
+    request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
     return toNSString(engine.openWallet(request));
   }];
 }
@@ -1073,6 +1650,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
 - (void)openWalletWithStoredSecret:(NSString *)path
                          secretKey:(NSString *)secretKey
                            network:(NSString *)network
+                     restoreHeight:(double)restoreHeight
                            resolve:(RCTPromiseResolveBlock)resolve
                             reject:(RCTPromiseRejectBlock)reject
 {
@@ -1082,6 +1660,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                   fields:@{
                     @"hasStoredSecret": @YES,
                     @"network": network ?: @"",
+                    @"restoreHeight": @(restoreHeight),
                     @"walletFile": walletFileName(path),
                   }
                     work:^id(WalletEngine &engine) {
@@ -1089,6 +1668,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     request.path = toStdString(path);
     request.password = toStdString(readRequiredKeychainSecret(secretKey));
     request.network = toNetworkType(network);
+    request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
     return toNSString(engine.openWallet(request));
   }];
 }
@@ -1229,6 +1809,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                              path:(NSString *)path
                          password:(NSString *)password
                            network:(NSString *)network
+                     restoreHeight:(double)restoreHeight
                        scannerUrl:(NSString *)scannerUrl
                  scannerAuthToken:(NSString *)scannerAuthToken
                         pushToken:(NSString *)pushToken
@@ -1241,6 +1822,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                   fields:@{
                     @"identityId": identityId ?: @"",
                     @"network": network ?: @"",
+                    @"restoreHeight": @(restoreHeight),
                     @"scannerUrl": scannerUrl ?: @"",
                     @"walletFile": walletFileName(path),
                   }
@@ -1249,7 +1831,47 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
         toStdString(identityId),
         toStdString(path),
         toStdString(password),
-        toNetworkType(network));
+        toNetworkType(network),
+        toHeight(restoreHeight, "restoreHeight"));
+    scannerRequest(@"POST",
+                   scannerUrl,
+                   @"/v1/fast-receive/watch",
+                   scannerAuthToken,
+                   watchRegistrationBody(payload, pushToken));
+    payload.identity.scannerStatus = "enabled";
+    return toDictionary(payload.identity);
+  }];
+}
+
+- (void)enableFastReceiveIdentityWithStoredSecret:(NSString *)identityId
+                                            path:(NSString *)path
+                                       secretKey:(NSString *)secretKey
+                                         network:(NSString *)network
+                                   restoreHeight:(double)restoreHeight
+                                      scannerUrl:(NSString *)scannerUrl
+                                scannerAuthToken:(NSString *)scannerAuthToken
+                                       pushToken:(NSString *)pushToken
+                                         resolve:(RCTPromiseResolveBlock)resolve
+                                          reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"enableFastReceiveIdentityWithStoredSecret"
+                  fields:@{
+                    @"hasStoredSecret": @YES,
+                    @"identityId": identityId ?: @"",
+                    @"network": network ?: @"",
+                    @"restoreHeight": @(restoreHeight),
+                    @"scannerUrl": scannerUrl ?: @"",
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
+    FastReceiveRegistrationPayload payload = engine.fastReceiveRegistrationPayload(
+        toStdString(identityId),
+        toStdString(path),
+        toStdString(readRequiredKeychainSecret(secretKey)),
+        toNetworkType(network),
+        toHeight(restoreHeight, "restoreHeight"));
     scannerRequest(@"POST",
                    scannerUrl,
                    @"/v1/fast-receive/watch",
@@ -1559,6 +2181,49 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     return toTransactionArray(engine.getTransactions(
         toStdString(walletId),
         toIndex(limit, "limit")));
+  }];
+}
+
+- (void)getOwnedOutputKeyImages:(NSString *)walletId
+                         resolve:(RCTPromiseResolveBlock)resolve
+                          reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"getOwnedOutputKeyImages"
+                  fields:@{
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
+    return toNSArray(engine.getOwnedOutputKeyImages(toStdString(walletId)));
+  }];
+}
+
+- (void)reconcileOutputKeyImages:(NSString *)walletId
+                       keyImages:(NSArray *)keyImages
+                     spentStates:(NSArray *)spentStates
+                   checkedHeight:(double)checkedHeight
+                         resolve:(RCTPromiseResolveBlock)resolve
+                          reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"reconcileOutputKeyImages"
+                  fields:@{
+                    @"checkedHeight": @(checkedHeight),
+                    @"count": @(keyImages.count),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
+    if (keyImages.count != spentStates.count) {
+      throw WalletEngineError("key image and spent-state counts do not match");
+    }
+    const auto changed = engine.reconcileOutputKeyImages(
+        toStdString(walletId),
+        toStringVector(keyImages),
+        toBoolVector(spentStates),
+        toHeight(checkedHeight, "checkedHeight"));
+    return toNSNumber(changed);
   }];
 }
 

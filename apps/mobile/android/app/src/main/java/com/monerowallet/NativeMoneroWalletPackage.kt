@@ -11,10 +11,10 @@ class NativeMoneroWalletPackage : BaseReactPackage() {
     name: String,
     reactContext: ReactApplicationContext,
   ): NativeModule? =
-    if (name == NativeMoneroWalletModule.NAME) {
-      NativeMoneroWalletModule(reactContext)
-    } else {
-      null
+    when (name) {
+      NativeMoneroWalletModule.NAME -> NativeMoneroWalletModule(reactContext)
+      NearbyLocationModule.NAME -> NearbyLocationModule(reactContext)
+      else -> null
     }
 
   override fun getReactModuleInfoProvider(): ReactModuleInfoProvider =
@@ -27,6 +27,14 @@ class NativeMoneroWalletPackage : BaseReactPackage() {
           false,
           false,
           true,
+        ),
+        NearbyLocationModule.NAME to ReactModuleInfo(
+          NearbyLocationModule.NAME,
+          NearbyLocationModule.NAME,
+          false,
+          false,
+          false,
+          false,
         ),
       )
     }

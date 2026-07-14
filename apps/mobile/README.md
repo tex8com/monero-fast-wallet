@@ -5,8 +5,20 @@ React Native shell for the Monero Fast Wallet.
 ## Role
 
 This app owns the user experience: onboarding, wallet setup screens, sync
-status, balance display, send/receive flows, marketplace screens, settings, and
-fast receive opt-in copy.
+status, balance display, send/receive flows, settings, and
+fast receive opt-in copy. The former P2P trading mock is removed;
+the menu now exposes optional nearby Monero enthusiast discovery for
+conversation and private meetups.
+
+New-wallet onboarding initially selects `Find Monero Enthusiasts` next to Fast
+Wallet creation. Android and iOS still require explicit foreground-location
+permission. Exact coordinates are discarded immediately after deriving a
+five-character approximate area; they are neither persisted nor uploaded. The
+app can publish an anonymous profile, discover approximate nearby profiles,
+request/accept contacts, chat after mutual approval, block, report, and delete
+the identity through `services/enthusiast-discovery`. The production reverse
+proxy for `https://xmr.tex8.com/community/` remains a deployment gate; the app
+does not replace unavailable server data with mock people.
 
 It is not the wallet brain. Production wallet operations must go through the
 native bridge:
@@ -63,12 +75,11 @@ explicitly documented.
 - Android shell mode still exists for lightweight development builds. The
   release `android:build` gate now links the real gRPC-enabled forked Monero
   wallet archives into the Android JNI bridge for `arm64-v8a`.
-- Android Monero wallet archives now include the official Monero Ledger HID
-  device code via `hidapi`/`libusb`; the Android native module detects Ledger
-  USB devices and requests Android USB host permission before Ledger wallet
-  creation. Android also declares Bluetooth LE permissions and can scan for
-  Ledger Nano X BLE service UUIDs, but it intentionally does not create a BLE
-  Ledger wallet until the Monero APDU bridge is linked.
+- Android Monero wallet archives include the official Monero Ledger HID device
+  code via `hidapi`/`libusb`. Android also implements the Ledger Nano X BLE
+  transport natively: discovery selects the peripheral, GATT notifications and
+  write-with-response carry official `0x05` frames, and JNI routes complete
+  APDUs into the forked `device_ledger` callback transport.
 - New software-wallet creation uses platform biometrics when available. The app
   generates the local wallet-file credential natively, stores it through Android
   Keystore or iOS Keychain, and asks for Face ID, Touch ID, fingerprint, or
@@ -77,10 +88,12 @@ explicitly documented.
   `getTransactions`. The Home and Send screens render the native transaction
   history instead of mock placeholders.
 - Software-wallet sending is wired through the native bridge as a two-step
-  `prepareTransaction` / `commitTransaction` flow. Preparation creates a native
-  Monero `PendingTransaction` and returns fee/tx metadata for review before
-  broadcast. Ledger-backed transaction signing still needs prompt/event
-  plumbing.
+  `prepareTransaction` / `commitTransaction` flow. The app prepares before it
+  opens the review screen, so the review already contains the exact fee and one
+  tap on `Send now` broadcasts. `MAX` uses Monero's sweep-all path and lets
+  `libwallet_api` subtract the fee. Ledger-backed transaction signing follows
+  the same native `device_ledger` path and waits for device approval; physical
+  Nano X send acceptance is still required.
 - Android has an instrumentation runtime smoke that creates an offline stagenet
   wallet through JNI and the real `libwallet_api` backend.
 - Ledger Nano support for Monero is required. The shared bridge contract now
@@ -91,12 +104,11 @@ explicitly documented.
   instead of asking for a local password first. The local Ledger wallet cache is
   protected with an internal credential stored through Android Keystore or iOS
   Keychain. The Receive screen can request address confirmation on the device.
-  Android has the first USB/HID transport gate. Android and iOS now both expose
-  native BLE permission/discovery gates for Ledger Nano X service UUIDs. The
-  official Monero GUI/Core path gives us Ledger HID/USB device support, not a
-  mobile BLE transport, so BLE discovery stays blocked from wallet creation
-  until a native BLE APDU bridge is routed into `wallet2`/`device_ledger`.
-  Transaction prompt/signing UI and connected Ledger tests are still pending.
+  Android retains its USB/HID path. Android and iOS now both expose native BLE
+  permission/discovery and implement Ledger `0x05` framing into the forked
+  `wallet2`/`device_ledger` callback transport. React Native receives only
+  sanitized status and never raw APDUs. Build and framing tests pass; connected
+  Ledger address/signing/disconnect tests remain pending on physical hardware.
 
 ## Commands
 
@@ -108,6 +120,30 @@ npm run android
 npm test
 npm run lint
 ```
+
+## Fast Wallet Push Notifications
+
+Fast Wallet notifications use the shared Tex8 FCM HTTP v1 backend. Register
+both native apps in the Firebase project used by the server service account:
+
+- Android package: `com.tex8.monerowallet`
+- iOS bundle ID: `com.tex8.monerowallet`
+- Android config: `android/app/google-services.json`
+- iOS config: `ios/GoogleService-Info.plist`
+
+Then run:
+
+```bash
+npm run firebase:check
+cd ios && bundle exec pod install
+```
+
+The Firebase client files and service-account JSON are secrets/runtime
+configuration and must not be committed. Upload an APNs authentication key in
+Firebase for iOS. The app requests notification permission only when a user
+enables notifications for a Fast Wallet. It registers the FCM token with Tex8
+Cloud, then sends only the returned anonymous subscription ID to the scanner as
+`device_id`; the scanner never receives the raw FCM token.
 
 Node and app diagnostics:
 
@@ -128,7 +164,14 @@ npm run android:logs
 it, and launches it. `ios:diagnostics` restarts the app and reads only
 `MONERO_WALLET_DIAGNOSTICS` JSON lines from the iOS system log.
 The current simulator gate confirms the app can reach the live Cuprate daemon
-at `152.53.133.188:18089` through both `/get_info` and `/json_rpc`.
+at `xmr.tex8.com:18089` through both `/get_info` and `/json_rpc`; optimized
+wallet refresh uses `xmr.tex8.com:18091` for gRPC block streaming.
+
+Fast Wallet is a separate spendable software wallet, not a receive-only
+address. The app stores its restore height with the wallet registration. An
+older cache is repaired once from that height, after which normal continuous
+wallet-core sync keeps it live. The hosted scanner provides early mempool/block
+notifications; it does not replace local spend-state verification before send.
 
 `android:build` and `android:build-install` default to the `release` variant so
 the APK contains the JavaScript bundle. They expect

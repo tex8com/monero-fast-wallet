@@ -1,0 +1,159 @@
+import React from 'react';
+import { TextInput, TouchableOpacity } from 'react-native';
+import ReactTestRenderer from 'react-test-renderer';
+
+import { useWalletState } from '../../services/WalletState';
+import { walletService } from '../../services/WalletService';
+import SendScreen from '../SendScreen';
+
+jest.mock('@react-navigation/native', () => ({
+  useFocusEffect: jest.fn(),
+}));
+
+jest.mock('react-native-linear-gradient', () => ({
+  __esModule: true,
+  default: ({ children, ...props }: React.PropsWithChildren<object>) => {
+    const ReactModule = require('react');
+    const { View: NativeView } = require('react-native');
+    return ReactModule.createElement(NativeView, props, children);
+  },
+}));
+
+jest.mock('../../components/SyncStatusBar', () => () => null);
+jest.mock('../../components/TransactionRow', () => () => null);
+jest.mock('../../components/WalletSwitcherPill', () => () => null);
+
+jest.mock('../../data/priceService', () => ({
+  useXmrPrice: () => ({ price: 300 }),
+}));
+
+jest.mock('../../i18n', () => ({
+  useI18n: () => ({
+    t: (key: string) =>
+      ({
+        'action.sendNow': 'Send Now',
+        'action.working': 'Working...',
+        'send.sendXmr': 'Send XMR',
+      }[key] ?? key),
+  }),
+}));
+
+jest.mock('../../services/NodeConnectionSettings', () => ({
+  getActiveNodeConnectionSettings: () => ({ mode: 'optimized-grpc' }),
+  loadActiveNodeConnectionSettings: jest.fn(async () => ({
+    mode: 'optimized-grpc',
+  })),
+}));
+
+jest.mock('../../services/WalletState', () => ({
+  useWalletState: jest.fn(),
+}));
+
+jest.mock('../../services/WalletService', () => ({
+  walletService: {
+    commitTransaction: jest.fn(),
+    loadFastReceiveIdentitiesForActiveNode: jest.fn(async () => []),
+    prepareTransaction: jest.fn(),
+  },
+}));
+
+const mockedUseWalletState = useWalletState as jest.MockedFunction<
+  typeof useWalletState
+>;
+const mockedWalletService = walletService as jest.Mocked<typeof walletService>;
+
+describe('SendScreen', () => {
+  it('prepares MAX as sweep-all and commits with one review tap', async () => {
+    const refreshSnapshot = jest.fn(async () => undefined);
+    const refreshTransactions = jest.fn(async () => []);
+    mockedUseWalletState.mockReturnValue({
+      error: undefined,
+      refreshSnapshot,
+      refreshTransactions,
+      registeredWallet: {
+        id: 'primary',
+        kind: 'software',
+        walletName: 'primary',
+      },
+      registeredWallets: [],
+      session: { walletId: 'wallet-1' },
+      setActiveRegisteredWallet: jest.fn(),
+      snapshot: {
+        balanceAtomic: '1000000000',
+        unlockedBalanceAtomic: '1000000000',
+        synchronized: true,
+      },
+      status: 'open',
+      syncProgress: 100,
+      transactions: [],
+      walletSnapshots: {},
+    } as unknown as ReturnType<typeof useWalletState>);
+    mockedWalletService.prepareTransaction.mockResolvedValue({
+      id: 'pending-max',
+      status: 'ok',
+      error: '',
+      amountAtomic: '970000000',
+      dustAtomic: '0',
+      feeAtomic: '30000000',
+      txCount: 1,
+      txIds: ['prepared-id'],
+      subaddrAccounts: [0],
+      subaddrIndices: [0],
+    });
+    mockedWalletService.commitTransaction.mockResolvedValue({
+      id: 'pending-max',
+      status: 'ok',
+      error: '',
+      amountAtomic: '970000000',
+      dustAtomic: '0',
+      feeAtomic: '30000000',
+      txCount: 1,
+      txIds: ['committed-id'],
+      subaddrAccounts: [0],
+      subaddrIndices: [0],
+    });
+
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <SendScreen navigation={{ navigate: jest.fn() }} />,
+      );
+    });
+
+    const inputs = renderer!.root.findAllByType(TextInput);
+    await ReactTestRenderer.act(async () => {
+      inputs[0].props.onChangeText('42ZCrRecipient');
+    });
+    const maxButton = renderer!.root
+      .findAllByType(TouchableOpacity)
+      .find(node => node.props.accessibilityLabel === 'MAX');
+    await ReactTestRenderer.act(async () => maxButton!.props.onPress());
+
+    const sendButton = renderer!.root
+      .findAllByType(TouchableOpacity)
+      .find(node => node.props.accessibilityLabel === 'Send XMR');
+    await ReactTestRenderer.act(async () => sendButton!.props.onPress());
+
+    expect(mockedWalletService.prepareTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ walletId: 'wallet-1' }),
+      {
+        address: '42ZCrRecipient',
+        amountAtomic: undefined,
+        priority: 'low',
+        sweepAll: true,
+      },
+    );
+
+    const confirmButton = renderer!.root
+      .findAllByType(TouchableOpacity)
+      .find(node => node.props.accessibilityLabel === 'Send Now');
+    expect(confirmButton).toBeDefined();
+    await ReactTestRenderer.act(async () => confirmButton!.props.onPress());
+
+    expect(mockedWalletService.commitTransaction).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.commitTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ walletId: 'wallet-1' }),
+      'pending-max',
+    );
+  });
+});

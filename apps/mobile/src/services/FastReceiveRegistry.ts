@@ -1,18 +1,16 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import type {
-  FastReceiveIdentity,
-  MoneroNetwork,
-} from "./NativeMoneroWallet";
+import type { FastReceiveIdentity, MoneroNetwork } from './NativeMoneroWallet';
 
 export const FAST_RECEIVE_IDENTITIES_STORAGE_KEY =
-  "monero-fast-wallet.fast-receive-identities.v1";
+  'monero-fast-wallet.fast-receive-identities.v1';
 
 export type FastReceiveIdentityStatus =
-  | "local-only"
-  | "enabled"
-  | "disabled"
-  | "registration-error";
+  | 'local-only'
+  | 'enabled'
+  | 'disabled'
+  | 'registration-error'
+  | 'server-mismatch';
 
 export interface FastReceiveIdentityRecord {
   id: string;
@@ -20,10 +18,16 @@ export interface FastReceiveIdentityRecord {
   path: string;
   address: string;
   network: MoneroNetwork;
+  credentialKey?: string;
+  sourceWalletId?: string;
   restoreHeight: number;
   derivationIndex: number;
   status: FastReceiveIdentityStatus;
   scannerStatus: string;
+  scannerUrl: string;
+  scannerCheckedAt?: string;
+  lastScannedHeight?: number;
+  notificationsEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -58,20 +62,39 @@ export async function upsertFastReceiveIdentity(
   return saveFastReceiveIdentities(next);
 }
 
+export async function removeFastReceiveIdentity(
+  identityId: string,
+): Promise<FastReceiveIdentityRecord[]> {
+  const current = await loadFastReceiveIdentities();
+  return saveFastReceiveIdentities(
+    current.filter(identity => identity.id !== identityId),
+  );
+}
+
 export function createFastReceiveIdentityRecord(
   identity: FastReceiveIdentity,
   now = new Date().toISOString(),
+  local?: {
+    credentialKey?: string;
+    sourceWalletId?: string;
+  },
 ): FastReceiveIdentityRecord {
   return normalizeFastReceiveIdentity({
     id: identity.id,
     label: identity.label,
     path: identity.path,
     address: identity.address,
-    network: parseNetwork(identity.network) ?? "stagenet",
+    network: parseNetwork(identity.network) ?? 'stagenet',
+    credentialKey: local?.credentialKey,
+    sourceWalletId: local?.sourceWalletId,
     restoreHeight: identity.restoreHeight,
     derivationIndex: identity.derivationIndex,
-    status: "local-only",
-    scannerStatus: identity.scannerStatus || "local-only",
+    status: 'local-only',
+    scannerStatus: identity.scannerStatus || 'local-only',
+    scannerUrl: '',
+    scannerCheckedAt: undefined,
+    lastScannedHeight: undefined,
+    notificationsEnabled: false,
     createdAt: now,
     updatedAt: now,
   });
@@ -84,16 +107,17 @@ export function nextFastReceiveDerivationIndex(
     return 0;
   }
 
-  return (
-    Math.max(...identities.map(identity => identity.derivationIndex)) + 1
-  );
+  return Math.max(...identities.map(identity => identity.derivationIndex)) + 1;
 }
 
 export function createFastReceiveIdentityId(
   derivationIndex: number,
   now = new Date(),
 ): string {
-  const stamp = now.toISOString().replace(/[^0-9A-Za-z]/g, "").slice(0, 15);
+  const stamp = now
+    .toISOString()
+    .replace(/[^0-9A-Za-z]/g, '')
+    .slice(0, 15);
   return `fast-receive-${derivationIndex}-${stamp}`;
 }
 
@@ -101,17 +125,23 @@ function normalizeFastReceiveIdentity(
   identity: FastReceiveIdentityRecord,
 ): FastReceiveIdentityRecord {
   return {
-    id: cleanRequired(identity.id, "id"),
-    label: identity.label.trim() || "Fast Receive",
-    path: cleanRequired(identity.path, "path"),
-    address: cleanRequired(identity.address, "address"),
+    id: cleanRequired(identity.id, 'id'),
+    label: normalizeLabel(identity.label),
+    path: cleanRequired(identity.path, 'path'),
+    address: cleanRequired(identity.address, 'address'),
     network: identity.network,
+    credentialKey: cleanOptional(identity.credentialKey),
+    sourceWalletId: cleanOptional(identity.sourceWalletId),
     restoreHeight: nonNegativeNumber(identity.restoreHeight),
     derivationIndex: nonNegativeNumber(identity.derivationIndex),
     status: normalizeStatus(identity.status),
     scannerStatus: identity.scannerStatus.trim() || identity.status,
-    createdAt: cleanRequired(identity.createdAt, "createdAt"),
-    updatedAt: cleanRequired(identity.updatedAt, "updatedAt"),
+    scannerUrl: (identity.scannerUrl ?? '').trim(),
+    scannerCheckedAt: cleanOptional(identity.scannerCheckedAt),
+    lastScannedHeight: optionalNonNegativeNumber(identity.lastScannedHeight),
+    notificationsEnabled: identity.notificationsEnabled === true,
+    createdAt: cleanRequired(identity.createdAt, 'createdAt'),
+    updatedAt: cleanRequired(identity.updatedAt, 'updatedAt'),
   };
 }
 
@@ -148,10 +178,16 @@ function parseFastReceiveIdentity(
   const path = parseString(value.path);
   const address = parseString(value.address);
   const network = parseNetwork(value.network);
+  const credentialKey = parseString(value.credentialKey);
+  const sourceWalletId = parseString(value.sourceWalletId);
   const restoreHeight = parseNumber(value.restoreHeight);
   const derivationIndex = parseNumber(value.derivationIndex);
   const status = parseStatus(value.status);
   const scannerStatus = parseString(value.scannerStatus);
+  const scannerUrl = parseString(value.scannerUrl);
+  const scannerCheckedAt = parseString(value.scannerCheckedAt);
+  const lastScannedHeight = parseNumber(value.lastScannedHeight);
+  const notificationsEnabled = value.notificationsEnabled === true;
   const createdAt = parseString(value.createdAt);
   const updatedAt = parseString(value.updatedAt);
 
@@ -175,10 +211,16 @@ function parseFastReceiveIdentity(
     path,
     address,
     network,
+    credentialKey,
+    sourceWalletId,
     restoreHeight,
     derivationIndex,
-    status: status ?? "local-only",
-    scannerStatus: scannerStatus ?? status ?? "local-only",
+    status: status ?? 'local-only',
+    scannerStatus: scannerStatus ?? status ?? 'local-only',
+    scannerUrl: scannerUrl ?? '',
+    scannerCheckedAt,
+    lastScannedHeight,
+    notificationsEnabled,
     createdAt,
     updatedAt,
   });
@@ -192,6 +234,14 @@ function cleanRequired(value: string, name: string): string {
   return trimmed;
 }
 
+function normalizeLabel(value: string): string {
+  const label = value.trim();
+  if (!label || label === 'Fast Receive') {
+    return 'Fast Wallet';
+  }
+  return label;
+}
+
 function nonNegativeNumber(value: number): number {
   if (!Number.isFinite(value) || value < 0) {
     return 0;
@@ -199,38 +249,52 @@ function nonNegativeNumber(value: number): number {
   return Math.floor(value);
 }
 
+function optionalNonNegativeNumber(
+  value: number | undefined,
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return nonNegativeNumber(value);
+}
+
 function normalizeStatus(
   status: FastReceiveIdentityStatus,
 ): FastReceiveIdentityStatus {
-  return parseStatus(status) ?? "local-only";
+  return parseStatus(status) ?? 'local-only';
+}
+
+function cleanOptional(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function parseString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+  return typeof value === 'string' ? value : undefined;
 }
 
 function parseNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
+  return typeof value === 'number' && Number.isFinite(value)
     ? value
     : undefined;
 }
 
 function parseNetwork(value: unknown): MoneroNetwork | undefined {
-  if (value === "mainnet" || value === "testnet" || value === "stagenet") {
+  if (value === 'mainnet' || value === 'testnet' || value === 'stagenet') {
     return value;
   }
 
   return undefined;
 }
 
-function parseStatus(
-  value: unknown,
-): FastReceiveIdentityStatus | undefined {
+function parseStatus(value: unknown): FastReceiveIdentityStatus | undefined {
   if (
-    value === "local-only" ||
-    value === "enabled" ||
-    value === "disabled" ||
-    value === "registration-error"
+    value === 'local-only' ||
+    value === 'enabled' ||
+    value === 'disabled' ||
+    value === 'registration-error' ||
+    value === 'server-mismatch'
   ) {
     return value;
   }
@@ -239,5 +303,5 @@ function parseStatus(
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === 'object' && value !== null;
 }

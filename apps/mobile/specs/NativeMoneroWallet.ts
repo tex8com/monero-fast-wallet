@@ -1,5 +1,5 @@
-import type { TurboModule } from "react-native";
-import { TurboModuleRegistry } from "react-native";
+import type { TurboModule } from 'react-native';
+import { TurboModuleRegistry } from 'react-native';
 
 export type WalletSnapshot = {
   id: string;
@@ -147,12 +147,18 @@ export interface Spec extends TurboModule {
     restoreHeight: number,
   ): Promise<string>;
 
-  openWallet(path: string, password: string, network: string): Promise<string>;
+  openWallet(
+    path: string,
+    password: string,
+    network: string,
+    restoreHeight: number,
+  ): Promise<string>;
 
   openWalletWithStoredSecret(
     path: string,
     secretKey: string,
     network: string,
+    restoreHeight: number,
   ): Promise<string>;
 
   createWalletFromDevice(
@@ -198,6 +204,18 @@ export interface Spec extends TurboModule {
     path: string,
     password: string,
     network: string,
+    restoreHeight: number,
+    scannerUrl: string,
+    scannerAuthToken: string,
+    pushToken: string,
+  ): Promise<FastReceiveIdentity>;
+
+  enableFastReceiveIdentityWithStoredSecret(
+    identityId: string,
+    path: string,
+    secretKey: string,
+    network: string,
+    restoreHeight: number,
     scannerUrl: string,
     scannerAuthToken: string,
     pushToken: string,
@@ -251,7 +269,19 @@ export interface Spec extends TurboModule {
 
   snapshot(walletId: string): Promise<WalletSnapshot>;
 
-  getTransactions(walletId: string, limit: number): Promise<WalletTransaction[]>;
+  getTransactions(
+    walletId: string,
+    limit: number,
+  ): Promise<WalletTransaction[]>;
+
+  getOwnedOutputKeyImages(walletId: string): Promise<string[]>;
+
+  reconcileOutputKeyImages(
+    walletId: string,
+    keyImages: string[],
+    spentStates: boolean[],
+    checkedHeight: number,
+  ): Promise<number>;
 
   prepareTransaction(
     walletId: string,
@@ -279,4 +309,4 @@ export interface Spec extends TurboModule {
   ): Promise<HardwareWalletStatus>;
 }
 
-export default TurboModuleRegistry.get<Spec>("NativeMoneroWallet");
+export default TurboModuleRegistry.get<Spec>('NativeMoneroWallet');

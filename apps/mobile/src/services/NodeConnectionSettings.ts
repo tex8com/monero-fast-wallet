@@ -25,8 +25,13 @@ export interface NodeConnectionDraft {
   proxyAddress: string;
 }
 
-const CUPRATE_DEFAULT_HOST = "152.53.133.188";
-const LEGACY_CUPRATE_DEFAULT_HOSTS = ["private-node-ip", "private-node-ip"];
+const CUPRATE_DEFAULT_HOST = "xmr.tex8.com";
+const CUPRATE_SCANNER_DEFAULT_ORIGIN = "https://xmr.tex8.com";
+const LEGACY_CUPRATE_DEFAULT_HOSTS = [
+  "152.53.133.188",
+  "private-node-ip",
+  "private-node-ip",
+];
 const LEGACY_MONEROD_RPC_PORT_BY_CUPRATE_PORT: Record<string, string> = {
   "18089": "18081",
   "28089": "28081",
@@ -41,6 +46,12 @@ const DAEMON_PORTS: Record<MoneroNetwork, number> = {
   mainnet: 18089,
   testnet: 28089,
   stagenet: 38089,
+};
+
+const ORIGINAL_RPC_PORTS: Record<MoneroNetwork, number> = {
+  mainnet: 18081,
+  testnet: 28081,
+  stagenet: 38081,
 };
 
 const CUPRATE_GRPC_PORTS: Record<MoneroNetwork, number> = {
@@ -58,7 +69,10 @@ export function createDefaultNodeConnectionSettings(
   network: MoneroNetwork,
   mode: NodeConnectionMode = "optimized-grpc",
 ): NodeConnectionSettings {
-  const daemonAddress = `${CUPRATE_DEFAULT_HOST}:${DAEMON_PORTS[network]}`;
+  const daemonAddress = `${CUPRATE_DEFAULT_HOST}:${defaultDaemonPortForMode(
+    network,
+    mode,
+  )}`;
   const grpcEndpoint =
     mode === "original-rpc"
       ? ""
@@ -161,12 +175,13 @@ export function normalizeNodeConnectionSettings(
   settings: NodeConnectionSettings,
 ): NodeConnectionSettings {
   const daemon = settings.daemon;
+  const daemonPort = defaultDaemonPortForMode(settings.network, settings.mode);
 
   return {
     mode: settings.mode,
     network: settings.network,
     daemon: {
-      address: daemon.address.trim(),
+      address: normalizeEndpointWithDefaultPort(daemon.address, daemonPort),
       trusted: daemon.trusted,
       useSsl: daemon.useSsl ?? false,
       username: (daemon.username ?? "").trim(),
@@ -175,8 +190,21 @@ export function normalizeNodeConnectionSettings(
       proxyAddress: (daemon.proxyAddress ?? "").trim(),
     },
     grpcEndpoint:
-      settings.mode === "original-rpc" ? "" : settings.grpcEndpoint.trim(),
+      settings.mode === "original-rpc"
+        ? ""
+        : normalizeEndpointWithDefaultPort(
+            settings.grpcEndpoint,
+            CUPRATE_GRPC_PORTS[settings.network],
+          ),
   };
+}
+
+export function deriveOptimizedGrpcEndpointFromDaemonAddress(
+  daemonAddress: string,
+  network: MoneroNetwork,
+): string {
+  const host = extractEndpointHost(daemonAddress);
+  return host ? `${host}:${CUPRATE_GRPC_PORTS[network]}` : "";
 }
 
 export function applyNodeModeDefaults(
@@ -209,6 +237,39 @@ export function applyNodeNetworkDefaults(
   return nodeConnectionSettingsToDraft(
     createDefaultNodeConnectionSettings(network, draft.mode),
   );
+}
+
+export function fastReceiveScannerUrlForSettings(
+  settings: NodeConnectionSettings,
+): string | undefined {
+  if (settings.mode === "original-rpc") {
+    return undefined;
+  }
+
+  const endpoint = settings.grpcEndpoint || settings.daemon.address;
+  const trimmed = endpoint.trim().replace(/\/+$/g, "");
+  if (!trimmed) {
+    return undefined;
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      return `${url.protocol}//${url.host}`;
+    } catch {
+      return trimmed;
+    }
+  }
+
+  const host = stripKnownCupratePort(trimmed);
+  if (
+    host === CUPRATE_DEFAULT_HOST ||
+    LEGACY_CUPRATE_DEFAULT_HOSTS.includes(host)
+  ) {
+    return CUPRATE_SCANNER_DEFAULT_ORIGIN;
+  }
+
+  return `https://${host}`;
 }
 
 function cloneNodeConnectionSettings(
@@ -346,6 +407,116 @@ function migrateLegacyDefaultEndpoint(
     (port === defaultPort || port === legacyRpcPort)
   ) {
     return defaultEndpoint;
+  }
+
+  return endpoint;
+}
+
+function defaultDaemonPortForMode(
+  network: MoneroNetwork,
+  mode: NodeConnectionMode,
+): number {
+  return mode === "original-rpc"
+    ? ORIGINAL_RPC_PORTS[network]
+    : DAEMON_PORTS[network];
+}
+
+function normalizeEndpointWithDefaultPort(
+  endpoint: string | undefined,
+  defaultPort: number,
+): string {
+  const trimmed = (endpoint ?? "").trim().replace(/\/+$/g, "");
+  if (!trimmed) {
+    return "";
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      const authority = url.port
+        ? url.host
+        : `${url.hostname}:${defaultPort}`;
+      const path = url.pathname === "/" ? "" : url.pathname;
+      return `${url.protocol}//${authority}${path}${url.search}${url.hash}`;
+    } catch {
+      return trimmed;
+    }
+  }
+
+  if (/^\[[^\]]+\](:\d+)?$/.test(trimmed)) {
+    return trimmed.includes("]:") ? trimmed : `${trimmed}:${defaultPort}`;
+  }
+
+  if (/^[^:]+:\d+$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  if (/^[^:]+:$/.test(trimmed)) {
+    return `${trimmed}${defaultPort}`;
+  }
+
+  if (!trimmed.includes(":")) {
+    return `${trimmed}:${defaultPort}`;
+  }
+
+  return trimmed;
+}
+
+function extractEndpointHost(endpoint: string): string {
+  const trimmed = endpoint.trim().replace(/\/+$/g, "");
+  if (!trimmed) {
+    return "";
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      return url.hostname.includes(":") ? `[${url.hostname}]` : url.hostname;
+    } catch {
+      return "";
+    }
+  }
+
+  const slashIndex = trimmed.indexOf("/");
+  const authority = slashIndex >= 0 ? trimmed.slice(0, slashIndex) : trimmed;
+  const bracketMatch = authority.match(/^(\[[^\]]+\])(?::\d+)?$/);
+  if (bracketMatch) {
+    return bracketMatch[1];
+  }
+
+  const colonIndex = authority.lastIndexOf(":");
+  if (colonIndex > 0 && /^\d+$/.test(authority.slice(colonIndex + 1))) {
+    return authority.slice(0, colonIndex);
+  }
+
+  return authority;
+}
+
+function stripKnownCupratePort(endpoint: string): string {
+  const slashIndex = endpoint.indexOf("/");
+  const authority = slashIndex >= 0 ? endpoint.slice(0, slashIndex) : endpoint;
+  const rest = slashIndex >= 0 ? endpoint.slice(slashIndex) : "";
+  const colonIndex = authority.lastIndexOf(":");
+  if (colonIndex <= 0) {
+    return endpoint;
+  }
+
+  const host = authority.slice(0, colonIndex);
+  const port = authority.slice(colonIndex + 1);
+  if (
+    [
+      "18081",
+      "18089",
+      "18091",
+      "28081",
+      "28089",
+      "28091",
+      "38081",
+      "38089",
+      "38091",
+    ].includes(port)
+  ) {
+    return `${host}${rest}`;
   }
 
   return endpoint;

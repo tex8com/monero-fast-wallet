@@ -1,4 +1,4 @@
-jest.mock("@react-native-async-storage/async-storage", () => {
+jest.mock('@react-native-async-storage/async-storage', () => {
   const storage = new Map<string, string>();
   const mock = {
     clear: jest.fn(async () => {
@@ -17,61 +17,109 @@ jest.mock("@react-native-async-storage/async-storage", () => {
 });
 
 const mockNativeWallet = {
-  defaultWalletPath: jest.fn(async (walletName: string, network: string) =>
-    `/current-container/wallets/${network}/${walletName}`,
+  defaultWalletPath: jest.fn(
+    async (walletName: string, network: string) =>
+      `/current-container/wallets/${network}/${walletName}`,
   ),
+  getBiometricAuthStatus: jest.fn(async () => ({
+    available: false,
+    biometryType: 'none',
+    enrolled: false,
+    message: 'Biometrics unavailable in test',
+    platform: 'ios',
+    supported: false,
+  })),
   logDiagnostics: jest.fn(async () => undefined),
-  openWallet: jest.fn(async () => ({ walletId: "wallet-1" })),
+  openWallet: jest.fn(async () => ({ walletId: 'wallet-1' })),
+  openWalletWithStoredSecret: jest.fn(async () => ({
+    walletId: 'wallet-fast',
+  })),
   setDaemon: jest.fn(async () => undefined),
   setGrpcEndpoint: jest.fn(async () => undefined),
 };
 
-jest.mock("../NativeMoneroWallet", () => {
+jest.mock('../NativeMoneroWallet', () => {
   return {
     requireNativeMoneroWallet: jest.fn(() => mockNativeWallet),
   };
 });
 
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   createRegisteredWallet,
   loadRegisteredWallet,
   saveRegisteredWallet,
-} from "../WalletRegistry";
-import { WalletService } from "../WalletService";
+} from '../WalletRegistry';
+import { WalletService } from '../WalletService';
 
-describe("WalletService registered wallet opening", () => {
+describe('WalletService registered wallet opening', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
     await AsyncStorage.clear();
   });
 
-  it("relocates registered wallet paths when the iOS app container changes", async () => {
+  it('relocates registered wallet paths when the iOS app container changes', async () => {
     await saveRegisteredWallet(
       createRegisteredWallet({
-        walletName: "primary-2",
-        path: "/old-container/Library/Application Support/MoneroWallet/wallets/mainnet/primary-2",
-        network: "mainnet",
-        now: "2026-07-08T20:06:07.217Z",
+        walletName: 'primary-2',
+        path: '/old-container/Library/Application Support/MoneroWallet/wallets/mainnet/primary-2',
+        network: 'mainnet',
+        now: '2026-07-08T20:06:07.217Z',
       }),
     );
 
     const service = new WalletService();
-    const session = await service.openRegisteredWallet("local-password");
+    const session = await service.openRegisteredWallet('local-password');
 
     expect(session).toEqual({
-      walletId: "wallet-1",
-      network: "mainnet",
+      walletId: 'wallet-1',
+      network: 'mainnet',
+      registrationId: 'software-mainnet-primary-2-20260708T200607',
     });
     expect(mockNativeWallet.openWallet).toHaveBeenCalledWith({
-      path: "/current-container/wallets/mainnet/primary-2",
-      password: "local-password",
-      network: "mainnet",
+      path: '/current-container/wallets/mainnet/primary-2',
+      password: 'local-password',
+      network: 'mainnet',
     });
     await expect(loadRegisteredWallet()).resolves.toMatchObject({
-      walletName: "primary-2",
-      path: "/current-container/wallets/mainnet/primary-2",
+      walletName: 'primary-2',
+      path: '/current-container/wallets/mainnet/primary-2',
+    });
+  });
+
+  it('opens a Fast Wallet by its path-safe identity id', async () => {
+    await saveRegisteredWallet(
+      createRegisteredWallet({
+        id: 'fast-receive-0-20260709T012217',
+        walletName: 'Fast Wallet',
+        path: '/old-container/wallets/mainnet/fast-receive-0-20260709T012217',
+        network: 'mainnet',
+        kind: 'fast',
+        credentialKey: 'monero.wallet.software.mainnet.primary.v1',
+        restoreHeight: 3714305,
+        now: '2026-07-09T01:22:17.000Z',
+      }),
+    );
+
+    const service = new WalletService();
+    const session = await service.openRegisteredWallet();
+
+    expect(session).toEqual({
+      walletId: 'wallet-fast',
+      network: 'mainnet',
+      credentialKey: 'monero.wallet.software.mainnet.primary.v1',
+      registrationId: 'fast-receive-0-20260709T012217',
+    });
+    expect(mockNativeWallet.defaultWalletPath).toHaveBeenCalledWith(
+      'fast-receive-0-20260709T012217',
+      'mainnet',
+    );
+    expect(mockNativeWallet.openWalletWithStoredSecret).toHaveBeenCalledWith({
+      path: '/current-container/wallets/mainnet/fast-receive-0-20260709T012217',
+      secretKey: 'monero.wallet.software.mainnet.primary.v1',
+      network: 'mainnet',
+      restoreHeight: 3714305,
     });
   });
 });

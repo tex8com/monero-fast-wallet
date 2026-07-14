@@ -38,12 +38,10 @@ async function fetchPrice(): Promise<{ price: number; change24h: number }> {
 
 /* ── Chart data for timeframes ──────────────────────────────────────── */
 const TF_DAYS: Record<string, string> = {
-  "Today": "1",
   "24H": "1",
   "7D": "7",
   "1M": "30",
   "1Y": "365",
-  "Max": "max",
 };
 
 async function fetchChart(tf: string): Promise<number[]> {
@@ -51,14 +49,12 @@ async function fetchChart(tf: string): Promise<number[]> {
   if (chartCache[key] && Date.now() - chartCache[key].ts < CACHE_TTL * 5) {
     return chartCache[key].points;
   }
-  const days = TF_DAYS[tf] ?? "1";
+
   try {
-    const resp = await fetch(`${BASE}/coins/monero/market_chart?vs_currency=usd&days=${days}`);
-    const data = await resp.json();
-    const prices: number[] = (data.prices ?? []).map((p: number[]) => p[1]);
-    // Downsample to ~40 points for smooth chart
-    const step = Math.max(1, Math.floor(prices.length / 40));
-    const sampled = prices.filter((_: number, i: number) => i % step === 0);
+    const prices = tf === "Max"
+      ? await fetchMaxChartPrices()
+      : await fetchCoinGeckoChartPrices(TF_DAYS[tf] ?? "1");
+    const sampled = downsampleChartPrices(prices);
     if (sampled.length > 0) {
       chartCache[key] = { points: sampled, ts: Date.now() };
     }
@@ -66,6 +62,54 @@ async function fetchChart(tf: string): Promise<number[]> {
   } catch {
     return chartCache[key]?.points ?? [];
   }
+}
+
+async function fetchCoinGeckoChartPrices(days: string): Promise<number[]> {
+  const resp = await fetch(`${BASE}/coins/monero/market_chart?vs_currency=usd&days=${days}`);
+  if (!resp.ok) {
+    throw new Error(`CoinGecko chart failed with HTTP ${resp.status}`);
+  }
+
+  const data = await resp.json();
+  return (data.prices ?? [])
+    .map((point: unknown) =>
+      Array.isArray(point) && typeof point[1] === "number" ? point[1] : 0,
+    )
+    .filter((price: number) => price > 0);
+}
+
+async function fetchMaxChartPrices(): Promise<number[]> {
+  const bitfinexPrices = await fetchBitfinexMaxChartPrices().catch(() => []);
+  if (bitfinexPrices.length > 0) {
+    return bitfinexPrices;
+  }
+
+  return fetchCoinGeckoChartPrices("365");
+}
+
+async function fetchBitfinexMaxChartPrices(): Promise<number[]> {
+  const resp = await fetch(
+    "https://api-pub.bitfinex.com/v2/candles/trade:1D:tXMRUSD/hist?limit=10000&sort=1",
+  );
+  if (!resp.ok) {
+    throw new Error(`Bitfinex max chart failed with HTTP ${resp.status}`);
+  }
+
+  const candles = await resp.json();
+  if (!Array.isArray(candles)) {
+    return [];
+  }
+
+  return candles
+    .map((candle: unknown) =>
+      Array.isArray(candle) && typeof candle[2] === "number" ? candle[2] : 0,
+    )
+    .filter((price: number) => price > 0);
+}
+
+function downsampleChartPrices(prices: number[]): number[] {
+  const step = Math.max(1, Math.floor(prices.length / 40));
+  return prices.filter((_: number, index: number) => index % step === 0);
 }
 
 /* ── Hooks ──────────────────────────────────────────────────────────── */

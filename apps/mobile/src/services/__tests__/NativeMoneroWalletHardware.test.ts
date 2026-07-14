@@ -257,9 +257,10 @@ describe("NativeMoneroWallet hardware bridge", () => {
         path: "/tmp/fast-receive-0",
         password: "local-wallet-password",
         network: "stagenet",
-        scannerUrl: "https://scanner.tex8.com",
+        restoreHeight: 123,
+        scannerUrl: "https://xmr.tex8.com",
         scannerAuthToken: "secret-token",
-        pushToken: "push-token",
+        pushSubscriptionId: "push-subscription-id",
       }),
     ).resolves.toMatchObject({
       id: "fast-receive-0",
@@ -273,9 +274,10 @@ describe("NativeMoneroWallet hardware bridge", () => {
       "/tmp/fast-receive-0",
       "local-wallet-password",
       "stagenet",
-      "https://scanner.tex8.com",
+      123,
+      "https://xmr.tex8.com",
       "secret-token",
-      "push-token",
+      "push-subscription-id",
     );
     expect(
       JSON.stringify(
@@ -322,6 +324,21 @@ describe("NativeMoneroWallet hardware bridge", () => {
         "wallet-1",
         "54A1recipient",
         "1000000000000",
+        "",
+        "low",
+        0,
+      );
+    await nativeWallet.prepareTransaction({
+      walletId: "wallet-1",
+      address: "54A1recipient",
+      sweepAll: true,
+      priority: "low",
+    });
+    expect(mockNativeMoneroWalletTurboModule.prepareTransaction)
+      .toHaveBeenLastCalledWith(
+        "wallet-1",
+        "54A1recipient",
+        "",
         "",
         "low",
         0,
