@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="${REPO:-git@github.com:tex8com/monero-fast-wallet.git}"
-BRANCH="${BRANCH:-codex/wallet-testbench-scanner-deploy}"
+BRANCH="${BRANCH:-main}"
 COMMIT="${1:-${COMMIT:-}}"
 DEPLOY_USER="${DEPLOY_USER:-server}"
 
@@ -114,6 +114,9 @@ ensure_env "NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT" "private-node-ip:18089"
 ensure_env "NOTIFY_SCANNER_BLOCK_SCAN_MAX_BLOCKS" "25"
 ensure_env "NOTIFY_SCANNER_BLOCK_SCAN_INTERVAL_MS" "10000"
 ensure_env "NOTIFY_SCANNER_CUPRATE_GRPC_CHUNK_BLOCKS" "200"
+# The test ingress is separately authenticated. It never accepts payment
+# details; it can only create an opaque test event for an existing watch.
+ensure_env "NOTIFY_SCANNER_TEST_AUTH_TOKEN" "$(openssl rand -hex 32)"
 
 install -o root -g root -m 0644 \
   "$source_dir/ops/notify-scanner/notify-scanner.service" \
@@ -165,7 +168,21 @@ curl -fsS http://127.0.0.1:8087/healthz
 curl -fsS https://xmr.tex8.com/healthz
 curl -fsS https://xmr.tex8.com/ | head -20
 
+# A deliberately invalid bearer token must be rejected by the test-only route.
+# This proves that the separately authenticated ingress is present without
+# disclosing its real token or creating a notification for a user.
+test_route_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X POST http://127.0.0.1:8087/v1/fast-receive/test/incoming-transaction \
+  -H 'authorization: Bearer invalid-deploy-probe' \
+  -H 'content-type: application/json' \
+  --data '{\"identity_id\":\"deploy-probe\"}')"
+if [[ "$test_route_status" != "401" ]]; then
+  echo "Fast Receive test ingress did not become ready (HTTP $test_route_status)." >&2
+  exit 1
+fi
+
 echo "OK notify-scanner deployed from $actual_commit"
+echo "Fast Receive test ingress is enabled with a server-only token."
 echo "Backup: $backup"
 echo "Rollback: systemctl stop notify-scanner; restore files from $backup; nginx -t && systemctl reload nginx"
 

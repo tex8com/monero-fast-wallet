@@ -92,7 +92,15 @@ NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT=http://private-node-ip:18089
 NOTIFY_SCANNER_BLOCK_SCAN_MAX_BLOCKS=25
 NOTIFY_SCANNER_BLOCK_SCAN_INTERVAL_MS=10000
 NOTIFY_SCANNER_CUPRATE_GRPC_CHUNK_BLOCKS=200
+NOTIFY_SCANNER_TEST_AUTH_TOKEN=<server-only-test-token>
 ```
+
+`NOTIFY_SCANNER_TEST_AUTH_TOKEN` is generated automatically by the deployer if
+it is missing. It enables the separately authenticated `POST
+/v1/fast-receive/test/incoming-transaction` route. The route creates an opaque
+test notification only for an existing Fast Wallet identity and deliberately
+accepts no address, amount, transaction id, or key material. Keep the token on
+the server; it is not an app credential and must never be bundled in a client.
 
 ## Nginx Route
 
