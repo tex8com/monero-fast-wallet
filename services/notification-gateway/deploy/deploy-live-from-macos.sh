@@ -26,7 +26,11 @@ if [[ ! -f "${SERVICE_DIR}/Cargo.toml" ]]; then
   echo "Run from the monero-fast-wallet repository root." >&2
   exit 1
 fi
-for command in ssh tar; do
+if [[ ! -t 0 || ! -t 1 ]]; then
+  echo "Live deployment needs a visible interactive Terminal for the one server sudo prompt." >&2
+  exit 2
+fi
+for command in ssh git; do
   command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 1; }
 done
 
@@ -42,8 +46,10 @@ else
 fi
 
 echo "Uploading notification gateway to ${REMOTE_HOST}..."
-tar -czf - "$SERVICE_DIR" | ssh "$REMOTE_HOST" \
-  "set -euo pipefail; rm -rf '$REMOTE_STAGE'; mkdir -p '$REMOTE_STAGE'; tar -xzf - -C '$REMOTE_STAGE'"
+# Archive committed source only. This excludes local Cargo targets and macOS
+# extended attributes, keeping the operator output concise and reproducible.
+git archive --format=tar HEAD "$SERVICE_DIR" | ssh "$REMOTE_HOST" \
+  "set -euo pipefail; rm -rf '$REMOTE_STAGE'; mkdir -p '$REMOTE_STAGE'; tar -xf - -C '$REMOTE_STAGE'"
 if [[ -n "$WNS_SECRETS_FILE" ]]; then
   # The file is transferred only into the short-lived, user-owned deploy stage.
   # It is never echoed, placed in the repository, or passed as a shell argument.
