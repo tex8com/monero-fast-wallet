@@ -5,6 +5,7 @@ use crate::{
         MatchedOutput, MatchedOutputResponse, RegisterMatchedOutputRequest, RegisterWatchRequest,
         SpentStatus, WatchRegistration, WatchResponse,
     },
+    notifications::NotificationSink,
     store::WatchStore,
 };
 use axum::{
@@ -14,7 +15,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -25,6 +27,8 @@ pub struct ApiState {
     pub store: Arc<dyn WatchStore>,
     pub auth_token: Option<String>,
     pub key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
+    pub test_auth_token: Option<String>,
+    pub notification_sink: Option<Arc<dyn NotificationSink>>,
 }
 
 pub fn router(store: Arc<dyn WatchStore>, auth_token: Option<String>) -> Router {
@@ -35,6 +39,19 @@ pub fn router_with_key_image_status_source(
     store: Arc<dyn WatchStore>,
     auth_token: Option<String>,
     key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
+) -> Router {
+    router_with_runtime(store, auth_token, key_image_status_source, None, None)
+}
+
+/// Builds the scanner API with its optional, independently authenticated test
+/// ingress. Production callers never receive this route unless a dedicated test
+/// token is configured.
+pub fn router_with_runtime(
+    store: Arc<dyn WatchStore>,
+    auth_token: Option<String>,
+    key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
+    test_auth_token: Option<String>,
+    notification_sink: Option<Arc<dyn NotificationSink>>,
 ) -> Router {
     Router::new()
         .route("/", get(project_page))
@@ -49,11 +66,17 @@ pub fn router_with_key_image_status_source(
             get(list_matches),
         )
         .route("/v1/fast-receive/matches", post(register_match))
+        .route(
+            "/v1/fast-receive/test/incoming-transaction",
+            post(simulate_incoming_transaction),
+        )
         .route("/v1/fast-receive/key-images/status", post(key_image_status))
         .with_state(ApiState {
             store,
             auth_token,
             key_image_status_source,
+            test_auth_token,
+            notification_sink,
         })
 }
 
@@ -128,6 +151,40 @@ async fn register_match(
 
     let output = MatchedOutput::from_request(request, now_ms())?;
     let stored = state.store.upsert_match(output)?;
+    Ok(Json(stored.response()))
+}
+
+/// Production-equivalent, opaque test path for the Fast Receive pipeline.
+/// It deliberately accepts no transaction, address, amount, or key material.
+/// The route is disabled unless `NOTIFY_SCANNER_TEST_AUTH_TOKEN` is configured.
+async fn simulate_incoming_transaction(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(request): Json<TestIncomingTransactionRequest>,
+) -> Result<Json<MatchedOutputResponse>, ApiError> {
+    authenticate_test(&state, &headers)?;
+    let watch = state
+        .store
+        .get(request.identity_id.trim())?
+        .ok_or_else(|| ApiError::NotFound("watch identity not found".to_owned()))?;
+    let sink = state.notification_sink.as_deref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("Fast Receive push dispatcher is disabled".to_owned())
+    })?;
+
+    let now = now_ms();
+    let output = MatchedOutput::from_request(
+        RegisterMatchedOutputRequest {
+            identity_id: request.identity_id.trim().to_owned(),
+            tx_id: synthetic_test_transaction_id(&request.identity_id, now),
+            output_index: 0,
+        },
+        now,
+    )?;
+    let mut stored = state.store.upsert_match(output)?;
+    sink.send(&watch, &stored).map_err(ApiError::from)?;
+    stored.notification_status = crate::model::NotificationStatus::Sent;
+    stored.updated_at_ms = now;
+    let stored = state.store.upsert_match(stored)?;
     Ok(Json(stored.response()))
 }
 
@@ -213,6 +270,29 @@ fn authenticate(state: &ApiState, headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
+fn authenticate_test(state: &ApiState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let Some(expected) = &state.test_auth_token else {
+        return Err(ApiError::NotFound("test route is disabled".to_owned()));
+    };
+    let expected_header = format!("Bearer {expected}");
+    let actual = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if actual == Some(expected_header.as_str()) {
+        Ok(())
+    } else {
+        Err(ApiError::Unauthorized)
+    }
+}
+
+fn synthetic_test_transaction_id(identity_id: &str, now_ms: u64) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"monero-fast-wallet-fast-receive-test-v1\\0");
+    digest.update(identity_id.trim().as_bytes());
+    digest.update(now_ms.to_le_bytes());
+    hex::encode(digest.finalize())
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -225,6 +305,12 @@ fn now_ms() -> u64 {
 #[derive(Serialize)]
 struct HealthResponse {
     ok: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TestIncomingTransactionRequest {
+    identity_id: String,
 }
 
 const PROJECT_PAGE_HTML: &str = r#"<!doctype html>
@@ -364,6 +450,7 @@ enum ApiError {
     Unauthorized,
     NotFound(String),
     BadRequest(String),
+    ServiceUnavailable(String),
     Internal(String),
 }
 
@@ -385,6 +472,7 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_owned()),
             Self::NotFound(message) => (StatusCode::NOT_FOUND, message),
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            Self::ServiceUnavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
             Self::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
         (status, Json(ErrorResponse { error: message })).into_response()
@@ -402,11 +490,28 @@ mod tests {
     use crate::{
         cuprate::{CheckedKeyImageStatus, KeyImageStatusSource},
         model::{KeyImageStatusRecord, Network},
+        notifications::NotificationSink,
         store::InMemoryWatchStore,
     };
     use axum::body::{to_bytes, Body};
     use http::{Request, StatusCode};
+    use std::sync::Mutex;
     use tower::ServiceExt;
+
+    #[derive(Default)]
+    struct RecordingNotificationSink {
+        signals: Mutex<Vec<(String, String)>>,
+    }
+
+    impl NotificationSink for RecordingNotificationSink {
+        fn send(&self, watch: &WatchRegistration, output: &MatchedOutput) -> anyhow::Result<()> {
+            self.signals
+                .lock()
+                .unwrap()
+                .push((watch.identity_id.clone(), output.id.clone()));
+            Ok(())
+        }
+    }
 
     #[derive(Clone)]
     struct StaticKeyImageStatusSource;
@@ -689,6 +794,77 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn test_ingress_uses_the_real_push_path_without_accepting_payment_details() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        store
+            .upsert(WatchRegistration {
+                identity_id: "fast-receive-0".to_owned(),
+                address: "9".repeat(95),
+                private_view_key: "c".repeat(64),
+                network: Network::Stagenet,
+                restore_height: 1,
+                push_token: None,
+                device_id: Some("desktop-installation-1".to_owned()),
+                created_at_ms: 1,
+                updated_at_ms: 1,
+                last_scanned_height: 0,
+            })
+            .unwrap();
+        let sink = Arc::new(RecordingNotificationSink::default());
+        let app = router_with_runtime(
+            store.clone(),
+            Some("scanner-auth".to_owned()),
+            None,
+            Some("test-auth".to_owned()),
+            Some(sink.clone()),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/fast-receive/test/incoming-transaction")
+                    .header("authorization", "Bearer test-auth")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"identity_id":"fast-receive-0"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let event: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(event["event_id"].as_str().unwrap().starts_with("evt_"));
+        assert_eq!(event["notification_status"], "sent");
+        assert!(event.get("amount_atomic").is_none());
+        assert!(event.get("address").is_none());
+        assert_eq!(sink.signals.lock().unwrap().len(), 1);
+        assert_eq!(store.list_matches("fast-receive-0").unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_ingress_is_unreachable_without_its_dedicated_token() {
+        let app = router(
+            Arc::new(InMemoryWatchStore::default()),
+            Some("scanner-auth".to_owned()),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/fast-receive/test/incoming-transaction")
+                    .header("authorization", "Bearer scanner-auth")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"identity_id":"fast-receive-0"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

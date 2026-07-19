@@ -5,7 +5,7 @@ pub mod notifications;
 pub mod scanner;
 pub mod store;
 
-pub use api::{router, router_with_key_image_status_source, ApiState};
+pub use api::{router, router_with_key_image_status_source, router_with_runtime, ApiState};
 pub use cuprate::{
     decode_get_blocks_payload, decode_get_blocks_response, decode_key_image_spent_response,
     decode_mempool_transaction_blob, CheckedKeyImageStatus, CuprateGrpcBlockSource,

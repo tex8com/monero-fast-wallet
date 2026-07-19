@@ -1,9 +1,8 @@
 use notify_scanner::{
-    dispatch_pending_notifications, parse_storage_key, router_with_key_image_status_source,
-    CuprateGrpcBlockSource, CuprateHttpKeyImageStatusSource, CuprateHttpMempoolSource,
-    EncryptedJsonFileStore, HostedViewKeyBlockMatcher, HostedViewKeyMempoolMatcher,
-    KeyImageStatusSource, MempoolScannerWorker, NotificationSink, ScannerWorker,
-    Tex8PushNotificationSink, WatchStore,
+    dispatch_pending_notifications, parse_storage_key, router_with_runtime, CuprateGrpcBlockSource,
+    CuprateHttpKeyImageStatusSource, CuprateHttpMempoolSource, EncryptedJsonFileStore,
+    HostedViewKeyBlockMatcher, HostedViewKeyMempoolMatcher, KeyImageStatusSource,
+    MempoolScannerWorker, NotificationSink, ScannerWorker, Tex8PushNotificationSink, WatchStore,
 };
 use std::{
     env,
@@ -32,20 +31,36 @@ async fn main() -> anyhow::Result<()> {
         .map(CuprateHttpKeyImageStatusSource::new)
         .transpose()?
         .map(|source| Arc::new(source) as Arc<dyn KeyImageStatusSource>);
-    spawn_block_scanner_if_configured(store.clone())?;
+    let push_sink = push_notification_sink_from_env()?;
+    let test_auth_token = env::var("NOTIFY_SCANNER_TEST_AUTH_TOKEN").ok();
+    if test_auth_token.is_some() && push_sink.is_none() {
+        anyhow::bail!(
+            "NOTIFY_SCANNER_TEST_AUTH_TOKEN requires the Fast Wallet push dispatcher configuration"
+        );
+    }
+    spawn_block_scanner_if_configured(store.clone(), push_sink.clone())?;
     let listener = TcpListener::bind(bind).await?;
 
     eprintln!("notify-scanner listening on {bind}");
     axum::serve(
         listener,
-        router_with_key_image_status_source(store, auth_token, key_image_status_source),
+        router_with_runtime(
+            store,
+            auth_token,
+            key_image_status_source,
+            test_auth_token,
+            push_sink,
+        ),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
     Ok(())
 }
 
-fn spawn_block_scanner_if_configured(store: Arc<dyn WatchStore>) -> anyhow::Result<()> {
+fn spawn_block_scanner_if_configured(
+    store: Arc<dyn WatchStore>,
+    push_sink: Option<Arc<dyn NotificationSink>>,
+) -> anyhow::Result<()> {
     let Ok(endpoint) = env::var("NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT") else {
         return Ok(());
     };
@@ -58,7 +73,6 @@ fn spawn_block_scanner_if_configured(store: Arc<dyn WatchStore>) -> anyhow::Resu
         .transpose()?;
     let block_source =
         CuprateGrpcBlockSource::new_with_chunk_blocks_hint(endpoint.clone(), chunk_blocks_hint)?;
-    let push_sink = push_notification_sink_from_env()?;
     let block_store = store.clone();
     let mempool_store = store.clone();
 

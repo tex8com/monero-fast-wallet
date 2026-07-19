@@ -2,7 +2,7 @@ use crate::{
     model::{DetectionStatus, MatchedOutput, NotificationStatus, WatchRegistration},
     store::WatchStore,
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{sync::Arc, time::Duration};
@@ -71,7 +71,9 @@ impl NotificationSink for Tex8PushNotificationSink {
             .set("content-type", "application/json")
             .set("x-fast-wallet-push-token", &self.auth_token)
             .send_string(&body)
-            .context("push gateway rejected generic Fast Wallet signal")?;
+            .map_err(|error| {
+                anyhow!("push gateway rejected generic Fast Wallet signal: {error}")
+            })?;
         Ok(())
     }
 }

@@ -112,6 +112,9 @@ export NOTIFY_SCANNER_PUSH_TENANT_ID=monero-wallet
 export NOTIFY_SCANNER_PUSH_SHOP_ID=monero-wallet
 export NOTIFY_SCANNER_PUSH_APP_ID=monero-wallet
 export NOTIFY_SCANNER_PUSH_TIMEOUT_MS=10000
+# Optional: enables the separately authenticated test-only payment signal route.
+# It is intentionally not the scanner API token.
+export NOTIFY_SCANNER_TEST_AUTH_TOKEN=<dedicated-test-only-secret>
 cargo run --manifest-path services/notify-scanner/Cargo.toml
 ```
 
@@ -149,6 +152,24 @@ are intentionally ignored by the dispatcher. The v2 cloud event contains only
 an opaque event id, anonymous subscription id, app routing scope, and the
 generic signal. It has no optional detail mode. Addresses and private view keys
 never leave the encrypted scanner database through the push path.
+
+### End-to-end Fast Receive test signal
+
+When `NOTIFY_SCANNER_TEST_AUTH_TOKEN` is set, an operator can test the exact
+same notification delivery route without fabricating an on-chain payment:
+
+```sh
+curl --fail-with-body \
+  -H "authorization: Bearer $NOTIFY_SCANNER_TEST_AUTH_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"identity_id":"fast-receive-identity"}' \
+  https://xmr.tex8.com/v1/fast-receive/test/incoming-transaction
+```
+
+The route is absent unless its dedicated token is configured. It does **not**
+accept a transaction id, amount, address, seed, spend key, or view key. It
+creates one opaque test event for the existing identity and delivers the same
+generic `incoming_transaction` notification that an actual scanner match uses.
 
 ## Scanner Worker
 
