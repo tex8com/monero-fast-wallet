@@ -30,6 +30,17 @@ for command in ssh tar; do
   command -v "$command" >/dev/null || { echo "Missing required command: $command" >&2; exit 1; }
 done
 
+# Never use the live host as the first compiler or test runner.  The gateway
+# route contract is validated locally before any SSH connection or privileged
+# server change is attempted.
+if command -v cargo >/dev/null 2>&1; then
+  echo "Running local notification-gateway tests before deployment..."
+  cargo test --manifest-path "$SERVICE_DIR/Cargo.toml"
+else
+  echo "Local Cargo is required for a live deployment preflight." >&2
+  exit 1
+fi
+
 echo "Uploading notification gateway to ${REMOTE_HOST}..."
 tar -czf - "$SERVICE_DIR" | ssh "$REMOTE_HOST" \
   "set -euo pipefail; rm -rf '$REMOTE_STAGE'; mkdir -p '$REMOTE_STAGE'; tar -xzf - -C '$REMOTE_STAGE'"
@@ -59,6 +70,7 @@ fi
 echo "Building the notification gateway on the live server..."
 "$HOME/.cargo/bin/cargo" build --release --manifest-path "$service_dir/Cargo.toml"
 test -x "$binary"
+"$HOME/.cargo/bin/cargo" test --manifest-path "$service_dir/Cargo.toml"
 
 # Ask only on the user's own terminal for all server mutations.
 sudo -v
@@ -83,6 +95,30 @@ sudo cp -a "$site_file" "$backup_dir/xmr.tex8.com.nginx"
 [[ -f "$nginx_snippet" ]] && sudo cp -a "$nginx_snippet" "$backup_dir/notification-gateway.conf" || true
 [[ -f "$env_file" ]] && sudo cp -a "$env_file" "$backup_dir/notification-gateway.env" || true
 sudo cp -a "$scanner_env" "$backup_dir/notify-scanner.env"
+
+# Once privileged files are about to change, a failed verification restores
+# the known-good service/Nginx/scanner configuration automatically. This
+# prevents the misleading half-deployed state that previously required a
+# sequence of manual root commands to repair.
+deployment_committed=0
+rollback() {
+  status=$?
+  if [[ "$deployment_committed" -eq 1 ]]; then
+    exit "$status"
+  fi
+  echo "Deployment validation failed; restoring the previous notification gateway configuration." >&2
+  [[ -f "$backup_dir/xmr.tex8.com.nginx" ]] && sudo cp -a "$backup_dir/xmr.tex8.com.nginx" "$site_file"
+  [[ -f "$backup_dir/notification-gateway.service" ]] && sudo cp -a "$backup_dir/notification-gateway.service" "$unit_file"
+  [[ -f "$backup_dir/notification-gateway.conf" ]] && sudo cp -a "$backup_dir/notification-gateway.conf" "$nginx_snippet"
+  [[ -f "$backup_dir/notification-gateway.env" ]] && sudo cp -a "$backup_dir/notification-gateway.env" "$env_file"
+  [[ -f "$backup_dir/notify-scanner.env" ]] && sudo cp -a "$backup_dir/notify-scanner.env" "$scanner_env"
+  sudo systemctl daemon-reload || true
+  sudo systemctl restart "$service_name" || true
+  sudo systemctl restart notify-scanner || true
+  if sudo nginx -t; then sudo systemctl reload nginx || true; fi
+  exit "$status"
+}
+trap rollback ERR
 
 if ! id "$service_user" >/dev/null 2>&1; then
   sudo useradd --system --user-group --home-dir /var/lib/monero-notification-gateway \
@@ -185,6 +221,8 @@ else
   printf '%s' "$probe_response" | grep -q "\"id\":\"$probe_event\""
   printf '%s' "$probe_response" | grep -q '"category":"monero.fast_wallet.incoming"'
 fi
+deployment_committed=1
+trap - ERR
 rm -rf "$stage"
 echo
 echo "Notification gateway is live. Backup: $backup_dir"

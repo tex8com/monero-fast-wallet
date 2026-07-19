@@ -89,7 +89,9 @@ try {
     serviceUrl = `http://127.0.0.1:${service.address().port}`;
   }
   await writeFile(configPath, JSON.stringify({
-    version: 1,
+    // Exercise the current shared contract, not the legacy compatibility
+    // path. This catches an agent/app contract drift before deployment.
+    version: 2,
     installationId: liveInstallationId ?? 'linux-e2e-installation',
     provider: 'linux-agent',
     serviceUrl,
