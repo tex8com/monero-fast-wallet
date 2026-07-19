@@ -1,15 +1,13 @@
 # Monero Fast Wallet Notification Gateway
 
-This is the separate HTTPS gateway for opaque desktop notification delivery.
+This is the separate HTTPS/WebSocket gateway for opaque desktop notification delivery.
 It is intentionally independent from Community and the scanner API.
 
 It accepts only a generic `incoming_transaction` signal from the local scanner
 and stores a short queue by anonymous installation capability. It rejects
 wallet addresses, amounts, transaction ids, key images, seeds, view keys,
 spend keys, arbitrary provider payload fields, and arbitrary registration
-targets. A Windows WNS channel URI is an opaque provider credential: it is
-accepted only on the registration endpoint, stored in the service-private
-event store, and never returned or logged.
+targets.
 
 ## API contract
 
@@ -28,49 +26,25 @@ deployment and requires `x-fast-wallet-push-token`. It accepts only:
 }
 ```
 
-`GET /api/v1/notifications/events` requires the anonymous capability in the
-`x-fast-wallet-installation-id` HTTPS header. It returns and removes pending
-opaque events. The agent does not put this value into a URL, so it is not part
-of normal access logs. This is deliberately at-most-once delivery: an event
-may be lost if the agent crashes after its retrieval; it must never be shown
-repeatedly after service restart.
+`GET /api/v1/notifications/stream` requires the anonymous capability in the
+`x-fast-wallet-installation-id` HTTPS header and is upgraded by Nginx to a
+durable `wss://` connection. Linux and Windows background agents keep this one
+outbound TLS connection open. The gateway sends a generic event, retains it,
+and removes it only after the agent acknowledges that it has shown the desktop
+notification. The agent reconnects after a network change with bounded
+backoff. There is no periodic polling and no capability is placed in a URL.
 
-`POST` and `DELETE /api/v1/notifications/installations` are the Windows WNS
-registration endpoints. Both require the same anonymous installation
-capability in `x-fast-wallet-installation-id`. Registration accepts only a
-Windows WNS channel hosted at `*.notify.windows.com`; it rejects arbitrary
-URLs, so the gateway cannot be used as an SSRF relay. A successful event is
-kept in the local opaque fallback queue and is also sent as a generic WNS toast
-when a current WNS registration exists. The toast carries no wallet data or
-event identifier.
+## Platform delivery
 
-## WNS server configuration
+| Platform | Delivery path |
+| --- | --- |
+| macOS | APNs is the primary closed-app path. A user-level WebSocket fallback can be enabled separately without replacing APNs. |
+| Windows | Unprivileged user-level `monero-fast-walletd` WebSocket agent → Windows desktop notification. |
+| Linux | Unprivileged user-level `monero-fast-walletd` WebSocket agent → DBus desktop notification. |
 
-Set these three values **only on the gateway host** in
-`/etc/monero-fast-wallet/notification-gateway.env`, then restart the service:
-
-```ini
-NOTIFICATION_GATEWAY_WNS_CLIENT_ID="<Microsoft Entra application (client) ID>"
-NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET="<Microsoft Entra client-secret Value>"
-NOTIFICATION_GATEWAY_WNS_TENANT_ID="<Microsoft Entra Directory (tenant) ID>"
-```
-
-This uses Microsoft's current Windows App SDK / Microsoft Entra OAuth flow:
-the gateway obtains a token from the tenant-specific Microsoft identity
-endpoint with the `https://wns.windows.com/.default` scope. The client secret
-**Value** (not its Secret ID) must not be copied into the desktop app,
-committed to Git, printed to a terminal, or passed through the deployment
-script. All three values must be present together. Without them the service
-keeps opaque local polling working but rejects WNS registration with `503`, and
-the desktop correctly reports that closed-app WNS is unavailable.
-
-For a packaged Windows desktop release, Microsoft additionally requires a
-**multi-tenant** Entra app registration and a one-time mapping of the Store
-Package Family Name (PFN) to that Entra Application ID. Submit that mapping to
-`Win_App_SDK_Push@microsoft.com` with the PFN, Application (client) ID, and the
-service-principal Object ID. Microsoft processes these mapping requests on a
-weekly cadence. Do not treat the Partner Center WNS screen or a local MSIX test
-certificate as a substitute for that mapping.
+The private delivery path requires no external push-provider or Microsoft credentials.
+The notification is deliberately generic: it conveys only that the Fast Wallet
+has activity; the wallet opens and syncs locally to reveal any details.
 
 ## Live deployment
 
@@ -82,5 +56,5 @@ bash services/notification-gateway/deploy/deploy-live-from-macos.sh
 
 The command asks for the existing server administrator's sudo password in the
 local terminal. It preserves the Community include, backs up the live Nginx,
-scanner and gateway configuration, and wires `notify-scanner` to the gateway
-over `127.0.0.1`.
+scanner and gateway configuration, verifies the public secure-stream route,
+and wires `notify-scanner` to the gateway over `127.0.0.1`.

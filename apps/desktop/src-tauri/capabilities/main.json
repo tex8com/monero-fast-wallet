@@ -33,7 +33,7 @@
     "allow-request-notification-installation",
     "allow-disable-notification-installation",
     "allow-consume-pending-notification-open",
-    "allow-linux-notification-agent-config-path",
+    "allow-background-notification-agent-config-path",
     "allow-disable-fast-wallet",
     "allow-load-node-settings",
     "allow-save-node-settings",

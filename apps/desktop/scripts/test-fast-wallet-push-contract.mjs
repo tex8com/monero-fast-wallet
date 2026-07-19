@@ -34,12 +34,18 @@ test('rejects unknown fields, old contracts, and malformed event identifiers', (
 });
 
 test('documents the closed-app provider contract used by desktop adapters', () => {
-  const providers = new Set(['apns', 'wns', 'linux-agent', 'tauri-local']);
-  const deliveries = new Set(['disabled', 'local-while-open', 'closed-app-apns', 'closed-app-wns', 'background-linux-agent']);
+  const providers = new Set(['apns', 'windows-agent', 'linux-agent', 'tauri-local']);
+  const deliveries = new Set([
+    'disabled',
+    'local-while-open',
+    'closed-app-apns',
+    'background-windows-agent',
+    'background-linux-agent',
+  ]);
   assert.equal(providers.has('apns'), true);
-  assert.equal(providers.has('wns'), true);
+  assert.equal(providers.has('windows-agent'), true);
   assert.equal(providers.has('linux-agent'), true);
   assert.equal(deliveries.has('background-linux-agent'), true);
+  assert.equal(deliveries.has('background-windows-agent'), true);
   assert.equal(deliveries.has('closed-app-apns'), true);
-  assert.equal(deliveries.has('closed-app-wns'), true);
 });

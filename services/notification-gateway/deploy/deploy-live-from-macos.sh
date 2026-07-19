@@ -10,17 +10,6 @@ REMOTE_STAGE="/home/${REMOTE_USER}/monero-fast-wallet-notification-gateway-$(dat
 SERVICE_DIR="services/notification-gateway"
 SERVICE_NAME="notification-gateway"
 SERVICE_USER="monero-notification-gateway"
-PROBE_INSTALLATION_ID="${NOTIFICATION_GATEWAY_PROBE_INSTALLATION_ID:-}"
-WNS_SECRETS_FILE="${WNS_SECRETS_FILE:-}"
-
-if [[ -n "$PROBE_INSTALLATION_ID" && ! "$PROBE_INSTALLATION_ID" =~ ^[A-Za-z0-9_-]{16,160}$ ]]; then
-  echo "NOTIFICATION_GATEWAY_PROBE_INSTALLATION_ID must be an anonymous installation id." >&2
-  exit 1
-fi
-if [[ -n "$WNS_SECRETS_FILE" && ! -f "$WNS_SECRETS_FILE" ]]; then
-  echo "WNS_SECRETS_FILE does not exist." >&2
-  exit 1
-fi
 
 if [[ ! -f "${SERVICE_DIR}/Cargo.toml" ]]; then
   echo "Run from the monero-fast-wallet repository root." >&2
@@ -50,11 +39,6 @@ echo "Uploading notification gateway to ${REMOTE_HOST}..."
 # extended attributes, keeping the operator output concise and reproducible.
 git archive --format=tar HEAD "$SERVICE_DIR" | ssh "$REMOTE_HOST" \
   "set -euo pipefail; rm -rf '$REMOTE_STAGE'; mkdir -p '$REMOTE_STAGE'; tar -xf - -C '$REMOTE_STAGE'"
-if [[ -n "$WNS_SECRETS_FILE" ]]; then
-  # The file is transferred only into the short-lived, user-owned deploy stage.
-  # It is never echoed, placed in the repository, or passed as a shell argument.
-  scp -q "$WNS_SECRETS_FILE" "$REMOTE_HOST:$REMOTE_STAGE/wns-server.env"
-fi
 
 ssh "$REMOTE_HOST" "cat > '$REMOTE_STAGE/install.sh' && chmod 0700 '$REMOTE_STAGE/install.sh'" <<'REMOTE'
 set -euo pipefail
@@ -67,7 +51,6 @@ env_file="/etc/monero-fast-wallet/notification-gateway.env"
 unit_file="/etc/systemd/system/$service_name.service"
 nginx_snippet="/etc/nginx/snippets/notification-gateway.conf"
 scanner_env="/srv/monero-fast-wallet/monero-fast-wallet-runtime/notify-scanner.env"
-wns_source="$stage/wns-server.env"
 
 if [[ ! -x "$HOME/.cargo/bin/cargo" ]]; then
   echo "Cargo is missing on the live server." >&2
@@ -140,19 +123,6 @@ fi
 sudo chown root:root "$env_file"
 sudo chmod 0600 "$env_file"
 
-if [[ -f "$wns_source" ]]; then
-  wns_client_id="$(sed -n 's/^NOTIFICATION_GATEWAY_WNS_CLIENT_ID=//p' "$wns_source" | head -n1)"
-  wns_client_secret="$(sed -n 's/^NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=//p' "$wns_source" | head -n1)"
-  wns_tenant_id="$(sed -n 's/^NOTIFICATION_GATEWAY_WNS_TENANT_ID=//p' "$wns_source" | head -n1)"
-  if [[ ! "$wns_client_id" =~ ^[A-Za-z0-9-]{16,160}$ || -z "$wns_client_secret" || ${#wns_client_secret} -gt 4096 || ! "$wns_tenant_id" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
-    echo "WNS secret file is incomplete or invalid." >&2
-    exit 1
-  fi
-  sudo sed -i '/^NOTIFICATION_GATEWAY_WNS_CLIENT_ID=/d;/^NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=/d;/^NOTIFICATION_GATEWAY_WNS_TENANT_ID=/d' "$env_file"
-  printf 'NOTIFICATION_GATEWAY_WNS_CLIENT_ID=%s\nNOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=%s\nNOTIFICATION_GATEWAY_WNS_TENANT_ID=%s\n' \
-    "$wns_client_id" "$wns_client_secret" "$wns_tenant_id" | sudo tee -a "$env_file" >/dev/null
-  sudo chmod 0600 "$env_file"
-fi
 token="$(sudo sed -n 's/^NOTIFICATION_GATEWAY_SCANNER_TOKEN=//p' "$env_file" | head -n1)"
 if [[ ! "$token" =~ ^[[:xdigit:]]{64}$ ]]; then
   echo "Gateway scanner token is invalid." >&2
@@ -184,33 +154,23 @@ sudo nginx -t
 sudo systemctl reload nginx
 
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8090/healthz
-# nginx and the public TLS listener can take a moment to observe a freshly
-# reloaded location.  Retry the expected anonymous rejection before deciding
-# that the route is unavailable, then fail with an actionable status.
-status=""
+# The TLS listener can take a moment to observe a freshly reloaded WebSocket
+# location. A malformed anonymous capability must consistently be rejected.
+stream_status=""
 for _attempt in 1 2 3 4 5 6; do
-  status="$(curl --silent --show-error --max-time 15 https://xmr.tex8.com/api/v1/notifications/events \
+  stream_status="$(curl --silent --show-error --max-time 15 https://xmr.tex8.com/api/v1/notifications/stream \
     -H 'x-fast-wallet-installation-id: invalid' -o /dev/null -w '%{http_code}' || true)"
-  [[ "$status" == "401" ]] && break
+  [[ "$stream_status" == "401" ]] && break
   sleep 2
 done
-if [[ "$status" != "401" ]]; then
-  echo "Notification gateway public route did not become ready (HTTP ${status:-unavailable})." >&2
+if [[ "$stream_status" != "401" ]]; then
+  echo "Notification gateway secure stream route did not become ready (HTTP ${stream_status:-unavailable})." >&2
   exit 1
 fi
-registration_status="$(curl --silent --show-error --max-time 15 \
-  -X POST https://xmr.tex8.com/api/v1/notifications/installations \
-  -H 'content-type: application/json' \
-  -o /dev/null -w '%{http_code}' \
-  --data '{"contractVersion":"monero-fast-wallet-push.v2","installationId":"invalid","platform":"windows","provider":"wns","endpoint":"https://notify.windows.com/"}' || true)"
-if [[ "$registration_status" != "401" ]]; then
-  echo "Notification gateway WNS registration route did not become ready (HTTP ${registration_status:-unavailable})." >&2
-  exit 1
-fi
-# Exercise the complete live route with a disposable opaque event. The event
-# is drained immediately and never contains a wallet identifier or payment
-# detail. Keep the scanner token out of all output and access logs.
-probe_installation="${NOTIFICATION_GATEWAY_PROBE_INSTALLATION_ID:-mwp_linux_$(openssl rand -hex 16)}"
+# Queue one disposable opaque event as a server-side smoke test. End-to-end
+# delivery and acknowledgement are verified locally before a live deploy; this
+# installer never consumes a real user's stream.
+probe_installation="mwp_deploy_probe_$(openssl rand -hex 16)"
 probe_event="sig_$(openssl rand -hex 32)"
 probe_payload="$(printf '{\"contractVersion\":\"monero-fast-wallet-push.v2\",\"eventId\":\"%s\",\"tenantId\":\"monero-wallet\",\"shopId\":\"monero-wallet\",\"appId\":\"monero-wallet\",\"subscriptionId\":\"%s\",\"signal\":\"incoming_transaction\"}' "$probe_event" "$probe_installation")"
 curl --fail --silent --show-error --max-time 10 \
@@ -218,28 +178,13 @@ curl --fail --silent --show-error --max-time 10 \
   -H "x-fast-wallet-push-token: $token" \
   -H 'content-type: application/json' \
   --data "$probe_payload" >/dev/null
-if [[ -n "${NOTIFICATION_GATEWAY_PROBE_INSTALLATION_ID:-}" ]]; then
-  # A caller-supplied installation belongs to a real test client. Do not
-  # consume its one-time event here; its background agent must receive it.
-  echo "Queued an opaque probe event for the supplied installation."
-else
-  probe_response="$(curl --fail --silent --show-error --max-time 15 \
-    https://xmr.tex8.com/api/v1/notifications/events \
-    -H "x-fast-wallet-installation-id: $probe_installation")"
-  printf '%s' "$probe_response" | grep -q "\"id\":\"$probe_event\""
-  printf '%s' "$probe_response" | grep -q '"category":"monero.fast_wallet.incoming"'
-fi
+echo "Queued a disposable opaque probe event for the secure stream."
 deployment_committed=1
 trap - ERR
 rm -rf "$stage"
 echo
 echo "Notification gateway is live. Backup: $backup_dir"
-if ! sudo grep -Eq '^NOTIFICATION_GATEWAY_WNS_CLIENT_ID=.+$' "$env_file" \
-  || ! sudo grep -Eq '^NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=.+$' "$env_file" \
-  || ! sudo grep -Eq '^NOTIFICATION_GATEWAY_WNS_TENANT_ID=.+$' "$env_file"; then
-  echo "WNS is intentionally not enabled: add the three NOTIFICATION_GATEWAY_WNS_* values to $env_file, then restart $service_name." >&2
-fi
+echo "Private WebSocket delivery is ready; no external push-provider credential is required."
 REMOTE
 
-ssh -tt "$REMOTE_HOST" \
-  "NOTIFICATION_GATEWAY_PROBE_INSTALLATION_ID='$PROBE_INSTALLATION_ID' bash '$REMOTE_STAGE/install.sh' '$REMOTE_STAGE'"
+ssh -tt "$REMOTE_HOST" "bash '$REMOTE_STAGE/install.sh' '$REMOTE_STAGE'"

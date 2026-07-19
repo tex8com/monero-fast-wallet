@@ -14,12 +14,13 @@ use tauri::{AppHandle, Manager};
 
 const NOTIFICATION_DIR: &str = "notifications";
 const INSTALLATION_FILE: &str = "desktop-installation.json";
-const LINUX_AGENT_FILE: &str = "linux-agent.json";
+const BACKGROUND_AGENT_FILE: &str = "background-agent.json";
 const PENDING_OPEN_FILE: &str = "pending-open-event.json";
-const CONTRACT_VERSION: u8 = 2;
+const CONTRACT_VERSION: u8 = 4;
 
 // These symbols are implemented by the AppKit bridge.  Keep the declaration
-// macOS-only: Windows uses WNS and must not try to link an APNs implementation.
+// macOS uses APNs. Windows and Linux use the private background agent and
+// must not try to link an APNs implementation.
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn tex8_desktop_apns_register() -> c_int;
@@ -75,19 +76,19 @@ pub struct NotificationInstallationStatus {
     pub installation: NotificationInstallation,
     pub delivery: String,
     pub background_mode_supported: bool,
-    pub linux_agent_config_path: Option<String>,
+    pub background_agent_config_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LinuxAgentConfig {
+struct BackgroundAgentConfig {
     version: u8,
     installation_id: String,
     platform: String,
     provider: String,
     service_url: String,
-    poll_interval_ms: u64,
     app_command: Option<String>,
+    enabled: bool,
 }
 
 pub fn status(app: &AppHandle) -> Result<NotificationInstallationStatus, String> {
@@ -95,9 +96,6 @@ pub fn status(app: &AppHandle) -> Result<NotificationInstallationStatus, String>
     let previous_endpoint = installation.endpoint.clone();
     refresh_platform_endpoint(&mut installation);
     if installation.endpoint != previous_endpoint {
-        if installation.provider == "wns" {
-            installation.gateway_status = "unregistered".to_owned();
-        }
         installation.updated_at = now();
         write_installation(app, &installation)?;
     }
@@ -119,20 +117,15 @@ pub fn request_installation(
         request_macos_apns_registration();
     }
     refresh_platform_endpoint(&mut installation);
-    if installation.enabled && installation.provider == "wns" {
-        installation.gateway_status = match register_windows_wns_channel(&installation) {
-            Ok(()) => "registered".to_owned(),
-            Err(_) => "unavailable".to_owned(),
-        };
-    }
     installation.background_mode_enabled = installation.enabled
-        && platform() == "linux"
-        && input.background_mode_enabled.unwrap_or(false);
+        && matches!(platform(), "windows" | "linux")
+        && input.background_mode_enabled.unwrap_or(true);
     installation.provider_status = provider_status(&installation);
     installation.updated_at = now;
     write_installation(app, &installation)?;
-    write_or_remove_linux_agent_config(app, &installation)?;
+    write_background_agent_config(app, &installation)?;
     crate::linux_notification_agent::reconcile(app, installation.background_mode_enabled)?;
+    crate::windows_notification_agent::reconcile(app, installation.background_mode_enabled)?;
     status_for_installation(app, installation)
 }
 
@@ -142,14 +135,12 @@ pub fn disable_installation(app: &AppHandle) -> Result<NotificationInstallationS
     installation.background_mode_enabled = false;
     installation.permission_status = "denied".to_owned();
     installation.provider_status = provider_status(&installation);
-    if installation.provider == "wns" {
-        let _ = remove_windows_wns_channel(&installation);
-        installation.gateway_status = "disabled".to_owned();
-    }
+    installation.gateway_status = "disabled".to_owned();
     installation.updated_at = now();
     write_installation(app, &installation)?;
-    write_or_remove_linux_agent_config(app, &installation)?;
+    write_background_agent_config(app, &installation)?;
     crate::linux_notification_agent::reconcile(app, false)?;
+    crate::windows_notification_agent::reconcile(app, false)?;
     status_for_installation(app, installation)
 }
 
@@ -166,12 +157,12 @@ pub fn consume_pending_open(app: &AppHandle) -> Result<Option<NotificationEvent>
     Ok(Some(event))
 }
 
-pub fn linux_agent_config_path(app: &AppHandle) -> Result<Option<String>, String> {
-    if platform() != "linux" {
+pub fn background_agent_config_path(app: &AppHandle) -> Result<Option<String>, String> {
+    if !matches!(platform(), "windows" | "linux") {
         return Ok(None);
     }
     Ok(Some(
-        notification_path(app, LINUX_AGENT_FILE)?
+        notification_path(app, BACKGROUND_AGENT_FILE)?
             .to_string_lossy()
             .into_owned(),
     ))
@@ -184,8 +175,10 @@ fn status_for_installation(
     installation.provider_status = provider_status(&installation);
     Ok(NotificationInstallationStatus {
         delivery: delivery(&installation),
-        background_mode_supported: matches!(platform(), "macos" | "windows" | "linux"),
-        linux_agent_config_path: linux_agent_config_path(app)?,
+        // APNs owns closed-app delivery on macOS. The optional local agent is
+        // intentionally a Windows/Linux feature until a macOS fallback exists.
+        background_mode_supported: matches!(platform(), "windows" | "linux"),
+        background_agent_config_path: background_agent_config_path(app)?,
         installation,
     })
 }
@@ -222,17 +215,17 @@ fn load(app: &AppHandle) -> Result<Option<NotificationInstallation>, String> {
     };
     let mut installation = serde_json::from_str::<NotificationInstallation>(&raw)
         .map_err(|_| "Desktop notification installation is invalid.".to_owned())?;
-    if !matches!(installation.version, 1 | CONTRACT_VERSION)
+    if !matches!(installation.version, 1 | 2 | 3 | CONTRACT_VERSION)
         || installation.installation_id.is_empty()
         || installation.installation_id.len() > 80
         || !matches!(
             installation.provider.as_str(),
-            "apns" | "wns" | "linux-agent" | "tauri-local"
+            "apns" | "windows-agent" | "linux-agent" | "tauri-local"
         )
     {
         return Err("Desktop notification installation is invalid.".to_owned());
     }
-    if installation.version == 1 {
+    if installation.version < CONTRACT_VERSION {
         installation.version = CONTRACT_VERSION;
         installation.gateway_status = "unregistered".to_owned();
     }
@@ -256,22 +249,20 @@ fn write_installation(
     )
 }
 
-fn write_or_remove_linux_agent_config(
+fn write_background_agent_config(
     app: &AppHandle,
     installation: &NotificationInstallation,
 ) -> Result<(), String> {
-    let path = notification_path(app, LINUX_AGENT_FILE)?;
-    if platform() != "linux" || !installation.background_mode_enabled {
-        let _ = fs::remove_file(path);
+    let path = notification_path(app, BACKGROUND_AGENT_FILE)?;
+    if !matches!(platform(), "windows" | "linux") {
         return Ok(());
     }
-    let config = LinuxAgentConfig {
+    let config = BackgroundAgentConfig {
         version: CONTRACT_VERSION,
         installation_id: installation.installation_id.clone(),
         platform: installation.platform.clone(),
         provider: installation.provider.clone(),
         service_url: notification_service_url(),
-        poll_interval_ms: 45_000,
         // Persist the absolute application executable while the app is alive.
         // The user-level agent can then reopen this exact app after a click,
         // without relying on a globally registered URL scheme.
@@ -279,11 +270,16 @@ fn write_or_remove_linux_agent_config(
             .ok()
             .filter(|path| path.is_absolute())
             .map(|path| path.to_string_lossy().into_owned()),
+        // The agent observes this state on a secure-stream heartbeat or a
+        // reconnect.
+        // Linux is additionally stopped by its user service; Windows is stopped
+        // on the next per-user start and never needs administrator privileges.
+        enabled: installation.background_mode_enabled,
     };
     write_json(
         path,
         &config,
-        "Linux notification agent config could not be saved.",
+        "Background notification agent config could not be saved.",
     )
 }
 
@@ -325,16 +321,11 @@ fn provider_status(installation: &NotificationInstallation) -> String {
         return "disabled".to_owned();
     }
     match installation.provider.as_str() {
-        "linux-agent" if installation.background_mode_enabled => "ready".to_owned(),
-        "linux-agent" => "local-fallback".to_owned(),
-        "apns" if is_apns_device_token(&installation.endpoint) => "ready".to_owned(),
-        "wns"
-            if !installation.endpoint.trim().is_empty()
-                && installation.gateway_status == "registered" =>
-        {
+        "linux-agent" | "windows-agent" if installation.background_mode_enabled => {
             "ready".to_owned()
         }
-        "wns" if !installation.endpoint.trim().is_empty() => "gateway-unavailable".to_owned(),
+        "linux-agent" | "windows-agent" => "local-fallback".to_owned(),
+        "apns" if is_apns_device_token(&installation.endpoint) => "ready".to_owned(),
         "tauri-local" => "local-fallback".to_owned(),
         _ => "not-configured".to_owned(),
     }
@@ -347,7 +338,7 @@ fn delivery(installation: &NotificationInstallation) -> String {
     match installation.provider_status.as_str() {
         "ready" => match installation.provider.as_str() {
             "apns" => "closed-app-apns",
-            "wns" => "closed-app-wns",
+            "windows-agent" => "background-windows-agent",
             "linux-agent" => "background-linux-agent",
             _ => "local-while-open",
         },
@@ -372,7 +363,7 @@ fn provider() -> &'static str {
     if cfg!(target_os = "macos") {
         "apns"
     } else if cfg!(target_os = "windows") {
-        "wns"
+        "windows-agent"
     } else if cfg!(target_os = "linux") {
         "linux-agent"
     } else {
@@ -395,49 +386,7 @@ fn refresh_platform_endpoint(installation: &mut NotificationInstallation) {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn refresh_platform_endpoint(installation: &mut NotificationInstallation) {
-    if !installation.enabled {
-        return;
-    }
-    match windows_wns_channel_uri() {
-        Ok(endpoint) => {
-            installation.endpoint = endpoint;
-            installation.provider_status = "unregistered".to_owned();
-        }
-        // An unpackaged development build has no Windows package identity and
-        // is therefore deliberately *not* reported as WNS-ready. The UI can
-        // still use its foreground local-notification fallback.
-        Err(error) => {
-            installation.endpoint.clear();
-            installation.provider_status = "not-configured".to_owned();
-            eprintln!("monero desktop WNS channel unavailable: {error}");
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_wns_channel_uri() -> Result<String, String> {
-    use windows::Networking::PushNotifications::PushNotificationChannelManager;
-
-    let operation =
-        PushNotificationChannelManager::CreatePushNotificationChannelForApplicationAsync()
-            .map_err(|error| format!("channel request failed: {error}"))?;
-    let channel = operation
-        .get()
-        .map_err(|error| format!("channel request failed: {error}"))?;
-    let endpoint = channel
-        .Uri()
-        .map_err(|error| format!("channel URI is unavailable: {error}"))?
-        .to_string();
-    if endpoint.starts_with("https://") && endpoint.len() <= 4096 {
-        Ok(endpoint)
-    } else {
-        Err("channel URI is invalid".to_owned())
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(target_os = "macos"))]
 fn refresh_platform_endpoint(_: &mut NotificationInstallation) {}
 
 #[cfg(target_os = "macos")]
@@ -490,64 +439,6 @@ fn notification_service_url() -> String {
         .unwrap_or_else(|_| "https://xmr.tex8.com/api/v1/notifications".to_owned())
 }
 
-fn notification_registration_url() -> String {
-    let base = notification_service_url();
-    base.strip_suffix("/events")
-        .map(|prefix| format!("{prefix}/installations"))
-        .unwrap_or_else(|| format!("{}/installations", base.trim_end_matches('/')))
-}
-
-fn register_windows_wns_channel(installation: &NotificationInstallation) -> Result<(), String> {
-    if installation.endpoint.trim().is_empty() {
-        return Err("WNS channel is unavailable.".to_owned());
-    }
-    let response = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|_| "Notification service is unavailable.".to_owned())?
-        .post(notification_registration_url())
-        .header(
-            "x-fast-wallet-installation-id",
-            &installation.installation_id,
-        )
-        .json(&serde_json::json!({
-            "contractVersion": "monero-fast-wallet-push.v2",
-            "installationId": installation.installation_id,
-            "platform": "windows",
-            "provider": "wns",
-            "endpoint": installation.endpoint,
-        }))
-        .send()
-        .map_err(|_| "Notification service is unavailable.".to_owned())?;
-    if response.status().as_u16() == 202 {
-        Ok(())
-    } else {
-        Err("Notification service rejected the WNS channel.".to_owned())
-    }
-}
-
-fn remove_windows_wns_channel(installation: &NotificationInstallation) -> Result<(), String> {
-    if installation.installation_id.trim().is_empty() {
-        return Ok(());
-    }
-    let response = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|_| "Notification service is unavailable.".to_owned())?
-        .delete(notification_registration_url())
-        .header(
-            "x-fast-wallet-installation-id",
-            &installation.installation_id,
-        )
-        .send()
-        .map_err(|_| "Notification service is unavailable.".to_owned())?;
-    if response.status().is_success() || response.status().as_u16() == 404 {
-        Ok(())
-    } else {
-        Err("Notification service rejected the WNS removal.".to_owned())
-    }
-}
-
 fn random_hex_16() -> String {
     let mut bytes = [0_u8; 16];
     if getrandom::getrandom(&mut bytes).is_err() {
@@ -595,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_agent_is_required_for_closed_app_linux_delivery() {
+    fn background_agents_are_required_for_closed_app_delivery() {
         let mut local = installation("linux-agent", "", false);
         local.provider_status = provider_status(&local);
         assert_eq!(local.provider_status, "local-fallback");
@@ -605,21 +496,18 @@ mod tests {
         background.provider_status = provider_status(&background);
         assert_eq!(background.provider_status, "ready");
         assert_eq!(delivery(&background), "background-linux-agent");
+
+        let mut windows = installation("windows-agent", "", true);
+        windows.platform = "windows".to_owned();
+        windows.provider_status = provider_status(&windows);
+        assert_eq!(windows.provider_status, "ready");
+        assert_eq!(delivery(&windows), "background-windows-agent");
     }
 
     #[test]
-    fn apns_and_wns_require_a_provider_endpoint() {
+    fn apns_requires_a_provider_endpoint() {
         let mut apns = installation("apns", "", false);
         apns.provider_status = provider_status(&apns);
         assert_eq!(apns.provider_status, "not-configured");
-
-        let mut wns = installation("wns", "wns-channel", false);
-        wns.provider_status = provider_status(&wns);
-        assert_eq!(wns.provider_status, "gateway-unavailable");
-        assert_eq!(delivery(&wns), "local-while-open");
-        wns.gateway_status = "registered".to_owned();
-        wns.provider_status = provider_status(&wns);
-        assert_eq!(wns.provider_status, "ready");
-        assert_eq!(delivery(&wns), "closed-app-wns");
     }
 }

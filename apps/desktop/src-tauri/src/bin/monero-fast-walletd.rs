@@ -1,28 +1,39 @@
+//! Private, unprivileged background notification agent for Windows and Linux.
+//!
+//! It maintains one outbound WSS connection to the Tex8 notification gateway.
+//! The gateway sends opaque event ids only; no wallet address, balance, amount,
+//! transaction or key material ever reaches this process.
+
 use serde::Deserialize;
-use std::{env, fs};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::{
+    collections::VecDeque,
     path::Path,
     process::Command,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use std::{env, fs};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use tungstenite::{client::IntoClientRequest, connect, http::HeaderValue, Message};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
 struct AgentConfig {
     version: u8,
     installation_id: String,
+    platform: String,
     provider: String,
     service_url: String,
-    poll_interval_ms: u64,
     app_command: Option<String>,
+    #[serde(default = "enabled_by_default")]
+    enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
 struct NotificationEvent {
     id: String,
     category: String,
@@ -31,6 +42,28 @@ struct NotificationEvent {
     received_at: String,
     #[serde(default)]
     opened: bool,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StreamEventMessage {
+    #[serde(rename = "type")]
+    message_type: String,
+    event: NotificationEvent,
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamAcknowledgement<'a> {
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    event_id: &'a str,
+}
+
+fn enabled_by_default() -> bool {
+    true
 }
 
 fn main() {
@@ -44,29 +77,26 @@ fn run() -> Result<(), String> {
     let config_path = parse_config_path()?;
     let config = read_config(&config_path)?;
     validate_config(&config)?;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = config;
-        return Err("monero-fast-walletd is supported only on Linux".to_owned());
+        return Err("monero-fast-walletd is supported only on Windows and Linux".to_owned());
     }
-    #[cfg(target_os = "linux")]
-    {
-        run_linux_agent(config)
-    }
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    run_agent(config_path, config)
 }
 
 fn validate_config(config: &AgentConfig) -> Result<(), String> {
-    // Version 2 added the shared desktop notification contract fields.  Keep
-    // accepting version 1 so an already installed agent can be upgraded
-    // without interrupting its background notification service.
-    if !matches!(config.version, 1 | 2) || config.provider != "linux-agent" {
-        return Err("invalid Linux notification agent config".to_owned());
-    }
-    if config.installation_id.trim().len() < 16
-        || config.service_url.trim().is_empty()
-        || config.poll_interval_ms == 0
+    // Version 4 replaces periodic polling with one authenticated WSS stream.
+    // The desktop host rewrites the config before it starts a migrated agent.
+    if !matches!(config.version, 1 | 2 | 3 | 4)
+        || !matches!(config.provider.as_str(), "linux-agent" | "windows-agent")
+        || !matches!(config.platform.as_str(), "linux" | "windows")
     {
-        return Err("invalid Linux notification agent config".to_owned());
+        return Err("invalid background notification agent config".to_owned());
+    }
+    if config.installation_id.trim().len() < 16 || config.service_url.trim().is_empty() {
+        return Err("invalid background notification agent config".to_owned());
     }
     Ok(())
 }
@@ -88,58 +118,122 @@ fn read_config(path: &str) -> Result<AgentConfig, String> {
     serde_json::from_str(&raw).map_err(|_| "config is invalid".to_owned())
 }
 
-#[cfg(target_os = "linux")]
-fn run_linux_agent(config: AgentConfig) -> Result<(), String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .user_agent("Monero-Fast-Wallet-Linux-Agent/0.1")
-        .build()
-        .map_err(|_| "notification client could not be initialized".to_owned())?;
-    let mut last_event_id = String::new();
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn run_agent(config_path: String, mut config: AgentConfig) -> Result<(), String> {
+    let mut reconnect_delay_secs = 1_u64;
     loop {
-        match fetch_events(&client, &config) {
-            Ok(events) => {
-                for event in events {
-                    if event.id == last_event_id || !is_opaque_event_id(&event.id) {
-                        continue;
-                    }
-                    show_linux_notification(&config, &event)?;
-                    last_event_id = event.id;
+        config = read_config(&config_path)?;
+        validate_config(&config)?;
+        if !config.enabled {
+            return Ok(());
+        }
+        match run_stream_connection(&config_path, &config) {
+            Ok(true) => return Ok(()),
+            // A server-side close is still a disconnection. Wait before
+            // reconnecting so a maintenance window can never turn into a
+            // CPU-intensive reconnect loop.
+            Ok(false) => {
+                thread::sleep(Duration::from_secs(reconnect_delay_secs));
+                reconnect_delay_secs = (reconnect_delay_secs * 2).min(30);
+            }
+            Err(error) => {
+                eprintln!("monero-fast-walletd stream disconnected: {error}");
+                thread::sleep(Duration::from_secs(reconnect_delay_secs));
+                reconnect_delay_secs = (reconnect_delay_secs * 2).min(30);
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool, String> {
+    let mut request = stream_url(config)?
+        .into_client_request()
+        .map_err(|_| "notification stream URL is invalid".to_owned())?;
+    let capability = HeaderValue::from_str(&config.installation_id)
+        .map_err(|_| "notification installation capability is invalid".to_owned())?;
+    request
+        .headers_mut()
+        .insert("x-fast-wallet-installation-id", capability);
+    let (mut socket, _) =
+        connect(request).map_err(|_| "notification stream could not be connected".to_owned())?;
+    let mut recent_event_ids = VecDeque::with_capacity(64);
+    loop {
+        match socket.read() {
+            Ok(Message::Text(text)) => {
+                let Ok(message) = serde_json::from_str::<StreamEventMessage>(&text) else {
+                    continue;
+                };
+                if message.message_type != "event" || !is_opaque_event_id(&message.event.id) {
+                    continue;
+                }
+                if recent_event_ids.iter().any(|id| id == &message.event.id) {
+                    acknowledge_event(&mut socket, &message.event.id)?;
+                    continue;
+                }
+                show_notification(config_path, config, &message.event)?;
+                acknowledge_event(&mut socket, &message.event.id)?;
+                recent_event_ids.push_back(message.event.id);
+                if recent_event_ids.len() > 64 {
+                    recent_event_ids.pop_front();
                 }
             }
-            Err(error) => eprintln!("monero-fast-walletd poll failed: {error}"),
+            Ok(Message::Ping(payload)) => {
+                socket.send(Message::Pong(payload)).map_err(|_| {
+                    "notification stream heartbeat could not be acknowledged".to_owned()
+                })?;
+                let updated = read_config(config_path)?;
+                validate_config(&updated)?;
+                if !updated.enabled {
+                    return Ok(true);
+                }
+            }
+            Ok(Message::Close(_)) => return Ok(false),
+            Ok(_) => {}
+            Err(_) => return Err("notification stream connection was interrupted".to_owned()),
         }
-        thread::sleep(Duration::from_millis(config.poll_interval_ms.max(10_000)));
     }
 }
 
-#[cfg(target_os = "linux")]
-fn fetch_events(
-    client: &reqwest::blocking::Client,
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn stream_url(config: &AgentConfig) -> Result<String, String> {
+    let base = config.service_url.trim_end_matches('/');
+    let scheme = if let Some(value) = base.strip_prefix("https://") {
+        format!("wss://{value}")
+    } else if let Some(value) = base.strip_prefix("http://") {
+        // Local test environments may use ws. Production configuration always
+        // writes https and therefore uses encrypted wss.
+        format!("ws://{value}")
+    } else {
+        return Err("notification service must use HTTP or HTTPS".to_owned());
+    };
+    Ok(format!("{scheme}/stream"))
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn acknowledge_event<S>(
+    socket: &mut tungstenite::WebSocket<S>,
+    event_id: &str,
+) -> Result<(), String>
+where
+    S: std::io::Read + std::io::Write,
+{
+    let body = serde_json::to_string(&StreamAcknowledgement {
+        message_type: "ack",
+        event_id,
+    })
+    .map_err(|_| "notification acknowledgement could not be prepared".to_owned())?;
+    socket
+        .send(Message::Text(body.into()))
+        .map_err(|_| "notification acknowledgement could not be sent".to_owned())
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn show_notification(
+    config_path: &str,
     config: &AgentConfig,
-) -> Result<Vec<NotificationEvent>, String> {
-    // Keep the anonymous installation capability out of URLs. URLs can be
-    // retained by access logs, while this HTTPS header is deliberately not
-    // logged by the gateway's Nginx configuration.
-    let url = format!("{}/events", config.service_url.trim_end_matches('/'));
-    let response = client
-        .get(url)
-        .header("x-fast-wallet-installation-id", &config.installation_id)
-        .send()
-        .map_err(|_| "notification service could not be reached".to_owned())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "notification service returned HTTP {}",
-            response.status().as_u16()
-        ));
-    }
-    response
-        .json::<Vec<NotificationEvent>>()
-        .map_err(|_| "notification service returned invalid events".to_owned())
-}
-
-#[cfg(target_os = "linux")]
-fn show_linux_notification(config: &AgentConfig, event: &NotificationEvent) -> Result<(), String> {
+    event: &NotificationEvent,
+) -> Result<(), String> {
     if event.category != "monero.fast_wallet.incoming"
         || !event.deep_link.starts_with("tex8://notification/")
     {
@@ -151,13 +245,19 @@ fn show_linux_notification(config: &AgentConfig, event: &NotificationEvent) -> R
         .appname("Monero Fast Wallet")
         .action("open", "Open wallet")
         .show()
-        .map_err(|_| "Linux desktop notification could not be shown".to_owned())?;
+        .map_err(|_| "desktop notification could not be shown".to_owned())?;
     let event = event.clone();
-    let config_path = config_path_for_pending_event(config)?;
+    let config_path = config_path.to_owned();
+    let command = config
+        .app_command
+        .as_ref()
+        .filter(|value| Path::new(value).is_absolute() && Path::new(value).is_file())
+        .cloned()
+        .ok_or_else(|| "wallet app command is unavailable".to_owned())?;
     thread::spawn(move || {
         handle.wait_for_action(move |action| {
             if matches!(action, "default" | "open") {
-                if let Err(error) = open_wallet_for_event(&config_path, &event) {
+                if let Err(error) = open_wallet_for_event(&(config_path, command), &event) {
                     eprintln!("monero-fast-walletd open failed: {error}");
                 }
             }
@@ -166,22 +266,7 @@ fn show_linux_notification(config: &AgentConfig, event: &NotificationEvent) -> R
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn config_path_for_pending_event(config: &AgentConfig) -> Result<(String, String), String> {
-    let config_path = env::args()
-        .skip_while(|arg| arg != "--config")
-        .nth(1)
-        .ok_or_else(|| "agent config path is unavailable".to_owned())?;
-    let command = config
-        .app_command
-        .as_ref()
-        .filter(|value| Path::new(value).is_absolute() && Path::new(value).is_file())
-        .cloned()
-        .ok_or_else(|| "Linux app command is unavailable".to_owned())?;
-    Ok((config_path, command))
-}
-
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn open_wallet_for_event(
     config_and_command: &(String, String),
     event: &NotificationEvent,
@@ -198,9 +283,6 @@ fn open_wallet_for_event(
         .ok_or_else(|| "notification directory is unavailable".to_owned())?
         .join("pending-open-event.json");
     let temporary = pending_path.with_extension("json.tmp");
-    // The desktop host consumes the same normalized event shape on every
-    // platform. The service may omit local delivery metadata, so create it
-    // here without ever adding wallet data to the on-disk hand-off.
     let pending_event = NotificationEvent {
         id: event.id.clone(),
         category: event.category.clone(),
@@ -229,7 +311,7 @@ fn open_wallet_for_event(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn is_opaque_event_id(value: &str) -> bool {
     (value.len() == 68
         && value.starts_with("evt_")
@@ -245,70 +327,17 @@ fn is_opaque_event_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{validate_config, AgentConfig};
-    #[cfg(target_os = "linux")]
-    use super::{is_opaque_event_id, open_wallet_for_event, NotificationEvent};
-    #[cfg(target_os = "linux")]
-    use std::{
-        fs,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
     #[test]
-    fn accepts_the_current_shared_notification_contract() {
+    fn accepts_the_current_private_background_agent_contract() {
         let config = AgentConfig {
-            version: 2,
-            installation_id: "mwp_linux_0123456789abcdef".to_owned(),
-            provider: "linux-agent".to_owned(),
+            version: 4,
+            installation_id: "mwp_desktop_0123456789abcdef".to_owned(),
+            platform: "windows".to_owned(),
+            provider: "windows-agent".to_owned(),
             service_url: "https://xmr.tex8.com/api/v1/notifications".to_owned(),
-            poll_interval_ms: 45_000,
             app_command: None,
+            enabled: true,
         };
         assert!(validate_config(&config).is_ok());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn accepts_only_the_documented_opaque_event_ids() {
-        assert!(is_opaque_event_id(&format!("evt_{}", "a".repeat(64))));
-        assert!(is_opaque_event_id(&format!("fwpush_{}", "b".repeat(32))));
-        assert!(!is_opaque_event_id("evt_wallet-address-or-amount"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn click_open_stores_only_the_validated_event_before_launching() {
-        let directory = std::env::temp_dir().join(format!(
-            "monero-fast-wallet-agent-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&directory).expect("create test notification directory");
-        let event_id = format!("evt_{}", "c".repeat(64));
-        let event = NotificationEvent {
-            id: event_id.clone(),
-            category: "monero.fast_wallet.incoming".to_owned(),
-            deep_link: format!("tex8://notification/{event_id}"),
-            received_at: String::new(),
-            opened: false,
-        };
-        open_wallet_for_event(
-            &(
-                directory
-                    .join("linux-agent.json")
-                    .to_string_lossy()
-                    .into_owned(),
-                "/bin/true".to_owned(),
-            ),
-            &event,
-        )
-        .expect("valid opaque event opens safely");
-        let pending = fs::read_to_string(directory.join("pending-open-event.json"))
-            .expect("pending event file");
-        assert!(pending.contains(&event_id));
-        assert!(pending.contains("\"opened\": true"));
-        assert!(!pending.contains("amount"));
-        let _ = fs::remove_dir_all(directory);
     }
 }

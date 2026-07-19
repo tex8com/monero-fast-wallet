@@ -29,7 +29,7 @@ test('desktop does not expose removed Modules or standalone Fast navigation', ()
 });
 
 test('desktop parity document records closed-app notification preparation truthfully', () => {
-  assert.match(parityDoc, /APNs\/WNS\/Linux-agent adapters/);
+  assert.match(parityDoc, /APNs and private Windows\/Linux background-agent adapters/);
   assert.match(parityDoc, /live closed-app delivery remain release gates/);
   assert.equal(/while app is open implemented; APNs closed-app delivery remains/.test(parityDoc), false);
 });

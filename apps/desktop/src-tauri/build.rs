@@ -28,7 +28,7 @@ const COMMANDS: &[&str] = &[
     "request_notification_installation",
     "disable_notification_installation",
     "consume_pending_notification_open",
-    "linux_notification_agent_config_path",
+    "background_notification_agent_config_path",
     "disable_fast_wallet",
     "load_node_settings",
     "save_node_settings",

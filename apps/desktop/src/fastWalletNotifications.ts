@@ -36,13 +36,13 @@ export type DesktopNotificationPreferences = {
 
 export type DesktopNotificationStatus = DesktopNotificationPreferences & {
   permission: 'granted' | 'denied' | 'unknown';
-  delivery: 'disabled' | 'local-while-open' | 'closed-app-apns' | 'closed-app-wns' | 'background-linux-agent';
+  delivery: 'disabled' | 'local-while-open' | 'closed-app-apns' | 'background-windows-agent' | 'background-linux-agent';
   platform: 'macos' | 'windows' | 'linux' | 'unknown';
-  provider: 'apns' | 'wns' | 'linux-agent' | 'tauri-local';
-  providerStatus: 'ready' | 'not-configured' | 'local-fallback' | 'disabled';
+  provider: 'apns' | 'windows-agent' | 'linux-agent' | 'tauri-local';
+  providerStatus: 'ready' | 'not-configured' | 'local-fallback' | 'disabled' | string;
   backgroundModeSupported: boolean;
   backgroundModeEnabled: boolean;
-  linuxAgentConfigPath?: string;
+  backgroundAgentConfigPath?: string;
   installationId: string;
 };
 
@@ -66,14 +66,13 @@ type NativeNotificationInstallationStatus = {
   };
   delivery: DesktopNotificationStatus['delivery'];
   backgroundModeSupported: boolean;
-  linuxAgentConfigPath?: string | null;
+  backgroundAgentConfigPath?: string | null;
 };
 
 export type NotificationClient = {
   requestPermission(): Promise<DesktopNotificationStatus>;
   refreshInstallation(): Promise<void>;
   disable(): Promise<DesktopNotificationStatus>;
-  subscribe(listener: (event: NotificationEvent) => void): () => void;
   consumePendingOpen(): Promise<NotificationEvent | null>;
 };
 
@@ -141,7 +140,7 @@ function normalizeStatus(
     providerStatus: installation?.providerStatus ?? 'not-configured',
     backgroundModeSupported: native?.backgroundModeSupported === true,
     backgroundModeEnabled: installation?.backgroundModeEnabled === true,
-    linuxAgentConfigPath: native?.linuxAgentConfigPath ?? undefined,
+    backgroundAgentConfigPath: native?.backgroundAgentConfigPath ?? undefined,
     installationId: installation?.installationId ?? getOrCreateDesktopInstallationId(),
   };
 }
@@ -158,7 +157,7 @@ export async function desktopNotificationStatus(): Promise<DesktopNotificationSt
 /**
  * Must be called from an explicit user action. This registers the desktop
  * installation with the platform provider selected by the native host:
- * APNs on macOS, WNS on Windows, and the optional user agent on Linux.
+ * APNs on macOS and a private, per-user background agent on Windows and Linux.
  */
 export async function enableDesktopFastWalletSignals(): Promise<DesktopNotificationStatus> {
   let granted = await isPermissionGranted();
@@ -178,7 +177,7 @@ export async function enableDesktopFastWalletSignals(): Promise<DesktopNotificat
     input: {
       permissionStatus: nativePermissionStatus(permission),
       locale: navigator.language,
-      backgroundModeEnabled: existing?.installation.platform === 'linux',
+      backgroundModeEnabled: existing?.installation.platform === 'windows' || existing?.installation.platform === 'linux',
     },
   });
   return normalizeStatus(native);
@@ -191,30 +190,10 @@ export async function disableDesktopFastWalletSignals(): Promise<DesktopNotifica
 }
 
 export function createDesktopNotificationClient(): NotificationClient {
-  let interval: number | undefined;
   return {
     requestPermission: enableDesktopFastWalletSignals,
     refreshInstallation: async () => { await desktopNotificationStatus(); },
     disable: disableDesktopFastWalletSignals,
-    subscribe(listener) {
-      const poll = async () => {
-        const rawSignals = await invoke<unknown[]>('poll_fast_wallet_push_signals');
-        for (const rawSignal of rawSignals) {
-          const signal = parseFastWalletPushEvent(rawSignal);
-          if (!signal) continue;
-          listener({
-            id: signal.eventId,
-            category: signal.type,
-            deepLink: `tex8://notification/${signal.eventId}`,
-            receivedAt: new Date().toISOString(),
-            opened: false,
-          });
-        }
-      };
-      void poll();
-      interval = window.setInterval(() => void poll(), 45_000);
-      return () => { if (interval !== undefined) window.clearInterval(interval); };
-    },
     consumePendingOpen: () => invoke<NotificationEvent | null>('consume_pending_notification_open'),
   };
 }

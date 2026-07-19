@@ -1,4 +1,4 @@
-use notification_gateway::{router, GatewayState, WnsConfig};
+use notification_gateway::{router, GatewayState};
 use std::{env, net::SocketAddr};
 use tokio::net::TcpListener;
 
@@ -12,8 +12,7 @@ async fn main() -> Result<(), String> {
         .map_err(|_| "NOTIFICATION_GATEWAY_SCANNER_TOKEN is required".to_owned())?;
     let storage = env::var("NOTIFICATION_GATEWAY_EVENT_STORE")
         .unwrap_or_else(|_| "./notification-events.json".to_owned());
-    let wns = WnsConfig::from_environment()?;
-    let state = GatewayState::open_with_wns(token, storage, wns)?;
+    let state = GatewayState::open(token, storage)?;
     let listener = TcpListener::bind(bind)
         .await
         .map_err(|_| "notification gateway could not bind".to_owned())?;

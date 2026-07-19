@@ -8,9 +8,7 @@ import {
   desktopNotificationStatus,
   disableDesktopFastWalletSignals,
   enableDesktopFastWalletSignals,
-  parseFastWalletPushEvent,
   sendPrivacySafeNotificationTest,
-  showPrivacySafeFastWalletNotification,
   type DesktopNotificationStatus,
 } from './fastWalletNotifications';
 import { type MarketPoint, type MarketTimeframe, useXmrChart, useXmrPrice } from './marketData';
@@ -67,7 +65,7 @@ function walletDisplayName(wallet: Pick<RegisteredWallet, 'displayName' | 'walle
 function notificationDeliveryLabel(status: DesktopNotificationStatus | null, t: ReturnType<typeof useI18n>['t']) {
   if (!status) return t('settings.deliveryChecking');
   if (status.delivery === 'closed-app-apns') return t('settings.deliveryApns');
-  if (status.delivery === 'closed-app-wns') return t('settings.deliveryWns');
+  if (status.delivery === 'background-windows-agent') return t('settings.deliveryWindowsAgent');
   if (status.delivery === 'background-linux-agent') return t('settings.deliveryLinuxAgent');
   if (status.delivery === 'disabled') return t('settings.deliveryDisabled');
   return status.providerStatus === 'not-configured' ? t('settings.deliveryNotConfigured', { provider: status.provider }) : t('settings.deliveryLocal');
@@ -199,28 +197,6 @@ export default function App() {
     window.addEventListener('blur', schedule); window.addEventListener('focus', cancel); document.addEventListener('visibilitychange', visibility);
     return () => { cancel(); window.removeEventListener('blur', schedule); window.removeEventListener('focus', cancel); document.removeEventListener('visibilitychange', visibility); };
   }, [activeWalletId, autoLockEnabled, closeActiveWallet]);
-  useEffect(() => {
-    let disposed = false;
-    const pollFastWalletSignals = async () => {
-      try {
-        const notification = await desktopNotificationStatus();
-        if (!notification.fastWalletSignalsEnabled || notification.permission !== 'granted') return;
-        const rawSignals = await invoke<unknown[]>('poll_fast_wallet_push_signals');
-        if (disposed) return;
-        for (const rawSignal of rawSignals) {
-          const signal = parseFastWalletPushEvent(rawSignal);
-          if (signal) await showPrivacySafeFastWalletNotification(signal);
-        }
-      } catch {
-        // Notification polling is intentionally quiet. Wallet refresh remains
-        // authoritative and the scanner must not disclose failure context.
-      }
-    };
-    void pollFastWalletSignals();
-    const timer = window.setInterval(() => void pollFastWalletSignals(), 45_000);
-    return () => { disposed = true; window.clearInterval(timer); };
-  }, []);
-
   return <main className="app-shell">
     <aside className="sidebar" aria-label="Main navigation">
       <div className="brand"><img className="brand-mark" src="/monero-mark.png" alt="" /><div><strong>Monero<span>Fast Wallet</span></strong><small>{t('shell.desktop')}</small></div></div>
@@ -1027,7 +1003,7 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
     </section>
     <section className="settings-section"><header><h3>{t('settings.notifications')}</h3><small>{notificationState?.permission === 'granted' ? t('settings.notificationsReady') : t('settings.notificationsOff')}</small></header>
       <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.fastWalletSignals')}</strong><p>{t('settings.fastWalletSignalsHint')}</p></div><label className="toggle"><input checked={notificationState?.fastWalletSignalsEnabled === true} disabled={notificationBusy} onChange={(event) => void setFastWalletNotifications(event.target.checked)} type="checkbox" /><span /></label></article>
-      <article className="settings-panel notification-privacy"><div><strong>{t('settings.notificationPrivacy')}</strong><p>{t('settings.notificationPrivacyHint')}</p><small>{t('settings.remotePushNotice')} · {notificationDeliveryLabel(notificationState, t)}</small>{notificationState?.linuxAgentConfigPath && <small>{notificationState.linuxAgentConfigPath}</small>}</div><button className="secondary" disabled={notificationBusy || notificationState?.fastWalletSignalsEnabled !== true || notificationState?.permission !== 'granted'} onClick={() => void testFastWalletNotification()} type="button">{t('settings.testNotification')}</button></article>
+      <article className="settings-panel notification-privacy"><div><strong>{t('settings.notificationPrivacy')}</strong><p>{t('settings.notificationPrivacyHint')}</p><small>{t('settings.remotePushNotice')} · {notificationDeliveryLabel(notificationState, t)}</small>{notificationState?.backgroundAgentConfigPath && <small>{notificationState.backgroundAgentConfigPath}</small>}</div><button className="secondary" disabled={notificationBusy || notificationState?.fastWalletSignalsEnabled !== true || notificationState?.permission !== 'granted'} onClick={() => void testFastWalletNotification()} type="button">{t('settings.testNotification')}</button></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.node')}</h3><small>{changed ? t('settings.unsaved') : savedProfile ? t('settings.saved') : t('settings.loading')}</small></header>
       <article className="settings-panel node-settings">{profile && <>

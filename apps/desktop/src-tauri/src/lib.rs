@@ -8,6 +8,7 @@ mod node_settings;
 mod secure_store;
 mod wallet_core;
 mod wallet_registry;
+mod windows_notification_agent;
 
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fs, sync::Mutex, time::Duration};
@@ -230,21 +231,6 @@ struct ScannerWatchResponse {
     last_scanned_height: u64,
     notifications_enabled: bool,
 }
-/// The scanner's public match endpoint deliberately returns only an opaque
-/// event id and state metadata. The desktop renderer receives an even smaller
-/// normalised signal below, never the identity that produced it.
-#[derive(Debug, Deserialize)]
-struct ScannerMatchedOutputResponse {
-    event_id: String,
-}
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DesktopFastWalletPushSignal {
-    r#type: &'static str,
-    contract_version: &'static str,
-    event_id: String,
-}
-
 #[tauri::command]
 fn notification_installation_status(
     app: AppHandle,
@@ -275,8 +261,8 @@ fn consume_pending_notification_open(
 }
 
 #[tauri::command]
-fn linux_notification_agent_config_path(app: AppHandle) -> Result<Option<String>, String> {
-    desktop_notifications::linux_agent_config_path(&app)
+fn background_notification_agent_config_path(app: AppHandle) -> Result<Option<String>, String> {
+    desktop_notifications::background_agent_config_path(&app)
 }
 
 #[tauri::command]
@@ -1028,7 +1014,7 @@ async fn enable_fast_wallet(
     let mut payload =
         parsed.map_err(|_| "The native Fast Wallet scanner payload was invalid.".to_owned())?;
     // The scanner receives only this anonymous installation capability when
-    // the user opted into notifications. It is neither an APNs/WNS token nor
+    // the user opted into notifications. It is not a push-provider token nor
     // a wallet identifier and lets the Linux background agent retrieve only
     // generic opaque event ids from the notification gateway.
     let subscription_id = notification_subscription_id(&app)?;
@@ -1094,39 +1080,6 @@ async fn refresh_fast_wallet_status(
         }
     }
     fast_wallet::update(&app, record)
-}
-#[tauri::command]
-async fn poll_fast_wallet_push_signals(
-    app: AppHandle,
-) -> Result<Vec<DesktopFastWalletPushSignal>, String> {
-    let mut signals = Vec::new();
-    for record in fast_wallet::list(&app)? {
-        // A disabled or local-only Fast Wallet must never create background
-        // traffic. The scanner credential stays in the OS Keychain and never
-        // crosses the Tauri boundary.
-        if record.status != "enabled" || record.scanner_url.is_empty() {
-            continue;
-        }
-        let scanner_url = fast_wallet::scanner_url(&record.scanner_url)?;
-        let matches = match get_fast_wallet_scanner_matches(&scanner_url, &record.id).await {
-            Ok(matches) => matches,
-            // A quiet local notification poll must never turn a transient
-            // server outage into an on-screen failure or leak scanner context.
-            Err(_) => continue,
-        };
-        for matched in matches {
-            if is_scanner_event_id(&matched.event_id) {
-                signals.push(DesktopFastWalletPushSignal {
-                    r#type: "monero.fast_wallet.incoming",
-                    contract_version: "monero-fast-wallet-push.v2",
-                    event_id: matched.event_id,
-                });
-            }
-        }
-    }
-    signals.sort_by(|left, right| left.event_id.cmp(&right.event_id));
-    signals.dedup_by(|left, right| left.event_id == right.event_id);
-    Ok(signals)
 }
 #[tauri::command]
 async fn disable_fast_wallet(
@@ -1244,44 +1197,6 @@ async fn get_fast_wallet_scanner_status(
         return Ok(None);
     }
     parse_scanner_response(response).await.map(Some)
-}
-
-async fn get_fast_wallet_scanner_matches(
-    scanner_url: &str,
-    identity_id: &str,
-) -> Result<Vec<ScannerMatchedOutputResponse>, String> {
-    fast_wallet::validate_id(identity_id)?;
-    let client = fast_scanner_client()?;
-    let mut token = secure_store::load_fast_scanner_token(identity_id)?;
-    let mut call = client
-        .get(format!(
-            "{scanner_url}/v1/fast-receive/watch/{identity_id}/matches"
-        ))
-        .header(reqwest::header::ACCEPT, "application/json");
-    if let Some(value) = token.as_deref() {
-        call = call.bearer_auth(value);
-    }
-    let response = call.send().await;
-    if let Some(value) = token.as_mut() {
-        value.zeroize();
-    }
-    let response = response.map_err(|_| "Fast Wallet scanner could not be reached.".to_owned())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Fast Wallet scanner request failed with HTTP {}.",
-            response.status().as_u16()
-        ));
-    }
-    response
-        .json::<Vec<ScannerMatchedOutputResponse>>()
-        .await
-        .map_err(|_| "Fast Wallet scanner returned an invalid response.".to_owned())
-}
-
-fn is_scanner_event_id(value: &str) -> bool {
-    value.len() == 68
-        && value.starts_with("evt_")
-        && value[4..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 async fn delete_fast_wallet_scanner_watch(
@@ -2059,23 +1974,23 @@ pub fn run() {
                     }
                 });
             }
-            if std::env::var("MONERO_DESKTOP_TEST_WNS_ON_START").as_deref() == Ok("1") {
+            if std::env::var("MONERO_DESKTOP_TEST_BACKGROUND_AGENT_ON_START").as_deref() == Ok("1") {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
                     let request = desktop_notifications::RequestNotificationInstallationInput {
                         permission_status: "authorized".to_owned(),
                         locale: Some("en-US".to_owned()),
                         app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-                        background_mode_enabled: Some(false),
+                        background_mode_enabled: Some(true),
                     };
                     match desktop_notifications::request_installation(&app_handle, request) {
                         Ok(status) => {
-                            // This opt-in test marker makes MSIX/WNS validation
-                            // observable from the interactive Windows VM without
-                            // writing the channel URI (a credential) to disk.
+                            // This opt-in marker makes background-agent setup
+                            // observable from Windows or Linux without storing
+                            // endpoint or wallet data in diagnostics.
                             diagnostics::record(
                                 &app_handle,
-                                "notifications.wns-test-result",
+                                "notifications.background-agent-test-result",
                                 &[
                                     ("delivery", status.delivery.clone()),
                                     ("providerStatus", status.installation.provider_status.clone()),
@@ -2083,19 +1998,18 @@ pub fn run() {
                                 ],
                             );
                             eprintln!(
-                                "monero desktop WNS registration requested: delivery={} providerStatus={} endpointLength={}",
+                                "monero desktop background-agent requested: delivery={} providerStatus={}",
                                 status.delivery,
                                 status.installation.provider_status,
-                                status.installation.endpoint.len()
                             );
                         }
                         Err(error) => {
                             diagnostics::record(
                                 &app_handle,
-                                "notifications.wns-test-result",
+                                "notifications.background-agent-test-result",
                                 &[("outcome", "error".to_owned())],
                             );
-                            eprintln!("monero desktop WNS registration failed: {error}");
+                            eprintln!("monero desktop background-agent setup failed: {error}");
                         }
                     }
                 });
@@ -2126,12 +2040,11 @@ pub fn run() {
             create_fast_wallet,
             enable_fast_wallet,
             refresh_fast_wallet_status,
-            poll_fast_wallet_push_signals,
             notification_installation_status,
             request_notification_installation,
             disable_notification_installation,
             consume_pending_notification_open,
-            linux_notification_agent_config_path,
+            background_notification_agent_config_path,
             disable_fast_wallet,
             load_node_settings,
             save_node_settings,
@@ -2168,7 +2081,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_scanner_event_id, market_backup_url};
+    use super::market_backup_url;
 
     #[test]
     fn market_backup_only_allows_expected_bitfinex_routes() {
@@ -2182,12 +2095,5 @@ mod tests {
         );
         assert!(market_backup_url("chart", Some("other")).is_err());
         assert!(market_backup_url("other", None).is_err());
-    }
-
-    #[test]
-    fn local_notification_poll_accepts_only_opaque_scanner_event_ids() {
-        assert!(is_scanner_event_id(&format!("evt_{}", "a".repeat(64))));
-        assert!(!is_scanner_event_id("evt_wallet-name"));
-        assert!(!is_scanner_event_id(&format!("evt_{}", "a".repeat(63))));
     }
 }

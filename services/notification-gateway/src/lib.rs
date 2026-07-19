@@ -5,12 +5,16 @@
 //! transaction id, view key, provider token, or user account field.
 
 use axum::{
-    extract::State,
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
@@ -20,80 +24,39 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use subtle::ConstantTimeEq;
-use tokio::sync::Mutex;
-use url::Url;
+use tokio::sync::{broadcast, Mutex};
 
 pub const CONTRACT_VERSION: &str = "monero-fast-wallet-push.v2";
 pub const EVENT_CATEGORY: &str = "monero.fast_wallet.incoming";
 const MAX_EVENTS_PER_INSTALLATION: usize = 32;
 const MAX_INSTALLATIONS: usize = 20_000;
-const WNS_SCOPE: &str = "https://wns.windows.com/.default";
 
 #[derive(Clone)]
 pub struct GatewayState {
     scanner_token: Arc<String>,
     store: Arc<Mutex<EventStore>>,
-    wns: Option<Arc<WnsDispatcher>>,
+    signals: broadcast::Sender<DeliverySignal>,
+}
+
+#[derive(Clone)]
+struct DeliverySignal {
+    installation_id: String,
+    event: OpaqueNotificationEvent,
 }
 
 impl GatewayState {
     pub fn open(scanner_token: String, storage_path: impl Into<PathBuf>) -> Result<Self, String> {
-        Self::open_with_wns(scanner_token, storage_path, None)
-    }
-
-    pub fn open_with_wns(
-        scanner_token: String,
-        storage_path: impl Into<PathBuf>,
-        wns: Option<WnsConfig>,
-    ) -> Result<Self, String> {
         if scanner_token.trim().len() < 32 {
             return Err(
                 "notification gateway scanner token must be at least 32 characters".to_owned(),
             );
         }
+        let (signals, _) = broadcast::channel(1_024);
         Ok(Self {
             scanner_token: Arc::new(scanner_token),
             store: Arc::new(Mutex::new(EventStore::open(storage_path.into())?)),
-            wns: wns.map(WnsDispatcher::new).transpose()?.map(Arc::new),
+            signals,
         })
-    }
-}
-
-/// Credentials for the server-side WNS provider. Keep this on the gateway
-/// host only; the desktop client never receives the client secret.
-#[derive(Clone)]
-pub struct WnsConfig {
-    client_id: String,
-    client_secret: String,
-    token_url: String,
-}
-
-impl WnsConfig {
-    pub fn from_environment() -> Result<Option<Self>, String> {
-        let client_id = std::env::var("NOTIFICATION_GATEWAY_WNS_CLIENT_ID").ok();
-        let client_secret = std::env::var("NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET").ok();
-        let tenant_id = std::env::var("NOTIFICATION_GATEWAY_WNS_TENANT_ID").ok();
-        match (client_id, client_secret, tenant_id) {
-            (None, None, None) => Ok(None),
-            (Some(client_id), Some(client_secret), Some(tenant_id))
-                if !client_id.trim().is_empty()
-                    && !client_secret.trim().is_empty()
-                    && valid_tenant_id(&tenant_id) =>
-            {
-                Ok(Some(Self {
-                    client_id,
-                    client_secret,
-                    token_url: format!(
-                        "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
-                        tenant_id.trim()
-                    ),
-                }))
-            }
-            _ => Err(
-                "WNS Azure credentials must include client id, client secret, and tenant id"
-                    .to_owned(),
-            ),
-        }
     }
 }
 
@@ -104,11 +67,7 @@ pub fn router(state: GatewayState) -> Router {
             "/api/v1/internal/fast-wallet-push-events",
             post(accept_event),
         )
-        .route("/api/v1/notifications/events", get(take_events))
-        .route(
-            "/api/v1/notifications/installations",
-            post(register_installation).delete(remove_installation),
-        )
+        .route("/api/v1/notifications/stream", get(stream_events))
         .with_state(state)
 }
 
@@ -131,29 +90,17 @@ async fn accept_event(
         received_at: unix_seconds().to_string(),
         opened: false,
     };
-    let registration = {
+    let enqueued = {
         let mut store = state.store.lock().await;
-        store.enqueue(input.subscription_id.clone(), event.clone())?;
-        store.wns_registration(&input.subscription_id)
+        store.enqueue(input.subscription_id.clone(), event.clone())?
     };
-    if let (Some(dispatcher), Some(registration)) = (&state.wns, registration) {
-        match dispatcher.send(&registration.endpoint, &event.id).await {
-            Ok(()) => {}
-            Err(WnsDeliveryError::ExpiredChannel) => {
-                let mut store = state.store.lock().await;
-                // A WNS channel may expire at any time. Removing it makes the
-                // next interactive launch register a fresh channel instead of
-                // silently pretending that background delivery still works.
-                let _ = store.remove_wns_registration(&input.subscription_id);
-                eprintln!("notification-gateway: WNS channel expired");
-            }
-            Err(_) => {
-                // The opaque event remains queued for the authenticated local
-                // fallback. Do not return a scanner failure or log a channel
-                // URI, token, wallet data, or other private material.
-                eprintln!("notification-gateway: WNS delivery attempt failed");
-            }
-        }
+    if enqueued {
+        // A connected private agent gets the opaque signal immediately. The
+        // durable queue is retained until that specific agent acknowledges it.
+        let _ = state.signals.send(DeliverySignal {
+            installation_id: input.subscription_id.clone(),
+            event: event.clone(),
+        });
     }
     Ok((
         StatusCode::ACCEPTED,
@@ -161,50 +108,99 @@ async fn accept_event(
     ))
 }
 
-async fn register_installation(
+async fn stream_events(
     State(state): State<GatewayState>,
     headers: HeaderMap,
-    Json(input): Json<WnsRegistrationInput>,
-) -> Result<(StatusCode, Json<InstallationResponse>), ApiError> {
+    websocket: WebSocketUpgrade,
+) -> Result<impl IntoResponse, ApiError> {
     let installation_id = installation_id(&headers)?;
-    input.validate(&installation_id)?;
-    if state.wns.is_none() {
-        return Err(ApiError::ProviderUnavailable);
+    Ok(websocket.on_upgrade(move |socket| stream_connection(socket, state, installation_id)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StreamAcknowledgement {
+    #[serde(rename = "type")]
+    message_type: String,
+    event_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamEventMessage {
+    #[serde(rename = "type")]
+    message_type: &'static str,
+    event: OpaqueNotificationEvent,
+}
+
+async fn stream_connection(mut socket: WebSocket, state: GatewayState, installation_id: String) {
+    let queued = {
+        let store = state.store.lock().await;
+        store.pending(&installation_id)
+    };
+    for event in queued {
+        if send_stream_event(&mut socket, event).await.is_err() {
+            return;
+        }
     }
-    let mut store = state.store.lock().await;
-    store.register_wns(
-        installation_id,
-        WnsRegistration {
-            endpoint: input.endpoint,
-            updated_at: unix_seconds(),
-        },
-    )?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(InstallationResponse {
-            accepted: true,
-            delivery: "wns".to_owned(),
-        }),
-    ))
+
+    let mut signals = state.signals.subscribe();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(25));
+    heartbeat.tick().await;
+    loop {
+        tokio::select! {
+            signal = signals.recv() => match signal {
+                Ok(signal) if signal.installation_id == installation_id => {
+                    if send_stream_event(&mut socket, signal.event).await.is_err() {
+                        return;
+                    }
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // The durable queue is authoritative. Re-send its current
+                    // state rather than silently dropping a notification.
+                    let queued = { state.store.lock().await.pending(&installation_id) };
+                    for event in queued {
+                        if send_stream_event(&mut socket, event).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            incoming = socket.next() => match incoming {
+                Some(Ok(Message::Text(text))) => {
+                    if let Ok(ack) = serde_json::from_str::<StreamAcknowledgement>(&text) {
+                        if ack.message_type == "ack" && valid_event_id(&ack.event_id) {
+                            let _ = state.store.lock().await.ack(&installation_id, &ack.event_id);
+                        }
+                    }
+                }
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                Some(Ok(_)) => {}
+            },
+            _ = heartbeat.tick() => {
+                if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
 }
 
-async fn remove_installation(
-    State(state): State<GatewayState>,
-    headers: HeaderMap,
-) -> Result<StatusCode, ApiError> {
-    let installation_id = installation_id(&headers)?;
-    let mut store = state.store.lock().await;
-    store.remove_wns_registration(&installation_id)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn take_events(
-    State(state): State<GatewayState>,
-    headers: HeaderMap,
-) -> Result<Json<Vec<OpaqueNotificationEvent>>, ApiError> {
-    let installation_id = installation_id(&headers)?;
-    let mut store = state.store.lock().await;
-    Ok(Json(store.take(&installation_id)?))
+async fn send_stream_event(
+    socket: &mut WebSocket,
+    event: OpaqueNotificationEvent,
+) -> Result<(), ()> {
+    let message = serde_json::to_string(&StreamEventMessage {
+        message_type: "event",
+        event,
+    })
+    .map_err(|_| ())?;
+    socket
+        .send(Message::Text(message.into()))
+        .await
+        .map_err(|_| ())
 }
 
 fn authenticate_scanner(headers: &HeaderMap, expected: &str) -> Result<(), ApiError> {
@@ -280,43 +276,11 @@ struct AcceptedResponse {
     accepted: bool,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InstallationResponse {
-    accepted: bool,
-    delivery: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WnsRegistrationInput {
-    contract_version: String,
-    installation_id: String,
-    platform: String,
-    provider: String,
-    endpoint: String,
-}
-
-impl WnsRegistrationInput {
-    fn validate(&self, authenticated_installation_id: &str) -> Result<(), ApiError> {
-        if self.contract_version != CONTRACT_VERSION
-            || self.installation_id != authenticated_installation_id
-            || self.platform != "windows"
-            || self.provider != "wns"
-            || !valid_wns_endpoint(&self.endpoint)
-        {
-            return Err(ApiError::BadRequest);
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug)]
 enum ApiError {
     Unauthorized,
     BadRequest,
     Storage,
-    ProviderUnavailable,
 }
 
 impl IntoResponse for ApiError {
@@ -325,7 +289,6 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::BadRequest => StatusCode::BAD_REQUEST,
             Self::Storage => StatusCode::SERVICE_UNAVAILABLE,
-            Self::ProviderUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         };
         status.into_response()
     }
@@ -335,14 +298,6 @@ impl IntoResponse for ApiError {
 struct DiskStore {
     version: u8,
     events: HashMap<String, VecDeque<OpaqueNotificationEvent>>,
-    #[serde(default)]
-    wns_registrations: HashMap<String, WnsRegistration>,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct WnsRegistration {
-    endpoint: String,
-    updated_at: u64,
 }
 
 struct EventStore {
@@ -356,23 +311,17 @@ impl EventStore {
             Ok(value) => serde_json::from_str::<DiskStore>(&value)
                 .map_err(|_| "notification gateway event store is invalid".to_owned())?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => DiskStore {
-                version: 2,
+                version: 3,
                 events: HashMap::new(),
-                wns_registrations: HashMap::new(),
             },
             Err(_) => return Err("notification gateway event store could not be read".to_owned()),
         };
-        if disk.version == 1 {
-            // Additive migration from the original opaque-event-only store.
-            disk.version = 2;
+        if matches!(disk.version, 1 | 2) {
+            // Version 3 removes obsolete provider-registration data. Serde ignores
+            // the historic field while preserving queued opaque events.
+            disk.version = 3;
         }
-        if disk.version != 2
-            || disk.events.len() > MAX_INSTALLATIONS
-            || disk.wns_registrations.len() > MAX_INSTALLATIONS
-            || disk.wns_registrations.iter().any(|(id, registration)| {
-                !valid_subscription_id(id) || !valid_wns_endpoint(&registration.endpoint)
-            })
-        {
+        if disk.version != 3 || disk.events.len() > MAX_INSTALLATIONS {
             return Err("notification gateway event store is invalid".to_owned());
         }
         Ok(Self { path, disk })
@@ -382,7 +331,7 @@ impl EventStore {
         &mut self,
         installation_id: String,
         event: OpaqueNotificationEvent,
-    ) -> Result<(), ApiError> {
+    ) -> Result<bool, ApiError> {
         if !self.disk.events.contains_key(&installation_id)
             && self.disk.events.len() >= MAX_INSTALLATIONS
         {
@@ -390,55 +339,36 @@ impl EventStore {
         }
         let queue = self.disk.events.entry(installation_id).or_default();
         if queue.iter().any(|existing| existing.id == event.id) {
-            return Ok(());
+            return Ok(false);
         }
         queue.push_back(event);
         while queue.len() > MAX_EVENTS_PER_INSTALLATION {
             queue.pop_front();
         }
-        self.persist().map_err(|_| ApiError::Storage)
+        self.persist().map_err(|_| ApiError::Storage)?;
+        Ok(true)
     }
 
-    fn take(&mut self, installation_id: &str) -> Result<Vec<OpaqueNotificationEvent>, ApiError> {
-        let events: Vec<OpaqueNotificationEvent> = self
-            .disk
-            .events
-            .remove(installation_id)
-            .map(|queue| queue.into_iter().collect())
-            .unwrap_or_default();
-        if !events.is_empty() {
-            self.persist().map_err(|_| ApiError::Storage)?;
-        }
-        Ok(events)
-    }
-
-    fn register_wns(
-        &mut self,
-        installation_id: String,
-        registration: WnsRegistration,
-    ) -> Result<(), ApiError> {
-        if !self.disk.wns_registrations.contains_key(&installation_id)
-            && self.disk.wns_registrations.len() >= MAX_INSTALLATIONS
-        {
-            return Err(ApiError::Storage);
-        }
+    fn pending(&self, installation_id: &str) -> Vec<OpaqueNotificationEvent> {
         self.disk
-            .wns_registrations
-            .insert(installation_id, registration);
-        self.persist().map_err(|_| ApiError::Storage)
+            .events
+            .get(installation_id)
+            .map(|queue| queue.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
-    fn wns_registration(&self, installation_id: &str) -> Option<WnsRegistration> {
-        self.disk.wns_registrations.get(installation_id).cloned()
-    }
-
-    fn remove_wns_registration(&mut self, installation_id: &str) -> Result<(), ApiError> {
-        if self
-            .disk
-            .wns_registrations
-            .remove(installation_id)
-            .is_some()
-        {
+    fn ack(&mut self, installation_id: &str, event_id: &str) -> Result<(), ApiError> {
+        let Some(queue) = self.disk.events.get_mut(installation_id) else {
+            return Ok(());
+        };
+        let before = queue.len();
+        queue.retain(|event| event.id != event_id);
+        let changed = queue.len() != before;
+        let empty = queue.is_empty();
+        if empty {
+            self.disk.events.remove(installation_id);
+        }
+        if changed {
             self.persist().map_err(|_| ApiError::Storage)?;
         }
         Ok(())
@@ -486,138 +416,6 @@ fn valid_scope(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
-fn valid_wns_endpoint(value: &str) -> bool {
-    let Ok(url) = Url::parse(value) else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    url.scheme() == "https"
-        && url.port_or_known_default() == Some(443)
-        && url.username().is_empty()
-        && url.password().is_none()
-        && (host == "notify.windows.com" || host.ends_with(".notify.windows.com"))
-        && value.len() <= 4096
-}
-
-fn valid_tenant_id(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.len() == 36
-        && trimmed.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
-}
-
-struct WnsDispatcher {
-    config: WnsConfig,
-    client: reqwest::Client,
-    cached_token: Mutex<Option<CachedWnsToken>>,
-}
-
-struct CachedWnsToken {
-    token: String,
-    expires_at: SystemTime,
-}
-
-#[derive(Debug)]
-enum WnsDeliveryError {
-    ExpiredChannel,
-    Unavailable,
-}
-
-#[derive(Deserialize)]
-struct WnsTokenResponse {
-    access_token: String,
-    expires_in: Option<u64>,
-}
-
-impl WnsDispatcher {
-    fn new(config: WnsConfig) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(12))
-            .build()
-            .map_err(|_| "WNS client could not be initialized".to_owned())?;
-        Ok(Self {
-            config,
-            client,
-            cached_token: Mutex::new(None),
-        })
-    }
-
-    async fn send(&self, endpoint: &str, event_id: &str) -> Result<(), WnsDeliveryError> {
-        let token = self.access_token().await?;
-        let response = self
-            .client
-            .post(endpoint)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("X-WNS-Type", "wns/toast")
-            .header("Content-Type", "text/xml")
-            .body(wns_toast_xml(event_id))
-            .send()
-            .await
-            .map_err(|_| WnsDeliveryError::Unavailable)?;
-        if response.status().is_success() {
-            Ok(())
-        } else if matches!(response.status().as_u16(), 404 | 410) {
-            Err(WnsDeliveryError::ExpiredChannel)
-        } else {
-            Err(WnsDeliveryError::Unavailable)
-        }
-    }
-
-    async fn access_token(&self) -> Result<String, WnsDeliveryError> {
-        {
-            let cache = self.cached_token.lock().await;
-            if let Some(cache) = cache.as_ref() {
-                if cache.expires_at > SystemTime::now() + Duration::from_secs(60) {
-                    return Ok(cache.token.clone());
-                }
-            }
-        }
-        let token = self
-            .client
-            .post(&self.config.token_url)
-            .form(&[
-                ("client_id", self.config.client_id.as_str()),
-                ("client_secret", self.config.client_secret.as_str()),
-                ("grant_type", "client_credentials"),
-                ("scope", WNS_SCOPE),
-            ])
-            .send()
-            .await
-            .map_err(|_| WnsDeliveryError::Unavailable)?;
-        if !token.status().is_success() {
-            return Err(WnsDeliveryError::Unavailable);
-        }
-        let payload = token
-            .json::<WnsTokenResponse>()
-            .await
-            .map_err(|_| WnsDeliveryError::Unavailable)?;
-        if payload.access_token.trim().is_empty() {
-            return Err(WnsDeliveryError::Unavailable);
-        }
-        let expires_in = payload.expires_in.unwrap_or(3600).clamp(120, 86_400);
-        let value = payload.access_token;
-        *self.cached_token.lock().await = Some(CachedWnsToken {
-            token: value.clone(),
-            expires_at: SystemTime::now() + Duration::from_secs(expires_in),
-        });
-        Ok(value)
-    }
-}
-
-fn wns_toast_xml(_event_id: &str) -> String {
-    // Do not put an address, amount, transaction id, wallet name, or event id
-    // into WNS. A notification only asks the user to open the wallet; private
-    // state remains behind the local authenticated wallet UI.
-    "<toast><visual><binding template=\"ToastGeneric\"><text>Monero Fast Wallet</text><text>Open the wallet to review a new activity.</text></binding></visual></toast>".to_owned()
-}
-
 fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -632,6 +430,13 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio::time::{sleep, timeout};
+    use tokio_tungstenite::{
+        connect_async,
+        tungstenite::{client::IntoClientRequest, http::HeaderValue, Message as ClientMessage},
+    };
     use tower::ServiceExt;
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
@@ -644,28 +449,91 @@ mod tests {
         router(GatewayState::open(TOKEN.to_owned(), storage).expect("state"))
     }
 
-    fn app_with_wns() -> Router {
+    async fn live_gateway() -> (GatewayState, std::net::SocketAddr) {
         let storage = std::env::temp_dir().join(format!(
-            "notification-gateway-wns-test-{}-{}",
+            "notification-gateway-websocket-test-{}-{}",
             unix_seconds(),
             std::process::id()
         ));
-        router(
-            GatewayState::open_with_wns(
-                TOKEN.to_owned(),
-                storage,
-                Some(WnsConfig {
-                    client_id: "test-client".to_owned(),
-                    client_secret: "test-secret".to_owned(),
-                    token_url: "http://test.invalid/token".to_owned(),
-                }),
-            )
-            .expect("state"),
-        )
+        let state = GatewayState::open(TOKEN.to_owned(), storage).expect("state");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = router(state.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, server).await.expect("gateway server");
+        });
+        (state, address)
     }
 
     #[tokio::test]
-    async fn accepts_only_opaque_scanner_event_and_drains_it_for_matching_installation() {
+    async fn websocket_delivery_is_kept_until_the_agent_acknowledges_it() {
+        let (state, address) = live_gateway().await;
+        let mut request = format!("ws://{address}/api/v1/notifications/stream")
+            .into_client_request()
+            .expect("websocket request");
+        request.headers_mut().insert(
+            "x-fast-wallet-installation-id",
+            HeaderValue::from_static(INSTALLATION),
+        );
+        let (mut client, _) = connect_async(request).await.expect("websocket connection");
+
+        let body = serde_json::json!({
+            "contractVersion": CONTRACT_VERSION,
+            "eventId": EVENT,
+            "tenantId": "monero-wallet",
+            "shopId": "monero-wallet",
+            "appId": "monero-wallet",
+            "subscriptionId": INSTALLATION,
+            "signal": "incoming_transaction"
+        });
+        let response = reqwest::Client::new()
+            .post(format!(
+                "http://{address}/api/v1/internal/fast-wallet-push-events"
+            ))
+            .header("x-fast-wallet-push-token", TOKEN)
+            .json(&body)
+            .send()
+            .await
+            .expect("scanner response");
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let frame = timeout(Duration::from_secs(2), client.next())
+            .await
+            .expect("stream event timeout")
+            .expect("stream closed")
+            .expect("stream frame");
+        let ClientMessage::Text(body) = frame else {
+            panic!("expected an event text frame");
+        };
+        let event: serde_json::Value = serde_json::from_str(&body).expect("event JSON");
+        assert_eq!(event["type"], "event");
+        assert_eq!(event["event"]["id"], EVENT);
+
+        {
+            let store = state.store.lock().await;
+            assert_eq!(store.pending(INSTALLATION).len(), 1);
+        }
+        client
+            .send(ClientMessage::Text(
+                serde_json::json!({ "type": "ack", "eventId": EVENT })
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .expect("acknowledgement");
+        for _ in 0..20 {
+            if state.store.lock().await.pending(INSTALLATION).is_empty() {
+                return;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+        panic!("event stayed queued after the acknowledged display");
+    }
+
+    #[tokio::test]
+    async fn accepts_only_an_opaque_scanner_event() {
         let app = app();
         let body = serde_json::json!({
             "contractVersion": CONTRACT_VERSION,
@@ -689,38 +557,9 @@ mod tests {
             .unwrap();
         assert_eq!(accepted.status(), StatusCode::ACCEPTED);
 
-        let request = Request::get("/api/v1/notifications/events")
-            .header("x-fast-wallet-installation-id", INSTALLATION)
-            .body(Body::empty())
-            .unwrap();
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), 4096)
-            .await
-            .unwrap();
-        let events: Vec<OpaqueNotificationEvent> = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].id, EVENT);
-        assert_eq!(events[0].category, EVENT_CATEGORY);
-        assert_eq!(events[0].deep_link, format!("tex8://notification/{EVENT}"));
-        let event = events.into_iter().next().unwrap();
-        assert_eq!(event.category, EVENT_CATEGORY);
-        assert!(event.received_at.parse::<u64>().is_ok());
-        assert!(!event.deep_link.contains("address"));
-        assert!(!event.deep_link.contains("amount"));
-
-        let empty = app
-            .oneshot(
-                Request::get("/api/v1/notifications/events")
-                    .header("x-fast-wallet-installation-id", INSTALLATION)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(empty.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(empty.into_body(), 4096).await.unwrap();
-        assert_eq!(bytes.as_ref(), b"[]");
+        // Delivery and acknowledgement are intentionally proven over the
+        // persistent stream in the dedicated WebSocket test above. This HTTP
+        // endpoint only verifies the scanner boundary accepts no details.
     }
 
     #[tokio::test]
@@ -748,159 +587,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
-        let unauthorized_fetch = app
-            .oneshot(
-                Request::get("/api/v1/notifications/events")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(unauthorized_fetch.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn windows_installation_registration_requires_the_matching_capability_and_wns_host() {
-        let app = app_with_wns();
-        let body = serde_json::json!({
-            "contractVersion": CONTRACT_VERSION,
-            "installationId": INSTALLATION,
-            "platform": "windows",
-            "provider": "wns",
-            "endpoint": "https://db5.notify.windows.com/w/?token=opaque-channel-token"
-        });
-        let accepted = app
-            .clone()
-            .oneshot(
-                Request::post("/api/v1/notifications/installations")
-                    .header("content-type", "application/json")
-                    .header("x-fast-wallet-installation-id", INSTALLATION)
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(accepted.status(), StatusCode::ACCEPTED);
-
-        let unsafe_endpoint = app
-            .clone()
-            .oneshot(
-                Request::post("/api/v1/notifications/installations")
-                    .header("content-type", "application/json")
-                    .header("x-fast-wallet-installation-id", INSTALLATION)
-                    .body(Body::from(
-                        serde_json::json!({
-                            "contractVersion": CONTRACT_VERSION,
-                            "installationId": INSTALLATION,
-                            "platform": "windows",
-                            "provider": "wns",
-                            "endpoint": "https://example.com/channel"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(unsafe_endpoint.status(), StatusCode::BAD_REQUEST);
-
-        let removed = app
-            .oneshot(
-                Request::delete("/api/v1/notifications/installations")
-                    .header("x-fast-wallet-installation-id", INSTALLATION)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
-    }
-
-    #[test]
-    fn wns_toast_never_contains_the_opaque_event_id_or_wallet_data() {
-        let event = "sig_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let xml = wns_toast_xml(event);
-        assert!(xml.contains("Monero Fast Wallet"));
-        assert!(!xml.contains(event));
-        assert!(!xml.contains("address"));
-        assert!(!xml.contains("amount"));
-    }
-
-    #[test]
-    fn tenant_id_requires_a_uuid_shape() {
-        assert!(valid_tenant_id("f8cdef31-a31e-4b4a-93e4-5f571e91255a"));
-        assert!(!valid_tenant_id("not-a-tenant"));
-        assert!(!valid_tenant_id("f8cdef31-a31e-4b4a-93e4-5f571e91255"));
-    }
-
-    #[tokio::test]
-    async fn wns_dispatch_uses_oauth_and_a_generic_toast() {
-        #[derive(Clone)]
-        struct Capture {
-            channel: Arc<Mutex<Option<(String, String, String)>>>,
-            token_form: Arc<Mutex<Option<String>>>,
-        }
-
-        async fn token(State(capture): State<Capture>, body: String) -> Json<serde_json::Value> {
-            *capture.token_form.lock().await = Some(body);
-            Json(serde_json::json!({ "access_token": "test-access-token", "expires_in": 3600 }))
-        }
-
-        async fn channel(
-            State(capture): State<Capture>,
-            headers: HeaderMap,
-            body: String,
-        ) -> StatusCode {
-            let authorization = headers
-                .get("authorization")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default()
-                .to_owned();
-            let kind = headers
-                .get("x-wns-type")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default()
-                .to_owned();
-            *capture.channel.lock().await = Some((authorization, kind, body));
-            StatusCode::OK
-        }
-
-        let capture = Capture {
-            channel: Arc::new(Mutex::new(None)),
-            token_form: Arc::new(Mutex::new(None)),
-        };
-        let server = Router::new()
-            .route("/token", post(token))
-            .route("/channel", post(channel))
-            .with_state(capture.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
-
-        let dispatcher = WnsDispatcher::new(WnsConfig {
-            client_id: "test-client".to_owned(),
-            client_secret: "test-secret".to_owned(),
-            token_url: format!("http://{address}/token"),
-        })
-        .unwrap();
-        dispatcher
-            .send(
-                &format!("http://{address}/channel"),
-                "sig_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .await
-            .unwrap();
-        task.abort();
-
-        let token_form = capture.token_form.lock().await.clone().unwrap();
-        let (authorization, kind, body) = capture.channel.lock().await.clone().unwrap();
-        assert!(token_form.contains("grant_type=client_credentials"));
-        assert!(token_form.contains("client_id=test-client"));
-        assert!(token_form.contains("scope=https%3A%2F%2Fwns.windows.com%2F.default"));
-        assert_eq!(authorization, "Bearer test-access-token");
-        assert_eq!(kind, "wns/toast");
-        assert!(body.contains("Monero Fast Wallet"));
-        assert!(!body.contains("sig_"));
-        assert!(!body.contains("address"));
     }
 }

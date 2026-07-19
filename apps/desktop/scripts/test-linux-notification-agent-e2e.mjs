@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, stat, writeFile, chmod } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,11 +43,12 @@ const environment = { ...process.env, DBUS_SESSION_BUS_ADDRESS: sessionBus };
 const temporaryDirectory = await mkdtemp(join(tmpdir(), 'monero-linux-push-'));
 const startedMarker = join(temporaryDirectory, 'wallet-opened');
 const launcherPath = join(temporaryDirectory, 'open-wallet.sh');
-const configPath = join(temporaryDirectory, 'linux-agent.json');
+const configPath = join(temporaryDirectory, 'background-agent.json');
 
 let agent;
 let monitor;
 let service;
+const receivedAcknowledgements = [];
 
 function stop(child) {
   if (child && !child.killed) child.kill('SIGTERM');
@@ -78,25 +80,59 @@ try {
   if (liveServiceUrl) {
     serviceUrl = liveServiceUrl;
   } else {
-    service = createServer((request, response) => {
-      assert.equal(request.url, '/events');
+    service = createServer();
+    service.on('upgrade', (request, socket) => {
+      assert.equal(request.url, '/stream');
       assert.equal(request.headers['x-fast-wallet-installation-id'], 'linux-e2e-installation');
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify([event]));
+      const key = request.headers['sec-websocket-key'];
+      assert.equal(typeof key, 'string');
+      const accept = createHash('sha1')
+        .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+        .digest('base64');
+      socket.write([
+        'HTTP/1.1 101 Switching Protocols',
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        `Sec-WebSocket-Accept: ${accept}`,
+        '',
+        '',
+      ].join('\r\n'));
+      const body = JSON.stringify({ type: 'event', event });
+      const payload = Buffer.from(body);
+      const header = payload.length < 126
+        ? Buffer.from([0x81, payload.length])
+        : Buffer.from([0x81, 126, payload.length >> 8, payload.length & 0xff]);
+      socket.write(Buffer.concat([header, payload]));
+      socket.once('data', (frame) => {
+        const masked = (frame[1] & 0x80) !== 0;
+        const length = frame[1] & 0x7f;
+        const offset = masked ? 6 : 2;
+        const mask = masked ? frame.subarray(2, 6) : undefined;
+        const content = Buffer.from(frame.subarray(offset, offset + length));
+        if (mask) {
+          for (let index = 0; index < content.length; index += 1) content[index] ^= mask[index % 4];
+        }
+        try {
+          const acknowledgement = JSON.parse(content.toString('utf8'));
+          if (acknowledgement.type === 'ack') receivedAcknowledgements.push(acknowledgement.eventId);
+        } catch {
+          // A malformed acknowledgement must not make the test appear green.
+        }
+      });
     });
     service.listen(0, '127.0.0.1');
     await once(service, 'listening');
     serviceUrl = `http://127.0.0.1:${service.address().port}`;
   }
   await writeFile(configPath, JSON.stringify({
-    // Exercise the current shared contract, not the legacy compatibility
-    // path. This catches an agent/app contract drift before deployment.
-    version: 2,
+    // Version 4 is the non-polling durable stream contract.
+    version: 4,
     installationId: liveInstallationId ?? 'linux-e2e-installation',
+    platform: 'linux',
     provider: 'linux-agent',
     serviceUrl,
-    pollIntervalMs: 10_000,
     appCommand: launcherPath,
+    enabled: true,
   }));
 
   let dbusOutput = '';
@@ -115,6 +151,13 @@ try {
   );
   assert.equal(dbusOutput.includes(opaqueEventId), false, 'DBus notification must not expose the event id');
   assert.equal(dbusOutput.includes('wallet'), true);
+  if (!liveServiceUrl) {
+    await waitFor(
+      () => receivedAcknowledgements.includes(opaqueEventId),
+      12_000,
+      'The agent displayed the notification but did not acknowledge the stream event.',
+    );
+  }
 
   // Exercise click-to-open without a human click: the session bus uses the
   // same opaque id and no detailed wallet payload. The agent writes the
@@ -128,7 +171,7 @@ try {
   await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   await assert.rejects(stat(startedMarker));
   await assert.rejects(readFile(join(temporaryDirectory, 'pending-open-event.json'), 'utf8'));
-  console.log('PASS: Linux agent emitted a generic closed-app DBus notification and rejected an invalid click id.');
+  console.log('PASS: Linux agent received a generic WebSocket event, notified over DBus, acknowledged delivery, and rejected an invalid click id.');
 } finally {
   stop(agent);
   stop(monitor);

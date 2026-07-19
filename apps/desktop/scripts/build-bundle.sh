@@ -21,6 +21,13 @@ case "${bundle}" in
     ;;
 esac
 
+tauri_config_args=()
+if [[ "${bundle}" == "nsis" ]]; then
+  tauri_config_args=(--config src-tauri/tauri.windows.conf.json)
+elif [[ "${bundle}" == "appimage" ]]; then
+  tauri_config_args=(--config src-tauri/tauri.linux.conf.json)
+fi
+
 if [[ "${bundle}" == "dmg" ]]; then
   # This exports the native wallet link configuration and stages the Rust
   # crypto dylib where the Tauri macOS bundler expects it.
@@ -56,4 +63,4 @@ export DESKTOP_MONERO_FAST_CRYPTO_LIBRARY="${fast_crypto_library}"
 # It is harmless on non-Linux targets and lets the app install a per-user
 # service only after the user explicitly enables Fast Wallet signals.
 cargo build --manifest-path src-tauri/Cargo.toml --release --bin monero-fast-walletd
-npm run tauri build -- --bundles "${bundle}"
+npm run tauri build -- --bundles "${bundle}" "${tauri_config_args[@]}"

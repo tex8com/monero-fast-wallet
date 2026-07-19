@@ -5,7 +5,7 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/monero-fast-walletd --config %h/.local/share/com.tex8.monerowallet.desktop/notifications/linux-agent.json
+ExecStart=%h/.local/bin/monero-fast-walletd --config %h/.local/share/com.tex8.monerowallet.desktop/notifications/background-agent.json
 Restart=on-failure
 RestartSec=15
 NoNewPrivileges=true

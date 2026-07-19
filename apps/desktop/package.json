@@ -8,8 +8,6 @@
     "dev": "vite --port 1430",
     "dev:wallet": "bash scripts/tauri-dev-with-monero-core.sh",
     "dev:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tauri-dev-windows.ps1",
-    "test:wns-package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-wns-test.ps1",
-    "test:wns-msix-interactive": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows-wns-interactive.ps1",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
     "test:parity-contract": "node --test scripts/test-desktop-parity-contract.mjs",
