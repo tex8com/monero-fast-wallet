@@ -5,6 +5,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  Share,
   TouchableOpacity,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
@@ -23,6 +24,7 @@ import type {
 import WalletSwitcherPill from '../components/WalletSwitcherPill';
 import { type TranslationKey, useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
+import { walletDisplayName } from '../services/WalletRegistry';
 import type {
   HardwareWalletStatus,
   WalletSnapshot,
@@ -39,6 +41,12 @@ import {
 import type { NodeConnectionMode } from '../services/NodeConnectionSettings';
 import { formatAtomicXmr } from '../services/WalletFormat';
 import { walletService } from '../services/WalletService';
+import {
+  createWalletAddressRecord,
+  loadWalletAddresses,
+  upsertWalletAddress,
+  type WalletAddressRecord,
+} from '../services/WalletAddressRegistry';
 
 const FAST_WALLET_STATUS_REFRESH_MS = 30_000;
 
@@ -132,11 +140,25 @@ function balanceDetail(
   })} XMR`;
 }
 
+function shortAddress(address: string): string {
+  return address.length > 18
+    ? `${address.slice(0, 9)}…${address.slice(-7)}`
+    : address;
+}
+
 export default function ReceiveScreen({ navigation, route }: any) {
   const [copied, setCopied] = useState(false);
+  const [shared, setShared] = useState(false);
   const [hardwareBusy, setHardwareBusy] = useState(false);
   const [fastWalletBusy, setFastWalletBusy] = useState(false);
   const [hardwareMessage, setHardwareMessage] = useState<string | undefined>();
+  const [walletAddresses, setWalletAddresses] = useState<
+    WalletAddressRecord[]
+  >([]);
+  const [selectedAddressId, setSelectedAddressId] = useState<
+    string | undefined
+  >();
+  const [addressBusy, setAddressBusy] = useState(false);
   const [selectedReceiveWalletId, setSelectedReceiveWalletId] = useState<
     string | undefined
   >();
@@ -157,6 +179,8 @@ export default function ReceiveScreen({ navigation, route }: any) {
     reconnectHardwareWallet,
     registeredWallet,
     registeredWallets,
+    refreshSnapshot,
+    refreshTransactions,
     session,
     setActiveRegisteredWallet,
     showHardwareWalletAddress,
@@ -197,6 +221,15 @@ export default function ReceiveScreen({ navigation, route }: any) {
   const selectedRegisteredWallet = registeredWallets.find(
     wallet => wallet.id === activeReceiveWalletId,
   );
+  const selectedAddress = walletAddresses.find(
+    item => item.id === selectedAddressId,
+  ) ?? walletAddresses[0];
+  // The selected address is already presented in full above the QR code. Keep
+  // the selector focused on the alternatives so the same address is never
+  // rendered twice on this screen.
+  const otherWalletAddresses = walletAddresses.filter(
+    item => item.id !== selectedAddress?.id,
+  );
   const selectedSnapshot =
     activeReceiveWalletId === registeredWallet?.id
       ? snapshot
@@ -204,7 +237,12 @@ export default function ReceiveScreen({ navigation, route }: any) {
       ? walletSnapshotMap[activeReceiveWalletId]
       : undefined;
   const address =
-    selectedFastIdentity?.address ?? selectedSnapshot?.primaryAddress ?? '';
+    selectedFastIdentity?.address ??
+    (activeReceiveWalletId === registeredWallet?.id
+      ? selectedAddress?.address
+      : undefined) ??
+    selectedSnapshot?.primaryAddress ??
+    '';
   const isHardwareWallet = Boolean(
     !selectedFastIdentity &&
       selectedRegisteredWallet?.kind === 'hardware' &&
@@ -215,7 +253,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
   const activeWalletDetail = selectedFastIdentity
     ? selectedFastStatus?.label
     : selectedRegisteredWallet
-    ? balanceDetail(selectedSnapshot) ?? selectedRegisteredWallet.walletName
+    ? balanceDetail(selectedSnapshot) ?? walletDisplayName(selectedRegisteredWallet)
     : undefined;
   const showsActiveWalletHistory = Boolean(
     session && activeReceiveWalletId === registeredWallet?.id,
@@ -226,6 +264,65 @@ export default function ReceiveScreen({ navigation, route }: any) {
       setSelectedReceiveWalletId(routeWalletId);
     }
   }, [routeWalletId]);
+
+  useEffect(() => {
+    let mounted = true;
+    if (
+      !session ||
+      !registeredWallet ||
+      activeReceiveWalletId !== registeredWallet.id ||
+      selectedFastIdentity
+    ) {
+      setWalletAddresses([]);
+      return () => {
+        mounted = false;
+      };
+    }
+
+    const load = async () => {
+      const primaryAddress = await walletService.getAddress(session);
+      const primary = createWalletAddressRecord({
+        walletId: registeredWallet.id,
+        accountIndex: session.accountIndex ?? 0,
+        addressIndex: session.addressIndex ?? 0,
+        address: primaryAddress,
+        label:
+          registeredWallet.role === 'fast'
+            ? t('receive.ledgerFastWallet')
+            : t('receive.primaryAddress'),
+      });
+      const addresses = await upsertWalletAddress(primary);
+      if (!mounted) {
+        return;
+      }
+      setWalletAddresses(addresses);
+      setSelectedAddressId(current =>
+        current && addresses.some(item => item.id === current)
+          ? current
+          : primary.id,
+      );
+    };
+
+    load().catch(() => {
+      loadWalletAddresses(registeredWallet.id)
+        .then(addresses => {
+          if (mounted) {
+            setWalletAddresses(addresses);
+          }
+        })
+        .catch(() => undefined);
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [
+    activeReceiveWalletId,
+    registeredWallet,
+    selectedFastIdentity,
+    session,
+    t,
+  ]);
 
   useFocusEffect(
     useCallback(() => {
@@ -252,6 +349,11 @@ export default function ReceiveScreen({ navigation, route }: any) {
       };
 
       refreshFastWalletStatus().catch(() => undefined);
+      // WalletState keeps an active wallet fresh in the background. Refresh
+      // once when this screen becomes visible as well, so the recent activity
+      // section never depends on a manual refresh action.
+      refreshSnapshot().catch(() => undefined);
+      refreshTransactions().catch(() => undefined);
       const interval = setInterval(
         () => refreshFastWalletStatus().catch(() => undefined),
         FAST_WALLET_STATUS_REFRESH_MS,
@@ -261,7 +363,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
         mounted = false;
         clearInterval(interval);
       };
-    }, []),
+    }, [refreshSnapshot, refreshTransactions]),
   );
 
   useEffect(() => {
@@ -282,8 +384,23 @@ export default function ReceiveScreen({ navigation, route }: any) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleShare = async () => {
+    if (!address) {
+      return;
+    }
+
+    try {
+      await Share.share({title: 'Monero address', message: address});
+      setShared(true);
+      setTimeout(() => setShared(false), 2000);
+    } catch {
+      // The native share sheet can be dismissed without selecting a target.
+    }
+  };
+
   const handleSelectWallet = async (wallet: WalletOption) => {
     setSelectedReceiveWalletId(wallet.id);
+    setSelectedAddressId(undefined);
     setHardwareMessage(undefined);
 
     if (wallet.kind === 'fast') {
@@ -342,10 +459,33 @@ export default function ReceiveScreen({ navigation, route }: any) {
     setHardwareMessage(t('receive.hardwareConfirmAddress'));
 
     try {
-      const nextStatus = await showHardwareWalletAddress(0, 0, '');
+      const nextStatus = await showHardwareWalletAddress(
+        selectedAddress?.accountIndex,
+        selectedAddress?.addressIndex,
+        '',
+      );
       setHardwareMessage(hardwareStatusText(nextStatus, t));
     } finally {
       setHardwareBusy(false);
+    }
+  };
+
+  const handleCreateAddress = async () => {
+    if (!session || !registeredWallet || addressBusy || selectedFastIdentity) {
+      return;
+    }
+
+    setAddressBusy(true);
+    try {
+      const newAddress = await walletService.createSubaddress(
+        session,
+        t('receive.newAddressLabel', {count: walletAddresses.length + 1}),
+      );
+      const addresses = await loadWalletAddresses(registeredWallet.id);
+      setWalletAddresses(addresses);
+      setSelectedAddressId(newAddress.id);
+    } finally {
+      setAddressBusy(false);
     }
   };
 
@@ -466,10 +606,57 @@ export default function ReceiveScreen({ navigation, route }: any) {
                   <Text style={s.copyBtnText}>{t('action.copyAddress')}</Text>
                 )}
               </TouchableOpacity>
-              <TouchableOpacity style={s.shareBtn}>
-                <Text style={s.shareBtnText}>{t('action.share')}</Text>
+              <TouchableOpacity style={s.shareBtn} onPress={handleShare}>
+                <Text style={s.shareBtnText}>
+                  {shared ? t('action.shared') : t('action.share')}
+                </Text>
               </TouchableOpacity>
             </View>
+            {!selectedFastIdentity &&
+            activeReceiveWalletId === registeredWallet?.id &&
+            session ? (
+              <View style={s.addressesBox}>
+                <View style={s.addressesHeader}>
+                  <Text style={s.addressesTitle}>
+                    {t('receive.otherAddresses')}
+                  </Text>
+                  <TouchableOpacity
+                    activeOpacity={0.75}
+                    disabled={addressBusy}
+                    onPress={handleCreateAddress}
+                    style={[s.newAddressButton, addressBusy && s.addressButtonBusy]}
+                  >
+                    {addressBusy ? (
+                      <ActivityIndicator color={colors.orange} size="small" />
+                    ) : (
+                      <Text style={s.newAddressButtonText}>{t('receive.newAddress')}</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+                {otherWalletAddresses.map(item => (
+                  <TouchableOpacity
+                    activeOpacity={0.75}
+                    key={item.id}
+                    onPress={() => setSelectedAddressId(item.id)}
+                    style={[
+                      s.addressRow,
+                    ]}
+                  >
+                    <View style={s.addressRowCopy}>
+                      <Text style={s.addressRowLabel} numberOfLines={1}>
+                        {item.label}
+                      </Text>
+                      <Text style={s.addressRowValue} numberOfLines={1}>
+                        {shortAddress(item.address)}
+                      </Text>
+                    </View>
+                    <Text style={s.addressRowIndex}>
+                      {item.accountIndex}.{item.addressIndex}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
             {isHardwareWallet ? (
               <View style={s.hardwareBox}>
                 <View style={s.hardwareHeader}>
@@ -597,7 +784,9 @@ export default function ReceiveScreen({ navigation, route }: any) {
                   transaction,
                   transactionHash: transaction.hash,
                   walletId: registeredWallet?.id,
-                  walletName: registeredWallet?.walletName,
+                  walletName: registeredWallet
+                    ? walletDisplayName(registeredWallet)
+                    : undefined,
                 })
               }
             />
@@ -748,6 +937,45 @@ const s = StyleSheet.create({
     fontFamily: 'monospace',
     lineHeight: 20,
   },
+  addressesBox: {
+    width: '100%',
+    marginTop: 16,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgInput,
+  },
+  addressesHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  addressesTitle: {color: colors.textPrimary, fontSize: 15, fontWeight: '800'},
+  newAddressButton: {
+    minHeight: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    borderRadius: radius.sm,
+    backgroundColor: 'rgba(242,104,34,0.12)',
+  },
+  newAddressButtonText: {color: colors.orange, fontSize: 12, fontWeight: '800'},
+  addressButtonBusy: {opacity: 0.62},
+  addressRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  addressRowCopy: {flex: 1, minWidth: 0},
+  addressRowLabel: {color: colors.textPrimary, fontSize: 13, fontWeight: '700'},
+  addressRowValue: {color: colors.textMuted, fontFamily: 'monospace', fontSize: 11, marginTop: 2},
+  addressRowIndex: {color: colors.textMuted, fontFamily: 'monospace', fontSize: 11},
   btnRow: { flexDirection: 'row', gap: 12, width: '100%' },
   copyBtn: {
     flex: 2,

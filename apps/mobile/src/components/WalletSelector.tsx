@@ -9,7 +9,10 @@ import {
 
 import { useI18n, type TranslationKey } from '../i18n';
 import type { WalletSnapshot } from '../services/NativeMoneroWallet';
-import type { RegisteredWallet } from '../services/WalletRegistry';
+import {
+  walletDisplayName,
+  type RegisteredWallet,
+} from '../services/WalletRegistry';
 import { formatAtomicXmr } from '../services/WalletFormat';
 import type { WalletSnapshotCache } from '../services/WalletSnapshotCache';
 import { colors, radius } from '../theme/colors';
@@ -141,7 +144,7 @@ export function resolveWalletOption(
       ? walletSnapshotStatusLabel(snapshot, t)
       : t('walletSelector.openToCheckNode'),
     kind: wallet.kind,
-    label: wallet.walletName,
+    label: walletDisplayName(wallet),
     meta:
       wallet.kind === 'hardware'
         ? wallet.hardwareDeviceName ?? 'Ledger'

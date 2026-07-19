@@ -28,6 +28,7 @@ using tex8::wallet::RestoreWalletRequest;
 using tex8::wallet::WalletEngine;
 using tex8::wallet::WalletEngineError;
 using tex8::wallet::WalletSnapshot;
+using tex8::wallet::WalletSubaddress;
 using tex8::wallet::WalletTransaction;
 using tex8::wallet::WalletTransactionTransfer;
 
@@ -596,6 +597,22 @@ jobject toJavaMap(JNIEnv* env, const FastReceiveIdentity& identity) {
   return map;
 }
 
+jobject toJavaMap(JNIEnv* env, const WalletSubaddress& subaddress) {
+  jclass hashMapClass = env->FindClass("java/util/HashMap");
+  jmethodID constructor = env->GetMethodID(hashMapClass, "<init>", "()V");
+  jmethodID putMethod = env->GetMethodID(
+      hashMapClass,
+      "put",
+      "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+
+  jobject map = env->NewObject(hashMapClass, constructor);
+  putMapDouble(env, map, putMethod, "accountIndex", subaddress.accountIndex);
+  putMapDouble(env, map, putMethod, "addressIndex", subaddress.addressIndex);
+  putMapString(env, map, putMethod, "address", subaddress.address);
+  putMapString(env, map, putMethod, "label", subaddress.label);
+  return map;
+}
+
 jobject toJavaMap(
     JNIEnv* env,
     const FastReceiveRegistrationPayload& payload) {
@@ -735,7 +752,8 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCreateWalletFromDevice(
     jstring network,
     jstring deviceName,
     jdouble restoreHeight,
-    jstring subaddressLookahead) {
+    jstring subaddressLookahead,
+    jdouble accountIndex) {
   try {
     CreateWalletFromDeviceRequest request;
     request.path = toStdString(env, path);
@@ -747,6 +765,7 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCreateWalletFromDevice(
     }
     request.restoreHeight = toUInt64(restoreHeight, "restoreHeight");
     request.subaddressLookahead = toStdString(env, subaddressLookahead);
+    request.accountIndex = toUInt32(accountIndex, "accountIndex");
     return toJavaString(env, walletEngine().createWalletFromDevice(request));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
@@ -902,6 +921,26 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeGetAddress(
   }
 }
 
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCreateSubaddress(
+    JNIEnv* env,
+    jclass,
+    jstring walletId,
+    jdouble accountIndex,
+    jstring label) {
+  try {
+    return toJavaMap(
+        env,
+        walletEngine().createSubaddress(
+            toStdString(env, walletId),
+            toUInt32(accountIndex, "accountIndex"),
+            toStdString(env, label)));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeGetSeed(
     JNIEnv* env,
@@ -917,6 +956,20 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeGetSeed(
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSetWalletPassword(
+    JNIEnv* env,
+    jclass,
+    jstring walletId,
+    jstring newPassword) {
+  try {
+    walletEngine().setWalletPassword(
+        toStdString(env, walletId), toStdString(env, newPassword));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
   }
 }
 

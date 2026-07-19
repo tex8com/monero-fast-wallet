@@ -6,10 +6,13 @@ export const WALLET_REGISTRY_STORAGE_KEY =
   'monero-fast-wallet.wallet-registry.v1';
 
 export type RegisteredWalletKind = 'software' | 'hardware' | 'fast';
+export type RegisteredWalletRole = 'standard' | 'fast';
 export type SeedBackupStatus = 'pending' | 'verified' | 'not-required';
 
 export interface RegisteredWallet {
   id: string;
+  /** User-facing label. `walletName` remains the immutable file/key name. */
+  displayName?: string;
   walletName: string;
   path: string;
   network: MoneroNetwork;
@@ -18,6 +21,14 @@ export interface RegisteredWallet {
   seedBackedUpAt?: string;
   credentialKey?: string;
   restoreHeight?: number;
+  /**
+   * A wallet can intentionally operate from another Monero account. Ledger
+   * Fast Wallets use account 1/address 0; ordinary wallets use account 0.
+   */
+  accountIndex?: number;
+  addressIndex?: number;
+  role?: RegisteredWalletRole;
+  sourceWalletId?: string;
   hardwareDeviceName?: string;
   hardwareDeviceType?: string;
   createdAt: string;
@@ -68,8 +79,19 @@ export async function upsertRegisteredWallet(
   wallet: RegisteredWallet,
   makeActive = false,
 ): Promise<RegisteredWallet> {
-  const normalized = normalizeRegisteredWallet(wallet);
   const current = await loadWalletRegistry();
+  const existing = current.wallets.find(item => item.id === wallet.id);
+  const defaultName = defaultWalletDisplayName(wallet.kind, wallet.walletName);
+  // Opening an existing wallet recreates technical metadata. Keep a label the
+  // owner has chosen instead of silently replacing it with the default.
+  const normalized = normalizeRegisteredWallet(
+    existing &&
+      (!wallet.displayName ||
+        (wallet.displayName === defaultName &&
+          existing.displayName !== defaultName))
+      ? {...wallet, displayName: existing.displayName}
+      : wallet,
+  );
   const nextWallets = current.wallets.some(item => item.id === normalized.id)
     ? current.wallets.map(item =>
         item.id === normalized.id ? normalized : item,
@@ -89,6 +111,7 @@ export async function upsertRegisteredWallet(
 
 export function createRegisteredWallet(input: {
   id?: string;
+  displayName?: string;
   walletName: string;
   path: string;
   network: MoneroNetwork;
@@ -97,6 +120,10 @@ export function createRegisteredWallet(input: {
   seedBackedUpAt?: string;
   credentialKey?: string;
   restoreHeight?: number;
+  accountIndex?: number;
+  addressIndex?: number;
+  role?: RegisteredWalletRole;
+  sourceWalletId?: string;
   hardwareDeviceName?: string;
   hardwareDeviceType?: string;
   now?: string;
@@ -107,6 +134,7 @@ export function createRegisteredWallet(input: {
     id:
       input.id ??
       createRegisteredWalletId(kind, input.walletName, input.network, now),
+    displayName: input.displayName,
     walletName: input.walletName,
     path: input.path,
     network: input.network,
@@ -117,6 +145,10 @@ export function createRegisteredWallet(input: {
     seedBackedUpAt: input.seedBackedUpAt,
     credentialKey: input.credentialKey,
     restoreHeight: input.restoreHeight,
+    accountIndex: input.accountIndex,
+    addressIndex: input.addressIndex,
+    role: input.role,
+    sourceWalletId: input.sourceWalletId,
     hardwareDeviceName: input.hardwareDeviceName,
     hardwareDeviceType: input.hardwareDeviceType,
     createdAt: now,
@@ -165,6 +197,36 @@ export async function removeRegisteredWallet(
     activeWalletId,
     wallets,
   });
+}
+
+export async function renameRegisteredWallet(
+  walletId: string,
+  displayName: string,
+): Promise<RegisteredWallet | undefined> {
+  const registry = await loadWalletRegistry();
+  const normalizedName = normalizeDisplayName(displayName);
+  if (!normalizedName) {
+    throw new Error('Wallet name must be between 1 and 64 printable characters.');
+  }
+  const wallet = registry.wallets.find(item => item.id === walletId);
+  if (!wallet) {
+    return undefined;
+  }
+  const updated = normalizeRegisteredWallet({...wallet, displayName: normalizedName});
+  await saveWalletRegistry({
+    ...registry,
+    wallets: registry.wallets.map(item =>
+      item.id === updated.id ? updated : item,
+    ),
+  });
+  return updated;
+}
+
+export function walletDisplayName(
+  wallet: Pick<RegisteredWallet, 'displayName' | 'walletName' | 'kind'>,
+): string {
+  return normalizeDisplayName(wallet.displayName) ??
+    defaultWalletDisplayName(wallet.kind, wallet.walletName);
 }
 
 export async function markRegisteredWalletSeedBackedUp(
@@ -249,6 +311,9 @@ function normalizeRegisteredWallet(wallet: RegisteredWallet): RegisteredWallet {
     id:
       wallet.id?.trim() ||
       createRegisteredWalletId(kind, walletName, wallet.network, createdAt),
+    displayName:
+      normalizeDisplayName(wallet.displayName) ??
+      defaultWalletDisplayName(kind, walletName),
     walletName,
     path: cleanRequired(wallet.path, 'path'),
     network: wallet.network,
@@ -266,8 +331,23 @@ function normalizeRegisteredWallet(wallet: RegisteredWallet): RegisteredWallet {
     normalized.credentialKey = wallet.credentialKey.trim();
   }
 
-  if (kind === 'fast') {
+  if (kind === 'fast' || wallet.restoreHeight !== undefined) {
     normalized.restoreHeight = normalizeRestoreHeight(wallet.restoreHeight);
+  }
+
+  const accountIndex = normalizeSubaddressIndex(wallet.accountIndex);
+  const addressIndex = normalizeSubaddressIndex(wallet.addressIndex);
+  if (accountIndex > 0) {
+    normalized.accountIndex = accountIndex;
+  }
+  if (addressIndex > 0) {
+    normalized.addressIndex = addressIndex;
+  }
+  if (wallet.role === 'fast') {
+    normalized.role = 'fast';
+  }
+  if (wallet.sourceWalletId?.trim()) {
+    normalized.sourceWalletId = wallet.sourceWalletId.trim();
   }
 
   if (kind === 'hardware') {
@@ -325,6 +405,7 @@ function parseRegisteredWalletRecord(
   }
 
   const walletName = parseString(value.walletName);
+  const displayName = parseString(value.displayName);
   const path = parseString(value.path);
   const network = parseNetwork(value.network);
   const kind = parseKind(value.kind) ?? 'software';
@@ -333,6 +414,10 @@ function parseRegisteredWalletRecord(
   const seedBackedUpAt = parseString(value.seedBackedUpAt);
   const credentialKey = parseString(value.credentialKey);
   const restoreHeight = parseNumber(value.restoreHeight);
+  const accountIndex = parseNumber(value.accountIndex);
+  const addressIndex = parseNumber(value.addressIndex);
+  const role = parseWalletRole(value.role);
+  const sourceWalletId = parseString(value.sourceWalletId);
   const hardwareDeviceName = parseString(value.hardwareDeviceName);
   const hardwareDeviceType = parseString(value.hardwareDeviceType);
   const createdAt = parseString(value.createdAt);
@@ -344,6 +429,7 @@ function parseRegisteredWalletRecord(
 
   return normalizeRegisteredWallet({
     id: id ?? createRegisteredWalletId(kind, walletName, network, createdAt),
+    displayName,
     walletName,
     path,
     network,
@@ -353,6 +439,10 @@ function parseRegisteredWalletRecord(
     seedBackedUpAt,
     credentialKey,
     restoreHeight,
+    accountIndex,
+    addressIndex,
+    role,
+    sourceWalletId,
     hardwareDeviceName,
     hardwareDeviceType,
     createdAt,
@@ -371,6 +461,32 @@ function parseString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function normalizeDisplayName(value: string | undefined): string | undefined {
+  const name = value?.trim();
+  if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name)) {
+    return undefined;
+  }
+  return name;
+}
+
+function defaultWalletDisplayName(
+  kind: RegisteredWalletKind,
+  walletName: string,
+): string {
+  const prefix = kind === 'hardware' ? 'ledger' : 'wallet';
+  const title = kind === 'hardware' ? 'Ledger' : kind === 'fast' ? 'Fast Wallet' : 'Wallet';
+  const legacyPrefix = kind === 'hardware' ? 'ledger' : 'primary';
+  const suffix = walletName.startsWith(`${prefix}-`)
+    ? walletName.slice(prefix.length + 1)
+    : walletName.startsWith(`${legacyPrefix}-`)
+      ? walletName.slice(legacyPrefix.length + 1)
+      : walletName === prefix || walletName === legacyPrefix
+        ? '1'
+        : undefined;
+  const number = suffix && /^\d+$/.test(suffix) ? Number(suffix) : 1;
+  return `${title} ${number}`;
+}
+
 function parseNumber(value: unknown): number | undefined {
   return typeof value === 'number' ? value : undefined;
 }
@@ -379,6 +495,20 @@ function normalizeRestoreHeight(value: number | undefined): number {
   return value !== undefined && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : 0;
+}
+
+function normalizeSubaddressIndex(value: number | undefined): number {
+  return value !== undefined && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : 0;
+}
+
+function parseWalletRole(value: unknown): RegisteredWalletRole | undefined {
+  if (value === 'standard' || value === 'fast') {
+    return value;
+  }
+
+  return undefined;
 }
 
 function parseNetwork(value: unknown): MoneroNetwork | undefined {

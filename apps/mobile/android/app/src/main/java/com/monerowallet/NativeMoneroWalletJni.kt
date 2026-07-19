@@ -78,6 +78,7 @@ internal object NativeMoneroWalletJni {
     deviceName: String,
     restoreHeight: Double,
     subaddressLookahead: String,
+    accountIndex: Double,
   ): String {
     requireLoaded()
     return nativeCreateWalletFromDevice(
@@ -87,6 +88,7 @@ internal object NativeMoneroWalletJni {
       deviceName,
       restoreHeight,
       subaddressLookahead,
+      accountIndex,
     )
   }
 
@@ -172,6 +174,20 @@ internal object NativeMoneroWalletJni {
   fun getAddress(walletId: String, accountIndex: Double, addressIndex: Double): String {
     requireLoaded()
     return nativeGetAddress(walletId, accountIndex, addressIndex)
+  }
+
+  fun createSubaddress(
+    walletId: String,
+    accountIndex: Double,
+    label: String,
+  ): Map<String, Any> {
+    requireLoaded()
+    return nativeCreateSubaddress(walletId, accountIndex, label)
+  }
+
+  fun setWalletPassword(walletId: String, newPassword: String) {
+    requireLoaded()
+    nativeSetWalletPassword(walletId, newPassword)
   }
 
   fun getSeed(walletId: String, seedOffset: String): String {
@@ -309,7 +325,14 @@ internal object NativeMoneroWalletJni {
     deviceName: String,
     restoreHeight: Double,
     subaddressLookahead: String,
+    accountIndex: Double,
   ): String
+
+  @JvmStatic private external fun nativeCreateSubaddress(
+    walletId: String,
+    accountIndex: Double,
+    label: String,
+  ): Map<String, Any>
 
   @JvmStatic private external fun nativeCreateFastReceiveIdentity(
     sourceWalletId: String,
@@ -359,6 +382,11 @@ internal object NativeMoneroWalletJni {
     walletId: String,
     seedOffset: String,
   ): String
+
+  @JvmStatic private external fun nativeSetWalletPassword(
+    walletId: String,
+    newPassword: String,
+  )
 
   @JvmStatic private external fun nativeGetBalance(
     walletId: String,

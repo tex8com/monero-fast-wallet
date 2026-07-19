@@ -103,6 +103,13 @@ export type FastReceiveIdentity = {
   scannerStatus: string;
 };
 
+export type WalletSubaddress = {
+  accountIndex: number;
+  addressIndex: number;
+  address: string;
+  label: string;
+};
+
 export interface Spec extends TurboModule {
   linkedWithMonero(): Promise<boolean>;
 
@@ -168,6 +175,7 @@ export interface Spec extends TurboModule {
     deviceName: string,
     restoreHeight: number,
     subaddressLookahead: string,
+    accountIndex: number,
   ): Promise<string>;
 
   createWalletFromDeviceWithStoredSecret(
@@ -177,6 +185,7 @@ export interface Spec extends TurboModule {
     deviceName: string,
     restoreHeight: number,
     subaddressLookahead: string,
+    accountIndex: number,
   ): Promise<string>;
 
   createFastReceiveIdentity(
@@ -260,6 +269,14 @@ export interface Spec extends TurboModule {
     accountIndex: number,
     addressIndex: number,
   ): Promise<string>;
+
+  createSubaddress(
+    walletId: string,
+    accountIndex: number,
+    label: string,
+  ): Promise<WalletSubaddress>;
+
+  setWalletPassword(walletId: string, newPassword: string): Promise<void>;
 
   getSeed(walletId: string, seedOffset: string): Promise<string>;
 

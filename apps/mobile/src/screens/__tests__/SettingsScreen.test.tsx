@@ -55,6 +55,13 @@ jest.mock("../../services/WalletService", () => ({
   },
 }));
 
+jest.mock("../../services/WalletState", () => ({
+  useWalletState: () => ({
+    lockWallet: jest.fn(async () => undefined),
+    session: undefined,
+  }),
+}));
+
 describe("SettingsScreen", () => {
   it("shows editable Tex8 daemon and gRPC endpoint fields", async () => {
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;

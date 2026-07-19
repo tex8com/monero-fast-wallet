@@ -23,6 +23,7 @@ fi
 rm -rf "${build_root}"
 cmake -S "${source_dir}" -B "${build_root}" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_STANDARD=17 \
   -Dprotobuf_BUILD_TESTS=OFF \
   -Dprotobuf_BUILD_CONFORMANCE=OFF \
   -Dprotobuf_BUILD_EXAMPLES=OFF \

@@ -16,6 +16,9 @@ const EVENT_TYPE = "monero.fast_wallet.incoming";
 const SUBSCRIPTION_ID_KEY = "monero-fast-wallet.push.subscription-id.v1";
 const LAST_EVENT_KEY = "monero-fast-wallet.push.last-event.v2";
 const LAST_EVENT_ID_KEY = "monero-fast-wallet.push.last-event-id.v2";
+// The scanner historically emits a SHA-256 based `sig_` identifier while the
+// gateway emits `fwpush_`. Both are opaque identifiers only, never wallet data.
+const OPAQUE_EVENT_ID = /^(?:fwpush_[0-9a-f]{32}|sig_[0-9a-f]{64}|evt_[0-9a-f]{64})$/;
 const FORBIDDEN_EVENT_FIELDS = [
   "address",
   "amountAtomic",
@@ -237,7 +240,7 @@ export function parseFastWalletPushEvent(message: any): FastWalletPushEvent | un
     data.type !== EVENT_TYPE ||
     data.contractVersion !== EVENT_CONTRACT ||
     typeof data.eventId !== "string" ||
-    !/^fwpush_[0-9a-f]{32}$/.test(data.eventId)
+    !OPAQUE_EVENT_ID.test(data.eventId)
   ) {
     return undefined;
   }
@@ -328,12 +331,7 @@ async function getLastEvent(): Promise<FastWalletPushEvent | undefined> {
     return undefined;
   }
   try {
-    const parsed = JSON.parse(raw) as Partial<FastWalletPushEvent>;
-    return parsed.type === EVENT_TYPE &&
-      parsed.contractVersion === EVENT_CONTRACT &&
-      typeof parsed.eventId === "string"
-      ? (parsed as FastWalletPushEvent)
-      : undefined;
+    return parseFastWalletPushEvent({ data: JSON.parse(raw) });
   } catch {
     return undefined;
   }

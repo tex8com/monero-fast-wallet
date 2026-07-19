@@ -54,7 +54,15 @@ struct CreateWalletFromDeviceRequest {
   std::string deviceName{"Ledger"};
   uint64_t restoreHeight{0};
   std::string subaddressLookahead;
+  uint32_t accountIndex{0};
   uint64_t kdfRounds{1};
+};
+
+struct WalletSubaddress {
+  uint32_t accountIndex{0};
+  uint32_t addressIndex{0};
+  std::string address;
+  std::string label;
 };
 
 struct CreateFastReceiveIdentityRequest {

@@ -11,11 +11,55 @@ MONERO_LINK_ROOT="${MONERO_WALLET_LINK_ROOT:-${REPO_ROOT}/build/android-monero-l
 MONERO_TARGET="${MONERO_WALLET_ANDROID_TARGET:-android-arm64}"
 REQUIRE_MONERO="${MONERO_WALLET_ANDROID_REQUIRE_MONERO:-1}"
 GRADLE_TASK="${MONERO_WALLET_ANDROID_GRADLE_TASK:-assemble${VARIANT_CAPITALIZED}}"
+EXTERNAL_BUILD_ROOT="${MONERO_WALLET_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
+APP_BUILD_DIR="${ANDROID_DIR}/app/build"
+
+# Native Android artifacts are intentionally kept off the small system volume.
+# A local override remains authoritative; this fallback only makes the standard
+# external build location work without requiring a long environment variable.
+if [ -z "${MONERO_WALLET_LINK_ROOT:-}" ] \
+  && [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ] \
+  && [ -f "/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests/${MONERO_TARGET}/link.cmake" ]; then
+  MONERO_LINK_ROOT="/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests"
+fi
 
 GRADLE_ARGS=(
   ":app:${GRADLE_TASK}"
   "-PreactNativeArchitectures=${ARCHITECTURES}"
 )
+
+# Keep Gradle's CMake object tree and caches beside the externally built
+# Monero archives when that development volume is available. The root disk is
+# intentionally not used for multi-gigabyte native intermediates.
+if [ -d "${EXTERNAL_BUILD_ROOT}" ]; then
+  APP_BUILD_DIR="${MONERO_WALLET_ANDROID_BUILD_DIR:-${EXTERNAL_BUILD_ROOT}/mobile-android-app-build}"
+  export GRADLE_USER_HOME="${MONERO_WALLET_GRADLE_USER_HOME:-${EXTERNAL_BUILD_ROOT}/mobile-gradle-user-home}"
+  GRADLE_ARGS+=("-PmoneroWalletExternalBuildDir=${APP_BUILD_DIR}")
+
+  # React Native dependencies own their Android Gradle outputs. AGP writes
+  # those under node_modules by default, independently of the app's build
+  # directory. Relocate only their reproducible build directories to the
+  # external build volume so a native Monero build cannot fill the system
+  # disk. Their small CMake staging directories stay in place because AGP
+  # records their module-local absolute paths. Source packages, lockfiles,
+  # signing keys, and wallet data remain in their original locations.
+  MODULE_BUILD_ROOT="${EXTERNAL_BUILD_ROOT}/mobile-android-module-builds"
+  while IFS= read -r -d '' module_output; do
+    if [ -L "${module_output}" ]; then
+      continue
+    fi
+    relative_output="${module_output#${MOBILE_DIR}/}"
+    external_output="${MODULE_BUILD_ROOT}/${relative_output}"
+    if [ -e "${external_output}" ]; then
+      echo "External Android output already exists: ${external_output}" >&2
+      echo "Move or remove that generated output before rebuilding." >&2
+      exit 1
+    fi
+    mkdir -p "$(dirname "${external_output}")"
+    mv "${module_output}" "${external_output}"
+    ln -s "${external_output}" "${module_output}"
+  done < <(find "${MOBILE_DIR}/node_modules" -type d -path '*/android/build' -prune -print0 2>/dev/null)
+fi
 
 if [ "$REQUIRE_MONERO" = "1" ]; then
   if [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ]; then
@@ -39,7 +83,12 @@ echo "Building Android ${VARIANT} for ${ARCHITECTURES}..."
 cd "$ANDROID_DIR"
 "${ANDROID_DIR}/gradlew" "${GRADLE_ARGS[@]}"
 
-apk_dir="${ANDROID_DIR}/app/build/outputs/apk/${VARIANT}"
+apk_dir="${APP_BUILD_DIR}/outputs/apk/${VARIANT}"
 if [ -d "$apk_dir" ]; then
   find "$apk_dir" -maxdepth 1 -name "*.apk" -print
+fi
+
+bundle_dir="${APP_BUILD_DIR}/outputs/bundle/${VARIANT}"
+if [ -d "$bundle_dir" ]; then
+  find "$bundle_dir" -maxdepth 1 -name "*.aab" -print
 fi

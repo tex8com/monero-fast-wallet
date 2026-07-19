@@ -17,6 +17,7 @@ import TransactionRow, {
 import { useI18n } from '../i18n';
 import type { WalletTransaction } from '../services/NativeMoneroWallet';
 import { useWalletState } from '../services/WalletState';
+import { walletDisplayName } from '../services/WalletRegistry';
 import { walletService } from '../services/WalletService';
 import { colors, spacing } from '../theme/colors';
 
@@ -67,7 +68,9 @@ export default function TransactionsScreen({ navigation }: any) {
       transaction,
       transactionHash: transaction.hash,
       walletId: registeredWallet?.id,
-      walletName: registeredWallet?.walletName,
+      walletName: registeredWallet
+        ? walletDisplayName(registeredWallet)
+        : undefined,
     });
   };
 
@@ -86,7 +89,9 @@ export default function TransactionsScreen({ navigation }: any) {
         <View style={s.headerCopy}>
           <Text style={s.title}>{t('transactions.title')}</Text>
           <Text style={s.subtitle} numberOfLines={1}>
-            {registeredWallet?.walletName ?? t('common.wallet')}
+            {registeredWallet
+              ? walletDisplayName(registeredWallet)
+              : t('common.wallet')}
           </Text>
         </View>
       </View>

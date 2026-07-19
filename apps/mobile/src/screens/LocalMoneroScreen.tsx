@@ -1,7 +1,22 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from "react-native";
 import { colors, spacing, radius } from "../theme/colors";
-import { LOCAL_MONERO_OFFERS } from "../data/mock";
+
+type LocalMoneroOffer = {
+  id: string;
+  type: "buy" | "sell";
+  user: string;
+  reputation: number;
+  lastSeen: string;
+  price: string;
+  limits: string;
+  paymentMethod: string;
+  trades: string;
+};
+
+// This feature has no live P2P marketplace backend yet. Keep the screen
+// empty rather than showing fabricated offers as if they were real listings.
+const LOCAL_MONERO_OFFERS: LocalMoneroOffer[] = [];
 
 export default function LocalMoneroScreen() {
   const [tab, setTab] = useState<"buy" | "sell">("buy");
@@ -63,8 +78,16 @@ export default function LocalMoneroScreen() {
             </TouchableOpacity>
           </View>
         ))}
+        {offers.length === 0 && (
+          <View style={s.emptyCard}>
+            <Text style={s.emptyTitle}>No listings yet</Text>
+            <Text style={s.emptyText}>
+              Local Monero listings will appear here when the marketplace service is available.
+            </Text>
+          </View>
+        )}
 
-        <View style={{ height: 100 }} />
+        <View style={s.bottomSpacer} />
       </ScrollView>
     </View>
   );
@@ -97,4 +120,8 @@ const s = StyleSheet.create({
   offerValue: { color: colors.textSecondary, fontSize: 13, fontWeight: "500" },
   tradeBtn: { backgroundColor: colors.orange, borderRadius: radius.md, paddingVertical: 14, alignItems: "center" },
   tradeBtnText: { color: "#FFF", fontSize: 16, fontWeight: "700" },
+  emptyCard: { backgroundColor: colors.bgCard, borderRadius: radius.lg, padding: spacing.lg, borderWidth: 1, borderColor: colors.border, alignItems: "center" },
+  emptyTitle: { color: colors.textPrimary, fontSize: 16, fontWeight: "700" },
+  emptyText: { color: colors.textSecondary, fontSize: 13, lineHeight: 20, marginTop: 8, textAlign: "center" },
+  bottomSpacer: { height: 100 },
 });

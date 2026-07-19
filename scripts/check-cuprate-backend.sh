@@ -57,6 +57,11 @@ need() {
 need curl
 need jq
 
+cmake_bin="${CMAKE_BIN:-$(command -v cmake 2>/dev/null || true)}"
+if [ -z "$cmake_bin" ] || [ ! -x "$cmake_bin" ]; then
+  cmake_bin="$(find "$HOME/Library/Android/sdk/cmake" -type f -name cmake -perm -111 2>/dev/null | sort | tail -n 1)"
+fi
+
 request() {
   local method="$1"
   local url="$2"
@@ -209,12 +214,34 @@ if [ "$CHECK_SEND_RAW" = "1" ]; then
 fi
 
 if [ "$CHECK_GRPC" = "1" ] && [ -d "$REPO_ROOT/node/cuprate/tools/grpc-smoke" ]; then
-  cmake -S "$REPO_ROOT/node/cuprate/tools/grpc-smoke" \
-    -B "$REPO_ROOT/build/cuprate-grpc-smoke" \
-    -G Ninja >/dev/null
-  cmake --build "$REPO_ROOT/build/cuprate-grpc-smoke" >/dev/null
+  if [ -z "$cmake_bin" ] || [ ! -x "$cmake_bin" ]; then
+    fail "missing required command: cmake"
+  fi
+  grpc_smoke_build_dir="${CUPRATE_GRPC_SMOKE_BUILD_DIR:-$REPO_ROOT/build/cuprate-grpc-smoke}"
+  grpc_cpp_prefix="${CUPRATE_GRPC_CPP_PREFIX:-}"
+  grpc_cmake_args=()
+  if [ -n "$grpc_cpp_prefix" ]; then
+    grpc_cmake_args+=(
+      "-DCMAKE_PREFIX_PATH=$grpc_cpp_prefix"
+      "-DGRPC_CPP_PLUGIN_PATH=$grpc_cpp_prefix/bin/grpc_cpp_plugin"
+    )
+    grpc_openssl_root="$(dirname "$grpc_cpp_prefix")/openssl-sdk"
+    if [ -f "$grpc_openssl_root/include/openssl/x509.h" ]; then
+      grpc_cmake_args+=(
+        "-DOPENSSL_ROOT_DIR=$grpc_openssl_root"
+        "-DOPENSSL_INCLUDE_DIR=$grpc_openssl_root/include"
+        "-DOPENSSL_SSL_LIBRARY=$grpc_openssl_root/lib/libssl.a"
+        "-DOPENSSL_CRYPTO_LIBRARY=$grpc_openssl_root/lib/libcrypto.a"
+      )
+    fi
+    export PATH="$grpc_cpp_prefix/bin:$PATH"
+  fi
+  "$cmake_bin" -S "$REPO_ROOT/node/cuprate/tools/grpc-smoke" \
+    -B "$grpc_smoke_build_dir" \
+    -G Ninja "${grpc_cmake_args[@]}" >/dev/null
+  "$cmake_bin" --build "$grpc_smoke_build_dir" >/dev/null
   start_height="$(echo "$get_info" | jq -r '[(.height // 0) - 64, 0] | max')"
-  "$REPO_ROOT/build/cuprate-grpc-smoke/smoke" \
+  "$grpc_smoke_build_dir/smoke" \
     "$GRPC_ENDPOINT" "$start_height" "$((start_height + 10))" 5
   echo "ok grpc block stream"
 fi

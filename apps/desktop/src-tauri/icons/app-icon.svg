@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Monero Fast Wallet macOS app icon.
+  The mark below is the official Monero vector signet from monero-gui/images/monero-vector.svg.
+  It is intentionally smaller than the macOS tile so it remains balanced next to standard Dock icons.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f2f0f5"/>
+    </linearGradient>
+  </defs>
+
+  <!--
+    A deliberately inset squircle. macOS already scales application surfaces in the Dock;
+    keeping an outer transparent margin prevents this tile from appearing oversized.
+  -->
+  <rect x="76" y="76" width="872" height="872" rx="198" fill="url(#tile)"/>
+  <rect x="76.75" y="76.75" width="870.5" height="870.5" rx="197.25" fill="none" stroke="#d8d4dc" stroke-width="1.5"/>
+
+  <!-- Official Monero signet, centered and intentionally prominent within the inset tile. -->
+  <g transform="translate(512 512) scale(.125) translate(-3000 -3000)">
+    <g transform="matrix(1.3333 0 0 -1.3333 0 6000)">
+      <g>
+        <g transform="translate(4128 2250.2)">
+          <path d="m0 0c0-1037.2-840.79-1878.1-1878.1-1878.1-1037.2 0-1878 840.88-1878 1878.1 0 1037.3 840.8 1878.1 1878 1878.1 1037.3 0 1878.1-840.79 1878.1-1878.1" fill="#fff"/>
+        </g>
+        <g transform="translate(2250 4128.2)">
+          <path d="m0 0c-1036.9 0-1879.1-842.06-1877.8-1878 .262-207.26 33.308-406.63 95.342-593.12h561.88v1579.9l1220.6-1220.6 1220.6 1220.6v-1579.9h561.96c62.117 186.48 95.008 385.85 95.369 593.12 1.809 1037-840.89 1877.8-1877.9 1877.8z" fill="#f36e36"/>
+        </g>
+        <g transform="translate(1969.3 1735.8)">
+          <path d="m0 0-532.67 532.7v-994.14h-407.26l-384.29-.07c329.63-540.8 925.35-902.56 1604.9-902.56 679.54 0 1275.3 361.85 1605 902.65l-384.44-.013h-407.27v994.14l-813.3-813.31-280.62 280.61z" fill="#575757"/>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

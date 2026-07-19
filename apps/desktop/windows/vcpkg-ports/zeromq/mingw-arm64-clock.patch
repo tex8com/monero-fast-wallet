@@ -1,0 +1,15 @@
+diff --git a/src/clock.cpp b/src/clock.cpp
+index 79522ad..3a5ce4d 100644
+--- a/src/clock.cpp
++++ b/src/clock.cpp
+@@ -227,6 +227,10 @@ uint64_t zmq::clock_t::rdtsc ()
+    return _ReadStatusReg (pmccntr_el0);
++#elif defined ZMQ_HAVE_WINDOWS
++    // MinGW ARM64 has no portable RDTSC equivalent. Returning zero makes the
++    // caller use the Windows monotonic timer instead.
++    return 0;
+ #elif (defined __GNUC__ && (defined __i386__ || defined __x86_64__))
+    uint32_t low, high;
+    __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+    return static_cast<uint64_t> (high) << 32 | low;
+ #elif (defined __SUNPRO_CC && (__SUNPRO_CC >= 0x5100)                          \

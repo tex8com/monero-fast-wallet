@@ -1,0 +1,15 @@
+[Unit]
+Description=Monero Fast Wallet background notification agent
+Documentation=https://tex8.com
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/monero-fast-walletd --config %h/.local/share/com.tex8.monerowallet.desktop/notifications/linux-agent.json
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

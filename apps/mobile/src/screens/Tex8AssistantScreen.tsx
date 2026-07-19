@@ -26,6 +26,7 @@ import type { FastReceiveIdentityRecord } from "../services/FastReceiveRegistry"
 import { getActiveNodeConnectionSettings } from "../services/NodeConnectionSettings";
 import { formatAtomicXmr } from "../services/WalletFormat";
 import { useWalletState } from "../services/WalletState";
+import { walletDisplayName } from "../services/WalletRegistry";
 import type { AppControlCommand } from "../../../../../tex8/products/mobile-platform/shared-app/src/core/chat/appControlCommands";
 
 type ChatMessage = {
@@ -115,7 +116,9 @@ export default function Tex8AssistantScreen({ navigation }: any) {
     const nodeSettings = getActiveNodeConnectionSettings(session?.network);
     return {
       walletStatus: status,
-      walletName: registeredWallet?.walletName,
+      walletName: registeredWallet
+        ? walletDisplayName(registeredWallet)
+        : undefined,
       network: session?.network ?? registeredWallet?.network,
       hasOpenWallet: Boolean(session && snapshot),
       primaryAddress: snapshot?.primaryAddress,
@@ -197,13 +200,6 @@ export default function Tex8AssistantScreen({ navigation }: any) {
           <Text style={s.kicker}>Tex8 Shared</Text>
           <Text style={s.title}>AI Assistant</Text>
         </View>
-        <TouchableOpacity
-          style={s.modulesButton}
-          onPress={() => navigation.navigate("SharedModules")}
-          activeOpacity={0.75}
-        >
-          <Icon name="lightbulb" size={19} color={colors.orange} />
-        </TouchableOpacity>
       </View>
 
       <View style={s.contractRow}>
@@ -269,7 +265,7 @@ export default function Tex8AssistantScreen({ navigation }: any) {
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder="Ask about wallet modules..."
+            placeholder="Ask about wallet features..."
             placeholderTextColor={colors.textMuted}
             style={s.input}
             multiline
@@ -315,16 +311,6 @@ const s = StyleSheet.create({
     textTransform: "uppercase",
   },
   title: { color: colors.textPrimary, fontSize: 28, fontWeight: "800" },
-  modulesButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.orangeMuted,
-    borderWidth: 1,
-    borderColor: "rgba(242,104,34,0.28)",
-  },
   contractRow: {
     marginHorizontal: spacing.lg,
     paddingHorizontal: 12,

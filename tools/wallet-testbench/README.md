@@ -54,6 +54,33 @@ tools/wallet-testbench/run-wallet-core-testbench.sh local
 That command is expected to fail until the public notify-scanner service is
 deployed and `/healthz` returns a healthy JSON body such as `{"ok":true}`.
 
+Community Discovery has its own full API contract runner. It starts an
+isolated encrypted service locally, tests every public endpoint with two fresh
+anonymous identities, and removes all generated contacts, messages, blocks,
+reports, and identities afterwards:
+
+```sh
+bash services/enthusiast-discovery/scripts/run-community-testbench.sh full
+```
+
+After the live Community service is deployed, the same privacy-scoped contract
+can run against it. It creates only short-lived `TB-...` anonymous identities
+and deletes them on completion; bearer tokens are never printed:
+
+```sh
+TESTBENCH_COMMUNITY_LIVE=1 \
+TESTBENCH_ALLOW_COMMUNITY_LIVE=1 \
+TESTBENCH_COMMUNITY_URL=https://xmr.tex8.com/community \
+tools/wallet-testbench/run-wallet-core-testbench.sh local
+```
+
+Set `TESTBENCH_REQUIRE_DEPLOYED_COMMUNITY=1` to turn a missing live Community
+contract into a failing gate. The live run covers the public route, health,
+anonymous identity creation, authentication rejection, approximate-area
+privacy, discovery, presence refresh, contact approval, chat, cursor queries,
+reporting, blocking, and cleanup. The local Rust tests additionally cover
+encrypted storage, rate limiting, expiry, and deletion of all related records.
+
 Broadcast is guarded and requires an explicit amount:
 
 ```sh

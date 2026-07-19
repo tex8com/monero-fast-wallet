@@ -6,6 +6,8 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleDisplayName</key>
 	<string>MoneroWallet</string>
 	<key>CFBundleExecutable</key>
@@ -48,6 +50,8 @@
 	<string>Bluetooth is used to connect to Ledger Nano hardware wallets.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Bluetooth is used to connect to Ledger Nano hardware wallets.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Camera access is used only to scan a Monero receiving-address QR code.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Face ID is used to unlock your wallet securely on this device.</string>
 	<key>RCTNewArchEnabled</key>

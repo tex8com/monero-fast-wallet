@@ -47,6 +47,38 @@ export type ScannerFetch = (
   text(): Promise<string>;
 }>;
 
+/**
+ * Confirms that the selected endpoint is a Fast Receive service before any
+ * private-view-key registration is attempted. This endpoint returns only a
+ * public health response; it deliberately carries no wallet metadata.
+ */
+export async function verifyFastReceiveScannerCapability(
+  scannerUrlInput: string,
+  fetchImpl: ScannerFetch = defaultFetch(),
+): Promise<void> {
+  const scannerUrl = normalizeScannerUrl(scannerUrlInput);
+  const response = await fetchImpl(`${scannerUrl}/healthz`, {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `Fast receive scanner capability check failed with HTTP ${response.status}`,
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bodyText);
+  } catch {
+    throw new Error('Fast receive scanner capability response was invalid');
+  }
+  if (!isRecord(parsed) || parsed.ok !== true) {
+    throw new Error('The selected server is not a Fast Receive scanner');
+  }
+}
+
 export async function checkFastReceiveKeyImages(
   input: CheckKeyImageStatusInput,
   fetchImpl: ScannerFetch = defaultFetch(),

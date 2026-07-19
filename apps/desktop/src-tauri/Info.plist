@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Bluetooth is used only to connect a Ledger Nano X hardware wallet.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>The camera is used only when you choose to scan a Monero recipient address QR code.</string>
+</dict>
+</plist>

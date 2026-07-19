@@ -6366,6 +6366,11 @@ react-is@^19.1.0, react-is@^19.2.3:
   resolved "https://registry.npmjs.org/react-is/-/react-is-19.2.5.tgz"
   integrity sha512-Dn0t8IQhCmeIT3wu+Apm1/YVsJXsGWi6k4sPdnBIdqMVtHtv0IGi6dcpNpNkNac0zB2uUAqNX3MHzN8c+z2rwQ==
 
+react-native-camera-kit@^18.0.0:
+  version "18.0.0"
+  resolved "https://registry.npmjs.org/react-native-camera-kit/-/react-native-camera-kit-18.0.0.tgz"
+  integrity sha512-FZG9kB8GDGcxTUB2cGhBn2wexIgzevv+PE7zfpLz6i/9kltDCLO/fomLhFvSaQVL2Bnu8AtxbBiI8Im0O8AqDA==
+
 react-native-clipboard@^0.0.5:
   version "0.0.5"
   resolved "https://registry.npmjs.org/react-native-clipboard/-/react-native-clipboard-0.0.5.tgz"
@@ -6385,6 +6390,11 @@ react-native-linear-gradient@^2.8.3:
   version "2.8.3"
   resolved "https://registry.npmjs.org/react-native-linear-gradient/-/react-native-linear-gradient-2.8.3.tgz"
   integrity sha512-KflAXZcEg54PXkLyflaSZQ3PJp4uC4whM7nT/Uot9m0e/qxFV3p6uor1983D1YOBJbJN7rrWdqIjq0T42jOJyA==
+
+react-native-permissions@^5.6.0:
+  version "5.6.0"
+  resolved "https://registry.npmjs.org/react-native-permissions/-/react-native-permissions-5.6.0.tgz"
+  integrity sha512-iKq7rgAg9cQSy9e/7A6wCj0GYhw+o29Ob4OKC793fniDdwraDNu7D67X4holGJLChUDNzFZH1Qj+YWgrPNsGLw==
 
 react-native-qrcode-svg@^6.3.21:
   version "6.3.21"

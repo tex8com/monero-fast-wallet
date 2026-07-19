@@ -71,10 +71,8 @@ export default function FindEnthusiastsScreen({navigation}: any) {
         setDisplayName(profile.displayName);
         setNearby(nextNearby);
         setContacts(nextContacts);
-      } catch (error) {
-        setCommunityError(
-          error instanceof Error ? error.message : t('enthusiasts.serverError'),
-        );
+      } catch {
+        setCommunityError(t('enthusiasts.serverError'));
       } finally {
         setCommunityBusy(false);
       }
@@ -152,8 +150,8 @@ export default function FindEnthusiastsScreen({navigation}: any) {
       const profile = await updateCommunityDisplayName(displayName, preference);
       setDisplayName(profile.displayName);
       await reloadCommunity(preference);
-    } catch (error) {
-      setCommunityError(error instanceof Error ? error.message : String(error));
+    } catch {
+      setCommunityError(t('enthusiasts.serverError'));
     } finally {
       setCommunityBusy(false);
     }

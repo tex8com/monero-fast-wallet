@@ -12,6 +12,9 @@ import {
 import { useFocusEffect } from '@react-navigation/native';
 
 import { Icon } from '../components/Icon';
+import TransactionRow, {
+  transactionRowKey,
+} from '../components/TransactionRow';
 import { useI18n } from '../i18n';
 import {
   fastReceiveScannerUrlForSettings,
@@ -27,7 +30,10 @@ import {
 } from '../services/FastWalletStatus';
 import { FastWalletPushService } from '../services/FastWalletPushService';
 import { logWalletEvent } from '../services/WalletLogger';
-import type { RegisteredWallet } from '../services/WalletRegistry';
+import {
+  walletDisplayName,
+  type RegisteredWallet,
+} from '../services/WalletRegistry';
 import { walletService } from '../services/WalletService';
 import { useWalletState } from '../services/WalletState';
 import { colors, radius, spacing } from '../theme/colors';
@@ -40,8 +46,10 @@ export default function WalletsScreen({ navigation }: any) {
     registeredWallet,
     registeredWallets,
     reloadRegisteredWallets,
+    renameRegisteredWallet,
     removeRegisteredWallet,
     session,
+    transactions,
     walletSnapshots,
   } = useWalletState();
   const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
@@ -57,6 +65,10 @@ export default function WalletsScreen({ navigation }: any) {
   const [busy, setBusy] = useState(false);
   const [busyIdentityId, setBusyIdentityId] = useState<string | undefined>();
   const [fastActionError, setFastActionError] = useState<string | undefined>();
+  const [renamingWalletId, setRenamingWalletId] = useState<string | undefined>();
+  const [renameValue, setRenameValue] = useState('');
+  const [renameError, setRenameError] = useState<string | undefined>();
+  const [renameBusy, setRenameBusy] = useState(false);
   const tex8Node = nodeMode === 'optimized-grpc';
   const needsPassword = Boolean(session && !session.credentialKey);
   const canCreateFastWallet =
@@ -116,7 +128,7 @@ export default function WalletsScreen({ navigation }: any) {
   const confirmRemoveWallet = (wallet: RegisteredWallet) => {
     Alert.alert(
       t('wallets.removeWallet'),
-      t('wallets.removeWalletConfirm', { name: wallet.walletName }),
+      t('wallets.removeWalletConfirm', { name: walletDisplayName(wallet) }),
       [
         { text: t('action.cancel'), style: 'cancel' },
         {
@@ -128,6 +140,29 @@ export default function WalletsScreen({ navigation }: any) {
         },
       ],
     );
+  };
+
+  const startRenameWallet = (wallet: RegisteredWallet) => {
+    setRenamingWalletId(wallet.id);
+    setRenameValue(walletDisplayName(wallet));
+    setRenameError(undefined);
+  };
+
+  const saveWalletName = async () => {
+    if (!renamingWalletId || renameBusy) {
+      return;
+    }
+    setRenameBusy(true);
+    setRenameError(undefined);
+    try {
+      await renameRegisteredWallet(renamingWalletId, renameValue);
+      setRenamingWalletId(undefined);
+      setRenameValue('');
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRenameBusy(false);
+    }
   };
 
   const confirmRemoveFastWallet = (identity: FastReceiveIdentityRecord) => {
@@ -312,24 +347,62 @@ export default function WalletsScreen({ navigation }: any) {
             registeredWallets
               .filter(wallet => wallet.kind !== 'fast')
               .map(wallet => (
-                <WalletRow
-                  active={wallet.id === registeredWallet?.id}
-                  address={walletSnapshots[wallet.id]?.primaryAddress}
-                  key={wallet.id}
-                  statusLabel={
-                    wallet.id === registeredWallet?.id
-                      ? t('walletSelector.active')
-                      : undefined
-                  }
-                  statusTone="success"
-                  subtitle={
-                    wallet.kind === 'hardware'
-                      ? wallet.hardwareDeviceName ?? 'Ledger Nano'
-                      : wallet.network
-                  }
-                  title={wallet.walletName}
-                  onRemove={() => confirmRemoveWallet(wallet)}
-                />
+                <View key={wallet.id}>
+                  <WalletRow
+                    active={wallet.id === registeredWallet?.id}
+                    address={walletSnapshots[wallet.id]?.primaryAddress}
+                    statusLabel={
+                      wallet.id === registeredWallet?.id
+                        ? t('walletSelector.active')
+                        : undefined
+                    }
+                    statusTone="success"
+                    subtitle={
+                      wallet.kind === 'hardware'
+                        ? wallet.hardwareDeviceName ?? 'Ledger Nano'
+                        : wallet.network
+                    }
+                    title={walletDisplayName(wallet)}
+                    onRename={() => startRenameWallet(wallet)}
+                    onRemove={() => confirmRemoveWallet(wallet)}
+                  />
+                  {renamingWalletId === wallet.id ? (
+                    <View style={s.renameBox}>
+                      <TextInput
+                        autoCapitalize="words"
+                        autoFocus
+                        maxLength={64}
+                        onChangeText={setRenameValue}
+                        placeholder="Wallet name"
+                        placeholderTextColor={colors.textMuted}
+                        style={s.renameInput}
+                        value={renameValue}
+                      />
+                      <View style={s.renameActions}>
+                        <TouchableOpacity
+                          activeOpacity={0.72}
+                          disabled={renameBusy}
+                          onPress={() => {
+                            setRenamingWalletId(undefined);
+                            setRenameError(undefined);
+                          }}
+                          style={s.renameCancel}
+                        >
+                          <Text style={s.renameCancelText}>{t('action.cancel')}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          activeOpacity={0.72}
+                          disabled={renameBusy}
+                          onPress={saveWalletName}
+                          style={s.renameSave}
+                        >
+                          {renameBusy ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={s.renameSaveText}>Save</Text>}
+                        </TouchableOpacity>
+                      </View>
+                      {renameError ? <Text style={s.renameError}>{renameError}</Text> : null}
+                    </View>
+                  ) : null}
+                </View>
               ))
           ) : (
             <EmptyCard text={t('wallets.noWallets')} />
@@ -423,6 +496,45 @@ export default function WalletsScreen({ navigation }: any) {
             </Text>
           </TouchableOpacity>
         </View>
+
+        <View style={s.recentSection}>
+          <View style={s.recentHeader}>
+            <Text style={s.recentTitle}>{t('home.transactions')}</Text>
+            <TouchableOpacity
+              accessibilityRole="button"
+              activeOpacity={0.7}
+              onPress={() => navigation.navigate('Transactions')}
+            >
+              <Text style={s.recentLink}>{t('transactions.viewMore')}</Text>
+            </TouchableOpacity>
+          </View>
+          {session && transactions.length > 0 ? (
+            transactions.slice(0, 3).map(transaction => (
+              <TransactionRow
+                key={transactionRowKey(transaction)}
+                transaction={transaction}
+                onPress={() =>
+                  navigation.navigate('TransactionDetail', {
+                    transaction,
+                    transactionHash: transaction.hash,
+                    walletId: registeredWallet?.id,
+                    walletName: registeredWallet
+                      ? walletDisplayName(registeredWallet)
+                      : undefined,
+                  })
+                }
+              />
+            ))
+          ) : (
+            <EmptyCard
+              text={
+                session
+                  ? t('home.noTransactions')
+                  : t('home.openWalletToLoad')
+              }
+            />
+          )}
+        </View>
       </ScrollView>
     </View>
   );
@@ -439,6 +551,7 @@ function WalletRow({
   statusTone,
   subtitle,
   title,
+  onRename,
   onRemove,
 }: {
   active?: boolean;
@@ -451,6 +564,7 @@ function WalletRow({
   statusTone?: FastWalletStatusTone;
   subtitle: string;
   title: string;
+  onRename?: () => void;
   onRemove: () => void;
 }) {
   const { t } = useI18n();
@@ -521,13 +635,20 @@ function WalletRow({
           ) : null}
         </View>
       ) : null}
-      <TouchableOpacity
-        activeOpacity={0.72}
-        onPress={onRemove}
-        style={s.removeButton}
-      >
-        <Icon name="trash" size={17} color={colors.error} />
-      </TouchableOpacity>
+      <View style={s.walletActions}>
+        {onRename ? (
+          <TouchableOpacity activeOpacity={0.72} onPress={onRename} style={s.renameButton}>
+            <Icon name="edit" size={16} color={colors.orange} />
+          </TouchableOpacity>
+        ) : null}
+        <TouchableOpacity
+          activeOpacity={0.72}
+          onPress={onRemove}
+          style={s.removeButton}
+        >
+          <Icon name="trash" size={17} color={colors.error} />
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -600,6 +721,19 @@ const s = StyleSheet.create({
     marginBottom: 10,
     textTransform: 'uppercase',
   },
+  recentSection: { marginBottom: 26 },
+  recentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  recentTitle: {
+    color: colors.textPrimary,
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  recentLink: { color: colors.orange, fontSize: 13, fontWeight: '800' },
   nodePill: {
     overflow: 'hidden',
     borderRadius: radius.full,
@@ -689,6 +823,15 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   retryText: { color: colors.orange, fontSize: 10, fontWeight: '900' },
+  walletActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  renameButton: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 17,
+    backgroundColor: colors.orangeMuted,
+  },
   removeButton: {
     width: 38,
     height: 38,
@@ -697,6 +840,31 @@ const s = StyleSheet.create({
     borderRadius: 19,
     backgroundColor: 'rgba(255,68,102,0.1)',
   },
+  renameBox: {
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgCard,
+    padding: 12,
+    marginTop: -2,
+    marginBottom: 10,
+  },
+  renameInput: {
+    minHeight: 44,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    color: colors.textPrimary,
+    backgroundColor: colors.bgInput,
+    paddingHorizontal: 12,
+    fontSize: 14,
+  },
+  renameActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 10 },
+  renameCancel: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 12 },
+  renameCancelText: { color: colors.textSecondary, fontWeight: '800' },
+  renameSave: { minWidth: 70, minHeight: 36, alignItems: 'center', justifyContent: 'center', borderRadius: radius.sm, backgroundColor: colors.orange, paddingHorizontal: 12 },
+  renameSaveText: { color: '#FFF', fontWeight: '900' },
+  renameError: { color: colors.error, fontSize: 12, marginTop: 8 },
   emptyCard: {
     borderRadius: radius.md,
     borderWidth: 1,

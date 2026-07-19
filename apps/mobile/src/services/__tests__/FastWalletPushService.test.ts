@@ -17,6 +17,22 @@ describe("FastWalletPushService", () => {
     });
   });
 
+  it("accepts the opaque scanner event identifier used by deployed scanners", () => {
+    expect(
+      parseFastWalletPushEvent({
+        data: {
+          contractVersion: "monero-fast-wallet-push.v2",
+          eventId: `sig_${"a".repeat(64)}`,
+          type: "monero.fast_wallet.incoming",
+        },
+      }),
+    ).toEqual({
+      contractVersion: "monero-fast-wallet-push.v2",
+      eventId: `sig_${"a".repeat(64)}`,
+      type: "monero.fast_wallet.incoming",
+    });
+  });
+
   it("rejects malformed or detail-bearing lookalike data", () => {
     expect(
       parseFastWalletPushEvent({

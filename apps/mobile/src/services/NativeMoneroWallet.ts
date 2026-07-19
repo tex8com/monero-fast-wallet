@@ -56,6 +56,7 @@ export interface CreateWalletFromDeviceInput {
   deviceName?: string;
   restoreHeight?: number;
   subaddressLookahead?: string;
+  accountIndex?: number;
 }
 
 export interface CreateWalletFromDeviceWithStoredSecretInput {
@@ -65,6 +66,14 @@ export interface CreateWalletFromDeviceWithStoredSecretInput {
   deviceName?: string;
   restoreHeight?: number;
   subaddressLookahead?: string;
+  accountIndex?: number;
+}
+
+export interface WalletSubaddress {
+  accountIndex: number;
+  addressIndex: number;
+  address: string;
+  label: string;
 }
 
 export interface CreateFastReceiveIdentityInput {
@@ -207,6 +216,12 @@ export interface NativeMoneroWalletModule {
     accountIndex?: number,
     addressIndex?: number,
   ): Promise<string>;
+  createSubaddress(
+    walletId: string,
+    accountIndex?: number,
+    label?: string,
+  ): Promise<WalletSubaddress>;
+  setWalletPassword(walletId: string, newPassword: string): Promise<void>;
   getSeed(walletId: string, seedOffset?: string): Promise<string>;
   getBalance(walletId: string, accountIndex?: number): Promise<string>;
   getUnlockedBalance(walletId: string, accountIndex?: number): Promise<string>;
@@ -306,6 +321,7 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.deviceName ?? 'Ledger',
           input.restoreHeight ?? 0,
           input.subaddressLookahead ?? '',
+          input.accountIndex ?? 0,
         ),
       }),
       createWalletFromDeviceWithStoredSecret: async input => ({
@@ -316,6 +332,7 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.deviceName ?? 'Ledger',
           input.restoreHeight ?? 0,
           input.subaddressLookahead ?? '',
+          input.accountIndex ?? 0,
         ),
       }),
       createFastReceiveIdentity: input =>
@@ -394,6 +411,10 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       stopRefresh: walletId => turboModule.stopRefresh(walletId),
       getAddress: (walletId, accountIndex = 0, addressIndex = 0) =>
         turboModule.getAddress(walletId, accountIndex, addressIndex),
+      createSubaddress: (walletId, accountIndex = 0, label = '') =>
+        turboModule.createSubaddress(walletId, accountIndex, label),
+      setWalletPassword: (walletId, newPassword) =>
+        turboModule.setWalletPassword(walletId, newPassword),
       getSeed: (walletId, seedOffset = '') =>
         turboModule.getSeed(walletId, seedOffset),
       getBalance: (walletId, accountIndex = 0) =>

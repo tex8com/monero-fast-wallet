@@ -33,6 +33,9 @@ fi
 if [[ -z "${grpc_cpp_plugin_path}" ]] && command -v grpc_cpp_plugin >/dev/null 2>&1; then
   grpc_cpp_plugin_path="$(command -v grpc_cpp_plugin)"
 fi
+if [[ -z "${grpc_cpp_plugin_path}" && -x "${repo_root}/build/host-grpc-tools/v1.80.0/bin/grpc_cpp_plugin" ]]; then
+  grpc_cpp_plugin_path="${repo_root}/build/host-grpc-tools/v1.80.0/bin/grpc_cpp_plugin"
+fi
 if [[ "${monero_enable_grpc_stream}" == "ON" ]]; then
   if [[ ! -x "${protoc_path}" ]]; then
     echo "Missing host protoc for gRPC stream build: ${protoc_path}" >&2
@@ -149,6 +152,7 @@ for label in "${targets[@]}"; do
     -DUSE_DEVICE_TREZOR_LIBUSB=OFF
     -DMONERO_ENABLE_LEDGER_BLE=ON
     -DUSE_READLINE=OFF
+    "-DCMAKE_MODULE_PATH=${script_dir}/cmake"
     "-DMONERO_ENABLE_GRPC_STREAM=${monero_enable_grpc_stream}"
     "-DRANDOMX_ENABLE_JIT=${randomx_enable_jit}"
     "-DMONERO_FAST_CRYPTO_LIBRARY=${fast_crypto_lib}"

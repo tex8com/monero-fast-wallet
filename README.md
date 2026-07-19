@@ -63,6 +63,7 @@ Allowed for development only:
 - Main wallet stays private and local.
 - Fast receive is opt-in and uses a separate receive identity.
 - Server notifications are hints; the app verifies wallet state locally.
+- [Desktop notification contract and APNs release gate](docs/DESKTOP_PUSH_NOTIFICATIONS.md)
 - Keep compatibility with upstream Monero and normal remote nodes.
 - Use Cuprate as a fast node/scanner path without changing Monero consensus.
 - Default mobile node mode is optimized Cuprate gRPC, while Settings can switch
@@ -74,6 +75,14 @@ Allowed for development only:
   escrow, and Fast Wallet positioning is tracked in
   `docs/PRODUCT_TRUST_USABILITY_PLAN.md`. Marketplace UI is retained only as an
   unrouted prototype and is not part of the current wallet experience.
+- A cross-platform desktop wallet now has a Tauri 2 + React + Rust shell. It
+  uses a deliberately small Rust/C++ bridge to the same `WalletEngine`. The
+  Apple Silicon macOS 12 build links the forked Monero core and bundled Rust
+  fast-crypto dylib; its native suite passed real local create/open/subaddress
+  tests and the DMG launches successfully. It remains an unsigned developer
+  artifact: signing/notarization, physical Ledger, Windows/Linux core links,
+  and broader release acceptance are gated as defined in
+  `docs/DESKTOP_APP_PLAN.md`.
 
 ## Repository Shape
 
@@ -107,8 +116,10 @@ Recommended public-source shape:
 ```text
 apps/
   mobile/              React Native wallet app
+  desktop/             Tauri 2 + React + Rust desktop wallet host
 native/
   monero-bridge/       C++ facade plus iOS/Android bridge to our wallet core
+  desktop-bridge/      narrow C ABI between Rust desktop host and WalletEngine
 services/
   notify-scanner/      hosted view-key registration/removal API and scanner
   enthusiast-discovery/ anonymous approximate-area community API
@@ -123,6 +134,8 @@ docs/
   NATIVE_WALLET_BRIDGE.md
   BACKEND_TESTING.md
   PRIVACY_MODEL.md
+  DESKTOP_APP_PLAN.md
+  DESKTOP_PARITY_MATRIX.md
   REPOSITORY_STRATEGY.md
   SOURCES.md
 ```

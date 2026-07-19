@@ -24,6 +24,7 @@ import {
   loadRegisteredWallets,
   loadWalletRegistry,
   markRegisteredWalletSeedBackedUp,
+  renameRegisteredWallet,
   removeRegisteredWallet,
   saveRegisteredWallet,
   setActiveRegisteredWallet,
@@ -55,6 +56,7 @@ describe('WalletRegistry', () => {
       wallets: [
         {
           id: 'software-mainnet-primary-20260608T000000',
+          displayName: 'Wallet 1',
           walletName: 'primary',
           path: '/app/wallets/mainnet/primary',
           network: 'mainnet',
@@ -166,6 +168,29 @@ describe('WalletRegistry', () => {
 
     expect((await loadRegisteredWallet())?.id).toBe(primary.id);
     expect((await loadWalletRegistry()).activeWalletId).toBe(primary.id);
+  });
+
+  it('renames only the local display label, never the wallet file identity', async () => {
+    const registration = await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: 'wallet-2',
+        path: '/app/wallets/mainnet/wallet-2',
+        network: 'mainnet',
+        now: '2026-06-08T00:00:00.000Z',
+      }),
+    );
+
+    const renamed = await renameRegisteredWallet(
+      registration.id,
+      'Savings Ledger',
+    );
+
+    expect(renamed).toMatchObject({
+      id: registration.id,
+      displayName: 'Savings Ledger',
+      walletName: 'wallet-2',
+      path: '/app/wallets/mainnet/wallet-2',
+    });
   });
 
   it('registers a spendable Fast Wallet without replacing the active wallet', async () => {

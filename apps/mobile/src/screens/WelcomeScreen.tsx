@@ -1,6 +1,8 @@
-import React, { useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
+  ActivityIndicator,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -12,12 +14,16 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import MoneroCoinGhost from "../components/MoneroCoinGhost";
 import MoneroCoin from "../components/MoneroCoin";
 import { useI18n } from "../i18n";
+import { useWalletState } from "../services/WalletState";
+import { walletDisplayName } from "../services/WalletRegistry";
 
 const IS_TEST = typeof jest !== "undefined";
 
 export default function WelcomeScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { t } = useI18n();
+  const { registeredWallets, setActiveRegisteredWallet } = useWalletState();
+  const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
   const contentOp = useRef(new Animated.Value(IS_TEST ? 1 : 0)).current;
   const contentY = useRef(new Animated.Value(IS_TEST ? 0 : 10)).current;
 
@@ -39,6 +45,23 @@ export default function WelcomeScreen({ navigation }: any) {
       }),
     ]).start();
   }, [contentOp, contentY]);
+
+  const openSavedWallet = useCallback(
+    async (walletId: string) => {
+      if (openingWalletId) return;
+      setOpeningWalletId(walletId);
+      try {
+        await setActiveRegisteredWallet(walletId);
+        navigation.navigate("WalletSetup", {
+          mode: "open",
+          openRequestId: Date.now(),
+        });
+      } finally {
+        setOpeningWalletId(undefined);
+      }
+    },
+    [navigation, openingWalletId, setActiveRegisteredWallet],
+  );
 
   return (
     <LinearGradient
@@ -80,6 +103,44 @@ export default function WelcomeScreen({ navigation }: any) {
           { paddingBottom: Math.max(insets.bottom + 88, 106) },
         ]}
       >
+        {registeredWallets.length > 0 ? (
+          <View style={s.savedWalletSection}>
+            <Text style={s.savedWalletTitle}>{t("welcome.savedWallets")}</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={s.savedWalletCarousel}
+            >
+              {registeredWallets.map(wallet => {
+                const opening = openingWalletId === wallet.id;
+                return (
+                  <TouchableOpacity
+                    key={wallet.id}
+                    style={s.savedWalletCard}
+                    activeOpacity={0.76}
+                    disabled={Boolean(openingWalletId)}
+                    onPress={() => void openSavedWallet(wallet.id)}
+                  >
+                    <MoneroCoin size={30} />
+                    <View style={s.savedWalletCopy}>
+                      <Text style={s.savedWalletName} numberOfLines={1}>
+                        {walletDisplayName(wallet)}
+                      </Text>
+                      <Text style={s.savedWalletMeta} numberOfLines={1}>
+                        {wallet.kind === "hardware"
+                          ? "Ledger"
+                          : wallet.kind === "fast"
+                            ? "Fast Wallet"
+                            : "Mainnet"}
+                      </Text>
+                    </View>
+                    {opening ? <ActivityIndicator color="#F26822" /> : null}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        ) : null}
         <TouchableOpacity
           style={s.btn}
           activeOpacity={0.85}
@@ -159,6 +220,41 @@ const s = StyleSheet.create({
   bottom: {
     paddingHorizontal: 24,
     alignItems: "center",
+  },
+  savedWalletSection: {
+    alignSelf: "stretch",
+    marginBottom: 18,
+  },
+  savedWalletTitle: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    marginBottom: 10,
+    textTransform: "uppercase",
+  },
+  savedWalletCarousel: {
+    gap: 10,
+    paddingRight: 24,
+  },
+  savedWalletCard: {
+    width: 208,
+    minHeight: 70,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.055)",
+  },
+  savedWalletCopy: { flex: 1 },
+  savedWalletName: { color: "#FFF", fontSize: 15, fontWeight: "800" },
+  savedWalletMeta: {
+    color: "rgba(255,255,255,0.46)",
+    fontSize: 12,
+    marginTop: 3,
   },
   btn: {
     width: "100%",

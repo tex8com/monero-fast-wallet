@@ -14,6 +14,7 @@ import { useI18n } from '../i18n';
 import type { WalletTransaction } from '../services/NativeMoneroWallet';
 import { formatAtomicXmr } from '../services/WalletFormat';
 import { useWalletState } from '../services/WalletState';
+import { walletDisplayName } from '../services/WalletRegistry';
 import { colors, radius, spacing } from '../theme/colors';
 
 type DetailRouteParams = {
@@ -73,7 +74,8 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
       })
     : t('status.unconfirmed');
   const walletName =
-    params.walletName ?? registeredWallet?.walletName ?? t('common.wallet');
+    params.walletName ??
+    (registeredWallet ? walletDisplayName(registeredWallet) : t('common.wallet'));
   const paymentId = transaction.paymentId.replace(/^0+$/, '');
 
   const copyTransactionId = () => {

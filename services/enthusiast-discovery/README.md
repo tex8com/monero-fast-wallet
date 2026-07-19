@@ -22,12 +22,12 @@ end-to-end encrypted; the UI and documentation must not claim otherwise.
 ```bash
 export ENTHUSIAST_DISCOVERY_STORAGE_KEY="$(openssl rand -hex 32)"
 export ENTHUSIAST_DISCOVERY_DB=/var/lib/enthusiast-discovery/community.json.enc
-export ENTHUSIAST_DISCOVERY_BIND=127.0.0.1:8088
+export ENTHUSIAST_DISCOVERY_BIND=127.0.0.1:8089
 cargo run --release
 ```
 
 The public reverse proxy should map `/community/` to this service without
-exposing port `8088` directly.
+exposing port `8089` directly.
 
 ## Production Layout
 
@@ -50,7 +50,7 @@ ENTHUSIAST_DISCOVERY_STORAGE_KEY=<64 lowercase hex characters>
 Acceptance after a commit-based deployment:
 
 ```bash
-curl -fsS http://127.0.0.1:8088/healthz
+curl -fsS http://127.0.0.1:8089/healthz
 curl -fsS https://xmr.tex8.com/community/healthz
 ```
 
@@ -61,5 +61,21 @@ leave an incompatible data format or key behind.
 ## Test
 
 ```bash
-cargo test
+cargo test --release
+bash scripts/run-community-testbench.sh full
 ```
+
+The HTTP testbench starts a fresh local service with an encrypted temporary
+database and performs the complete anonymous discovery flow against the real
+HTTP server. For a live acceptance run, use
+`TESTBENCH_ALLOW_COMMUNITY_LIVE=1` and pass the production URL explicitly:
+
+```bash
+TESTBENCH_ALLOW_COMMUNITY_LIVE=1 \
+TESTBENCH_COMMUNITY_URL=https://xmr.tex8.com/community \
+bash scripts/run-community-testbench.sh live
+```
+
+The runner creates temporary `TB-...` anonymous profiles and deletes all test
+identities and related records before it succeeds. It never writes bearer
+tokens to the console.

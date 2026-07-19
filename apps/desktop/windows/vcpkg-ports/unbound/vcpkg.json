@@ -1,0 +1,13 @@
+{
+  "name": "unbound",
+  "version": "1.25.1",
+  "description": "Unbound validating DNS resolver library, built as a static library for the Monero desktop wallet.",
+  "dependencies": [
+    "expat",
+    "openssl",
+    {
+      "name": "vcpkg-make",
+      "host": true
+    }
+  ]
+}

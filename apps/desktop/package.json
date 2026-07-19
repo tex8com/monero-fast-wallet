@@ -1,0 +1,44 @@
+{
+  "name": "@tex8/monero-wallet-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Monero Fast Wallet desktop UI and Tauri host",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 1430",
+    "dev:wallet": "bash scripts/tauri-dev-with-monero-core.sh",
+    "dev:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tauri-dev-windows.ps1",
+    "test:wns-package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-wns-test.ps1",
+    "test:wns-msix-interactive": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows-wns-interactive.ps1",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit",
+    "test:parity-contract": "node --test scripts/test-desktop-parity-contract.mjs",
+    "test:push-contract": "node --experimental-strip-types --test scripts/test-fast-wallet-push-contract.mjs",
+    "test:linux-push-e2e": "node scripts/test-linux-notification-agent-e2e.mjs",
+    "test:apns-send": "node scripts/send-apns-test.mjs",
+    "test:wallet-contract": "node --experimental-strip-types --test scripts/test-wallet-sync-contract.mjs",
+    "tauri": "tauri",
+    "desktop:test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "bundle:mac": "bash scripts/build-bundle.sh dmg",
+    "bundle:windows": "bash scripts/build-bundle.sh nsis",
+    "bundle:windows-store": "tauri build -- --bundles nsis --config src-tauri/tauri.microsoftstore.conf.json",
+    "bundle:linux": "bash scripts/build-bundle.sh appimage"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-geolocation": "^2.3.2",
+    "@tauri-apps/plugin-notification": "^2.3.3",
+    "@types/qrcode": "^1.5.6",
+    "qrcode": "^1.5.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "typescript": "~5.7.2",
+    "vite": "^6.1.0"
+  }
+}

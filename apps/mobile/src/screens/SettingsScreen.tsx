@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
+  Alert,
+  Modal,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
@@ -10,7 +12,7 @@ import {
 } from "react-native";
 import { colors, spacing, radius } from "../theme/colors";
 import MoneroLogo from "../components/MoneroLogo";
-import { Icon, IconName } from "../components/Icon";
+import { Icon } from "../components/Icon";
 import {
   languageNames,
   supportedLanguages,
@@ -36,14 +38,7 @@ import type {
 } from "../services/NodeConnectionSettings";
 import { runWalletDiagnostics } from "../services/WalletDiagnostics";
 import { walletService } from "../services/WalletService";
-
-type Item = {
-  labelKey: TranslationKey;
-  icon: IconName;
-  danger?: boolean;
-  toggle?: boolean;
-  defaultOn?: boolean;
-};
+import { useWalletState } from "../services/WalletState";
 
 type DiagnosticRow = {
   label: string;
@@ -52,37 +47,6 @@ type DiagnosticRow = {
 };
 
 type WalletDiagnosticsResult = Awaited<ReturnType<typeof runWalletDiagnostics>>;
-
-const SECTIONS: { titleKey: TranslationKey; items: Item[] }[] = [
-  {
-    titleKey: "settings.wallet",
-    items: [
-      { labelKey: "settings.showBackupSeed", icon: "key", danger: true },
-      { labelKey: "settings.changeWalletPassword", icon: "lock" },
-    ],
-  },
-  {
-    titleKey: "settings.security",
-    items: [
-      { labelKey: "settings.enableBiometrics", icon: "fingerprint", toggle: true },
-      { labelKey: "settings.autoLock", icon: "clock", toggle: true, defaultOn: true },
-      { labelKey: "settings.useTor", icon: "onion", toggle: true },
-    ],
-  },
-  {
-    titleKey: "settings.appearance",
-    items: [
-      { labelKey: "settings.currencyUsd", icon: "dollar" },
-    ],
-  },
-  {
-    titleKey: "settings.info",
-    items: [
-      { labelKey: "settings.privacyPolicy", icon: "file" },
-      { labelKey: "settings.openSourceLicenses", icon: "package" },
-    ],
-  },
-];
 
 const NODE_MODES: { value: NodeConnectionMode; labelKey: TranslationKey }[] = [
   { value: "optimized-grpc", labelKey: "settings.nodeModeTex8" },
@@ -98,6 +62,7 @@ const NETWORKS: { value: MoneroNetwork; label: string }[] = [
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { language, setLanguage, t } = useI18n();
+  const { lockWallet, registeredWallet, session } = useWalletState();
   const bottomPadding = Math.max(180, insets.bottom + 150);
   const [draft, setDraft] = useState<NodeConnectionDraft>(() =>
     nodeConnectionSettingsToDraft(getActiveNodeConnectionSettings()),
@@ -112,6 +77,11 @@ export default function SettingsScreen() {
     useState("Ready");
   const [diagnosticRows, setDiagnosticRows] = useState<DiagnosticRow[]>([]);
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
+  const [recoverySeed, setRecoverySeed] = useState<string | undefined>();
+  const [isRevealingSeed, setIsRevealingSeed] = useState(false);
+  const [newWalletPassword, setNewWalletPassword] = useState("");
+  const [confirmWalletPassword, setConfirmWalletPassword] = useState("");
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -262,6 +232,57 @@ export default function SettingsScreen() {
     }
   }
 
+  async function revealRecoverySeed() {
+    if (!session) {
+      Alert.alert(t("settings.recoverySeedTitle"), t("settings.recoverySeedUnavailable"));
+      return;
+    }
+    if (registeredWallet?.kind === "hardware" || session.hardwareDevice) {
+      Alert.alert(t("settings.recoverySeedTitle"), t("settings.recoverySeedHardware"));
+      return;
+    }
+
+    setIsRevealingSeed(true);
+    try {
+      setRecoverySeed(await walletService.getSeed(session));
+    } catch {
+      Alert.alert(t("settings.recoverySeedTitle"), t("settings.recoverySeedError"));
+    } finally {
+      setIsRevealingSeed(false);
+    }
+  }
+
+  async function changeWalletPassword() {
+    if (!session) {
+      Alert.alert(t("settings.changeWalletPassword"), t("settings.recoverySeedUnavailable"));
+      return;
+    }
+    if (registeredWallet?.kind === "hardware" || session.hardwareDevice) {
+      Alert.alert(t("settings.changeWalletPassword"), t("settings.passwordHardware"));
+      return;
+    }
+    if (newWalletPassword.length < 8) {
+      Alert.alert(t("settings.changeWalletPassword"), t("settings.passwordMinimum"));
+      return;
+    }
+    if (newWalletPassword !== confirmWalletPassword) {
+      Alert.alert(t("settings.changeWalletPassword"), t("settings.passwordMismatch"));
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      await walletService.changeWalletPassword(session, newWalletPassword);
+      setNewWalletPassword("");
+      setConfirmWalletPassword("");
+      Alert.alert(t("settings.changeWalletPassword"), t("settings.passwordChanged"));
+    } catch (error) {
+      Alert.alert(t("settings.changeWalletPassword"), errorMessage(error));
+    } finally {
+      setIsChangingPassword(false);
+    }
+  }
+
   return (
     <View style={s.container}>
       <ScrollView contentContainerStyle={[s.scroll, { paddingBottom: bottomPadding }]}>
@@ -307,6 +328,78 @@ export default function SettingsScreen() {
                   </Text>
                 </TouchableOpacity>
               ))}
+            </View>
+          </View>
+        </View>
+
+        <View style={s.section}>
+          <Text style={s.sectionTitle}>{t("settings.wallet")}</Text>
+          <View style={s.sectionCard}>
+            <TouchableOpacity
+              accessibilityRole="button"
+              activeOpacity={0.7}
+              disabled={!session || isRevealingSeed}
+              onPress={() => void revealRecoverySeed()}
+              style={[s.row, (!session || isRevealingSeed) && s.rowDisabled]}
+            >
+              <View style={s.rowIconWrap}>
+                <Icon name="key" size={20} color={colors.orange} />
+              </View>
+              <View style={s.rowCopy}>
+                <Text style={s.rowLabel}>{t("settings.showBackupSeed")}</Text>
+                <Text style={s.rowHint}>{t("settings.recoverySeedDescription")}</Text>
+              </View>
+              <Icon name="chevron-right" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+
+            <View style={s.passwordPanel}>
+              <Text style={s.passwordTitle}>{t("settings.changeWalletPassword")}</Text>
+              <Text style={s.passwordHint}>{t("settings.passwordChangeHint")}</Text>
+              <TextInput
+                value={newWalletPassword}
+                onChangeText={setNewWalletPassword}
+                placeholder={t("settings.newWalletPassword")}
+                placeholderTextColor={colors.textMuted}
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={Boolean(session) && registeredWallet?.kind !== "hardware"}
+                style={s.input}
+              />
+              <TextInput
+                value={confirmWalletPassword}
+                onChangeText={setConfirmWalletPassword}
+                placeholder={t("settings.confirmWalletPassword")}
+                placeholderTextColor={colors.textMuted}
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={Boolean(session) && registeredWallet?.kind !== "hardware"}
+                style={s.input}
+              />
+              <TouchableOpacity
+                activeOpacity={0.8}
+                disabled={
+                  !session ||
+                  registeredWallet?.kind === "hardware" ||
+                  isChangingPassword ||
+                  !newWalletPassword ||
+                  !confirmWalletPassword
+                }
+                onPress={() => void changeWalletPassword()}
+                style={[
+                  s.secondaryButton,
+                  (!session ||
+                    registeredWallet?.kind === "hardware" ||
+                    isChangingPassword ||
+                    !newWalletPassword ||
+                    !confirmWalletPassword) && s.primaryButtonDisabled,
+                ]}
+              >
+                <Text style={s.secondaryButtonText}>
+                  {isChangingPassword ? t("action.working") : t("settings.changeWalletPassword")}
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
@@ -511,37 +604,38 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {SECTIONS.map(section => (
-          <View key={section.titleKey} style={s.section}>
-            <Text style={s.sectionTitle}>{t(section.titleKey)}</Text>
-            <View style={s.sectionCard}>
-              {section.items.map((item, i) => (
-                <TouchableOpacity key={item.labelKey} style={[s.row, i < section.items.length - 1 && s.rowBorder]} activeOpacity={0.6}>
-                  <View style={s.rowIconWrap}>
-                    <Icon name={item.icon} size={20} color={item.danger ? colors.error : colors.textSecondary} />
-                  </View>
-                  <Text style={[s.rowLabel, item.danger && { color: colors.error }]}>{t(item.labelKey)}</Text>
-                  {item.toggle ? (
-                    <Switch
-                      value={item.defaultOn ?? false}
-                      trackColor={{ false: colors.surface, true: colors.orange }}
-                      thumbColor="#FFF"
-                    />
-                  ) : (
-                    <Icon name="chevron-right" size={18} color={colors.textMuted} />
-                  )}
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-        ))}
-
-        <TouchableOpacity style={s.logoutBtn}>
+        <TouchableOpacity
+          activeOpacity={0.72}
+          disabled={!session}
+          onPress={() => void lockWallet().catch(() => undefined)}
+          style={[s.logoutBtn, !session && s.logoutBtnDisabled]}
+        >
           <Text style={s.logoutText}>{t("action.closeWallet")}</Text>
         </TouchableOpacity>
 
         <View style={s.bottomSpacer} />
       </ScrollView>
+      <Modal
+        animationType="slide"
+        transparent
+        visible={Boolean(recoverySeed)}
+        onRequestClose={() => setRecoverySeed(undefined)}
+      >
+        <View style={s.seedModalBackdrop}>
+          <View style={s.seedModalCard}>
+            <Text style={s.seedModalTitle}>{t("settings.recoverySeedTitle")}</Text>
+            <Text style={s.seedModalHint}>{t("settings.recoverySeedWarning")}</Text>
+            <Text selectable style={s.seedText}>{recoverySeed}</Text>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => setRecoverySeed(undefined)}
+              style={s.primaryButton}
+            >
+              <Text style={s.primaryButtonText}>{t("action.close")}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -750,6 +844,17 @@ const s = StyleSheet.create({
   nodeStatus: { color: colors.success, fontSize: 12, fontWeight: "700", marginBottom: 8, paddingRight: 4 },
   nodeStatusDirty: { color: colors.warning },
   nodePanel: { backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, gap: 12 },
+  rowDisabled: { opacity: 0.5 },
+  rowCopy: { flex: 1, gap: 3 },
+  rowHint: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
+  passwordPanel: { borderTopWidth: 1, borderTopColor: colors.border, padding: spacing.md, gap: 10 },
+  passwordTitle: { color: colors.textPrimary, fontSize: 15, fontWeight: "700" },
+  passwordHint: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
+  seedModalBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.66)", padding: spacing.lg },
+  seedModalCard: { backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.lg, gap: 14 },
+  seedModalTitle: { color: colors.textPrimary, fontSize: 22, fontWeight: "800" },
+  seedModalHint: { color: colors.warning, fontSize: 13, lineHeight: 19 },
+  seedText: { color: colors.textPrimary, fontSize: 16, lineHeight: 26, fontWeight: "600", backgroundColor: colors.bgElevated, borderRadius: radius.md, padding: spacing.md },
   languageHelp: { color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
   nodeHintBox: { flexDirection: "row", alignItems: "flex-start", gap: 9, borderRadius: radius.md, borderWidth: 1, borderColor: "rgba(242,104,34,0.18)", backgroundColor: "rgba(242,104,34,0.08)", padding: spacing.md },
   nodeHintText: { flex: 1, color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
@@ -794,6 +899,7 @@ const s = StyleSheet.create({
   rowIconWrap: { width: 28, alignItems: "center", justifyContent: "center" },
   rowLabel: { flex: 1, color: colors.textPrimary, fontSize: 15, fontWeight: "500" },
   logoutBtn: { marginTop: 8, paddingVertical: 16, alignItems: "center", backgroundColor: "rgba(255,68,102,0.1)", borderRadius: radius.md, borderWidth: 1, borderColor: "rgba(255,68,102,0.2)" },
+  logoutBtnDisabled: { opacity: 0.45 },
   logoutText: { color: colors.error, fontSize: 16, fontWeight: "600" },
   bottomSpacer: { height: 24 },
 });

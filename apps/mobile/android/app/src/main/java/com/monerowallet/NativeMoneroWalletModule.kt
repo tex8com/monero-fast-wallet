@@ -3,6 +3,7 @@ package com.monerowallet
 import android.Manifest
 import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
@@ -284,10 +285,11 @@ class NativeMoneroWalletModule(
         status = if (result != null) {
           ledgerBleDetectedStatus(result)
         } else {
-          ledgerBleTransportStatus(
-            messageOverride =
-              "No Ledger Nano X BLE device found. Unlock it, enable Bluetooth, and open the Monero app.",
-          )
+          previouslyPairedLedgerBleStatus()
+            ?: ledgerBleTransportStatus(
+              messageOverride =
+                "No Ledger Nano X BLE device found. Unlock it, enable Bluetooth, and open the Monero app.",
+            )
         },
       )
     }, LEDGER_BLE_SCAN_TIMEOUT_MS)
@@ -583,6 +585,7 @@ class NativeMoneroWalletModule(
     deviceName: String,
     restoreHeight: Double,
     subaddressLookahead: String,
+    accountIndex: Double,
     promise: Promise,
   ) {
     resolveNativeString(
@@ -592,6 +595,7 @@ class NativeMoneroWalletModule(
         "deviceName" to if (deviceName.isBlank()) "Ledger" else deviceName,
         "restoreHeight" to restoreHeight,
         "subaddressLookahead" to subaddressLookahead,
+        "accountIndex" to accountIndex,
       ),
     ) {
       NativeMoneroWalletJni.createWalletFromDevice(
@@ -601,6 +605,7 @@ class NativeMoneroWalletModule(
         if (deviceName.isBlank()) "Ledger" else deviceName,
         restoreHeight,
         subaddressLookahead,
+        accountIndex,
       )
     }
   }
@@ -612,6 +617,7 @@ class NativeMoneroWalletModule(
     deviceName: String,
     restoreHeight: Double,
     subaddressLookahead: String,
+    accountIndex: Double,
     promise: Promise,
   ) {
     resolveNativeString(
@@ -622,6 +628,7 @@ class NativeMoneroWalletModule(
         "hasStoredSecret" to true,
         "restoreHeight" to restoreHeight,
         "subaddressLookahead" to subaddressLookahead,
+        "accountIndex" to accountIndex,
       ),
     ) {
       NativeMoneroWalletJni.createWalletFromDevice(
@@ -631,6 +638,7 @@ class NativeMoneroWalletModule(
         if (deviceName.isBlank()) "Ledger" else deviceName,
         restoreHeight,
         subaddressLookahead,
+        accountIndex,
       )
     }
   }
@@ -947,6 +955,27 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun createSubaddress(
+    walletId: String,
+    accountIndex: Double,
+    label: String,
+    promise: Promise,
+  ) {
+    resolveNativeMap(
+      promise,
+      "createSubaddress",
+      mapOf(
+        "accountIndex" to accountIndex,
+        "label" to label,
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
+      walletSubaddressToWritableMap(
+        NativeMoneroWalletJni.createSubaddress(walletId, accountIndex, label),
+      )
+    }
+  }
+
   override fun getSeed(walletId: String, seedOffset: String, promise: Promise) {
     resolveNativeString(
       promise,
@@ -957,6 +986,23 @@ class NativeMoneroWalletModule(
       ),
     ) {
       NativeMoneroWalletJni.getSeed(walletId, seedOffset)
+    }
+  }
+
+  override fun setWalletPassword(
+    walletId: String,
+    newPassword: String,
+    promise: Promise,
+  ) {
+    resolveNativeVoid(
+      promise,
+      "setWalletPassword",
+      mapOf(
+        "hasNewPassword" to newPassword.isNotEmpty(),
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
+      NativeMoneroWalletJni.setWalletPassword(walletId, newPassword)
     }
   }
 
@@ -1562,6 +1608,16 @@ class NativeMoneroWalletModule(
       putString("scannerStatus", identity.stringValue("scannerStatus"))
     }
 
+  private fun walletSubaddressToWritableMap(
+    subaddress: Map<String, Any>,
+  ): WritableMap =
+    Arguments.createMap().apply {
+      putDouble("accountIndex", subaddress.numberValue("accountIndex"))
+      putDouble("addressIndex", subaddress.numberValue("addressIndex"))
+      putString("address", subaddress.stringValue("address"))
+      putString("label", subaddress.stringValue("label"))
+    }
+
   private fun transactionsToWritableArray(
     transactions: List<Map<String, Any>>,
   ): WritableArray =
@@ -1839,8 +1895,8 @@ class NativeMoneroWalletModule(
   }
 
   private fun ledgerBleDetectedStatus(result: ScanResult): LedgerTransportStatus {
-    LedgerBleTransport.selectDevice(result.device)
     val deviceName = ledgerBleDeviceName(result)
+    rememberLedgerBleDevice(result.device, deviceName)
     return LedgerTransportStatus(
       platform = "android",
       transport = "ble",
@@ -1852,6 +1908,73 @@ class NativeMoneroWalletModule(
       deviceName = deviceName,
       message = "Ledger Nano found. Keep it unlocked with the Monero app open.",
     )
+  }
+
+  /**
+   * Ledger Nano X can stop advertising its Ledger service between sessions
+   * while it remains paired with Android. Reuse the paired device after a
+   * scan misses it instead of reporting a false negative.
+   */
+  private fun previouslyPairedLedgerBleStatus(): LedgerTransportStatus? {
+    val device = rememberedLedgerBleDevice() ?: return null
+    val deviceName = ledgerBleDeviceName(device)
+    LedgerBleTransport.selectDevice(device)
+    return LedgerTransportStatus(
+      platform = "android",
+      transport = "ble",
+      supported = NativeMoneroWalletJni.linkedWithMonero(),
+      available = true,
+      permissionGranted = missingLedgerBlePermissions().isEmpty(),
+      requiresUserAction = false,
+      deviceCount = 1,
+      deviceName = deviceName,
+      message = "Using previously paired Ledger Nano X. Keep it unlocked with the Monero app open.",
+    )
+  }
+
+  private fun rememberLedgerBleDevice(device: BluetoothDevice, deviceName: String) {
+    LedgerBleTransport.selectDevice(device)
+    reactApplicationContext
+      .getSharedPreferences(LEDGER_BLE_PREFERENCES_NAME, Context.MODE_PRIVATE)
+      .edit()
+      .putString(LEDGER_BLE_DEVICE_ADDRESS_KEY, device.address)
+      .putString(LEDGER_BLE_DEVICE_NAME_KEY, deviceName)
+      .apply()
+  }
+
+  private fun rememberedLedgerBleDevice(): BluetoothDevice? {
+    val adapter = bluetoothAdapter() ?: return null
+    if (missingLedgerBlePermissions().isNotEmpty()) {
+      return null
+    }
+    val preferences = reactApplicationContext.getSharedPreferences(
+      LEDGER_BLE_PREFERENCES_NAME,
+      Context.MODE_PRIVATE,
+    )
+    val storedAddress = preferences.getString(LEDGER_BLE_DEVICE_ADDRESS_KEY, null)
+    val storedDevice = storedAddress
+      ?.takeIf(BluetoothAdapter::checkBluetoothAddress)
+      ?.let { address -> runCatching { adapter.getRemoteDevice(address) }.getOrNull() }
+    if (storedDevice != null) {
+      return storedDevice
+    }
+
+    // Older app versions did not persist the selected Ledger. Ledger's
+    // default BLE name is its four-character identifier, so this recovers the
+    // single previously paired Nano X without guessing among multiple devices.
+    val paired = runCatching { adapter.bondedDevices }.getOrDefault(emptySet())
+      .filter { device ->
+        device.type == BluetoothDevice.DEVICE_TYPE_LE ||
+          device.type == BluetoothDevice.DEVICE_TYPE_DUAL
+      }
+      .filter { device ->
+        val name = device.name.orEmpty()
+        name.contains("ledger", ignoreCase = true) ||
+          LEDGER_BLE_DEFAULT_NAME.matches(name)
+      }
+    val device = paired.singleOrNull() ?: return null
+    rememberLedgerBleDevice(device, ledgerBleDeviceName(device))
+    return device
   }
 
   private fun finishLedgerBleScan(status: LedgerTransportStatus) {
@@ -1903,6 +2026,17 @@ class NativeMoneroWalletModule(
     return "Ledger Nano X"
   }
 
+  private fun ledgerBleDeviceName(device: BluetoothDevice): String {
+    if (
+      Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+        reactApplicationContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+          PackageManager.PERMISSION_GRANTED
+    ) {
+      return device.name?.takeIf { it.isNotBlank() } ?: "Ledger Nano X"
+    }
+    return "Ledger Nano X"
+  }
+
   private fun ScanResult.matchesLedgerBleService(): Boolean {
     val advertisedServices = scanRecord?.serviceUuids ?: return false
     return advertisedServices.any { serviceUuid ->
@@ -1948,6 +2082,9 @@ class NativeMoneroWalletModule(
     private const val ANDROID_KEYSTORE_PROVIDER = "AndroidKeyStore"
     private const val SECRET_KEY_ALIAS = "monero_wallet_native_secrets_v1"
     private const val SECRET_PREFERENCES_NAME = "monero_wallet_native_secrets"
+    private const val LEDGER_BLE_PREFERENCES_NAME = "monero_wallet_ledger_ble"
+    private const val LEDGER_BLE_DEVICE_ADDRESS_KEY = "device_address"
+    private const val LEDGER_BLE_DEVICE_NAME_KEY = "device_name"
     private const val SECRET_CIPHER_TRANSFORMATION = "AES/GCM/NoPadding"
     private const val SECRET_GCM_TAG_BITS = 128
     private const val ACTION_LEDGER_USB_PERMISSION =
@@ -1957,6 +2094,7 @@ class NativeMoneroWalletModule(
     private const val LEDGER_VENDOR_ID = 0x2C97
     private const val REQUEST_LEDGER_BLE_PERMISSIONS = 0x4C58
     private const val LEDGER_BLE_SCAN_TIMEOUT_MS = 4_000L
+    private val LEDGER_BLE_DEFAULT_NAME = Regex("(?i)^[0-9a-f]{4}$")
     private val LEDGER_PRODUCT_IDS = setOf(
       0x0001,
       0x0004,

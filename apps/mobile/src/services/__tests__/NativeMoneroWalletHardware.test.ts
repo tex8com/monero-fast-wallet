@@ -170,6 +170,7 @@ describe("NativeMoneroWallet hardware bridge", () => {
       "Ledger",
       0,
       "",
+      0,
     );
   });
 

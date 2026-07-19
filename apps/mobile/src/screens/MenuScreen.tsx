@@ -1,11 +1,12 @@
 import React from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Linking } from "react-native";
 import Svg, { Path, Circle } from "react-native-svg";
 import { colors } from "../theme/colors";
 import MoneroLogo from "../components/MoneroLogo";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 import { useWalletState } from "../services/WalletState";
+import { walletDisplayName } from "../services/WalletRegistry";
 
 /* ── SVG Icons ────────────────────────────────────────────────────── */
 function IcoCommunity({ c }: { c: string }) {
@@ -17,23 +18,8 @@ function IcoGear({ c }: { c: string }) {
 function IcoSpark({ c }: { c: string }) {
   return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16zM5 15l.7 1.8L7.5 17.5l-1.8.7L5 20l-.7-1.8-1.8-.7 1.8-.7L5 15z" stroke={c} strokeWidth={1.6} strokeLinejoin="round" /></Svg>);
 }
-function IcoModules({ c }: { c: string }) {
-  return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Path d="M4 4h7v7H4V4zM13 4h7v7h-7V4zM4 13h7v7H4v-7zM13 13h7v7h-7v-7z" stroke={c} strokeWidth={1.8} strokeLinejoin="round" /></Svg>);
-}
 function IcoGlobe({ c }: { c: string }) {
   return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Circle cx="12" cy="12" r="9" stroke={c} strokeWidth={1.8} /><Path d="M3 12h18M12 3c2.5 3 4 6 4 9s-1.5 6-4 9c-2.5-3-4-6-4-9s1.5-6 4-9z" stroke={c} strokeWidth={1.8} /></Svg>);
-}
-function IcoBook({ c }: { c: string }) {
-  return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Path d="M4 19.5A2.5 2.5 0 016.5 17H20" stroke={c} strokeWidth={1.8} strokeLinecap="round" /><Path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" stroke={c} strokeWidth={1.8} /></Svg>);
-}
-function IcoDownload({ c }: { c: string }) {
-  return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke={c} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /></Svg>);
-}
-function IcoHelp({ c }: { c: string }) {
-  return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Circle cx="12" cy="12" r="9" stroke={c} strokeWidth={1.8} /><Path d="M9 9a3 3 0 015.12 2.12c0 2-3 3-3 3" stroke={c} strokeWidth={1.8} strokeLinecap="round" /><Circle cx="12" cy="17" r="0.5" fill={c} /></Svg>);
-}
-function IcoCode({ c }: { c: string }) {
-  return (<Svg width={20} height={20} viewBox="0 0 24 24" fill="none"><Path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke={c} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /></Svg>);
 }
 function IcoWallet({ c }: { c: string }) {
   return <Icon name="wallet" size={20} color={c} />;
@@ -44,26 +30,15 @@ const MENU_ITEMS = [
   { labelKey: "enthusiasts.title", descKey: "enthusiasts.menuDescription", screen: "FindEnthusiasts", Icon: IcoCommunity },
   { labelKey: "settings.title", descKey: "menu.configureWallet", screen: "Settings", Icon: IcoGear },
   { label: "Tex8 Assistant", descKey: "menu.sharedAiModule", screen: "Tex8Assistant", Icon: IcoSpark },
-  { label: "Shared Modules", descKey: "menu.sharedModulesDesc", screen: "SharedModules", Icon: IcoModules },
-  { labelKey: "menu.nodeStatus", descKey: "menu.connectionStatus", screen: null, Icon: IcoGlobe },
-  { labelKey: "menu.addressBook", descKey: "menu.addressBookDesc", screen: null, Icon: IcoBook },
-  { labelKey: "menu.export", descKey: "menu.exportDesc", screen: null, Icon: IcoDownload },
-  { labelKey: "menu.help", descKey: "menu.helpDesc", screen: null, Icon: IcoHelp },
+  { labelKey: "menu.nodeStatus", descKey: "menu.connectionStatus", screen: "Settings", Icon: IcoGlobe },
 ] as const;
-
-const DEV_SCREENS = [
-  { label: "Welcome Screen", screen: "Welcome" },
-  { label: "Wallet Setup",   screen: "WalletSetup" },
-  { label: "Find Monero Enthusiasts", screen: "FindEnthusiasts" },
-  { label: "Settings",       screen: "Settings" },
-  { label: "Tex8 Assistant",  screen: "Tex8Assistant" },
-  { label: "Shared Modules",  screen: "SharedModules" },
-];
 
 export default function MenuScreen({ navigation }: any) {
   const { t } = useI18n();
   const { registeredWallet, snapshot, status } = useWalletState();
-  const walletName = registeredWallet?.walletName ?? t("menu.myWallet");
+  const walletName = registeredWallet
+    ? walletDisplayName(registeredWallet)
+    : t("menu.myWallet");
   const address = snapshot?.primaryAddress;
   const addressLabel = address
     ? `${address.slice(0, 6)}...${address.slice(-5)}`
@@ -100,7 +75,7 @@ export default function MenuScreen({ navigation }: any) {
             key={"label" in item ? item.label : item.labelKey}
             style={s.menuItem}
             activeOpacity={0.6}
-            onPress={() => item.screen && navigation.navigate(item.screen)}
+            onPress={() => navigation.navigate(item.screen)}
           >
             <View style={s.menuIcon}>
               <item.Icon c={colors.orange} />
@@ -115,24 +90,14 @@ export default function MenuScreen({ navigation }: any) {
           </TouchableOpacity>
         ))}
 
-        {/* Dev Menu */}
-        <View style={s.devSection}>
-          <Text style={s.devTitle}>DEV MENU</Text>
-          {DEV_SCREENS.map(item => (
-            <TouchableOpacity
-              key={item.label}
-              style={s.devItem}
-              activeOpacity={0.6}
-              onPress={() => navigation.navigate(item.screen)}
-            >
-              <IcoCode c={colors.textMuted} />
-              <Text style={s.devLabel}>{item.label}</Text>
-              <Text style={s.menuArrow}>›</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <Text style={s.footer}>{t("menu.footer")}</Text>
+        <TouchableOpacity
+          accessibilityRole="link"
+          accessibilityLabel="Made with love by TEX8"
+          onPress={() => void Linking.openURL("https://solutions.tex8.com/en")}
+          activeOpacity={0.72}
+        >
+          <Text style={s.footer}>Made with <Text style={s.heart}>❤️</Text> by <Text style={s.tex8}>TEX8</Text></Text>
+        </TouchableOpacity>
         <View style={{ height: 100 }} />
       </ScrollView>
     </View>
@@ -154,10 +119,7 @@ const s = StyleSheet.create({
   menuDesc: { color: colors.textMuted, fontSize: 12 },
   menuArrow: { color: colors.textMuted, fontSize: 22, fontWeight: "300" },
 
-  devSection: { marginTop: 24, paddingTop: 20, borderTopWidth: 1, borderTopColor: colors.border },
-  devTitle: { color: colors.textMuted, fontSize: 11, fontWeight: "700", letterSpacing: 1, marginBottom: 12 },
-  devItem: { flexDirection: "row", alignItems: "center", paddingVertical: 14, paddingHorizontal: 12, gap: 12, backgroundColor: "rgba(255,255,255,0.03)", borderRadius: 10, marginBottom: 6 },
-  devLabel: { flex: 1, color: colors.textSecondary, fontSize: 14, fontWeight: "500" },
-
   footer: { color: colors.textMuted, fontSize: 12, textAlign: "center", marginTop: 28, lineHeight: 20 },
+  heart: { color: colors.orange },
+  tex8: { color: colors.textPrimary, fontWeight: "800" },
 });

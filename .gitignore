@@ -8,6 +8,7 @@ target/
 .env
 .env.*
 !.env.example
+secrets/
 
 # Wallet material must never be committed.
 *.keys

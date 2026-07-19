@@ -1,0 +1,55 @@
+name: Desktop shell verification
+
+on:
+  pull_request:
+    paths:
+      - 'apps/desktop/**'
+      - 'native/desktop-bridge/**'
+      - 'native/monero-bridge/**'
+      - '.github/workflows/desktop-shell.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/**'
+      - 'native/desktop-bridge/**'
+      - 'native/monero-bridge/**'
+      - '.github/workflows/desktop-shell.yml'
+
+jobs:
+  verify:
+    name: ${{ matrix.name }} shell checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-14
+          - name: Windows
+            os: windows-2025
+          - name: Linux
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux WebKit dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - run: npm run check
+      - run: npm run desktop:test
+
+# Release packaging is intentionally separate: it must call
+# apps/desktop/scripts/build-bundle.sh on its native operating-system runner
+# with a pinned, built libwallet_api archive. The script refuses shell-only
+# packages, so no unsigned/pre-production shell can be published as a wallet.

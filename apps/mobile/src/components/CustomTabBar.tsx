@@ -17,11 +17,15 @@ function IconReceive({ color }: { color: string }) {
 function IconMenu({ color }: { color: string }) {
   return (<Svg width={22} height={22} viewBox="0 0 24 24" fill="none"><Line x1="4" y1="6" x2="20" y2="6" stroke={color} strokeWidth={1.8} strokeLinecap="round" /><Line x1="4" y1="12" x2="20" y2="12" stroke={color} strokeWidth={1.8} strokeLinecap="round" /><Line x1="4" y1="18" x2="20" y2="18" stroke={color} strokeWidth={1.8} strokeLinecap="round" /></Svg>);
 }
+function IconCommunity({ color }: { color: string }) {
+  return (<Svg width={22} height={22} viewBox="0 0 24 24" fill="none"><Path d="M16 20v-1.5a4 4 0 00-4-4H7a4 4 0 00-4 4V20" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /><Path d="M9.5 10.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7zM21 20v-1.5a4 4 0 00-3-3.87M16.5 3.63a3.5 3.5 0 010 6.74" stroke={color} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" /></Svg>);
+}
 
 const TABS = [
   { key: "Home",        labelKey: "tabs.home",    Icon: IconHome },
   { key: "Send",        labelKey: "tabs.send",    Icon: IconSend },
   { key: "Receive",     labelKey: "tabs.receive", Icon: IconReceive },
+  { key: "FindEnthusiasts", labelKey: "tabs.community", Icon: IconCommunity },
   { key: "Menu",        labelKey: "tabs.menu",    Icon: IconMenu },
 ] as const;
 
@@ -32,10 +36,8 @@ const HIDDEN_SCREENS = [
   "TransactionDetail",
 ];
 const MENU_CHILD_SCREENS = [
-  "FindEnthusiasts",
   "Settings",
   "Tex8Assistant",
-  "SharedModules",
   "Wallets",
 ];
 

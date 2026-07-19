@@ -19,6 +19,10 @@
 #include <os/log.h>
 #endif
 
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
+
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
 #include "wallet2_api.h"
 #endif
@@ -57,6 +61,9 @@ void logEngineDiagnostic(
 
 #if defined(__APPLE__)
   os_log(OS_LOG_DEFAULT, "%{public}s", message.str().c_str());
+#elif defined(__ANDROID__)
+  __android_log_write(
+      ANDROID_LOG_INFO, "NativeMoneroWallet", message.str().c_str());
 #else
   std::cerr << message.str() << std::endl;
 #endif
@@ -376,6 +383,10 @@ class WalletEngine::Impl {
     Monero::Wallet* wallet{nullptr};
     NetworkType network{NetworkType::Stagenet};
     uint64_t cacheResetHeight{0};
+    // A Ledger wallet created without an explicit restore height is a new
+    // wallet. WalletManager otherwise seeds it with a date-based estimate
+    // before a daemon is configured, which can leave it needlessly behind.
+    bool useDaemonHeightForAutomaticRestore{false};
     std::string grpcEndpoint;
     HardwareWalletStatus hardwareStatus;
     std::unique_ptr<HardwareWalletListener> hardwareListener;
@@ -413,6 +424,12 @@ class WalletEngine::Impl {
   }
 
   WalletId restoreWallet(const RestoreWalletRequest& request) {
+    logEngineDiagnostic(
+        "restoreWallet.start",
+        {
+            {"network", std::to_string(static_cast<int>(request.network))},
+            {"requestedRestoreHeight", std::to_string(request.restoreHeight)},
+        });
     auto* wallet = manager_->recoveryWallet(
         request.path,
         request.password,
@@ -455,9 +472,18 @@ class WalletEngine::Impl {
   }
 
   WalletId createWalletFromDevice(const CreateWalletFromDeviceRequest& request) {
+    logEngineDiagnostic(
+        "createWalletFromDevice.start",
+        {
+            {"network", std::to_string(static_cast<int>(request.network))},
+            {"requestedRestoreHeight", std::to_string(request.restoreHeight)},
+            {"accountIndex", std::to_string(request.accountIndex)},
+            {"transport", request.deviceName.empty() ? "Ledger" : request.deviceName},
+        });
     auto session = std::make_unique<WalletSession>();
     session->id = nextWalletId();
     session->network = request.network;
+    session->useDaemonHeightForAutomaticRestore = request.restoreHeight <= 1;
     session->hardwareStatus.walletId = session->id;
     session->hardwareStatus.deviceName =
         request.deviceName.empty() ? "Ledger" : request.deviceName;
@@ -477,6 +503,12 @@ class WalletEngine::Impl {
 
     try {
       throwIfWalletFailed(wallet, "createWalletFromDevice");
+      while (wallet->numSubaddressAccounts() <= request.accountIndex) {
+        wallet->addSubaddressAccount("");
+        throwIfWalletFailed(
+            wallet,
+            "createWalletFromDevice.addSubaddressAccount");
+      }
     } catch (...) {
       if (wallet != nullptr) {
         manager_->closeWallet(wallet, false);
@@ -667,6 +699,22 @@ class WalletEngine::Impl {
     }
   }
 
+  void setWalletPassword(
+      const WalletId& walletId,
+      const std::string& newPassword) {
+    if (newPassword.empty()) {
+      throw WalletEngineError("wallet password must not be empty");
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto* wallet = getLocked(walletId).wallet;
+    if (!wallet->setPassword(newPassword)) {
+      throwIfWalletFailed(wallet, "setWalletPassword");
+      throw WalletEngineError("setWalletPassword failed");
+    }
+    throwIfWalletFailed(wallet, "setWalletPassword");
+  }
+
   void setDaemon(const WalletId& walletId, const DaemonConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto& session = getLocked(walletId);
@@ -753,6 +801,25 @@ class WalletEngine::Impl {
       throw WalletEngineError("setDaemon failed");
     }
 
+    if (session.useDaemonHeightForAutomaticRestore) {
+      const uint64_t daemonHeight = session.wallet->daemonBlockChainHeight();
+      const uint64_t walletHeight = session.wallet->blockChainHeight();
+      if (daemonHeight > 1 && walletHeight < daemonHeight) {
+        session.wallet->setRefreshFromBlockHeight(daemonHeight);
+        throwIfWalletFailed(
+            session.wallet, "setDaemon.setAutomaticRestoreHeight");
+        session.cacheResetHeight = daemonHeight;
+        logEngineDiagnostic(
+            "setDaemon.automaticRestoreHeight.ready",
+            {
+                {"walletId", maskedWalletId},
+                {"walletHeight", std::to_string(walletHeight)},
+                {"restoreHeight", std::to_string(daemonHeight)},
+            });
+      }
+      session.useDaemonHeightForAutomaticRestore = false;
+    }
+
     logEngineDiagnostic(
         "setDaemon.success",
         {
@@ -772,6 +839,15 @@ class WalletEngine::Impl {
     std::lock_guard<std::mutex> lock(mutex_);
     auto& session = getLocked(walletId);
     auto* wallet = session.wallet;
+
+    logEngineDiagnostic(
+        "startRefresh.start",
+        {
+            {"walletId", maskDiagnosticId(walletId)},
+            {"walletHeight", std::to_string(wallet->blockChainHeight())},
+            {"daemonHeight", std::to_string(wallet->daemonBlockChainHeight())},
+            {"cacheResetHeight", std::to_string(session.cacheResetHeight)},
+        });
 
     if (session.cacheResetHeight > 1 &&
         wallet->blockChainHeight() < session.cacheResetHeight) {
@@ -810,6 +886,9 @@ class WalletEngine::Impl {
     }
 
     wallet->startRefresh();
+    logEngineDiagnostic(
+        "startRefresh.scheduled",
+        {{"walletId", maskDiagnosticId(walletId)}});
   }
 
   void stopRefresh(const WalletId& walletId) {
@@ -826,6 +905,29 @@ class WalletEngine::Impl {
       uint32_t addressIndex) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return getLocked(walletId).wallet->address(accountIndex, addressIndex);
+  }
+
+  WalletSubaddress createSubaddress(
+      const WalletId& walletId,
+      uint32_t accountIndex,
+      const std::string& label) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto* wallet = getLocked(walletId).wallet;
+    if (accountIndex >= wallet->numSubaddressAccounts()) {
+      throw WalletEngineError("subaddress account does not exist");
+    }
+
+    const auto addressIndex =
+        static_cast<uint32_t>(wallet->numSubaddresses(accountIndex));
+    wallet->addSubaddress(accountIndex, label);
+    throwIfWalletFailed(wallet, "createSubaddress");
+
+    WalletSubaddress result;
+    result.accountIndex = accountIndex;
+    result.addressIndex = addressIndex;
+    result.address = wallet->address(accountIndex, addressIndex);
+    result.label = label;
+    return result;
   }
 
   std::string getSeed(
@@ -862,11 +964,16 @@ class WalletEngine::Impl {
     result.daemonHeight = wallet->daemonBlockChainHeight();
     result.daemonTargetHeight = wallet->daemonBlockChainTargetHeight();
     result.synchronized = wallet->synchronized();
+    int status = Monero::Wallet::Status_Ok;
+    std::string statusError;
+    wallet->statusWithErrorString(status, statusError);
     logEngineDiagnostic(
         "snapshot.state",
         {{"walletId", maskDiagnosticId(walletId)},
          {"walletHeight", std::to_string(result.walletHeight)},
          {"daemonHeight", std::to_string(result.daemonHeight)},
+         {"daemonTargetHeight", std::to_string(result.daemonTargetHeight)},
+         {"status", std::to_string(status)},
          {"synchronized", result.synchronized ? "true" : "false"}});
     return result;
   }
@@ -1143,6 +1250,15 @@ class WalletEngine::Impl {
     session->hardwareStatus.walletId = session->id;
     updateHardwareStatusFromWallet(*session);
 
+    logEngineDiagnostic(
+        "wallet.added",
+        {
+            {"context", context},
+            {"refreshFromHeight",
+             std::to_string(wallet->getRefreshFromBlockHeight())},
+            {"cacheResetHeight", std::to_string(cacheResetHeight)},
+        });
+
     std::lock_guard<std::mutex> lock(mutex_);
     const auto walletId = session->id;
     wallets_.emplace(walletId, std::move(session));
@@ -1336,6 +1452,18 @@ void WalletEngine::closeWallet(const WalletId& walletId, bool store) {
 #endif
 }
 
+void WalletEngine::setWalletPassword(
+    const WalletId& walletId,
+    const std::string& newPassword) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->setWalletPassword(walletId, newPassword);
+#else
+  (void)walletId;
+  (void)newPassword;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
 void WalletEngine::setDaemon(
     const WalletId& walletId,
     const DaemonConfig& config) {
@@ -1388,6 +1516,20 @@ std::string WalletEngine::getAddress(
   (void)walletId;
   (void)accountIndex;
   (void)addressIndex;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+WalletSubaddress WalletEngine::createSubaddress(
+    const WalletId& walletId,
+    uint32_t accountIndex,
+    const std::string& label) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->createSubaddress(walletId, accountIndex, label);
+#else
+  (void)walletId;
+  (void)accountIndex;
+  (void)label;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }

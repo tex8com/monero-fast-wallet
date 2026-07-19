@@ -5,7 +5,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/android-common.sh"
 
 ADB_BIN="$(resolve_adb)"
 APP_ID="${MONERO_WALLET_ANDROID_APP_ID:-com.tex8.monerowallet}"
-VARIANT="${MONERO_WALLET_ANDROID_VARIANT:-release}"
+VARIANT="${MONERO_WALLET_ANDROID_VARIANT:-debug}"
 VARIANT_CAPITALIZED="$(capitalize_variant "$VARIANT")"
 ARCHITECTURES="${MONERO_WALLET_ANDROID_ARCHITECTURES:-arm64-v8a}"
 MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
@@ -40,5 +40,18 @@ DEVICE="$(select_android_device "$ADB_BIN")"
 
 echo "Installing ${APP_ID} ${VARIANT} on ${DEVICE}..."
 cd "$ANDROID_DIR"
-"${ANDROID_DIR}/gradlew" "${GRADLE_ARGS[@]}"
+
+if "${ANDROID_DIR}/gradlew" ":app:tasks" --all | grep -Eq "^[[:space:]]*install${VARIANT_CAPITALIZED}([[:space:]]|$)"; then
+  "${ANDROID_DIR}/gradlew" "${GRADLE_ARGS[@]}"
+else
+  "${ANDROID_DIR}/gradlew" ":app:assemble${VARIANT_CAPITALIZED}" "${GRADLE_ARGS[@]:1}"
+  APK_PATH="${ANDROID_DIR}/app/build/outputs/apk/${VARIANT}/app-${VARIANT}.apk"
+
+  if [ ! -f "${APK_PATH}" ]; then
+    echo "Expected APK was not produced: ${APK_PATH}" >&2
+    exit 1
+  fi
+
+  "$ADB_BIN" -s "$DEVICE" install -r "$APK_PATH"
+fi
 "$ADB_BIN" -s "$DEVICE" shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 >/dev/null

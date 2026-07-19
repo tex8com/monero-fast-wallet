@@ -179,6 +179,12 @@ the APK contains the JavaScript bundle. They expect
 Android Monero artifacts first if that file is missing. `android:build` only
 builds the APK and works without a connected device. `android:build-install`
 also installs and launches on a connected Android device/emulator.
+
+For this Mac, the supported full-core command is
+`native/monero-bridge/scripts/build-android-monero-core-external.sh`. It keeps
+the large native artifacts on `/Volumes/4TB/monero-fast-wallet-build`; the
+Android build script discovers the resulting manifest automatically. Set
+`MONERO_WALLET_LINK_ROOT` to use a different artifact location.
 `android:diagnostics` uses the `monerowallet://diagnostics/run` deep link and
 reads matching logcat JSON lines.
 The current Android build gate produces a release APK containing
@@ -256,6 +262,15 @@ TARGETS=ios-sim-arm64,ios-device \
 
 The generated `iphonesimulator` and `iphoneos` aliases are consumed by the
 Xcode project through `$(PLATFORM_NAME)`.
+
+For an Apple-Silicon simulator-only software-wallet build, use the shorter
+command below. It builds the real `ios-sim-arm64` core, links it into the
+simulator app, and deliberately does not claim Ledger transport support:
+
+```bash
+npm run ios:build-simulator-core
+npm run ios:build-install
+```
 
 Current gRPC-enabled Android Monero link smoke:
 

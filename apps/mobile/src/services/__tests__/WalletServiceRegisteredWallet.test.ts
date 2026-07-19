@@ -29,7 +29,11 @@ const mockNativeWallet = {
     platform: 'ios',
     supported: false,
   })),
+  ensureSecret: jest.fn(async () => undefined),
   logDiagnostics: jest.fn(async () => undefined),
+  createWalletFromDeviceWithStoredSecret: jest.fn(async () => ({
+    walletId: 'wallet-ledger',
+  })),
   openWallet: jest.fn(async () => ({ walletId: 'wallet-1' })),
   openWalletWithStoredSecret: jest.fn(async () => ({
     walletId: 'wallet-fast',
@@ -49,7 +53,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createRegisteredWallet,
   loadRegisteredWallet,
+  loadRegisteredWallets,
   saveRegisteredWallet,
+  setActiveRegisteredWallet,
 } from '../WalletRegistry';
 import { WalletService } from '../WalletService';
 
@@ -120,6 +126,51 @@ describe('WalletService registered wallet opening', () => {
       secretKey: 'monero.wallet.software.mainnet.primary.v1',
       network: 'mainnet',
       restoreHeight: 3714305,
+    });
+  });
+
+  it('creates standard and Fast Ledger entries from one native device initialization', async () => {
+    const service = new WalletService();
+    const result = await service.createNamedLedgerWalletPairFromDevice({
+      walletName: 'ledger',
+      network: 'mainnet',
+      restoreHeight: 3714305,
+    });
+
+    expect(mockNativeWallet.createWalletFromDeviceWithStoredSecret).toHaveBeenCalledTimes(1);
+    expect(mockNativeWallet.createWalletFromDeviceWithStoredSecret).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/current-container/wallets/mainnet/ledger',
+        network: 'mainnet',
+        accountIndex: 1,
+      }),
+    );
+    expect(result.session).toMatchObject({
+      walletId: 'wallet-ledger',
+      accountIndex: 0,
+      addressIndex: 0,
+    });
+    expect(result.fastRegistration).toMatchObject({
+      kind: 'hardware',
+      role: 'fast',
+      accountIndex: 1,
+      path: '/current-container/wallets/mainnet/ledger',
+      sourceWalletId: result.registration.id,
+      credentialKey: result.registration.credentialKey,
+    });
+    await expect(loadRegisteredWallets()).resolves.toHaveLength(2);
+
+    await setActiveRegisteredWallet(result.fastRegistration.id);
+    const fastSession = await service.openRegisteredWallet();
+    expect(mockNativeWallet.openWalletWithStoredSecret).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        path: '/current-container/wallets/mainnet/ledger',
+        network: 'mainnet',
+      }),
+    );
+    expect(fastSession).toMatchObject({
+      registrationId: result.fastRegistration.id,
+      accountIndex: 1,
     });
   });
 });

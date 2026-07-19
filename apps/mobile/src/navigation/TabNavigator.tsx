@@ -8,7 +8,6 @@ import MenuScreen from "../screens/MenuScreen";
 import FindEnthusiastsScreen from "../screens/FindEnthusiastsScreen";
 import EnthusiastChatScreen from "../screens/EnthusiastChatScreen";
 import SettingsScreen from "../screens/SettingsScreen";
-import SharedModulesScreen from "../screens/SharedModulesScreen";
 import Tex8AssistantScreen from "../screens/Tex8AssistantScreen";
 import WelcomeScreen from "../screens/WelcomeScreen";
 import WalletSetupScreen from "../screens/WalletSetupScreen";
@@ -42,13 +41,12 @@ export default function TabNavigator() {
       <Tab.Screen name="Home" component={HomeScreen} />
       <Tab.Screen name="Send" component={SendScreen} />
       <Tab.Screen name="Receive" component={ReceiveScreen} />
+      <Tab.Screen name="FindEnthusiasts" component={FindEnthusiastsScreen} />
       <Tab.Screen name="Menu" component={MenuScreen} />
       {/* Hidden screens — accessible via Menu */}
-      <Tab.Screen name="FindEnthusiasts" component={FindEnthusiastsScreen} />
       <Tab.Screen name="EnthusiastChat" component={EnthusiastChatScreen} />
       <Tab.Screen name="Settings" component={SettingsScreen} />
       <Tab.Screen name="Tex8Assistant" component={Tex8AssistantScreen} />
-      <Tab.Screen name="SharedModules" component={SharedModulesScreen} />
       <Tab.Screen name="Wallets" component={WalletsScreen} />
       <Tab.Screen name="Transactions" component={TransactionsScreen} />
       <Tab.Screen name="TransactionDetail" component={TransactionDetailScreen} />

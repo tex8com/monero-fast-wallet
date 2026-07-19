@@ -4,6 +4,20 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 suite="${1:-local}"
 
+# macOS installs CMake either through a developer toolchain or inside the
+# Android SDK. Testbench callers should not have to amend PATH manually: the
+# native bridge and Cuprate gRPC smoke checks need the same CMake/Ninja pair.
+cmake_bin="${CMAKE_BIN:-$(command -v cmake 2>/dev/null || true)}"
+if [[ -z "${cmake_bin}" || ! -x "${cmake_bin}" ]]; then
+  cmake_bin="$(find "${HOME}/Library/Android/sdk/cmake" -type f -name cmake -perm -111 2>/dev/null | sort | tail -n 1)"
+fi
+if [[ -z "${cmake_bin}" || ! -x "${cmake_bin}" ]]; then
+  echo "CMake is required for the wallet-core testbench." >&2
+  exit 127
+fi
+export CMAKE_BIN="${cmake_bin}"
+export PATH="$(dirname "${cmake_bin}"):${PATH}"
+
 case "${suite}" in
   local|full)
     ;;
@@ -20,17 +34,21 @@ fi
 
 work_root="${TESTBENCH_WORK_ROOT:-${repo_root}/build/wallet-testbench}"
 shell_build_dir="${TESTBENCH_SHELL_BUILD_DIR:-${work_root}/native-bridge-shell}"
-default_funded_wallet_dir="${FUNDED_WALLET_DIR:-$HOME/Documents/Monero/tex8-send-tests}"
-default_monero_source_dir="$HOME/Documents/Projects/monero-gui/monero"
+default_funded_wallet_dir="${FUNDED_WALLET_DIR:-}"
+default_monero_source_dir="${repo_root}/../monero-gui/monero"
 default_monero_build_dir="${default_monero_source_dir}/build/tex8-wallet-api"
 if [[ -d "/Volumes/4TB/monero-gui-build/tex8-wallet-api" ]]; then
   default_monero_build_dir="/Volumes/4TB/monero-gui-build/tex8-wallet-api"
+fi
+if [[ -d "${default_monero_source_dir}/build/tex8-desktop-wallet-api-macos12" ]]; then
+  default_monero_build_dir="${default_monero_source_dir}/build/tex8-desktop-wallet-api-macos12"
 fi
 
 export MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${default_monero_source_dir}}"
 export MONERO_BUILD_DIR="${MONERO_BUILD_DIR:-${default_monero_build_dir}}"
 
-linked_build_dir="${BRIDGE_BUILD_DIR:-${repo_root}/build/native-bridge-monero}"
+linked_build_dir="${BRIDGE_BUILD_DIR:-${work_root}/native-bridge-monero}"
+export BRIDGE_BUILD_DIR="${linked_build_dir}"
 linked_runner="${linked_build_dir}/monero_wallet_bridge_smoke"
 password="${TESTBENCH_WALLET_PASSWORD:-testbench-local-password}"
 
@@ -87,7 +105,7 @@ build_linked_runner_if_possible() {
   fi
 
   (cd "${repo_root}" && native/monero-bridge/scripts/configure-local-monero-bridge.sh)
-  cmake --build "${linked_build_dir}" --target monero_wallet_bridge_smoke
+  "${cmake_bin}" --build "${linked_build_dir}" --target monero_wallet_bridge_smoke
 }
 
 gate_pin_files() {
@@ -97,8 +115,8 @@ gate_pin_files() {
 }
 
 gate_shell_bridge_build() {
-  cmake -S "${repo_root}/native/monero-bridge" -B "${shell_build_dir}"
-  cmake --build "${shell_build_dir}" --target monero_wallet_bridge_smoke
+  "${cmake_bin}" -S "${repo_root}/native/monero-bridge" -B "${shell_build_dir}"
+  "${cmake_bin}" --build "${shell_build_dir}" --target monero_wallet_bridge_smoke
   "${shell_build_dir}/monero_wallet_bridge_smoke" | grep -q "linked_with_monero=false"
 }
 
@@ -107,7 +125,24 @@ gate_notify_scanner_tests() {
 }
 
 gate_enthusiast_discovery_tests() {
-  cargo test --manifest-path "${repo_root}/services/enthusiast-discovery/Cargo.toml"
+  cargo test --release --manifest-path "${repo_root}/services/enthusiast-discovery/Cargo.toml"
+}
+
+gate_enthusiast_discovery_local_http_contract() {
+  bash "${repo_root}/services/enthusiast-discovery/scripts/run-community-testbench.sh" local
+}
+
+gate_enthusiast_discovery_live_http_contract() {
+  if [[ "${TESTBENCH_COMMUNITY_LIVE:-0}" != "1" ]]; then
+    if [[ "${TESTBENCH_REQUIRE_DEPLOYED_COMMUNITY:-0}" == "1" ]]; then
+      return 1
+    fi
+    return 2
+  fi
+
+  TESTBENCH_COMMUNITY_URL="${TESTBENCH_COMMUNITY_URL:-https://xmr.tex8.com/community}" \
+    TESTBENCH_ALLOW_COMMUNITY_LIVE=1 \
+    bash "${repo_root}/services/enthusiast-discovery/scripts/run-community-testbench.sh" live
 }
 
 gate_notify_scanner_worker_tests() {
@@ -135,9 +170,22 @@ gate_notify_scanner_live_cuprate_sources() {
 gate_cuprate_backend_compatibility() {
   local rpc="${CUPRATE_RPC:-xmr.tex8.com:18089}"
   local grpc="${CUPRATE_GRPC:-xmr.tex8.com:18091}"
+  local host_grpc_root="${TESTBENCH_HOST_GRPC_ROOT:-${work_root}/host-grpc-sdk}"
+  local host_grpc_prefix="${CUPRATE_GRPC_CPP_PREFIX:-${host_grpc_root}/v1.80.0}"
+
+  if [[ ! -f "${host_grpc_prefix}/lib/cmake/protobuf/protobuf-config.cmake" ||
+        ! -f "${host_grpc_prefix}/lib/cmake/grpc/gRPCConfig.cmake" ]]; then
+    OUTPUT_ROOT="${host_grpc_root}" \
+      BUILD_DIR="${host_grpc_root}/build/grpc-v1.80.0" \
+      INSTALL_DIR="${host_grpc_prefix}" \
+      CMAKE_BIN="${cmake_bin}" \
+      "${repo_root}/native/monero-bridge/scripts/build-host-grpc-cpp-sdk.sh"
+  fi
 
   MONERO_WALLET_DAEMON_URL="${MONERO_WALLET_DAEMON_URL:-http://${rpc}}" \
     MONERO_WALLET_GRPC_ENDPOINT="${MONERO_WALLET_GRPC_ENDPOINT:-${grpc}}" \
+    CUPRATE_GRPC_CPP_PREFIX="${host_grpc_prefix}" \
+    CUPRATE_GRPC_SMOKE_BUILD_DIR="${work_root}/cuprate-grpc-smoke" \
     "${repo_root}/scripts/check-cuprate-backend.sh"
 }
 
@@ -440,12 +488,17 @@ gate_android_runtime() {
   if [[ "${TESTBENCH_ANDROID_DEVICE:-0}" != "1" ]]; then
     return 2
   fi
+  local link_root="${MONERO_WALLET_LINK_ROOT:-${repo_root}/build/android-monero-link-manifests}"
+  if [[ ! -f "${link_root}/android-arm64/link.cmake" &&
+        -f "/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests/android-arm64/link.cmake" ]]; then
+    link_root="/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests"
+  fi
   (cd "${repo_root}/apps/mobile/android" &&
     ./gradlew :app:connectedDebugAndroidTest \
       -PreactNativeArchitectures=arm64-v8a \
       -PmoneroWalletBridgeWithMonero=true \
       -PmoneroSourceDir="${MONERO_SOURCE_DIR}" \
-      -PmoneroWalletLinkRoot="${repo_root}/build/android-monero-link-manifests")
+      -PmoneroWalletLinkRoot="${link_root}")
 }
 
 gate_ios_runtime() {
@@ -481,6 +534,8 @@ handle_gate_result "fork pins recorded" gate_pin_files
 handle_gate_result "native bridge shell build" gate_shell_bridge_build
 handle_gate_result "notify-scanner unit/store tests" gate_notify_scanner_tests
 handle_gate_result "enthusiast discovery privacy/API tests" gate_enthusiast_discovery_tests
+handle_gate_result "enthusiast discovery local HTTP contract" gate_enthusiast_discovery_local_http_contract
+handle_gate_result "deployed Community API contract" gate_enthusiast_discovery_live_http_contract
 handle_gate_result "notify-scanner block worker tests" gate_notify_scanner_worker_tests
 handle_gate_result "notify-scanner mempool worker tests" gate_notify_scanner_mempool_tests
 handle_gate_result "notify-scanner Cuprate adapter tests" gate_notify_scanner_cuprate_adapter_tests

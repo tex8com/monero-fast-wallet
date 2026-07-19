@@ -412,6 +412,9 @@ impl CommunityStore {
         });
         data.blocks
             .retain(|block| block.blocker_id != identity_id && block.blocked_id != identity_id);
+        data.reports.retain(|report| {
+            report.reporter_id != identity_id && report.reported_id != identity_id
+        });
         self.persist(&data)
     }
 
@@ -504,6 +507,50 @@ fn hash_token(token: &str) -> String {
 
 fn constant_time_equal(first: &str, second: &str) -> bool {
     first.len() == second.len() && first.as_bytes().ct_eq(second.as_bytes()).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CommunityStore;
+
+    #[test]
+    fn deleting_an_identity_removes_every_related_record() {
+        let store = CommunityStore::in_memory();
+        let (alice, _) = store.create_identity("Alice", 1).unwrap();
+        let (bob, _) = store.create_identity("Bob", 1).unwrap();
+
+        store.request_contact(&alice.id, &bob.id, 2).unwrap();
+        store.accept_contact(&bob.id, &alice.id, 3).unwrap();
+        store
+            .send_message(&alice.id, &bob.id, "Private hello", 4)
+            .unwrap();
+        store
+            .report(&alice.id, &bob.id, "Automated cleanup test", 5)
+            .unwrap();
+        store.delete_identity(&alice.id).unwrap();
+
+        let data = store.data.read().unwrap();
+        assert!(data
+            .identities
+            .iter()
+            .all(|identity| identity.id != alice.id));
+        assert!(data
+            .contacts
+            .iter()
+            .all(|contact| contact.requester_id != alice.id && contact.recipient_id != alice.id));
+        assert!(data
+            .messages
+            .iter()
+            .all(|message| message.sender_id != alice.id && message.recipient_id != alice.id));
+        assert!(data
+            .blocks
+            .iter()
+            .all(|block| block.blocker_id != alice.id && block.blocked_id != alice.id));
+        assert!(data
+            .reports
+            .iter()
+            .all(|report| report.reporter_id != alice.id && report.reported_id != alice.id));
+    }
 }
 
 #[derive(Serialize, Deserialize)]

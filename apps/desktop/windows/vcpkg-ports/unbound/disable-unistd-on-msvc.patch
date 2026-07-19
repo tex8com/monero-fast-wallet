@@ -1,0 +1,12 @@
+--- a/config.h.in
++++ b/config.h.in
+@@ -1351,6 +1351,8 @@
+ #endif
+ 
+ #include <stdio.h>
+ #include <string.h>
+-#include <unistd.h>
++#ifndef _MSC_VER
++#include <unistd.h>
++#endif
+ #include <assert.h>

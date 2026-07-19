@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   StatusBar,
   Dimensions,
+  Linking,
   ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
@@ -28,7 +29,13 @@ import WalletSelector, {
   type WalletOption,
   type WalletSelectorItem,
 } from '../components/WalletSelector';
-import { useXmrPrice, useXmrChart, xmrToUsd } from '../data/priceService';
+import {
+  type ChartPoint,
+  useXmrPrice,
+  useXmrChart,
+  xmrToUsd,
+} from '../data/priceService';
+import { useMoneroUpdates } from '../data/moneroUpdates';
 import { useI18n } from '../i18n';
 import type { WalletSnapshot } from '../services/NativeMoneroWallet';
 import type { FastReceiveIdentityRecord } from '../services/FastReceiveRegistry';
@@ -42,6 +49,7 @@ import {
 } from '../services/NodeConnectionSettings';
 import type { NodeConnectionMode } from '../services/NodeConnectionSettings';
 import { useWalletState } from '../services/WalletState';
+import { walletDisplayName } from '../services/WalletRegistry';
 import {
   atomicXmrToNumber,
   formatAtomicXmr,
@@ -49,6 +57,7 @@ import {
   toAtomicBigInt,
 } from '../services/WalletFormat';
 import { walletService } from '../services/WalletService';
+import { presentWalletSync } from '../../../../packages/wallet-shared/src/walletSync';
 
 const W = Dimensions.get('window').width;
 const CHART_W = W - 40;
@@ -60,23 +69,47 @@ const TIMEFRAMES = ['24H', '7D', '1M', '1Y', 'Max'];
 function PriceChart({
   points,
   positive,
+  dateLocale,
 }: {
-  points: number[];
+  points: ChartPoint[];
   positive: boolean;
+  dateLocale: string;
 }) {
+  const [selectedIndex, setSelectedIndex] = useState(points.length - 1);
+  const [showTooltip, setShowTooltip] = useState(false);
   if (points.length < 2) return null;
-  const min = Math.min(...points) * 0.998;
-  const max = Math.max(...points) * 1.002;
+  const prices = points.map(point => point.price);
+  const min = Math.min(...prices) * 0.998;
+  const max = Math.max(...prices) * 1.002;
   const range = max - min || 1;
   const pad = 2;
   const stepX = (CHART_W - pad * 2) / (points.length - 1);
+  const safeSelectedIndex = Math.min(selectedIndex, points.length - 1);
+  const selectedPoint = points[safeSelectedIndex];
+  const selectedX = pad + safeSelectedIndex * stepX;
+  const selectedY =
+    pad +
+    (CHART_H - pad * 2) -
+    ((selectedPoint.price - min) / range) * (CHART_H - pad * 2);
+  const tooltipLeft = Math.max(8, Math.min(CHART_W - 146, selectedX - 70));
+  const chartTimestamp = new Intl.DateTimeFormat(dateLocale, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(selectedPoint.timestamp));
+  const updateSelection = (locationX: number) => {
+    const ratio = Math.max(0, Math.min(1, locationX / CHART_W));
+    setSelectedIndex(Math.round(ratio * (points.length - 1)));
+    setShowTooltip(true);
+  };
 
   let linePath = '';
   let areaPath = '';
   points.forEach((p, i) => {
     const x = pad + i * stepX;
     const y =
-      pad + (CHART_H - pad * 2) - ((p - min) / range) * (CHART_H - pad * 2);
+      pad +
+      (CHART_H - pad * 2) -
+      ((p.price - min) / range) * (CHART_H - pad * 2);
     if (i === 0) {
       linePath += `M${x},${y}`;
       areaPath += `M${x},${CHART_H}L${x},${y}`;
@@ -85,7 +118,7 @@ function PriceChart({
       const py =
         pad +
         (CHART_H - pad * 2) -
-        ((points[i - 1] - min) / range) * (CHART_H - pad * 2);
+        ((points[i - 1].price - min) / range) * (CHART_H - pad * 2);
       linePath += `C${px + stepX * 0.4},${py} ${
         x - stepX * 0.4
       },${y} ${x},${y}`;
@@ -98,27 +131,50 @@ function PriceChart({
   const lc = positive ? '#00D68F' : '#FF4466';
   const gid = positive ? 'gG' : 'gR';
 
+  const lastPoint = points[points.length - 1];
+  const lastY =
+    pad +
+    (CHART_H - pad * 2) -
+    ((lastPoint.price - min) / range) * (CHART_H - pad * 2);
+
   return (
-    <Svg width={CHART_W} height={CHART_H}>
-      <Defs>
-        <SvgGrad id={gid} x1="0" y1="0" x2="0" y2="1">
-          <Stop offset="0" stopColor={lc} stopOpacity="0.2" />
-          <Stop offset="1" stopColor={lc} stopOpacity="0" />
-        </SvgGrad>
-      </Defs>
-      <Path d={areaPath} fill={`url(#${gid})`} />
-      <Path d={linePath} stroke={lc} strokeWidth={2} fill="none" />
-      <Circle
-        cx={pad + (points.length - 1) * stepX}
-        cy={
-          pad +
-          (CHART_H - pad * 2) -
-          ((points[points.length - 1] - min) / range) * (CHART_H - pad * 2)
-        }
-        r={4}
-        fill={lc}
-      />
-    </Svg>
+    <View
+      style={s.chartInteractive}
+      onStartShouldSetResponder={() => true}
+      onMoveShouldSetResponder={() => true}
+      onResponderGrant={event => updateSelection(event.nativeEvent.locationX)}
+      onResponderMove={event => updateSelection(event.nativeEvent.locationX)}
+    >
+      <Svg width={CHART_W} height={CHART_H} pointerEvents="none">
+        <Defs>
+          <SvgGrad id={gid} x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor={lc} stopOpacity="0.2" />
+            <Stop offset="1" stopColor={lc} stopOpacity="0" />
+          </SvgGrad>
+        </Defs>
+        <Path d={areaPath} fill={`url(#${gid})`} />
+        <Path d={linePath} stroke={lc} strokeWidth={2} fill="none" />
+        {showTooltip && (
+          <Path
+            d={`M${selectedX},0L${selectedX},${CHART_H}`}
+            stroke="rgba(255,255,255,0.38)"
+            strokeWidth={1}
+          />
+        )}
+        <Circle
+          cx={showTooltip ? selectedX : pad + (points.length - 1) * stepX}
+          cy={showTooltip ? selectedY : lastY}
+          r={showTooltip ? 5 : 4}
+          fill={lc}
+        />
+      </Svg>
+      {showTooltip && (
+        <View pointerEvents="none" style={[s.chartTooltip, { left: tooltipLeft }]}>
+          <Text style={s.chartTooltipPrice}>${selectedPoint.price.toFixed(2)}</Text>
+          <Text style={s.chartTooltipDate}>{chartTimestamp}</Text>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -187,7 +243,18 @@ export default function HomeScreen({ navigation }: any) {
   );
   const { dateLocale, t } = useI18n();
   const { price, change24h, loading: priceLoading } = useXmrPrice();
-  const { points, loading: chartLoading } = useXmrChart(tf);
+  const {
+    points,
+    loading: chartLoading,
+    error: chartError,
+    refresh: refreshChart,
+  } = useXmrChart(tf);
+  const {
+    items: officialUpdates,
+    loading: updatesLoading,
+    unavailable: updatesUnavailable,
+    refresh: refreshUpdates,
+  } = useMoneroUpdates();
   const {
     error,
     registeredWallet,
@@ -210,6 +277,7 @@ export default function HomeScreen({ navigation }: any) {
   });
   const showLocked = lockedAtomic > 0n;
   const hasSyncError = status === 'error' || Boolean(error);
+  const syncPresentation = presentWalletSync(snapshot);
   const syncColor = hasSyncError
     ? colors.error
     : status === 'open'
@@ -222,7 +290,9 @@ export default function HomeScreen({ navigation }: any) {
     : status === 'open'
     ? t('status.live')
     : status === 'syncing'
-    ? `${syncProgress ?? 0}%`
+    ? syncPresentation.phase === 'finalizing'
+      ? t('sync.finalizing')
+      : `${syncProgress ?? 0}%`
     : status === 'opening'
     ? t('action.open')
     : status === 'locked'
@@ -233,14 +303,14 @@ export default function HomeScreen({ navigation }: any) {
     tf === '24H'
       ? change24h >= 0
       : points.length >= 2
-      ? points[points.length - 1] >= points[0]
+      ? points[points.length - 1].price >= points[0].price
       : true;
 
   const changePercent =
     tf === '24H'
       ? change24h
       : points.length >= 2
-      ? ((points[points.length - 1] - points[0]) / points[0]) * 100
+      ? ((points[points.length - 1].price - points[0].price) / points[0].price) * 100
       : 0;
 
   const changeUsd = price > 0 ? Math.abs((changePercent / 100) * price) : 0;
@@ -383,7 +453,7 @@ export default function HomeScreen({ navigation }: any) {
               progress={syncProgress}
               snapshot={snapshot}
               status={status}
-              walletName={registeredWallet.walletName}
+              walletName={walletDisplayName(registeredWallet)}
             />
           </View>
         ) : null}
@@ -429,7 +499,7 @@ export default function HomeScreen({ navigation }: any) {
 
         {/* Chart */}
         <View style={s.chartWrap}>
-          {chartLoading || points.length < 2 ? (
+          {chartLoading && points.length < 2 ? (
             <View
               style={{
                 height: CHART_H,
@@ -439,8 +509,23 @@ export default function HomeScreen({ navigation }: any) {
             >
               <ActivityIndicator color={colors.orange} />
             </View>
+          ) : points.length >= 2 ? (
+            <PriceChart
+              points={points}
+              positive={positive}
+              dateLocale={dateLocale}
+            />
           ) : (
-            <PriceChart points={points} positive={positive} />
+            <View style={s.chartUnavailable}>
+              <Text style={s.chartUnavailableText}>
+                {chartError
+                  ? t('home.chartUnavailable')
+                  : t('home.chartLoading')}
+              </Text>
+              <TouchableOpacity style={s.chartRetryButton} onPress={refreshChart}>
+                <Text style={s.chartRetryText}>{t('action.retry')}</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
 
@@ -457,6 +542,29 @@ export default function HomeScreen({ navigation }: any) {
               </Text>
             </TouchableOpacity>
           ))}
+        </View>
+
+        <View style={s.updatesCard}>
+          <View style={s.updatesHeader}>
+            <View>
+              <Text style={s.updatesEyebrow}>{t('home.updatesSource')}</Text>
+              <Text style={s.updatesTitle}>{t('home.updatesTitle')}</Text>
+            </View>
+            <TouchableOpacity onPress={() => Linking.openURL('https://github.com/monero-project/monero/releases').catch(() => undefined)}>
+              <Text style={s.updatesSourceLink}>{t('home.updatesSourceLink')} ↗</Text>
+            </TouchableOpacity>
+          </View>
+          {updatesLoading && officialUpdates.length === 0 ? (
+            <Text style={s.updatesStatus}>{t('home.updatesLoading')}</Text>
+          ) : updatesUnavailable && officialUpdates.length === 0 ? (
+            <View style={s.updatesUnavailable}><Text style={s.updatesStatus}>{t('home.updatesUnavailable')}</Text><TouchableOpacity onPress={refreshUpdates}><Text style={s.updatesRetry}>{t('action.retry')}</Text></TouchableOpacity></View>
+          ) : (
+            officialUpdates.map(item => (
+              <TouchableOpacity key={item.id} style={s.updateRow} onPress={() => Linking.openURL(item.url).catch(() => undefined)}>
+                <View style={s.updateCopy}><Text numberOfLines={1} style={s.updateName}>{item.title}</Text><Text style={s.updateDate}>{new Intl.DateTimeFormat(dateLocale, {dateStyle: 'medium'}).format(new Date(item.publishedAt))}</Text></View><Text style={s.updateChevron}>›</Text>
+              </TouchableOpacity>
+            ))
+          )}
         </View>
 
         {/* Action Buttons */}
@@ -545,7 +653,7 @@ export default function HomeScreen({ navigation }: any) {
         </View>
 
         {hasOpenWallet && transactions.length > 0 ? (
-          transactions.slice(0, 5).map(transaction => (
+          transactions.slice(0, 3).map(transaction => (
             <TransactionRow
               key={transactionRowKey(transaction)}
               style={s.transactionRow}
@@ -555,7 +663,9 @@ export default function HomeScreen({ navigation }: any) {
                   transaction,
                   transactionHash: transaction.hash,
                   walletId: registeredWallet?.id,
-                  walletName: registeredWallet?.walletName,
+                  walletName: registeredWallet
+                    ? walletDisplayName(registeredWallet)
+                    : undefined,
                 })
               }
             />
@@ -628,6 +738,36 @@ const s = StyleSheet.create({
   changeUsd: { fontSize: 15, fontWeight: '500' },
 
   chartWrap: { paddingHorizontal: 20, marginBottom: 4 },
+  chartInteractive: { height: CHART_H, position: 'relative' },
+  chartTooltip: {
+    position: 'absolute',
+    top: 8,
+    width: 138,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#4B405B',
+    backgroundColor: 'rgba(17,14,27,0.95)',
+  },
+  chartTooltipPrice: { color: '#FFF', fontSize: 13, fontWeight: '800' },
+  chartTooltipDate: { color: colors.textMuted, fontSize: 10, marginTop: 2 },
+  chartUnavailable: {
+    height: CHART_H,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  chartUnavailableText: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },
+  chartRetryButton: {
+    backgroundColor: 'rgba(242,104,34,0.16)',
+    borderColor: colors.orange,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+  },
+  chartRetryText: { color: colors.orange, fontSize: 12, fontWeight: '800' },
 
   tfRow: {
     flexDirection: 'row',
@@ -645,6 +785,28 @@ const s = StyleSheet.create({
   tfBtnActive: { backgroundColor: colors.orange },
   tfText: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },
   tfTextActive: { color: '#FFF' },
+
+  updatesCard: {
+    marginHorizontal: 20,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: '#332B45',
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: colors.bgCard,
+  },
+  updatesHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 16, paddingVertical: 15 },
+  updatesEyebrow: { color: colors.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  updatesTitle: { color: '#FFF', fontSize: 17, fontWeight: '800', marginTop: 3 },
+  updatesSourceLink: { color: '#F4A369', fontSize: 12, fontWeight: '800' },
+  updatesStatus: { color: colors.textMuted, fontSize: 13, fontWeight: '600', paddingHorizontal: 16, paddingBottom: 16 },
+  updatesUnavailable: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  updatesRetry: { color: colors.orange, fontSize: 12, fontWeight: '800', paddingRight: 16, paddingBottom: 16 },
+  updateRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderTopWidth: 1, borderTopColor: '#2D273B', paddingHorizontal: 16, paddingVertical: 12 },
+  updateCopy: { flex: 1, minWidth: 0 },
+  updateName: { color: '#EEE8F2', fontSize: 13, fontWeight: '700' },
+  updateDate: { color: colors.textMuted, fontSize: 11, fontWeight: '600', marginTop: 4 },
+  updateChevron: { color: '#F4BD55', fontSize: 22 },
 
   actRow: { flexDirection: 'row', paddingHorizontal: 20, marginBottom: 24 },
   actBtn: { flex: 1, alignItems: 'center' },

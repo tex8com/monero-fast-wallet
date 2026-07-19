@@ -111,7 +111,6 @@ export function createTex8SharedManifestSnapshot() {
       "WalletSetup",
       "FindEnthusiasts",
       "Tex8Assistant",
-      "SharedModules",
     ],
     elements: MONERO_SHARED_ELEMENTS.map(element => ({
       type: element.type,

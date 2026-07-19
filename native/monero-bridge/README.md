@@ -175,6 +175,18 @@ TARGETS=android-arm64 SKIP_FAST_CRYPTO=1 \
   native/monero-bridge/scripts/build-android-monero-wallet-api.sh
 ```
 
+On this macOS development machine, use the external-volume wrapper instead of
+placing multi-gigabyte Android archives on the system disk:
+
+```bash
+native/monero-bridge/scripts/build-android-monero-core-external.sh
+```
+
+It stores dependencies, fast crypto, `wallet_api`, and generated link manifests
+under `/Volumes/4TB/monero-fast-wallet-build`. Once complete,
+`apps/mobile/scripts/android-build.sh` discovers that manifest automatically;
+`MONERO_WALLET_LINK_ROOT` still overrides the location for CI and other hosts.
+
 The Android builder passes the target-specific `MONERO_FAST_CRYPTO_LIBRARY` into
 the Monero fork so `cncrypto` never accidentally links the host macOS Rust
 archive. If Android dependency archives are installed under one prefix, pass it

@@ -34,6 +34,7 @@ export type IconName =
   | 'file'
   | 'package'
   | 'plus'
+  | 'edit'
   | 'trash'
   | 'chevron-right'
   | 'map-pin'
@@ -244,6 +245,13 @@ const RENDERERS: Record<IconName, (color: string, sw: number) => React.ReactNode
     <G {...stroke(c, sw)}>
       <Line x1={12} y1={5} x2={12} y2={19} />
       <Line x1={5} y1={12} x2={19} y2={12} />
+    </G>
+  ),
+  edit: (c, sw) => (
+    <G {...stroke(c, sw)}>
+      <Path d="M4 20 H8 L19 9 L15 5 L4 16 Z" />
+      <Path d="M13.5 6.5 L17.5 10.5" />
+      <Path d="M15 5 L16.5 3.5 Q18 2 19.5 3.5 L20.5 4.5 Q22 6 20.5 7.5 L19 9" />
     </G>
   ),
   trash: (c, sw) => (

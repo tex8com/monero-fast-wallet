@@ -1,0 +1,28 @@
+[Unit]
+Description=Monero Fast Wallet privacy-safe notification gateway
+Documentation=https://github.com/tex8com/monero-fast-wallet
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=monero-notification-gateway
+Group=monero-notification-gateway
+EnvironmentFile=/etc/monero-fast-wallet/notification-gateway.env
+ExecStart=/usr/local/bin/notification-gateway
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/monero-notification-gateway
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

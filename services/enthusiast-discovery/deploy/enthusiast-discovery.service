@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=monero-community
 Group=monero-community
-Environment=ENTHUSIAST_DISCOVERY_BIND=127.0.0.1:8088
+Environment=ENTHUSIAST_DISCOVERY_BIND=127.0.0.1:8089
 Environment=ENTHUSIAST_DISCOVERY_DB=/var/lib/enthusiast-discovery/community.json.enc
 EnvironmentFile=/etc/monero-fast-wallet/enthusiast-discovery.env
 ExecStart=/usr/local/bin/enthusiast-discovery

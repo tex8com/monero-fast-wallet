@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, StatusBar,
   Animated, Dimensions, Modal, TextInput,
-  KeyboardAvoidingView, Platform, ScrollView, Switch, ActivityIndicator,
+  KeyboardAvoidingView, Platform, ScrollView, Switch, ActivityIndicator, Linking,
   useWindowDimensions,
 } from "react-native";
 import LinearGradient from "react-native-linear-gradient";
@@ -15,6 +15,7 @@ import { type TranslationKey, useI18n } from "../i18n";
 import { useWalletState } from "../services/WalletState";
 import { logWalletEvent } from "../services/WalletLogger";
 import { FastWalletPushService } from "../services/FastWalletPushService";
+import { verifyFastReceiveScannerCapability } from "../services/FastReceiveScannerClient";
 import {
   loadEnthusiastDiscoveryPreference,
   refreshApproximateEnthusiastLocation,
@@ -28,6 +29,14 @@ import type {
   BiometricAuthStatus,
   LedgerTransportStatus,
 } from "../services/NativeMoneroWallet";
+import { walletDisplayName } from "../services/WalletRegistry";
+import {
+  dateInputValue,
+  isRestoreStartDateValid,
+  parseRestoreStartDate,
+  restoreHeightFromStartDate,
+  todayRestoreDate,
+} from "../services/RestoreStart";
 
 const { width: SW, height: SH } = Dimensions.get("window");
 const CREATE_STEPS = [
@@ -57,7 +66,7 @@ const OPEN_STEPS = [
   "setup.step.loadingWallet",
   "setup.step.preparingSync",
 ] as const satisfies readonly TranslationKey[];
-const DEFAULT_WALLET_NAME = "primary";
+const DEFAULT_WALLET_NAME = "wallet";
 const DEFAULT_HARDWARE_WALLET_NAME = "ledger";
 const MONERO_SEED_WORD_COUNT = 25;
 const CREATE_CARD_HORIZONTAL_MARGIN = 20;
@@ -89,7 +98,12 @@ function normalizeSeed(seed: string): string {
 function ledgerTransportReady(
   status: LedgerTransportStatus | undefined,
 ): boolean {
-  return Boolean(status?.supported && status.available && status.permissionGranted);
+  return Boolean(
+    status?.supported &&
+      status.available &&
+      status.permissionGranted &&
+      (status.transport !== "ble" || status.deviceCount > 0),
+  );
 }
 
 function ledgerStatusTitle(
@@ -110,6 +124,9 @@ function ledgerStatusTitle(
   }
   if (status.requiresUserAction || !status.permissionGranted) {
     return t("setup.hardware.permissionRequired");
+  }
+  if (status.transport === "ble" && status.deviceCount === 0) {
+    return t("setup.hardware.waiting");
   }
   return status.deviceName || t("setup.hardware.found");
 }
@@ -168,9 +185,118 @@ function SetupOption({
   );
 }
 
+function RestoreStartDateField({
+  value,
+  onChange,
+  dateLocale,
+  t,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  dateLocale: string;
+  t: (key: TranslationKey) => string;
+}) {
+  const [calendarVisible, setCalendarVisible] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
+  const valid = isRestoreStartDateValid(value);
+  const selectedDate = (() => {
+    try {
+      return parseRestoreStartDate(value);
+    } catch {
+      return undefined;
+    }
+  })();
+  const selectedDateTime = selectedDate?.getTime();
+
+  useEffect(() => {
+    if (calendarVisible) {
+      setCalendarMonth(
+        selectedDateTime === undefined
+          ? new Date()
+          : new Date(selectedDateTime),
+      );
+    }
+  }, [calendarVisible, selectedDateTime]);
+
+  const year = calendarMonth.getFullYear();
+  const month = calendarMonth.getMonth();
+  const firstDayOffset = (new Date(year, month, 1, 12).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0, 12).getDate();
+  const days = Array.from({ length: firstDayOffset + daysInMonth }, (_, index) =>
+    index < firstDayOffset ? undefined : index - firstDayOffset + 1,
+  );
+  const weekdays = Array.from({ length: 7 }, (_, index) =>
+    new Intl.DateTimeFormat(dateLocale, { weekday: "narrow" }).format(
+      new Date(2024, 0, index + 1, 12),
+    ),
+  );
+  const label = selectedDate
+    ? new Intl.DateTimeFormat(dateLocale, { dateStyle: "medium" }).format(selectedDate)
+    : t("setup.scanAutomatic");
+
+  return (
+    <View style={s.restoreStartField}>
+      <Text style={s.restoreStartLabel}>{t("setup.scanStart")}</Text>
+      <TouchableOpacity
+        style={s.restoreDateButton}
+        onPress={() => setCalendarVisible(visible => !visible)}
+        activeOpacity={0.76}
+      >
+        <Text style={s.restoreDateButtonText}>{label}</Text>
+        <Text style={s.restoreDateChevron}>{calendarVisible ? "⌃" : "⌄"}</Text>
+      </TouchableOpacity>
+      {!valid ? <Text style={s.errorText}>{t("setup.scanDateError")}</Text> : null}
+      <Text style={s.restoreDateHint}>{t("setup.scanDateHint")}</Text>
+      {calendarVisible ? (
+        <View style={s.restoreCalendar}>
+          <View style={s.restoreCalendarHeader}>
+            <TouchableOpacity
+              style={s.restoreCalendarNav}
+              onPress={() => setCalendarMonth(current => new Date(current.getFullYear(), current.getMonth() - 1, 1, 12))}
+            >
+              <Text style={s.restoreCalendarNavText}>‹</Text>
+            </TouchableOpacity>
+            <Text style={s.restoreCalendarMonth}>
+              {new Intl.DateTimeFormat(dateLocale, { month: "long", year: "numeric" }).format(calendarMonth)}
+            </Text>
+            <TouchableOpacity
+              style={s.restoreCalendarNav}
+              onPress={() => setCalendarMonth(current => new Date(current.getFullYear(), current.getMonth() + 1, 1, 12))}
+              disabled={dateInputValue(new Date(year, month + 1, 1, 12)) > todayRestoreDate()}
+            >
+              <Text style={s.restoreCalendarNavText}>›</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={s.restoreCalendarGrid}>
+            {weekdays.map((weekday, index) => <Text style={s.restoreWeekday} key={`${weekday}-${index}`}>{weekday}</Text>)}
+            {days.map((day, index) => {
+              if (!day) return <View style={s.restoreCalendarDay} key={`empty-${index}`} />;
+              const date = new Date(year, month, day, 12);
+              const inputValue = dateInputValue(date);
+              const isFuture = inputValue > todayRestoreDate();
+              const isSelected = inputValue === value;
+              return <TouchableOpacity
+                style={[s.restoreCalendarDay, isSelected && s.restoreCalendarDaySelected]}
+                disabled={isFuture}
+                key={inputValue}
+                onPress={() => { onChange(inputValue); setCalendarVisible(false); }}
+              >
+                <Text style={[s.restoreCalendarDayText, isSelected && s.restoreCalendarDayTextSelected, isFuture && s.restoreCalendarDayTextDisabled]}>{day}</Text>
+              </TouchableOpacity>;
+            })}
+          </View>
+          <TouchableOpacity style={s.restoreAutomaticButton} onPress={() => { onChange(""); setCalendarVisible(false); }}>
+            <Text style={s.restoreAutomaticText}>{t("setup.scanAutomatic")}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 /* ── Screen ─────────────────────────────────────────────────────────── */
 export default function WalletSetupScreen({ navigation, route }: any) {
-  const { t } = useI18n();
+  const { dateLocale, t } = useI18n();
   const { width: windowWidth } = useWindowDimensions();
   const createCardWidth = Math.min(
     CREATE_CARD_MAX_WIDTH,
@@ -199,7 +325,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const [walletPassword, setWalletPassword] = useState("");
   const [walletPasswordConfirm, setWalletPasswordConfirm] = useState("");
   const [restoreSeed, setRestoreSeed] = useState("");
-  const [restoreHeight, setRestoreHeight] = useState("");
+  const [restoreStartDate, setRestoreStartDate] = useState("");
+  const [ledgerRestoreStartDate, setLedgerRestoreStartDate] = useState("");
+  const [pendingWalletOpenId, setPendingWalletOpenId] = useState<string | undefined>();
   const [createStep, setCreateStep] = useState(() => t(CREATE_STEPS[0]));
   const [createError, setCreateError] = useState<string | undefined>();
   const [createdSeed, setCreatedSeed] = useState("");
@@ -220,6 +348,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     registerOpenedSession,
     reloadRegisteredWallet,
     reloadRegisteredWallets,
+    setActiveRegisteredWallet,
   } = useWalletState();
 
   useEffect(() => {
@@ -239,10 +368,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const restoreSeedWordCount = normalizedRestoreSeed
     ? normalizedRestoreSeed.split(" ").length
     : 0;
-  const restoreHeightNumber =
-    restoreHeight.trim().length > 0 ? Number(restoreHeight.trim()) : 0;
-  const restoreHeightReady =
-    Number.isFinite(restoreHeightNumber) && restoreHeightNumber >= 0;
+  const restoreStartDateReady = isRestoreStartDateValid(restoreStartDate);
+  const ledgerRestoreStartDateReady = isRestoreStartDateValid(
+    ledgerRestoreStartDate,
+  );
   const canUseBiometric = biometricReady(biometricStatus);
   const currentBiometricLabel = biometricLabel(biometricStatus);
   const openUsesStoredSecret =
@@ -251,6 +380,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     Boolean(registeredWallet?.credentialKey);
   const openUsesHardwareWallet =
     passwordPromptMode === "open" && registeredWallet?.kind === "hardware";
+  const hardwareTransportReady = ledgerTransportReady(ledgerStatus);
   const waitingForBiometricStatus =
     biometricStatus === undefined && biometricError === undefined;
   const createBiometricPending =
@@ -272,16 +402,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       !openUsesHardwareWallet);
   const passwordReady =
     passwordPromptMode === "open"
-      ? openUsesStoredSecret
-        ? true
-        : openUsesHardwareWallet
-          ? true
-          : walletPassword.length > 0
+      ? openUsesStoredSecret ||
+        openUsesHardwareWallet ||
+        walletPassword.length > 0
         : passwordPromptMode === "restore"
           ? walletPassword.length >= 8 &&
             walletPassword === walletPasswordConfirm &&
           restoreSeedWordCount === MONERO_SEED_WORD_COUNT &&
-          restoreHeightReady
+          restoreStartDateReady
         : createCredentialMode === "device"
           ? true
           : walletPassword.length >= 8 &&
@@ -310,7 +438,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     passwordPromptMode === "open"
       ? openUsesStoredSecret
         ? t("action.unlock")
-        : t("action.open")
+        : openUsesHardwareWallet && !hardwareTransportReady
+          ? t("action.search")
+          : t("action.open")
       : passwordPromptMode === "restore"
           ? t("action.import")
           : t("action.create");
@@ -321,11 +451,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       : t("setup.seedSubtitleDynamic", { count: seedWords.length });
   const setupOverlayVisible =
     creating || Boolean(pendingSeedBackup) || createdSeed.length > 0;
-  const openWalletDescription =
-    registeredWallets.length > 1
-      ? `${registeredWallet?.walletName ?? t("common.wallet")} on ${registeredWallet?.network ?? "mainnet"} (${registeredWallets.length} wallets)`
-      : `${registeredWallet?.walletName ?? t("common.wallet")} on ${registeredWallet?.network ?? "mainnet"}`;
-
   useEffect(() => {
     Animated.timing(bgOp, { toValue: 1, duration: 1000, useNativeDriver: true }).start();
     Animated.parallel([
@@ -394,7 +519,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     setWalletPasswordConfirm("");
     if (mode === "restore") {
       setRestoreSeed("");
-      setRestoreHeight("");
+      setRestoreStartDate("");
+    }
+    if (mode === "open") {
+      setOpenRestoreStartDate("");
     }
     if (mode === "create") {
       setCreateCredentialMode("device");
@@ -411,6 +539,24 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     registeredWallets.length,
   ]);
 
+  const chooseSavedWallet = useCallback(async (walletId: string) => {
+    if (creating) {
+      return;
+    }
+    setCreateError(undefined);
+    setPendingWalletOpenId(walletId);
+    await setActiveRegisteredWallet(walletId);
+    await reloadRegisteredWallets();
+  }, [creating, reloadRegisteredWallets, setActiveRegisteredWallet]);
+
+  useEffect(() => {
+    if (!pendingWalletOpenId || registeredWallet?.id !== pendingWalletOpenId) {
+      return;
+    }
+    setPendingWalletOpenId(undefined);
+    openPasswordPrompt("open");
+  }, [openPasswordPrompt, pendingWalletOpenId, registeredWallet?.id]);
+
   const closePasswordPrompt = useCallback(() => {
     const shouldReturnHome =
       passwordPromptMode === "open" && route?.params?.mode === "open";
@@ -421,7 +567,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     }
   }, [navigation, passwordPromptMode, route?.params?.mode]);
 
-  const refreshLedgerTransport = async (requestAccess = false) => {
+  const refreshLedgerTransport = useCallback(async (requestAccess = false) => {
     setLedgerBusy(true);
     setLedgerError(undefined);
     setupLog("refreshLedgerTransport.start", {
@@ -452,7 +598,17 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     } finally {
       setLedgerBusy(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!openUsesHardwareWallet) {
+      return;
+    }
+
+    setLedgerStatus(undefined);
+    setLedgerError(undefined);
+    refreshLedgerTransport(true).catch(() => undefined);
+  }, [openUsesHardwareWallet, refreshLedgerTransport, registeredWallet?.id]);
 
   const openLedgerPrompt = () => {
     if (creating) {
@@ -600,6 +756,11 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
       return;
     }
+
+    // A URL inferred from a node is not proof that it exposes the Fast Wallet
+    // service. Verify the public health endpoint before any registration
+    // payload (and therefore any isolated private view key) leaves the device.
+    await verifyFastReceiveScannerCapability(scannerUrl);
 
     setupLog("fastReceiveScannerRegistration.start", {
       identityId,
@@ -875,7 +1036,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setupLog("startRestoreWallet.skipped", {
         creating,
         passwordReady,
-        restoreHeightReady,
+        restoreStartDateReady,
         restoreSeedWordCount,
       });
       return;
@@ -883,27 +1044,33 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
     const password = walletPassword;
     const startedAt = Date.now();
-    setupLog("startRestoreWallet.start", {
-      createFastReceiveOnSetup,
-      restoreHeight: Math.floor(restoreHeightNumber),
-      restoreSeedWordCount,
-    });
-    setCreating(true);
-    setCreatingKind("restore");
-    setPasswordPromptMode(undefined);
-    setCreateError(undefined);
-    setCreatedSeed("");
-    setCreatedSeedWalletId(undefined);
-    clearQueuedSeedBackup();
-    setSeedConfirmed(false);
-    beginCreateAnimation(RESTORE_STEPS);
-
     try {
+      const settings = await loadActiveNodeConnectionSettings();
+      const restoreHeight = restoreHeightFromStartDate(
+        restoreStartDate,
+        settings.network,
+      );
+      setupLog("startRestoreWallet.start", {
+        createFastReceiveOnSetup,
+        restoreHeight: restoreHeight ?? 0,
+        restoreStartDate: restoreStartDate || "automatic",
+        restoreSeedWordCount,
+      });
+      setCreating(true);
+      setCreatingKind("restore");
+      setPasswordPromptMode(undefined);
+      setCreateError(undefined);
+      setCreatedSeed("");
+      setCreatedSeedWalletId(undefined);
+      clearQueuedSeedBackup();
+      setSeedConfirmed(false);
+      beginCreateAnimation(RESTORE_STEPS);
       const result = await walletService.restoreNamedWallet({
         walletName: DEFAULT_WALLET_NAME,
         password,
         mnemonic: normalizedRestoreSeed,
-        restoreHeight: Math.floor(restoreHeightNumber),
+        network: settings.network,
+        restoreHeight,
       });
       let fastReceiveIdentityId: string | undefined;
       if (createFastReceiveOnSetup) {
@@ -911,7 +1078,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         setupLog("startRestoreWallet.fastReceive.start");
         const fastReceive = await walletService.createFastReceiveIdentity({
           password,
-          restoreHeight: Math.floor(restoreHeightNumber),
+          restoreHeight,
         });
         fastReceiveIdentityId = fastReceive.identity.id;
         setupLog("startRestoreWallet.fastReceive.localReady", {
@@ -935,7 +1102,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setWalletPassword("");
       setWalletPasswordConfirm("");
       setRestoreSeed("");
-      setRestoreHeight("");
+      setRestoreStartDate("");
       if (fastReceiveIdentityId) {
         registerFastReceiveInBackground(
           "startRestoreWallet",
@@ -961,28 +1128,37 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   };
 
   const startCreateHardwareWallet = async () => {
-    if (creating) {
+    if (creating || !ledgerRestoreStartDateReady) {
       setupLog("startCreateHardwareWallet.skipped", {
-        reason: "creating",
+        reason: creating ? "creating" : "invalidStartDate",
       });
+      if (!ledgerRestoreStartDateReady) {
+        setLedgerError(t("setup.scanDateError"));
+      }
       return;
     }
 
     const startedAt = Date.now();
-    setupLog("startCreateHardwareWallet.start", {
-      createFastReceiveOnSetup,
-    });
-    setCreating(true);
-    setCreatingKind("hardware");
-    setPasswordPromptMode(undefined);
-    setCreateError(undefined);
-    setCreatedSeed("");
-    setCreatedSeedWalletId(undefined);
-    clearQueuedSeedBackup();
-    setSeedConfirmed(false);
-    beginCreateAnimation(HARDWARE_STEPS);
-
     try {
+      const settings = await loadActiveNodeConnectionSettings();
+      const restoreHeight = restoreHeightFromStartDate(
+        ledgerRestoreStartDate,
+        settings.network,
+      );
+      setupLog("startCreateHardwareWallet.start", {
+        createFastReceiveOnSetup,
+        restoreHeight: restoreHeight ?? 0,
+        restoreStartDate: ledgerRestoreStartDate || "automatic",
+      });
+      setCreating(true);
+      setCreatingKind("hardware");
+      setPasswordPromptMode(undefined);
+      setCreateError(undefined);
+      setCreatedSeed("");
+      setCreatedSeedWalletId(undefined);
+      clearQueuedSeedBackup();
+      setSeedConfirmed(false);
+      beginCreateAnimation(HARDWARE_STEPS);
       const transportStatus =
         await walletService.requestLedgerTransportAccess();
       setLedgerStatus(transportStatus);
@@ -1001,24 +1177,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         throw new Error(transportStatus.message);
       }
 
+      const deviceName =
+        transportStatus.transport === "ble" ? "Ledger:ble" : "Ledger";
       const result = await walletService.createNamedWalletFromDevice({
         walletName: DEFAULT_HARDWARE_WALLET_NAME,
-        deviceName:
-          transportStatus.transport === "ble" ? "Ledger:ble" : "Ledger",
+        network: settings.network,
+        deviceName,
+        restoreHeight,
       });
-      let fastReceiveIdentityId: string | undefined;
-      if (createFastReceiveOnSetup) {
-        setCreateStep(t("setup.createFastReceive"));
-        setupLog("startCreateHardwareWallet.fastReceive.start");
-        const fastReceive = await walletService.createFastReceiveIdentity({
-          restoreHeight: result.registration.restoreHeight ?? 0,
-        });
-        fastReceiveIdentityId = fastReceive.identity.id;
-        setupLog("startCreateHardwareWallet.fastReceive.localReady", {
-          elapsedMs: Date.now() - startedAt,
-          identityId: fastReceive.identity.id,
-        });
-      }
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
@@ -1033,13 +1199,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
       finishCreateAnimation();
       setLedgerPromptVisible(false);
-      if (fastReceiveIdentityId) {
-        registerFastReceiveInBackground(
-          "startCreateHardwareWallet",
-          fastReceiveIdentityId,
-          { secretKey: result.session.credentialKey },
-        );
-      }
+      setLedgerRestoreStartDate("");
       navigation.navigate("Home");
       setupLog("startCreateHardwareWallet.success", {
         elapsedMs: Date.now() - startedAt,
@@ -1067,11 +1227,17 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       return;
     }
 
+    if (registeredWallet?.kind === "hardware" && !hardwareTransportReady) {
+      const message =
+        ledgerError ??
+        ledgerStatus?.message ??
+        "Connect a Ledger Nano before opening this wallet";
+      setCreateError(message);
+      refreshLedgerTransport(true).catch(() => undefined);
+      return;
+    }
+
     const startedAt = Date.now();
-    setupLog("openExistingWallet.start", {
-      kind: registeredWallet?.kind,
-      walletName: registeredWallet?.walletName,
-    });
     setCreating(true);
     setCreatingKind(
       registeredWallet?.kind === "hardware" ? "hardware" : "open",
@@ -1088,6 +1254,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     setCreateStep(t("setup.step.openingWallet"));
 
     try {
+      setupLog("openExistingWallet.start", {
+        kind: registeredWallet?.kind,
+        walletName: registeredWallet?.walletName,
+      });
       const session = await walletService.openRegisteredWallet(walletPassword);
       const wallet = await walletService.loadRegisteredWallet();
       await registerOpenedSession(session, wallet, {
@@ -1137,6 +1307,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       passwordReady,
     });
     if (passwordPromptMode === "open") {
+      if (openUsesHardwareWallet && !hardwareTransportReady) {
+        refreshLedgerTransport(true).catch(() => undefined);
+        return;
+      }
       openExistingWallet();
       return;
     }
@@ -1221,17 +1395,31 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         <Text style={s.title}>{t("setup.title")}</Text>
         <Text style={s.subtitle}>{t("setup.subtitle")}</Text>
 
+        {registeredWallets.length > 0 ? (
+          <View style={s.savedWalletSection}>
+            <Text style={s.savedWalletTitle}>{t("home.allWallets")}</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.savedWalletCarousel}>
+              {registeredWallets.map(wallet => (
+                <TouchableOpacity
+                  key={wallet.id}
+                  style={[s.savedWalletCard, wallet.id === registeredWallet?.id && s.savedWalletCardActive]}
+                  onPress={() => { void chooseSavedWallet(wallet.id); }}
+                  disabled={creating}
+                  activeOpacity={0.76}
+                >
+                  <MoneroCoin size={30} />
+                  <View style={s.savedWalletCopy}>
+                    <Text style={s.savedWalletName} numberOfLines={1}>{walletDisplayName(wallet)}</Text>
+                    <Text style={s.savedWalletMeta} numberOfLines={1}>{wallet.kind === "hardware" ? "Ledger" : wallet.kind === "fast" ? "Fast Wallet" : "Mainnet"}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
+
         {/* Options */}
         <View style={s.options}>
-          {registeredWallet ? (
-            <SetupOption
-              icon={<IcoImport c={colors.orange} />}
-              title={t("action.openWallet")}
-              desc={openWalletDescription}
-              onPress={() => openPasswordPrompt("open")}
-              disabled={creating}
-            />
-          ) : null}
           <SetupOption
             icon={<IcoPlus c={colors.orange} />}
             title={t("action.createWallet")}
@@ -1257,7 +1445,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       </Animated.View>
 
       {/* Footer */}
-      <Text style={s.footer}>{t("setup.footer")}</Text>
+      <TouchableOpacity
+        accessibilityRole="link"
+        accessibilityLabel="Made with love by TEX8"
+        onPress={() => void Linking.openURL("https://solutions.tex8.com/en")}
+        activeOpacity={0.72}
+      >
+        <Text style={s.footer}>Made with <Text style={{ color: colors.orange }}>❤️</Text> by <Text style={{ color: "rgba(255,255,255,0.62)", fontWeight: "800" }}>TEX8</Text></Text>
+      </TouchableOpacity>
 
       <Modal
         visible={passwordPromptMode !== undefined}
@@ -1295,13 +1490,11 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                       autoCorrect={false}
                       style={[s.input, s.seedInput]}
                     />
-                    <TextInput
-                      value={restoreHeight}
-                      onChangeText={setRestoreHeight}
-                      placeholder={t("setup.restoreHeight")}
-                      placeholderTextColor="rgba(255,255,255,0.28)"
-                      keyboardType="number-pad"
-                      style={s.input}
+                    <RestoreStartDateField
+                      value={restoreStartDate}
+                      onChange={setRestoreStartDate}
+                      dateLocale={dateLocale}
+                      t={t}
                     />
                   </>
                 ) : null}
@@ -1381,12 +1574,33 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 {openUsesHardwareWallet ? (
                   <View style={s.biometricBox}>
                     <View style={s.biometricHeader}>
-                      <View style={[s.biometricDot, s.biometricDotReady]} />
-                      <Text style={s.biometricTitle}>Ledger Nano</Text>
+                      <View
+                        style={[
+                          s.biometricDot,
+                          hardwareTransportReady && s.biometricDotReady,
+                        ]}
+                      />
+                      <Text style={s.biometricTitle}>
+                        {ledgerBusy
+                          ? t("setup.hardware.searching")
+                          : ledgerStatusTitle(ledgerStatus, t)}
+                      </Text>
+                      {ledgerBusy ? (
+                        <ActivityIndicator color={colors.orange} />
+                      ) : null}
                     </View>
                     <Text style={s.biometricText}>
-                      {t("setup.hardware.openReady")}
+                      {ledgerError ??
+                        ledgerStatus?.message ??
+                        t("setup.hardware.looking")}
                     </Text>
+                    {ledgerStatus ? (
+                      <Text style={s.biometricText}>
+                        {ledgerStatus.platform} · {ledgerStatus.transport} ·{" "}
+                        {ledgerStatus.deviceCount} device
+                        {ledgerStatus.deviceCount === 1 ? "" : "s"}
+                      </Text>
+                    ) : null}
                   </View>
                 ) : null}
                 {showPasswordFields ? (
@@ -1418,9 +1632,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 {passwordPromptMode === "restore" && restoreSeed.length > 0 && restoreSeedWordCount !== MONERO_SEED_WORD_COUNT ? (
                   <Text style={s.errorText}>{t("setup.seedFullError")}</Text>
                 ) : null}
-                {passwordPromptMode === "restore" && !restoreHeightReady ? (
-                  <Text style={s.errorText}>{t("setup.restoreHeightError")}</Text>
-                ) : null}
                 {passwordPromptMode === "create" || passwordPromptMode === "restore" ? (
                   <>
                     {fastReceiveSetupToggle}
@@ -1451,9 +1662,18 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     <Text style={s.secondaryButtonText}>{t("action.cancel")}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[s.primaryButton, !passwordReady && s.primaryButtonDisabled]}
+                    style={[
+                      s.primaryButton,
+                      (!passwordReady ||
+                        (openUsesHardwareWallet && ledgerBusy)) &&
+                        s.primaryButtonDisabled,
+                    ]}
                     onPress={submitPasswordPrompt}
-                    disabled={!passwordReady || creating}
+                    disabled={
+                      !passwordReady ||
+                      creating ||
+                      (openUsesHardwareWallet && ledgerBusy)
+                    }
                   >
                     <Text
                       style={s.primaryButtonText}
@@ -1516,8 +1736,12 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 ) : null}
               </View>
 
-              {fastReceiveSetupToggle}
-
+              <RestoreStartDateField
+                value={ledgerRestoreStartDate}
+                onChange={setLedgerRestoreStartDate}
+                dateLocale={dateLocale}
+                t={t}
+              />
               <View style={s.promptActions}>
                 <TouchableOpacity
                   style={s.secondaryButton}
@@ -1529,7 +1753,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 <TouchableOpacity
                   style={[
                     s.primaryButton,
-                    (ledgerBusy || creating) && s.primaryButtonDisabled,
+                    (ledgerBusy || creating || !ledgerRestoreStartDateReady) && s.primaryButtonDisabled,
                   ]}
                   onPress={() => {
                     if (ledgerTransportReady(ledgerStatus)) {
@@ -1538,7 +1762,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     }
                     refreshLedgerTransport(true).catch(() => undefined);
                   }}
-                  disabled={ledgerBusy || creating}
+                  disabled={ledgerBusy || creating || !ledgerRestoreStartDateReady}
                 >
                   <Text style={s.primaryButtonText}>
                     {ledgerTransportReady(ledgerStatus) ? t("action.createWallet") : t("action.search")}
@@ -1643,6 +1867,14 @@ const s = StyleSheet.create({
   subtitle: { color: "rgba(255,255,255,0.45)", fontSize: 16, textAlign: "center", marginBottom: 40 },
 
   options: { gap: 12 },
+  savedWalletSection: { marginBottom: 20 },
+  savedWalletTitle: { color: "rgba(255,255,255,0.6)", fontSize: 12, fontWeight: "800", letterSpacing: 0.8, marginBottom: 10, textTransform: "uppercase" },
+  savedWalletCarousel: { gap: 10, paddingRight: 24 },
+  savedWalletCard: { width: 196, minHeight: 74, flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 16, padding: 13, borderWidth: 1, borderColor: "rgba(255,255,255,0.09)", backgroundColor: "rgba(255,255,255,0.045)" },
+  savedWalletCardActive: { borderColor: colors.orange, backgroundColor: "rgba(242,104,34,0.13)" },
+  savedWalletCopy: { flex: 1 },
+  savedWalletName: { color: "#FFF", fontSize: 15, fontWeight: "800" },
+  savedWalletMeta: { color: "rgba(255,255,255,0.45)", fontSize: 12, marginTop: 3 },
   option: {
     flexDirection: "row",
     alignItems: "center",
@@ -1712,6 +1944,53 @@ const s = StyleSheet.create({
     paddingTop: 14,
     textAlignVertical: "top",
   },
+  restoreStartField: { marginBottom: 12 },
+  restoreStartLabel: {
+    color: "rgba(255,255,255,0.8)",
+    fontSize: 13,
+    fontWeight: "700",
+    marginBottom: 8,
+  },
+  restoreDateButton: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  restoreDateButtonText: { color: "#FFF", fontSize: 15, fontWeight: "700" },
+  restoreDateChevron: { color: colors.orange, fontSize: 19, fontWeight: "800" },
+  restoreDateHint: {
+    color: "rgba(255,255,255,0.43)",
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 7,
+  },
+  restoreCalendar: {
+    marginTop: 10,
+    borderRadius: 14,
+    padding: 12,
+    backgroundColor: "rgba(0,0,0,0.16)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  restoreCalendarHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  restoreCalendarNav: { width: 34, height: 32, alignItems: "center", justifyContent: "center", borderRadius: 9, backgroundColor: "rgba(255,255,255,0.08)" },
+  restoreCalendarNavText: { color: "#FFF", fontSize: 24, lineHeight: 26 },
+  restoreCalendarMonth: { flex: 1, color: "#FFF", fontSize: 14, fontWeight: "800", textAlign: "center" },
+  restoreCalendarGrid: { flexDirection: "row", flexWrap: "wrap" },
+  restoreWeekday: { width: "14.2857%", color: "rgba(255,255,255,0.4)", fontSize: 11, fontWeight: "800", textAlign: "center", marginBottom: 6 },
+  restoreCalendarDay: { width: "14.2857%", height: 34, alignItems: "center", justifyContent: "center", borderRadius: 9 },
+  restoreCalendarDaySelected: { backgroundColor: colors.orange },
+  restoreCalendarDayText: { color: "rgba(255,255,255,0.86)", fontSize: 13, fontWeight: "700" },
+  restoreCalendarDayTextSelected: { color: "#FFF" },
+  restoreCalendarDayTextDisabled: { color: "rgba(255,255,255,0.18)" },
+  restoreAutomaticButton: { minHeight: 38, alignItems: "center", justifyContent: "center", marginTop: 8, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.06)" },
+  restoreAutomaticText: { color: colors.orange, fontSize: 13, fontWeight: "800" },
   errorText: { color: "#FF8A80", fontSize: 13, lineHeight: 18, marginBottom: 10 },
   fastReceiveRow: {
     minHeight: 68,
@@ -1835,6 +2114,13 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
     textTransform: "uppercase",
+  },
+  ledgerFastHint: {
+    color: "rgba(255,255,255,0.48)",
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: -2,
+    marginBottom: 12,
   },
   promptActions: { flexDirection: "row", gap: 12, marginTop: 10 },
   secondaryButton: {

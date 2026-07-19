@@ -5,10 +5,18 @@ require Pod::Executable.execute_command('node', ['-p',
     {paths: [process.argv[1]]},
   )', __dir__]).strip
 
+require_relative '../node_modules/react-native-permissions/scripts/setup'
+
 ENV['RCT_USE_PREBUILT_RNCORE'] = '0'
 
 platform :ios, min_ios_version_supported
 prepare_react_native_project!
+
+# QR recipient scanning needs only the camera permission handler. Keeping this
+# explicit prevents unused permission handlers from being compiled into iOS.
+setup_permissions([
+  'Camera',
+])
 
 linkage = ENV.fetch('USE_FRAMEWORKS', 'static')
 Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green

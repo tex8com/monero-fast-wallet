@@ -13,7 +13,7 @@ import type {
   WalletTransaction,
   WalletSnapshot,
 } from './NativeMoneroWallet';
-import type { RegisteredWallet } from './WalletRegistry';
+import { walletDisplayName, type RegisteredWallet } from './WalletRegistry';
 import { walletService, type WalletSession } from './WalletService';
 import {
   FastWalletPushService,
@@ -30,6 +30,7 @@ import {
   IncomingTransactionObserver,
   type IncomingTransactionNotice,
 } from './IncomingTransactionObserver';
+import { presentWalletSync } from '../../../../packages/wallet-shared/src/walletSync';
 
 type RegisterOpenedSessionOptions = {
   refresh?: boolean;
@@ -56,8 +57,10 @@ interface WalletStateValue {
   incomingTransactionNotice: IncomingTransactionNotice | undefined;
   status: WalletRuntimeStatus;
   syncProgress: number | undefined;
+  unlockRequestId: number | undefined;
   clearError: () => void;
   dismissIncomingTransactionNotice: () => void;
+  lockWallet: () => Promise<void>;
   registerOpenedSession: (
     session: WalletSession,
     registration?: RegisteredWallet,
@@ -67,6 +70,10 @@ interface WalletStateValue {
   reloadRegisteredWallets: () => Promise<RegisteredWallet[]>;
   setActiveRegisteredWallet: (
     walletId: string,
+  ) => Promise<RegisteredWallet | undefined>;
+  renameRegisteredWallet: (
+    walletId: string,
+    displayName: string,
   ) => Promise<RegisteredWallet | undefined>;
   removeRegisteredWallet: (walletId: string) => Promise<RegisteredWallet[]>;
   refreshSnapshot: () => Promise<WalletSnapshot | undefined>;
@@ -91,23 +98,7 @@ function errorMessage(error: unknown): string {
 function syncProgress(
   snapshot: WalletSnapshot | undefined,
 ): number | undefined {
-  if (!snapshot) {
-    return undefined;
-  }
-
-  const targetHeight =
-    snapshot.daemonTargetHeight > 0
-      ? snapshot.daemonTargetHeight
-      : snapshot.daemonHeight;
-
-  if (targetHeight <= 0) {
-    return undefined;
-  }
-
-  return Math.max(
-    0,
-    Math.min(100, Math.floor((snapshot.walletHeight / targetHeight) * 100)),
-  );
+  return presentWalletSync(snapshot).progress;
 }
 
 export function WalletStateProvider({
@@ -134,6 +125,7 @@ export function WalletStateProvider({
   const [incomingTransactionNotice, setIncomingTransactionNotice] = useState<
     IncomingTransactionNotice | undefined
   >();
+  const [unlockRequestId, setUnlockRequestId] = useState<number | undefined>();
   const [error, setError] = useState<string | undefined>();
   const sessionRef = useRef<WalletSession | undefined>(undefined);
   const registeredWalletRef = useRef<RegisteredWallet | undefined>(undefined);
@@ -319,6 +311,7 @@ export function WalletStateProvider({
       setTransactions([]);
       setHardwareStatus(undefined);
       setError(undefined);
+      setUnlockRequestId(undefined);
       setLoadingRegistry(false);
       return wallet;
     },
@@ -353,6 +346,26 @@ export function WalletStateProvider({
       return wallets;
     },
     [stopNativeRefresh],
+  );
+
+  const renameRegisteredWallet = useCallback(
+    async (walletId: string, displayName: string) => {
+      const updated = await walletService.renameRegisteredWallet(
+        walletId,
+        displayName,
+      );
+      if (!updated) {
+        return undefined;
+      }
+      const wallets = await walletService.loadRegisteredWallets();
+      const active = await walletService.loadRegisteredWallet();
+      registeredWalletRef.current = active;
+      registeredWalletsRef.current = wallets;
+      setRegisteredWallet(active);
+      setRegisteredWallets(wallets);
+      return updated;
+    },
+    [],
   );
 
   useEffect(() => {
@@ -419,6 +432,13 @@ export function WalletStateProvider({
     snapshotRefreshInFlight.current = true;
     try {
       const nextSnapshot = await walletService.snapshot(activeSession);
+      logWalletEvent('WalletState', 'refreshSnapshot.success', {
+        daemonHeight: nextSnapshot.daemonHeight,
+        daemonTargetHeight: nextSnapshot.daemonTargetHeight,
+        synchronized: nextSnapshot.synchronized,
+        walletHeight: nextSnapshot.walletHeight,
+        walletId: activeSession.walletId,
+      });
       setSnapshot(nextSnapshot);
       const activeWallet = registeredWalletRef.current;
       if (activeWallet) {
@@ -485,7 +505,7 @@ export function WalletStateProvider({
       queueIncomingTransactionNotices(
         incomingTransactionObserverRef.current.observe({
           walletId: activeWallet?.id ?? activeSession.walletId,
-          walletName: activeWallet?.walletName ?? 'Wallet',
+          walletName: activeWallet ? walletDisplayName(activeWallet) : 'Wallet',
           transactions: nextTransactions,
         }),
       );
@@ -521,7 +541,9 @@ export function WalletStateProvider({
           queueIncomingTransactionNotices(
             incomingTransactionObserverRef.current.observe({
               walletId: result.registrationId,
-              walletName: registration?.walletName ?? 'Fast Wallet',
+              walletName: registration
+                ? walletDisplayName(registration)
+                : 'Fast Wallet',
               transactions: result.transactions,
               announceInitial: announceInitialTransactions,
             }),
@@ -735,6 +757,44 @@ export function WalletStateProvider({
     [refreshHardwareWalletStatus, refreshSnapshot, refreshTransactions],
   );
 
+  const lockWallet = useCallback(async () => {
+    const activeSession = sessionRef.current;
+    if (!activeSession) {
+      return;
+    }
+
+    logWalletEvent('WalletState', 'lockWallet.start', {
+      walletId: activeSession.walletId,
+    });
+    stopNativeRefresh(activeSession, 'manualLock');
+    try {
+      await walletService.closeWallet(activeSession);
+      // Prevent the background auto-open path from immediately undoing a
+      // conscious lock action. The UI redirects to the explicit unlock sheet.
+      autoOpenAttemptedWalletIdRef.current =
+        registeredWalletRef.current?.id ?? activeSession.walletId;
+      sessionRef.current = undefined;
+      setSession(undefined);
+      setSnapshot(undefined);
+      setTransactions([]);
+      setHardwareStatus(undefined);
+      setError(undefined);
+      setUnlockRequestId(Date.now());
+      logWalletEvent('WalletState', 'lockWallet.success', {
+        walletId: activeSession.walletId,
+      });
+    } catch (reason) {
+      startNativeRefresh(activeSession, 'lockFailed');
+      const message = errorMessage(reason);
+      setError(message);
+      logWalletEvent('WalletState', 'lockWallet.error', {
+        error: message,
+        walletId: activeSession.walletId,
+      });
+      throw reason;
+    }
+  }, [startNativeRefresh, stopNativeRefresh]);
+
   const reconnectHardwareWallet = useCallback(async () => {
     const activeSession = sessionRef.current;
     if (!activeSession?.hardwareDevice) {
@@ -799,12 +859,14 @@ export function WalletStateProvider({
         stopNativeRefresh(previousSession, 'sessionReplaced');
       }
 
+      walletService.activateSession(openedSession);
       sessionRef.current = openedSession;
       setSession(openedSession);
       setSnapshot(undefined);
       setTransactions([]);
       setHardwareStatus(undefined);
       setError(undefined);
+      setUnlockRequestId(undefined);
       startNativeRefresh(openedSession, 'sessionOpened');
 
       if (registration) {
@@ -941,12 +1003,15 @@ export function WalletStateProvider({
       incomingTransactionNotice,
       status,
       syncProgress: progress,
+      unlockRequestId,
       clearError: () => setError(undefined),
       dismissIncomingTransactionNotice,
+      lockWallet,
       registerOpenedSession,
       reloadRegisteredWallet,
       reloadRegisteredWallets,
       setActiveRegisteredWallet: activateRegisteredWallet,
+      renameRegisteredWallet,
       removeRegisteredWallet,
       refreshSnapshot,
       refreshTransactions,
@@ -958,6 +1023,7 @@ export function WalletStateProvider({
       error,
       hardwareStatus,
       incomingTransactionNotice,
+      lockWallet,
       progress,
       reconnectHardwareWallet,
       refreshHardwareWalletStatus,
@@ -970,12 +1036,14 @@ export function WalletStateProvider({
       reloadRegisteredWallet,
       reloadRegisteredWallets,
       activateRegisteredWallet,
+      renameRegisteredWallet,
       removeRegisteredWallet,
       session,
       showHardwareWalletAddress,
       snapshot,
       status,
       transactions,
+      unlockRequestId,
       dismissIncomingTransactionNotice,
     ],
   );

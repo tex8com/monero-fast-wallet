@@ -697,6 +697,7 @@ using tex8::wallet::RestoreWalletRequest;
 using tex8::wallet::WalletEngine;
 using tex8::wallet::WalletEngineError;
 using tex8::wallet::WalletSnapshot;
+using tex8::wallet::WalletSubaddress;
 using tex8::wallet::WalletTransaction;
 using tex8::wallet::WalletTransactionTransfer;
 
@@ -987,6 +988,15 @@ NSDictionary *toDictionary(const FastReceiveIdentity &identity) {
     @"restoreHeight": toNSNumber(identity.restoreHeight),
     @"derivationIndex": toNSNumber(identity.derivationIndex),
     @"scannerStatus": toNSString(identity.scannerStatus),
+  };
+}
+
+NSDictionary *toDictionary(const WalletSubaddress &subaddress) {
+  return @{
+    @"accountIndex": toNSNumber(subaddress.accountIndex),
+    @"addressIndex": toNSNumber(subaddress.addressIndex),
+    @"address": toNSString(subaddress.address),
+    @"label": toNSString(subaddress.label),
   };
 }
 
@@ -1679,6 +1689,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                     deviceName:(NSString *)deviceName
                  restoreHeight:(double)restoreHeight
             subaddressLookahead:(NSString *)subaddressLookahead
+                  accountIndex:(double)accountIndex
                        resolve:(RCTPromiseResolveBlock)resolve
                         reject:(RCTPromiseRejectBlock)reject
 {
@@ -1690,6 +1701,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                     @"network": network ?: @"",
                     @"restoreHeight": @(restoreHeight),
                     @"subaddressLookahead": subaddressLookahead ?: @"",
+                    @"accountIndex": @(accountIndex),
                     @"walletFile": walletFileName(path),
                   }
                     work:^id(WalletEngine &engine) {
@@ -1700,6 +1712,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     request.deviceName = toStdString(deviceName.length == 0 ? @"Ledger" : deviceName);
     request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
     request.subaddressLookahead = toStdString(subaddressLookahead);
+    request.accountIndex = toIndex(accountIndex, "accountIndex");
     return toNSString(engine.createWalletFromDevice(request));
   }];
 }
@@ -1710,6 +1723,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                                     deviceName:(NSString *)deviceName
                                  restoreHeight:(double)restoreHeight
                             subaddressLookahead:(NSString *)subaddressLookahead
+                                  accountIndex:(double)accountIndex
                                        resolve:(RCTPromiseResolveBlock)resolve
                                         reject:(RCTPromiseRejectBlock)reject
 {
@@ -1722,6 +1736,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                     @"network": network ?: @"",
                     @"restoreHeight": @(restoreHeight),
                     @"subaddressLookahead": subaddressLookahead ?: @"",
+                    @"accountIndex": @(accountIndex),
                     @"walletFile": walletFileName(path),
                   }
                     work:^id(WalletEngine &engine) {
@@ -1732,6 +1747,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     request.deviceName = toStdString(deviceName.length == 0 ? @"Ledger" : deviceName);
     request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
     request.subaddressLookahead = toStdString(subaddressLookahead);
+    request.accountIndex = toIndex(accountIndex, "accountIndex");
     return toNSString(engine.createWalletFromDevice(request));
   }];
 }
@@ -2091,6 +2107,28 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
   }];
 }
 
+- (void)createSubaddress:(NSString *)walletId
+             accountIndex:(double)accountIndex
+                    label:(NSString *)label
+                  resolve:(RCTPromiseResolveBlock)resolve
+                   reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"createSubaddress"
+                  fields:@{
+                    @"accountIndex": @(accountIndex),
+                    @"label": label ?: @"",
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
+    return toDictionary(engine.createSubaddress(
+        toStdString(walletId),
+        toIndex(accountIndex, "accountIndex"),
+        toStdString(label)));
+  }];
+}
+
 - (void)getSeed:(NSString *)walletId
      seedOffset:(NSString *)seedOffset
         resolve:(RCTPromiseResolveBlock)resolve
@@ -2107,6 +2145,24 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     return toNSString(engine.getSeed(
         toStdString(walletId),
         toStdString(seedOffset)));
+  }];
+}
+
+- (void)setWalletPassword:(NSString *)walletId
+              newPassword:(NSString *)newPassword
+                  resolve:(RCTPromiseResolveBlock)resolve
+                   reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"setWalletPassword"
+                  fields:@{
+                    @"hasNewPassword": @(newPassword.length > 0),
+                    @"walletId": maskIdentifier(walletId),
+                  }
+                    work:^id(WalletEngine &engine) {
+    engine.setWalletPassword(toStdString(walletId), toStdString(newPassword));
+    return nil;
   }];
 }
 

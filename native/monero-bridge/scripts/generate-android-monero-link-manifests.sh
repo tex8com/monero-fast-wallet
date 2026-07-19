@@ -100,7 +100,16 @@ append_pkg_config_static_libs() {
     return 0
   fi
   if ! command -v pkg-config >/dev/null 2>&1; then
-    echo "warning: pkg-config not found; cannot add gRPC static libraries" >&2
+    # The Android prefix contains all gRPC dependency archives. Link them as a
+    # group when pkg-config is unavailable (macOS does not include it) so the
+    # Android linker can resolve the circular static-library references.
+    echo "pkg-config not found; adding Android gRPC archives as a link group" >&2
+    monero_libraries+=("-Wl,--start-group")
+    local archive
+    while IFS= read -r archive; do
+      monero_libraries+=("${archive}")
+    done < <(find "${dependency_prefix}/lib" -maxdepth 1 -type f -name "*.a" | sort)
+    monero_libraries+=("-Wl,--end-group")
     return 0
   fi
 

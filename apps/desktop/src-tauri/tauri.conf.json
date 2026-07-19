@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Monero Fast Wallet",
+  "version": "0.1.0",
+  "identifier": "com.tex8.monerowallet.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1430",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Monero Fast Wallet",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 360,
+        "minHeight": 540,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' https://xmr.tex8.com https://api.coingecko.com; img-src 'self' asset: data: https:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Finance",
+    "shortDescription": "Self-custodial Monero wallet",
+    "longDescription": "Monero Fast Wallet is a self-custodial desktop wallet powered by the forked Monero wallet core.",
+    "icon": [
+      "icons/icon.icns",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "entitlements": "./Entitlements.plist",
+      "infoPlist": "Info.plist",
+      "frameworks": [
+        "../native-libs/libmonero_fast_crypto.dylib"
+      ]
+    }
+  }
+}

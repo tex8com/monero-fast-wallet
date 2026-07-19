@@ -13,9 +13,10 @@ const tex8SharedAppRoot = path.resolve(
   __dirname,
   "../../../tex8/products/mobile-platform/shared-app",
 );
+const moneroSharedWalletRoot = path.resolve(__dirname, '../../packages/wallet-shared');
 
 const config = {
-  watchFolders: [tex8SharedAppRoot],
+  watchFolders: [tex8SharedAppRoot, moneroSharedWalletRoot],
   transformer: {
     babelTransformerPath: require.resolve("react-native-svg-transformer/react-native"),
   },

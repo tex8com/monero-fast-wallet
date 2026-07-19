@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let bind: SocketAddr = env::var("ENTHUSIAST_DISCOVERY_BIND")
-        .unwrap_or_else(|_| "127.0.0.1:8088".to_owned())
+        .unwrap_or_else(|_| "127.0.0.1:8089".to_owned())
         .parse()?;
     let database = env::var("ENTHUSIAST_DISCOVERY_DB")
         .unwrap_or_else(|_| "./enthusiast-discovery.json.enc".to_owned());

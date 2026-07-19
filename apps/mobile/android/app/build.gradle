@@ -86,6 +86,25 @@ def moneroFastCryptoRoot = (findProperty("moneroFastCryptoRoot") ?: "").toString
 def moneroWalletExtraLibraries = (findProperty("moneroWalletExtraLibraries") ?: "").toString()
 def moneroWalletExtraLibraryDirs = (findProperty("moneroWalletExtraLibraryDirs") ?: "").toString()
 def moneroWalletExtraLinkOptions = (findProperty("moneroWalletExtraLinkOptions") ?: "").toString()
+def moneroWalletExternalBuildDir = (findProperty("moneroWalletExternalBuildDir") ?: System.getenv("MONERO_WALLET_ANDROID_BUILD_DIR") ?: "").toString().trim()
+def uploadStoreFile = (System.getenv("MONERO_UPLOAD_STORE_FILE") ?: "").trim()
+def uploadStorePassword = (System.getenv("MONERO_UPLOAD_STORE_PASSWORD") ?: "").trim()
+def uploadKeyAlias = (System.getenv("MONERO_UPLOAD_KEY_ALIAS") ?: "").trim()
+def uploadKeyPassword = (System.getenv("MONERO_UPLOAD_KEY_PASSWORD") ?: "").trim()
+def hasUploadSigning = [
+        uploadStoreFile,
+        uploadStorePassword,
+        uploadKeyAlias,
+        uploadKeyPassword,
+].every { !it.isEmpty() }
+
+// Native Monero archives and Android's CMake intermediates are large. Keep
+// generated output on the optional external build volume instead of allowing
+// a development compile to exhaust the system disk. This affects only Gradle
+// output; app sources, signing material, and wallet files stay in place.
+if (!moneroWalletExternalBuildDir.isEmpty()) {
+    layout.buildDirectory.set(file(moneroWalletExternalBuildDir))
+}
 
 android {
     ndkVersion rootProject.ext.ndkVersion
@@ -124,15 +143,23 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            if (hasUploadSigning) {
+                storeFile file(uploadStoreFile)
+                storePassword uploadStorePassword
+                keyAlias uploadKeyAlias
+                keyPassword uploadKeyPassword
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            if (hasUploadSigning) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
@@ -140,7 +167,25 @@ android {
     externalNativeBuild {
         cmake {
             path "src/main/cpp/CMakeLists.txt"
+            // AGP keeps CMake's staging directory outside layout.buildDirectory
+            // by default (<module>/.cxx). Relocate it as well when an external
+            // build volume is configured, otherwise a full native Monero link
+            // can still exhaust the internal macOS disk.
+            if (!moneroWalletExternalBuildDir.isEmpty()) {
+                buildStagingDirectory file("${moneroWalletExternalBuildDir}-cxx")
+            }
         }
+    }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    def requestedReleaseBuild = graph.allTasks.any {
+        it.path == ":app:bundleRelease" || it.path == ":app:assembleRelease"
+    }
+    if (requestedReleaseBuild && !hasUploadSigning) {
+        throw new GradleException(
+                "Release signing is required. Run scripts/android-play-bundle.sh or set MONERO_UPLOAD_* environment variables."
+        )
     }
 }
 

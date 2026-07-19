@@ -5,6 +5,7 @@ import { useI18n } from "../i18n";
 import type { WalletSnapshot } from "../services/NativeMoneroWallet";
 import type { WalletRuntimeStatus } from "../services/WalletState";
 import { colors, radius } from "../theme/colors";
+import { presentWalletSync } from "../../../../packages/wallet-shared/src/walletSync";
 
 type SyncStatusBarProps = {
   compact?: boolean;
@@ -28,18 +29,23 @@ export default function SyncStatusBar({
   walletName,
 }: SyncStatusBarProps) {
   const { t } = useI18n();
-  const derivedProgress = progress ?? syncProgress(snapshot);
-  const percent = snapshot?.synchronized ? 100 : derivedProgress;
-  const isSynced = snapshot?.synchronized || percent === 100;
+  const presentation = presentWalletSync(snapshot);
+  const derivedProgress = progress ?? presentation.progress;
+  const percent = presentation.coreConfirmed ? 100 : derivedProgress;
+  const isSynced = presentation.coreConfirmed;
   const displayPercent = percent ?? (status === "syncing" ? 0 : undefined);
   const hasSyncError = status === "error" || Boolean(error);
   const tone = resolveTone(status, snapshot, hasSyncError);
   const label = walletName
     ? t("sync.walletName", { wallet: walletName })
     : t("sync.wallet");
-  const detail = resolveDetail(status, snapshot, hasSyncError, percent, t);
+  const detail = resolveDetail(status, snapshot, hasSyncError, presentation.phase, percent, t);
   const fillWidth = `${Math.max(0, Math.min(100, displayPercent ?? 0))}%` as `${number}%`;
-  const showPercent = displayPercent !== undefined && !hasSyncError;
+  // 99% is an internal finalization state, not a useful user-facing target.
+  // The native core still decides when it is actually spend-ready, so show an
+  // honest finishing indicator rather than implying that sync is stuck.
+  const finalizing = presentation.phase === "finalizing";
+  const showPercent = displayPercent !== undefined && !hasSyncError && !finalizing;
 
   if (isSynced && !hasSyncError) {
     if (hideWhenSynced) {
@@ -82,7 +88,7 @@ export default function SyncStatusBar({
             </Text>
           ) : (
             <Text style={[s.percent, s.percentMuted]}>
-              {tone === "danger" ? t("sync.offline") : t("sync.waiting")}
+              {finalizing ? "…" : tone === "danger" ? t("sync.offline") : t("sync.waiting")}
             </Text>
           )}
         </View>
@@ -103,26 +109,6 @@ export default function SyncStatusBar({
         </Text>
       ) : null}
     </View>
-  );
-}
-
-function syncProgress(snapshot: WalletSnapshot | undefined): number | undefined {
-  if (!snapshot) {
-    return undefined;
-  }
-
-  const targetHeight =
-    snapshot.daemonTargetHeight > 0
-      ? snapshot.daemonTargetHeight
-      : snapshot.daemonHeight;
-
-  if (targetHeight <= 0) {
-    return undefined;
-  }
-
-  return Math.max(
-    0,
-    Math.min(100, Math.floor((snapshot.walletHeight / targetHeight) * 100)),
   );
 }
 
@@ -147,14 +133,18 @@ function resolveDetail(
   status: WalletRuntimeStatus,
   snapshot: WalletSnapshot | undefined,
   hasSyncError: boolean,
+  phase: ReturnType<typeof presentWalletSync>["phase"],
   percent: number | undefined,
   t: ReturnType<typeof useI18n>["t"],
 ): string {
   if (hasSyncError) {
     return t("sync.error");
   }
-  if (snapshot?.synchronized || percent === 100) {
+  if (snapshot?.synchronized) {
     return t("sync.synced");
+  }
+  if (phase === "finalizing") {
+    return t("sync.finalizing");
   }
   if (percent !== undefined) {
     return t("sync.syncing");

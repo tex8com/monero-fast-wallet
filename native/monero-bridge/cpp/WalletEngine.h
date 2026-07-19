@@ -38,6 +38,9 @@ class WalletEngine {
       NetworkType network,
       uint64_t restoreHeightHint = 0);
   void closeWallet(const WalletId& walletId, bool store = true);
+  void setWalletPassword(
+      const WalletId& walletId,
+      const std::string& newPassword);
 
   void setDaemon(const WalletId& walletId, const DaemonConfig& config);
   void setGrpcEndpoint(const WalletId& walletId, const std::string& endpoint);
@@ -49,6 +52,10 @@ class WalletEngine {
       const WalletId& walletId,
       uint32_t accountIndex = 0,
       uint32_t addressIndex = 0) const;
+  WalletSubaddress createSubaddress(
+      const WalletId& walletId,
+      uint32_t accountIndex = 0,
+      const std::string& label = "");
   std::string getSeed(
       const WalletId& walletId,
       const std::string& seedOffset = "") const;

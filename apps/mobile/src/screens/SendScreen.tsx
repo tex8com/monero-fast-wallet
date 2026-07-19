@@ -14,6 +14,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import LinearGradient from 'react-native-linear-gradient';
 import { colors, radius, spacing } from '../theme/colors';
 import { Icon } from '../components/Icon';
+import RecipientQrScanner from '../components/RecipientQrScanner';
 import SyncStatusBar from '../components/SyncStatusBar';
 import TransactionRow, {
   transactionRowKey,
@@ -28,6 +29,7 @@ import { useXmrPrice } from '../data/priceService';
 import { useI18n } from '../i18n';
 import type {
   PreparedTransaction,
+  TransactionPriority,
   WalletSnapshot,
 } from '../services/NativeMoneroWallet';
 import type { FastReceiveIdentityRecord } from '../services/FastReceiveRegistry';
@@ -47,42 +49,31 @@ import {
   toAtomicBigInt,
 } from '../services/WalletFormat';
 import { useWalletState } from '../services/WalletState';
+import { walletDisplayName } from '../services/WalletRegistry';
 import { walletService } from '../services/WalletService';
+import {
+  loadRecentRecipients,
+  loadRecipientContacts,
+  rememberRecipient,
+  type RecipientContact,
+} from '../services/RecipientAddressBook';
 
 type Step = 'form' | 'confirm';
 
-const CONTACTS = [
-  {
-    id: '1',
-    name: 'Alice',
-    label: 'Design',
-    address:
-      '48aBcD3fGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh',
-  },
-  {
-    id: '2',
-    name: 'Noah',
-    label: 'Ledger',
-    address:
-      '83MkR9uFv2PaQpLmZ6xY8dCwN1sT4bGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh',
-  },
-  {
-    id: '3',
-    name: 'Vault',
-    label: 'Cold',
-    address:
-      '46zTr9QwErTyUiOpAsDfGhJkLmNbVcXz1234567890AbCdEfGhIjKlMnOpQrStUvWxYz',
-  },
-  {
-    id: '4',
-    name: 'Sam',
-    label: 'Work',
-    address:
-      '89sAaBbCcDdEeFf00112233445566778899AaBbCcDdEeFf00112233445566778899',
-  },
-];
-
 const QUICK_AMOUNTS = ['0.10', '0.25', '0.50', '1.00'];
+const PRIORITIES: TransactionPriority[] = ['low', 'default', 'medium', 'high'];
+
+function priorityLabel(
+  priority: TransactionPriority,
+  t: ReturnType<typeof useI18n>['t'],
+) {
+  switch (priority) {
+    case 'low': return t('send.priorityLow');
+    case 'default': return t('send.priorityNormal');
+    case 'medium': return t('send.priorityMedium');
+    case 'high': return t('send.priorityHigh');
+  }
+}
 
 function fastWalletSendOption(
   identity: FastReceiveIdentityRecord,
@@ -125,17 +116,20 @@ export default function SendScreen({ navigation }: any) {
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [step, setStep] = useState<Step>('form');
-  const [selectedContact, setSelectedContact] = useState<string | null>(null);
+  const [priority, setPriority] = useState<TransactionPriority>('low');
   const [sendError, setSendError] = useState<string | undefined>();
   const [sendStatus, setSendStatus] = useState<string | undefined>();
   const [preparedTx, setPreparedTx] = useState<
     PreparedTransaction | undefined
   >();
   const [sending, setSending] = useState(false);
+  const [scannerVisible, setScannerVisible] = useState(false);
   const [sweepAll, setSweepAll] = useState(false);
   const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
     FastReceiveIdentityRecord[]
   >([]);
+  const [recipientContacts, setRecipientContacts] = useState<RecipientContact[]>([]);
+  const [recentRecipients, setRecentRecipients] = useState<RecipientContact[]>([]);
   const [nodeMode, setNodeMode] = useState<NodeConnectionMode>(
     getActiveNodeConnectionSettings().mode,
   );
@@ -169,7 +163,7 @@ export default function SendScreen({ navigation }: any) {
   const sendEnabled =
     Boolean(snapshot?.synchronized && session) &&
     address.trim().length > 0 &&
-    amountAvailable;
+    (sweepAll ? unlockedAtomic > 0n : amountAvailable);
   const availableXmr = snapshot
     ? formatAtomicXmr(snapshot.unlockedBalanceAtomic, {
         maxFractionDigits: 4,
@@ -234,31 +228,34 @@ export default function SendScreen({ navigation }: any) {
       Promise.all([
         walletService.loadFastReceiveIdentitiesForActiveNode(),
         loadActiveNodeConnectionSettings(),
+        loadRecipientContacts(),
+        loadRecentRecipients(),
       ])
-        .then(([identities, settings]) => {
+        .then(([identities, settings, contacts, recent]) => {
           if (mounted) {
             setFastReceiveIdentities(identities);
             setNodeMode(settings.mode);
+            setRecipientContacts(contacts);
+            setRecentRecipients(recent);
           }
         })
         .catch(() => undefined);
 
+      // Recent transactions are refreshed by WalletState while a wallet is
+      // open. Doing an immediate refresh on focus avoids stale activity after
+      // switching tabs without exposing a separate manual refresh button.
+      refreshSnapshot().catch(() => undefined);
+      refreshTransactions().catch(() => undefined);
+
       return () => {
         mounted = false;
       };
-    }, []),
+    }, [refreshSnapshot, refreshTransactions]),
   );
 
   const clearPreparedTransaction = () => {
     setPreparedTx(undefined);
     setSendStatus(undefined);
-  };
-
-  const selectContact = (contact: (typeof CONTACTS)[number]) => {
-    setSelectedContact(contact.id);
-    setAddress(contact.address);
-    setSendError(undefined);
-    clearPreparedTransaction();
   };
 
   const selectWallet = async (wallet: WalletOption) => {
@@ -301,7 +298,10 @@ export default function SendScreen({ navigation }: any) {
       setSendError(t('send.waitForSync'));
       return;
     }
-    if (amountAtomic === undefined || amountAtomic <= 0n) {
+    if (
+      (!sweepAll && (amountAtomic === undefined || amountAtomic <= 0n)) ||
+      (sweepAll && unlockedAtomic <= 0n)
+    ) {
       setSendError(t('send.enterValidAmount'));
       return;
     }
@@ -309,7 +309,7 @@ export default function SendScreen({ navigation }: any) {
       setSendError(t('send.noRecipient'));
       return;
     }
-    if (!amountAvailable) {
+    if (!sweepAll && !amountAvailable) {
       setSendError(t('send.amountAboveBalance'));
       return;
     }
@@ -323,8 +323,8 @@ export default function SendScreen({ navigation }: any) {
     try {
       const nextTransaction = await walletService.prepareTransaction(session, {
         address: address.trim(),
-        amountAtomic: sweepAll ? undefined : amountAtomic.toString(),
-        priority: 'low',
+        amountAtomic: sweepAll ? undefined : amountAtomic?.toString(),
+        priority,
         sweepAll,
       });
       if (nextTransaction.status !== 'ok' || !nextTransaction.id) {
@@ -370,11 +370,13 @@ export default function SendScreen({ navigation }: any) {
 
       setAddress('');
       setAmount('');
-      setSelectedContact(null);
       setPreparedTx(undefined);
       setSweepAll(false);
       setSendStatus(t('send.transactionBroadcast'));
       setStep('form');
+      setRecentRecipients(
+        await rememberRecipient(address.trim(), recipientContacts),
+      );
       await Promise.all([refreshSnapshot(), refreshTransactions()]);
     } catch (error) {
       setSendError(error instanceof Error ? error.message : String(error));
@@ -504,68 +506,98 @@ export default function SendScreen({ navigation }: any) {
                 ? t('sync.sendBalanceNotice')
                 : undefined
             }
-            walletName={registeredWallet.walletName}
+            walletName={walletDisplayName(registeredWallet)}
           />
         ) : null}
-
-        <View style={s.sectionHeader}>
-          <Text style={s.sectionTitle}>{t('send.contacts')}</Text>
-          <TouchableOpacity activeOpacity={0.7}>
-            <Text style={s.sectionLink}>{t('send.addressBook')}</Text>
-          </TouchableOpacity>
-        </View>
-
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={s.contactsRow}
-        >
-          {CONTACTS.map(contact => {
-            const active = selectedContact === contact.id;
-            return (
-              <TouchableOpacity
-                key={contact.id}
-                style={[s.contactChip, active && s.contactChipActive]}
-                onPress={() => selectContact(contact)}
-                activeOpacity={0.72}
-              >
-                <View
-                  style={[s.contactAvatar, active && s.contactAvatarActive]}
-                >
-                  <Text style={s.contactInitial}>
-                    {contact.name.slice(0, 1)}
-                  </Text>
-                </View>
-                <Text style={s.contactName}>{contact.name}</Text>
-                <Text style={s.contactLabel}>{contact.label}</Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
 
         <View style={s.card}>
           <View style={s.cardHeader}>
             <Text style={s.fieldLabel}>{t('send.recipient')}</Text>
-            <TouchableOpacity style={s.iconButton} activeOpacity={0.72}>
-              <Icon name="qr-scan" size={20} color={colors.orange} />
+          </View>
+          <View style={s.addressInputRow}>
+            <TextInput
+              style={s.addressInput}
+              placeholder={t('send.pasteAddress')}
+              placeholderTextColor={colors.textMuted}
+              value={address}
+              onChangeText={value => {
+                setAddress(value);
+                setSendError(undefined);
+                clearPreparedTransaction();
+              }}
+              autoCapitalize="none"
+              autoCorrect={false}
+              multiline
+            />
+            <TouchableOpacity
+              accessibilityLabel={t('send.scanAddress')}
+              accessibilityRole="button"
+              style={s.scanButton}
+              onPress={() => setScannerVisible(true)}
+            >
+              <Icon name="qr-scan" size={23} color={colors.orange} />
             </TouchableOpacity>
           </View>
-          <TextInput
-            style={s.addressInput}
-            placeholder={t('send.pasteAddress')}
-            placeholderTextColor={colors.textMuted}
-            value={address}
-            onChangeText={value => {
-              setAddress(value);
-              setSelectedContact(null);
-              setSendError(undefined);
-              clearPreparedTransaction();
-            }}
-            autoCapitalize="none"
-            autoCorrect={false}
-            multiline
-          />
         </View>
+
+        {recipientContacts.length > 0 || recentRecipients.length > 0 ? (
+          <View style={s.contactsCard}>
+            {recipientContacts.length > 0 ? (
+              <>
+                <Text style={s.fieldLabel}>{t('send.addressBook')}</Text>
+                <View style={s.contactRow}>
+                  {recipientContacts.map(contact => (
+                    <TouchableOpacity
+                      key={contact.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={contact.label}
+                      style={[s.contactChip, contact.donor && s.donorChip]}
+                      activeOpacity={0.72}
+                      onPress={() => {
+                        setAddress(contact.address);
+                        setSendError(undefined);
+                        clearPreparedTransaction();
+                      }}
+                    >
+                      <Text style={s.contactName}>{contact.label}</Text>
+                      <Text style={s.contactAddress} numberOfLines={1}>
+                        {shortAddress(contact.address, contact.address)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            ) : null}
+            {recentRecipients.length > 0 ? (
+              <>
+                <Text style={[s.fieldLabel, s.recentLabel]}>
+                  {t('send.recentContacts')}
+                </Text>
+                <View style={s.contactRow}>
+                  {recentRecipients.map(contact => (
+                    <TouchableOpacity
+                      key={contact.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={contact.label}
+                      style={s.contactChip}
+                      activeOpacity={0.72}
+                      onPress={() => {
+                        setAddress(contact.address);
+                        setSendError(undefined);
+                        clearPreparedTransaction();
+                      }}
+                    >
+                      <Text style={s.contactName}>{contact.label}</Text>
+                      <Text style={s.contactAddress} numberOfLines={1}>
+                        {shortAddress(contact.address, contact.address)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            ) : null}
+          </View>
+        ) : null}
 
         <View style={s.amountCard}>
           <View style={s.cardHeader}>
@@ -620,6 +652,40 @@ export default function SendScreen({ navigation }: any) {
               </TouchableOpacity>
             ))}
           </View>
+        </View>
+
+        <View style={s.priorityCard}>
+          <Text style={s.fieldLabel}>{t('send.priority')}</Text>
+          <View style={s.priorityRow}>
+            {PRIORITIES.map(value => (
+              <TouchableOpacity
+                key={value}
+                accessibilityRole="button"
+                accessibilityState={{selected: priority === value}}
+                activeOpacity={0.72}
+                onPress={() => {
+                  setPriority(value);
+                  clearPreparedTransaction();
+                }}
+                style={[
+                  s.priorityButton,
+                  priority === value && s.priorityButtonActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    s.priorityButtonText,
+                    priority === value && s.priorityButtonTextActive,
+                  ]}
+                >
+                  {priorityLabel(value, t)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {sweepAll ? (
+            <Text style={s.sweepHint}>{t('send.sweepAll')}</Text>
+          ) : null}
         </View>
 
         {sendStatus ? <Text style={s.statusText}>{sendStatus}</Text> : null}
@@ -692,7 +758,9 @@ export default function SendScreen({ navigation }: any) {
                   transaction,
                   transactionHash: transaction.hash,
                   walletId: registeredWallet?.id,
-                  walletName: registeredWallet?.walletName,
+                  walletName: registeredWallet
+                    ? walletDisplayName(registeredWallet)
+                    : undefined,
                 })
               }
             />
@@ -704,6 +772,16 @@ export default function SendScreen({ navigation }: any) {
           </View>
         )}
       </ScrollView>
+      <RecipientQrScanner
+        visible={scannerVisible}
+        onClose={() => setScannerVisible(false)}
+        onScanned={scannedAddress => {
+          setAddress(scannedAddress);
+          setSendError(undefined);
+          clearPreparedTransaction();
+          setScannerVisible(false);
+        }}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -770,12 +848,6 @@ const s = StyleSheet.create({
     lineHeight: 20,
   },
 
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
   sectionHeaderRecent: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -784,40 +856,7 @@ const s = StyleSheet.create({
     marginBottom: 12,
   },
   sectionTitle: { color: colors.textPrimary, fontSize: 17, fontWeight: '800' },
-  sectionLink: { color: colors.orange, fontSize: 13, fontWeight: '700' },
   viewMore: { color: 'rgba(242,104,34,0.76)', fontSize: 13, fontWeight: '700' },
-
-  contactsRow: { gap: 10, paddingRight: spacing.lg, paddingBottom: 18 },
-  contactChip: {
-    width: 84,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.045)',
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: 10,
-    alignItems: 'center',
-  },
-  contactChipActive: {
-    borderColor: colors.orange,
-    backgroundColor: 'rgba(242,104,34,0.12)',
-  },
-  contactAvatar: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: colors.bgElevated,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
-  },
-  contactAvatarActive: { backgroundColor: colors.orange },
-  contactInitial: {
-    color: colors.textPrimary,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  contactName: { color: colors.textPrimary, fontSize: 12, fontWeight: '800' },
-  contactLabel: { color: colors.textMuted, fontSize: 11, marginTop: 2 },
 
   card: {
     backgroundColor: colors.bgCard,
@@ -848,14 +887,6 @@ const s = StyleSheet.create({
     letterSpacing: 0.5,
     textTransform: 'uppercase',
   },
-  iconButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: colors.orangeMuted,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   maxText: {
     color: colors.orange,
     fontSize: 12,
@@ -863,6 +894,7 @@ const s = StyleSheet.create({
     letterSpacing: 0.8,
   },
   addressInput: {
+    flex: 1,
     minHeight: 54,
     color: colors.textPrimary,
     fontSize: 15,
@@ -870,6 +902,38 @@ const s = StyleSheet.create({
     padding: 0,
     textAlignVertical: 'top',
   },
+  addressInputRow: {alignItems: 'center', flexDirection: 'row', gap: spacing.sm},
+  scanButton: {
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    borderColor: colors.border,
+    borderLeftWidth: 1,
+    justifyContent: 'center',
+    minWidth: 46,
+  },
+  contactsCard: {
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 12,
+  },
+  contactRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
+  contactChip: {
+    minWidth: 118,
+    maxWidth: '100%',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: 'rgba(255,255,255,0.035)',
+  },
+  donorChip: { borderColor: 'rgba(242,104,34,0.52)', backgroundColor: 'rgba(242,104,34,0.08)' },
+  contactName: { color: colors.textPrimary, fontSize: 12, fontWeight: '800' },
+  contactAddress: { color: colors.textMuted, fontSize: 10, marginTop: 3, fontFamily: 'monospace' },
+  recentLabel: { marginTop: 15 },
 
   amountRow: {
     flexDirection: 'row',
@@ -912,6 +976,32 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
   },
+  priorityCard: {
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    marginBottom: 12,
+  },
+  priorityRow: { flexDirection: 'row', gap: 6, marginTop: 10 },
+  priorityButton: {
+    flex: 1,
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.sm,
+    backgroundColor: 'rgba(255,255,255,0.055)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  priorityButtonActive: {
+    backgroundColor: colors.orange,
+    borderColor: colors.orange,
+  },
+  priorityButtonText: { color: colors.textSecondary, fontSize: 12, fontWeight: '800' },
+  priorityButtonTextActive: { color: '#FFF' },
+  sweepHint: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginTop: 10 },
 
   summaryCard: {
     flexDirection: 'row',

@@ -193,6 +193,7 @@ for label in "${targets[@]}"; do
       -DHIDAPI_WITH_LIBUSB=ON \
       -DHIDAPI_BUILD_HIDTEST=OFF \
       -DHIDAPI_WITH_TESTS=OFF \
+      "-DCMAKE_MODULE_PATH=${script_dir}/cmake" \
       "-DCMAKE_INSTALL_PREFIX=${prefix}" \
       "-DCMAKE_PREFIX_PATH=${prefix}"
     cmake --build "${hidapi_build_dir}" --target install -j "${jobs}"

@@ -3,10 +3,40 @@ import {
   checkFastReceiveKeyImages,
   parseKeyImageStatusResponse,
   parseWatchStatusResponse,
+  verifyFastReceiveScannerCapability,
   type ScannerFetch,
 } from "../FastReceiveScannerClient";
 
 describe("FastReceiveScannerClient", () => {
+  it("verifies the public scanner capability before registration", async () => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: true }),
+    })) as ScannerFetch & jest.Mock;
+
+    await expect(
+      verifyFastReceiveScannerCapability("https://xmr.tex8.com/", fetchImpl),
+    ).resolves.toBeUndefined();
+
+    expect(fetchImpl).toHaveBeenCalledWith("https://xmr.tex8.com/healthz", {
+      method: "GET",
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("does not accept an unrelated server as a Fast Receive scanner", async () => {
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: false }),
+    })) as ScannerFetch & jest.Mock;
+
+    await expect(
+      verifyFastReceiveScannerCapability("https://example.invalid", fetchImpl),
+    ).rejects.toThrow("not a Fast Receive scanner");
+  });
+
   it("posts key images to the scanner with bearer auth", async () => {
     const fetchImpl = jest.fn(async () => ({
       ok: true,
