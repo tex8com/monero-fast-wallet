@@ -27,7 +27,7 @@ pub const CONTRACT_VERSION: &str = "monero-fast-wallet-push.v2";
 pub const EVENT_CATEGORY: &str = "monero.fast_wallet.incoming";
 const MAX_EVENTS_PER_INSTALLATION: usize = 32;
 const MAX_INSTALLATIONS: usize = 20_000;
-const WNS_TOKEN_URL: &str = "https://login.live.com/accesstoken.srf";
+const WNS_SCOPE: &str = "https://wns.windows.com/.default";
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -72,18 +72,27 @@ impl WnsConfig {
     pub fn from_environment() -> Result<Option<Self>, String> {
         let client_id = std::env::var("NOTIFICATION_GATEWAY_WNS_CLIENT_ID").ok();
         let client_secret = std::env::var("NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET").ok();
-        match (client_id, client_secret) {
-            (None, None) => Ok(None),
-            (Some(client_id), Some(client_secret))
-                if !client_id.trim().is_empty() && !client_secret.trim().is_empty() =>
+        let tenant_id = std::env::var("NOTIFICATION_GATEWAY_WNS_TENANT_ID").ok();
+        match (client_id, client_secret, tenant_id) {
+            (None, None, None) => Ok(None),
+            (Some(client_id), Some(client_secret), Some(tenant_id))
+                if !client_id.trim().is_empty()
+                    && !client_secret.trim().is_empty()
+                    && valid_tenant_id(&tenant_id) =>
             {
                 Ok(Some(Self {
                     client_id,
                     client_secret,
-                    token_url: WNS_TOKEN_URL.to_owned(),
+                    token_url: format!(
+                        "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
+                        tenant_id.trim()
+                    ),
                 }))
             }
-            _ => Err("WNS credentials must be configured together".to_owned()),
+            _ => Err(
+                "WNS Azure credentials must include client id, client secret, and tenant id"
+                    .to_owned(),
+            ),
         }
     }
 }
@@ -492,6 +501,18 @@ fn valid_wns_endpoint(value: &str) -> bool {
         && value.len() <= 4096
 }
 
+fn valid_tenant_id(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.len() == 36
+        && trimmed.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
 struct WnsDispatcher {
     config: WnsConfig,
     client: reqwest::Client,
@@ -565,7 +586,7 @@ impl WnsDispatcher {
                 ("client_id", self.config.client_id.as_str()),
                 ("client_secret", self.config.client_secret.as_str()),
                 ("grant_type", "client_credentials"),
-                ("scope", "notify.windows.com"),
+                ("scope", WNS_SCOPE),
             ])
             .send()
             .await
@@ -636,7 +657,7 @@ mod tests {
                 Some(WnsConfig {
                     client_id: "test-client".to_owned(),
                     client_secret: "test-secret".to_owned(),
-                    token_url: WNS_TOKEN_URL.to_owned(),
+                    token_url: "http://test.invalid/token".to_owned(),
                 }),
             )
             .expect("state"),
@@ -805,12 +826,23 @@ mod tests {
         assert!(!xml.contains("amount"));
     }
 
+    #[test]
+    fn tenant_id_requires_a_uuid_shape() {
+        assert!(valid_tenant_id("f8cdef31-a31e-4b4a-93e4-5f571e91255a"));
+        assert!(!valid_tenant_id("not-a-tenant"));
+        assert!(!valid_tenant_id("f8cdef31-a31e-4b4a-93e4-5f571e91255"));
+    }
+
     #[tokio::test]
     async fn wns_dispatch_uses_oauth_and_a_generic_toast() {
         #[derive(Clone)]
-        struct Capture(Arc<Mutex<Option<(String, String, String)>>>);
+        struct Capture {
+            channel: Arc<Mutex<Option<(String, String, String)>>>,
+            token_form: Arc<Mutex<Option<String>>>,
+        }
 
-        async fn token() -> Json<serde_json::Value> {
+        async fn token(State(capture): State<Capture>, body: String) -> Json<serde_json::Value> {
+            *capture.token_form.lock().await = Some(body);
             Json(serde_json::json!({ "access_token": "test-access-token", "expires_in": 3600 }))
         }
 
@@ -829,11 +861,14 @@ mod tests {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default()
                 .to_owned();
-            *capture.0.lock().await = Some((authorization, kind, body));
+            *capture.channel.lock().await = Some((authorization, kind, body));
             StatusCode::OK
         }
 
-        let capture = Capture(Arc::new(Mutex::new(None)));
+        let capture = Capture {
+            channel: Arc::new(Mutex::new(None)),
+            token_form: Arc::new(Mutex::new(None)),
+        };
         let server = Router::new()
             .route("/token", post(token))
             .route("/channel", post(channel))
@@ -857,7 +892,11 @@ mod tests {
             .unwrap();
         task.abort();
 
-        let (authorization, kind, body) = capture.0.lock().await.clone().unwrap();
+        let token_form = capture.token_form.lock().await.clone().unwrap();
+        let (authorization, kind, body) = capture.channel.lock().await.clone().unwrap();
+        assert!(token_form.contains("grant_type=client_credentials"));
+        assert!(token_form.contains("client_id=test-client"));
+        assert!(token_form.contains("scope=https%3A%2F%2Fwns.windows.com%2F.default"));
         assert_eq!(authorization, "Bearer test-access-token");
         assert_eq!(kind, "wns/toast");
         assert!(body.contains("Monero Fast Wallet"));

@@ -143,13 +143,14 @@ sudo chmod 0600 "$env_file"
 if [[ -f "$wns_source" ]]; then
   wns_client_id="$(sed -n 's/^NOTIFICATION_GATEWAY_WNS_CLIENT_ID=//p' "$wns_source" | head -n1)"
   wns_client_secret="$(sed -n 's/^NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=//p' "$wns_source" | head -n1)"
-  if [[ ! "$wns_client_id" =~ ^[A-Za-z0-9-]{16,160}$ || -z "$wns_client_secret" || ${#wns_client_secret} -gt 4096 ]]; then
+  wns_tenant_id="$(sed -n 's/^NOTIFICATION_GATEWAY_WNS_TENANT_ID=//p' "$wns_source" | head -n1)"
+  if [[ ! "$wns_client_id" =~ ^[A-Za-z0-9-]{16,160}$ || -z "$wns_client_secret" || ${#wns_client_secret} -gt 4096 || ! "$wns_tenant_id" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
     echo "WNS secret file is incomplete or invalid." >&2
     exit 1
   fi
-  sudo sed -i '/^NOTIFICATION_GATEWAY_WNS_CLIENT_ID=/d;/^NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=/d' "$env_file"
-  printf 'NOTIFICATION_GATEWAY_WNS_CLIENT_ID=%s\nNOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=%s\n' \
-    "$wns_client_id" "$wns_client_secret" | sudo tee -a "$env_file" >/dev/null
+  sudo sed -i '/^NOTIFICATION_GATEWAY_WNS_CLIENT_ID=/d;/^NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=/d;/^NOTIFICATION_GATEWAY_WNS_TENANT_ID=/d' "$env_file"
+  printf 'NOTIFICATION_GATEWAY_WNS_CLIENT_ID=%s\nNOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=%s\nNOTIFICATION_GATEWAY_WNS_TENANT_ID=%s\n' \
+    "$wns_client_id" "$wns_client_secret" "$wns_tenant_id" | sudo tee -a "$env_file" >/dev/null
   sudo chmod 0600 "$env_file"
 fi
 token="$(sudo sed -n 's/^NOTIFICATION_GATEWAY_SCANNER_TOKEN=//p' "$env_file" | head -n1)"
@@ -200,7 +201,8 @@ fi
 registration_status="$(curl --silent --show-error --max-time 15 \
   -X POST https://xmr.tex8.com/api/v1/notifications/installations \
   -H 'content-type: application/json' \
-  -o /dev/null -w '%{http_code}' --data '{}' || true)"
+  -o /dev/null -w '%{http_code}' \
+  --data '{"contractVersion":"monero-fast-wallet-push.v2","installationId":"invalid","platform":"windows","provider":"wns","endpoint":"https://notify.windows.com/"}' || true)"
 if [[ "$registration_status" != "401" ]]; then
   echo "Notification gateway WNS registration route did not become ready (HTTP ${registration_status:-unavailable})." >&2
   exit 1
@@ -233,8 +235,9 @@ rm -rf "$stage"
 echo
 echo "Notification gateway is live. Backup: $backup_dir"
 if ! sudo grep -Eq '^NOTIFICATION_GATEWAY_WNS_CLIENT_ID=.+$' "$env_file" \
-  || ! sudo grep -Eq '^NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=.+$' "$env_file"; then
-  echo "WNS is intentionally not enabled: add the two NOTIFICATION_GATEWAY_WNS_* values to $env_file, then restart $service_name." >&2
+  || ! sudo grep -Eq '^NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET=.+$' "$env_file" \
+  || ! sudo grep -Eq '^NOTIFICATION_GATEWAY_WNS_TENANT_ID=.+$' "$env_file"; then
+  echo "WNS is intentionally not enabled: add the three NOTIFICATION_GATEWAY_WNS_* values to $env_file, then restart $service_name." >&2
 fi
 REMOTE
 

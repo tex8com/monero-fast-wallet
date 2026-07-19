@@ -46,19 +46,31 @@ event identifier.
 
 ## WNS server configuration
 
-Set these two values **only on the gateway host** in
+Set these three values **only on the gateway host** in
 `/etc/monero-fast-wallet/notification-gateway.env`, then restart the service:
 
 ```ini
-NOTIFICATION_GATEWAY_WNS_CLIENT_ID="<Partner-Center application client id>"
-NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET="<Azure client-secret value>"
+NOTIFICATION_GATEWAY_WNS_CLIENT_ID="<Microsoft Entra application (client) ID>"
+NOTIFICATION_GATEWAY_WNS_CLIENT_SECRET="<Microsoft Entra client-secret Value>"
+NOTIFICATION_GATEWAY_WNS_TENANT_ID="<Microsoft Entra Directory (tenant) ID>"
 ```
 
-The client secret must not be copied into the desktop app, committed to Git,
-printed to a terminal, or passed through the deployment script. Both values
-must be present together. Without them the service keeps opaque local polling
-working but rejects WNS registration with `503`, and the desktop correctly
-reports that closed-app WNS is unavailable.
+This uses Microsoft's current Windows App SDK / Microsoft Entra OAuth flow:
+the gateway obtains a token from the tenant-specific Microsoft identity
+endpoint with the `https://wns.windows.com/.default` scope. The client secret
+**Value** (not its Secret ID) must not be copied into the desktop app,
+committed to Git, printed to a terminal, or passed through the deployment
+script. All three values must be present together. Without them the service
+keeps opaque local polling working but rejects WNS registration with `503`, and
+the desktop correctly reports that closed-app WNS is unavailable.
+
+For a packaged Windows desktop release, Microsoft additionally requires a
+**multi-tenant** Entra app registration and a one-time mapping of the Store
+Package Family Name (PFN) to that Entra Application ID. Submit that mapping to
+`Win_App_SDK_Push@microsoft.com` with the PFN, Application (client) ID, and the
+service-principal Object ID. Microsoft processes these mapping requests on a
+weekly cadence. Do not treat the Partner Center WNS screen or a local MSIX test
+certificate as a substitute for that mapping.
 
 ## Live deployment
 
