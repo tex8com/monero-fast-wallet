@@ -63,4 +63,8 @@ export DESKTOP_MONERO_FAST_CRYPTO_LIBRARY="${fast_crypto_library}"
 # It is harmless on non-Linux targets and lets the app install a per-user
 # service only after the user explicitly enables Fast Wallet signals.
 cargo build --manifest-path src-tauri/Cargo.toml --release --bin monero-fast-walletd
-npm run tauri build -- --bundles "${bundle}" "${tauri_config_args[@]}"
+tauri_build_args=(--bundles "${bundle}")
+if (( ${#tauri_config_args[@]} > 0 )); then
+  tauri_build_args+=("${tauri_config_args[@]}")
+fi
+npm run tauri build -- "${tauri_build_args[@]}"
