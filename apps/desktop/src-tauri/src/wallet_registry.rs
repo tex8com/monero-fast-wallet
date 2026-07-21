@@ -105,6 +105,34 @@ pub fn hardware_wallet(
     }
 }
 
+/// This is a local, view-only companion to a normal Ledger wallet. It cannot
+/// spend: the hardware wallet retains every spending operation.  The private
+/// view key is held only in the OS credential store and the encrypted local
+/// wallet file, never in public registry metadata.
+pub fn ledger_read_only_wallet(
+    wallet_name: &str,
+    network: &str,
+    restore_height: Option<u64>,
+    source_wallet_id: &str,
+) -> RegisteredWallet {
+    let timestamp = now();
+    RegisteredWallet {
+        id: format!("view-only-{network}-{wallet_name}"),
+        display_name: Some(default_display_name("view-only", wallet_name)),
+        wallet_name: wallet_name.to_owned(),
+        network: network.to_owned(),
+        kind: "view-only".to_owned(),
+        seed_backup_status: "not-required".to_owned(),
+        restore_height,
+        account_index: None,
+        address_index: None,
+        role: None,
+        source_wallet_id: Some(source_wallet_id.to_owned()),
+        created_at: timestamp,
+        last_opened_at: timestamp,
+    }
+}
+
 pub fn load(app: &AppHandle) -> Result<WalletRegistry, String> {
     let path = registry_path(app)?;
     match fs::read_to_string(path) {
@@ -352,10 +380,11 @@ fn validate_wallet(wallet: &RegisteredWallet) -> Result<(), String> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
     let safe_network = matches!(wallet.network.as_str(), "mainnet" | "testnet" | "stagenet");
-    let safe_kind = matches!(wallet.kind.as_str(), "software" | "hardware");
+    let safe_kind = matches!(wallet.kind.as_str(), "software" | "hardware" | "view-only");
     let safe_backup = match wallet.kind.as_str() {
         "software" => matches!(wallet.seed_backup_status.as_str(), "pending" | "verified"),
         "hardware" => wallet.seed_backup_status == "not-required",
+        "view-only" => wallet.seed_backup_status == "not-required",
         _ => false,
     };
     let account_index = wallet.account_index.unwrap_or(0);
@@ -381,6 +410,14 @@ fn validate_wallet(wallet: &RegisteredWallet) -> Result<(), String> {
             }
             Some(_) => false,
         },
+        "view-only" => {
+            account_index == 0
+                && address_index == 0
+                && wallet.role.is_none()
+                && wallet.source_wallet_id.as_deref().is_some_and(|id| {
+                    id.starts_with(&format!("hardware-{}-", wallet.network)) && id != wallet.id
+                })
+        }
         _ => false,
     };
     let safe_display_name = wallet
@@ -421,6 +458,7 @@ fn default_display_name(kind: &str, wallet_name: &str) -> String {
     }
     let (prefix, title) = match kind {
         "hardware" => ("ledger", "Ledger"),
+        "view-only" => ("ledger-read", "Ledger read-only"),
         _ => ("wallet", "Wallet"),
     };
     let number = wallet_name
@@ -441,7 +479,8 @@ fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        hardware_wallet, normalize, remove_from_registry, software_wallet, WalletRegistry,
+        hardware_wallet, ledger_read_only_wallet, normalize, remove_from_registry,
+        software_wallet, WalletRegistry,
     };
 
     #[test]
@@ -520,6 +559,34 @@ mod tests {
     }
 
     #[test]
+    fn ledger_read_only_wallet_is_local_and_requires_its_ledger_source() {
+        let source = hardware_wallet("ledger-1", "mainnet", Some(42), None, None, None);
+        let read_only = ledger_read_only_wallet(
+            "ledger-read-1",
+            "mainnet",
+            Some(42),
+            &source.id,
+        );
+        assert_eq!(read_only.kind, "view-only");
+        assert_eq!(read_only.seed_backup_status, "not-required");
+        assert_eq!(read_only.source_wallet_id.as_deref(), Some(source.id.as_str()));
+        assert!(normalize(WalletRegistry {
+            version: 1,
+            active_wallet_id: Some(read_only.id.clone()),
+            wallets: vec![source.clone(), read_only],
+        })
+        .is_ok());
+
+        let orphan = ledger_read_only_wallet("ledger-read-2", "mainnet", None, &source.id);
+        assert!(normalize(WalletRegistry {
+            version: 1,
+            active_wallet_id: Some(orphan.id.clone()),
+            wallets: vec![orphan],
+        })
+        .is_err());
+    }
+
+    #[test]
     fn legacy_ledger_fast_wallet_is_repaired_from_its_reserved_name() {
         let source = hardware_wallet("ledger-1", "mainnet", Some(42), None, None, None);
         let legacy_child = hardware_wallet(
@@ -563,9 +630,9 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_source_wallet_also_removes_its_fast_child() {
+    fn removing_a_source_wallet_also_removes_its_derived_children() {
         let source = hardware_wallet("ledger-1", "mainnet", Some(42), None, None, None);
-        let child = hardware_wallet(
+        let fast_child = hardware_wallet(
             "ledger-fast-1",
             "mainnet",
             Some(42),
@@ -573,11 +640,17 @@ mod tests {
             Some("fast"),
             Some(&source.id),
         );
+        let read_only_child = ledger_read_only_wallet(
+            "ledger-read-1",
+            "mainnet",
+            Some(42),
+            &source.id,
+        );
         let registry = remove_from_registry(
             WalletRegistry {
                 version: 1,
-                active_wallet_id: Some(child.id.clone()),
-                wallets: vec![source, child],
+                active_wallet_id: Some(read_only_child.id.clone()),
+                wallets: vec![source, fast_child, read_only_child],
             },
             "hardware-mainnet-ledger-1",
         )

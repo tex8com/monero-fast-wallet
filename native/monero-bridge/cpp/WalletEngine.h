@@ -29,6 +29,8 @@ class WalletEngine {
   WalletId restoreWallet(const RestoreWalletRequest& request);
   WalletId openWallet(const OpenWalletRequest& request);
   WalletId createWalletFromDevice(const CreateWalletFromDeviceRequest& request);
+  WalletId createViewOnlyWallet(const CreateViewOnlyWalletRequest& request);
+  HardwareViewKeyExport exportHardwarePrivateViewKey(const WalletId& walletId);
   FastReceiveIdentity createFastReceiveIdentity(
       const CreateFastReceiveIdentityRequest& request);
   FastReceiveRegistrationPayload fastReceiveRegistrationPayload(

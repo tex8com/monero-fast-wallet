@@ -45,6 +45,15 @@ unsafe extern "C" {
         subaddress_lookahead: *const c_char,
         account_index: u32,
     ) -> RawResult;
+    fn tex8_desktop_wallet_create_view_only(
+        core: *mut RawCore,
+        path: *const c_char,
+        password: *const c_char,
+        network: u8,
+        restore_height: u64,
+        address: *const c_char,
+        private_view_key: *const c_char,
+    ) -> RawResult;
     fn tex8_desktop_wallet_open(
         core: *mut RawCore,
         path: *const c_char,
@@ -120,6 +129,10 @@ unsafe extern "C" {
         core: *mut RawCore,
         wallet_id: *const c_char,
     ) -> RawResult;
+    fn tex8_desktop_wallet_export_hardware_private_view_key(
+        core: *mut RawCore,
+        wallet_id: *const c_char,
+    ) -> RawResult;
     fn tex8_desktop_wallet_show_hardware_address(
         core: *mut RawCore,
         wallet_id: *const c_char,
@@ -173,6 +186,14 @@ pub struct HardwareWalletCreate<'a> {
     pub restore_height: u64,
     pub subaddress_lookahead: &'a str,
     pub account_index: u32,
+}
+pub struct ViewOnlyWalletCreate<'a> {
+    pub path: &'a str,
+    pub password: &'a str,
+    pub network: u8,
+    pub restore_height: u64,
+    pub address: &'a str,
+    pub private_view_key: &'a str,
 }
 pub struct FastReceiveIdentityCreate<'a> {
     pub source_wallet_id: &'a str,
@@ -269,6 +290,23 @@ impl NativeWallet {
                 request.restore_height,
                 subaddress_lookahead.as_ptr(),
                 request.account_index,
+            )
+        })
+    }
+    pub fn create_view_only(&self, request: ViewOnlyWalletCreate<'_>) -> Result<String, String> {
+        let path = c(request.path)?;
+        let password = c(request.password)?;
+        let address = c(request.address)?;
+        let private_view_key = c(request.private_view_key)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_create_view_only(
+                self.core.as_ptr(),
+                path.as_ptr(),
+                password.as_ptr(),
+                request.network,
+                request.restore_height,
+                address.as_ptr(),
+                private_view_key.as_ptr(),
             )
         })
     }
@@ -491,6 +529,15 @@ impl NativeWallet {
         let wallet_id = c(wallet_id)?;
         self.result(unsafe {
             tex8_desktop_wallet_reconnect_hardware(self.core.as_ptr(), wallet_id.as_ptr())
+        })
+    }
+    pub fn export_hardware_private_view_key(&self, wallet_id: &str) -> Result<String, String> {
+        let wallet_id = c(wallet_id)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_export_hardware_private_view_key(
+                self.core.as_ptr(),
+                wallet_id.as_ptr(),
+            )
         })
     }
     pub fn show_hardware_address(

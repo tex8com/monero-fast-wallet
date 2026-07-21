@@ -525,6 +525,61 @@ class WalletEngine::Impl {
     return walletId;
   }
 
+  WalletId createViewOnlyWallet(const CreateViewOnlyWalletRequest& request) {
+    if (request.path.empty() || request.password.empty() || request.address.empty() ||
+        request.privateViewKey.empty()) {
+      throw WalletEngineError("view-only wallet requires a path, local credential, address, and private view key");
+    }
+
+    auto* wallet = manager_->createWalletFromKeys(
+        request.path,
+        request.password,
+        "English",
+        toMoneroNetwork(request.network),
+        request.restoreHeight,
+        request.address,
+        request.privateViewKey,
+        "",
+        request.kdfRounds);
+    try {
+      throwIfWalletFailed(wallet, "createViewOnlyWallet");
+      if (request.restoreHeight > 1) {
+        wallet->setRefreshFromBlockHeight(request.restoreHeight);
+        throwIfWalletFailed(wallet, "createViewOnlyWallet.setRefreshFromBlockHeight");
+      }
+    } catch (...) {
+      if (wallet != nullptr) {
+        manager_->closeWallet(wallet, false);
+      }
+      throw;
+    }
+
+    return addWallet(
+        "createViewOnlyWallet",
+        request.path,
+        request.network,
+        wallet,
+        request.restoreHeight > 1 ? request.restoreHeight : 0);
+  }
+
+  HardwareViewKeyExport exportHardwarePrivateViewKey(const WalletId& walletId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& session = getLocked(walletId);
+    if (session.wallet->getDeviceType() == Monero::Wallet::Device_Software) {
+      throw WalletEngineError("wallet is not backed by a hardware device");
+    }
+
+    // The Monero Ledger app asks the user to approve this operation. Do not
+    // prefetch it and do not retain it in the engine after returning.
+    const auto privateViewKey = session.wallet->secretViewKey();
+    if (privateViewKey.empty()) {
+      throw WalletEngineError(
+          "Ledger did not export the private view key. Approve Export view key on the Ledger and try again.");
+    }
+    return HardwareViewKeyExport{
+        session.wallet->address(0, 0), privateViewKey, session.network};
+  }
+
   FastReceiveIdentity createFastReceiveIdentity(
       const CreateFastReceiveIdentityRequest& request) {
     if (request.sourceWalletId.empty()) {
@@ -1405,6 +1460,26 @@ WalletId WalletEngine::createWalletFromDevice(
   return impl_->createWalletFromDevice(request);
 #else
   (void)request;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+WalletId WalletEngine::createViewOnlyWallet(
+    const CreateViewOnlyWalletRequest& request) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->createViewOnlyWallet(request);
+#else
+  (void)request;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+HardwareViewKeyExport WalletEngine::exportHardwarePrivateViewKey(
+    const WalletId& walletId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->exportHardwarePrivateViewKey(walletId);
+#else
+  (void)walletId;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }

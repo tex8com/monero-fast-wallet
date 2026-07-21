@@ -34,6 +34,35 @@ pub fn load_wallet_password(wallet_id: &str) -> Result<Option<String>, String> {
     load_secret("wallet-password", wallet_id, "wallet password")
 }
 
+/// A Ledger private view key is optional and is exported only after the owner
+/// explicitly approves the request on the hardware wallet.  It stays in the
+/// platform credential store and is never exposed to the renderer or sent to
+/// a scanner.  It is used only for the local read-only Ledger companion.
+pub fn store_ledger_private_view_key(wallet_id: &str, private_view_key: String) -> Result<(), String> {
+    store_secret(
+        "ledger-private-view-key",
+        wallet_id,
+        private_view_key,
+        "Ledger private view key",
+    )
+}
+
+pub fn load_ledger_private_view_key(wallet_id: &str) -> Result<Option<String>, String> {
+    load_secret(
+        "ledger-private-view-key",
+        wallet_id,
+        "Ledger private view key",
+    )
+}
+
+pub fn delete_ledger_private_view_key(wallet_id: &str) -> Result<(), String> {
+    delete_secret(
+        "ledger-private-view-key",
+        wallet_id,
+        "Ledger private view key",
+    )
+}
+
 /// A Fast Wallet is a separately-derived local wallet. Its password is kept
 /// only in the OS credential store so a scanner registration can reopen the
 /// identity without revealing the password to the renderer.

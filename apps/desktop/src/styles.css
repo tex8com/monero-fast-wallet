@@ -401,6 +401,12 @@ h2 { letter-spacing: -0.65px; }
 .wallet-list-page .primary { flex: 0 0 auto; margin: 0; }
 .wallet-list { display: grid; gap: 11px; }
 .wallet-list-page .recent-transactions { margin-top: 24px; }
+.ledger-read-only-card { display: grid; gap: 14px; margin-top: 18px; padding: 20px; border: 1px solid #4d624f; border-radius: 14px; background: linear-gradient(115deg, #13251f, #12101d 62%); }
+.ledger-read-only-card h3 { margin: 2px 0 7px; font-size: 18px; }
+.ledger-read-only-card p:not(.eyebrow) { margin: 0; max-width: 720px; color: #c5d2ca; font-size: 13px; line-height: 1.55; }
+.ledger-read-only-card .fast-consent { margin: 0; }
+.ledger-read-only-card .secondary { justify-self: start; margin: 0; }
+.ledger-read-only-ready { padding: 10px 12px; border: 1px solid #3f6858; border-radius: 10px; color: #b5ead7 !important; background: #10241f; }
 .wallet-row { display: grid; grid-template-columns: 49px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 17px; border: 1px solid #332b45; border-radius: 14px; background: #12101d; }
 .wallet-row.active { border-color: #a65332; background: linear-gradient(105deg, #251724, #12101d 62%); }
 .wallet-row-mark { display: grid; place-items: center; width: 45px; height: 45px; border-radius: 13px; background: #251b2a; }

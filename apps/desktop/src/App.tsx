@@ -209,7 +209,7 @@ export default function App() {
       {!linked && <section className="notice" role="status"><div className="notice-icon"><img src="/monero-mark.png" alt="" /></div><div><h2>{t('shell.noticeEngineTitle')}</h2><p>{error ?? status?.message ?? t('shell.noticeEngineVerifying')}</p></div></section>}
       {linked && error && <section className="notice compact-notice" role="alert"><div><h2>{t('shell.noticeActionNeeded')}</h2><p>{error}</p></div></section>}
       {section === 'home' && <Home linked={linked} walletId={activeWalletId} wallet={activeWallet} savedWallets={wallets} onSetup={startSetup} onWallets={() => setSection('wallets')} onBackup={() => void revealRecoverySeed()} onLock={() => void closeActiveWallet()} onSend={() => setSection('send')} onReceive={() => setSection('receive')} onActivity={() => setSection('activity')} />}
-      {section === 'wallets' && <Wallets linked={linked} walletId={activeWalletId} wallets={wallets} activeWallet={activeWallet} onSetup={startSetup} onOpen={openSavedWallet} onRenamed={() => void reloadWallets()} onRemove={removeWallet} onActivity={() => setSection('activity')} />}
+      {section === 'wallets' && <Wallets linked={linked} walletId={activeWalletId} wallets={wallets} activeWallet={activeWallet} onSetup={startSetup} onOpen={openSavedWallet} onOpened={(result) => void activateWallet(result)} onRenamed={() => void reloadWallets()} onRemove={removeWallet} onActivity={() => setSection('activity')} />}
       {section === 'setup' && <Setup key={setupRequest ? `${setupRequest.walletName}-${setupRequest.network}` : 'new-wallet'} linked={linked} initial={setupRequest} wallets={wallets} onSelectSaved={openSavedWallet} onOpened={(result) => void activateWallet(result)} onCreated={(result) => void createdWallet(result)} />}
       {section === 'send' && <Send linked={linked} walletId={activeWalletId} wallet={activeWallet} onActivity={() => setSection('activity')} />}
       {section === 'receive' && <Receive linked={linked} walletId={activeWalletId} wallet={activeWallet} onActivity={() => setSection('activity')} />}
@@ -435,7 +435,7 @@ function RecentTransactions({ hasOpenWallet, items, onActivity }: { hasOpenWalle
   return <section className="home-transactions recent-transactions"><header><div><p className="eyebrow">{t('home.activity')}</p><h2>{t('home.transactions')}</h2></div><button className="quiet-button" onClick={onActivity} type="button">{t('home.viewMore')}</button></header>{hasOpenWallet && items.length ? <div className="home-transaction-list">{items.slice(0, 3).map((item) => <button className="home-transaction-row" key={`${item.hash}-${item.direction}-${item.timestamp}`} onClick={onActivity} type="button"><span className={item.direction === 'in' ? 'home-transaction-icon incoming' : 'home-transaction-icon'}>{item.direction === 'in' ? '↓' : '↑'}</span><span><strong>{item.direction === 'in' ? t('home.received') : t('home.sent')} · {item.direction === 'in' ? '+' : '-'}{formatAtomicXmr(item.amountAtomic)} XMR</strong><small>{shortHash(item.hash)} · {transactionTimestamp(item.timestamp)}</small></span><em>{item.failed ? t('home.failed') : item.pending ? t('home.pending') : t('home.confirmed')}</em></button>)}</div> : <div className="home-empty"><p>{hasOpenWallet ? t('home.noTransactions') : t('home.openForActivity')}</p></div>}</section>;
 }
 
-function Wallets({ linked, walletId, wallets, activeWallet, onSetup, onOpen, onRenamed, onRemove, onActivity }: { linked: boolean; walletId: string | null; wallets: RegisteredWallet[]; activeWallet: RegisteredWallet | null; onSetup: () => void; onOpen: (wallet: RegisteredWallet) => void; onRenamed: () => void; onRemove: (wallet: RegisteredWallet) => Promise<void>; onActivity: () => void }) {
+function Wallets({ linked, walletId, wallets, activeWallet, onSetup, onOpen, onOpened, onRenamed, onRemove, onActivity }: { linked: boolean; walletId: string | null; wallets: RegisteredWallet[]; activeWallet: RegisteredWallet | null; onSetup: () => void; onOpen: (wallet: RegisteredWallet) => void; onOpened: (result: WalletOperationResponse) => void; onRenamed: () => void; onRemove: (wallet: RegisteredWallet) => Promise<void>; onActivity: () => void }) {
   const { t } = useI18n();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState('');
@@ -476,7 +476,26 @@ function Wallets({ linked, walletId, wallets, activeWallet, onSetup, onOpen, onR
     finally { setRemovingId(null); }
   };
   if (wallets.length === 0) return <section className="empty-state"><img className="empty-mark" src="/monero-mark.png" alt="" /><h2>{linked ? t('wallets.empty') : t('wallets.protected')}</h2><p>{linked ? t('wallets.emptyText') : t('wallets.protectedText')}</p><button className="primary" onClick={onSetup} type="button">{t('wallets.openSetup')}</button></section>;
-  return <section className="wallet-list-page"><header><div><h2>{t('wallets.saved')}</h2><p>{t('wallets.namesInfo')}</p></div><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></header><div className="wallet-list">{wallets.map((wallet) => <div className="wallet-row-wrap" key={wallet.id}><article className={activeWallet?.id === wallet.id ? 'wallet-row active' : 'wallet-row'}><div className="wallet-row-mark"><img src="/monero-mark.png" alt="" /></div><div className="wallet-row-copy"><div><h3>{walletDisplayName(wallet)}</h3><span className={wallet.seedBackupStatus === 'pending' ? 'wallet-chip warning' : 'wallet-chip'}>{wallet.seedBackupStatus === 'pending' ? t('wallets.backupNeeded') : wallet.isOpen ? t('home.openLocal') : t('wallets.locked')}</span></div><p>{networkLabel(wallet.network)} · {wallet.kind === 'hardware' ? t('wallets.ledger') : t('wallets.software')}{wallet.restoreHeight ? ` · ${t('wallets.scanFrom', { height: wallet.restoreHeight })}` : ''}</p></div><div className="wallet-row-actions"><button className="quiet-button" disabled={Boolean(removingId)} onClick={() => startRename(wallet)} type="button">{t('wallets.rename')}</button><button className="secondary" disabled={!linked || Boolean(removingId)} onClick={() => onOpen(wallet)} type="button">{wallet.isOpen ? t('wallets.use') : t('wallets.unlock')}</button><button className="danger-button" disabled={Boolean(removingId)} onClick={() => void remove(wallet)} type="button">{removingId === wallet.id ? t('wallets.removing') : t('wallets.remove')}</button></div></article>{editingId === wallet.id && <div className="wallet-rename"><input autoFocus value={displayName} maxLength={64} onChange={(event) => setDisplayName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void saveRename(); if (event.key === 'Escape') setEditingId(null); }} placeholder={t('wallets.namePlaceholder')} /><div><button className="quiet-button" disabled={renaming || Boolean(removingId)} onClick={() => { setEditingId(null); setMessage(null); }} type="button">{t('common.cancel')}</button><button className="secondary" disabled={renaming || Boolean(removingId)} onClick={() => void saveRename()} type="button">{renaming ? t('wallets.saving') : t('wallets.saveName')}</button></div>{message && <p className="setup-message">{message}</p>}</div>}</div>)}</div><RecentTransactions hasOpenWallet={Boolean(walletId)} items={transactions} onActivity={onActivity} /></section>;
+  return <section className="wallet-list-page"><header><div><h2>{t('wallets.saved')}</h2><p>{t('wallets.namesInfo')}</p></div><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></header><div className="wallet-list">{wallets.map((wallet) => <div className="wallet-row-wrap" key={wallet.id}><article className={activeWallet?.id === wallet.id ? 'wallet-row active' : 'wallet-row'}><div className="wallet-row-mark"><img src="/monero-mark.png" alt="" /></div><div className="wallet-row-copy"><div><h3>{walletDisplayName(wallet)}</h3><span className={wallet.seedBackupStatus === 'pending' ? 'wallet-chip warning' : 'wallet-chip'}>{wallet.seedBackupStatus === 'pending' ? t('wallets.backupNeeded') : wallet.isOpen ? t('home.openLocal') : t('wallets.locked')}</span></div><p>{networkLabel(wallet.network)} · {wallet.kind === 'hardware' ? t('wallets.ledger') : wallet.kind === 'view-only' ? 'Ledger read-only' : t('wallets.software')}{wallet.restoreHeight ? ` · ${t('wallets.scanFrom', { height: wallet.restoreHeight })}` : ''}</p></div><div className="wallet-row-actions"><button className="quiet-button" disabled={Boolean(removingId)} onClick={() => startRename(wallet)} type="button">{t('wallets.rename')}</button><button className="secondary" disabled={!linked || Boolean(removingId)} onClick={() => onOpen(wallet)} type="button">{wallet.isOpen ? t('wallets.use') : t('wallets.unlock')}</button><button className="danger-button" disabled={Boolean(removingId)} onClick={() => void remove(wallet)} type="button">{removingId === wallet.id ? t('wallets.removing') : t('wallets.remove')}</button></div></article>{editingId === wallet.id && <div className="wallet-rename"><input autoFocus value={displayName} maxLength={64} onChange={(event) => setDisplayName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void saveRename(); if (event.key === 'Escape') setEditingId(null); }} placeholder={t('wallets.namePlaceholder')} /><div><button className="quiet-button" disabled={renaming || Boolean(removingId)} onClick={() => { setEditingId(null); setMessage(null); }} type="button">{t('common.cancel')}</button><button className="secondary" disabled={renaming || Boolean(removingId)} onClick={() => void saveRename()} type="button">{renaming ? t('wallets.saving') : t('wallets.saveName')}</button></div>{message && <p className="setup-message">{message}</p>}</div>}</div>)}</div><LedgerReadOnlySetup linked={linked} walletId={walletId} activeWallet={activeWallet} wallets={wallets} onOpened={onOpened} /><RecentTransactions hasOpenWallet={Boolean(walletId)} items={transactions} onActivity={onActivity} /></section>;
+}
+
+function LedgerReadOnlySetup({ linked, walletId, activeWallet, wallets, onOpened }: { linked: boolean; walletId: string | null; activeWallet: RegisteredWallet | null; wallets: RegisteredWallet[]; onOpened: (result: WalletOperationResponse) => void }) {
+  const [approved, setApproved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const isLedger = activeWallet?.kind === 'hardware' && activeWallet.role !== 'fast';
+  const existing = isLedger ? wallets.find((wallet) => wallet.kind === 'view-only' && wallet.sourceWalletId === activeWallet.id) : undefined;
+  if (!isLedger) return null;
+  const create = async () => {
+    if (!walletId || !activeWallet || !approved || busy) return;
+    setBusy(true); setMessage(null);
+    try {
+      const result = await invoke<WalletOperationResponse>('enable_ledger_read_only', { input: { sourceWalletId: walletId, sourceRegistrationId: activeWallet.id } });
+      onOpened(result);
+    } catch (reason) { setMessage(errorMessage(reason, 'The Ledger read-only copy could not be created.')); }
+    finally { setBusy(false); }
+  };
+  return <article className="ledger-read-only-card"><div><p className="eyebrow">Optional local read-only mode</p><h3>Read and sync without Ledger</h3><p>Approve <b>Export view key</b> once on the connected Ledger. We create a local read-only wallet that can receive, read and synchronize but can never spend. Its private view key is encrypted on this device only and is never uploaded.</p></div>{existing ? <p className="ledger-read-only-ready">Local read-only copy is ready: <b>{walletDisplayName(existing)}</b>.</p> : <><label className="fast-consent"><input checked={approved} onChange={(event) => setApproved(event.target.checked)} type="checkbox" />I understand this stores the private view key only in this device’s secure storage and encrypted local wallet file.</label><button className="secondary" disabled={!linked || !walletId || !approved || busy} onClick={() => void create()} type="button">{busy ? 'Waiting for Ledger…' : 'Create local read-only copy'}</button></>}{message && <p className="setup-message">{message}</p>}</article>;
 }
 
 function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }: { linked: boolean; initial: SetupRequest; wallets: RegisteredWallet[]; onSelectSaved: (wallet: RegisteredWallet) => void; onOpened: (result: WalletOperationResponse) => void; onCreated: (result: WalletOperationResponse) => void }) {
@@ -492,6 +511,10 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const network: Network = mode === 'open' ? initial?.network ?? 'mainnet' : 'mainnet';
+  // Both a Ledger spending wallet and its local read-only companion use a
+  // randomly generated credential held in the OS secure store. Neither has a
+  // user-created wallet password, so neither may enter the legacy prompt.
+  const openingDeviceCredentialWallet = Boolean(initial && wallets.some(wallet => wallet.walletName === initial.walletName && wallet.network === initial.network && (wallet.kind === 'hardware' || wallet.kind === 'view-only')));
   const label = mode === 'create' ? t('setup.create') : mode === 'restore' ? t('setup.import') : mode === 'open' ? t('setup.open') : t('setup.ledger');
   const description = mode === 'create'
     ? t('setup.createDescription')
@@ -520,7 +543,10 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
     if (next === 'ledger' && ledgerTransport === 'ble') void checkLedgerBluetooth();
   };
   useEffect(() => {
-    if (mode !== 'open' || !initial || needsLegacyPassword) return;
+    // A Ledger wallet is authorized by reconnecting/unlocking the device, not
+    // by a user-created local password. Do not even ask the legacy-password
+    // probe for it, otherwise a stale secure-store entry looks like a prompt.
+    if (mode !== 'open' || !initial || needsLegacyPassword || openingDeviceCredentialWallet) return;
     let mounted = true;
     invoke<boolean>('wallet_open_requires_password', {
       input: { walletName: initial.walletName, network: initial.network, restoreHeight: 0 },
@@ -532,7 +558,7 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
         if (mounted) setMessage(errorMessage(reason, t('setup.operationFailed')));
       });
     return () => { mounted = false; };
-  }, [initial, mode, needsLegacyPassword, t]);
+  }, [initial, mode, needsLegacyPassword, openingDeviceCredentialWallet, t]);
   const submit = async () => {
     if (!linked || busy) return;
     let restoreHeight: number | undefined;

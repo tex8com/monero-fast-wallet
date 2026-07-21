@@ -78,6 +78,20 @@ struct CreateHardwareWalletInput {
     role: Option<String>,
     create_fast: Option<bool>,
 }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EnableLedgerReadOnlyInput {
+    source_wallet_id: String,
+    source_registration_id: String,
+    restore_height: Option<u64>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeHardwareViewKeyExport {
+    address: String,
+    private_view_key: String,
+    network: String,
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WalletOperationResponse {
@@ -503,6 +517,148 @@ fn create_hardware_wallet(
     }
     Ok(response)
 }
+
+/// Creates an explicitly requested, local read-only companion for a Ledger.
+/// The Ledger asks for approval before exporting its private view key. That
+/// key never crosses the Tauri command boundary: it is immediately encrypted
+/// in OS secure storage and used to create a local view-only wallet file.
+#[tauri::command]
+fn enable_ledger_read_only(
+    app: AppHandle,
+    state: State<'_, NativeWalletState>,
+    sessions: State<'_, WalletSessionState>,
+    input: EnableLedgerReadOnlyInput,
+) -> Result<WalletOperationResponse, String> {
+    let source = wallet_registry::list(&app)?
+        .wallets
+        .into_iter()
+        .find(|wallet| wallet.id == input.source_registration_id)
+        .ok_or_else(|| "The selected Ledger wallet is no longer saved on this device.".to_owned())?;
+    if source.kind != "hardware" || source.role.as_deref().unwrap_or("standard") != "standard" {
+        return Err("Choose a normal Ledger wallet for the local read-only copy.".to_owned());
+    }
+    if input.source_wallet_id.trim().is_empty() {
+        return Err("Open and unlock the Ledger wallet before enabling local read-only sync.".to_owned());
+    }
+    let active_native_id = sessions
+        .0
+        .lock()
+        .map_err(|_| "Wallet session state is busy.".to_owned())?
+        .get(&source.id)
+        .cloned()
+        .ok_or_else(|| "Open and unlock the Ledger wallet first, then approve Export view key on the Ledger.".to_owned())?;
+    if active_native_id != input.source_wallet_id {
+        return Err("The selected Ledger session changed. Open the Ledger wallet again and retry.".to_owned());
+    }
+    if wallet_registry::list(&app)?.wallets.iter().any(|wallet| {
+        wallet.kind == "view-only" && wallet.source_wallet_id.as_deref() == Some(source.id.as_str())
+    }) {
+        return Err("This Ledger already has a local read-only copy. Open it from your wallet list.".to_owned());
+    }
+
+    eprintln!("MONERO_DESKTOP_LEDGER_READ_ONLY export-requested local-only=true");
+    let mut exported_json = state
+        .0
+        .lock()
+        .map_err(|_| "Native wallet is busy.".to_owned())?
+        .export_hardware_private_view_key(&active_native_id)?;
+    let mut exported: NativeHardwareViewKeyExport = serde_json::from_str(&exported_json)
+        .map_err(|_| "The Ledger returned an invalid view-key response.".to_owned())?;
+    exported_json.zeroize();
+    if exported.network != source.network || exported.address.trim().is_empty() || exported.private_view_key.trim().is_empty() {
+        exported.private_view_key.zeroize();
+        return Err("The Ledger view key could not be verified for this wallet.".to_owned());
+    }
+
+    let wallet_name = next_wallet_file_name(&app, "", "ledger-read")?;
+    let path = wallet_path(&app, &wallet_name)?;
+    let restore_height = input
+        .restore_height
+        .filter(|height| *height > 0)
+        .or(source.restore_height);
+    let mut requested_password = String::new();
+    let mut local_password = wallet_password_or_generated(&mut requested_password)?;
+    let native_wallet_id = match state
+        .0
+        .lock()
+        .map_err(|_| "Native wallet is busy.".to_owned())?
+        .create_view_only(native_wallet::ViewOnlyWalletCreate {
+            path: &path,
+            password: &local_password,
+            network: network(&source.network)?,
+            restore_height: restore_height.unwrap_or(0),
+            address: &exported.address,
+            private_view_key: &exported.private_view_key,
+        }) {
+        Ok(wallet_id) => wallet_id,
+        Err(error) => {
+            exported.private_view_key.zeroize();
+            local_password.zeroize();
+            return Err(error);
+        }
+    };
+    if let Err(error) = secure_store::store_ledger_private_view_key(
+        &source.id,
+        std::mem::take(&mut exported.private_view_key),
+    ) {
+        let _ = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .close(&native_wallet_id, false);
+        local_password.zeroize();
+        return Err(error);
+    }
+    // Confirm that the OS credential backend accepted the value while it is
+    // still part of this explicit setup operation. Never expose or log it.
+    let mut verified_view_key = match secure_store::load_ledger_private_view_key(&source.id) {
+        Ok(Some(value)) if !value.trim().is_empty() => value,
+        Ok(_) => {
+            let _ = secure_store::delete_ledger_private_view_key(&source.id);
+            let _ = state
+                .0
+                .lock()
+                .map_err(|_| "Native wallet is busy.".to_owned())?
+                .close(&native_wallet_id, false);
+            local_password.zeroize();
+            return Err("The Ledger private view key could not be verified in secure storage.".to_owned());
+        }
+        Err(error) => {
+            let _ = secure_store::delete_ledger_private_view_key(&source.id);
+            let _ = state
+                .0
+                .lock()
+                .map_err(|_| "Native wallet is busy.".to_owned())?
+                .close(&native_wallet_id, false);
+            local_password.zeroize();
+            return Err(error);
+        }
+    };
+    verified_view_key.zeroize();
+    let registration = wallet_registry::ledger_read_only_wallet(
+        &wallet_name,
+        &source.network,
+        restore_height,
+        &source.id,
+    );
+    match finish_wallet_operation_with_password(
+        &app,
+        &state,
+        &sessions,
+        native_wallet_id,
+        registration,
+        local_password,
+    ) {
+        Ok(response) => {
+            eprintln!("MONERO_DESKTOP_LEDGER_READ_ONLY created local-only=true");
+            Ok(response)
+        }
+        Err(error) => {
+            let _ = secure_store::delete_ledger_private_view_key(&source.id);
+            Err(error)
+        }
+    }
+}
 #[tauri::command]
 fn wallet_open_requires_password(
     app: AppHandle,
@@ -514,6 +670,18 @@ fn wallet_open_requires_password(
         &input.network,
         input.restore_height.filter(|height| *height > 0),
     )?;
+    // Neither a Ledger wallet nor its explicitly-created local read-only
+    // companion has a user-entered wallet password. Their encrypted local
+    // files use a generated credential held only in OS secure storage. The
+    // Ledger itself authorizes hardware operations; the read-only copy cannot
+    // spend at all.
+    if registration.kind == "hardware" || registration.kind == "view-only" {
+        eprintln!(
+            "MONERO_DESKTOP_WALLET_OPEN credential-check kind={} requires-user-password=false",
+            registration.kind
+        );
+        return Ok(false);
+    }
     let credential_registration = physical_registration_for_open(&app, &registration)?;
     Ok(secure_store::load_wallet_password(&credential_registration.id)?.is_none())
 }
@@ -532,7 +700,25 @@ fn open_wallet(
     let physical_registration = physical_registration_for_open(&app, &registration)?;
     let path = wallet_path(&app, &physical_registration.wallet_name)?;
     let mut password = std::mem::take(&mut input.password);
-    if password.trim().is_empty() {
+    let is_hardware = registration.kind == "hardware";
+    let uses_device_credential = is_hardware || registration.kind == "view-only";
+    if uses_device_credential {
+        // This is deliberately not a user password prompt.  Hardware wallet
+        // files are assigned a random local credential at creation and only
+        // the OS secure store may retrieve it.  The following Ledger
+        // reconnect supplies the actual user authorization.
+        password = secure_store::load_wallet_password(&physical_registration.id)?.ok_or_else(|| {
+            if is_hardware {
+                "This Ledger wallet's protected local credential is unavailable on this device. Reconnect the Ledger and add this Ledger wallet again; no Ledger PIN or wallet password is required here.".to_owned()
+            } else {
+                "This local Ledger read-only copy is missing its protected device credential. Remove it and create the read-only copy again from the Ledger; no wallet password is required here.".to_owned()
+            }
+        })?;
+        eprintln!(
+            "MONERO_DESKTOP_WALLET_OPEN using-device-held-file-credential kind={}",
+            registration.kind
+        );
+    } else if password.trim().is_empty() {
         password =
             secure_store::load_wallet_password(&physical_registration.id)?.ok_or_else(|| {
                 "This older wallet needs its existing password once. Enter it to continue."
@@ -556,6 +742,26 @@ fn open_wallet(
             return Err(error);
         }
     };
+    if is_hardware {
+        let reconnect = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .reconnect_hardware(&wallet_id);
+        if let Err(error) = reconnect {
+            let _ = state
+                .0
+                .lock()
+                .map_err(|_| "Native wallet is busy.".to_owned())?
+                .close(&wallet_id, false);
+            password.zeroize();
+            eprintln!("MONERO_DESKTOP_LEDGER_OPEN reconnect-failed error={error}");
+            return Err(format!(
+                "Connect and unlock the Ledger, then open the Monero app on it. {error}"
+            ));
+        }
+        eprintln!("MONERO_DESKTOP_LEDGER_OPEN reconnect-success");
+    }
     // A wallet first opened from an older local file provides its password
     // explicitly. Store that credential only in macOS Keychain so every later
     // unlock uses the same secure, device-held path as newly created wallets.
@@ -677,6 +883,22 @@ fn remove_registered_wallet(
     }
     for removed_id in &removed_ids {
         let _ = secure_store::delete_wallet_password(removed_id);
+    }
+    let removed_view_only_source_ids = registry
+        .wallets
+        .iter()
+        .filter(|wallet| wallet.id == input.wallet_id || wallet.source_wallet_id.as_deref() == Some(input.wallet_id.as_str()))
+        .filter_map(|wallet| {
+            (wallet.kind == "view-only")
+                .then(|| wallet.source_wallet_id.clone())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    for source_id in removed_view_only_source_ids {
+        let _ = secure_store::delete_ledger_private_view_key(&source_id);
+    }
+    if registry.wallets.iter().any(|wallet| wallet.id == input.wallet_id && wallet.kind == "hardware") {
+        let _ = secure_store::delete_ledger_private_view_key(&input.wallet_id);
     }
     wallet_registry::remove(&app, &input.wallet_id)?;
     Ok(())
@@ -1803,6 +2025,12 @@ fn physical_registration_for_open(
     app: &AppHandle,
     registration: &wallet_registry::RegisteredWallet,
 ) -> Result<wallet_registry::RegisteredWallet, String> {
+    // Only the historic Ledger Fast Wallet is physically represented by its
+    // source Ledger file. A local view-only companion has its own encrypted
+    // file and must therefore retain its own registration/credential.
+    if registration.kind != "hardware" || registration.role.as_deref() != Some("fast") {
+        return Ok(registration.clone());
+    }
     let Some(source_wallet_id) = registration.source_wallet_id.as_deref() else {
         return Ok(registration.clone());
     };
@@ -2025,6 +2253,7 @@ pub fn run() {
             create_wallet,
             restore_wallet,
             create_hardware_wallet,
+            enable_ledger_read_only,
             wallet_open_requires_password,
             open_wallet,
             close_wallet,

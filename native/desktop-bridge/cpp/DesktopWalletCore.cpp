@@ -165,6 +165,16 @@ std::string hardwareStatusJson(
   return output.str();
 }
 
+std::string hardwareViewKeyExportJson(
+    const tex8::wallet::HardwareViewKeyExport& exportValue) {
+  std::ostringstream output;
+  output << "{\"address\":" << jsonString(exportValue.address)
+         << ",\"privateViewKey\":" << jsonString(exportValue.privateViewKey)
+         << ",\"network\":"
+         << jsonString(networkName(exportValue.network)) << '}';
+  return output.str();
+}
+
 std::string walletSnapshotJson(const tex8::wallet::WalletSnapshot& snapshot) {
   std::ostringstream output;
   output << "{\"id\":" << jsonString(snapshot.id)
@@ -297,6 +307,19 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_create_from_device(
     request.subaddressLookahead = input(subaddress_lookahead);
     request.accountIndex = account_index;
     return core->engine.createWalletFromDevice(request);
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_create_view_only(
+    Tex8DesktopWalletCore* core, const char* path, const char* password,
+    unsigned char network, unsigned long long restore_height,
+    const char* address, const char* private_view_key) noexcept {
+  return invoke(core, [&] {
+    tex8::wallet::CreateViewOnlyWalletRequest request;
+    request.path = input(path); request.password = input(password);
+    request.network = networkFrom(network); request.restoreHeight = restore_height;
+    request.address = input(address); request.privateViewKey = input(private_view_key);
+    return core->engine.createViewOnlyWallet(request);
   });
 }
 
@@ -468,6 +491,14 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_reconnect_hardware(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept {
   return invoke(core, [&] {
     return hardwareStatusJson(core->engine.reconnectHardwareWallet(input(wallet_id)));
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_export_hardware_private_view_key(
+    Tex8DesktopWalletCore* core, const char* wallet_id) noexcept {
+  return invoke(core, [&] {
+    return hardwareViewKeyExportJson(
+        core->engine.exportHardwarePrivateViewKey(input(wallet_id)));
   });
 }
 

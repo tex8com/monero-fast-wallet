@@ -46,6 +46,14 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_create_from_device(
     unsigned long long restore_height,
     const char* subaddress_lookahead,
     unsigned int account_index) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_create_view_only(
+    Tex8DesktopWalletCore* core,
+    const char* path,
+    const char* password,
+    unsigned char network,
+    unsigned long long restore_height,
+    const char* address,
+    const char* private_view_key) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_open(
     Tex8DesktopWalletCore* core,
     const char* path,
@@ -105,6 +113,8 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_commit_transaction(
 extern "C" Tex8DesktopResult tex8_desktop_wallet_hardware_status(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_reconnect_hardware(
+    Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_export_hardware_private_view_key(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_show_hardware_address(
     Tex8DesktopWalletCore* core, const char* wallet_id,

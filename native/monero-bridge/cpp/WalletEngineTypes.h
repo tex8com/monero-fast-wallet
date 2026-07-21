@@ -161,6 +161,26 @@ struct FastReceiveRegistrationPayload {
   std::string privateViewKey;
 };
 
+// A Ledger-backed wallet may explicitly export its private view key once so a
+// local, encrypted view-only wallet can synchronize while the device is not
+// connected. This is never a spending credential and callers must never log
+// or send privateViewKey to a remote service.
+struct CreateViewOnlyWalletRequest {
+  std::string path;
+  std::string password;
+  std::string address;
+  std::string privateViewKey;
+  NetworkType network{NetworkType::Stagenet};
+  uint64_t restoreHeight{0};
+  uint64_t kdfRounds{1};
+};
+
+struct HardwareViewKeyExport {
+  std::string address;
+  std::string privateViewKey;
+  NetworkType network{NetworkType::Stagenet};
+};
+
 struct HardwareWalletStatus {
   WalletId walletId;
   std::string deviceName;
