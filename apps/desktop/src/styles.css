@@ -426,6 +426,9 @@ h2 { letter-spacing: -0.65px; }
 .wallet-rename > div { display: flex; align-items: center; gap: 8px; }
 .wallet-rename .quiet-button, .wallet-rename .secondary { margin: 0; }
 .wallet-rename .setup-message { grid-column: 1 / -1; }
+.wallet-list-message { margin: 0 0 14px; }
+.wallet-remove-dialog { max-width: 560px; }
+.wallet-remove-dialog .danger-button { margin: 0; }
 .seed-overlay { display: grid; position: fixed; z-index: 20; inset: 0; place-items: center; padding: 32px; background: rgb(3 2 8 / 78%); backdrop-filter: blur(6px); }
 .seed-dialog { width: min(660px, 100%); padding: 28px; border: 1px solid #7a4c42; border-radius: 18px; background: linear-gradient(145deg, #211625, #100e18); box-shadow: 0 28px 90px rgb(0 0 0 / 52%); }
 .seed-dialog h2 { margin: 0 0 8px; font-size: 27px; }
