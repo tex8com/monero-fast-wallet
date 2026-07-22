@@ -5,7 +5,6 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  Share,
   TouchableOpacity,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
@@ -19,9 +18,8 @@ import TransactionRow, {
 } from '../components/TransactionRow';
 import type {
   WalletOption,
-  WalletSelectorItem,
 } from '../components/WalletSelector';
-import WalletSwitcherPill from '../components/WalletSwitcherPill';
+import {resolveWalletOption} from '../components/WalletSelector';
 import { type TranslationKey, useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
 import { walletDisplayName } from '../services/WalletRegistry';
@@ -148,9 +146,7 @@ function shortAddress(address: string): string {
 
 export default function ReceiveScreen({ navigation, route }: any) {
   const [copied, setCopied] = useState(false);
-  const [shared, setShared] = useState(false);
   const [hardwareBusy, setHardwareBusy] = useState(false);
-  const [fastWalletBusy, setFastWalletBusy] = useState(false);
   const [hardwareMessage, setHardwareMessage] = useState<string | undefined>();
   const [walletAddresses, setWalletAddresses] = useState<
     WalletAddressRecord[]
@@ -159,6 +155,8 @@ export default function ReceiveScreen({ navigation, route }: any) {
     string | undefined
   >();
   const [addressBusy, setAddressBusy] = useState(false);
+  const [showAddressTools, setShowAddressTools] = useState(false);
+  const [showHardwareTools, setShowHardwareTools] = useState(false);
   const [selectedReceiveWalletId, setSelectedReceiveWalletId] = useState<
     string | undefined
   >();
@@ -189,20 +187,25 @@ export default function ReceiveScreen({ navigation, route }: any) {
     transactions,
     walletSnapshots,
   } = useWalletState();
-  const walletSnapshotMap = {
-    ...walletSnapshots,
-    ...(registeredWallet && snapshot
-      ? { [registeredWallet.id]: snapshot }
-      : {}),
-  };
-  const receiveWalletOptions = useMemo<WalletSelectorItem[]>(
+  const walletSnapshotMap = useMemo(
+    () => ({
+      ...walletSnapshots,
+      ...(registeredWallet && snapshot
+        ? {[registeredWallet.id]: snapshot}
+        : {}),
+    }),
+    [registeredWallet, snapshot, walletSnapshots],
+  );
+  const receiveWalletOptions = useMemo<WalletOption[]>(
     () => [
-      ...registeredWallets.filter(wallet => wallet.kind !== 'fast'),
+      ...registeredWallets
+        .filter(wallet => wallet.kind !== 'fast')
+        .map(wallet => resolveWalletOption(wallet, walletSnapshotMap, t)),
       ...fastReceiveIdentities.map(identity =>
         fastWalletReceiveOption(identity, t, nodeMode === 'optimized-grpc'),
       ),
     ],
-    [fastReceiveIdentities, nodeMode, registeredWallets, t],
+    [fastReceiveIdentities, nodeMode, registeredWallets, t, walletSnapshotMap],
   );
   const activeReceiveWalletId =
     selectedReceiveWalletId ??
@@ -384,24 +387,12 @@ export default function ReceiveScreen({ navigation, route }: any) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleShare = async () => {
-    if (!address) {
-      return;
-    }
-
-    try {
-      await Share.share({title: 'Monero address', message: address});
-      setShared(true);
-      setTimeout(() => setShared(false), 2000);
-    } catch {
-      // The native share sheet can be dismissed without selecting a target.
-    }
-  };
-
   const handleSelectWallet = async (wallet: WalletOption) => {
     setSelectedReceiveWalletId(wallet.id);
     setSelectedAddressId(undefined);
     setHardwareMessage(undefined);
+    setShowAddressTools(false);
+    setShowHardwareTools(false);
 
     if (wallet.kind === 'fast') {
       return;
@@ -430,27 +421,6 @@ export default function ReceiveScreen({ navigation, route }: any) {
       setHardwareMessage(hardwareStatusText(nextStatus, t));
     } finally {
       setHardwareBusy(false);
-    }
-  };
-
-  const handleRepairFastWallet = async () => {
-    if (!selectedFastIdentity || fastWalletBusy) {
-      return;
-    }
-
-    setFastWalletBusy(true);
-    try {
-      const identities =
-        await walletService.repairFastReceiveIdentityForActiveNode(
-          selectedFastIdentity.id,
-        );
-      setFastReceiveIdentities(identities);
-    } catch {
-      const identities =
-        await walletService.loadFastReceiveIdentitiesForActiveNode();
-      setFastReceiveIdentities(identities);
-    } finally {
-      setFastWalletBusy(false);
     }
   };
 
@@ -497,16 +467,47 @@ export default function ReceiveScreen({ navigation, route }: any) {
             <Text style={s.title}>{t('receive.title')}</Text>
             <Text style={s.subtitle}>{t('receive.subtitle')}</Text>
           </View>
-          <WalletSwitcherPill
-            activeWalletId={activeReceiveWalletId}
-            detail={activeWalletDetail}
-            snapshots={walletSnapshotMap}
-            titleKey="walletSelector.receiveTo"
-            wallets={receiveWalletOptions}
-            onManage={() => navigation.navigate('Wallets')}
-            onSelect={handleSelectWallet}
-          />
         </View>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={s.walletCarousel}
+          style={s.walletCarouselScroll}
+        >
+          {receiveWalletOptions.map(wallet => {
+            const active = wallet.id === activeReceiveWalletId;
+            return (
+              <TouchableOpacity
+                key={wallet.id}
+                accessibilityRole="button"
+                accessibilityState={{selected: active}}
+                onPress={() => handleSelectWallet(wallet)}
+                style={[s.walletCard, active && s.walletCardActive]}
+              >
+                <View style={s.walletCardTop}>
+                  <Text style={s.walletCardTitle} numberOfLines={1}>
+                    {wallet.label}
+                  </Text>
+                  {wallet.badge ? (
+                    <Text style={s.fastBadge}>{wallet.badge}</Text>
+                  ) : null}
+                </View>
+                <Text style={s.walletCardDetail} numberOfLines={1}>
+                  {wallet.detail ?? activeWalletDetail ?? t('common.wallet')}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={() => navigation.navigate('Wallets')}
+            style={s.manageWalletsCard}
+          >
+            <Icon name="settings" size={18} color={colors.orange} />
+            <Text style={s.manageWalletsText}>{t('walletSelector.wallets')}</Text>
+          </TouchableOpacity>
+        </ScrollView>
 
         {address ? (
           <View style={s.card}>
@@ -544,77 +545,51 @@ export default function ReceiveScreen({ navigation, route }: any) {
                     {selectedFastStatus.description}
                   </Text>
                 </View>
-                {selectedFastStatus.canRetry ? (
-                  <TouchableOpacity
-                    activeOpacity={0.75}
-                    disabled={fastWalletBusy}
-                    onPress={handleRepairFastWallet}
-                    style={s.fastStatusRetry}
-                  >
-                    {fastWalletBusy ? (
-                      <ActivityIndicator color={colors.orange} size="small" />
-                    ) : (
-                      <Text style={s.fastStatusRetryText}>
-                        {t('action.retry')}
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                ) : null}
               </View>
             ) : null}
-            {/* QR Code */}
             <View style={s.qrBox}>
-              <QrCode value={address} size={200} />
+              <QrCode value={address} size={252} />
             </View>
 
-            {/* Address */}
-            <View style={s.addrBox}>
-              <Text style={s.addrLabel}>{t('receive.addressLabel')}</Text>
-              <Text style={s.addrText} selectable>
-                {address.slice(0, -5)}
-                <Text style={{ color: colors.orange }}>
-                  {address.slice(-5)}
-                </Text>
+            <View style={s.simpleAddressRow}>
+              <Text style={s.simpleAddress} numberOfLines={1}>
+                {shortAddress(address)}
               </Text>
-            </View>
-
-            <View style={s.btnRow}>
               <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={t('action.copyAddress')}
                 style={[
-                  s.copyBtn,
-                  copied && { backgroundColor: colors.success },
+                  s.copyIconButton,
+                  copied && s.copyIconButtonDone,
                 ]}
                 onPress={handleCopy}
               >
-                {copied ? (
-                  <View
-                    style={{
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 6,
-                    }}
-                  >
-                    <Icon
-                      name="check"
-                      size={16}
-                      color="#FFF"
-                      strokeWidth={2.5}
-                    />
-                    <Text style={s.copyBtnText}>{t('action.copied')}</Text>
-                  </View>
-                ) : (
-                  <Text style={s.copyBtnText}>{t('action.copyAddress')}</Text>
-                )}
-              </TouchableOpacity>
-              <TouchableOpacity style={s.shareBtn} onPress={handleShare}>
-                <Text style={s.shareBtnText}>
-                  {shared ? t('action.shared') : t('action.share')}
-                </Text>
+                <Icon
+                  name={copied ? 'check' : 'copy'}
+                  size={18}
+                  color={copied ? '#FFF' : colors.orange}
+                />
               </TouchableOpacity>
             </View>
             {!selectedFastIdentity &&
             activeReceiveWalletId === registeredWallet?.id &&
             session ? (
+              <View style={s.addressToolsContainer}>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  onPress={() => setShowAddressTools(value => !value)}
+                  style={s.addressToolsToggle}
+                >
+                  <Text style={s.addressToolsToggleText}>
+                    {t('receive.manageAddresses')}
+                  </Text>
+                  <Icon
+                    name="chevron-right"
+                    size={18}
+                    color={colors.orange}
+                  />
+                </TouchableOpacity>
+                {showAddressTools ? (
               <View style={s.addressesBox}>
                 <View style={s.addressesHeader}>
                   <Text style={s.addressesTitle}>
@@ -656,8 +631,26 @@ export default function ReceiveScreen({ navigation, route }: any) {
                   </TouchableOpacity>
                 ))}
               </View>
+                ) : null}
+              </View>
             ) : null}
             {isHardwareWallet ? (
+              <View style={s.addressToolsContainer}>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  onPress={() => setShowHardwareTools(value => !value)}
+                  style={s.addressToolsToggle}
+                >
+                  <Text style={s.addressToolsToggleText}>
+                    {session?.hardwareDevice?.name ?? 'Ledger Nano'}
+                  </Text>
+                  <Icon
+                    name="chevron-right"
+                    size={18}
+                    color={colors.orange}
+                  />
+                </TouchableOpacity>
+                {showHardwareTools ? (
               <View style={s.hardwareBox}>
                 <View style={s.hardwareHeader}>
                   <View style={s.hardwareTitleRow}>
@@ -725,6 +718,8 @@ export default function ReceiveScreen({ navigation, route }: any) {
                     </Text>
                   </TouchableOpacity>
                 </View>
+              </View>
+                ) : null}
               </View>
             ) : null}
           </View>
@@ -843,6 +838,48 @@ const s = StyleSheet.create({
     marginTop: 4,
     lineHeight: 20,
   },
+  walletCarouselScroll: {marginBottom: 16},
+  walletCarousel: {gap: 10, paddingRight: spacing.lg},
+  walletCard: {
+    width: 196,
+    minHeight: 76,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgCard,
+    padding: 12,
+    justifyContent: 'center',
+  },
+  walletCardActive: {
+    borderColor: colors.orange,
+    backgroundColor: 'rgba(242,104,34,0.1)',
+  },
+  walletCardTop: {flexDirection: 'row', alignItems: 'center', gap: 7},
+  walletCardTitle: {flex: 1, color: colors.textPrimary, fontSize: 15, fontWeight: '800'},
+  fastBadge: {
+    color: colors.success,
+    backgroundColor: 'rgba(0,214,143,0.14)',
+    borderRadius: radius.full,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  walletCardDetail: {color: colors.textSecondary, fontSize: 12, marginTop: 6},
+  manageWalletsCard: {
+    minWidth: 112,
+    minHeight: 76,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderStyle: 'dashed',
+    backgroundColor: colors.bgCard,
+  },
+  manageWalletsText: {color: colors.orange, fontSize: 12, fontWeight: '800'},
   card: {
     backgroundColor: colors.bgCard,
     borderRadius: radius.lg,
@@ -892,29 +929,43 @@ const s = StyleSheet.create({
     lineHeight: 17,
     marginTop: 3,
   },
-  fastStatusRetry: {
-    minWidth: 74,
-    minHeight: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: radius.md,
-    backgroundColor: 'rgba(242,104,34,0.12)',
-    paddingHorizontal: 10,
-  },
-  fastStatusRetryText: {
-    color: colors.orange,
-    fontSize: 11,
-    fontWeight: '900',
-  },
   qrBox: {
-    width: 200,
-    height: 200,
+    width: 252,
+    height: 252,
     borderRadius: radius.lg,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 24,
     overflow: 'hidden',
   },
+  simpleAddressRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 6,
+  },
+  simpleAddress: {flex: 1, color: colors.textSecondary, fontFamily: 'monospace', fontSize: 13},
+  copyIconButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    backgroundColor: colors.surface,
+  },
+  copyIconButtonDone: {backgroundColor: colors.success, borderColor: colors.success},
+  addressToolsContainer: {width: '100%', marginTop: 12},
+  addressToolsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingHorizontal: 4,
+  },
+  addressToolsToggleText: {color: colors.textSecondary, fontSize: 13, fontWeight: '800'},
   addrBox: {
     width: '100%',
     backgroundColor: colors.bgInput,

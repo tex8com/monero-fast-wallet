@@ -130,17 +130,6 @@ export default function FindEnthusiastsScreen({navigation}: any) {
     }
   };
 
-  const retry = async () => {
-    setBusy(true);
-    try {
-      const next = await refreshApproximateEnthusiastLocation();
-      setPreference(next);
-      await reloadCommunity(next);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const saveDisplayName = async () => {
     if (!preference || displayName.trim().length < 2) {
       return;
@@ -291,13 +280,6 @@ export default function FindEnthusiastsScreen({navigation}: any) {
             );
           })}
         </View>
-
-        {enabled && (!ready || communityError) ? (
-          <TouchableOpacity style={s.retryButton} onPress={retry}>
-            <Icon name="arrow-right" size={18} color="#FFFFFF" />
-            <Text style={s.retryText}>{t('action.retry')}</Text>
-          </TouchableOpacity>
-        ) : null}
 
         <View style={s.privacyBand}>
           <Icon name="lock" size={19} color={colors.success} />
@@ -455,8 +437,6 @@ const s = StyleSheet.create({
   radiusButtonActive: {backgroundColor: colors.orange},
   radiusText: {color: colors.textSecondary, fontSize: 14, fontWeight: '800'},
   radiusTextActive: {color: '#FFFFFF'},
-  retryButton: {minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: colors.orange, borderRadius: 8, marginTop: 14},
-  retryText: {color: '#FFFFFF', fontSize: 14, fontWeight: '800'},
   privacyBand: {flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 22, borderBottomWidth: 1, borderBottomColor: colors.border},
   privacyText: {flex: 1, color: colors.textSecondary, fontSize: 13, lineHeight: 19},
   nameRow: {flexDirection: 'row', gap: 8},

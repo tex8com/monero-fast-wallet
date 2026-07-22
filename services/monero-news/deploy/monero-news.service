@@ -1,0 +1,27 @@
+[Unit]
+Description=Monero Fast Wallet server-owned news feed
+Documentation=https://github.com/tex8com/monero-fast-wallet
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=monero-news
+Group=monero-news
+Environment=MONERO_NEWS_BIND=127.0.0.1:8091
+ExecStart=/usr/local/bin/monero-news
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

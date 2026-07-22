@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import Clipboard from '@react-native-clipboard/clipboard';
 import LinearGradient from 'react-native-linear-gradient';
 import { colors, radius, spacing } from '../theme/colors';
 import { Icon } from '../components/Icon';
@@ -20,7 +21,6 @@ import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
 import {
-  walletSnapshotStatusLabel,
   type WalletOption,
   type WalletSelectorItem,
 } from '../components/WalletSelector';
@@ -30,18 +30,7 @@ import { useI18n } from '../i18n';
 import type {
   PreparedTransaction,
   TransactionPriority,
-  WalletSnapshot,
 } from '../services/NativeMoneroWallet';
-import type { FastReceiveIdentityRecord } from '../services/FastReceiveRegistry';
-import {
-  fastWalletSelectorTone,
-  fastWalletStatusPresentation,
-} from '../services/FastWalletStatus';
-import {
-  getActiveNodeConnectionSettings,
-  loadActiveNodeConnectionSettings,
-} from '../services/NodeConnectionSettings';
-import type { NodeConnectionMode } from '../services/NodeConnectionSettings';
 import {
   atomicXmrToNumber,
   formatAtomicXmr,
@@ -58,7 +47,7 @@ import {
   type RecipientContact,
 } from '../services/RecipientAddressBook';
 
-type Step = 'form' | 'confirm';
+type Step = 'recipient-choice' | 'manual-recipient' | 'amount' | 'confirm';
 
 const QUICK_AMOUNTS = ['0.10', '0.25', '0.50', '1.00'];
 const PRIORITIES: TransactionPriority[] = ['low', 'default', 'medium', 'high'];
@@ -75,33 +64,6 @@ function priorityLabel(
   }
 }
 
-function fastWalletSendOption(
-  identity: FastReceiveIdentityRecord,
-  t: ReturnType<typeof useI18n>['t'],
-  tex8Node: boolean,
-  snapshot?: WalletSnapshot,
-): WalletOption {
-  const status = fastWalletStatusPresentation(identity, tex8Node, t);
-  return {
-    id: identity.id,
-    address: identity.address,
-    badge: t('walletSelector.fast'),
-    detail: snapshot
-      ? walletSnapshotStatusLabel(snapshot, t)
-      : status.ready
-      ? t('walletSelector.openToSend')
-      : status.label,
-    kind: 'fast',
-    label: identity.label,
-    meta: identity.network,
-    tone: snapshot
-      ? snapshot.synchronized
-        ? 'success'
-        : 'warning'
-      : fastWalletSelectorTone(status),
-  };
-}
-
 function shortAddress(value: string, fallback: string) {
   if (!value) {
     return fallback;
@@ -115,7 +77,7 @@ function shortAddress(value: string, fallback: string) {
 export default function SendScreen({ navigation }: any) {
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
-  const [step, setStep] = useState<Step>('form');
+  const [step, setStep] = useState<Step>('recipient-choice');
   const [priority, setPriority] = useState<TransactionPriority>('low');
   const [sendError, setSendError] = useState<string | undefined>();
   const [sendStatus, setSendStatus] = useState<string | undefined>();
@@ -125,14 +87,8 @@ export default function SendScreen({ navigation }: any) {
   const [sending, setSending] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [sweepAll, setSweepAll] = useState(false);
-  const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
-    FastReceiveIdentityRecord[]
-  >([]);
   const [recipientContacts, setRecipientContacts] = useState<RecipientContact[]>([]);
   const [recentRecipients, setRecentRecipients] = useState<RecipientContact[]>([]);
-  const [nodeMode, setNodeMode] = useState<NodeConnectionMode>(
-    getActiveNodeConnectionSettings().mode,
-  );
   const { t } = useI18n();
   const { price } = useXmrPrice();
   const {
@@ -208,33 +164,25 @@ export default function SendScreen({ navigation }: any) {
     [registeredWallet, snapshot, walletSnapshots],
   );
   const sendWalletOptions = useMemo<WalletSelectorItem[]>(
-    () => [
-      ...registeredWallets.filter(wallet => wallet.kind !== 'fast'),
-      ...fastReceiveIdentities.map(identity =>
-        fastWalletSendOption(
-          identity,
-          t,
-          nodeMode === 'optimized-grpc',
-          walletSnapshotMap[identity.id],
-        ),
-      ),
-    ],
-    [fastReceiveIdentities, nodeMode, registeredWallets, t, walletSnapshotMap],
+    () =>
+      registeredWallets
+        .filter(wallet => wallet.kind !== 'fast')
+        .filter(wallet => {
+          const candidate = walletSnapshotMap[wallet.id];
+          return candidate && toAtomicBigInt(candidate.unlockedBalanceAtomic) > 0n;
+        }),
+    [registeredWallets, walletSnapshotMap],
   );
 
   useFocusEffect(
     useCallback(() => {
       let mounted = true;
       Promise.all([
-        walletService.loadFastReceiveIdentitiesForActiveNode(),
-        loadActiveNodeConnectionSettings(),
         loadRecipientContacts(),
         loadRecentRecipients(),
       ])
-        .then(([identities, settings, contacts, recent]) => {
+        .then(([contacts, recent]) => {
           if (mounted) {
-            setFastReceiveIdentities(identities);
-            setNodeMode(settings.mode);
             setRecipientContacts(contacts);
             setRecentRecipients(recent);
           }
@@ -373,7 +321,7 @@ export default function SendScreen({ navigation }: any) {
       setPreparedTx(undefined);
       setSweepAll(false);
       setSendStatus(t('send.transactionBroadcast'));
-      setStep('form');
+      setStep('recipient-choice');
       setRecentRecipients(
         await rememberRecipient(address.trim(), recipientContacts),
       );
@@ -395,7 +343,7 @@ export default function SendScreen({ navigation }: any) {
         >
           <TouchableOpacity
             style={s.backButton}
-            onPress={() => setStep('form')}
+            onPress={() => setStep('amount')}
             activeOpacity={0.7}
           >
             <Icon name="arrow-left" size={20} color={colors.textSecondary} />
@@ -467,6 +415,200 @@ export default function SendScreen({ navigation }: any) {
     );
   }
 
+  if (step === 'recipient-choice' || step === 'manual-recipient') {
+    const continueWithRecipient = () => {
+      if (!address.trim()) {
+        setSendError(t('send.noRecipient'));
+        return;
+      }
+      setSendError(undefined);
+      setStep('amount');
+    };
+
+    return (
+      <KeyboardAvoidingView
+        style={s.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
+        <ScrollView
+          contentContainerStyle={s.scroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={s.title}>{t('send.title')}</Text>
+          <Text style={s.subtitle}>{t('send.subtitle')}</Text>
+
+          {step === 'recipient-choice' ? (
+            <View style={s.choiceStack}>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={t('send.scanAddress')}
+                activeOpacity={0.82}
+                onPress={() => setScannerVisible(true)}
+                style={[s.choiceCard, s.choiceCardPrimary]}
+              >
+                <View style={s.choiceIconPrimary}>
+                  <Icon name="qr-scan" size={34} color="#FFF" />
+                </View>
+                <View style={s.choiceCopy}>
+                  <Text style={s.choiceTitle}>{t('send.scanAddress')}</Text>
+                  <Text style={s.choiceText}>{t('send.scanAddressHint')}</Text>
+                </View>
+                <Icon name="chevron-right" size={22} color="#FFF" />
+              </TouchableOpacity>
+
+              <View style={s.orRow}>
+                <View style={s.orLine} />
+                <Text style={s.orText}>{t('send.or')}</Text>
+                <View style={s.orLine} />
+              </View>
+
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={t('send.manualRecipient')}
+                activeOpacity={0.78}
+                onPress={() => setStep('manual-recipient')}
+                style={s.choiceCard}
+              >
+                <View style={s.choiceIcon}>
+                  <Icon name="edit" size={28} color={colors.orange} />
+                </View>
+                <View style={s.choiceCopy}>
+                  <Text style={[s.choiceTitle, s.choiceTitleDark]}>
+                    {t('send.manualRecipient')}
+                  </Text>
+                  <Text style={s.choiceText}>{t('send.manualRecipientHint')}</Text>
+                </View>
+                <Icon name="chevron-right" size={22} color={colors.orange} />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={s.manualCard}>
+              <TouchableOpacity
+                style={s.backButton}
+                accessibilityRole="button"
+                onPress={() => {
+                  setSendError(undefined);
+                  setStep('recipient-choice');
+                }}
+              >
+                <Icon name="arrow-left" size={20} color={colors.textSecondary} />
+                <Text style={s.backText}>{t('action.back')}</Text>
+              </TouchableOpacity>
+              <Text style={s.fieldLabel}>{t('send.recipient')}</Text>
+              <View style={s.addressInputRow}>
+                <TextInput
+                  style={s.addressInput}
+                  placeholder={t('send.pasteAddress')}
+                  placeholderTextColor={colors.textMuted}
+                  value={address}
+                  onChangeText={value => {
+                    setAddress(value);
+                    setSendError(undefined);
+                    clearPreparedTransaction();
+                  }}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  multiline
+                />
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel={t('action.paste')}
+                  style={s.pasteButton}
+                  onPress={() => {
+                    Clipboard.getString()
+                      .then(value => {
+                        if (value.trim()) {
+                          setAddress(value.trim());
+                          setSendError(undefined);
+                          clearPreparedTransaction();
+                        }
+                      })
+                      .catch(() => undefined);
+                  }}
+                >
+                  <Text style={s.pasteButtonText}>{t('action.paste')}</Text>
+                </TouchableOpacity>
+              </View>
+
+              {recipientContacts.length > 0 || recentRecipients.length > 0 ? (
+                <View style={s.contactsCompact}>
+                  {recipientContacts.length > 0 ? (
+                    <>
+                      <Text style={s.fieldLabel}>{t('send.addressBook')}</Text>
+                      <View style={s.contactRow}>
+                        {recipientContacts.slice(0, 3).map(contact => (
+                          <TouchableOpacity
+                            key={contact.id}
+                            style={[s.contactChip, contact.donor && s.donorChip]}
+                            onPress={() => {
+                              setAddress(contact.address);
+                              setSendError(undefined);
+                            }}
+                          >
+                            <Text style={s.contactName}>{contact.label}</Text>
+                            <Text style={s.contactAddress} numberOfLines={1}>
+                              {shortAddress(contact.address, contact.address)}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </>
+                  ) : null}
+                  {recentRecipients.length > 0 ? (
+                    <>
+                      <Text style={[s.fieldLabel, s.recentLabel]}>{t('send.recentContacts')}</Text>
+                      <View style={s.contactRow}>
+                        {recentRecipients.slice(0, 3).map(contact => (
+                          <TouchableOpacity
+                            key={contact.id}
+                            style={s.contactChip}
+                            onPress={() => {
+                              setAddress(contact.address);
+                              setSendError(undefined);
+                            }}
+                          >
+                            <Text style={s.contactName}>{contact.label}</Text>
+                            <Text style={s.contactAddress} numberOfLines={1}>
+                              {shortAddress(contact.address, contact.address)}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </>
+                  ) : null}
+                </View>
+              ) : null}
+              {sendError ? <Text style={s.errorText}>{sendError}</Text> : null}
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={t('action.continue')}
+                onPress={continueWithRecipient}
+                style={s.formCta}
+              >
+                <LinearGradient colors={[colors.orange, colors.orangeDark]} style={s.primaryBtn}>
+                  <Text style={s.primaryBtnText}>{t('action.continue')}</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            </View>
+          )}
+        </ScrollView>
+        <RecipientQrScanner
+          visible={scannerVisible}
+          onClose={() => setScannerVisible(false)}
+          onScanned={scannedAddress => {
+            setAddress(scannedAddress);
+            setSendError(undefined);
+            clearPreparedTransaction();
+            setScannerVisible(false);
+            setStep('amount');
+          }}
+        />
+      </KeyboardAvoidingView>
+    );
+  }
+
   return (
     <KeyboardAvoidingView
       style={s.container}
@@ -510,94 +652,20 @@ export default function SendScreen({ navigation }: any) {
           />
         ) : null}
 
-        <View style={s.card}>
-          <View style={s.cardHeader}>
+        <View style={s.recipientSummaryCard}>
+          <View>
             <Text style={s.fieldLabel}>{t('send.recipient')}</Text>
+            <Text style={s.recipientSummaryAddress} numberOfLines={1}>
+              {shortAddress(address, t('send.noRecipient'))}
+            </Text>
           </View>
-          <View style={s.addressInputRow}>
-            <TextInput
-              style={s.addressInput}
-              placeholder={t('send.pasteAddress')}
-              placeholderTextColor={colors.textMuted}
-              value={address}
-              onChangeText={value => {
-                setAddress(value);
-                setSendError(undefined);
-                clearPreparedTransaction();
-              }}
-              autoCapitalize="none"
-              autoCorrect={false}
-              multiline
-            />
-            <TouchableOpacity
-              accessibilityLabel={t('send.scanAddress')}
-              accessibilityRole="button"
-              style={s.scanButton}
-              onPress={() => setScannerVisible(true)}
-            >
-              <Icon name="qr-scan" size={23} color={colors.orange} />
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={() => setStep('manual-recipient')}
+          >
+            <Text style={s.changeRecipient}>{t('action.change')}</Text>
+          </TouchableOpacity>
         </View>
-
-        {recipientContacts.length > 0 || recentRecipients.length > 0 ? (
-          <View style={s.contactsCard}>
-            {recipientContacts.length > 0 ? (
-              <>
-                <Text style={s.fieldLabel}>{t('send.addressBook')}</Text>
-                <View style={s.contactRow}>
-                  {recipientContacts.map(contact => (
-                    <TouchableOpacity
-                      key={contact.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={contact.label}
-                      style={[s.contactChip, contact.donor && s.donorChip]}
-                      activeOpacity={0.72}
-                      onPress={() => {
-                        setAddress(contact.address);
-                        setSendError(undefined);
-                        clearPreparedTransaction();
-                      }}
-                    >
-                      <Text style={s.contactName}>{contact.label}</Text>
-                      <Text style={s.contactAddress} numberOfLines={1}>
-                        {shortAddress(contact.address, contact.address)}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </>
-            ) : null}
-            {recentRecipients.length > 0 ? (
-              <>
-                <Text style={[s.fieldLabel, s.recentLabel]}>
-                  {t('send.recentContacts')}
-                </Text>
-                <View style={s.contactRow}>
-                  {recentRecipients.map(contact => (
-                    <TouchableOpacity
-                      key={contact.id}
-                      accessibilityRole="button"
-                      accessibilityLabel={contact.label}
-                      style={s.contactChip}
-                      activeOpacity={0.72}
-                      onPress={() => {
-                        setAddress(contact.address);
-                        setSendError(undefined);
-                        clearPreparedTransaction();
-                      }}
-                    >
-                      <Text style={s.contactName}>{contact.label}</Text>
-                      <Text style={s.contactAddress} numberOfLines={1}>
-                        {shortAddress(contact.address, contact.address)}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </>
-            ) : null}
-          </View>
-        ) : null}
 
         <View style={s.amountCard}>
           <View style={s.cardHeader}>
@@ -847,6 +915,72 @@ const s = StyleSheet.create({
     marginTop: 5,
     lineHeight: 20,
   },
+  choiceStack: { marginTop: 34, gap: 16 },
+  choiceCard: {
+    minHeight: 116,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgCard,
+    padding: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  choiceCardPrimary: { backgroundColor: colors.orange, borderColor: colors.orange },
+  choiceIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(242,104,34,0.12)',
+  },
+  choiceIconPrimary: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.13)',
+  },
+  choiceCopy: { flex: 1 },
+  choiceTitle: { color: '#FFF', fontSize: 19, fontWeight: '900' },
+  choiceTitleDark: { color: colors.textPrimary },
+  choiceText: { color: 'rgba(255,255,255,0.72)', fontSize: 13, lineHeight: 18, marginTop: 4 },
+  orRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  orLine: { height: 1, flex: 1, backgroundColor: colors.border },
+  orText: { color: colors.textMuted, fontSize: 12, fontWeight: '800' },
+  manualCard: {
+    marginTop: 26,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgCard,
+  },
+  pasteButton: {
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+    paddingHorizontal: 13,
+    borderRadius: radius.sm,
+    backgroundColor: 'rgba(242,104,34,0.12)',
+  },
+  pasteButtonText: { color: colors.orange, fontSize: 14, fontWeight: '900' },
+  contactsCompact: { marginTop: 22 },
+  recipientSummaryCard: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgCard,
+    marginBottom: 12,
+  },
+  recipientSummaryAddress: { color: colors.textPrimary, marginTop: 5, fontSize: 15, fontFamily: 'monospace' },
+  changeRecipient: { color: colors.orange, fontWeight: '800', fontSize: 14 },
 
   sectionHeaderRecent: {
     flexDirection: 'row',

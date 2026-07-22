@@ -35,7 +35,10 @@ import {
   useXmrChart,
   xmrToUsd,
 } from '../data/priceService';
-import { useMoneroUpdates } from '../data/moneroUpdates';
+import {
+  type MoneroNewsCategory,
+  useMoneroNews,
+} from '../data/moneroNews';
 import { useI18n } from '../i18n';
 import type { WalletSnapshot } from '../services/NativeMoneroWallet';
 import type { FastReceiveIdentityRecord } from '../services/FastReceiveRegistry';
@@ -235,6 +238,7 @@ function fastWalletDashboardOption(
 /* ── Home Screen ─────────────────────────────────────────────────────── */
 export default function HomeScreen({ navigation }: any) {
   const [tf, setTf] = useState('24H');
+  const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>('all');
   const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
     FastReceiveIdentityRecord[]
   >([]);
@@ -250,11 +254,11 @@ export default function HomeScreen({ navigation }: any) {
     refresh: refreshChart,
   } = useXmrChart(tf);
   const {
-    items: officialUpdates,
-    loading: updatesLoading,
-    unavailable: updatesUnavailable,
-    refresh: refreshUpdates,
-  } = useMoneroUpdates();
+    items: newsItems,
+    loading: newsLoading,
+    unavailable: newsUnavailable,
+    refresh: refreshNews,
+  } = useMoneroNews();
   const {
     error,
     registeredWallet,
@@ -334,6 +338,13 @@ export default function HomeScreen({ navigation }: any) {
   });
   const totalBalanceUsd =
     price > 0 ? xmrToUsd(atomicXmrToNumber(totalBalanceAtomic), price) : '—';
+  const visibleNews = useMemo(
+    () =>
+      newsCategory === 'all'
+        ? newsItems
+        : newsItems.filter(item => item.category === newsCategory),
+    [newsCategory, newsItems],
+  );
   const homeWalletOptions = useMemo<WalletSelectorItem[]>(
     () => [
       ...registeredWallets.filter(wallet => wallet.kind !== 'fast'),
@@ -544,26 +555,100 @@ export default function HomeScreen({ navigation }: any) {
           ))}
         </View>
 
-        <View style={s.updatesCard}>
-          <View style={s.updatesHeader}>
+        <View style={s.newsCard}>
+          <View style={s.newsHeader}>
             <View>
-              <Text style={s.updatesEyebrow}>{t('home.updatesSource')}</Text>
-              <Text style={s.updatesTitle}>{t('home.updatesTitle')}</Text>
+              <Text style={s.newsEyebrow}>{t('home.newsSource')}</Text>
+              <Text style={s.newsTitle}>{t('home.newsTitle')}</Text>
             </View>
-            <TouchableOpacity onPress={() => Linking.openURL('https://github.com/monero-project/monero/releases').catch(() => undefined)}>
-              <Text style={s.updatesSourceLink}>{t('home.updatesSourceLink')} ↗</Text>
+            <TouchableOpacity
+              onPress={() =>
+                Linking.openURL('https://www.getmonero.org/blog/').catch(
+                  () => undefined,
+                )
+              }
+            >
+              <Text style={s.newsSourceLink}>{t('home.newsSourceLink')} ↗</Text>
             </TouchableOpacity>
           </View>
-          {updatesLoading && officialUpdates.length === 0 ? (
-            <Text style={s.updatesStatus}>{t('home.updatesLoading')}</Text>
-          ) : updatesUnavailable && officialUpdates.length === 0 ? (
-            <View style={s.updatesUnavailable}><Text style={s.updatesStatus}>{t('home.updatesUnavailable')}</Text><TouchableOpacity onPress={refreshUpdates}><Text style={s.updatesRetry}>{t('action.retry')}</Text></TouchableOpacity></View>
-          ) : (
-            officialUpdates.map(item => (
-              <TouchableOpacity key={item.id} style={s.updateRow} onPress={() => Linking.openURL(item.url).catch(() => undefined)}>
-                <View style={s.updateCopy}><Text numberOfLines={1} style={s.updateName}>{item.title}</Text><Text style={s.updateDate}>{new Intl.DateTimeFormat(dateLocale, {dateStyle: 'medium'}).format(new Date(item.publishedAt))}</Text></View><Text style={s.updateChevron}>›</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={s.newsFilters}
+          >
+            {(['all', 'network', 'wallet', 'ecosystem'] as const).map(category => (
+              <TouchableOpacity
+                key={category}
+                style={[
+                  s.newsFilter,
+                  newsCategory === category && s.newsFilterActive,
+                ]}
+                onPress={() => setNewsCategory(category)}
+              >
+                <Text
+                  style={[
+                    s.newsFilterText,
+                    newsCategory === category && s.newsFilterTextActive,
+                  ]}
+                >
+                  {category === 'all'
+                    ? t('home.newsAll')
+                    : category === 'network'
+                    ? t('home.newsNetwork')
+                    : category === 'wallet'
+                    ? t('home.newsWallet')
+                    : t('home.newsEcosystem')}
+                </Text>
               </TouchableOpacity>
-            ))
+            ))}
+          </ScrollView>
+          {newsLoading && newsItems.length === 0 ? (
+            <Text style={s.newsStatus}>{t('home.newsLoading')}</Text>
+          ) : newsUnavailable && newsItems.length === 0 ? (
+            <View style={s.newsUnavailable}>
+              <Text style={s.newsStatus}>{t('home.newsUnavailable')}</Text>
+              <TouchableOpacity onPress={refreshNews}>
+                <Text style={s.newsRetry}>{t('action.retry')}</Text>
+              </TouchableOpacity>
+            </View>
+          ) : visibleNews.length === 0 ? (
+            <Text style={s.newsStatus}>{t('home.newsEmpty')}</Text>
+          ) : (
+            <ScrollView
+              horizontal
+              pagingEnabled
+              decelerationRate="fast"
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={s.newsPages}
+            >
+              {visibleNews.slice(0, 8).map(item => (
+                <TouchableOpacity
+                  key={item.id}
+                  style={s.newsPage}
+                  onPress={() => Linking.openURL(item.url).catch(() => undefined)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={s.newsCategory}>
+                    {item.category === 'network'
+                      ? t('home.newsNetwork')
+                      : item.category === 'wallet'
+                      ? t('home.newsWallet')
+                      : t('home.newsEcosystem')}
+                  </Text>
+                  <Text numberOfLines={2} style={s.newsItemTitle}>
+                    {item.title}
+                  </Text>
+                  <Text numberOfLines={2} style={s.newsSummary}>
+                    {item.summary}
+                  </Text>
+                  <Text style={s.newsDate}>
+                    {new Intl.DateTimeFormat(dateLocale, {
+                      dateStyle: 'medium',
+                    }).format(new Date(item.publishedAt))}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           )}
         </View>
 
@@ -786,7 +871,7 @@ const s = StyleSheet.create({
   tfText: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },
   tfTextActive: { color: '#FFF' },
 
-  updatesCard: {
+  newsCard: {
     marginHorizontal: 20,
     marginBottom: 24,
     borderWidth: 1,
@@ -795,18 +880,24 @@ const s = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: colors.bgCard,
   },
-  updatesHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 16, paddingVertical: 15 },
-  updatesEyebrow: { color: colors.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
-  updatesTitle: { color: '#FFF', fontSize: 17, fontWeight: '800', marginTop: 3 },
-  updatesSourceLink: { color: '#F4A369', fontSize: 12, fontWeight: '800' },
-  updatesStatus: { color: colors.textMuted, fontSize: 13, fontWeight: '600', paddingHorizontal: 16, paddingBottom: 16 },
-  updatesUnavailable: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  updatesRetry: { color: colors.orange, fontSize: 12, fontWeight: '800', paddingRight: 16, paddingBottom: 16 },
-  updateRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderTopWidth: 1, borderTopColor: '#2D273B', paddingHorizontal: 16, paddingVertical: 12 },
-  updateCopy: { flex: 1, minWidth: 0 },
-  updateName: { color: '#EEE8F2', fontSize: 13, fontWeight: '700' },
-  updateDate: { color: colors.textMuted, fontSize: 11, fontWeight: '600', marginTop: 4 },
-  updateChevron: { color: '#F4BD55', fontSize: 22 },
+  newsHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 16, paddingTop: 15 },
+  newsEyebrow: { color: colors.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  newsTitle: { color: '#FFF', fontSize: 17, fontWeight: '800', marginTop: 3 },
+  newsSourceLink: { color: '#F4A369', fontSize: 12, fontWeight: '800' },
+  newsFilters: { gap: 8, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 12 },
+  newsFilter: { borderColor: '#3B324E', borderRadius: 999, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 7 },
+  newsFilterActive: { backgroundColor: colors.orange, borderColor: colors.orange },
+  newsFilterText: { color: colors.textMuted, fontSize: 11, fontWeight: '800' },
+  newsFilterTextActive: { color: '#FFF' },
+  newsStatus: { color: colors.textMuted, fontSize: 13, fontWeight: '600', paddingHorizontal: 16, paddingBottom: 16 },
+  newsUnavailable: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  newsRetry: { color: colors.orange, fontSize: 12, fontWeight: '800', paddingRight: 16, paddingBottom: 16 },
+  newsPages: { paddingHorizontal: 16, paddingBottom: 16, gap: 12 },
+  newsPage: { width: CHART_W - 32, minHeight: 144, borderRadius: 13, borderWidth: 1, borderColor: '#332B45', backgroundColor: 'rgba(255,255,255,0.025)', padding: 15 },
+  newsCategory: { color: '#F4BD55', fontSize: 10, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
+  newsItemTitle: { color: '#EEE8F2', fontSize: 16, fontWeight: '800', lineHeight: 21, marginTop: 8 },
+  newsSummary: { color: colors.textSecondary, fontSize: 12, lineHeight: 18, marginTop: 5 },
+  newsDate: { color: colors.textMuted, fontSize: 11, fontWeight: '700', marginTop: 'auto', paddingTop: 10 },
 
   actRow: { flexDirection: 'row', paddingHorizontal: 20, marginBottom: 24 },
   actBtn: { flex: 1, alignItems: 'center' },

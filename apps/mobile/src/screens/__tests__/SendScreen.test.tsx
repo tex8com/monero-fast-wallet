@@ -120,10 +120,19 @@ describe('SendScreen', () => {
       );
     });
 
-    const inputs = renderer!.root.findAllByType(TextInput);
+    const manualRecipientButton = renderer!.root
+      .findAllByType(TouchableOpacity)
+      .find(node => node.props.accessibilityLabel === 'send.manualRecipient');
+    await ReactTestRenderer.act(async () => manualRecipientButton!.props.onPress());
+
+    const recipientInput = renderer!.root.findAllByType(TextInput)[0];
     await ReactTestRenderer.act(async () => {
-      inputs[0].props.onChangeText('42ZCrRecipient');
+      recipientInput.props.onChangeText('42ZCrRecipient');
     });
+    const continueButton = renderer!.root
+      .findAllByType(TouchableOpacity)
+      .find(node => node.props.accessibilityLabel === 'action.continue');
+    await ReactTestRenderer.act(async () => continueButton!.props.onPress());
     const maxButton = renderer!.root
       .findAllByType(TouchableOpacity)
       .find(node => node.props.accessibilityLabel === 'MAX');
