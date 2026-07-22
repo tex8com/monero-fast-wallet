@@ -521,9 +521,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setRestoreSeed("");
       setRestoreStartDate("");
     }
-    if (mode === "open") {
-      setOpenRestoreStartDate("");
-    }
     if (mode === "create") {
       setCreateCredentialMode("device");
     }
