@@ -383,37 +383,24 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const hardwareTransportReady = ledgerTransportReady(ledgerStatus);
   const waitingForBiometricStatus =
     biometricStatus === undefined && biometricError === undefined;
-  const createBiometricPending =
-    passwordPromptMode === "create" &&
-    createCredentialMode === "device" &&
-    waitingForBiometricStatus;
-  const showCreateMethodChoices =
-    passwordPromptMode === "create";
-  const showBiometricCard =
-    (passwordPromptMode === "create" && createCredentialMode === "device") ||
-    openUsesStoredSecret;
+  // A software wallet's encryption secret is held in the platform secure
+  // store. App protection is selected once in Settings; it is deliberately
+  // not a separate prompt for every wallet.
+  const showCreateMethodChoices = false;
+  const showBiometricCard = false;
   const showPasswordFields =
-    passwordPromptMode === "restore" ||
-    (passwordPromptMode === "create" &&
-      createCredentialMode === "password" &&
-      !createBiometricPending) ||
-    (passwordPromptMode === "open" &&
+    passwordPromptMode === "open" &&
       !openUsesStoredSecret &&
-      !openUsesHardwareWallet);
+      !openUsesHardwareWallet;
   const passwordReady =
     passwordPromptMode === "open"
       ? openUsesStoredSecret ||
         openUsesHardwareWallet ||
         walletPassword.length > 0
         : passwordPromptMode === "restore"
-          ? walletPassword.length >= 8 &&
-            walletPassword === walletPasswordConfirm &&
-          restoreSeedWordCount === MONERO_SEED_WORD_COUNT &&
-          restoreStartDateReady
-        : createCredentialMode === "device"
-          ? true
-          : walletPassword.length >= 8 &&
-            walletPassword === walletPasswordConfirm;
+          ? restoreSeedWordCount === MONERO_SEED_WORD_COUNT &&
+            restoreStartDateReady
+          : true;
   const passwordPromptTitle =
     passwordPromptMode === "open"
       ? t("action.openWallet")
@@ -428,12 +415,8 @@ export default function WalletSetupScreen({ navigation, route }: any) {
           ? t("setup.prompt.openHardware")
           : t("setup.prompt.openPassword")
       : passwordPromptMode === "restore"
-          ? t("setup.prompt.restore")
-          : createCredentialMode === "device"
-            ? canUseBiometric
-              ? t("setup.prompt.createDeviceWithBiometric", { biometric: currentBiometricLabel })
-              : t("setup.prompt.createDeviceNoBiometric")
-            : t("setup.prompt.createPassword");
+          ? t("setup.prompt.restoreStored")
+          : t("setup.prompt.createDeviceNoBiometric");
   const passwordPromptAction =
     passwordPromptMode === "open"
       ? openUsesStoredSecret
@@ -551,8 +534,17 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       return;
     }
     setPendingWalletOpenId(undefined);
+    if (registeredWallet.credentialKey && registeredWallet.kind !== "hardware") {
+      navigation.navigate("Home");
+      return;
+    }
     openPasswordPrompt("open");
-  }, [openPasswordPrompt, pendingWalletOpenId, registeredWallet?.id]);
+  }, [
+    navigation,
+    openPasswordPrompt,
+    pendingWalletOpenId,
+    registeredWallet,
+  ]);
 
   const closePasswordPrompt = useCallback(() => {
     const shouldReturnHome =
@@ -634,6 +626,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         return;
       }
       handledModeRequest.current = requestKey;
+      if (registeredWallet.credentialKey && registeredWallet.kind !== "hardware") {
+        navigation.navigate("Home");
+        return;
+      }
       openPasswordPrompt("open");
       return;
     }
@@ -643,6 +639,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       openPasswordPrompt(requestedMode);
     }
   }, [
+    navigation,
     openPasswordPrompt,
     registeredWallet,
     route?.params?.mode,
@@ -1062,9 +1059,8 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       clearQueuedSeedBackup();
       setSeedConfirmed(false);
       beginCreateAnimation(RESTORE_STEPS);
-      const result = await walletService.restoreNamedWallet({
+      const result = await walletService.restoreNamedWalletWithStoredSecret({
         walletName: DEFAULT_WALLET_NAME,
-        password,
         mnemonic: normalizedRestoreSeed,
         network: settings.network,
         restoreHeight,
@@ -1074,7 +1070,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         setCreateStep(t("setup.createFastReceive"));
         setupLog("startRestoreWallet.fastReceive.start");
         const fastReceive = await walletService.createFastReceiveIdentity({
-          password,
           restoreHeight,
         });
         fastReceiveIdentityId = fastReceive.identity.id;
@@ -1104,7 +1099,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         registerFastReceiveInBackground(
           "startRestoreWallet",
           fastReceiveIdentityId,
-          { password },
+          { secretKey: result.session.credentialKey },
         );
       }
       navigation.navigate("Home");
@@ -1317,12 +1312,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       return;
     }
 
-    if (createCredentialMode === "device") {
-      startCreateWalletWithDeviceSecret();
-      return;
-    }
-
-    startCreateWallet();
+    startCreateWalletWithDeviceSecret();
   };
 
   const finishSeedBackup = async () => {

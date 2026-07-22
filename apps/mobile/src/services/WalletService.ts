@@ -57,6 +57,7 @@ import type {
   PreparedTransaction,
   PrepareTransactionInput,
   RestoreWalletInput,
+  RestoreWalletWithStoredSecretInput,
   TransactionPriority,
   WalletTransaction,
   WalletSnapshot,
@@ -108,6 +109,14 @@ export interface CreateNamedLedgerWalletPairResult
 export interface RestoreNamedWalletInput {
   walletName: string;
   password: string;
+  mnemonic: string;
+  seedOffset?: string;
+  network?: MoneroNetwork;
+  restoreHeight?: number;
+}
+
+export interface RestoreNamedWalletWithStoredSecretInput {
+  walletName: string;
   mnemonic: string;
   seedOffset?: string;
   network?: MoneroNetwork;
@@ -235,6 +244,30 @@ export class WalletService {
         secretKey: key,
       },
       () => requireNativeMoneroWallet().ensureSecret(key),
+    );
+  }
+
+  async storeSecret(key: string, value: string): Promise<void> {
+    return traceWalletOperation(
+      'storeSecret',
+      {secretKey: key},
+      () => requireNativeMoneroWallet().storeSecret(key, value),
+    );
+  }
+
+  async verifySecret(key: string, value: string): Promise<boolean> {
+    return traceWalletOperation(
+      'verifySecret',
+      {secretKey: key},
+      () => requireNativeMoneroWallet().verifySecret(key, value),
+    );
+  }
+
+  async deleteSecret(key: string): Promise<void> {
+    return traceWalletOperation(
+      'deleteSecret',
+      {secretKey: key},
+      () => requireNativeMoneroWallet().deleteSecret(key),
     );
   }
 
@@ -381,10 +414,6 @@ export class WalletService {
         );
 
         await this.ensureSecret(credentialKey);
-        await this.authorizeDeviceSecretAccess(
-          'Create and unlock your Monero wallet.',
-          input.authentication ?? 'if-available',
-        );
         const session = await this.createWalletWithStoredSecret({
           path,
           secretKey: credentialKey,
@@ -772,6 +801,92 @@ export class WalletService {
           session,
           registration,
         };
+      },
+    );
+  }
+
+  async restoreWalletWithStoredSecret(
+    input: RestoreWalletWithStoredSecretInput,
+  ): Promise<WalletSession> {
+    return traceWalletOperation(
+      'restoreWalletWithStoredSecret',
+      {
+        hasSeedOffset: Boolean(input.seedOffset),
+        network: input.network,
+        restoreHeight: input.restoreHeight ?? 0,
+        secretKey: input.secretKey,
+        seedWordCount: input.mnemonic.trim().split(/\s+/).filter(Boolean)
+          .length,
+        walletFile: walletFileName(input.path),
+      },
+      async () => {
+        const result = await requireNativeMoneroWallet().restoreWalletWithStoredSecret(
+          input,
+        );
+        return this.configureOpenedSession({
+          walletId: result.walletId,
+          network: input.network,
+          credentialKey: input.secretKey,
+        });
+      },
+    );
+  }
+
+  async restoreNamedWalletWithStoredSecret(
+    input: RestoreNamedWalletWithStoredSecretInput,
+  ): Promise<CreateNamedWalletResult> {
+    return traceWalletOperation(
+      'restoreNamedWalletWithStoredSecret',
+      {
+        networkHint: input.network ?? 'active',
+        requestedName: input.walletName,
+        restoreHeight: input.restoreHeight ?? 0,
+        seedWordCount: input.mnemonic.trim().split(/\s+/).filter(Boolean)
+          .length,
+      },
+      async () => {
+        const settings = await loadActiveNodeConnectionSettings(input.network);
+        const walletName = await this.resolveAvailableWalletName(
+          input.walletName,
+          settings.network,
+          'software',
+        );
+        const path = await this.defaultWalletPath(walletName, settings.network);
+        const credentialKey = walletCredentialKey(
+          'software',
+          walletName,
+          settings.network,
+        );
+        await this.ensureSecret(credentialKey);
+        const session = await this.restoreWalletWithStoredSecret({
+          path,
+          secretKey: credentialKey,
+          mnemonic: input.mnemonic,
+          seedOffset: input.seedOffset,
+          network: settings.network,
+          restoreHeight: input.restoreHeight,
+        });
+        const registration = await saveRegisteredWallet(
+          createRegisteredWallet({
+            walletName,
+            path,
+            network: settings.network,
+            credentialKey,
+            seedBackupStatus: 'verified',
+            seedBackedUpAt: new Date().toISOString(),
+          }),
+        );
+        logWalletEvent(
+          'WalletService',
+          'restoreNamedWalletWithStoredSecret.registered',
+          {
+            network: settings.network,
+            registrationId: maskIdentifier(registration.id),
+            walletFile: walletFileName(path),
+            walletName,
+          },
+        );
+        return {session, registration};
       },
     );
   }
@@ -2145,10 +2260,10 @@ export class WalletService {
       walletFile: walletFileName(registration.path),
       walletName: registration.walletName,
     });
-    await this.authorizeDeviceSecretAccess(
-      'Unlock your Monero wallet.',
-      'if-available',
-    );
+    // The encrypted credential is already kept in platform secure storage.
+    // Do not add a second, per-wallet biometric/password hurdle here: app
+    // access protection belongs at the application boundary, not to every
+    // saved wallet the user selects.
     const session = await this.openWalletWithStoredSecret({
       path: registration.path,
       secretKey: registration.credentialKey,

@@ -39,6 +39,10 @@ import type {
 import { runWalletDiagnostics } from "../services/WalletDiagnostics";
 import { walletService } from "../services/WalletService";
 import { useWalletState } from "../services/WalletState";
+import {
+  type AppProtectionMode,
+  useAppSecurity,
+} from "../services/AppSecurity";
 
 type DiagnosticRow = {
   label: string;
@@ -62,7 +66,11 @@ const NETWORKS: { value: MoneroNetwork; label: string }[] = [
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { language, setLanguage, t } = useI18n();
-  const { lockWallet, registeredWallet, session } = useWalletState();
+  const { registeredWallet, session } = useWalletState();
+  const {
+    mode: savedProtectionMode,
+    setMode: setAppProtectionMode,
+  } = useAppSecurity();
   const bottomPadding = Math.max(180, insets.bottom + 150);
   const [draft, setDraft] = useState<NodeConnectionDraft>(() =>
     nodeConnectionSettingsToDraft(getActiveNodeConnectionSettings()),
@@ -79,9 +87,15 @@ export default function SettingsScreen() {
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
   const [recoverySeed, setRecoverySeed] = useState<string | undefined>();
   const [isRevealingSeed, setIsRevealingSeed] = useState(false);
-  const [newWalletPassword, setNewWalletPassword] = useState("");
-  const [confirmWalletPassword, setConfirmWalletPassword] = useState("");
-  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [protectionMode, setProtectionMode] =
+    useState<AppProtectionMode>(savedProtectionMode);
+  const [appPassword, setAppPassword] = useState("");
+  const [confirmAppPassword, setConfirmAppPassword] = useState("");
+  const [isSavingAppProtection, setIsSavingAppProtection] = useState(false);
+
+  useEffect(() => {
+    setProtectionMode(savedProtectionMode);
+  }, [savedProtectionMode]);
 
   useEffect(() => {
     let mounted = true;
@@ -252,34 +266,31 @@ export default function SettingsScreen() {
     }
   }
 
-  async function changeWalletPassword() {
-    if (!session) {
-      Alert.alert(t("settings.changeWalletPassword"), t("settings.recoverySeedUnavailable"));
-      return;
-    }
-    if (registeredWallet?.kind === "hardware" || session.hardwareDevice) {
-      Alert.alert(t("settings.changeWalletPassword"), t("settings.passwordHardware"));
-      return;
-    }
-    if (newWalletPassword.length < 8) {
-      Alert.alert(t("settings.changeWalletPassword"), t("settings.passwordMinimum"));
-      return;
-    }
-    if (newWalletPassword !== confirmWalletPassword) {
-      Alert.alert(t("settings.changeWalletPassword"), t("settings.passwordMismatch"));
-      return;
+  async function saveAppProtection() {
+    if (protectionMode === "password") {
+      if (appPassword.length < 8) {
+        Alert.alert(t("settings.appProtection"), t("settings.passwordMinimum"));
+        return;
+      }
+      if (appPassword !== confirmAppPassword) {
+        Alert.alert(t("settings.appProtection"), t("settings.passwordMismatch"));
+        return;
+      }
     }
 
-    setIsChangingPassword(true);
+    setIsSavingAppProtection(true);
     try {
-      await walletService.changeWalletPassword(session, newWalletPassword);
-      setNewWalletPassword("");
-      setConfirmWalletPassword("");
-      Alert.alert(t("settings.changeWalletPassword"), t("settings.passwordChanged"));
+      await setAppProtectionMode(
+        protectionMode,
+        protectionMode === "password" ? appPassword : undefined,
+      );
+      setAppPassword("");
+      setConfirmAppPassword("");
+      Alert.alert(t("settings.appProtection"), t("settings.appProtectionSaved"));
     } catch (error) {
-      Alert.alert(t("settings.changeWalletPassword"), errorMessage(error));
+      Alert.alert(t("settings.appProtection"), errorMessage(error));
     } finally {
-      setIsChangingPassword(false);
+      setIsSavingAppProtection(false);
     }
   }
 
@@ -333,6 +344,77 @@ export default function SettingsScreen() {
         </View>
 
         <View style={s.section}>
+          <Text style={s.sectionTitle}>{t("settings.appProtection")}</Text>
+          <View style={s.nodePanel}>
+            <Text style={s.passwordHint}>{t("settings.appProtectionHint")}</Text>
+            <View style={s.segmented}>
+              {([
+                ["none", t("settings.noProtection")],
+                ["biometric", t("settings.biometrics")],
+                ["password", t("settings.appPassword")],
+              ] as const).map(([nextMode, label]) => (
+                <TouchableOpacity
+                  key={nextMode}
+                  accessibilityRole="button"
+                  onPress={() => setProtectionMode(nextMode)}
+                  style={[s.segment, protectionMode === nextMode && s.segmentActive]}
+                >
+                  <Text
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    style={[s.segmentText, protectionMode === nextMode && s.segmentTextActive]}
+                  >
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {protectionMode === "password" ? (
+              <>
+                <TextInput
+                  value={appPassword}
+                  onChangeText={setAppPassword}
+                  placeholder={t("settings.setAppPassword")}
+                  placeholderTextColor={colors.textMuted}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={s.input}
+                />
+                <TextInput
+                  value={confirmAppPassword}
+                  onChangeText={setConfirmAppPassword}
+                  placeholder={t("settings.confirmAppPassword")}
+                  placeholderTextColor={colors.textMuted}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={s.input}
+                />
+              </>
+            ) : null}
+            <TouchableOpacity
+              activeOpacity={0.8}
+              disabled={
+                isSavingAppProtection ||
+                (protectionMode === "password" && (!appPassword || !confirmAppPassword))
+              }
+              onPress={() => void saveAppProtection()}
+              style={[
+                s.secondaryButton,
+                (isSavingAppProtection ||
+                  (protectionMode === "password" && (!appPassword || !confirmAppPassword))) &&
+                  s.primaryButtonDisabled,
+              ]}
+            >
+              <Text style={s.secondaryButtonText}>
+                {isSavingAppProtection ? t("action.working") : t("settings.saveAppProtection")}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={s.section}>
           <Text style={s.sectionTitle}>{t("settings.wallet")}</Text>
           <View style={s.sectionCard}>
             <TouchableOpacity
@@ -351,56 +433,6 @@ export default function SettingsScreen() {
               </View>
               <Icon name="chevron-right" size={18} color={colors.textMuted} />
             </TouchableOpacity>
-
-            <View style={s.passwordPanel}>
-              <Text style={s.passwordTitle}>{t("settings.changeWalletPassword")}</Text>
-              <Text style={s.passwordHint}>{t("settings.passwordChangeHint")}</Text>
-              <TextInput
-                value={newWalletPassword}
-                onChangeText={setNewWalletPassword}
-                placeholder={t("settings.newWalletPassword")}
-                placeholderTextColor={colors.textMuted}
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={Boolean(session) && registeredWallet?.kind !== "hardware"}
-                style={s.input}
-              />
-              <TextInput
-                value={confirmWalletPassword}
-                onChangeText={setConfirmWalletPassword}
-                placeholder={t("settings.confirmWalletPassword")}
-                placeholderTextColor={colors.textMuted}
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={Boolean(session) && registeredWallet?.kind !== "hardware"}
-                style={s.input}
-              />
-              <TouchableOpacity
-                activeOpacity={0.8}
-                disabled={
-                  !session ||
-                  registeredWallet?.kind === "hardware" ||
-                  isChangingPassword ||
-                  !newWalletPassword ||
-                  !confirmWalletPassword
-                }
-                onPress={() => void changeWalletPassword()}
-                style={[
-                  s.secondaryButton,
-                  (!session ||
-                    registeredWallet?.kind === "hardware" ||
-                    isChangingPassword ||
-                    !newWalletPassword ||
-                    !confirmWalletPassword) && s.primaryButtonDisabled,
-                ]}
-              >
-                <Text style={s.secondaryButtonText}>
-                  {isChangingPassword ? t("action.working") : t("settings.changeWalletPassword")}
-                </Text>
-              </TouchableOpacity>
-            </View>
           </View>
         </View>
 
@@ -603,15 +635,6 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </View>
         </View>
-
-        <TouchableOpacity
-          activeOpacity={0.72}
-          disabled={!session}
-          onPress={() => void lockWallet().catch(() => undefined)}
-          style={[s.logoutBtn, !session && s.logoutBtnDisabled]}
-        >
-          <Text style={s.logoutText}>{t("action.closeWallet")}</Text>
-        </TouchableOpacity>
 
         <View style={s.bottomSpacer} />
       </ScrollView>

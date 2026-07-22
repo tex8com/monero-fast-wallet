@@ -125,6 +125,8 @@ export interface Spec extends TurboModule {
 
   storeSecret(key: string, value: string): Promise<void>;
 
+  verifySecret(key: string, value: string): Promise<boolean>;
+
   ensureSecret(key: string): Promise<void>;
 
   deleteSecret(key: string): Promise<void>;
@@ -148,6 +150,20 @@ export interface Spec extends TurboModule {
   restoreWallet(
     path: string,
     password: string,
+    mnemonic: string,
+    seedOffset: string,
+    network: string,
+    restoreHeight: number,
+  ): Promise<string>;
+
+  /**
+   * Restores a software wallet with the app-managed secret held in the
+   * platform secure store. This keeps wallet-file encryption without adding
+   * a second, per-wallet password prompt to the user experience.
+   */
+  restoreWalletWithStoredSecret(
+    path: string,
+    secretKey: string,
     mnemonic: string,
     seedOffset: string,
     network: string,

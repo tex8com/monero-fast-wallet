@@ -9,6 +9,7 @@ import TabNavigator from './src/navigation/TabNavigator';
 import { LanguageProvider } from './src/i18n';
 import { WalletDiagnosticsController } from './src/services/WalletDiagnosticsController';
 import { FastWalletPushService } from './src/services/FastWalletPushService';
+import { AppSecurityProvider } from './src/services/AppSecurity';
 import { WalletStateProvider } from './src/services/WalletState';
 import { useWalletState } from './src/services/WalletState';
 import IncomingPaymentNotice from './src/components/IncomingPaymentNotice';
@@ -61,17 +62,19 @@ function App() {
     <GestureHandlerRootView style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor="#0A0A14" />
       <LanguageProvider>
-        <WalletStateProvider>
-          <WalletDiagnosticsController />
-          <NavigationContainer
-            onReady={() => setNavigationReady(true)}
-            ref={navigationRef}
-          >
-            <TabNavigator />
-          </NavigationContainer>
-          <WalletUnlockRedirect ready={navigationReady} />
-          <IncomingPaymentNotice />
-        </WalletStateProvider>
+        <AppSecurityProvider>
+          <WalletStateProvider>
+            <WalletDiagnosticsController />
+            <NavigationContainer
+              onReady={() => setNavigationReady(true)}
+              ref={navigationRef}
+            >
+              <TabNavigator />
+            </NavigationContainer>
+            <WalletUnlockRedirect ready={navigationReady} />
+            <IncomingPaymentNotice />
+          </WalletStateProvider>
+        </AppSecurityProvider>
       </LanguageProvider>
     </GestureHandlerRootView>
   );

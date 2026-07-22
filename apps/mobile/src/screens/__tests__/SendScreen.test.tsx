@@ -135,7 +135,7 @@ describe('SendScreen', () => {
     await ReactTestRenderer.act(async () => continueButton!.props.onPress());
     const maxButton = renderer!.root
       .findAllByType(TouchableOpacity)
-      .find(node => node.props.accessibilityLabel === 'MAX');
+      .find(node => node.props.accessibilityLabel === 'send.all');
     await ReactTestRenderer.act(async () => maxButton!.props.onPress());
 
     const sendButton = renderer!.root

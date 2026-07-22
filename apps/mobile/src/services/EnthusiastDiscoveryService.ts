@@ -4,6 +4,7 @@ import {
   PermissionsAndroid,
   Platform,
 } from 'react-native';
+import {logWalletEvent} from './WalletLogger';
 
 const STORAGE_KEY = 'monero-wallet.enthusiast-discovery.v1';
 const ACCOUNT_STORAGE_KEY = 'monero-wallet.enthusiast-account.v1';
@@ -297,6 +298,9 @@ export async function setEnthusiastDiscoveryRadius(
 
 async function requestAndroidLocationPermission(): Promise<boolean> {
   if (Platform.OS !== 'android') {
+    logWalletEvent('community-location', 'permission.not-required', {
+      platform: Platform.OS,
+    });
     return true;
   }
   const fine = PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION;
@@ -305,13 +309,19 @@ async function requestAndroidLocationPermission(): Promise<boolean> {
     (await PermissionsAndroid.check(fine)) ||
     (await PermissionsAndroid.check(coarse))
   ) {
+    logWalletEvent('community-location', 'permission.already-granted');
     return true;
   }
   const result = await PermissionsAndroid.requestMultiple([fine, coarse]);
-  return (
+  const granted =
     result[fine] === PermissionsAndroid.RESULTS.GRANTED ||
-    result[coarse] === PermissionsAndroid.RESULTS.GRANTED
-  );
+    result[coarse] === PermissionsAndroid.RESULTS.GRANTED;
+  logWalletEvent('community-location', 'permission.request-result', {
+    granted,
+    fine: result[fine],
+    coarse: result[coarse],
+  });
+  return granted;
 }
 
 function validLocation(value: unknown): value is NativeLocationSnapshot {
@@ -376,13 +386,17 @@ function locationErrorStatus(error: unknown): EnthusiastLocationStatus {
 
 export async function refreshApproximateEnthusiastLocation(): Promise<EnthusiastDiscoveryPreference> {
   const current = await loadEnthusiastDiscoveryPreference();
-  if (!current.enabled) {
-    return current;
-  }
-
+  // Request one fresh location as Community opens, even before the user
+  // chooses visibility. Exact coordinates never leave this function: only a
+  // coarse geohash is kept in memory and it is uploaded only when discovery
+  // has explicitly been enabled.
+  logWalletEvent('community-location', 'request.started', {
+    discoveryEnabled: current.enabled,
+  });
   await savePreference({...current, locationStatus: 'requesting'});
   try {
     if (!(await requestAndroidLocationPermission())) {
+      logWalletEvent('community-location', 'request.denied');
       return savePreference({...current, locationStatus: 'denied'});
     }
 
@@ -390,11 +404,13 @@ export async function refreshApproximateEnthusiastLocation(): Promise<Enthusiast
       | NearbyLocationModule
       | undefined;
     if (!module?.getCurrentLocation) {
+      logWalletEvent('community-location', 'request.native-module-unavailable');
       return savePreference({...current, locationStatus: 'unavailable'});
     }
 
     const location = await module.getCurrentLocation();
     if (!validLocation(location)) {
+      logWalletEvent('community-location', 'request.invalid-result');
       return savePreference({...current, locationStatus: 'unavailable'});
     }
 
@@ -404,14 +420,28 @@ export async function refreshApproximateEnthusiastLocation(): Promise<Enthusiast
       location.longitude,
     );
     const ready = await savePreference({...current, locationStatus: 'ready'});
+    logWalletEvent('community-location', 'request.ready', {
+      accuracyMeters:
+        typeof location.accuracy === 'number' ? Math.round(location.accuracy) : undefined,
+      published: current.enabled,
+    });
+    if (!current.enabled) {
+      return ready;
+    }
     try {
       await publishCommunityProfile(ready, approximateAreaId);
+      logWalletEvent('community-location', 'community-profile.published');
       return savePreference({...ready, serverStatus: 'ready'});
     } catch {
+      logWalletEvent('community-location', 'community-profile.publish-failed');
       return savePreference({...ready, serverStatus: 'offline'});
     }
   } catch (error) {
     approximateAreaId = undefined;
+    logWalletEvent('community-location', 'request.failed', {
+      status: locationErrorStatus(error),
+      message: error instanceof Error ? error.message : String(error),
+    });
     return savePreference({
       ...current,
       locationStatus: locationErrorStatus(error),

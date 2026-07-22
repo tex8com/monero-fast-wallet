@@ -3,6 +3,7 @@ import ReactTestRenderer from "react-test-renderer";
 import { TextInput } from "react-native";
 
 import { LanguageProvider } from "../../i18n";
+import { AppSecurityProvider } from "../../services/AppSecurity";
 import SettingsScreen from "../SettingsScreen";
 
 jest.mock("@react-native-async-storage/async-storage", () => {
@@ -69,7 +70,9 @@ describe("SettingsScreen", () => {
     await ReactTestRenderer.act(async () => {
       renderer = ReactTestRenderer.create(
         <LanguageProvider>
-          <SettingsScreen />
+          <AppSecurityProvider>
+            <SettingsScreen />
+          </AppSecurityProvider>
         </LanguageProvider>,
       );
     });

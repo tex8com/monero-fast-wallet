@@ -676,6 +676,17 @@ export default function SendScreen({ navigation }: any) {
         <View style={s.amountCard}>
           <View style={s.cardHeader}>
             <Text style={s.fieldLabel}>{t('send.amount')}</Text>
+            <TouchableOpacity
+              accessibilityLabel={t('send.all')}
+              accessibilityRole="button"
+              onPress={() => {
+                setAmount('');
+                setSweepAll(true);
+                setSendError(undefined);
+                clearPreparedTransaction();
+              }}>
+              <Text style={s.maxText}>{t('send.all')}</Text>
+            </TouchableOpacity>
           </View>
           <Text style={s.amountInput}>{amount || '0.0000'}</Text>
           <Text style={s.xmrLabel}>XMR</Text>

@@ -28,6 +28,15 @@ export interface RestoreWalletInput {
   restoreHeight?: number;
 }
 
+export interface RestoreWalletWithStoredSecretInput {
+  path: string;
+  secretKey: string;
+  mnemonic: string;
+  seedOffset?: string;
+  network: MoneroNetwork;
+  restoreHeight?: number;
+}
+
 export interface OpenWalletInput {
   path: string;
   password: string;
@@ -165,6 +174,7 @@ export interface NativeMoneroWalletModule {
   getBiometricAuthStatus(): Promise<BiometricAuthStatus>;
   authenticateBiometric(reason: string): Promise<BiometricAuthResult>;
   storeSecret(key: string, value: string): Promise<void>;
+  verifySecret(key: string, value: string): Promise<boolean>;
   ensureSecret(key: string): Promise<void>;
   deleteSecret(key: string): Promise<void>;
   defaultWalletPath(
@@ -176,6 +186,9 @@ export interface NativeMoneroWalletModule {
     input: CreateWalletWithStoredSecretInput,
   ): Promise<{ walletId: string }>;
   restoreWallet(input: RestoreWalletInput): Promise<{ walletId: string }>;
+  restoreWalletWithStoredSecret(
+    input: RestoreWalletWithStoredSecretInput,
+  ): Promise<{ walletId: string }>;
   openWallet(input: OpenWalletInput): Promise<{ walletId: string }>;
   openWalletWithStoredSecret(
     input: OpenWalletWithStoredSecretInput,
@@ -267,6 +280,7 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       authenticateBiometric: reason =>
         turboModule.authenticateBiometric(reason),
       storeSecret: (key, value) => turboModule.storeSecret(key, value),
+      verifySecret: (key, value) => turboModule.verifySecret(key, value),
       ensureSecret: key => turboModule.ensureSecret(key),
       deleteSecret: key => turboModule.deleteSecret(key),
       defaultWalletPath: (walletName, network) =>
@@ -291,6 +305,16 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
         walletId: await turboModule.restoreWallet(
           input.path,
           input.password,
+          input.mnemonic,
+          input.seedOffset ?? '',
+          input.network,
+          input.restoreHeight ?? 0,
+        ),
+      }),
+      restoreWalletWithStoredSecret: async input => ({
+        walletId: await turboModule.restoreWalletWithStoredSecret(
+          input.path,
+          input.secretKey,
           input.mnemonic,
           input.seedOffset ?? '',
           input.network,

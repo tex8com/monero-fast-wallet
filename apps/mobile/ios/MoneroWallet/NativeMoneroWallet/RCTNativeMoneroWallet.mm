@@ -1478,6 +1478,19 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
   }
 }
 
+- (void)verifySecret:(NSString *)key
+               value:(NSString *)value
+             resolve:(RCTPromiseResolveBlock)resolve
+              reject:(RCTPromiseRejectBlock)reject
+{
+  try {
+    NSString *storedValue = readKeychainSecret(key);
+    resolve(@(storedValue != nil && [storedValue isEqualToString:value]));
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+  }
+}
+
 - (void)ensureSecret:(NSString *)key
              resolve:(RCTPromiseResolveBlock)resolve
               reject:(RCTPromiseRejectBlock)reject
@@ -1624,6 +1637,47 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     RestoreWalletRequest request;
     request.path = toStdString(path);
     request.password = toStdString(password);
+    request.mnemonic = toStdString(mnemonic);
+    request.seedOffset = toStdString(seedOffset);
+    request.network = toNetworkType(network);
+    request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
+    return toNSString(engine.restoreWallet(request));
+  }];
+}
+
+- (void)restoreWalletWithStoredSecret:(NSString *)path
+                            secretKey:(NSString *)secretKey
+                             mnemonic:(NSString *)mnemonic
+                           seedOffset:(NSString *)seedOffset
+                              network:(NSString *)network
+                        restoreHeight:(double)restoreHeight
+                              resolve:(RCTPromiseResolveBlock)resolve
+                               reject:(RCTPromiseRejectBlock)reject
+{
+  NSArray<NSString *> *seedWords = [[mnemonic stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]]
+      componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSPredicate *nonEmpty =
+      [NSPredicate predicateWithBlock:^BOOL(NSString *word,
+                                            NSDictionary<NSString *, id> *bindings) {
+    (void)bindings;
+    return word.length > 0;
+  }];
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"restoreWalletWithStoredSecret"
+                  fields:@{
+                    @"hasSeedOffset": @(seedOffset.length > 0),
+                    @"hasStoredSecret": @YES,
+                    @"network": network ?: @"",
+                    @"restoreHeight": @(restoreHeight),
+                    @"seedWordCount": @([[seedWords filteredArrayUsingPredicate:nonEmpty] count]),
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
+    RestoreWalletRequest request;
+    request.path = toStdString(path);
+    request.password = toStdString(readRequiredKeychainSecret(secretKey));
     request.mnemonic = toStdString(mnemonic);
     request.seedOffset = toStdString(seedOffset);
     request.network = toNetworkType(network);

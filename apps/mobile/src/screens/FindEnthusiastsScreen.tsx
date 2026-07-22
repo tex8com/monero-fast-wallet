@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -52,10 +52,6 @@ export default function FindEnthusiastsScreen({navigation}: any) {
   // radius must never trigger another GPS request.
   const locationRefreshStarted = useRef(false);
 
-  const reloadPreference = useCallback(async () => {
-    setPreference(await loadEnthusiastDiscoveryPreference());
-  }, []);
-
   const reloadCommunity = useCallback(
     async (activePreference: EnthusiastDiscoveryPreference) => {
       if (!activePreference.enabled || activePreference.locationStatus !== 'ready') {
@@ -85,32 +81,50 @@ export default function FindEnthusiastsScreen({navigation}: any) {
 
   useFocusEffect(
     useCallback(() => {
+      let active = true;
       locationRefreshStarted.current = false;
-      reloadPreference().catch(() => undefined);
-    }, [reloadPreference]),
-  );
 
-  useEffect(() => {
-    if (!preference || busy) {
-      return;
-    }
-    if (
-      preference.enabled &&
-      preference.locationStatus === 'not_requested' &&
-      !locationRefreshStarted.current
-    ) {
-      locationRefreshStarted.current = true;
-      setBusy(true);
-      refreshApproximateEnthusiastLocation()
-        .then(next => {
-          setPreference(next);
-          return reloadCommunity(next);
-        })
-        .finally(() => setBusy(false));
-    } else if (preference.locationStatus === 'ready') {
-      reloadCommunity(preference).catch(() => undefined);
-    }
-  }, [busy, preference, reloadCommunity]);
+      const refreshOnScreenOpen = async () => {
+        const current = await loadEnthusiastDiscoveryPreference();
+        if (!active) {
+          return;
+        }
+        setPreference(current);
+
+        // Ask the operating system for one fresh approximate location when
+        // Community opens. This is deliberately independent of the radius:
+        // 5/10/25 km only changes the server-side lookup, never GPS access.
+        if (!locationRefreshStarted.current) {
+          locationRefreshStarted.current = true;
+          setBusy(true);
+          try {
+            const next = await refreshApproximateEnthusiastLocation();
+            if (!active) {
+              return;
+            }
+            setPreference(next);
+            if (next.enabled) {
+              await reloadCommunity(next);
+            }
+          } finally {
+            if (active) {
+              setBusy(false);
+            }
+          }
+          return;
+        }
+
+        if (current.locationStatus === 'ready') {
+          await reloadCommunity(current);
+        }
+      };
+
+      refreshOnScreenOpen().catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, [reloadCommunity]),
+  );
 
   const toggleDiscovery = async (enabled: boolean) => {
     setBusy(true);

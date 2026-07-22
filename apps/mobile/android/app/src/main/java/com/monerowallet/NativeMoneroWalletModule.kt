@@ -415,6 +415,18 @@ class NativeMoneroWalletModule(
       }
   }
 
+  override fun verifySecret(key: String, value: String, promise: Promise) {
+    runCatching { readSecretValue(key) == value }
+      .onSuccess { promise.resolve(it) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_secret_error",
+          error.message ?: "Failed to verify native secret",
+          error,
+        )
+      }
+  }
+
   override fun ensureSecret(key: String, promise: Promise) {
     runCatching {
       if (readSecretValue(key) == null) {
@@ -529,6 +541,36 @@ class NativeMoneroWalletModule(
       NativeMoneroWalletJni.restoreWallet(
         path,
         password,
+        mnemonic,
+        seedOffset,
+        network,
+        restoreHeight,
+      )
+    }
+  }
+
+  override fun restoreWalletWithStoredSecret(
+    path: String,
+    secretKey: String,
+    mnemonic: String,
+    seedOffset: String,
+    network: String,
+    restoreHeight: Double,
+    promise: Promise,
+  ) {
+    resolveNativeString(
+      promise,
+      "restoreWalletWithStoredSecret",
+      walletPathFields(path, network) + mapOf(
+        "hasSeedOffset" to seedOffset.isNotBlank(),
+        "hasStoredSecret" to true,
+        "restoreHeight" to restoreHeight,
+        "seedWordCount" to mnemonic.trim().split(Regex("\\s+")).filter { it.isNotBlank() }.size,
+      ),
+    ) {
+      NativeMoneroWalletJni.restoreWallet(
+        path,
+        readRequiredSecretValue(secretKey),
         mnemonic,
         seedOffset,
         network,

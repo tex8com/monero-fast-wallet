@@ -299,6 +299,10 @@ export function WalletStateProvider({
   const activateRegisteredWallet = useCallback(
     async (walletId: string) => {
       stopNativeRefresh(sessionRef.current, 'activeWalletChanged');
+      // Selecting a saved wallet is an explicit user action.  Allow the
+      // automatic local-credential opener to run again even when the same
+      // wallet had previously been locked.
+      autoOpenAttemptedWalletIdRef.current = undefined;
       const wallet = await walletService.setActiveRegisteredWallet(walletId);
       const wallets = await walletService.loadRegisteredWallets();
       registeredWalletRef.current = wallet;
