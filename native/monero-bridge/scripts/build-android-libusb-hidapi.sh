@@ -178,6 +178,11 @@ for label in "${targets[@]}"; do
     mv "${work_dir}/hidapi-hidapi-${hidapi_version}" "${hidapi_source_dir}"
 
     echo "==> build hidapi ${hidapi_version} for ${label}"
+    # Prefer the target prefix over host pkg-config metadata. On development
+    # Macs pkg-config is often installed, and without this it may resolve a
+    # host libusb despite the Android archive already being present.
+    PKG_CONFIG_LIBDIR="${prefix}/lib/pkgconfig" \
+    PKG_CONFIG_PATH="${prefix}/lib/pkgconfig" \
     cmake \
       -S "${hidapi_source_dir}" \
       -B "${hidapi_build_dir}" \

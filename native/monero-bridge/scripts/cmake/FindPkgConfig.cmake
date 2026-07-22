@@ -54,7 +54,11 @@ else()
       get_filename_component(_pkg_prefix "${_pkg_config_dir}/../.." ABSOLUTE)
     endif()
 
-    if(_pkg_name STREQUAL "libusb")
+    # HIDAPI requests the package by its canonical pkg-config name
+    # ("libusb-1.0"), while the static archive itself is libusb-1.0.a.
+    # Accept both spellings so the Android fallback never tries to construct
+    # the non-existent liblibusb-1.0.a.
+    if(_pkg_name STREQUAL "libusb" OR _pkg_name STREQUAL "libusb-1.0")
       set(_pkg_library_name "usb-1.0")
     else()
       set(_pkg_library_name "${_pkg_name}")
@@ -68,10 +72,26 @@ else()
       return()
     endif()
 
-    set(${package_prefix}_INCLUDE_DIRS "${_pkg_prefix}/include")
+    set(_pkg_include_dirs "${_pkg_prefix}/include")
+    if(_pkg_name STREQUAL "libusb" OR _pkg_name STREQUAL "libusb-1.0")
+      list(APPEND _pkg_include_dirs "${_pkg_prefix}/include/libusb-1.0")
+    endif()
+    set(${package_prefix}_INCLUDE_DIRS "${_pkg_include_dirs}")
     set(${package_prefix}_LIBRARY_DIRS "${_pkg_prefix}/lib")
     set(${package_prefix}_FOUND TRUE)
     set(${package_prefix}_VERSION "native-prefix")
     set(${package_prefix}_LIBRARIES "${_pkg_library_name}")
+
+    # CMake projects such as HIDAPI request IMPORTED_TARGET and link against
+    # PkgConfig::<prefix>. Recreate the tiny interface target that CMake's
+    # native FindPkgConfig module would provide, but point it at the already
+    # cross-compiled static archive in the Android dependency prefix.
+    if(_pkg_IMPORTED_TARGET AND NOT TARGET "PkgConfig::${package_prefix}")
+      add_library("PkgConfig::${package_prefix}" INTERFACE IMPORTED)
+      set_target_properties("PkgConfig::${package_prefix}" PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${_pkg_include_dirs}"
+        INTERFACE_LINK_LIBRARIES "${_pkg_archive}"
+      )
+    endif()
   endmacro()
 endif()

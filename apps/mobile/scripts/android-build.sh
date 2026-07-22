@@ -51,9 +51,13 @@ if [ -d "${EXTERNAL_BUILD_ROOT}" ]; then
     relative_output="${module_output#${MOBILE_DIR}/}"
     external_output="${MODULE_BUILD_ROOT}/${relative_output}"
     if [ -e "${external_output}" ]; then
-      echo "External Android output already exists: ${external_output}" >&2
-      echo "Move or remove that generated output before rebuilding." >&2
-      exit 1
+      # Both locations are Gradle-generated output only. A previous interrupted
+      # build can leave the external cache behind while AGP recreates the local
+      # directory. Reuse the external output and replace only the local,
+      # reproducible directory with a symlink; never touch package sources.
+      rm -rf "${module_output}"
+      ln -s "${external_output}" "${module_output}"
+      continue
     fi
     mkdir -p "$(dirname "${external_output}")"
     mv "${module_output}" "${external_output}"
