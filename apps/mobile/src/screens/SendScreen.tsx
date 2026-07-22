@@ -49,21 +49,6 @@ import {
 
 type Step = 'recipient-choice' | 'manual-recipient' | 'amount' | 'confirm';
 
-const QUICK_AMOUNTS = ['0.10', '0.25', '0.50', '1.00'];
-const PRIORITIES: TransactionPriority[] = ['low', 'default', 'medium', 'high'];
-
-function priorityLabel(
-  priority: TransactionPriority,
-  t: ReturnType<typeof useI18n>['t'],
-) {
-  switch (priority) {
-    case 'low': return t('send.priorityLow');
-    case 'default': return t('send.priorityNormal');
-    case 'medium': return t('send.priorityMedium');
-    case 'high': return t('send.priorityHigh');
-  }
-}
-
 function shortAddress(value: string, fallback: string) {
   if (!value) {
     return fallback;
@@ -78,7 +63,9 @@ export default function SendScreen({ navigation }: any) {
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [step, setStep] = useState<Step>('recipient-choice');
-  const [priority, setPriority] = useState<TransactionPriority>('low');
+  // Keep the straightforward default. Advanced fee selection belongs in a
+  // future optional details sheet, not in the primary send journey.
+  const priority: TransactionPriority = 'low';
   const [sendError, setSendError] = useState<string | undefined>();
   const [sendStatus, setSendStatus] = useState<string | undefined>();
   const [preparedTx, setPreparedTx] = useState<
@@ -128,11 +115,6 @@ export default function SendScreen({ navigation }: any) {
     : status === 'locked'
     ? t('status.locked')
     : '0.00';
-  const maxAmount = snapshot
-    ? formatAtomicXmr(snapshot.unlockedBalanceAtomic, {
-        maxFractionDigits: 12,
-      })
-    : '';
   const preparedFee = preparedTx
     ? formatAtomicXmr(preparedTx.feeAtomic, { maxFractionDigits: 12 })
     : undefined;
@@ -204,6 +186,30 @@ export default function SendScreen({ navigation }: any) {
   const clearPreparedTransaction = () => {
     setPreparedTx(undefined);
     setSendStatus(undefined);
+  };
+
+  const enterAmountKey = (key: string) => {
+    let next = amount;
+    if (key === 'backspace') {
+      next = amount.slice(0, -1);
+    } else if (key === '.') {
+      if (amount.includes('.')) {
+        return;
+      }
+      next = amount ? `${amount}.` : '0.';
+    } else if (amount === '0') {
+      next = key;
+    } else {
+      next = `${amount}${key}`;
+    }
+    const [, fraction = ''] = next.split('.');
+    if (fraction.length > 12 || next.length > 24) {
+      return;
+    }
+    setAmount(next);
+    setSweepAll(false);
+    setSendError(undefined);
+    clearPreparedTransaction();
   };
 
   const selectWallet = async (wallet: WalletOption) => {
@@ -670,90 +676,25 @@ export default function SendScreen({ navigation }: any) {
         <View style={s.amountCard}>
           <View style={s.cardHeader}>
             <Text style={s.fieldLabel}>{t('send.amount')}</Text>
-            <TouchableOpacity
-              accessibilityLabel="MAX"
-              accessibilityRole="button"
-              onPress={() => {
-                setAmount(maxAmount);
-                setSweepAll(true);
-                setSendError(undefined);
-                clearPreparedTransaction();
-              }}
-              activeOpacity={0.7}
-              disabled={!snapshot}
-            >
-              <Text style={s.maxText}>MAX</Text>
-            </TouchableOpacity>
           </View>
-          <View style={s.amountRow}>
-            <TextInput
-              style={s.amountInput}
-              placeholder="0.0000"
-              placeholderTextColor={colors.textMuted}
-              value={amount}
-              onChangeText={value => {
-                setAmount(value);
-                setSweepAll(false);
-                setSendError(undefined);
-                clearPreparedTransaction();
-              }}
-              keyboardType="decimal-pad"
-            />
-            <Text style={s.xmrLabel}>XMR</Text>
-          </View>
+          <Text style={s.amountInput}>{amount || '0.0000'}</Text>
+          <Text style={s.xmrLabel}>XMR</Text>
           <Text style={s.usdLabel}>≈ ${usd} USD</Text>
 
-          <View style={s.quickRow}>
-            {QUICK_AMOUNTS.map(value => (
+          <View style={s.keypad}>
+            {['1', '2', '3', '4', '5', '6', '7', '8', '.', '9', '0', 'backspace'].map(key => (
               <TouchableOpacity
-                key={value}
-                style={s.quickBtn}
-                onPress={() => {
-                  setAmount(value);
-                  setSweepAll(false);
-                  setSendError(undefined);
-                  clearPreparedTransaction();
-                }}
-                activeOpacity={0.72}
-              >
-                <Text style={s.quickBtnText}>{value}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-
-        <View style={s.priorityCard}>
-          <Text style={s.fieldLabel}>{t('send.priority')}</Text>
-          <View style={s.priorityRow}>
-            {PRIORITIES.map(value => (
-              <TouchableOpacity
-                key={value}
+                key={key}
                 accessibilityRole="button"
-                accessibilityState={{selected: priority === value}}
+                accessibilityLabel={key === 'backspace' ? 'Delete' : key}
+                style={s.keypadKey}
+                onPress={() => enterAmountKey(key)}
                 activeOpacity={0.72}
-                onPress={() => {
-                  setPriority(value);
-                  clearPreparedTransaction();
-                }}
-                style={[
-                  s.priorityButton,
-                  priority === value && s.priorityButtonActive,
-                ]}
               >
-                <Text
-                  style={[
-                    s.priorityButtonText,
-                    priority === value && s.priorityButtonTextActive,
-                  ]}
-                >
-                  {priorityLabel(value, t)}
-                </Text>
+                <Text style={s.keypadKeyText}>{key === 'backspace' ? '⌫' : key}</Text>
               </TouchableOpacity>
             ))}
           </View>
-          {sweepAll ? (
-            <Text style={s.sweepHint}>{t('send.sweepAll')}</Text>
-          ) : null}
         </View>
 
         {sendStatus ? <Text style={s.statusText}>{sendStatus}</Text> : null}
@@ -765,19 +706,6 @@ export default function SendScreen({ navigation }: any) {
         ) : hasAmount && !amountAvailable ? (
           <Text style={s.errorText}>{t('send.amountAboveBalance')}</Text>
         ) : null}
-
-        <View style={s.summaryCard}>
-          <View>
-            <Text style={s.summaryTitle}>{t('send.privateTransfer')}</Text>
-            <Text style={s.summaryText}>
-              {preparedFee
-                ? `${t('send.fee')} ${preparedFee} XMR`
-                : t('send.feePreparedBeforeBroadcast')}{' '}
-              · {t('send.recipientHidden')}
-            </Text>
-          </View>
-          <Icon name="lock" size={22} color={colors.orange} />
-        </View>
 
         <TouchableOpacity
           accessibilityLabel={t('send.sendXmr')}
@@ -1075,25 +1003,47 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   amountInput: {
-    flex: 1,
     color: colors.textPrimary,
-    fontSize: 36,
-    fontWeight: '800',
+    fontSize: 42,
+    fontWeight: '900',
     textAlign: 'center',
-    paddingVertical: 4,
+    paddingVertical: 2,
     letterSpacing: 0,
   },
   xmrLabel: {
     color: colors.orange,
     fontSize: 15,
     fontWeight: '900',
-    marginLeft: 10,
+    textAlign: 'center',
+    marginTop: -2,
   },
   usdLabel: {
     color: colors.textMuted,
     fontSize: 14,
     textAlign: 'center',
     marginBottom: 12,
+  },
+  keypad: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 9,
+    marginTop: 8,
+  },
+  keypadKey: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.055)',
+    borderColor: 'rgba(255,255,255,0.10)',
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexBasis: '31%',
+    flexGrow: 1,
+    justifyContent: 'center',
+    minHeight: 54,
+  },
+  keypadKeyText: {
+    color: colors.textPrimary,
+    fontSize: 22,
+    fontWeight: '800',
   },
   quickRow: { flexDirection: 'row', gap: 8 },
   quickBtn: {

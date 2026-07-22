@@ -338,13 +338,24 @@ export default function ReceiveScreen({ navigation, route }: any) {
 
         refreshInFlight = true;
         try {
+          // Local identities are authoritative for the receive carousel. A
+          // temporary node/scanner outage must never hide a Fast Wallet that
+          // was just created on this device.
           const [identities, settings] = await Promise.all([
-            walletService.loadFastReceiveIdentitiesForActiveNode(),
+            walletService.loadFastReceiveIdentities(),
             loadActiveNodeConnectionSettings(),
           ]);
           if (mounted) {
             setFastReceiveIdentities(identities);
             setNodeMode(settings.mode);
+          }
+          try {
+            const refreshed = await walletService.loadFastReceiveIdentitiesForActiveNode();
+            if (mounted) {
+              setFastReceiveIdentities(refreshed);
+            }
+          } catch {
+            // Keep the local identity visible; only its remote status may be stale.
           }
         } finally {
           refreshInFlight = false;

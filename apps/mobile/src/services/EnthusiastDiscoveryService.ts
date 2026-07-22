@@ -299,13 +299,18 @@ async function requestAndroidLocationPermission(): Promise<boolean> {
   if (Platform.OS !== 'android') {
     return true;
   }
-  const permission = PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION;
-  if (await PermissionsAndroid.check(permission)) {
+  const fine = PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION;
+  const coarse = PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION;
+  if (
+    (await PermissionsAndroid.check(fine)) ||
+    (await PermissionsAndroid.check(coarse))
+  ) {
     return true;
   }
+  const result = await PermissionsAndroid.requestMultiple([fine, coarse]);
   return (
-    (await PermissionsAndroid.request(permission)) ===
-    PermissionsAndroid.RESULTS.GRANTED
+    result[fine] === PermissionsAndroid.RESULTS.GRANTED ||
+    result[coarse] === PermissionsAndroid.RESULTS.GRANTED
   );
 }
 

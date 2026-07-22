@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -48,6 +48,9 @@ export default function FindEnthusiastsScreen({navigation}: any) {
   const [busy, setBusy] = useState(false);
   const [communityBusy, setCommunityBusy] = useState(false);
   const [communityError, setCommunityError] = useState<string>();
+  // Opening Community gets one fresh approximate fix. Changing the search
+  // radius must never trigger another GPS request.
+  const locationRefreshStarted = useRef(false);
 
   const reloadPreference = useCallback(async () => {
     setPreference(await loadEnthusiastDiscoveryPreference());
@@ -82,6 +85,7 @@ export default function FindEnthusiastsScreen({navigation}: any) {
 
   useFocusEffect(
     useCallback(() => {
+      locationRefreshStarted.current = false;
       reloadPreference().catch(() => undefined);
     }, [reloadPreference]),
   );
@@ -92,8 +96,10 @@ export default function FindEnthusiastsScreen({navigation}: any) {
     }
     if (
       preference.enabled &&
-      preference.locationStatus === 'not_requested'
+      preference.locationStatus === 'not_requested' &&
+      !locationRefreshStarted.current
     ) {
+      locationRefreshStarted.current = true;
       setBusy(true);
       refreshApproximateEnthusiastLocation()
         .then(next => {
@@ -124,9 +130,7 @@ export default function FindEnthusiastsScreen({navigation}: any) {
     const next = await setEnthusiastDiscoveryRadius(radiusKm);
     setPreference(next);
     if (next.enabled) {
-      const refreshed = await refreshApproximateEnthusiastLocation();
-      setPreference(refreshed);
-      await reloadCommunity(refreshed);
+      await reloadCommunity(next);
     }
   };
 

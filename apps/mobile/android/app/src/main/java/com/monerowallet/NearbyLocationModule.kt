@@ -43,11 +43,21 @@ class NearbyLocationModule(
     }
 
     val manager = reactApplicationContext.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-    val providers = listOf(
-      LocationManager.NETWORK_PROVIDER,
-      LocationManager.GPS_PROVIDER,
-      LocationManager.PASSIVE_PROVIDER,
-    ).filter { provider -> runCatching { manager.isProviderEnabled(provider) }.getOrDefault(false) }
+    // Prefer GPS when the user granted precise location. The JS layer turns
+    // the result into a coarse area and discards the exact coordinates.
+    val preferredProviders = if (hasFine) {
+      listOf(
+        LocationManager.GPS_PROVIDER,
+        LocationManager.NETWORK_PROVIDER,
+        LocationManager.PASSIVE_PROVIDER,
+      )
+    } else {
+      listOf(
+        LocationManager.NETWORK_PROVIDER,
+        LocationManager.PASSIVE_PROVIDER,
+      )
+    }
+    val providers = preferredProviders.filter { provider -> runCatching { manager.isProviderEnabled(provider) }.getOrDefault(false) }
 
     if (providers.isEmpty()) {
       promise.reject("LOCATION_UNAVAILABLE", "No location provider is available")
