@@ -58,6 +58,8 @@ test('desktop keeps the balance summary but removes the transient sync status af
   assert.match(appSource, /const showPrimaryWalletCard = Boolean\(walletId\);/);
   assert.match(appSource, /primary-wallet-balance/);
   assert.match(appSource, /!snapshot\?\.synchronized && <div className="primary-wallet-sync">/);
+  assert.match(appSource, /className="sync-refresh"/);
+  assert.equal(/>\{t\('common\.refresh'\)\}<\/button>/.test(appSource), false);
 });
 
 test('Ledger read-only setup is reachable through Tauri command permissions', () => {
