@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { PermissionsAndroid, Platform } from 'react-native';
+import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import { checkNotifications, RESULTS } from 'react-native-permissions';
 
 import { logWalletEvent } from './WalletLogger';
@@ -287,7 +287,45 @@ export function parseFastWalletPushEvent(
   };
 }
 
-async function handleRemoteMessage(message: any): Promise<void> {
+async function showAndroidForegroundNotification(
+  message: any,
+  event: FastWalletPushEvent,
+): Promise<void> {
+  if (Platform.OS !== 'android') {
+    return;
+  }
+
+  const notifier = NativeModules.MoneroLocalNotification;
+  if (!notifier?.show) {
+    logWalletEvent('FastWalletPush', 'foregroundNotification.unavailable');
+    return;
+  }
+
+  // Never derive notification text from wallet data. The server owns this
+  // generic, privacy-safe wording and the opaque event id only deduplicates.
+  const title =
+    typeof message?.notification?.title === 'string'
+      ? message.notification.title
+      : 'Monero Fast Wallet';
+  const body =
+    typeof message?.notification?.body === 'string'
+      ? message.notification.body
+      : 'A private payment update is available.';
+
+  try {
+    await notifier.show(title, body, event.eventId);
+    logWalletEvent('FastWalletPush', 'foregroundNotification.shown');
+  } catch (error) {
+    logWalletEvent('FastWalletPush', 'foregroundNotification.error', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function handleRemoteMessage(
+  message: any,
+  options: { foreground?: boolean } = {},
+): Promise<void> {
   const event = parseFastWalletPushEvent(message);
   if (!event) {
     return;
@@ -301,6 +339,9 @@ async function handleRemoteMessage(message: any): Promise<void> {
     AsyncStorage.setItem(LAST_EVENT_ID_KEY, event.eventId),
   ]);
   listeners.forEach(listener => listener(event));
+  if (options.foreground) {
+    await showAndroidForegroundNotification(message, event);
+  }
   logWalletEvent('FastWalletPush', 'incomingSignal.received');
 }
 
@@ -334,7 +375,11 @@ function startLifecycle(): () => void {
     );
   }
   if (instance.onMessage) {
-    unsubscribers.push(instance.onMessage(handleRemoteMessage));
+    unsubscribers.push(
+      instance.onMessage((message: any) =>
+        handleRemoteMessage(message, { foreground: true }),
+      ),
+    );
   }
   if (instance.onNotificationOpenedApp) {
     unsubscribers.push(instance.onNotificationOpenedApp(handleRemoteMessage));

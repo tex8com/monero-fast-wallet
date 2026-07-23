@@ -118,8 +118,8 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Increment for each shareable APK so Android accepts it as an update
         // over the previous locally installed release.
-        versionCode 3
-        versionName "1.0.2"
+        versionCode 4
+        versionName "1.0.3"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
@@ -197,6 +197,7 @@ dependencies {
     // Use the lifecycle-aware AndroidX prompt. The platform prompt can be
     // launched before React's activity has focus and then remain invisible.
     implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.core:core-ktx:1.13.1")
     testImplementation("junit:junit:4.13.2")
 
     androidTestImplementation("androidx.test:core:1.6.1")

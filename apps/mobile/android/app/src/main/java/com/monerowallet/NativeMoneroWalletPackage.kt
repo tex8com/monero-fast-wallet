@@ -14,6 +14,7 @@ class NativeMoneroWalletPackage : BaseReactPackage() {
     when (name) {
       NativeMoneroWalletModule.NAME -> NativeMoneroWalletModule(reactContext)
       NearbyLocationModule.NAME -> NearbyLocationModule(reactContext)
+      LocalPushNotificationModule.NAME -> LocalPushNotificationModule(reactContext)
       else -> null
     }
 
@@ -31,6 +32,14 @@ class NativeMoneroWalletPackage : BaseReactPackage() {
         NearbyLocationModule.NAME to ReactModuleInfo(
           NearbyLocationModule.NAME,
           NearbyLocationModule.NAME,
+          false,
+          false,
+          false,
+          false,
+        ),
+        LocalPushNotificationModule.NAME to ReactModuleInfo(
+          LocalPushNotificationModule.NAME,
+          LocalPushNotificationModule.NAME,
           false,
           false,
           false,
