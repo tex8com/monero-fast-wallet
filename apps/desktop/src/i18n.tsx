@@ -173,7 +173,7 @@ const messages = {
       "Enable notifications in macOS first.",
     "settings.changePassword": "Change wallet password",
     "settings.passwordHint":
-      "The password is stored only in macOS Keychain for this wallet’s later unlocks.",
+      "The credential is stored only in this device’s secure storage for later app-protected opens.",
     "settings.newWalletPassword": "New wallet password",
     "settings.confirmWalletPassword": "Confirm new password",
     "settings.passwordChanged": "Wallet password changed.",
@@ -336,13 +336,13 @@ const messages = {
     "setup.ledger": "Ledger Nano",
     "setup.ledgerDetail": "Use USB or Bluetooth.",
     "setup.createDescription":
-      "A private Mainnet wallet is created. Its secure local credential is kept in macOS Keychain and your recovery seed is shown once.",
+      "A private Mainnet wallet is created. Its secure local credential is kept in this device’s secure storage and your recovery seed is shown once.",
     "setup.restoreDescription":
       "Paste your 25-word Monero seed. Set a scan height only when you know it.",
     "setup.openDescription":
       "Open this saved {network} wallet with its device-held credential.",
     "setup.passwordRequired":
-      "Enter this wallet’s existing password once. It will then be kept only in macOS Keychain for later unlocks.",
+      "This saved wallet has no usable secure local credential on this device. Restore it from its recovery seed instead.",
     "setup.ledgerDescription":
       "Connect and unlock the Ledger, open its Monero app, then choose USB or Bluetooth. This step creates one Ledger wallet only.",
     "setup.seed": "Monero seed",

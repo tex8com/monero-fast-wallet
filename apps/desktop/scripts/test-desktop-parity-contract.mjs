@@ -81,3 +81,16 @@ test('a Ledger setup reuses its approved view-key export within one Core session
   assert.match(ledgerCorePatch, /if \(this->has_view_key\) \{/);
   assert.match(ledgerCorePatch, /Ledger view-key export requested from device/);
 });
+
+test('a physical Ledger export can be diagnosed without logging wallet secrets', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  assert.match(hostSource, /ledger\.view-key-export-requested/);
+  assert.match(hostSource, /ledger\.view-key-export-complete/);
+  assert.match(hostSource, /ledger\.recovery-session-opened/);
+  const ledgerDiagnostics = hostSource.slice(
+    hostSource.indexOf('fn create_ledger_read_only_from_open_source'),
+    hostSource.indexOf('#[tauri::command]\nfn wallet_open_requires_password'),
+  );
+  assert.equal(/private_view_key\.clone\(\)/.test(ledgerDiagnostics), false);
+  assert.equal(/exported\.address\.clone\(\)/.test(ledgerDiagnostics), false);
+});

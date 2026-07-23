@@ -557,6 +557,7 @@ fn enable_ledger_read_only(
         &source,
         &active_native_id,
         input.restore_height,
+        "open-ledger-session",
     )
 }
 
@@ -569,6 +570,7 @@ fn create_ledger_read_only_from_open_source(
     source: &wallet_registry::RegisteredWallet,
     source_native_id: &str,
     requested_restore_height: Option<u64>,
+    export_flow: &str,
 ) -> Result<WalletOperationResponse, String> {
     if wallet_registry::list(app)?.wallets.iter().any(|wallet| {
         wallet.kind == "view-only" && wallet.source_wallet_id.as_deref() == Some(source.id.as_str())
@@ -576,17 +578,49 @@ fn create_ledger_read_only_from_open_source(
         return Err("This Ledger already has a local read-only copy. Open it from your wallet list.".to_owned());
     }
 
-    eprintln!("MONERO_DESKTOP_LEDGER_READ_ONLY export-requested local-only=true");
-    let mut exported_json = state
+    // One command must result in exactly one Core export request.  The
+    // structured events make a physical Ledger test diagnosable even when the
+    // packaged app has no terminal attached.  They intentionally contain no
+    // wallet ID, address, path, password, or key material.
+    diagnostics::record(
+        app,
+        "ledger.view-key-export-requested",
+        &[("flow", export_flow.to_owned())],
+    );
+    eprintln!("MONERO_DESKTOP_LEDGER_READ_ONLY export-requested flow={export_flow}");
+    let mut exported_json = match state
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
-        .export_hardware_private_view_key(source_native_id)?;
+        .export_hardware_private_view_key(source_native_id)
+    {
+        Ok(value) => {
+            diagnostics::record(
+                app,
+                "ledger.view-key-export-received",
+                &[("flow", export_flow.to_owned())],
+            );
+            value
+        }
+        Err(error) => {
+            diagnostics::record(
+                app,
+                "ledger.view-key-export-failed",
+                &[("flow", export_flow.to_owned()), ("stage", "core".to_owned())],
+            );
+            return Err(error);
+        }
+    };
     let mut exported: NativeHardwareViewKeyExport = serde_json::from_str(&exported_json)
         .map_err(|_| "The Ledger returned an invalid view-key response.".to_owned())?;
     exported_json.zeroize();
     if exported.network != source.network || exported.address.trim().is_empty() || exported.private_view_key.trim().is_empty() {
         exported.private_view_key.zeroize();
+        diagnostics::record(
+            app,
+            "ledger.view-key-export-failed",
+            &[("flow", export_flow.to_owned()), ("stage", "verification".to_owned())],
+        );
         return Err("The Ledger view key could not be verified for this wallet.".to_owned());
     }
 
@@ -613,6 +647,11 @@ fn create_ledger_read_only_from_open_source(
         Err(error) => {
             exported.private_view_key.zeroize();
             local_password.zeroize();
+            diagnostics::record(
+                app,
+                "ledger.view-key-export-failed",
+                &[("flow", export_flow.to_owned()), ("stage", "read-only-create".to_owned())],
+            );
             return Err(error);
         }
     };
@@ -626,6 +665,11 @@ fn create_ledger_read_only_from_open_source(
             .map_err(|_| "Native wallet is busy.".to_owned())?
             .close(&native_wallet_id, false);
         local_password.zeroize();
+        diagnostics::record(
+            app,
+            "ledger.view-key-export-failed",
+            &[("flow", export_flow.to_owned()), ("stage", "secure-store-write".to_owned())],
+        );
         return Err(error);
     }
     // Confirm that the OS credential backend accepted the value while it is
@@ -640,6 +684,11 @@ fn create_ledger_read_only_from_open_source(
                 .map_err(|_| "Native wallet is busy.".to_owned())?
                 .close(&native_wallet_id, false);
             local_password.zeroize();
+            diagnostics::record(
+                app,
+                "ledger.view-key-export-failed",
+                &[("flow", export_flow.to_owned()), ("stage", "secure-store-verify".to_owned())],
+            );
             return Err("The Ledger private view key could not be verified in secure storage.".to_owned());
         }
         Err(error) => {
@@ -650,6 +699,11 @@ fn create_ledger_read_only_from_open_source(
                 .map_err(|_| "Native wallet is busy.".to_owned())?
                 .close(&native_wallet_id, false);
             local_password.zeroize();
+            diagnostics::record(
+                app,
+                "ledger.view-key-export-failed",
+                &[("flow", export_flow.to_owned()), ("stage", "secure-store-verify".to_owned())],
+            );
             return Err(error);
         }
     };
@@ -669,11 +723,21 @@ fn create_ledger_read_only_from_open_source(
         local_password,
     ) {
         Ok(response) => {
-            eprintln!("MONERO_DESKTOP_LEDGER_READ_ONLY created local-only=true");
+            diagnostics::record(
+                app,
+                "ledger.view-key-export-complete",
+                &[("flow", export_flow.to_owned())],
+            );
+            eprintln!("MONERO_DESKTOP_LEDGER_READ_ONLY created flow={export_flow}");
             Ok(response)
         }
         Err(error) => {
             let _ = secure_store::delete_ledger_private_view_key(&source.id);
+            diagnostics::record(
+                app,
+                "ledger.view-key-export-failed",
+                &[("flow", export_flow.to_owned()), ("stage", "registration".to_owned())],
+            );
             Err(error)
         }
     }
@@ -721,11 +785,21 @@ fn create_ledger_read_only_from_device(
         Ok(wallet_id) => wallet_id,
         Err(error) => {
             export_password.zeroize();
+            diagnostics::record(
+                &app,
+                "ledger.recovery-session-failed",
+                &[("stage", "device-open".to_owned())],
+            );
             return Err(format!(
                 "Could not open the connected Ledger for view-key export. Confirm that it is unlocked and the Monero app is open. {error}"
             ));
         }
     };
+    diagnostics::record(
+        &app,
+        "ledger.recovery-session-opened",
+        &[],
+    );
 
     // create_from_device already established this short-lived session and
     // obtained the user-approved view key. Reconnecting here would prompt the
@@ -737,6 +811,7 @@ fn create_ledger_read_only_from_device(
         &source,
         &export_wallet_id,
         input.restore_height,
+        "recovery-device-session",
     );
     let _ = state
         .0
