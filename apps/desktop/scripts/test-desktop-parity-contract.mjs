@@ -71,6 +71,15 @@ test('desktop dashboard keeps the mobile order: chart, balance, news, then walle
   assert.ok(chart >= 0 && balance > chart && news > balance && actions > news);
 });
 
+test('desktop news uses the same TEX8 feed and categories as mobile', () => {
+  const newsSource = readFileSync(resolve(desktopRoot, 'src', 'moneroNews.ts'), 'utf8');
+  assert.match(newsSource, /https:\/\/xmr\.tex8\.com\/news\/v1\/news\?limit=18/);
+  assert.match(newsSource, /'network' \| 'wallet' \| 'ecosystem'/);
+  assert.doesNotMatch(appSource, /api\.github\.com\/repos\/monero-project/);
+  assert.match(appSource, /const \[newsCategory, setNewsCategory\]/);
+  assert.match(appSource, /home\.newsSource/);
+});
+
 test('desktop exposes and creates the default-on Ledger Fast Wallet pair', () => {
   const setupSource = appSource.slice(appSource.indexOf('function Setup('), appSource.indexOf('function FastWallets('));
   assert.match(setupSource, /setCreateFastWallet\(next !== 'open'\)/);

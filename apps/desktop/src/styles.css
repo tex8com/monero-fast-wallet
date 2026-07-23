@@ -550,11 +550,18 @@ h2 { letter-spacing: -0.65px; }
 .official-updates header > a { flex: 0 0 auto; color: #f4a369; font-size: 12px; font-weight: 800; text-decoration: none; }
 .official-updates header > a:hover { color: #ffd0b0; text-decoration: underline; }
 .official-updates-list { border-top: 1px solid #2d273b; }
+.news-filters { display: flex; gap: 8px; padding: 0 22px 14px; overflow-x: auto; }
+.news-filters button { flex: 0 0 auto; border: 1px solid #3a314b; border-radius: 999px; padding: 7px 12px; background: transparent; color: #aaa2b5; font-size: 11px; font-weight: 800; }
+.news-filters button.selected { border-color: #ff641d; background: #ff641d; color: #15111d; }
 .official-updates-list a { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 14px; align-items: center; padding: 13px 22px; border-bottom: 1px solid #2d273b; color: inherit; text-decoration: none; }
 .official-updates-list a:last-child { border-bottom: 0; }
 .official-updates-list a:hover { background: #1b1526; }
+.official-updates-list a > span { display: grid; gap: 4px; min-width: 0; }
+.official-updates-list b { color: #f4bd55; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
 .official-updates-list strong { overflow: hidden; color: #eee8f2; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.official-updates-list a > span > small { overflow: hidden; color: #aaa2b5; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .official-updates-list small { color: #a9a0b4; font-size: 11px; font-weight: 700; }
+.official-updates-list time { color: #a9a0b4; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .official-updates-list em { color: #f4bd55; font-size: 20px; font-style: normal; }
 .official-updates-status { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 76px; margin: 0; padding: 14px; color: #aaa2b5; font-size: 13px; font-weight: 700; }
 .wallet-overview-card, .wallet-sync-card { padding: 22px 23px; }

@@ -17,7 +17,7 @@ import {
   type DesktopNotificationStatus,
 } from './fastWalletNotifications';
 import { type MarketPoint, type MarketTimeframe, useXmrChart, useXmrPrice } from './marketData';
-import { useMoneroUpdates } from './moneroUpdates';
+import { type MoneroNewsCategory, useMoneroNews } from './moneroNews';
 import { restoreHeightFromStartDate, todayRestoreDate } from './restoreStart';
 import { removeDesktopWalletAddresses, upsertDesktopWalletAddress } from './walletAddressRegistry';
 import { loadRecipientContacts, loadRecentRecipients, rememberRecipient, type RecipientContact } from './recipientAddressBook';
@@ -429,6 +429,7 @@ function MarketChart({ points, positive, onRetry }: { points: MarketPoint[]; pos
 function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBackup, onLock, onSend, onReceive, onActivity }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; savedWallets: RegisteredWallet[]; onSetup: () => void; onWallets: () => void; onBackup: () => void; onLock: () => void; onSend: () => void; onReceive: () => void; onActivity: () => void }) {
   const { t } = useI18n();
   const [timeframe, setTimeframe] = useState<MarketTimeframe>('24H');
+  const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>('all');
   const [snapshot, setSnapshot] = useState<NativeWalletSnapshot | null>(null);
   const [transactions, setTransactions] = useState<NativeTransaction[]>([]);
   const [message, setMessage] = useState<string | null>(null);
@@ -441,7 +442,7 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   const syncStartHeightsRef = useRef(new Map<string, number>());
   const { price, change24h, loading: priceLoading } = useXmrPrice();
   const { points, loading: chartLoading, refresh: refreshChart } = useXmrChart(timeframe);
-  const { items: officialUpdates, loading: updatesLoading, unavailable: updatesUnavailable, refresh: refreshUpdates } = useMoneroUpdates();
+  const { items: newsItems, loading: newsLoading, unavailable: newsUnavailable, refresh: refreshNews } = useMoneroNews();
 
   const accountIndex = wallet?.accountIndex ?? 0;
   const loadSnapshot = useCallback(async (startRefresh = false) => {
@@ -511,6 +512,9 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   // same model: the balance remains useful; a permanent 100% bar is not.
   const showPrimaryWalletCard = Boolean(walletId);
   const syncEtaSeconds = useDesktopSyncEta(sync);
+  const visibleNews = newsCategory === 'all'
+    ? newsItems
+    : newsItems.filter((item) => item.category === newsCategory);
   const routeToWalletAction = (action: () => void) => {
     if (walletId && linked) { action(); return; }
     if (savedWallets.length) { onWallets(); return; }
@@ -532,9 +536,10 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
       {!snapshot?.synchronized && <div className="primary-wallet-sync"><div className="sync-reading"><span className="sync-led" /> <strong>{syncLabel(snapshot, t, syncStartHeight)}</strong><button className="sync-refresh" aria-label={t('common.refresh')} onClick={() => void refreshWallet()} title={t('common.refresh')} type="button">↻</button><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{hasMeasuredProgress ? `${progress}%` : ''}</em></div>{hasMeasuredProgress && <div className="sync-track"><span style={{ width: `${progress}%` }} /></div>}{sync.targetHeight !== undefined && <div className="sync-metrics"><span>{t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight), target: formatSyncBlockCount(sync.targetHeight) })}</span>{sync.phase === 'finalizing' ? <span>{t('home.syncConfirming')}</span> : sync.remainingBlocks !== undefined ? <span>{t('home.syncRemaining', { count: formatSyncBlockCount(sync.remainingBlocks) })}</span> : null}{sync.phase === 'syncing' && <span>{formatDesktopSyncEta(syncEtaSeconds, t)}</span>}</div>}</div>}
     </section>}
 
-    <section className="official-updates" aria-label={t('home.updatesTitle')}>
-      <header><div><p className="eyebrow">{t('home.updatesSource')}</p><h2>{t('home.updatesTitle')}</h2></div><a href="https://github.com/monero-project/monero/releases" target="_blank" rel="noreferrer">{t('home.updatesSourceLink')} ↗</a></header>
-      {updatesLoading && officialUpdates.length === 0 ? <p className="official-updates-status">{t('home.updatesLoading')}</p> : updatesUnavailable && officialUpdates.length === 0 ? <div className="official-updates-status"><span>{t('home.updatesUnavailable')}</span><button className="quiet-button" onClick={refreshUpdates} type="button">{t('home.chartRetry')}</button></div> : <div className="official-updates-list">{officialUpdates.map((item) => <a href={item.url} key={item.id} target="_blank" rel="noreferrer"><strong>{item.title}</strong><small>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.publishedAt))}</small><em>›</em></a>)}</div>}
+    <section className="official-updates" aria-label={t('home.newsTitle')}>
+      <header><div><p className="eyebrow">{t('home.newsSource')}</p><h2>{t('home.newsTitle')}</h2></div><a href="https://www.getmonero.org/blog/" target="_blank" rel="noreferrer">{t('home.newsSourceLink')} ↗</a></header>
+      <div className="news-filters" aria-label={t('home.newsTitle')}>{(['all', 'network', 'wallet', 'ecosystem'] as const).map((category) => <button className={newsCategory === category ? 'selected' : ''} key={category} onClick={() => setNewsCategory(category)} type="button">{category === 'all' ? t('home.newsAll') : category === 'network' ? t('home.newsNetwork') : category === 'wallet' ? t('home.newsWallet') : t('home.newsEcosystem')}</button>)}</div>
+      {newsLoading && newsItems.length === 0 ? <p className="official-updates-status">{t('home.newsLoading')}</p> : newsUnavailable && newsItems.length === 0 ? <div className="official-updates-status"><span>{t('home.newsUnavailable')}</span><button className="quiet-button" onClick={refreshNews} type="button">{t('home.chartRetry')}</button></div> : visibleNews.length === 0 ? <p className="official-updates-status">{t('home.newsEmpty')}</p> : <div className="official-updates-list">{visibleNews.slice(0, 8).map((item) => <a href={item.url} key={item.id} target="_blank" rel="noreferrer"><span><b>{item.category === 'network' ? t('home.newsNetwork') : item.category === 'wallet' ? t('home.newsWallet') : t('home.newsEcosystem')}</b><strong>{item.title}</strong><small>{item.summary}</small></span><time>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.publishedAt))}</time><em>›</em></a>)}</div>}
     </section>
 
     <section className="home-quick-actions" aria-label="Wallet actions"><button onClick={() => routeToWalletAction(onSend)} type="button"><span>↑</span><strong>{t('nav.send')}</strong><small>{t('home.sendDetail')}</small></button><button onClick={() => routeToWalletAction(onReceive)} type="button"><span>↓</span><strong>{t('nav.receive')}</strong><small>{t('home.receiveDetail')}</small></button></section>
