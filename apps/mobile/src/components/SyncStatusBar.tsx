@@ -46,11 +46,19 @@ export default function SyncStatusBar({
   // The native core still decides when it is actually spend-ready, so show an
   // honest finishing indicator rather than implying that sync is stuck.
   const finalizing = presentation.phase === "finalizing";
-  const showPercent = displayPercent !== undefined && !hasSyncError && !finalizing;
+  // Do not show a misleading 0–1% bar while the native core is connecting or
+  // restoring its latest checkpoint. The next native snapshot can already be
+  // fully synchronized, which otherwise looks like a jump from 0% to 100%.
+  const hasMeasuredProgress = (displayPercent ?? 0) > 1;
+  const showPercent =
+    hasMeasuredProgress && !hasSyncError && !finalizing && presentation.phase !== "waiting-for-node";
   const working =
     !hasSyncError &&
     !isSynced &&
-    (status === "opening" || status === "syncing" || finalizing);
+    (status === "opening" ||
+      status === "syncing" ||
+      finalizing ||
+      presentation.phase === "waiting-for-node");
   const animatedDots = useAnimatedDots(working);
   const detail = `${resolveDetail(
     status,
@@ -177,16 +185,21 @@ function resolveDetail(
     return t("sync.synced");
   }
   if (phase === "finalizing") {
-    return t("sync.finalizing");
+    return t("sync.updatingHistory");
   }
-  if (percent !== undefined) {
-    return t("sync.syncing");
-  }
-  if (status === "syncing") {
-    return t("sync.syncing");
+  if (phase === "waiting-for-node") {
+    return t("sync.connectingNode");
   }
   if (status === "opening") {
     return t("sync.opening");
+  }
+  if (status === "syncing") {
+    return percent !== undefined && percent > 1
+      ? t("sync.scanningBlocks")
+      : t("sync.checkingBlocks");
+  }
+  if (percent !== undefined) {
+    return percent > 1 ? t("sync.scanningBlocks") : t("sync.checkingBlocks");
   }
   if (status === "locked") {
     return t("sync.openWallet");

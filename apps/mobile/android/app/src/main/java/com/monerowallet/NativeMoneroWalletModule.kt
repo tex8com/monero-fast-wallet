@@ -15,11 +15,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.biometrics.BiometricManager
-import android.hardware.biometrics.BiometricPrompt
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
-import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
@@ -35,6 +33,10 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.PermissionAwareActivity
+import androidx.biometric.BiometricPrompt as AndroidXBiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -56,6 +58,8 @@ class NativeMoneroWalletModule(
   private var pendingLedgerBleScanPromise: Promise? = null
   private var pendingLedgerBleScanCallback: ScanCallback? = null
   private var pendingBiometricPromise: Promise? = null
+  private var pendingBiometricPrompt: AndroidXBiometricPrompt? = null
+  private var pendingBiometricTimeout: Runnable? = null
   private val mainHandler = Handler(Looper.getMainLooper())
 
   init {
@@ -323,11 +327,11 @@ class NativeMoneroWalletModule(
       return
     }
 
-    val activity = reactApplicationContext.currentActivity
+    val activity = reactApplicationContext.currentActivity as? FragmentActivity
     if (activity == null) {
       promise.reject(
         "monero_wallet_android_biometric_activity_missing",
-        "Biometric unlock requires an active Android activity",
+        "Biometric unlock requires an active app screen",
       )
       return
     }
@@ -341,59 +345,14 @@ class NativeMoneroWalletModule(
     }
 
     pendingBiometricPromise = promise
-    activity.runOnUiThread {
-      runCatching {
-        val prompt = BiometricPrompt.Builder(activity)
-          .setTitle("Monero Fast Wallet")
-          .setSubtitle(
-            reason.ifBlank {
-              "Confirm biometrics to unlock your local wallet"
-            },
-          )
-          .setNegativeButton("Cancel", activity.mainExecutor) { _, _ ->
-            resolvePendingBiometric(
-              success = false,
-              biometryType = status.biometryType,
-              message = "Biometric unlock was cancelled",
-            )
-          }
-          .build()
-
-        prompt.authenticate(
-          CancellationSignal(),
-          activity.mainExecutor,
-          object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(
-              result: BiometricPrompt.AuthenticationResult,
-            ) {
-              resolvePendingBiometric(
-                success = true,
-                biometryType = status.biometryType,
-                message = "Biometric unlock confirmed",
-              )
-            }
-
-            override fun onAuthenticationError(
-              errorCode: Int,
-              errString: CharSequence,
-            ) {
-              resolvePendingBiometric(
-                success = false,
-                biometryType = status.biometryType,
-                message = errString.toString(),
-              )
-            }
-          },
-        )
-      }.onFailure { error ->
-        val pending = pendingBiometricPromise
-        pendingBiometricPromise = null
-        pending?.reject(
-          "monero_wallet_android_biometric_error",
-          error.message ?: "Biometric unlock failed",
-          error,
-        )
-      }
+    Log.i(NAME, "MONERO_WALLET_BIOMETRIC requested; waiting for resumed activity")
+    mainHandler.post {
+      presentBiometricWhenReady(
+        activity = activity,
+        reason = reason,
+        status = status,
+        deadlineMs = SystemClock.elapsedRealtime() + BIOMETRIC_ACTIVITY_READY_TIMEOUT_MS,
+      )
     }
   }
 
@@ -1817,13 +1776,133 @@ class NativeMoneroWalletModule(
     message: String,
   ) {
     val pending = pendingBiometricPromise ?: return
-    pendingBiometricPromise = null
+    clearPendingBiometricRequest()
     pending.resolve(
       biometricAuthResultToWritableMap(
         success = success,
         biometryType = biometryType,
         message = message,
       ),
+    )
+  }
+
+  /**
+   * React can request unlock during a foreground transition. Waiting until the
+   * FragmentActivity is resumed and focused prevents an otherwise invisible
+   * platform prompt that leaves the JavaScript UI on "Working…".
+   */
+  private fun presentBiometricWhenReady(
+    activity: FragmentActivity,
+    reason: String,
+    status: BiometricAuthStatus,
+    deadlineMs: Long,
+  ) {
+    if (pendingBiometricPromise == null) {
+      return
+    }
+
+    if (activity.isFinishing ||
+      (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && activity.isDestroyed)
+    ) {
+      resolvePendingBiometric(
+        success = false,
+        biometryType = status.biometryType,
+        message = "The app screen closed before biometric unlock could start",
+      )
+      return
+    }
+
+    val isReady =
+      activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && activity.hasWindowFocus()
+    if (!isReady) {
+      if (SystemClock.elapsedRealtime() >= deadlineMs) {
+        Log.w(NAME, "MONERO_WALLET_BIOMETRIC cancelled; activity never became focused")
+        resolvePendingBiometric(
+          success = false,
+          biometryType = status.biometryType,
+          message = "Unlock screen is not active yet. Please tap unlock again.",
+        )
+      } else {
+        mainHandler.postDelayed(
+          {
+            presentBiometricWhenReady(activity, reason, status, deadlineMs)
+          },
+          BIOMETRIC_ACTIVITY_READY_RETRY_MS,
+        )
+      }
+      return
+    }
+
+    runCatching {
+      Log.i(NAME, "MONERO_WALLET_BIOMETRIC presenting AndroidX prompt")
+      val prompt = AndroidXBiometricPrompt(
+        activity,
+        ContextCompat.getMainExecutor(activity),
+        object : AndroidXBiometricPrompt.AuthenticationCallback() {
+          override fun onAuthenticationSucceeded(
+            result: AndroidXBiometricPrompt.AuthenticationResult,
+          ) {
+            Log.i(NAME, "MONERO_WALLET_BIOMETRIC confirmed")
+            resolvePendingBiometric(
+              success = true,
+              biometryType = status.biometryType,
+              message = "Biometric unlock confirmed",
+            )
+          }
+
+          override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+            Log.i(NAME, "MONERO_WALLET_BIOMETRIC cancelled/error code=$errorCode")
+            resolvePendingBiometric(
+              success = false,
+              biometryType = status.biometryType,
+              message = errString.toString(),
+            )
+          }
+        },
+      )
+      pendingBiometricPrompt = prompt
+      pendingBiometricTimeout = Runnable {
+        pendingBiometricPrompt?.cancelAuthentication()
+        resolvePendingBiometric(
+          success = false,
+          biometryType = status.biometryType,
+          message = "Biometric unlock timed out. Please try again.",
+        )
+      }.also { timeout ->
+        mainHandler.postDelayed(timeout, BIOMETRIC_PROMPT_TIMEOUT_MS)
+      }
+      prompt.authenticate(
+        AndroidXBiometricPrompt.PromptInfo.Builder()
+          .setTitle("Monero Fast Wallet")
+          .setSubtitle(
+            reason.ifBlank {
+              "Confirm biometrics to unlock your local wallets"
+            },
+          )
+          .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+          .setNegativeButtonText("Cancel")
+          .build(),
+      )
+    }.onFailure { error ->
+      rejectPendingBiometric(error)
+    }
+  }
+
+  private fun clearPendingBiometricRequest() {
+    pendingBiometricTimeout?.let(mainHandler::removeCallbacks)
+    pendingBiometricTimeout = null
+    pendingBiometricPrompt = null
+    pendingBiometricPromise = null
+  }
+
+  private fun rejectPendingBiometric(error: Throwable) {
+    val pending = pendingBiometricPromise ?: return
+    clearPendingBiometricRequest()
+    Log.e(NAME, "MONERO_WALLET_BIOMETRIC failed to present", error)
+    pending.reject(
+      "monero_wallet_android_biometric_error",
+      error.message ?: "Biometric unlock failed",
+      error,
     )
   }
 
@@ -2197,6 +2276,9 @@ class NativeMoneroWalletModule(
     private const val LEDGER_VENDOR_ID = 0x2C97
     private const val REQUEST_LEDGER_BLE_PERMISSIONS = 0x4C58
     private const val LEDGER_BLE_SCAN_TIMEOUT_MS = 4_000L
+    private const val BIOMETRIC_ACTIVITY_READY_TIMEOUT_MS = 5_000L
+    private const val BIOMETRIC_ACTIVITY_READY_RETRY_MS = 100L
+    private const val BIOMETRIC_PROMPT_TIMEOUT_MS = 30_000L
     private val LEDGER_BLE_DEFAULT_NAME = Regex("(?i)^[0-9a-f]{4}$")
     private val LEDGER_PRODUCT_IDS = setOf(
       0x0001,

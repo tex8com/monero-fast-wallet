@@ -116,8 +116,10 @@ android {
         applicationId "com.tex8.monerowallet"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
-        versionName "1.0.1"
+        // Increment for each shareable APK so Android accepts it as an update
+        // over the previous locally installed release.
+        versionCode 3
+        versionName "1.0.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
@@ -192,6 +194,9 @@ gradle.taskGraph.whenReady { graph ->
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
+    // Use the lifecycle-aware AndroidX prompt. The platform prompt can be
+    // launched before React's activity has focus and then remain invisible.
+    implementation("androidx.biometric:biometric:1.1.0")
     testImplementation("junit:junit:4.13.2")
 
     androidTestImplementation("androidx.test:core:1.6.1")
