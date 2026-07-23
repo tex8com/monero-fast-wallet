@@ -123,6 +123,28 @@ describe('WalletService registered wallet opening', () => {
     expect(mockNativeWallet.openWalletWithStoredSecret).not.toHaveBeenCalled();
   });
 
+  it('never reapplies the import scan height when reopening a saved wallet', async () => {
+    await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: 'resume-with-core-cache',
+        path: '/current-container/wallets/mainnet/resume-with-core-cache',
+        network: 'mainnet',
+        credentialKey: 'monero.wallet.software.mainnet.resume.v1',
+        restoreHeight: 3_705_094,
+        now: '2026-07-23T18:20:00.000Z',
+      }),
+    );
+
+    const service = new WalletService();
+    await service.openRegisteredWallet();
+
+    expect(mockNativeWallet.openWalletWithStoredSecret).toHaveBeenCalledWith({
+      path: '/current-container/wallets/mainnet/resume-with-core-cache',
+      secretKey: 'monero.wallet.software.mainnet.resume.v1',
+      network: 'mainnet',
+    });
+  });
+
   it('creates standard and Fast Ledger entries from one native device initialization', async () => {
     const service = new WalletService();
     const result = await service.createNamedLedgerWalletPairFromDevice({

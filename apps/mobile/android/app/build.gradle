@@ -118,8 +118,8 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Increment for each shareable APK so Android accepts it as an update
         // over the previous locally installed release.
-        versionCode 5
-        versionName "1.0.4"
+        versionCode 6
+        versionName "1.0.5"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {

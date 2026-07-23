@@ -41,7 +41,6 @@ import {
   upsertWalletAddress,
 } from './WalletAddressRegistry';
 import type { WalletAddressRecord } from './WalletAddressRegistry';
-import { loadWalletSnapshotCache } from './WalletSnapshotCache';
 import type {
   BiometricAuthResult,
   BiometricAuthStatus,
@@ -601,9 +600,6 @@ export class WalletService {
               path: resolved.path,
               secretKey: resolved.credentialKey!,
               network: resolved.network,
-              ...(resolved.restoreHeight
-                ? { restoreHeight: resolved.restoreHeight }
-                : {}),
             });
             session = { ...session, registrationId: registration.id };
             this.fastSignalSessions.set(registration.id, session);
@@ -2406,7 +2402,6 @@ export class WalletService {
         path: registration.viewOnlyPath,
         secretKey: registration.viewOnlyCredentialKey,
         network: registration.network,
-        restoreHeight: registration.restoreHeight,
       });
       const registeredSession: WalletSession = {
         ...session,
@@ -2443,43 +2438,14 @@ export class WalletService {
         registration.walletName,
         registration.network,
       );
-    // Older Ledger wallets with an empty restore height were created from the
-    // core's date estimate. Resume them from the last height confirmed by the
-    // selected node instead of making them rescan that already-known range on
-    // every open. An explicitly entered restore height is never changed.
-    const cachedSnapshot = registration.restoreHeight
-      ? undefined
-      : (await loadWalletSnapshotCache())[registration.id];
-    const cachedRestoreHeight = latestKnownBlockHeight(cachedSnapshot);
-    const automaticRestoreHeight = registration.restoreHeight
-      ? 0
-      : cachedRestoreHeight > 1
-        ? cachedRestoreHeight
-        : await resolveAutomaticHardwareRestoreHeight(registration.network);
-    const restoreHeight =
-      registration.restoreHeight ??
-      (automaticRestoreHeight > 1 ? automaticRestoreHeight : undefined);
+    // A restore height is an import/creation setting, never an open setting.
+    // Passing it again to an existing Ledger wallet can make the native core
+    // discard its persisted cache and rescan from that original height.
     const session = await this.openWalletWithStoredSecret({
       path: registration.path,
       secretKey: credentialKey,
       network: registration.network,
-      ...(restoreHeight ? { restoreHeight } : {}),
     });
-    if (!registration.restoreHeight && restoreHeight) {
-      await upsertRegisteredWallet({
-        ...registration,
-        restoreHeight,
-      });
-      logWalletEvent(
-        'WalletService',
-        'openHardwareRegisteredWallet.autoHeight',
-        {
-          registrationId: maskIdentifier(registration.id),
-          restoreHeight,
-          walletName: registration.walletName,
-        },
-      );
-    }
     const hardwareDevice = hardwareDeviceFromRegistration(registration);
     const registeredSession = hardwareDevice
       ? {
@@ -2520,9 +2486,6 @@ export class WalletService {
       path: registration.path,
       secretKey: registration.credentialKey,
       network: registration.network,
-      ...(registration.restoreHeight
-        ? { restoreHeight: registration.restoreHeight }
-        : {}),
     });
     const hardwareDevice = hardwareDeviceFromRegistration(registration);
     if (!hardwareDevice) {
@@ -2553,9 +2516,6 @@ export class WalletService {
       path: registration.path,
       password,
       network: registration.network,
-      ...(registration.restoreHeight
-        ? { restoreHeight: registration.restoreHeight }
-        : {}),
     });
   }
 
@@ -2701,60 +2661,6 @@ function latestKnownBlockHeight(snapshot: WalletSnapshot | undefined): number {
     return snapshot.walletHeight;
   }
   return Math.max(0, snapshot.daemonTargetHeight);
-}
-
-async function resolveAutomaticHardwareRestoreHeight(
-  network: MoneroNetwork,
-): Promise<number> {
-  try {
-    const settings = await loadActiveNodeConnectionSettings(network);
-    if (settings.network !== network) {
-      return 0;
-    }
-
-    const address = settings.daemon.address.trim().replace(/\/+$/, '');
-    if (!address) {
-      return 0;
-    }
-    const baseUrl = /^https?:\/\//i.test(address)
-      ? address
-      : `${settings.daemon.useSsl ? 'https' : 'http'}://${address}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5_000);
-    try {
-      const response = await fetch(`${baseUrl}/get_info`, {
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        return 0;
-      }
-      const payload: unknown = await response.json();
-      const record =
-        isRecord(payload) && isRecord(payload.result)
-          ? payload.result
-          : payload;
-      const height = isRecord(record) ? record.height : undefined;
-      return typeof height === 'number' && Number.isFinite(height) && height > 1
-        ? Math.floor(height)
-        : 0;
-    } finally {
-      clearTimeout(timeout);
-    }
-  } catch (error) {
-    logWalletEvent(
-      'WalletService',
-      'automaticHardwareRestoreHeight.unavailable',
-      {
-        error: errorMessage(error),
-        network,
-      },
-    );
-    return 0;
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function sessionLogFields(session: WalletSession): Record<string, unknown> {

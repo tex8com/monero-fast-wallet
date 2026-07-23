@@ -447,14 +447,18 @@ class WalletEngine::Impl {
         request.password,
         toMoneroNetwork(request.network),
         request.kdfRounds);
-    uint64_t cacheResetHeight = 0;
     try {
       throwIfWalletFailed(wallet, "openWallet");
-      if (request.restoreHeight > 1 &&
-          wallet->blockChainHeight() < request.restoreHeight) {
-        wallet->setRefreshFromBlockHeight(request.restoreHeight);
-        throwIfWalletFailed(wallet, "openWallet.setRefreshFromBlockHeight");
-        cacheResetHeight = request.restoreHeight;
+      if (request.restoreHeight > 1) {
+        // Scan-start height applies only when creating or importing a wallet.
+        // An existing wallet owns its persisted Core cache; resetting it on
+        // every open causes repeated historic scans after a normal restart.
+        logEngineDiagnostic(
+            "openWallet.restoreHeightIgnored",
+            {
+                {"requestedRestoreHeight", std::to_string(request.restoreHeight)},
+                {"walletHeight", std::to_string(wallet->blockChainHeight())},
+            });
       }
     } catch (...) {
       if (wallet != nullptr) {
@@ -467,8 +471,7 @@ class WalletEngine::Impl {
         "openWallet",
         request.path,
         request.network,
-        wallet,
-        cacheResetHeight);
+        wallet);
   }
 
   WalletId createWalletFromDevice(const CreateWalletFromDeviceRequest& request) {

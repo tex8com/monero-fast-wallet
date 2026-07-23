@@ -489,6 +489,7 @@ export function WalletStateProvider({
         logWalletEvent('WalletState', 'refreshSnapshot.success', {
           daemonHeight: nextSnapshot.daemonHeight,
           synchronized: nextSnapshot.synchronized,
+          syncStartHeight: syncStartHeightsRef.current.get(registration.id),
           walletHeight: nextSnapshot.walletHeight,
           registrationId: registration.id,
         });
@@ -733,6 +734,7 @@ export function WalletStateProvider({
         setSyncStartHeight(undefined);
       }
       logWalletEvent('WalletState', 'startNativeRefresh.start', {
+        clearedSyncStartHeight: true,
         reason,
         registrationId,
       });
