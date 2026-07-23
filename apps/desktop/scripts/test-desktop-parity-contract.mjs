@@ -96,3 +96,10 @@ test('a physical Ledger export can be diagnosed without logging wallet secrets',
   assert.equal(/private_view_key\.clone\(\)/.test(ledgerDiagnostics), false);
   assert.equal(/exported\.address\.clone\(\)/.test(ledgerDiagnostics), false);
 });
+
+test('both desktop Ledger read-only flows keep one instruction dialog open until the native export resolves', () => {
+  assert.match(appSource, /function LedgerViewKeyExportOverlay\(\)/);
+  assert.match(appSource, /This window closes automatically as soon as the Ledger returns the private view key/);
+  assert.match(appSource, /setLedgerViewKeyExportPending\(true\)/);
+  assert.match(appSource, /setLedgerViewKeyExportPending\(false\); setBusy\(false\);/);
+});

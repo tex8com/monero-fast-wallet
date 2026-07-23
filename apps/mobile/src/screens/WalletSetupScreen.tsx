@@ -463,6 +463,8 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     useState<CreateCredentialMode>('device');
   const [ledgerPromptVisible, setLedgerPromptVisible] = useState(false);
   const [ledgerBusy, setLedgerBusy] = useState(false);
+  const [ledgerViewKeyExportPending, setLedgerViewKeyExportPending] =
+    useState(false);
   const [ledgerStatus, setLedgerStatus] = useState<
     LedgerTransportStatus | undefined
   >();
@@ -1286,6 +1288,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
       const deviceName =
         transportStatus.transport === 'ble' ? 'Ledger:ble' : 'Ledger';
+      // This is the sole native request for the private view key. Keep the
+      // Ledger approval instruction visible until that request resolves.
+      setLedgerViewKeyExportPending(persistLedgerViewOnly);
       const result = await walletService.createNamedWalletFromDevice({
         walletName: DEFAULT_HARDWARE_WALLET_NAME,
         network: settings.network,
@@ -1323,6 +1328,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         error: errorMessage(error),
       });
     } finally {
+      setLedgerViewKeyExportPending(false);
       setCreating(false);
     }
   };
@@ -2057,6 +2063,31 @@ export default function WalletSetupScreen({ navigation, route }: any) {
           </View>
         )}
       </Modal>
+
+      <Modal
+        visible={ledgerViewKeyExportPending}
+        transparent
+        animationType="fade"
+        presentationStyle="overFullScreen"
+      >
+        <View style={s.promptBackdrop}>
+          <View style={[s.promptCard, s.ledgerViewKeyExportCard]}>
+            <MoneroCoin size={58} />
+            <Text style={s.promptTitle}>
+              {t('setup.hardware.exportViewKeyTitle')}
+            </Text>
+            <Text style={s.promptSubtitle}>
+              {t('setup.hardware.exportViewKeyInstructions')}
+            </Text>
+            <View style={s.ledgerViewKeyExportWait}>
+              <ActivityIndicator color={colors.orange} />
+              <Text style={s.ledgerViewKeyExportWaitText}>
+                {t('setup.hardware.exportViewKeyWaiting')}
+              </Text>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
@@ -2454,6 +2485,21 @@ const s = StyleSheet.create({
     lineHeight: 18,
     marginTop: -2,
     marginBottom: 12,
+  },
+  ledgerViewKeyExportCard: {
+    alignItems: 'center',
+    borderColor: 'rgba(255,157,24,0.55)',
+  },
+  ledgerViewKeyExportWait: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 20,
+  },
+  ledgerViewKeyExportWaitText: {
+    color: colors.orange,
+    fontSize: 14,
+    fontWeight: '800',
   },
   promptActions: { flexDirection: 'row', gap: 12, marginTop: 10 },
   secondaryButton: {

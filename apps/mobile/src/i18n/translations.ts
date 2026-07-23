@@ -153,6 +153,10 @@ const en = {
   'setup.hardware.found': 'Ledger Nano found',
   'setup.hardware.instructions':
     'Connect Ledger Nano with Bluetooth or USB, unlock it, and open the Monero app on the device.',
+  'setup.hardware.exportViewKeyTitle': 'Approve on your Ledger',
+  'setup.hardware.exportViewKeyInstructions':
+    'Keep Ledger Nano unlocked with the Monero app open. On the Ledger, approve Export view key. This window closes automatically when Ledger returns the private view key.',
+  'setup.hardware.exportViewKeyWaiting': 'Waiting for Ledger…',
   'setup.hardware.localViewTitle': 'Remember Ledger for viewing',
   'setup.hardware.localViewDescription':
     'Keep an encrypted, read-only wallet on this device. You can view balances and receive without reconnecting Ledger; sending still requires Ledger.',
@@ -712,6 +716,10 @@ const de: Record<keyof typeof en, string> = {
   'setup.hardware.found': 'Ledger Nano gefunden',
   'setup.hardware.instructions':
     'Verbinde den Ledger Nano per Bluetooth oder USB, entsperre ihn und öffne die Monero-App am Gerät.',
+  'setup.hardware.exportViewKeyTitle': 'Auf dem Ledger bestätigen',
+  'setup.hardware.exportViewKeyInstructions':
+    'Ledger Nano entsperrt lassen und die Monero-App geöffnet halten. Auf dem Ledger „Export view key“ bestätigen. Dieses Fenster schließt automatisch, sobald der Ledger den privaten View Key zurückgibt.',
+  'setup.hardware.exportViewKeyWaiting': 'Warte auf den Ledger…',
   'setup.hardware.localViewTitle': 'Ledger zum Anzeigen merken',
   'setup.hardware.localViewDescription':
     'Speichert eine verschlüsselte Nur-Lese-Wallet auf diesem Gerät. Guthaben und Eingänge sind ohne Ledger sichtbar; zum Senden bleibt Ledger erforderlich.',
