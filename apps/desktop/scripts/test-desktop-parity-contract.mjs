@@ -62,6 +62,25 @@ test('desktop keeps the balance summary but removes the transient sync status af
   assert.equal(/>\{t\('common\.refresh'\)\}<\/button>/.test(appSource), false);
 });
 
+test('desktop dashboard keeps the mobile order: chart, balance, news, then wallet actions', () => {
+  const homeSource = appSource.slice(appSource.indexOf('function Home('), appSource.indexOf('function RecentTransactions('));
+  const chart = homeSource.indexOf('<section className="market-card">');
+  const balance = homeSource.indexOf('home-primary-wallet');
+  const news = homeSource.indexOf('<section className="official-updates"');
+  const actions = homeSource.indexOf('<section className="home-quick-actions"');
+  assert.ok(chart >= 0 && balance > chart && news > balance && actions > news);
+});
+
+test('desktop exposes and creates the default-on Ledger Fast Wallet pair', () => {
+  const setupSource = appSource.slice(appSource.indexOf('function Setup('), appSource.indexOf('function FastWallets('));
+  assert.match(setupSource, /setCreateFastWallet\(next !== 'open'\)/);
+  assert.match(setupSource, /createFast: createFastWallet/);
+  assert.match(setupSource, /mode === 'create' \|\| mode === 'restore' \|\| mode === 'ledger'/);
+  assert.match(appSource, /function isFastWalletRegistration/);
+  assert.match(appSource, /fast-wallet-badge/);
+  assert.match(appSource, /FAST WALLET · LEDGER/);
+});
+
 test('Ledger read-only setup is reachable through Tauri command permissions', () => {
   for (const command of ['enable_ledger_read_only', 'create_ledger_read_only_from_device']) {
     assert.match(tauriBuild, new RegExp(`"${command}"`));

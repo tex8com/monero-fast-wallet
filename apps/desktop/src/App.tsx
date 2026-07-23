@@ -67,6 +67,13 @@ function errorMessage(reason: unknown, fallback: string) {
 }
 function networkLabel(network: Network) { return network === 'mainnet' ? 'Mainnet' : network === 'testnet' ? 'Testnet' : 'Stagenet'; }
 function walletDisplayName(wallet: Pick<RegisteredWallet, 'displayName' | 'walletName'>) { return wallet.displayName?.trim() || wallet.walletName; }
+function isFastWalletRegistration(wallet: Pick<RegisteredWallet, 'kind' | 'role'> | null | undefined) { return wallet?.role === 'fast' || wallet?.kind === 'fast'; }
+function walletTypeLabel(wallet: RegisteredWallet, t: ReturnType<typeof useI18n>['t']) {
+  if (isFastWalletRegistration(wallet)) return `Fast Wallet · ${t('wallets.ledger')}`;
+  if (wallet.kind === 'hardware') return t('wallets.ledger');
+  if (wallet.kind === 'view-only') return 'Ledger read-only';
+  return t('wallets.software');
+}
 function notificationDeliveryLabel(status: DesktopNotificationStatus | null, t: ReturnType<typeof useI18n>['t']) {
   if (!status) return t('settings.deliveryChecking');
   if (status.delivery === 'closed-app-apns') return t('settings.deliveryApns');
@@ -323,7 +330,7 @@ function DesktopWalletSwitcher({ wallets, activeWallet, onSelect, onManage }: { 
   return <div className="desktop-wallet-switcher-wrap">
     <button className="desktop-wallet-switcher" aria-expanded={open} aria-haspopup="menu" onClick={() => wallets.length ? setOpen((value) => !value) : manage()} type="button">
       <img src="/monero-mark.png" alt="" />
-      <span><strong>{selected ? walletDisplayName(selected) : t('home.addWallet')}</strong><small>{selected ? `${selected.kind === 'hardware' ? t('wallets.ledger') : t('wallets.software')} · ${networkLabel(selected.network)}` : t('home.noWallets')}</small></span>
+      <span><strong>{selected ? walletDisplayName(selected) : t('home.addWallet')}</strong><small>{selected ? `${walletTypeLabel(selected, t)} · ${networkLabel(selected.network)}` : t('home.noWallets')}</small></span>
       <em aria-hidden="true">⌄</em>
     </button>
     {open && <div className="desktop-wallet-menu" role="menu" aria-label={t('wallets.saved')}>
@@ -339,7 +346,7 @@ function DesktopWalletSwitcher({ wallets, activeWallet, onSelect, onManage }: { 
               : t('setup.open');
         return <button className={isActive ? 'desktop-wallet-menu-row active' : 'desktop-wallet-menu-row'} key={wallet.id} onClick={() => selectWallet(wallet)} role="menuitem" type="button">
           <span className="desktop-wallet-menu-mark"><img src="/monero-mark.png" alt="" /></span>
-          <span className="desktop-wallet-menu-copy"><strong>{walletDisplayName(wallet)}</strong><small>{wallet.kind === 'hardware' ? t('wallets.ledger') : t('wallets.software')} · {networkLabel(wallet.network)}</small></span>
+          <span className="desktop-wallet-menu-copy"><strong>{walletDisplayName(wallet)}{isFastWalletRegistration(wallet) && <b className="fast-wallet-badge">FAST</b>}</strong><small>{walletTypeLabel(wallet, t)} · {networkLabel(wallet.network)}</small></span>
           <em>{action}</em>
         </button>;
       })}</div>
@@ -511,6 +518,12 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   };
 
   return <div className="home-stack home-dashboard">
+    <section className="market-card">
+      <div className="market-card-head"><div><p className="eyebrow">{t('home.liveMarket')}</p><h2>{priceLoading ? t('home.priceLoading') : price > 0 ? formatUsd(price) : t('home.marketUnavailable')}</h2>{price > 0 && <p className={positive ? 'market-change positive' : 'market-change negative'}><span>{positive ? '▲' : '▼'} {Math.abs(changePercent).toFixed(2)}%</span><span>{positive ? '+' : '-'}{formatUsd(changeUsd)}</span></p>}</div><img className="market-mark" src="/monero-mark.png" alt="Monero" /></div>
+      <div className="market-chart-wrap">{chartLoading && points.length < 2 ? <div className="market-chart-empty">{t('home.chartLoading')}</div> : <MarketChart points={points} positive={positive} onRetry={refreshChart} />}</div>
+      <div className="market-timeframes" aria-label="Market chart timeframe">{(['24H', '7D', '1M', '1Y', 'Max'] as MarketTimeframe[]).map((item) => <button className={timeframe === item ? 'selected' : ''} onClick={() => setTimeframe(item)} key={item} type="button">{item}</button>)}</div>
+    </section>
+
     {showPrimaryWalletCard && <section className={`${snapshot?.synchronized ? 'wallet-sync-card ready' : 'wallet-sync-card'} home-primary-wallet`}>
       <div className="primary-wallet-balance">
         <div><p className="eyebrow">{t('home.totalBalance')}</p><h2>{`${balanceXmr} XMR`}</h2><strong>{balanceUsd}</strong></div>
@@ -519,12 +532,6 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
       {!snapshot?.synchronized && <div className="primary-wallet-sync"><div className="sync-reading"><span className="sync-led" /> <strong>{syncLabel(snapshot, t, syncStartHeight)}</strong><button className="sync-refresh" aria-label={t('common.refresh')} onClick={() => void refreshWallet()} title={t('common.refresh')} type="button">↻</button><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{hasMeasuredProgress ? `${progress}%` : ''}</em></div>{hasMeasuredProgress && <div className="sync-track"><span style={{ width: `${progress}%` }} /></div>}{sync.targetHeight !== undefined && <div className="sync-metrics"><span>{t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight), target: formatSyncBlockCount(sync.targetHeight) })}</span>{sync.phase === 'finalizing' ? <span>{t('home.syncConfirming')}</span> : sync.remainingBlocks !== undefined ? <span>{t('home.syncRemaining', { count: formatSyncBlockCount(sync.remainingBlocks) })}</span> : null}{sync.phase === 'syncing' && <span>{formatDesktopSyncEta(syncEtaSeconds, t)}</span>}</div>}</div>}
     </section>}
 
-    <section className="market-card">
-      <div className="market-card-head"><div><p className="eyebrow">{t('home.liveMarket')}</p><h2>{priceLoading ? t('home.priceLoading') : price > 0 ? formatUsd(price) : t('home.marketUnavailable')}</h2>{price > 0 && <p className={positive ? 'market-change positive' : 'market-change negative'}><span>{positive ? '▲' : '▼'} {Math.abs(changePercent).toFixed(2)}%</span><span>{positive ? '+' : '-'}{formatUsd(changeUsd)}</span></p>}</div><img className="market-mark" src="/monero-mark.png" alt="Monero" /></div>
-      <div className="market-chart-wrap">{chartLoading && points.length < 2 ? <div className="market-chart-empty">{t('home.chartLoading')}</div> : <MarketChart points={points} positive={positive} onRetry={refreshChart} />}</div>
-      <div className="market-timeframes" aria-label="Market chart timeframe">{(['24H', '7D', '1M', '1Y', 'Max'] as MarketTimeframe[]).map((item) => <button className={timeframe === item ? 'selected' : ''} onClick={() => setTimeframe(item)} key={item} type="button">{item}</button>)}</div>
-    </section>
-
     <section className="official-updates" aria-label={t('home.updatesTitle')}>
       <header><div><p className="eyebrow">{t('home.updatesSource')}</p><h2>{t('home.updatesTitle')}</h2></div><a href="https://github.com/monero-project/monero/releases" target="_blank" rel="noreferrer">{t('home.updatesSourceLink')} ↗</a></header>
       {updatesLoading && officialUpdates.length === 0 ? <p className="official-updates-status">{t('home.updatesLoading')}</p> : updatesUnavailable && officialUpdates.length === 0 ? <div className="official-updates-status"><span>{t('home.updatesUnavailable')}</span><button className="quiet-button" onClick={refreshUpdates} type="button">{t('home.chartRetry')}</button></div> : <div className="official-updates-list">{officialUpdates.map((item) => <a href={item.url} key={item.id} target="_blank" rel="noreferrer"><strong>{item.title}</strong><small>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.publishedAt))}</small><em>›</em></a>)}</div>}
@@ -532,7 +539,7 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
 
     <section className="home-quick-actions" aria-label="Wallet actions"><button onClick={() => routeToWalletAction(onSend)} type="button"><span>↑</span><strong>{t('nav.send')}</strong><small>{t('home.sendDetail')}</small></button><button onClick={() => routeToWalletAction(onReceive)} type="button"><span>↓</span><strong>{t('nav.receive')}</strong><small>{t('home.receiveDetail')}</small></button></section>
 
-    <section className="home-wallets"><header><div><p className="eyebrow">{t('home.allWallets')}</p><h2>{t('home.yourWallets')}</h2></div><button className="quiet-button" onClick={onWallets} type="button">{t('home.manageWallets')}</button></header>{savedWallets.length ? <div className="wallet-strip">{savedWallets.map((item) => { const active = item.id === wallet?.id; return <button className={active ? 'wallet-mini-card active' : 'wallet-mini-card'} onClick={onWallets} key={item.id} type="button"><span>{walletDisplayName(item)}</span><small>{item.kind === 'hardware' ? 'LEDGER' : networkLabel(item.network).toUpperCase()}</small><strong>{active && walletId ? `${balanceXmr} XMR` : item.isOpen ? t('home.openLocal') : t('home.openToCheck')}</strong></button>; })}<button className="wallet-mini-card add" onClick={onSetup} type="button"><span>＋</span><strong>{t('home.addWallet')}</strong></button></div> : <div className="home-empty"><p>{t('home.noWallets')}</p><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></div>}</section>
+    <section className="home-wallets"><header><div><p className="eyebrow">{t('home.allWallets')}</p><h2>{t('home.yourWallets')}</h2></div><button className="quiet-button" onClick={onWallets} type="button">{t('home.manageWallets')}</button></header>{savedWallets.length ? <div className="wallet-strip">{savedWallets.map((item) => { const active = item.id === wallet?.id; const fast = isFastWalletRegistration(item); return <button className={`${active ? 'wallet-mini-card active' : 'wallet-mini-card'}${fast ? ' fast' : ''}`} onClick={onWallets} key={item.id} type="button"><span>{walletDisplayName(item)}</span><small>{fast ? 'FAST WALLET · LEDGER' : item.kind === 'hardware' ? 'LEDGER' : networkLabel(item.network).toUpperCase()}</small><strong>{active && walletId ? `${balanceXmr} XMR` : item.isOpen ? t('home.openLocal') : fast ? 'Open Fast Wallet' : t('home.openToCheck')}</strong></button>; })}<button className="wallet-mini-card add" onClick={onSetup} type="button"><span>＋</span><strong>{t('home.addWallet')}</strong></button></div> : <div className="home-empty"><p>{t('home.noWallets')}</p><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></div>}</section>
 
     <RecentTransactions hasOpenWallet={Boolean(walletId)} items={transactions} onActivity={() => routeToWalletAction(onActivity)} />
 
@@ -629,7 +636,7 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
   const [ledgerViewKeyExportPending, setLedgerViewKeyExportPending] = useState(false);
   const [ledgerTransport, setLedgerTransport] = useState<'usb' | 'ble'>('usb');
   const [ledgerStatus, setLedgerStatus] = useState<LedgerTransportStatus | null>(null);
-  // Creating or restoring a software wallet always starts with Fast Wallet
+  // Every new wallet type, including a Ledger pair, starts with Fast Wallet
   // enabled. Opening a saved wallet is the only mode that must never create a
   // companion as a side effect.
   const [createFastWallet, setCreateFastWallet] = useState(() => initial?.mode !== 'open');
@@ -671,10 +678,11 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
   };
   const chooseMode = (next: SetupMode) => {
     setMode(next); setMessage(null); setCredentialUnavailable(false); setLedgerReadOnlyRecovery(false); setLedgerViewKeyConsent(false);
-    // Fast Wallet is an opt-in companion created only while creating or
-    // importing a software wallet.  Opening an existing wallet must never
-    // offer or create another wallet as a side effect.
-    setCreateFastWallet(next === 'create' || next === 'restore');
+    // A Ledger Fast Wallet is the reserved account 1 in the same device
+    // wallet file. It is part of the same default-on setup contract as the
+    // separate software Fast Wallet; opening existing wallets never creates
+    // a companion as a side effect.
+    setCreateFastWallet(next !== 'open');
     if (next === 'ledger' && ledgerTransport === 'ble') void checkLedgerBluetooth();
   };
   useEffect(() => {
@@ -706,7 +714,7 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
     setBusy(true); setMessage(null);
     try {
       const input = mode === 'ledger'
-        ? { walletName: '', password: '', network, deviceName: ledgerTransport === 'ble' ? 'Ledger:ble' : 'Ledger', restoreHeight, accountIndex: 0, role: 'standard', createFast: false }
+        ? { walletName: '', password: '', network, deviceName: ledgerTransport === 'ble' ? 'Ledger:ble' : 'Ledger', restoreHeight, accountIndex: 0, role: 'standard', createFast: createFastWallet }
         : { walletName: mode === 'open' ? initial?.walletName ?? '' : '', password: '', network, ...(mode === 'create' ? { language: 'English' } : {}), ...(mode === 'restore' ? { mnemonic, restoreHeight } : {}) };
       const command = mode === 'create' ? 'create_wallet' : mode === 'restore' ? 'restore_wallet' : mode === 'ledger' ? 'create_hardware_wallet' : 'open_wallet';
       const result = await invoke<WalletOperationResponse>(command, { input });
@@ -754,8 +762,8 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
     ? [{ id: 'open', title: t('setup.open'), detail: t('setup.openDetail') }]
     : [{ id: 'create', title: t('setup.create'), detail: t('setup.createDetail') }, { id: 'ledger', title: t('setup.ledger'), detail: t('setup.ledgerDetail') }, { id: 'restore', title: t('setup.import'), detail: t('setup.importDetail') }];
   const scanDate = <><label>{t('setup.scanStart')} <small>{t('common.optional')}</small><input value={restoreStartDate} onChange={(event) => setRestoreStartDate(event.target.value)} type="date" max={todayRestoreDate()} /></label><small className="restore-start-hint">{t('setup.scanDateHint')}</small></>;
-  const fastChoice = <label className="fast-setup-choice"><input checked={createFastWallet} onChange={(event) => setCreateFastWallet(event.target.checked)} type="checkbox" /><span><strong>Fast Wallet</strong><small>A separate receive wallet is created and only its private view key is registered for private incoming-payment alerts.</small></span></label>;
-  return <><section className="setup-grid simple-setup"><header><p className="eyebrow">{initial?.mode === 'open' ? t('wallets.unlock') : t('setup.eyebrow')}</p><h2>{initial?.mode === 'open' ? t('setup.open') : t('setup.title')}</h2><p>{initial?.mode === 'open' ? openDescription : t('setup.subtitle')}</p></header>{!initial && wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{wallet.kind === 'hardware' ? t('wallets.ledger') : wallet.kind === 'fast' ? 'Fast Wallet' : networkLabel(wallet.network)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : item.id === 'restore' ? '⇣' : '↗'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{mode === 'open' ? networkLabel(network) : t('common.mainnet')}</p><h2>{label}</h2><p>{openDescription}</p><div className="wallet-form">{mode === 'restore' && <><label>{t('setup.seed')}<textarea value={mnemonic} onChange={(event) => setMnemonic(event.target.value)} placeholder={t('setup.seedPlaceholder')} autoComplete="off" /></label>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}</>}{(mode === 'create' || mode === 'restore') && fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy || credentialUnavailable || (mode === 'restore' && !mnemonic.trim())} type="button">{actionLabel}</button>{ledgerReadOnlyRecovery && selectedOpeningLedger && <section className="ledger-read-only-recovery"><h3>Enable secure local read-only sync</h3><p>Approve <b>Export view key</b> once on the connected Ledger. Only the private view key is encrypted in system secure storage and the local read-only wallet; the spend key never leaves the Ledger.</p><label className="fast-consent"><input checked={ledgerViewKeyConsent} onChange={(event) => setLedgerViewKeyConsent(event.target.checked)} type="checkbox" />I approve storing this Ledger’s private view key locally for read-only sync.</label><button className="secondary" disabled={!ledgerViewKeyConsent || busy} onClick={() => void createLedgerReadOnly()} type="button">{busy ? t('setup.working') : 'Export view key & enable sync'}</button></section>}{message && <p className="setup-message">{message}</p>}</div></article></section>{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay />}</>;
+  const fastChoice = <label className="fast-setup-choice"><input checked={createFastWallet} onChange={(event) => setCreateFastWallet(event.target.checked)} type="checkbox" /><span><strong>Fast Wallet</strong><small>{mode === 'ledger' ? 'Create the separate Ledger Fast Wallet in reserved account 1. It receives only; spending remains exclusively on your Ledger.' : 'A separate receive wallet is created and only its private view key is registered for private incoming-payment alerts.'}</small></span></label>;
+  return <><section className="setup-grid simple-setup"><header><p className="eyebrow">{initial?.mode === 'open' ? t('wallets.unlock') : t('setup.eyebrow')}</p><h2>{initial?.mode === 'open' ? t('setup.open') : t('setup.title')}</h2><p>{initial?.mode === 'open' ? openDescription : t('setup.subtitle')}</p></header>{!initial && wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{walletTypeLabel(wallet, t)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : item.id === 'restore' ? '⇣' : '↗'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{mode === 'open' ? networkLabel(network) : t('common.mainnet')}</p><h2>{label}</h2><p>{openDescription}</p><div className="wallet-form">{mode === 'restore' && <><label>{t('setup.seed')}<textarea value={mnemonic} onChange={(event) => setMnemonic(event.target.value)} placeholder={t('setup.seedPlaceholder')} autoComplete="off" /></label>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}</>}{(mode === 'create' || mode === 'restore' || mode === 'ledger') && fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy || credentialUnavailable || (mode === 'restore' && !mnemonic.trim())} type="button">{actionLabel}</button>{ledgerReadOnlyRecovery && selectedOpeningLedger && <section className="ledger-read-only-recovery"><h3>Enable secure local read-only sync</h3><p>Approve <b>Export view key</b> once on the connected Ledger. Only the private view key is encrypted in system secure storage and the local read-only wallet; the spend key never leaves the Ledger.</p><label className="fast-consent"><input checked={ledgerViewKeyConsent} onChange={(event) => setLedgerViewKeyConsent(event.target.checked)} type="checkbox" />I approve storing this Ledger’s private view key locally for read-only sync.</label><button className="secondary" disabled={!ledgerViewKeyConsent || busy} onClick={() => void createLedgerReadOnly()} type="button">{busy ? t('setup.working') : 'Export view key & enable sync'}</button></section>}{message && <p className="setup-message">{message}</p>}</div></article></section>{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay />}</>;
 }
 
 function FastWallets({ linked, sourceWalletId, sourceWallet }: { linked: boolean; sourceWalletId: string | null; sourceWallet: RegisteredWallet | null }) {

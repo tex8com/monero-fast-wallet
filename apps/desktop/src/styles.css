@@ -447,6 +447,7 @@ h2 { letter-spacing: -0.65px; }
 .wallet-row p { overflow: hidden; margin: 5px 0 0; color: #aaa2b5; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .wallet-chip { display: inline-flex; align-items: center; padding: 4px 7px; border-radius: 999px; color: #b5ead7; background: #15362f; font-size: 10px; font-weight: 850; letter-spacing: .04em; text-transform: uppercase; }
 .wallet-chip.warning { color: #ffd379; background: #392d16; }
+.fast-wallet-badge { display: inline-flex; align-items: center; margin-left: 7px; padding: 3px 6px; border: 1px solid #fa671c; border-radius: 999px; color: #ffd0ad; background: #3d1d12; font-size: 9px; font-weight: 900; letter-spacing: .08em; line-height: 1; vertical-align: middle; }
 .wallet-row .secondary { margin: 0; }
 .wallet-row-actions { display: flex; align-items: center; gap: 8px; }
 .wallet-row-actions .quiet-button, .wallet-row-actions .secondary { margin: 0; }
@@ -610,6 +611,7 @@ h2 { letter-spacing: -0.65px; }
 .wallet-mini-card { display: grid; flex: 0 0 190px; gap: 5px; min-height: 112px; padding: 14px; border: 1px solid #39314a; border-radius: 13px; color: inherit; background: #0d0b14; cursor: pointer; text-align: left; }
 .wallet-mini-card:hover { border-color: #725055; }
 .wallet-mini-card.active { border-color: #fa671c; background: linear-gradient(135deg, #291720, #15101c); }
+.wallet-mini-card.fast { border-color: #a65332; background: linear-gradient(135deg, #291720, #15101c 72%); }
 .wallet-mini-card > span { overflow: hidden; color: #f2edf5; font-size: 15px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .wallet-mini-card small { color: #a39aae; font-size: 10px; font-weight: 850; letter-spacing: .06em; }
 .wallet-mini-card strong { align-self: end; overflow: hidden; color: #d9d1df; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
