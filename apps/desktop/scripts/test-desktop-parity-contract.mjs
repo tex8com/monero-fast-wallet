@@ -75,3 +75,9 @@ test('Ledger read-only sync consumes the Core-approved view key without reconnec
   const recoverySource = hostSource.slice(hostSource.indexOf('fn create_ledger_read_only_from_device'), hostSource.indexOf('#\[tauri::command\]\nfn wallet_open_requires_password'));
   assert.equal(/reconnect_hardware\(&export_wallet_id\)/.test(recoverySource), false);
 });
+
+test('a Ledger setup reuses its approved view-key export within one Core session', () => {
+  assert.match(ledgerCorePatch, /Ledger view-key export reused from the current device session/);
+  assert.match(ledgerCorePatch, /if \(this->has_view_key\) \{/);
+  assert.match(ledgerCorePatch, /Ledger view-key export requested from device/);
+});

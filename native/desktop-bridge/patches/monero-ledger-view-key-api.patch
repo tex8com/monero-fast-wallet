@@ -18,6 +18,24 @@ index 66556b79c..0a5ddd453 100644
          bool  generate_chacha_key(const cryptonote::account_keys &keys, crypto::chacha_key &key, uint64_t kdf_rounds) override;
          void  display_address(const cryptonote::subaddress_index& index, const boost::optional<crypto::hash8> &payment_id) override;
  
+diff --git a/src/device/device_ledger.cpp b/src/device/device_ledger.cpp
+--- a/src/device/device_ledger.cpp
++++ b/src/device/device_ledger.cpp
+@@ -744,2 +744,12 @@ bool  device_ledger::get_secret_keys(crypto::secret_key &vkey , crypto::secret_
+-        //spcialkey, normal conf handled in decrypt
+-        send_simple(INS_GET_KEY, 0x02);
++        // connect() has already completed this explicit device approval for
++        // the current Ledger session. account_base::create_from_device()
++        // calls us again immediately afterwards; requesting a second export
++        // would show the same confirmation twice without changing the keys.
++        if (this->has_view_key) {
++            MINFO("Ledger view-key export reused from the current device session");
++            return true;
++        }
++
++        //spcialkey, normal conf handled in decrypt
++        MINFO("Ledger view-key export requested from device");
++        send_simple(INS_GET_KEY, 0x02);
 diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
 index 9050edfcf..0f0b94c24 100644
 --- a/src/wallet/api/wallet2_api.h
