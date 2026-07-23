@@ -14,6 +14,8 @@
     "allow-create-wallet",
     "allow-restore-wallet",
     "allow-create-hardware-wallet",
+    "allow-enable-ledger-read-only",
+    "allow-create-ledger-read-only-from-device",
     "allow-open-wallet",
     "allow-close-wallet",
     "allow-change-wallet-password",

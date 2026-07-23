@@ -10,6 +10,8 @@ const repoRoot = resolve(desktopRoot, '..', '..');
 
 const appSource = readFileSync(resolve(desktopRoot, 'src', 'App.tsx'), 'utf8');
 const parityDoc = readFileSync(resolve(repoRoot, 'docs', 'DESKTOP_PARITY_MATRIX.md'), 'utf8');
+const tauriBuild = readFileSync(resolve(desktopRoot, 'src-tauri', 'build.rs'), 'utf8');
+const tauriCapability = readFileSync(resolve(desktopRoot, 'src-tauri', 'capabilities', 'main.json'), 'utf8');
 
 test('desktop primary navigation matches the mobile bottom menu contract', () => {
   const primaryMatch = appSource.match(/function primarySections[\s\S]*?return \[([\s\S]*?)\];\s*}/);
@@ -49,4 +51,11 @@ test('desktop Receive keeps QR and copy primary while address tools stay optiona
   assert.match(receiveSource, /copy-icon-button/);
   assert.match(receiveSource, /showAddressTools/);
   assert.match(receiveSource, /receive\.manageAddresses/);
+});
+
+test('Ledger read-only setup is reachable through Tauri command permissions', () => {
+  for (const command of ['enable_ledger_read_only', 'create_ledger_read_only_from_device']) {
+    assert.match(tauriBuild, new RegExp(`"${command}"`));
+    assert.match(tauriCapability, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
+  }
 });

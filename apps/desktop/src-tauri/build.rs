@@ -9,6 +9,8 @@ const COMMANDS: &[&str] = &[
     "create_wallet",
     "restore_wallet",
     "create_hardware_wallet",
+    "enable_ledger_read_only",
+    "create_ledger_read_only_from_device",
     "open_wallet",
     "close_wallet",
     "change_wallet_password",
