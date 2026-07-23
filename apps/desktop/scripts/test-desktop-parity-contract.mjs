@@ -79,9 +79,19 @@ test('Ledger read-only sync consumes the Core-approved view key without reconnec
 });
 
 test('a Ledger setup reuses its approved view-key export within one Core session', () => {
+  assert.match(ledgerCorePatch, /request_view_key_export/);
   assert.match(ledgerCorePatch, /Ledger view-key export reused from the current device session/);
-  assert.match(ledgerCorePatch, /if \(this->has_view_key\) \{/);
   assert.match(ledgerCorePatch, /Ledger view-key export requested from device/);
+  const normalConnection = ledgerCorePatch
+    .slice(
+      ledgerCorePatch.indexOf('bool  device_ledger::get_secret_keys'),
+      ledgerCorePatch.indexOf('bool device_ledger::request_view_key_export'),
+    )
+    .split('\n')
+    .filter(line => !line.startsWith('-'))
+    .join('\n');
+  assert.doesNotMatch(normalConnection, /INS_GET_KEY, 0x02/);
+  assert.match(normalConnection, /Normal connection deliberately receives fake keys/);
 });
 
 test('a physical Ledger export can be diagnosed without logging wallet secrets', () => {
