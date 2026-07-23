@@ -2031,6 +2031,13 @@ fn remove_temporary_wallet_files(path: &str) {
     let _ = fs::remove_file(format!("{path}.keys"));
 }
 
+fn wallet_file_path_is_available(path: &str) -> bool {
+    // Removing a wallet from the app intentionally keeps its encrypted files.
+    // A future add must therefore skip both the cache and key-file names,
+    // rather than asking the native Core to overwrite an existing wallet.
+    !std::path::Path::new(path).exists() && !std::path::Path::new(&format!("{path}.keys")).exists()
+}
+
 fn next_wallet_file_name(app: &AppHandle, requested: &str, prefix: &str) -> Result<String, String> {
     let requested = requested.trim();
     let registry = wallet_registry::list(app)?;
@@ -2040,13 +2047,16 @@ fn next_wallet_file_name(app: &AppHandle, requested: &str, prefix: &str) -> Resu
         .map(|wallet| wallet.wallet_name.as_str())
         .collect::<std::collections::HashSet<_>>();
     if !requested.is_empty() && !used.contains(requested) {
-        wallet_path(app, requested)?;
-        return Ok(requested.to_owned());
+        let path = wallet_path(app, requested)?;
+        if wallet_file_path_is_available(&path) {
+            return Ok(requested.to_owned());
+        }
     }
     let mut number = 1_u64;
     loop {
         let candidate = format!("{prefix}-{number}");
-        if !used.contains(candidate.as_str()) {
+        let path = wallet_path(app, &candidate)?;
+        if !used.contains(candidate.as_str()) && wallet_file_path_is_available(&path) {
             return Ok(candidate);
         }
         number += 1;
@@ -2427,7 +2437,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::market_backup_url;
+    use super::{market_backup_url, wallet_file_path_is_available};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn market_backup_only_allows_expected_bitfinex_routes() {
@@ -2441,5 +2455,27 @@ mod tests {
         );
         assert!(market_backup_url("chart", Some("other")).is_err());
         assert!(market_backup_url("other", None).is_err());
+    }
+
+    #[test]
+    fn wallet_filename_availability_reserves_existing_wallet_and_key_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "monero-fast-wallet-filename-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ledger-1.wallet");
+        let path = path.to_string_lossy().into_owned();
+
+        assert!(wallet_file_path_is_available(&path));
+        fs::write(format!("{path}.keys"), "test").unwrap();
+        assert!(!wallet_file_path_is_available(&path));
+        fs::remove_file(format!("{path}.keys")).unwrap();
+        fs::write(&path, "test").unwrap();
+        assert!(!wallet_file_path_is_available(&path));
+        fs::remove_dir_all(directory).unwrap();
     }
 }
