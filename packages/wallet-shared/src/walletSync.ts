@@ -185,7 +185,9 @@ export function presentWalletSync(
  * live data. A single fast refresh batch can otherwise turn tens of seconds
  * into a false “3 seconds remaining” promise. Once the observation window is
  * stable, the rate is recalculated from the complete current flow and the
- * most recent interval, using the slower of the two measurements.
+ * most recent interval, using the slower of the two measurements. Very short
+ * extrapolations are deliberately withheld: UI polling, Core finalization,
+ * and transaction checks are larger than a few seconds at that point.
  */
 export function updateWalletSyncEta(
   previous: WalletSyncEtaState | undefined,
@@ -247,11 +249,17 @@ export function updateWalletSyncEta(
 
   const observedForMs = observedAt - state.startedAt;
   const hasReliableObservation =
-    state.progressSamples >= 3 && observedForMs >= 15_000;
-  const etaSeconds =
+    state.progressSamples >= 3 && observedForMs >= 30_000;
+  const projectedSeconds =
     hasReliableObservation && state.blocksPerSecond && state.blocksPerSecond > 0
-      ? Math.max(1, Math.ceil(remainingBlocks / state.blocksPerSecond))
+      ? Math.ceil(remainingBlocks / state.blocksPerSecond)
       : undefined;
+  // Below one minute, a native wallet can still spend most of the apparent
+  // time in the final Core checks. Showing a number there is less truthful
+  // than continuing to say that the remaining time is being calculated.
+  const etaSeconds = projectedSeconds && projectedSeconds >= 60
+    ? projectedSeconds
+    : undefined;
   return { state, etaSeconds };
 }
 

@@ -118,14 +118,23 @@ test('no cached height can turn an active 19k-block scan into 99%', () => {
 
 test('ETA waits for sustained observed Core progress', () => {
   const initial = updateWalletSyncEta(undefined, 10_000, 0);
-  const first = updateWalletSyncEta(initial.state, 9_500, 5_000);
-  const idle = updateWalletSyncEta(first.state, 9_500, 10_000);
-  const slower = updateWalletSyncEta(idle.state, 9_000, 15_000);
-  const reliable = updateWalletSyncEta(slower.state, 8_500, 20_000);
+  const first = updateWalletSyncEta(initial.state, 9_500, 10_000);
+  const idle = updateWalletSyncEta(first.state, 9_500, 15_000);
+  const slower = updateWalletSyncEta(idle.state, 9_000, 20_000);
+  const reliable = updateWalletSyncEta(slower.state, 8_500, 30_000);
 
   assert.equal(first.etaSeconds, undefined);
   assert.equal(idle.etaSeconds, undefined);
-  assert.equal(idle.state.lastProgressAt, 5_000);
+  assert.equal(idle.state.lastProgressAt, 10_000);
   assert.equal(slower.etaSeconds, undefined);
-  assert.equal(reliable.etaSeconds, 114);
+  assert.equal(reliable.etaSeconds, 170);
+});
+
+test('ETA with a few seconds of apparent work remains indeterminate', () => {
+  const initial = updateWalletSyncEta(undefined, 1_000, 0);
+  const one = updateWalletSyncEta(initial.state, 700, 10_000);
+  const two = updateWalletSyncEta(one.state, 400, 20_000);
+  const three = updateWalletSyncEta(two.state, 100, 30_000);
+
+  assert.equal(three.etaSeconds, undefined);
 });
