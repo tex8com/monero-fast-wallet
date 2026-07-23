@@ -25,6 +25,14 @@ export interface EnthusiastDiscoveryPreference {
   updatedAt?: string;
 }
 
+export interface EnthusiastLocationDebug {
+  status: EnthusiastLocationStatus;
+  latitude?: number;
+  longitude?: number;
+  accuracyMeters?: number;
+  capturedAt?: string;
+}
+
 export type CommunityRelationship =
   | 'none'
   | 'outgoing'
@@ -80,6 +88,13 @@ const DEFAULT_PREFERENCE: EnthusiastDiscoveryPreference = {
 };
 
 let approximateAreaId: string | undefined;
+let latestLocationDebug: EnthusiastLocationDebug = {
+  status: 'not_requested',
+};
+
+export function getEnthusiastLocationDebug(): EnthusiastLocationDebug {
+  return { ...latestLocationDebug };
+}
 
 function withTimeout<T>(
   promise: Promise<T>,
@@ -424,16 +439,18 @@ export async function refreshApproximateEnthusiastLocation(
     }
   }
   // Request one fresh location as Community opens, even before the user
-  // chooses visibility. Exact coordinates never leave this function: only a
-  // coarse geohash is kept in memory and it is uploaded only when discovery
-  // has explicitly been enabled.
+  // chooses visibility. Exact coordinates are retained only in volatile
+  // memory for the temporary on-device debug display. Only a coarse geohash
+  // can be uploaded, and only when discovery has explicitly been enabled.
   logWalletEvent('community-location', 'request.started', {
     discoveryEnabled: current.enabled,
   });
+  latestLocationDebug = { status: 'requesting' };
   await savePreference({ ...current, locationStatus: 'requesting' });
   try {
     if (!(await requestAndroidLocationPermission())) {
       logWalletEvent('community-location', 'request.denied');
+      latestLocationDebug = { status: 'denied' };
       return savePreference({ ...current, locationStatus: 'denied' });
     }
 
@@ -442,6 +459,7 @@ export async function refreshApproximateEnthusiastLocation(
       | undefined;
     if (!module?.getCurrentLocation) {
       logWalletEvent('community-location', 'request.native-module-unavailable');
+      latestLocationDebug = { status: 'unavailable' };
       return savePreference({ ...current, locationStatus: 'unavailable' });
     }
 
@@ -452,10 +470,25 @@ export async function refreshApproximateEnthusiastLocation(
     );
     if (!validLocation(location)) {
       logWalletEvent('community-location', 'request.invalid-result');
+      latestLocationDebug = { status: 'unavailable' };
       return savePreference({ ...current, locationStatus: 'unavailable' });
     }
 
-    // Only this coarse cell remains in memory. Exact coordinates are discarded.
+    latestLocationDebug = {
+      status: 'ready',
+      latitude: location.latitude,
+      longitude: location.longitude,
+      accuracyMeters:
+        typeof location.accuracy === 'number' &&
+        Number.isFinite(location.accuracy)
+          ? Math.round(location.accuracy)
+          : undefined,
+      capturedAt:
+        typeof location.timestamp === 'number' &&
+        Number.isFinite(location.timestamp)
+          ? new Date(location.timestamp).toISOString()
+          : new Date().toISOString(),
+    };
     approximateAreaId = approximateAreaForCoordinates(
       location.latitude,
       location.longitude,
@@ -481,6 +514,7 @@ export async function refreshApproximateEnthusiastLocation(
     }
   } catch (error) {
     approximateAreaId = undefined;
+    latestLocationDebug = { status: locationErrorStatus(error) };
     logWalletEvent('community-location', 'request.failed', {
       status: locationErrorStatus(error),
       message: error instanceof Error ? error.message : String(error),
@@ -494,6 +528,34 @@ export async function refreshApproximateEnthusiastLocation(
 
 export function getCurrentApproximateAreaId(): string | undefined {
   return approximateAreaId;
+}
+
+export async function removeCommunityListing(): Promise<EnthusiastDiscoveryPreference> {
+  const current = await loadEnthusiastDiscoveryPreference();
+  const account = await loadAccount();
+  if (account) {
+    await communityRequest(
+      '/v1/profile',
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          display_name: account.displayName,
+          bio: '',
+          area_id: null,
+          visible: false,
+          radius_km: current.radiusKm,
+        }),
+      },
+      account,
+    );
+  }
+  approximateAreaId = undefined;
+  return savePreference({
+    ...current,
+    enabled: false,
+    locationStatus: 'not_requested',
+    serverStatus: 'ready',
+  });
 }
 
 export async function getCommunityIdentityId(): Promise<string | undefined> {

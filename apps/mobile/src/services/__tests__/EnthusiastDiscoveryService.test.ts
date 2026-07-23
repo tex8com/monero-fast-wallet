@@ -18,14 +18,17 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 
 import {
   approximateAreaForCoordinates,
+  getEnthusiastLocationDebug,
   loadEnthusiastDiscoveryPreference,
   refreshApproximateEnthusiastLocation,
+  removeCommunityListing,
   setEnthusiastDiscoveryEnabled,
   setEnthusiastDiscoveryRadius,
 } from '../EnthusiastDiscoveryService';
 
 describe('EnthusiastDiscoveryService', () => {
   beforeEach(async () => {
+    jest.clearAllMocks();
     await AsyncStorage.clear();
     delete NativeModules.NearbyLocation;
     (globalThis as any).fetch = jest.fn(
@@ -100,6 +103,12 @@ describe('EnthusiastDiscoveryService', () => {
     expect(persisted).not.toContain('15.4395');
     expect(persisted).not.toContain('latitude');
     expect(persisted).not.toContain('longitude');
+    expect(getEnthusiastLocationDebug()).toMatchObject({
+      status: 'ready',
+      latitude: 47.0707,
+      longitude: 15.4395,
+      accuracyMeters: 8,
+    });
 
     const profileRequest = (globalThis.fetch as jest.Mock).mock.calls.find(
       ([url]) => String(url).endsWith('/v1/profile'),
@@ -145,5 +154,35 @@ describe('EnthusiastDiscoveryService', () => {
     expect(
       NativeModules.NearbyLocation.getCurrentLocation,
     ).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes only the public listing and keeps the anonymous account', async () => {
+    NativeModules.NearbyLocation = {
+      getCurrentLocation: jest.fn(async () => ({
+        latitude: 47.0707,
+        longitude: 15.4395,
+        accuracy: 8,
+      })),
+    };
+
+    await setEnthusiastDiscoveryEnabled(true);
+    await refreshApproximateEnthusiastLocation();
+    const result = await removeCommunityListing();
+
+    expect(result).toMatchObject({
+      enabled: false,
+      locationStatus: 'not_requested',
+    });
+    const profileRequests = (globalThis.fetch as jest.Mock).mock.calls.filter(
+      ([url]) => String(url).endsWith('/v1/profile'),
+    );
+    const removedListing = JSON.parse(
+      profileRequests[profileRequests.length - 1][1].body,
+    );
+    expect(removedListing).toMatchObject({
+      area_id: null,
+      visible: false,
+    });
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
   });
 });

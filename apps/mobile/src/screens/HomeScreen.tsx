@@ -510,7 +510,6 @@ export default function HomeScreen({ navigation }: any) {
           <View style={s.syncStatusWrap}>
             <SyncStatusBar
               error={error}
-              hideWhenSynced
               progress={syncProgress}
               snapshot={snapshot}
               syncStartHeight={syncStartHeight}

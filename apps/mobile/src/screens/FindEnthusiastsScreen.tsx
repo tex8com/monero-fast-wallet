@@ -18,18 +18,21 @@ import { Icon } from '../components/Icon';
 import { useI18n } from '../i18n';
 import {
   acceptCommunityContact,
-  deleteCommunityIdentity,
+  getEnthusiastLocationDebug,
   listCommunityContacts,
   listNearbyEnthusiasts,
   loadCommunityProfile,
   loadEnthusiastDiscoveryPreference,
   refreshApproximateEnthusiastLocation,
+  removeCommunityListing,
   requestCommunityContact,
   setEnthusiastDiscoveryEnabled,
   setEnthusiastDiscoveryRadius,
   updateCommunityDisplayName,
   type CommunityContact,
+  type CommunityProfile,
   type EnthusiastDiscoveryPreference,
+  type EnthusiastLocationDebug,
   type EnthusiastRadiusKm,
   type NearbyEnthusiast,
 } from '../services/EnthusiastDiscoveryService';
@@ -42,6 +45,9 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
   const { t } = useI18n();
   const [preference, setPreference] = useState<EnthusiastDiscoveryPreference>();
   const [displayName, setDisplayName] = useState('');
+  const [ownProfile, setOwnProfile] = useState<CommunityProfile>();
+  const [locationDebug, setLocationDebug] =
+    useState<EnthusiastLocationDebug>(getEnthusiastLocationDebug());
   const [nearby, setNearby] = useState<NearbyEnthusiast[]>([]);
   const [contacts, setContacts] = useState<CommunityContact[]>([]);
   const [busy, setBusy] = useState(false);
@@ -57,6 +63,7 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
         !activePreference.enabled ||
         activePreference.locationStatus !== 'ready'
       ) {
+        setOwnProfile(undefined);
         setNearby([]);
         setContacts([]);
         return;
@@ -70,6 +77,7 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
           listCommunityContacts(),
         ]);
         setDisplayName(profile.displayName);
+        setOwnProfile(profile.visible ? profile : undefined);
         setNearby(nextNearby);
         setContacts(nextContacts);
       } catch {
@@ -99,11 +107,13 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
         if (!locationRefreshStarted.current) {
           locationRefreshStarted.current = true;
           setBusy(true);
+          setLocationDebug({ status: 'requesting' });
           try {
             const next = await refreshApproximateEnthusiastLocation(true);
             if (!active) {
               return;
             }
+            setLocationDebug(getEnthusiastLocationDebug());
             setPreference(next);
             if (next.enabled) {
               await reloadCommunity(next);
@@ -133,7 +143,9 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
     try {
       let next = await setEnthusiastDiscoveryEnabled(enabled);
       if (enabled) {
+        setLocationDebug({ status: 'requesting' });
         next = await refreshApproximateEnthusiastLocation();
+        setLocationDebug(getEnthusiastLocationDebug());
       }
       setPreference(next);
       await reloadCommunity(next);
@@ -158,6 +170,7 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
     try {
       const profile = await updateCommunityDisplayName(displayName, preference);
       setDisplayName(profile.displayName);
+      setOwnProfile(profile);
       await reloadCommunity(preference);
     } catch {
       setCommunityError(t('enthusiasts.serverError'));
@@ -166,25 +179,23 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
     }
   };
 
-  const removeCommunityIdentity = () => {
+  const removeListing = () => {
     Alert.alert(
-      t('enthusiasts.deleteTitle'),
-      t('enthusiasts.deleteDescription'),
+      t('enthusiasts.removeListingTitle'),
+      t('enthusiasts.removeListingDescription'),
       [
         { text: t('action.cancel'), style: 'cancel' },
         {
-          text: t('enthusiasts.deleteAction'),
+          text: t('enthusiasts.removeListing'),
           style: 'destructive',
           onPress: () => {
             setBusy(true);
             setCommunityError(undefined);
-            deleteCommunityIdentity()
-              .then(() => setEnthusiastDiscoveryEnabled(false))
+            removeCommunityListing()
               .then(next => {
                 setPreference(next);
-                setDisplayName('');
+                setOwnProfile(undefined);
                 setNearby([]);
-                setContacts([]);
               })
               .catch(error =>
                 setCommunityError(
@@ -312,6 +323,29 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
           <Text style={s.privacyText}>{t('enthusiasts.privacy')}</Text>
         </View>
 
+        <View style={s.debugCard}>
+          <View style={s.debugHeader}>
+            <Icon name="map-pin" size={17} color={colors.orange} />
+            <Text style={s.debugTitle}>{t('enthusiasts.debugGps')}</Text>
+          </View>
+          <Text style={s.debugValue}>
+            {locationDebug.status === 'ready' &&
+            typeof locationDebug.latitude === 'number' &&
+            typeof locationDebug.longitude === 'number'
+              ? `${locationDebug.latitude.toFixed(
+                  6,
+                )}, ${locationDebug.longitude.toFixed(6)}${
+                  typeof locationDebug.accuracyMeters === 'number'
+                    ? ` · ±${locationDebug.accuracyMeters} m`
+                    : ''
+                }`
+              : t(`enthusiasts.status.${locationDebug.status}`)}
+          </Text>
+          <Text style={s.debugHint}>
+            {t('enthusiasts.debugLocalOnly')}
+          </Text>
+        </View>
+
         {ready ? (
           <>
             <Text style={s.label}>{t('enthusiasts.yourName')}</Text>
@@ -328,6 +362,32 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
                 <Icon name="check" size={19} color="#FFFFFF" />
               </TouchableOpacity>
             </View>
+
+            {ownProfile ? (
+              <View style={s.listingCard}>
+                <View style={s.listingContent}>
+                  <Text style={s.listingEyebrow}>
+                    {t('enthusiasts.myListing')}
+                  </Text>
+                  <Text style={s.listingName}>
+                    {ownProfile.displayName}
+                  </Text>
+                  <Text style={s.listingDetail}>
+                    {t('enthusiasts.listingVisible', {
+                      radius: ownProfile.radiusKm,
+                    })}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={s.listingRemove}
+                  onPress={removeListing}
+                  disabled={busy || communityBusy}
+                  accessibilityLabel={t('enthusiasts.removeListing')}
+                >
+                  <Icon name="close" size={21} color={colors.error} />
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
             <SectionHeader
               title={t('enthusiasts.connections')}
@@ -391,16 +451,6 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
 
         {communityError ? (
           <Text style={s.errorText}>{communityError}</Text>
-        ) : null}
-        {enabled ? (
-          <TouchableOpacity
-            style={s.deleteButton}
-            onPress={removeCommunityIdentity}
-            disabled={busy || communityBusy}
-          >
-            <Icon name="trash" size={18} color={colors.error} />
-            <Text style={s.deleteText}>{t('enthusiasts.deleteAction')}</Text>
-          </TouchableOpacity>
         ) : null}
       </ScrollView>
     </View>
@@ -550,6 +600,37 @@ const s = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
   },
+  debugCard: {
+    marginTop: 18,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    backgroundColor: colors.bgCard,
+  },
+  debugHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  debugTitle: {
+    color: colors.orange,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  debugValue: {
+    color: colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '800',
+    marginTop: 10,
+  },
+  debugHint: {
+    color: colors.textMuted,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 7,
+  },
   nameRow: { flexDirection: 'row', gap: 8 },
   nameInput: {
     flex: 1,
@@ -568,6 +649,41 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: 8,
     backgroundColor: colors.orange,
+  },
+  listingCard: {
+    minHeight: 78,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+    paddingLeft: 15,
+    borderWidth: 1,
+    borderColor: colors.success,
+    borderRadius: 10,
+    backgroundColor: colors.bgCard,
+  },
+  listingContent: { flex: 1, paddingVertical: 12 },
+  listingEyebrow: {
+    color: colors.success,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  listingName: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  listingDetail: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    marginTop: 3,
+  },
+  listingRemove: {
+    width: 56,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   resultsHeader: {
     flexDirection: 'row',
@@ -627,16 +743,4 @@ const s = StyleSheet.create({
     lineHeight: 19,
     marginTop: 16,
   },
-  deleteButton: {
-    minHeight: 48,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 32,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    paddingTop: 18,
-  },
-  deleteText: { color: colors.error, fontSize: 14, fontWeight: '800' },
 });

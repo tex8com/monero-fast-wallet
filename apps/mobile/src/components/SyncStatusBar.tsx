@@ -10,7 +10,6 @@ import { presentWalletSync } from "../../../../packages/wallet-shared/src/wallet
 type SyncStatusBarProps = {
   compact?: boolean;
   error?: string;
-  hideWhenSynced?: boolean;
   progress?: number;
   snapshot?: WalletSnapshot;
   syncStartHeight?: number;
@@ -22,7 +21,6 @@ type SyncStatusBarProps = {
 export default function SyncStatusBar({
   compact,
   error,
-  hideWhenSynced,
   progress,
   snapshot,
   syncStartHeight,
@@ -37,25 +35,33 @@ export default function SyncStatusBar({
   const derivedProgress = progress ?? presentation.progress;
   const percent = presentation.coreConfirmed ? 100 : derivedProgress;
   const isSynced = presentation.coreConfirmed;
-  const displayPercent = percent ?? (status === "syncing" ? 0 : undefined);
+  const displayPercent = percent;
   const hasSyncError = status === "error" || Boolean(error);
   const tone = resolveTone(status, snapshot, hasSyncError);
   const label = walletName
     ? t("sync.walletName", { wallet: walletName })
     : t("sync.wallet");
-  const detail = resolveDetail(status, snapshot, hasSyncError, presentation.phase, percent, t);
   const fillWidth = `${Math.max(0, Math.min(100, displayPercent ?? 0))}%` as `${number}%`;
   // 99% is an internal finalization state, not a useful user-facing target.
   // The native core still decides when it is actually spend-ready, so show an
   // honest finishing indicator rather than implying that sync is stuck.
   const finalizing = presentation.phase === "finalizing";
   const showPercent = displayPercent !== undefined && !hasSyncError && !finalizing;
+  const working =
+    !hasSyncError &&
+    !isSynced &&
+    (status === "opening" || status === "syncing" || finalizing);
+  const animatedDots = useAnimatedDots(working);
+  const detail = `${resolveDetail(
+    status,
+    snapshot,
+    hasSyncError,
+    presentation.phase,
+    percent,
+    t,
+  )}${working ? animatedDots : ""}`;
 
   if (isSynced && !hasSyncError) {
-    if (hideWhenSynced) {
-      return null;
-    }
-
     return (
       <View style={[s.readyRow, compact && s.readyRowCompact]}>
         <View style={[s.statusLed, s.statusLedReady]} />
@@ -92,21 +98,27 @@ export default function SyncStatusBar({
             </Text>
           ) : (
             <Text style={[s.percent, s.percentMuted]}>
-              {finalizing ? "…" : tone === "danger" ? t("sync.offline") : t("sync.waiting")}
+              {working
+                ? animatedDots
+                : tone === "danger"
+                ? t("sync.offline")
+                : t("sync.waiting")}
             </Text>
           )}
         </View>
       </View>
-      <View style={s.track}>
-        <View
-          style={[
-            s.fill,
-            tone === "ready" && s.fillReady,
-            tone === "danger" && s.fillDanger,
-            { width: fillWidth },
-          ]}
-        />
-      </View>
+      {showPercent ? (
+        <View style={s.track}>
+          <View
+            style={[
+              s.fill,
+              tone === "ready" && s.fillReady,
+              tone === "danger" && s.fillDanger,
+              { width: fillWidth },
+            ]}
+          />
+        </View>
+      ) : null}
       {subtitle ? (
         <Text style={s.subtitle} numberOfLines={2}>
           {subtitle}
@@ -114,6 +126,23 @@ export default function SyncStatusBar({
       ) : null}
     </View>
   );
+}
+
+function useAnimatedDots(active: boolean): string {
+  const [frame, setFrame] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!active) {
+      setFrame(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setFrame(current => (current + 1) % 3);
+    }, 450);
+    return () => clearInterval(interval);
+  }, [active]);
+
+  return ".".repeat(frame + 1);
 }
 
 function resolveTone(
