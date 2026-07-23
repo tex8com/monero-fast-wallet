@@ -29,17 +29,21 @@ describe('presentWalletSync', () => {
     expect(result.progress).toBe(0);
   });
 
-  it('reserves 100 percent for a synchronized native wallet', () => {
-    expect(
-      presentWalletSync(snapshot({ walletHeight: 3_701_000 }), {
-        startHeight: 3_700_000,
-      }).progress,
-    ).toBe(99);
-    expect(
-      presentWalletSync(
-        snapshot({ walletHeight: 3_701_000, synchronized: true }),
-        { startHeight: 3_700_000 },
-      ).progress,
-    ).toBe(100);
+  it('keeps final verification indeterminate until the native wallet confirms sync', () => {
+    const finalizing = presentWalletSync(snapshot({ walletHeight: 3_701_000 }), {
+      startHeight: 3_700_000,
+    });
+
+    expect(finalizing.phase).toBe('finalizing');
+    expect(finalizing.progress).toBeUndefined();
+    expect(finalizing.remainingBlocks).toBe(0);
+
+    const synchronized = presentWalletSync(
+      snapshot({ walletHeight: 3_701_000, synchronized: true }),
+      { startHeight: 3_700_000 },
+    );
+
+    expect(synchronized.phase).toBe('synchronized');
+    expect(synchronized.progress).toBe(100);
   });
 });

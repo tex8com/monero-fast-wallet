@@ -14,7 +14,10 @@ test('only the native core may confirm a wallet as synchronized', () => {
   });
 
   assert.equal(sync.phase, 'finalizing');
-  assert.equal(sync.progress, 99);
+  // Heights alone are not a completion signal. Keep this state indeterminate
+  // instead of displaying a synthetic 99% that looks permanently stuck.
+  assert.equal(sync.progress, undefined);
+  assert.equal(sync.remainingBlocks, 0);
   assert.equal(sync.coreConfirmed, false);
   assert.equal(walletIsSpendReady({
     walletHeight: 1_000,

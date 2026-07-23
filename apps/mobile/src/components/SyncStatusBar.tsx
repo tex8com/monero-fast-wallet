@@ -32,7 +32,11 @@ export default function SyncStatusBar({
   const presentation = presentWalletSync(snapshot, {
     startHeight: syncStartHeight,
   });
-  const derivedProgress = progress ?? presentation.progress;
+  const etaSeconds = useSyncEta(presentation);
+  // A native snapshot is the source of truth.  Callers also pass a derived
+  // progress value for legacy layouts; prefer the snapshot presentation so a
+  // stale caller value can never reintroduce a synthetic 97–99% state.
+  const derivedProgress = snapshot ? presentation.progress : progress ?? presentation.progress;
   const percent = presentation.coreConfirmed ? 100 : derivedProgress;
   const isSynced = presentation.coreConfirmed;
   const displayPercent = percent;
@@ -42,9 +46,9 @@ export default function SyncStatusBar({
     ? t("sync.walletName", { wallet: walletName })
     : t("sync.wallet");
   const fillWidth = `${Math.max(0, Math.min(100, displayPercent ?? 0))}%` as `${number}%`;
-  // 99% is an internal finalization state, not a useful user-facing target.
-  // The native core still decides when it is actually spend-ready, so show an
-  // honest finishing indicator rather than implying that sync is stuck.
+  // The native core still decides when it is actually spend-ready.  During
+  // final verification we show the exact phase and block state, not a nearly
+  // complete percentage that looks stuck.
   const finalizing = presentation.phase === "finalizing";
   // Do not show a misleading 0–1% bar while the native core is connecting or
   // restoring its latest checkpoint. The next native snapshot can already be
@@ -127,6 +131,26 @@ export default function SyncStatusBar({
           />
         </View>
       ) : null}
+      {!hasSyncError && !isSynced && presentation.targetHeight !== undefined ? (
+        <View style={s.metrics}>
+          <Text style={s.metric}>
+            {t("sync.blockHeight", {
+              current: formatBlockCount(presentation.walletHeight),
+              target: formatBlockCount(presentation.targetHeight),
+            })}
+          </Text>
+          {presentation.phase === "finalizing" ? (
+            <Text style={s.metric}>{t("sync.coreConfirming")}</Text>
+          ) : presentation.remainingBlocks !== undefined ? (
+            <Text style={s.metric}>
+              {t("sync.blocksRemaining", { count: formatBlockCount(presentation.remainingBlocks) })}
+            </Text>
+          ) : null}
+          {presentation.phase === "syncing" ? (
+            <Text style={s.metric}>{formatSyncEta(etaSeconds, t)}</Text>
+          ) : null}
+        </View>
+      ) : null}
       {subtitle ? (
         <Text style={s.subtitle} numberOfLines={2}>
           {subtitle}
@@ -151,6 +175,60 @@ function useAnimatedDots(active: boolean): string {
   }, [active]);
 
   return ".".repeat(frame + 1);
+}
+
+type SyncSample = {
+  remainingBlocks: number;
+  at: number;
+  blocksPerSecond?: number;
+};
+
+function useSyncEta(presentation: ReturnType<typeof presentWalletSync>) {
+  const sampleRef = React.useRef<SyncSample | null>(null);
+  const [etaSeconds, setEtaSeconds] = React.useState<number | undefined>();
+
+  React.useEffect(() => {
+    if (
+      presentation.phase !== "syncing" ||
+      presentation.remainingBlocks === undefined ||
+      presentation.remainingBlocks <= 0
+    ) {
+      sampleRef.current = null;
+      setEtaSeconds(undefined);
+      return;
+    }
+
+    const now = Date.now();
+    const previous = sampleRef.current;
+    let blocksPerSecond = previous?.blocksPerSecond;
+
+    if (previous && previous.remainingBlocks > presentation.remainingBlocks) {
+      const elapsedSeconds = (now - previous.at) / 1000;
+      if (elapsedSeconds >= 1) {
+        const measured = (previous.remainingBlocks - presentation.remainingBlocks) / elapsedSeconds;
+        if (Number.isFinite(measured) && measured > 0) {
+          blocksPerSecond = blocksPerSecond ? blocksPerSecond * 0.7 + measured * 0.3 : measured;
+        }
+      }
+    }
+
+    sampleRef.current = { remainingBlocks: presentation.remainingBlocks, at: now, blocksPerSecond };
+    setEtaSeconds(blocksPerSecond ? Math.ceil(presentation.remainingBlocks / blocksPerSecond) : undefined);
+  }, [presentation.phase, presentation.remainingBlocks]);
+
+  return etaSeconds;
+}
+
+function formatBlockCount(value?: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "–";
+}
+
+function formatSyncEta(seconds: number | undefined, t: ReturnType<typeof useI18n>["t"]) {
+  if (!seconds || seconds <= 0) return t("sync.etaCalculating");
+  if (seconds < 60) return t("sync.etaSeconds", { count: seconds });
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return t("sync.etaMinutes", { count: minutes });
+  return t("sync.etaHours", { count: Math.ceil(minutes / 60) });
 }
 
 function resolveTone(
@@ -185,7 +263,7 @@ function resolveDetail(
     return t("sync.synced");
   }
   if (phase === "finalizing") {
-    return t("sync.updatingHistory");
+    return t("sync.verifyingRecent");
   }
   if (phase === "waiting-for-node") {
     return t("sync.connectingNode");
@@ -286,6 +364,23 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.08)",
     marginTop: 10,
     overflow: "hidden",
+  },
+  metrics: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 10,
+  },
+  metric: {
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderColor: colors.border,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: "700",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
   },
   fill: {
     height: "100%",

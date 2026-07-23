@@ -21,6 +21,10 @@ export type WalletSyncPresentation = {
   progress: number | undefined;
   targetHeight: number | undefined;
   walletHeight: number;
+  /** Number of blocks scanned within the current synchronization range. */
+  scannedBlocks: number | undefined;
+  /** Number of blocks the native wallet still has to scan. */
+  remainingBlocks: number | undefined;
   coreConfirmed: boolean;
 };
 
@@ -53,6 +57,8 @@ export function presentWalletSync(
       progress: undefined,
       targetHeight: undefined,
       walletHeight: 0,
+      scannedBlocks: undefined,
+      remainingBlocks: undefined,
       coreConfirmed: false,
     };
   }
@@ -69,6 +75,8 @@ export function presentWalletSync(
       progress: 100,
       targetHeight: targetHeight || undefined,
       walletHeight,
+      scannedBlocks: undefined,
+      remainingBlocks: 0,
       coreConfirmed: true,
     };
   }
@@ -79,6 +87,8 @@ export function presentWalletSync(
       progress: undefined,
       targetHeight: undefined,
       walletHeight,
+      scannedBlocks: undefined,
+      remainingBlocks: undefined,
       coreConfirmed: false,
     };
   }
@@ -92,6 +102,7 @@ export function presentWalletSync(
     requestedStartHeight > 0 ? Math.min(requestedStartHeight, targetHeight) : 0;
   const remainingRange = targetHeight - startHeight;
   const completedRange = Math.max(0, walletHeight - startHeight);
+  const remainingBlocks = Math.max(0, targetHeight - walletHeight);
   const heightProgress =
     remainingRange <= 0
       ? 100
@@ -103,9 +114,15 @@ export function presentWalletSync(
   if (heightProgress >= 100) {
     return {
       phase: "finalizing",
-      progress: 99,
+      // The native core has reached the daemon height but still has to
+      // validate its cache/transactions. Showing a synthetic 99% here made
+      // it look stuck. This is intentionally indeterminate until the core
+      // explicitly sets `synchronized`.
+      progress: undefined,
       targetHeight,
       walletHeight,
+      scannedBlocks: completedRange,
+      remainingBlocks,
       coreConfirmed: false,
     };
   }
@@ -115,6 +132,8 @@ export function presentWalletSync(
     progress: heightProgress,
     targetHeight,
     walletHeight,
+    scannedBlocks: completedRange,
+    remainingBlocks,
     coreConfirmed: false,
   };
 }

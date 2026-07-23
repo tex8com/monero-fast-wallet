@@ -332,8 +332,10 @@ export default function HomeScreen({ navigation }: any) {
           ? t('status.live')
           : status === 'syncing'
             ? syncPresentation.phase === 'finalizing'
-              ? t('sync.finalizing')
-              : `${syncProgress ?? 0}%`
+              ? t('sync.verifyingRecent')
+              : syncPresentation.phase === 'waiting-for-node'
+                ? t('sync.connectingNode')
+                : t('sync.scanningBlocks')
             : status === 'opening'
               ? t('action.open')
               : status === 'locked'

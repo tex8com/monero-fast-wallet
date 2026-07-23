@@ -79,8 +79,8 @@ function syncLabel(snapshot: NativeWalletSnapshot | null, t?: ReturnType<typeof 
   const sync = presentWalletSync(snapshot, { startHeight });
   if (sync.phase === 'synchronized') return `${t ? t('home.syncComplete') : 'Synchronized'} · 100%`;
   if (sync.phase === 'waiting-for-node') return t ? t('home.syncConnecting') : 'Connecting node';
-  if (sync.phase === 'finalizing') return `${t ? t('home.syncUpdating') : 'Updating history'} · ${snapshot?.walletHeight ?? 0}/${sync.targetHeight}`;
-  return `${t ? t('home.syncScanning') : 'Scanning blocks'} · ${snapshot?.walletHeight ?? 0}/${sync.targetHeight}`;
+  if (sync.phase === 'finalizing') return t ? t('home.syncVerifying') : 'Verifying recent transactions';
+  return t ? t('home.syncScanning') : 'Scanning blocks';
 }
 const ATOMIC_XMR = 1_000_000_000_000n;
 function atomicValue(value: string | undefined) { try { return BigInt(value ?? '0'); } catch { return 0n; } }
@@ -90,6 +90,46 @@ function isLikelyMoneroAddress(value: string) { return /^[1-9A-HJ-NP-Za-km-z]{90
 function atomicXmrNumber(value: string | undefined) { return Number(atomicValue(value)) / Number(ATOMIC_XMR); }
 function formatUsd(value: number) { return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value); }
 function syncProgress(snapshot: NativeWalletSnapshot | null, startHeight?: number) { return presentWalletSync(snapshot, { startHeight }).progress; }
+function formatSyncBlockCount(value: number | undefined) {
+  return new Intl.NumberFormat().format(Math.max(0, Math.floor(value ?? 0)));
+}
+function useDesktopSyncEta(sync: ReturnType<typeof presentWalletSync>) {
+  const sampleRef = useRef<{ remainingBlocks: number; observedAt: number; rate: number } | null>(null);
+  const [etaSeconds, setEtaSeconds] = useState<number | undefined>();
+
+  useEffect(() => {
+    if (sync.phase !== 'syncing' || sync.remainingBlocks === undefined || sync.remainingBlocks <= 0) {
+      sampleRef.current = null;
+      setEtaSeconds(undefined);
+      return;
+    }
+
+    const now = Date.now();
+    const previous = sampleRef.current;
+    if (!previous || sync.remainingBlocks >= previous.remainingBlocks) {
+      sampleRef.current = { remainingBlocks: sync.remainingBlocks, observedAt: now, rate: previous?.rate ?? 0 };
+      setEtaSeconds(undefined);
+      return;
+    }
+
+    const elapsedSeconds = (now - previous.observedAt) / 1_000;
+    const completedBlocks = previous.remainingBlocks - sync.remainingBlocks;
+    if (elapsedSeconds <= 0 || completedBlocks <= 0) return;
+
+    const instantRate = completedBlocks / elapsedSeconds;
+    const rate = previous.rate > 0 ? previous.rate * 0.65 + instantRate * 0.35 : instantRate;
+    sampleRef.current = { remainingBlocks: sync.remainingBlocks, observedAt: now, rate };
+    setEtaSeconds(rate > 0 ? Math.max(1, Math.ceil(sync.remainingBlocks / rate)) : undefined);
+  }, [sync.phase, sync.remainingBlocks]);
+
+  return etaSeconds;
+}
+function formatDesktopSyncEta(seconds: number | undefined, t: ReturnType<typeof useI18n>['t']) {
+  if (!seconds) return t('home.syncEtaCalculating');
+  if (seconds < 60) return t('home.syncEtaSeconds', { count: seconds });
+  if (seconds < 3_600) return t('home.syncEtaMinutes', { count: Math.ceil(seconds / 60) });
+  return t('home.syncEtaHours', { count: Math.ceil(seconds / 3_600) });
+}
 function shortHash(value: string) { return value.length > 20 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
 function transactionTimestamp(value: string) { const timestamp = Number(value); return Number.isFinite(timestamp) && timestamp > 0 ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp * 1000)) : 'Time not available'; }
 function approximateAreaForCoordinates(latitude: number, longitude: number) { const alphabet = '0123456789bcdefghjkmnpqrstuvwxyz'; let latitudeRange: [number, number] = [-90, 90]; let longitudeRange: [number, number] = [-180, 180]; let bits = 0; let value = 0; let useLongitude = true; let result = ''; while (result.length < 5) { const range = useLongitude ? longitudeRange : latitudeRange; const coordinate = useLongitude ? longitude : latitude; const midpoint = (range[0] + range[1]) / 2; value = value * 2 + (coordinate >= midpoint ? 1 : 0); if (coordinate >= midpoint) range[0] = midpoint; else range[1] = midpoint; useLongitude = !useLongitude; bits += 1; if (bits === 5) { result += alphabet[value]; bits = 0; value = 0; } } return result; }
@@ -408,6 +448,7 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   const sync = presentWalletSync(snapshot, { startHeight: syncStartHeight });
   const hasMeasuredProgress = sync.phase === 'syncing' && (progress ?? 0) > 1;
   const syncWorking = Boolean(walletId) && sync.phase !== 'synchronized';
+  const syncEtaSeconds = useDesktopSyncEta(sync);
   const routeToWalletAction = (action: () => void) => {
     if (walletId && linked) { action(); return; }
     if (savedWallets.length) { onWallets(); return; }
@@ -436,7 +477,8 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
 
       <section className={snapshot?.synchronized ? 'wallet-sync-card ready' : 'wallet-sync-card'}>
         <div className="wallet-sync-heading"><div><strong>{wallet ? walletDisplayName(wallet) : t('home.sync')}</strong><small>{wallet ? `${networkLabel(wallet.network)} · ${wallet.kind === 'hardware' ? t('common.ledger') : t('wallets.software')}` : t('home.noWalletOpen')}</small></div>{walletId ? <button className="quiet-button" onClick={() => void refreshWallet()} type="button">{t('common.refresh')}</button> : <button className="quiet-button" onClick={savedWallets.length ? onWallets : onSetup} type="button">{t('home.openWallet')}</button>}</div>
-        <div className="sync-reading"><span className={snapshot?.synchronized ? 'sync-led ready' : 'sync-led'} /> <strong>{walletId ? syncLabel(snapshot, t, syncStartHeight) : t('home.waiting')}</strong><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{walletId ? snapshot?.synchronized ? '100%' : hasMeasuredProgress ? `${progress}%` : '…' : ''}</em></div>
+        <div className="sync-reading"><span className={snapshot?.synchronized ? 'sync-led ready' : 'sync-led'} /> <strong>{walletId ? syncLabel(snapshot, t, syncStartHeight) : t('home.waiting')}</strong><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{walletId ? snapshot?.synchronized ? '100%' : hasMeasuredProgress ? `${progress}%` : '' : ''}</em></div>
+        {walletId && !sync.coreConfirmed && sync.targetHeight !== undefined && <div className="sync-metrics"><span>{t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight), target: formatSyncBlockCount(sync.targetHeight) })}</span>{sync.phase === 'finalizing' ? <span>{t('home.syncConfirming')}</span> : sync.remainingBlocks !== undefined ? <span>{t('home.syncRemaining', { count: formatSyncBlockCount(sync.remainingBlocks) })}</span> : null}{sync.phase === 'syncing' && <span>{formatDesktopSyncEta(syncEtaSeconds, t)}</span>}</div>}
         {(snapshot?.synchronized || hasMeasuredProgress) && <div className="sync-track"><span className={snapshot?.synchronized ? 'ready' : ''} style={{ width: `${snapshot?.synchronized ? 100 : progress}%` }} /></div>}
       </section>
     </div>

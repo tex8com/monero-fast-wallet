@@ -17,6 +17,7 @@ import {
 import { formatAtomicXmr } from '../services/WalletFormat';
 import type { WalletSnapshotCache } from '../services/WalletSnapshotCache';
 import { colors, radius } from '../theme/colors';
+import { presentWalletSync } from '../../../../packages/wallet-shared/src/walletSync';
 
 export type WalletOptionKind = RegisteredWallet['kind'] | 'fast';
 
@@ -166,26 +167,17 @@ export function walletSnapshotStatusLabel(
   t: (key: TranslationKey) => string,
 ): string {
   const balance = balanceLabel(snapshot);
-  const targetHeight =
-    snapshot.daemonTargetHeight > 0
-      ? snapshot.daemonTargetHeight
-      : snapshot.daemonHeight;
-
-  if (snapshot.synchronized) {
+  const sync = presentWalletSync(snapshot);
+  if (sync.coreConfirmed) {
     return `${t('walletSelector.synced')} · ${balance}`;
   }
-
-  const progress =
-    targetHeight > 0
-      ? Math.max(
-          0,
-          Math.min(
-            100,
-            Math.floor((snapshot.walletHeight / targetHeight) * 100),
-          ),
-        )
-      : 0;
-  return `${t('walletSelector.syncing')} ${progress}% · ${balance}`;
+  if (sync.phase === 'finalizing') {
+    return `${t('sync.verifyingRecent')} · ${balance}`;
+  }
+  if (sync.phase === 'waiting-for-node') {
+    return `${t('sync.connectingNode')} · ${balance}`;
+  }
+  return `${t('sync.scanningBlocks')} · ${balance}`;
 }
 
 function balanceLabel(snapshot: WalletSnapshot): string {
