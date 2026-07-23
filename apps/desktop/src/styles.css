@@ -534,6 +534,9 @@ h2 { letter-spacing: -0.65px; }
 .wallet-locked { display: flex; align-items: center; gap: 7px; margin: 11px 0 0; color: #f2bd54; font-size: 12px; font-weight: 750; }
 .wallet-locked span { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .wallet-sync-card { display: grid; align-content: start; gap: 14px; background: linear-gradient(130deg, #161425, #12101d); }
+.home-primary-sync { grid-template-columns: minmax(220px, .8fr) minmax(0, 1.2fr); align-items: center; column-gap: 28px; min-height: 130px; }
+.home-primary-sync .wallet-sync-heading { grid-row: span 2; }
+.home-primary-sync .sync-track { grid-column: 2; }
 .wallet-sync-card.ready { border-color: #315a4d; }
 .wallet-sync-heading strong { display: block; color: #f7f3fa; font-size: 16px; }
 .wallet-sync-heading small { display: block; margin-top: 4px; color: #a9a1b6; font-size: 12px; }
@@ -618,6 +621,8 @@ h2 { letter-spacing: -0.65px; }
   .settings-wallet-actions .secondary { justify-self: start; }
   .password-fields, .settings-form-grid { grid-template-columns: 1fr; }
   .home-main-grid { grid-template-columns: 1fr; }
+  .home-primary-sync { grid-template-columns: 1fr; min-height: 0; }
+  .home-primary-sync .wallet-sync-heading, .home-primary-sync .sync-track { grid-column: auto; grid-row: auto; }
   .market-card-head h2 { font-size: 38px; }
   .home-quick-actions button { grid-template-columns: 45px minmax(0, 1fr); padding: 15px; }
   .home-quick-actions button > span { width: 42px; height: 42px; }
