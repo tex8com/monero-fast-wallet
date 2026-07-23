@@ -405,7 +405,17 @@ class WalletEngine::Impl {
     for (auto& item : wallets_) {
       if (item.second->wallet != nullptr) {
         disposePendingTransactions(*item.second);
-        manager_->closeWallet(item.second->wallet, true);
+        try {
+          closeSessionWallet(*item.second, true, "engineDestructor");
+        } catch (const std::exception& error) {
+          // Destructors must never terminate the process. Preserve the native
+          // diagnostic and still release the Core wallet without a second
+          // pre-stop store attempt.
+          logEngineDiagnostic(
+              "closeWallet.destructorError",
+              {{"error", error.what()}});
+          manager_->closeWallet(item.second->wallet, false);
+        }
         item.second->wallet = nullptr;
       }
     }
@@ -751,9 +761,9 @@ class WalletEngine::Impl {
     }
 
     disposePendingTransactions(*session);
-    if (session->wallet != nullptr &&
-        !manager_->closeWallet(session->wallet, store)) {
-      throw WalletEngineError("closeWallet failed: " + walletId);
+    if (session->wallet != nullptr) {
+      closeSessionWallet(*session, store, "closeWallet");
+      session->wallet = nullptr;
     }
   }
 
@@ -1285,6 +1295,53 @@ class WalletEngine::Impl {
   }
 
  private:
+  void closeSessionWallet(
+      WalletSession& session,
+      bool store,
+      const std::string& context) {
+    auto* wallet = session.wallet;
+    if (wallet == nullptr) {
+      return;
+    }
+
+    const std::string maskedWalletId = maskDiagnosticId(session.id);
+    const uint64_t heightBeforeStop = wallet->blockChainHeight();
+    // WalletManager::closeWallet(true) stores before it stops the refresh
+    // thread. That can persist an older cache checkpoint while a scan is still
+    // completing. Stop first, then store the settled Core cache explicitly.
+    wallet->pauseRefresh();
+    wallet->stop();
+    const uint64_t heightAfterStop = wallet->blockChainHeight();
+    logEngineDiagnostic(
+        "closeWallet.refreshStopped",
+        {
+            {"context", context},
+            {"walletId", maskedWalletId},
+            {"heightBeforeStop", std::to_string(heightBeforeStop)},
+            {"heightAfterStop", std::to_string(heightAfterStop)},
+            {"store", store ? "true" : "false"},
+        });
+
+    if (store) {
+      if (!wallet->store("")) {
+        throwIfWalletFailed(wallet, "closeWallet.store");
+        throw WalletEngineError("failed to persist wallet cache");
+      }
+      throwIfWalletFailed(wallet, "closeWallet.store");
+      logEngineDiagnostic(
+          "closeWallet.cacheStored",
+          {
+              {"context", context},
+              {"walletId", maskedWalletId},
+              {"walletHeight", std::to_string(wallet->blockChainHeight())},
+          });
+    }
+
+    if (!manager_->closeWallet(wallet, false)) {
+      throw WalletEngineError("closeWallet failed: " + session.id);
+    }
+  }
+
   WalletId addWallet(
       const std::string& context,
       const std::string& path,

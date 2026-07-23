@@ -146,7 +146,7 @@ export default function SyncStatusBar({
           {presentation.phase === "finalizing" ? (
             <Text style={s.metric}>{t("sync.coreConfirming")}</Text>
           ) : presentation.remainingBlocks !== undefined ? (
-            <Text style={s.metric}>
+            <Text style={s.metricStrong}>
               {t("sync.blocksRemaining", { count: formatBlockCount(presentation.remainingBlocks) })}
             </Text>
           ) : null}
@@ -356,21 +356,20 @@ const s = StyleSheet.create({
     overflow: "hidden",
   },
   metrics: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    marginTop: 10,
+    marginTop: 11,
+    gap: 4,
   },
   metric: {
-    backgroundColor: "rgba(255,255,255,0.03)",
-    borderColor: colors.border,
-    borderRadius: radius.full,
-    borderWidth: 1,
     color: colors.textMuted,
-    fontSize: 11,
-    fontWeight: "700",
-    paddingHorizontal: 8,
-    paddingVertical: 5,
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
+  metricStrong: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: "800",
+    lineHeight: 17,
   },
   fill: {
     height: "100%",

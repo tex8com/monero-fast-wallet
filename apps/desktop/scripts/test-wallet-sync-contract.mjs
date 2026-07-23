@@ -91,14 +91,16 @@ test('no cached height can turn an active 19k-block scan into 99%', () => {
   assert.equal(sync.remainingBlocks, 19_277);
 });
 
-test('ETA starts from observed progress and smooths subsequent flow', () => {
+test('ETA waits for sustained observed Core progress', () => {
   const initial = updateWalletSyncEta(undefined, 10_000, 0);
   const first = updateWalletSyncEta(initial.state, 9_500, 5_000);
   const idle = updateWalletSyncEta(first.state, 9_500, 10_000);
   const slower = updateWalletSyncEta(idle.state, 9_000, 15_000);
+  const reliable = updateWalletSyncEta(slower.state, 8_500, 20_000);
 
-  assert.equal(first.etaSeconds, 95);
-  assert.equal(idle.etaSeconds, 95);
+  assert.equal(first.etaSeconds, undefined);
+  assert.equal(idle.etaSeconds, undefined);
   assert.equal(idle.state.lastProgressAt, 5_000);
-  assert.equal(slower.etaSeconds, 103);
+  assert.equal(slower.etaSeconds, undefined);
+  assert.equal(reliable.etaSeconds, 114);
 });

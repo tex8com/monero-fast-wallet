@@ -932,10 +932,18 @@ export function WalletStateProvider({
         clearTimeout(timeout);
       }
       nativeRefreshRetryTimeoutsRef.current.clear();
-      for (const openedSession of sessionsByRegistrationRef.current.values()) {
-        void stopNativeRefresh(openedSession, 'unmount');
-        void walletService.closeWallet(openedSession).catch(() => undefined);
-      }
+      const openSessions = Array.from(sessionsByRegistrationRef.current.values());
+      // React cannot await an effect cleanup, but preserve the native ordering
+      // nevertheless: a Core refresh must be stopped before its cache is
+      // persisted and the wallet is closed. Starting both promises at once can
+      // save the cache before the refresh thread has committed its last height.
+      const closeSessionsInOrder = async () => {
+        for (const openedSession of openSessions) {
+          await stopNativeRefresh(openedSession, 'unmount');
+          await walletService.closeWallet(openedSession).catch(() => undefined);
+        }
+      };
+      closeSessionsInOrder().catch(() => undefined);
       sessionsByRegistrationRef.current.clear();
     },
     [stopNativeRefresh],

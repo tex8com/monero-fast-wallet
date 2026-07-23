@@ -44,7 +44,9 @@ export type WalletSyncEtaState = {
   /** Time and remaining height of the last snapshot that made progress. */
   lastProgressAt: number;
   lastRemainingBlocks: number;
-  /** Smoothed estimate based exclusively on observed core progress. */
+  /** Number of distinct Core progress samples after the initial baseline. */
+  progressSamples: number;
+  /** Rate based exclusively on the measured Core block flow. */
   blocksPerSecond?: number;
 };
 
@@ -162,11 +164,11 @@ export function presentWalletSync(
 /**
  * Updates a rest-time estimate from live core snapshots.
  *
- * The first useful estimate uses all progress measured since the start of this
- * refresh. Later estimates combine the newly measured transfer rate with the
- * previous estimate. Snapshots which report no additional blocks deliberately
- * do not reset the timing window; otherwise a five-second poll can make a
- * short burst look like an implausible one-second ETA.
+ * An ETA is deliberately withheld until the native Core has provided enough
+ * live data. A single fast refresh batch can otherwise turn tens of seconds
+ * into a false “3 seconds remaining” promise. Once the observation window is
+ * stable, the rate is recalculated from the complete current flow and the
+ * most recent interval, using the slower of the two measurements.
  */
 export function updateWalletSyncEta(
   previous: WalletSyncEtaState | undefined,
@@ -189,6 +191,7 @@ export function updateWalletSyncEta(
         startRemainingBlocks: remainingBlocks,
         lastProgressAt: observedAt,
         lastRemainingBlocks: remainingBlocks,
+        progressSamples: 0,
       },
       etaSeconds: undefined,
     };
@@ -208,21 +211,28 @@ export function updateWalletSyncEta(
       elapsedSinceProgress > 0 && completedSinceProgress > 0
         ? completedSinceProgress / elapsedSinceProgress
         : undefined;
+    // The short last interval can briefly be much faster than sustainable
+    // scanning. Choosing the lower measured rate makes the displayed “about”
+    // estimate conservative without inventing a server-side speed.
     const blocksPerSecond =
-      previous.blocksPerSecond && instantRate
-        ? previous.blocksPerSecond * 0.75 + instantRate * 0.25
-        : initialRate;
+      initialRate && instantRate
+        ? Math.min(initialRate, instantRate)
+        : initialRate ?? instantRate;
 
     state = {
       ...previous,
       lastProgressAt: observedAt,
       lastRemainingBlocks: remainingBlocks,
+      progressSamples: previous.progressSamples + 1,
       blocksPerSecond,
     };
   }
 
+  const observedForMs = observedAt - state.startedAt;
+  const hasReliableObservation =
+    state.progressSamples >= 3 && observedForMs >= 15_000;
   const etaSeconds =
-    state.blocksPerSecond && state.blocksPerSecond > 0
+    hasReliableObservation && state.blocksPerSecond && state.blocksPerSecond > 0
       ? Math.max(1, Math.ceil(remainingBlocks / state.blocksPerSecond))
       : undefined;
   return { state, etaSeconds };

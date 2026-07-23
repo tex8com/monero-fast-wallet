@@ -64,18 +64,25 @@ describe('presentWalletSync', () => {
     expect(synchronized.progress).toBe(100);
   });
 
-  it('keeps the ETA stable without progress and smooths the next core measurement', () => {
+  it('withholds ETA until the Core flow has enough measured samples', () => {
     const initial = updateWalletSyncEta(undefined, 10_000, 0);
     expect(initial.etaSeconds).toBeUndefined();
 
     const firstMeasurement = updateWalletSyncEta(initial.state, 9_500, 5_000);
-    expect(firstMeasurement.etaSeconds).toBe(95);
+    expect(firstMeasurement.etaSeconds).toBeUndefined();
 
     const noProgress = updateWalletSyncEta(firstMeasurement.state, 9_500, 10_000);
-    expect(noProgress.etaSeconds).toBe(95);
+    expect(noProgress.etaSeconds).toBeUndefined();
     expect(noProgress.state?.lastProgressAt).toBe(5_000);
 
     const slowerMeasurement = updateWalletSyncEta(noProgress.state, 9_000, 15_000);
-    expect(slowerMeasurement.etaSeconds).toBe(103);
+    expect(slowerMeasurement.etaSeconds).toBeUndefined();
+
+    const reliableMeasurement = updateWalletSyncEta(
+      slowerMeasurement.state,
+      8_500,
+      20_000,
+    );
+    expect(reliableMeasurement.etaSeconds).toBe(114);
   });
 });
