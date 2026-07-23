@@ -13,6 +13,7 @@ type SyncStatusBarProps = {
   hideWhenSynced?: boolean;
   progress?: number;
   snapshot?: WalletSnapshot;
+  syncStartHeight?: number;
   status: WalletRuntimeStatus;
   subtitle?: string;
   walletName?: string;
@@ -24,12 +25,15 @@ export default function SyncStatusBar({
   hideWhenSynced,
   progress,
   snapshot,
+  syncStartHeight,
   status,
   subtitle,
   walletName,
 }: SyncStatusBarProps) {
   const { t } = useI18n();
-  const presentation = presentWalletSync(snapshot);
+  const presentation = presentWalletSync(snapshot, {
+    startHeight: syncStartHeight,
+  });
   const derivedProgress = progress ?? presentation.progress;
   const percent = presentation.coreConfirmed ? 100 : derivedProgress;
   const isSynced = presentation.coreConfirmed;

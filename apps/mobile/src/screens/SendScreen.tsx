@@ -96,6 +96,7 @@ export default function SendScreen({ navigation }: any) {
     snapshot,
     status,
     syncProgress,
+    syncStartHeight,
     transactions,
     walletSnapshots,
   } = useWalletState();
@@ -665,6 +666,7 @@ export default function SendScreen({ navigation }: any) {
             error={walletError}
             progress={syncProgress}
             snapshot={snapshot}
+            syncStartHeight={syncStartHeight}
             status={status}
             subtitle={
               snapshot && !snapshot.synchronized

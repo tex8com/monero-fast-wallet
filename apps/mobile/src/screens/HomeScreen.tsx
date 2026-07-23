@@ -261,6 +261,7 @@ export default function HomeScreen({ navigation }: any) {
     snapshot,
     status,
     syncProgress,
+    syncStartHeight,
     transactions,
     walletSnapshots,
   } = useWalletState();
@@ -289,12 +290,16 @@ export default function HomeScreen({ navigation }: any) {
   const selectedFastWallet = registeredWallet?.kind === 'fast';
   const hasSyncError =
     !selectedFastWallet && (status === 'error' || Boolean(error));
-  const syncPresentation = presentWalletSync(snapshot);
+  const syncPresentation = presentWalletSync(snapshot, {
+    startHeight: syncStartHeight,
+  });
   const syncColor = selectedFastStatus
     ? selectedFastStatus.tone === 'success'
       ? colors.success
       : selectedFastStatus.tone === 'danger'
       ? colors.error
+      : selectedFastStatus.tone === 'muted'
+      ? colors.textMuted
       : colors.warning
     : hasSyncError
     ? colors.error
@@ -462,7 +467,7 @@ export default function HomeScreen({ navigation }: any) {
           <View style={s.headerL}>
             <MoneroLogo size={26} />
             <Text style={s.headerT}>
-              Monero<Text style={s.headerTOrange}>-Wallet</Text>
+              Monero <Text style={s.headerTOrange}>Fast Wallet</Text>
             </Text>
           </View>
           <View style={[s.syncBadge, { backgroundColor: `${syncColor}1A` }]}>
@@ -478,6 +483,7 @@ export default function HomeScreen({ navigation }: any) {
               hideWhenSynced
               progress={syncProgress}
               snapshot={snapshot}
+              syncStartHeight={syncStartHeight}
               status={status}
               walletName={walletDisplayName(registeredWallet)}
             />

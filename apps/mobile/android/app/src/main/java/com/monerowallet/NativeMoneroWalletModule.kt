@@ -344,7 +344,7 @@ class NativeMoneroWalletModule(
     activity.runOnUiThread {
       runCatching {
         val prompt = BiometricPrompt.Builder(activity)
-          .setTitle("Monero Wallet")
+          .setTitle("Monero Fast Wallet")
           .setSubtitle(
             reason.ifBlank {
               "Confirm biometrics to unlock your local wallet"

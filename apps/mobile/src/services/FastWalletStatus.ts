@@ -69,10 +69,10 @@ export function fastWalletStatusPresentation(
     default:
       return {
         canRetry: true,
-        description: t("fastWallet.status.settingUpDescription"),
-        label: t("fastWallet.status.settingUp"),
+        description: t("fastWallet.status.localOnlyDescription"),
+        label: t("fastWallet.status.localOnly"),
         ready: false,
-        tone: "warning",
+        tone: "muted",
       };
   }
 }

@@ -107,6 +107,9 @@ const en = {
     'The address works, but automatic server detection is off.',
   'fastWallet.status.pushErrorDescription':
     'The address is active, but notifications could not be enabled.',
+  'fastWallet.status.localOnly': 'Local only',
+  'fastWallet.status.localOnlyDescription':
+    'This receive address is ready. Connect it to the Fast Wallet server to enable automatic payment alerts.',
   'fastWallet.status.paused': 'Fast paused',
   'fastWallet.status.serverChangedDescription':
     'Connect this Fast Wallet once to the selected Fast Wallet server.',
@@ -639,6 +642,9 @@ const de: Record<keyof typeof en, string> = {
     'Die Adresse funktioniert, aber die automatische Server-Erkennung ist aus.',
   'fastWallet.status.pushErrorDescription':
     'Die Adresse ist aktiv, aber Mitteilungen konnten nicht aktiviert werden.',
+  'fastWallet.status.localOnly': 'Nur lokal',
+  'fastWallet.status.localOnlyDescription':
+    'Diese Empfangsadresse ist bereit. Verbinde sie mit dem Fast-Wallet-Server für automatische Zahlungshinweise.',
   'fastWallet.status.paused': 'Fast pausiert',
   'fastWallet.status.serverChangedDescription':
     'Verbinde diese Fast Wallet einmal mit dem ausgewählten Fast-Wallet-Server.',

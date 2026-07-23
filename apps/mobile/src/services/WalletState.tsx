@@ -57,6 +57,7 @@ interface WalletStateValue {
   incomingTransactionNotice: IncomingTransactionNotice | undefined;
   status: WalletRuntimeStatus;
   syncProgress: number | undefined;
+  syncStartHeight: number | undefined;
   unlockRequestId: number | undefined;
   clearError: () => void;
   dismissIncomingTransactionNotice: () => void;
@@ -96,12 +97,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function syncProgress(
-  snapshot: WalletSnapshot | undefined,
-): number | undefined {
-  return presentWalletSync(snapshot).progress;
-}
-
 export function WalletStateProvider({
   children,
 }: {
@@ -122,6 +117,7 @@ export function WalletStateProvider({
     {},
   );
   const [snapshot, setSnapshot] = useState<WalletSnapshot | undefined>();
+  const [syncStartHeight, setSyncStartHeight] = useState<number | undefined>();
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [incomingTransactionNotice, setIncomingTransactionNotice] = useState<
     IncomingTransactionNotice | undefined
@@ -885,6 +881,14 @@ export function WalletStateProvider({
       sessionRef.current = openedSession;
       setSession(openedSession);
       const activeRegistration = registration ?? registeredWalletRef.current;
+      const cachedSnapshot = activeRegistration
+        ? walletSnapshots[activeRegistration.id]
+        : undefined;
+      setSyncStartHeight(
+        activeRegistration?.kind !== 'fast' && cachedSnapshot
+          ? Number(cachedSnapshot.walletHeight) || 0
+          : undefined,
+      );
       if (registration) {
         registeredWalletRef.current = registration;
       }
@@ -1010,6 +1014,7 @@ export function WalletStateProvider({
       sessionRef.current ||
       !registeredWallet?.credentialKey ||
       registeredWallet.kind === 'hardware' ||
+      registeredWallet.kind === 'fast' ||
       autoOpenAttemptedWalletIdRef.current === registeredWallet.id
     ) {
       return;
@@ -1064,7 +1069,9 @@ export function WalletStateProvider({
     session,
   ]);
 
-  const progress = syncProgress(snapshot);
+  const progress = presentWalletSync(snapshot, {
+    startHeight: syncStartHeight,
+  }).progress;
   const status = useMemo<WalletRuntimeStatus>(() => {
     if (loadingRegistry) {
       return 'loading';
@@ -1106,6 +1113,7 @@ export function WalletStateProvider({
       incomingTransactionNotice,
       status,
       syncProgress: progress,
+      syncStartHeight,
       unlockRequestId,
       clearError: () => setError(undefined),
       dismissIncomingTransactionNotice,
@@ -1129,6 +1137,7 @@ export function WalletStateProvider({
       incomingTransactionNotice,
       lockWallet,
       progress,
+      syncStartHeight,
       reconnectHardwareWallet,
       connectLedgerForSigning,
       refreshHardwareWalletStatus,

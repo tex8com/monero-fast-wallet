@@ -27,6 +27,15 @@ export type WalletSyncPresentation = {
   coreConfirmed: boolean;
 };
 
+export type WalletSyncPresentationOptions = {
+  /**
+   * Height persisted at the end of the previous successful refresh session.
+   * When present, the visible percentage describes only the work that is
+   * still required now instead of the wallet's lifetime blockchain scan.
+   */
+  startHeight?: number | string;
+};
+
 function nonNegativeNumber(value: number | string): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -39,6 +48,7 @@ function nonNegativeNumber(value: number | string): number {
  */
 export function presentWalletSync(
   snapshot: WalletSyncSource | null | undefined,
+  options: WalletSyncPresentationOptions = {},
 ): WalletSyncPresentation {
   if (!snapshot) {
     return {
@@ -76,10 +86,20 @@ export function presentWalletSync(
     };
   }
 
-  const heightProgress = Math.max(
-    0,
-    Math.min(100, Math.floor((walletHeight / targetHeight) * 100)),
-  );
+  const requestedStartHeight = nonNegativeNumber(options.startHeight ?? 0);
+  const startHeight =
+    requestedStartHeight > 0 && requestedStartHeight <= walletHeight
+      ? Math.min(requestedStartHeight, targetHeight)
+      : 0;
+  const remainingRange = targetHeight - startHeight;
+  const completedRange = walletHeight - startHeight;
+  const heightProgress =
+    remainingRange <= 0
+      ? 100
+      : Math.max(
+          0,
+          Math.min(100, Math.floor((completedRange / remainingRange) * 100)),
+        );
 
   if (heightProgress >= 100) {
     return {

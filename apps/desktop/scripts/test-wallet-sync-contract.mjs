@@ -57,3 +57,19 @@ test('progress is identical for numeric mobile and string desktop snapshots', ()
   assert.equal(mobile.phase, 'syncing');
   assert.equal(mobile.progress, 55);
 });
+
+test('resume progress is measured from the previous cached wallet height', () => {
+  const sync = presentWalletSync(
+    {
+      walletHeight: 3_700_500,
+      daemonHeight: 3_701_000,
+      daemonTargetHeight: 3_701_000,
+      synchronized: false,
+    },
+    { startHeight: 3_700_000 },
+  );
+
+  assert.equal(sync.phase, 'syncing');
+  assert.equal(sync.progress, 50);
+  assert.equal(sync.coreConfirmed, false);
+});
