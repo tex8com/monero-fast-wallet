@@ -826,14 +826,20 @@ export default function ReceiveScreen({ navigation, route }: any) {
         ) : (
           <View style={s.transactionsEmpty}>
             <Text style={s.transactionsEmptyTitle}>
-              {showsActiveWalletHistory
-                ? t('home.noTransactions')
-                : t('home.walletNotOpen')}
+              {selectedFastIdentity
+                ? (selectedFastStatus?.label ??
+                  t('home.fastWalletTransactionsTitle'))
+                : showsActiveWalletHistory
+                  ? t('home.noTransactions')
+                  : t('home.walletNotOpen')}
             </Text>
             <Text style={s.transactionsEmptyText}>
-              {showsActiveWalletHistory
-                ? t('home.noTransactionsText')
-                : t('transactions.openWalletToLoad')}
+              {selectedFastIdentity
+                ? (selectedFastStatus?.description ??
+                  t('home.fastWalletTransactionsText'))
+                : showsActiveWalletHistory
+                  ? t('home.noTransactionsText')
+                  : t('transactions.openWalletToLoad')}
             </Text>
           </View>
         )}

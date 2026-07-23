@@ -764,6 +764,11 @@ function createDiagnosticRows(
       value: formatWalletDiagnostic(diagnostics),
     },
     {
+      label: "Fast Wallet view key",
+      value: formatFastWalletDiagnostic(diagnostics.fastWallet),
+      warning: isFastWalletDiagnosticWarning(diagnostics.fastWallet),
+    },
+    {
       label: "Ledger",
       value: formatLedgerDiagnostic(diagnostics.ledgerTransport),
       warning: diagnostics.ledgerTransport
@@ -820,6 +825,31 @@ function formatWalletDiagnostic(
   }
 
   return diagnostics.registeredWallet ? "Registered" : "None";
+}
+
+function formatFastWalletDiagnostic(
+  fastWallet: WalletDiagnosticsResult["fastWallet"],
+): string {
+  if (fastWallet.configuredCount === 0) {
+    return "Not configured";
+  }
+  if (fastWallet.checkedCount === 0) {
+    return "Check failed";
+  }
+  if (fastWallet.hostedCount === 0) {
+    return `Not hosted 0/${fastWallet.configuredCount}`;
+  }
+  return `Hosted ${fastWallet.hostedCount}/${fastWallet.configuredCount}`;
+}
+
+function isFastWalletDiagnosticWarning(
+  fastWallet: WalletDiagnosticsResult["fastWallet"],
+): boolean {
+  return (
+    fastWallet.configuredCount > 0 &&
+    (fastWallet.checkedCount < fastWallet.configuredCount ||
+      fastWallet.hostedCount < fastWallet.configuredCount)
+  );
 }
 
 function formatLedgerDiagnostic(

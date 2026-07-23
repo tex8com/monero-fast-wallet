@@ -775,7 +775,7 @@ export default function HomeScreen({ navigation }: any) {
               </Text>
             </View>
           )}
-          {!hasOpenWallet ? (
+          {!hasOpenWallet && !selectedFastWallet ? (
             <TouchableOpacity style={s.balOpenButton} onPress={openWalletSetup}>
               <Text style={s.balOpenButtonText}>
                 {registeredWallet
@@ -806,13 +806,15 @@ export default function HomeScreen({ navigation }: any) {
         {/* Transactions */}
         <View style={s.secRow}>
           <Text style={s.secTitle}>{t('home.transactions')}</Text>
-          <TouchableOpacity
-            accessibilityRole="button"
-            activeOpacity={0.7}
-            onPress={() => navigation.navigate('Transactions')}
-          >
-            <Text style={s.secLink}>{t('transactions.viewMore')}</Text>
-          </TouchableOpacity>
+          {!selectedFastWallet ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              activeOpacity={0.7}
+              onPress={() => navigation.navigate('Transactions')}
+            >
+              <Text style={s.secLink}>{t('transactions.viewMore')}</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         {hasOpenWallet && transactions.length > 0 ? (
@@ -836,14 +838,20 @@ export default function HomeScreen({ navigation }: any) {
         ) : (
           <View style={s.emptyTxCard}>
             <Text style={s.emptyTxTitle}>
-              {hasOpenWallet
-                ? t('home.noTransactions')
-                : t('home.walletNotOpen')}
+              {selectedFastWallet
+                ? (selectedFastStatus?.label ??
+                  t('home.fastWalletTransactionsTitle'))
+                : hasOpenWallet
+                  ? t('home.noTransactions')
+                  : t('home.walletNotOpen')}
             </Text>
             <Text style={s.emptyTxText}>
-              {hasOpenWallet
-                ? t('home.noTransactionsText')
-                : t('home.openWalletToLoad')}
+              {selectedFastWallet
+                ? (selectedFastStatus?.description ??
+                  t('home.fastWalletTransactionsText'))
+                : hasOpenWallet
+                  ? t('home.noTransactionsText')
+                  : t('home.openWalletToLoad')}
             </Text>
           </View>
         )}

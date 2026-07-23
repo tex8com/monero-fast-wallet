@@ -234,6 +234,9 @@ const en = {
   'home.noTransactions': 'No transactions yet',
   'home.noTransactionsText':
     'Activity appears here after the wallet has scanned matching outputs.',
+  'home.fastWalletTransactionsTitle': 'Fast Wallet monitoring active',
+  'home.fastWalletTransactionsText':
+    'Incoming payments are monitored by the Fast Wallet server. This wallet does not need to be open locally.',
   'home.noWallet': 'No wallet',
   'home.openWalletToLoad': 'Open or create a wallet to load private activity.',
   'home.pending': '{amount} XMR pending',
@@ -772,6 +775,9 @@ const de: Record<keyof typeof en, string> = {
   'home.noTransactions': 'Noch keine Transaktionen',
   'home.noTransactionsText':
     'Aktivität erscheint hier, nachdem die Wallet passende Outputs gescannt hat.',
+  'home.fastWalletTransactionsTitle': 'Fast-Wallet-Überwachung aktiv',
+  'home.fastWalletTransactionsText':
+    'Eingänge werden vom Fast-Wallet-Server überwacht. Diese Wallet muss dafür lokal nicht geöffnet sein.',
   'home.noWallet': 'Keine Wallet',
   'home.openWalletToLoad':
     'Öffne oder erstelle eine Wallet, um private Aktivität zu laden.',

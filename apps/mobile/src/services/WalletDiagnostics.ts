@@ -1,4 +1,8 @@
-import { loadActiveNodeConnectionSettings } from './NodeConnectionSettings';
+import { checkFastReceiveWatchRegistration } from './FastReceiveScannerClient';
+import {
+  fastReceiveScannerUrlForSettings,
+  loadActiveNodeConnectionSettings,
+} from './NodeConnectionSettings';
 import { walletService } from './WalletService';
 import {
   emitWalletDiagnosticsLine,
@@ -40,6 +44,57 @@ export async function runWalletDiagnostics(trigger = 'manual') {
       errors.push(errorMessage(error));
       return [];
     });
+  const activeFastWallets = settings
+    ? fastWallets.filter(wallet => wallet.network === settings.network)
+    : fastWallets;
+  const fastWalletScannerUrl = settings
+    ? fastReceiveScannerUrlForSettings(settings)
+    : undefined;
+  const fastWalletChecks = await Promise.all(
+    activeFastWallets.map(async wallet => {
+      const baseResult = {
+        id: wallet.id,
+        label: wallet.label,
+        network: wallet.network,
+        scannerUrl: fastWalletScannerUrl,
+      };
+
+      if (!fastWalletScannerUrl) {
+        return {
+          ...baseResult,
+          checked: false,
+          error: 'Fast Wallet scanner is disabled',
+          hosted: false,
+          scannerStatus: 'disabled',
+        };
+      }
+
+      try {
+        const result = await checkFastReceiveWatchRegistration({
+          identityId: wallet.id,
+          scannerUrl: fastWalletScannerUrl,
+        });
+        return {
+          ...baseResult,
+          checked: true,
+          hosted: result.registered,
+          lastScannedHeight: result.lastScannedHeight,
+          notificationsEnabled: result.notificationsEnabled,
+          scannerStatus: result.scannerStatus,
+        };
+      } catch (error) {
+        const message = errorMessage(error);
+        errors.push(`Fast Wallet ${wallet.label}: ${message}`);
+        return {
+          ...baseResult,
+          checked: false,
+          error: message,
+          hosted: false,
+          scannerStatus: 'check-error',
+        };
+      }
+    }),
+  );
   const activeSession = walletService.getActiveSession();
   const snapshot = activeSession
     ? await walletService.snapshot(activeSession).catch(error => {
@@ -94,6 +149,15 @@ export async function runWalletDiagnostics(trigger = 'manual') {
       jsonRpcGetInfo: summarizeGetInfo(daemonJsonRpcGetInfo),
     },
     errors,
+    fastWallet: {
+      checkedCount: fastWalletChecks.filter(wallet => wallet.checked).length,
+      configuredCount: activeFastWallets.length,
+      hostedCount: fastWalletChecks.filter(
+        wallet => wallet.checked && wallet.hosted,
+      ).length,
+      identities: fastWalletChecks,
+      scannerUrl: fastWalletScannerUrl,
+    },
     hardwareStatus,
     ledgerTransport,
     native: {
@@ -127,12 +191,7 @@ export async function runWalletDiagnostics(trigger = 'manual') {
     `${WALLET_DIAGNOSTIC_LOG_PREFIX} ${JSON.stringify({
       activeWalletId: registeredWallet?.id,
       event: 'walletInventory',
-      fastWallets: fastWallets.map(wallet => ({
-        hasCredential: Boolean(wallet.credentialKey),
-        id: wallet.id,
-        network: wallet.network,
-        scannerStatus: wallet.status,
-      })),
+      fastWallets: fastWalletChecks,
       registeredWallets: registeredWallets.map(wallet => ({
         hasCredential: Boolean(wallet.credentialKey),
         id: wallet.id,
