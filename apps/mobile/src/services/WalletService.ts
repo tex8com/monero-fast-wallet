@@ -47,6 +47,7 @@ import type {
   CreateWalletInput,
   CreateWalletFromDeviceInput,
   CreateWalletFromDeviceWithStoredSecretInput,
+  CreateViewOnlyWalletFromHardwareWithStoredSecretInput,
   CreateWalletWithStoredSecretInput,
   DaemonConfig,
   HardwareWalletStatus,
@@ -70,6 +71,8 @@ export interface WalletSession {
   accountIndex?: number;
   addressIndex?: number;
   credentialKey?: string;
+  /** This session can inspect the wallet but cannot sign a transaction. */
+  readOnly?: boolean;
   hardwareDevice?: {
     name: string;
     type: string;
@@ -132,6 +135,8 @@ export interface CreateNamedHardwareWalletInput {
   accountIndex?: number;
   role?: 'standard' | 'fast';
   sourceWalletId?: string;
+  /** Explicit opt-in for an encrypted local read-only Ledger companion. */
+  enableLocalViewOnly?: boolean;
 }
 
 export interface CreateFastReceiveIdentityInput {
@@ -268,6 +273,14 @@ export class WalletService {
       'deleteSecret',
       {secretKey: key},
       () => requireNativeMoneroWallet().deleteSecret(key),
+    );
+  }
+
+  async deleteWalletFiles(path: string): Promise<void> {
+    return traceWalletOperation(
+      'deleteWalletFiles',
+      {walletFile: walletFileName(path)},
+      () => requireNativeMoneroWallet().deleteWalletFiles(path),
     );
   }
 
@@ -469,14 +482,76 @@ export class WalletService {
   }
 
   async removeRegisteredWallet(walletId: string): Promise<RegisteredWallet[]> {
-    const backgroundSession = this.fastSignalSessions.get(walletId);
-    if (backgroundSession) {
-      this.fastSignalSessions.delete(walletId);
-      await this.stopRefresh(backgroundSession).catch(() => undefined);
-      await this.closeWallet(backgroundSession).catch(() => undefined);
+    const registrations = await loadRegisteredWallets();
+    const target = registrations.find(wallet => wallet.id === walletId);
+    if (!target) {
+      return registrations;
     }
-    await removeWalletRegistration(walletId);
-    await removeWalletAddresses(walletId);
+    const removed = registrations.filter(
+      wallet => wallet.id === walletId || wallet.sourceWalletId === walletId,
+    );
+    const removedIds = new Set(removed.map(wallet => wallet.id));
+    const remaining = registrations.filter(wallet => !removedIds.has(wallet.id));
+
+    for (const wallet of removed) {
+      const backgroundSession = this.fastSignalSessions.get(wallet.id);
+      if (backgroundSession) {
+        this.fastSignalSessions.delete(wallet.id);
+        await this.stopRefresh(backgroundSession).catch(() => undefined);
+        await this.closeWallet(backgroundSession).catch(() => undefined);
+      }
+    }
+    if (
+      this.activeSession?.registrationId &&
+      removedIds.has(this.activeSession.registrationId)
+    ) {
+      await this.closeWallet(this.activeSession).catch(() => undefined);
+    }
+
+    const filePaths = new Set<string>();
+    const credentialKeys = new Set<string>();
+    for (const wallet of removed) {
+      filePaths.add(wallet.path);
+      if (wallet.viewOnlyPath) {
+        filePaths.add(wallet.viewOnlyPath);
+      }
+      if (wallet.credentialKey) {
+        credentialKeys.add(wallet.credentialKey);
+      }
+      if (wallet.viewOnlyCredentialKey) {
+        credentialKeys.add(wallet.viewOnlyCredentialKey);
+      }
+    }
+    for (const path of filePaths) {
+      if (
+        !remaining.some(
+          wallet => wallet.path === path || wallet.viewOnlyPath === path,
+        )
+      ) {
+        await this.deleteWalletFiles(path);
+      }
+    }
+    for (const key of credentialKeys) {
+      if (
+        !remaining.some(
+          wallet =>
+            wallet.credentialKey === key || wallet.viewOnlyCredentialKey === key,
+        )
+      ) {
+        await this.deleteSecret(key);
+      }
+    }
+    for (const wallet of removed) {
+      if (wallet.kind === 'fast') {
+        await removeFastReceiveIdentity(wallet.id).catch(() => undefined);
+      }
+      await removeWalletRegistration(wallet.id);
+      await removeWalletAddresses(wallet.id);
+    }
+    logWalletEvent('WalletService', 'removeRegisteredWallet.complete', {
+      registrationId: maskIdentifier(walletId),
+      removedCount: removed.length,
+    });
     return loadRegisteredWallets();
   }
 
@@ -726,6 +801,45 @@ export class WalletService {
         this.activeSession = {
           ...registeredSession,
         };
+        return registeredSession;
+      },
+    );
+  }
+
+  async openHardwareWalletForSigning(
+    registration: RegisteredWallet,
+  ): Promise<WalletSession> {
+    return traceWalletOperation(
+      'openHardwareWalletForSigning',
+      {
+        network: registration.network,
+        registrationId: maskIdentifier(registration.id),
+        walletName: registration.walletName,
+      },
+      async () => {
+        if (registration.kind !== 'hardware') {
+          throw new Error('The selected wallet is not a Ledger wallet');
+        }
+
+        const resolvedRegistration =
+          await this.resolveRegisteredWalletContainerPath(registration);
+        const session = await this.openHardwareSigningRegisteredWallet(
+          resolvedRegistration,
+        );
+        const registeredSession: WalletSession = {
+          ...session,
+          readOnly: false,
+          registrationId: resolvedRegistration.id,
+          accountIndex: resolvedRegistration.accountIndex,
+          addressIndex: resolvedRegistration.addressIndex,
+          hardwareDevice:
+            hardwareDeviceFromRegistration(resolvedRegistration) ?? {
+              name: 'Ledger',
+              type: 'ledger',
+            },
+        };
+        await saveRegisteredWallet(touchRegisteredWallet(resolvedRegistration));
+        this.activeSession = registeredSession;
         return registeredSession;
       },
     );
@@ -996,6 +1110,25 @@ export class WalletService {
     );
   }
 
+  private async createViewOnlyWalletFromHardwareWithStoredSecret(
+    input: CreateViewOnlyWalletFromHardwareWithStoredSecretInput,
+  ): Promise<string> {
+    return traceWalletOperation(
+      'createViewOnlyWalletFromHardwareWithStoredSecret',
+      {
+        network: input.network,
+        restoreHeight: input.restoreHeight ?? 0,
+        hasStoredCredential: Boolean(input.secretKey),
+        walletFile: walletFileName(input.path),
+      },
+      async () => {
+        const result = await requireNativeMoneroWallet()
+          .createViewOnlyWalletFromHardwareWithStoredSecret(input);
+        return result.walletId;
+      },
+    );
+  }
+
   async createNamedWalletFromDevice(
     input: CreateNamedHardwareWalletInput,
   ): Promise<CreateNamedWalletResult> {
@@ -1031,6 +1164,35 @@ export class WalletService {
           subaddressLookahead: input.subaddressLookahead,
           accountIndex: input.accountIndex,
         });
+        let viewOnlyPath: string | undefined;
+        let viewOnlyCredentialKey: string | undefined;
+        if (input.enableLocalViewOnly) {
+          viewOnlyPath = await this.defaultWalletPath(
+            `${walletName}-ledger-view`,
+            settings.network,
+          );
+          viewOnlyCredentialKey = ledgerViewOnlyCredentialKey(
+            walletName,
+            settings.network,
+          );
+          await this.ensureSecret(viewOnlyCredentialKey);
+          try {
+            const viewOnlyWalletId =
+              await this.createViewOnlyWalletFromHardwareWithStoredSecret({
+                sourceWalletId: session.walletId,
+                path: viewOnlyPath,
+                secretKey: viewOnlyCredentialKey,
+                network: settings.network,
+                restoreHeight: input.restoreHeight,
+              });
+            await requireNativeMoneroWallet().closeWallet(viewOnlyWalletId, true);
+            this.activeSession = session;
+          } catch (error) {
+            await this.deleteWalletFiles(viewOnlyPath).catch(() => undefined);
+            await this.deleteSecret(viewOnlyCredentialKey).catch(() => undefined);
+            throw error;
+          }
+        }
         const registration = await saveRegisteredWallet(
           createRegisteredWallet({
             walletName,
@@ -1038,6 +1200,12 @@ export class WalletService {
             network: settings.network,
             kind: 'hardware',
             credentialKey,
+            viewOnlyPath,
+            viewOnlyCredentialKey,
+            viewOnlyEnabledAt:
+              viewOnlyPath && viewOnlyCredentialKey
+                ? new Date().toISOString()
+                : undefined,
             restoreHeight: input.restoreHeight,
             accountIndex: input.accountIndex,
             role: input.role,
@@ -1716,6 +1884,11 @@ export class WalletService {
     session: WalletSession,
     input: PrepareWalletTransactionInput,
   ): Promise<PreparedTransaction> {
+    if (session.readOnly) {
+      throw new Error(
+        'Connect and unlock your Ledger to authorize this transaction.',
+      );
+    }
     const request: PrepareTransactionInput = {
       walletId: session.walletId,
       address: input.address,
@@ -2186,6 +2359,42 @@ export class WalletService {
       walletFile: walletFileName(registration.path),
       walletName: registration.walletName,
     });
+    if (registration.viewOnlyPath && registration.viewOnlyCredentialKey) {
+      const session = await this.openWalletWithStoredSecret({
+        path: registration.viewOnlyPath,
+        secretKey: registration.viewOnlyCredentialKey,
+        network: registration.network,
+        restoreHeight: registration.restoreHeight,
+      });
+      const registeredSession: WalletSession = {
+        ...session,
+        readOnly: true,
+        accountIndex: registration.accountIndex,
+        addressIndex: registration.addressIndex,
+        hardwareDevice:
+          hardwareDeviceFromRegistration(registration) ?? {
+            name: 'Ledger',
+            type: 'ledger',
+          },
+      };
+      this.activeSession = registeredSession;
+      logWalletEvent(
+        'WalletService',
+        'openHardwareRegisteredWallet.localViewOnly',
+        {
+          registrationId: maskIdentifier(registration.id),
+          walletFile: walletFileName(registration.viewOnlyPath),
+        },
+      );
+      return registeredSession;
+    }
+
+    return this.openHardwareSigningRegisteredWallet(registration);
+  }
+
+  private async openHardwareSigningRegisteredWallet(
+    registration: RegisteredWallet,
+  ): Promise<WalletSession> {
     const credentialKey =
       registration.credentialKey ??
       walletCredentialKey(
@@ -2619,6 +2828,15 @@ function walletCredentialKey(
   network: MoneroNetwork,
 ): string {
   return `monero.wallet.${kind}.${network}.${pathSafeWalletName(
+    walletName,
+  )}.v1`;
+}
+
+function ledgerViewOnlyCredentialKey(
+  walletName: string,
+  network: MoneroNetwork,
+): string {
+  return `monero.wallet.hardware-view.${network}.${pathSafeWalletName(
     walletName,
   )}.v1`;
 }

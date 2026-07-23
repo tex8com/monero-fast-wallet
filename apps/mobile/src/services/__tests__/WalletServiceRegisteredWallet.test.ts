@@ -30,10 +30,16 @@ const mockNativeWallet = {
     supported: false,
   })),
   ensureSecret: jest.fn(async () => undefined),
+  deleteSecret: jest.fn(async () => undefined),
+  deleteWalletFiles: jest.fn(async () => undefined),
   logDiagnostics: jest.fn(async () => undefined),
   createWalletFromDeviceWithStoredSecret: jest.fn(async () => ({
     walletId: 'wallet-ledger',
   })),
+  createViewOnlyWalletFromHardwareWithStoredSecret: jest.fn(async () => ({
+    walletId: 'wallet-ledger-view',
+  })),
+  closeWallet: jest.fn(async () => undefined),
   openWallet: jest.fn(async () => ({ walletId: 'wallet-1' })),
   openWalletWithStoredSecret: jest.fn(async () => ({
     walletId: 'wallet-fast',
@@ -172,5 +178,45 @@ describe('WalletService registered wallet opening', () => {
       registrationId: result.fastRegistration.id,
       accountIndex: 1,
     });
+  });
+
+  it('creates and removes an opted-in encrypted Ledger read wallet as one unit', async () => {
+    const service = new WalletService();
+    const result = await service.createNamedWalletFromDevice({
+      walletName: 'ledger-private',
+      network: 'mainnet',
+      restoreHeight: 3714305,
+      enableLocalViewOnly: true,
+    });
+
+    expect(
+      mockNativeWallet.createViewOnlyWalletFromHardwareWithStoredSecret,
+    ).toHaveBeenCalledWith({
+      sourceWalletId: 'wallet-ledger',
+      path: '/current-container/wallets/mainnet/ledger-private-ledger-view',
+      secretKey: 'monero.wallet.hardware-view.mainnet.ledger-private.v1',
+      network: 'mainnet',
+      restoreHeight: 3714305,
+    });
+    expect(result.registration).toMatchObject({
+      kind: 'hardware',
+      viewOnlyPath:
+        '/current-container/wallets/mainnet/ledger-private-ledger-view',
+      viewOnlyCredentialKey:
+        'monero.wallet.hardware-view.mainnet.ledger-private.v1',
+    });
+
+    await service.removeRegisteredWallet(result.registration.id);
+
+    expect(mockNativeWallet.deleteWalletFiles).toHaveBeenCalledWith(
+      '/current-container/wallets/mainnet/ledger-private',
+    );
+    expect(mockNativeWallet.deleteWalletFiles).toHaveBeenCalledWith(
+      '/current-container/wallets/mainnet/ledger-private-ledger-view',
+    );
+    expect(mockNativeWallet.deleteSecret).toHaveBeenCalledWith(
+      'monero.wallet.hardware-view.mainnet.ledger-private.v1',
+    );
+    await expect(loadRegisteredWallets()).resolves.toEqual([]);
   });
 });

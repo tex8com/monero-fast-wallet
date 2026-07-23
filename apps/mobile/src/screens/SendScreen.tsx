@@ -39,7 +39,10 @@ import {
 } from '../services/WalletFormat';
 import { useWalletState } from '../services/WalletState';
 import { walletDisplayName } from '../services/WalletRegistry';
-import { walletService } from '../services/WalletService';
+import {
+  walletService,
+  type WalletSession,
+} from '../services/WalletService';
 import {
   loadRecentRecipients,
   loadRecipientContacts,
@@ -71,6 +74,9 @@ export default function SendScreen({ navigation }: any) {
   const [preparedTx, setPreparedTx] = useState<
     PreparedTransaction | undefined
   >();
+  const [preparedSession, setPreparedSession] = useState<
+    WalletSession | undefined
+  >();
   const [sending, setSending] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [sweepAll, setSweepAll] = useState(false);
@@ -80,6 +86,7 @@ export default function SendScreen({ navigation }: any) {
   const { price } = useXmrPrice();
   const {
     error: walletError,
+    connectLedgerForSigning,
     refreshSnapshot,
     refreshTransactions,
     registeredWallet,
@@ -185,6 +192,7 @@ export default function SendScreen({ navigation }: any) {
 
   const clearPreparedTransaction = () => {
     setPreparedTx(undefined);
+    setPreparedSession(undefined);
     setSendStatus(undefined);
   };
 
@@ -275,7 +283,13 @@ export default function SendScreen({ navigation }: any) {
     setSending(true);
     setSendError(undefined);
     try {
-      const nextTransaction = await walletService.prepareTransaction(session, {
+      const signingSession = session.readOnly
+        ? await connectLedgerForSigning()
+        : session;
+      if (!signingSession) {
+        throw new Error(t('send.openWalletBeforeSending'));
+      }
+      const nextTransaction = await walletService.prepareTransaction(signingSession, {
         address: address.trim(),
         amountAtomic: sweepAll ? undefined : amountAtomic?.toString(),
         priority,
@@ -287,6 +301,7 @@ export default function SendScreen({ navigation }: any) {
         );
       }
       setPreparedTx(nextTransaction);
+      setPreparedSession(signingSession);
       setSendStatus(undefined);
       if (sweepAll) {
         setAmount(
@@ -304,7 +319,8 @@ export default function SendScreen({ navigation }: any) {
   };
 
   const handleSend = async () => {
-    if (!session || !preparedTx) {
+    const transactionSession = preparedSession ?? session;
+    if (!transactionSession || !preparedTx) {
       setSendError(t('send.transactionPreparationFailed'));
       return;
     }
@@ -313,7 +329,7 @@ export default function SendScreen({ navigation }: any) {
     setSendError(undefined);
     try {
       const committed = await walletService.commitTransaction(
-        session,
+        transactionSession,
         preparedTx.id,
       );
       if (committed.status !== 'ok') {
@@ -325,6 +341,7 @@ export default function SendScreen({ navigation }: any) {
       setAddress('');
       setAmount('');
       setPreparedTx(undefined);
+      setPreparedSession(undefined);
       setSweepAll(false);
       setSendStatus(t('send.transactionBroadcast'));
       setStep('recipient-choice');

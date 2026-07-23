@@ -138,6 +138,11 @@ const en = {
   'setup.hardware.found': 'Ledger Nano found',
   'setup.hardware.instructions':
     'Connect Ledger Nano with Bluetooth or USB, unlock it, and open the Monero app on the device.',
+  'setup.hardware.localViewTitle': 'Remember Ledger for viewing',
+  'setup.hardware.localViewDescription':
+    'Keep an encrypted, read-only wallet on this device. You can view balances and receive without reconnecting Ledger; sending still requires Ledger.',
+  'setup.hardware.localViewProtectionRequired':
+    'Turn on app protection in Settings before saving Ledger viewing access on this device.',
   'setup.hardware.looking': 'Looking for an available Ledger transport.',
   'setup.hardware.openReady':
     'Ready to open with the connected hardware wallet.',
@@ -517,6 +522,8 @@ const en = {
   'wallets.removeWallet': 'Remove Wallet',
   'wallets.removeWalletConfirm':
     'Remove {name} from this app? This does not erase your 25-word seed.',
+  'wallets.removeFailedTitle': 'Wallet could not be removed',
+  'wallets.removeFailed': 'The local wallet data could not be removed.',
   'wallets.subtitle': 'Add, switch, and remove private or Fast Wallets.',
   'wallets.title': 'Wallets',
 } as const;
@@ -663,6 +670,11 @@ const de: Record<keyof typeof en, string> = {
   'setup.hardware.found': 'Ledger Nano gefunden',
   'setup.hardware.instructions':
     'Verbinde den Ledger Nano per Bluetooth oder USB, entsperre ihn und öffne die Monero-App am Gerät.',
+  'setup.hardware.localViewTitle': 'Ledger zum Anzeigen merken',
+  'setup.hardware.localViewDescription':
+    'Speichert eine verschlüsselte Nur-Lese-Wallet auf diesem Gerät. Guthaben und Eingänge sind ohne Ledger sichtbar; zum Senden bleibt Ledger erforderlich.',
+  'setup.hardware.localViewProtectionRequired':
+    'Aktiviere zuerst den App-Schutz in den Einstellungen, bevor der Ledger-Lesezugriff auf diesem Gerät gespeichert wird.',
   'setup.hardware.looking': 'Suche nach einem verfügbaren Ledger-Transport.',
   'setup.hardware.openReady':
     'Bereit zum Öffnen mit der verbundenen Hardware-Wallet.',
@@ -1053,6 +1065,8 @@ const de: Record<keyof typeof en, string> = {
   'wallets.removeWallet': 'Wallet entfernen',
   'wallets.removeWalletConfirm':
     '{name} aus dieser App entfernen? Dein 25-Wörter-Seed wird dadurch nicht gelöscht.',
+  'wallets.removeFailedTitle': 'Wallet konnte nicht entfernt werden',
+  'wallets.removeFailed': 'Die lokalen Wallet-Daten konnten nicht entfernt werden.',
   'wallets.subtitle':
     'Private Wallets und Fast Wallets hinzufügen, wechseln und entfernen.',
   'wallets.title': 'Wallets',

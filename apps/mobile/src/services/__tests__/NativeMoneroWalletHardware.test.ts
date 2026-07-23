@@ -33,6 +33,10 @@ const mockNativeMoneroWalletTurboModule = {
   createWalletWithStoredSecret: jest.fn(async () => "wallet-1"),
   createWalletFromDevice: jest.fn(async () => "wallet-1"),
   createWalletFromDeviceWithStoredSecret: jest.fn(async () => "wallet-1"),
+  createViewOnlyWalletFromHardwareWithStoredSecret: jest.fn(
+    async () => "wallet-ledger-view",
+  ),
+  deleteWalletFiles: jest.fn(async () => undefined),
   createFastReceiveIdentity: jest.fn(async () => ({
     id: "fast-receive-0",
     label: "Fast Receive",
@@ -244,6 +248,44 @@ describe("NativeMoneroWallet hardware bridge", () => {
       "Fast Receive",
       10,
       0,
+    );
+  });
+
+  it("creates an encrypted Ledger read wallet without exposing the view key to JavaScript", async () => {
+    const { requireNativeMoneroWallet } =
+      require("../NativeMoneroWallet") as typeof import("../NativeMoneroWallet");
+    const nativeWallet = requireNativeMoneroWallet();
+
+    await expect(
+      nativeWallet.createViewOnlyWalletFromHardwareWithStoredSecret({
+        sourceWalletId: "wallet-1",
+        path: "/tmp/wallet-ledger-view",
+        secretKey: "monero.wallet.hardware.ledger.view.v1",
+        network: "mainnet",
+        restoreHeight: 123,
+      }),
+    ).resolves.toEqual({ walletId: "wallet-ledger-view" });
+
+    expect(
+      mockNativeMoneroWalletTurboModule
+        .createViewOnlyWalletFromHardwareWithStoredSecret,
+    ).toHaveBeenCalledWith(
+      "wallet-1",
+      "/tmp/wallet-ledger-view",
+      "monero.wallet.hardware.ledger.view.v1",
+      "mainnet",
+      123,
+    );
+    expect(
+      JSON.stringify(
+        mockNativeMoneroWalletTurboModule
+          .createViewOnlyWalletFromHardwareWithStoredSecret.mock.calls,
+      ),
+    ).not.toContain("privateViewKey");
+
+    await nativeWallet.deleteWalletFiles("/tmp/wallet-ledger-view");
+    expect(mockNativeMoneroWalletTurboModule.deleteWalletFiles).toHaveBeenCalledWith(
+      "/tmp/wallet-ledger-view",
     );
   });
 

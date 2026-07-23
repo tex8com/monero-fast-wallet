@@ -20,6 +20,11 @@ export interface RegisteredWallet {
   seedBackupStatus: SeedBackupStatus;
   seedBackedUpAt?: string;
   credentialKey?: string;
+  /** Encrypted, local-only read wallet paired with a Ledger registration. */
+  viewOnlyPath?: string;
+  /** Secure-store key for the paired read wallet's random file password. */
+  viewOnlyCredentialKey?: string;
+  viewOnlyEnabledAt?: string;
   restoreHeight?: number;
   /**
    * A wallet can intentionally operate from another Monero account. Ledger
@@ -119,6 +124,9 @@ export function createRegisteredWallet(input: {
   seedBackupStatus?: SeedBackupStatus;
   seedBackedUpAt?: string;
   credentialKey?: string;
+  viewOnlyPath?: string;
+  viewOnlyCredentialKey?: string;
+  viewOnlyEnabledAt?: string;
   restoreHeight?: number;
   accountIndex?: number;
   addressIndex?: number;
@@ -144,6 +152,9 @@ export function createRegisteredWallet(input: {
       (kind === 'software' ? 'pending' : 'not-required'),
     seedBackedUpAt: input.seedBackedUpAt,
     credentialKey: input.credentialKey,
+    viewOnlyPath: input.viewOnlyPath,
+    viewOnlyCredentialKey: input.viewOnlyCredentialKey,
+    viewOnlyEnabledAt: input.viewOnlyEnabledAt,
     restoreHeight: input.restoreHeight,
     accountIndex: input.accountIndex,
     addressIndex: input.addressIndex,
@@ -331,6 +342,17 @@ function normalizeRegisteredWallet(wallet: RegisteredWallet): RegisteredWallet {
     normalized.credentialKey = wallet.credentialKey.trim();
   }
 
+  if (
+    kind === 'hardware' &&
+    wallet.viewOnlyPath?.trim() &&
+    wallet.viewOnlyCredentialKey?.trim()
+  ) {
+    normalized.viewOnlyPath = wallet.viewOnlyPath.trim();
+    normalized.viewOnlyCredentialKey = wallet.viewOnlyCredentialKey.trim();
+    normalized.viewOnlyEnabledAt =
+      wallet.viewOnlyEnabledAt?.trim() || wallet.createdAt;
+  }
+
   if (kind === 'fast' || wallet.restoreHeight !== undefined) {
     normalized.restoreHeight = normalizeRestoreHeight(wallet.restoreHeight);
   }
@@ -413,6 +435,9 @@ function parseRegisteredWalletRecord(
   const seedBackupStatus = parseSeedBackupStatus(value.seedBackupStatus);
   const seedBackedUpAt = parseString(value.seedBackedUpAt);
   const credentialKey = parseString(value.credentialKey);
+  const viewOnlyPath = parseString(value.viewOnlyPath);
+  const viewOnlyCredentialKey = parseString(value.viewOnlyCredentialKey);
+  const viewOnlyEnabledAt = parseString(value.viewOnlyEnabledAt);
   const restoreHeight = parseNumber(value.restoreHeight);
   const accountIndex = parseNumber(value.accountIndex);
   const addressIndex = parseNumber(value.addressIndex);
@@ -438,6 +463,9 @@ function parseRegisteredWalletRecord(
       seedBackupStatus ?? (kind === 'software' ? 'verified' : 'not-required'),
     seedBackedUpAt,
     credentialKey,
+    viewOnlyPath,
+    viewOnlyCredentialKey,
+    viewOnlyEnabledAt,
     restoreHeight,
     accountIndex,
     addressIndex,

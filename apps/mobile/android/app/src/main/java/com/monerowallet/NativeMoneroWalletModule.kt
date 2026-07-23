@@ -455,6 +455,40 @@ class NativeMoneroWalletModule(
       }
   }
 
+  override fun deleteWalletFiles(path: String, promise: Promise) {
+    runCatching {
+      val walletRoot = File(
+        reactApplicationContext.noBackupFilesDir,
+        "monero-wallets/wallets",
+      ).canonicalFile
+      val walletFile = File(path).canonicalFile
+      val rootPrefix = walletRoot.path + File.separator
+      require(walletFile.path.startsWith(rootPrefix)) {
+        "Wallet path is outside the protected app wallet directory"
+      }
+      require(!walletFile.isDirectory) { "Wallet path must not be a directory" }
+
+      listOf(
+        walletFile,
+        File(walletFile.path + ".keys"),
+        File(walletFile.path + ".address.txt"),
+        File(walletFile.path + ".lock"),
+      ).forEach { file ->
+        if (file.exists() && !file.delete()) {
+          error("Failed to delete wallet file: ${file.name}")
+        }
+      }
+    }
+      .onSuccess { promise.resolve(null) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_delete_error",
+          error.message ?: "Failed to delete wallet files",
+          error,
+        )
+      }
+  }
+
   override fun defaultWalletPath(walletName: String, network: String, promise: Promise) {
     runCatching {
       val checkedWalletName = checkedPathSegment(walletName, "walletName")
@@ -681,6 +715,33 @@ class NativeMoneroWalletModule(
         restoreHeight,
         subaddressLookahead,
         accountIndex,
+      )
+    }
+  }
+
+  override fun createViewOnlyWalletFromHardwareWithStoredSecret(
+    sourceWalletId: String,
+    path: String,
+    secretKey: String,
+    network: String,
+    restoreHeight: Double,
+    promise: Promise,
+  ) {
+    resolveNativeString(
+      promise,
+      "createViewOnlyWalletFromHardwareWithStoredSecret",
+      walletPathFields(path, network) + mapOf(
+        "hasStoredSecret" to true,
+        "restoreHeight" to restoreHeight,
+        "sourceWalletId" to maskIdentifier(sourceWalletId),
+      ),
+    ) {
+      NativeMoneroWalletJni.createViewOnlyWalletFromHardware(
+        sourceWalletId,
+        path,
+        readRequiredSecretValue(secretKey),
+        network,
+        restoreHeight,
       )
     }
   }

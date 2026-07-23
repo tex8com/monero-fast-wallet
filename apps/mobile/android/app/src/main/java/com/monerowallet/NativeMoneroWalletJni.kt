@@ -92,6 +92,23 @@ internal object NativeMoneroWalletJni {
     )
   }
 
+  fun createViewOnlyWalletFromHardware(
+    sourceWalletId: String,
+    path: String,
+    password: String,
+    network: String,
+    restoreHeight: Double,
+  ): String {
+    requireLoaded()
+    return nativeCreateViewOnlyWalletFromHardware(
+      sourceWalletId,
+      path,
+      password,
+      network,
+      restoreHeight,
+    )
+  }
+
   fun createFastReceiveIdentity(
     sourceWalletId: String,
     identityId: String,
@@ -326,6 +343,14 @@ internal object NativeMoneroWalletJni {
     restoreHeight: Double,
     subaddressLookahead: String,
     accountIndex: Double,
+  ): String
+
+  @JvmStatic private external fun nativeCreateViewOnlyWalletFromHardware(
+    sourceWalletId: String,
+    path: String,
+    password: String,
+    network: String,
+    restoreHeight: Double,
   ): String
 
   @JvmStatic private external fun nativeCreateSubaddress(

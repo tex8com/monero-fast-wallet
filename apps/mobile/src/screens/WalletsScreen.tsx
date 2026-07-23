@@ -134,8 +134,18 @@ export default function WalletsScreen({ navigation }: any) {
         {
           text: t('wallets.removeFromApp'),
           style: 'destructive',
-          onPress: () => {
-            removeRegisteredWallet(wallet.id).catch(() => undefined);
+          onPress: async () => {
+            try {
+              await removeRegisteredWallet(wallet.id);
+              await reloadRegisteredWallets();
+            } catch (error) {
+              Alert.alert(
+                t('wallets.removeFailedTitle'),
+                error instanceof Error
+                  ? error.message
+                  : t('wallets.removeFailed'),
+              );
+            }
           },
         },
       ],

@@ -9,6 +9,7 @@
 #import <React/RCTBridgeModule.h>
 #import <Security/Security.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -683,11 +684,13 @@ namespace {
 
 using tex8::wallet::CreateWalletRequest;
 using tex8::wallet::CreateWalletFromDeviceRequest;
+using tex8::wallet::CreateViewOnlyWalletRequest;
 using tex8::wallet::CreateFastReceiveIdentityRequest;
 using tex8::wallet::DaemonConfig;
 using tex8::wallet::FastReceiveIdentity;
 using tex8::wallet::FastReceiveRegistrationPayload;
 using tex8::wallet::HardwareWalletStatus;
+using tex8::wallet::HardwareViewKeyExport;
 using tex8::wallet::LedgerBleTransportCallbacks;
 using tex8::wallet::NetworkType;
 using tex8::wallet::OpenWalletRequest;
@@ -1515,6 +1518,55 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
   }
 }
 
+- (void)deleteWalletFiles:(NSString *)path
+                  resolve:(RCTPromiseResolveBlock)resolve
+                   reject:(RCTPromiseRejectBlock)reject
+{
+  try {
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSURL *appSupportUrl = [fileManager URLForDirectory:NSApplicationSupportDirectory
+                                               inDomain:NSUserDomainMask
+                                      appropriateForURL:nil
+                                                 create:NO
+                                                  error:nil];
+    if (appSupportUrl == nil) {
+      throw WalletEngineError("failed to resolve Application Support directory");
+    }
+
+    NSString *walletRoot = [[[[appSupportUrl URLByAppendingPathComponent:@"MoneroWallet"]
+        URLByAppendingPathComponent:@"wallets"] path] stringByStandardizingPath];
+    NSString *walletPath = [path stringByStandardizingPath];
+    NSString *rootPrefix = [walletRoot stringByAppendingString:@"/"];
+    if (walletPath.length == 0 || ![walletPath hasPrefix:rootPrefix]) {
+      throw WalletEngineError("refusing to delete wallet files outside the wallet directory");
+    }
+
+    NSArray<NSString *> *paths = @[
+      walletPath,
+      [walletPath stringByAppendingString:@".keys"],
+      [walletPath stringByAppendingString:@".address.txt"],
+      [walletPath stringByAppendingString:@".lock"],
+    ];
+    for (NSString *candidate in paths) {
+      BOOL isDirectory = NO;
+      if (![fileManager fileExistsAtPath:candidate isDirectory:&isDirectory]) {
+        continue;
+      }
+      if (isDirectory) {
+        throw WalletEngineError("refusing to delete a wallet directory");
+      }
+      NSError *error = nil;
+      if (![fileManager removeItemAtPath:candidate error:&error]) {
+        throw WalletEngineError("failed to delete wallet file: " +
+            toStdString(error.localizedDescription));
+      }
+    }
+    resolve([NSNull null]);
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+  }
+}
+
 - (void)defaultWalletPath:(NSString *)walletName
                   network:(NSString *)network
                   resolve:(RCTPromiseResolveBlock)resolve
@@ -1803,6 +1855,56 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     request.subaddressLookahead = toStdString(subaddressLookahead);
     request.accountIndex = toIndex(accountIndex, "accountIndex");
     return toNSString(engine.createWalletFromDevice(request));
+  }];
+}
+
+- (void)createViewOnlyWalletFromHardwareWithStoredSecret:(NSString *)sourceWalletId
+                                                     path:(NSString *)path
+                                                secretKey:(NSString *)secretKey
+                                                  network:(NSString *)network
+                                            restoreHeight:(double)restoreHeight
+                                                  resolve:(RCTPromiseResolveBlock)resolve
+                                                   reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"createViewOnlyWalletFromHardwareWithStoredSecret"
+                  fields:@{
+                    @"hasStoredSecret": @YES,
+                    @"network": network ?: @"",
+                    @"restoreHeight": @(restoreHeight),
+                    @"sourceWalletId": maskIdentifier(sourceWalletId),
+                    @"walletFile": walletFileName(path),
+                  }
+                    work:^id(WalletEngine &engine) {
+    HardwareViewKeyExport exported =
+        engine.exportHardwarePrivateViewKey(toStdString(sourceWalletId));
+    const NetworkType requestedNetwork = toNetworkType(network);
+    if (exported.network != requestedNetwork) {
+      std::fill(exported.privateViewKey.begin(), exported.privateViewKey.end(), '\0');
+      throw WalletEngineError("hardware wallet network does not match the requested network");
+    }
+
+    CreateViewOnlyWalletRequest request;
+    request.path = toStdString(path);
+    request.password = toStdString(readRequiredKeychainSecret(secretKey));
+    request.address = exported.address;
+    request.privateViewKey = exported.privateViewKey;
+    request.network = requestedNetwork;
+    request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
+
+    try {
+      std::string walletId = engine.createViewOnlyWallet(request);
+      std::fill(request.password.begin(), request.password.end(), '\0');
+      std::fill(request.privateViewKey.begin(), request.privateViewKey.end(), '\0');
+      std::fill(exported.privateViewKey.begin(), exported.privateViewKey.end(), '\0');
+      return toNSString(walletId);
+    } catch (...) {
+      std::fill(request.password.begin(), request.password.end(), '\0');
+      std::fill(request.privateViewKey.begin(), request.privateViewKey.end(), '\0');
+      std::fill(exported.privateViewKey.begin(), exported.privateViewKey.end(), '\0');
+      throw;
+    }
   }];
 }
 

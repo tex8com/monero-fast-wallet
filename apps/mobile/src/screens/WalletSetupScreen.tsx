@@ -37,6 +37,7 @@ import {
   restoreHeightFromStartDate,
   todayRestoreDate,
 } from "../services/RestoreStart";
+import { useAppSecurity } from "../services/AppSecurity";
 
 const { width: SW, height: SH } = Dimensions.get("window");
 const CREATE_STEPS = [
@@ -338,8 +339,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const [seedConfirmed, setSeedConfirmed] = useState(false);
   const [createFastReceiveOnSetup, setCreateFastReceiveOnSetup] =
     useState(true);
+  const [persistLedgerViewOnly, setPersistLedgerViewOnly] = useState(false);
   const [enableEnthusiastDiscoveryOnSetup, setEnableEnthusiastDiscoveryOnSetup] =
     useState(true);
+  const { mode: appProtectionMode } = useAppSecurity();
   const {
     registeredWallet,
     registeredWallets,
@@ -350,6 +353,20 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     reloadRegisteredWallets,
     setActiveRegisteredWallet,
   } = useWalletState();
+
+  const changePersistLedgerViewOnly = useCallback(
+    (enabled: boolean) => {
+      if (enabled && appProtectionMode === "none") {
+        setPersistLedgerViewOnly(false);
+        setLedgerError(t("setup.hardware.localViewProtectionRequired"));
+        return;
+      }
+
+      setLedgerError(undefined);
+      setPersistLedgerViewOnly(enabled);
+    },
+    [appProtectionMode, t],
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -374,12 +391,23 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   );
   const canUseBiometric = biometricReady(biometricStatus);
   const currentBiometricLabel = biometricLabel(biometricStatus);
+  const hasLocalLedgerView =
+    registeredWallet?.kind === "hardware" &&
+    Boolean(
+      registeredWallet.viewOnlyPath &&
+        registeredWallet.viewOnlyCredentialKey,
+    );
   const openUsesStoredSecret =
     passwordPromptMode === "open" &&
-    registeredWallet?.kind !== "hardware" &&
-    Boolean(registeredWallet?.credentialKey);
+    Boolean(
+      (registeredWallet?.kind !== "hardware" &&
+        registeredWallet?.credentialKey) ||
+        hasLocalLedgerView,
+    );
   const openUsesHardwareWallet =
-    passwordPromptMode === "open" && registeredWallet?.kind === "hardware";
+    passwordPromptMode === "open" &&
+    registeredWallet?.kind === "hardware" &&
+    !hasLocalLedgerView;
   const hardwareTransportReady = ledgerTransportReady(ledgerStatus);
   const waitingForBiometricStatus =
     biometricStatus === undefined && biometricError === undefined;
@@ -845,96 +873,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     </View>
   );
 
-  const startCreateWallet = async () => {
-    if (creating || !passwordReady) {
-      setupLog("startCreateWallet.skipped", {
-        creating,
-        passwordReady,
-      });
-      return;
-    }
-
-    const password = walletPassword;
-    const startedAt = Date.now();
-    setupLog("startCreateWallet.start", {
-      createFastReceiveOnSetup,
-      credentialMode: "password",
-      enableEnthusiastDiscoveryOnSetup,
-    });
-    setCreating(true);
-    setCreatingKind("software");
-    setPasswordPromptMode(undefined);
-    setCreateError(undefined);
-    setCreatedSeed("");
-    setCreatedSeedWalletId(undefined);
-    clearQueuedSeedBackup();
-    setSeedConfirmed(false);
-    beginCreateAnimation(CREATE_STEPS);
-
-    try {
-      const result = await walletService.createNamedWallet({
-        walletName: DEFAULT_WALLET_NAME,
-        password,
-        language: "English",
-      });
-      setupLog("startCreateWallet.primaryCreated", {
-        elapsedMs: Date.now() - startedAt,
-      });
-      let fastReceiveIdentityId: string | undefined;
-      if (createFastReceiveOnSetup) {
-        setCreateStep(t("setup.createFastReceive"));
-        setupLog("startCreateWallet.fastReceive.start");
-        const fastReceive = await walletService.createFastReceiveIdentity({
-          password,
-          restoreHeight: 0,
-        });
-        fastReceiveIdentityId = fastReceive.identity.id;
-        setupLog("startCreateWallet.fastReceive.localReady", {
-          elapsedMs: Date.now() - startedAt,
-          identityId: fastReceive.identity.id,
-        });
-      }
-      const seed = await walletService.getSeed(result.session);
-      setupLog("startCreateWallet.seedLoaded", {
-        seedWordCount: seed.trim().split(/\s+/).filter(Boolean).length,
-      });
-      await registerOpenedSession(result.session, result.registration, {
-        refresh: false,
-      });
-      setupLog("startCreateWallet.registered", {
-        registrationId: result.registration.id,
-        walletName: result.registration.walletName,
-      });
-      setupLog("startCreateWallet.syncDeferred", {
-        reason: "seedBackupRequired",
-        walletId: result.session.walletId,
-      });
-
-      finishCreateAnimation();
-      queueSeedBackupAfterCreate(result.registration.id, seed);
-      setWalletPassword("");
-      setWalletPasswordConfirm("");
-      if (fastReceiveIdentityId) {
-        registerFastReceiveInBackground("startCreateWallet", fastReceiveIdentityId, {
-          password,
-        });
-      }
-      setupLog("startCreateWallet.success", {
-        elapsedMs: Date.now() - startedAt,
-      });
-    } catch (error) {
-      finishCreateAnimation();
-      setCreateError(errorMessage(error));
-      setPasswordPromptMode("create");
-      setupLog("startCreateWallet.error", {
-        elapsedMs: Date.now() - startedAt,
-        error: errorMessage(error),
-      });
-    } finally {
-      setCreating(false);
-    }
-  };
-
   const startCreateWalletWithDeviceSecret = async () => {
     if (creating) {
       setupLog("startCreateWalletWithDeviceSecret.skipped", {
@@ -1036,7 +974,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       return;
     }
 
-    const password = walletPassword;
     const startedAt = Date.now();
     try {
       const settings = await loadActiveNodeConnectionSettings();
@@ -1139,6 +1076,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       );
       setupLog("startCreateHardwareWallet.start", {
         createFastReceiveOnSetup,
+        persistLedgerViewOnly,
         restoreHeight: restoreHeight ?? 0,
         restoreStartDate: ledgerRestoreStartDate || "automatic",
       });
@@ -1176,6 +1114,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         network: settings.network,
         deviceName,
         restoreHeight,
+        enableLocalViewOnly: persistLedgerViewOnly,
       });
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
@@ -1192,6 +1131,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       finishCreateAnimation();
       setLedgerPromptVisible(false);
       setLedgerRestoreStartDate("");
+      setPersistLedgerViewOnly(false);
       navigation.navigate("Home");
       setupLog("startCreateHardwareWallet.success", {
         elapsedMs: Date.now() - startedAt,
@@ -1219,7 +1159,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       return;
     }
 
-    if (registeredWallet?.kind === "hardware" && !hardwareTransportReady) {
+    if (openUsesHardwareWallet && !hardwareTransportReady) {
       const message =
         ledgerError ??
         ledgerStatus?.message ??
@@ -1729,6 +1669,25 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 dateLocale={dateLocale}
                 t={t}
               />
+              <View style={s.fastReceiveRow}>
+                <View style={s.fastReceiveText}>
+                  <Text style={s.fastReceiveTitle}>
+                    {t("setup.hardware.localViewTitle")}
+                  </Text>
+                  <Text style={s.fastReceiveValue}>
+                    {t("setup.hardware.localViewDescription")}
+                  </Text>
+                </View>
+                <Switch
+                  value={persistLedgerViewOnly}
+                  onValueChange={changePersistLedgerViewOnly}
+                  trackColor={{
+                    false: "rgba(255,255,255,0.12)",
+                    true: colors.orange,
+                  }}
+                  thumbColor="#FFF"
+                />
+              </View>
               <View style={s.promptActions}>
                 <TouchableOpacity
                   style={s.secondaryButton}

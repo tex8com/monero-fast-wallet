@@ -80,6 +80,7 @@ interface WalletStateValue {
   refreshTransactions: () => Promise<WalletTransaction[]>;
   refreshHardwareWalletStatus: () => Promise<HardwareWalletStatus | undefined>;
   reconnectHardwareWallet: () => Promise<HardwareWalletStatus | undefined>;
+  connectLedgerForSigning: () => Promise<WalletSession | undefined>;
   showHardwareWalletAddress: (
     accountIndex?: number,
     addressIndex?: number,
@@ -204,7 +205,7 @@ export function WalletStateProvider({
   const stopNativeRefresh = useCallback(
     (closingSession: WalletSession | undefined, reason: string) => {
       if (!closingSession) {
-        return;
+        return Promise.resolve();
       }
 
       nativeRefreshGenerationRef.current += 1;
@@ -224,13 +225,15 @@ export function WalletStateProvider({
         reason,
         walletId: closingSession.walletId,
       });
-      walletService.stopRefresh(closingSession).catch(stopError => {
-        logWalletEvent('WalletState', 'stopNativeRefresh.error', {
-          error: errorMessage(stopError),
-          reason,
-          walletId: closingSession.walletId,
+      return walletService
+        .stopRefresh(closingSession)
+        .catch(stopError => {
+          logWalletEvent('WalletState', 'stopNativeRefresh.error', {
+            error: errorMessage(stopError),
+            reason,
+            walletId: closingSession.walletId,
+          });
         });
-      });
     },
     [],
   );
@@ -909,6 +912,71 @@ export function WalletStateProvider({
     ],
   );
 
+  const connectLedgerForSigning = useCallback(async () => {
+    const activeSession = sessionRef.current;
+    const activeRegistration = registeredWalletRef.current;
+    if (!activeSession || !activeRegistration) {
+      return undefined;
+    }
+    if (!activeSession.readOnly) {
+      return activeSession;
+    }
+    if (activeRegistration.kind !== 'hardware') {
+      throw new Error('The active wallet is not a Ledger wallet');
+    }
+
+    logWalletEvent('WalletState', 'connectLedgerForSigning.start', {
+      walletId: activeSession.walletId,
+      registrationId: activeRegistration.id,
+    });
+    await stopNativeRefresh(activeSession, 'ledgerSigningRequested');
+    await walletService.closeWallet(activeSession);
+    sessionRef.current = undefined;
+    setSession(undefined);
+    setSnapshot(undefined);
+    setTransactions([]);
+    setHardwareStatus(undefined);
+
+    try {
+      const signingSession =
+        await walletService.openHardwareWalletForSigning(activeRegistration);
+      walletService.activateSession(signingSession);
+      sessionRef.current = signingSession;
+      setSession(signingSession);
+      setError(undefined);
+      startNativeRefresh(signingSession, 'ledgerSigningConnected');
+      logWalletEvent('WalletState', 'connectLedgerForSigning.success', {
+        walletId: signingSession.walletId,
+        registrationId: activeRegistration.id,
+      });
+      return signingSession;
+    } catch (reason) {
+      const message = errorMessage(reason);
+      setError(message);
+      logWalletEvent('WalletState', 'connectLedgerForSigning.error', {
+        error: message,
+        registrationId: activeRegistration.id,
+      });
+
+      // A cancelled or unavailable Ledger must not destroy the useful local
+      // read-only session. Reopen it so balances and incoming transfers remain
+      // available without requiring another user action.
+      try {
+        const readOnlySession = await walletService.openRegisteredWallet();
+        walletService.activateSession(readOnlySession);
+        sessionRef.current = readOnlySession;
+        setSession(readOnlySession);
+        startNativeRefresh(readOnlySession, 'ledgerSigningCancelled');
+      } catch (restoreError) {
+        logWalletEvent('WalletState', 'connectLedgerForSigning.restoreError', {
+          error: errorMessage(restoreError),
+          registrationId: activeRegistration.id,
+        });
+      }
+      throw reason;
+    }
+  }, [startNativeRefresh, stopNativeRefresh]);
+
   useEffect(() => {
     if (
       loadingRegistry ||
@@ -1021,6 +1089,7 @@ export function WalletStateProvider({
       refreshTransactions,
       refreshHardwareWalletStatus,
       reconnectHardwareWallet,
+      connectLedgerForSigning,
       showHardwareWalletAddress,
     }),
     [
@@ -1030,6 +1099,7 @@ export function WalletStateProvider({
       lockWallet,
       progress,
       reconnectHardwareWallet,
+      connectLedgerForSigning,
       refreshHardwareWalletStatus,
       refreshSnapshot,
       refreshTransactions,

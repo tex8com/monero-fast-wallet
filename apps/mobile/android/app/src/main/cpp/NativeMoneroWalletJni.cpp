@@ -2,6 +2,7 @@
 
 #include <jni.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -14,6 +15,7 @@ namespace {
 
 using tex8::wallet::CreateWalletRequest;
 using tex8::wallet::CreateWalletFromDeviceRequest;
+using tex8::wallet::CreateViewOnlyWalletRequest;
 using tex8::wallet::CreateFastReceiveIdentityRequest;
 using tex8::wallet::DaemonConfig;
 using tex8::wallet::FastReceiveIdentity;
@@ -768,6 +770,47 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCreateWalletFromDevice(
     request.accountIndex = toUInt32(accountIndex, "accountIndex");
     return toJavaString(env, walletEngine().createWalletFromDevice(request));
   } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCreateViewOnlyWalletFromHardware(
+    JNIEnv* env,
+    jclass,
+    jstring sourceWalletId,
+    jstring path,
+    jstring password,
+    jstring network,
+    jdouble restoreHeight) {
+  tex8::wallet::HardwareViewKeyExport exported;
+  CreateViewOnlyWalletRequest request;
+  try {
+    const NetworkType requestedNetwork = parseNetwork(toStdString(env, network));
+    exported = walletEngine().exportHardwarePrivateViewKey(
+        toStdString(env, sourceWalletId));
+    if (exported.network != requestedNetwork) {
+      throw WalletEngineError(
+          "hardware wallet network does not match the requested view-only wallet network");
+    }
+
+    request.path = toStdString(env, path);
+    request.password = toStdString(env, password);
+    request.address = exported.address;
+    request.privateViewKey = exported.privateViewKey;
+    request.network = requestedNetwork;
+    request.restoreHeight = toUInt64(restoreHeight, "restoreHeight");
+    const std::string walletId = walletEngine().createViewOnlyWallet(request);
+
+    std::fill(request.password.begin(), request.password.end(), '\0');
+    std::fill(request.privateViewKey.begin(), request.privateViewKey.end(), '\0');
+    std::fill(exported.privateViewKey.begin(), exported.privateViewKey.end(), '\0');
+    return toJavaString(env, walletId);
+  } catch (const std::exception& error) {
+    std::fill(request.password.begin(), request.password.end(), '\0');
+    std::fill(request.privateViewKey.begin(), request.privateViewKey.end(), '\0');
+    std::fill(exported.privateViewKey.begin(), exported.privateViewKey.end(), '\0');
     throwJavaError(env, error);
     return nullptr;
   }

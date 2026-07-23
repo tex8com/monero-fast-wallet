@@ -78,6 +78,14 @@ export interface CreateWalletFromDeviceWithStoredSecretInput {
   accountIndex?: number;
 }
 
+export interface CreateViewOnlyWalletFromHardwareWithStoredSecretInput {
+  sourceWalletId: string;
+  path: string;
+  secretKey: string;
+  network: MoneroNetwork;
+  restoreHeight?: number;
+}
+
 export interface WalletSubaddress {
   accountIndex: number;
   addressIndex: number;
@@ -199,6 +207,10 @@ export interface NativeMoneroWalletModule {
   createWalletFromDeviceWithStoredSecret(
     input: CreateWalletFromDeviceWithStoredSecretInput,
   ): Promise<{ walletId: string }>;
+  createViewOnlyWalletFromHardwareWithStoredSecret(
+    input: CreateViewOnlyWalletFromHardwareWithStoredSecretInput,
+  ): Promise<{ walletId: string }>;
+  deleteWalletFiles(path: string): Promise<void>;
   createFastReceiveIdentity(
     input: CreateFastReceiveIdentityInput,
   ): Promise<FastReceiveIdentity>;
@@ -359,6 +371,17 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.accountIndex ?? 0,
         ),
       }),
+      createViewOnlyWalletFromHardwareWithStoredSecret: async input => ({
+        walletId:
+          await turboModule.createViewOnlyWalletFromHardwareWithStoredSecret(
+            input.sourceWalletId,
+            input.path,
+            input.secretKey,
+            input.network,
+            input.restoreHeight ?? 0,
+          ),
+      }),
+      deleteWalletFiles: path => turboModule.deleteWalletFiles(path),
       createFastReceiveIdentity: input =>
         turboModule.createFastReceiveIdentity(
           input.sourceWalletId,

@@ -204,6 +204,22 @@ export interface Spec extends TurboModule {
     accountIndex: number,
   ): Promise<string>;
 
+  /**
+   * Exports the connected hardware wallet's private view key and immediately
+   * consumes it inside the native core to create an encrypted view-only
+   * companion. The private view key never crosses the React Native boundary.
+   */
+  createViewOnlyWalletFromHardwareWithStoredSecret(
+    sourceWalletId: string,
+    path: string,
+    secretKey: string,
+    network: string,
+    restoreHeight: number,
+  ): Promise<string>;
+
+  /** Deletes a wallet file and its native sidecars inside the app container. */
+  deleteWalletFiles(path: string): Promise<void>;
+
   createFastReceiveIdentity(
     sourceWalletId: string,
     identityId: string,
