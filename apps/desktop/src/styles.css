@@ -406,6 +406,10 @@ h2 { letter-spacing: -0.65px; }
 .ledger-read-only-card p:not(.eyebrow) { margin: 0; max-width: 720px; color: #c5d2ca; font-size: 13px; line-height: 1.55; }
 .ledger-read-only-card .fast-consent { margin: 0; }
 .ledger-read-only-card .secondary { justify-self: start; margin: 0; }
+.ledger-read-only-recovery { display: grid; gap: 12px; margin-top: 18px; padding: 17px; border: 1px solid #564565; border-radius: 12px; background: rgba(40, 25, 49, .52); }
+.ledger-read-only-recovery h3, .ledger-read-only-recovery p { margin: 0; }
+.ledger-read-only-recovery p { color: #d8cedf; line-height: 1.5; }
+.ledger-read-only-recovery .secondary { justify-self: start; margin: 0; }
 .ledger-read-only-ready { padding: 10px 12px; border: 1px solid #3f6858; border-radius: 10px; color: #b5ead7 !important; background: #10241f; }
 .wallet-row { display: grid; grid-template-columns: 49px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 17px; border: 1px solid #332b45; border-radius: 14px; background: #12101d; }
 .wallet-row.active { border-color: #a65332; background: linear-gradient(105deg, #251724, #12101d 62%); }

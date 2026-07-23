@@ -87,6 +87,12 @@ struct EnableLedgerReadOnlyInput {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct CreateLedgerReadOnlyFromDeviceInput {
+    source_registration_id: String,
+    restore_height: Option<u64>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct NativeHardwareViewKeyExport {
     address: String,
     private_view_key: String,
@@ -550,7 +556,27 @@ fn enable_ledger_read_only(
     if active_native_id != input.source_wallet_id {
         return Err("The selected Ledger session changed. Open the Ledger wallet again and retry.".to_owned());
     }
-    if wallet_registry::list(&app)?.wallets.iter().any(|wallet| {
+    create_ledger_read_only_from_open_source(
+        &app,
+        &state,
+        &sessions,
+        &source,
+        &active_native_id,
+        input.restore_height,
+    )
+}
+
+/// Uses an already-open hardware session only long enough to request the
+/// explicit Ledger view-key export. The value is never returned to React.
+fn create_ledger_read_only_from_open_source(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    sessions: &WalletSessionState,
+    source: &wallet_registry::RegisteredWallet,
+    source_native_id: &str,
+    requested_restore_height: Option<u64>,
+) -> Result<WalletOperationResponse, String> {
+    if wallet_registry::list(app)?.wallets.iter().any(|wallet| {
         wallet.kind == "view-only" && wallet.source_wallet_id.as_deref() == Some(source.id.as_str())
     }) {
         return Err("This Ledger already has a local read-only copy. Open it from your wallet list.".to_owned());
@@ -561,7 +587,7 @@ fn enable_ledger_read_only(
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
-        .export_hardware_private_view_key(&active_native_id)?;
+        .export_hardware_private_view_key(source_native_id)?;
     let mut exported: NativeHardwareViewKeyExport = serde_json::from_str(&exported_json)
         .map_err(|_| "The Ledger returned an invalid view-key response.".to_owned())?;
     exported_json.zeroize();
@@ -572,8 +598,7 @@ fn enable_ledger_read_only(
 
     let wallet_name = next_wallet_file_name(&app, "", "ledger-read")?;
     let path = wallet_path(&app, &wallet_name)?;
-    let restore_height = input
-        .restore_height
+    let restore_height = requested_restore_height
         .filter(|height| *height > 0)
         .or(source.restore_height);
     let mut requested_password = String::new();
@@ -642,9 +667,9 @@ fn enable_ledger_read_only(
         &source.id,
     );
     match finish_wallet_operation_with_password(
-        &app,
-        &state,
-        &sessions,
+        app,
+        state,
+        sessions,
         native_wallet_id,
         registration,
         local_password,
@@ -658,6 +683,90 @@ fn enable_ledger_read_only(
             Err(error)
         }
     }
+}
+
+/// Repairs a historic Ledger registration that no longer has its former local
+/// file credential. It never tries to recover or replace the Ledger spend key:
+/// a short-lived hardware session requests only the user-approved private view
+/// key, then creates the durable local read-only companion.
+#[tauri::command]
+fn create_ledger_read_only_from_device(
+    app: AppHandle,
+    state: State<'_, NativeWalletState>,
+    sessions: State<'_, WalletSessionState>,
+    input: CreateLedgerReadOnlyFromDeviceInput,
+) -> Result<WalletOperationResponse, String> {
+    let source = wallet_registry::list(&app)?
+        .wallets
+        .into_iter()
+        .find(|wallet| wallet.id == input.source_registration_id)
+        .ok_or_else(|| "The selected Ledger wallet is no longer saved on this device.".to_owned())?;
+    if source.kind != "hardware" || source.role.as_deref().unwrap_or("standard") != "standard" {
+        return Err("Choose a normal Ledger wallet for the local read-only copy.".to_owned());
+    }
+
+    // This disposable native session exists solely to ask the connected Ledger
+    // for its view key. Its random local-file credential is never stored.
+    let export_wallet_name = format!("ledger-view-export-{}", now());
+    let export_path = wallet_path(&app, &export_wallet_name)?;
+    let mut requested_password = String::new();
+    let mut export_password = wallet_password_or_generated(&mut requested_password)?;
+    let export_wallet_id = match state
+        .0
+        .lock()
+        .map_err(|_| "Native wallet is busy.".to_owned())?
+        .create_from_device(native_wallet::HardwareWalletCreate {
+            path: &export_path,
+            password: &export_password,
+            network: network(&source.network)?,
+            device_name: "Ledger",
+            restore_height: 0,
+            subaddress_lookahead: "",
+            account_index: source.account_index.unwrap_or(0),
+        }) {
+        Ok(wallet_id) => wallet_id,
+        Err(error) => {
+            export_password.zeroize();
+            return Err(format!(
+                "Could not open the connected Ledger for view-key export. Confirm that it is unlocked and the Monero app is open. {error}"
+            ));
+        }
+    };
+
+    let reconnect = state
+        .0
+        .lock()
+        .map_err(|_| "Native wallet is busy.".to_owned())?
+        .reconnect_hardware(&export_wallet_id);
+    if let Err(error) = reconnect {
+        let _ = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .close(&export_wallet_id, false);
+        remove_temporary_wallet_files(&export_path);
+        export_password.zeroize();
+        return Err(format!(
+            "Could not connect to the Ledger for view-key export. Confirm that it is unlocked and the Monero app is open. {error}"
+        ));
+    }
+
+    let result = create_ledger_read_only_from_open_source(
+        &app,
+        &state,
+        &sessions,
+        &source,
+        &export_wallet_id,
+        input.restore_height,
+    );
+    let _ = state
+        .0
+        .lock()
+        .map_err(|_| "Native wallet is busy.".to_owned())?
+        .close(&export_wallet_id, false);
+    remove_temporary_wallet_files(&export_path);
+    export_password.zeroize();
+    result
 }
 #[tauri::command]
 fn wallet_open_requires_password(
@@ -1915,6 +2024,13 @@ fn wallet_path(app: &AppHandle, name: &str) -> Result<String, String> {
         .into_owned())
 }
 
+fn remove_temporary_wallet_files(path: &str) {
+    // The path was generated by wallet_path() for this command only. Ignore
+    // cleanup failures: they cannot affect the persisted read-only wallet.
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(format!("{path}.keys"));
+}
+
 fn next_wallet_file_name(app: &AppHandle, requested: &str, prefix: &str) -> Result<String, String> {
     let requested = requested.trim();
     let registry = wallet_registry::list(app)?;
@@ -2254,6 +2370,7 @@ pub fn run() {
             restore_wallet,
             create_hardware_wallet,
             enable_ledger_read_only,
+            create_ledger_read_only_from_device,
             wallet_open_requires_password,
             open_wallet,
             close_wallet,

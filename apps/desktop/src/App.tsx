@@ -615,6 +615,8 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
   const [restoreStartDate, setRestoreStartDate] = useState('');
   const [legacyPassword, setLegacyPassword] = useState('');
   const [needsLegacyPassword, setNeedsLegacyPassword] = useState(false);
+  const [ledgerReadOnlyRecovery, setLedgerReadOnlyRecovery] = useState(false);
+  const [ledgerViewKeyConsent, setLedgerViewKeyConsent] = useState(false);
   const [ledgerTransport, setLedgerTransport] = useState<'usb' | 'ble'>('usb');
   const [ledgerStatus, setLedgerStatus] = useState<LedgerTransportStatus | null>(null);
   const [createFastWallet, setCreateFastWallet] = useState(!initial);
@@ -625,6 +627,14 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
   // randomly generated credential held in the OS secure store. Neither has a
   // user-created wallet password, so neither may enter the legacy prompt.
   const openingDeviceCredentialWallet = Boolean(initial && wallets.some(wallet => wallet.walletName === initial.walletName && wallet.network === initial.network && (wallet.kind === 'hardware' || wallet.kind === 'view-only')));
+  const selectedOpeningLedger = initial
+    ? wallets.find(wallet =>
+      wallet.walletName === initial.walletName &&
+      wallet.network === initial.network &&
+      wallet.kind === 'hardware' &&
+      wallet.role !== 'fast',
+    )
+    : undefined;
   const label = mode === 'create' ? t('setup.create') : mode === 'restore' ? t('setup.import') : mode === 'open' ? t('setup.open') : t('setup.ledger');
   const description = mode === 'create'
     ? t('setup.createDescription')
@@ -645,7 +655,7 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
     finally { setBusy(false); }
   };
   const chooseMode = (next: SetupMode) => {
-    setMode(next); setMessage(null); setNeedsLegacyPassword(false); setLegacyPassword('');
+    setMode(next); setMessage(null); setNeedsLegacyPassword(false); setLegacyPassword(''); setLedgerReadOnlyRecovery(false); setLedgerViewKeyConsent(false);
     // Fast Wallet is an opt-in companion created only while creating or
     // importing a software wallet.  Opening an existing wallet must never
     // offer or create another wallet as a side effect.
@@ -705,6 +715,21 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
       const detail = errorMessage(reason, t('setup.operationFailed'));
       setMessage(detail);
       if (mode === 'open' && /needs its existing password/i.test(detail)) setNeedsLegacyPassword(true);
+      if (mode === 'open' && selectedOpeningLedger && /protected local credential is unavailable/i.test(detail)) setLedgerReadOnlyRecovery(true);
+    } finally { setBusy(false); }
+  };
+  const createLedgerReadOnly = async () => {
+    if (!selectedOpeningLedger || !ledgerViewKeyConsent || busy) return;
+    setBusy(true); setMessage(null);
+    try {
+      const result = await invoke<WalletOperationResponse>('create_ledger_read_only_from_device', {
+        input: { sourceRegistrationId: selectedOpeningLedger.id },
+      });
+      setLedgerReadOnlyRecovery(false);
+      setLedgerViewKeyConsent(false);
+      onOpened(result);
+    } catch (reason) {
+      setMessage(errorMessage(reason, 'The Ledger view key could not be stored securely on this Mac.'));
     } finally { setBusy(false); }
   };
   const ledgerNeedsSearch = ledgerTransport === 'ble' && (!ledgerStatus?.supported || !ledgerStatus.available || !ledgerStatus.permissionGranted || ledgerStatus.deviceCount < 1);
@@ -714,7 +739,7 @@ function Setup({ linked, initial, wallets, onSelectSaved, onOpened, onCreated }:
     : [{ id: 'create', title: t('setup.create'), detail: t('setup.createDetail') }, { id: 'ledger', title: t('setup.ledger'), detail: t('setup.ledgerDetail') }, { id: 'restore', title: t('setup.import'), detail: t('setup.importDetail') }];
   const scanDate = <><label>{t('setup.scanStart')} <small>{t('common.optional')}</small><input value={restoreStartDate} onChange={(event) => setRestoreStartDate(event.target.value)} type="date" max={todayRestoreDate()} /></label><small className="restore-start-hint">{t('setup.scanDateHint')}</small></>;
   const fastChoice = <label className="fast-setup-choice"><input checked={createFastWallet} onChange={(event) => setCreateFastWallet(event.target.checked)} type="checkbox" /><span><strong>Fast Wallet</strong><small>A separate receive wallet is created and only its private view key is registered for private incoming-payment alerts.</small></span></label>;
-  return <section className="setup-grid simple-setup"><header><p className="eyebrow">{initial?.mode === 'open' ? t('wallets.unlock') : t('setup.eyebrow')}</p><h2>{initial?.mode === 'open' ? t('setup.open') : t('setup.title')}</h2><p>{initial?.mode === 'open' && needsLegacyPassword ? t('setup.passwordRequired') : initial?.mode === 'open' ? t('setup.openDescription', { network: networkLabel(network) }) : t('setup.subtitle')}</p></header>{!initial && wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{wallet.kind === 'hardware' ? t('wallets.ledger') : wallet.kind === 'fast' ? 'Fast Wallet' : networkLabel(wallet.network)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : item.id === 'restore' ? '⇣' : '↗'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{mode === 'open' ? networkLabel(network) : t('common.mainnet')}</p><h2>{label}</h2><p>{openDescription}</p><div className="wallet-form">{mode === 'restore' && <><label>{t('setup.seed')}<textarea value={mnemonic} onChange={(event) => setMnemonic(event.target.value)} placeholder={t('setup.seedPlaceholder')} autoComplete="off" /></label>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}</>}{mode === 'open' && needsLegacyPassword && <label>{t('setup.legacyPassword')}<input autoFocus value={legacyPassword} onChange={(event) => setLegacyPassword(event.target.value)} type="password" autoComplete="current-password" /></label>}{(mode === 'create' || mode === 'restore') && fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy || (mode === 'restore' && !mnemonic.trim()) || (mode === 'open' && needsLegacyPassword && !legacyPassword)} type="button">{actionLabel}</button>{message && <p className="setup-message">{message}</p>}</div></article></section>;
+  return <section className="setup-grid simple-setup"><header><p className="eyebrow">{initial?.mode === 'open' ? t('wallets.unlock') : t('setup.eyebrow')}</p><h2>{initial?.mode === 'open' ? t('setup.open') : t('setup.title')}</h2><p>{initial?.mode === 'open' && needsLegacyPassword ? t('setup.passwordRequired') : initial?.mode === 'open' ? t('setup.openDescription', { network: networkLabel(network) }) : t('setup.subtitle')}</p></header>{!initial && wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{wallet.kind === 'hardware' ? t('wallets.ledger') : wallet.kind === 'fast' ? 'Fast Wallet' : networkLabel(wallet.network)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : item.id === 'restore' ? '⇣' : '↗'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{mode === 'open' ? networkLabel(network) : t('common.mainnet')}</p><h2>{label}</h2><p>{openDescription}</p><div className="wallet-form">{mode === 'restore' && <><label>{t('setup.seed')}<textarea value={mnemonic} onChange={(event) => setMnemonic(event.target.value)} placeholder={t('setup.seedPlaceholder')} autoComplete="off" /></label>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}</>}{mode === 'open' && needsLegacyPassword && <label>{t('setup.legacyPassword')}<input autoFocus value={legacyPassword} onChange={(event) => setLegacyPassword(event.target.value)} type="password" autoComplete="current-password" /></label>}{(mode === 'create' || mode === 'restore') && fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy || (mode === 'restore' && !mnemonic.trim()) || (mode === 'open' && needsLegacyPassword && !legacyPassword)} type="button">{actionLabel}</button>{ledgerReadOnlyRecovery && selectedOpeningLedger && <section className="ledger-read-only-recovery"><h3>Enable secure local read-only sync</h3><p>Approve <b>Export view key</b> once on the connected Ledger. Only the private view key is encrypted in macOS Keychain and the local read-only wallet; the spend key never leaves the Ledger.</p><label className="fast-consent"><input checked={ledgerViewKeyConsent} onChange={(event) => setLedgerViewKeyConsent(event.target.checked)} type="checkbox" />I approve storing this Ledger’s private view key locally for read-only sync.</label><button className="secondary" disabled={!ledgerViewKeyConsent || busy} onClick={() => void createLedgerReadOnly()} type="button">{busy ? t('setup.working') : 'Export view key & enable sync'}</button></section>}{message && <p className="setup-message">{message}</p>}</div></article></section>;
 }
 
 function FastWallets({ linked, sourceWalletId, sourceWallet }: { linked: boolean; sourceWalletId: string | null; sourceWallet: RegisteredWallet | null }) {
