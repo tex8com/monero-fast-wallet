@@ -29,8 +29,10 @@ import {
   type FastWalletStatusTone,
 } from '../services/FastWalletStatus';
 import { FastWalletPushService } from '../services/FastWalletPushService';
+import { useNotificationAuthorization } from '../hooks/useNotificationAuthorization';
 import { logWalletEvent } from '../services/WalletLogger';
 import {
+  isFastWalletRegistration,
   walletDisplayName,
   type RegisteredWallet,
 } from '../services/WalletRegistry';
@@ -42,6 +44,8 @@ const FAST_WALLET_STATUS_REFRESH_MS = 30_000;
 
 export default function WalletsScreen({ navigation }: any) {
   const { t } = useI18n();
+  const { authorized: notificationsAuthorized } =
+    useNotificationAuthorization();
   const {
     registeredWallet,
     registeredWallets,
@@ -65,7 +69,9 @@ export default function WalletsScreen({ navigation }: any) {
   const [busy, setBusy] = useState(false);
   const [busyIdentityId, setBusyIdentityId] = useState<string | undefined>();
   const [fastActionError, setFastActionError] = useState<string | undefined>();
-  const [renamingWalletId, setRenamingWalletId] = useState<string | undefined>();
+  const [renamingWalletId, setRenamingWalletId] = useState<
+    string | undefined
+  >();
   const [renameValue, setRenameValue] = useState('');
   const [renameError, setRenameError] = useState<string | undefined>();
   const [renameBusy, setRenameBusy] = useState(false);
@@ -75,8 +81,8 @@ export default function WalletsScreen({ navigation }: any) {
     tex8Node &&
     Boolean(
       session &&
-        !session.hardwareDevice &&
-        registeredWallet?.kind === 'software',
+      !session.hardwareDevice &&
+      registeredWallet?.kind === 'software',
     ) &&
     (!needsPassword || password.length > 0) &&
     !busy;
@@ -353,9 +359,11 @@ export default function WalletsScreen({ navigation }: any) {
 
         <View style={s.section}>
           <Text style={s.sectionTitle}>{t('wallets.privateWallets')}</Text>
-          {registeredWallets.some(wallet => wallet.kind !== 'fast') ? (
+          {registeredWallets.some(
+            wallet => !isFastWalletRegistration(wallet),
+          ) ? (
             registeredWallets
-              .filter(wallet => wallet.kind !== 'fast')
+              .filter(wallet => !isFastWalletRegistration(wallet))
               .map(wallet => (
                 <View key={wallet.id}>
                   <WalletRow
@@ -369,7 +377,7 @@ export default function WalletsScreen({ navigation }: any) {
                     statusTone="success"
                     subtitle={
                       wallet.kind === 'hardware'
-                        ? wallet.hardwareDeviceName ?? 'Ledger Nano'
+                        ? (wallet.hardwareDeviceName ?? 'Ledger Nano')
                         : wallet.network
                     }
                     title={walletDisplayName(wallet)}
@@ -398,7 +406,9 @@ export default function WalletsScreen({ navigation }: any) {
                           }}
                           style={s.renameCancel}
                         >
-                          <Text style={s.renameCancelText}>{t('action.cancel')}</Text>
+                          <Text style={s.renameCancelText}>
+                            {t('action.cancel')}
+                          </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                           activeOpacity={0.72}
@@ -406,10 +416,16 @@ export default function WalletsScreen({ navigation }: any) {
                           onPress={saveWalletName}
                           style={s.renameSave}
                         >
-                          {renameBusy ? <ActivityIndicator color="#FFF" size="small" /> : <Text style={s.renameSaveText}>Save</Text>}
+                          {renameBusy ? (
+                            <ActivityIndicator color="#FFF" size="small" />
+                          ) : (
+                            <Text style={s.renameSaveText}>Save</Text>
+                          )}
                         </TouchableOpacity>
                       </View>
-                      {renameError ? <Text style={s.renameError}>{renameError}</Text> : null}
+                      {renameError ? (
+                        <Text style={s.renameError}>{renameError}</Text>
+                      ) : null}
                     </View>
                   ) : null}
                 </View>
@@ -444,6 +460,7 @@ export default function WalletsScreen({ navigation }: any) {
                 identity,
                 tex8Node,
                 t,
+                notificationsAuthorized,
               );
               return (
                 <WalletRow
@@ -538,9 +555,7 @@ export default function WalletsScreen({ navigation }: any) {
           ) : (
             <EmptyCard
               text={
-                session
-                  ? t('home.noTransactions')
-                  : t('home.openWalletToLoad')
+                session ? t('home.noTransactions') : t('home.openWalletToLoad')
               }
             />
           )}
@@ -647,7 +662,11 @@ function WalletRow({
       ) : null}
       <View style={s.walletActions}>
         {onRename ? (
-          <TouchableOpacity activeOpacity={0.72} onPress={onRename} style={s.renameButton}>
+          <TouchableOpacity
+            activeOpacity={0.72}
+            onPress={onRename}
+            style={s.renameButton}
+          >
             <Icon name="edit" size={16} color={colors.orange} />
           </TouchableOpacity>
         ) : null}
@@ -869,10 +888,27 @@ const s = StyleSheet.create({
     paddingHorizontal: 12,
     fontSize: 14,
   },
-  renameActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 10 },
-  renameCancel: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 12 },
+  renameActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 10,
+  },
+  renameCancel: {
+    minHeight: 36,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
   renameCancelText: { color: colors.textSecondary, fontWeight: '800' },
-  renameSave: { minWidth: 70, minHeight: 36, alignItems: 'center', justifyContent: 'center', borderRadius: radius.sm, backgroundColor: colors.orange, paddingHorizontal: 12 },
+  renameSave: {
+    minWidth: 70,
+    minHeight: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.sm,
+    backgroundColor: colors.orange,
+    paddingHorizontal: 12,
+  },
   renameSaveText: { color: '#FFF', fontWeight: '900' },
   renameError: { color: colors.error, fontSize: 12, marginTop: 8 },
   emptyCard: {

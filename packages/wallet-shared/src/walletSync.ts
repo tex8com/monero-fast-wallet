@@ -13,10 +13,7 @@ export type WalletSyncSource = {
 };
 
 export type WalletSyncPhase =
-  | 'waiting-for-node'
-  | 'syncing'
-  | 'finalizing'
-  | 'synchronized';
+  "waiting-for-node" | "syncing" | "finalizing" | "synchronized";
 
 export type WalletSyncPresentation = {
   phase: WalletSyncPhase;
@@ -37,7 +34,7 @@ export type WalletSyncPresentationOptions = {
 };
 
 function nonNegativeNumber(value: number | string): number {
-  const parsed = typeof value === 'number' ? value : Number(value);
+  const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
@@ -52,7 +49,7 @@ export function presentWalletSync(
 ): WalletSyncPresentation {
   if (!snapshot) {
     return {
-      phase: 'waiting-for-node',
+      phase: "waiting-for-node",
       progress: undefined,
       targetHeight: undefined,
       walletHeight: 0,
@@ -68,7 +65,7 @@ export function presentWalletSync(
 
   if (snapshot.synchronized) {
     return {
-      phase: 'synchronized',
+      phase: "synchronized",
       progress: 100,
       targetHeight: targetHeight || undefined,
       walletHeight,
@@ -78,7 +75,7 @@ export function presentWalletSync(
 
   if (targetHeight <= 0) {
     return {
-      phase: 'waiting-for-node',
+      phase: "waiting-for-node",
       progress: undefined,
       targetHeight: undefined,
       walletHeight,
@@ -87,12 +84,14 @@ export function presentWalletSync(
   }
 
   const requestedStartHeight = nonNegativeNumber(options.startHeight ?? 0);
+  // Keep the persisted baseline even while the native core is still
+  // restoring its current height. Falling back to genesis here made every
+  // reopen appear to start at 97-99%, although no historic blocks were being
+  // rescanned.
   const startHeight =
-    requestedStartHeight > 0 && requestedStartHeight <= walletHeight
-      ? Math.min(requestedStartHeight, targetHeight)
-      : 0;
+    requestedStartHeight > 0 ? Math.min(requestedStartHeight, targetHeight) : 0;
   const remainingRange = targetHeight - startHeight;
-  const completedRange = walletHeight - startHeight;
+  const completedRange = Math.max(0, walletHeight - startHeight);
   const heightProgress =
     remainingRange <= 0
       ? 100
@@ -103,7 +102,7 @@ export function presentWalletSync(
 
   if (heightProgress >= 100) {
     return {
-      phase: 'finalizing',
+      phase: "finalizing",
       progress: 99,
       targetHeight,
       walletHeight,
@@ -112,7 +111,7 @@ export function presentWalletSync(
   }
 
   return {
-    phase: 'syncing',
+    phase: "syncing",
     progress: heightProgress,
     targetHeight,
     walletHeight,

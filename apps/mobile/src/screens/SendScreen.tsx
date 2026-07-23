@@ -38,11 +38,11 @@ import {
   toAtomicBigInt,
 } from '../services/WalletFormat';
 import { useWalletState } from '../services/WalletState';
-import { walletDisplayName } from '../services/WalletRegistry';
 import {
-  walletService,
-  type WalletSession,
-} from '../services/WalletService';
+  isFastWalletRegistration,
+  walletDisplayName,
+} from '../services/WalletRegistry';
+import { walletService, type WalletSession } from '../services/WalletService';
 import {
   loadRecentRecipients,
   loadRecipientContacts,
@@ -80,13 +80,18 @@ export default function SendScreen({ navigation }: any) {
   const [sending, setSending] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [sweepAll, setSweepAll] = useState(false);
-  const [recipientContacts, setRecipientContacts] = useState<RecipientContact[]>([]);
-  const [recentRecipients, setRecentRecipients] = useState<RecipientContact[]>([]);
+  const [recipientContacts, setRecipientContacts] = useState<
+    RecipientContact[]
+  >([]);
+  const [recentRecipients, setRecentRecipients] = useState<RecipientContact[]>(
+    [],
+  );
   const { t } = useI18n();
   const { price } = useXmrPrice();
   const {
     error: walletError,
     connectLedgerForSigning,
+    isRegisteredWalletOpen,
     refreshSnapshot,
     refreshTransactions,
     registeredWallet,
@@ -121,8 +126,8 @@ export default function SendScreen({ navigation }: any) {
         minFractionDigits: 2,
       })
     : status === 'locked'
-    ? t('status.locked')
-    : '0.00';
+      ? t('status.locked')
+      : '0.00';
   const preparedFee = preparedTx
     ? formatAtomicXmr(preparedTx.feeAtomic, { maxFractionDigits: 12 })
     : undefined;
@@ -156,10 +161,12 @@ export default function SendScreen({ navigation }: any) {
   const sendWalletOptions = useMemo<WalletSelectorItem[]>(
     () =>
       registeredWallets
-        .filter(wallet => wallet.kind !== 'fast')
+        .filter(wallet => !isFastWalletRegistration(wallet))
         .filter(wallet => {
           const candidate = walletSnapshotMap[wallet.id];
-          return candidate && toAtomicBigInt(candidate.unlockedBalanceAtomic) > 0n;
+          return (
+            candidate && toAtomicBigInt(candidate.unlockedBalanceAtomic) > 0n
+          );
         }),
     [registeredWallets, walletSnapshotMap],
   );
@@ -167,10 +174,7 @@ export default function SendScreen({ navigation }: any) {
   useFocusEffect(
     useCallback(() => {
       let mounted = true;
-      Promise.all([
-        loadRecipientContacts(),
-        loadRecentRecipients(),
-      ])
+      Promise.all([loadRecipientContacts(), loadRecentRecipients()])
         .then(([contacts, recent]) => {
           if (mounted) {
             setRecipientContacts(contacts);
@@ -227,7 +231,10 @@ export default function SendScreen({ navigation }: any) {
     }
 
     const walletId = wallet.id;
-    if (walletId === registeredWallet?.id && session) {
+    if (isRegisteredWalletOpen(walletId)) {
+      if (walletId !== registeredWallet?.id) {
+        await setActiveRegisteredWallet(walletId);
+      }
       return;
     }
 
@@ -239,11 +246,7 @@ export default function SendScreen({ navigation }: any) {
     if (changedWallet) {
       selectedWallet = await setActiveRegisteredWallet(walletId);
     }
-    if (
-      changedWallet &&
-      selectedWallet?.credentialKey &&
-      selectedWallet.kind !== 'hardware'
-    ) {
+    if (changedWallet && selectedWallet?.credentialKey) {
       return;
     }
     navigation.navigate('WalletSetup', {
@@ -290,12 +293,15 @@ export default function SendScreen({ navigation }: any) {
       if (!signingSession) {
         throw new Error(t('send.openWalletBeforeSending'));
       }
-      const nextTransaction = await walletService.prepareTransaction(signingSession, {
-        address: address.trim(),
-        amountAtomic: sweepAll ? undefined : amountAtomic?.toString(),
-        priority,
-        sweepAll,
-      });
+      const nextTransaction = await walletService.prepareTransaction(
+        signingSession,
+        {
+          address: address.trim(),
+          amountAtomic: sweepAll ? undefined : amountAtomic?.toString(),
+          priority,
+          sweepAll,
+        },
+      );
       if (nextTransaction.status !== 'ok' || !nextTransaction.id) {
         throw new Error(
           nextTransaction.error || t('send.transactionPreparationFailed'),
@@ -428,9 +434,7 @@ export default function SendScreen({ navigation }: any) {
             >
               <Icon name="send" size={20} color="#FFF" strokeWidth={2} />
               <Text style={s.primaryBtnText}>
-                {sending
-                  ? t('action.working')
-                  : t('action.sendNow')}
+                {sending ? t('action.working') : t('action.sendNow')}
               </Text>
             </LinearGradient>
           </TouchableOpacity>
@@ -502,7 +506,9 @@ export default function SendScreen({ navigation }: any) {
                   <Text style={[s.choiceTitle, s.choiceTitleDark]}>
                     {t('send.manualRecipient')}
                   </Text>
-                  <Text style={s.choiceText}>{t('send.manualRecipientHint')}</Text>
+                  <Text style={s.choiceText}>
+                    {t('send.manualRecipientHint')}
+                  </Text>
                 </View>
                 <Icon name="chevron-right" size={22} color={colors.orange} />
               </TouchableOpacity>
@@ -517,7 +523,11 @@ export default function SendScreen({ navigation }: any) {
                   setStep('recipient-choice');
                 }}
               >
-                <Icon name="arrow-left" size={20} color={colors.textSecondary} />
+                <Icon
+                  name="arrow-left"
+                  size={20}
+                  color={colors.textSecondary}
+                />
                 <Text style={s.backText}>{t('action.back')}</Text>
               </TouchableOpacity>
               <Text style={s.fieldLabel}>{t('send.recipient')}</Text>
@@ -565,7 +575,10 @@ export default function SendScreen({ navigation }: any) {
                         {recipientContacts.slice(0, 3).map(contact => (
                           <TouchableOpacity
                             key={contact.id}
-                            style={[s.contactChip, contact.donor && s.donorChip]}
+                            style={[
+                              s.contactChip,
+                              contact.donor && s.donorChip,
+                            ]}
                             onPress={() => {
                               setAddress(contact.address);
                               setSendError(undefined);
@@ -582,7 +595,9 @@ export default function SendScreen({ navigation }: any) {
                   ) : null}
                   {recentRecipients.length > 0 ? (
                     <>
-                      <Text style={[s.fieldLabel, s.recentLabel]}>{t('send.recentContacts')}</Text>
+                      <Text style={[s.fieldLabel, s.recentLabel]}>
+                        {t('send.recentContacts')}
+                      </Text>
                       <View style={s.contactRow}>
                         {recentRecipients.slice(0, 3).map(contact => (
                           <TouchableOpacity
@@ -611,7 +626,10 @@ export default function SendScreen({ navigation }: any) {
                 onPress={continueWithRecipient}
                 style={s.formCta}
               >
-                <LinearGradient colors={[colors.orange, colors.orangeDark]} style={s.primaryBtn}>
+                <LinearGradient
+                  colors={[colors.orange, colors.orangeDark]}
+                  style={s.primaryBtn}
+                >
                   <Text style={s.primaryBtnText}>{t('action.continue')}</Text>
                 </LinearGradient>
               </TouchableOpacity>
@@ -703,7 +721,8 @@ export default function SendScreen({ navigation }: any) {
                 setSweepAll(true);
                 setSendError(undefined);
                 clearPreparedTransaction();
-              }}>
+              }}
+            >
               <Text style={s.maxText}>{t('send.all')}</Text>
             </TouchableOpacity>
           </View>
@@ -712,7 +731,20 @@ export default function SendScreen({ navigation }: any) {
           <Text style={s.usdLabel}>≈ ${usd} USD</Text>
 
           <View style={s.keypad}>
-            {['1', '2', '3', '4', '5', '6', '7', '8', '.', '9', '0', 'backspace'].map(key => (
+            {[
+              '1',
+              '2',
+              '3',
+              '4',
+              '5',
+              '6',
+              '7',
+              '8',
+              '.',
+              '9',
+              '0',
+              'backspace',
+            ].map(key => (
               <TouchableOpacity
                 key={key}
                 accessibilityRole="button"
@@ -721,7 +753,9 @@ export default function SendScreen({ navigation }: any) {
                 onPress={() => enterAmountKey(key)}
                 activeOpacity={0.72}
               >
-                <Text style={s.keypadKeyText}>{key === 'backspace' ? '⌫' : key}</Text>
+                <Text style={s.keypadKeyText}>
+                  {key === 'backspace' ? '⌫' : key}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -885,7 +919,10 @@ const s = StyleSheet.create({
     alignItems: 'center',
     gap: 14,
   },
-  choiceCardPrimary: { backgroundColor: colors.orange, borderColor: colors.orange },
+  choiceCardPrimary: {
+    backgroundColor: colors.orange,
+    borderColor: colors.orange,
+  },
   choiceIcon: {
     width: 56,
     height: 56,
@@ -905,7 +942,12 @@ const s = StyleSheet.create({
   choiceCopy: { flex: 1 },
   choiceTitle: { color: '#FFF', fontSize: 19, fontWeight: '900' },
   choiceTitleDark: { color: colors.textPrimary },
-  choiceText: { color: 'rgba(255,255,255,0.72)', fontSize: 13, lineHeight: 18, marginTop: 4 },
+  choiceText: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 4,
+  },
   orRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   orLine: { height: 1, flex: 1, backgroundColor: colors.border },
   orText: { color: colors.textMuted, fontSize: 12, fontWeight: '800' },
@@ -937,7 +979,12 @@ const s = StyleSheet.create({
     backgroundColor: colors.bgCard,
     marginBottom: 12,
   },
-  recipientSummaryAddress: { color: colors.textPrimary, marginTop: 5, fontSize: 15, fontFamily: 'monospace' },
+  recipientSummaryAddress: {
+    color: colors.textPrimary,
+    marginTop: 5,
+    fontSize: 15,
+    fontFamily: 'monospace',
+  },
   changeRecipient: { color: colors.orange, fontWeight: '800', fontSize: 14 },
 
   sectionHeaderRecent: {
@@ -994,7 +1041,11 @@ const s = StyleSheet.create({
     padding: 0,
     textAlignVertical: 'top',
   },
-  addressInputRow: {alignItems: 'center', flexDirection: 'row', gap: spacing.sm},
+  addressInputRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
   scanButton: {
     alignItems: 'center',
     alignSelf: 'stretch',
@@ -1022,9 +1073,17 @@ const s = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: 'rgba(255,255,255,0.035)',
   },
-  donorChip: { borderColor: 'rgba(242,104,34,0.52)', backgroundColor: 'rgba(242,104,34,0.08)' },
+  donorChip: {
+    borderColor: 'rgba(242,104,34,0.52)',
+    backgroundColor: 'rgba(242,104,34,0.08)',
+  },
   contactName: { color: colors.textPrimary, fontSize: 12, fontWeight: '800' },
-  contactAddress: { color: colors.textMuted, fontSize: 10, marginTop: 3, fontFamily: 'monospace' },
+  contactAddress: {
+    color: colors.textMuted,
+    fontSize: 10,
+    marginTop: 3,
+    fontFamily: 'monospace',
+  },
   recentLabel: { marginTop: 15 },
 
   amountRow: {
@@ -1113,9 +1172,18 @@ const s = StyleSheet.create({
     backgroundColor: colors.orange,
     borderColor: colors.orange,
   },
-  priorityButtonText: { color: colors.textSecondary, fontSize: 12, fontWeight: '800' },
+  priorityButtonText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
   priorityButtonTextActive: { color: '#FFF' },
-  sweepHint: { color: colors.textMuted, fontSize: 12, lineHeight: 17, marginTop: 10 },
+  sweepHint: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 10,
+  },
 
   summaryCard: {
     flexDirection: 'row',

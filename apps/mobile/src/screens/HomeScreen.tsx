@@ -35,6 +35,7 @@ import {
   xmrToUsd,
 } from '../data/priceService';
 import { type MoneroNewsCategory, useMoneroNews } from '../data/moneroNews';
+import { useNotificationAuthorization } from '../hooks/useNotificationAuthorization';
 import { useI18n } from '../i18n';
 import type { FastReceiveIdentityRecord } from '../services/FastReceiveRegistry';
 import {
@@ -47,7 +48,10 @@ import {
 } from '../services/NodeConnectionSettings';
 import type { NodeConnectionMode } from '../services/NodeConnectionSettings';
 import { useWalletState } from '../services/WalletState';
-import { walletDisplayName } from '../services/WalletRegistry';
+import {
+  isFastWalletRegistration,
+  walletDisplayName,
+} from '../services/WalletRegistry';
 import {
   atomicXmrToNumber,
   formatAtomicXmr,
@@ -212,8 +216,14 @@ function fastWalletDashboardOption(
   identity: FastReceiveIdentityRecord,
   t: ReturnType<typeof useI18n>['t'],
   tex8Node: boolean,
+  notificationsAuthorized: boolean,
 ): WalletOption {
-  const status = fastWalletStatusPresentation(identity, tex8Node, t);
+  const status = fastWalletStatusPresentation(
+    identity,
+    tex8Node,
+    t,
+    notificationsAuthorized,
+  );
   return {
     id: identity.id,
     address: identity.address,
@@ -239,6 +249,8 @@ export default function HomeScreen({ navigation }: any) {
     getActiveNodeConnectionSettings().mode,
   );
   const { dateLocale, t } = useI18n();
+  const { authorized: notificationsAuthorized } =
+    useNotificationAuthorization();
   const { price, change24h, loading: priceLoading } = useXmrPrice();
   const {
     points,
@@ -256,6 +268,7 @@ export default function HomeScreen({ navigation }: any) {
     error,
     registeredWallet,
     registeredWallets,
+    isRegisteredWalletOpen,
     session,
     setActiveRegisteredWallet,
     snapshot,
@@ -275,7 +288,7 @@ export default function HomeScreen({ navigation }: any) {
   });
   const showLocked = lockedAtomic > 0n;
   const selectedFastIdentity =
-    registeredWallet?.kind === 'fast'
+    registeredWallet && isFastWalletRegistration(registeredWallet)
       ? fastReceiveIdentities.find(
           identity => identity.id === registeredWallet.id,
         )
@@ -285,9 +298,10 @@ export default function HomeScreen({ navigation }: any) {
         selectedFastIdentity,
         nodeMode === 'optimized-grpc',
         t,
+        notificationsAuthorized,
       )
     : undefined;
-  const selectedFastWallet = registeredWallet?.kind === 'fast';
+  const selectedFastWallet = isFastWalletRegistration(registeredWallet);
   const hasSyncError =
     !selectedFastWallet && (status === 'error' || Boolean(error));
   const syncPresentation = presentWalletSync(snapshot, {
@@ -297,50 +311,50 @@ export default function HomeScreen({ navigation }: any) {
     ? selectedFastStatus.tone === 'success'
       ? colors.success
       : selectedFastStatus.tone === 'danger'
-      ? colors.error
-      : selectedFastStatus.tone === 'muted'
-      ? colors.textMuted
-      : colors.warning
+        ? colors.error
+        : selectedFastStatus.tone === 'muted'
+          ? colors.textMuted
+          : colors.warning
     : hasSyncError
-    ? colors.error
-    : status === 'open'
-    ? colors.success
-    : status === 'syncing' || status === 'opening'
-    ? colors.warning
-    : colors.orange;
+      ? colors.error
+      : status === 'open'
+        ? colors.success
+        : status === 'syncing' || status === 'opening'
+          ? colors.warning
+          : colors.orange;
   const syncText = selectedFastStatus
     ? selectedFastStatus.label
     : selectedFastWallet
-    ? t('fastWallet.status.settingUp')
-    : hasSyncError
-    ? t('sync.error')
-    : status === 'open'
-    ? t('status.live')
-    : status === 'syncing'
-    ? syncPresentation.phase === 'finalizing'
-      ? t('sync.finalizing')
-      : `${syncProgress ?? 0}%`
-    : status === 'opening'
-    ? t('action.open')
-    : status === 'locked'
-    ? t('status.locked')
-    : t('status.setup');
+      ? t('fastWallet.status.settingUp')
+      : hasSyncError
+        ? t('sync.error')
+        : status === 'open'
+          ? t('status.live')
+          : status === 'syncing'
+            ? syncPresentation.phase === 'finalizing'
+              ? t('sync.finalizing')
+              : `${syncProgress ?? 0}%`
+            : status === 'opening'
+              ? t('action.open')
+              : status === 'locked'
+                ? t('status.locked')
+                : t('status.setup');
 
   const positive =
     tf === '24H'
       ? change24h >= 0
       : points.length >= 2
-      ? points[points.length - 1].price >= points[0].price
-      : true;
+        ? points[points.length - 1].price >= points[0].price
+        : true;
 
   const changePercent =
     tf === '24H'
       ? change24h
       : points.length >= 2
-      ? ((points[points.length - 1].price - points[0].price) /
-          points[0].price) *
-        100
-      : 0;
+        ? ((points[points.length - 1].price - points[0].price) /
+            points[0].price) *
+          100
+        : 0;
 
   const changeUsd = price > 0 ? Math.abs((changePercent / 100) * price) : 0;
   const walletSnapshotMap = useMemo(
@@ -372,12 +386,23 @@ export default function HomeScreen({ navigation }: any) {
   );
   const homeWalletOptions = useMemo<WalletSelectorItem[]>(
     () => [
-      ...registeredWallets.filter(wallet => wallet.kind !== 'fast'),
+      ...registeredWallets.filter(wallet => !isFastWalletRegistration(wallet)),
       ...fastReceiveIdentities.map(identity =>
-        fastWalletDashboardOption(identity, t, nodeMode === 'optimized-grpc'),
+        fastWalletDashboardOption(
+          identity,
+          t,
+          nodeMode === 'optimized-grpc',
+          notificationsAuthorized,
+        ),
       ),
     ],
-    [fastReceiveIdentities, nodeMode, registeredWallets, t],
+    [
+      fastReceiveIdentities,
+      nodeMode,
+      notificationsAuthorized,
+      registeredWallets,
+      t,
+    ],
   );
   const openWalletSetup = () =>
     navigation.navigate(
@@ -399,7 +424,16 @@ export default function HomeScreen({ navigation }: any) {
   };
   const selectWallet = async (wallet: WalletOption) => {
     const walletId = wallet.id;
-    if (walletId === registeredWallet?.id && hasOpenWallet) {
+    if (wallet.kind === 'fast') {
+      if (walletId !== registeredWallet?.id) {
+        await setActiveRegisteredWallet(walletId);
+      }
+      return;
+    }
+    if (isRegisteredWalletOpen(walletId)) {
+      if (walletId !== registeredWallet?.id) {
+        await setActiveRegisteredWallet(walletId);
+      }
       return;
     }
 
@@ -408,11 +442,7 @@ export default function HomeScreen({ navigation }: any) {
     if (changedWallet) {
       selectedWallet = await setActiveRegisteredWallet(walletId);
     }
-    if (
-      changedWallet &&
-      selectedWallet?.credentialKey &&
-      selectedWallet.kind !== 'hardware'
-    ) {
+    if (changedWallet && selectedWallet?.credentialKey) {
       return;
     }
     navigation.navigate('WalletSetup', {
@@ -639,10 +669,10 @@ export default function HomeScreen({ navigation }: any) {
                     {category === 'all'
                       ? t('home.newsAll')
                       : category === 'network'
-                      ? t('home.newsNetwork')
-                      : category === 'wallet'
-                      ? t('home.newsWallet')
-                      : t('home.newsEcosystem')}
+                        ? t('home.newsNetwork')
+                        : category === 'wallet'
+                          ? t('home.newsWallet')
+                          : t('home.newsEcosystem')}
                   </Text>
                 </TouchableOpacity>
               ),
@@ -680,8 +710,8 @@ export default function HomeScreen({ navigation }: any) {
                     {item.category === 'network'
                       ? t('home.newsNetwork')
                       : item.category === 'wallet'
-                      ? t('home.newsWallet')
-                      : t('home.newsEcosystem')}
+                        ? t('home.newsWallet')
+                        : t('home.newsEcosystem')}
                   </Text>
                   <Text numberOfLines={2} style={s.newsItemTitle}>
                     {item.title}

@@ -23,6 +23,7 @@ import type { NodeConnectionSettings } from './NodeConnectionSettings';
 import { logWalletEvent } from './WalletLogger';
 import {
   createRegisteredWallet,
+  isFastWalletRegistration,
   loadRegisteredWallet,
   loadRegisteredWallets,
   markRegisteredWalletSeedBackedUp,
@@ -98,8 +99,7 @@ export interface CreateNamedWalletResult {
   registration: RegisteredWallet;
 }
 
-export interface CreateNamedLedgerWalletPairResult
-  extends CreateNamedWalletResult {
+export interface CreateNamedLedgerWalletPairResult extends CreateNamedWalletResult {
   /**
    * A logical Fast Ledger wallet shares the same native wallet file and
    * device-held credential as its standard Ledger wallet. Only its selected
@@ -193,9 +193,7 @@ const WALLET_READ_TIMEOUT_MS = 12_000;
 const FAST_SPEND_RECONCILE_INTERVAL_MS = 30_000;
 const KEY_IMAGE_STATUS_BATCH_SIZE = 1024;
 export type DeviceSecretAuthenticationMode =
-  | 'if-available'
-  | 'required'
-  | 'none';
+  'if-available' | 'required' | 'none';
 
 export class WalletService {
   private activeSession: WalletSession | undefined;
@@ -253,33 +251,27 @@ export class WalletService {
   }
 
   async storeSecret(key: string, value: string): Promise<void> {
-    return traceWalletOperation(
-      'storeSecret',
-      {secretKey: key},
-      () => requireNativeMoneroWallet().storeSecret(key, value),
+    return traceWalletOperation('storeSecret', { secretKey: key }, () =>
+      requireNativeMoneroWallet().storeSecret(key, value),
     );
   }
 
   async verifySecret(key: string, value: string): Promise<boolean> {
-    return traceWalletOperation(
-      'verifySecret',
-      {secretKey: key},
-      () => requireNativeMoneroWallet().verifySecret(key, value),
+    return traceWalletOperation('verifySecret', { secretKey: key }, () =>
+      requireNativeMoneroWallet().verifySecret(key, value),
     );
   }
 
   async deleteSecret(key: string): Promise<void> {
-    return traceWalletOperation(
-      'deleteSecret',
-      {secretKey: key},
-      () => requireNativeMoneroWallet().deleteSecret(key),
+    return traceWalletOperation('deleteSecret', { secretKey: key }, () =>
+      requireNativeMoneroWallet().deleteSecret(key),
     );
   }
 
   async deleteWalletFiles(path: string): Promise<void> {
     return traceWalletOperation(
       'deleteWalletFiles',
-      {walletFile: walletFileName(path)},
+      { walletFile: walletFileName(path) },
       () => requireNativeMoneroWallet().deleteWalletFiles(path),
     );
   }
@@ -491,7 +483,9 @@ export class WalletService {
       wallet => wallet.id === walletId || wallet.sourceWalletId === walletId,
     );
     const removedIds = new Set(removed.map(wallet => wallet.id));
-    const remaining = registrations.filter(wallet => !removedIds.has(wallet.id));
+    const remaining = registrations.filter(
+      wallet => !removedIds.has(wallet.id),
+    );
 
     for (const wallet of removed) {
       const backgroundSession = this.fastSignalSessions.get(wallet.id);
@@ -535,14 +529,15 @@ export class WalletService {
       if (
         !remaining.some(
           wallet =>
-            wallet.credentialKey === key || wallet.viewOnlyCredentialKey === key,
+            wallet.credentialKey === key ||
+            wallet.viewOnlyCredentialKey === key,
         )
       ) {
         await this.deleteSecret(key);
       }
     }
     for (const wallet of removed) {
-      if (wallet.kind === 'fast') {
+      if (isFastWalletRegistration(wallet)) {
         await removeFastReceiveIdentity(wallet.id).catch(() => undefined);
       }
       await removeWalletRegistration(wallet.id);
@@ -600,18 +595,17 @@ export class WalletService {
               : this.fastSignalSessions.get(registration.id);
           let openedForSignal = false;
           if (!session) {
-            const resolved = await this.resolveRegisteredWalletContainerPath(
-              registration,
-            );
+            const resolved =
+              await this.resolveRegisteredWalletContainerPath(registration);
             session = await this.openWalletWithStoredSecret({
               path: resolved.path,
               secretKey: resolved.credentialKey!,
               network: resolved.network,
               ...(resolved.restoreHeight
-                ? {restoreHeight: resolved.restoreHeight}
+                ? { restoreHeight: resolved.restoreHeight }
                 : {}),
             });
-            session = {...session, registrationId: registration.id};
+            session = { ...session, registrationId: registration.id };
             this.fastSignalSessions.set(registration.id, session);
             await this.startRefresh(session);
             openedForSignal = true;
@@ -754,16 +748,19 @@ export class WalletService {
     return removeFastReceiveIdentity(identityId);
   }
 
-  async openRegisteredWallet(password?: string): Promise<WalletSession> {
+  async openRegisteredWalletRegistration(
+    registration: RegisteredWallet,
+    password?: string,
+  ): Promise<WalletSession> {
     return traceWalletOperation(
-      'openRegisteredWallet',
+      'openRegisteredWalletRegistration',
       {
         hasPassword: Boolean(password),
+        registrationId: maskIdentifier(registration.id),
       },
       async () => {
-        const registration = await loadRegisteredWallet();
-        if (!registration) {
-          throw new Error('No registered wallet found on this device');
+        if (isFastWalletRegistration(registration)) {
+          throw new Error('Fast Wallet is synchronized by the scanner service');
         }
 
         const resolvedRegistration =
@@ -782,11 +779,13 @@ export class WalletService {
           resolvedRegistration.kind === 'hardware'
             ? await this.openHardwareRegisteredWallet(resolvedRegistration)
             : resolvedRegistration.credentialKey && !password
-            ? await this.openStoredSecretRegisteredWallet(resolvedRegistration)
-            : await this.openSoftwareRegisteredWallet(
-                resolvedRegistration,
-                password,
-              );
+              ? await this.openStoredSecretRegisteredWallet(
+                  resolvedRegistration,
+                )
+              : await this.openSoftwareRegisteredWallet(
+                  resolvedRegistration,
+                  password,
+                );
         const hardwareDevice =
           hardwareDeviceFromRegistration(resolvedRegistration);
         const registeredSession = {
@@ -794,16 +793,27 @@ export class WalletService {
           registrationId: resolvedRegistration.id,
           accountIndex: resolvedRegistration.accountIndex,
           addressIndex: resolvedRegistration.addressIndex,
-          ...(hardwareDevice ? {hardwareDevice} : {}),
+          ...(hardwareDevice ? { hardwareDevice } : {}),
         };
 
         await saveRegisteredWallet(touchRegisteredWallet(resolvedRegistration));
-        this.activeSession = {
-          ...registeredSession,
-        };
         return registeredSession;
       },
     );
+  }
+
+  async openRegisteredWallet(password?: string): Promise<WalletSession> {
+    const registration = await loadRegisteredWallet();
+    if (!registration) {
+      throw new Error('No registered wallet found on this device');
+    }
+
+    const session = await this.openRegisteredWalletRegistration(
+      registration,
+      password,
+    );
+    this.activeSession = { ...session };
+    return session;
   }
 
   async openHardwareWalletForSigning(
@@ -823,20 +833,20 @@ export class WalletService {
 
         const resolvedRegistration =
           await this.resolveRegisteredWalletContainerPath(registration);
-        const session = await this.openHardwareSigningRegisteredWallet(
-          resolvedRegistration,
-        );
+        const session =
+          await this.openHardwareSigningRegisteredWallet(resolvedRegistration);
         const registeredSession: WalletSession = {
           ...session,
           readOnly: false,
           registrationId: resolvedRegistration.id,
           accountIndex: resolvedRegistration.accountIndex,
           addressIndex: resolvedRegistration.addressIndex,
-          hardwareDevice:
-            hardwareDeviceFromRegistration(resolvedRegistration) ?? {
-              name: 'Ledger',
-              type: 'ledger',
-            },
+          hardwareDevice: hardwareDeviceFromRegistration(
+            resolvedRegistration,
+          ) ?? {
+            name: 'Ledger',
+            type: 'ledger',
+          },
         };
         await saveRegisteredWallet(touchRegisteredWallet(resolvedRegistration));
         this.activeSession = registeredSession;
@@ -934,9 +944,10 @@ export class WalletService {
         walletFile: walletFileName(input.path),
       },
       async () => {
-        const result = await requireNativeMoneroWallet().restoreWalletWithStoredSecret(
-          input,
-        );
+        const result =
+          await requireNativeMoneroWallet().restoreWalletWithStoredSecret(
+            input,
+          );
         return this.configureOpenedSession({
           walletId: result.walletId,
           network: input.network,
@@ -1000,7 +1011,7 @@ export class WalletService {
             walletName,
           },
         );
-        return {session, registration};
+        return { session, registration };
       },
     );
   }
@@ -1122,8 +1133,10 @@ export class WalletService {
         walletFile: walletFileName(input.path),
       },
       async () => {
-        const result = await requireNativeMoneroWallet()
-          .createViewOnlyWalletFromHardwareWithStoredSecret(input);
+        const result =
+          await requireNativeMoneroWallet().createViewOnlyWalletFromHardwareWithStoredSecret(
+            input,
+          );
         return result.walletId;
       },
     );
@@ -1185,11 +1198,16 @@ export class WalletService {
                 network: settings.network,
                 restoreHeight: input.restoreHeight,
               });
-            await requireNativeMoneroWallet().closeWallet(viewOnlyWalletId, true);
+            await requireNativeMoneroWallet().closeWallet(
+              viewOnlyWalletId,
+              true,
+            );
             this.activeSession = session;
           } catch (error) {
             await this.deleteWalletFiles(viewOnlyPath).catch(() => undefined);
-            await this.deleteSecret(viewOnlyCredentialKey).catch(() => undefined);
+            await this.deleteSecret(viewOnlyCredentialKey).catch(
+              () => undefined,
+            );
             throw error;
           }
         }
@@ -1244,7 +1262,10 @@ export class WalletService {
   }
 
   async createNamedLedgerWalletPairFromDevice(
-    input: Omit<CreateNamedHardwareWalletInput, 'accountIndex' | 'role' | 'sourceWalletId'>,
+    input: Omit<
+      CreateNamedHardwareWalletInput,
+      'accountIndex' | 'role' | 'sourceWalletId'
+    >,
   ): Promise<CreateNamedLedgerWalletPairResult> {
     return traceWalletOperation(
       'createNamedLedgerWalletPairFromDevice',
@@ -1273,15 +1294,17 @@ export class WalletService {
         // Ask the Ledger to initialize one wallet once. The bridge creates
         // account 1 in that same wallet file; it never creates a second
         // device wallet or asks the device to export its view key again.
-        const deviceSession = await this.createWalletFromDeviceWithStoredSecret({
-          path,
-          secretKey: credentialKey,
-          network: settings.network,
-          deviceName,
-          restoreHeight: input.restoreHeight,
-          subaddressLookahead: input.subaddressLookahead,
-          accountIndex: 1,
-        });
+        const deviceSession = await this.createWalletFromDeviceWithStoredSecret(
+          {
+            path,
+            secretKey: credentialKey,
+            network: settings.network,
+            deviceName,
+            restoreHeight: input.restoreHeight,
+            subaddressLookahead: input.subaddressLookahead,
+            accountIndex: 1,
+          },
+        );
         const standardRegistration = await saveRegisteredWallet(
           createRegisteredWallet({
             walletName,
@@ -1290,7 +1313,8 @@ export class WalletService {
             kind: 'hardware',
             credentialKey,
             restoreHeight: input.restoreHeight,
-            hardwareDeviceName: deviceSession.hardwareDevice?.name ?? deviceName,
+            hardwareDeviceName:
+              deviceSession.hardwareDevice?.name ?? deviceName,
             hardwareDeviceType: deviceSession.hardwareDevice?.type ?? 'ledger',
           }),
         );
@@ -1310,7 +1334,8 @@ export class WalletService {
             accountIndex: 1,
             role: 'fast',
             sourceWalletId: standardRegistration.id,
-            hardwareDeviceName: deviceSession.hardwareDevice?.name ?? deviceName,
+            hardwareDeviceName:
+              deviceSession.hardwareDevice?.name ?? deviceName,
             hardwareDeviceType: deviceSession.hardwareDevice?.type ?? 'ledger',
           }),
           false,
@@ -1333,7 +1358,11 @@ export class WalletService {
             walletName,
           },
         );
-        return { session, registration: standardRegistration, fastRegistration };
+        return {
+          session,
+          registration: standardRegistration,
+          fastRegistration,
+        };
       },
     );
   }
@@ -1460,13 +1489,11 @@ export class WalletService {
       async () => {
         const session = this.activeSession;
         if (!session) {
-          throw new Error(
-            'Open a wallet before creating fast receive',
-          );
+          throw new Error('Open a wallet before creating fast receive');
         }
 
         const sourceWallet = await loadRegisteredWallet();
-        if (sourceWallet?.kind === 'fast') {
+        if (isFastWalletRegistration(sourceWallet)) {
           throw new Error(
             'Open a private software wallet before creating a Fast Wallet',
           );
@@ -1676,14 +1703,14 @@ export class WalletService {
 
   private async reconcileFastWalletSpendState(
     session: WalletSession,
-    options: {required: boolean; force?: boolean},
+    options: { required: boolean; force?: boolean },
   ): Promise<number> {
     const registration = session.registrationId
       ? (await loadRegisteredWallets()).find(
           item => item.id === session.registrationId,
         )
       : await loadRegisteredWallet();
-    if (registration?.kind !== 'fast') {
+    if (!registration || !isFastWalletRegistration(registration)) {
       return 0;
     }
 
@@ -1707,7 +1734,11 @@ export class WalletService {
         const identity = (await loadFastReceiveIdentities()).find(
           item => item.id === registration.id,
         );
-        if (!identity || identity.status !== 'enabled' || !identity.scannerUrl) {
+        if (
+          !identity ||
+          identity.status !== 'enabled' ||
+          !identity.scannerUrl
+        ) {
           if (options.required) {
             throw new Error(
               'Fast Wallet spend status cannot be verified until its server registration is active',
@@ -1783,7 +1814,7 @@ export class WalletService {
   }
 
   activateSession(session: WalletSession): void {
-    this.activeSession = {...session};
+    this.activeSession = { ...session };
   }
 
   async startRefresh(session: WalletSession): Promise<void> {
@@ -1808,50 +1839,58 @@ export class WalletService {
   }
 
   async snapshot(session: WalletSession): Promise<WalletSnapshot> {
-    return traceWalletOperation('snapshot', sessionLogFields(session), async () => {
-      const nativeWallet = requireNativeMoneroWallet();
-      const readSnapshot = () =>
-        withTimeout(
-          nativeWallet.snapshot(session.walletId),
-          WALLET_READ_TIMEOUT_MS,
-          'Wallet snapshot timed out',
-        );
-      let result = await readSnapshot();
-      const accountIndex = session.accountIndex ?? 0;
-      if (accountIndex > 0) {
-        const [primaryAddress, balanceAtomic, unlockedBalanceAtomic] =
-          await Promise.all([
-            nativeWallet.getAddress(
-              session.walletId,
-              accountIndex,
-              session.addressIndex ?? 0,
-            ),
-            nativeWallet.getBalance(session.walletId, accountIndex),
-            nativeWallet.getUnlockedBalance(session.walletId, accountIndex),
-          ]);
-        result = {
-          ...result,
-          primaryAddress,
-          balanceAtomic,
-          unlockedBalanceAtomic,
-        };
-      }
-      if (result.synchronized) {
-        const changed = await this.reconcileFastWalletSpendState(session, {
-          required: false,
-        }).catch(error => {
-          logWalletEvent('WalletService', 'fastSpendReconcile.backgroundError', {
-            error: errorMessage(error),
-            ...sessionLogFields(session),
-          });
-          return 0;
-        });
-        if (changed > 0) {
-          result = await readSnapshot();
+    return traceWalletOperation(
+      'snapshot',
+      sessionLogFields(session),
+      async () => {
+        const nativeWallet = requireNativeMoneroWallet();
+        const readSnapshot = () =>
+          withTimeout(
+            nativeWallet.snapshot(session.walletId),
+            WALLET_READ_TIMEOUT_MS,
+            'Wallet snapshot timed out',
+          );
+        let result = await readSnapshot();
+        const accountIndex = session.accountIndex ?? 0;
+        if (accountIndex > 0) {
+          const [primaryAddress, balanceAtomic, unlockedBalanceAtomic] =
+            await Promise.all([
+              nativeWallet.getAddress(
+                session.walletId,
+                accountIndex,
+                session.addressIndex ?? 0,
+              ),
+              nativeWallet.getBalance(session.walletId, accountIndex),
+              nativeWallet.getUnlockedBalance(session.walletId, accountIndex),
+            ]);
+          result = {
+            ...result,
+            primaryAddress,
+            balanceAtomic,
+            unlockedBalanceAtomic,
+          };
         }
-      }
-      return result;
-    });
+        if (result.synchronized) {
+          const changed = await this.reconcileFastWalletSpendState(session, {
+            required: false,
+          }).catch(error => {
+            logWalletEvent(
+              'WalletService',
+              'fastSpendReconcile.backgroundError',
+              {
+                error: errorMessage(error),
+                ...sessionLogFields(session),
+              },
+            );
+            return 0;
+          });
+          if (changed > 0) {
+            result = await readSnapshot();
+          }
+        }
+        return result;
+      },
+    );
   }
 
   async getTransactions(
@@ -2034,7 +2073,10 @@ export class WalletService {
       },
       async () => {
         const nativeWallet = requireNativeMoneroWallet();
-        await nativeWallet.setWalletPassword(session.walletId, normalizedPassword);
+        await nativeWallet.setWalletPassword(
+          session.walletId,
+          normalizedPassword,
+        );
         if (session.credentialKey) {
           try {
             await nativeWallet.storeSecret(
@@ -2099,7 +2141,7 @@ export class WalletService {
     const accountIndex = session.accountIndex ?? 0;
     const subaddress = await traceWalletOperation(
       'createSubaddress',
-      {accountIndex, ...sessionLogFields(session)},
+      { accountIndex, ...sessionLogFields(session) },
       () =>
         requireNativeMoneroWallet().createSubaddress(
           session.walletId,
@@ -2239,8 +2281,8 @@ export class WalletService {
       const sourceWallet = identity.sourceWalletId
         ? softwareWallets.find(wallet => wallet.id === identity.sourceWalletId)
         : softwareWallets.length === 1
-        ? softwareWallets[0]
-        : undefined;
+          ? softwareWallets[0]
+          : undefined;
       const credentialKey =
         identity.credentialKey ??
         existing?.credentialKey ??
@@ -2371,11 +2413,10 @@ export class WalletService {
         readOnly: true,
         accountIndex: registration.accountIndex,
         addressIndex: registration.addressIndex,
-        hardwareDevice:
-          hardwareDeviceFromRegistration(registration) ?? {
-            name: 'Ledger',
-            type: 'ledger',
-          },
+        hardwareDevice: hardwareDeviceFromRegistration(registration) ?? {
+          name: 'Ledger',
+          type: 'ledger',
+        },
       };
       this.activeSession = registeredSession;
       logWalletEvent(
@@ -2422,20 +2463,22 @@ export class WalletService {
       path: registration.path,
       secretKey: credentialKey,
       network: registration.network,
-      ...(restoreHeight
-        ? {restoreHeight}
-        : {}),
+      ...(restoreHeight ? { restoreHeight } : {}),
     });
     if (!registration.restoreHeight && restoreHeight) {
       await upsertRegisteredWallet({
         ...registration,
         restoreHeight,
       });
-      logWalletEvent('WalletService', 'openHardwareRegisteredWallet.autoHeight', {
-        registrationId: maskIdentifier(registration.id),
-        restoreHeight,
-        walletName: registration.walletName,
-      });
+      logWalletEvent(
+        'WalletService',
+        'openHardwareRegisteredWallet.autoHeight',
+        {
+          registrationId: maskIdentifier(registration.id),
+          restoreHeight,
+          walletName: registration.walletName,
+        },
+      );
     }
     const hardwareDevice = hardwareDeviceFromRegistration(registration);
     const registeredSession = hardwareDevice
@@ -2686,9 +2729,10 @@ async function resolveAutomaticHardwareRestoreHeight(
         return 0;
       }
       const payload: unknown = await response.json();
-      const record = isRecord(payload) && isRecord(payload.result)
-        ? payload.result
-        : payload;
+      const record =
+        isRecord(payload) && isRecord(payload.result)
+          ? payload.result
+          : payload;
       const height = isRecord(record) ? record.height : undefined;
       return typeof height === 'number' && Number.isFinite(height) && height > 1
         ? Math.floor(height)
@@ -2697,10 +2741,14 @@ async function resolveAutomaticHardwareRestoreHeight(
       clearTimeout(timeout);
     }
   } catch (error) {
-    logWalletEvent('WalletService', 'automaticHardwareRestoreHeight.unavailable', {
-      error: errorMessage(error),
-      network,
-    });
+    logWalletEvent(
+      'WalletService',
+      'automaticHardwareRestoreHeight.unavailable',
+      {
+        error: errorMessage(error),
+        network,
+      },
+    );
     return 0;
   }
 }

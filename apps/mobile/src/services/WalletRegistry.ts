@@ -46,6 +46,17 @@ export interface WalletRegistryState {
   wallets: RegisteredWallet[];
 }
 
+/**
+ * Fast Wallet is a scanner-service role, not a local Monero Core session.
+ * Ledger Fast Wallets intentionally keep `kind: hardware` so their source is
+ * preserved; `role: fast` is therefore just as authoritative as `kind: fast`.
+ */
+export function isFastWalletRegistration(
+  wallet: Pick<RegisteredWallet, 'kind' | 'role'> | null | undefined,
+): boolean {
+  return wallet?.kind === 'fast' || wallet?.role === 'fast';
+}
+
 export async function loadRegisteredWallet(): Promise<
   RegisteredWallet | undefined
 > {
@@ -94,7 +105,7 @@ export async function upsertRegisteredWallet(
       (!wallet.displayName ||
         (wallet.displayName === defaultName &&
           existing.displayName !== defaultName))
-      ? {...wallet, displayName: existing.displayName}
+      ? { ...wallet, displayName: existing.displayName }
       : wallet,
   );
   const nextWallets = current.wallets.some(item => item.id === normalized.id)
@@ -217,13 +228,18 @@ export async function renameRegisteredWallet(
   const registry = await loadWalletRegistry();
   const normalizedName = normalizeDisplayName(displayName);
   if (!normalizedName) {
-    throw new Error('Wallet name must be between 1 and 64 printable characters.');
+    throw new Error(
+      'Wallet name must be between 1 and 64 printable characters.',
+    );
   }
   const wallet = registry.wallets.find(item => item.id === walletId);
   if (!wallet) {
     return undefined;
   }
-  const updated = normalizeRegisteredWallet({...wallet, displayName: normalizedName});
+  const updated = normalizeRegisteredWallet({
+    ...wallet,
+    displayName: normalizedName,
+  });
   await saveWalletRegistry({
     ...registry,
     wallets: registry.wallets.map(item =>
@@ -236,8 +252,10 @@ export async function renameRegisteredWallet(
 export function walletDisplayName(
   wallet: Pick<RegisteredWallet, 'displayName' | 'walletName' | 'kind'>,
 ): string {
-  return normalizeDisplayName(wallet.displayName) ??
-    defaultWalletDisplayName(wallet.kind, wallet.walletName);
+  return (
+    normalizeDisplayName(wallet.displayName) ??
+    defaultWalletDisplayName(wallet.kind, wallet.walletName)
+  );
 }
 
 export async function markRegisteredWalletSeedBackedUp(
@@ -502,7 +520,8 @@ function defaultWalletDisplayName(
   walletName: string,
 ): string {
   const prefix = kind === 'hardware' ? 'ledger' : 'wallet';
-  const title = kind === 'hardware' ? 'Ledger' : kind === 'fast' ? 'Fast Wallet' : 'Wallet';
+  const title =
+    kind === 'hardware' ? 'Ledger' : kind === 'fast' ? 'Fast Wallet' : 'Wallet';
   const legacyPrefix = kind === 'hardware' ? 'ledger' : 'primary';
   const suffix = walletName.startsWith(`${prefix}-`)
     ? walletName.slice(prefix.length + 1)

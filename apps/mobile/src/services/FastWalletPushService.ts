@@ -1,48 +1,50 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { PermissionsAndroid, Platform } from "react-native";
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { PermissionsAndroid, Platform } from 'react-native';
+import { checkNotifications, RESULTS } from 'react-native-permissions';
 
-import { logWalletEvent } from "./WalletLogger";
+import { logWalletEvent } from './WalletLogger';
 
 declare const require: (moduleName: string) => any;
 
 const PUSH_REGISTRATION_URL =
-  "https://api.tex8.com/api/v1/public/mobile/push-tokens/register";
-const TENANT_ID = "monero-wallet";
-const SHOP_ID = "monero-wallet";
-const APP_ID = "monero-wallet";
-const BUNDLE_ID = "com.tex8.monerowallet";
-const EVENT_CONTRACT = "monero-fast-wallet-push.v2";
-const EVENT_TYPE = "monero.fast_wallet.incoming";
-const SUBSCRIPTION_ID_KEY = "monero-fast-wallet.push.subscription-id.v1";
-const LAST_EVENT_KEY = "monero-fast-wallet.push.last-event.v2";
-const LAST_EVENT_ID_KEY = "monero-fast-wallet.push.last-event-id.v2";
+  'https://api.tex8.com/api/v1/public/mobile/push-tokens/register';
+const TENANT_ID = 'monero-wallet';
+const SHOP_ID = 'monero-wallet';
+const APP_ID = 'monero-wallet';
+const BUNDLE_ID = 'com.tex8.monerowallet';
+const EVENT_CONTRACT = 'monero-fast-wallet-push.v2';
+const EVENT_TYPE = 'monero.fast_wallet.incoming';
+const SUBSCRIPTION_ID_KEY = 'monero-fast-wallet.push.subscription-id.v1';
+const LAST_EVENT_KEY = 'monero-fast-wallet.push.last-event.v2';
+const LAST_EVENT_ID_KEY = 'monero-fast-wallet.push.last-event-id.v2';
 // The scanner historically emits a SHA-256 based `sig_` identifier while the
 // gateway emits `fwpush_`. Both are opaque identifiers only, never wallet data.
-const OPAQUE_EVENT_ID = /^(?:fwpush_[0-9a-f]{32}|sig_[0-9a-f]{64}|evt_[0-9a-f]{64})$/;
+const OPAQUE_EVENT_ID =
+  /^(?:fwpush_[0-9a-f]{32}|sig_[0-9a-f]{64}|evt_[0-9a-f]{64})$/;
 const FORBIDDEN_EVENT_FIELDS = [
-  "address",
-  "amountAtomic",
-  "amount_atomic",
-  "blockHeight",
-  "block_height",
-  "confirmations",
-  "keyImage",
-  "key_image",
-  "network",
-  "outputIndex",
-  "output_index",
-  "privateSpendKey",
-  "private_spend_key",
-  "privateViewKey",
-  "private_view_key",
-  "seed",
-  "spendKey",
-  "state",
-  "txId",
-  "tx_id",
-  "walletId",
-  "wallet_id",
-  "walletAddress",
+  'address',
+  'amountAtomic',
+  'amount_atomic',
+  'blockHeight',
+  'block_height',
+  'confirmations',
+  'keyImage',
+  'key_image',
+  'network',
+  'outputIndex',
+  'output_index',
+  'privateSpendKey',
+  'private_spend_key',
+  'privateViewKey',
+  'private_view_key',
+  'seed',
+  'spendKey',
+  'state',
+  'txId',
+  'tx_id',
+  'walletId',
+  'wallet_id',
+  'walletAddress',
 ] as const;
 
 let backgroundHandlerInstalled = false;
@@ -50,24 +52,49 @@ let lifecycleStarted = false;
 const listeners = new Set<(event: FastWalletPushEvent) => void>();
 
 export interface FastWalletPushEvent {
-  type: "monero.fast_wallet.incoming";
-  contractVersion: "monero-fast-wallet-push.v2";
+  type: 'monero.fast_wallet.incoming';
+  contractVersion: 'monero-fast-wallet-push.v2';
   eventId: string;
 }
 
 export interface FastWalletPushRegistration {
   permissionStatus: string;
-  provider: "fcm";
+  provider: 'fcm';
   subscriptionId: string;
+}
+
+export type NotificationAuthorizationStatus =
+  'authorized' | 'denied' | 'not_determined';
+
+export async function getNotificationAuthorizationStatus(): Promise<NotificationAuthorizationStatus> {
+  if (Platform.OS === 'android') {
+    if (Number(Platform.Version) < 33) {
+      return 'authorized';
+    }
+    const granted = await PermissionsAndroid.check(
+      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+    );
+    return granted ? 'authorized' : 'denied';
+  }
+
+  if (Platform.OS === 'ios') {
+    const { status } = await checkNotifications();
+    if (status === RESULTS.GRANTED || status === RESULTS.LIMITED) {
+      return 'authorized';
+    }
+    return status === RESULTS.DENIED ? 'not_determined' : 'denied';
+  }
+
+  return 'denied';
 }
 
 function messagingInstance(): any | undefined {
   try {
-    const module = require("@react-native-firebase/messaging");
+    const module = require('@react-native-firebase/messaging');
     const factory = module.default ?? module;
-    return typeof factory === "function" ? factory() : factory;
+    return typeof factory === 'function' ? factory() : factory;
   } catch (error) {
-    logWalletEvent("FastWalletPush", "messaging.unavailable", {
+    logWalletEvent('FastWalletPush', 'messaging.unavailable', {
       error: error instanceof Error ? error.message : String(error),
     });
     return undefined;
@@ -95,43 +122,43 @@ async function getStoredSubscriptionId(): Promise<string | undefined> {
 }
 
 function permissionName(value: unknown): string {
-  if (typeof value === "string") {
+  if (typeof value === 'string') {
     return value.toLowerCase();
   }
   switch (value) {
     case -1:
-      return "not_determined";
+      return 'not_determined';
     case 0:
-      return "denied";
+      return 'denied';
     case 1:
-      return "authorized";
+      return 'authorized';
     case 2:
-      return "provisional";
+      return 'provisional';
     case 3:
-      return "ephemeral";
+      return 'ephemeral';
     default:
-      return "unknown";
+      return 'unknown';
   }
 }
 
 async function requestPermission(instance: any): Promise<string> {
-  if (Platform.OS === "android" && Number(Platform.Version) >= 33) {
+  if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
     const result = await PermissionsAndroid.request(
       PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
     );
     if (result !== PermissionsAndroid.RESULTS.GRANTED) {
-      throw new Error("Push permission was not granted");
+      throw new Error('Push permission was not granted');
     }
   }
 
   await instance.setAutoInitEnabled?.(true);
   await instance.registerDeviceForRemoteMessages?.();
-  if (typeof instance.requestPermission !== "function") {
-    return Platform.OS === "android" ? "authorized" : "unknown";
+  if (typeof instance.requestPermission !== 'function') {
+    return Platform.OS === 'android' ? 'authorized' : 'unknown';
   }
   const status = permissionName(await instance.requestPermission());
-  if (status === "denied" || status === "not_determined") {
-    throw new Error("Push permission was not granted");
+  if (status === 'denied' || status === 'not_determined') {
+    throw new Error('Push permission was not granted');
   }
   return status;
 }
@@ -152,26 +179,26 @@ async function registerToken(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
   const response = await fetch(PUSH_REGISTRATION_URL, {
-    method: "POST",
+    method: 'POST',
     headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "X-App-Id": APP_ID,
-      "X-Shop-Id": SHOP_ID,
-      "X-Tenant-Id": TENANT_ID,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-App-Id': APP_ID,
+      'X-Shop-Id': SHOP_ID,
+      'X-Tenant-Id': TENANT_ID,
     },
     body: JSON.stringify({
       anonymousDeviceId: subscriptionId,
       appId: APP_ID,
-      appVersion: "0.0.1",
-      buildNumber: "1",
+      appVersion: '0.0.1',
+      buildNumber: '1',
       bundleId: BUNDLE_ID,
       locale: currentLocale(),
       permissionStatus,
       platform: Platform.OS,
-      provider: "fcm",
+      provider: 'fcm',
       shopId: SHOP_ID,
-      source: "monero-fast-wallet",
+      source: 'monero-fast-wallet',
       tenantId: TENANT_ID,
       token,
     }),
@@ -180,31 +207,33 @@ async function registerToken(
   const body = await response.json().catch(() => ({}));
   if (!response.ok || !body.success) {
     throw new Error(
-      body.message || body.error || `Push registration failed with HTTP ${response.status}`,
+      body.message ||
+        body.error ||
+        `Push registration failed with HTTP ${response.status}`,
     );
   }
   if (body.subscriptionId && body.subscriptionId !== subscriptionId) {
-    throw new Error("Push service returned a mismatched subscription id");
+    throw new Error('Push service returned a mismatched subscription id');
   }
 }
 
 async function enableFastWalletNotifications(): Promise<FastWalletPushRegistration> {
   const instance = messagingInstance();
   if (!instance) {
-    throw new Error("Firebase Messaging is not configured");
+    throw new Error('Firebase Messaging is not configured');
   }
   const permissionStatus = await requestPermission(instance);
   const token = await instance.getToken();
   if (!token) {
-    throw new Error("Firebase returned no push token");
+    throw new Error('Firebase returned no push token');
   }
   const subscriptionId = await getOrCreateSubscriptionId();
   await registerToken(token, subscriptionId, permissionStatus);
-  logWalletEvent("FastWalletPush", "registration.success", {
+  logWalletEvent('FastWalletPush', 'registration.success', {
     permissionStatus,
     platform: Platform.OS,
   });
-  return { permissionStatus, provider: "fcm", subscriptionId };
+  return { permissionStatus, provider: 'fcm', subscriptionId };
 }
 
 async function refreshRegistrationQuietly(token?: string): Promise<void> {
@@ -221,25 +250,31 @@ async function refreshRegistrationQuietly(token?: string): Promise<void> {
     await instance.registerDeviceForRemoteMessages?.();
     const nextToken = token || (await instance.getToken());
     if (nextToken) {
-      await registerToken(nextToken, subscriptionId, "authorized");
+      await registerToken(
+        nextToken,
+        subscriptionId,
+        await getNotificationAuthorizationStatus(),
+      );
     }
   } catch (error) {
-    logWalletEvent("FastWalletPush", "registration.refreshError", {
+    logWalletEvent('FastWalletPush', 'registration.refreshError', {
       error: error instanceof Error ? error.message : String(error),
     });
   }
 }
 
-export function parseFastWalletPushEvent(message: any): FastWalletPushEvent | undefined {
+export function parseFastWalletPushEvent(
+  message: any,
+): FastWalletPushEvent | undefined {
   const data = message?.data;
-  const allowedFields = new Set(["type", "contractVersion", "eventId"]);
+  const allowedFields = new Set(['type', 'contractVersion', 'eventId']);
   if (
     !data ||
     Object.keys(data).some(field => !allowedFields.has(field)) ||
     FORBIDDEN_EVENT_FIELDS.some(field => data[field] !== undefined) ||
     data.type !== EVENT_TYPE ||
     data.contractVersion !== EVENT_CONTRACT ||
-    typeof data.eventId !== "string" ||
+    typeof data.eventId !== 'string' ||
     !OPAQUE_EVENT_ID.test(data.eventId)
   ) {
     return undefined;
@@ -266,7 +301,7 @@ async function handleRemoteMessage(message: any): Promise<void> {
     AsyncStorage.setItem(LAST_EVENT_ID_KEY, event.eventId),
   ]);
   listeners.forEach(listener => listener(event));
-  logWalletEvent("FastWalletPush", "incomingSignal.received");
+  logWalletEvent('FastWalletPush', 'incomingSignal.received');
 }
 
 function installBackgroundHandler(): void {
@@ -339,6 +374,7 @@ async function getLastEvent(): Promise<FastWalletPushEvent | undefined> {
 
 export const FastWalletPushService = {
   enableFastWalletNotifications,
+  getNotificationAuthorizationStatus,
   getLastEvent,
   getStoredSubscriptionId,
   installBackgroundHandler,

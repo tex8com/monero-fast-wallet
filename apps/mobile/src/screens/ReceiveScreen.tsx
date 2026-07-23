@@ -16,13 +16,15 @@ import { Icon } from '../components/Icon';
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
-import type {
-  WalletOption,
-} from '../components/WalletSelector';
-import {resolveWalletOption} from '../components/WalletSelector';
+import type { WalletOption } from '../components/WalletSelector';
+import { resolveWalletOption } from '../components/WalletSelector';
 import { type TranslationKey, useI18n } from '../i18n';
+import { useNotificationAuthorization } from '../hooks/useNotificationAuthorization';
 import { useWalletState } from '../services/WalletState';
-import { walletDisplayName } from '../services/WalletRegistry';
+import {
+  isFastWalletRegistration,
+  walletDisplayName,
+} from '../services/WalletRegistry';
 import type {
   HardwareWalletStatus,
   WalletSnapshot,
@@ -111,8 +113,14 @@ function fastWalletReceiveOption(
   identity: FastReceiveIdentityRecord,
   t: Translator,
   tex8Node: boolean,
+  notificationsAuthorized: boolean,
 ): WalletOption {
-  const status = fastWalletStatusPresentation(identity, tex8Node, t);
+  const status = fastWalletStatusPresentation(
+    identity,
+    tex8Node,
+    t,
+    notificationsAuthorized,
+  );
   return {
     id: identity.id,
     address: identity.address,
@@ -148,9 +156,11 @@ export default function ReceiveScreen({ navigation, route }: any) {
   const [copied, setCopied] = useState(false);
   const [hardwareBusy, setHardwareBusy] = useState(false);
   const [hardwareMessage, setHardwareMessage] = useState<string | undefined>();
-  const [walletAddresses, setWalletAddresses] = useState<
-    WalletAddressRecord[]
-  >([]);
+  const { authorized: notificationsAuthorized } =
+    useNotificationAuthorization();
+  const [walletAddresses, setWalletAddresses] = useState<WalletAddressRecord[]>(
+    [],
+  );
   const [selectedAddressId, setSelectedAddressId] = useState<
     string | undefined
   >();
@@ -173,6 +183,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
       : undefined;
   const {
     hardwareStatus,
+    isRegisteredWalletOpen,
     refreshHardwareWalletStatus,
     reconnectHardwareWallet,
     registeredWallet,
@@ -191,7 +202,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
     () => ({
       ...walletSnapshots,
       ...(registeredWallet && snapshot
-        ? {[registeredWallet.id]: snapshot}
+        ? { [registeredWallet.id]: snapshot }
         : {}),
     }),
     [registeredWallet, snapshot, walletSnapshots],
@@ -199,13 +210,25 @@ export default function ReceiveScreen({ navigation, route }: any) {
   const receiveWalletOptions = useMemo<WalletOption[]>(
     () => [
       ...registeredWallets
-        .filter(wallet => wallet.kind !== 'fast')
+        .filter(wallet => !isFastWalletRegistration(wallet))
         .map(wallet => resolveWalletOption(wallet, walletSnapshotMap, t)),
       ...fastReceiveIdentities.map(identity =>
-        fastWalletReceiveOption(identity, t, nodeMode === 'optimized-grpc'),
+        fastWalletReceiveOption(
+          identity,
+          t,
+          nodeMode === 'optimized-grpc',
+          notificationsAuthorized,
+        ),
       ),
     ],
-    [fastReceiveIdentities, nodeMode, registeredWallets, t, walletSnapshotMap],
+    [
+      fastReceiveIdentities,
+      nodeMode,
+      notificationsAuthorized,
+      registeredWallets,
+      t,
+      walletSnapshotMap,
+    ],
   );
   const activeReceiveWalletId =
     selectedReceiveWalletId ??
@@ -219,14 +242,15 @@ export default function ReceiveScreen({ navigation, route }: any) {
         selectedFastIdentity,
         nodeMode === 'optimized-grpc',
         t,
+        notificationsAuthorized,
       )
     : undefined;
   const selectedRegisteredWallet = registeredWallets.find(
     wallet => wallet.id === activeReceiveWalletId,
   );
-  const selectedAddress = walletAddresses.find(
-    item => item.id === selectedAddressId,
-  ) ?? walletAddresses[0];
+  const selectedAddress =
+    walletAddresses.find(item => item.id === selectedAddressId) ??
+    walletAddresses[0];
   // The selected address is already presented in full above the QR code. Keep
   // the selector focused on the alternatives so the same address is never
   // rendered twice on this screen.
@@ -237,8 +261,8 @@ export default function ReceiveScreen({ navigation, route }: any) {
     activeReceiveWalletId === registeredWallet?.id
       ? snapshot
       : activeReceiveWalletId
-      ? walletSnapshotMap[activeReceiveWalletId]
-      : undefined;
+        ? walletSnapshotMap[activeReceiveWalletId]
+        : undefined;
   const address =
     selectedFastIdentity?.address ??
     (activeReceiveWalletId === registeredWallet?.id
@@ -248,16 +272,17 @@ export default function ReceiveScreen({ navigation, route }: any) {
     '';
   const isHardwareWallet = Boolean(
     !selectedFastIdentity &&
-      selectedRegisteredWallet?.kind === 'hardware' &&
-      selectedRegisteredWallet.id === registeredWallet?.id &&
-      session?.hardwareDevice,
+    selectedRegisteredWallet?.kind === 'hardware' &&
+    selectedRegisteredWallet.id === registeredWallet?.id &&
+    session?.hardwareDevice,
   );
   const hardwareConnected = hardwareStatus?.connected ?? false;
   const activeWalletDetail = selectedFastIdentity
     ? selectedFastStatus?.label
     : selectedRegisteredWallet
-    ? balanceDetail(selectedSnapshot) ?? walletDisplayName(selectedRegisteredWallet)
-    : undefined;
+      ? (balanceDetail(selectedSnapshot) ??
+        walletDisplayName(selectedRegisteredWallet))
+      : undefined;
   const showsActiveWalletHistory = Boolean(
     session && activeReceiveWalletId === registeredWallet?.id,
   );
@@ -350,7 +375,8 @@ export default function ReceiveScreen({ navigation, route }: any) {
             setNodeMode(settings.mode);
           }
           try {
-            const refreshed = await walletService.loadFastReceiveIdentitiesForActiveNode();
+            const refreshed =
+              await walletService.loadFastReceiveIdentitiesForActiveNode();
             if (mounted) {
               setFastReceiveIdentities(refreshed);
             }
@@ -410,7 +436,10 @@ export default function ReceiveScreen({ navigation, route }: any) {
     }
 
     const walletId = wallet.id;
-    if (walletId === registeredWallet?.id && session) {
+    if (isRegisteredWalletOpen(walletId)) {
+      if (walletId !== registeredWallet?.id) {
+        await setActiveRegisteredWallet(walletId);
+      }
       return;
     }
 
@@ -460,7 +489,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
     try {
       const newAddress = await walletService.createSubaddress(
         session,
-        t('receive.newAddressLabel', {count: walletAddresses.length + 1}),
+        t('receive.newAddressLabel', { count: walletAddresses.length + 1 }),
       );
       const addresses = await loadWalletAddresses(registeredWallet.id);
       setWalletAddresses(addresses);
@@ -492,7 +521,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
               <TouchableOpacity
                 key={wallet.id}
                 accessibilityRole="button"
-                accessibilityState={{selected: active}}
+                accessibilityState={{ selected: active }}
                 onPress={() => handleSelectWallet(wallet)}
                 style={[s.walletCard, active && s.walletCardActive]}
               >
@@ -516,7 +545,9 @@ export default function ReceiveScreen({ navigation, route }: any) {
             style={s.manageWalletsCard}
           >
             <Icon name="settings" size={18} color={colors.orange} />
-            <Text style={s.manageWalletsText}>{t('walletSelector.wallets')}</Text>
+            <Text style={s.manageWalletsText}>
+              {t('walletSelector.wallets')}
+            </Text>
           </TouchableOpacity>
         </ScrollView>
 
@@ -569,10 +600,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
               <TouchableOpacity
                 accessibilityRole="button"
                 accessibilityLabel={t('action.copyAddress')}
-                style={[
-                  s.copyIconButton,
-                  copied && s.copyIconButtonDone,
-                ]}
+                style={[s.copyIconButton, copied && s.copyIconButtonDone]}
                 onPress={handleCopy}
               >
                 <Icon
@@ -594,54 +622,56 @@ export default function ReceiveScreen({ navigation, route }: any) {
                   <Text style={s.addressToolsToggleText}>
                     {t('receive.manageAddresses')}
                   </Text>
-                  <Icon
-                    name="chevron-right"
-                    size={18}
-                    color={colors.orange}
-                  />
+                  <Icon name="chevron-right" size={18} color={colors.orange} />
                 </TouchableOpacity>
                 {showAddressTools ? (
-              <View style={s.addressesBox}>
-                <View style={s.addressesHeader}>
-                  <Text style={s.addressesTitle}>
-                    {t('receive.otherAddresses')}
-                  </Text>
-                  <TouchableOpacity
-                    activeOpacity={0.75}
-                    disabled={addressBusy}
-                    onPress={handleCreateAddress}
-                    style={[s.newAddressButton, addressBusy && s.addressButtonBusy]}
-                  >
-                    {addressBusy ? (
-                      <ActivityIndicator color={colors.orange} size="small" />
-                    ) : (
-                      <Text style={s.newAddressButtonText}>{t('receive.newAddress')}</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
-                {otherWalletAddresses.map(item => (
-                  <TouchableOpacity
-                    activeOpacity={0.75}
-                    key={item.id}
-                    onPress={() => setSelectedAddressId(item.id)}
-                    style={[
-                      s.addressRow,
-                    ]}
-                  >
-                    <View style={s.addressRowCopy}>
-                      <Text style={s.addressRowLabel} numberOfLines={1}>
-                        {item.label}
+                  <View style={s.addressesBox}>
+                    <View style={s.addressesHeader}>
+                      <Text style={s.addressesTitle}>
+                        {t('receive.otherAddresses')}
                       </Text>
-                      <Text style={s.addressRowValue} numberOfLines={1}>
-                        {shortAddress(item.address)}
-                      </Text>
+                      <TouchableOpacity
+                        activeOpacity={0.75}
+                        disabled={addressBusy}
+                        onPress={handleCreateAddress}
+                        style={[
+                          s.newAddressButton,
+                          addressBusy && s.addressButtonBusy,
+                        ]}
+                      >
+                        {addressBusy ? (
+                          <ActivityIndicator
+                            color={colors.orange}
+                            size="small"
+                          />
+                        ) : (
+                          <Text style={s.newAddressButtonText}>
+                            {t('receive.newAddress')}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
                     </View>
-                    <Text style={s.addressRowIndex}>
-                      {item.accountIndex}.{item.addressIndex}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+                    {otherWalletAddresses.map(item => (
+                      <TouchableOpacity
+                        activeOpacity={0.75}
+                        key={item.id}
+                        onPress={() => setSelectedAddressId(item.id)}
+                        style={[s.addressRow]}
+                      >
+                        <View style={s.addressRowCopy}>
+                          <Text style={s.addressRowLabel} numberOfLines={1}>
+                            {item.label}
+                          </Text>
+                          <Text style={s.addressRowValue} numberOfLines={1}>
+                            {shortAddress(item.address)}
+                          </Text>
+                        </View>
+                        <Text style={s.addressRowIndex}>
+                          {item.accountIndex}.{item.addressIndex}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                 ) : null}
               </View>
             ) : null}
@@ -655,81 +685,77 @@ export default function ReceiveScreen({ navigation, route }: any) {
                   <Text style={s.addressToolsToggleText}>
                     {session?.hardwareDevice?.name ?? 'Ledger Nano'}
                   </Text>
-                  <Icon
-                    name="chevron-right"
-                    size={18}
-                    color={colors.orange}
-                  />
+                  <Icon name="chevron-right" size={18} color={colors.orange} />
                 </TouchableOpacity>
                 {showHardwareTools ? (
-              <View style={s.hardwareBox}>
-                <View style={s.hardwareHeader}>
-                  <View style={s.hardwareTitleRow}>
-                    <Icon name="wallet" size={17} color={colors.orange} />
-                    <Text style={s.hardwareTitle}>
-                      {session?.hardwareDevice?.name ?? 'Ledger Nano'}
+                  <View style={s.hardwareBox}>
+                    <View style={s.hardwareHeader}>
+                      <View style={s.hardwareTitleRow}>
+                        <Icon name="wallet" size={17} color={colors.orange} />
+                        <Text style={s.hardwareTitle}>
+                          {session?.hardwareDevice?.name ?? 'Ledger Nano'}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          s.hardwarePill,
+                          {
+                            backgroundColor: hardwareConnected
+                              ? 'rgba(0,214,143,0.12)'
+                              : 'rgba(255,184,0,0.12)',
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            s.hardwarePillText,
+                            {
+                              color: hardwareConnected
+                                ? colors.success
+                                : colors.warning,
+                            },
+                          ]}
+                        >
+                          {hardwareConnected
+                            ? t('receive.connected')
+                            : t('receive.checkDevice')}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={s.hardwareText}>
+                      {hardwareMessage ?? hardwareStatusText(hardwareStatus, t)}
                     </Text>
+                    <View style={s.hardwareActions}>
+                      <TouchableOpacity
+                        style={[
+                          s.hardwarePrimary,
+                          hardwareBusy && s.hardwareButtonDisabled,
+                        ]}
+                        onPress={handleShowAddressOnDevice}
+                        disabled={hardwareBusy}
+                      >
+                        {hardwareBusy ? (
+                          <ActivityIndicator color="#FFF" size="small" />
+                        ) : (
+                          <Text style={s.hardwarePrimaryText}>
+                            {t('action.showOnLedger')}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          s.hardwareSecondary,
+                          hardwareBusy && s.hardwareButtonDisabled,
+                        ]}
+                        onPress={handleReconnectHardwareWallet}
+                        disabled={hardwareBusy}
+                      >
+                        <Text style={s.hardwareSecondaryText}>
+                          {t('action.reconnect')}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                  <View
-                    style={[
-                      s.hardwarePill,
-                      {
-                        backgroundColor: hardwareConnected
-                          ? 'rgba(0,214,143,0.12)'
-                          : 'rgba(255,184,0,0.12)',
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        s.hardwarePillText,
-                        {
-                          color: hardwareConnected
-                            ? colors.success
-                            : colors.warning,
-                        },
-                      ]}
-                    >
-                      {hardwareConnected
-                        ? t('receive.connected')
-                        : t('receive.checkDevice')}
-                    </Text>
-                  </View>
-                </View>
-                <Text style={s.hardwareText}>
-                  {hardwareMessage ?? hardwareStatusText(hardwareStatus, t)}
-                </Text>
-                <View style={s.hardwareActions}>
-                  <TouchableOpacity
-                    style={[
-                      s.hardwarePrimary,
-                      hardwareBusy && s.hardwareButtonDisabled,
-                    ]}
-                    onPress={handleShowAddressOnDevice}
-                    disabled={hardwareBusy}
-                  >
-                    {hardwareBusy ? (
-                      <ActivityIndicator color="#FFF" size="small" />
-                    ) : (
-                      <Text style={s.hardwarePrimaryText}>
-                        {t('action.showOnLedger')}
-                      </Text>
-                    )}
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[
-                      s.hardwareSecondary,
-                      hardwareBusy && s.hardwareButtonDisabled,
-                    ]}
-                    onPress={handleReconnectHardwareWallet}
-                    disabled={hardwareBusy}
-                  >
-                    <Text style={s.hardwareSecondaryText}>
-                      {t('action.reconnect')}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
                 ) : null}
               </View>
             ) : null}
@@ -849,8 +875,8 @@ const s = StyleSheet.create({
     marginTop: 4,
     lineHeight: 20,
   },
-  walletCarouselScroll: {marginBottom: 16},
-  walletCarousel: {gap: 10, paddingRight: spacing.lg},
+  walletCarouselScroll: { marginBottom: 16 },
+  walletCarousel: { gap: 10, paddingRight: spacing.lg },
   walletCard: {
     width: 196,
     minHeight: 76,
@@ -865,8 +891,13 @@ const s = StyleSheet.create({
     borderColor: colors.orange,
     backgroundColor: 'rgba(242,104,34,0.1)',
   },
-  walletCardTop: {flexDirection: 'row', alignItems: 'center', gap: 7},
-  walletCardTitle: {flex: 1, color: colors.textPrimary, fontSize: 15, fontWeight: '800'},
+  walletCardTop: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  walletCardTitle: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '800',
+  },
   fastBadge: {
     color: colors.success,
     backgroundColor: 'rgba(0,214,143,0.14)',
@@ -876,7 +907,7 @@ const s = StyleSheet.create({
     fontSize: 10,
     fontWeight: '900',
   },
-  walletCardDetail: {color: colors.textSecondary, fontSize: 12, marginTop: 6},
+  walletCardDetail: { color: colors.textSecondary, fontSize: 12, marginTop: 6 },
   manageWalletsCard: {
     minWidth: 112,
     minHeight: 76,
@@ -890,7 +921,7 @@ const s = StyleSheet.create({
     borderStyle: 'dashed',
     backgroundColor: colors.bgCard,
   },
-  manageWalletsText: {color: colors.orange, fontSize: 12, fontWeight: '800'},
+  manageWalletsText: { color: colors.orange, fontSize: 12, fontWeight: '800' },
   card: {
     backgroundColor: colors.bgCard,
     borderRadius: radius.lg,
@@ -956,7 +987,12 @@ const s = StyleSheet.create({
     gap: 10,
     marginBottom: 6,
   },
-  simpleAddress: {flex: 1, color: colors.textSecondary, fontFamily: 'monospace', fontSize: 13},
+  simpleAddress: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontFamily: 'monospace',
+    fontSize: 13,
+  },
   copyIconButton: {
     width: 42,
     height: 42,
@@ -967,8 +1003,11 @@ const s = StyleSheet.create({
     borderColor: colors.borderLight,
     backgroundColor: colors.surface,
   },
-  copyIconButtonDone: {backgroundColor: colors.success, borderColor: colors.success},
-  addressToolsContainer: {width: '100%', marginTop: 12},
+  copyIconButtonDone: {
+    backgroundColor: colors.success,
+    borderColor: colors.success,
+  },
+  addressToolsContainer: { width: '100%', marginTop: 12 },
   addressToolsToggle: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -976,7 +1015,11 @@ const s = StyleSheet.create({
     minHeight: 44,
     paddingHorizontal: 4,
   },
-  addressToolsToggleText: {color: colors.textSecondary, fontSize: 13, fontWeight: '800'},
+  addressToolsToggleText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
   addrBox: {
     width: '100%',
     backgroundColor: colors.bgInput,
@@ -1014,7 +1057,11 @@ const s = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: 10,
   },
-  addressesTitle: {color: colors.textPrimary, fontSize: 15, fontWeight: '800'},
+  addressesTitle: {
+    color: colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '800',
+  },
   newAddressButton: {
     minHeight: 34,
     alignItems: 'center',
@@ -1023,8 +1070,12 @@ const s = StyleSheet.create({
     borderRadius: radius.sm,
     backgroundColor: 'rgba(242,104,34,0.12)',
   },
-  newAddressButtonText: {color: colors.orange, fontSize: 12, fontWeight: '800'},
-  addressButtonBusy: {opacity: 0.62},
+  newAddressButtonText: {
+    color: colors.orange,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  addressButtonBusy: { opacity: 0.62 },
   addressRow: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -1034,10 +1085,23 @@ const s = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
-  addressRowCopy: {flex: 1, minWidth: 0},
-  addressRowLabel: {color: colors.textPrimary, fontSize: 13, fontWeight: '700'},
-  addressRowValue: {color: colors.textMuted, fontFamily: 'monospace', fontSize: 11, marginTop: 2},
-  addressRowIndex: {color: colors.textMuted, fontFamily: 'monospace', fontSize: 11},
+  addressRowCopy: { flex: 1, minWidth: 0 },
+  addressRowLabel: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  addressRowValue: {
+    color: colors.textMuted,
+    fontFamily: 'monospace',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  addressRowIndex: {
+    color: colors.textMuted,
+    fontFamily: 'monospace',
+    fontSize: 11,
+  },
   btnRow: { flexDirection: 'row', gap: 12, width: '100%' },
   copyBtn: {
     flex: 2,

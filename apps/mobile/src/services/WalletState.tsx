@@ -13,7 +13,11 @@ import type {
   WalletTransaction,
   WalletSnapshot,
 } from './NativeMoneroWallet';
-import { walletDisplayName, type RegisteredWallet } from './WalletRegistry';
+import {
+  isFastWalletRegistration,
+  walletDisplayName,
+  type RegisteredWallet,
+} from './WalletRegistry';
 import { walletService, type WalletSession } from './WalletService';
 import {
   FastWalletPushService,
@@ -34,16 +38,11 @@ import { presentWalletSync } from '../../../../packages/wallet-shared/src/wallet
 
 type RegisterOpenedSessionOptions = {
   refresh?: boolean;
+  select?: boolean;
 };
 
 export type WalletRuntimeStatus =
-  | 'loading'
-  | 'empty'
-  | 'locked'
-  | 'opening'
-  | 'syncing'
-  | 'open'
-  | 'error';
+  'loading' | 'empty' | 'locked' | 'opening' | 'syncing' | 'open' | 'error';
 
 interface WalletStateValue {
   error: string | undefined;
@@ -59,6 +58,7 @@ interface WalletStateValue {
   syncProgress: number | undefined;
   syncStartHeight: number | undefined;
   unlockRequestId: number | undefined;
+  isRegisteredWalletOpen: (walletId: string) => boolean;
   clearError: () => void;
   dismissIncomingTransactionNotice: () => void;
   lockWallet: () => Promise<void>;
@@ -97,6 +97,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function sessionRegistrationId(session: WalletSession): string {
+  return session.registrationId ?? session.walletId;
+}
+
 export function WalletStateProvider({
   children,
 }: {
@@ -116,6 +120,7 @@ export function WalletStateProvider({
   const [walletSnapshots, setWalletSnapshots] = useState<WalletSnapshotCache>(
     {},
   );
+  const walletSnapshotsRef = useRef<WalletSnapshotCache>({});
   const [snapshot, setSnapshot] = useState<WalletSnapshot | undefined>();
   const [syncStartHeight, setSyncStartHeight] = useState<number | undefined>();
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
@@ -125,6 +130,11 @@ export function WalletStateProvider({
   const [unlockRequestId, setUnlockRequestId] = useState<number | undefined>();
   const [error, setError] = useState<string | undefined>();
   const sessionRef = useRef<WalletSession | undefined>(undefined);
+  const sessionsByRegistrationRef = useRef(new Map<string, WalletSession>());
+  const transactionsByRegistrationRef = useRef(
+    new Map<string, WalletTransaction[]>(),
+  );
+  const syncStartHeightsRef = useRef(new Map<string, number>());
   const registeredWalletRef = useRef<RegisteredWallet | undefined>(undefined);
   const registeredWalletsRef = useRef<RegisteredWallet[]>([]);
   const incomingTransactionObserverRef = useRef(
@@ -136,17 +146,16 @@ export function WalletStateProvider({
   const incomingTransactionNoticeQueueRef = useRef<IncomingTransactionNotice[]>(
     [],
   );
-  const autoOpenAttemptedWalletIdRef = useRef<string | undefined>(undefined);
-  const nativeRefreshWalletIdRef = useRef<string | undefined>(undefined);
-  const nativeRefreshReadyWalletIdRef = useRef<string | undefined>(undefined);
-  const nativeRefreshRecoverUntilRef = useRef(0);
-  const nativeRefreshGenerationRef = useRef(0);
-  const nativeRefreshRetryAttemptRef = useRef(0);
-  const nativeRefreshRetryTimeoutRef = useRef<
-    ReturnType<typeof setTimeout> | undefined
-  >(undefined);
-  const snapshotRefreshInFlight = useRef(false);
-  const transactionRefreshInFlight = useRef(false);
+  const autoOpenAttemptedWalletIdsRef = useRef(new Set<string>());
+  const nativeRefreshWalletIdsRef = useRef(new Set<string>());
+  const nativeRefreshReadyWalletIdsRef = useRef(new Set<string>());
+  const nativeRefreshRetryAttemptsRef = useRef(new Map<string, number>());
+  const nativeRefreshRetryTimeoutsRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
+  const snapshotRefreshInFlightIdsRef = useRef(new Set<string>());
+  const transactionRefreshInFlightIdsRef = useRef(new Set<string>());
+  const globallyLockedRef = useRef(false);
   const hardwareRefreshInFlight = useRef(false);
   const processedPushEventIdRef = useRef<string | undefined>(undefined);
 
@@ -204,21 +213,19 @@ export function WalletStateProvider({
         return Promise.resolve();
       }
 
-      nativeRefreshGenerationRef.current += 1;
-      if (nativeRefreshRetryTimeoutRef.current) {
-        clearTimeout(nativeRefreshRetryTimeoutRef.current);
-        nativeRefreshRetryTimeoutRef.current = undefined;
+      const registrationId = sessionRegistrationId(closingSession);
+      const retryTimeout =
+        nativeRefreshRetryTimeoutsRef.current.get(registrationId);
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+        nativeRefreshRetryTimeoutsRef.current.delete(registrationId);
       }
-      if (nativeRefreshWalletIdRef.current === closingSession.walletId) {
-        nativeRefreshWalletIdRef.current = undefined;
-      }
-      if (nativeRefreshReadyWalletIdRef.current === closingSession.walletId) {
-        nativeRefreshReadyWalletIdRef.current = undefined;
-      }
-      nativeRefreshRecoverUntilRef.current = 0;
-      nativeRefreshRetryAttemptRef.current = 0;
+      nativeRefreshWalletIdsRef.current.delete(registrationId);
+      nativeRefreshReadyWalletIdsRef.current.delete(registrationId);
+      nativeRefreshRetryAttemptsRef.current.delete(registrationId);
       logWalletEvent('WalletState', 'stopNativeRefresh.start', {
         reason,
+        registrationId,
         walletId: closingSession.walletId,
       });
       return walletService.stopRefresh(closingSession).catch(stopError => {
@@ -234,7 +241,11 @@ export function WalletStateProvider({
 
   const shouldSkipLiveWalletRead = useCallback(
     (activeSession: WalletSession, operation: string) => {
-      if (registeredWalletRef.current?.kind === 'fast') {
+      const registrationId = sessionRegistrationId(activeSession);
+      const registration = registeredWalletsRef.current.find(
+        wallet => wallet.id === registrationId,
+      );
+      if (isFastWalletRegistration(registration)) {
         logWalletEvent('WalletState', `${operation}.skipped`, {
           reason: 'fastWalletUsesScannerSignals',
           walletId: activeSession.walletId,
@@ -242,22 +253,9 @@ export function WalletStateProvider({
         return true;
       }
 
-      const recoveringForMs =
-        nativeRefreshRecoverUntilRef.current > Date.now()
-          ? nativeRefreshRecoverUntilRef.current - Date.now()
-          : 0;
-      if (recoveringForMs > 0) {
-        logWalletEvent('WalletState', `${operation}.skipped`, {
-          reason: 'nativeRefreshRecovering',
-          recoverMs: Math.round(recoveringForMs),
-          walletId: activeSession.walletId,
-        });
-        return true;
-      }
-
       if (
-        nativeRefreshWalletIdRef.current === activeSession.walletId &&
-        nativeRefreshReadyWalletIdRef.current !== activeSession.walletId
+        nativeRefreshWalletIdsRef.current.has(registrationId) &&
+        !nativeRefreshReadyWalletIdsRef.current.has(registrationId)
       ) {
         logWalletEvent('WalletState', `${operation}.skipped`, {
           reason: 'nativeRefreshStarting',
@@ -282,6 +280,7 @@ export function WalletStateProvider({
     setRegisteredWallet(wallet);
     setRegisteredWallets(wallets);
     setWalletSnapshots(cachedSnapshots);
+    walletSnapshotsRef.current = cachedSnapshots;
     setLoadingRegistry(false);
     return wallet;
   }, []);
@@ -297,35 +296,33 @@ export function WalletStateProvider({
     setRegisteredWallets(wallets);
     setRegisteredWallet(active);
     setWalletSnapshots(cachedSnapshots);
+    walletSnapshotsRef.current = cachedSnapshots;
     setLoadingRegistry(false);
     return wallets;
   }, []);
 
-  const activateRegisteredWallet = useCallback(
-    async (walletId: string) => {
-      stopNativeRefresh(sessionRef.current, 'activeWalletChanged');
-      // Selecting a saved wallet is an explicit user action.  Allow the
-      // automatic local-credential opener to run again even when the same
-      // wallet had previously been locked.
-      autoOpenAttemptedWalletIdRef.current = undefined;
-      const wallet = await walletService.setActiveRegisteredWallet(walletId);
-      const wallets = await walletService.loadRegisteredWallets();
-      registeredWalletRef.current = wallet;
-      registeredWalletsRef.current = wallets;
-      setRegisteredWallet(wallet);
-      setRegisteredWallets(wallets);
-      setSession(undefined);
-      sessionRef.current = undefined;
-      setSnapshot(undefined);
-      setTransactions([]);
-      setHardwareStatus(undefined);
-      setError(undefined);
-      setUnlockRequestId(undefined);
-      setLoadingRegistry(false);
-      return wallet;
-    },
-    [stopNativeRefresh],
-  );
+  const activateRegisteredWallet = useCallback(async (walletId: string) => {
+    const wallet = await walletService.setActiveRegisteredWallet(walletId);
+    const wallets = await walletService.loadRegisteredWallets();
+    const openedSession = sessionsByRegistrationRef.current.get(walletId);
+    registeredWalletRef.current = wallet;
+    registeredWalletsRef.current = wallets;
+    setRegisteredWallet(wallet);
+    setRegisteredWallets(wallets);
+    sessionRef.current = openedSession;
+    setSession(openedSession);
+    if (openedSession) {
+      walletService.activateSession(openedSession);
+    }
+    setSnapshot(walletSnapshotsRef.current[walletId]);
+    setTransactions(transactionsByRegistrationRef.current.get(walletId) ?? []);
+    setSyncStartHeight(syncStartHeightsRef.current.get(walletId));
+    setHardwareStatus(undefined);
+    setError(undefined);
+    setUnlockRequestId(undefined);
+    setLoadingRegistry(false);
+    return wallet;
+  }, []);
 
   const removeRegisteredWallet = useCallback(
     async (walletId: string) => {
@@ -336,20 +333,39 @@ export function WalletStateProvider({
         pruneWalletSnapshotCache(wallets.map(wallet => wallet.id)),
       ]);
 
-      if (removingActiveWallet) {
-        stopNativeRefresh(sessionRef.current, 'activeWalletRemoved');
-        setSession(undefined);
-        sessionRef.current = undefined;
-        setSnapshot(undefined);
-        setTransactions([]);
-        setHardwareStatus(undefined);
+      const removedSession = sessionsByRegistrationRef.current.get(walletId);
+      if (removedSession) {
+        await stopNativeRefresh(removedSession, 'walletRemoved');
+        await walletService.closeWallet(removedSession).catch(() => undefined);
       }
+      sessionsByRegistrationRef.current.delete(walletId);
+      transactionsByRegistrationRef.current.delete(walletId);
+      syncStartHeightsRef.current.delete(walletId);
+      autoOpenAttemptedWalletIdsRef.current.delete(walletId);
 
       registeredWalletRef.current = active;
       registeredWalletsRef.current = wallets;
       setRegisteredWallet(active);
       setRegisteredWallets(wallets);
       setWalletSnapshots(cachedSnapshots);
+      walletSnapshotsRef.current = cachedSnapshots;
+      if (removingActiveWallet) {
+        const nextSession = active
+          ? sessionsByRegistrationRef.current.get(active.id)
+          : undefined;
+        sessionRef.current = nextSession;
+        setSession(nextSession);
+        setSnapshot(active ? cachedSnapshots[active.id] : undefined);
+        setTransactions(
+          active
+            ? (transactionsByRegistrationRef.current.get(active.id) ?? [])
+            : [],
+        );
+        setSyncStartHeight(
+          active ? syncStartHeightsRef.current.get(active.id) : undefined,
+        );
+        setHardwareStatus(undefined);
+      }
       setError(undefined);
       setLoadingRegistry(false);
       return wallets;
@@ -401,8 +417,12 @@ export function WalletStateProvider({
           setRegisteredWallet(wallet);
           setRegisteredWallets(wallets);
           setWalletSnapshots(cachedSnapshots);
+          walletSnapshotsRef.current = cachedSnapshots;
           pruneWalletSnapshotCache(wallets.map(item => item.id))
-            .then(setWalletSnapshots)
+            .then(pruned => {
+              walletSnapshotsRef.current = pruned;
+              setWalletSnapshots(pruned);
+            })
             .catch(() => undefined);
         }
       })
@@ -422,117 +442,138 @@ export function WalletStateProvider({
     };
   }, []);
 
-  const refreshSnapshot = useCallback(async () => {
-    const activeSession = sessionRef.current;
-    if (!activeSession) {
-      return undefined;
-    }
-    if (shouldSkipLiveWalletRead(activeSession, 'refreshSnapshot')) {
-      return snapshot;
-    }
-    if (snapshotRefreshInFlight.current) {
-      logWalletEvent('WalletState', 'refreshSnapshot.skipped', {
-        reason: 'inFlight',
-        walletId: activeSession.walletId,
-      });
-      return snapshot;
-    }
+  const refreshSessionSnapshot = useCallback(
+    async (
+      registration: RegisteredWallet,
+      openedSession: WalletSession,
+    ): Promise<WalletSnapshot | undefined> => {
+      if (shouldSkipLiveWalletRead(openedSession, 'refreshSnapshot')) {
+        return walletSnapshotsRef.current[registration.id];
+      }
+      if (snapshotRefreshInFlightIdsRef.current.has(registration.id)) {
+        return walletSnapshotsRef.current[registration.id];
+      }
 
-    snapshotRefreshInFlight.current = true;
-    try {
-      const nextSnapshot = await walletService.snapshot(activeSession);
-      logWalletEvent('WalletState', 'refreshSnapshot.success', {
-        daemonHeight: nextSnapshot.daemonHeight,
-        daemonTargetHeight: nextSnapshot.daemonTargetHeight,
-        synchronized: nextSnapshot.synchronized,
-        walletHeight: nextSnapshot.walletHeight,
-        walletId: activeSession.walletId,
-      });
-      setSnapshot(nextSnapshot);
-      const activeWallet = registeredWalletRef.current;
-      if (activeWallet) {
-        setWalletSnapshots(current => ({
-          ...current,
-          [activeWallet.id]: nextSnapshot,
-        }));
-        saveWalletSnapshot(activeWallet.id, nextSnapshot).catch(reason => {
+      snapshotRefreshInFlightIdsRef.current.add(registration.id);
+      try {
+        const nextSnapshot = await walletService.snapshot(openedSession);
+        if (!syncStartHeightsRef.current.has(registration.id)) {
+          const cachedHeight = Number(
+            walletSnapshotsRef.current[registration.id]?.walletHeight,
+          );
+          syncStartHeightsRef.current.set(
+            registration.id,
+            Number.isFinite(cachedHeight) && cachedHeight > 0
+              ? cachedHeight
+              : nextSnapshot.walletHeight,
+          );
+        }
+        const nextCache = {
+          ...walletSnapshotsRef.current,
+          [registration.id]: nextSnapshot,
+        };
+        walletSnapshotsRef.current = nextCache;
+        setWalletSnapshots(nextCache);
+        if (registeredWalletRef.current?.id === registration.id) {
+          setSnapshot(nextSnapshot);
+          setSyncStartHeight(syncStartHeightsRef.current.get(registration.id));
+          setError(undefined);
+        }
+        saveWalletSnapshot(registration.id, nextSnapshot).catch(reason => {
           logWalletEvent('WalletState', 'refreshSnapshot.cacheError', {
             error: errorMessage(reason),
-            walletId: activeWallet.id,
+            walletId: registration.id,
           });
         });
+        logWalletEvent('WalletState', 'refreshSnapshot.success', {
+          daemonHeight: nextSnapshot.daemonHeight,
+          synchronized: nextSnapshot.synchronized,
+          walletHeight: nextSnapshot.walletHeight,
+          registrationId: registration.id,
+        });
+        return nextSnapshot;
+      } catch (reason) {
+        if (registeredWalletRef.current?.id === registration.id) {
+          setError(errorMessage(reason));
+        }
+        logWalletEvent('WalletState', 'refreshSnapshot.error', {
+          error: errorMessage(reason),
+          registrationId: registration.id,
+        });
+        return undefined;
+      } finally {
+        snapshotRefreshInFlightIdsRef.current.delete(registration.id);
       }
-      setError(undefined);
-      return nextSnapshot;
-    } catch (reason) {
-      setError(errorMessage(reason));
-      logWalletEvent('WalletState', 'refreshSnapshot.error', {
-        error: errorMessage(reason),
-        walletId: activeSession.walletId,
-      });
+    },
+    [shouldSkipLiveWalletRead],
+  );
+
+  const refreshSessionTransactions = useCallback(
+    async (
+      registration: RegisteredWallet,
+      openedSession: WalletSession,
+    ): Promise<WalletTransaction[]> => {
+      const cached =
+        transactionsByRegistrationRef.current.get(registration.id) ?? [];
+      if (shouldSkipLiveWalletRead(openedSession, 'refreshTransactions')) {
+        return cached;
+      }
+      if (transactionRefreshInFlightIdsRef.current.has(registration.id)) {
+        return cached;
+      }
+
+      transactionRefreshInFlightIdsRef.current.add(registration.id);
+      try {
+        const nextTransactions = await walletService.getTransactions(
+          openedSession,
+          25,
+        );
+        transactionsByRegistrationRef.current.set(
+          registration.id,
+          nextTransactions,
+        );
+        queueIncomingTransactionNotices(
+          incomingTransactionObserverRef.current.observe({
+            walletId: registration.id,
+            walletName: walletDisplayName(registration),
+            transactions: nextTransactions,
+          }),
+        );
+        if (registeredWalletRef.current?.id === registration.id) {
+          setTransactions(nextTransactions);
+        }
+        return nextTransactions;
+      } catch (reason) {
+        logWalletEvent('WalletState', 'refreshTransactions.error', {
+          error: errorMessage(reason),
+          registrationId: registration.id,
+        });
+        return cached;
+      } finally {
+        transactionRefreshInFlightIdsRef.current.delete(registration.id);
+      }
+    },
+    [queueIncomingTransactionNotices, shouldSkipLiveWalletRead],
+  );
+
+  const refreshSnapshot = useCallback(async () => {
+    const activeRegistration = registeredWalletRef.current;
+    const activeSession = sessionRef.current;
+    if (!activeRegistration || !activeSession) {
       return undefined;
-    } finally {
-      snapshotRefreshInFlight.current = false;
     }
-  }, [shouldSkipLiveWalletRead, snapshot]);
+    return refreshSessionSnapshot(activeRegistration, activeSession);
+  }, [refreshSessionSnapshot]);
 
   const refreshTransactions = useCallback(async () => {
+    const activeRegistration = registeredWalletRef.current;
     const activeSession = sessionRef.current;
-    if (!activeSession) {
+    if (!activeRegistration || !activeSession) {
       setTransactions([]);
       return [];
     }
-    if (shouldSkipLiveWalletRead(activeSession, 'refreshTransactions')) {
-      return transactions;
-    }
-    if (transactionRefreshInFlight.current) {
-      logWalletEvent('WalletState', 'refreshTransactions.skipped', {
-        reason: 'inFlight',
-        walletId: activeSession.walletId,
-      });
-      return transactions;
-    }
-
-    transactionRefreshInFlight.current = true;
-    try {
-      const nextTransactions = await walletService.getTransactions(
-        activeSession,
-        25,
-      );
-      const uniqueTransactionCount = new Set(
-        nextTransactions.map(transaction => transaction.hash),
-      ).size;
-      logWalletEvent('WalletState', 'refreshTransactions.success', {
-        pendingTransactionCount: nextTransactions.filter(
-          transaction => transaction.pending,
-        ).length,
-        transactionCount: nextTransactions.length,
-        uniqueTransactionCount,
-        walletId: activeSession.walletId,
-      });
-      const activeWallet = registeredWalletRef.current;
-      queueIncomingTransactionNotices(
-        incomingTransactionObserverRef.current.observe({
-          walletId: activeWallet?.id ?? activeSession.walletId,
-          walletName: activeWallet ? walletDisplayName(activeWallet) : 'Wallet',
-          transactions: nextTransactions,
-        }),
-      );
-      setTransactions(nextTransactions);
-      return nextTransactions;
-    } catch (reason) {
-      logWalletEvent('WalletState', 'refreshTransactions.error', {
-        error: errorMessage(reason),
-        walletId: activeSession.walletId,
-      });
-      // Transaction history is a secondary read. A slow daemon must not turn
-      // an otherwise usable wallet into a global sync error or erase already
-      // loaded activity.
-      return transactions;
-    } finally {
-      transactionRefreshInFlight.current = false;
-    }
-  }, [queueIncomingTransactionNotices, shouldSkipLiveWalletRead, transactions]);
+    return refreshSessionTransactions(activeRegistration, activeSession);
+  }, [refreshSessionTransactions]);
 
   const refreshFastWalletsFromIncomingSignal = useCallback(
     async (event: FastWalletPushEvent, announceInitialTransactions = false) => {
@@ -559,10 +600,12 @@ export function WalletStateProvider({
             }),
           );
           if (result.snapshot) {
-            setWalletSnapshots(current => ({
-              ...current,
-              [result.registrationId]: result.snapshot!,
-            }));
+            const nextCache = {
+              ...walletSnapshotsRef.current,
+              [result.registrationId]: result.snapshot,
+            };
+            walletSnapshotsRef.current = nextCache;
+            setWalletSnapshots(nextCache);
             await saveWalletSnapshot(
               result.registrationId,
               result.snapshot,
@@ -638,9 +681,8 @@ export function WalletStateProvider({
 
     hardwareRefreshInFlight.current = true;
     try {
-      const nextStatus = await walletService.getHardwareWalletStatus(
-        activeSession,
-      );
+      const nextStatus =
+        await walletService.getHardwareWalletStatus(activeSession);
       setHardwareStatus(nextStatus);
       setError(undefined);
       return nextStatus;
@@ -654,7 +696,11 @@ export function WalletStateProvider({
 
   const startNativeRefresh = useCallback(
     (openedSession: WalletSession, reason: string) => {
-      if (registeredWalletRef.current?.kind === 'fast') {
+      const registrationId = sessionRegistrationId(openedSession);
+      const registration = registeredWalletsRef.current.find(
+        wallet => wallet.id === registrationId,
+      );
+      if (!registration || isFastWalletRegistration(registration)) {
         logWalletEvent('WalletState', 'startNativeRefresh.skipped', {
           reason: 'fastWalletUsesScannerSignals',
           walletId: openedSession.walletId,
@@ -662,135 +708,174 @@ export function WalletStateProvider({
         return;
       }
 
-      if (nativeRefreshWalletIdRef.current === openedSession.walletId) {
+      if (nativeRefreshWalletIdsRef.current.has(registrationId)) {
         logWalletEvent('WalletState', 'startNativeRefresh.skipped', {
           reason: 'alreadyStarted',
-          walletId: openedSession.walletId,
+          registrationId,
         });
         return;
       }
 
-      const generation = nativeRefreshGenerationRef.current + 1;
-      nativeRefreshGenerationRef.current = generation;
-      nativeRefreshWalletIdRef.current = openedSession.walletId;
-      nativeRefreshReadyWalletIdRef.current = undefined;
-      nativeRefreshRecoverUntilRef.current = 0;
-      if (nativeRefreshRetryTimeoutRef.current) {
-        clearTimeout(nativeRefreshRetryTimeoutRef.current);
-        nativeRefreshRetryTimeoutRef.current = undefined;
+      const retryTimeout =
+        nativeRefreshRetryTimeoutsRef.current.get(registrationId);
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+        nativeRefreshRetryTimeoutsRef.current.delete(registrationId);
       }
+      nativeRefreshWalletIdsRef.current.add(registrationId);
+      nativeRefreshReadyWalletIdsRef.current.delete(registrationId);
       logWalletEvent('WalletState', 'startNativeRefresh.start', {
         reason,
-        walletId: openedSession.walletId,
+        registrationId,
       });
 
       walletService
         .startRefresh(openedSession)
         .then(() => {
           if (
-            nativeRefreshGenerationRef.current !== generation ||
-            sessionRef.current?.walletId !== openedSession.walletId
+            sessionsByRegistrationRef.current.get(registrationId) !==
+            openedSession
           ) {
             logWalletEvent('WalletState', 'startNativeRefresh.stale', {
               reason,
-              walletId: openedSession.walletId,
+              registrationId,
             });
             return;
           }
 
-          setError(undefined);
-          nativeRefreshRetryAttemptRef.current = 0;
-          nativeRefreshReadyWalletIdRef.current = openedSession.walletId;
+          nativeRefreshRetryAttemptsRef.current.delete(registrationId);
+          nativeRefreshReadyWalletIdsRef.current.add(registrationId);
+          if (registeredWalletRef.current?.id === registrationId) {
+            setError(undefined);
+          }
           logWalletEvent('WalletState', 'startNativeRefresh.success', {
             reason,
-            walletId: openedSession.walletId,
+            registrationId,
           });
-          refreshSnapshot().catch(refreshError => {
-            logWalletEvent('WalletState', 'startNativeRefresh.snapshotError', {
-              error: errorMessage(refreshError),
-              walletId: openedSession.walletId,
+          refreshSessionSnapshot(registration, openedSession).catch(
+            refreshError => {
+              logWalletEvent(
+                'WalletState',
+                'startNativeRefresh.snapshotError',
+                {
+                  error: errorMessage(refreshError),
+                  registrationId,
+                },
+              );
+            },
+          );
+          refreshSessionTransactions(registration, openedSession).catch(
+            refreshError => {
+              logWalletEvent(
+                'WalletState',
+                'startNativeRefresh.transactionsError',
+                {
+                  error: errorMessage(refreshError),
+                  registrationId,
+                },
+              );
+            },
+          );
+          if (
+            registeredWalletRef.current?.id === registrationId &&
+            openedSession.hardwareDevice
+          ) {
+            refreshHardwareWalletStatus().catch(refreshError => {
+              logWalletEvent(
+                'WalletState',
+                'startNativeRefresh.hardwareError',
+                {
+                  error: errorMessage(refreshError),
+                  registrationId,
+                },
+              );
             });
-          });
-          refreshTransactions().catch(refreshError => {
-            logWalletEvent(
-              'WalletState',
-              'startNativeRefresh.transactionsError',
-              {
-                error: errorMessage(refreshError),
-                walletId: openedSession.walletId,
-              },
-            );
-          });
-          refreshHardwareWalletStatus().catch(refreshError => {
-            logWalletEvent('WalletState', 'startNativeRefresh.hardwareError', {
-              error: errorMessage(refreshError),
-              walletId: openedSession.walletId,
-            });
-          });
+          }
         })
         .catch(reasonError => {
           if (
-            nativeRefreshGenerationRef.current !== generation ||
-            sessionRef.current?.walletId !== openedSession.walletId
+            sessionsByRegistrationRef.current.get(registrationId) !==
+            openedSession
           ) {
             return;
           }
 
-          nativeRefreshReadyWalletIdRef.current = undefined;
-          setError(errorMessage(reasonError));
-          const retryAttempt = nativeRefreshRetryAttemptRef.current + 1;
-          nativeRefreshRetryAttemptRef.current = retryAttempt;
+          nativeRefreshReadyWalletIdsRef.current.delete(registrationId);
+          nativeRefreshWalletIdsRef.current.delete(registrationId);
+          if (registeredWalletRef.current?.id === registrationId) {
+            setError(errorMessage(reasonError));
+          }
+          const retryAttempt =
+            (nativeRefreshRetryAttemptsRef.current.get(registrationId) ?? 0) +
+            1;
+          nativeRefreshRetryAttemptsRef.current.set(
+            registrationId,
+            retryAttempt,
+          );
           const retryDelayMs = Math.min(
             30_000,
             5_000 * 2 ** Math.min(retryAttempt - 1, 3),
           );
-          nativeRefreshWalletIdRef.current = undefined;
-          nativeRefreshRecoverUntilRef.current =
-            Date.now() + retryDelayMs + 5_000;
           logWalletEvent('WalletState', 'startNativeRefresh.error', {
             error: errorMessage(reasonError),
             reason,
-            walletId: openedSession.walletId,
+            registrationId,
           });
           logWalletEvent('WalletState', 'startNativeRefresh.retryScheduled', {
             previousError: errorMessage(reasonError),
             retryAttempt,
             retryDelayMs,
-            walletId: openedSession.walletId,
+            registrationId,
           });
-          nativeRefreshRetryTimeoutRef.current = setTimeout(() => {
-            nativeRefreshRetryTimeoutRef.current = undefined;
-            if (sessionRef.current?.walletId !== openedSession.walletId) {
+          const timeout = setTimeout(() => {
+            nativeRefreshRetryTimeoutsRef.current.delete(registrationId);
+            if (
+              globallyLockedRef.current ||
+              sessionsByRegistrationRef.current.get(registrationId) !==
+                openedSession
+            ) {
               logWalletEvent('WalletState', 'startNativeRefresh.retrySkipped', {
-                reason: 'sessionChanged',
-                walletId: openedSession.walletId,
+                reason: 'sessionChangedOrLocked',
+                registrationId,
               });
               return;
             }
 
             startNativeRefresh(openedSession, 'retryAfterError');
           }, retryDelayMs);
+          nativeRefreshRetryTimeoutsRef.current.set(registrationId, timeout);
         });
     },
-    [refreshHardwareWalletStatus, refreshSnapshot, refreshTransactions],
+    [
+      refreshHardwareWalletStatus,
+      refreshSessionSnapshot,
+      refreshSessionTransactions,
+    ],
   );
 
   const lockWallet = useCallback(async () => {
-    const activeSession = sessionRef.current;
-    if (!activeSession) {
+    const openSessions = [...sessionsByRegistrationRef.current.values()];
+    if (openSessions.length === 0) {
       return;
     }
 
+    globallyLockedRef.current = true;
     logWalletEvent('WalletState', 'lockWallet.start', {
-      walletId: activeSession.walletId,
+      walletCount: openSessions.length,
     });
-    stopNativeRefresh(activeSession, 'manualLock');
     try {
-      await walletService.closeWallet(activeSession);
-      // Prevent the background auto-open path from immediately undoing a
-      // conscious lock action. The UI redirects to the explicit unlock sheet.
-      autoOpenAttemptedWalletIdRef.current =
-        registeredWalletRef.current?.id ?? activeSession.walletId;
+      await Promise.all(
+        openSessions.map(openedSession =>
+          stopNativeRefresh(openedSession, 'manualLock'),
+        ),
+      );
+      await Promise.all(
+        openSessions.map(openedSession =>
+          walletService.closeWallet(openedSession).catch(() => undefined),
+        ),
+      );
+      sessionsByRegistrationRef.current.clear();
+      autoOpenAttemptedWalletIdsRef.current.clear();
       sessionRef.current = undefined;
       setSession(undefined);
       setSnapshot(undefined);
@@ -799,19 +884,18 @@ export function WalletStateProvider({
       setError(undefined);
       setUnlockRequestId(Date.now());
       logWalletEvent('WalletState', 'lockWallet.success', {
-        walletId: activeSession.walletId,
+        walletCount: openSessions.length,
       });
     } catch (reason) {
-      startNativeRefresh(activeSession, 'lockFailed');
       const message = errorMessage(reason);
       setError(message);
       logWalletEvent('WalletState', 'lockWallet.error', {
         error: message,
-        walletId: activeSession.walletId,
+        walletCount: openSessions.length,
       });
       throw reason;
     }
-  }, [startNativeRefresh, stopNativeRefresh]);
+  }, [stopNativeRefresh]);
 
   const reconnectHardwareWallet = useCallback(async () => {
     const activeSession = sessionRef.current;
@@ -821,9 +905,8 @@ export function WalletStateProvider({
     }
 
     try {
-      const nextStatus = await walletService.reconnectHardwareWallet(
-        activeSession,
-      );
+      const nextStatus =
+        await walletService.reconnectHardwareWallet(activeSession);
       setHardwareStatus(nextStatus);
       setError(undefined);
       return nextStatus;
@@ -835,7 +918,15 @@ export function WalletStateProvider({
 
   useEffect(
     () => () => {
-      stopNativeRefresh(sessionRef.current, 'unmount');
+      for (const timeout of nativeRefreshRetryTimeoutsRef.current.values()) {
+        clearTimeout(timeout);
+      }
+      nativeRefreshRetryTimeoutsRef.current.clear();
+      for (const openedSession of sessionsByRegistrationRef.current.values()) {
+        void stopNativeRefresh(openedSession, 'unmount');
+        void walletService.closeWallet(openedSession).catch(() => undefined);
+      }
+      sessionsByRegistrationRef.current.clear();
     },
     [stopNativeRefresh],
   );
@@ -872,73 +963,105 @@ export function WalletStateProvider({
       registration?: RegisteredWallet,
       options?: RegisterOpenedSessionOptions,
     ) => {
-      const previousSession = sessionRef.current;
-      if (previousSession?.walletId !== openedSession.walletId) {
-        stopNativeRefresh(previousSession, 'sessionReplaced');
+      const registrationId = sessionRegistrationId(openedSession);
+      let openedRegistration =
+        registration ??
+        registeredWalletsRef.current.find(
+          wallet => wallet.id === registrationId,
+        );
+
+      if (!openedRegistration) {
+        const wallets = await walletService.loadRegisteredWallets();
+        registeredWalletsRef.current = wallets;
+        setRegisteredWallets(wallets);
+        openedRegistration = wallets.find(
+          wallet => wallet.id === registrationId,
+        );
+      }
+      if (!openedRegistration) {
+        throw new Error('Opened wallet is missing from the local registry');
+      }
+      if (isFastWalletRegistration(openedRegistration)) {
+        throw new Error('Fast Wallet is synchronized by the scanner service');
       }
 
-      walletService.activateSession(openedSession);
-      sessionRef.current = openedSession;
-      setSession(openedSession);
-      const activeRegistration = registration ?? registeredWalletRef.current;
-      const cachedSnapshot = activeRegistration
-        ? walletSnapshots[activeRegistration.id]
-        : undefined;
-      setSyncStartHeight(
-        activeRegistration?.kind !== 'fast' && cachedSnapshot
-          ? Number(cachedSnapshot.walletHeight) || 0
-          : undefined,
+      const previousSession = sessionsByRegistrationRef.current.get(
+        openedRegistration.id,
       );
-      if (registration) {
-        registeredWalletRef.current = registration;
+      if (
+        previousSession &&
+        previousSession.walletId !== openedSession.walletId
+      ) {
+        await stopNativeRefresh(previousSession, 'registrationReopened');
+        await walletService.closeWallet(previousSession).catch(() => undefined);
       }
-      setSnapshot(
-        activeRegistration?.kind === 'fast'
-          ? walletSnapshots[activeRegistration.id]
-          : undefined,
+
+      const registeredSession = {
+        ...openedSession,
+        registrationId: openedRegistration.id,
+      };
+      sessionsByRegistrationRef.current.set(
+        openedRegistration.id,
+        registeredSession,
       );
-      setTransactions([]);
-      setHardwareStatus(undefined);
+      autoOpenAttemptedWalletIdsRef.current.add(openedRegistration.id);
+      globallyLockedRef.current = false;
+
+      const wallets = registeredWalletsRef.current.some(
+        wallet => wallet.id === openedRegistration?.id,
+      )
+        ? registeredWalletsRef.current.map(wallet =>
+            wallet.id === openedRegistration?.id ? openedRegistration! : wallet,
+          )
+        : [...registeredWalletsRef.current, openedRegistration];
+      registeredWalletsRef.current = wallets;
+      setRegisteredWallets(wallets);
+
+      const shouldSelect =
+        options?.select ??
+        Boolean(
+          registration ||
+          !registeredWalletRef.current ||
+          registeredWalletRef.current.id === openedRegistration.id,
+        );
+      if (shouldSelect) {
+        walletService.activateSession(registeredSession);
+        registeredWalletRef.current = openedRegistration;
+        sessionRef.current = registeredSession;
+        setRegisteredWallet(openedRegistration);
+        setSession(registeredSession);
+        setSnapshot(walletSnapshotsRef.current[openedRegistration.id]);
+        setTransactions(
+          transactionsByRegistrationRef.current.get(openedRegistration.id) ??
+            [],
+        );
+        setSyncStartHeight(
+          syncStartHeightsRef.current.get(openedRegistration.id),
+        );
+        setHardwareStatus(undefined);
+      }
       setError(undefined);
       setUnlockRequestId(undefined);
-      if (registration) {
-        setRegisteredWallet(registration);
-        setRegisteredWallets(current => {
-          const wallets = current.some(wallet => wallet.id === registration.id)
-            ? current.map(wallet =>
-                wallet.id === registration.id ? registration : wallet,
-              )
-            : [...current, registration];
-          registeredWalletsRef.current = wallets;
-          return wallets;
-        });
-        setLoadingRegistry(false);
-      } else {
-        const wallet = await reloadRegisteredWallet();
-        registeredWalletRef.current = wallet;
-        if (wallet?.kind === 'fast') {
-          setSnapshot(walletSnapshots[wallet.id]);
-        }
-      }
+      setLoadingRegistry(false);
 
-      startNativeRefresh(openedSession, 'sessionOpened');
+      startNativeRefresh(registeredSession, 'sessionOpened');
 
       if (options?.refresh === false) {
         return;
       }
 
-      await refreshSnapshot();
-      await refreshTransactions();
-      await refreshHardwareWalletStatus();
+      await refreshSessionSnapshot(openedRegistration, registeredSession);
+      await refreshSessionTransactions(openedRegistration, registeredSession);
+      if (shouldSelect && registeredSession.hardwareDevice) {
+        await refreshHardwareWalletStatus();
+      }
     },
     [
       refreshHardwareWalletStatus,
-      refreshSnapshot,
-      refreshTransactions,
-      reloadRegisteredWallet,
+      refreshSessionSnapshot,
+      refreshSessionTransactions,
       startNativeRefresh,
       stopNativeRefresh,
-      walletSnapshots,
     ],
   );
 
@@ -961,6 +1084,7 @@ export function WalletStateProvider({
     });
     await stopNativeRefresh(activeSession, 'ledgerSigningRequested');
     await walletService.closeWallet(activeSession);
+    sessionsByRegistrationRef.current.delete(activeRegistration.id);
     sessionRef.current = undefined;
     setSession(undefined);
     setSnapshot(undefined);
@@ -968,19 +1092,26 @@ export function WalletStateProvider({
     setHardwareStatus(undefined);
 
     try {
-      const signingSession = await walletService.openHardwareWalletForSigning(
-        activeRegistration,
+      const signingSession =
+        await walletService.openHardwareWalletForSigning(activeRegistration);
+      const registeredSigningSession = {
+        ...signingSession,
+        registrationId: activeRegistration.id,
+      };
+      sessionsByRegistrationRef.current.set(
+        activeRegistration.id,
+        registeredSigningSession,
       );
-      walletService.activateSession(signingSession);
-      sessionRef.current = signingSession;
-      setSession(signingSession);
+      walletService.activateSession(registeredSigningSession);
+      sessionRef.current = registeredSigningSession;
+      setSession(registeredSigningSession);
       setError(undefined);
-      startNativeRefresh(signingSession, 'ledgerSigningConnected');
+      startNativeRefresh(registeredSigningSession, 'ledgerSigningConnected');
       logWalletEvent('WalletState', 'connectLedgerForSigning.success', {
-        walletId: signingSession.walletId,
+        walletId: registeredSigningSession.walletId,
         registrationId: activeRegistration.id,
       });
-      return signingSession;
+      return registeredSigningSession;
     } catch (reason) {
       const message = errorMessage(reason);
       setError(message);
@@ -993,11 +1124,22 @@ export function WalletStateProvider({
       // read-only session. Reopen it so balances and incoming transfers remain
       // available without requiring another user action.
       try {
-        const readOnlySession = await walletService.openRegisteredWallet();
-        walletService.activateSession(readOnlySession);
-        sessionRef.current = readOnlySession;
-        setSession(readOnlySession);
-        startNativeRefresh(readOnlySession, 'ledgerSigningCancelled');
+        const readOnlySession =
+          await walletService.openRegisteredWalletRegistration(
+            activeRegistration,
+          );
+        const registeredReadOnlySession = {
+          ...readOnlySession,
+          registrationId: activeRegistration.id,
+        };
+        sessionsByRegistrationRef.current.set(
+          activeRegistration.id,
+          registeredReadOnlySession,
+        );
+        walletService.activateSession(registeredReadOnlySession);
+        sessionRef.current = registeredReadOnlySession;
+        setSession(registeredReadOnlySession);
+        startNativeRefresh(registeredReadOnlySession, 'ledgerSigningCancelled');
       } catch (restoreError) {
         logWalletEvent('WalletState', 'connectLedgerForSigning.restoreError', {
           error: errorMessage(restoreError),
@@ -1009,64 +1151,96 @@ export function WalletStateProvider({
   }, [startNativeRefresh, stopNativeRefresh]);
 
   useEffect(() => {
-    if (
-      loadingRegistry ||
-      sessionRef.current ||
-      !registeredWallet?.credentialKey ||
-      registeredWallet.kind === 'hardware' ||
-      registeredWallet.kind === 'fast' ||
-      autoOpenAttemptedWalletIdRef.current === registeredWallet.id
-    ) {
+    if (loadingRegistry || globallyLockedRef.current) {
       return;
     }
 
-    autoOpenAttemptedWalletIdRef.current = registeredWallet.id;
-    logWalletEvent('WalletState', 'autoOpen.start', {
-      walletId: registeredWallet.id,
-      walletName: registeredWallet.walletName,
-    });
-    walletService
-      .openRegisteredWallet()
-      .then(openedSession =>
-        registerOpenedSession(openedSession, undefined, { refresh: false }),
-      )
-      .then(() => {
-        logWalletEvent('WalletState', 'autoOpen.success', {
-          walletId: registeredWallet.id,
-          walletName: registeredWallet.walletName,
-        });
-      })
-      .catch(reason => {
-        const message = errorMessage(reason);
-        setError(message);
-        logWalletEvent('WalletState', 'autoOpen.error', {
-          error: message,
-          walletId: registeredWallet.id,
-          walletName: registeredWallet.walletName,
-        });
+    for (const wallet of registeredWallets) {
+      const canOpenWithoutPrompt =
+        (wallet.kind === 'software' && Boolean(wallet.credentialKey)) ||
+        (wallet.kind === 'hardware' &&
+          Boolean(wallet.viewOnlyPath && wallet.viewOnlyCredentialKey));
+      if (
+        isFastWalletRegistration(wallet) ||
+        !canOpenWithoutPrompt ||
+        sessionsByRegistrationRef.current.has(wallet.id) ||
+        autoOpenAttemptedWalletIdsRef.current.has(wallet.id)
+      ) {
+        continue;
+      }
+
+      autoOpenAttemptedWalletIdsRef.current.add(wallet.id);
+      logWalletEvent('WalletState', 'autoOpen.start', {
+        walletId: wallet.id,
+        walletName: wallet.walletName,
       });
-  }, [loadingRegistry, registerOpenedSession, registeredWallet]);
+      walletService
+        .openRegisteredWalletRegistration(wallet)
+        .then(openedSession =>
+          registerOpenedSession(openedSession, wallet, {
+            refresh: false,
+            select: registeredWalletRef.current?.id === wallet.id,
+          }),
+        )
+        .then(() => {
+          logWalletEvent('WalletState', 'autoOpen.success', {
+            walletId: wallet.id,
+            walletName: wallet.walletName,
+          });
+        })
+        .catch(reason => {
+          const message = errorMessage(reason);
+          if (registeredWalletRef.current?.id === wallet.id) {
+            setError(message);
+          }
+          logWalletEvent('WalletState', 'autoOpen.error', {
+            error: message,
+            walletId: wallet.id,
+            walletName: wallet.walletName,
+          });
+        });
+    }
+  }, [
+    loadingRegistry,
+    registerOpenedSession,
+    registeredWallets,
+    unlockRequestId,
+  ]);
 
   useEffect(() => {
-    sessionRef.current = session;
-    if (!session) {
-      return undefined;
-    }
+    const refreshOpenSessions = () => {
+      for (const [
+        registrationId,
+        openedSession,
+      ] of sessionsByRegistrationRef.current.entries()) {
+        const registration = registeredWalletsRef.current.find(
+          wallet => wallet.id === registrationId,
+        );
+        if (!registration || isFastWalletRegistration(registration)) {
+          continue;
+        }
+        refreshSessionSnapshot(registration, openedSession).catch(
+          () => undefined,
+        );
+        refreshSessionTransactions(registration, openedSession).catch(
+          () => undefined,
+        );
+      }
+      if (sessionRef.current?.hardwareDevice) {
+        refreshHardwareWalletStatus().catch(() => undefined);
+      }
+    };
 
-    const interval = setInterval(() => {
-      refreshSnapshot().catch(() => undefined);
-      refreshTransactions().catch(() => undefined);
-      refreshHardwareWalletStatus().catch(() => undefined);
-    }, 5000);
+    refreshOpenSessions();
+    const interval = setInterval(refreshOpenSessions, 5000);
 
     return () => {
       clearInterval(interval);
     };
   }, [
     refreshHardwareWalletStatus,
-    refreshSnapshot,
-    refreshTransactions,
-    session,
+    refreshSessionSnapshot,
+    refreshSessionTransactions,
   ]);
 
   const progress = presentWalletSync(snapshot, {
@@ -1077,12 +1251,12 @@ export function WalletStateProvider({
       return 'loading';
     }
 
-    if (error && !session) {
-      return 'error';
+    if (isFastWalletRegistration(registeredWallet)) {
+      return 'open';
     }
 
-    if (session && registeredWallet?.kind === 'fast') {
-      return 'open';
+    if (error && !session) {
+      return 'error';
     }
 
     if (session && snapshot) {
@@ -1100,6 +1274,11 @@ export function WalletStateProvider({
     return 'empty';
   }, [error, loadingRegistry, registeredWallet, session, snapshot]);
 
+  const isRegisteredWalletOpen = useCallback(
+    (walletId: string) => sessionsByRegistrationRef.current.has(walletId),
+    [],
+  );
+
   const value = useMemo<WalletStateValue>(
     () => ({
       error,
@@ -1115,6 +1294,7 @@ export function WalletStateProvider({
       syncProgress: progress,
       syncStartHeight,
       unlockRequestId,
+      isRegisteredWalletOpen,
       clearError: () => setError(undefined),
       dismissIncomingTransactionNotice,
       lockWallet,
@@ -1135,6 +1315,7 @@ export function WalletStateProvider({
       error,
       hardwareStatus,
       incomingTransactionNotice,
+      isRegisteredWalletOpen,
       lockWallet,
       progress,
       syncStartHeight,

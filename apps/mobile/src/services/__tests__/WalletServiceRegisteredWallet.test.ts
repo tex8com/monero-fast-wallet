@@ -100,7 +100,7 @@ describe('WalletService registered wallet opening', () => {
     });
   });
 
-  it('opens a Fast Wallet by its path-safe identity id', async () => {
+  it('keeps a Fast Wallet out of the local Monero core', async () => {
     await saveRegisteredWallet(
       createRegisteredWallet({
         id: 'fast-receive-0-20260709T012217',
@@ -115,24 +115,12 @@ describe('WalletService registered wallet opening', () => {
     );
 
     const service = new WalletService();
-    const session = await service.openRegisteredWallet();
 
-    expect(session).toEqual({
-      walletId: 'wallet-fast',
-      network: 'mainnet',
-      credentialKey: 'monero.wallet.software.mainnet.primary.v1',
-      registrationId: 'fast-receive-0-20260709T012217',
-    });
-    expect(mockNativeWallet.defaultWalletPath).toHaveBeenCalledWith(
-      'fast-receive-0-20260709T012217',
-      'mainnet',
+    await expect(service.openRegisteredWallet()).rejects.toThrow(
+      'Fast Wallet is synchronized by the scanner service',
     );
-    expect(mockNativeWallet.openWalletWithStoredSecret).toHaveBeenCalledWith({
-      path: '/current-container/wallets/mainnet/fast-receive-0-20260709T012217',
-      secretKey: 'monero.wallet.software.mainnet.primary.v1',
-      network: 'mainnet',
-      restoreHeight: 3714305,
-    });
+    expect(mockNativeWallet.defaultWalletPath).not.toHaveBeenCalled();
+    expect(mockNativeWallet.openWalletWithStoredSecret).not.toHaveBeenCalled();
   });
 
   it('creates standard and Fast Ledger entries from one native device initialization', async () => {
@@ -143,8 +131,12 @@ describe('WalletService registered wallet opening', () => {
       restoreHeight: 3714305,
     });
 
-    expect(mockNativeWallet.createWalletFromDeviceWithStoredSecret).toHaveBeenCalledTimes(1);
-    expect(mockNativeWallet.createWalletFromDeviceWithStoredSecret).toHaveBeenCalledWith(
+    expect(
+      mockNativeWallet.createWalletFromDeviceWithStoredSecret,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      mockNativeWallet.createWalletFromDeviceWithStoredSecret,
+    ).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/current-container/wallets/mainnet/ledger',
         network: 'mainnet',
@@ -167,17 +159,10 @@ describe('WalletService registered wallet opening', () => {
     await expect(loadRegisteredWallets()).resolves.toHaveLength(2);
 
     await setActiveRegisteredWallet(result.fastRegistration.id);
-    const fastSession = await service.openRegisteredWallet();
-    expect(mockNativeWallet.openWalletWithStoredSecret).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        path: '/current-container/wallets/mainnet/ledger',
-        network: 'mainnet',
-      }),
+    await expect(service.openRegisteredWallet()).rejects.toThrow(
+      'Fast Wallet is synchronized by the scanner service',
     );
-    expect(fastSession).toMatchObject({
-      registrationId: result.fastRegistration.id,
-      accountIndex: 1,
-    });
+    expect(mockNativeWallet.openWalletWithStoredSecret).not.toHaveBeenCalled();
   });
 
   it('creates and removes an opted-in encrypted Ledger read wallet as one unit', async () => {

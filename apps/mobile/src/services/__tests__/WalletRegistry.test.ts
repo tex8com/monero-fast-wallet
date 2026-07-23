@@ -20,6 +20,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
   createRegisteredWallet,
+  isFastWalletRegistration,
   loadRegisteredWallet,
   loadRegisteredWallets,
   loadWalletRegistry,
@@ -32,6 +33,18 @@ import {
   upsertRegisteredWallet,
   WALLET_REGISTRY_STORAGE_KEY,
 } from '../WalletRegistry';
+
+describe('isFastWalletRegistration', () => {
+  it('recognizes software and Ledger scanner wallets by their fast role', () => {
+    expect(isFastWalletRegistration({ kind: 'fast' })).toBe(true);
+    expect(isFastWalletRegistration({ kind: 'hardware', role: 'fast' })).toBe(
+      true,
+    );
+    expect(
+      isFastWalletRegistration({ kind: 'software', role: 'standard' }),
+    ).toBe(false);
+  });
+});
 
 describe('WalletRegistry', () => {
   beforeEach(async () => {

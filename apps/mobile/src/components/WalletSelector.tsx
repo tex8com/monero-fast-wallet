@@ -10,6 +10,7 @@ import {
 import { useI18n, type TranslationKey } from '../i18n';
 import type { WalletSnapshot } from '../services/NativeMoneroWallet';
 import {
+  isFastWalletRegistration,
   walletDisplayName,
   type RegisteredWallet,
 } from '../services/WalletRegistry';
@@ -133,21 +134,24 @@ export function resolveWalletOption(
   }
 
   const snapshot = snapshots[wallet.id];
+  const fastWallet = isFastWalletRegistration(wallet);
   return {
     id: wallet.id,
     address: snapshot?.primaryAddress,
-    badge:
-      wallet.kind === 'hardware'
-        ? wallet.hardwareDeviceName ?? 'Ledger'
+    badge: fastWallet
+      ? t('walletSelector.fast')
+      : wallet.kind === 'hardware'
+        ? (wallet.hardwareDeviceName ?? 'Ledger')
         : undefined,
     detail: snapshot
       ? walletSnapshotStatusLabel(snapshot, t)
       : t('walletSelector.openToCheckNode'),
-    kind: wallet.kind,
+    kind: fastWallet ? 'fast' : wallet.kind,
     label: walletDisplayName(wallet),
-    meta:
-      wallet.kind === 'hardware'
-        ? wallet.hardwareDeviceName ?? 'Ledger'
+    meta: fastWallet
+      ? wallet.network
+      : wallet.kind === 'hardware'
+        ? (wallet.hardwareDeviceName ?? 'Ledger')
         : wallet.network,
     tone: snapshot ? 'balance' : 'muted',
   };
