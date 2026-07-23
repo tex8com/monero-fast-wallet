@@ -54,9 +54,10 @@ test('desktop Receive keeps QR and copy primary while address tools stay optiona
   assert.match(receiveSource, /receive\.manageAddresses/);
 });
 
-test('desktop removes the transient sync banner after Core confirms completion', () => {
-  assert.match(appSource, /const showPrimarySync = !walletId \|\| !snapshot\?\.synchronized;/);
-  assert.match(appSource, /\{showPrimarySync && <section className=\{`\$\{snapshot\?\.synchronized \? 'wallet-sync-card ready' : 'wallet-sync-card'\} home-primary-sync`\}>/);
+test('desktop keeps the balance summary but removes the transient sync status after Core confirms completion', () => {
+  assert.match(appSource, /const showPrimaryWalletCard = Boolean\(walletId\);/);
+  assert.match(appSource, /primary-wallet-balance/);
+  assert.match(appSource, /!snapshot\?\.synchronized && <div className="primary-wallet-sync">/);
 });
 
 test('Ledger read-only setup is reachable through Tauri command permissions', () => {

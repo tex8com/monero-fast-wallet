@@ -491,10 +491,10 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   const sync = presentWalletSync(snapshot, { startHeight: syncStartHeight });
   const hasMeasuredProgress = sync.phase === 'syncing' && (progress ?? 0) > 1;
   const syncWorking = Boolean(walletId) && sync.phase !== 'synchronized';
-  // The mobile dashboard removes its transient sync status as soon as the
-  // native Core confirms completion. Keep the empty-wallet prompt, but do not
-  // leave a permanent 100% progress card on the desktop home screen.
-  const showPrimarySync = !walletId || !snapshot?.synchronized;
+  // Mobile keeps the wallet summary visible but removes its transient sync
+  // status once the native Core confirms completion. The desktop uses the
+  // same model: the balance remains useful; a permanent 100% bar is not.
+  const showPrimaryWalletCard = Boolean(walletId);
   const syncEtaSeconds = useDesktopSyncEta(sync);
   const routeToWalletAction = (action: () => void) => {
     if (walletId && linked) { action(); return; }
@@ -503,11 +503,13 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   };
 
   return <div className="home-stack home-dashboard">
-    {showPrimarySync && <section className={`${snapshot?.synchronized ? 'wallet-sync-card ready' : 'wallet-sync-card'} home-primary-sync`}>
-      <div className="wallet-sync-heading"><div><strong>{wallet ? walletDisplayName(wallet) : t('home.sync')}</strong><small>{wallet ? `${networkLabel(wallet.network)} · ${wallet.kind === 'hardware' ? t('common.ledger') : t('wallets.software')}` : t('home.noWalletOpen')}</small></div>{walletId ? <button className="quiet-button" onClick={() => void refreshWallet()} type="button">{t('common.refresh')}</button> : <button className="quiet-button" onClick={savedWallets.length ? onWallets : onSetup} type="button">{t('home.openWallet')}</button>}</div>
-      <div className="sync-reading"><span className={snapshot?.synchronized ? 'sync-led ready' : 'sync-led'} /> <strong>{walletId ? syncLabel(snapshot, t, syncStartHeight) : t('home.waiting')}</strong><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{walletId ? snapshot?.synchronized ? '100%' : hasMeasuredProgress ? `${progress}%` : '' : ''}</em></div>
-      {walletId && !sync.coreConfirmed && sync.targetHeight !== undefined && <div className="sync-metrics"><span>{t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight), target: formatSyncBlockCount(sync.targetHeight) })}</span>{sync.phase === 'finalizing' ? <span>{t('home.syncConfirming')}</span> : sync.remainingBlocks !== undefined ? <span>{t('home.syncRemaining', { count: formatSyncBlockCount(sync.remainingBlocks) })}</span> : null}{sync.phase === 'syncing' && <span>{formatDesktopSyncEta(syncEtaSeconds, t)}</span>}</div>}
-      {(snapshot?.synchronized || hasMeasuredProgress) && <div className="sync-track"><span className={snapshot?.synchronized ? 'ready' : ''} style={{ width: `${snapshot?.synchronized ? 100 : progress}%` }} /></div>}
+    {showPrimaryWalletCard && <section className={`${snapshot?.synchronized ? 'wallet-sync-card ready' : 'wallet-sync-card'} home-primary-wallet`}>
+      <div className="primary-wallet-balance">
+        <div><p className="eyebrow">{t('home.totalBalance')}</p><h2>{`${balanceXmr} XMR`}</h2><strong>{balanceUsd}</strong></div>
+        <div className="primary-wallet-meta"><strong>{wallet ? walletDisplayName(wallet) : t('common.wallet')}</strong><small>{wallet ? `${networkLabel(wallet.network)} · ${wallet.kind === 'hardware' ? t('common.ledger') : t('wallets.software')}` : ''}</small>{lockedAtomic > 0n && <span className="wallet-locked"><i />{lockedXmr} XMR locked</span>}</div>
+        <button className="quiet-button" onClick={() => void refreshWallet()} type="button">{t('common.refresh')}</button>
+      </div>
+      {!snapshot?.synchronized && <div className="primary-wallet-sync"><div className="sync-reading"><span className="sync-led" /> <strong>{syncLabel(snapshot, t, syncStartHeight)}</strong><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{hasMeasuredProgress ? `${progress}%` : ''}</em></div>{hasMeasuredProgress && <div className="sync-track"><span style={{ width: `${progress}%` }} /></div>}{sync.targetHeight !== undefined && <div className="sync-metrics"><span>{t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight), target: formatSyncBlockCount(sync.targetHeight) })}</span>{sync.phase === 'finalizing' ? <span>{t('home.syncConfirming')}</span> : sync.remainingBlocks !== undefined ? <span>{t('home.syncRemaining', { count: formatSyncBlockCount(sync.remainingBlocks) })}</span> : null}{sync.phase === 'syncing' && <span>{formatDesktopSyncEta(syncEtaSeconds, t)}</span>}</div>}</div>}
     </section>}
 
     <section className="market-card">
@@ -520,16 +522,6 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
       <header><div><p className="eyebrow">{t('home.updatesSource')}</p><h2>{t('home.updatesTitle')}</h2></div><a href="https://github.com/monero-project/monero/releases" target="_blank" rel="noreferrer">{t('home.updatesSourceLink')} ↗</a></header>
       {updatesLoading && officialUpdates.length === 0 ? <p className="official-updates-status">{t('home.updatesLoading')}</p> : updatesUnavailable && officialUpdates.length === 0 ? <div className="official-updates-status"><span>{t('home.updatesUnavailable')}</span><button className="quiet-button" onClick={refreshUpdates} type="button">{t('home.chartRetry')}</button></div> : <div className="official-updates-list">{officialUpdates.map((item) => <a href={item.url} key={item.id} target="_blank" rel="noreferrer"><strong>{item.title}</strong><small>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.publishedAt))}</small><em>›</em></a>)}</div>}
     </section>
-
-    <div className="home-main-grid">
-      <section className="wallet-overview-card">
-        <div className="wallet-overview-heading"><div><p className="eyebrow">{t('home.totalBalance')}</p><h2>{walletId ? `${balanceXmr} XMR` : '— XMR'}</h2></div><strong>{walletId ? balanceUsd : t('home.openWallet')}</strong></div>
-        {walletId && lockedAtomic > 0n && <p className="wallet-locked"><span />{lockedXmr} XMR locked</p>}
-        <p>{walletId ? `${t('home.nativeBalance')}${wallet ? ` · ${walletDisplayName(wallet)}` : ''}.` : savedWallets.length ? t('home.savedBalance') : t('home.begin')}</p>
-        {!walletId && <button className="secondary" onClick={savedWallets.length ? onWallets : onSetup} type="button">{savedWallets.length ? t('home.openWallet') : t('home.createOrImport')}</button>}
-      </section>
-
-    </div>
 
     <section className="home-quick-actions" aria-label="Wallet actions"><button onClick={() => routeToWalletAction(onSend)} type="button"><span>↑</span><strong>{t('nav.send')}</strong><small>{t('home.sendDetail')}</small></button><button onClick={() => routeToWalletAction(onReceive)} type="button"><span>↓</span><strong>{t('nav.receive')}</strong><small>{t('home.receiveDetail')}</small></button></section>
 
