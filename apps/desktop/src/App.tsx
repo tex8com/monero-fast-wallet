@@ -491,6 +491,10 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   const sync = presentWalletSync(snapshot, { startHeight: syncStartHeight });
   const hasMeasuredProgress = sync.phase === 'syncing' && (progress ?? 0) > 1;
   const syncWorking = Boolean(walletId) && sync.phase !== 'synchronized';
+  // The mobile dashboard removes its transient sync status as soon as the
+  // native Core confirms completion. Keep the empty-wallet prompt, but do not
+  // leave a permanent 100% progress card on the desktop home screen.
+  const showPrimarySync = !walletId || !snapshot?.synchronized;
   const syncEtaSeconds = useDesktopSyncEta(sync);
   const routeToWalletAction = (action: () => void) => {
     if (walletId && linked) { action(); return; }
@@ -499,12 +503,12 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   };
 
   return <div className="home-stack home-dashboard">
-    <section className={`${snapshot?.synchronized ? 'wallet-sync-card ready' : 'wallet-sync-card'} home-primary-sync`}>
+    {showPrimarySync && <section className={`${snapshot?.synchronized ? 'wallet-sync-card ready' : 'wallet-sync-card'} home-primary-sync`}>
       <div className="wallet-sync-heading"><div><strong>{wallet ? walletDisplayName(wallet) : t('home.sync')}</strong><small>{wallet ? `${networkLabel(wallet.network)} · ${wallet.kind === 'hardware' ? t('common.ledger') : t('wallets.software')}` : t('home.noWalletOpen')}</small></div>{walletId ? <button className="quiet-button" onClick={() => void refreshWallet()} type="button">{t('common.refresh')}</button> : <button className="quiet-button" onClick={savedWallets.length ? onWallets : onSetup} type="button">{t('home.openWallet')}</button>}</div>
       <div className="sync-reading"><span className={snapshot?.synchronized ? 'sync-led ready' : 'sync-led'} /> <strong>{walletId ? syncLabel(snapshot, t, syncStartHeight) : t('home.waiting')}</strong><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{walletId ? snapshot?.synchronized ? '100%' : hasMeasuredProgress ? `${progress}%` : '' : ''}</em></div>
       {walletId && !sync.coreConfirmed && sync.targetHeight !== undefined && <div className="sync-metrics"><span>{t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight), target: formatSyncBlockCount(sync.targetHeight) })}</span>{sync.phase === 'finalizing' ? <span>{t('home.syncConfirming')}</span> : sync.remainingBlocks !== undefined ? <span>{t('home.syncRemaining', { count: formatSyncBlockCount(sync.remainingBlocks) })}</span> : null}{sync.phase === 'syncing' && <span>{formatDesktopSyncEta(syncEtaSeconds, t)}</span>}</div>}
       {(snapshot?.synchronized || hasMeasuredProgress) && <div className="sync-track"><span className={snapshot?.synchronized ? 'ready' : ''} style={{ width: `${snapshot?.synchronized ? 100 : progress}%` }} /></div>}
-    </section>
+    </section>}
 
     <section className="market-card">
       <div className="market-card-head"><div><p className="eyebrow">{t('home.liveMarket')}</p><h2>{priceLoading ? t('home.priceLoading') : price > 0 ? formatUsd(price) : t('home.marketUnavailable')}</h2>{price > 0 && <p className={positive ? 'market-change positive' : 'market-change negative'}><span>{positive ? '▲' : '▼'} {Math.abs(changePercent).toFixed(2)}%</span><span>{positive ? '+' : '-'}{formatUsd(changeUsd)}</span></p>}</div><img className="market-mark" src="/monero-mark.png" alt="Monero" /></div>

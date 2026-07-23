@@ -53,6 +53,11 @@ test('desktop Receive keeps QR and copy primary while address tools stay optiona
   assert.match(receiveSource, /receive\.manageAddresses/);
 });
 
+test('desktop removes the transient sync banner after Core confirms completion', () => {
+  assert.match(appSource, /const showPrimarySync = !walletId \|\| !snapshot\?\.synchronized;/);
+  assert.match(appSource, /\{showPrimarySync && <section className=\{`\$\{snapshot\?\.synchronized \? 'wallet-sync-card ready' : 'wallet-sync-card'\} home-primary-sync`\}>/);
+});
+
 test('Ledger read-only setup is reachable through Tauri command permissions', () => {
   for (const command of ['enable_ledger_read_only', 'create_ledger_read_only_from_device']) {
     assert.match(tauriBuild, new RegExp(`"${command}"`));
