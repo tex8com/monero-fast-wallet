@@ -90,6 +90,13 @@ test('desktop exposes and creates the default-on Ledger Fast Wallet pair', () =>
   assert.match(appSource, /FAST WALLET · LEDGER/);
 });
 
+test('desktop makes Fast Wallet management reachable from saved wallets', () => {
+  const walletsSource = appSource.slice(appSource.indexOf('function Wallets('), appSource.indexOf('function LedgerReadOnlySetup('));
+  assert.match(walletsSource, /<FastWallets linked=\{linked\} sourceWalletId=\{walletId\} sourceWallet=\{activeWallet\} \/>/);
+  assert.match(walletsSource, /Receive-only Fast Wallet/);
+  assert.doesNotMatch(appSource, /Ledger Fast Wallet is not available yet/);
+});
+
 test('Ledger read-only setup is reachable through Tauri command permissions', () => {
   for (const command of ['enable_ledger_read_only', 'create_ledger_read_only_from_device']) {
     assert.match(tauriBuild, new RegExp(`"${command}"`));
