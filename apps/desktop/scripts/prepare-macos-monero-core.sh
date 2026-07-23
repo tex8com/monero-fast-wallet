@@ -108,7 +108,10 @@ mkdir -p "${depends_prefix}" "${monero_build_dir}" "${fast_crypto_target_dir}"
   -DRANDOMX_ENABLE_JIT=OFF \
   -DMONERO_FAST_CRYPTO_LIBRARY="${fast_crypto_target_dir}/release/libmonero_fast_crypto.a" \
   -DMANUAL_SUBMODULES=1
-"${cmake_bin}" --build "${monero_build_dir}" --target wallet_api --parallel 4
+# CI can retain the faster default while constrained developer machines can
+# explicitly serialize this large C++ link target with
+# MONERO_DESKTOP_BUILD_JOBS=1.
+"${cmake_bin}" --build "${monero_build_dir}" --target wallet_api --parallel "${MONERO_DESKTOP_BUILD_JOBS:-4}"
 
 (
   cd "${fast_crypto_dir}"
