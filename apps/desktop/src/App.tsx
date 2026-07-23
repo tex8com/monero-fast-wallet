@@ -71,12 +71,12 @@ function notificationDeliveryLabel(status: DesktopNotificationStatus | null, t: 
   return status.providerStatus === 'not-configured' ? t('settings.deliveryNotConfigured', { provider: status.provider }) : t('settings.deliveryLocal');
 }
 function parseNativeJson<T>(value: string, fallback: string): T { try { return JSON.parse(value) as T; } catch { throw new Error(fallback); } }
-function syncLabel(snapshot: NativeWalletSnapshot | null) {
+function syncLabel(snapshot: NativeWalletSnapshot | null, t?: ReturnType<typeof useI18n>['t']) {
   const sync = presentWalletSync(snapshot);
-  if (sync.phase === 'synchronized') return 'Synchronized · 100%';
-  if (sync.phase === 'waiting-for-node') return 'Syncing · waiting for node height';
-  if (sync.phase === 'finalizing') return `Finalizing sync · ${snapshot?.walletHeight}/${sync.targetHeight}`;
-  return `Syncing · ${sync.progress}% · ${snapshot?.walletHeight}/${sync.targetHeight}`;
+  if (sync.phase === 'synchronized') return `${t ? t('home.syncComplete') : 'Synchronized'} · 100%`;
+  if (sync.phase === 'waiting-for-node') return t ? t('home.syncConnecting') : 'Connecting node';
+  if (sync.phase === 'finalizing') return `${t ? t('home.syncUpdating') : 'Updating history'} · ${snapshot?.walletHeight ?? 0}/${sync.targetHeight}`;
+  return `${t ? t('home.syncScanning') : 'Scanning blocks'} · ${snapshot?.walletHeight ?? 0}/${sync.targetHeight}`;
 }
 const ATOMIC_XMR = 1_000_000_000_000n;
 function atomicValue(value: string | undefined) { try { return BigInt(value ?? '0'); } catch { return 0n; } }
@@ -85,7 +85,7 @@ function parseXmrToAtomic(value: string) { const normalized = value.trim().repla
 function isLikelyMoneroAddress(value: string) { return /^[1-9A-HJ-NP-Za-km-z]{90,110}$/.test(value.trim()); }
 function atomicXmrNumber(value: string | undefined) { return Number(atomicValue(value)) / Number(ATOMIC_XMR); }
 function formatUsd(value: number) { return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value); }
-function syncProgress(snapshot: NativeWalletSnapshot | null) { return presentWalletSync(snapshot).progress ?? 0; }
+function syncProgress(snapshot: NativeWalletSnapshot | null) { return presentWalletSync(snapshot).progress; }
 function shortHash(value: string) { return value.length > 20 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
 function transactionTimestamp(value: string) { const timestamp = Number(value); return Number.isFinite(timestamp) && timestamp > 0 ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp * 1000)) : 'Time not available'; }
 function approximateAreaForCoordinates(latitude: number, longitude: number) { const alphabet = '0123456789bcdefghjkmnpqrstuvwxyz'; let latitudeRange: [number, number] = [-90, 90]; let longitudeRange: [number, number] = [-180, 180]; let bits = 0; let value = 0; let useLongitude = true; let result = ''; while (result.length < 5) { const range = useLongitude ? longitudeRange : latitudeRange; const coordinate = useLongitude ? longitude : latitude; const midpoint = (range[0] + range[1]) / 2; value = value * 2 + (coordinate >= midpoint ? 1 : 0); if (coordinate >= midpoint) range[0] = midpoint; else range[1] = midpoint; useLongitude = !useLongitude; bits += 1; if (bits === 5) { result += alphabet[value]; bits = 0; value = 0; } } return result; }
@@ -385,6 +385,9 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   const lockedXmr = formatAtomicXmr(lockedAtomic.toString());
   const balanceUsd = price > 0 ? formatUsd(atomicXmrNumber(balanceAtomic) * price) : '—';
   const progress = syncProgress(snapshot);
+  const sync = presentWalletSync(snapshot);
+  const hasMeasuredProgress = sync.phase === 'syncing' && (progress ?? 0) > 1;
+  const syncWorking = Boolean(walletId) && sync.phase !== 'synchronized';
   const routeToWalletAction = (action: () => void) => {
     if (walletId && linked) { action(); return; }
     if (savedWallets.length) { onWallets(); return; }
@@ -413,8 +416,8 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
 
       <section className={snapshot?.synchronized ? 'wallet-sync-card ready' : 'wallet-sync-card'}>
         <div className="wallet-sync-heading"><div><strong>{wallet ? walletDisplayName(wallet) : t('home.sync')}</strong><small>{wallet ? `${networkLabel(wallet.network)} · ${wallet.kind === 'hardware' ? t('common.ledger') : t('wallets.software')}` : t('home.noWalletOpen')}</small></div>{walletId ? <button className="quiet-button" onClick={() => void refreshWallet()} type="button">{t('common.refresh')}</button> : <button className="quiet-button" onClick={savedWallets.length ? onWallets : onSetup} type="button">{t('home.openWallet')}</button>}</div>
-        <div className="sync-reading"><span className={snapshot?.synchronized ? 'sync-led ready' : 'sync-led'} /> <strong>{walletId ? syncLabel(snapshot) : t('home.waiting')}</strong><em>{walletId ? presentWalletSync(snapshot).phase === 'finalizing' ? '…' : `${progress}%` : ''}</em></div>
-        <div className="sync-track"><span className={snapshot?.synchronized ? 'ready' : ''} style={{ width: `${progress}%` }} /></div>
+        <div className="sync-reading"><span className={snapshot?.synchronized ? 'sync-led ready' : 'sync-led'} /> <strong>{walletId ? syncLabel(snapshot, t) : t('home.waiting')}</strong><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{walletId ? snapshot?.synchronized ? '100%' : hasMeasuredProgress ? `${progress}%` : '…' : ''}</em></div>
+        {(snapshot?.synchronized || hasMeasuredProgress) && <div className="sync-track"><span className={snapshot?.synchronized ? 'ready' : ''} style={{ width: `${snapshot?.synchronized ? 100 : progress}%` }} /></div>}
       </section>
     </div>
 

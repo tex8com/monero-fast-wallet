@@ -537,11 +537,13 @@ h2 { letter-spacing: -0.65px; }
 .sync-reading { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .sync-reading strong { overflow: hidden; flex: 1; color: #f1eaf4; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .sync-reading em { color: #f4bd55; font-size: 17px; font-style: normal; font-weight: 900; }
+.sync-reading em.sync-working { animation: sync-working 1.1s ease-in-out infinite; }
 .sync-led { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: #f4bd55; }
 .sync-led.ready { background: #00d68f; }
 .sync-track { height: 6px; overflow: hidden; border-radius: 99px; background: #282236; }
 .sync-track span { display: block; height: 100%; border-radius: inherit; background: #f4bd55; transition: width .3s ease; }
 .sync-track span.ready { background: #00d68f; }
+@keyframes sync-working { 50% { opacity: .35; transform: translateY(-1px); } }
 .home-quick-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .home-quick-actions button { display: grid; grid-template-columns: 52px minmax(0, 1fr); column-gap: 14px; align-items: center; padding: 18px 21px; border: 1px solid #3a3049; border-radius: 16px; color: inherit; background: #151120; cursor: pointer; text-align: left; }
 .home-quick-actions button:hover { border-color: #a95335; background: #211526; }
