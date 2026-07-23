@@ -188,6 +188,15 @@ internal object NativeMoneroWalletJni {
     nativeStopRefresh(walletId)
   }
 
+  /**
+   * Runs directly from the Android activity lifecycle. This cannot depend on
+   * the React Native bridge still being scheduled while an app is backgrounded.
+   */
+  fun persistOpenWallets() {
+    requireLoaded()
+    nativePersistOpenWallets()
+  }
+
   fun getAddress(walletId: String, accountIndex: Double, addressIndex: Double): String {
     requireLoaded()
     return nativeGetAddress(walletId, accountIndex, addressIndex)
@@ -396,6 +405,7 @@ internal object NativeMoneroWalletJni {
 
   @JvmStatic private external fun nativeStartRefresh(walletId: String)
   @JvmStatic private external fun nativeStopRefresh(walletId: String)
+  @JvmStatic private external fun nativePersistOpenWallets()
 
   @JvmStatic private external fun nativeGetAddress(
     walletId: String,

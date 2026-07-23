@@ -967,6 +967,38 @@ class WalletEngine::Impl {
     throwIfWalletFailed(wallet, "refresh");
   }
 
+  void persistOpenWallets() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& item : wallets_) {
+      auto& session = *item.second;
+      auto* wallet = session.wallet;
+      if (wallet == nullptr) {
+        continue;
+      }
+
+      // The operating system may suspend JavaScript immediately after
+      // Activity.onPause(). Stop the Core refresh thread here, before store(),
+      // so the saved cache checkpoint is the settled scanned height rather
+      // than an earlier value racing with a refresh.
+      const uint64_t heightBeforeStop = wallet->blockChainHeight();
+      wallet->pauseRefresh();
+      wallet->stop();
+      const uint64_t persistedHeight = wallet->blockChainHeight();
+      if (!wallet->store("")) {
+        throwIfWalletFailed(wallet, "persistOpenWallets.store");
+        throw WalletEngineError("failed to persist wallet cache");
+      }
+      throwIfWalletFailed(wallet, "persistOpenWallets.store");
+      logEngineDiagnostic(
+          "persistOpenWallets.cacheStored",
+          {
+              {"walletId", maskDiagnosticId(session.id)},
+              {"heightBeforeStop", std::to_string(heightBeforeStop)},
+              {"walletHeight", std::to_string(persistedHeight)},
+          });
+    }
+  }
+
   std::string getAddress(
       const WalletId& walletId,
       uint32_t accountIndex,
@@ -1638,6 +1670,12 @@ void WalletEngine::stopRefresh(const WalletId& walletId) {
 #else
   (void)walletId;
   throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::persistOpenWallets() {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->persistOpenWallets();
 #endif
 }
 

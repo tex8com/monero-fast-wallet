@@ -7,6 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { AppState } from 'react-native';
 
 import type {
   HardwareWalletStatus,
@@ -35,6 +36,7 @@ import {
   type IncomingTransactionNotice,
 } from './IncomingTransactionObserver';
 import { presentWalletSync } from '../../../../packages/wallet-shared/src/walletSync';
+import { useAppSecurity } from './AppSecurity';
 
 type RegisterOpenedSessionOptions = {
   refresh?: boolean;
@@ -106,6 +108,11 @@ export function WalletStateProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const {
+    locked: appSecurityLocked,
+    mode: appSecurityMode,
+    ready: appSecurityReady,
+  } = useAppSecurity();
   const [loadingRegistry, setLoadingRegistry] = useState(true);
   const [registeredWallet, setRegisteredWallet] = useState<
     RegisteredWallet | undefined
@@ -156,6 +163,9 @@ export function WalletStateProvider({
   const snapshotRefreshInFlightIdsRef = useRef(new Set<string>());
   const transactionRefreshInFlightIdsRef = useRef(new Set<string>());
   const globallyLockedRef = useRef(false);
+  const backgroundLockInFlightRef = useRef(false);
+  const backgroundLockedWalletsRef = useRef(false);
+  const [autoOpenGeneration, setAutoOpenGeneration] = useState(0);
   const hardwareRefreshInFlight = useRef(false);
   const processedPushEventIdRef = useRef<string | undefined>(undefined);
 
@@ -907,6 +917,73 @@ export function WalletStateProvider({
     }
   }, [stopNativeRefresh]);
 
+  useEffect(() => {
+    if (!appSecurityReady || appSecurityLocked || !backgroundLockedWalletsRef.current) {
+      return;
+    }
+
+    // A protected app resumes its wallets only after the app-wide protection
+    // has really been cleared. This keeps every wallet behind one biometric
+    // prompt while restoring parallel Core sync automatically.
+    backgroundLockedWalletsRef.current = false;
+    globallyLockedRef.current = false;
+    autoOpenAttemptedWalletIdsRef.current.clear();
+    setAutoOpenGeneration(current => current + 1);
+    logWalletEvent('WalletState', 'appSecurity.resumeWallets', {
+      protectionMode: appSecurityMode,
+    });
+  }, [appSecurityLocked, appSecurityMode, appSecurityReady]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      if (nextState === 'background') {
+        if (
+          backgroundLockInFlightRef.current ||
+          sessionsByRegistrationRef.current.size === 0
+        ) {
+          return;
+        }
+
+        // Android can terminate a background process without running React
+        // cleanup or the native static destructor. Close through the Core now
+        // so its scanned height is durably stored before that can happen.
+        backgroundLockInFlightRef.current = true;
+        logWalletEvent('WalletState', 'appBackground.persistWallets.start', {
+          walletCount: sessionsByRegistrationRef.current.size,
+        });
+        lockWallet()
+          .then(() => {
+            backgroundLockedWalletsRef.current = true;
+            logWalletEvent('WalletState', 'appBackground.persistWallets.success', {});
+          })
+          .catch(reason => {
+            logWalletEvent('WalletState', 'appBackground.persistWallets.error', {
+              error: errorMessage(reason),
+            });
+          })
+          .finally(() => {
+            backgroundLockInFlightRef.current = false;
+          });
+        return;
+      }
+
+      if (
+        nextState === 'active' &&
+        appSecurityMode === 'none' &&
+        backgroundLockedWalletsRef.current
+      ) {
+        backgroundLockedWalletsRef.current = false;
+        globallyLockedRef.current = false;
+        autoOpenAttemptedWalletIdsRef.current.clear();
+        setAutoOpenGeneration(current => current + 1);
+        logWalletEvent('WalletState', 'appBackground.resumeWallets', {
+          protectionMode: 'none',
+        });
+      }
+    });
+    return () => subscription.remove();
+  }, [appSecurityMode, lockWallet]);
+
   const reconnectHardwareWallet = useCallback(async () => {
     const activeSession = sessionRef.current;
     if (!activeSession?.hardwareDevice) {
@@ -1169,7 +1246,12 @@ export function WalletStateProvider({
   }, [startNativeRefresh, stopNativeRefresh]);
 
   useEffect(() => {
-    if (loadingRegistry || globallyLockedRef.current) {
+    if (
+      loadingRegistry ||
+      !appSecurityReady ||
+      globallyLockedRef.current ||
+      (appSecurityReady && appSecurityLocked)
+    ) {
       return;
     }
 
@@ -1220,6 +1302,9 @@ export function WalletStateProvider({
     }
   }, [
     loadingRegistry,
+    appSecurityLocked,
+    appSecurityReady,
+    autoOpenGeneration,
     registerOpenedSession,
     registeredWallets,
     unlockRequestId,

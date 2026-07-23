@@ -132,7 +132,9 @@ function AppSecurityLockScreen() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | undefined>();
   const [working, setWorking] = useState(false);
-  const unlock = async () => {
+  const automaticBiometricAttemptedRef = useRef(false);
+
+  const unlock = useCallback(async () => {
     setWorking(true);
     setError(undefined);
     try {
@@ -160,7 +162,22 @@ function AppSecurityLockScreen() {
     } finally {
       setWorking(false);
     }
-  };
+  }, [mode, password, t, unlockContext]);
+
+  useEffect(() => {
+    if (mode !== 'biometric' || automaticBiometricAttemptedRef.current) {
+      return;
+    }
+
+    // The lock overlay is already mounted and the React activity is active at
+    // this point. Open the operating-system biometric sheet immediately; the
+    // button remains only as a retry path after an explicit cancellation.
+    automaticBiometricAttemptedRef.current = true;
+    const timeout = setTimeout(() => {
+      unlock().catch(() => undefined);
+    }, 180);
+    return () => clearTimeout(timeout);
+  }, [mode, unlock]);
 
   return (
     <View style={styles.overlay} accessibilityViewIsModal>
@@ -183,7 +200,9 @@ function AppSecurityLockScreen() {
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <TouchableOpacity
           accessibilityRole="button"
-          onPress={() => void unlock()}
+          onPress={() => {
+            unlock().catch(() => undefined);
+          }}
           disabled={working || (mode === 'password' && !password)}
           style={[styles.primaryButton, (working || (mode === 'password' && !password)) && styles.disabled]}
         >

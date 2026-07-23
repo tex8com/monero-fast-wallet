@@ -944,6 +944,17 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeStopRefresh(
   }
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativePersistOpenWallets(
+    JNIEnv* env,
+    jclass) {
+  try {
+    walletEngine().persistOpenWallets();
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeGetAddress(
     JNIEnv* env,

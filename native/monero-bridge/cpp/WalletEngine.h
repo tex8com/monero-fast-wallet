@@ -49,6 +49,9 @@ class WalletEngine {
 
   void startRefresh(const WalletId& walletId);
   void stopRefresh(const WalletId& walletId);
+  // Synchronously settle and persist every open Core wallet. Android calls
+  // this from the native activity lifecycle before JavaScript can be paused.
+  void persistOpenWallets();
 
   std::string getAddress(
       const WalletId& walletId,

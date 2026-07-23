@@ -1,6 +1,7 @@
 package com.monerowallet
 
 import android.content.Intent
+import android.util.Log
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
@@ -24,5 +25,18 @@ class MainActivity : ReactActivity() {
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     setIntent(intent)
+  }
+
+  override fun onPause() {
+    // Do this on the native lifecycle boundary. Android can freeze the React
+    // bridge before its AppState callback has finished, which otherwise leaves
+    // the Monero Core cache at the old scan height for the next app launch.
+    runCatching { NativeMoneroWalletJni.persistOpenWallets() }
+      .onFailure { error -> Log.w(TAG, "Could not persist open wallet caches", error) }
+    super.onPause()
+  }
+
+  private companion object {
+    const val TAG = "MoneroWalletActivity"
   }
 }
