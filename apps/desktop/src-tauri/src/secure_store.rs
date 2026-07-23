@@ -14,7 +14,22 @@ pub fn store_wallet_password(wallet_id: &str, mut password: String) -> Result<()
             .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
         entry
             .set_password(&password)
-            .map_err(|_| "The wallet password could not be saved in secure storage.".to_owned())
+            .map_err(|_| "The wallet password could not be saved in secure storage.".to_owned())?;
+
+        // A successful write call alone is not a sufficient safety boundary.
+        // In particular, a credential backend can accept a write and then be
+        // unavailable to the app that has to reopen the encrypted wallet.
+        // Verify the exact record before returning success so we never create
+        // a wallet that only appears passwordless during its first session.
+        let mut stored = entry
+            .get_password()
+            .map_err(|_| "The wallet password could not be verified in secure storage.".to_owned())?;
+        let matches = stored == password;
+        stored.zeroize();
+        if !matches {
+            return Err("The wallet password verification failed in secure storage.".to_owned());
+        }
+        Ok(())
     })();
     password.zeroize();
     result
@@ -220,7 +235,7 @@ fn delete_secret(prefix: &str, identifier: &str, label: &str) -> Result<(), Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{account_name, account_name_with_prefix};
+    use super::{account_name, account_name_with_prefix, delete_wallet_password, load_wallet_password, store_wallet_password};
 
     #[test]
     fn accepts_safe_wallet_identifiers() {
@@ -240,5 +255,19 @@ mod tests {
             account_name_with_prefix("fast-wallet-password", "fast-receive-0").unwrap(),
             account_name_with_prefix("fast-scanner-token", "fast-receive-0").unwrap()
         );
+    }
+
+    #[test]
+    #[ignore = "requires the current platform's real secure credential store"]
+    fn wallet_credential_round_trip_uses_the_platform_secure_store() {
+        let identifier = format!("secure-store-test-{}", std::process::id());
+        let password = "test-device-held-credential".to_owned();
+        store_wallet_password(&identifier, password).expect("store and verification must succeed");
+        assert!(
+            load_wallet_password(&identifier)
+                .expect("secure store must be readable")
+                .is_some()
+        );
+        delete_wallet_password(&identifier).expect("test credential cleanup must succeed");
     }
 }

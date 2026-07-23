@@ -187,10 +187,10 @@ const messages = {
     "settings.seedHardware": "The recovery seed remains on the Ledger device.",
     "settings.seedHint": "Show it only when you need to verify your backup.",
     "settings.showRecoverySeed": "Show recovery seed",
-    "settings.unlock": "Wallet unlock",
+    "settings.unlock": "App protection",
     "settings.unlockHint":
-      "The automatic local wallet credential stays in macOS Keychain and is never shown in the app.",
-    "settings.keychain": "Keychain",
+      "Unlocking this app opens all saved wallets together. Individual wallets never ask for a password.",
+    "settings.keychain": "Secure storage",
     "settings.localDevice": "Local device",
     "settings.autoLock": "Auto-lock after 5 minutes",
     "settings.autoLockHint":
@@ -591,10 +591,10 @@ const messages = {
       "Der Wiederherstellungs-Seed bleibt auf dem Ledger-Gerät.",
     "settings.seedHint": "Zeige ihn nur, wenn du dein Backup überprüfen musst.",
     "settings.showRecoverySeed": "Wiederherstellungs-Seed anzeigen",
-    "settings.unlock": "Wallet entsperren",
+    "settings.unlock": "App-Schutz",
     "settings.unlockHint":
-      "Die automatische lokale Wallet-Zugangskennung liegt im macOS-Schlüsselbund und wird nie in der App angezeigt.",
-    "settings.keychain": "Schlüsselbund",
+      "Das Entsperren dieser App öffnet alle gespeicherten Wallets gemeinsam. Einzelne Wallets fragen nie nach einem Passwort.",
+    "settings.keychain": "Sicherer Speicher",
     "settings.localDevice": "Lokales Gerät",
     "settings.autoLock": "Nach 5 Minuten automatisch sperren",
     "settings.autoLockHint":

@@ -17,7 +17,10 @@ tauri-build = { version = "2.4", features = [] }
 
 [dependencies]
 getrandom = "0.2"
-keyring = "3.6"
+# Explicitly select real platform credential stores. Without these features
+# keyring falls back to an in-memory mock on macOS, which makes a newly
+# created wallet impossible to reopen after the app process exits.
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

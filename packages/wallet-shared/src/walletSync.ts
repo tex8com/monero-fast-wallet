@@ -30,9 +30,10 @@ export type WalletSyncPresentation = {
 
 export type WalletSyncPresentationOptions = {
   /**
-   * Height from the first live core snapshot of the current refresh session.
-   * When absent, progress intentionally remains indeterminate instead of
-   * treating genesis or an old UI cache as the beginning of this sync.
+   * Authoritative start of the visible sync range: the restore height chosen
+   * by the owner, or (for a new wallet) its first live Core height. When
+   * absent, progress intentionally remains indeterminate instead of treating
+   * genesis or an old UI cache as the beginning of this sync.
    */
   startHeight?: number | string;
 };
@@ -58,6 +59,22 @@ export type WalletSyncEtaEstimate = {
 function nonNegativeNumber(value: number | string): number {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+/**
+ * Selects the only valid presentation baseline for a wallet sync. A user
+ * supplied restore height is durable and wins over a transient UI snapshot.
+ * New wallets have no chosen height, so their first live Core height is the
+ * best available baseline for the current session.
+ */
+export function syncStartHeightForWallet(
+  restoreHeight: number | string | undefined,
+  liveStartHeight?: number | string,
+): number | undefined {
+  const configured = nonNegativeNumber(restoreHeight ?? 0);
+  if (configured > 0) return configured;
+  const live = nonNegativeNumber(liveStartHeight ?? 0);
+  return live > 0 ? live : undefined;
 }
 
 /**

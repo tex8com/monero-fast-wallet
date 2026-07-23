@@ -66,11 +66,6 @@ unsafe extern "C" {
         wallet_id: *const c_char,
         store: c_int,
     ) -> RawResult;
-    fn tex8_desktop_wallet_set_password(
-        core: *mut RawCore,
-        wallet_id: *const c_char,
-        new_password: *const c_char,
-    ) -> RawResult;
     fn tex8_desktop_wallet_set_daemon(
         core: *mut RawCore,
         wallet_id: *const c_char,
@@ -314,18 +309,6 @@ impl NativeWallet {
         let wallet_id = c(wallet_id)?;
         self.result(unsafe {
             tex8_desktop_wallet_close(self.core.as_ptr(), wallet_id.as_ptr(), store.into())
-        })
-        .map(|_| ())
-    }
-    pub fn set_password(&self, wallet_id: &str, new_password: &str) -> Result<(), String> {
-        let wallet_id = c(wallet_id)?;
-        let new_password = c(new_password)?;
-        self.result(unsafe {
-            tex8_desktop_wallet_set_password(
-                self.core.as_ptr(),
-                wallet_id.as_ptr(),
-                new_password.as_ptr(),
-            )
         })
         .map(|_| ())
     }

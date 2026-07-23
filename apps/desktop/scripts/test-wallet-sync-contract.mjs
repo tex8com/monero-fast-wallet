@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
   presentWalletSync,
+  syncStartHeightForWallet,
   updateWalletSyncEta,
   walletIsSpendReady,
 } from '../../../packages/wallet-shared/src/walletSync.ts';
@@ -76,6 +78,29 @@ test('refresh progress is measured from the first live core height', () => {
   assert.equal(sync.phase, 'syncing');
   assert.equal(sync.progress, 50);
   assert.equal(sync.coreConfirmed, false);
+});
+
+test('a configured restore height is the durable percentage baseline', async () => {
+  const restoreHeight = 3_549_388;
+  const sync = presentWalletSync(
+    {
+      walletHeight: restoreHeight,
+      daemonHeight: 3_724_447,
+      daemonTargetHeight: 3_724_447,
+      synchronized: false,
+    },
+    { startHeight: syncStartHeightForWallet(restoreHeight, 3_700_000) },
+  );
+
+  assert.equal(sync.phase, 'syncing');
+  assert.equal(sync.progress, 0);
+  assert.equal(sync.remainingBlocks, 175_059);
+
+  assert.equal(syncStartHeightForWallet(restoreHeight, 3_700_000), restoreHeight);
+  assert.equal(syncStartHeightForWallet(undefined, 3_700_000), 3_700_000);
+
+  const desktopApp = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(desktopApp, /syncStartHeightForWallet\(wallet\?\.restoreHeight/);
 });
 
 test('no cached height can turn an active 19k-block scan into 99%', () => {

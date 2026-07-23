@@ -35,7 +35,10 @@ import {
   IncomingTransactionObserver,
   type IncomingTransactionNotice,
 } from './IncomingTransactionObserver';
-import { presentWalletSync } from '../../../../packages/wallet-shared/src/walletSync';
+import {
+  presentWalletSync,
+  syncStartHeightForWallet,
+} from '../../../../packages/wallet-shared/src/walletSync';
 import { useAppSecurity } from './AppSecurity';
 
 type RegisterOpenedSessionOptions = {
@@ -467,17 +470,17 @@ export function WalletStateProvider({
       snapshotRefreshInFlightIdsRef.current.add(registration.id);
       try {
         const nextSnapshot = await walletService.snapshot(openedSession);
-        if (
-          !syncStartHeightsRef.current.has(registration.id) &&
-          nextSnapshot.walletHeight > 0
-        ) {
-          // Only the first live Core snapshot may establish the percentage
-          // baseline. A saved UI snapshot can be from a previous partial sync
-          // and made a current 19k-block scan incorrectly look like 99%.
-          syncStartHeightsRef.current.set(
-            registration.id,
+        if (!syncStartHeightsRef.current.has(registration.id)) {
+          const startHeight = syncStartHeightForWallet(
+            registration.restoreHeight,
             nextSnapshot.walletHeight,
           );
+          if (startHeight !== undefined) {
+            // An import/Ledger scan starts exactly where the owner selected.
+            // A new wallet has no chosen height, so only its first live Core
+            // snapshot may establish the presentation baseline.
+            syncStartHeightsRef.current.set(registration.id, startHeight);
+          }
         }
         const nextCache = {
           ...walletSnapshotsRef.current,
