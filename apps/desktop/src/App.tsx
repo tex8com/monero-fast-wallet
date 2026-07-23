@@ -27,6 +27,7 @@ type Section = 'home' | 'wallets' | 'setup' | 'send' | 'receive' | 'activity' | 
 type Network = 'mainnet' | 'testnet' | 'stagenet';
 type SetupMode = 'create' | 'restore' | 'open' | 'ledger';
 type WalletCoreStatus = { linked: boolean; releaseReady: boolean; backend: string; message: string };
+type AppProtectionStatus = { configured: boolean; locked: boolean };
 type RegisteredWallet = { id: string; displayName?: string; walletName: string; network: Network; kind: string; seedBackupStatus: 'pending' | 'verified' | 'not-required'; restoreHeight?: number; accountIndex?: number; addressIndex?: number; role?: 'standard' | 'fast'; sourceWalletId?: string; createdAt: number; lastOpenedAt: number; isOpen?: boolean; isActive?: boolean };
 type WalletOperationResponse = { walletId: string; wallet: RegisteredWallet };
 type LedgerTransportStatus = { platform: string; transport: 'ble'; supported: boolean; available: boolean; permissionGranted: boolean; requiresUserAction: boolean; deviceCount: number; message: string };
@@ -147,6 +148,7 @@ export default function App() {
   const [setupRequest, setSetupRequest] = useState<SetupRequest>(null);
   const [seedBackup, setSeedBackup] = useState<SeedBackup | null>(null);
   const [status, setStatus] = useState<WalletCoreStatus | null>(null);
+  const [appProtection, setAppProtection] = useState<AppProtectionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [autoLockEnabled, setAutoLockEnabled] = useState(() => window.localStorage.getItem('tex8-monero-auto-lock') !== 'false');
   const startupWalletSessionsInitializedRef = useRef(false);
@@ -168,6 +170,7 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
     invoke<WalletCoreStatus>('wallet_core_status').then((value) => mounted && setStatus(value)).catch(() => mounted && setError('The desktop host could not verify the native wallet core.'));
+    invoke<AppProtectionStatus>('app_protection_status').then((value) => mounted && setAppProtection(value)).catch((reason) => mounted && setError(errorMessage(reason, 'App protection could not read secure storage.')));
     reloadWallets();
     return () => { mounted = false; };
   }, [reloadWallets]);
@@ -217,6 +220,22 @@ export default function App() {
       }
     } catch (reason) { setError(errorMessage(reason, 'The wallet could not be locked.')); }
   }, [activeWallet, activeWalletId, reloadWallets]);
+  const lockDesktopApp = useCallback(async () => {
+    try {
+      await invoke<void>('lock_app');
+      setActiveWalletId(null); setActiveWallet(null); setSeedBackup(null); setSetupRequest(null);
+      setSection('home'); setAppProtection({ configured: true, locked: true });
+      await reloadWallets();
+    } catch (reason) { setError(errorMessage(reason, 'Monero Fast Wallet could not be locked.')); }
+  }, [reloadWallets]);
+  const setAppPassword = useCallback(async (password: string) => {
+    const result = await invoke<AppProtectionStatus>('set_app_protection_password', { input: { password } });
+    setAppProtection(result);
+  }, []);
+  const clearAppPassword = useCallback(async () => {
+    const result = await invoke<AppProtectionStatus>('clear_app_protection_password');
+    setAppProtection(result);
+  }, []);
   const removeWallet = useCallback(async (wallet: RegisteredWallet) => {
     const removingActiveWallet = activeWallet?.id === wallet.id;
     try {
@@ -236,7 +255,7 @@ export default function App() {
   const linked = Boolean(status?.linked);
 
   useEffect(() => {
-    if (!linked || wallets.length === 0 || startupWalletSessionsInitializedRef.current) return;
+    if (!linked || appProtection?.locked !== false || wallets.length === 0 || startupWalletSessionsInitializedRef.current) return;
     startupWalletSessionsInitializedRef.current = true;
     let cancelled = false;
 
@@ -275,18 +294,20 @@ export default function App() {
       console.warn('MONERO_DESKTOP_STARTUP_OPEN failed', reason);
     });
     return () => { cancelled = true; };
-  }, [activateWallet, linked, wallets]);
+  }, [activateWallet, appProtection?.locked, linked, wallets]);
 
   useEffect(() => { window.localStorage.setItem('tex8-monero-auto-lock', autoLockEnabled ? 'true' : 'false'); }, [autoLockEnabled]);
   useEffect(() => {
-    if (!autoLockEnabled || !activeWalletId) return;
+    if (!autoLockEnabled || !activeWalletId || appProtection?.configured !== true) return;
     let timer: number | undefined;
     const cancel = () => { if (timer !== undefined) { window.clearTimeout(timer); timer = undefined; } };
-    const schedule = () => { cancel(); timer = window.setTimeout(() => void closeActiveWallet(), 5 * 60 * 1000); };
+    const schedule = () => { cancel(); timer = window.setTimeout(() => void lockDesktopApp(), 5 * 60 * 1000); };
     const visibility = () => { if (document.visibilityState === 'hidden') schedule(); else cancel(); };
     window.addEventListener('blur', schedule); window.addEventListener('focus', cancel); document.addEventListener('visibilitychange', visibility);
     return () => { cancel(); window.removeEventListener('blur', schedule); window.removeEventListener('focus', cancel); document.removeEventListener('visibilitychange', visibility); };
-  }, [activeWalletId, autoLockEnabled, closeActiveWallet]);
+  }, [activeWalletId, appProtection?.configured, autoLockEnabled, lockDesktopApp]);
+  if (!appProtection) return <main className="app-shell app-protection-loading"><p>Preparing secure app protection…</p></main>;
+  if (appProtection.locked) return <AppProtectionGate onUnlocked={(value) => { setAppProtection(value); startupWalletSessionsInitializedRef.current = false; }} />;
   return <main className="app-shell">
     <aside className="sidebar" aria-label="Main navigation">
       <div className="brand"><img className="brand-mark" src="/monero-mark.png" alt="" /><div><strong>Monero<span>Fast Wallet</span></strong><small>{t('shell.desktop')}</small></div></div>
@@ -306,7 +327,7 @@ export default function App() {
       {section === 'activity' && <Activity linked={linked} walletId={activeWalletId} wallet={activeWallet} />}
       {section === 'community' && <Community />}
       {section === 'assistant' && <Assistant wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
-      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} autoLockEnabled={autoLockEnabled} onAutoLockChange={setAutoLockEnabled} />}
+      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} autoLockEnabled={autoLockEnabled} onAutoLockChange={setAutoLockEnabled} appProtection={appProtection} onSetAppPassword={setAppPassword} onClearAppPassword={clearAppPassword} onLockApp={lockDesktopApp} />}
       {section === 'menu' && <DesktopMenu wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
       {seedBackup && <RecoverySeedOverlay wallet={seedBackup.wallet} seed={seedBackup.seed} onConfirm={() => void confirmSeedBackup()} onDismiss={() => setSeedBackup(null)} />}
     </section>
@@ -314,6 +335,21 @@ export default function App() {
 }
 
 function NavItem({ item, active, onSelect }: { item: { id: Section; label: string; icon: string }; active: Section; onSelect: (section: Section) => void }) { return <button className={item.id === active ? 'nav-item active' : 'nav-item'} onClick={() => onSelect(item.id)} type="button"><span>{item.icon}</span>{item.label}</button>; }
+
+function AppProtectionGate({ onUnlocked }: { onUnlocked: (status: AppProtectionStatus) => void }) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const unlock = async () => {
+    setBusy(true); setError(null);
+    try {
+      const status = await invoke<AppProtectionStatus>('verify_app_protection_password', { input: { password } });
+      setPassword(''); onUnlocked(status);
+    } catch (reason) { setPassword(''); setError(errorMessage(reason, 'The app could not be unlocked.')); }
+    finally { setBusy(false); }
+  };
+  return <main className="app-shell app-protection-gate"><section className="app-protection-card" role="dialog" aria-modal="true" aria-labelledby="app-protection-title"><img src="/monero-mark.png" alt="" /><p className="eyebrow">Monero Fast Wallet</p><h1 id="app-protection-title">Unlock app</h1><p>Your saved wallets open together only after this app is unlocked. There is no password per wallet.</p><form onSubmit={(event) => { event.preventDefault(); void unlock(); }}><label>App password<input autoFocus autoComplete="current-password" onChange={(event) => setPassword(event.target.value)} type="password" value={password} /></label><button className="primary" disabled={busy || !password} type="submit">{busy ? 'Unlocking…' : 'Unlock Monero Fast Wallet'}</button></form>{error && <p className="setup-message">{error}</p>}<small>Stored only in this device’s secure OS storage.</small></section></main>;
+}
 
 function DesktopWalletSwitcher({ wallets, activeWallet, onSelect, onManage }: { wallets: RegisteredWallet[]; activeWallet: RegisteredWallet | null; onSelect: (wallet: RegisteredWallet) => void; onManage: () => void }) {
   const { t } = useI18n();
@@ -1097,7 +1133,7 @@ function Settings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoL
   return <section className="settings-page"><header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>Settings</h2><p>Desktop wallet controls mirror the mobile app while keeping keys and credentials local.</p></div><span>Desktop</span></header><section className="settings-section"><header><h3>Wallet</h3><small>{wallet ? `${wallet.walletName} · ${networkLabel(wallet.network)} · ${wallet.kind}` : 'No wallet open'}</small></header><article className="settings-panel settings-wallet-actions"><div><div><strong>Recovery seed</strong><p>{wallet?.kind === 'hardware' ? 'The recovery seed remains on the Ledger device.' : 'Reveal only while this local wallet is open.'}</p></div></div><button className="secondary" disabled={!walletId || wallet?.kind === 'hardware'} onClick={onRevealSeed} type="button">Show recovery seed</button></article><article className="settings-panel password-change"><div><strong>Change wallet password</strong><p>Changing the password requires the wallet to be open. The new password is never saved by this app.</p></div><div className="password-fields"><input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="New wallet password" /><input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="Confirm new password" /><button className="secondary" disabled={!walletId || changingPassword || !newPassword || !confirmPassword} onClick={() => void saveNewPassword()} type="button">{changingPassword ? 'Changing…' : 'Change password'}</button></div></article></section><section className="settings-section"><header><h3>Security</h3><small>Local controls</small></header><article className="settings-panel settings-toggle-row"><div><strong>Auto-lock after 5 minutes</strong><p>Locks the open wallet after the desktop app has been in the background for five minutes.</p></div><label className="toggle"><input checked={autoLockEnabled} onChange={(event) => onAutoLockChange(event.target.checked)} type="checkbox" /><span /></label></article><article className="settings-panel settings-info-row"><div><strong>Secure storage</strong><p>Node credentials and Fast Wallet scanner credentials stay in macOS Keychain. Recovery seeds and spend keys are never stored in this settings view.</p></div><span className="status-good">Keychain</span></article></section><section className="settings-section"><header><h3>Node</h3><small>{changed ? 'Unsaved changes' : savedProfile ? 'Saved' : 'Loading'}</small></header><article className="settings-panel node-settings"><p>{wallet ? `${wallet.walletName} uses its ${networkLabel(wallet.network)} profile when you save that network.` : 'Configure a network profile before opening a wallet.'}</p>{profile && <><div className="settings-field"><span>Network</span><div className="node-mode">{(['mainnet', 'testnet', 'stagenet'] as Network[]).map((item) => <button className={network === item ? 'selected' : ''} onClick={() => setNetwork(item)} key={item} type="button">{networkLabel(item)}</button>)}</div></div><div className="settings-field"><span>Connection</span><div className="node-mode">{([['optimized-grpc', 'Optimized'], ['original-rpc', 'Original RPC'], ['custom', 'Custom']] as const).map(([mode, label]) => <button className={profile.mode === mode ? 'selected' : ''} onClick={() => changeMode(mode)} key={mode} type="button">{label}</button>)}</div></div><div className="node-hint">{profile.mode === 'original-rpc' ? 'Original Monero daemon RPC. gRPC is disabled for this profile.' : profile.mode === 'optimized-grpc' ? 'Optimized Cuprate gRPC profile, matching the mobile default.' : 'Custom node endpoints remain local to this device.'}</div><div className="settings-form-grid"><label>Daemon address<input value={profile.daemonAddress} onChange={(event) => setProfile({ ...profile, daemonAddress: event.target.value })} placeholder="node.example:18089" autoComplete="off" /></label>{profile.mode !== 'original-rpc' && <label>Cuprate gRPC endpoint<input value={profile.grpcEndpoint} onChange={(event) => setProfile({ ...profile, grpcEndpoint: event.target.value })} placeholder="node.example:18091" autoComplete="off" /></label>}<label>Node username <small>Optional</small><input value={profile.username} onChange={(event) => setProfile({ ...profile, username: event.target.value })} autoComplete="off" /></label><label>Node password <small>Optional · Keychain only</small><input value={password} onChange={(event) => { setPassword(event.target.value); setClearPassword(false); }} type="password" autoComplete="new-password" placeholder={profile.passwordStored ? 'Password stored in Keychain' : 'Stored only in Keychain'} /></label><label>SOCKS5 proxy <small>Optional</small><input value={profile.proxyAddress} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.value })} placeholder="127.0.0.1:9050" autoComplete="off" /></label></div><div className="settings-checkboxes"><label className="checkbox"><input checked={profile.trusted} onChange={(event) => setProfile({ ...profile, trusted: event.target.checked })} type="checkbox" />Trusted node</label><label className="checkbox"><input checked={profile.useSsl} onChange={(event) => setProfile({ ...profile, useSsl: event.target.checked })} type="checkbox" />Use SSL/TLS for daemon RPC</label><label className="checkbox"><input checked={torEnabled} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.checked ? '127.0.0.1:9050' : '' })} type="checkbox" />Use Tor via local SOCKS5</label>{profile.passwordStored && <label className="checkbox"><input checked={clearPassword} onChange={(event) => setClearPassword(event.target.checked)} type="checkbox" />Forget stored node password</label>}</div><div className="settings-actions"><button className="secondary" onClick={reset} type="button">Reset defaults</button><button className="primary" disabled={busy || !changed} onClick={() => void save()} type="button">{busy ? 'Saving…' : wallet?.network === profile.network && walletId ? 'Save & apply node' : 'Save node profile'}</button></div></>}</article></section><section className="settings-section"><header><h3>Diagnostics</h3><small>{diagnosing ? 'Running…' : diagnostics.length ? 'Updated' : 'Ready'}</small></header><article className="settings-panel">{diagnostics.length > 0 && <div className="settings-diagnostics">{diagnostics.map((item) => <div key={item.label}><span>{item.label}</span><strong className={item.tone ?? 'neutral'}>{item.value}</strong></div>)}</div>}<button className="primary" disabled={diagnosing} onClick={() => void runDiagnostics()} type="button">{diagnosing ? 'Running diagnostics…' : 'Run diagnostics'}</button></article></section><section className="settings-section settings-about"><header><h3>About</h3><small>Local desktop build</small></header><article className="settings-panel"><div><strong>Privacy by design</strong><p>The packaged interface contains no remote web content. Wallet keys, passwords, transaction signing, and recovery seeds remain in the native Monero core.</p></div><div><strong>Market display</strong><p>Dashboard values use XMR/USD, the same default display as the mobile wallet.</p></div><div><strong>Open-source components</strong><p>Built with Tauri, React, Rust, and the pinned fork of Monero libwallet_api.</p></div></article></section><button className="danger-button settings-lock" disabled={!walletId} onClick={onCloseWallet} type="button">Close wallet</button>{message && <p className="setup-message">{message}</p>}</section>;
 }
 
-function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoLockEnabled, onAutoLockChange }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; autoLockEnabled: boolean; onAutoLockChange: (value: boolean) => void }) {
+function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoLockEnabled, onAutoLockChange, appProtection, onSetAppPassword, onClearAppPassword, onLockApp }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; autoLockEnabled: boolean; onAutoLockChange: (value: boolean) => void; appProtection: AppProtectionStatus; onSetAppPassword: (password: string) => Promise<void>; onClearAppPassword: () => Promise<void>; onLockApp: () => Promise<void> }) {
   const { language, setLanguage, t } = useI18n();
   const [network, setNetwork] = useState<Network>(wallet?.network ?? 'mainnet');
   const [profile, setProfile] = useState<NodeProfile | null>(null);
@@ -1108,6 +1144,9 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
   const [busy, setBusy] = useState(false);
   const [notificationState, setNotificationState] = useState<DesktopNotificationStatus | null>(null);
   const [notificationBusy, setNotificationBusy] = useState(false);
+  const [appPassword, setAppPassword] = useState('');
+  const [appPasswordConfirm, setAppPasswordConfirm] = useState('');
+  const [appProtectionBusy, setAppProtectionBusy] = useState(false);
 
   useEffect(() => { if (wallet?.network) setNetwork(wallet.network); }, [wallet?.network]);
   const load = useCallback(async () => {
@@ -1161,6 +1200,19 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
     } catch (reason) { setMessage(errorMessage(reason, t('settings.notificationsError'))); }
     finally { setNotificationBusy(false); }
   };
+  const saveAppPassword = async () => {
+    if (appPassword !== appPasswordConfirm) { setMessage('The two app passwords do not match.'); return; }
+    setAppProtectionBusy(true); setMessage(null);
+    try { await onSetAppPassword(appPassword); setAppPassword(''); setAppPasswordConfirm(''); setMessage('App protection is enabled for all saved wallets.'); }
+    catch (reason) { setMessage(errorMessage(reason, 'App protection could not be enabled.')); }
+    finally { setAppProtectionBusy(false); }
+  };
+  const removeAppPassword = async () => {
+    setAppProtectionBusy(true); setMessage(null);
+    try { await onClearAppPassword(); setMessage('App protection was removed from this device.'); }
+    catch (reason) { setMessage(errorMessage(reason, 'App protection could not be changed.')); }
+    finally { setAppProtectionBusy(false); }
+  };
   return <section className="settings-page">
     <header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>{t('settings.title')}</h2><p>{t('settings.subtitle')}</p></div><span>{status?.linked ? t('settings.ready') : t('settings.checking')}</span></header>
     <section className="settings-section"><header><h3>{t('settings.language')}</h3><small>{t('settings.languageHint')}</small></header>
@@ -1171,7 +1223,8 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
       <article className="settings-panel settings-info-row"><div><strong>{t('settings.unlock')}</strong><p>{t('settings.unlockHint')}</p></div><span className="status-good">{t('settings.keychain')}</span></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.security')}</h3><small>{t('settings.localDevice')}</small></header>
-      <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.autoLock')}</strong><p>{t('settings.autoLockHint')}</p></div><label className="toggle"><input checked={autoLockEnabled} onChange={(event) => onAutoLockChange(event.target.checked)} type="checkbox" /><span /></label></article>
+      <article className="settings-panel app-protection-settings"><div><strong>One app password</strong><p>{appProtection.configured ? 'Enabled. It protects every saved wallet together and wallet files never ask for a separate password.' : 'Set one password for Monero Fast Wallet. It works with macOS Keychain, Windows Credential Manager, and Linux secret storage.'}</p></div>{appProtection.configured ? <div className="settings-actions"><button className="secondary" disabled={appProtectionBusy} onClick={() => void onLockApp()} type="button">Lock app now</button><button className="quiet-button" disabled={appProtectionBusy} onClick={() => void removeAppPassword()} type="button">Remove app password</button></div> : <div className="password-fields"><input value={appPassword} onChange={(event) => setAppPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="App password (at least 8 characters)" /><input value={appPasswordConfirm} onChange={(event) => setAppPasswordConfirm(event.target.value)} type="password" autoComplete="new-password" placeholder="Confirm app password" /><button className="primary" disabled={appProtectionBusy || !appPassword || !appPasswordConfirm} onClick={() => void saveAppPassword()} type="button">{appProtectionBusy ? 'Saving…' : 'Protect app'}</button></div>}</article>
+      <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.autoLock')}</strong><p>{appProtection.configured ? 'Locks every open wallet after the desktop app has been in the background for five minutes.' : 'Enable app protection first to use automatic app lock.'}</p></div><label className="toggle"><input checked={autoLockEnabled} disabled={!appProtection.configured} onChange={(event) => onAutoLockChange(event.target.checked)} type="checkbox" /><span /></label></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.notifications')}</h3><small>{notificationState?.permission === 'granted' ? t('settings.notificationsReady') : t('settings.notificationsOff')}</small></header>
       <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.fastWalletSignals')}</strong><p>{t('settings.fastWalletSignalsHint')}</p></div><label className="toggle"><input checked={notificationState?.fastWalletSignalsEnabled === true} disabled={notificationBusy} onChange={(event) => void setFastWalletNotifications(event.target.checked)} type="checkbox" /><span /></label></article>

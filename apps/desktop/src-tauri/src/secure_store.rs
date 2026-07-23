@@ -3,6 +3,35 @@ use zeroize::Zeroize;
 
 const SERVICE_NAME: &str = "com.tex8.monerowallet.desktop";
 const COMMUNITY_ACCOUNT_NAME: &str = "community-account";
+const APP_PROTECTION_IDENTIFIER: &str = "app-protection";
+
+/// The app password is the single user-visible local unlock boundary. Wallet
+/// file credentials remain separate, random secrets which are never shown to
+/// the user and are also held only by the OS credential store.
+pub fn store_app_protection_password(password: String) -> Result<(), String> {
+    store_secret(
+        "app-protection-password",
+        APP_PROTECTION_IDENTIFIER,
+        password,
+        "app protection password",
+    )
+}
+
+pub fn load_app_protection_password() -> Result<Option<String>, String> {
+    load_secret(
+        "app-protection-password",
+        APP_PROTECTION_IDENTIFIER,
+        "app protection password",
+    )
+}
+
+pub fn delete_app_protection_password() -> Result<(), String> {
+    delete_secret(
+        "app-protection-password",
+        APP_PROTECTION_IDENTIFIER,
+        "app protection password",
+    )
+}
 
 pub fn store_wallet_password(wallet_id: &str, mut password: String) -> Result<(), String> {
     let result = (|| {

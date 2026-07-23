@@ -2,6 +2,11 @@ use std::{env, fs, path::PathBuf};
 
 const COMMANDS: &[&str] = &[
     "wallet_core_status",
+    "app_protection_status",
+    "set_app_protection_password",
+    "verify_app_protection_password",
+    "clear_app_protection_password",
+    "lock_app",
     "fetch_market_backup",
     "ledger_transport_status",
     "store_wallet_password",

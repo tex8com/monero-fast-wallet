@@ -11,7 +11,7 @@ mod wallet_registry;
 mod windows_notification_agent;
 
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, sync::Mutex, time::Duration};
+use std::{collections::{HashMap, HashSet}, fs, sync::Mutex, time::Duration};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 use zeroize::Zeroize;
@@ -32,6 +32,20 @@ struct WalletSessionState(Mutex<HashMap<String, String>>);
 /// Fast Wallet sessions are isolated from the active normal-wallet mapping.
 /// Their renderer IDs are process-local and never identify a wallet file.
 struct FastWalletSessionState(Mutex<HashMap<String, String>>);
+/// `true` means the app is locked.  This is intentionally process-local: the
+/// durable secret stays in Keychain/Credential Manager/libsecret, while every
+/// native wallet session is closed on lock.
+struct AppProtectionState(Mutex<bool>);
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppProtectionStatus {
+    configured: bool,
+    locked: bool,
+}
+#[derive(Debug, Deserialize)]
+struct AppProtectionPasswordInput {
+    password: String,
+}
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateWalletInput {
@@ -342,13 +356,147 @@ fn delete_wallet_password(wallet_id: String) -> Result<(), String> {
     secure_store::delete_wallet_password(&wallet_id)
 }
 
+fn app_is_locked(state: &AppProtectionState) -> Result<bool, String> {
+    state
+        .0
+        .lock()
+        .map(|locked| *locked)
+        .map_err(|_| "App protection state is busy.".to_owned())
+}
+
+fn require_app_unlocked(state: &AppProtectionState) -> Result<(), String> {
+    if app_is_locked(state)? {
+        return Err("Unlock Monero Fast Wallet before opening wallets.".to_owned());
+    }
+    Ok(())
+}
+
+fn secrets_match(left: &str, right: &str) -> bool {
+    let mut difference = (left.len() ^ right.len()) as u8;
+    for (a, b) in left.bytes().zip(right.bytes()) {
+        difference |= a ^ b;
+    }
+    difference == 0
+}
+
+#[tauri::command]
+fn app_protection_status(
+    protection: State<'_, AppProtectionState>,
+) -> Result<AppProtectionStatus, String> {
+    let configured = secure_store::load_app_protection_password()?.is_some();
+    Ok(AppProtectionStatus {
+        configured,
+        locked: configured && app_is_locked(&protection)?,
+    })
+}
+
+#[tauri::command]
+fn set_app_protection_password(
+    protection: State<'_, AppProtectionState>,
+    mut input: AppProtectionPasswordInput,
+) -> Result<AppProtectionStatus, String> {
+    let already_configured = secure_store::load_app_protection_password()?.is_some();
+    if already_configured && app_is_locked(&protection)? {
+        input.password.zeroize();
+        return Err("Unlock Monero Fast Wallet before changing the app password.".to_owned());
+    }
+    if input.password.chars().count() < 8 {
+        input.password.zeroize();
+        return Err("Use an app password with at least 8 characters.".to_owned());
+    }
+    secure_store::store_app_protection_password(std::mem::take(&mut input.password))?;
+    *protection
+        .0
+        .lock()
+        .map_err(|_| "App protection state is busy.".to_owned())? = false;
+    eprintln!("MONERO_DESKTOP_APP_PROTECTION configured");
+    Ok(AppProtectionStatus { configured: true, locked: false })
+}
+
+#[tauri::command]
+fn verify_app_protection_password(
+    protection: State<'_, AppProtectionState>,
+    mut input: AppProtectionPasswordInput,
+) -> Result<AppProtectionStatus, String> {
+    let mut stored = secure_store::load_app_protection_password()?
+        .ok_or_else(|| "App protection is not configured on this device.".to_owned())?;
+    let matches = secrets_match(&stored, &input.password);
+    stored.zeroize();
+    input.password.zeroize();
+    if !matches {
+        eprintln!("MONERO_DESKTOP_APP_PROTECTION unlock-rejected");
+        return Err("The app password is incorrect.".to_owned());
+    }
+    *protection
+        .0
+        .lock()
+        .map_err(|_| "App protection state is busy.".to_owned())? = false;
+    eprintln!("MONERO_DESKTOP_APP_PROTECTION unlocked");
+    Ok(AppProtectionStatus { configured: true, locked: false })
+}
+
+#[tauri::command]
+fn clear_app_protection_password(
+    protection: State<'_, AppProtectionState>,
+) -> Result<AppProtectionStatus, String> {
+    require_app_unlocked(&protection)?;
+    secure_store::delete_app_protection_password()?;
+    *protection
+        .0
+        .lock()
+        .map_err(|_| "App protection state is busy.".to_owned())? = false;
+    eprintln!("MONERO_DESKTOP_APP_PROTECTION removed");
+    Ok(AppProtectionStatus { configured: false, locked: false })
+}
+
+#[tauri::command]
+fn lock_app(
+    state: State<'_, NativeWalletState>,
+    sessions: State<'_, WalletSessionState>,
+    fast_sessions: State<'_, FastWalletSessionState>,
+    protection: State<'_, AppProtectionState>,
+) -> Result<(), String> {
+    if secure_store::load_app_protection_password()?.is_none() {
+        return Err("Set an app password before using app lock.".to_owned());
+    }
+    *protection
+        .0
+        .lock()
+        .map_err(|_| "App protection state is busy.".to_owned())? = true;
+    let wallet_ids = {
+        let normal = sessions.0.lock().map_err(|_| "Wallet session state is busy.".to_owned())?;
+        let fast = fast_sessions.0.lock().map_err(|_| "Fast Wallet session state is busy.".to_owned())?;
+        normal.values().chain(fast.values()).cloned().collect::<HashSet<_>>()
+    };
+    let mut close_error = None;
+    for wallet_id in wallet_ids {
+        if let Err(error) = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .close(&wallet_id, true)
+        {
+            close_error.get_or_insert(error);
+        }
+    }
+    sessions.0.lock().map_err(|_| "Wallet session state is busy.".to_owned())?.clear();
+    fast_sessions.0.lock().map_err(|_| "Fast Wallet session state is busy.".to_owned())?.clear();
+    eprintln!("MONERO_DESKTOP_APP_PROTECTION locked");
+    if let Some(error) = close_error {
+        return Err(format!("Monero Fast Wallet is locked, but a wallet session reported: {error}"));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn create_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     mut input: CreateWalletInput,
 ) -> Result<WalletOperationResponse, String> {
+    require_app_unlocked(&protection)?;
     let wallet_name = next_wallet_file_name(&app, &input.wallet_name, "wallet")?;
     let wallet_network = input.network.clone();
     let mut password = wallet_password_or_generated(&mut input.password)?;
@@ -383,8 +531,10 @@ fn restore_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     mut input: RestoreWalletInput,
 ) -> Result<WalletOperationResponse, String> {
+    require_app_unlocked(&protection)?;
     let wallet_name = next_wallet_file_name(&app, &input.wallet_name, "wallet")?;
     let wallet_network = input.network.clone();
     let restore_height = input.restore_height.filter(|height| *height > 0);
@@ -424,8 +574,10 @@ fn create_hardware_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     mut input: CreateHardwareWalletInput,
 ) -> Result<WalletOperationResponse, String> {
+    require_app_unlocked(&protection)?;
     let account_index = input.account_index.unwrap_or(0);
     let role = input.role.as_deref().unwrap_or("standard");
     if account_index > 1_000_000 || !matches!(role, "standard" | "fast") {
@@ -527,8 +679,10 @@ fn enable_ledger_read_only(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     input: EnableLedgerReadOnlyInput,
 ) -> Result<WalletOperationResponse, String> {
+    require_app_unlocked(&protection)?;
     let source = wallet_registry::list(&app)?
         .wallets
         .into_iter()
@@ -752,8 +906,10 @@ fn create_ledger_read_only_from_device(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     input: CreateLedgerReadOnlyFromDeviceInput,
 ) -> Result<WalletOperationResponse, String> {
+    require_app_unlocked(&protection)?;
     let source = wallet_registry::list(&app)?
         .wallets
         .into_iter()
@@ -863,8 +1019,10 @@ fn open_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     mut input: OpenWalletInput,
 ) -> Result<WalletOperationResponse, String> {
+    require_app_unlocked(&protection)?;
     let wallet_name = input.wallet_name.clone();
     let wallet_network = input.network.clone();
     let restore_height = input.restore_height.filter(|height| *height > 0);
@@ -1067,8 +1225,10 @@ fn list_registered_wallets(
 fn activate_registered_wallet(
     app: AppHandle,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     wallet_id: String,
 ) -> Result<WalletOperationResponse, String> {
+    require_app_unlocked(&protection)?;
     let registered = wallet_registry::list(&app)?;
     let wallet = registered
         .wallets
@@ -1104,8 +1264,10 @@ fn open_fast_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, FastWalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     input: FastWalletIdInput,
 ) -> Result<FastWalletOpenResponse, String> {
+    require_app_unlocked(&protection)?;
     let wallet = fast_wallet::get(&app, &input.identity_id)?;
     if let Some(wallet_id) = sessions
         .0
@@ -1230,8 +1392,10 @@ fn create_fast_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     mut input: CreateFastWalletInput,
 ) -> Result<fast_wallet::FastWalletRecord, String> {
+    require_app_unlocked(&protection)?;
     let source = wallet_registry::list(&app)?
         .wallets
         .into_iter()
@@ -1343,8 +1507,10 @@ fn create_fast_wallet(
 async fn enable_fast_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     mut input: FastWalletEnableInput,
 ) -> Result<fast_wallet::FastWalletRecord, String> {
+    require_app_unlocked(&protection)?;
     let mut record = fast_wallet::get(&app, &input.identity_id)?;
     let scanner_url = fast_wallet::scanner_url(&input.scanner_url)?;
     if let Some(mut supplied_token) = input.scanner_auth_token.take() {
@@ -2315,6 +2481,17 @@ fn finish_wallet_operation(
 }
 
 pub fn run() {
+    // Fail closed when the OS credential store cannot be read. The renderer
+    // can show the exact storage error, but native sessions must never open
+    // before the app-wide boundary has been confirmed.
+    let initially_locked = match secure_store::load_app_protection_password() {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(error) => {
+            eprintln!("MONERO_DESKTOP_APP_PROTECTION status-read-failed: {error}");
+            true
+        }
+    };
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(NativeWalletState(Mutex::new(
@@ -2322,6 +2499,7 @@ pub fn run() {
         )))
         .manage(WalletSessionState(Mutex::new(HashMap::new())))
         .manage(FastWalletSessionState(Mutex::new(HashMap::new())))
+        .manage(AppProtectionState(Mutex::new(initially_locked)))
         .manage(community::CommunityState::new().expect("Community client initialization"))
         .setup(|app| {
             if std::env::var("MONERO_DESKTOP_TEST_NOTIFICATION_ON_START").as_deref() == Ok("1") {
@@ -2412,6 +2590,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             wallet_core_status,
+            app_protection_status,
+            set_app_protection_password,
+            verify_app_protection_password,
+            clear_app_protection_password,
+            lock_app,
             fetch_market_backup,
             ledger_transport_status,
             store_wallet_password,

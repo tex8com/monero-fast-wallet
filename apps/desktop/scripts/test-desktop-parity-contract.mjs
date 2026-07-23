@@ -148,3 +148,18 @@ test('both desktop Ledger read-only flows keep one instruction dialog open until
   assert.match(appSource, /setLedgerViewKeyExportPending\(true\)/);
   assert.match(appSource, /setLedgerViewKeyExportPending\(false\); setBusy\(false\);/);
 });
+
+test('desktop uses one app-wide unlock boundary before restoring wallet sessions', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  for (const command of ['app_protection_status', 'set_app_protection_password', 'verify_app_protection_password', 'clear_app_protection_password', 'lock_app']) {
+    assert.match(tauriBuild, new RegExp(`"${command}"`));
+    assert.match(tauriCapability, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
+  }
+  assert.match(appSource, /appProtection\?\.locked !== false/);
+  assert.match(appSource, /function AppProtectionGate/);
+  assert.match(appSource, /There is no password per wallet/);
+  assert.match(hostSource, /fn lock_app\(/);
+  assert.match(hostSource, /FastWalletSessionState/);
+  assert.match(hostSource, /MONERO_DESKTOP_APP_PROTECTION locked/);
+  assert.match(hostSource, /require_app_unlocked\(&protection\)\?/);
+});
