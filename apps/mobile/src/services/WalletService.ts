@@ -1301,6 +1301,37 @@ export class WalletService {
             accountIndex: 1,
           },
         );
+        let viewOnlyPath: string | undefined;
+        let viewOnlyCredentialKey: string | undefined;
+        if (input.enableLocalViewOnly) {
+          viewOnlyPath = await this.defaultWalletPath(
+            `${walletName}-ledger-view`,
+            settings.network,
+          );
+          viewOnlyCredentialKey = ledgerViewOnlyCredentialKey(
+            walletName,
+            settings.network,
+          );
+          await this.ensureSecret(viewOnlyCredentialKey);
+          try {
+            const viewOnlyWalletId =
+              await this.createViewOnlyWalletFromHardwareWithStoredSecret({
+                sourceWalletId: deviceSession.walletId,
+                path: viewOnlyPath,
+                secretKey: viewOnlyCredentialKey,
+                network: settings.network,
+                restoreHeight: input.restoreHeight,
+              });
+            await requireNativeMoneroWallet().closeWallet(viewOnlyWalletId, true);
+            this.activeSession = deviceSession;
+          } catch (error) {
+            await this.deleteWalletFiles(viewOnlyPath).catch(() => undefined);
+            await this.deleteSecret(viewOnlyCredentialKey).catch(
+              () => undefined,
+            );
+            throw error;
+          }
+        }
         const standardRegistration = await saveRegisteredWallet(
           createRegisteredWallet({
             walletName,
@@ -1308,6 +1339,12 @@ export class WalletService {
             network: settings.network,
             kind: 'hardware',
             credentialKey,
+            viewOnlyPath,
+            viewOnlyCredentialKey,
+            viewOnlyEnabledAt:
+              viewOnlyPath && viewOnlyCredentialKey
+                ? new Date().toISOString()
+                : undefined,
             restoreHeight: input.restoreHeight,
             hardwareDeviceName:
               deviceSession.hardwareDevice?.name ?? deviceName,

@@ -1291,13 +1291,21 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       // This is the sole native request for the private view key. Keep the
       // Ledger approval instruction visible until that request resolves.
       setLedgerViewKeyExportPending(persistLedgerViewOnly);
-      const result = await walletService.createNamedWalletFromDevice({
-        walletName: DEFAULT_HARDWARE_WALLET_NAME,
-        network: settings.network,
-        deviceName,
-        restoreHeight,
-        enableLocalViewOnly: persistLedgerViewOnly,
-      });
+      const result = createFastReceiveOnSetup
+        ? await walletService.createNamedLedgerWalletPairFromDevice({
+            walletName: DEFAULT_HARDWARE_WALLET_NAME,
+            network: settings.network,
+            deviceName,
+            restoreHeight,
+            enableLocalViewOnly: persistLedgerViewOnly,
+          })
+        : await walletService.createNamedWalletFromDevice({
+            walletName: DEFAULT_HARDWARE_WALLET_NAME,
+            network: settings.network,
+            deviceName,
+            restoreHeight,
+            enableLocalViewOnly: persistLedgerViewOnly,
+          });
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
@@ -1305,6 +1313,11 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         registrationId: result.registration.id,
         walletName: result.registration.walletName,
       });
+      if (createFastReceiveOnSetup) {
+        setupLog('startCreateHardwareWallet.fastWalletRegistered', {
+          sourceRegistrationId: result.registration.id,
+        });
+      }
       setupLog('startCreateHardwareWallet.syncDeferred', {
         reason: 'setupNavigation',
         walletId: result.session.walletId,

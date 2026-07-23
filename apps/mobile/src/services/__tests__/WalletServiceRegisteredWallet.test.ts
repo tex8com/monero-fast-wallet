@@ -151,6 +151,7 @@ describe('WalletService registered wallet opening', () => {
       walletName: 'ledger',
       network: 'mainnet',
       restoreHeight: 3714305,
+      enableLocalViewOnly: true,
     });
 
     expect(
@@ -178,6 +179,21 @@ describe('WalletService registered wallet opening', () => {
       sourceWalletId: result.registration.id,
       credentialKey: result.registration.credentialKey,
     });
+    expect(result.registration).toMatchObject({
+      viewOnlyPath: '/current-container/wallets/mainnet/ledger-ledger-view',
+      viewOnlyCredentialKey: 'monero.wallet.hardware-view.mainnet.ledger.v1',
+    });
+    expect(
+      mockNativeWallet.createViewOnlyWalletFromHardwareWithStoredSecret,
+    ).toHaveBeenCalledTimes(1);
+    expect(mockNativeWallet.createViewOnlyWalletFromHardwareWithStoredSecret)
+      .toHaveBeenCalledWith({
+        sourceWalletId: 'wallet-ledger',
+        path: '/current-container/wallets/mainnet/ledger-ledger-view',
+        secretKey: 'monero.wallet.hardware-view.mainnet.ledger.v1',
+        network: 'mainnet',
+        restoreHeight: 3714305,
+      });
     await expect(loadRegisteredWallets()).resolves.toHaveLength(2);
 
     await setActiveRegisteredWallet(result.fastRegistration.id);
