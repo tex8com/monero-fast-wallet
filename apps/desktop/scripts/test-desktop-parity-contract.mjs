@@ -33,3 +33,20 @@ test('desktop parity document records closed-app notification preparation truthf
   assert.match(parityDoc, /live closed-app delivery remain release gates/);
   assert.equal(/while app is open implemented; APNs closed-app delivery remains/.test(parityDoc), false);
 });
+
+test('desktop Send keeps the same simple two-step primary flow as mobile', () => {
+  const sendSource = appSource.slice(appSource.indexOf('function Send('), appSource.indexOf('function Receive('));
+  assert.match(appSource, /type SendStep = 'recipient-choice' \| 'manual-recipient' \| 'amount' \| 'review'/);
+  assert.match(sendSource, /priority: 'low'/);
+  assert.match(sendSource, /setStep\('review'\)/);
+  assert.equal(/priority-choice/.test(sendSource), false, 'fee priority must not be a primary send choice');
+  assert.equal(/RecentTransactions/.test(sendSource), false, 'recent activity must not distract from the send journey');
+});
+
+test('desktop Receive keeps QR and copy primary while address tools stay optional', () => {
+  const receiveSource = appSource.slice(appSource.indexOf('function Receive('), appSource.indexOf('function HardwareWalletCard('));
+  assert.match(receiveSource, /receive-simple-card/);
+  assert.match(receiveSource, /copy-icon-button/);
+  assert.match(receiveSource, /showAddressTools/);
+  assert.match(receiveSource, /receive\.manageAddresses/);
+});

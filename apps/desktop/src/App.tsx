@@ -293,7 +293,7 @@ export default function App() {
       {section === 'home' && <Home linked={linked} walletId={activeWalletId} wallet={activeWallet} savedWallets={wallets} onSetup={startSetup} onWallets={() => setSection('wallets')} onBackup={() => void revealRecoverySeed()} onLock={() => void closeActiveWallet()} onSend={() => setSection('send')} onReceive={() => setSection('receive')} onActivity={() => setSection('activity')} />}
       {section === 'wallets' && <Wallets linked={linked} walletId={activeWalletId} wallets={wallets} activeWallet={activeWallet} onSetup={startSetup} onOpen={openSavedWallet} onOpened={(result) => void activateWallet(result)} onRenamed={() => void reloadWallets()} onRemove={removeWallet} onActivity={() => setSection('activity')} />}
       {section === 'setup' && <Setup key={setupRequest ? `${setupRequest.walletName}-${setupRequest.network}` : 'new-wallet'} linked={linked} initial={setupRequest} wallets={wallets} onSelectSaved={openSavedWallet} onOpened={(result) => void activateWallet(result)} onCreated={(result) => void createdWallet(result)} />}
-      {section === 'send' && <Send linked={linked} walletId={activeWalletId} wallet={activeWallet} onActivity={() => setSection('activity')} />}
+      {section === 'send' && <Send linked={linked} walletId={activeWalletId} wallet={activeWallet} />}
       {section === 'receive' && <Receive linked={linked} walletId={activeWalletId} wallet={activeWallet} onActivity={() => setSection('activity')} />}
       {section === 'activity' && <Activity linked={linked} walletId={activeWalletId} wallet={activeWallet} />}
       {section === 'community' && <Community />}
@@ -777,15 +777,16 @@ function FastWallets({ linked, sourceWalletId, sourceWallet }: { linked: boolean
 
 function WalletFeature({ linked, title, text }: { linked: boolean; title: string; text: string }) { return <section className="empty-state"><img className="empty-mark" src="/monero-mark.png" alt="" /><h2>{title}</h2><p>{text}</p>{!linked && <p className="feature-lock">Available when the local Monero engine is linked.</p>}</section>; }
 
-function Send({ linked, walletId, wallet, onActivity }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; onActivity: () => void }) {
+type SendStep = 'recipient-choice' | 'manual-recipient' | 'amount' | 'review';
+
+function Send({ linked, walletId, wallet }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null }) {
   const { t } = useI18n();
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
-  const [priority, setPriority] = useState<'low' | 'default' | 'medium' | 'high'>('low');
+  const [step, setStep] = useState<SendStep>('recipient-choice');
   const [sweepAll, setSweepAll] = useState(false);
   const [snapshot, setSnapshot] = useState<NativeWalletSnapshot | null>(null);
   const [review, setReview] = useState<NativePreparedTransaction | null>(null);
-  const [transactions, setTransactions] = useState<NativeTransaction[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [contacts, setContacts] = useState<RecipientContact[]>(() => loadRecipientContacts());
@@ -799,28 +800,16 @@ function Send({ linked, walletId, wallet, onActivity }: { linked: boolean; walle
     const raw = await invoke<string>('wallet_snapshot', { input: { walletId, accountIndex } });
     setSnapshot(parseNativeJson<NativeWalletSnapshot>(raw, t('send.preparationFailed')));
   }, [accountIndex, t, walletId]);
-  const loadTransactions = useCallback(async () => {
-    if (!walletId) { setTransactions([]); return; }
-    const raw = await invoke<string>('wallet_transactions', { input: { walletId, accountIndex } });
-    setTransactions(parseNativeJson<NativeTransaction[]>(raw, t('send.preparationFailed')));
-  }, [accountIndex, t, walletId]);
-
   useEffect(() => {
     if (!linked || !walletId) return;
     void loadSnapshot();
   }, [linked, loadSnapshot, walletId]);
-  useEffect(() => {
-    if (!linked || !walletId) return;
-    const refreshTransactions = () => void loadTransactions().catch((reason) => setMessage(errorMessage(reason, t('send.preparationFailed'))));
-    refreshTransactions();
-    const timer = window.setInterval(refreshTransactions, 10_000);
-    return () => window.clearInterval(timer);
-  }, [linked, loadTransactions, t, walletId]);
 
   const selectRecipient = (contact: RecipientContact) => {
     setAddress(contact.address);
     setReview(null);
     setMessage(null);
+    setStep('amount');
   };
 
   const prepare = async () => {
@@ -834,11 +823,14 @@ function Send({ linked, walletId, wallet, onActivity }: { linked: boolean; walle
     if (!sweepAll && snapshot && atomicValue(amountAtomic ?? undefined) > atomicValue(snapshot.unlockedBalanceAtomic)) { setMessage(t('send.insufficient')); return; }
     setBusy(true); setMessage(null);
     try {
-      const raw = await invoke<string>('prepare_transaction', { input: { walletId, address: recipient, amountAtomic: sweepAll ? '' : amountAtomic ?? '', priority, accountIndex } });
+      // Keep the normal path identical to mobile: low priority, with the
+      // actual fee always calculated by the native wallet before confirmation.
+      const raw = await invoke<string>('prepare_transaction', { input: { walletId, address: recipient, amountAtomic: sweepAll ? '' : amountAtomic ?? '', priority: 'low', accountIndex } });
       const prepared = parseNativeJson<NativePreparedTransaction>(raw, t('send.preparationFailed'));
       if (prepared.status !== 'ok') throw new Error(prepared.error || t('send.preparationFailed'));
       setReview(prepared);
       if (sweepAll) setAmount(formatAtomicXmr(prepared.amountAtomic, 12));
+      setStep('review');
     } catch (reason) { setMessage(errorMessage(reason, t('send.preparationFailed'))); }
     finally { setBusy(false); }
   };
@@ -850,41 +842,44 @@ function Send({ linked, walletId, wallet, onActivity }: { linked: boolean; walle
       const raw = await invoke<string>('commit_transaction', { input: { walletId, pendingId: review.id } });
       const result = parseNativeJson<NativePreparedTransaction>(raw, t('send.broadcastFailed'));
       if (result.status !== 'ok') throw new Error(result.error || t('send.broadcastFailed'));
-      setReview(null); setAmount(''); setSweepAll(false); setMessage(t('send.sent'));
+      setReview(null); setAmount(''); setSweepAll(false); setMessage(t('send.sent')); setStep('recipient-choice');
       setRecentContacts(rememberRecipient(address.trim(), contacts));
       setAddress('');
-      await Promise.all([loadSnapshot(true), loadTransactions()]);
+      await loadSnapshot(true);
     } catch (reason) { setMessage(errorMessage(reason, t('send.broadcastFailed'))); }
     finally { setBusy(false); }
   };
 
   const useMaximum = () => {
     if (!snapshot) return;
-    setAmount(formatAtomicXmr(snapshot.unlockedBalanceAtomic, 12));
+    // An empty amount is the native Core's sweep signal. It returns the real
+    // spendable amount after the real network fee, never a guessed balance.
+    setAmount('');
     setSweepAll(true);
     setReview(null); setMessage(null);
+  };
+  const pasteRecipient = async () => {
+    try {
+      const pasted = await navigator.clipboard.readText();
+      if (pasted.trim()) {
+        setAddress(pasted.trim());
+        setReview(null);
+        setMessage(null);
+      }
+    } catch { setMessage(t('send.scanPasteFallback')); }
   };
   const amountAtomic = parseXmrToAtomic(amount) ?? '0';
   const totalAtomic = review ? atomicValue(review.amountAtomic) + atomicValue(review.feeAtomic) + atomicValue(review.dustAtomic) : 0n;
 
   if (!linked || !walletId) return <WalletFeature linked={linked} title={t('send.title')} text={t('send.openWallet')} />;
   return <section className="transaction-form transaction-page">
-    <header><p className="eyebrow">{t('send.from')}</p><h2>{t('send.title')}</h2><p>{t('send.subtitle')}</p></header>
-    <div className="transaction-summary"><span>{wallet ? walletDisplayName(wallet) : t('common.wallet')}</span><strong>{snapshot ? `${formatAtomicXmr(snapshot.unlockedBalanceAtomic, 12)} XMR` : t('common.loading')}</strong><small>{t('send.available')} · {snapshot ? syncLabel(snapshot) : t('common.loading')}</small></div>
-    <label>{t('send.recipient')}<span className="recipient-address-input"><input value={address} onChange={(event) => { setAddress(event.target.value); setReview(null); }} placeholder={t('send.recipientPlaceholder')} autoComplete="off" spellCheck="false" /><button className="recipient-qr-button" aria-label={t('send.scanAddress')} onClick={() => setScannerOpen(true)} title={t('send.scanAddress')} type="button">⌗</button></span></label>
-    <section className="recipient-picker" aria-label="Address book">
-      {contacts.length > 0 && <div><strong>{t('send.addressBook')}</strong><div className="recipient-chips">{contacts.map((contact) => <button className={contact.donor ? 'recipient-chip donor' : 'recipient-chip'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}
-      {recentContacts.length > 0 && <div><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}
-    </section>
-    <div className="transaction-form-grid"><label>{t('send.amount')}<span className="amount-field"><input value={amount} onChange={(event) => { setAmount(event.target.value); setSweepAll(false); setReview(null); }} inputMode="decimal" placeholder={t('send.amountPlaceholder')} /><em>XMR</em></span></label><button className="secondary amount-max" disabled={!snapshot || busy} onClick={useMaximum} type="button">{t('send.max')}</button></div>
-    {sweepAll && !review && <p className="transaction-note">{t('send.sweepAll')}</p>}
-    <div className="priority-choice"><span>{t('send.priority')}</span><div>{([['low', t('send.low')], ['default', t('send.normal')], ['medium', t('send.medium')], ['high', t('send.high')]] as const).map(([value, label]) => <button className={priority === value ? 'selected' : ''} onClick={() => { setPriority(value); setReview(null); }} key={value} type="button">{label}</button>)}</div></div>
-    {wallet?.kind === 'hardware' && <p className="transaction-note">{t('send.ledgerHint')}</p>}
-    {!review ? <button className="primary" disabled={busy} onClick={() => void prepare()} type="button">{busy ? t('send.preparing') : t('send.review')}</button> : <section className="review-card"><header><strong>{t('send.reviewTitle')}</strong><p>{t('send.reviewSubtitle')}</p></header><code>{address.trim()}</code><dl className="review-details"><div><dt>{t('send.amount')}</dt><dd>{formatAtomicXmr(review.amountAtomic, 12)} XMR</dd></div><div><dt>{t('send.networkFee')}</dt><dd>{formatAtomicXmr(review.feeAtomic, 12)} XMR</dd></div><div><dt>{t('send.total')}</dt><dd>{formatAtomicXmr(totalAtomic.toString(), 12)} XMR</dd></div><div><dt>{t('send.account')}</dt><dd>{accountIndex}</dd></div></dl>{review.error && <p className="setup-message">{review.error}</p>}<div className="button-row"><button className="quiet-button" disabled={busy} onClick={() => setReview(null)} type="button">{t('common.cancel')}</button><button className="primary" disabled={busy} onClick={() => void commit()} type="button">{busy ? t('send.sending') : t('send.confirm')}</button></div></section>}
+    {step === 'recipient-choice' && <><header><p className="eyebrow">{t('send.from')}</p><h2>{t('send.title')}</h2><p>{t('send.chooseRecipient')}</p></header><div className="send-choice-stack"><button className="send-choice-card primary-choice" onClick={() => setScannerOpen(true)} type="button"><span className="send-choice-icon">⌗</span><span><strong>{t('send.scanAddress')}</strong><small>{t('send.scanHint')}</small></span><b>›</b></button><span className="send-choice-or">{t('send.or')}</span><button className="send-choice-card" onClick={() => setStep('manual-recipient')} type="button"><span className="send-choice-icon">✎</span><span><strong>{t('send.manualRecipient')}</strong><small>{t('send.manualRecipientHint')}</small></span><b>›</b></button></div></>}
+    {step === 'manual-recipient' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.recipient')}</h2><p>{t('send.manualRecipientHint')}</p></header><label>{t('send.recipient')}<span className="recipient-address-input"><input value={address} onChange={(event) => { setAddress(event.target.value); setReview(null); setMessage(null); }} placeholder={t('send.recipientPlaceholder')} autoComplete="off" spellCheck="false" /><button className="paste-button" onClick={() => void pasteRecipient()} type="button">{t('common.paste')}</button></span></label><section className="recipient-picker" aria-label={t('send.addressBook')}>{contacts.length > 0 && <div><strong>{t('send.addressBook')}</strong><div className="recipient-chips">{contacts.slice(0, 3).map((contact) => <button className={contact.donor ? 'recipient-chip donor' : 'recipient-chip'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}{recentContacts.length > 0 && <div><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.slice(0, 3).map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}</section><button className="primary" onClick={() => { if (!address.trim()) { setMessage(t('send.recipientRequired')); return; } setMessage(null); setStep('amount'); }} type="button">{t('common.continue')}</button></>}
+    {step === 'amount' && <><button className="quiet-button step-back" onClick={() => setStep('manual-recipient')} type="button">‹ {t('common.back')}</button><header><h2>{t('send.amount')}</h2><p>{t('send.available')}: {snapshot ? `${formatAtomicXmr(snapshot.unlockedBalanceAtomic, 12)} XMR` : t('common.loading')}</p></header><section className="recipient-summary"><span>{t('send.recipient')}</span><strong>{shortHash(address.trim())}</strong><button className="quiet-button" onClick={() => setStep('manual-recipient')} type="button">{t('common.change')}</button></section><div className="transaction-form-grid"><label>{t('send.amount')}<span className="amount-field"><input value={amount} onChange={(event) => { setAmount(event.target.value); setSweepAll(false); setReview(null); }} inputMode="decimal" placeholder={t('send.amountPlaceholder')} /><em>XMR</em></span></label><button className="secondary amount-max" disabled={!snapshot || busy} onClick={useMaximum} type="button">{t('send.max')}</button></div>{sweepAll && <p className="transaction-note">{t('send.sweepAll')}</p>}<button className="primary" disabled={busy} onClick={() => void prepare()} type="button">{busy ? t('send.preparing') : t('send.review')}</button></>}
+    {step === 'review' && review && <><button className="quiet-button step-back" disabled={busy} onClick={() => { setReview(null); setStep('amount'); }} type="button">‹ {t('common.back')}</button><section className="review-card"><header><strong>{t('send.reviewTitle')}</strong><p>{t('send.reviewSubtitle')}</p></header><code>{address.trim()}</code><dl className="review-details"><div><dt>{t('send.amount')}</dt><dd>{formatAtomicXmr(review.amountAtomic, 12)} XMR</dd></div><div><dt>{t('send.networkFee')}</dt><dd>{formatAtomicXmr(review.feeAtomic, 12)} XMR</dd></div><div><dt>{t('send.total')}</dt><dd>{formatAtomicXmr(totalAtomic.toString(), 12)} XMR</dd></div></dl>{wallet?.kind === 'hardware' && <p className="transaction-note">{t('send.ledgerHint')}</p>}{review.error && <p className="setup-message">{review.error}</p>}<button className="primary" disabled={busy} onClick={() => void commit()} type="button">{busy ? t('send.sending') : t('send.confirm')}</button></section></>}
     {message && <p className="setup-message">{message}</p>}
     {amount && !review && parseXmrToAtomic(amount) && <small className="amount-preview">{formatAtomicXmr(amountAtomic, 12)} XMR</small>}
-    <RecentTransactions hasOpenWallet items={transactions} onActivity={onActivity} />
-    <DesktopRecipientQrScanner open={scannerOpen} onClose={() => setScannerOpen(false)} onScanned={(scannedAddress) => { setAddress(scannedAddress); setReview(null); setMessage(null); setScannerOpen(false); }} />
+    <DesktopRecipientQrScanner open={scannerOpen} onClose={() => setScannerOpen(false)} onScanned={(scannedAddress) => { setAddress(scannedAddress); setReview(null); setMessage(null); setScannerOpen(false); setStep('amount'); }} />
   </section>;
 }
 
@@ -898,6 +893,7 @@ function Receive({ linked, walletId, wallet, onActivity }: { linked: boolean; wa
   const [message, setMessage] = useState<string | null>(null);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showAddressTools, setShowAddressTools] = useState(false);
   const accountIndex = wallet?.accountIndex ?? 0;
 
   const load = useCallback(async () => {
@@ -983,11 +979,8 @@ function Receive({ linked, walletId, wallet, onActivity }: { linked: boolean; wa
 
   if (!linked || !walletId) return <WalletFeature linked={linked} title={t('receive.title')} text={t('send.openWallet')} />;
   return <section className="transaction-form transaction-page receive-page">
-    <header><p className="eyebrow">{t('receive.primaryAddress')}</p><h2>{t('receive.title')}</h2><p>{t('receive.subtitle')}</p></header>
-    {!address ? <button className="primary" disabled={busy} onClick={() => void load()} type="button">{busy ? t('common.loading') : t('receive.showAddress')}</button> : <><section className="receive-address-card"><code className="address-output">{address}</code><div className="receive-actions"><button className="secondary" onClick={() => void copy()} type="button">{t('receive.copyAddress')}</button><button className="secondary" onClick={() => void share()} type="button">{t('receive.shareAddress')}</button>{wallet?.kind === 'hardware' && <button className="secondary" disabled={busy} onClick={() => void showOnLedger()} type="button">{t('receive.verifyLedger')}</button>}</div></section><div className="receive-qr"><div>{qrCode ? <img src={qrCode} alt="QR code for the displayed Monero receive address" /> : <span>{t('common.loading')}</span>}</div><p>{wallet?.kind === 'hardware' ? t('receive.ledgerHint') : t('receive.qrHint')}</p></div></>}
-    <section className="subaddress-section"><div><strong>{t('receive.newSubaddress')}</strong><p>{t('receive.qrHint')}</p></div><label>{t('receive.subaddressLabel')}<input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('receive.subaddressPlaceholder')} maxLength={80} /></label><button className="secondary" disabled={busy} onClick={() => void subaddress()} type="button">{t('receive.createSubaddress')}</button></section>
-    {subaddresses.some((item) => item.address !== address) && <section className="subaddress-list">{subaddresses.filter((item) => item.address !== address).map((item) => <button key={`${item.accountIndex}-${item.addressIndex}`} onClick={() => { setAddress(item.address); setAddressIndex(item.addressIndex); setMessage(null); }} type="button"><span><strong>{item.label || `${t('receive.primaryAddress')} ${item.accountIndex}/${item.addressIndex}`}</strong><small>{item.address}</small></span><em>{item.accountIndex}/{item.addressIndex}</em></button>)}</section>}
-    <RecentTransactions hasOpenWallet items={transactions} onActivity={onActivity} />
+    <header><p className="eyebrow">{wallet ? walletDisplayName(wallet) : t('common.wallet')}</p><h2>{t('receive.title')}</h2><p>{t('receive.subtitle')}</p></header>
+    {!address ? <button className="primary" disabled={busy} onClick={() => void load()} type="button">{busy ? t('common.loading') : t('receive.showAddress')}</button> : <><section className="receive-simple-card"><div className="receive-qr"><div>{qrCode ? <img src={qrCode} alt="QR code for the displayed Monero receive address" /> : <span>{t('common.loading')}</span>}</div></div><div className="simple-address-row"><code title={address}>{shortHash(address)}</code><button className="copy-icon-button" aria-label={t('receive.copyAddress')} onClick={() => void copy()} title={t('receive.copyAddress')} type="button">⧉</button></div><p>{wallet?.kind === 'hardware' ? t('receive.ledgerHint') : t('receive.qrHint')}</p></section><RecentTransactions hasOpenWallet items={transactions} onActivity={onActivity} /><button className="quiet-button address-tools-toggle" onClick={() => setShowAddressTools((visible) => !visible)} type="button">{showAddressTools ? t('receive.hideAddressTools') : t('receive.manageAddresses')}</button>{showAddressTools && <section className="address-tools"><div className="receive-actions"><button className="secondary" onClick={() => void share()} type="button">{t('receive.shareAddress')}</button>{wallet?.kind === 'hardware' && <button className="secondary" disabled={busy} onClick={() => void showOnLedger()} type="button">{t('receive.verifyLedger')}</button>}</div><section className="subaddress-section"><div><strong>{t('receive.newSubaddress')}</strong><p>{t('receive.qrHint')}</p></div><label>{t('receive.subaddressLabel')}<input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('receive.subaddressPlaceholder')} maxLength={80} /></label><button className="secondary" disabled={busy} onClick={() => void subaddress()} type="button">{t('receive.createSubaddress')}</button></section>{subaddresses.some((item) => item.address !== address) && <section className="subaddress-list">{subaddresses.filter((item) => item.address !== address).map((item) => <button key={`${item.accountIndex}-${item.addressIndex}`} onClick={() => { setAddress(item.address); setAddressIndex(item.addressIndex); setMessage(null); }} type="button"><span><strong>{item.label || `${t('receive.primaryAddress')} ${item.accountIndex}/${item.addressIndex}`}</strong><small>{shortHash(item.address)}</small></span><em>{item.accountIndex}/{item.addressIndex}</em></button>)}</section>}</section>}</>}
     {message && <p className="setup-message">{message}</p>}
   </section>;
 }
