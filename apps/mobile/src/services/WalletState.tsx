@@ -225,21 +225,27 @@ export function WalletStateProvider({
         reason,
         walletId: closingSession.walletId,
       });
-      return walletService
-        .stopRefresh(closingSession)
-        .catch(stopError => {
-          logWalletEvent('WalletState', 'stopNativeRefresh.error', {
-            error: errorMessage(stopError),
-            reason,
-            walletId: closingSession.walletId,
-          });
+      return walletService.stopRefresh(closingSession).catch(stopError => {
+        logWalletEvent('WalletState', 'stopNativeRefresh.error', {
+          error: errorMessage(stopError),
+          reason,
+          walletId: closingSession.walletId,
         });
+      });
     },
     [],
   );
 
   const shouldSkipLiveWalletRead = useCallback(
     (activeSession: WalletSession, operation: string) => {
+      if (registeredWalletRef.current?.kind === 'fast') {
+        logWalletEvent('WalletState', `${operation}.skipped`, {
+          reason: 'fastWalletUsesScannerSignals',
+          walletId: activeSession.walletId,
+        });
+        return true;
+      }
+
       const recoveringForMs =
         nativeRefreshRecoverUntilRef.current > Date.now()
           ? nativeRefreshRecoverUntilRef.current - Date.now()
@@ -517,15 +523,16 @@ export function WalletStateProvider({
         }),
       );
       setTransactions(nextTransactions);
-      setError(undefined);
       return nextTransactions;
     } catch (reason) {
-      setError(errorMessage(reason));
       logWalletEvent('WalletState', 'refreshTransactions.error', {
         error: errorMessage(reason),
         walletId: activeSession.walletId,
       });
-      return [];
+      // Transaction history is a secondary read. A slow daemon must not turn
+      // an otherwise usable wallet into a global sync error or erase already
+      // loaded activity.
+      return transactions;
     } finally {
       transactionRefreshInFlight.current = false;
     }
@@ -651,6 +658,14 @@ export function WalletStateProvider({
 
   const startNativeRefresh = useCallback(
     (openedSession: WalletSession, reason: string) => {
+      if (registeredWalletRef.current?.kind === 'fast') {
+        logWalletEvent('WalletState', 'startNativeRefresh.skipped', {
+          reason: 'fastWalletUsesScannerSignals',
+          walletId: openedSession.walletId,
+        });
+        return;
+      }
+
       if (nativeRefreshWalletIdRef.current === openedSession.walletId) {
         logWalletEvent('WalletState', 'startNativeRefresh.skipped', {
           reason: 'alreadyStarted',
@@ -869,15 +884,20 @@ export function WalletStateProvider({
       walletService.activateSession(openedSession);
       sessionRef.current = openedSession;
       setSession(openedSession);
-      setSnapshot(undefined);
+      const activeRegistration = registration ?? registeredWalletRef.current;
+      if (registration) {
+        registeredWalletRef.current = registration;
+      }
+      setSnapshot(
+        activeRegistration?.kind === 'fast'
+          ? walletSnapshots[activeRegistration.id]
+          : undefined,
+      );
       setTransactions([]);
       setHardwareStatus(undefined);
       setError(undefined);
       setUnlockRequestId(undefined);
-      startNativeRefresh(openedSession, 'sessionOpened');
-
       if (registration) {
-        registeredWalletRef.current = registration;
         setRegisteredWallet(registration);
         setRegisteredWallets(current => {
           const wallets = current.some(wallet => wallet.id === registration.id)
@@ -892,7 +912,12 @@ export function WalletStateProvider({
       } else {
         const wallet = await reloadRegisteredWallet();
         registeredWalletRef.current = wallet;
+        if (wallet?.kind === 'fast') {
+          setSnapshot(walletSnapshots[wallet.id]);
+        }
       }
+
+      startNativeRefresh(openedSession, 'sessionOpened');
 
       if (options?.refresh === false) {
         return;
@@ -909,6 +934,7 @@ export function WalletStateProvider({
       reloadRegisteredWallet,
       startNativeRefresh,
       stopNativeRefresh,
+      walletSnapshots,
     ],
   );
 
@@ -938,8 +964,9 @@ export function WalletStateProvider({
     setHardwareStatus(undefined);
 
     try {
-      const signingSession =
-        await walletService.openHardwareWalletForSigning(activeRegistration);
+      const signingSession = await walletService.openHardwareWalletForSigning(
+        activeRegistration,
+      );
       walletService.activateSession(signingSession);
       sessionRef.current = signingSession;
       setSession(signingSession);
@@ -1045,6 +1072,10 @@ export function WalletStateProvider({
 
     if (error && !session) {
       return 'error';
+    }
+
+    if (session && registeredWallet?.kind === 'fast') {
+      return 'open';
     }
 
     if (session && snapshot) {

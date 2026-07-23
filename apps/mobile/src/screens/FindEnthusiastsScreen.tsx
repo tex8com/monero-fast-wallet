@@ -1,4 +1,4 @@
-import React, {useCallback, useRef, useState} from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,11 +11,11 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import {useFocusEffect} from '@react-navigation/native';
-import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import {Icon} from '../components/Icon';
-import {useI18n} from '../i18n';
+import { Icon } from '../components/Icon';
+import { useI18n } from '../i18n';
 import {
   acceptCommunityContact,
   deleteCommunityIdentity,
@@ -33,15 +33,14 @@ import {
   type EnthusiastRadiusKm,
   type NearbyEnthusiast,
 } from '../services/EnthusiastDiscoveryService';
-import {colors, spacing} from '../theme/colors';
+import { colors, spacing } from '../theme/colors';
 
 const RADII: EnthusiastRadiusKm[] = [5, 10, 25];
 
-export default function FindEnthusiastsScreen({navigation}: any) {
+export default function FindEnthusiastsScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
-  const {t} = useI18n();
-  const [preference, setPreference] =
-    useState<EnthusiastDiscoveryPreference>();
+  const { t } = useI18n();
+  const [preference, setPreference] = useState<EnthusiastDiscoveryPreference>();
   const [displayName, setDisplayName] = useState('');
   const [nearby, setNearby] = useState<NearbyEnthusiast[]>([]);
   const [contacts, setContacts] = useState<CommunityContact[]>([]);
@@ -54,7 +53,10 @@ export default function FindEnthusiastsScreen({navigation}: any) {
 
   const reloadCommunity = useCallback(
     async (activePreference: EnthusiastDiscoveryPreference) => {
-      if (!activePreference.enabled || activePreference.locationStatus !== 'ready') {
+      if (
+        !activePreference.enabled ||
+        activePreference.locationStatus !== 'ready'
+      ) {
         setNearby([]);
         setContacts([]);
         return;
@@ -98,7 +100,7 @@ export default function FindEnthusiastsScreen({navigation}: any) {
           locationRefreshStarted.current = true;
           setBusy(true);
           try {
-            const next = await refreshApproximateEnthusiastLocation();
+            const next = await refreshApproximateEnthusiastLocation(true);
             if (!active) {
               return;
             }
@@ -169,7 +171,7 @@ export default function FindEnthusiastsScreen({navigation}: any) {
       t('enthusiasts.deleteTitle'),
       t('enthusiasts.deleteDescription'),
       [
-        {text: t('action.cancel'), style: 'cancel'},
+        { text: t('action.cancel'), style: 'cancel' },
         {
           text: t('enthusiasts.deleteAction'),
           style: 'destructive',
@@ -226,7 +228,7 @@ export default function FindEnthusiastsScreen({navigation}: any) {
       return;
     }
     if (contact.status === 'connected') {
-      navigation.navigate('EnthusiastChat', {peer: contact});
+      navigation.navigate('EnthusiastChat', { peer: contact });
     }
   };
 
@@ -239,14 +241,16 @@ export default function FindEnthusiastsScreen({navigation}: any) {
       <ScrollView
         contentContainerStyle={[
           s.scroll,
-          {paddingTop: insets.top + 14, paddingBottom: insets.bottom + 120},
+          { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 120 },
         ]}
-        showsVerticalScrollIndicator={false}>
+        showsVerticalScrollIndicator={false}
+      >
         <View style={s.header}>
           <TouchableOpacity
             style={s.iconButton}
             onPress={() => navigation.navigate('Menu')}
-            accessibilityLabel={t('action.back')}>
+            accessibilityLabel={t('action.back')}
+          >
             <Icon name="arrow-left" size={20} color={colors.textSecondary} />
           </TouchableOpacity>
           <View style={s.headerText}>
@@ -265,20 +269,23 @@ export default function FindEnthusiastsScreen({navigation}: any) {
               {ready
                 ? t('enthusiasts.status.ready')
                 : enabled
-                  ? t(`enthusiasts.status.${preference?.locationStatus ?? 'not_requested'}`)
-                  : t('enthusiasts.status.off')}
+                ? t(
+                    `enthusiasts.status.${
+                      preference?.locationStatus ?? 'not_requested'
+                    }`,
+                  )
+                : t('enthusiasts.status.off')}
             </Text>
           </View>
-          {busy ? (
-            <ActivityIndicator color={colors.orange} />
-          ) : (
-            <Switch
-              value={enabled}
-              onValueChange={value => toggleDiscovery(value).catch(() => undefined)}
-              trackColor={{false: colors.surface, true: colors.orange}}
-              thumbColor="#FFFFFF"
-            />
-          )}
+          <Switch
+            value={enabled}
+            disabled={busy}
+            onValueChange={value =>
+              toggleDiscovery(value).catch(() => undefined)
+            }
+            trackColor={{ false: colors.surface, true: colors.orange }}
+            thumbColor="#FFFFFF"
+          />
         </View>
 
         <Text style={s.label}>{t('enthusiasts.radius')}</Text>
@@ -290,7 +297,8 @@ export default function FindEnthusiastsScreen({navigation}: any) {
                 key={radiusKm}
                 style={[s.radiusButton, selected && s.radiusButtonActive]}
                 onPress={() => chooseRadius(radiusKm).catch(() => undefined)}
-                disabled={!enabled}>
+                disabled={!enabled}
+              >
                 <Text style={[s.radiusText, selected && s.radiusTextActive]}>
                   {radiusKm} km
                 </Text>
@@ -337,8 +345,8 @@ export default function FindEnthusiastsScreen({navigation}: any) {
                     contact.status === 'incoming'
                       ? t('enthusiasts.accept')
                       : contact.status === 'connected'
-                        ? t('enthusiasts.chat')
-                        : undefined
+                      ? t('enthusiasts.chat')
+                      : undefined
                   }
                   onPress={() => openContact(contact).catch(() => undefined)}
                 />
@@ -364,15 +372,15 @@ export default function FindEnthusiastsScreen({navigation}: any) {
                     profile.relationship === 'none'
                       ? t('enthusiasts.connect')
                       : profile.relationship === 'incoming'
-                        ? t('enthusiasts.accept')
-                        : profile.relationship === 'connected'
-                          ? t('enthusiasts.chat')
-                          : t('enthusiasts.requested')
+                      ? t('enthusiasts.accept')
+                      : profile.relationship === 'connected'
+                      ? t('enthusiasts.chat')
+                      : t('enthusiasts.requested')
                   }
                   disabled={profile.relationship === 'outgoing'}
                   onPress={() =>
                     profile.relationship === 'connected'
-                      ? navigation.navigate('EnthusiastChat', {peer: profile})
+                      ? navigation.navigate('EnthusiastChat', { peer: profile })
                       : connect(profile).catch(() => undefined)
                   }
                 />
@@ -381,12 +389,15 @@ export default function FindEnthusiastsScreen({navigation}: any) {
           </>
         ) : null}
 
-        {communityError ? <Text style={s.errorText}>{communityError}</Text> : null}
+        {communityError ? (
+          <Text style={s.errorText}>{communityError}</Text>
+        ) : null}
         {enabled ? (
           <TouchableOpacity
             style={s.deleteButton}
             onPress={removeCommunityIdentity}
-            disabled={busy || communityBusy}>
+            disabled={busy || communityBusy}
+          >
             <Icon name="trash" size={18} color={colors.error} />
             <Text style={s.deleteText}>{t('enthusiasts.deleteAction')}</Text>
           </TouchableOpacity>
@@ -396,11 +407,19 @@ export default function FindEnthusiastsScreen({navigation}: any) {
   );
 }
 
-function SectionHeader({title, loading}: {title: string; loading: boolean}) {
+function SectionHeader({
+  title,
+  loading,
+}: {
+  title: string;
+  loading: boolean;
+}) {
   return (
     <View style={s.resultsHeader}>
       <Text style={s.resultsTitle}>{title}</Text>
-      {loading ? <ActivityIndicator size="small" color={colors.orange} /> : null}
+      {loading ? (
+        <ActivityIndicator size="small" color={colors.orange} />
+      ) : null}
     </View>
   );
 }
@@ -428,8 +447,14 @@ function PersonRow({
         <Text style={s.personDetail}>{detail}</Text>
       </View>
       {action ? (
-        <TouchableOpacity disabled={disabled} onPress={onPress} style={s.personAction}>
-          <Text style={[s.personActionText, disabled && s.disabledText]}>{action}</Text>
+        <TouchableOpacity
+          disabled={disabled}
+          onPress={onPress}
+          style={s.personAction}
+        >
+          <Text style={[s.personActionText, disabled && s.disabledText]}>
+            {action}
+          </Text>
         </TouchableOpacity>
       ) : null}
     </View>
@@ -437,43 +462,181 @@ function PersonRow({
 }
 
 const s = StyleSheet.create({
-  container: {flex: 1, backgroundColor: colors.bg},
-  scroll: {paddingHorizontal: spacing.lg},
-  header: {flexDirection: 'row', alignItems: 'flex-start', gap: 14, marginBottom: 30},
-  iconButton: {width: 42, height: 42, alignItems: 'center', justifyContent: 'center'},
-  headerText: {flex: 1, paddingTop: 2},
-  title: {color: colors.textPrimary, fontSize: 25, lineHeight: 31, fontWeight: '800'},
-  subtitle: {color: colors.textSecondary, fontSize: 14, lineHeight: 20, marginTop: 5},
-  visibilityRow: {flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 12},
-  visibilityIcon: {width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: colors.orangeMuted},
-  visibilityText: {flex: 1},
-  sectionTitle: {color: colors.textPrimary, fontSize: 17, fontWeight: '800'},
-  sectionText: {color: colors.textSecondary, fontSize: 13, lineHeight: 18, marginTop: 3},
-  label: {color: colors.textSecondary, fontSize: 12, fontWeight: '800', marginTop: 24, marginBottom: 10},
-  radiusControl: {minHeight: 50, flexDirection: 'row', padding: 4, backgroundColor: colors.bgCard, borderWidth: 1, borderColor: colors.border, borderRadius: 8},
-  radiusButton: {flex: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 6},
-  radiusButtonActive: {backgroundColor: colors.orange},
-  radiusText: {color: colors.textSecondary, fontSize: 14, fontWeight: '800'},
-  radiusTextActive: {color: '#FFFFFF'},
-  privacyBand: {flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 22, borderBottomWidth: 1, borderBottomColor: colors.border},
-  privacyText: {flex: 1, color: colors.textSecondary, fontSize: 13, lineHeight: 19},
-  nameRow: {flexDirection: 'row', gap: 8},
-  nameInput: {flex: 1, minHeight: 48, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 14, color: colors.textPrimary, fontSize: 15},
-  saveButton: {width: 48, minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: colors.orange},
-  resultsHeader: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 28, marginBottom: 10},
-  resultsTitle: {color: colors.textPrimary, fontSize: 18, fontWeight: '800'},
-  personRow: {minHeight: 66, flexDirection: 'row', alignItems: 'center', gap: 11, borderBottomWidth: 1, borderBottomColor: colors.border},
-  personAvatar: {width: 38, height: 38, borderRadius: 8, backgroundColor: colors.orangeMuted, alignItems: 'center', justifyContent: 'center'},
-  personText: {flex: 1},
-  personName: {color: colors.textPrimary, fontSize: 15, fontWeight: '700'},
-  personDetail: {color: colors.textSecondary, fontSize: 12, marginTop: 3},
-  personAction: {minHeight: 40, justifyContent: 'center', paddingHorizontal: 6},
-  personActionText: {color: colors.orange, fontSize: 13, fontWeight: '800'},
-  disabledText: {color: colors.textMuted},
-  emptyState: {alignItems: 'center', paddingVertical: 32, paddingHorizontal: 24},
-  emptyTitle: {color: colors.textPrimary, fontSize: 16, fontWeight: '800', marginTop: 13},
-  emptyText: {color: colors.textSecondary, fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 6},
-  errorText: {color: colors.error, fontSize: 13, lineHeight: 19, marginTop: 16},
-  deleteButton: {minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 32, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 18},
-  deleteText: {color: colors.error, fontSize: 14, fontWeight: '800'},
+  container: { flex: 1, backgroundColor: colors.bg },
+  scroll: { paddingHorizontal: spacing.lg },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 14,
+    marginBottom: 30,
+  },
+  iconButton: {
+    width: 42,
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerText: { flex: 1, paddingTop: 2 },
+  title: {
+    color: colors.textPrimary,
+    fontSize: 25,
+    lineHeight: 31,
+    fontWeight: '800',
+  },
+  subtitle: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 5,
+  },
+  visibilityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
+    paddingVertical: 12,
+  },
+  visibilityIcon: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: colors.orangeMuted,
+  },
+  visibilityText: { flex: 1 },
+  sectionTitle: { color: colors.textPrimary, fontSize: 17, fontWeight: '800' },
+  sectionText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 3,
+  },
+  label: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 24,
+    marginBottom: 10,
+  },
+  radiusControl: {
+    minHeight: 50,
+    flexDirection: 'row',
+    padding: 4,
+    backgroundColor: colors.bgCard,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+  },
+  radiusButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+  },
+  radiusButtonActive: { backgroundColor: colors.orange },
+  radiusText: { color: colors.textSecondary, fontSize: 14, fontWeight: '800' },
+  radiusTextActive: { color: '#FFFFFF' },
+  privacyBand: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingVertical: 22,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  privacyText: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  nameRow: { flexDirection: 'row', gap: 8 },
+  nameInput: {
+    flex: 1,
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    color: colors.textPrimary,
+    fontSize: 15,
+  },
+  saveButton: {
+    width: 48,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    backgroundColor: colors.orange,
+  },
+  resultsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 28,
+    marginBottom: 10,
+  },
+  resultsTitle: { color: colors.textPrimary, fontSize: 18, fontWeight: '800' },
+  personRow: {
+    minHeight: 66,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  personAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: colors.orangeMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  personText: { flex: 1 },
+  personName: { color: colors.textPrimary, fontSize: 15, fontWeight: '700' },
+  personDetail: { color: colors.textSecondary, fontSize: 12, marginTop: 3 },
+  personAction: {
+    minHeight: 40,
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  personActionText: { color: colors.orange, fontSize: 13, fontWeight: '800' },
+  disabledText: { color: colors.textMuted },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 32,
+    paddingHorizontal: 24,
+  },
+  emptyTitle: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 13,
+  },
+  emptyText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    marginTop: 6,
+  },
+  errorText: {
+    color: colors.error,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 16,
+  },
+  deleteButton: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 32,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: 18,
+  },
+  deleteText: { color: colors.error, fontSize: 14, fontWeight: '800' },
 });

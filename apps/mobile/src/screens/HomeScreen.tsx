@@ -25,7 +25,6 @@ import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
 import WalletSelector, {
-  walletSnapshotStatusLabel,
   type WalletOption,
   type WalletSelectorItem,
 } from '../components/WalletSelector';
@@ -35,12 +34,8 @@ import {
   useXmrChart,
   xmrToUsd,
 } from '../data/priceService';
-import {
-  type MoneroNewsCategory,
-  useMoneroNews,
-} from '../data/moneroNews';
+import { type MoneroNewsCategory, useMoneroNews } from '../data/moneroNews';
 import { useI18n } from '../i18n';
-import type { WalletSnapshot } from '../services/NativeMoneroWallet';
 import type { FastReceiveIdentityRecord } from '../services/FastReceiveRegistry';
 import {
   fastWalletSelectorTone,
@@ -172,8 +167,13 @@ function PriceChart({
         />
       </Svg>
       {showTooltip && (
-        <View pointerEvents="none" style={[s.chartTooltip, { left: tooltipLeft }]}>
-          <Text style={s.chartTooltipPrice}>${selectedPoint.price.toFixed(2)}</Text>
+        <View
+          pointerEvents="none"
+          style={[s.chartTooltip, { left: tooltipLeft }]}
+        >
+          <Text style={s.chartTooltipPrice}>
+            ${selectedPoint.price.toFixed(2)}
+          </Text>
           <Text style={s.chartTooltipDate}>{chartTimestamp}</Text>
         </View>
       )}
@@ -212,33 +212,26 @@ function fastWalletDashboardOption(
   identity: FastReceiveIdentityRecord,
   t: ReturnType<typeof useI18n>['t'],
   tex8Node: boolean,
-  snapshot?: WalletSnapshot,
 ): WalletOption {
   const status = fastWalletStatusPresentation(identity, tex8Node, t);
   return {
     id: identity.id,
     address: identity.address,
     badge: t('walletSelector.fast'),
-    detail: snapshot
-      ? walletSnapshotStatusLabel(snapshot, t)
-      : status.ready
-      ? t('walletSelector.openToSend')
-      : status.label,
+    detail: status.label,
     kind: 'fast',
     label: identity.label,
     meta: identity.network,
-    tone: snapshot
-      ? snapshot.synchronized
-        ? 'success'
-        : 'warning'
-      : fastWalletSelectorTone(status),
+    tone: fastWalletSelectorTone(status),
   };
 }
 
 /* ── Home Screen ─────────────────────────────────────────────────────── */
 export default function HomeScreen({ navigation }: any) {
   const [tf, setTf] = useState('24H');
-  const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>('all');
+  const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>(
+    'all',
+  );
   const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
     FastReceiveIdentityRecord[]
   >([]);
@@ -280,16 +273,41 @@ export default function HomeScreen({ navigation }: any) {
     minFractionDigits: 4,
   });
   const showLocked = lockedAtomic > 0n;
-  const hasSyncError = status === 'error' || Boolean(error);
+  const selectedFastIdentity =
+    registeredWallet?.kind === 'fast'
+      ? fastReceiveIdentities.find(
+          identity => identity.id === registeredWallet.id,
+        )
+      : undefined;
+  const selectedFastStatus = selectedFastIdentity
+    ? fastWalletStatusPresentation(
+        selectedFastIdentity,
+        nodeMode === 'optimized-grpc',
+        t,
+      )
+    : undefined;
+  const selectedFastWallet = registeredWallet?.kind === 'fast';
+  const hasSyncError =
+    !selectedFastWallet && (status === 'error' || Boolean(error));
   const syncPresentation = presentWalletSync(snapshot);
-  const syncColor = hasSyncError
+  const syncColor = selectedFastStatus
+    ? selectedFastStatus.tone === 'success'
+      ? colors.success
+      : selectedFastStatus.tone === 'danger'
+      ? colors.error
+      : colors.warning
+    : hasSyncError
     ? colors.error
     : status === 'open'
     ? colors.success
     : status === 'syncing' || status === 'opening'
     ? colors.warning
     : colors.orange;
-  const syncText = hasSyncError
+  const syncText = selectedFastStatus
+    ? selectedFastStatus.label
+    : selectedFastWallet
+    ? t('fastWallet.status.settingUp')
+    : hasSyncError
     ? t('sync.error')
     : status === 'open'
     ? t('status.live')
@@ -314,7 +332,9 @@ export default function HomeScreen({ navigation }: any) {
     tf === '24H'
       ? change24h
       : points.length >= 2
-      ? ((points[points.length - 1].price - points[0].price) / points[0].price) * 100
+      ? ((points[points.length - 1].price - points[0].price) /
+          points[0].price) *
+        100
       : 0;
 
   const changeUsd = price > 0 ? Math.abs((changePercent / 100) * price) : 0;
@@ -349,15 +369,10 @@ export default function HomeScreen({ navigation }: any) {
     () => [
       ...registeredWallets.filter(wallet => wallet.kind !== 'fast'),
       ...fastReceiveIdentities.map(identity =>
-        fastWalletDashboardOption(
-          identity,
-          t,
-          nodeMode === 'optimized-grpc',
-          walletSnapshotMap[identity.id],
-        ),
+        fastWalletDashboardOption(identity, t, nodeMode === 'optimized-grpc'),
       ),
     ],
-    [fastReceiveIdentities, nodeMode, registeredWallets, t, walletSnapshotMap],
+    [fastReceiveIdentities, nodeMode, registeredWallets, t],
   );
   const openWalletSetup = () =>
     navigation.navigate(
@@ -456,7 +471,7 @@ export default function HomeScreen({ navigation }: any) {
           </View>
         </View>
 
-        {registeredWallet ? (
+        {registeredWallet && !selectedFastWallet ? (
           <View style={s.syncStatusWrap}>
             <SyncStatusBar
               error={error}
@@ -466,6 +481,26 @@ export default function HomeScreen({ navigation }: any) {
               status={status}
               walletName={walletDisplayName(registeredWallet)}
             />
+          </View>
+        ) : registeredWallet && selectedFastWallet ? (
+          <View style={s.syncStatusWrap}>
+            <View style={s.fastWalletStatusCard}>
+              <View style={s.fastWalletStatusTopRow}>
+                <View style={s.fastWalletStatusTitleGroup}>
+                  <Text style={s.fastWalletStatusTitle} numberOfLines={1}>
+                    {walletDisplayName(registeredWallet)}
+                  </Text>
+                  <Text style={[s.fastWalletStatusLabel, { color: syncColor }]}>
+                    {syncText}
+                  </Text>
+                </View>
+                <View style={[s.syncDot, { backgroundColor: syncColor }]} />
+              </View>
+              <Text style={s.fastWalletStatusDescription} numberOfLines={2}>
+                {selectedFastStatus?.description ??
+                  t('fastWallet.status.settingUpDescription')}
+              </Text>
+            </View>
           </View>
         ) : null}
 
@@ -533,7 +568,10 @@ export default function HomeScreen({ navigation }: any) {
                   ? t('home.chartUnavailable')
                   : t('home.chartLoading')}
               </Text>
-              <TouchableOpacity style={s.chartRetryButton} onPress={refreshChart}>
+              <TouchableOpacity
+                style={s.chartRetryButton}
+                onPress={refreshChart}
+              >
                 <Text style={s.chartRetryText}>{t('action.retry')}</Text>
               </TouchableOpacity>
             </View>
@@ -576,31 +614,33 @@ export default function HomeScreen({ navigation }: any) {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={s.newsFilters}
           >
-            {(['all', 'network', 'wallet', 'ecosystem'] as const).map(category => (
-              <TouchableOpacity
-                key={category}
-                style={[
-                  s.newsFilter,
-                  newsCategory === category && s.newsFilterActive,
-                ]}
-                onPress={() => setNewsCategory(category)}
-              >
-                <Text
+            {(['all', 'network', 'wallet', 'ecosystem'] as const).map(
+              category => (
+                <TouchableOpacity
+                  key={category}
                   style={[
-                    s.newsFilterText,
-                    newsCategory === category && s.newsFilterTextActive,
+                    s.newsFilter,
+                    newsCategory === category && s.newsFilterActive,
                   ]}
+                  onPress={() => setNewsCategory(category)}
                 >
-                  {category === 'all'
-                    ? t('home.newsAll')
-                    : category === 'network'
-                    ? t('home.newsNetwork')
-                    : category === 'wallet'
-                    ? t('home.newsWallet')
-                    : t('home.newsEcosystem')}
-                </Text>
-              </TouchableOpacity>
-            ))}
+                  <Text
+                    style={[
+                      s.newsFilterText,
+                      newsCategory === category && s.newsFilterTextActive,
+                    ]}
+                  >
+                    {category === 'all'
+                      ? t('home.newsAll')
+                      : category === 'network'
+                      ? t('home.newsNetwork')
+                      : category === 'wallet'
+                      ? t('home.newsWallet')
+                      : t('home.newsEcosystem')}
+                  </Text>
+                </TouchableOpacity>
+              ),
+            )}
           </ScrollView>
           {newsLoading && newsItems.length === 0 ? (
             <Text style={s.newsStatus}>{t('home.newsLoading')}</Text>
@@ -625,7 +665,9 @@ export default function HomeScreen({ navigation }: any) {
                 <TouchableOpacity
                   key={item.id}
                   style={s.newsPage}
-                  onPress={() => Linking.openURL(item.url).catch(() => undefined)}
+                  onPress={() =>
+                    Linking.openURL(item.url).catch(() => undefined)
+                  }
                   activeOpacity={0.8}
                 >
                   <Text style={s.newsCategory}>
@@ -805,6 +847,37 @@ const s = StyleSheet.create({
   },
   syncTxt: { color: colors.success, fontSize: 12, fontWeight: '600' },
   syncStatusWrap: { paddingHorizontal: 20 },
+  fastWalletStatusCard: {
+    borderColor: colors.border,
+    borderRadius: 16,
+    borderWidth: 1,
+    backgroundColor: 'rgba(255,255,255,0.045)',
+    padding: 14,
+    marginBottom: 14,
+  },
+  fastWalletStatusTopRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  fastWalletStatusTitleGroup: { flex: 1 },
+  fastWalletStatusTitle: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  fastWalletStatusLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  fastWalletStatusDescription: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 8,
+  },
 
   priceSection: { paddingHorizontal: 20, marginBottom: 8 },
   priceBig: {
@@ -843,7 +916,11 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     gap: 10,
   },
-  chartUnavailableText: { color: colors.textMuted, fontSize: 13, fontWeight: '600' },
+  chartUnavailableText: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontWeight: '600',
+  },
   chartRetryButton: {
     backgroundColor: 'rgba(242,104,34,0.16)',
     borderColor: colors.orange,
@@ -880,24 +957,98 @@ const s = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: colors.bgCard,
   },
-  newsHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 16, paddingTop: 15 },
-  newsEyebrow: { color: colors.textMuted, fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+  newsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 15,
+  },
+  newsEyebrow: {
+    color: colors.textMuted,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
   newsTitle: { color: '#FFF', fontSize: 17, fontWeight: '800', marginTop: 3 },
   newsSourceLink: { color: '#F4A369', fontSize: 12, fontWeight: '800' },
-  newsFilters: { gap: 8, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 12 },
-  newsFilter: { borderColor: '#3B324E', borderRadius: 999, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 7 },
-  newsFilterActive: { backgroundColor: colors.orange, borderColor: colors.orange },
+  newsFilters: {
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 12,
+  },
+  newsFilter: {
+    borderColor: '#3B324E',
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  newsFilterActive: {
+    backgroundColor: colors.orange,
+    borderColor: colors.orange,
+  },
   newsFilterText: { color: colors.textMuted, fontSize: 11, fontWeight: '800' },
   newsFilterTextActive: { color: '#FFF' },
-  newsStatus: { color: colors.textMuted, fontSize: 13, fontWeight: '600', paddingHorizontal: 16, paddingBottom: 16 },
-  newsUnavailable: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  newsRetry: { color: colors.orange, fontSize: 12, fontWeight: '800', paddingRight: 16, paddingBottom: 16 },
+  newsStatus: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontWeight: '600',
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+  },
+  newsUnavailable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  newsRetry: {
+    color: colors.orange,
+    fontSize: 12,
+    fontWeight: '800',
+    paddingRight: 16,
+    paddingBottom: 16,
+  },
   newsPages: { paddingHorizontal: 16, paddingBottom: 16, gap: 12 },
-  newsPage: { width: CHART_W - 32, minHeight: 144, borderRadius: 13, borderWidth: 1, borderColor: '#332B45', backgroundColor: 'rgba(255,255,255,0.025)', padding: 15 },
-  newsCategory: { color: '#F4BD55', fontSize: 10, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' },
-  newsItemTitle: { color: '#EEE8F2', fontSize: 16, fontWeight: '800', lineHeight: 21, marginTop: 8 },
-  newsSummary: { color: colors.textSecondary, fontSize: 12, lineHeight: 18, marginTop: 5 },
-  newsDate: { color: colors.textMuted, fontSize: 11, fontWeight: '700', marginTop: 'auto', paddingTop: 10 },
+  newsPage: {
+    width: CHART_W - 32,
+    minHeight: 144,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: '#332B45',
+    backgroundColor: 'rgba(255,255,255,0.025)',
+    padding: 15,
+  },
+  newsCategory: {
+    color: '#F4BD55',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  newsItemTitle: {
+    color: '#EEE8F2',
+    fontSize: 16,
+    fontWeight: '800',
+    lineHeight: 21,
+    marginTop: 8,
+  },
+  newsSummary: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 5,
+  },
+  newsDate: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 'auto',
+    paddingTop: 10,
+  },
 
   actRow: { flexDirection: 'row', paddingHorizontal: 20, marginBottom: 24 },
   actBtn: { flex: 1, alignItems: 'center' },

@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {NativeModules} from 'react-native';
+import { NativeModules } from 'react-native';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
   const storage = new Map<string, string>();
@@ -28,30 +28,32 @@ describe('EnthusiastDiscoveryService', () => {
   beforeEach(async () => {
     await AsyncStorage.clear();
     delete NativeModules.NearbyLocation;
-    (globalThis as any).fetch = jest.fn(async (url: string, options: any = {}) => {
-      if (url.endsWith('/v1/identities')) {
+    (globalThis as any).fetch = jest.fn(
+      async (url: string, options: any = {}) => {
+        if (url.endsWith('/v1/identities')) {
+          return {
+            ok: true,
+            status: 201,
+            json: async () => ({
+              identity_id: 'anonymous-1',
+              access_token: 'community-token',
+            }),
+          };
+        }
+        const body = options.body ? JSON.parse(options.body) : {};
         return {
           ok: true,
-          status: 201,
+          status: 200,
           json: async () => ({
             identity_id: 'anonymous-1',
-            access_token: 'community-token',
+            display_name: body.display_name ?? 'Monero 1234',
+            bio: '',
+            visible: body.visible ?? true,
+            radius_km: body.radius_km ?? 10,
           }),
         };
-      }
-      const body = options.body ? JSON.parse(options.body) : {};
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          identity_id: 'anonymous-1',
-          display_name: body.display_name ?? 'Monero 1234',
-          bio: '',
-          visible: body.visible ?? true,
-          radius_km: body.radius_km ?? 10,
-        }),
-      };
-    });
+      },
+    );
   });
 
   it('defaults to disabled while onboarding can explicitly opt in', async () => {
@@ -91,9 +93,7 @@ describe('EnthusiastDiscoveryService', () => {
     await setEnthusiastDiscoveryEnabled(true);
 
     const result = await refreshApproximateEnthusiastLocation();
-    const persisted = JSON.stringify(
-      await loadEnthusiastDiscoveryPreference(),
-    );
+    const persisted = JSON.stringify(await loadEnthusiastDiscoveryPreference());
 
     expect(result.locationStatus).toBe('ready');
     expect(persisted).not.toContain('47.0707');
@@ -108,5 +108,42 @@ describe('EnthusiastDiscoveryService', () => {
     expect(uploaded.area_id).toHaveLength(5);
     expect(uploaded).not.toHaveProperty('latitude');
     expect(uploaded).not.toHaveProperty('longitude');
+  });
+
+  it('ends a native location request that never resolves', async () => {
+    jest.useFakeTimers();
+    NativeModules.NearbyLocation = {
+      getCurrentLocation: jest.fn(() => new Promise(() => undefined)),
+    };
+
+    try {
+      const pending = refreshApproximateEnthusiastLocation(true);
+      await jest.advanceTimersByTimeAsync(12_001);
+
+      await expect(pending).resolves.toMatchObject({
+        locationStatus: 'unavailable',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('reuses the in-memory approximate area when visibility is enabled', async () => {
+    NativeModules.NearbyLocation = {
+      getCurrentLocation: jest.fn(async () => ({
+        latitude: 47.0707,
+        longitude: 15.4395,
+        accuracy: 500,
+      })),
+    };
+
+    await refreshApproximateEnthusiastLocation(true);
+    await setEnthusiastDiscoveryEnabled(true);
+    const result = await refreshApproximateEnthusiastLocation();
+
+    expect(result.locationStatus).toBe('ready');
+    expect(
+      NativeModules.NearbyLocation.getCurrentLocation,
+    ).toHaveBeenCalledTimes(1);
   });
 });

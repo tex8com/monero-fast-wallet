@@ -1,15 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {
-  NativeModules,
-  PermissionsAndroid,
-  Platform,
-} from 'react-native';
-import {logWalletEvent} from './WalletLogger';
+import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import { logWalletEvent } from './WalletLogger';
 
 const STORAGE_KEY = 'monero-wallet.enthusiast-discovery.v1';
 const ACCOUNT_STORAGE_KEY = 'monero-wallet.enthusiast-account.v1';
 const COMMUNITY_API_BASE_URL = 'https://xmr.tex8.com/community';
 const GEOHASH_ALPHABET = '0123456789bcdefghjkmnpqrstuvwxyz';
+const LOCATION_REQUEST_TIMEOUT_MS = 12_000;
 
 export type EnthusiastRadiusKm = 5 | 10 | 25;
 export type EnthusiastLocationStatus =
@@ -84,6 +81,26 @@ const DEFAULT_PREFERENCE: EnthusiastDiscoveryPreference = {
 
 let approximateAreaId: string | undefined;
 
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      value => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 function parseAccount(raw: string | null): CommunityAccount | undefined {
   if (!raw) {
     return undefined;
@@ -120,17 +137,15 @@ async function communityRequest<T>(
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
-        ...(options.body ? {'Content-Type': 'application/json'} : {}),
-        ...(account
-          ? {Authorization: `Bearer ${account.accessToken}`}
-          : {}),
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(account ? { Authorization: `Bearer ${account.accessToken}` } : {}),
         ...options.headers,
       },
     });
     if (!response.ok) {
-      const error = await response
-        .json()
-        .catch(() => ({message: `Community server returned ${response.status}`}));
+      const error = await response.json().catch(() => ({
+        message: `Community server returned ${response.status}`,
+      }));
       throw new Error(
         typeof error?.message === 'string'
           ? error.message
@@ -168,7 +183,7 @@ async function ensureCommunityAccount(): Promise<CommunityAccount> {
   const displayName = generatedDisplayName();
   const created = await communityRequest<any>('/v1/identities', {
     method: 'POST',
-    body: JSON.stringify({display_name: displayName}),
+    body: JSON.stringify({ display_name: displayName }),
   });
   const account: CommunityAccount = {
     identityId: String(created.identity_id),
@@ -218,7 +233,7 @@ function isLocationStatus(value: unknown): value is EnthusiastLocationStatus {
 
 function parsePreference(raw: string | null): EnthusiastDiscoveryPreference {
   if (!raw) {
-    return {...DEFAULT_PREFERENCE};
+    return { ...DEFAULT_PREFERENCE };
   }
 
   try {
@@ -227,7 +242,8 @@ function parsePreference(raw: string | null): EnthusiastDiscoveryPreference {
       enabled: parsed.enabled === true,
       radiusKm: isRadius(parsed.radiusKm) ? parsed.radiusKm : 10,
       locationStatus: isLocationStatus(parsed.locationStatus)
-        ? parsed.locationStatus === 'requesting' || parsed.locationStatus === 'ready'
+        ? parsed.locationStatus === 'requesting' ||
+          (parsed.locationStatus === 'ready' && !approximateAreaId)
           ? 'not_requested'
           : parsed.locationStatus
         : 'not_requested',
@@ -239,7 +255,7 @@ function parsePreference(raw: string | null): EnthusiastDiscoveryPreference {
           : undefined,
     };
   } catch {
-    return {...DEFAULT_PREFERENCE};
+    return { ...DEFAULT_PREFERENCE };
   }
 }
 
@@ -293,7 +309,7 @@ export async function setEnthusiastDiscoveryRadius(
   radiusKm: EnthusiastRadiusKm,
 ): Promise<EnthusiastDiscoveryPreference> {
   const current = await loadEnthusiastDiscoveryPreference();
-  return savePreference({...current, radiusKm});
+  return savePreference({ ...current, radiusKm });
 }
 
 async function requestAndroidLocationPermission(): Promise<boolean> {
@@ -378,14 +394,35 @@ function locationErrorStatus(error: unknown): EnthusiastLocationStatus {
   if (/denied|permission|restricted/i.test(message)) {
     return 'denied';
   }
-  if (/unavailable|timeout|module/i.test(message)) {
+  if (/unavailable|time(?:d)?\s*out|module/i.test(message)) {
     return 'unavailable';
   }
   return 'error';
 }
 
-export async function refreshApproximateEnthusiastLocation(): Promise<EnthusiastDiscoveryPreference> {
+export async function refreshApproximateEnthusiastLocation(
+  force = false,
+): Promise<EnthusiastDiscoveryPreference> {
   const current = await loadEnthusiastDiscoveryPreference();
+  if (!force && current.locationStatus === 'ready' && approximateAreaId) {
+    if (!current.enabled) {
+      return current;
+    }
+    try {
+      await publishCommunityProfile(current, approximateAreaId);
+      logWalletEvent(
+        'community-location',
+        'community-profile.published-cached-area',
+      );
+      return savePreference({ ...current, serverStatus: 'ready' });
+    } catch {
+      logWalletEvent(
+        'community-location',
+        'community-profile.publish-cached-area-failed',
+      );
+      return savePreference({ ...current, serverStatus: 'offline' });
+    }
+  }
   // Request one fresh location as Community opens, even before the user
   // chooses visibility. Exact coordinates never leave this function: only a
   // coarse geohash is kept in memory and it is uploaded only when discovery
@@ -393,11 +430,11 @@ export async function refreshApproximateEnthusiastLocation(): Promise<Enthusiast
   logWalletEvent('community-location', 'request.started', {
     discoveryEnabled: current.enabled,
   });
-  await savePreference({...current, locationStatus: 'requesting'});
+  await savePreference({ ...current, locationStatus: 'requesting' });
   try {
     if (!(await requestAndroidLocationPermission())) {
       logWalletEvent('community-location', 'request.denied');
-      return savePreference({...current, locationStatus: 'denied'});
+      return savePreference({ ...current, locationStatus: 'denied' });
     }
 
     const module = NativeModules.NearbyLocation as
@@ -405,13 +442,17 @@ export async function refreshApproximateEnthusiastLocation(): Promise<Enthusiast
       | undefined;
     if (!module?.getCurrentLocation) {
       logWalletEvent('community-location', 'request.native-module-unavailable');
-      return savePreference({...current, locationStatus: 'unavailable'});
+      return savePreference({ ...current, locationStatus: 'unavailable' });
     }
 
-    const location = await module.getCurrentLocation();
+    const location = await withTimeout(
+      module.getCurrentLocation(),
+      LOCATION_REQUEST_TIMEOUT_MS,
+      'Location request timed out',
+    );
     if (!validLocation(location)) {
       logWalletEvent('community-location', 'request.invalid-result');
-      return savePreference({...current, locationStatus: 'unavailable'});
+      return savePreference({ ...current, locationStatus: 'unavailable' });
     }
 
     // Only this coarse cell remains in memory. Exact coordinates are discarded.
@@ -419,10 +460,12 @@ export async function refreshApproximateEnthusiastLocation(): Promise<Enthusiast
       location.latitude,
       location.longitude,
     );
-    const ready = await savePreference({...current, locationStatus: 'ready'});
+    const ready = await savePreference({ ...current, locationStatus: 'ready' });
     logWalletEvent('community-location', 'request.ready', {
       accuracyMeters:
-        typeof location.accuracy === 'number' ? Math.round(location.accuracy) : undefined,
+        typeof location.accuracy === 'number'
+          ? Math.round(location.accuracy)
+          : undefined,
       published: current.enabled,
     });
     if (!current.enabled) {
@@ -431,10 +474,10 @@ export async function refreshApproximateEnthusiastLocation(): Promise<Enthusiast
     try {
       await publishCommunityProfile(ready, approximateAreaId);
       logWalletEvent('community-location', 'community-profile.published');
-      return savePreference({...ready, serverStatus: 'ready'});
+      return savePreference({ ...ready, serverStatus: 'ready' });
     } catch {
       logWalletEvent('community-location', 'community-profile.publish-failed');
-      return savePreference({...ready, serverStatus: 'offline'});
+      return savePreference({ ...ready, serverStatus: 'offline' });
     }
   } catch (error) {
     approximateAreaId = undefined;
@@ -460,7 +503,7 @@ export async function getCommunityIdentityId(): Promise<string | undefined> {
 export async function loadCommunityProfile(): Promise<CommunityProfile> {
   const account = await ensureCommunityAccount();
   return profileFromApi(
-    await communityRequest('/v1/profile', {method: 'GET'}, account),
+    await communityRequest('/v1/profile', { method: 'GET' }, account),
   );
 }
 
@@ -469,7 +512,7 @@ export async function updateCommunityDisplayName(
   preference: EnthusiastDiscoveryPreference,
 ): Promise<CommunityProfile> {
   const account = await ensureCommunityAccount();
-  const updatedAccount = {...account, displayName: displayName.trim()};
+  const updatedAccount = { ...account, displayName: displayName.trim() };
   const response = await communityRequest<any>(
     '/v1/profile',
     {
@@ -497,7 +540,7 @@ export async function listNearbyEnthusiasts(
   const account = await ensureCommunityAccount();
   const response = await communityRequest<any[]>(
     `/v1/nearby?radius_km=${radiusKm}`,
-    {method: 'GET'},
+    { method: 'GET' },
     account,
   );
   return response.map(value => ({
@@ -514,7 +557,7 @@ export async function listCommunityContacts(): Promise<CommunityContact[]> {
   const account = await ensureCommunityAccount();
   const response = await communityRequest<any[]>(
     '/v1/contacts',
-    {method: 'GET'},
+    { method: 'GET' },
     account,
   );
   return response.map(value => ({
@@ -527,7 +570,7 @@ export async function requestCommunityContact(peerId: string): Promise<void> {
   const account = await ensureCommunityAccount();
   await communityRequest(
     `/v1/contacts/${encodeURIComponent(peerId)}`,
-    {method: 'POST'},
+    { method: 'POST' },
     account,
   );
 }
@@ -536,7 +579,7 @@ export async function acceptCommunityContact(peerId: string): Promise<void> {
   const account = await ensureCommunityAccount();
   await communityRequest(
     `/v1/contacts/${encodeURIComponent(peerId)}/accept`,
-    {method: 'POST'},
+    { method: 'POST' },
     account,
   );
 }
@@ -547,8 +590,10 @@ export async function listCommunityMessages(
 ): Promise<CommunityMessage[]> {
   const account = await ensureCommunityAccount();
   const response = await communityRequest<any[]>(
-    `/v1/conversations/${encodeURIComponent(peerId)}/messages?after_ms=${afterMs}`,
-    {method: 'GET'},
+    `/v1/conversations/${encodeURIComponent(
+      peerId,
+    )}/messages?after_ms=${afterMs}`,
+    { method: 'GET' },
     account,
   );
   return response.map(value => ({
@@ -567,7 +612,7 @@ export async function sendCommunityMessage(
   const account = await ensureCommunityAccount();
   const value = await communityRequest<any>(
     `/v1/conversations/${encodeURIComponent(peerId)}/messages`,
-    {method: 'POST', body: JSON.stringify({body})},
+    { method: 'POST', body: JSON.stringify({ body }) },
     account,
   );
   return {
@@ -583,7 +628,7 @@ export async function blockCommunityProfile(peerId: string): Promise<void> {
   const account = await ensureCommunityAccount();
   await communityRequest(
     `/v1/blocks/${encodeURIComponent(peerId)}`,
-    {method: 'POST'},
+    { method: 'POST' },
     account,
   );
 }
@@ -595,7 +640,7 @@ export async function reportCommunityProfile(
   const account = await ensureCommunityAccount();
   await communityRequest(
     `/v1/reports/${encodeURIComponent(peerId)}`,
-    {method: 'POST', body: JSON.stringify({reason})},
+    { method: 'POST', body: JSON.stringify({ reason }) },
     account,
   );
 }
@@ -603,7 +648,7 @@ export async function reportCommunityProfile(
 export async function deleteCommunityIdentity(): Promise<void> {
   const account = await loadAccount();
   if (account) {
-    await communityRequest('/v1/profile', {method: 'DELETE'}, account);
+    await communityRequest('/v1/profile', { method: 'DELETE' }, account);
   }
   await AsyncStorage.removeItem(ACCOUNT_STORAGE_KEY);
   approximateAreaId = undefined;
