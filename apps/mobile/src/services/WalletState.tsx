@@ -457,15 +457,16 @@ export function WalletStateProvider({
       snapshotRefreshInFlightIdsRef.current.add(registration.id);
       try {
         const nextSnapshot = await walletService.snapshot(openedSession);
-        if (!syncStartHeightsRef.current.has(registration.id)) {
-          const cachedHeight = Number(
-            walletSnapshotsRef.current[registration.id]?.walletHeight,
-          );
+        if (
+          !syncStartHeightsRef.current.has(registration.id) &&
+          nextSnapshot.walletHeight > 0
+        ) {
+          // Only the first live Core snapshot may establish the percentage
+          // baseline. A saved UI snapshot can be from a previous partial sync
+          // and made a current 19k-block scan incorrectly look like 99%.
           syncStartHeightsRef.current.set(
             registration.id,
-            Number.isFinite(cachedHeight) && cachedHeight > 0
-              ? cachedHeight
-              : nextSnapshot.walletHeight,
+            nextSnapshot.walletHeight,
           );
         }
         const nextCache = {
@@ -724,6 +725,13 @@ export function WalletStateProvider({
       }
       nativeRefreshWalletIdsRef.current.add(registrationId);
       nativeRefreshReadyWalletIdsRef.current.delete(registrationId);
+      // A new native refresh is a new measurement window. Until its first
+      // live Core snapshot arrives, the shared presenter intentionally keeps
+      // progress indeterminate instead of reusing a cached height.
+      syncStartHeightsRef.current.delete(registrationId);
+      if (registeredWalletRef.current?.id === registrationId) {
+        setSyncStartHeight(undefined);
+      }
       logWalletEvent('WalletState', 'startNativeRefresh.start', {
         reason,
         registrationId,

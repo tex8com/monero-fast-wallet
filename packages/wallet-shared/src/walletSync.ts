@@ -30,11 +30,27 @@ export type WalletSyncPresentation = {
 
 export type WalletSyncPresentationOptions = {
   /**
-   * Height persisted at the end of the previous successful refresh session.
-   * When present, the visible percentage describes only the work that is
-   * still required now instead of the wallet's lifetime blockchain scan.
+   * Height from the first live core snapshot of the current refresh session.
+   * When absent, progress intentionally remains indeterminate instead of
+   * treating genesis or an old UI cache as the beginning of this sync.
    */
   startHeight?: number | string;
+};
+
+export type WalletSyncEtaState = {
+  /** The first live core snapshot of the current refresh. */
+  startedAt: number;
+  startRemainingBlocks: number;
+  /** Time and remaining height of the last snapshot that made progress. */
+  lastProgressAt: number;
+  lastRemainingBlocks: number;
+  /** Smoothed estimate based exclusively on observed core progress. */
+  blocksPerSecond?: number;
+};
+
+export type WalletSyncEtaEstimate = {
+  state: WalletSyncEtaState | undefined;
+  etaSeconds: number | undefined;
 };
 
 function nonNegativeNumber(value: number | string): number {
@@ -94,24 +110,29 @@ export function presentWalletSync(
   }
 
   const requestedStartHeight = nonNegativeNumber(options.startHeight ?? 0);
-  // Keep the persisted baseline even while the native core is still
-  // restoring its current height. Falling back to genesis here made every
-  // reopen appear to start at 97-99%, although no historic blocks were being
+  // Until the first live Core baseline arrives, keep progress indeterminate.
+  // Falling back to genesis or a persisted UI cache here made every reopen
+  // appear to start at 97-99%, although no historic blocks were being
   // rescanned.
-  const startHeight =
-    requestedStartHeight > 0 ? Math.min(requestedStartHeight, targetHeight) : 0;
-  const remainingRange = targetHeight - startHeight;
-  const completedRange = Math.max(0, walletHeight - startHeight);
+  const hasLiveStartHeight = requestedStartHeight > 0;
+  const startHeight = hasLiveStartHeight
+    ? Math.min(requestedStartHeight, targetHeight)
+    : undefined;
+  const remainingRange = startHeight === undefined ? undefined : targetHeight - startHeight;
+  const completedRange =
+    startHeight === undefined ? undefined : Math.max(0, walletHeight - startHeight);
   const remainingBlocks = Math.max(0, targetHeight - walletHeight);
   const heightProgress =
-    remainingRange <= 0
-      ? 100
-      : Math.max(
-          0,
-          Math.min(100, Math.floor((completedRange / remainingRange) * 100)),
-        );
+    remainingRange === undefined || completedRange === undefined
+      ? undefined
+      : remainingRange <= 0
+        ? 100
+        : Math.max(
+            0,
+            Math.min(100, Math.floor((completedRange / remainingRange) * 100)),
+          );
 
-  if (heightProgress >= 100) {
+  if (heightProgress === 100 || walletHeight >= targetHeight) {
     return {
       phase: "finalizing",
       // The native core has reached the daemon height but still has to
@@ -136,6 +157,75 @@ export function presentWalletSync(
     remainingBlocks,
     coreConfirmed: false,
   };
+}
+
+/**
+ * Updates a rest-time estimate from live core snapshots.
+ *
+ * The first useful estimate uses all progress measured since the start of this
+ * refresh. Later estimates combine the newly measured transfer rate with the
+ * previous estimate. Snapshots which report no additional blocks deliberately
+ * do not reset the timing window; otherwise a five-second poll can make a
+ * short burst look like an implausible one-second ETA.
+ */
+export function updateWalletSyncEta(
+  previous: WalletSyncEtaState | undefined,
+  remainingBlocks: number | undefined,
+  observedAt: number,
+): WalletSyncEtaEstimate {
+  if (
+    remainingBlocks === undefined ||
+    !Number.isFinite(remainingBlocks) ||
+    remainingBlocks <= 0 ||
+    !Number.isFinite(observedAt)
+  ) {
+    return { state: undefined, etaSeconds: undefined };
+  }
+
+  if (!previous || remainingBlocks > previous.startRemainingBlocks) {
+    return {
+      state: {
+        startedAt: observedAt,
+        startRemainingBlocks: remainingBlocks,
+        lastProgressAt: observedAt,
+        lastRemainingBlocks: remainingBlocks,
+      },
+      etaSeconds: undefined,
+    };
+  }
+
+  let state = previous;
+  if (remainingBlocks < previous.lastRemainingBlocks) {
+    const elapsedSinceStart = (observedAt - previous.startedAt) / 1_000;
+    const elapsedSinceProgress = (observedAt - previous.lastProgressAt) / 1_000;
+    const completedSinceStart = previous.startRemainingBlocks - remainingBlocks;
+    const completedSinceProgress = previous.lastRemainingBlocks - remainingBlocks;
+    const initialRate =
+      elapsedSinceStart > 0 && completedSinceStart > 0
+        ? completedSinceStart / elapsedSinceStart
+        : undefined;
+    const instantRate =
+      elapsedSinceProgress > 0 && completedSinceProgress > 0
+        ? completedSinceProgress / elapsedSinceProgress
+        : undefined;
+    const blocksPerSecond =
+      previous.blocksPerSecond && instantRate
+        ? previous.blocksPerSecond * 0.75 + instantRate * 0.25
+        : initialRate;
+
+    state = {
+      ...previous,
+      lastProgressAt: observedAt,
+      lastRemainingBlocks: remainingBlocks,
+      blocksPerSecond,
+    };
+  }
+
+  const etaSeconds =
+    state.blocksPerSecond && state.blocksPerSecond > 0
+      ? Math.max(1, Math.ceil(remainingBlocks / state.blocksPerSecond))
+      : undefined;
+  return { state, etaSeconds };
 }
 
 export function walletIsSpendReady(

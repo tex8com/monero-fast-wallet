@@ -2,7 +2,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { checkPermissions, getCurrentPosition, requestPermissions } from '@tauri-apps/plugin-geolocation';
 import QRCode from 'qrcode';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { presentWalletSync } from '../../../packages/wallet-shared/src/walletSync';
+import {
+  presentWalletSync,
+  updateWalletSyncEta,
+  type WalletSyncEtaState,
+} from '../../../packages/wallet-shared/src/walletSync';
 import { useI18n } from './i18n';
 import {
   desktopNotificationStatus,
@@ -94,33 +98,24 @@ function formatSyncBlockCount(value: number | undefined) {
   return new Intl.NumberFormat().format(Math.max(0, Math.floor(value ?? 0)));
 }
 function useDesktopSyncEta(sync: ReturnType<typeof presentWalletSync>) {
-  const sampleRef = useRef<{ remainingBlocks: number; observedAt: number; rate: number } | null>(null);
+  const sampleRef = useRef<WalletSyncEtaState | undefined>(undefined);
   const [etaSeconds, setEtaSeconds] = useState<number | undefined>();
 
   useEffect(() => {
-    if (sync.phase !== 'syncing' || sync.remainingBlocks === undefined || sync.remainingBlocks <= 0) {
-      sampleRef.current = null;
+    if (sync.phase !== 'syncing' || sync.remainingBlocks === undefined || sync.remainingBlocks <= 0 || sync.scannedBlocks === undefined) {
+      sampleRef.current = undefined;
       setEtaSeconds(undefined);
       return;
     }
 
-    const now = Date.now();
-    const previous = sampleRef.current;
-    if (!previous || sync.remainingBlocks >= previous.remainingBlocks) {
-      sampleRef.current = { remainingBlocks: sync.remainingBlocks, observedAt: now, rate: previous?.rate ?? 0 };
-      setEtaSeconds(undefined);
-      return;
-    }
-
-    const elapsedSeconds = (now - previous.observedAt) / 1_000;
-    const completedBlocks = previous.remainingBlocks - sync.remainingBlocks;
-    if (elapsedSeconds <= 0 || completedBlocks <= 0) return;
-
-    const instantRate = completedBlocks / elapsedSeconds;
-    const rate = previous.rate > 0 ? previous.rate * 0.65 + instantRate * 0.35 : instantRate;
-    sampleRef.current = { remainingBlocks: sync.remainingBlocks, observedAt: now, rate };
-    setEtaSeconds(rate > 0 ? Math.max(1, Math.ceil(sync.remainingBlocks / rate)) : undefined);
-  }, [sync.phase, sync.remainingBlocks]);
+    const estimate = updateWalletSyncEta(
+      sampleRef.current,
+      sync.remainingBlocks,
+      Date.now(),
+    );
+    sampleRef.current = estimate.state;
+    setEtaSeconds(estimate.etaSeconds);
+  }, [sync.phase, sync.remainingBlocks, sync.scannedBlocks]);
 
   return etaSeconds;
 }
@@ -384,7 +379,6 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   // A wallet can be selected repeatedly while it is already scanning. Keep a
   // per-wallet baseline so the visible progress describes this refresh, not
   // the full chain since genesis (which is what caused 97-99% on reopen).
-  const walletSnapshotsRef = useRef(new Map<string, NativeWalletSnapshot>());
   const syncStartHeightsRef = useRef(new Map<string, number>());
   const { price, change24h, loading: priceLoading } = useXmrPrice();
   const { points, loading: chartLoading, refresh: refreshChart } = useXmrChart(timeframe);
@@ -397,13 +391,13 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
     snapshotRefreshInFlight.current = true;
     try {
       if (startRefresh) {
-        const previousHeight = nativeHeight(walletSnapshotsRef.current.get(walletId)?.walletHeight);
-        if (previousHeight) syncStartHeightsRef.current.set(walletId, previousHeight);
+        // Do not reuse a cached UI height as a progress baseline. The first
+        // snapshot after the native Core refresh starts owns this range.
+        syncStartHeightsRef.current.delete(walletId);
       }
       if (startRefresh) await invoke<void>('start_wallet_refresh', { input: { walletId } });
       const raw = await invoke<string>('wallet_snapshot', { input: { walletId, accountIndex } });
       const nextSnapshot = parseNativeJson<NativeWalletSnapshot>(raw, 'The native wallet snapshot was invalid.');
-      walletSnapshotsRef.current.set(walletId, nextSnapshot);
       const nextHeight = nativeHeight(nextSnapshot.walletHeight);
       if (nextHeight && (nextSnapshot.synchronized || !syncStartHeightsRef.current.has(walletId))) {
         syncStartHeightsRef.current.set(walletId, nextHeight);

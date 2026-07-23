@@ -5,7 +5,11 @@ import { useI18n } from "../i18n";
 import type { WalletSnapshot } from "../services/NativeMoneroWallet";
 import type { WalletRuntimeStatus } from "../services/WalletState";
 import { colors, radius } from "../theme/colors";
-import { presentWalletSync } from "../../../../packages/wallet-shared/src/walletSync";
+import {
+  presentWalletSync,
+  updateWalletSyncEta,
+  type WalletSyncEtaState,
+} from "../../../../packages/wallet-shared/src/walletSync";
 
 type SyncStatusBarProps = {
   compact?: boolean;
@@ -177,44 +181,30 @@ function useAnimatedDots(active: boolean): string {
   return ".".repeat(frame + 1);
 }
 
-type SyncSample = {
-  remainingBlocks: number;
-  at: number;
-  blocksPerSecond?: number;
-};
-
 function useSyncEta(presentation: ReturnType<typeof presentWalletSync>) {
-  const sampleRef = React.useRef<SyncSample | null>(null);
+  const sampleRef = React.useRef<WalletSyncEtaState | undefined>(undefined);
   const [etaSeconds, setEtaSeconds] = React.useState<number | undefined>();
 
   React.useEffect(() => {
     if (
       presentation.phase !== "syncing" ||
       presentation.remainingBlocks === undefined ||
-      presentation.remainingBlocks <= 0
+      presentation.remainingBlocks <= 0 ||
+      presentation.scannedBlocks === undefined
     ) {
-      sampleRef.current = null;
+      sampleRef.current = undefined;
       setEtaSeconds(undefined);
       return;
     }
 
-    const now = Date.now();
-    const previous = sampleRef.current;
-    let blocksPerSecond = previous?.blocksPerSecond;
-
-    if (previous && previous.remainingBlocks > presentation.remainingBlocks) {
-      const elapsedSeconds = (now - previous.at) / 1000;
-      if (elapsedSeconds >= 1) {
-        const measured = (previous.remainingBlocks - presentation.remainingBlocks) / elapsedSeconds;
-        if (Number.isFinite(measured) && measured > 0) {
-          blocksPerSecond = blocksPerSecond ? blocksPerSecond * 0.7 + measured * 0.3 : measured;
-        }
-      }
-    }
-
-    sampleRef.current = { remainingBlocks: presentation.remainingBlocks, at: now, blocksPerSecond };
-    setEtaSeconds(blocksPerSecond ? Math.ceil(presentation.remainingBlocks / blocksPerSecond) : undefined);
-  }, [presentation.phase, presentation.remainingBlocks]);
+    const estimate = updateWalletSyncEta(
+      sampleRef.current,
+      presentation.remainingBlocks,
+      Date.now(),
+    );
+    sampleRef.current = estimate.state;
+    setEtaSeconds(estimate.etaSeconds);
+  }, [presentation.phase, presentation.remainingBlocks, presentation.scannedBlocks]);
 
   return etaSeconds;
 }
