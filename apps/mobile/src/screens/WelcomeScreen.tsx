@@ -110,7 +110,7 @@ export default function WelcomeScreen({ navigation }: any) {
         <View style={s.textWrap}>
           <View style={s.titleRow}>
             <Text style={[s.titleWord, s.titleWhite]}>Monero</Text>
-            <Text style={[s.titleWord, s.titleOrange]}> Wallet</Text>
+            <Text style={[s.titleWord, s.titleOrange]}> Fast Wallet</Text>
           </View>
           <Text style={s.subtitle}>{t('welcome.subtitle')}</Text>
         </View>
