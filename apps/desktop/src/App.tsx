@@ -71,8 +71,12 @@ function notificationDeliveryLabel(status: DesktopNotificationStatus | null, t: 
   return status.providerStatus === 'not-configured' ? t('settings.deliveryNotConfigured', { provider: status.provider }) : t('settings.deliveryLocal');
 }
 function parseNativeJson<T>(value: string, fallback: string): T { try { return JSON.parse(value) as T; } catch { throw new Error(fallback); } }
-function syncLabel(snapshot: NativeWalletSnapshot | null, t?: ReturnType<typeof useI18n>['t']) {
-  const sync = presentWalletSync(snapshot);
+function nativeHeight(value: string | number | undefined) {
+  const height = Number(value);
+  return Number.isFinite(height) && height > 0 ? Math.floor(height) : undefined;
+}
+function syncLabel(snapshot: NativeWalletSnapshot | null, t?: ReturnType<typeof useI18n>['t'], startHeight?: number) {
+  const sync = presentWalletSync(snapshot, { startHeight });
   if (sync.phase === 'synchronized') return `${t ? t('home.syncComplete') : 'Synchronized'} · 100%`;
   if (sync.phase === 'waiting-for-node') return t ? t('home.syncConnecting') : 'Connecting node';
   if (sync.phase === 'finalizing') return `${t ? t('home.syncUpdating') : 'Updating history'} · ${snapshot?.walletHeight ?? 0}/${sync.targetHeight}`;
@@ -85,7 +89,7 @@ function parseXmrToAtomic(value: string) { const normalized = value.trim().repla
 function isLikelyMoneroAddress(value: string) { return /^[1-9A-HJ-NP-Za-km-z]{90,110}$/.test(value.trim()); }
 function atomicXmrNumber(value: string | undefined) { return Number(atomicValue(value)) / Number(ATOMIC_XMR); }
 function formatUsd(value: number) { return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value); }
-function syncProgress(snapshot: NativeWalletSnapshot | null) { return presentWalletSync(snapshot).progress; }
+function syncProgress(snapshot: NativeWalletSnapshot | null, startHeight?: number) { return presentWalletSync(snapshot, { startHeight }).progress; }
 function shortHash(value: string) { return value.length > 20 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
 function transactionTimestamp(value: string) { const timestamp = Number(value); return Number.isFinite(timestamp) && timestamp > 0 ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp * 1000)) : 'Time not available'; }
 function approximateAreaForCoordinates(latitude: number, longitude: number) { const alphabet = '0123456789bcdefghjkmnpqrstuvwxyz'; let latitudeRange: [number, number] = [-90, 90]; let longitudeRange: [number, number] = [-180, 180]; let bits = 0; let value = 0; let useLongitude = true; let result = ''; while (result.length < 5) { const range = useLongitude ? longitudeRange : latitudeRange; const coordinate = useLongitude ? longitude : latitude; const midpoint = (range[0] + range[1]) / 2; value = value * 2 + (coordinate >= midpoint ? 1 : 0); if (coordinate >= midpoint) range[0] = midpoint; else range[1] = midpoint; useLongitude = !useLongitude; bits += 1; if (bits === 5) { result += alphabet[value]; bits = 0; value = 0; } } return result; }
@@ -337,6 +341,11 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   const [transactions, setTransactions] = useState<NativeTransaction[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const snapshotRefreshInFlight = useRef(false);
+  // A wallet can be selected repeatedly while it is already scanning. Keep a
+  // per-wallet baseline so the visible progress describes this refresh, not
+  // the full chain since genesis (which is what caused 97-99% on reopen).
+  const walletSnapshotsRef = useRef(new Map<string, NativeWalletSnapshot>());
+  const syncStartHeightsRef = useRef(new Map<string, number>());
   const { price, change24h, loading: priceLoading } = useXmrPrice();
   const { points, loading: chartLoading, refresh: refreshChart } = useXmrChart(timeframe);
   const { items: officialUpdates, loading: updatesLoading, unavailable: updatesUnavailable, refresh: refreshUpdates } = useMoneroUpdates();
@@ -347,9 +356,19 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
     if (snapshotRefreshInFlight.current) return;
     snapshotRefreshInFlight.current = true;
     try {
+      if (startRefresh) {
+        const previousHeight = nativeHeight(walletSnapshotsRef.current.get(walletId)?.walletHeight);
+        if (previousHeight) syncStartHeightsRef.current.set(walletId, previousHeight);
+      }
       if (startRefresh) await invoke<void>('start_wallet_refresh', { input: { walletId } });
       const raw = await invoke<string>('wallet_snapshot', { input: { walletId, accountIndex } });
-      setSnapshot(parseNativeJson<NativeWalletSnapshot>(raw, 'The native wallet snapshot was invalid.'));
+      const nextSnapshot = parseNativeJson<NativeWalletSnapshot>(raw, 'The native wallet snapshot was invalid.');
+      walletSnapshotsRef.current.set(walletId, nextSnapshot);
+      const nextHeight = nativeHeight(nextSnapshot.walletHeight);
+      if (nextHeight && (nextSnapshot.synchronized || !syncStartHeightsRef.current.has(walletId))) {
+        syncStartHeightsRef.current.set(walletId, nextHeight);
+      }
+      setSnapshot(nextSnapshot);
       setMessage(startRefresh ? 'Local wallet refresh started.' : null);
     } catch (reason) { setMessage(errorMessage(reason, 'Could not read wallet state.')); }
     finally { snapshotRefreshInFlight.current = false; }
@@ -384,8 +403,9 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
   const balanceXmr = formatAtomicXmr(balanceAtomic);
   const lockedXmr = formatAtomicXmr(lockedAtomic.toString());
   const balanceUsd = price > 0 ? formatUsd(atomicXmrNumber(balanceAtomic) * price) : '—';
-  const progress = syncProgress(snapshot);
-  const sync = presentWalletSync(snapshot);
+  const syncStartHeight = walletId ? syncStartHeightsRef.current.get(walletId) : undefined;
+  const progress = syncProgress(snapshot, syncStartHeight);
+  const sync = presentWalletSync(snapshot, { startHeight: syncStartHeight });
   const hasMeasuredProgress = sync.phase === 'syncing' && (progress ?? 0) > 1;
   const syncWorking = Boolean(walletId) && sync.phase !== 'synchronized';
   const routeToWalletAction = (action: () => void) => {
@@ -416,7 +436,7 @@ function Home({ linked, walletId, wallet, savedWallets, onSetup, onWallets, onBa
 
       <section className={snapshot?.synchronized ? 'wallet-sync-card ready' : 'wallet-sync-card'}>
         <div className="wallet-sync-heading"><div><strong>{wallet ? walletDisplayName(wallet) : t('home.sync')}</strong><small>{wallet ? `${networkLabel(wallet.network)} · ${wallet.kind === 'hardware' ? t('common.ledger') : t('wallets.software')}` : t('home.noWalletOpen')}</small></div>{walletId ? <button className="quiet-button" onClick={() => void refreshWallet()} type="button">{t('common.refresh')}</button> : <button className="quiet-button" onClick={savedWallets.length ? onWallets : onSetup} type="button">{t('home.openWallet')}</button>}</div>
-        <div className="sync-reading"><span className={snapshot?.synchronized ? 'sync-led ready' : 'sync-led'} /> <strong>{walletId ? syncLabel(snapshot, t) : t('home.waiting')}</strong><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{walletId ? snapshot?.synchronized ? '100%' : hasMeasuredProgress ? `${progress}%` : '…' : ''}</em></div>
+        <div className="sync-reading"><span className={snapshot?.synchronized ? 'sync-led ready' : 'sync-led'} /> <strong>{walletId ? syncLabel(snapshot, t, syncStartHeight) : t('home.waiting')}</strong><em className={syncWorking && !hasMeasuredProgress ? 'sync-working' : ''}>{walletId ? snapshot?.synchronized ? '100%' : hasMeasuredProgress ? `${progress}%` : '…' : ''}</em></div>
         {(snapshot?.synchronized || hasMeasuredProgress) && <div className="sync-track"><span className={snapshot?.synchronized ? 'ready' : ''} style={{ width: `${snapshot?.synchronized ? 100 : progress}%` }} /></div>}
       </section>
     </div>
