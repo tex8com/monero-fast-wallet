@@ -12,6 +12,7 @@ const appSource = readFileSync(resolve(desktopRoot, 'src', 'App.tsx'), 'utf8');
 const parityDoc = readFileSync(resolve(repoRoot, 'docs', 'DESKTOP_PARITY_MATRIX.md'), 'utf8');
 const tauriBuild = readFileSync(resolve(desktopRoot, 'src-tauri', 'build.rs'), 'utf8');
 const tauriCapability = readFileSync(resolve(desktopRoot, 'src-tauri', 'capabilities', 'main.json'), 'utf8');
+const ledgerCorePatch = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'patches', 'monero-ledger-view-key-api.patch'), 'utf8');
 
 test('desktop primary navigation matches the mobile bottom menu contract', () => {
   const primaryMatch = appSource.match(/function primarySections[\s\S]*?return \[([\s\S]*?)\];\s*}/);
@@ -63,4 +64,13 @@ test('Ledger read-only setup is reachable through Tauri command permissions', ()
     assert.match(tauriBuild, new RegExp(`"${command}"`));
     assert.match(tauriCapability, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
   }
+});
+
+test('Ledger read-only sync consumes the Core-approved view key without reconnecting', () => {
+  const bridgeSource = readFileSync(resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletEngine.cpp'), 'utf8');
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  assert.match(ledgerCorePatch, /hardwarePrivateViewKey/);
+  assert.match(bridgeSource, /hardwarePrivateViewKey\(\)/);
+  const recoverySource = hostSource.slice(hostSource.indexOf('fn create_ledger_read_only_from_device'), hostSource.indexOf('#\[tauri::command\]\nfn wallet_open_requires_password'));
+  assert.equal(/reconnect_hardware\(&export_wallet_id\)/.test(recoverySource), false);
 });

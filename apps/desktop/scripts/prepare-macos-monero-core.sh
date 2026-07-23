@@ -14,10 +14,20 @@ desktop_dir="$(cd "${script_dir}/.." && pwd)"
 repo_root="$(cd "${desktop_dir}/../.." && pwd)"
 default_monero_source="$(cd "${repo_root}/../monero-gui/monero" 2>/dev/null && pwd || true)"
 monero_source_dir="${MONERO_SOURCE_DIR:-${default_monero_source}}"
+ledger_view_key_patch="${repo_root}/native/desktop-bridge/patches/monero-ledger-view-key-api.patch"
 
 if [[ -z "${monero_source_dir}" || ! -f "${monero_source_dir}/CMakeLists.txt" ]]; then
   echo "Pinned Monero source was not found. Set MONERO_SOURCE_DIR to the fork checkout." >&2
   return 1 2>/dev/null || exit 1
+fi
+
+# Ledger's normal Wallet API exposes a deliberate placeholder instead of its
+# real private view key. Apply our narrowly scoped Core extension before every
+# build so the desktop bridge can use only a Ledger-approved view-key export
+# for a local read-only companion. The patch is versioned here, not hidden in
+# an untracked local Core edit.
+if ! rg --quiet "hardwarePrivateViewKey" "${monero_source_dir}/src/wallet/api/wallet2_api.h"; then
+  patch --batch --forward --directory="${monero_source_dir}" --strip=1 < "${ledger_view_key_patch}"
 fi
 
 cmake_bin="${CMAKE_BIN:-$(command -v cmake 2>/dev/null || true)}"

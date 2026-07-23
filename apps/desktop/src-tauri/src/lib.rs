@@ -733,24 +733,9 @@ fn create_ledger_read_only_from_device(
         }
     };
 
-    let reconnect = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .reconnect_hardware(&export_wallet_id);
-    if let Err(error) = reconnect {
-        let _ = state
-            .0
-            .lock()
-            .map_err(|_| "Native wallet is busy.".to_owned())?
-            .close(&export_wallet_id, false);
-        remove_temporary_wallet_files(&export_path);
-        export_password.zeroize();
-        return Err(format!(
-            "Could not connect to the Ledger for view-key export. Confirm that it is unlocked and the Monero app is open. {error}"
-        ));
-    }
-
+    // create_from_device already established this short-lived session and
+    // obtained the user-approved view key. Reconnecting here would prompt the
+    // Ledger a second time without adding any safety or capability.
     let result = create_ledger_read_only_from_open_source(
         &app,
         &state,

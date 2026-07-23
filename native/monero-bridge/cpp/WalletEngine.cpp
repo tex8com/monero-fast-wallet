@@ -584,7 +584,10 @@ class WalletEngine::Impl {
 
     // The Monero Ledger app asks the user to approve this operation. Do not
     // prefetch it and do not retain it in the engine after returning.
-    const auto privateViewKey = session.wallet->secretViewKey();
+    // Ledger wallets store a deliberately fake key in the general Wallet API
+    // account object. The pinned Core extension exposes the real key only
+    // after the user has approved its export on the connected Ledger.
+    const auto privateViewKey = session.wallet->hardwarePrivateViewKey();
     if (privateViewKey.empty()) {
       throw WalletEngineError(
           "Ledger did not export the private view key. Approve Export view key on the Ledger and try again.");
