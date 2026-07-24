@@ -18,7 +18,6 @@ const COMMANDS: &[&str] = &[
     "create_ledger_read_only_from_device",
     "open_wallet",
     "close_wallet",
-    "change_wallet_password",
     "rename_wallet",
     "remove_registered_wallet",
     "list_registered_wallets",

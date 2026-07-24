@@ -23,7 +23,6 @@
     "allow-create-ledger-read-only-from-device",
     "allow-open-wallet",
     "allow-close-wallet",
-    "allow-change-wallet-password",
     "allow-rename-wallet",
     "allow-remove-registered-wallet",
     "allow-list-registered-wallets",

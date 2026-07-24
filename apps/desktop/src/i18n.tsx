@@ -349,7 +349,7 @@ const messages = {
     "setup.passwordRequired":
       "This saved wallet has no usable secure local credential on this device. Restore it from its recovery seed instead.",
     "setup.ledgerDescription":
-      "Connect and unlock the Ledger, open its Monero app, then choose USB or Bluetooth. This step creates one Ledger wallet only.",
+      "Connect and unlock the Ledger, open its Monero app, then choose USB or Bluetooth. Fast Wallet is on by default and creates the normal Ledger wallet plus its separate receive account.",
     "setup.seed": "Monero seed",
     "setup.seedPlaceholder": "Your 25-word recovery seed",
     "setup.scanHeight": "Scan from height",
@@ -764,7 +764,7 @@ const messages = {
     "setup.passwordRequired":
       "Gib das bestehende Passwort dieser Wallet einmal ein. Danach liegt es nur im macOS-Schlüsselbund für spätere Entsperrungen.",
     "setup.ledgerDescription":
-      "Verbinde und entsperre den Ledger, öffne die Monero-App und wähle dann USB oder Bluetooth. Dieser Schritt erstellt nur eine Ledger-Wallet.",
+      "Verbinde und entsperre den Ledger, öffne die Monero-App und wähle dann USB oder Bluetooth. Fast Wallet ist standardmäßig aktiv und erstellt die normale Ledger-Wallet plus ihr separates Empfangskonto.",
     "setup.seed": "Monero-Seed",
     "setup.seedPlaceholder": "Dein 25-Wort-Wiederherstellungs-Seed",
     "setup.scanHeight": "Scannen ab Höhe",

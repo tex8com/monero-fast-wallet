@@ -196,3 +196,10 @@ test('desktop uses one app-wide unlock boundary before restoring wallet sessions
   assert.match(hostSource, /MONERO_DESKTOP_APP_PROTECTION locked/);
   assert.match(hostSource, /require_app_unlocked\(&protection\)\?/);
 });
+
+test('desktop exposes no per-wallet password command or current settings control', () => {
+  const activeSettings = appSource.slice(appSource.indexOf('function LeanSettings('));
+  assert.doesNotMatch(activeSettings, /change_wallet_password/);
+  assert.doesNotMatch(tauriBuild, /"change_wallet_password"/);
+  assert.doesNotMatch(tauriCapability, /"allow-change-wallet-password"/);
+});
