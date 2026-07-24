@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">MoneroWallet</string>
+    <string name="app_name">Monero Fast Wallet</string>
     <string name="monero_transaction_channel_name">Monero transactions</string>
     <string name="monero_transaction_channel_description">Fast Wallet payment and confirmation alerts</string>
 </resources>

@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export type MoneroNewsCategory = 'network' | 'wallet' | 'ecosystem';
 
@@ -20,6 +20,7 @@ type Cache = { items: MoneroNewsItem[]; updatedAt: number };
 const API_URL = 'https://xmr.tex8.com/news/v1/news?limit=18';
 const CACHE_KEY = '@tex8/monero/news-v1';
 const CACHE_TTL_MS = 30 * 60 * 1_000;
+const RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 5 * 60_000];
 let memoryCache: Cache | null = null;
 
 function isFresh(cache: Cache) {
@@ -109,24 +110,44 @@ export function useMoneroNews() {
   const [items, setItems] = useState<MoneroNewsItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [unavailable, setUnavailable] = useState(false);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryAttempt = useRef(0);
+  const clearRetry = useCallback(() => {
+    if (retryTimer.current) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
+  }, []);
 
-  const refresh = useCallback(async (force = false) => {
+  const refresh = useCallback(async (force = false, automatic = false) => {
+    if (!automatic) {
+      clearRetry();
+      retryAttempt.current = 0;
+    }
     setLoading(true);
     setUnavailable(false);
     try {
       setItems(await fetchNews(force));
+      retryAttempt.current = 0;
     } catch {
       const cached = await loadCache();
       if (cached) setItems(cached.items);
       setUnavailable(true);
+      const delay = RETRY_DELAYS_MS[Math.min(retryAttempt.current, RETRY_DELAYS_MS.length - 1)];
+      retryAttempt.current += 1;
+      retryTimer.current = setTimeout(() => {
+        retryTimer.current = null;
+        void refresh(true, true);
+      }, delay);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [clearRetry]);
 
   useEffect(() => {
     refresh().catch(() => undefined);
-  }, [refresh]);
+    return clearRetry;
+  }, [clearRetry, refresh]);
 
   return { items, loading, unavailable, refresh: () => refresh(true) };
 }

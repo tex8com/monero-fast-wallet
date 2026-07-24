@@ -78,11 +78,21 @@ describe('presentWalletSync', () => {
     const slowerMeasurement = updateWalletSyncEta(noProgress.state, 9_000, 15_000);
     expect(slowerMeasurement.etaSeconds).toBeUndefined();
 
-    const reliableMeasurement = updateWalletSyncEta(
+    const stillTooEarly = updateWalletSyncEta(
       slowerMeasurement.state,
       8_500,
       20_000,
     );
-    expect(reliableMeasurement.etaSeconds).toBe(114);
+    expect(stillTooEarly.etaSeconds).toBeUndefined();
+
+    // A visible time needs sustained Core progress over a meaningful window,
+    // not merely three fast UI polls. The slower current interval wins over
+    // the overall rate so the estimate remains deliberately conservative.
+    const reliableMeasurement = updateWalletSyncEta(
+      stillTooEarly.state,
+      8_000,
+      35_000,
+    );
+    expect(reliableMeasurement.etaSeconds).toBe(240);
   });
 });
