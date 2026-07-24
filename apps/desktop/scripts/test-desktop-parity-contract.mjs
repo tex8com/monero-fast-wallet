@@ -105,7 +105,7 @@ test('desktop Community mirrors mobile automatic coarse-location loading without
 
 test('desktop applies the selected Fast Wallet default to every new wallet type', () => {
   const setupSource = appSource.slice(appSource.indexOf('function Setup('), appSource.indexOf('function FastWallets('));
-  assert.match(appSource, /function FastWalletOnboarding/);
+  assert.match(appSource, /function ExperienceModeOnboarding/);
   assert.match(appSource, /fastWalletPreference/);
   assert.match(setupSource, /suggestedFastWallet/);
   assert.match(setupSource, /setCreateFastWallet\(next !== 'open' && suggestedFastWallet\)/);

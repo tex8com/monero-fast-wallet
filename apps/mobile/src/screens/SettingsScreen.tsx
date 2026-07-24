@@ -98,7 +98,7 @@ export default function SettingsScreen() {
   const [confirmAppPassword, setConfirmAppPassword] = useState("");
   const [isSavingAppProtection, setIsSavingAppProtection] = useState(false);
   const [fastWalletPreference, setFastWalletPreference] =
-    useState<FastWalletPreference>("enabled");
+    useState<FastWalletPreference>("disabled");
 
   useEffect(() => {
     setProtectionMode(savedProtectionMode);
@@ -458,20 +458,26 @@ export default function SettingsScreen() {
         </View>
 
         <View style={s.section}>
-          <Text style={s.sectionTitle}>New wallets</Text>
+          <Text style={s.sectionTitle}>Privacy mode</Text>
           <View style={s.nodePanel}>
-            <View style={s.switchRow}>
-              <View style={s.switchText}>
-                <Text style={s.switchTitle}>Create a Fast Wallet</Text>
-                <Text style={s.switchValue}>Adds a separate receive wallet to future normal and Ledger wallets. Scanner hosting always needs separate approval.</Text>
-              </View>
-              <Switch
-                value={fastWalletPreference === "enabled"}
-                onValueChange={changeFastWalletPreference}
-                trackColor={{ false: colors.surface, true: colors.orange }}
-                thumbColor="#FFF"
-              />
+            <Text style={s.passwordHint}>Choose the default for future normal and Ledger wallets. Existing wallets are unchanged.</Text>
+            <View style={s.segmented}>
+              <TouchableOpacity
+                style={[s.segment, fastWalletPreference === "disabled" && s.segmentActive]}
+                activeOpacity={0.75}
+                onPress={() => changeFastWalletPreference(false)}
+              >
+                <Text style={[s.segmentText, fastWalletPreference === "disabled" && s.segmentTextActive]}>Maximum privacy</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[s.segment, fastWalletPreference === "enabled" && s.segmentActive]}
+                activeOpacity={0.75}
+                onPress={() => changeFastWalletPreference(true)}
+              >
+                <Text style={[s.segmentText, fastWalletPreference === "enabled" && s.segmentTextActive]}>Privacy + comfort</Text>
+              </TouchableOpacity>
             </View>
+            <Text style={s.switchValue}>{fastWalletPreference === "enabled" ? "Privacy + comfort adds a separate Fast Wallet for quick incoming-payment alerts." : "Maximum privacy creates only normal local wallets by default."} Scanner hosting always needs separate approval.</Text>
           </View>
         </View>
 
