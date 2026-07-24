@@ -32,6 +32,24 @@ describe('presentWalletSync', () => {
     expect(result.progress).toBe(0);
   });
 
+  it('starts an explicitly selected January 2026 scan at zero percent', () => {
+    // 3,549,388 is the shared safe restore height for 2026-01-01. This is a
+    // regression guard for the dashboard screenshot where that same first
+    // Core height was incorrectly displayed as 95% of the full chain.
+    const result = presentWalletSync(
+      snapshot({
+        walletHeight: 3_549_388,
+        daemonHeight: 3_724_447,
+        daemonTargetHeight: 3_724_447,
+      }),
+      {startHeight: 3_549_388},
+    );
+
+    expect(result.phase).toBe('syncing');
+    expect(result.progress).toBe(0);
+    expect(result.remainingBlocks).toBe(175_059);
+  });
+
   it('does not invent a 99% value before the live refresh baseline exists', () => {
     const result = presentWalletSync(
       snapshot({

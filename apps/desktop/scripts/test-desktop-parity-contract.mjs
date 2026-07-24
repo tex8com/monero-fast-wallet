@@ -72,6 +72,13 @@ test('desktop dashboard keeps the mobile order: chart, balance, news, then walle
   assert.ok(chart >= 0 && balance > chart && news > balance && actions > news);
 });
 
+test('desktop computes sync percentage from the wallet restore range, never the full chain', () => {
+  const homeSource = appSource.slice(appSource.indexOf('function Home('), appSource.indexOf('function RecentTransactions('));
+  assert.match(homeSource, /syncStartHeightForWallet\(\s*wallet\?\.restoreHeight,/);
+  assert.match(homeSource, /presentWalletSync\(snapshot, \{ startHeight: syncStartHeight \}\)/);
+  assert.match(homeSource, /sync\.phase === 'finalizing'/);
+});
+
 test('desktop news uses the same TEX8 feed and categories as mobile', () => {
   const newsSource = readFileSync(resolve(desktopRoot, 'src', 'moneroNews.ts'), 'utf8');
   assert.match(newsSource, /https:\/\/xmr\.tex8\.com\/news\/v1\/news\?limit=18/);

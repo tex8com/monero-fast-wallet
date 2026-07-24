@@ -16,6 +16,12 @@ describe("restore start date", () => {
     );
   });
 
+  it("uses the same safe January 2026 height that the desktop dashboard treats as zero progress", () => {
+    expect(restoreHeightFromStartDate("2026-01-01", "mainnet")).toBe(
+      3_549_388,
+    );
+  });
+
   it("rejects invalid calendar dates", () => {
     expect(() => parseRestoreStartDate("2024-02-30")).toThrow(
       "Enter a valid date.",
