@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   ActivityIndicator,
+  Modal,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -19,6 +20,11 @@ import {
   isFastWalletRegistration,
   walletDisplayName,
 } from '../services/WalletRegistry';
+import {
+  loadExperienceProfile,
+  saveExperienceProfile,
+  type ExperienceProfileId,
+} from '../services/ExperienceProfile';
 
 const IS_TEST = typeof jest !== 'undefined';
 
@@ -31,6 +37,9 @@ export default function WelcomeScreen({ navigation }: any) {
     setActiveRegisteredWallet,
   } = useWalletState();
   const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
+  const [profile, setProfile] = useState<ExperienceProfileId>('privacy');
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [showFastWalletInfo, setShowFastWalletInfo] = useState(false);
   const contentOp = useRef(new Animated.Value(IS_TEST ? 1 : 0)).current;
   const contentY = useRef(new Animated.Value(IS_TEST ? 0 : 10)).current;
 
@@ -52,6 +61,21 @@ export default function WelcomeScreen({ navigation }: any) {
       }),
     ]).start();
   }, [contentOp, contentY]);
+
+  useEffect(() => {
+    let mounted = true;
+    void loadExperienceProfile().then(value => {
+      if (!mounted) return;
+      if (value) setProfile(value);
+      setProfileLoaded(true);
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  const continueToSetup = useCallback(async () => {
+    await saveExperienceProfile(profile);
+    navigation.navigate('WalletSetup', { experienceProfile: profile });
+  }, [navigation, profile]);
 
   const openSavedWallet = useCallback(
     async (walletId: string) => {
@@ -157,10 +181,24 @@ export default function WelcomeScreen({ navigation }: any) {
             </ScrollView>
           </View>
         ) : null}
+        {registeredWallets.length === 0 && profileLoaded ? <View style={s.profilePanel}>
+          <Text style={s.profileEyebrow}>FIND THE RIGHT SETTINGS</Text>
+          <Text style={s.profileLead}>Your Native Monero Core and normal wallets stay local and private.</Text>
+          <TouchableOpacity style={[s.profileCard, profile === 'privacy' && s.profileCardSelected]} onPress={() => setProfile('privacy')} activeOpacity={0.8}>
+            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Maximum privacy</Text><Text style={s.profileMeter}>●●●○○</Text></View>
+            <Text style={s.profileDetail}>Normal local wallets. No Fast Wallet, contact discovery, or approximate location suggested.</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[s.profileCard, profile === 'comfort' && s.profileCardSelected]} onPress={() => setProfile('comfort')} activeOpacity={0.8}>
+            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Privacy + comfort</Text><Text style={s.profileMeter}>●●●●○</Text></View>
+            <Text style={s.profileDetail}>Suggests a separate Fast Wallet for quick incoming-payment alerts. Normal wallets and Core stay unchanged.</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => setShowFastWalletInfo(true)} accessibilityRole="button"><Text style={s.infoLink}>ⓘ How Fast Wallet works</Text></TouchableOpacity>
+          <Text style={s.profileFootnote}>Contacts and Community location always need their own visible approval.</Text>
+        </View> : null}
         <TouchableOpacity
           style={s.btn}
           activeOpacity={0.85}
-          onPress={() => navigation.navigate('WalletSetup')}
+          onPress={() => registeredWallets.length ? navigation.navigate('WalletSetup') : void continueToSetup()}
         >
           <LinearGradient
             colors={['#F26822', '#D4551A']}
@@ -172,6 +210,9 @@ export default function WelcomeScreen({ navigation }: any) {
           </LinearGradient>
         </TouchableOpacity>
       </View>
+      <Modal visible={showFastWalletInfo} transparent animationType="fade" onRequestClose={() => setShowFastWalletInfo(false)}>
+        <View style={s.infoBackdrop}><View style={s.infoSheet}><Text style={s.infoTitle}>Fast Wallet explained</Text><Text style={s.infoCopy}>A Fast Wallet is a separate receive wallet. Only after you approve scanner hosting, its public address and private view key are sent to that scanner for incoming-payment alerts.</Text><Text style={s.infoCopy}>The spend key stays on this device or exclusively on your Ledger. Your Native Monero Core still handles wallet data and sync.</Text><Text style={s.infoCopy}>Your own node protects your blockchain connection. Your own scanner means no third party receives this Fast Wallet’s view key.</Text><TouchableOpacity style={s.infoClose} onPress={() => setShowFastWalletInfo(false)}><Text style={s.infoCloseText}>Got it</Text></TouchableOpacity></View></View>
+      </Modal>
     </LinearGradient>
   );
 }
@@ -277,6 +318,23 @@ const s = StyleSheet.create({
     borderRadius: 16,
     overflow: 'hidden',
   },
+  profilePanel: { alignSelf: 'stretch', marginBottom: 18, gap: 8 },
+  profileEyebrow: { color: 'rgba(255,255,255,0.55)', fontWeight: '800', fontSize: 11, letterSpacing: 1 },
+  profileLead: { color: 'rgba(255,255,255,0.78)', fontSize: 14, lineHeight: 20, marginBottom: 3 },
+  profileCard: { borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', borderRadius: 14, padding: 13, backgroundColor: 'rgba(255,255,255,0.045)' },
+  profileCardSelected: { borderColor: '#F26822', backgroundColor: 'rgba(242,104,34,0.13)' },
+  profileTitleRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, alignItems: 'center' },
+  profileTitle: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  profileMeter: { color: '#F5B744', fontSize: 12, letterSpacing: 1 },
+  profileDetail: { color: 'rgba(255,255,255,0.62)', fontSize: 12, lineHeight: 17, marginTop: 5 },
+  infoLink: { color: '#F5B744', fontSize: 12, fontWeight: '700', marginTop: 9 },
+  profileFootnote: { color: 'rgba(255,255,255,0.42)', fontSize: 11, lineHeight: 16, marginTop: 2 },
+  infoBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', padding: 24 },
+  infoSheet: { borderRadius: 18, borderWidth: 1, borderColor: 'rgba(242,104,34,0.5)', backgroundColor: '#161223', padding: 21, gap: 12 },
+  infoTitle: { color: '#FFF', fontSize: 21, fontWeight: '800' },
+  infoCopy: { color: 'rgba(255,255,255,0.75)', fontSize: 14, lineHeight: 20 },
+  infoClose: { backgroundColor: '#F26822', paddingVertical: 13, borderRadius: 12, alignItems: 'center', marginTop: 4 },
+  infoCloseText: { color: '#FFF', fontWeight: '800', fontSize: 15 },
   btnGrad: {
     height: 60,
     borderRadius: 16,

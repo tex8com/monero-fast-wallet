@@ -103,9 +103,12 @@ test('desktop Community mirrors mobile automatic coarse-location loading without
   assert.match(stylesSource, /\.community-page > header \.secondary \{ display: none; \}/);
 });
 
-test('desktop exposes and creates the default-on Ledger Fast Wallet pair', () => {
+test('desktop applies the selected privacy/comfort profile to a Ledger Fast Wallet pair', () => {
   const setupSource = appSource.slice(appSource.indexOf('function Setup('), appSource.indexOf('function FastWallets('));
-  assert.match(setupSource, /setCreateFastWallet\(next !== 'open'\)/);
+  assert.match(appSource, /function ExperienceProfileOnboarding/);
+  assert.match(appSource, /experienceProfileRecommendations/);
+  assert.match(setupSource, /suggestedFastWallet/);
+  assert.match(setupSource, /setCreateFastWallet\(next !== 'open' && suggestedFastWallet\)/);
   assert.match(setupSource, /createFast: createFastWallet/);
   assert.match(setupSource, /mode === 'create' \|\| mode === 'restore' \|\| mode === 'ledger'/);
   assert.match(appSource, /function isFastWalletRegistration/);

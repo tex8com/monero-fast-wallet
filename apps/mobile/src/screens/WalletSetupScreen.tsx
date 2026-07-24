@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { experienceProfileRecommendations, type ExperienceProfileId } from '../../../../packages/wallet-shared/src/experienceProfile';
+import { loadExperienceProfile } from '../services/ExperienceProfile';
 import {
   View,
   Text,
@@ -486,13 +488,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     PendingSeedBackup | undefined
   >();
   const [seedConfirmed, setSeedConfirmed] = useState(false);
+  const requestedExperienceProfile = route?.params?.experienceProfile as ExperienceProfileId | undefined;
   const [createFastReceiveOnSetup, setCreateFastReceiveOnSetup] =
-    useState(true);
+    useState(() => requestedExperienceProfile ? experienceProfileRecommendations[requestedExperienceProfile].fastWalletSuggested : true);
   const [persistLedgerViewOnly, setPersistLedgerViewOnly] = useState(false);
   const [
     enableEnthusiastDiscoveryOnSetup,
     setEnableEnthusiastDiscoveryOnSetup,
-  ] = useState(true);
+  ] = useState(() => requestedExperienceProfile ? experienceProfileRecommendations[requestedExperienceProfile].enthusiastDiscoverySuggested : true);
   const { mode: appProtectionMode } = useAppSecurity();
   const {
     registeredWallet,
@@ -532,6 +535,17 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       mounted = false;
     };
   }, []);
+  useEffect(() => {
+    if (requestedExperienceProfile) return;
+    let mounted = true;
+    void loadExperienceProfile().then(profile => {
+      if (!mounted || !profile) return;
+      const recommendation = experienceProfileRecommendations[profile];
+      setCreateFastReceiveOnSetup(recommendation.fastWalletSuggested);
+      setEnableEnthusiastDiscoveryOnSetup(recommendation.enthusiastDiscoverySuggested);
+    });
+    return () => { mounted = false; };
+  }, [requestedExperienceProfile]);
   const normalizedRestoreSeed = normalizeSeed(restoreSeed);
   const restoreSeedWordCount = normalizedRestoreSeed
     ? normalizedRestoreSeed.split(' ').length

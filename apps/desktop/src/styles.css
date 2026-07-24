@@ -175,6 +175,25 @@ h2 { letter-spacing: -0.65px; }
 .fast-setup-choice span, .fast-setup-choice strong, .fast-setup-choice small { display: block; }
 .fast-setup-choice strong { color: #f7e7de; font-size: 13px; }
 .fast-setup-choice small { margin-top: 4px; color: #c4b9c7; font-size: 11px; font-weight: 500; line-height: 1.45; }
+.experience-onboarding { width: min(650px, 100%); margin: 68px auto; padding: 34px; border: 1px solid #40304b; border-radius: 22px; background: linear-gradient(135deg, #1b1323, #11101b); text-align: center; }
+.experience-onboarding > img { width: 58px; height: 58px; }
+.experience-onboarding h1 { margin: 7px 0 10px; color: #fff8ff; font-size: clamp(30px, 5vw, 45px); }
+.experience-core { max-width: 540px; margin: 0 auto 23px; color: #c6bdcd; line-height: 1.55; }
+.experience-choices { display: grid; gap: 12px; text-align: left; }
+.experience-choices > button { display: grid; gap: 7px; width: 100%; padding: 17px; border: 1px solid #4a3a53; border-radius: 15px; background: #15111e; color: #f7effa; text-align: left; }
+.experience-choices > button.selected { border-color: #fa671c; background: #281722; box-shadow: 0 0 0 1px rgb(250 103 28 / 20%); }
+.experience-choices span { display: flex; justify-content: space-between; gap: 18px; align-items: center; }
+.experience-choices strong { font-size: 17px; }
+.experience-choices em { color: #f5b744; font-style: normal; font-size: 12px; letter-spacing: 1px; }
+.experience-choices small, .experience-choices i, .experience-settings small { color: #bcb2c3; line-height: 1.45; font-size: 13px; }
+.experience-choices i { color: #f5b744; font-style: normal; font-weight: 700; width: fit-content; cursor: pointer; }
+.experience-note { margin: 14px 0 17px; color: #958a9d; font-size: 12px; }
+.experience-continue { min-width: 220px; }
+.experience-info { max-width: 520px; text-align: left; }
+.experience-info p { color: #cfc6d2; line-height: 1.55; }
+.experience-settings > div { display: flex; flex-wrap: wrap; gap: 9px; }
+.experience-settings button { padding: 10px 13px; border: 1px solid #51415c; border-radius: 9px; background: #17121f; color: #ded4e2; font-weight: 700; }
+.experience-settings button.selected { border-color: #fa671c; background: #341b25; color: #fff; }
 .setup-transport { display: flex; grid-column: 1 / -1; gap: 7px; padding: 5px; border: 1px solid #332b45; border-radius: 11px; background: #0d0b14; }
 .setup-transport button { flex: 1; min-height: 38px; border: 0; border-radius: 8px; color: #bbb3c8; background: transparent; cursor: pointer; font: inherit; font-size: 13px; font-weight: 800; }
 .setup-transport button.selected { color: #21101a; background: #fa671c; }
