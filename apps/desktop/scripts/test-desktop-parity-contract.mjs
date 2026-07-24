@@ -38,11 +38,14 @@ test('desktop parity document records closed-app notification preparation truthf
   assert.equal(/while app is open implemented; APNs closed-app delivery remains/.test(parityDoc), false);
 });
 
-test('desktop Send keeps the same simple two-step primary flow as mobile', () => {
+test('desktop Send keeps the same simple recipient-first flow as mobile', () => {
   const sendSource = appSource.slice(appSource.indexOf('function Send('), appSource.indexOf('function Receive('));
-  assert.match(appSource, /type SendStep = 'recipient-choice' \| 'manual-recipient' \| 'amount' \| 'review'/);
+  assert.match(appSource, /type SendStep = 'recipient-choice' \| 'manual-recipient' \| 'address-book' \| 'amount' \| 'review'/);
   assert.match(sendSource, /priority: 'low'/);
   assert.match(sendSource, /setStep\('review'\)/);
+  assert.match(sendSource, /saveRecipientContacts/);
+  assert.match(sendSource, /recentContacts\.map/);
+  assert.match(sendSource, /Donation stays first/);
   assert.equal(/priority-choice/.test(sendSource), false, 'fee priority must not be a primary send choice');
   assert.equal(/RecentTransactions/.test(sendSource), false, 'recent activity must not distract from the send journey');
 });

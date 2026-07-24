@@ -11,7 +11,7 @@ export const TEX8_DONOR_MONERO_ADDRESS = '';
 
 export async function loadRecipientContacts(): Promise<RecipientContact[]> {
   const donor = TEX8_DONOR_MONERO_ADDRESS.trim()
-    ? [{ id: 'tex8-donor', label: 'TEX8 donor', address: TEX8_DONOR_MONERO_ADDRESS.trim(), donor: true }]
+    ? [{ id: 'tex8-donor', label: 'Donation', address: TEX8_DONOR_MONERO_ADDRESS.trim(), donor: true }]
     : [];
   try {
     const raw = await AsyncStorage.getItem(CONTACTS_KEY);
@@ -24,6 +24,28 @@ export async function loadRecipientContacts(): Promise<RecipientContact[]> {
   } catch {
     return donor;
   }
+}
+
+/**
+ * Stores only user-created recipient labels and addresses on this device.
+ * The built-in Donation entry is release configuration and is deliberately
+ * never written back to the user's local address book.
+ */
+export async function saveRecipientContacts(
+  contacts: RecipientContact[],
+): Promise<RecipientContact[]> {
+  const normalized = uniqueRecipients(
+    contacts
+      .filter(contact => !contact.donor && contact.id !== 'tex8-donor')
+      .map(contact => ({
+        id: contact.id.trim(),
+        label: contact.label.trim().slice(0, 80),
+        address: contact.address.trim(),
+      }))
+      .filter(contact => contact.id && contact.label && contact.address),
+  );
+  await AsyncStorage.setItem(CONTACTS_KEY, JSON.stringify(normalized));
+  return loadRecipientContacts();
 }
 
 export async function loadRecentRecipients(): Promise<RecipientContact[]> {

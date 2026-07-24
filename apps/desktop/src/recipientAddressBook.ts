@@ -15,7 +15,7 @@ const tex8DonorAddress = ((import.meta as ImportMeta & { env?: Record<string, st
 
 export function loadRecipientContacts(): RecipientContact[] {
   const donor = tex8DonorAddress
-    ? [{ id: 'tex8-donor', label: 'TEX8 donor', address: tex8DonorAddress, donor: true }]
+    ? [{ id: 'tex8-donor', label: 'Donation', address: tex8DonorAddress, donor: true }]
     : [];
   try {
     const raw = window.localStorage.getItem(CONTACTS_KEY);
@@ -30,6 +30,18 @@ export function loadRecipientContacts(): RecipientContact[] {
   } catch {
     return donor;
   }
+}
+
+/** Local contacts only. The Donation recipient is release configuration and
+ * remains first without being persisted with the user's personal contacts. */
+export function saveRecipientContacts(contacts: RecipientContact[]): RecipientContact[] {
+  const normalized = contacts
+    .filter((contact) => !contact.donor && contact.id !== 'tex8-donor')
+    .map((contact) => ({ ...contact, id: contact.id.trim(), label: contact.label.trim().slice(0, 80), address: contact.address.trim() }))
+    .filter((contact) => contact.id && contact.label && contact.address);
+  const unique = normalized.filter((contact, index, all) => all.findIndex((candidate) => candidate.address === contact.address) === index);
+  try { window.localStorage.setItem(CONTACTS_KEY, JSON.stringify(unique)); } catch { /* Optional local convenience metadata. */ }
+  return loadRecipientContacts();
 }
 
 export function loadRecentRecipients(): RecipientContact[] {

@@ -16,7 +16,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   TEX8_DONOR_MONERO_ADDRESS,
   loadRecentRecipients,
+  loadRecipientContacts,
   rememberRecipient,
+  saveRecipientContacts,
 } from '../RecipientAddressBook';
 
 describe('RecipientAddressBook', () => {
@@ -62,6 +64,19 @@ describe('RecipientAddressBook', () => {
     await expect(loadRecentRecipients()).resolves.toEqual([
       {id: 'one', label: 'One', address: 'address-a'},
       {id: 'three', label: 'Three', address: 'address-b'},
+    ]);
+  });
+
+  it('persists personal contacts while reserving Donation for release configuration', async () => {
+    await expect(
+      saveRecipientContacts([
+        {id: 'tex8-donor', label: 'Donation', address: 'must-not-persist', donor: true},
+        {id: 'alice', label: ' Alice ', address: ' address-a '},
+        {id: 'duplicate', label: 'Other', address: 'address-a'},
+      ]),
+    ).resolves.toEqual([{id: 'alice', label: 'Alice', address: 'address-a'}]);
+    await expect(loadRecipientContacts()).resolves.toEqual([
+      {id: 'alice', label: 'Alice', address: 'address-a'},
     ]);
   });
 });

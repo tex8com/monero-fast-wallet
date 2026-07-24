@@ -71,6 +71,7 @@ const messages = {
     "send.recipientPlaceholder": "Paste a Monero address",
     "send.addressBook": "Address book",
     "send.recentContacts": "Recent contacts",
+    "send.viewMore": "All addresses",
     "send.scanAddress": "Scan address QR code",
     "send.scanHint": "Point the camera at a Monero receiving-address QR code.",
     "send.scanCameraUnavailable":
@@ -472,6 +473,7 @@ const messages = {
     "send.recipientPlaceholder": "Monero-Adresse einfügen",
     "send.addressBook": "Adressbuch",
     "send.recentContacts": "Zuletzt verwendet",
+    "send.viewMore": "Alle Adressen",
     "send.scanAddress": "Adress-QR-Code scannen",
     "send.scanHint":
       "Richte die Kamera auf einen Monero-Empfangsadress-QR-Code.",

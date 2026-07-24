@@ -47,10 +47,11 @@ import {
   loadRecentRecipients,
   loadRecipientContacts,
   rememberRecipient,
+  saveRecipientContacts,
   type RecipientContact,
 } from '../services/RecipientAddressBook';
 
-type Step = 'recipient-choice' | 'manual-recipient' | 'amount' | 'confirm';
+type Step = 'recipient-choice' | 'manual-recipient' | 'address-book' | 'amount' | 'confirm';
 
 function shortAddress(value: string, fallback: string) {
   if (!value) {
@@ -86,6 +87,8 @@ export default function SendScreen({ navigation }: any) {
   const [recentRecipients, setRecentRecipients] = useState<RecipientContact[]>(
     [],
   );
+  const [contactLabel, setContactLabel] = useState('');
+  const [contactAddress, setContactAddress] = useState('');
   const { t } = useI18n();
   const { price } = useXmrPrice();
   const {
@@ -363,6 +366,34 @@ export default function SendScreen({ navigation }: any) {
     }
   };
 
+  const selectRecipientContact = (contact: RecipientContact) => {
+    setAddress(contact.address);
+    setSendError(undefined);
+    clearPreparedTransaction();
+    setStep('amount');
+  };
+
+  const saveContact = async () => {
+    const label = contactLabel.trim();
+    const contactAddressValue = contactAddress.trim();
+    if (!label || !contactAddressValue) {
+      setSendError(t('send.contactDetailsRequired'));
+      return;
+    }
+    const next = await saveRecipientContacts([
+      ...recipientContacts,
+      {
+        id: `contact:${Date.now()}`,
+        label,
+        address: contactAddressValue,
+      },
+    ]);
+    setRecipientContacts(next);
+    setContactLabel('');
+    setContactAddress('');
+    setSendError(undefined);
+  };
+
   if (step === 'confirm') {
     return (
       <View style={s.container}>
@@ -443,7 +474,11 @@ export default function SendScreen({ navigation }: any) {
     );
   }
 
-  if (step === 'recipient-choice' || step === 'manual-recipient') {
+  if (
+    step === 'recipient-choice' ||
+    step === 'manual-recipient' ||
+    step === 'address-book'
+  ) {
     const continueWithRecipient = () => {
       if (!address.trim()) {
         setSendError(t('send.noRecipient'));
@@ -512,8 +547,58 @@ export default function SendScreen({ navigation }: any) {
                 </View>
                 <Icon name="chevron-right" size={22} color={colors.orange} />
               </TouchableOpacity>
+
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={t('send.addressBook')}
+                activeOpacity={0.78}
+                onPress={() => setStep('address-book')}
+                style={s.choiceCard}
+              >
+                <View style={s.choiceIcon}>
+                  <Icon name="users" size={27} color={colors.orange} />
+                </View>
+                <View style={s.choiceCopy}>
+                  <Text style={[s.choiceTitle, s.choiceTitleDark]}>
+                    {t('send.addressBook')}
+                  </Text>
+                  <Text style={s.choiceText}>
+                    {t('send.addressBookHint')}
+                  </Text>
+                </View>
+                <Icon name="chevron-right" size={22} color={colors.orange} />
+              </TouchableOpacity>
+
+              {recentRecipients.length > 0 ? (
+                <View style={s.quickRecipients}>
+                  <View style={s.quickRecipientsHeader}>
+                    <Text style={s.fieldLabel}>{t('send.recentContacts')}</Text>
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      accessibilityLabel={t('send.addressBook')}
+                      onPress={() => setStep('address-book')}
+                    >
+                      <Text style={s.viewMore}>{t('send.viewMore')}</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <View style={s.contactRow}>
+                    {recentRecipients.map(contact => (
+                      <TouchableOpacity
+                        key={contact.id}
+                        style={s.contactChip}
+                        onPress={() => selectRecipientContact(contact)}
+                      >
+                        <Text style={s.contactName}>{contact.label}</Text>
+                        <Text style={s.contactAddress} numberOfLines={1}>
+                          {shortAddress(contact.address, contact.address)}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
             </View>
-          ) : (
+          ) : step === 'manual-recipient' ? (
             <View style={s.manualCard}>
               <TouchableOpacity
                 style={s.backButton}
@@ -570,7 +655,15 @@ export default function SendScreen({ navigation }: any) {
                 <View style={s.contactsCompact}>
                   {recipientContacts.length > 0 ? (
                     <>
-                      <Text style={s.fieldLabel}>{t('send.addressBook')}</Text>
+                      <View style={s.quickRecipientsHeader}>
+                        <Text style={s.fieldLabel}>{t('send.addressBook')}</Text>
+                        <TouchableOpacity
+                          accessibilityRole="button"
+                          onPress={() => setStep('address-book')}
+                        >
+                          <Text style={s.viewMore}>{t('send.viewMore')}</Text>
+                        </TouchableOpacity>
+                      </View>
                       <View style={s.contactRow}>
                         {recipientContacts.slice(0, 3).map(contact => (
                           <TouchableOpacity
@@ -579,10 +672,7 @@ export default function SendScreen({ navigation }: any) {
                               s.contactChip,
                               contact.donor && s.donorChip,
                             ]}
-                            onPress={() => {
-                              setAddress(contact.address);
-                              setSendError(undefined);
-                            }}
+                            onPress={() => selectRecipientContact(contact)}
                           >
                             <Text style={s.contactName}>{contact.label}</Text>
                             <Text style={s.contactAddress} numberOfLines={1}>
@@ -603,10 +693,7 @@ export default function SendScreen({ navigation }: any) {
                           <TouchableOpacity
                             key={contact.id}
                             style={s.contactChip}
-                            onPress={() => {
-                              setAddress(contact.address);
-                              setSendError(undefined);
-                            }}
+                            onPress={() => selectRecipientContact(contact)}
                           >
                             <Text style={s.contactName}>{contact.label}</Text>
                             <Text style={s.contactAddress} numberOfLines={1}>
@@ -633,6 +720,86 @@ export default function SendScreen({ navigation }: any) {
                   <Text style={s.primaryBtnText}>{t('action.continue')}</Text>
                 </LinearGradient>
               </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={s.addressBookCard}>
+              <TouchableOpacity
+                style={s.backButton}
+                accessibilityRole="button"
+                onPress={() => {
+                  setSendError(undefined);
+                  setStep('recipient-choice');
+                }}
+              >
+                <Icon name="arrow-left" size={20} color={colors.textSecondary} />
+                <Text style={s.backText}>{t('action.back')}</Text>
+              </TouchableOpacity>
+              <Text style={s.addressBookTitle}>{t('send.addressBook')}</Text>
+              <Text style={s.addressBookDescription}>{t('send.addressBookHint')}</Text>
+
+              {recipientContacts.length > 0 ? (
+                <View style={s.addressBookList}>
+                  {recipientContacts.map(contact => (
+                    <TouchableOpacity
+                      key={contact.id}
+                      style={[s.addressBookRecipient, contact.donor && s.donorRecipient]}
+                      onPress={() => selectRecipientContact(contact)}
+                    >
+                      <View style={s.addressBookRecipientIcon}>
+                        <Icon name={contact.donor ? 'wallet' : 'users'} size={20} color={contact.donor ? '#FFF' : colors.orange} />
+                      </View>
+                      <View style={s.choiceCopy}>
+                        <Text style={s.contactName}>{contact.label}</Text>
+                        <Text style={s.contactAddress} numberOfLines={1}>{shortAddress(contact.address, contact.address)}</Text>
+                      </View>
+                      <Icon name="chevron-right" size={20} color={colors.orange} />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : (
+                <Text style={s.emptyAddressBook}>{t('send.noSavedContacts')}</Text>
+              )}
+
+              {recentRecipients.length > 0 ? (
+                <View style={s.addressBookRecent}>
+                  <Text style={s.fieldLabel}>{t('send.recentContacts')}</Text>
+                  <View style={s.contactRow}>
+                    {recentRecipients.map(contact => (
+                      <TouchableOpacity key={contact.id} style={s.contactChip} onPress={() => selectRecipientContact(contact)}>
+                        <Text style={s.contactName}>{contact.label}</Text>
+                        <Text style={s.contactAddress} numberOfLines={1}>{shortAddress(contact.address, contact.address)}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
+              <View style={s.addContactCard}>
+                <Text style={s.fieldLabel}>{t('send.addContact')}</Text>
+                <TextInput
+                  style={s.contactInput}
+                  placeholder={t('send.contactName')}
+                  placeholderTextColor={colors.textMuted}
+                  value={contactLabel}
+                  onChangeText={setContactLabel}
+                  maxLength={80}
+                />
+                <TextInput
+                  style={s.contactInput}
+                  placeholder={t('send.pasteAddress')}
+                  placeholderTextColor={colors.textMuted}
+                  value={contactAddress}
+                  onChangeText={setContactAddress}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  multiline
+                />
+                <TouchableOpacity accessibilityRole="button" onPress={() => void saveContact()} style={s.addContactButton}>
+                  <Icon name="plus" size={18} color={colors.orange} />
+                  <Text style={s.addContactText}>{t('send.saveContact')}</Text>
+                </TouchableOpacity>
+              </View>
+              {sendError ? <Text style={s.errorText}>{sendError}</Text> : null}
             </View>
           )}
         </ScrollView>
@@ -968,6 +1135,75 @@ const s = StyleSheet.create({
   },
   pasteButtonText: { color: colors.orange, fontSize: 14, fontWeight: '900' },
   contactsCompact: { marginTop: 22 },
+  quickRecipients: {
+    marginTop: 4,
+    paddingTop: 2,
+  },
+  quickRecipientsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  addressBookCard: {
+    marginTop: 26,
+    padding: spacing.md,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgCard,
+  },
+  addressBookTitle: { color: colors.textPrimary, fontSize: 22, fontWeight: '900' },
+  addressBookDescription: { color: colors.textSecondary, fontSize: 13, lineHeight: 19, marginTop: 5 },
+  addressBookList: { marginTop: 18, gap: 8 },
+  addressBookRecipient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 11,
+    padding: 12,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: 'rgba(255,255,255,0.025)',
+  },
+  donorRecipient: {
+    borderColor: 'rgba(242,104,34,0.7)',
+    backgroundColor: 'rgba(242,104,34,0.12)',
+  },
+  addressBookRecipientIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(242,104,34,0.12)',
+  },
+  addressBookRecent: { marginTop: 22 },
+  emptyAddressBook: { color: colors.textMuted, fontSize: 13, lineHeight: 19, marginTop: 18 },
+  addContactCard: {
+    marginTop: 24,
+    gap: 10,
+    paddingTop: 18,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  contactInput: {
+    minHeight: 48,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    color: colors.textPrimary,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
+  addContactButton: {
+    flexDirection: 'row',
+    alignSelf: 'flex-start',
+    alignItems: 'center',
+    gap: 7,
+    paddingVertical: 8,
+  },
+  addContactText: { color: colors.orange, fontSize: 14, fontWeight: '900' },
   recipientSummaryCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
