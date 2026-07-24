@@ -233,6 +233,14 @@ struct FastWalletEnableInput {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct LedgerFastWalletEnableInput {
+    identity_id: String,
+    source_wallet_id: String,
+    scanner_url: String,
+    scanner_auth_token: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FastWalletIdInput {
     identity_id: String,
 }
@@ -675,6 +683,37 @@ fn create_hardware_wallet(
         password,
     )?;
     if let Some(fast_registration) = fast_registration {
+        // The default Ledger Fast Wallet is account 1 inside this same Core
+        // session. Persist public Fast metadata now; scanner registration is
+        // a separate explicit consent step and therefore starts local-only.
+        let existing_fast_record = fast_wallet::list(&app)
+            .unwrap_or_else(|error| {
+                eprintln!("MONERO_DESKTOP_LEDGER_FAST metadata-list-failed error={error}");
+                Vec::new()
+            })
+            .into_iter()
+            .any(|record| record.source_registration_id == response.wallet.id);
+        if !existing_fast_record {
+            match state
+                .0
+                .lock()
+                .map_err(|_| "Native wallet is busy.".to_owned())?
+                .address(&response.wallet_id, 1, 0)
+                .and_then(|address| fast_wallet::new_record(
+                    format!("ledger-fast-{}", response.wallet.id),
+                    "Ledger Fast Wallet".to_owned(),
+                    address,
+                    wallet_network.clone(),
+                    response.wallet.id.clone(),
+                    restore_height.unwrap_or(0),
+                    1,
+                ))
+                .and_then(|record| fast_wallet::insert(&app, record))
+            {
+                Ok(_) => diagnostics::record(&app, "ledger.fast-wallet-local-ready", &[("account", "1".to_owned())]),
+                Err(error) => eprintln!("MONERO_DESKTOP_LEDGER_FAST local-record-failed error={error}"),
+            }
+        }
         wallet_registry::upsert_preserving_active(&app, fast_registration)?;
     }
     Ok(response)
@@ -1488,7 +1527,7 @@ fn create_fast_wallet(
         .find(|wallet| wallet.id == input.source_registration_id)
         .ok_or_else(|| "The source wallet is not saved on this device.".to_owned())?;
     if source.kind != "software" {
-        return Err("Fast Wallet is currently available only for software wallets. Ledger Fast Wallet support is not implemented yet.".to_owned());
+        return Err("Ledger Fast Wallet is created automatically with Ledger setup. Open that Ledger wallet and select its Fast Wallet account instead.".to_owned());
     }
     let source_session_id = sessions
         .0
@@ -1655,6 +1694,115 @@ async fn enable_fast_wallet(
         return Err(error);
     }
     fast_wallet::update(&app, record)
+}
+/// Registers the reserved Ledger Fast account with a scanner after explicit
+/// consent in the renderer. The private view key is requested once from the
+/// already-open Ledger session, stays in Rust, and is zeroized immediately
+/// after the HTTPS registration call. The Ledger spend key is never read.
+#[tauri::command]
+async fn enable_ledger_fast_wallet(
+    app: AppHandle,
+    state: State<'_, NativeWalletState>,
+    sessions: State<'_, WalletSessionState>,
+    exports: State<'_, LedgerViewKeyExportState>,
+    protection: State<'_, AppProtectionState>,
+    mut input: LedgerFastWalletEnableInput,
+) -> Result<fast_wallet::FastWalletRecord, String> {
+    require_app_unlocked(&protection)?;
+    let mut record = fast_wallet::get(&app, &input.identity_id)?;
+    let source = wallet_registry::list(&app)?
+        .wallets
+        .into_iter()
+        .find(|wallet| wallet.id == record.source_registration_id)
+        .ok_or_else(|| "The Ledger Fast Wallet source is not saved on this device.".to_owned())?;
+    if source.kind != "hardware" || source.role.as_deref().unwrap_or("standard") != "standard" {
+        return Err("This Fast Wallet is not backed by a normal Ledger wallet.".to_owned());
+    }
+    let source_session_id = sessions
+        .0
+        .lock()
+        .map_err(|_| "Wallet session state is busy.".to_owned())?
+        .get(&source.id)
+        .cloned()
+        .ok_or_else(|| "Open the normal Ledger wallet first, then approve Export view key once on the Ledger.".to_owned())?;
+    if source_session_id != input.source_wallet_id {
+        return Err("The selected Ledger session changed. Open the normal Ledger wallet again and retry.".to_owned());
+    }
+    let scanner_url = fast_wallet::scanner_url(&input.scanner_url)?;
+    if let Some(mut supplied_token) = input.scanner_auth_token.take() {
+        let token = supplied_token.trim().to_owned();
+        supplied_token.zeroize();
+        if !token.is_empty() {
+            secure_store::store_fast_scanner_token(&record.id, token)?;
+        }
+    }
+    begin_ledger_view_key_export(&app, &exports, &source.id, "ledger-fast-scanner")?;
+    diagnostics::record(
+        &app,
+        "ledger.view-key-export-requested",
+        &[("flow", "ledger-fast-scanner".to_owned())],
+    );
+    let result = (|| async {
+        let mut exported_json = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .export_hardware_private_view_key(&source_session_id)?;
+        let mut exported: NativeHardwareViewKeyExport = serde_json::from_str(&exported_json)
+            .map_err(|_| "The Ledger returned an invalid view-key response.".to_owned())?;
+        exported_json.zeroize();
+        diagnostics::record(
+            &app,
+            "ledger.view-key-export-received",
+            &[("flow", "ledger-fast-scanner".to_owned())],
+        );
+        if exported.network != source.network || exported.private_view_key.trim().is_empty() {
+            exported.private_view_key.zeroize();
+            return Err("The Ledger view key could not be verified for this Fast Wallet.".to_owned());
+        }
+        let account_address = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .address(&source_session_id, 1, 0)?;
+        if account_address != record.address {
+            exported.private_view_key.zeroize();
+            return Err("The connected Ledger does not match this Fast Wallet account.".to_owned());
+        }
+        let mut payload = NativeFastWalletRegistrationPayload {
+            identity: NativeFastWalletIdentity {
+                id: record.id.clone(),
+                label: record.label.clone(),
+                address: record.address.clone(),
+                network: record.network.clone(),
+                restore_height: record.restore_height.to_string(),
+                derivation_index: record.derivation_index.to_string(),
+                scanner_status: record.scanner_status.clone(),
+            },
+            private_view_key: std::mem::take(&mut exported.private_view_key),
+        };
+        let subscription_id = notification_subscription_id(&app)?;
+        let response = register_fast_wallet_with_scanner(
+            &scanner_url,
+            &record,
+            &mut payload,
+            subscription_id.as_deref(),
+        ).await;
+        payload.private_view_key.zeroize();
+        let response = response?;
+        apply_scanner_response(&mut record, &scanner_url, response)?;
+        diagnostics::record(&app, "ledger.fast-wallet-scanner-enabled", &[("account", "1".to_owned())]);
+        fast_wallet::update(&app, record)
+    })().await;
+    finish_ledger_view_key_export(&exports, &source.id);
+    if result.is_err() {
+        diagnostics::record(
+            &app,
+            "ledger.view-key-export-failed",
+            &[("flow", "ledger-fast-scanner".to_owned())],
+        );
+    }
+    result
 }
 #[tauri::command]
 async fn refresh_fast_wallet_status(
@@ -2739,6 +2887,7 @@ pub fn run() {
             close_fast_wallet,
             create_fast_wallet,
             enable_fast_wallet,
+            enable_ledger_fast_wallet,
             refresh_fast_wallet_status,
             notification_installation_status,
             request_notification_installation,

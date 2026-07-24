@@ -98,10 +98,33 @@ test('desktop makes Fast Wallet management reachable from saved wallets', () => 
 });
 
 test('Ledger read-only setup is reachable through Tauri command permissions', () => {
-  for (const command of ['enable_ledger_read_only', 'create_ledger_read_only_from_device']) {
+  for (const command of ['enable_ledger_read_only', 'create_ledger_read_only_from_device', 'enable_ledger_fast_wallet', 'registered_wallet_snapshots']) {
     assert.match(tauriBuild, new RegExp(`"${command}"`));
     assert.match(tauriCapability, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
   }
+});
+
+test('Ledger Fast Wallet scanner registration uses the open account-zero session exactly once', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const ledgerFastSource = hostSource.slice(
+    hostSource.indexOf('async fn enable_ledger_fast_wallet'),
+    hostSource.indexOf('#[tauri::command]\nasync fn refresh_fast_wallet_status'),
+  );
+  assert.match(hostSource, /ledger\.fast-wallet-local-ready/);
+  assert.match(ledgerFastSource, /\.address\(&source_session_id, 1, 0\)/);
+  assert.match(ledgerFastSource, /export_hardware_private_view_key\(&source_session_id\)/);
+  assert.match(ledgerFastSource, /begin_ledger_view_key_export\(&app, &exports, &source\.id, "ledger-fast-scanner"\)/);
+  assert.match(hostSource, /ledger\.view-key-export-duplicate-blocked/);
+  assert.match(ledgerFastSource, /ledger\.view-key-export-received/);
+  assert.equal(/create_from_device/.test(ledgerFastSource), false);
+});
+
+test('Ledger Fast Wallet scanner approval has the same single automatic instruction dialog', () => {
+  const fastSource = appSource.slice(appSource.indexOf('function FastWallets('), appSource.indexOf('function WalletFeature('));
+  assert.match(fastSource, /enable_ledger_fast_wallet/);
+  assert.match(fastSource, /setLedgerViewKeyExportPending\(true\)/);
+  assert.match(fastSource, /<LedgerViewKeyExportOverlay \/>/);
+  assert.match(fastSource, /setLedgerViewKeyExportPending\(false\); setBusy\(false\);/);
 });
 
 test('Ledger read-only sync consumes the Core-approved view key without reconnecting', () => {
