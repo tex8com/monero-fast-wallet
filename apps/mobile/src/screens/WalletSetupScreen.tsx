@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { experienceProfileRecommendations, type ExperienceProfileId } from '../../../../packages/wallet-shared/src/experienceProfile';
-import { loadExperienceProfile } from '../services/ExperienceProfile';
+import { isFastWalletEnabled } from '../../../../packages/wallet-shared/src/fastWalletPreference';
+import { loadFastWalletPreference } from '../services/FastWalletPreference';
 import {
   View,
   Text,
@@ -488,14 +488,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     PendingSeedBackup | undefined
   >();
   const [seedConfirmed, setSeedConfirmed] = useState(false);
-  const requestedExperienceProfile = route?.params?.experienceProfile as ExperienceProfileId | undefined;
+  const requestedFastWalletEnabled = route?.params?.fastWalletEnabled as boolean | undefined;
   const [createFastReceiveOnSetup, setCreateFastReceiveOnSetup] =
-    useState(() => requestedExperienceProfile ? experienceProfileRecommendations[requestedExperienceProfile].fastWalletSuggested : true);
+    useState(() => requestedFastWalletEnabled ?? true);
   const [persistLedgerViewOnly, setPersistLedgerViewOnly] = useState(false);
   const [
     enableEnthusiastDiscoveryOnSetup,
     setEnableEnthusiastDiscoveryOnSetup,
-  ] = useState(() => requestedExperienceProfile ? experienceProfileRecommendations[requestedExperienceProfile].enthusiastDiscoverySuggested : true);
+  ] = useState(true);
   const { mode: appProtectionMode } = useAppSecurity();
   const {
     registeredWallet,
@@ -536,16 +536,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     };
   }, []);
   useEffect(() => {
-    if (requestedExperienceProfile) return;
+    if (typeof requestedFastWalletEnabled === 'boolean') return;
     let mounted = true;
-    void loadExperienceProfile().then(profile => {
-      if (!mounted || !profile) return;
-      const recommendation = experienceProfileRecommendations[profile];
-      setCreateFastReceiveOnSetup(recommendation.fastWalletSuggested);
-      setEnableEnthusiastDiscoveryOnSetup(recommendation.enthusiastDiscoverySuggested);
+    void loadFastWalletPreference().then(preference => {
+      if (!mounted || !preference) return;
+      setCreateFastReceiveOnSetup(isFastWalletEnabled(preference));
     });
     return () => { mounted = false; };
-  }, [requestedExperienceProfile]);
+  }, [requestedFastWalletEnabled]);
   const normalizedRestoreSeed = normalizeSeed(restoreSeed);
   const restoreSeedWordCount = normalizedRestoreSeed
     ? normalizedRestoreSeed.split(' ').length

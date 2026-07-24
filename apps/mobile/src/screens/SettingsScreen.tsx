@@ -43,6 +43,11 @@ import {
   type AppProtectionMode,
   useAppSecurity,
 } from "../services/AppSecurity";
+import {
+  loadFastWalletPreference,
+  saveFastWalletPreference,
+  type FastWalletPreference,
+} from "../services/FastWalletPreference";
 
 type DiagnosticRow = {
   label: string;
@@ -92,10 +97,26 @@ export default function SettingsScreen() {
   const [appPassword, setAppPassword] = useState("");
   const [confirmAppPassword, setConfirmAppPassword] = useState("");
   const [isSavingAppProtection, setIsSavingAppProtection] = useState(false);
+  const [fastWalletPreference, setFastWalletPreference] =
+    useState<FastWalletPreference>("enabled");
 
   useEffect(() => {
     setProtectionMode(savedProtectionMode);
   }, [savedProtectionMode]);
+
+  useEffect(() => {
+    let mounted = true;
+    void loadFastWalletPreference().then(preference => {
+      if (mounted && preference) setFastWalletPreference(preference);
+    });
+    return () => { mounted = false; };
+  }, []);
+
+  function changeFastWalletPreference(enabled: boolean) {
+    const next: FastWalletPreference = enabled ? "enabled" : "disabled";
+    setFastWalletPreference(next);
+    void saveFastWalletPreference(next).catch(() => undefined);
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -433,6 +454,24 @@ export default function SettingsScreen() {
               </View>
               <Icon name="chevron-right" size={18} color={colors.textMuted} />
             </TouchableOpacity>
+          </View>
+        </View>
+
+        <View style={s.section}>
+          <Text style={s.sectionTitle}>New wallets</Text>
+          <View style={s.nodePanel}>
+            <View style={s.switchRow}>
+              <View style={s.switchText}>
+                <Text style={s.switchTitle}>Create a Fast Wallet</Text>
+                <Text style={s.switchValue}>Adds a separate receive wallet to future normal and Ledger wallets. Scanner hosting always needs separate approval.</Text>
+              </View>
+              <Switch
+                value={fastWalletPreference === "enabled"}
+                onValueChange={changeFastWalletPreference}
+                trackColor={{ false: colors.surface, true: colors.orange }}
+                thumbColor="#FFF"
+              />
+            </View>
           </View>
         </View>
 

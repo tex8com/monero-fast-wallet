@@ -21,10 +21,10 @@ import {
   walletDisplayName,
 } from '../services/WalletRegistry';
 import {
-  loadExperienceProfile,
-  saveExperienceProfile,
-  type ExperienceProfileId,
-} from '../services/ExperienceProfile';
+  loadFastWalletPreference,
+  saveFastWalletPreference,
+  type FastWalletPreference,
+} from '../services/FastWalletPreference';
 
 const IS_TEST = typeof jest !== 'undefined';
 
@@ -37,8 +37,9 @@ export default function WelcomeScreen({ navigation }: any) {
     setActiveRegisteredWallet,
   } = useWalletState();
   const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
-  const [profile, setProfile] = useState<ExperienceProfileId>('privacy');
-  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [fastWalletPreference, setFastWalletPreference] =
+    useState<FastWalletPreference>('enabled');
+  const [preferenceLoaded, setPreferenceLoaded] = useState(false);
   const [showFastWalletInfo, setShowFastWalletInfo] = useState(false);
   const contentOp = useRef(new Animated.Value(IS_TEST ? 1 : 0)).current;
   const contentY = useRef(new Animated.Value(IS_TEST ? 0 : 10)).current;
@@ -64,18 +65,20 @@ export default function WelcomeScreen({ navigation }: any) {
 
   useEffect(() => {
     let mounted = true;
-    void loadExperienceProfile().then(value => {
+    void loadFastWalletPreference().then(value => {
       if (!mounted) return;
-      if (value) setProfile(value);
-      setProfileLoaded(true);
+      if (value) setFastWalletPreference(value);
+      setPreferenceLoaded(true);
     });
     return () => { mounted = false; };
   }, []);
 
   const continueToSetup = useCallback(async () => {
-    await saveExperienceProfile(profile);
-    navigation.navigate('WalletSetup', { experienceProfile: profile });
-  }, [navigation, profile]);
+    await saveFastWalletPreference(fastWalletPreference);
+    navigation.navigate('WalletSetup', {
+      fastWalletEnabled: fastWalletPreference === 'enabled',
+    });
+  }, [fastWalletPreference, navigation]);
 
   const openSavedWallet = useCallback(
     async (walletId: string) => {
@@ -181,19 +184,19 @@ export default function WelcomeScreen({ navigation }: any) {
             </ScrollView>
           </View>
         ) : null}
-        {registeredWallets.length === 0 && profileLoaded ? <View style={s.profilePanel}>
-          <Text style={s.profileEyebrow}>FIND THE RIGHT SETTINGS</Text>
-          <Text style={s.profileLead}>Your Native Monero Core and normal wallets stay local and private.</Text>
-          <TouchableOpacity style={[s.profileCard, profile === 'privacy' && s.profileCardSelected]} onPress={() => setProfile('privacy')} activeOpacity={0.8}>
-            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Maximum privacy</Text><Text style={s.profileMeter}>●●●○○</Text></View>
-            <Text style={s.profileDetail}>Normal local wallets. No Fast Wallet, contact discovery, or approximate location suggested.</Text>
+        {registeredWallets.length === 0 && preferenceLoaded ? <View style={s.profilePanel}>
+          <Text style={s.profileEyebrow}>WALLET SETUP</Text>
+          <Text style={s.profileLead}>Would you like a Fast Wallet with each new wallet?</Text>
+          <TouchableOpacity style={[s.profileCard, fastWalletPreference === 'enabled' && s.profileCardSelected]} onPress={() => setFastWalletPreference('enabled')} activeOpacity={0.8}>
+            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Use Fast Wallet</Text><Text style={s.profileMeter}>●●●●○</Text></View>
+            <Text style={s.profileDetail}>Creates a separate receive wallet for fast incoming-payment alerts. Your normal wallet stays local and private.</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={[s.profileCard, profile === 'comfort' && s.profileCardSelected]} onPress={() => setProfile('comfort')} activeOpacity={0.8}>
-            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Privacy + comfort</Text><Text style={s.profileMeter}>●●●●○</Text></View>
-            <Text style={s.profileDetail}>Suggests a separate Fast Wallet for quick incoming-payment alerts. Normal wallets and Core stay unchanged.</Text>
+          <TouchableOpacity style={[s.profileCard, fastWalletPreference === 'disabled' && s.profileCardSelected]} onPress={() => setFastWalletPreference('disabled')} activeOpacity={0.8}>
+            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Only normal wallets</Text><Text style={s.profileMeter}>●●●○○</Text></View>
+            <Text style={s.profileDetail}>Creates only your normal local wallet. You can add a Fast Wallet later.</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setShowFastWalletInfo(true)} accessibilityRole="button"><Text style={s.infoLink}>ⓘ How Fast Wallet works</Text></TouchableOpacity>
-          <Text style={s.profileFootnote}>Contacts and Community location always need their own visible approval.</Text>
+          <Text style={s.profileFootnote}>You can change this default any time in Settings. Scanner hosting still needs separate approval.</Text>
         </View> : null}
         <TouchableOpacity
           style={s.btn}
