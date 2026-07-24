@@ -25,10 +25,13 @@ if [[ "${mode}" == "development" ]]; then
   profile_path="${repo_dir}/secrets/codesign/Monero_Fast_Wallet_Desktop_Development.provisionprofile"
   entitlements_path="${desktop_dir}/src-tauri/Entitlements.plist"
   identity="${MONERO_DESKTOP_CODESIGN_IDENTITY:-Apple Development: Roland Kohlhuber (MQFCV562XY)}"
+  timestamp_args=(--timestamp=none)
 else
   profile_path="${repo_dir}/secrets/codesign/Monero_Fast_Wallet_Desktop_Developer_ID.provisionprofile"
   entitlements_path="${desktop_dir}/src-tauri/Entitlements.production.plist"
   identity="${MONERO_DESKTOP_CODESIGN_IDENTITY:-Developer ID Application: Nordhain LLC (F98729Y989)}"
+  # A trusted timestamp is mandatory for a notarizable Developer ID artifact.
+  timestamp_args=(--timestamp)
 fi
 
 [[ -d "${app_path}" ]] || { echo "App bundle is missing: ${app_path}" >&2; exit 1; }
@@ -43,12 +46,19 @@ application_identifier="$(security cms -D -i "${profile_path}" | plutil -p - | a
 cp "${profile_path}" "${app_path}/Contents/embedded.provisionprofile"
 
 while IFS= read -r -d '' nested_code; do
-  codesign --force --sign "${identity}" --timestamp=none "${nested_code}"
+  codesign --force --sign "${identity}" "${timestamp_args[@]}" --options runtime "${nested_code}"
 done < <(find "${app_path}/Contents/Frameworks" -type f \( -name '*.dylib' -o -perm -u+x \) -print0 2>/dev/null)
 
-codesign --force --sign "${identity}" --timestamp=none --options runtime \
+# Tauri bundles our unprivileged Windows/Linux push helper in Contents/MacOS as
+# well. Sign every additional executable before sealing the outer application.
+while IFS= read -r -d '' nested_code; do
+  [[ "${nested_code}" == "${app_path}/Contents/MacOS/monero-wallet-desktop" ]] && continue
+  codesign --force --sign "${identity}" "${timestamp_args[@]}" --options runtime "${nested_code}"
+done < <(find "${app_path}/Contents/MacOS" -type f -perm -u+x -print0 2>/dev/null)
+
+codesign --force --sign "${identity}" "${timestamp_args[@]}" --options runtime \
   --entitlements "${entitlements_path}" "${app_path}/Contents/MacOS/monero-wallet-desktop"
-codesign --force --sign "${identity}" --timestamp=none --options runtime \
+codesign --force --sign "${identity}" "${timestamp_args[@]}" --options runtime \
   --entitlements "${entitlements_path}" "${app_path}"
 codesign --verify --deep --strict --verbose=2 "${app_path}"
 codesign -d --entitlements :- "${app_path}" 2>&1

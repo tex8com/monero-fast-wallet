@@ -16,6 +16,7 @@
     "ios:logs": "bash scripts/ios-logs.sh",
     "ios:metro": "bash scripts/ios-ensure-metro.sh",
     "firebase:check": "node scripts/check-firebase-config.js",
+    "test:release-contract": "node scripts/test-release-signing-contract.js",
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest"
