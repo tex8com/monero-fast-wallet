@@ -89,7 +89,6 @@ const CREATE_CARD_HORIZONTAL_MARGIN = 20;
 const CREATE_CARD_MAX_WIDTH = 360;
 type PasswordPromptMode = 'create' | 'open' | 'restore';
 type CreationKind = 'software' | 'hardware' | 'restore' | 'open';
-type CreateCredentialMode = 'device' | 'password';
 type FastReceiveRegistrationCredentials = {
   password?: string;
   secretKey?: string;
@@ -459,8 +458,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const [passwordPromptMode, setPasswordPromptMode] = useState<
     PasswordPromptMode | undefined
   >();
-  const [createCredentialMode, setCreateCredentialMode] =
-    useState<CreateCredentialMode>('device');
   const [ledgerPromptVisible, setLedgerPromptVisible] = useState(false);
   const [ledgerBusy, setLedgerBusy] = useState(false);
   const [ledgerViewKeyExportPending, setLedgerViewKeyExportPending] =
@@ -473,8 +470,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     BiometricAuthStatus | undefined
   >();
   const [biometricError, setBiometricError] = useState<string | undefined>();
-  const [walletPassword, setWalletPassword] = useState('');
-  const [walletPasswordConfirm, setWalletPasswordConfirm] = useState('');
   const [restoreSeed, setRestoreSeed] = useState('');
   const [restoreStartDate, setRestoreStartDate] = useState('');
   const [ledgerRestoreStartDate, setLedgerRestoreStartDate] = useState('');
@@ -569,17 +564,11 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   // A software wallet's encryption secret is held in the platform secure
   // store. App protection is selected once in Settings; it is deliberately
   // not a separate prompt for every wallet.
-  const showCreateMethodChoices = false;
   const showBiometricCard = false;
-  const showPasswordFields =
-    passwordPromptMode === 'open' &&
-    !openUsesStoredSecret &&
-    !openUsesHardwareWallet;
   const passwordReady =
     passwordPromptMode === 'open'
       ? openUsesStoredSecret ||
-        openUsesHardwareWallet ||
-        walletPassword.length > 0
+        openUsesHardwareWallet
       : passwordPromptMode === 'restore'
         ? restoreSeedWordCount === MONERO_SEED_WORD_COUNT &&
           restoreStartDateReady
@@ -596,7 +585,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         ? t('setup.prompt.openStored', { biometric: currentBiometricLabel })
         : openUsesHardwareWallet
           ? t('setup.prompt.openHardware')
-          : t('setup.prompt.openPassword')
+          : 'This wallet is missing its protected device credential. Restore it from the recovery seed to create a new local copy.'
       : passwordPromptMode === 'restore'
         ? t('setup.prompt.restoreStored')
         : t('setup.prompt.createDeviceNoBiometric');
@@ -692,19 +681,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
       setupLog('openPasswordPrompt.start', {
         canUseBiometric,
-        createCredentialMode,
         mode,
         registeredWalletCount: registeredWallets.length,
       });
       setCreateError(undefined);
-      setWalletPassword('');
-      setWalletPasswordConfirm('');
       if (mode === 'restore') {
         setRestoreSeed('');
         setRestoreStartDate('');
-      }
-      if (mode === 'create') {
-        setCreateCredentialMode('device');
       }
       if (mode === 'create' || mode === 'open') {
         refreshBiometricStatus().catch(() => undefined);
@@ -713,7 +696,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     },
     [
       canUseBiometric,
-      createCredentialMode,
       creating,
       refreshBiometricStatus,
       registeredWallets.length,
@@ -745,7 +727,16 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       navigation.navigate('Home');
       return;
     }
-    openPasswordPrompt('open');
+    if (registeredWallet.kind === 'hardware') {
+      openPasswordPrompt('open');
+      return;
+    }
+    // A legacy registration without its secure credential cannot be unlocked
+    // by guessing a wallet password. Take the owner directly to recovery.
+    setRestoreSeed('');
+    setRestoreStartDate('');
+    setCreateError('This wallet is missing its protected device credential. Restore it from the recovery seed to create a new local copy.');
+    setPasswordPromptMode('restore');
   }, [navigation, openPasswordPrompt, pendingWalletOpenId, registeredWallet]);
 
   const closePasswordPrompt = useCallback(() => {
@@ -1207,8 +1198,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
 
       finishCreateAnimation();
-      setWalletPassword('');
-      setWalletPasswordConfirm('');
       setRestoreSeed('');
       setRestoreStartDate('');
       if (fastReceiveIdentityId) {
@@ -1386,7 +1375,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         kind: registeredWallet?.kind,
         walletName: registeredWallet?.walletName,
       });
-      const session = await walletService.openRegisteredWallet(walletPassword);
+      const session = await walletService.openRegisteredWallet();
       const wallet = await walletService.loadRegisteredWallet();
       await registerOpenedSession(session, wallet, {
         refresh: false,
@@ -1413,7 +1402,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         walletId: session.walletId,
       });
       finishCreateAnimation();
-      setWalletPassword('');
       navigation.navigate('Home');
       setupLog('openExistingWallet.success', {
         elapsedMs: Date.now() - startedAt,
@@ -1434,7 +1422,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const submitPasswordPrompt = () => {
     setupLog('submitPasswordPrompt', {
-      createCredentialMode,
       mode: passwordPromptMode,
       passwordReady,
     });
@@ -1660,58 +1647,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     />
                   </>
                 ) : null}
-                {showCreateMethodChoices ? (
-                  <View style={s.createMethodRow}>
-                    <TouchableOpacity
-                      style={[
-                        s.createMethodButton,
-                        createCredentialMode === 'device' &&
-                          s.createMethodButtonActive,
-                      ]}
-                      activeOpacity={0.75}
-                      onPress={() => setCreateCredentialMode('device')}
-                    >
-                      <Text
-                        style={[
-                          s.createMethodText,
-                          createCredentialMode === 'device' &&
-                            s.createMethodTextActive,
-                        ]}
-                      >
-                        {t('setup.device')}
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[
-                        s.createMethodButton,
-                        createCredentialMode === 'password' &&
-                          s.createMethodButtonActive,
-                      ]}
-                      activeOpacity={0.75}
-                      onPress={() => setCreateCredentialMode('password')}
-                    >
-                      <Text
-                        style={[
-                          s.createMethodText,
-                          createCredentialMode === 'password' &&
-                            s.createMethodTextActive,
-                        ]}
-                      >
-                        {t('setup.method.password')}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : null}
                 {showBiometricCard ? (
                   <View style={s.biometricBox}>
                     <View style={s.biometricHeader}>
                       <View
                         style={[
                           s.biometricDot,
-                          (canUseBiometric ||
-                            (passwordPromptMode === 'create' &&
-                              createCredentialMode === 'device') ||
-                            openUsesStoredSecret) &&
+                          (canUseBiometric || openUsesStoredSecret) &&
                             s.biometricDotReady,
                         ]}
                       />
@@ -1767,36 +1709,8 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     ) : null}
                   </View>
                 ) : null}
-                {showPasswordFields ? (
-                  <>
-                    <TextInput
-                      value={walletPassword}
-                      onChangeText={setWalletPassword}
-                      placeholder={t('settings.password')}
-                      placeholderTextColor="rgba(255,255,255,0.28)"
-                      secureTextEntry
-                      style={s.input}
-                    />
-                    {passwordPromptMode !== 'open' ? (
-                      <TextInput
-                        value={walletPasswordConfirm}
-                        onChangeText={setWalletPasswordConfirm}
-                        placeholder={t('setup.passwordConfirm')}
-                        placeholderTextColor="rgba(255,255,255,0.28)"
-                        secureTextEntry
-                        style={s.input}
-                      />
-                    ) : null}
-                  </>
-                ) : null}
                 {createError ? (
                   <Text style={s.errorText}>{createError}</Text>
-                ) : null}
-                {showPasswordFields &&
-                passwordPromptMode !== 'open' &&
-                walletPasswordConfirm.length > 0 &&
-                walletPassword !== walletPasswordConfirm ? (
-                  <Text style={s.errorText}>{t('setup.passwordMismatch')}</Text>
                 ) : null}
                 {passwordPromptMode === 'restore' &&
                 restoreSeed.length > 0 &&

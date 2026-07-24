@@ -65,7 +65,6 @@ export default function WalletsScreen({ navigation }: any) {
   const [nodeSettings, setNodeSettings] = useState<NodeConnectionSettings>(
     getActiveNodeConnectionSettings(),
   );
-  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [busyIdentityId, setBusyIdentityId] = useState<string | undefined>();
   const [fastActionError, setFastActionError] = useState<string | undefined>();
@@ -76,7 +75,7 @@ export default function WalletsScreen({ navigation }: any) {
   const [renameError, setRenameError] = useState<string | undefined>();
   const [renameBusy, setRenameBusy] = useState(false);
   const tex8Node = nodeMode === 'optimized-grpc';
-  const needsPassword = Boolean(session && !session.credentialKey);
+  const hasSecureWalletCredential = Boolean(session?.credentialKey);
   const canCreateFastWallet =
     tex8Node &&
     Boolean(
@@ -84,7 +83,7 @@ export default function WalletsScreen({ navigation }: any) {
       !session.hardwareDevice &&
       registeredWallet?.kind === 'software',
     ) &&
-    (!needsPassword || password.length > 0) &&
+    hasSecureWalletCredential &&
     !busy;
 
   useFocusEffect(
@@ -228,7 +227,6 @@ export default function WalletsScreen({ navigation }: any) {
     setFastActionError(undefined);
     try {
       const result = await walletService.createFastReceiveIdentity({
-        password: needsPassword ? password : undefined,
       });
       const scannerUrl = fastReceiveScannerUrlForSettings(nodeSettings);
       const pushSubscriptionId = scannerUrl
@@ -245,7 +243,6 @@ export default function WalletsScreen({ navigation }: any) {
       const enabled = scannerUrl
         ? await walletService.enableFastReceiveIdentity({
             identityId: result.identity.id,
-            password: needsPassword ? password : undefined,
             secretKey: session?.credentialKey,
             scannerUrl,
             pushSubscriptionId,
@@ -253,7 +250,6 @@ export default function WalletsScreen({ navigation }: any) {
         : result;
       setFastReceiveIdentities(enabled.identities);
       await reloadRegisteredWallets();
-      setPassword('');
     } catch {
       const identities =
         await walletService.loadFastReceiveIdentitiesForActiveNode();
@@ -275,10 +271,8 @@ export default function WalletsScreen({ navigation }: any) {
       const identities =
         await walletService.repairFastReceiveIdentityForActiveNode(
           identity.id,
-          needsPassword ? password : undefined,
         );
       setFastReceiveIdentities(identities);
-      setPassword('');
     } catch {
       const identities =
         await walletService.loadFastReceiveIdentitiesForActiveNode();
@@ -308,13 +302,11 @@ export default function WalletsScreen({ navigation }: any) {
         await FastWalletPushService.enableFastWalletNotifications();
       const result = await walletService.enableFastReceiveIdentity({
         identityId: identity.id,
-        password: needsPassword ? password : undefined,
         secretKey: session?.credentialKey,
         pushSubscriptionId: registration.subscriptionId,
         scannerUrl,
       });
       setFastReceiveIdentities(result.identities);
-      setPassword('');
     } catch (error) {
       logWalletEvent('Wallets', 'fastWallet.enablePushError', {
         error: error instanceof Error ? error.message : String(error),
@@ -470,14 +462,12 @@ export default function WalletsScreen({ navigation }: any) {
                   key={identity.id}
                   onRemove={() => confirmRemoveFastWallet(identity)}
                   onRetry={
-                    status.canRetry && (!needsPassword || password.length > 0)
+                    status.canRetry
                       ? () => repairFastWallet(identity)
                       : undefined
                   }
                   onSecondaryAction={
-                    status.ready &&
-                    !identity.notificationsEnabled &&
-                    (!needsPassword || password.length > 0)
+                    status.ready && !identity.notificationsEnabled
                       ? () => enablePushForFastWallet(identity)
                       : undefined
                   }
@@ -497,15 +487,10 @@ export default function WalletsScreen({ navigation }: any) {
             <Text style={s.fastActionError}>{fastActionError}</Text>
           ) : null}
 
-          {needsPassword ? (
-            <TextInput
-              value={password}
-              onChangeText={setPassword}
-              placeholder={t('settings.walletPassword')}
-              placeholderTextColor={colors.textMuted}
-              secureTextEntry
-              style={s.passwordInput}
-            />
+          {session && !hasSecureWalletCredential ? (
+            <Text style={s.fastActionError}>
+              This legacy wallet is missing its protected device credential. Restore it from the recovery seed before managing Fast Wallet.
+            </Text>
           ) : null}
 
           <TouchableOpacity

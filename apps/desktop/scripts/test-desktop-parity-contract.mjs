@@ -9,6 +9,7 @@ const desktopRoot = resolve(here, '..');
 const repoRoot = resolve(desktopRoot, '..', '..');
 
 const appSource = readFileSync(resolve(desktopRoot, 'src', 'App.tsx'), 'utf8');
+const stylesSource = readFileSync(resolve(desktopRoot, 'src', 'styles.css'), 'utf8');
 const parityDoc = readFileSync(resolve(repoRoot, 'docs', 'DESKTOP_PARITY_MATRIX.md'), 'utf8');
 const tauriBuild = readFileSync(resolve(desktopRoot, 'src-tauri', 'build.rs'), 'utf8');
 const tauriCapability = readFileSync(resolve(desktopRoot, 'src-tauri', 'capabilities', 'main.json'), 'utf8');
@@ -78,6 +79,18 @@ test('desktop news uses the same TEX8 feed and categories as mobile', () => {
   assert.doesNotMatch(appSource, /api\.github\.com\/repos\/monero-project/);
   assert.match(appSource, /const \[newsCategory, setNewsCategory\]/);
   assert.match(appSource, /home\.newsSource/);
+});
+
+test('desktop Community mirrors mobile automatic coarse-location loading without a retry control', () => {
+  const communitySource = appSource.slice(
+    appSource.indexOf('function Community()'),
+    appSource.indexOf('function Settings('),
+  );
+  assert.match(communitySource, /locationRefreshStarted/);
+  assert.match(communitySource, /getCurrentPosition\(\{ enableHighAccuracy: false/);
+  assert.match(communitySource, /approximateAreaForCoordinates/);
+  assert.match(communitySource, /Exact coordinates were discarded/);
+  assert.match(stylesSource, /\.community-page > header \.secondary \{ display: none; \}/);
 });
 
 test('desktop exposes and creates the default-on Ledger Fast Wallet pair', () => {

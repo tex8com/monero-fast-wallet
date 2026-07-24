@@ -313,7 +313,9 @@ h2 { letter-spacing: -0.65px; }
 .community-page > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
 .community-page > header h2 { margin: 0 0 7px; }
 .community-page > header p:not(.eyebrow) { max-width: 680px; margin: 0; color: #ada6b8; line-height: 1.55; }
-.community-page > header .secondary { margin: 0; }
+/* Nearby and profile data refresh automatically after Community is opened.
+   Do not expose a misleading retry action like the old desktop screen did. */
+.community-page > header .secondary { display: none; }
 .community-profile-card, .community-settings, .community-section, .community-conversation, .community-report, .community-delete { border: 1px solid #332b45; border-radius: 15px; background: #12101d; }
 .community-profile-card, .community-delete { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 20px 23px; background: linear-gradient(112deg, #191527, #12101d); }
 .community-profile-card h3, .community-delete h3, .community-section h3, .community-report h3 { margin: 0 0 6px; }
