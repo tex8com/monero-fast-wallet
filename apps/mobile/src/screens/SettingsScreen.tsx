@@ -467,7 +467,7 @@ export default function SettingsScreen() {
                 activeOpacity={0.75}
                 onPress={() => changeFastWalletPreference(false)}
               >
-                <Text style={[s.segmentText, fastWalletPreference === "disabled" && s.segmentTextActive]}>Maximum privacy</Text>
+                <Text style={[s.segmentText, fastWalletPreference === "disabled" && s.segmentTextActive]}>Privacy only</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[s.segment, fastWalletPreference === "enabled" && s.segmentActive]}
@@ -477,7 +477,7 @@ export default function SettingsScreen() {
                 <Text style={[s.segmentText, fastWalletPreference === "enabled" && s.segmentTextActive]}>Privacy + comfort</Text>
               </TouchableOpacity>
             </View>
-            <Text style={s.switchValue}>{fastWalletPreference === "enabled" ? "Privacy + comfort adds a separate Fast Wallet for quick incoming-payment alerts." : "Maximum privacy creates only normal local wallets by default."} Scanner hosting always needs separate approval.</Text>
+            <Text style={s.switchValue}>{fastWalletPreference === "enabled" ? "Privacy + comfort adds a separate Fast Wallet for quick incoming-payment alerts. Your normal wallet stays unchanged." : "Privacy only creates normal local wallets by default. You can add a Fast Wallet later."} Scanner hosting always needs separate approval.</Text>
           </View>
         </View>
 

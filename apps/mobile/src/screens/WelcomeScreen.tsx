@@ -186,14 +186,14 @@ export default function WelcomeScreen({ navigation }: any) {
         ) : null}
         {registeredWallets.length === 0 && preferenceLoaded ? <View style={s.profilePanel}>
           <Text style={s.profileEyebrow}>FIND THE RIGHT SETTINGS</Text>
-          <Text style={s.profileLead}>Your Native Monero Core and normal wallets stay local and private.</Text>
+          <Text style={s.profileLead}>Both modes keep your Native Monero Core and normal wallets equally local and private.</Text>
           <TouchableOpacity style={[s.profileCard, fastWalletPreference === 'disabled' && s.profileCardSelected]} onPress={() => setFastWalletPreference('disabled')} activeOpacity={0.8}>
-            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Maximum privacy</Text><Text style={s.profileMeter}>●●●○○</Text></View>
-            <Text style={s.profileDetail}>Creates only normal local wallets. A Fast Wallet is not added automatically.</Text>
+            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Privacy only</Text></View>
+            <Text style={s.profileDetail}>Creates only normal local wallets. You can add a Fast Wallet later whenever you want.</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[s.profileCard, fastWalletPreference === 'enabled' && s.profileCardSelected]} onPress={() => setFastWalletPreference('enabled')} activeOpacity={0.8}>
-            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Privacy + comfort</Text><Text style={s.profileMeter}>●●●●○</Text></View>
-            <Text style={s.profileDetail}>Adds a separate Fast Wallet to new normal and Ledger wallets for quick incoming-payment alerts.</Text>
+            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Privacy + comfort</Text></View>
+            <Text style={s.profileDetail}>Adds a separate Fast Wallet to new normal and Ledger wallets for quick incoming-payment alerts. Your normal wallet stays unchanged.</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setShowFastWalletInfo(true)} accessibilityRole="button"><Text style={s.infoLink}>ⓘ How Fast Wallet works</Text></TouchableOpacity>
           <Text style={s.profileFootnote}>You can change this mode any time in Settings. Scanner hosting still needs separate approval.</Text>
