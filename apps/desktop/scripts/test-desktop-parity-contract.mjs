@@ -142,6 +142,16 @@ test('a physical Ledger export can be diagnosed without logging wallet secrets',
   assert.equal(/exported\.address\.clone\(\)/.test(ledgerDiagnostics), false);
 });
 
+test('a repeated Ledger view-key action is blocked before another device session starts', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const recoverySource = hostSource.slice(hostSource.indexOf('fn create_ledger_read_only_from_device'), hostSource.indexOf('#\[tauri::command\]\nfn wallet_open_requires_password'));
+  assert.match(hostSource, /struct LedgerViewKeyExportState/);
+  assert.match(hostSource, /ledger\.view-key-export-duplicate-blocked/);
+  assert.match(recoverySource, /if ledger_read_only_exists\(&app, &source\.id\)\?/);
+  assert.ok(recoverySource.indexOf('ledger_read_only_exists') < recoverySource.indexOf('create_from_device'));
+  assert.match(recoverySource, /begin_ledger_view_key_export\(&app, &exports, &source\.id, "recovery-device-session"\)/);
+});
+
 test('both desktop Ledger read-only flows keep one instruction dialog open until the native export resolves', () => {
   assert.match(appSource, /function LedgerViewKeyExportOverlay\(\)/);
   assert.match(appSource, /This window closes automatically as soon as the Ledger returns the private view key/);

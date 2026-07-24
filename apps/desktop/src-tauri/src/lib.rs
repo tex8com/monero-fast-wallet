@@ -32,6 +32,10 @@ struct WalletSessionState(Mutex<HashMap<String, String>>);
 /// Fast Wallet sessions are isolated from the active normal-wallet mapping.
 /// Their renderer IDs are process-local and never identify a wallet file.
 struct FastWalletSessionState(Mutex<HashMap<String, String>>);
+/// A Ledger request can block while the user approves it on-device. Keep an
+/// explicit per-Ledger in-flight marker so repeated renderer clicks never
+/// create parallel sessions or repeated Export view key prompts.
+struct LedgerViewKeyExportState(Mutex<HashSet<String>>);
 /// `true` means the app is locked.  This is intentionally process-local: the
 /// durable secret stays in Keychain/Credential Manager/libsecret, while every
 /// native wallet session is closed on lock.
@@ -685,6 +689,7 @@ fn enable_ledger_read_only(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    exports: State<'_, LedgerViewKeyExportState>,
     protection: State<'_, AppProtectionState>,
     input: EnableLedgerReadOnlyInput,
 ) -> Result<WalletOperationResponse, String> {
@@ -710,7 +715,8 @@ fn enable_ledger_read_only(
     if active_native_id != input.source_wallet_id {
         return Err("The selected Ledger session changed. Open the Ledger wallet again and retry.".to_owned());
     }
-    create_ledger_read_only_from_open_source(
+    begin_ledger_view_key_export(&app, &exports, &source.id, "open-ledger-session")?;
+    let result = create_ledger_read_only_from_open_source(
         &app,
         &state,
         &sessions,
@@ -718,11 +724,47 @@ fn enable_ledger_read_only(
         &active_native_id,
         input.restore_height,
         "open-ledger-session",
-    )
+    );
+    finish_ledger_view_key_export(&exports, &source.id);
+    result
 }
 
 /// Uses an already-open hardware session only long enough to request the
 /// explicit Ledger view-key export. The value is never returned to React.
+fn ledger_read_only_exists(app: &AppHandle, source_registration_id: &str) -> Result<bool, String> {
+    Ok(wallet_registry::list(app)?.wallets.iter().any(|wallet| {
+        wallet.kind == "view-only"
+            && wallet.source_wallet_id.as_deref() == Some(source_registration_id)
+    }))
+}
+
+fn begin_ledger_view_key_export(
+    app: &AppHandle,
+    exports: &LedgerViewKeyExportState,
+    source_registration_id: &str,
+    flow: &str,
+) -> Result<(), String> {
+    let mut in_flight = exports
+        .0
+        .lock()
+        .map_err(|_| "Ledger view-key export state is busy.".to_owned())?;
+    if !in_flight.insert(source_registration_id.to_owned()) {
+        diagnostics::record(app, "ledger.view-key-export-duplicate-blocked", &[("flow", flow.to_owned())]);
+        return Err("A Ledger view-key approval is already in progress. Approve or reject the request on the Ledger before trying again.".to_owned());
+    }
+    diagnostics::record(app, "ledger.view-key-export-flow-started", &[("flow", flow.to_owned())]);
+    Ok(())
+}
+
+fn finish_ledger_view_key_export(
+    exports: &LedgerViewKeyExportState,
+    source_registration_id: &str,
+) {
+    if let Ok(mut in_flight) = exports.0.lock() {
+        in_flight.remove(source_registration_id);
+    }
+}
+
 fn create_ledger_read_only_from_open_source(
     app: &AppHandle,
     state: &NativeWalletState,
@@ -732,9 +774,7 @@ fn create_ledger_read_only_from_open_source(
     requested_restore_height: Option<u64>,
     export_flow: &str,
 ) -> Result<WalletOperationResponse, String> {
-    if wallet_registry::list(app)?.wallets.iter().any(|wallet| {
-        wallet.kind == "view-only" && wallet.source_wallet_id.as_deref() == Some(source.id.as_str())
-    }) {
+    if ledger_read_only_exists(app, &source.id)? {
         return Err("This Ledger already has a local read-only copy. Open it from your wallet list.".to_owned());
     }
 
@@ -912,6 +952,7 @@ fn create_ledger_read_only_from_device(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    exports: State<'_, LedgerViewKeyExportState>,
     protection: State<'_, AppProtectionState>,
     input: CreateLedgerReadOnlyFromDeviceInput,
 ) -> Result<WalletOperationResponse, String> {
@@ -924,6 +965,13 @@ fn create_ledger_read_only_from_device(
     if source.kind != "hardware" || source.role.as_deref().unwrap_or("standard") != "standard" {
         return Err("Choose a normal Ledger wallet for the local read-only copy.".to_owned());
     }
+    // Do this before starting a disposable hardware session. Otherwise a
+    // second click after a successful export would still wake the Ledger and
+    // can look like another private-view-key approval to the owner.
+    if ledger_read_only_exists(&app, &source.id)? {
+        return Err("This Ledger already has a local read-only copy. Open it from your wallet list.".to_owned());
+    }
+    begin_ledger_view_key_export(&app, &exports, &source.id, "recovery-device-session")?;
 
     // This disposable native session exists solely to ask the connected Ledger
     // for its view key. Its random local-file credential is never stored.
@@ -947,6 +995,7 @@ fn create_ledger_read_only_from_device(
         Ok(wallet_id) => wallet_id,
         Err(error) => {
             export_password.zeroize();
+            finish_ledger_view_key_export(&exports, &source.id);
             diagnostics::record(
                 &app,
                 "ledger.recovery-session-failed",
@@ -982,6 +1031,7 @@ fn create_ledger_read_only_from_device(
         .close(&export_wallet_id, false);
     remove_temporary_wallet_files(&export_path);
     export_password.zeroize();
+    finish_ledger_view_key_export(&exports, &source.id);
     result
 }
 #[tauri::command]
@@ -2570,6 +2620,7 @@ pub fn run() {
         )))
         .manage(WalletSessionState(Mutex::new(HashMap::new())))
         .manage(FastWalletSessionState(Mutex::new(HashMap::new())))
+        .manage(LedgerViewKeyExportState(Mutex::new(HashSet::new())))
         .manage(AppProtectionState(Mutex::new(initially_locked)))
         .manage(community::CommunityState::new().expect("Community client initialization"))
         .setup(|app| {
