@@ -137,7 +137,7 @@ export function useMoneroNews() {
       retryAttempt.current += 1;
       retryTimer.current = setTimeout(() => {
         retryTimer.current = null;
-        void refresh(true, true);
+        refresh(true, true).catch(() => undefined);
       }, delay);
     } finally {
       setLoading(false);

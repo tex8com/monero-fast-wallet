@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { StatusBar, StyleSheet } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
   createNavigationContainerRef,
   NavigationContainer,
@@ -60,22 +61,24 @@ function App() {
 
   return (
     <GestureHandlerRootView style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor="#0A0A14" />
-      <LanguageProvider>
-        <AppSecurityProvider>
-          <WalletStateProvider>
-            <WalletDiagnosticsController />
-            <NavigationContainer
-              onReady={() => setNavigationReady(true)}
-              ref={navigationRef}
-            >
-              <TabNavigator />
-            </NavigationContainer>
-            <WalletUnlockRedirect ready={navigationReady} />
-            <IncomingPaymentNotice />
-          </WalletStateProvider>
-        </AppSecurityProvider>
-      </LanguageProvider>
+      <SafeAreaProvider>
+        <StatusBar barStyle="light-content" backgroundColor="#0A0A14" />
+        <LanguageProvider>
+          <AppSecurityProvider>
+            <WalletStateProvider>
+              <WalletDiagnosticsController />
+              <NavigationContainer
+                onReady={() => setNavigationReady(true)}
+                ref={navigationRef}
+              >
+                <TabNavigator />
+              </NavigationContainer>
+              <WalletUnlockRedirect ready={navigationReady} />
+              <IncomingPaymentNotice />
+            </WalletStateProvider>
+          </AppSecurityProvider>
+        </LanguageProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }
