@@ -107,7 +107,7 @@ if [[ "$local_route_status" != "200" ]]; then
   sed -n '1,20p' "$response_headers" >&2 || true
   sed -n '1,20p' "$response_body" >&2 || true
   sudo tail -n 20 /var/log/nginx/error.log >&2 || true
-  exit 1
+  false
 fi
 grep -qi '^X-Monero-News-Proxy: 1' "$response_headers"
 grep -q '"items"' "$response_body"
