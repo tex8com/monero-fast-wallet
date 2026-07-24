@@ -85,6 +85,12 @@ export default function WalletsScreen({ navigation }: any) {
     ) &&
     hasSecureWalletCredential &&
     !busy;
+  const showFastWalletInfo = () => {
+    Alert.alert(
+      'What is Fast Wallet?',
+      'A Fast Wallet is a separate receive wallet for quick incoming-payment alerts. After you explicitly enable scanner hosting, only this Fast Wallet’s public address and private view key are sent to the selected scanner. The scanner can detect incoming payments for this Fast Wallet, but it cannot spend funds.\n\nYour normal wallet, recovery seed, and spend key stay on this device or on your Ledger.\n\nFor the highest privacy, run your own open-source Monero node for the blockchain connection. A node does not replace Fast Wallet scanning: use your own compatible scanner too if you do not want a third-party scanner to receive this Fast Wallet view key.',
+    );
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -430,11 +436,21 @@ export default function WalletsScreen({ navigation }: any) {
         <View style={s.section}>
           <View style={s.sectionHeaderRow}>
             <Text style={s.sectionTitle}>{t('wallets.fastWallets')}</Text>
-            <Text style={[s.nodePill, tex8Node ? s.nodePillOk : s.nodePillOff]}>
-              {tex8Node
-                ? t('settings.nodeModeTex8')
-                : t('settings.nodeModeOriginal')}
-            </Text>
+            <View style={s.fastHeaderActions}>
+              <TouchableOpacity
+                accessibilityLabel="What is Fast Wallet?"
+                accessibilityRole="button"
+                onPress={showFastWalletInfo}
+                style={s.fastInfoButton}
+              >
+                <Icon name="info" size={16} color={colors.orange} />
+              </TouchableOpacity>
+              <Text style={[s.nodePill, tex8Node ? s.nodePillOk : s.nodePillOff]}>
+                {tex8Node
+                  ? t('settings.nodeModeTex8')
+                  : t('settings.nodeModeOriginal')}
+              </Text>
+            </View>
           </View>
 
           <View style={s.fastInfo}>
@@ -763,6 +779,17 @@ const s = StyleSheet.create({
   nodePillOff: {
     color: colors.warning,
     backgroundColor: 'rgba(255,184,0,0.12)',
+  },
+  fastHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  fastInfoButton: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(242,104,34,0.35)',
+    backgroundColor: 'rgba(242,104,34,0.08)',
   },
   fastInfo: {
     flexDirection: 'row',
