@@ -92,10 +92,31 @@ sudo systemctl is-active --quiet "$service_name"
 sudo nginx -t
 sudo systemctl reload nginx
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8091/healthz
-curl --fail --silent --show-error --max-time 25 \
+echo "Validating the local HTTPS Nginx news route..."
+response_headers="$(mktemp)"
+response_body="$(mktemp)"
+trap 'rm -f "$response_headers" "$response_body"' EXIT
+local_route_status="$(curl --noproxy '*' --silent --show-error --max-time 25 \
   --resolve xmr.tex8.com:443:127.0.0.1 \
+  --dump-header "$response_headers" \
+  --output "$response_body" \
+  --write-out '%{http_code}' \
+  'https://xmr.tex8.com/news/v1/news?limit=1' || true)"
+if [[ "$local_route_status" != "200" ]]; then
+  echo "Local HTTPS news-route validation returned HTTP ${local_route_status:-no response}." >&2
+  sed -n '1,20p' "$response_headers" >&2 || true
+  sed -n '1,20p' "$response_body" >&2 || true
+  sudo tail -n 20 /var/log/nginx/error.log >&2 || true
+  exit 1
+fi
+grep -qi '^X-Monero-News-Proxy: 1' "$response_headers"
+grep -q '"items"' "$response_body"
+rm -f "$response_headers" "$response_body"
+trap - EXIT
+
+echo "Validating the public news route..."
+curl --noproxy '*' --fail --silent --show-error --max-time 25 \
   'https://xmr.tex8.com/news/v1/news?limit=1' | grep -q '"items"'
-curl --fail --silent --show-error --max-time 25 'https://xmr.tex8.com/news/v1/news?limit=1' | grep -q '"items"'
 
 committed=1
 trap - ERR
