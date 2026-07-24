@@ -49,7 +49,11 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 backup_dir="/root/monero-news-backups/$timestamp"
 sudo install -d -m 0700 "$backup_dir"
 sudo cp -a "$site_file" "$backup_dir/xmr.tex8.com.nginx"
-[[ -f "$unit_file" ]] && sudo cp -a "$unit_file" "$backup_dir/monero-news.service" || true
+had_unit=0
+if [[ -f "$unit_file" ]]; then
+  had_unit=1
+  sudo cp -a "$unit_file" "$backup_dir/monero-news.service"
+fi
 [[ -f "$snippet_file" ]] && sudo cp -a "$snippet_file" "$backup_dir/monero-news.conf" || true
 
 committed=0
@@ -58,10 +62,15 @@ rollback() {
   [[ "$committed" -eq 1 ]] && exit "$status"
   echo "News deployment validation failed; restoring previous configuration." >&2
   sudo cp -a "$backup_dir/xmr.tex8.com.nginx" "$site_file" || true
-  [[ -f "$backup_dir/monero-news.service" ]] && sudo cp -a "$backup_dir/monero-news.service" "$unit_file" || sudo rm -f "$unit_file"
+  if [[ "$had_unit" -eq 1 ]]; then
+    sudo cp -a "$backup_dir/monero-news.service" "$unit_file" || true
+  else
+    sudo systemctl disable --now "$service_name" || true
+    sudo rm -f "$unit_file"
+  fi
   [[ -f "$backup_dir/monero-news.conf" ]] && sudo cp -a "$backup_dir/monero-news.conf" "$snippet_file" || sudo rm -f "$snippet_file"
   sudo systemctl daemon-reload || true
-  sudo systemctl restart "$service_name" || true
+  [[ "$had_unit" -eq 1 ]] && sudo systemctl restart "$service_name" || true
   if sudo nginx -t; then sudo systemctl reload nginx || true; fi
   exit "$status"
 }
@@ -83,6 +92,9 @@ sudo systemctl is-active --quiet "$service_name"
 sudo nginx -t
 sudo systemctl reload nginx
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8091/healthz
+curl --fail --silent --show-error --max-time 25 \
+  --resolve xmr.tex8.com:443:127.0.0.1 \
+  'https://xmr.tex8.com/news/v1/news?limit=1' | grep -q '"items"'
 curl --fail --silent --show-error --max-time 25 'https://xmr.tex8.com/news/v1/news?limit=1' | grep -q '"items"'
 
 committed=1
