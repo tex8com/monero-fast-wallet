@@ -39,11 +39,19 @@ test -x "$binary"
 
 # All privileged operations share exactly one credential check.
 sudo -v
-site_file="$({ sudo nginx -T 2>&1 | awk '
-  /^# configuration file / { file = $4; sub(/:$/, "", file) }
-  /server_name[[:space:]].*xmr\.tex8\.com/ { print file; exit }
-'; } || true)"
-[[ -n "$site_file" && -f "$site_file" ]] || { echo "Could not find active xmr.tex8.com Nginx block." >&2; exit 1; }
+# This is the live, enabled vhost on the TEX8 server.  Do not infer it from
+# `nginx -T`: that output can select an unrelated included file before the
+# actual TLS server block is reached.
+site_file="/etc/nginx/sites-enabled/xmr.tex8.com"
+[[ -f "$site_file" ]] || { echo "Expected live xmr.tex8.com Nginx vhost is missing: $site_file" >&2; exit 1; }
+sudo grep -qE '^[[:space:]]*server_name[[:space:]].*xmr\.tex8\.com[[:space:]]*;' "$site_file" || {
+  echo "Expected xmr.tex8.com server_name is missing from $site_file" >&2
+  exit 1
+}
+sudo grep -qE '^[[:space:]]*listen[[:space:]].*443[[:space:]].*ssl.*;' "$site_file" || {
+  echo "Expected TLS listen directive is missing from $site_file" >&2
+  exit 1
+}
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 backup_dir="/root/monero-news-backups/$timestamp"
@@ -87,10 +95,10 @@ sudo install -o root -g root -m 0644 "$service_dir/deploy/nginx-monero-news.conf
 # first, then placing exactly one include immediately after `listen 443 ssl`.
 sudo sed -i "\\|^[[:space:]]*include ${snippet_file};[[:space:]]*$|d" "$site_file"
 sudo sed -i "/^[[:space:]]*listen[[:space:]].*443[[:space:]].*ssl.*;/a\\    include $snippet_file;" "$site_file"
-sudo grep -qF "include $snippet_file;" "$site_file" || {
-  echo "Could not include the news route in the xmr TLS Nginx block." >&2
+if ! sudo sed -n '/^[[:space:]]*listen[[:space:]].*443[[:space:]].*ssl.*;/,+1p' "$site_file" | grep -qF "include $snippet_file;"; then
+  echo "Could not place the news route directly in the xmr TLS Nginx block." >&2
   false
-}
+fi
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now "$service_name"
