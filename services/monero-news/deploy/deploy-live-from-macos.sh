@@ -81,9 +81,16 @@ sudo install -o root -g root -m 0755 "$binary" "/usr/local/bin/$service_name"
 sudo install -o root -g root -m 0644 "$service_dir/deploy/monero-news.service" "$unit_file"
 sudo install -d -m 0755 /etc/nginx/snippets
 sudo install -o root -g root -m 0644 "$service_dir/deploy/nginx-monero-news.conf" "$snippet_file"
-if ! sudo grep -qF "include $snippet_file;" "$site_file"; then
-  sudo sed -i "/server_name[[:space:]].*xmr\.tex8\.com[[:space:]]*;/a\\    include $snippet_file;" "$site_file"
-fi
+# The xmr virtual-host file contains a separate HTTP redirect block.  The
+# public API must be included in the TLS block, otherwise Nginx serves its
+# static 404 page for /news/.  Make this idempotent by removing an old include
+# first, then placing exactly one include immediately after `listen 443 ssl`.
+sudo sed -i "\\|^[[:space:]]*include ${snippet_file};[[:space:]]*$|d" "$site_file"
+sudo sed -i "/^[[:space:]]*listen[[:space:]].*443[[:space:]].*ssl.*;/a\\    include $snippet_file;" "$site_file"
+sudo grep -qF "include $snippet_file;" "$site_file" || {
+  echo "Could not include the news route in the xmr TLS Nginx block." >&2
+  false
+}
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now "$service_name"
