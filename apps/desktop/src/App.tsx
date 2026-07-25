@@ -319,8 +319,8 @@ export default function App() {
     const cancel = () => { if (timer !== undefined) { window.clearTimeout(timer); timer = undefined; } };
     const schedule = () => { cancel(); timer = window.setTimeout(() => void lockDesktopApp(), 5 * 60 * 1000); };
     const visibility = () => { if (document.visibilityState === 'hidden') schedule(); else cancel(); };
-    window.addEventListener('blur', schedule); window.addEventListener('focus', cancel); document.addEventListener('visibilitychange', visibility);
-    return () => { cancel(); window.removeEventListener('blur', schedule); window.removeEventListener('focus', cancel); document.removeEventListener('visibilitychange', visibility); };
+    document.addEventListener('visibilitychange', visibility);
+    return () => { cancel(); document.removeEventListener('visibilitychange', visibility); };
   }, [activeWalletId, appProtection?.configured, autoLockEnabled, lockDesktopApp]);
   if (!appProtection) return <main className="app-shell app-protection-loading"><p>Preparing secure app protection…</p></main>;
   if (appProtection.locked) return <AppProtectionGate onUnlocked={(value) => { setAppProtection(value); startupWalletSessionsInitializedRef.current = false; }} />;
