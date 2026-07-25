@@ -106,6 +106,10 @@ sudo systemctl restart "$service_name"
 sudo systemctl is-active --quiet "$service_name"
 sudo nginx -t
 sudo systemctl reload nginx
+if ! sudo nginx -T 2>&1 | grep -qF 'location ^~ /news/ {'; then
+  echo "Nginx reloaded without the required /news/ route." >&2
+  false
+fi
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8091/healthz
 echo "Validating the local HTTPS Nginx news route..."
 response_headers="$(mktemp)"
