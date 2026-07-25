@@ -221,6 +221,18 @@ h2 { letter-spacing: -0.65px; }
 .transaction-summary > strong { color: #f8e4d9; font-size: 18px; text-align: right; }
 .transaction-summary > small { grid-column: 1 / -1; color: #a9a0b5; font-size: 12px; }
 .step-back { justify-self: start; margin: 0; padding-inline: 0; }
+.recipient-entry-panel { display: grid; gap: 18px; padding: 22px; border: 1px solid #393047; border-radius: 16px; background: linear-gradient(130deg, #15101e, #0d0b14); }
+.recipient-entry-heading { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
+.recipient-entry-heading > div { display: grid; gap: 4px; }
+.recipient-entry-heading strong { color: #f4edf7; font-size: 18px; }
+.recipient-entry-heading small { color: #afa5b8; font-size: 12px; }
+.recipient-address-book-button { flex: 0 0 auto; margin: 0; }
+.recipient-entry-section { display: grid; gap: 8px; }
+.recipient-entry-section > strong { color: #c9bfce; font-size: 12px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.recipient-entry-panel > label { display: grid; gap: 8px; color: #ddd2e3; font-size: 13px; font-weight: 750; }
+.recipient-entry-actions { display: flex; gap: 12px; justify-content: space-between; }
+.recipient-entry-actions .primary { min-width: 180px; margin: 0; }
+.recipient-entry-actions .secondary { margin: 0; }
 .send-choice-stack { display: grid; gap: 12px; }
 .send-choice-card { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 13px; align-items: center; width: 100%; padding: 16px; border: 1px solid #3e354b; border-radius: 13px; color: #eee8f2; background: #0d0b14; cursor: pointer; text-align: left; }
 .send-choice-card:hover { border-color: #fa671c; background: #19111d; }
