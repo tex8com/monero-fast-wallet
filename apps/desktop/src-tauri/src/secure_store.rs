@@ -1,9 +1,47 @@
 use keyring::Entry;
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+};
 use zeroize::Zeroize;
 
 const SERVICE_NAME: &str = "com.tex8.monerowallet.desktop";
 const COMMUNITY_ACCOUNT_NAME: &str = "community-account";
 const APP_PROTECTION_IDENTIFIER: &str = "app-protection";
+
+/// Values read from the platform credential store are held only while the
+/// app-wide protection is unlocked. Opening several wallets in parallel must
+/// not trigger repeated OS credential dialogs for the same entry.
+static SESSION_SECRET_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+fn session_secret_cache() -> &'static Mutex<HashMap<String, String>> {
+    SESSION_SECRET_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_key(prefix: &str, identifier: &str) -> String {
+    format!("{prefix}:{identifier}")
+}
+
+fn cache_secret(prefix: &str, identifier: &str, value: &str) -> Result<(), String> {
+    let mut cache = session_secret_cache()
+        .lock()
+        .map_err(|_| "Secure session cache is busy.".to_owned())?;
+    if let Some(mut previous) = cache.insert(cache_key(prefix, identifier), value.to_owned()) {
+        previous.zeroize();
+    }
+    Ok(())
+}
+
+pub fn clear_session_secret_cache() -> Result<(), String> {
+    let mut cache = session_secret_cache()
+        .lock()
+        .map_err(|_| "Secure session cache is busy.".to_owned())?;
+    for value in cache.values_mut() {
+        value.zeroize();
+    }
+    cache.clear();
+    Ok(())
+}
 
 /// The app password is the single user-visible local unlock boundary. Wallet
 /// file credentials remain separate, random secrets which are never shown to
@@ -58,6 +96,7 @@ pub fn store_wallet_password(wallet_id: &str, mut password: String) -> Result<()
         if !matches {
             return Err("The wallet password verification failed in secure storage.".to_owned());
         }
+        cache_secret("wallet-password", wallet_id, &password)?;
         Ok(())
     })();
     password.zeroize();
@@ -65,13 +104,7 @@ pub fn store_wallet_password(wallet_id: &str, mut password: String) -> Result<()
 }
 
 pub fn delete_wallet_password(wallet_id: &str) -> Result<(), String> {
-    let account = account_name(wallet_id)?;
-    let entry = Entry::new(SERVICE_NAME, &account)
-        .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(_) => Err("The wallet password could not be removed from secure storage.".to_owned()),
-    }
+    delete_secret("wallet-password", wallet_id, "wallet password")
 }
 
 pub fn load_wallet_password(wallet_id: &str) -> Result<Option<String>, String> {
@@ -231,18 +264,33 @@ fn store_secret(
             .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
         entry
             .set_password(&value)
-            .map_err(|_| format!("The {label} could not be saved in secure storage."))
+            .map_err(|_| format!("The {label} could not be saved in secure storage."))?;
+        cache_secret(prefix, identifier, &value)
     })();
     value.zeroize();
     result
 }
 
 fn load_secret(prefix: &str, identifier: &str, label: &str) -> Result<Option<String>, String> {
+    let key = cache_key(prefix, identifier);
+    let mut cache = session_secret_cache()
+        .lock()
+        .map_err(|_| "Secure session cache is busy.".to_owned())?;
+    if let Some(value) = cache.get(&key).cloned() {
+        eprintln!("MONERO_DESKTOP_SECURE_STORE cache-hit kind={prefix}");
+        return Ok(Some(value));
+    }
     let account = account_name_with_prefix(prefix, identifier)?;
     let entry = Entry::new(SERVICE_NAME, &account)
         .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
     match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
+        Ok(value) => {
+            if let Some(mut previous) = cache.insert(key, value.clone()) {
+                previous.zeroize();
+            }
+            eprintln!("MONERO_DESKTOP_SECURE_STORE platform-read kind={prefix}");
+            Ok(Some(value))
+        }
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(_) => Err(format!(
             "The {label} could not be read from secure storage."
@@ -251,6 +299,14 @@ fn load_secret(prefix: &str, identifier: &str, label: &str) -> Result<Option<Str
 }
 
 fn delete_secret(prefix: &str, identifier: &str, label: &str) -> Result<(), String> {
+    let key = cache_key(prefix, identifier);
+    if let Some(mut value) = session_secret_cache()
+        .lock()
+        .map_err(|_| "Secure session cache is busy.".to_owned())?
+        .remove(&key)
+    {
+        value.zeroize();
+    }
     let account = account_name_with_prefix(prefix, identifier)?;
     let entry = Entry::new(SERVICE_NAME, &account)
         .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;

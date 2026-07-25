@@ -499,6 +499,7 @@ fn lock_app(
     }
     sessions.0.lock().map_err(|_| "Wallet session state is busy.".to_owned())?.clear();
     fast_sessions.0.lock().map_err(|_| "Fast Wallet session state is busy.".to_owned())?.clear();
+    secure_store::clear_session_secret_cache()?;
     eprintln!("MONERO_DESKTOP_APP_PROTECTION locked");
     if let Some(error) = close_error {
         return Err(format!("Monero Fast Wallet is locked, but a wallet session reported: {error}"));
