@@ -105,7 +105,22 @@ sudo systemctl enable --now "$service_name"
 sudo systemctl restart "$service_name"
 sudo systemctl is-active --quiet "$service_name"
 sudo nginx -t
+nginx_master_pid="$(sudo cat /run/nginx.pid)"
+nginx_workers_before="$(sudo pgrep -P "$nginx_master_pid" | sort | tr '\n' ' ' || true)"
 sudo systemctl reload nginx
+nginx_workers_reloaded=0
+for _ in {1..20}; do
+  nginx_workers_after="$(sudo pgrep -P "$nginx_master_pid" | sort | tr '\n' ' ' || true)"
+  if [[ -n "$nginx_workers_after" && "$nginx_workers_after" != "$nginx_workers_before" ]]; then
+    nginx_workers_reloaded=1
+    break
+  fi
+  sleep 0.25
+done
+if [[ "$nginx_workers_reloaded" -ne 1 ]]; then
+  echo "Nginx did not replace its workers after reload; refusing to test the old configuration." >&2
+  false
+fi
 if ! sudo nginx -T 2>&1 | grep -qF 'location ^~ /news/ {'; then
   echo "Nginx reloaded without the required /news/ route." >&2
   false
