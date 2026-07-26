@@ -88,6 +88,33 @@ impl HardwareHostedViewKeyMatcher {
         }
     }
 
+    pub fn block_window_transaction_key_count(&self, blocks: &[ScannedBlock]) -> Result<usize> {
+        let scannables = blocks
+            .iter()
+            .map(|block| {
+                block.scannable_block.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "block {} has no Monero scannable payload for hardware matching",
+                        block.height
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(prepare_scannables(&scannables)?.points.len())
+    }
+
+    pub fn mempool_transaction_key_count(&self, txs: &[ScannedMempoolTx]) -> Result<usize> {
+        let scannables = txs
+            .iter()
+            .map(|tx| {
+                tx.scannable_block.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("mempool transaction has no Monero scannable payload")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(prepare_scannables(&scannables)?.points.len())
+    }
+
     fn match_scannables(
         &self,
         watch: &WatchRegistration,
@@ -718,9 +745,7 @@ mod tests {
             .map(|watch| matcher.match_blocks(watch, &blocks))
             .collect::<Result<Vec<_>>>()
             .unwrap();
-        let batched_blocks = matcher
-            .match_blocks_for_watches(&watches, &blocks)
-            .unwrap();
+        let batched_blocks = matcher.match_blocks_for_watches(&watches, &blocks).unwrap();
         assert_eq!(batched_blocks, individual_blocks);
         assert_eq!(batched_blocks[0][0].len(), 1);
         assert!(batched_blocks[1][0].is_empty());
