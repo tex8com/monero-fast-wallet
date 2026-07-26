@@ -9,13 +9,23 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
 };
 use rand_core::RngCore;
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     sync::RwLock,
 };
+use zeroize::Zeroize;
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+pub const MAX_WATCH_RECORDS: usize = 100_000;
+pub const MAX_MATCHES_PER_WATCH: usize = 4_096;
+pub const MAX_KEY_IMAGE_STATUSES_PER_WATCH: usize = 4_096;
 
 pub trait WatchStore: Send + Sync {
     fn upsert(&self, registration: WatchRegistration) -> Result<WatchRegistration>;
@@ -43,6 +53,7 @@ pub struct InMemoryWatchStore {
 impl WatchStore for InMemoryWatchStore {
     fn upsert(&self, registration: WatchRegistration) -> Result<WatchRegistration> {
         let mut records = self.records.write().expect("watch store poisoned");
+        ensure_watch_capacity(&records, &registration.identity_id, MAX_WATCH_RECORDS)?;
         records.insert(registration.identity_id.clone(), registration.clone());
         Ok(registration)
     }
@@ -78,6 +89,7 @@ impl WatchStore for InMemoryWatchStore {
             stored = merge_matched_output(existing, output);
         }
         matches.insert(stored.id.clone(), stored.clone());
+        prune_matches_for_identity(&mut matches, &stored.identity_id, MAX_MATCHES_PER_WATCH);
         Ok(stored)
     }
 
@@ -101,6 +113,11 @@ impl WatchStore for InMemoryWatchStore {
         statuses.insert(
             key_image_status_id(&status.identity_id, &status.key_image),
             status.clone(),
+        );
+        prune_key_image_statuses_for_identity(
+            &mut statuses,
+            &status.identity_id,
+            MAX_KEY_IMAGE_STATUSES_PER_WATCH,
         );
         Ok(status)
     }
@@ -131,12 +148,20 @@ pub struct EncryptedJsonFileStore {
 }
 
 impl EncryptedJsonFileStore {
-    pub fn open(path: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self> {
+    pub fn open(path: impl Into<PathBuf>, mut key: [u8; 32]) -> Result<Self> {
         let path = path.into();
         let cipher = XChaCha20Poly1305::new((&key).into());
-        let rewrite_existing = path.exists();
-        let mut stored = if rewrite_existing {
-            read_records(&path, &cipher)?
+        key.zeroize();
+        let backup_path = backup_path(&path);
+        let rewrite_existing = path.exists() || backup_path.exists();
+        let mut stored = if path.exists() {
+            read_records(&path, &cipher).or_else(|primary_error| {
+                read_records(&backup_path, &cipher).with_context(|| {
+                    format!("primary watch db could not be recovered ({primary_error:#})")
+                })
+            })?
+        } else if backup_path.exists() {
+            read_records(&backup_path, &cipher)?
         } else {
             StoredRecords::default()
         };
@@ -199,15 +224,16 @@ impl EncryptedJsonFileStore {
                 .with_context(|| format!("create watch db parent {}", parent.display()))?;
         }
 
-        let plaintext = serde_json::to_vec(&StoredRecords {
+        let mut plaintext = serde_json::to_vec(&StoredRecords {
             records: records.values().cloned().collect(),
             matches: matches.values().cloned().collect(),
             key_image_statuses: key_image_statuses.values().cloned().collect(),
         })?;
-        let sealed = seal(&self.cipher, &plaintext)?;
+        let sealed_result = seal(&self.cipher, &plaintext);
+        plaintext.zeroize();
+        let sealed = sealed_result?;
         let serialized = serde_json::to_vec_pretty(&sealed)?;
-        fs::write(&self.path, serialized)
-            .with_context(|| format!("write watch db {}", self.path.display()))?;
+        atomic_replace(&self.path, &serialized)?;
         Ok(())
     }
 }
@@ -215,6 +241,7 @@ impl EncryptedJsonFileStore {
 impl WatchStore for EncryptedJsonFileStore {
     fn upsert(&self, registration: WatchRegistration) -> Result<WatchRegistration> {
         let mut records = self.records.write().expect("watch store poisoned");
+        ensure_watch_capacity(&records, &registration.identity_id, MAX_WATCH_RECORDS)?;
         records.insert(registration.identity_id.clone(), registration.clone());
         let matches = self.matches.read().expect("watch store poisoned");
         let key_image_statuses = self
@@ -261,6 +288,7 @@ impl WatchStore for EncryptedJsonFileStore {
             stored = merge_matched_output(existing, output);
         }
         matches.insert(stored.id.clone(), stored.clone());
+        prune_matches_for_identity(&mut matches, &stored.identity_id, MAX_MATCHES_PER_WATCH);
         self.persist(&records, &matches, &key_image_statuses)?;
         Ok(stored)
     }
@@ -288,6 +316,11 @@ impl WatchStore for EncryptedJsonFileStore {
             key_image_status_id(&status.identity_id, &status.key_image),
             status.clone(),
         );
+        prune_key_image_statuses_for_identity(
+            &mut key_image_statuses,
+            &status.identity_id,
+            MAX_KEY_IMAGE_STATUSES_PER_WATCH,
+        );
         self.persist(&records, &matches, &key_image_statuses)?;
         Ok(status)
     }
@@ -306,6 +339,51 @@ impl WatchStore for EncryptedJsonFileStore {
             .filter_map(|key_image| statuses.get(&key_image_status_id(identity_id, key_image)))
             .cloned()
             .collect())
+    }
+}
+
+fn ensure_watch_capacity(
+    records: &BTreeMap<String, WatchRegistration>,
+    identity_id: &str,
+    limit: usize,
+) -> Result<()> {
+    if !records.contains_key(identity_id) && records.len() >= limit {
+        return Err(anyhow!("watch storage capacity reached"));
+    }
+    Ok(())
+}
+
+fn prune_matches_for_identity(
+    matches: &mut BTreeMap<String, MatchedOutput>,
+    identity_id: &str,
+    limit: usize,
+) {
+    let mut ordered = matches
+        .iter()
+        .filter(|(_, output)| output.identity_id == identity_id)
+        .map(|(id, output)| (output.updated_at_ms, id.clone()))
+        .collect::<Vec<_>>();
+    ordered.sort();
+    let remove_count = ordered.len().saturating_sub(limit);
+    for (_, id) in ordered.into_iter().take(remove_count) {
+        matches.remove(&id);
+    }
+}
+
+fn prune_key_image_statuses_for_identity(
+    statuses: &mut BTreeMap<String, KeyImageStatusRecord>,
+    identity_id: &str,
+    limit: usize,
+) {
+    let mut ordered = statuses
+        .iter()
+        .filter(|(_, status)| status.identity_id == identity_id)
+        .map(|(id, status)| (status.updated_at_ms, id.clone()))
+        .collect::<Vec<_>>();
+    ordered.sort();
+    let remove_count = ordered.len().saturating_sub(limit);
+    for (_, id) in ordered.into_iter().take(remove_count) {
+        statuses.remove(&id);
     }
 }
 
@@ -358,12 +436,185 @@ pub fn parse_storage_key(value: &str) -> Result<[u8; 32]> {
         .map_err(|_| anyhow!("storage key must decode to exactly 32 bytes"))
 }
 
+pub fn verify_storage_file(path: impl AsRef<Path>, mut key: [u8; 32]) -> Result<()> {
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    key.zeroize();
+    let mut plaintext = read_plaintext(path.as_ref(), &cipher)?;
+    let validation = serde_json::from_slice::<IgnoredAny>(&plaintext)
+        .context("validate decrypted watch db JSON");
+    plaintext.zeroize();
+    validation.map(|_| ())
+}
+
+pub fn rotate_storage_key(
+    path: impl AsRef<Path>,
+    mut old_key: [u8; 32],
+    mut new_key: [u8; 32],
+) -> Result<()> {
+    let path = path.as_ref();
+    if old_key == new_key {
+        old_key.zeroize();
+        new_key.zeroize();
+        return Err(anyhow!("new storage key must differ from the old key"));
+    }
+
+    let old_cipher = XChaCha20Poly1305::new((&old_key).into());
+    old_key.zeroize();
+    let new_cipher = XChaCha20Poly1305::new((&new_key).into());
+    new_key.zeroize();
+
+    let backup = backup_path(path);
+    let mut plaintext = if path.exists() {
+        read_plaintext(path, &old_cipher).or_else(|primary_error| {
+            read_plaintext(&backup, &old_cipher).with_context(|| {
+                format!("primary watch db could not be recovered ({primary_error:#})")
+            })
+        })?
+    } else {
+        read_plaintext(&backup, &old_cipher)?
+    };
+    serde_json::from_slice::<IgnoredAny>(&plaintext)
+        .context("validate decrypted watch db JSON before key rotation")?;
+
+    let first_result = seal(&new_cipher, &plaintext)
+        .and_then(|sealed| serde_json::to_vec_pretty(&sealed).map_err(Into::into));
+    let second_result = seal(&new_cipher, &plaintext)
+        .and_then(|sealed| serde_json::to_vec_pretty(&sealed).map_err(Into::into));
+    plaintext.zeroize();
+    let first = first_result?;
+    let second = second_result?;
+
+    // Two authenticated snapshots under the new key ensure that normal
+    // corruption recovery keeps working immediately after a rotation.
+    atomic_replace(path, &first)?;
+    atomic_replace(path, &second)?;
+    read_records(path, &new_cipher).context("verify rotated watch db")?;
+    read_records(&backup, &new_cipher).context("verify rotated recovery snapshot")?;
+    Ok(())
+}
+
+pub fn backup_storage_file(
+    source: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    key: [u8; 32],
+) -> Result<()> {
+    copy_verified_storage_file(source.as_ref(), destination.as_ref(), key, "backup")
+}
+
+pub fn restore_storage_file(
+    source: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    key: [u8; 32],
+) -> Result<()> {
+    copy_verified_storage_file(source.as_ref(), destination.as_ref(), key, "restore")
+}
+
+fn copy_verified_storage_file(
+    source: &Path,
+    destination: &Path,
+    mut key: [u8; 32],
+    operation: &str,
+) -> Result<()> {
+    let result = (|| {
+        if source == destination {
+            return Err(anyhow!("{operation} source and destination must differ"));
+        }
+        verify_storage_file(source, key)?;
+        let contents =
+            fs::read(source).with_context(|| format!("read storage {operation} source"))?;
+        atomic_replace(destination, &contents)?;
+        verify_storage_file(destination, key)
+            .with_context(|| format!("verify storage {operation} destination"))
+    })();
+    key.zeroize();
+    result
+}
+
 fn read_records(path: &Path, cipher: &XChaCha20Poly1305) -> Result<StoredRecords> {
+    let mut plaintext = read_plaintext(path, cipher)?;
+    let result = serde_json::from_slice(&plaintext).map_err(Into::into);
+    plaintext.zeroize();
+    result
+}
+
+fn read_plaintext(path: &Path, cipher: &XChaCha20Poly1305) -> Result<Vec<u8>> {
     let value = fs::read(path).with_context(|| format!("read watch db {}", path.display()))?;
     let sealed: SealedFile = serde_json::from_slice(&value)?;
-    let plaintext = open(cipher, &sealed)?;
-    let stored: StoredRecords = serde_json::from_slice(&plaintext)?;
-    Ok(stored)
+    open(cipher, &sealed)
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("watch-db");
+    path.with_file_name(format!("{file_name}.previous"))
+}
+
+fn atomic_replace(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("watch db path has no parent"))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create watch db parent {}", parent.display()))?;
+    #[cfg(unix)]
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("secure watch db parent {}", parent.display()))?;
+
+    let mut random = [0u8; 8];
+    OsRng.fill_bytes(&mut random);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("watch-db");
+    let temporary_path = parent.join(format!(".{file_name}.tmp-{}", hex::encode(random)));
+
+    let write_result = (|| -> Result<()> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut temporary = options
+            .open(&temporary_path)
+            .with_context(|| format!("create temporary watch db {}", temporary_path.display()))?;
+        temporary
+            .write_all(contents)
+            .with_context(|| format!("write temporary watch db {}", temporary_path.display()))?;
+        temporary
+            .sync_all()
+            .with_context(|| format!("sync temporary watch db {}", temporary_path.display()))?;
+        drop(temporary);
+
+        let backup = backup_path(path);
+        if path.exists() {
+            if backup.exists() {
+                fs::remove_file(&backup)
+                    .with_context(|| format!("remove old watch db backup {}", backup.display()))?;
+            }
+            fs::rename(path, &backup)
+                .with_context(|| format!("rotate watch db backup {}", backup.display()))?;
+        }
+        if let Err(error) = fs::rename(&temporary_path, path) {
+            if backup.exists() && !path.exists() {
+                let _ = fs::rename(&backup, path);
+            }
+            return Err(error).with_context(|| format!("install watch db {}", path.display()));
+        }
+        #[cfg(unix)]
+        {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("secure watch db {}", path.display()))?;
+            File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .with_context(|| format!("sync watch db parent {}", parent.display()))?;
+        }
+        Ok(())
+    })();
+
+    if temporary_path.exists() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    write_result
 }
 
 fn seal(cipher: &XChaCha20Poly1305, plaintext: &[u8]) -> Result<SealedFile> {
@@ -417,6 +668,7 @@ mod tests {
             identity_id: "fast-receive-0".to_owned(),
             address: "9".repeat(95),
             private_view_key: "b".repeat(64),
+            management_token_hash: "0".repeat(64),
             network: Network::Stagenet,
             restore_height: 50,
             push_token: Some("push-token".to_owned()),
@@ -444,6 +696,45 @@ mod tests {
     fn parses_hex_storage_key() {
         let key = parse_storage_key(&"11".repeat(32)).unwrap();
         assert_eq!(key, [0x11; 32]);
+    }
+
+    #[test]
+    fn bounded_storage_rejects_new_watches_and_prunes_old_privacy_records() {
+        let record = registration();
+        let mut records = BTreeMap::new();
+        records.insert(record.identity_id.clone(), record.clone());
+        assert!(ensure_watch_capacity(&records, &record.identity_id, 1).is_ok());
+        assert!(ensure_watch_capacity(&records, "fast-receive-new", 1).is_err());
+
+        let mut matches = BTreeMap::new();
+        for timestamp in 1..=3 {
+            let mut output = matched_output();
+            output.id = format!("evt_{timestamp}");
+            output.updated_at_ms = timestamp;
+            matches.insert(output.id.clone(), output);
+        }
+        prune_matches_for_identity(&mut matches, &record.identity_id, 2);
+        assert_eq!(matches.len(), 2);
+        assert!(!matches.contains_key("evt_1"));
+
+        let mut statuses = BTreeMap::new();
+        for timestamp in 1..=3 {
+            let key_image = format!("{timestamp:064x}");
+            let status = KeyImageStatusRecord {
+                identity_id: record.identity_id.clone(),
+                key_image: key_image.clone(),
+                status: SpentStatus::Unknown,
+                checked_height: timestamp,
+                updated_at_ms: timestamp,
+            };
+            statuses.insert(key_image_status_id(&record.identity_id, &key_image), status);
+        }
+        prune_key_image_statuses_for_identity(&mut statuses, &record.identity_id, 2);
+        assert_eq!(statuses.len(), 2);
+        assert!(!statuses.contains_key(&key_image_status_id(
+            &record.identity_id,
+            &format!("{:064x}", 1)
+        )));
     }
 
     #[test]
@@ -487,6 +778,97 @@ mod tests {
                 .status,
             SpentStatus::Unspent
         );
+    }
+
+    #[test]
+    fn encrypted_store_recovers_from_the_last_authenticated_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watch.json.enc");
+        let key = [8u8; 32];
+        let store = EncryptedJsonFileStore::open(&path, key).unwrap();
+        let first = registration();
+        store.upsert(first.clone()).unwrap();
+
+        let mut updated = first;
+        updated.updated_at_ms = 2;
+        store.upsert(updated).unwrap();
+        assert!(backup_path(&path).exists());
+
+        fs::write(&path, b"corrupted-current-snapshot").unwrap();
+        let recovered = EncryptedJsonFileStore::open(&path, key).unwrap();
+        assert_eq!(
+            recovered
+                .get("fast-receive-0")
+                .unwrap()
+                .unwrap()
+                .updated_at_ms,
+            1
+        );
+        assert!(read_records(&path, &recovered.cipher).is_ok());
+    }
+
+    #[test]
+    fn storage_key_rotation_reencrypts_primary_and_recovery_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watch.json.enc");
+        let old_key = [4u8; 32];
+        let new_key = [5u8; 32];
+        let store = EncryptedJsonFileStore::open(&path, old_key).unwrap();
+        store.upsert(registration()).unwrap();
+
+        rotate_storage_key(&path, old_key, new_key).unwrap();
+
+        assert!(EncryptedJsonFileStore::open(&path, old_key).is_err());
+        let reopened = EncryptedJsonFileStore::open(&path, new_key).unwrap();
+        assert!(reopened.get("fast-receive-0").unwrap().is_some());
+        verify_storage_file(&path, new_key).unwrap();
+        verify_storage_file(backup_path(&path), new_key).unwrap();
+    }
+
+    #[test]
+    fn authenticated_backup_and_restore_reject_the_wrong_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watch.json.enc");
+        let backup = dir.path().join("off-host-backup.json.enc");
+        let restored = dir.path().join("restored").join("watch.json.enc");
+        let key = [3u8; 32];
+        let store = EncryptedJsonFileStore::open(&path, key).unwrap();
+        store.upsert(registration()).unwrap();
+
+        backup_storage_file(&path, &backup, key).unwrap();
+        assert!(restore_storage_file(&backup, &restored, [2u8; 32]).is_err());
+        restore_storage_file(&backup, &restored, key).unwrap();
+
+        let reopened = EncryptedJsonFileStore::open(&restored, key).unwrap();
+        assert!(reopened.get("fast-receive-0").unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn encrypted_store_uses_private_file_and_directory_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let database_dir = dir.path().join("private");
+        let path = database_dir.join("watch.json.enc");
+        let store = EncryptedJsonFileStore::open(&path, [6u8; 32]).unwrap();
+        store.upsert(registration()).unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&database_dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(fs::read_dir(&database_dir).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".tmp-")
+        }));
     }
 
     #[test]

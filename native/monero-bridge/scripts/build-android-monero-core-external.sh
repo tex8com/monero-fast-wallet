@@ -10,6 +10,7 @@ repo_root="$(cd "${script_dir}/../../.." && pwd)"
 build_root="${MONERO_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
 target="${MONERO_WALLET_ANDROID_TARGET:-android-arm64}"
 cmake_bin="${ANDROID_HOME:-${HOME}/Library/Android/sdk}/cmake/3.22.1/bin"
+patched_source_dir="${MONERO_ANDROID_SOURCE_DIR:-${build_root}/monero-v0.18.4.6-tex8-patched}"
 
 if [[ ! -d "${build_root}" ]]; then
   echo "External Android build volume is unavailable: ${build_root}" >&2
@@ -21,13 +22,20 @@ if [[ ! -x "${cmake_bin}/cmake" || ! -x "${cmake_bin}/ninja" ]]; then
 fi
 
 export PATH="${cmake_bin}:${PATH}"
+export MONERO_SOURCE_DIR="${patched_source_dir}"
+
+# Android must consume the same authenticated Monero patch series as the
+# desktop packages. In particular, patch 0020 owns the runtime-selected Rust
+# CPU worker budget; building an arbitrary neighbouring checkout could silently
+# fall back to the old scalar wallet path.
+source "${script_dir}/prepare-patched-monero-core.sh"
 
 protobuf_tools="${build_root}/host-protobuf-tools/protobuf-v31.1"
 grpc_tools="${build_root}/host-grpc-tools/v1.80.0"
 deps_root="${build_root}/android-deps"
-wallet_root="${build_root}/android-monero-wallet"
-fast_crypto_root="${build_root}/mobile-fast-crypto"
-manifest_root="${build_root}/android-monero-link-manifests"
+wallet_root="${MONERO_ANDROID_WALLET_BUILD_ROOT:-${build_root}/android-monero-wallet-tex8-patched}"
+fast_crypto_root="${MONERO_ANDROID_FAST_CRYPTO_ROOT:-${build_root}/mobile-fast-crypto-tex8-patched}"
+manifest_root="${MONERO_ANDROID_LINK_MANIFEST_ROOT:-${build_root}/android-monero-link-manifests-tex8-patched}"
 
 if [[ ! -x "${protobuf_tools}/bin/protoc" ]]; then
   OUTPUT_ROOT="${build_root}/host-protobuf-tools" \
@@ -44,12 +52,14 @@ if [[ ! -x "${grpc_tools}/bin/grpc_cpp_plugin" ]]; then
 fi
 
 TARGETS="${target}" \
+  MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR}" \
   OUTPUT_ROOT="${deps_root}" \
   SOURCES_DIR="${deps_root}/sources" \
   WORK_DIR="${deps_root}/work" \
   "${script_dir}/build-android-monero-deps.sh"
 
 TARGETS="${target}" \
+  MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR}" \
   OUTPUT_ROOT="${wallet_root}" \
   MONERO_ANDROID_DEPENDENCY_ROOT="${deps_root}" \
   MONERO_FAST_CRYPTO_ROOT="${fast_crypto_root}" \
@@ -60,3 +70,5 @@ TARGETS="${target}" \
   "${script_dir}/build-android-monero-wallet-api.sh"
 
 echo "Android Monero core is ready: ${manifest_root}/${target}/link.cmake"
+echo "Authenticated Monero source: ${MONERO_SOURCE_DIR}"
+echo "Authenticated Monero tree: ${MONERO_PATCHED_SOURCE_TREE}"

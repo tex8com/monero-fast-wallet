@@ -1,8 +1,9 @@
 use notify_scanner::{
-    dispatch_pending_notifications, parse_storage_key, router_with_runtime, CuprateGrpcBlockSource,
-    CuprateHttpKeyImageStatusSource, CuprateHttpMempoolSource, EncryptedJsonFileStore,
-    HostedViewKeyBlockMatcher, HostedViewKeyMempoolMatcher, KeyImageStatusSource,
-    MempoolScannerWorker, NotificationSink, ScannerWorker, Tex8PushNotificationSink, WatchStore,
+    dispatch_pending_notifications, parse_storage_key, router_with_runtime, BlockSource,
+    CuprateGrpcBlockSource, CuprateHttpKeyImageStatusSource, CuprateHttpMempoolSource,
+    EncryptedJsonFileStore, HardwareHostedViewKeyMatcher, KeyImageStatusSource,
+    MempoolScannerWorker, Network, NotificationSink, ScanPackBlockSource, ScannedBlock,
+    ScannerWorker, Tex8PushNotificationSink, WatchStore,
 };
 use std::{
     env,
@@ -12,6 +13,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::net::TcpListener;
+use zeroize::Zeroize;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -20,19 +22,22 @@ async fn main() -> anyhow::Result<()> {
         .parse()?;
     let db_path = env::var("NOTIFY_SCANNER_WATCH_DB")
         .unwrap_or_else(|_| "./notify-scanner-watch.json.enc".to_owned());
-    let key_value = env::var("NOTIFY_SCANNER_STORAGE_KEY").map_err(|_| {
+    let mut key_value = env::var("NOTIFY_SCANNER_STORAGE_KEY").map_err(|_| {
         anyhow::anyhow!("NOTIFY_SCANNER_STORAGE_KEY must be a 32-byte hex or base64 key")
     })?;
-    let auth_token = env::var("NOTIFY_SCANNER_AUTH_TOKEN").ok();
-    let key = parse_storage_key(&key_value)?;
-    let store = Arc::new(EncryptedJsonFileStore::open(db_path, key)?);
+    let internal_auth_token = optional_runtime_secret("NOTIFY_SCANNER_INTERNAL_AUTH_TOKEN")?;
+    let mut key = parse_storage_key(&key_value)?;
+    key_value.zeroize();
+    let store_result = EncryptedJsonFileStore::open(db_path, key);
+    key.zeroize();
+    let store = Arc::new(store_result?);
     let key_image_status_source = env::var("NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT")
         .ok()
         .map(CuprateHttpKeyImageStatusSource::new)
         .transpose()?
         .map(|source| Arc::new(source) as Arc<dyn KeyImageStatusSource>);
     let push_sink = push_notification_sink_from_env()?;
-    let test_auth_token = env::var("NOTIFY_SCANNER_TEST_AUTH_TOKEN").ok();
+    let test_auth_token = optional_runtime_secret("NOTIFY_SCANNER_TEST_AUTH_TOKEN")?;
     if test_auth_token.is_some() && push_sink.is_none() {
         anyhow::bail!(
             "NOTIFY_SCANNER_TEST_AUTH_TOKEN requires the Fast Wallet push dispatcher configuration"
@@ -46,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
         listener,
         router_with_runtime(
             store,
-            auth_token,
+            internal_auth_token,
             key_image_status_source,
             test_auth_token,
             push_sink,
@@ -57,38 +62,103 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn optional_runtime_secret(name: &str) -> anyhow::Result<Option<String>> {
+    let Some(value) = env::var(name).ok() else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.len() < 43
+        || trimmed.len() > 256
+        || !trimmed.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        anyhow::bail!("{name} must be a 32-byte-or-stronger printable secret");
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
 fn spawn_block_scanner_if_configured(
     store: Arc<dyn WatchStore>,
     push_sink: Option<Arc<dyn NotificationSink>>,
 ) -> anyhow::Result<()> {
-    let Ok(endpoint) = env::var("NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT") else {
+    let grpc_endpoint = env::var("NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT").ok();
+    let scanpack_directory = env::var("NOTIFY_SCANNER_SCANPACK_DIRECTORY").ok();
+    if grpc_endpoint.is_none() && scanpack_directory.is_none() {
         return Ok(());
-    };
+    }
     let max_blocks = env_usize("NOTIFY_SCANNER_BLOCK_SCAN_MAX_BLOCKS", 25)?;
     let interval_ms = env_u64("NOTIFY_SCANNER_BLOCK_SCAN_INTERVAL_MS", 10_000)?;
+    let derivation_workers = env_usize(
+        "NOTIFY_SCANNER_DERIVATION_WORKERS",
+        thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1),
+    )?;
     let chunk_blocks_hint = env_u32("NOTIFY_SCANNER_CUPRATE_GRPC_CHUNK_BLOCKS", 200)?;
     let mempool_source = env::var("NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT")
         .ok()
         .map(CuprateHttpMempoolSource::new)
         .transpose()?;
-    let block_source =
-        CuprateGrpcBlockSource::new_with_chunk_blocks_hint(endpoint.clone(), chunk_blocks_hint)?;
+    let (block_source, block_source_label) = if let Some(scanpack_directory) = scanpack_directory {
+        let network = env::var("NOTIFY_SCANNER_SCANPACK_NETWORK")
+            .unwrap_or_else(|_| "mainnet".to_owned())
+            .parse::<Network>()
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "NOTIFY_SCANNER_SCANPACK_NETWORK must be mainnet, testnet, or stagenet"
+                )
+            })?;
+        let refresh_ms = env_u64("NOTIFY_SCANNER_SCANPACK_REFRESH_MS", 10_000)?;
+        let source = ScanPackBlockSource::open(
+            &scanpack_directory,
+            network,
+            Duration::from_millis(refresh_ms),
+        )?;
+        (
+            RuntimeBlockSource::ScanPack(source),
+            format!(
+                "scanpack-read-only directory={} network={network}",
+                scanpack_directory
+            ),
+        )
+    } else {
+        let endpoint = grpc_endpoint.expect("checked above");
+        (
+            RuntimeBlockSource::Grpc(CuprateGrpcBlockSource::new_with_chunk_blocks_hint(
+                endpoint.clone(),
+                chunk_blocks_hint,
+            )?),
+            format!("cuprate-grpc endpoint={endpoint}"),
+        )
+    };
     let block_store = store.clone();
     let mempool_store = store.clone();
 
     thread::Builder::new()
         .name("notify-scanner-blocks".to_owned())
         .spawn(move || {
+            let matcher = match HardwareHostedViewKeyMatcher::new(derivation_workers) {
+                Ok(matcher) => matcher,
+                Err(error) => {
+                    eprintln!("notify-scanner hardware matcher initialization failed: {error:#}");
+                    return;
+                }
+            };
+            eprintln!(
+                "notify-scanner derivation backend={} workers={}",
+                matcher.backend_name(),
+                matcher.workers()
+            );
+            let mempool_matcher = matcher.clone();
             let mut worker = ScannerWorker::new(
                 block_store.clone(),
                 block_source,
-                HostedViewKeyBlockMatcher,
+                matcher,
             );
             let mut mempool_worker = mempool_source.map(|source| {
                 MempoolScannerWorker::new(
                     mempool_store,
                     source,
-                    HostedViewKeyMempoolMatcher,
+                    mempool_matcher,
                 )
             });
             loop {
@@ -148,9 +218,30 @@ fn spawn_block_scanner_if_configured(
         })?;
 
     eprintln!(
-        "notify-scanner block scanner enabled endpoint={endpoint} max_blocks={max_blocks} interval_ms={interval_ms}"
+        "notify-scanner block scanner enabled source={block_source_label} max_blocks={max_blocks} interval_ms={interval_ms}"
     );
     Ok(())
+}
+
+enum RuntimeBlockSource {
+    ScanPack(ScanPackBlockSource),
+    Grpc(CuprateGrpcBlockSource),
+}
+
+impl BlockSource for RuntimeBlockSource {
+    fn next_blocks(
+        &mut self,
+        network: Network,
+        from_height_exclusive: u64,
+        max_blocks: usize,
+    ) -> anyhow::Result<Vec<ScannedBlock>> {
+        match self {
+            Self::ScanPack(source) => {
+                source.next_blocks(network, from_height_exclusive, max_blocks)
+            }
+            Self::Grpc(source) => source.next_blocks(network, from_height_exclusive, max_blocks),
+        }
+    }
 }
 
 fn push_notification_sink_from_env() -> anyhow::Result<Option<Arc<dyn NotificationSink>>> {

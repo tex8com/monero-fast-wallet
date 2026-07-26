@@ -1,0 +1,40 @@
+From 1f4c8e2b69de2e025626b9ed0fd50cf15b0a897e Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Sat, 18 Apr 2026 23:09:41 -0500
+Subject: [PATCH 08/41] =?UTF-8?q?storage/database:=20raise=20LMDB=20max=5F?=
+ =?UTF-8?q?readers=20126=20=E2=86=92=20512?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When cuprated serves many concurrent wallet clients (e.g. monero-gui with
+16 parallel fetch clients) on top of internal P2P sync + txpool readers,
+the 126 reader slots fill up and heed panics with ReadersFull, crashing
+the entire cuprated process.
+
+512 is safely above typical concurrent read loads and well within LMDB's
+architectural reader-table limits.
+---
+ storage/database/src/backend/heed/env.rs | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/storage/database/src/backend/heed/env.rs b/storage/database/src/backend/heed/env.rs
+index 4c85bc7..d5c238c 100644
+--- a/storage/database/src/backend/heed/env.rs
++++ b/storage/database/src/backend/heed/env.rs
+@@ -178,9 +178,13 @@ impl Env for ConcreteEnv {
+         // For now:
+         // - No other program using our DB exists
+         // - Almost no-one has a 126+ thread CPU
++        // Raised from 126 to 512 to accommodate many concurrent wallet clients
++        // (e.g., monero-gui with 16 parallel fetch clients each opening read transactions)
++        // plus internal P2P sync readers. LMDB's ReadersFull panic would otherwise crash
++        // the entire cuprated process.
+         let reader_threads = u32::try_from(config.reader_threads.get()).unwrap_or(u32::MAX);
+-        env_open_options.max_readers(if reader_threads < 110 {
+-            126
++        env_open_options.max_readers(if reader_threads < 496 {
++            512
+         } else {
+             reader_threads.saturating_add(16)
+         });

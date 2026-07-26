@@ -1,0 +1,290 @@
+From b519538616eefa370a0b00e80666de9d428ec1a4 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Thu, 16 Apr 2026 19:34:21 -0500
+Subject: [PATCH 03/14] feat: add gzip decompression support for RPC responses
+
+- Send Accept-Encoding: gzip in HTTP requests
+- Decompress gzip responses in invoke_http_bin before deserialization
+- Link zlib for decompression
+- Fully backwards compatible: only decompresses if server sends gzip
+---
+ .github/workflows/depends.yml                 | 113 ------------------
+ .github/workflows/gitian.yml                  |  49 --------
+ contrib/epee/include/net/http_client.h        |   6 +-
+ .../include/storages/http_abstract_invoke.h   |  35 +++++-
+ contrib/epee/src/CMakeLists.txt               |   1 +
+ 5 files changed, 38 insertions(+), 166 deletions(-)
+ delete mode 100644 .github/workflows/depends.yml
+ delete mode 100644 .github/workflows/gitian.yml
+
+diff --git a/.github/workflows/depends.yml b/.github/workflows/depends.yml
+deleted file mode 100644
+index c754260b..00000000
+--- a/.github/workflows/depends.yml
++++ /dev/null
+@@ -1,113 +0,0 @@
+-name: ci/gh-actions/depends
+-
+-on:
+-  push:
+-  pull_request:
+-    paths-ignore:
+-      - 'docs/**'
+-      - '**/README.md'
+-
+-env:
+-  APT_SET_CONF: |
+-    tee -a /etc/apt/apt.conf.d/80-custom << EOF
+-    Acquire::Retries "3";
+-    Acquire::http::Timeout "120";
+-    Acquire::ftp::Timeout "120";
+-    EOF
+-  CCACHE_SETTINGS: |
+-        ccache --max-size=150M
+-        ccache --set-config=compression=true
+-
+-jobs:
+-  build-cross:
+-    runs-on: ubuntu-latest
+-    container:
+-      image: ubuntu:20.04
+-      env:
+-        DEBIAN_FRONTEND: noninteractive
+-        CCACHE_TEMPDIR: /tmp/.ccache-temp
+-    strategy:
+-      fail-fast: false
+-      matrix:
+-        toolchain:
+-          - name: "RISCV 64bit"
+-            host: "riscv64-linux-gnu"
+-            packages: "python3 gperf g++-riscv64-linux-gnu"
+-          - name: "ARM v7"
+-            host: "arm-linux-gnueabihf"
+-            packages: "python3 gperf g++-arm-linux-gnueabihf"
+-          - name: "ARM v8"
+-            host: "aarch64-linux-gnu"
+-            packages: "python3 gperf g++-aarch64-linux-gnu"
+-          - name: "i686 Win"
+-            host: "i686-w64-mingw32"
+-            packages: "python3 g++-mingw-w64-i686"
+-          - name: "i686 Linux"
+-            host: "i686-pc-linux-gnu"
+-            packages: "gperf cmake g++-multilib python3-zmq"
+-          - name: "Win64"
+-            host: "x86_64-w64-mingw32"
+-            packages: "cmake python3 g++-mingw-w64-x86-64"
+-          - name: "x86_64 Linux"
+-            host: "x86_64-unknown-linux-gnu"
+-            packages: "gperf cmake python3-zmq libdbus-1-dev libharfbuzz-dev"
+-          - name: "Cross-Mac x86_64"
+-            host: "x86_64-apple-darwin11"
+-            packages: "cmake imagemagick libcap-dev librsvg2-bin libz-dev libbz2-dev libtiff-tools python-dev python3-setuptools-git libtinfo5"
+-          - name: "Cross-Mac aarch64"
+-            host: "aarch64-apple-darwin11"
+-            packages: "cmake imagemagick libcap-dev librsvg2-bin libz-dev libbz2-dev libtiff-tools python-dev python3-setuptools-git libtinfo5"
+-          - name: "x86_64 Freebsd"
+-            host: "x86_64-unknown-freebsd"
+-            packages: "clang-8 gperf cmake python3-zmq libdbus-1-dev libharfbuzz-dev"
+-    name: ${{ matrix.toolchain.name }}
+-    steps:
+-    - name: set apt conf
+-      run: ${{env.APT_SET_CONF}}
+-    - name: install dependencies
+-      run: apt update; apt -y install build-essential libtool cmake autotools-dev automake pkg-config python3 gperf bsdmainutils curl git ca-certificates unzip ccache ${{ matrix.toolchain.packages }}
+-    - name: configure git
+-      run: git config --global --add safe.directory '*'
+-    - uses: actions/checkout@v4
+-      with:
+-        fetch-depth: 0
+-        submodules: recursive
+-# Most volatile cache
+-    - name: ccache
+-      uses: actions/cache@v4
+-      with:
+-        path: ~/.ccache
+-        key: ccache-${{ matrix.toolchain.host }}-${{ github.sha }}
+-        restore-keys: ccache-${{ matrix.toolchain.host }}-
+-# Less volatile cache
+-    - name: depends cache
+-      uses: actions/cache@v4
+-      with:
+-        path: contrib/depends/built
+-        key: depends-${{ matrix.toolchain.host }}-${{ hashFiles('contrib/depends/packages/*') }}
+-        restore-keys: |
+-          depends-${{ matrix.toolchain.host }}-${{ hashFiles('contrib/depends/packages/*') }}
+-          depends-${{ matrix.toolchain.host }}-
+-# Static cache
+-    - name: OSX SDK cache
+-      uses: actions/cache@v4
+-      with:
+-        path: contrib/depends/sdk-sources
+-        key: sdk-${{ matrix.toolchain.host }}-${{ matrix.toolchain.osx_sdk }}
+-        restore-keys: sdk-${{ matrix.toolchain.host }}-${{ matrix.toolchain.osx_sdk }}
+-    - name: prepare w64-mingw32
+-      if: ${{ matrix.toolchain.host == 'x86_64-w64-mingw32' || matrix.toolchain.host == 'i686-w64-mingw32' }}
+-      run: |
+-        update-alternatives --set ${{ matrix.toolchain.host }}-g++ $(which ${{ matrix.toolchain.host }}-g++-posix)
+-        update-alternatives --set ${{ matrix.toolchain.host }}-gcc $(which ${{ matrix.toolchain.host }}-gcc-posix)
+-    - name: build
+-      run: |
+-        ${{env.CCACHE_SETTINGS}}
+-        make depends target=${{ matrix.toolchain.host }} -j4
+-    - uses: actions/upload-artifact@v4
+-      if: ${{ matrix.toolchain.host == 'x86_64-w64-mingw32' || matrix.toolchain.host == 'x86_64-apple-darwin11' || matrix.toolchain.host == 'x86_64-unknown-linux-gnu' }}
+-      with:
+-        name: ${{ matrix.toolchain.name }}
+-        path: |
+-          build/${{ matrix.toolchain.host }}/release/bin/monero-wallet-cli*
+-          build/${{ matrix.toolchain.host }}/release/bin/monerod*
+diff --git a/.github/workflows/gitian.yml b/.github/workflows/gitian.yml
+deleted file mode 100644
+index 46b23188..00000000
+--- a/.github/workflows/gitian.yml
++++ /dev/null
+@@ -1,49 +0,0 @@
+-name: ci/gh-actions/gitian
+-
+-on:
+-  push:
+-    tags:
+-      - '*'
+-
+-jobs:
+-  build-gitian:
+-    runs-on: ubuntu-22.04
+-    strategy:
+-      fail-fast: false
+-      matrix:
+-        operating-system:
+-          - name: "Linux"
+-            option: "l"
+-          - name: "Windows"
+-            option: "w"
+-          - name: "Android"
+-            option: "a"
+-          - name: "FreeBSD"
+-            option: "f"
+-          - name: "macOS"
+-            option: "m"
+-    name: ${{ matrix.operating-system.name }}
+-    steps:
+-    - name: prepare
+-      run: |
+-        sudo apt update
+-        curl -O https://raw.githubusercontent.com/monero-project/monero/${{ github.ref_name }}/contrib/gitian/gitian-build.py
+-        chmod +x gitian-build.py
+-    - name: setup
+-      run: |
+-        ./gitian-build.py --setup --docker github-actions ${{ github.ref_name }}
+-    - name: build
+-      run: |
+-        ./gitian-build.py --docker --detach-sign --no-commit --build -j 3 -o ${{ matrix.operating-system.option }} github-actions ${{ github.ref_name }}
+-    - name: post build
+-      run: |
+-        cd out/${{ github.ref_name }}
+-        shasum -a256 *
+-        echo \`\`\` >> $GITHUB_STEP_SUMMARY
+-        shasum -a256 * >> $GITHUB_STEP_SUMMARY
+-        echo \`\`\` >> $GITHUB_STEP_SUMMARY
+-    - uses: actions/upload-artifact@v4
+-      with:
+-        name: ${{ matrix.operating-system.name }}
+-        path: |
+-          out/${{ github.ref_name }}/*
+diff --git a/contrib/epee/include/net/http_client.h b/contrib/epee/include/net/http_client.h
+index 9ce30b62..26fa5501 100644
+--- a/contrib/epee/include/net/http_client.h
++++ b/contrib/epee/include/net/http_client.h
+@@ -250,6 +250,7 @@ namespace net_utils
+ 				req_buff.append(method.data(), method.size()).append(" ").append(uri.data(), uri.size()).append(" HTTP/1.1\r\n");
+ 				add_field(req_buff, "Host", m_host_buff);
+ 				add_field(req_buff, "Content-Length", std::to_string(body.size()));
++				add_field(req_buff, "Accept-Encoding", "gzip");
+ 
+ 				//handle "additional_params"
+ 				for(const auto& field : additional_params)
+@@ -752,9 +753,8 @@ namespace net_utils
+ 				boost::smatch result;						//   12      3
+ 				if(boost::regex_search( m_response_info.m_header_info.m_content_encoding, result, rexp_match_gzip, boost::match_default) && result[0].matched)
+ 				{
+-          m_pcontent_encoding_handler.reset(new do_nothing_sub_handler(this));
+-          LOG_ERROR("GZIP encoding not supported");
+-          return false;
++					// Accept gzip: store raw compressed bytes, decompress later in invoke_http_bin
++					m_pcontent_encoding_handler.reset(new do_nothing_sub_handler(this));
+ 				}
+ 				else 
+ 				{
+diff --git a/contrib/epee/include/storages/http_abstract_invoke.h b/contrib/epee/include/storages/http_abstract_invoke.h
+index c615b20e..2aa34d23 100644
+--- a/contrib/epee/include/storages/http_abstract_invoke.h
++++ b/contrib/epee/include/storages/http_abstract_invoke.h
+@@ -29,6 +29,7 @@
+ #include <boost/utility/string_ref.hpp>
+ #include <chrono>
+ #include <string>
++#include <zlib.h>
+ #include "byte_slice.h"
+ #include "portable_storage_template_helper.h"
+ #include "net/http_base.h"
+@@ -98,12 +99,44 @@ namespace epee
+         return false;
+       }
+ 
++      // Decompress gzip response if server sent Content-Encoding: gzip
++      std::string decompressed_body;
++      const std::string* body_ptr = &pri->m_body;
++      if (pri->m_header_info.m_content_encoding.find("gzip") != std::string::npos)
++      {
++        z_stream zs{};
++        if (inflateInit2(&zs, 15 + 16) != Z_OK) // 15+16 = gzip format
++        {
++          LOG_PRINT_L1("Failed to init gzip decompression");
++          return false;
++        }
++        zs.next_in = (Bytef*)pri->m_body.data();
++        zs.avail_in = pri->m_body.size();
++        decompressed_body.resize(pri->m_body.size() * 4); // estimate 4x ratio
++        int ret;
++        do {
++          zs.next_out = (Bytef*)decompressed_body.data() + zs.total_out;
++          zs.avail_out = decompressed_body.size() - zs.total_out;
++          ret = inflate(&zs, Z_NO_FLUSH);
++          if (ret == Z_BUF_ERROR || (ret == Z_OK && zs.avail_out == 0))
++            decompressed_body.resize(decompressed_body.size() * 2);
++        } while (ret == Z_OK || ret == Z_BUF_ERROR);
++        decompressed_body.resize(zs.total_out);
++        inflateEnd(&zs);
++        if (ret != Z_STREAM_END)
++        {
++          LOG_PRINT_L1("gzip decompression failed: " << ret);
++          return false;
++        }
++        body_ptr = &decompressed_body;
++      }
++
+       static const constexpr epee::serialization::portable_storage::limits_t default_http_bin_limits = {
+         65536 * 3, // objects
+         65536 * 3, // fields
+         65536 * 3, // strings
+       };
+-      return serialization::load_t_from_binary(result_struct, epee::strspan<uint8_t>(pri->m_body), &default_http_bin_limits);
++      return serialization::load_t_from_binary(result_struct, epee::strspan<uint8_t>(*body_ptr), &default_http_bin_limits);
+     }
+ 
+     template<class t_request, class t_response, class t_transport>
+diff --git a/contrib/epee/src/CMakeLists.txt b/contrib/epee/src/CMakeLists.txt
+index 808b9f09..aa22923e 100644
+--- a/contrib/epee/src/CMakeLists.txt
++++ b/contrib/epee/src/CMakeLists.txt
+@@ -71,6 +71,7 @@ target_link_libraries(epee
+     ${Boost_REGEX_LIBRARY}
+     ${Boost_SYSTEM_LIBRARY}
+     ${OPENSSL_LIBRARIES}
++    z
+   PRIVATE
+     ${EXTRA_LIBRARIES})
+ 
+-- 
+2.50.1 (Apple Git-155)
+

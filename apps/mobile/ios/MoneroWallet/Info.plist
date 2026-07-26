@@ -42,7 +42,7 @@
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
-		<true/>
+		<false/>
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Location is used only when you enable nearby Monero enthusiast discovery. The app reduces it to an approximate area and never displays your exact position.</string>

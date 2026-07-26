@@ -1,0 +1,38 @@
+From ce07d688332b72fe2d25475bb0e13ba5ce611174 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Mon, 6 Jul 2026 21:12:44 -0500
+Subject: [PATCH 22/41] Default get_outs request flags
+
+---
+ rpc/types/src/bin.rs   | 2 +-
+ rpc/types/src/other.rs | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/rpc/types/src/bin.rs b/rpc/types/src/bin.rs
+index a825ea9..ffd99d6 100644
+--- a/rpc/types/src/bin.rs
++++ b/rpc/types/src/bin.rs
+@@ -93,7 +93,7 @@ define_request_and_response! {
+     GetOuts,
+     Request {
+         outputs: Vec<GetOutputsOut> = default::<Vec<GetOutputsOut>>(), "default",
+-        get_txid: bool,
++        get_txid: bool = default::<bool>(), "default",
+     },
+     AccessResponseBase {
+         outs: Vec<OutKeyBin> = default::<Vec<OutKeyBin>>(), "default",
+diff --git a/rpc/types/src/other.rs b/rpc/types/src/other.rs
+index d0cb2c7..4554097 100644
+--- a/rpc/types/src/other.rs
++++ b/rpc/types/src/other.rs
+@@ -391,8 +391,8 @@ define_request_and_response! {
+     GetOuts,
+ 
+     Request {
+-        outputs: Vec<GetOutputsOut>,
+-        get_txid: bool,
++        outputs: Vec<GetOutputsOut> = default::<Vec<GetOutputsOut>>(), "default",
++        get_txid: bool = default::<bool>(), "default",
+     },
+ 
+     ResponseBase {

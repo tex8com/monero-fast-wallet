@@ -1,0 +1,105 @@
+From 03b3c7418b821da3f9e9369d4a884057911255cc Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Mon, 13 Jul 2026 17:39:33 -0500
+Subject: [PATCH 30/41] Improve fast RPC blockchain handling
+
+---
+ binaries/cuprated/src/rpc/service/blockchain.rs | 1 -
+ consensus/context/src/alt_chains.rs             | 4 ++--
+ consensus/context/src/task.rs                   | 7 +++----
+ consensus/src/block/batch_prepare.rs            | 2 +-
+ storage/blockchain/src/ops/block.rs             | 4 ++--
+ 5 files changed, 8 insertions(+), 10 deletions(-)
+
+diff --git a/binaries/cuprated/src/rpc/service/blockchain.rs b/binaries/cuprated/src/rpc/service/blockchain.rs
+index 25859b3..36f0ea2 100644
+--- a/binaries/cuprated/src/rpc/service/blockchain.rs
++++ b/binaries/cuprated/src/rpc/service/blockchain.rs
+@@ -576,7 +576,6 @@ pub async fn tx_output_indexes(
+     Ok(o_indexes)
+ }
+ 
+-
+ pub async fn tx_output_indexes_batch(
+     blockchain_read: &mut BlockchainReadHandle,
+     tx_hashes: Vec<[u8; 32]>,
+diff --git a/consensus/context/src/alt_chains.rs b/consensus/context/src/alt_chains.rs
+index f2bbc7a..cedc773 100644
+--- a/consensus/context/src/alt_chains.rs
++++ b/consensus/context/src/alt_chains.rs
+@@ -9,8 +9,8 @@ use cuprate_types::{
+ };
+ 
+ use crate::{
+-    ContextCacheError, __private::Database, difficulty::DifficultyCache, rx_vms::RandomXVm,
+-    weight::BlockWeightsCache,
++    __private::Database, difficulty::DifficultyCache, rx_vms::RandomXVm, weight::BlockWeightsCache,
++    ContextCacheError,
+ };
+ 
+ pub(crate) mod sealed {
+diff --git a/consensus/context/src/task.rs b/consensus/context/src/task.rs
+index 5080359..60d6b15 100644
+--- a/consensus/context/src/task.rs
++++ b/consensus/context/src/task.rs
+@@ -325,14 +325,13 @@ impl<D: Database + Clone + Send + 'static> ContextTask<D> {
+                 BlockChainContextResponse::HardForkInfo(info)
+             }
+             BlockChainContextRequest::FeeEstimate { .. } => {
+-                BlockChainContextResponse::FeeEstimate(crate::FeeEstimate { fees: vec![20000],
++                BlockChainContextResponse::FeeEstimate(crate::FeeEstimate {
++                    fees: vec![20000],
+                     fee: 20000,
+                     quantization_mask: 10000,
+                 })
+             }
+-            BlockChainContextRequest::AltChains => {
+-                BlockChainContextResponse::AltChains(vec![])
+-            }
++            BlockChainContextRequest::AltChains => BlockChainContextResponse::AltChains(vec![]),
+             BlockChainContextRequest::CalculatePow { .. } => {
+                 todo!("CalculatePow not yet implemented")
+             }
+diff --git a/consensus/src/block/batch_prepare.rs b/consensus/src/block/batch_prepare.rs
+index b8c5662..a5df723 100644
+--- a/consensus/src/block/batch_prepare.rs
++++ b/consensus/src/block/batch_prepare.rs
+@@ -16,11 +16,11 @@ use cuprate_helper::asynch::rayon_spawn_async;
+ use cuprate_types::{output_cache::OutputCache, TransactionVerificationData};
+ 
+ use crate::{
++    __private::Database,
+     batch_verifier::MultiThreadedBatchVerifier,
+     block::{free::order_transactions, PreparedBlock, PreparedBlockExPow},
+     transactions::{check_kis_unique, contextual_data::get_output_cache, start_tx_verification},
+     BlockChainContextRequest, BlockChainContextResponse, ExtendedConsensusError,
+-    __private::Database,
+ };
+ 
+ /// Cached state created when batch preparing a group of blocks.
+diff --git a/storage/blockchain/src/ops/block.rs b/storage/blockchain/src/ops/block.rs
+index 16dc655..fae703c 100644
+--- a/storage/blockchain/src/ops/block.rs
++++ b/storage/blockchain/src/ops/block.rs
+@@ -9,10 +9,10 @@ use monero_oxide::{
+     transaction::Transaction,
+ };
+ 
+-use cuprate_fixed_bytes::ByteArray;
+ use cuprate_database::{
+     DbResult, RuntimeError, StorableVec, {DatabaseRo, DatabaseRw},
+ };
++use cuprate_fixed_bytes::ByteArray;
+ use cuprate_helper::cast::usize_to_u64;
+ use cuprate_helper::{
+     map::{combine_low_high_bits_to_u128, split_u128_into_low_high_bits},
+@@ -468,8 +468,8 @@ pub fn block_exists(
+ mod test {
+     use pretty_assertions::assert_eq;
+ 
++    use cuprate_database::{Env, EnvInner, TxRw};
+     use cuprate_fixed_bytes::ByteArray;
+-use cuprate_database::{Env, EnvInner, TxRw};
+     use cuprate_test_utils::data::{BLOCK_V16_TX0, BLOCK_V1_TX2, BLOCK_V9_TX3};
+ 
+     use crate::{

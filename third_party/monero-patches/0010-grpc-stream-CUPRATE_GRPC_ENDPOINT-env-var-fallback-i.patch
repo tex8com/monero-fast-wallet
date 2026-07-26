@@ -1,0 +1,52 @@
+From 5b90bedb49a93682d0dbcd08f38764765e02a4d6 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Sun, 19 Apr 2026 15:49:45 -0500
+Subject: [PATCH 10/14] grpc-stream: CUPRATE_GRPC_ENDPOINT env var fallback in
+ wallet2::init
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Lets existing wallet binaries opt into streaming sync without any code
+change — set CUPRATE_GRPC_ENDPOINT=host:18091 before launching the
+wallet. If the caller already set the endpoint explicitly via
+set_grpc_stream_endpoint() (e.g. from a future GUI Settings field) the
+env var is ignored.
+
+Useful specifically for Phase 1c end-to-end testing: the existing
+monero-wallet-gui + monero-wallet-cli binaries can exercise the stream
+path immediately, no GUI/CLI work required yet. A proper settings UI
+lands in a follow-up commit.
+---
+ src/wallet/wallet2.cpp | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 8f3da6a1..654b571b 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -1459,6 +1459,21 @@ bool wallet2::init(std::string daemon_address, boost::optional<epee::net_utils::
+   m_checkpoints.init_default_checkpoints(m_nettype);
+   m_is_initialized = true;
+   m_upper_transaction_weight_limit = upper_transaction_weight_limit;
++
++#ifdef MONERO_GRPC_STREAM
++  // Env-var fallback: if the caller hasn't set an endpoint explicitly via
++  // set_grpc_stream_endpoint(), honor CUPRATE_GRPC_ENDPOINT. Lets existing
++  // wallet binaries opt into streaming sync without code changes -- useful
++  // for testing before the GUI gets a proper settings UI.
++  if (m_grpc_stream_endpoint.empty())
++  {
++    if (const char* env = std::getenv("CUPRATE_GRPC_ENDPOINT"); env && *env)
++    {
++      set_grpc_stream_endpoint(env);
++    }
++  }
++#endif
++
+   return set_daemon(daemon_address, daemon_login, trusted_daemon, std::move(ssl_options));
+ }
+ //----------------------------------------------------------------------------------------------------
+-- 
+2.50.1 (Apple Git-155)
+

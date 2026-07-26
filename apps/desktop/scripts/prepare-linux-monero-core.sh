@@ -6,10 +6,12 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 desktop_dir="$(cd "${script_dir}/.." && pwd)"
 repo_root="$(cd "${desktop_dir}/../.." && pwd)"
-monero_source_dir="${MONERO_SOURCE_DIR:-${repo_root}/../monero-gui/monero}"
+source "${repo_root}/native/monero-bridge/scripts/prepare-patched-monero-core.sh"
+monero_source_dir="${MONERO_SOURCE_DIR}"
 monero_build_dir="${MONERO_BUILD_DIR:-${repo_root}/.build/monero-linux-wallet-api}"
 fast_crypto_dir="${monero_source_dir}/external/monero-fast-crypto"
-fast_crypto_library="${fast_crypto_dir}/target/release/libmonero_fast_crypto.so"
+fast_crypto_target_dir="${MONERO_DESKTOP_FAST_CRYPTO_TARGET_DIR:-${repo_root}/build/desktop-fast-crypto-linux}"
+fast_crypto_library="${fast_crypto_target_dir}/release/libmonero_fast_crypto.so"
 staged_library_dir="${desktop_dir}/native-libs"
 staged_fast_crypto="${staged_library_dir}/libmonero_fast_crypto.so"
 
@@ -25,10 +27,9 @@ done
 }
 
 mkdir -p "${monero_build_dir}" "${staged_library_dir}"
-(
-  cd "${fast_crypto_dir}"
-  cargo build --release
-)
+"${repo_root}/native/monero-bridge/scripts/build-desktop-fast-crypto.sh" \
+  "${fast_crypto_dir}" \
+  "${fast_crypto_target_dir}"
 [[ -f "${fast_crypto_library}" ]] || {
   echo "Rust Fast Crypto shared library was not produced." >&2
   exit 1
@@ -46,7 +47,8 @@ cmake -S "${monero_source_dir}" -B "${monero_build_dir}" -G Ninja \
   -DUSE_DEVICE_TREZOR=OFF \
   -DUSE_DEVICE_TREZOR_LIBUSB=OFF \
   -DMONERO_ENABLE_GRPC_STREAM=OFF \
-  -DRANDOMX_ENABLE_JIT=OFF
+  -DRANDOMX_ENABLE_JIT=OFF \
+  -DMONERO_FAST_CRYPTO_LIBRARY="${fast_crypto_target_dir}/release/libmonero_fast_crypto.a"
 cmake --build "${monero_build_dir}" --target wallet_api --parallel 4
 
 archives=(

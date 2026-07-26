@@ -1,0 +1,357 @@
+From fe3e80326ffba9f9f5054d6ef6b5038b30ea5948 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 23 Jul 2026 21:27:11 -0500
+Subject: [PATCH] grpc-stream: add bounded ordered range pool up to 8 channels
+
+---
+ src/wallet/grpc_stream/CMakeLists.txt         |   1 +
+ .../grpc_stream/grpc_block_range_pool.cpp     | 149 ++++++++++++++++++
+ .../grpc_stream/grpc_block_range_pool.h       |  43 +++++
+ src/wallet/wallet2.cpp                        |  47 +++---
+ src/wallet/wallet2.h                          |   4 +-
+ 5 files changed, 214 insertions(+), 30 deletions(-)
+ create mode 100644 src/wallet/grpc_stream/grpc_block_range_pool.cpp
+ create mode 100644 src/wallet/grpc_stream/grpc_block_range_pool.h
+
+diff --git a/src/wallet/grpc_stream/CMakeLists.txt b/src/wallet/grpc_stream/CMakeLists.txt
+index 2be95c4c9..e850e02d8 100644
+--- a/src/wallet/grpc_stream/CMakeLists.txt
++++ b/src/wallet/grpc_stream/CMakeLists.txt
+@@ -59,6 +59,7 @@ add_custom_command(
+ 
+ add_library(cuprate_grpc_stream STATIC
+     grpc_block_stream_client.cpp
++    grpc_block_range_pool.cpp
+     ${GENERATED_PB}
+ )
+ 
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.cpp b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+new file mode 100644
+index 000000000..4c62e194e
+--- /dev/null
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+@@ -0,0 +1,149 @@
++#include "grpc_block_range_pool.h"
++#include "grpc_block_stream_client.h"
++
++#include <algorithm>
++#include <cstdio>
++#include <memory>
++#include <string>
++#include <utility>
++#include <vector>
++
++namespace cuprate_grpc_stream {
++namespace {
++constexpr size_t kMaxChannels = 8;
++constexpr uint32_t kMinRangeBlocks = 16;
++constexpr uint32_t kMaxRangeBlocks = 512;
++}
++
++struct cuprate_grpc_block_range_pool::impl {
++    struct slot {
++        std::unique_ptr<cuprate_grpc_stream_client> client;
++        uint64_t start = 0;
++        uint64_t stop = 0;
++        bool active = false;
++    };
++    std::string target, request_id, error;
++    std::vector<std::string> locator;
++    std::vector<slot> slots;
++    uint64_t next_expected = 0, next_assign = 0, stop_height = 0;
++    uint32_t range_blocks = 0;
++    size_t target_channels = 1;
++    bool opened = false, warmup_complete = false, ended_ok = false;
++    int error_code = 0;
++    uint64_t last_start = 0, last_seq = 0, last_tip = 0;
++    uint32_t last_blocks = 0, last_payload_bytes = 0;
++    std::string last_server_id;
++};
++
++cuprate_grpc_block_range_pool::cuprate_grpc_block_range_pool() : p_(std::make_unique<impl>()) {}
++cuprate_grpc_block_range_pool::~cuprate_grpc_block_range_pool() { close(); }
++
++namespace {
++bool open_slot(cuprate_grpc_block_range_pool::impl& p, size_t index, bool use_locator)
++{
++    if (p.next_assign > p.stop_height) return true;
++    if (index >= p.slots.size()) p.slots.resize(index + 1);
++    auto& slot = p.slots[index];
++    slot.client = std::make_unique<cuprate_grpc_stream_client>();
++    slot.start = p.next_assign;
++    slot.stop = std::min(p.stop_height, slot.start + static_cast<uint64_t>(p.range_blocks) - 1);
++    p.next_assign = slot.stop + 1;
++    if (!slot.client->connect(p.target) || !slot.client->open_stream(
++            slot.start, slot.stop, true, p.range_blocks,
++            p.request_id + "-c" + std::to_string(index),
++            use_locator ? p.locator : std::vector<std::string>{}, 1)) {
++        p.error_code = slot.client->last_error_code();
++        p.error = slot.client->last_error_message();
++        return false;
++    }
++    slot.active = true;
++    std::fprintf(stderr, "[GRPC pool] OPEN slot=%zu range=[%llu..%llu] locator=%d\n", index,
++        (unsigned long long)slot.start, (unsigned long long)slot.stop, use_locator ? 1 : 0);
++    return true;
++}
++
++bool fill_slots(cuprate_grpc_block_range_pool::impl& p)
++{
++    for (size_t i = 0; i < p.target_channels && p.next_assign <= p.stop_height; ++i) {
++        if (i >= p.slots.size() || !p.slots[i].active) {
++            if (!open_slot(p, i, false)) return false;
++        }
++    }
++    return true;
++}
++}
++
++bool cuprate_grpc_block_range_pool::open(const std::string& target, uint64_t start_height,
++    uint64_t stop_height, uint32_t range_blocks, size_t max_channels,
++    const std::string& client_request_id, const std::vector<std::string>& chain_locator)
++{
++    close();
++    if (target.empty() || stop_height < start_height) {
++        p_->error_code = -1; p_->error = "invalid finite range pool request"; return false;
++    }
++    p_->target = target; p_->request_id = client_request_id; p_->locator = chain_locator;
++    p_->stop_height = stop_height;
++    p_->range_blocks = std::max(kMinRangeBlocks, std::min(kMaxRangeBlocks, range_blocks));
++    p_->target_channels = std::max<size_t>(1, std::min(kMaxChannels, max_channels));
++    p_->next_assign = start_height;
++    p_->next_expected = 0;
++    p_->error.clear(); p_->error_code = 0; p_->ended_ok = false;
++    p_->last_start = p_->last_seq = p_->last_tip = 0;
++    p_->last_blocks = p_->last_payload_bytes = 0;
++    p_->last_server_id.clear();
++    p_->opened = true;
++    // The locator is used only by this warm-up range. Once its range ends, all
++    // later requests are explicit, non-overlapping height ranges.
++    if (!open_slot(*p_, 0, true)) { close(); return false; }
++    return true;
++}
++
++bool cuprate_grpc_block_range_pool::next_chunk_payload(std::string& out, uint32_t timeout_ms)
++{
++    if (!p_->opened) { p_->error_code = -1; p_->error = "pool not open"; return false; }
++    if (p_->warmup_complete && !fill_slots(*p_)) { close(); return false; }
++    impl::slot* wanted = nullptr;
++    for (auto& slot : p_->slots) {
++        if (slot.active && (p_->next_expected == 0 || (slot.start <= p_->next_expected && p_->next_expected <= slot.stop))) {
++            wanted = &slot; break;
++        }
++    }
++    if (!wanted) { p_->ended_ok = p_->next_assign > p_->stop_height; return false; }
++    if (!wanted->client->next_chunk_payload(out, timeout_ms)) {
++        p_->error_code = wanted->client->last_error_code();
++        p_->error = wanted->client->last_error_message();
++        return false;
++    }
++    p_->last_start = wanted->client->last_chunk_start_height();
++    p_->last_seq = wanted->client->last_chunk_seq();
++    p_->last_tip = wanted->client->last_chunk_chain_tip();
++    p_->last_blocks = wanted->client->last_chunk_n_blocks();
++    p_->last_payload_bytes = wanted->client->last_chunk_payload_bytes();
++    p_->last_server_id = wanted->client->last_chunk_server_request_id();
++    if (p_->next_expected == 0) p_->next_expected = p_->last_start;
++    const uint64_t end = p_->last_start + p_->last_blocks;
++    if (p_->last_start != p_->next_expected || p_->last_blocks == 0 || end > wanted->stop + 1) {
++        p_->error_code = -1; p_->error = "range gap, overlap, or invalid chunk"; return false;
++    }
++    p_->next_expected = end;
++    if (end == wanted->stop + 1) {
++        wanted->client->close(); wanted->active = false;
++        p_->warmup_complete = true;
++    }
++    std::fprintf(stderr, "[GRPC pool] CHUNK start=%llu blocks=%u expected_next=%llu slots=%zu\n",
++        (unsigned long long)p_->last_start, p_->last_blocks,
++        (unsigned long long)p_->next_expected, p_->target_channels);
++    return true;
++}
++
++void cuprate_grpc_block_range_pool::close() { for (auto& s : p_->slots) if (s.client) s.client->close(); p_->slots.clear(); p_->opened = false; }
++bool cuprate_grpc_block_range_pool::stream_ended_ok() const { return p_->ended_ok; }
++int cuprate_grpc_block_range_pool::last_error_code() const { return p_->error_code; }
++std::string cuprate_grpc_block_range_pool::last_error_message() const { return p_->error; }
++uint64_t cuprate_grpc_block_range_pool::last_chunk_start_height() const { return p_->last_start; }
++uint64_t cuprate_grpc_block_range_pool::last_chunk_seq() const { return p_->last_seq; }
++uint64_t cuprate_grpc_block_range_pool::last_chunk_chain_tip() const { return p_->last_tip; }
++uint32_t cuprate_grpc_block_range_pool::last_chunk_n_blocks() const { return p_->last_blocks; }
++uint32_t cuprate_grpc_block_range_pool::last_chunk_payload_bytes() const { return p_->last_payload_bytes; }
++std::string cuprate_grpc_block_range_pool::last_chunk_server_request_id() const { return p_->last_server_id; }
++} // namespace cuprate_grpc_stream
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.h b/src/wallet/grpc_stream/grpc_block_range_pool.h
+new file mode 100644
+index 000000000..3581a7feb
+--- /dev/null
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.h
+@@ -0,0 +1,43 @@
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <string>
++#include <vector>
++
++namespace cuprate_grpc_stream {
++
++// A bounded, ordered scheduler over independent gRPC channels. Ranges never
++// overlap; a completed range is committed by wallet2 before its slot is reused.
++// This preserves chain order while allowing network transfer to run ahead.
++class cuprate_grpc_block_range_pool
++{
++public:
++    struct impl;
++    cuprate_grpc_block_range_pool();
++    ~cuprate_grpc_block_range_pool();
++    cuprate_grpc_block_range_pool(const cuprate_grpc_block_range_pool&) = delete;
++    cuprate_grpc_block_range_pool& operator=(const cuprate_grpc_block_range_pool&) = delete;
++
++    bool open(const std::string& target, uint64_t start_height, uint64_t stop_height,
++              uint32_t range_blocks, size_t max_channels,
++              const std::string& client_request_id,
++              const std::vector<std::string>& chain_locator);
++    bool next_chunk_payload(std::string& out_epee_bytes, uint32_t timeout_ms);
++    void close();
++    bool stream_ended_ok() const;
++    int last_error_code() const;
++    std::string last_error_message() const;
++    uint64_t last_chunk_start_height() const;
++    uint64_t last_chunk_seq() const;
++    uint64_t last_chunk_chain_tip() const;
++    uint32_t last_chunk_n_blocks() const;
++    uint32_t last_chunk_payload_bytes() const;
++    std::string last_chunk_server_request_id() const;
++
++private:
++    std::unique_ptr<impl> p_;
++};
++
++} // namespace cuprate_grpc_stream
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 089a69cf3..e5de32d82 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3335,7 +3335,7 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       : std::max(start_height, wallet_height);
+     uint64_t stream_stop_height = 0;
+     uint32_t stream_chunk_hint = m_grpc_stream_chunk_hint;
+-    size_t stream_queue_capacity = 0;
++    size_t stream_channels = 1;
+ 
+     // A daemon that is behind this wallet cannot provide a forward stream.
+     // Its chain locator resolves to an old common block, after which the
+@@ -3347,7 +3347,8 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     if (height_error)
+     {
+       MWARNING("grpc_stream: daemon height preflight failed: " << *height_error
+-        << " -- retaining the existing unbounded stream plan");
++        << " -- using bin RPC because a bounded parallel range plan requires a tip");
++      return false;
+     }
+     else if (daemon_height <= wallet_height)
+     {
+@@ -3365,32 +3366,30 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     }
+     else
+     {
+-      // A single ordered stream is intentional: HTTP/2 flow control already
+-      // overlaps server serialisation, transfer and wallet scanning. Three
+-      // buffered chunks keep that pipeline full without unbounded memory;
+-      // independent parallel streams would add reordering/reorg complexity.
++      // The range pool commits strictly in height order. It starts with one
++      // locator-validated range and then opens non-overlapping ranges on up to
++      // eight independent HTTP/2 connections. Each connection buffers at most
++      // one completed chunk, bounding reordering memory to eight chunks.
+       constexpr uint32_t minimum_chunk_hint = 16;
+       const uint32_t configured_chunk_hint = std::max<uint32_t>(minimum_chunk_hint,
+-        std::min<uint32_t>(m_grpc_stream_chunk_hint, 10000));
++        std::min<uint32_t>(m_grpc_stream_chunk_hint, 512));
+       const uint64_t blocks_to_tip = daemon_height - effective_start;
+-      const uint64_t three_chunk_window = static_cast<uint64_t>(configured_chunk_hint) * 3;
+-      const char* plan = "continuous";
+-      stream_queue_capacity = 3;
++      const char* plan = "pool-1";
++      stream_stop_height = daemon_height - 1;
+ 
+       if (blocks_to_tip <= configured_chunk_hint)
+       {
+         stream_chunk_hint = static_cast<uint32_t>(std::max<uint64_t>(
+           minimum_chunk_hint, blocks_to_tip));
+         stream_stop_height = daemon_height - 1;
+-        stream_queue_capacity = 1;
+         plan = "one-chunk";
+       }
+-      else if (blocks_to_tip <= three_chunk_window)
++      else
+       {
+-        stream_chunk_hint = static_cast<uint32_t>(std::max<uint64_t>(
+-          minimum_chunk_hint, (blocks_to_tip + 2) / 3));
+-        stream_stop_height = daemon_height - 1;
+-        plan = "three-chunk";
++        while (stream_channels < 8
++          && blocks_to_tip > static_cast<uint64_t>(configured_chunk_hint) * stream_channels * 2)
++          stream_channels *= 2;
++        plan = stream_channels == 8 ? "pool-8" : stream_channels == 4 ? "pool-4" : stream_channels == 2 ? "pool-2" : "pool-1";
+       }
+ 
+       MWARNING("grpc_stream: adaptive plan=" << plan
+@@ -3400,19 +3399,11 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+         << " start=" << effective_start
+         << " stop=" << stream_stop_height
+         << " chunk_hint=" << stream_chunk_hint
+-        << " queue_capacity=" << stream_queue_capacity);
++        << " channels=" << stream_channels);
+     }
+     if (!m_grpc_stream_client)
+-      m_grpc_stream_client = std::make_unique<cuprate_grpc_stream::cuprate_grpc_stream_client>();
++      m_grpc_stream_client = std::make_unique<cuprate_grpc_stream::cuprate_grpc_block_range_pool>();
+     m_grpc_stream_client->close();
+-    if (!m_grpc_stream_client->connect(m_grpc_stream_endpoint))
+-    {
+-      MWARNING("grpc_stream: connect failed to '" << m_grpc_stream_endpoint
+-        << "' err=" << m_grpc_stream_client->last_error_message()
+-        << " -- falling back to bin RPC for this session");
+-      m_grpc_stream_fallback_to_bin = true;
+-      return false;
+-    }
+     std::ostringstream sid;
+     sid << "wallet-" << std::chrono::system_clock::now().time_since_epoch().count()
+         << "-h" << effective_start;
+@@ -3432,8 +3423,8 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       chain_locator.emplace_back(
+           reinterpret_cast<const char*>(&genesis_or_oldest), sizeof(genesis_or_oldest));
+     }
+-    if (!m_grpc_stream_client->open_stream(effective_start, stream_stop_height, /*prune=*/true,
+-        stream_chunk_hint, m_grpc_stream_session_id, chain_locator, stream_queue_capacity))
++    if (!m_grpc_stream_client->open(m_grpc_stream_endpoint, effective_start, stream_stop_height,
++        stream_chunk_hint, stream_channels, m_grpc_stream_session_id, chain_locator))
+     {
+       MWARNING("grpc_stream: open_stream failed at start=" << effective_start
+         << " err=" << m_grpc_stream_client->last_error_message()
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index ba2a34d72..62964ca0a 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -74,7 +74,7 @@
+ #include "wallet_rpc_helpers.h"
+ 
+ #ifdef MONERO_GRPC_STREAM
+-#include "grpc_stream/grpc_block_stream_client.h"
++#include "grpc_stream/grpc_block_range_pool.h"
+ #endif
+ 
+ #undef MONERO_DEFAULT_LOG_CATEGORY
+@@ -2001,7 +2001,7 @@ private:
+     const std::unique_ptr<epee::net_utils::http::abstract_http_client> m_http_client;
+     std::vector<std::unique_ptr<epee::net_utils::http::abstract_http_client>> m_pull_clients;
+ #ifdef MONERO_GRPC_STREAM
+-    std::unique_ptr<cuprate_grpc_stream::cuprate_grpc_stream_client> m_grpc_stream_client;
++    std::unique_ptr<cuprate_grpc_stream::cuprate_grpc_block_range_pool> m_grpc_stream_client;
+     std::string  m_grpc_stream_endpoint;
+     std::string  m_grpc_stream_session_id;
+     bool         m_grpc_stream_active = false;
+-- 
+2.50.1 (Apple Git-155)
+

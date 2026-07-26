@@ -1,0 +1,144 @@
+From 9f7fac39265acb2bc4b92fe1efe7fd12791c6977 Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <rolandkohlhuber@Rolands-MacBook-Air.local>
+Date: Sat, 25 Jul 2026 14:12:52 -0500
+Subject: [PATCH 1/6] curve: reuse prepared scalar digits across wallet batch
+
+---
+ curve25519-dalek/src/backend/mod.rs           | 24 ++++++++++++++
+ .../serial/scalar_mul/variable_base.rs        | 15 +++++----
+ .../vector/scalar_mul/variable_base.rs        | 13 ++++----
+ curve25519-dalek/src/edwards.rs               | 32 +++++++++++++++++++
+ 4 files changed, 71 insertions(+), 13 deletions(-)
+
+diff --git a/curve25519-dalek/src/backend/mod.rs b/curve25519-dalek/src/backend/mod.rs
+index 9ad1dd3..8f7808d 100644
+--- a/curve25519-dalek/src/backend/mod.rs
++++ b/curve25519-dalek/src/backend/mod.rs
+@@ -236,6 +236,30 @@ pub fn variable_base_mul(point: &EdwardsPoint, scalar: &Scalar) -> EdwardsPoint
+     }
+ }
+ 
++/// Perform constant-time, variable-base scalar multiplication with a
++/// precomputed signed radix-16 scalar.
++pub fn variable_base_mul_precomputed(
++    point: &EdwardsPoint,
++    scalar_digits: &[i8; 64],
++) -> EdwardsPoint {
++    match get_selected_backend() {
++        #[cfg(curve25519_dalek_backend = "simd")]
++        BackendKind::Avx2 => {
++            vector::scalar_mul::variable_base::spec_avx2::mul_precomputed(point, scalar_digits)
++        }
++        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++        BackendKind::Avx512 => {
++            vector::scalar_mul::variable_base::spec_avx512ifma_avx512vl::mul_precomputed(
++                point,
++                scalar_digits,
++            )
++        }
++        BackendKind::Serial => {
++            serial::scalar_mul::variable_base::mul_precomputed(point, scalar_digits)
++        }
++    }
++}
++
+ /// Compute \\(aA + bB\\) in variable time, where \\(B\\) is the Ed25519 basepoint.
+ #[allow(non_snake_case)]
+ pub fn vartime_double_base_mul(a: &Scalar, A: &EdwardsPoint, b: &Scalar) -> EdwardsPoint {
+diff --git a/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs b/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs
+index 1de84bc..1a9e6a7 100644
+--- a/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs
++++ b/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs
+@@ -9,15 +9,16 @@ use crate::window::LookupTable;
+ /// Perform constant-time, variable-base scalar multiplication.
+ #[rustfmt::skip] // keep alignment of explanatory comments
+ pub(crate) fn mul(point: &EdwardsPoint, scalar: &Scalar) -> EdwardsPoint {
++    let scalar_digits = scalar.as_radix_16();
++    mul_precomputed(point, &scalar_digits)
++}
++
++/// Perform constant-time, variable-base scalar multiplication using an
++/// already computed signed radix-16 representation of the scalar.
++#[rustfmt::skip]
++pub(crate) fn mul_precomputed(point: &EdwardsPoint, scalar_digits: &[i8; 64]) -> EdwardsPoint {
+     // Construct a lookup table of [P,2P,3P,4P,5P,6P,7P,8P]
+     let lookup_table = LookupTable::<ProjectiveNielsPoint>::from(point);
+-    // Setting s = scalar, compute
+-    //
+-    //    s = s_0 + s_1*16^1 + ... + s_63*16^63,
+-    //
+-    // with `-8 ≤ s_i < 8` for `0 ≤ i < 63` and `-8 ≤ s_63 ≤ 8`.
+-    // This decomposition requires s < 2^255, which is guaranteed by Scalar invariant #1.
+-    let scalar_digits = scalar.as_radix_16();
+     // Compute s*P as
+     //
+     //    s*P = P*(s_0 +   s_1*16^1 +   s_2*16^2 + ... +   s_63*16^63)
+diff --git a/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs b/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs
+index 9f924f2..6d32ac3 100644
+--- a/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs
++++ b/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs
+@@ -19,14 +19,15 @@ pub mod spec {
+ 
+     /// Perform constant-time, variable-base scalar multiplication.
+     pub fn mul(point: &EdwardsPoint, scalar: &Scalar) -> EdwardsPoint {
++        let scalar_digits = scalar.as_radix_16();
++        mul_precomputed(point, &scalar_digits)
++    }
++
++    /// Perform constant-time, variable-base scalar multiplication using an
++    /// already computed signed radix-16 representation of the scalar.
++    pub fn mul_precomputed(point: &EdwardsPoint, scalar_digits: &[i8; 64]) -> EdwardsPoint {
+         // Construct a lookup table of [P,2P,3P,4P,5P,6P,7P,8P]
+         let lookup_table = LookupTable::<CachedPoint>::from(point);
+-        // Setting s = scalar, compute
+-        //
+-        //    s = s_0 + s_1*16^1 + ... + s_63*16^63,
+-        //
+-        // with `-8 ≤ s_i < 8` for `0 ≤ i < 63` and `-8 ≤ s_63 ≤ 8`.
+-        let scalar_digits = scalar.as_radix_16();
+         // Compute s*P as
+         //
+         //    s*P = P*(s_0 +   s_1*16^1 +   s_2*16^2 + ... +   s_63*16^63)
+diff --git a/curve25519-dalek/src/edwards.rs b/curve25519-dalek/src/edwards.rs
+index 856fac1..82bac08 100644
+--- a/curve25519-dalek/src/edwards.rs
++++ b/curve25519-dalek/src/edwards.rs
+@@ -152,6 +152,38 @@ use crate::traits::MultiscalarMul;
+ #[cfg(feature = "alloc")]
+ use crate::traits::{VartimeMultiscalarMul, VartimePrecomputedMultiscalarMul};
+ 
++/// A scalar prepared for repeated constant-time multiplication with distinct
++/// Edwards points.
++///
++/// This is useful for batch protocols that multiply many different points by
++/// one secret scalar. Preparing it once avoids repeating the scalar's signed
++/// radix-16 decomposition for every point. Point lookup and selection remain
++/// constant time with respect to the scalar.
++pub struct PreparedVariableBaseScalar {
++    radix_16: [i8; 64],
++}
++
++impl PreparedVariableBaseScalar {
++    /// Prepare a scalar for repeated variable-base multiplication.
++    pub fn new(scalar: &Scalar) -> Self {
++        Self {
++            radix_16: scalar.as_radix_16(),
++        }
++    }
++
++    /// Multiply `point` by this prepared scalar in constant time.
++    pub fn mul(&self, point: &EdwardsPoint) -> EdwardsPoint {
++        crate::backend::variable_base_mul_precomputed(point, &self.radix_16)
++    }
++}
++
++#[cfg(feature = "zeroize")]
++impl Drop for PreparedVariableBaseScalar {
++    fn drop(&mut self) {
++        self.radix_16.zeroize();
++    }
++}
++
+ // ------------------------------------------------------------------------
+ // Compressed points
+ // ------------------------------------------------------------------------

@@ -197,6 +197,11 @@ internal object NativeMoneroWalletJni {
     nativePersistOpenWallets()
   }
 
+  fun closeAllWallets() {
+    requireLoaded()
+    nativeCloseAllWallets()
+  }
+
   fun getAddress(walletId: String, accountIndex: Double, addressIndex: Double): String {
     requireLoaded()
     return nativeGetAddress(walletId, accountIndex, addressIndex)
@@ -406,6 +411,7 @@ internal object NativeMoneroWalletJni {
   @JvmStatic private external fun nativeStartRefresh(walletId: String)
   @JvmStatic private external fun nativeStopRefresh(walletId: String)
   @JvmStatic private external fun nativePersistOpenWallets()
+  @JvmStatic private external fun nativeCloseAllWallets()
 
   @JvmStatic private external fun nativeGetAddress(
     walletId: String,

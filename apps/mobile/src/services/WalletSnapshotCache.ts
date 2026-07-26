@@ -1,14 +1,16 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-
-import type { WalletSnapshot } from "./NativeMoneroWallet";
+import type { WalletSnapshot } from './NativeMoneroWallet';
+import {
+  loadProtectedMetadata,
+  storeProtectedMetadata,
+} from './ProtectedMetadataStorage';
 
 export const WALLET_SNAPSHOT_CACHE_STORAGE_KEY =
-  "monero-fast-wallet.wallet-snapshots.v1";
+  'monero-fast-wallet.wallet-snapshots.v1';
 
 export type WalletSnapshotCache = Record<string, WalletSnapshot>;
 
 export async function loadWalletSnapshotCache(): Promise<WalletSnapshotCache> {
-  const value = await AsyncStorage.getItem(WALLET_SNAPSHOT_CACHE_STORAGE_KEY);
+  const value = await loadProtectedMetadata(WALLET_SNAPSHOT_CACHE_STORAGE_KEY);
   return parseWalletSnapshotCache(value);
 }
 
@@ -40,7 +42,7 @@ export async function pruneWalletSnapshotCache(
 async function saveWalletSnapshotCache(
   cache: WalletSnapshotCache,
 ): Promise<void> {
-  await AsyncStorage.setItem(
+  await storeProtectedMetadata(
     WALLET_SNAPSHOT_CACHE_STORAGE_KEY,
     JSON.stringify(cache),
   );
@@ -53,16 +55,16 @@ function parseWalletSnapshotCache(value: string | null): WalletSnapshotCache {
 
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return {};
     }
 
     return Object.fromEntries(
       Object.entries(parsed)
-        .map(([walletId, snapshot]) => [
-          walletId,
-          parseWalletSnapshot(snapshot),
-        ] as const)
+        .map(
+          ([walletId, snapshot]) =>
+            [walletId, parseWalletSnapshot(snapshot)] as const,
+        )
         .filter((entry): entry is readonly [string, WalletSnapshot] =>
           Boolean(entry[1]),
         ),
@@ -73,7 +75,7 @@ function parseWalletSnapshotCache(value: string | null): WalletSnapshotCache {
 }
 
 function parseWalletSnapshot(value: unknown): WalletSnapshot | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return undefined;
   }
 
@@ -115,11 +117,11 @@ function parseWalletSnapshot(value: unknown): WalletSnapshot | undefined {
 }
 
 function parseString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function parseNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
+  return typeof value === 'number' && Number.isFinite(value)
     ? value
     : undefined;
 }

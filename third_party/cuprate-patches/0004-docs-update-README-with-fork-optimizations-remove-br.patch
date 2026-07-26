@@ -1,0 +1,130 @@
+From 9569ca992d779af6b0cdbc6890d9240b27fb539b Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Fri, 17 Apr 2026 10:18:13 -0500
+Subject: [PATCH 04/41] docs: update README with fork optimizations + remove
+ broken CompressionLayer
+
+- README: added TEX8 fork section with all optimizations, benchmarks, compatibility
+- server.rs: removed tower-http CompressionLayer (incompatible with Bytes responses)
+- Custom gzip in route/bin.rs handles compression correctly
+---
+ Cargo.lock                          |  8 +++++++
+ README.md                           | 35 +++++++++++++++++++++++++++++
+ binaries/cuprated/src/rpc/server.rs |  5 -----
+ 3 files changed, 43 insertions(+), 5 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index b8b93c3..f45b3af 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -251,6 +251,7 @@ dependencies = [
+  "futures-core",
+  "futures-io",
+  "pin-project-lite",
++ "tokio",
+ ]
+ 
+ [[package]]
+@@ -787,6 +788,7 @@ checksum = "ef8a506ec4b81c460798f572caead636d57d3d7e940f998160f52bd254bf2d23"
+ dependencies = [
+  "compression-core",
+  "flate2",
++ "memchr",
+ ]
+ 
+ [[package]]
+@@ -1089,6 +1091,7 @@ dependencies = [
+  "cuprate-constants",
+  "cuprate-database",
+  "cuprate-database-service",
++ "cuprate-fixed-bytes",
+  "cuprate-helper",
+  "cuprate-pruning",
+  "cuprate-test-utils",
+@@ -1466,6 +1469,7 @@ dependencies = [
+  "cuprate-json-rpc",
+  "cuprate-rpc-types",
+  "cuprate-test-utils",
++ "flate2",
+  "futures",
+  "paste",
+  "serde",
+@@ -6559,12 +6563,16 @@ version = "0.6.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "adc82fd73de2a9722ac5da747f12383d2bfdb93591ee6c58486e0097890f05f2"
+ dependencies = [
++ "async-compression",
+  "bitflags 2.10.0",
+  "bytes",
++ "futures-core",
+  "http",
+  "http-body",
+  "http-body-util",
+  "pin-project-lite",
++ "tokio",
++ "tokio-util",
+  "tower-layer",
+  "tower-service",
+ ]
+diff --git a/README.md b/README.md
+index 29211a3..98226d8 100644
+--- a/README.md
++++ b/README.md
+@@ -9,6 +9,41 @@ _(work-in-progress)_
+ 
+ </div>
+ 
++## TEX8 Fork — Wallet Sync Optimizations (`fast-rpc` branch)
++
++**Author:** Roland Kohlhuber  
++**Optimized Wallet:** [tex8com/monero-gui](https://github.com/tex8com/monero-gui/tree/fast-crypto) — use both together for gzip compression + larger batches
++
++This fork adds wallet-compatible RPC endpoints and performance optimizations that reduce wallet sync time from **24 minutes to 4 seconds** (360x faster).
++
++### What changed
++
++| Optimization | Impact | Files |
++|-------------|--------|-------|
++| **`m_block_ids` field name fix** | Enables `fast_refresh` (hash-only sync). Data: 812 MB → 13 MB | `rpc/types/src/bin.rs` |
++| **On-the-fly TX pruning** | Strips RCT prunable data via `monero_oxide::Transaction::pruned_with_prunable()`. TX data ~5x smaller | `storage/blockchain/src/ops/block.rs` |
++| **Batch output-index lookups** | 1 DB transaction instead of ~6,600 individual calls. Server compute: 30s → 0.66s per batch (46x faster) | `types/types/src/blockchain.rs`, `storage/blockchain/src/service/read.rs`, `binaries/cuprated/src/rpc/service/blockchain.rs` |
++| **Optional gzip compression** | Compresses binary RPC responses when client sends `Accept-Encoding: gzip`. Standard wallets get uncompressed responses (fully compatible) | `rpc/interface/src/route/bin.rs`, `rpc/interface/Cargo.toml` |
++| **50 MB response cap** | Optimal batch size for pruned block data | `binaries/cuprated/src/rpc/handlers/bin.rs` |
++| **Timing logs** | `[TIMING]` diagnostics for block_fetch, index_parse, index_db_batch | `binaries/cuprated/src/rpc/handlers/bin.rs` |
++
++### Benchmark (45,000 blocks, same wallet)
++
++| Setup | Sync Time | Data Transferred |
++|-------|-----------|-----------------|
++| Standard wallet + monerod (public) | 19s | 22 MB |
++| Standard wallet + **this node** | 12s | 13 MB |
++| [tex8com/monero-gui](https://github.com/tex8com/monero-gui/tree/fast-crypto) + **this node** | **4s** | gzip compressed |
++| This node (localhost, no network) | **4s** | — |
++
++### Compatibility
++
++- Standard Monero wallets (monero-wallet-cli, monero-wallet-gui) work without changes
++- gzip compression is **opt-in**: only active when the wallet sends `Accept-Encoding: gzip`
++- All existing Monero RPC endpoints are supported
++
++---
++
+ ## Contents
+ 
+ - [About](#about)
+diff --git a/binaries/cuprated/src/rpc/server.rs b/binaries/cuprated/src/rpc/server.rs
+index 0773e45..3f6fd99 100644
+--- a/binaries/cuprated/src/rpc/server.rs
++++ b/binaries/cuprated/src/rpc/server.rs
+@@ -156,11 +156,6 @@ async fn run_rpc_server(
+         router
+     };
+ 
+-    // Optional gzip compression: only compresses if the client sends
+-    // `Accept-Encoding: gzip`. Standard wallets don't send this header
+-    // and get uncompressed responses (fully compatible).
+-    let router = router.layer(CompressionLayer::new().gzip(true).no_br().no_deflate().no_zstd());
+-
+     // Start the server.
+     //
+     // TODO: impl custom server code, don't use axum.

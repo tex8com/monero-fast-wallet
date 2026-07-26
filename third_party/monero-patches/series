@@ -1,0 +1,22 @@
+# Apply in this exact order to upstream.lock:upstream_commit.
+0001-fix-Ledger-crash-on-macOS-26-PAC-pointer-authenticat.patch
+0002-feat-all-modifications-fast-crypto-increased-limits-.patch
+0003-feat-add-gzip-decompression-support-for-RPC-response.patch
+0004-perf-parallel-block-fetch-with-8-connections-in-pull.patch
+0005-perf-parallel-fast_refresh-hot-block-diagnostics-cor.patch
+0006-perf-tune-parallel-sync-16-clients-speculative-prefe.patch
+0007-grpc-stream-opt-in-cmake-infrastructure-skeleton-cli.patch
+0008-grpc-stream-real-client-implementation-standalone-sm.patch
+0009-grpc-stream-wallet2-integration-pull_blocks-routes-t.patch
+0010-grpc-stream-CUPRATE_GRPC_ENDPOINT-env-var-fallback-i.patch
+0011-grpc-stream-fix-use-gRPC-in-background-sync-mode-dis.patch
+0012-grpc-stream-open-stream-at-m_blockchain.size-not-cal.patch
+0013-grpc-stream-detect-drift-and-reopen-when-stream-fall.patch
+0014-Expose-mobile-gRPC-wallet-core-support.patch
+0015-grpc-stream-preserve-getblocks-chain-locator-semanti.patch
+0016-Expose-Ledger-mobile-transport-and-output-reconcilia.patch
+0017-Adapt-gRPC-wallet-stream-to-daemon-distance.patch
+0018-grpc-stream-bounded-ordered-range-pool.patch
+0019-add-reproducible-metal-key-derivation-testbench.patch
+0020-wallet-batch-CPU-key-derivations-through-Rust.patch
+0021-wallet-add-native-Metal-derivation-backend.patch

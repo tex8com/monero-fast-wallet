@@ -4,7 +4,8 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
 
-grpc_version="${GRPC_VERSION:-v1.80.0}"
+grpc_version="v1.80.0"
+grpc_commit="f5e2d6e856176c2f6b7691032adfefe21e5f64c1"
 output_root="${OUTPUT_ROOT:-${repo_root}/build/ios-deps}"
 sources_dir="${SOURCES_DIR:-${output_root}/sources}"
 work_dir="${WORK_DIR:-${output_root}/work}"
@@ -40,23 +41,15 @@ sdk_path_for_label() {
 
 clone_grpc_source() {
   local source_dir="$1"
-
-  if [[ -f "${source_dir}/CMakeLists.txt" ]]; then
-    echo "==> reuse gRPC source ${source_dir}"
-    return 0
-  fi
-
-  rm -rf "${source_dir}"
-  git clone --depth 1 --branch "${grpc_version}" https://github.com/grpc/grpc "${source_dir}"
-  git -C "${source_dir}" submodule update --init --depth 1 \
+  "${script_dir}/checkout-pinned-source.sh" \
+    https://github.com/grpc/grpc.git \
+    "${grpc_commit}" \
+    "${source_dir}" \
     third_party/abseil-cpp \
     third_party/cares/cares \
     third_party/protobuf \
     third_party/re2 \
     third_party/zlib
-
-  rm -rf "${source_dir}/.git"
-  find "${source_dir}" -name .git -type f -delete
 }
 
 write_pkg_config_aliases() {

@@ -1,0 +1,72 @@
+From 403a2113bcb41ff24312855199447aa7572d5921 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Sat, 4 Jul 2026 18:07:34 -0500
+Subject: [PATCH 16/41] Fix Cuprate send RPC compatibility
+
+---
+ .../cuprated/src/rpc/handlers/other_json.rs    | 18 ++++++++++++++++--
+ binaries/cuprated/src/rpc/server.rs            |  1 +
+ 2 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/binaries/cuprated/src/rpc/handlers/other_json.rs b/binaries/cuprated/src/rpc/handlers/other_json.rs
+index 15a572a..2575d84 100644
+--- a/binaries/cuprated/src/rpc/handlers/other_json.rs
++++ b/binaries/cuprated/src/rpc/handlers/other_json.rs
+@@ -383,7 +383,16 @@ async fn send_raw_transaction(
+         tx_extra_too_big: false,
+     };
+ 
+-    let tx = Transaction::read(&mut request.tx_as_hex.as_slice())?;
++    let tx = match Transaction::read(&mut request.tx_as_hex.as_slice()) {
++        Ok(tx) => tx,
++        Err(e) => {
++            resp.base.response_base.status = Status::Failed;
++            resp.invalid_input = true;
++            resp.not_relayed = true;
++            resp.reason = format!("Failed to parse transaction: {e}");
++            return Ok(resp);
++        }
++    };
+ 
+     if request.do_sanity_checks {
+         /// FIXME: these checks could be defined elsewhere.
+@@ -464,7 +473,10 @@ async fn send_raw_transaction(
+         // > making nodes hold txs in their pool that don't get passed
+         // > around the network can cause issues, like targeted tx pool double spends
+         // > there is also no reason to have this for public RPC
+-        return Err(anyhow!("do_not_relay is not supported on restricted RPC"));
++        resp.base.response_base.status = Status::Failed;
++        resp.not_relayed = true;
++        resp.reason = "do_not_relay is not supported on restricted RPC".to_string();
++        return Ok(resp);
+     }
+ 
+     let txs = vec![tx.serialize().into()];
+@@ -482,6 +494,7 @@ async fn send_raw_transaction(
+         return Ok(resp);
+     }
+ 
++    resp.base.response_base.status = Status::Failed;
+     resp.not_relayed = true;
+ 
+     // <https://github.com/monero-project/monero/blob/cc73fe71162d564ffda8e549b79a350bca53c454/src/rpc/core_rpc_server.cpp#L124>
+@@ -514,6 +527,7 @@ async fn send_raw_transaction(
+             add_reason(&mut reasons, reason);
+         }
+     }
++    resp.reason = reasons;
+ 
+     Ok(resp)
+ }
+diff --git a/binaries/cuprated/src/rpc/server.rs b/binaries/cuprated/src/rpc/server.rs
+index aaed5bf..60dd279 100644
+--- a/binaries/cuprated/src/rpc/server.rs
++++ b/binaries/cuprated/src/rpc/server.rs
+@@ -182,6 +182,7 @@ async fn run_rpc_server(
+         .other_sendrawtransaction()
+         .other_get_transaction_pool()
+         .other_get_transaction_pool_hashes()
++        .other_get_transaction_pool_stats()
+         .other_get_outs()
+         .other_get_peer_list()
+         .other_get_net_stats()

@@ -1,0 +1,5 @@
+repository=https://github.com/dalek-cryptography/curve25519-dalek.git
+base_commit=5312a0311ec40df95be953eacfa8a11b9a34bc54
+base_crate_tree=70ad9be1bb6874750723f3db00d6a29fe6d5d827
+patched_crate_tree=ab74e47faf40dce292977c1ef1f22949d65ae68f
+source_result_commit=b63ac1ee40ea2137e95b1816f88ce390f648bd6a

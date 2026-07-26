@@ -21,19 +21,6 @@ export interface FastReceiveWatchStatusResult {
   lastScannedHeight?: number;
 }
 
-export interface CheckKeyImageStatusInput {
-  scannerUrl: string;
-  scannerAuthToken?: string;
-  identityId: string;
-  keyImages: string[];
-}
-
-export interface CheckWatchRegistrationInput {
-  scannerUrl: string;
-  scannerAuthToken?: string;
-  identityId: string;
-}
-
 export type ScannerFetch = (
   url: string,
   init: {
@@ -77,71 +64,6 @@ export async function verifyFastReceiveScannerCapability(
   if (!isRecord(parsed) || parsed.ok !== true) {
     throw new Error('The selected server is not a Fast Receive scanner');
   }
-}
-
-export async function checkFastReceiveKeyImages(
-  input: CheckKeyImageStatusInput,
-  fetchImpl: ScannerFetch = defaultFetch(),
-): Promise<KeyImageStatusResult> {
-  const scannerUrl = normalizeScannerUrl(input.scannerUrl);
-  const identityId = cleanRequired(input.identityId, "identityId");
-  const keyImages = validateKeyImages(input.keyImages);
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-  };
-  const token = input.scannerAuthToken?.trim();
-  if (token) {
-    headers.authorization = `Bearer ${token}`;
-  }
-
-  const response = await fetchImpl(
-    `${scannerUrl}/v1/fast-receive/key-images/status`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        identity_id: identityId,
-        key_images: keyImages,
-      }),
-    },
-  );
-  const bodyText = await response.text();
-  if (!response.ok) {
-    throw new Error(`Fast receive scanner key-image check failed with HTTP ${response.status}`);
-  }
-
-  return parseKeyImageStatusResponse(bodyText, identityId, keyImages);
-}
-
-export async function checkFastReceiveWatchRegistration(
-  input: CheckWatchRegistrationInput,
-  fetchImpl: ScannerFetch = defaultFetch(),
-): Promise<FastReceiveWatchStatusResult> {
-  const scannerUrl = normalizeScannerUrl(input.scannerUrl);
-  const identityId = cleanRequired(input.identityId, "identityId");
-  const headers = scannerHeaders(input.scannerAuthToken);
-
-  const response = await fetchImpl(
-    `${scannerUrl}/v1/fast-receive/watch/${encodeURIComponent(identityId)}`,
-    {
-      method: "GET",
-      headers,
-    },
-  );
-  const bodyText = await response.text();
-  if (response.status === 404) {
-    return {
-      identityId,
-      registered: false,
-      scannerStatus: "missing",
-      notificationsEnabled: false,
-    };
-  }
-  if (!response.ok) {
-    throw new Error(`Fast receive scanner watch check failed with HTTP ${response.status}`);
-  }
-
-  return parseWatchStatusResponse(bodyText, identityId);
 }
 
 export function parseKeyImageStatusResponse(
@@ -223,23 +145,31 @@ function parseKeyImageStatusItem(
   };
 }
 
-function normalizeScannerUrl(value: string): string {
+export function normalizeScannerUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/g, "");
-  if (!/^https?:\/\/[^/]+/i.test(trimmed)) {
-    throw new Error("scannerUrl must be an HTTP(S) URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("scannerUrl must be a valid HTTPS origin");
   }
-  return trimmed;
+  if (
+    parsed.protocol !== 'https:' ||
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    (parsed.pathname !== '' && parsed.pathname !== '/')
+  ) {
+    throw new Error(
+      'scannerUrl must be an HTTPS origin without credentials, paths, queries, or fragments',
+    );
+  }
+  return parsed.origin;
 }
 
-function cleanRequired(value: string, name: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error(`${name} must not be empty`);
-  }
-  return trimmed;
-}
-
-function validateKeyImages(keyImages: string[]): string[] {
+export function validateKeyImages(keyImages: string[]): string[] {
   if (keyImages.length === 0 || keyImages.length > 1024) {
     throw new Error("keyImages must contain between 1 and 1024 items");
   }
@@ -281,15 +211,4 @@ function defaultFetch(): ScannerFetch {
     throw new Error("fetch is not available for fast receive scanner calls");
   }
   return fetchImpl;
-}
-
-function scannerHeaders(scannerAuthToken?: string): Record<string, string> {
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-  };
-  const token = scannerAuthToken?.trim();
-  if (token) {
-    headers.authorization = `Bearer ${token}`;
-  }
-  return headers;
 }

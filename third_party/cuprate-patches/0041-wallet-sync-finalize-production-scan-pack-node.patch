@@ -1,0 +1,1524 @@
+From cd1ec57ab44301b93a21e9b504b9d913b88fc871 Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <roland@tex8.com>
+Date: Sat, 25 Jul 2026 13:34:16 -0500
+Subject: [PATCH 41/41] wallet sync: finalize production scan pack node
+
+---
+ Cargo.lock                               |   1 +
+ binaries/cuprated/Cargo.toml             |   4 +-
+ binaries/cuprated/src/config.rs          |   5 +-
+ binaries/cuprated/src/config/args.rs     |   2 +-
+ binaries/cuprated/src/config/rpc.rs      |  12 +
+ binaries/cuprated/src/constants.rs       |   7 +
+ binaries/cuprated/src/main.rs            |  12 +-
+ binaries/cuprated/src/rpc.rs             |   2 +-
+ binaries/cuprated/src/rpc/grpc.rs        | 307 ++++++++++----
+ binaries/cuprated/src/rpc/rpc_handler.rs |  10 +-
+ binaries/cuprated/src/rpc/scanpack.rs    | 488 +++++++++++++++++++----
+ binaries/cuprated/src/rpc/server.rs      |  93 ++++-
+ binaries/cuprated/src/version.rs         |   8 +-
+ 13 files changed, 776 insertions(+), 175 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 2e39dd9..332f873 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1700,6 +1700,7 @@ dependencies = [
+  "hex",
+  "hex-literal 1.1.0",
+  "indexmap 2.12.0",
++ "libc",
+  "monero-address",
+  "monero-oxide",
+  "nu-ansi-term 0.46.0",
+diff --git a/binaries/cuprated/Cargo.toml b/binaries/cuprated/Cargo.toml
+index c4d829a..0621afb 100644
+--- a/binaries/cuprated/Cargo.toml
++++ b/binaries/cuprated/Cargo.toml
+@@ -81,7 +81,7 @@ strum                 = { workspace = true }
+ thiserror             = { workspace = true }
+ thread_local          = { workspace = true }
+ tokio-util            = { workspace = true, features = ["rt"] }
+-tokio-stream          = { workspace = true, features = ["sync"] }
++tokio-stream          = { workspace = true, features = ["sync", "net"] }
+ tokio                 = { workspace = true }
+ toml                  = { workspace = true, features = ["parse", "display", "serde"]}
+ toml_edit             = { workspace = true, features = ["parse", "display"] }
+@@ -95,6 +95,7 @@ tower-http            = { workspace = true, features = ["limit", "compression-gz
+ tracing-appender      = { workspace = true }
+ tracing-subscriber    = { workspace = true, features = ["std", "fmt", "default"] }
+ tracing               = { workspace = true, features = ["default"] }
++libc                  = "0.2"
+ 
+ [dev-dependencies]
+ tempfile          = { workspace = true }
+@@ -107,4 +108,3 @@ tonic-build = { workspace = true, features = ["prost", "transport"] }
+ 
+ [lints]
+ workspace = true
+-
+diff --git a/binaries/cuprated/src/config.rs b/binaries/cuprated/src/config.rs
+index 6d9db4c..17aaabe 100644
+--- a/binaries/cuprated/src/config.rs
++++ b/binaries/cuprated/src/config.rs
+@@ -48,7 +48,10 @@ mod macros;
+ use fs::FileSystemConfig;
+ pub use p2p::{p2p_port, P2PConfig};
+ use rayon::RayonConfig;
+-pub use rpc::{grpc_rpc_port, restricted_rpc_port, unrestricted_rpc_port, GrpcConfig, RpcConfig, WalletScanCacheConfig};
++pub use rpc::{
++    grpc_rpc_port, restricted_rpc_port, unrestricted_rpc_port, GrpcConfig, RpcConfig,
++    WalletScanCacheConfig,
++};
+ pub use storage::{StorageConfig, TxpoolConfig};
+ use tokio::TokioConfig;
+ use tor::TorConfig;
+diff --git a/binaries/cuprated/src/config/args.rs b/binaries/cuprated/src/config/args.rs
+index aefad34..d0219b8 100644
+--- a/binaries/cuprated/src/config/args.rs
++++ b/binaries/cuprated/src/config/args.rs
+@@ -9,7 +9,7 @@ use crate::{config::Config, version::CupratedVersionInfo};
+ 
+ /// Cuprate Args.
+ #[derive(clap::Parser, Debug)]
+-#[command(about)]
++#[command(name = "tex8-fastwallet-cuprate", about)]
+ pub struct Args {
+     /// The network to run on.
+     #[arg(
+diff --git a/binaries/cuprated/src/config/rpc.rs b/binaries/cuprated/src/config/rpc.rs
+index d93399f..21bb173 100644
+--- a/binaries/cuprated/src/config/rpc.rs
++++ b/binaries/cuprated/src/config/rpc.rs
+@@ -205,6 +205,17 @@ config_struct! {
+         /// Type     | boolean
+         /// Examples | true, false
+         pub i_know_what_im_doing_allow_public_grpc: bool,
++
++        /// Optional Linux TCP congestion control algorithm for accepted
++        /// wallet-gRPC connections only, for example `"bbr"`.
++        ///
++        /// This is deliberately scoped to the separate gRPC listener. It
++        /// does not change the system default, P2P node synchronization, or
++        /// bin-RPC sockets. Leave it unset for the kernel default.
++        ///
++        /// Type     | string or omitted
++        /// Examples | "bbr", "cubic"
++        pub tcp_congestion_control: Option<String>,
+     }
+ }
+ 
+@@ -215,6 +226,7 @@ impl Default for GrpcConfig {
+             port: DefaultOrCustom::Default,
+             enable: false,
+             i_know_what_im_doing_allow_public_grpc: false,
++            tcp_congestion_control: None,
+         }
+     }
+ }
+diff --git a/binaries/cuprated/src/constants.rs b/binaries/cuprated/src/constants.rs
+index 60e7baf..ff13f9f 100644
+--- a/binaries/cuprated/src/constants.rs
++++ b/binaries/cuprated/src/constants.rs
+@@ -3,6 +3,12 @@ use std::time::Duration;
+ 
+ use const_format::formatcp;
+ 
++/// Stable product identity for the TEX8 Fast Wallet production node.
++///
++/// This is intentionally not injected into Monero's P2P handshake because the
++/// wire protocol has no free-form node-name field.
++pub const PRODUCT_NAME: &str = "tex8-fastwallet-cuprate";
++
+ /// `cuprated`'s semantic version (`MAJOR.MINOR.PATCH`) as string.
+ pub const VERSION: &str = clap::crate_version!();
+ 
+@@ -42,6 +48,7 @@ mod test {
+     #[test]
+     fn version() {
+         let semantic_version = format!("{MAJOR_VERSION}.{MINOR_VERSION}.{PATCH_VERSION}");
++        assert_eq!(PRODUCT_NAME, "tex8-fastwallet-cuprate");
+         assert_eq!(VERSION, VERSION);
+         assert_eq!(VERSION, "0.0.8");
+     }
+diff --git a/binaries/cuprated/src/main.rs b/binaries/cuprated/src/main.rs
+index 8a8388c..f20fd07 100644
+--- a/binaries/cuprated/src/main.rs
++++ b/binaries/cuprated/src/main.rs
+@@ -33,8 +33,11 @@ use cuprate_types::blockchain::BlockchainWriteRequest;
+ use txpool::IncomingTxHandler;
+ 
+ use crate::{
+-    blockchain::SyncNotify, config::Config, constants::PANIC_CRITICAL_SERVICE_ERROR,
+-    logging::CupratedTracingFilter, tor::initialize_tor_if_enabled,
++    blockchain::SyncNotify,
++    config::Config,
++    constants::{PANIC_CRITICAL_SERVICE_ERROR, PRODUCT_NAME},
++    logging::CupratedTracingFilter,
++    tor::initialize_tor_if_enabled,
+ };
+ 
+ mod blockchain;
+@@ -64,6 +67,11 @@ fn main() {
+     // Initialize logging.
+     logging::init_logging(&config);
+ 
++    info!(
++        product = PRODUCT_NAME,
++        "Starting TEX8 Fast Wallet production node"
++    );
++
+     //Printing configuration
+     info!("{config}");
+ 
+diff --git a/binaries/cuprated/src/rpc.rs b/binaries/cuprated/src/rpc.rs
+index 26653dc..500a919 100644
+--- a/binaries/cuprated/src/rpc.rs
++++ b/binaries/cuprated/src/rpc.rs
+@@ -4,9 +4,9 @@
+ 
+ mod constants;
+ pub(crate) mod grpc;
+-pub(crate) mod scanpack;
+ mod handlers;
+ mod rpc_handler;
++pub(crate) mod scanpack;
+ mod server;
+ mod service;
+ 
+diff --git a/binaries/cuprated/src/rpc/grpc.rs b/binaries/cuprated/src/rpc/grpc.rs
+index 23ca75d..aebeb1b 100644
+--- a/binaries/cuprated/src/rpc/grpc.rs
++++ b/binaries/cuprated/src/rpc/grpc.rs
+@@ -12,8 +12,8 @@
+ 
+ use std::pin::Pin;
+ use std::sync::{
+-    OnceLock,
+     atomic::{AtomicU64, Ordering},
++    OnceLock,
+ };
+ use std::time::{Instant, SystemTime, UNIX_EPOCH};
+ 
+@@ -23,19 +23,19 @@ use cuprate_fixed_bytes::ByteArrayVec;
+ use cuprate_helper::cast::{u64_to_usize, usize_to_u64};
+ use cuprate_rpc_types::bin::GetBlocksResponse;
+ use cuprate_types::{
+-    BlockCompleteEntry,
+     rpc::{BlockOutputIndices, PoolInfoExtent},
++    BlockCompleteEntry,
+ };
+ use futures::Stream;
+ use tokio::sync::mpsc;
+-use tokio_stream::wrappers::ReceiverStream;
++use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+ use tonic::{Request, Response, Status};
+ 
++use crate::config::WalletScanCacheConfig;
+ use crate::rpc::{
+     handlers::{bin as bin_handlers, helper as bin_helper},
+     CupratedRpcHandler,
+ };
+-use crate::config::WalletScanCacheConfig;
+ 
+ #[allow(
+     clippy::unnecessary_qualifications,
+@@ -118,6 +118,21 @@ fn sync_range_reads_enabled() -> bool {
+     })
+ }
+ 
++/// Enables per-chunk transport-boundary timestamps for an explicit diagnostic
++/// run.  This is intentionally opt-in: the normal sync trace remains useful
++/// in production without emitting another log line for every gRPC chunk.
++fn sync_deep_trace_enabled() -> bool {
++    static ENABLED: OnceLock<bool> = OnceLock::new();
++    *ENABLED.get_or_init(|| {
++        matches!(
++            std::env::var("CUPRATE_SYNC_DEEP_TRACE")
++                .as_deref()
++                .map(str::trim),
++            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
++        )
++    })
++}
++
+ struct FetchedChunk {
+     top_h: u64,
+     chain_height: usize,
+@@ -140,6 +155,14 @@ struct IndexedChunk {
+     index_metrics: bin_handlers::OutputIndicesMetrics,
+ }
+ 
++/// Internal only: records when the producer successfully inserted a chunk
++/// into the bounded channel.  The gRPC API continues to expose exactly the
++/// same `BlockChunk` messages.
++struct QueuedBlockChunk {
++    chunk: BlockChunk,
++    enqueued_at: Instant,
++}
++
+ #[derive(Clone)]
+ pub struct BlockStreamService {
+     pub handler: CupratedRpcHandler,
+@@ -190,7 +213,7 @@ impl BlockStream for BlockStreamService {
+             open_epoch_ms,
+         );
+ 
+-        let (tx, rx) = mpsc::channel::<Result<BlockChunk, Status>>(CHANNEL_CAPACITY);
++        let (tx, rx) = mpsc::channel::<QueuedBlockChunk>(CHANNEL_CAPACITY);
+         let mut handler = self.handler.clone();
+         let id_for_task = server_req_id.clone();
+         let id_for_close = server_req_id.clone();
+@@ -216,59 +239,153 @@ impl BlockStream for BlockStreamService {
+             }
+         });
+ 
+-        Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
++        // This closure runs when tonic polls our application stream.  Its
++        // delay is therefore the mpsc residence time up to tonic's demand;
++        // it deliberately does *not* claim to measure a completed TCP write.
++        let deep_trace = sync_deep_trace_enabled();
++        let outbound = ReceiverStream::new(rx).map(move |queued| {
++            if deep_trace {
++                let tonic_poll_ms = queued.enqueued_at.elapsed().as_secs_f64() * 1000.0;
++                eprintln!(
++                    "[SYNC_TRACE_SERVER_EGRESS] id={} seq={} start={} n_blocks={} payload_bytes={} mpsc_to_tonic_poll_ms={:.3}",
++                    queued.chunk.server_request_id,
++                    queued.chunk.chunk_seq,
++                    queued.chunk.start_height,
++                    queued.chunk.n_blocks,
++                    queued.chunk.payload_bytes,
++                    tonic_poll_ms,
++                );
++            }
++            Ok(queued.chunk)
++        });
++
++        Ok(Response::new(Box::pin(outbound)))
+     }
+ }
+ 
+ /// Build missing scan packs without blocking RPC serving. Existing packs are
+ /// immutable; a positive `max_blocks` turns the directory into a moving window.
+ pub fn spawn_scanpack_builder(mut state: CupratedRpcHandler, config: WalletScanCacheConfig) {
+-    let Some(store) = state.wallet_scan_packs.clone() else { return; };
+-    if !config.build_on_start { return; }
+-    let chunk_blocks = config.chunk_blocks.clamp(MIN_CHUNK_BLOCKS, MAX_CHUNK_BLOCKS);
++    let Some(store) = state.wallet_scan_packs.clone() else {
++        return;
++    };
++    if !config.build_on_start {
++        return;
++    }
++    let chunk_blocks = config
++        .chunk_blocks
++        .clamp(MIN_CHUNK_BLOCKS, MAX_CHUNK_BLOCKS);
+     tokio::spawn(async move {
+         loop {
+             let Ok((top_height, _)) = bin_helper::top_height(&mut state).await else {
+                 eprintln!("[SCANPACK] unable to obtain chain tip; retrying");
+-                tokio::time::sleep(std::time::Duration::from_secs(config.build_poll_seconds.max(1))).await;
++                tokio::time::sleep(std::time::Duration::from_secs(
++                    config.build_poll_seconds.max(1),
++                ))
++                .await;
+                 continue;
+             };
+             let end = top_height.saturating_add(1);
++            let mut result = "complete";
+             let start = store.logical_start_height(end);
+             match store.remove_before(start) {
+-                Ok(removed) if removed > 0 => eprintln!("[SCANPACK] evicted {removed} packs below height {start}"),
++                Ok(removed) if removed > 0 => {
++                    eprintln!("[SCANPACK] evicted {removed} packs below height {start}")
++                }
+                 Ok(_) => (),
+                 Err(error) => eprintln!("[SCANPACK] eviction error: {error:#}"),
+             }
+             let mut height = start;
+-            let mut built = 0_u64;
+-            while height < end {
+-                if let Ok(Some(existing_end)) = store.covering_end(height) {
+-                    height = existing_end;
+-                    continue;
++            let mut written_packs = 0_u64;
++            let mut live_tail = match store.newest_short_tail(chunk_blocks) {
++                Ok(tail) => tail,
++                Err(error) => {
++                    eprintln!("[SCANPACK] tail inspection error: {error:#}");
++                    result = "tail_inspection_error";
++                    None
++                }
++            };
++            while result == "complete" && height < end {
++                let replace_live_tail = matches!(live_tail, Some((tail_start, tail_end)) if tail_start == height && tail_end < end);
++                match store.covering_end(height) {
++                    Ok(Some(existing_end)) if !replace_live_tail => {
++                        height = existing_end;
++                        continue;
++                    }
++                    Ok(_) => (),
++                    Err(error) => {
++                        eprintln!(
++                            "[SCANPACK] coverage inspection error at height {height}: {error:#}"
++                        );
++                        result = "coverage_inspection_error";
++                        break;
++                    }
+                 }
+                 let count = store.builder_block_count(height, end, chunk_blocks);
+-                if store.should_defer_short_tail(height, end, count, chunk_blocks) {
++                if count == 0 {
++                    eprintln!("[SCANPACK] builder produced zero block count at height {height}");
++                    result = "zero_block_count";
+                     break;
+                 }
++                let pack_start = height;
++                let is_short_tail = count < chunk_blocks
++                    && height.saturating_add(u64::try_from(count).unwrap_or(u64::MAX)) == end;
+                 match bin_handlers::capped_wallet_scan_range_with_metrics(
+-                    &mut state, usize::try_from(height).unwrap(), usize::try_from(end).unwrap(), count,
+-                    true, false, MAX_GRPC_CHUNK_RESPONSE_BYTES, MAX_GRPC_CHUNK_TX_COUNT,
+-                ).await {
+-                    Ok((blocks, output_indices, _, _, _)) => match crate::rpc::scanpack::ScanPack::new(height, blocks, output_indices).and_then(|pack| {
+-                        let pack_end = pack.end_height;
+-                        store.write(&pack)?;
+-                        Ok(pack_end)
+-                    }) {
+-                        Ok(pack_end) => { built += 1; height = pack_end; if built % 16 == 0 { eprintln!("[SCANPACK] built {built} packs; next_height={height} tip={end}"); } }
+-                        Err(error) => { eprintln!("[SCANPACK] write error at height {height}: {error:#}"); break; }
+-                    },
+-                    Err(error) => { eprintln!("[SCANPACK] build error at height {height}: {error:#}"); break; }
++                    &mut state,
++                    usize::try_from(height).unwrap(),
++                    usize::try_from(end).unwrap(),
++                    count,
++                    true,
++                    false,
++                    MAX_GRPC_CHUNK_RESPONSE_BYTES,
++                    MAX_GRPC_CHUNK_TX_COUNT,
++                )
++                .await
++                {
++                    Ok((blocks, output_indices, _, _, _)) => {
++                        match crate::rpc::scanpack::ScanPack::new(height, blocks, output_indices)
++                            .and_then(|pack| {
++                                let pack_end = pack.end_height;
++                                if replace_live_tail {
++                                    store.replace_short_tail(&pack, chunk_blocks)?;
++                                } else {
++                                    store.write(&pack)?;
++                                }
++                                Ok(pack_end)
++                            }) {
++                            Ok(pack_end) => {
++                                written_packs += 1;
++                                height = pack_end;
++                                live_tail = is_short_tail.then_some((pack_start, pack_end));
++                                if written_packs % 16 == 0 {
++                                    eprintln!("[SCANPACK] built {written_packs} packs; next_height={height} tip={end}");
++                                }
++                            }
++                            Err(error) => {
++                                eprintln!("[SCANPACK] write error at height {height}: {error:#}");
++                                result = "write_error";
++                                break;
++                            }
++                        }
++                    }
++                    Err(error) => {
++                        eprintln!("[SCANPACK] build error at height {height}: {error:#}");
++                        result = "build_error";
++                        break;
++                    }
+                 }
+                 tokio::task::yield_now().await;
+             }
+-            if built > 0 { eprintln!("[SCANPACK] pass complete: built={built} covered_until={height} tip={end}"); }
+-            tokio::time::sleep(std::time::Duration::from_secs(config.build_poll_seconds.max(1))).await;
++            if let Err(error) =
++                store.write_builder_status(end, height, live_tail, written_packs, result)
++            {
++                eprintln!("[SCANPACK] status write error: {error:#}");
++            }
++            eprintln!("[SCANPACK] status: result={result} written={written_packs} covered_until={height} tip={end} missing={} live_tail={:?}", end.saturating_sub(height), live_tail);
++            tokio::time::sleep(std::time::Duration::from_secs(
++                config.build_poll_seconds.max(1),
++            ))
++            .await;
+         }
+     });
+ }
+@@ -297,7 +414,9 @@ async fn fetch_chunk(
+ 
+     let mut want = chunk_blocks.min(target_end - start);
+     let cache_start = match &state.wallet_scan_packs {
+-        Some(store) => store.first_available_height(store.logical_start_height(u64::try_from(target_end)?))?,
++        Some(store) => {
++            store.first_available_height(store.logical_start_height(u64::try_from(target_end)?))?
++        }
+         None => None,
+     };
+     // Do not let a legacy response cross into the first cached height. The
+@@ -313,19 +432,37 @@ async fn fetch_chunk(
+     if let (Some(store), Some(cache_start)) = (&state.wallet_scan_packs, cache_start) {
+         if u64::try_from(start)? >= cache_start {
+             if let Some(pack) = store.load_covering(u64::try_from(start)?, want)? {
+-            let block_count = pack.blocks.len();
+-            let tx_count = pack.blocks.iter().map(|block| block.txs.len()).sum();
+-            let index_values = pack.output_indices.iter().flat_map(|block| &block.indices)
+-                .map(|tx| tx.indices.len()).sum();
+-            return Ok(Some(FetchedChunk {
+-                top_h, chain_height, target_end, start, blocks: pack.blocks, top_ms,
+-                fetch_ms: t_fetch.elapsed().as_secs_f64() * 1000.0,
+-                fetch_metrics: bin_handlers::BlockFetchMetrics { returned_blocks: block_count, returned_txs: tx_count, ..Default::default() },
+-                prepared_output_indices: Some(pack.output_indices),
+-                prepared_index_metrics: Some(bin_handlers::OutputIndicesMetrics { blocks: block_count, transactions: tx_count, output_index_values: index_values, ..Default::default() }),
+-                range_read: false,
+-                scanpack_hit: true,
+-            }));
++                let block_count = pack.blocks.len();
++                let tx_count = pack.blocks.iter().map(|block| block.txs.len()).sum();
++                let index_values = pack
++                    .output_indices
++                    .iter()
++                    .flat_map(|block| &block.indices)
++                    .map(|tx| tx.indices.len())
++                    .sum();
++                return Ok(Some(FetchedChunk {
++                    top_h,
++                    chain_height,
++                    target_end,
++                    start,
++                    blocks: pack.blocks,
++                    top_ms,
++                    fetch_ms: t_fetch.elapsed().as_secs_f64() * 1000.0,
++                    fetch_metrics: bin_handlers::BlockFetchMetrics {
++                        returned_blocks: block_count,
++                        returned_txs: tx_count,
++                        ..Default::default()
++                    },
++                    prepared_output_indices: Some(pack.output_indices),
++                    prepared_index_metrics: Some(bin_handlers::OutputIndicesMetrics {
++                        blocks: block_count,
++                        transactions: tx_count,
++                        output_index_values: index_values,
++                        ..Default::default()
++                    }),
++                    range_read: false,
++                    scanpack_hit: true,
++                }));
+             }
+         }
+     }
+@@ -333,17 +470,17 @@ async fn fetch_chunk(
+     let (blocks, fetch_metrics, prepared_output_indices, prepared_index_metrics, range_read) =
+         if range_requested {
+             let (blocks, output_indices, fetch_metrics, index_metrics, range_read) =
+-            bin_handlers::capped_wallet_scan_range_with_metrics(
+-                &mut state,
+-                start,
+-                chain_height,
+-                want,
+-                prune,
+-                no_miner_tx,
+-                MAX_GRPC_CHUNK_RESPONSE_BYTES,
+-                MAX_GRPC_CHUNK_TX_COUNT,
+-            )
+-            .await?;
++                bin_handlers::capped_wallet_scan_range_with_metrics(
++                    &mut state,
++                    start,
++                    chain_height,
++                    want,
++                    prune,
++                    no_miner_tx,
++                    MAX_GRPC_CHUNK_RESPONSE_BYTES,
++                    MAX_GRPC_CHUNK_TX_COUNT,
++                )
++                .await?;
+             (
+                 blocks,
+                 fetch_metrics,
+@@ -353,14 +490,14 @@ async fn fetch_chunk(
+             )
+         } else {
+             let (blocks, fetch_metrics) = bin_handlers::capped_block_complete_entries_with_metrics(
+-            &mut state,
+-            start,
+-            chain_height,
+-            want,
+-            prune,
+-            MAX_GRPC_CHUNK_RESPONSE_BYTES,
+-            MAX_GRPC_CHUNK_TX_COUNT,
+-        )
++                &mut state,
++                start,
++                chain_height,
++                want,
++                prune,
++                MAX_GRPC_CHUNK_RESPONSE_BYTES,
++                MAX_GRPC_CHUNK_TX_COUNT,
++            )
+             .await?;
+             (blocks, fetch_metrics, None, None, false)
+         };
+@@ -398,13 +535,12 @@ async fn index_chunk(
+         });
+     }
+     let t_idx = Instant::now();
+-    let (output_indices, index_metrics) =
+-        bin_handlers::output_indices_for_blocks_with_metrics(
+-            &mut state,
+-            &fetched.blocks,
+-            no_miner_tx,
+-        )
+-        .await?;
++    let (output_indices, index_metrics) = bin_handlers::output_indices_for_blocks_with_metrics(
++        &mut state,
++        &fetched.blocks,
++        no_miner_tx,
++    )
++    .await?;
+ 
+     Ok(IndexedChunk {
+         fetched,
+@@ -416,7 +552,7 @@ async fn index_chunk(
+ 
+ async fn produce_block_stream(
+     state: &mut CupratedRpcHandler,
+-    tx: mpsc::Sender<Result<BlockChunk, Status>>,
++    tx: mpsc::Sender<QueuedBlockChunk>,
+     start_height: u64,
+     stop_height: u64,
+     prune: bool,
+@@ -430,12 +566,13 @@ async fn produce_block_stream(
+     let mut total_blocks: u64 = 0;
+     let mut total_bytes: u64 = 0;
+     let pipeline_depth = stream_pipeline_depth();
+-    let mut prefetched: Option<tokio::task::JoinHandle<Result<Option<FetchedChunk>, Error>>> =
+-        None;
++    let mut prefetched: Option<tokio::task::JoinHandle<Result<Option<FetchedChunk>, Error>>> = None;
+ 
+     loop {
+         let fetched = match prefetched.take() {
+-            Some(task) => task.await.map_err(|error| Error::msg(error.to_string()))??,
++            Some(task) => task
++                .await
++                .map_err(|error| Error::msg(error.to_string()))??,
+             None => {
+                 fetch_chunk(
+                     state.clone(),
+@@ -549,16 +686,26 @@ async fn produce_block_stream(
+         };
+         let proto_copy_ms = t_proto_copy.elapsed().as_secs_f64() * 1000.0;
+ 
++        // Reserve first so `queue_send_wait_ms` is strictly the wait for a
++        // free mpsc slot.  Only after the permit exists do we stamp the
++        // enqueue time consumed by `SYNC_TRACE_SERVER_EGRESS` above.
+         let t_send = Instant::now();
+-        if tx.send(Ok(chunk)).await.is_err() {
+-            let total_ms = stream_t0.elapsed().as_secs_f64() * 1000.0;
+-            eprintln!(
++        let permit = match tx.reserve().await {
++            Ok(permit) => permit,
++            Err(_) => {
++                let total_ms = stream_t0.elapsed().as_secs_f64() * 1000.0;
++                eprintln!(
+                 "[GRPC StreamBlocks] CLOSE id={} reason=client_disconnect chunks={} blocks={} bytes={} total_ms={:.1}",
+                 server_req_id, chunk_seq, total_blocks, total_bytes, total_ms,
+             );
+-            return Ok(());
+-        }
++                return Ok(());
++            }
++        };
+         let send_ms = t_send.elapsed().as_secs_f64() * 1000.0;
++        permit.send(QueuedBlockChunk {
++            chunk,
++            enqueued_at: Instant::now(),
++        });
+         let queue_depth_after = CHANNEL_CAPACITY.saturating_sub(tx.capacity());
+ 
+         total_blocks += actual_blocks as u64;
+diff --git a/binaries/cuprated/src/rpc/rpc_handler.rs b/binaries/cuprated/src/rpc/rpc_handler.rs
+index 22a4798..54ecfc5 100644
+--- a/binaries/cuprated/src/rpc/rpc_handler.rs
++++ b/binaries/cuprated/src/rpc/rpc_handler.rs
+@@ -1,6 +1,9 @@
+ //! `cuprated`'s implementation of [`RpcHandler`].
+ 
+-use std::{sync::Arc, task::{Context, Poll}};
++use std::{
++    sync::Arc,
++    task::{Context, Poll},
++};
+ 
+ use anyhow::Error;
+ use futures::future::BoxFuture;
+@@ -19,7 +22,10 @@ use cuprate_rpc_types::{
+ use cuprate_txpool::service::TxpoolReadHandle;
+ use cuprate_types::BlockTemplate;
+ 
+-use crate::{rpc::{handlers, scanpack::ScanPackStore}, txpool::IncomingTxHandler};
++use crate::{
++    rpc::{handlers, scanpack::ScanPackStore},
++    txpool::IncomingTxHandler,
++};
+ 
+ /// TODO: use real type when public.
+ #[derive(Clone)]
+diff --git a/binaries/cuprated/src/rpc/scanpack.rs b/binaries/cuprated/src/rpc/scanpack.rs
+index 1ed23b4..f3742ae 100644
+--- a/binaries/cuprated/src/rpc/scanpack.rs
++++ b/binaries/cuprated/src/rpc/scanpack.rs
+@@ -11,18 +11,23 @@ use std::{
+     ops::Bound,
+     path::{Path, PathBuf},
+     sync::{Arc, RwLock},
++    time::{SystemTime, UNIX_EPOCH},
+ };
+ 
+ use anyhow::{bail, Context, Result};
+ use bytes::Bytes;
+ use cuprate_fixed_bytes::ByteArray;
+-use cuprate_types::{BlockCompleteEntry, PrunedTxBlobEntry, TransactionBlobs, rpc::{BlockOutputIndices, TxOutputIndices}};
++use cuprate_types::{
++    rpc::{BlockOutputIndices, TxOutputIndices},
++    BlockCompleteEntry, PrunedTxBlobEntry, TransactionBlobs,
++};
+ 
+ const MAGIC: &[u8; 8] = b"MWSPACK1";
+ const FORMAT_VERSION: u32 = 1;
+ const MAX_PACK_BLOCKS: usize = 10_000;
+ const MAX_ITEM_BYTES: usize = 64 * 1024 * 1024;
+ const MAX_INDICES_PER_TX: usize = 1_000_000;
++const BUILDER_STATUS_FILE: &str = "scanpack-status.env";
+ 
+ /// One immutable, height-contiguous wallet scan pack.
+ #[derive(Debug, Clone)]
+@@ -39,20 +44,35 @@ impl ScanPack {
+         blocks: Vec<BlockCompleteEntry>,
+         output_indices: Vec<BlockOutputIndices>,
+     ) -> Result<Self> {
+-        if blocks.is_empty() || blocks.len() != output_indices.len() || blocks.len() > MAX_PACK_BLOCKS {
++        if blocks.is_empty()
++            || blocks.len() != output_indices.len()
++            || blocks.len() > MAX_PACK_BLOCKS
++        {
+             bail!("invalid scan pack dimensions")
+         }
+         let end_height = start_height
+             .checked_add(u64::try_from(blocks.len())?)
+             .context("scan pack end height overflow")?;
+-        Ok(Self { start_height, end_height, blocks, output_indices })
++        Ok(Self {
++            start_height,
++            end_height,
++            blocks,
++            output_indices,
++        })
+     }
+ 
+     pub fn slice_from(&self, start_height: u64, max_blocks: usize) -> Option<Self> {
+         let offset = usize::try_from(start_height.checked_sub(self.start_height)?).ok()?;
+-        if offset >= self.blocks.len() { return None; }
++        if offset >= self.blocks.len() {
++            return None;
++        }
+         let end = offset.saturating_add(max_blocks).min(self.blocks.len());
+-        Self::new(start_height, self.blocks[offset..end].to_vec(), self.output_indices[offset..end].to_vec()).ok()
++        Self::new(
++            start_height,
++            self.blocks[offset..end].to_vec(),
++            self.output_indices[offset..end].to_vec(),
++        )
++        .ok()
+     }
+ }
+ 
+@@ -96,16 +116,29 @@ impl ScanPackStore {
+         let mut index = BTreeMap::new();
+         for entry in fs::read_dir(&self.directory)? {
+             let path = entry?.path();
+-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue; };
+-            let Some(height) = name.strip_prefix("pack-").and_then(|v| v.strip_suffix(".mwsp")) else { continue; };
+-            if let Ok(height) = height.parse::<u64>() { index.insert(height, path); }
++            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
++                continue;
++            };
++            let Some(height) = name
++                .strip_prefix("pack-")
++                .and_then(|v| v.strip_suffix(".mwsp"))
++            else {
++                continue;
++            };
++            if let Ok(height) = height.parse::<u64>() {
++                index.insert(height, path);
++            }
+         }
+         *self.packs.write().expect("scan pack index lock poisoned") = index;
+         Ok(())
+     }
+ 
+     pub fn cache_start_height(&self) -> Option<u64> {
+-        self.packs.read().expect("scan pack index lock poisoned").first_key_value().map(|(height, _)| *height)
++        self.packs
++            .read()
++            .expect("scan pack index lock poisoned")
++            .first_key_value()
++            .map(|(height, _)| *height)
+     }
+ 
+     /// The first height that may be served from a bounded rolling cache for a
+@@ -115,7 +148,8 @@ impl ScanPackStore {
+         if self.max_blocks < 0 {
+             self.configured_start_height.min(end)
+         } else {
+-            end.saturating_sub(self.max_blocks as u64).max(self.configured_start_height)
++            end.saturating_sub(self.max_blocks as u64)
++                .max(self.configured_start_height)
+         }
+     }
+ 
+@@ -135,7 +169,7 @@ impl ScanPackStore {
+             (previous, next_start)
+         };
+         if let Some(path) = previous {
+-            let pack = read_pack(&path)?;
++            let pack = read_pack_metadata(&path)?;
+             if pack.end_height > minimum_height {
+                 return Ok(Some(minimum_height));
+             }
+@@ -148,7 +182,9 @@ impl ScanPackStore {
+     /// The moving-window builder uses this to make a shortened leading pack
+     /// rather than writing across an already cached boundary.
+     pub fn next_start_after(&self, height: u64) -> Option<u64> {
+-        self.packs.read().expect("scan pack index lock poisoned")
++        self.packs
++            .read()
++            .expect("scan pack index lock poisoned")
+             .range((Bound::Excluded(height), Bound::Unbounded))
+             .next()
+             .map(|(start, _)| *start)
+@@ -166,20 +202,121 @@ impl ScanPackStore {
+         count
+     }
+ 
+-    /// Once a cache has at least one package, defer an incomplete newest tail
+-    /// until it forms a full package. This keeps immutable rolling caches from
+-    /// creating one tiny file for every newly mined block; the newest short
+-    /// tail safely uses the ordinary DB fallback in the meantime.
+-    pub fn should_defer_short_tail(&self, height: u64, end: u64, count: usize, chunk_blocks: usize) -> bool {
+-        count < chunk_blocks
+-            && height.saturating_add(u64::try_from(count).unwrap_or(u64::MAX)) == end
+-            && !self.packs.read().expect("scan pack index lock poisoned").is_empty()
++    /// Return the unique incomplete tail package, if one exists.
++    pub fn newest_short_tail(&self, chunk_blocks: usize) -> Result<Option<(u64, u64)>> {
++        let entry = self
++            .packs
++            .read()
++            .expect("scan pack index lock poisoned")
++            .last_key_value()
++            .map(|(start, path)| (*start, path.clone()));
++        let Some((start, path)) = entry else {
++            return Ok(None);
++        };
++        let pack = read_pack_metadata(&path)?;
++        Ok((pack.block_count < chunk_blocks).then_some((start, pack.end_height)))
++    }
++
++    /// Atomically update the newest short package. It can be promoted to a
++    /// complete package, but an already complete package is never rewritten.
++    pub fn replace_short_tail(&self, pack: &ScanPack, chunk_blocks: usize) -> Result<()> {
++        let (previous, next_start, existing_path) = {
++            let packs = self.packs.read().expect("scan pack index lock poisoned");
++            let previous = packs
++                .range((Bound::Unbounded, Bound::Excluded(pack.start_height)))
++                .next_back()
++                .map(|(_, path)| path.clone());
++            let next_start = packs
++                .range((Bound::Excluded(pack.start_height), Bound::Unbounded))
++                .next()
++                .map(|(start, _)| *start);
++            (previous, next_start, packs.get(&pack.start_height).cloned())
++        };
++        let Some(final_path) = existing_path else {
++            bail!("no short scan pack exists at height {}", pack.start_height);
++        };
++        if read_pack_metadata(&final_path)?.block_count >= chunk_blocks {
++            bail!(
++                "refusing to replace complete scan pack at height {}",
++                pack.start_height
++            );
++        }
++        if let Some(path) = previous {
++            let previous = read_pack_metadata(&path)?;
++            if previous.end_height > pack.start_height {
++                bail!(
++                    "replacement scan pack at {} overlaps preceding pack ending at {}",
++                    pack.start_height,
++                    previous.end_height
++                );
++            }
++        }
++        if let Some(next_start) = next_start {
++            if pack.end_height > next_start {
++                bail!(
++                    "replacement scan pack ending at {} overlaps following pack at {}",
++                    pack.end_height,
++                    next_start
++                );
++            }
++        }
++        let temporary_path = self
++            .directory
++            .join(format!(".pack-{:020}.tmp", pack.start_height));
++        write_pack(&temporary_path, pack)?;
++        fs::rename(&temporary_path, &final_path)?;
++        Ok(())
++    }
++
++    /// Persist observable builder progress without requiring journal access.
++    pub fn write_builder_status(
++        &self,
++        tip_end: u64,
++        covered_until: u64,
++        live_tail: Option<(u64, u64)>,
++        written_packs: u64,
++        result: &str,
++    ) -> Result<()> {
++        let temporary_path = self.directory.join(".scanpack-status.tmp");
++        let final_path = self.directory.join(BUILDER_STATUS_FILE);
++        let updated = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .unwrap_or_default()
++            .as_secs();
++        let (tail_start, tail_end) = live_tail
++            .map(|(start, end)| (start.to_string(), end.to_string()))
++            .unwrap_or_else(|| ("none".to_owned(), "none".to_owned()));
++        let mut writer = BufWriter::new(File::create(&temporary_path)?);
++        writeln!(writer, "schema=cuprate_scanpack_builder_status_v1")?;
++        writeln!(writer, "updated_unix_seconds={updated}")?;
++        writeln!(writer, "result={result}")?;
++        writeln!(writer, "tip_height_exclusive={tip_end}")?;
++        writeln!(writer, "covered_until_exclusive={covered_until}")?;
++        writeln!(
++            writer,
++            "missing_blocks={}",
++            tip_end.saturating_sub(covered_until)
++        )?;
++        writeln!(writer, "live_tail_start={tail_start}")?;
++        writeln!(writer, "live_tail_end_exclusive={tail_end}")?;
++        writeln!(writer, "written_packs_this_pass={written_packs}")?;
++        writer.flush()?;
++        writer.get_ref().sync_all()?;
++        fs::rename(&temporary_path, &final_path)?;
++        Ok(())
+     }
+ 
+     pub fn load_covering(&self, height: u64, max_blocks: usize) -> Result<Option<ScanPack>> {
+-        let path = self.packs.read().expect("scan pack index lock poisoned")
+-            .range((Bound::Unbounded, Bound::Included(height))).next_back().map(|(_, path)| path.clone());
+-        let Some(path) = path else { return Ok(None); };
++        let path = self
++            .packs
++            .read()
++            .expect("scan pack index lock poisoned")
++            .range((Bound::Unbounded, Bound::Included(height)))
++            .next_back()
++            .map(|(_, path)| path.clone());
++        let Some(path) = path else {
++            return Ok(None);
++        };
+         let pack = read_pack(&path)?;
+         Ok(pack.slice_from(height, max_blocks))
+     }
+@@ -190,10 +327,17 @@ impl ScanPackStore {
+     /// over a client-sized slice. Otherwise a moving cache window leaves tiny
+     /// duplicate tail packs whenever the chain tip advances between passes.
+     pub fn covering_end(&self, height: u64) -> Result<Option<u64>> {
+-        let path = self.packs.read().expect("scan pack index lock poisoned")
+-            .range((Bound::Unbounded, Bound::Included(height))).next_back().map(|(_, path)| path.clone());
+-        let Some(path) = path else { return Ok(None); };
+-        let pack = read_pack(&path)?;
++        let path = self
++            .packs
++            .read()
++            .expect("scan pack index lock poisoned")
++            .range((Bound::Unbounded, Bound::Included(height)))
++            .next_back()
++            .map(|(_, path)| path.clone());
++        let Some(path) = path else {
++            return Ok(None);
++        };
++        let pack = read_pack_metadata(&path)?;
+         Ok((pack.start_height <= height && height < pack.end_height).then_some(pack.end_height))
+     }
+ 
+@@ -214,7 +358,7 @@ impl ScanPackStore {
+             (previous, next_start)
+         };
+         if let Some(path) = previous {
+-            let previous = read_pack(&path)?;
++            let previous = read_pack_metadata(&path)?;
+             if previous.end_height > pack.start_height {
+                 bail!(
+                     "scan pack at {} overlaps preceding pack ending at {}",
+@@ -232,11 +376,18 @@ impl ScanPackStore {
+                 );
+             }
+         }
+-        let final_path = self.directory.join(format!("pack-{:020}.mwsp", pack.start_height));
+-        let temporary_path = self.directory.join(format!(".pack-{:020}.tmp", pack.start_height));
++        let final_path = self
++            .directory
++            .join(format!("pack-{:020}.mwsp", pack.start_height));
++        let temporary_path = self
++            .directory
++            .join(format!(".pack-{:020}.tmp", pack.start_height));
+         write_pack(&temporary_path, pack)?;
+         fs::rename(&temporary_path, &final_path)?;
+-        self.packs.write().expect("scan pack index lock poisoned").insert(pack.start_height, final_path);
++        self.packs
++            .write()
++            .expect("scan pack index lock poisoned")
++            .insert(pack.start_height, final_path);
+         Ok(())
+     }
+ 
+@@ -256,7 +407,7 @@ impl ScanPackStore {
+         let mut stale = Vec::new();
+ 
+         'entries: for (start, path) in entries {
+-            let pack = read_pack(&path)?;
++            let pack = read_pack_metadata(&path)?;
+             loop {
+                 let Some((_, retained_end, _)) = retained.last() else {
+                     retained.push((start, pack.end_height, path));
+@@ -300,8 +451,8 @@ impl ScanPackStore {
+         let mut stale = Vec::new();
+         let mut found_full_pack = false;
+         for (_, path) in entries.iter().rev() {
+-            let pack = read_pack(path)?;
+-            if pack.blocks.len() >= chunk_blocks {
++            let pack = read_pack_metadata(path)?;
++            if pack.block_count >= chunk_blocks {
+                 found_full_pack = true;
+                 break;
+             }
+@@ -323,14 +474,22 @@ impl ScanPackStore {
+     /// window. A package straddling the lower bound is kept physically and is
+     /// sliced at request time.
+     pub fn remove_before(&self, height: u64) -> Result<usize> {
+-        let stale: Vec<_> = self.packs.read().expect("scan pack index lock poisoned")
+-            .iter().filter_map(|(start, path)| (*start < height).then(|| (*start, path.clone()))).collect();
++        let stale: Vec<_> = self
++            .packs
++            .read()
++            .expect("scan pack index lock poisoned")
++            .iter()
++            .filter_map(|(start, path)| (*start < height).then(|| (*start, path.clone())))
++            .collect();
+         let mut removed = 0;
+         for (start, path) in stale {
+-            let pack = read_pack(&path)?;
++            let pack = read_pack_metadata(&path)?;
+             if pack.end_height <= height {
+                 fs::remove_file(&path)?;
+-                self.packs.write().expect("scan pack index lock poisoned").remove(&start);
++                self.packs
++                    .write()
++                    .expect("scan pack index lock poisoned")
++                    .remove(&start);
+                 removed += 1;
+             }
+         }
+@@ -338,52 +497,180 @@ impl ScanPackStore {
+     }
+ }
+ 
+-fn write_u32(writer: &mut impl Write, value: u32) -> io::Result<()> { writer.write_all(&value.to_le_bytes()) }
+-fn write_u64(writer: &mut impl Write, value: u64) -> io::Result<()> { writer.write_all(&value.to_le_bytes()) }
+-fn read_u32(reader: &mut impl Read) -> io::Result<u32> { let mut b = [0; 4]; reader.read_exact(&mut b)?; Ok(u32::from_le_bytes(b)) }
+-fn read_u64(reader: &mut impl Read) -> io::Result<u64> { let mut b = [0; 8]; reader.read_exact(&mut b)?; Ok(u64::from_le_bytes(b)) }
+-fn write_bytes(writer: &mut impl Write, bytes: &[u8]) -> Result<()> { write_u32(writer, u32::try_from(bytes.len())?)?; writer.write_all(bytes)?; Ok(()) }
+-fn read_bytes(reader: &mut impl Read) -> Result<Vec<u8>> { let len = usize::try_from(read_u32(reader)?)?; if len > MAX_ITEM_BYTES { bail!("scan pack item exceeds limit") }; let mut bytes = vec![0; len]; reader.read_exact(&mut bytes)?; Ok(bytes) }
++fn write_u32(writer: &mut impl Write, value: u32) -> io::Result<()> {
++    writer.write_all(&value.to_le_bytes())
++}
++fn write_u64(writer: &mut impl Write, value: u64) -> io::Result<()> {
++    writer.write_all(&value.to_le_bytes())
++}
++fn read_u32(reader: &mut impl Read) -> io::Result<u32> {
++    let mut b = [0; 4];
++    reader.read_exact(&mut b)?;
++    Ok(u32::from_le_bytes(b))
++}
++fn read_u64(reader: &mut impl Read) -> io::Result<u64> {
++    let mut b = [0; 8];
++    reader.read_exact(&mut b)?;
++    Ok(u64::from_le_bytes(b))
++}
++fn write_bytes(writer: &mut impl Write, bytes: &[u8]) -> Result<()> {
++    write_u32(writer, u32::try_from(bytes.len())?)?;
++    writer.write_all(bytes)?;
++    Ok(())
++}
++fn read_bytes(reader: &mut impl Read) -> Result<Vec<u8>> {
++    let len = usize::try_from(read_u32(reader)?)?;
++    if len > MAX_ITEM_BYTES {
++        bail!("scan pack item exceeds limit")
++    };
++    let mut bytes = vec![0; len];
++    reader.read_exact(&mut bytes)?;
++    Ok(bytes)
++}
+ 
+ fn write_pack(path: &Path, pack: &ScanPack) -> Result<()> {
+     let mut writer = BufWriter::new(File::create(path)?);
+-    writer.write_all(MAGIC)?; write_u32(&mut writer, FORMAT_VERSION)?;
+-    write_u64(&mut writer, pack.start_height)?; write_u64(&mut writer, pack.end_height)?;
++    writer.write_all(MAGIC)?;
++    write_u32(&mut writer, FORMAT_VERSION)?;
++    write_u64(&mut writer, pack.start_height)?;
++    write_u64(&mut writer, pack.end_height)?;
+     write_u32(&mut writer, u32::try_from(pack.blocks.len())?)?;
+     for (block, indices) in pack.blocks.iter().zip(&pack.output_indices) {
+-        writer.write_all(&[u8::from(block.pruned)])?; write_u64(&mut writer, block.block_weight)?; write_bytes(&mut writer, &block.block)?;
++        writer.write_all(&[u8::from(block.pruned)])?;
++        write_u64(&mut writer, block.block_weight)?;
++        write_bytes(&mut writer, &block.block)?;
+         match &block.txs {
+-            TransactionBlobs::Pruned(txs) => { writer.write_all(&[1])?; write_u32(&mut writer, u32::try_from(txs.len())?)?; for tx in txs { write_bytes(&mut writer, &tx.blob)?; writer.write_all(tx.prunable_hash.as_ref())?; } }
+-            TransactionBlobs::Normal(txs) => { writer.write_all(&[0])?; write_u32(&mut writer, u32::try_from(txs.len())?)?; for tx in txs { write_bytes(&mut writer, tx.as_ref())?; } }
+-            TransactionBlobs::None => { writer.write_all(&[2])?; write_u32(&mut writer, 0)?; }
++            TransactionBlobs::Pruned(txs) => {
++                writer.write_all(&[1])?;
++                write_u32(&mut writer, u32::try_from(txs.len())?)?;
++                for tx in txs {
++                    write_bytes(&mut writer, &tx.blob)?;
++                    writer.write_all(tx.prunable_hash.as_ref())?;
++                }
++            }
++            TransactionBlobs::Normal(txs) => {
++                writer.write_all(&[0])?;
++                write_u32(&mut writer, u32::try_from(txs.len())?)?;
++                for tx in txs {
++                    write_bytes(&mut writer, tx.as_ref())?;
++                }
++            }
++            TransactionBlobs::None => {
++                writer.write_all(&[2])?;
++                write_u32(&mut writer, 0)?;
++            }
+         }
+         write_u32(&mut writer, u32::try_from(indices.indices.len())?)?;
+-        for tx in &indices.indices { write_u32(&mut writer, u32::try_from(tx.indices.len())?)?; for index in &tx.indices { write_u64(&mut writer, *index)?; } }
++        for tx in &indices.indices {
++            write_u32(&mut writer, u32::try_from(tx.indices.len())?)?;
++            for index in &tx.indices {
++                write_u64(&mut writer, *index)?;
++            }
++        }
++    }
++    writer.flush()?;
++    writer.get_ref().sync_all()?;
++    Ok(())
++}
++
++#[derive(Debug, Clone, Copy)]
++struct ScanPackMetadata {
++    start_height: u64,
++    end_height: u64,
++    block_count: usize,
++}
++
++fn read_pack_metadata_from(reader: &mut impl Read) -> Result<ScanPackMetadata> {
++    let mut magic = [0; 8];
++    reader.read_exact(&mut magic)?;
++    if &magic != MAGIC {
++        bail!("invalid scan pack magic")
++    }
++    if read_u32(reader)? != FORMAT_VERSION {
++        bail!("unsupported scan pack version")
++    }
++    let start_height = read_u64(reader)?;
++    let end_height = read_u64(reader)?;
++    let count = usize::try_from(read_u32(reader)?)?;
++    if count == 0 || count > MAX_PACK_BLOCKS {
++        bail!("invalid scan pack block count")
+     }
+-    writer.flush()?; writer.get_ref().sync_all()?; Ok(())
++    if end_height.checked_sub(start_height) != Some(u64::try_from(count)?) {
++        bail!("scan pack height interval mismatch")
++    }
++    Ok(ScanPackMetadata {
++        start_height,
++        end_height,
++        block_count: count,
++    })
++}
++
++fn read_pack_metadata(path: &Path) -> Result<ScanPackMetadata> {
++    let mut reader = BufReader::new(File::open(path)?);
++    read_pack_metadata_from(&mut reader)
+ }
+ 
+ fn read_pack(path: &Path) -> Result<ScanPack> {
+     let mut reader = BufReader::new(File::open(path)?);
+-    let mut magic = [0; 8]; reader.read_exact(&mut magic)?; if &magic != MAGIC { bail!("invalid scan pack magic") }
+-    if read_u32(&mut reader)? != FORMAT_VERSION { bail!("unsupported scan pack version") }
+-    let start_height = read_u64(&mut reader)?; let end_height = read_u64(&mut reader)?;
+-    let count = usize::try_from(read_u32(&mut reader)?)?; if count == 0 || count > MAX_PACK_BLOCKS { bail!("invalid scan pack block count") }
+-    if end_height.checked_sub(start_height) != Some(u64::try_from(count)?) { bail!("scan pack height interval mismatch") }
+-    let mut blocks = Vec::with_capacity(count); let mut output_indices = Vec::with_capacity(count);
++    let metadata = read_pack_metadata_from(&mut reader)?;
++    let start_height = metadata.start_height;
++    let end_height = metadata.end_height;
++    let count = metadata.block_count;
++    let mut blocks = Vec::with_capacity(count);
++    let mut output_indices = Vec::with_capacity(count);
+     for _ in 0..count {
+-        let mut pruned = [0; 1]; reader.read_exact(&mut pruned)?; let block_weight = read_u64(&mut reader)?; let block = Bytes::from(read_bytes(&mut reader)?);
+-        let mut tag = [0; 1]; reader.read_exact(&mut tag)?; let tx_count = usize::try_from(read_u32(&mut reader)?)?;
++        let mut pruned = [0; 1];
++        reader.read_exact(&mut pruned)?;
++        let block_weight = read_u64(&mut reader)?;
++        let block = Bytes::from(read_bytes(&mut reader)?);
++        let mut tag = [0; 1];
++        reader.read_exact(&mut tag)?;
++        let tx_count = usize::try_from(read_u32(&mut reader)?)?;
+         let txs = match tag[0] {
+-            0 => TransactionBlobs::Normal((0..tx_count).map(|_| read_bytes(&mut reader).map(Bytes::from)).collect::<Result<_>>()?),
+-            1 => TransactionBlobs::Pruned((0..tx_count).map(|_| { let blob = Bytes::from(read_bytes(&mut reader)?); let mut hash = [0; 32]; reader.read_exact(&mut hash)?; Ok(PrunedTxBlobEntry { blob, prunable_hash: ByteArray::from(hash) }) }).collect::<Result<_>>()?),
++            0 => TransactionBlobs::Normal(
++                (0..tx_count)
++                    .map(|_| read_bytes(&mut reader).map(Bytes::from))
++                    .collect::<Result<_>>()?,
++            ),
++            1 => TransactionBlobs::Pruned(
++                (0..tx_count)
++                    .map(|_| {
++                        let blob = Bytes::from(read_bytes(&mut reader)?);
++                        let mut hash = [0; 32];
++                        reader.read_exact(&mut hash)?;
++                        Ok(PrunedTxBlobEntry {
++                            blob,
++                            prunable_hash: ByteArray::from(hash),
++                        })
++                    })
++                    .collect::<Result<_>>()?,
++            ),
+             2 if tx_count == 0 => TransactionBlobs::None,
+             _ => bail!("invalid scan pack transaction tag"),
+         };
+-        let tx_index_count = usize::try_from(read_u32(&mut reader)?)?; if tx_index_count > MAX_PACK_BLOCKS * 100_000 { bail!("scan pack has too many transaction index lists") }
++        let tx_index_count = usize::try_from(read_u32(&mut reader)?)?;
++        if tx_index_count > MAX_PACK_BLOCKS * 100_000 {
++            bail!("scan pack has too many transaction index lists")
++        }
+         let mut per_block = Vec::with_capacity(tx_index_count);
+-        for _ in 0..tx_index_count { let index_count = usize::try_from(read_u32(&mut reader)?)?; if index_count > MAX_INDICES_PER_TX { bail!("scan pack has too many output indices") }; let mut indices = Vec::with_capacity(index_count); for _ in 0..index_count { indices.push(read_u64(&mut reader)?); } per_block.push(TxOutputIndices { indices }); }
+-        blocks.push(BlockCompleteEntry { pruned: pruned[0] != 0, block, block_weight, txs }); output_indices.push(BlockOutputIndices { indices: per_block });
++        for _ in 0..tx_index_count {
++            let index_count = usize::try_from(read_u32(&mut reader)?)?;
++            if index_count > MAX_INDICES_PER_TX {
++                bail!("scan pack has too many output indices")
++            };
++            let mut indices = Vec::with_capacity(index_count);
++            for _ in 0..index_count {
++                indices.push(read_u64(&mut reader)?);
++            }
++            per_block.push(TxOutputIndices { indices });
++        }
++        blocks.push(BlockCompleteEntry {
++            pruned: pruned[0] != 0,
++            block,
++            block_weight,
++            txs,
++        });
++        output_indices.push(BlockOutputIndices { indices: per_block });
+     }
+     ScanPack::new(start_height, blocks, output_indices)
+ }
+@@ -400,15 +687,52 @@ mod tests {
+         ScanPack::new(
+             start_height,
+             (0..count).map(|_| BlockCompleteEntry::default()).collect(),
+-            (0..count).map(|_| BlockOutputIndices { indices: vec![] }).collect(),
+-        ).unwrap()
++            (0..count)
++                .map(|_| BlockOutputIndices { indices: vec![] })
++                .collect(),
++        )
++        .unwrap()
+     }
+ 
+     #[test]
+     fn persists_and_slices_pack() {
+-        let directory = tempfile::tempdir().unwrap(); let store = store(directory.path().to_path_buf());
++        let directory = tempfile::tempdir().unwrap();
++        let store = store(directory.path().to_path_buf());
+         let pack = pack(100, 2);
+-        store.write(&pack).unwrap(); let read = store.load_covering(101, 10).unwrap().unwrap(); assert_eq!(read.start_height, 101); assert_eq!(read.end_height, 102); assert_eq!(read.blocks.len(), 1); assert_eq!(store.covering_end(101).unwrap(), Some(102));
++        store.write(&pack).unwrap();
++        let read = store.load_covering(101, 10).unwrap().unwrap();
++        assert_eq!(read.start_height, 101);
++        assert_eq!(read.end_height, 102);
++        assert_eq!(read.blocks.len(), 1);
++        assert_eq!(store.covering_end(101).unwrap(), Some(102));
++    }
++
++    #[test]
++    fn metadata_reads_only_the_fixed_header() {
++        let directory = tempfile::tempdir().unwrap();
++        let path = directory.path().join("pack.mwsp");
++        write_pack(&path, &pack(100, 2)).unwrap();
++        let bytes = fs::read(&path).unwrap();
++        fs::write(&path, &bytes[..32]).unwrap();
++
++        let metadata = read_pack_metadata(&path).unwrap();
++        assert_eq!(metadata.start_height, 100);
++        assert_eq!(metadata.end_height, 102);
++        assert_eq!(metadata.block_count, 2);
++        assert!(read_pack(&path).is_err());
++    }
++
++    #[test]
++    fn covering_end_reads_only_the_fixed_header() {
++        let directory = tempfile::tempdir().unwrap();
++        let store = store(directory.path().to_path_buf());
++        store.write(&pack(100, 2)).unwrap();
++        let path = directory.path().join("pack-00000000000000000100.mwsp");
++        let bytes = fs::read(&path).unwrap();
++        fs::write(&path, &bytes[..32]).unwrap();
++
++        assert_eq!(store.covering_end(101).unwrap(), Some(102));
++        assert!(store.load_covering(101, 1).is_err());
+     }
+ 
+     #[test]
+@@ -455,12 +779,28 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn rolling_window_defers_a_short_newest_tail() {
++    fn short_tail_is_replaced_then_promoted() {
+         let directory = tempfile::tempdir().unwrap();
+-        let empty = store(directory.path().to_path_buf());
+-        assert!(!empty.should_defer_short_tail(100, 101, 1, 1_000));
+-        empty.write(&pack(100, 2)).unwrap();
+-        assert!(empty.should_defer_short_tail(102, 103, 1, 1_000));
++        let store = store(directory.path().to_path_buf());
++        store.write(&pack(100, 2)).unwrap();
++        store.write(&pack(102, 1)).unwrap();
++        assert_eq!(store.newest_short_tail(2).unwrap(), Some((102, 103)));
++        store.replace_short_tail(&pack(102, 2), 2).unwrap();
++        assert_eq!(store.newest_short_tail(2).unwrap(), None);
++        assert_eq!(store.covering_end(102).unwrap(), Some(104));
++    }
++
++    #[test]
++    fn writes_readable_builder_status() {
++        let directory = tempfile::tempdir().unwrap();
++        let store = store(directory.path().to_path_buf());
++        store
++            .write_builder_status(105, 105, Some((102, 105)), 1, "complete")
++            .unwrap();
++        let status = fs::read_to_string(directory.path().join(BUILDER_STATUS_FILE)).unwrap();
++        assert!(status.contains("tip_height_exclusive=105"));
++        assert!(status.contains("missing_blocks=0"));
++        assert!(status.contains("live_tail_start=102"));
+     }
+ 
+     #[test]
+diff --git a/binaries/cuprated/src/rpc/server.rs b/binaries/cuprated/src/rpc/server.rs
+index 2bc40d7..c2f98d7 100644
+--- a/binaries/cuprated/src/rpc/server.rs
++++ b/binaries/cuprated/src/rpc/server.rs
+@@ -5,8 +5,12 @@ use std::{
+     time::Duration,
+ };
+ 
++#[cfg(target_os = "linux")]
++use std::ffi::CString;
++
+ use anyhow::Error;
+ use tokio::net::TcpListener;
++use tokio_stream::{wrappers::TcpListenerStream, StreamExt};
+ use tower::limit::rate::RateLimitLayer;
+ use tower_http::compression::CompressionLayer;
+ use tower_http::limit::RequestBodyLimitLayer;
+@@ -20,7 +24,9 @@ use cuprate_txpool::service::TxpoolReadHandle;
+ 
+ use crate::{
+     config::{grpc_rpc_port, restricted_rpc_port, unrestricted_rpc_port, GrpcConfig, RpcConfig},
+-    rpc::{grpc, rpc_handler::BlockchainManagerHandle, scanpack::ScanPackStore, CupratedRpcHandler},
++    rpc::{
++        grpc, rpc_handler::BlockchainManagerHandle, scanpack::ScanPackStore, CupratedRpcHandler,
++    },
+     txpool::IncomingTxHandler,
+ };
+ 
+@@ -40,13 +46,15 @@ pub fn init_rpc_servers(
+     tx_handler: IncomingTxHandler,
+ ) {
+     let wallet_scan_packs = if config.wallet_scan_cache.enable {
+-        Some(ScanPackStore::open(
+-            config.wallet_scan_cache.directory.clone(),
+-            config.wallet_scan_cache.start_height,
+-            config.wallet_scan_cache.max_blocks,
+-            config.wallet_scan_cache.chunk_blocks,
++        Some(
++            ScanPackStore::open(
++                config.wallet_scan_cache.directory.clone(),
++                config.wallet_scan_cache.start_height,
++                config.wallet_scan_cache.max_blocks,
++                config.wallet_scan_cache.chunk_blocks,
++            )
++            .unwrap_or_else(|error| panic!("opening wallet scan cache failed: {error:#}")),
+         )
+-            .unwrap_or_else(|error| panic!("opening wallet scan cache failed: {error:#}")))
+     } else {
+         None
+     };
+@@ -131,8 +139,9 @@ pub fn init_rpc_servers(
+             warn!(address = %grpc_addr, "Starting gRPC server on non-local address");
+         }
+         let bind = SocketAddr::new(grpc_addr, grpc_port);
++        let tcp_congestion_control = config.grpc.tcp_congestion_control.clone();
+         tokio::task::spawn(async move {
+-            if let Err(e) = run_grpc_server(grpc_handler, bind).await {
++            if let Err(e) = run_grpc_server(grpc_handler, bind, tcp_congestion_control).await {
+                 eprintln!("[GRPC] server task exited with error: {e:?}");
+             }
+         });
+@@ -148,25 +157,89 @@ pub fn init_rpc_servers(
+ async fn run_grpc_server(
+     rpc_handler: CupratedRpcHandler,
+     address: SocketAddr,
++    tcp_congestion_control: Option<String>,
+ ) -> Result<(), Error> {
+     use tonic::transport::Server;
+ 
+     eprintln!("[GRPC] Starting BlockStream server at {address}");
+-    info!(address = %address, "Starting gRPC streaming server");
++    info!(
++        address = %address,
++        tcp_congestion_control = ?tcp_congestion_control,
++        "Starting gRPC streaming server"
++    );
+ 
+     let svc = grpc::block_stream_service(rpc_handler);
++    let listener = TcpListener::bind(address).await?;
++    let incoming = TcpListenerStream::new(listener).map(move |connection| {
++        let stream = connection?;
++        if let Some(algorithm) = tcp_congestion_control.as_deref() {
++            if let Err(error) = set_grpc_tcp_congestion_control(&stream, algorithm) {
++                // Keep wallet data service available if the host kernel does
++                // not expose the optional algorithm. The concrete socket
++                // error is logged for benchmark evidence; P2P and the system
++                // TCP default are never touched here.
++                warn!(%error, %algorithm, "Unable to set wallet-gRPC TCP congestion control; using kernel default for this socket");
++            }
++        }
++        Ok::<_, std::io::Error>(stream)
++    });
+ 
+     Server::builder()
+         .initial_stream_window_size(Some(grpc::GRPC_HTTP2_STREAM_WINDOW_BYTES))
+         .initial_connection_window_size(Some(grpc::GRPC_HTTP2_CONNECTION_WINDOW_BYTES))
+         .add_service(svc)
+-        .serve(address)
++        .serve_with_incoming(incoming)
+         .await
+         .map_err(|e| anyhow::anyhow!("tonic server error: {e}"))?;
+ 
+     Ok(())
+ }
+ 
++/// Sets congestion control on exactly one accepted wallet-gRPC TCP socket.
++/// Linux owns the algorithm registry; no system-wide sysctl is changed.
++#[cfg(target_os = "linux")]
++fn set_grpc_tcp_congestion_control(
++    stream: &tokio::net::TcpStream,
++    algorithm: &str,
++) -> std::io::Result<()> {
++    use std::os::fd::AsRawFd;
++
++    let algorithm = CString::new(algorithm).map_err(|_| {
++        std::io::Error::new(
++            std::io::ErrorKind::InvalidInput,
++            "gRPC TCP congestion control must not contain a NUL byte",
++        )
++    })?;
++    // SAFETY: the TCP stream owns a valid file descriptor for this entire
++    // call. `algorithm` remains allocated for the pointer and length passed
++    // to `setsockopt`, and TCP_CONGESTION expects a NUL-terminated name.
++    let result = unsafe {
++        libc::setsockopt(
++            stream.as_raw_fd(),
++            libc::IPPROTO_TCP,
++            libc::TCP_CONGESTION,
++            algorithm.as_ptr().cast(),
++            algorithm.as_bytes_with_nul().len() as libc::socklen_t,
++        )
++    };
++    if result == 0 {
++        Ok(())
++    } else {
++        Err(std::io::Error::last_os_error())
++    }
++}
++
++#[cfg(not(target_os = "linux"))]
++fn set_grpc_tcp_congestion_control(
++    _stream: &tokio::net::TcpStream,
++    _algorithm: &str,
++) -> std::io::Result<()> {
++    Err(std::io::Error::new(
++        std::io::ErrorKind::Unsupported,
++        "per-socket TCP congestion control is only implemented for Linux",
++    ))
++}
++
+ /// This initializes and runs an RPC server.
+ ///
+ /// The function will only return when the server itself returns or an error occurs.
+diff --git a/binaries/cuprated/src/version.rs b/binaries/cuprated/src/version.rs
+index ab41af8..759d5c3 100644
+--- a/binaries/cuprated/src/version.rs
++++ b/binaries/cuprated/src/version.rs
+@@ -8,11 +8,13 @@ use cuprate_constants::build::{BUILD, COMMIT};
+ use cuprate_rpc_types::{CORE_RPC_VERSION, CORE_RPC_VERSION_MAJOR, CORE_RPC_VERSION_MINOR};
+ use cuprate_types::HardFork;
+ 
+-use crate::constants::{MAJOR_VERSION, MINOR_VERSION, PATCH_VERSION, VERSION};
++use crate::constants::{MAJOR_VERSION, MINOR_VERSION, PATCH_VERSION, PRODUCT_NAME, VERSION};
+ 
+ // NOTE: keep `books/user/src/cli.md` updated with this struct.
+ #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+ pub struct CupratedVersionInfo {
++    /// Stable product identity of this TEX8 production build.
++    product_name: &'static str,
+     /// `cuprated`'s major version.
+     major_version: u8,
+     /// `cuprated`'s minor version.
+@@ -41,6 +43,7 @@ impl CupratedVersionInfo {
+     /// Generate version info.
+     pub fn new() -> Self {
+         Self {
++            product_name: PRODUCT_NAME,
+             major_version: MAJOR_VERSION.parse().unwrap(),
+             minor_version: MINOR_VERSION.parse().unwrap(),
+             patch_version: PATCH_VERSION.parse().unwrap(),
+@@ -63,6 +66,7 @@ mod tests {
+     /// Tests that [`CupratedVersionInfo`] can be generated.
+     #[test]
+     fn new() {
+-        CupratedVersionInfo::new();
++        let version = CupratedVersionInfo::new();
++        assert_eq!(version.product_name, "tex8-fastwallet-cuprate");
+     }
+ }

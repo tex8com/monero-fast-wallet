@@ -1,13 +1,9 @@
-import { checkFastReceiveWatchRegistration } from './FastReceiveScannerClient';
 import {
   fastReceiveScannerUrlForSettings,
   loadActiveNodeConnectionSettings,
 } from './NodeConnectionSettings';
 import { walletService } from './WalletService';
-import {
-  emitWalletDiagnosticsLine,
-  WALLET_DIAGNOSTIC_LOG_PREFIX,
-} from './WalletLogger';
+import { emitWalletDiagnosticsLine, logWalletEvent } from './WalletLogger';
 
 export { emitWalletDiagnosticsLine };
 
@@ -20,108 +16,71 @@ interface HttpDiagnosticResult {
   status?: number;
 }
 
+/**
+ * User-visible health check. It deliberately returns only coarse state and
+ * chain heights: never paths, addresses, balances, wallet ids, scanner URLs,
+ * contacts, transaction data, or raw native/network error strings.
+ */
 export async function runWalletDiagnostics(trigger = 'manual') {
   const errors: string[] = [];
-  const settings = await loadActiveNodeConnectionSettings().catch(error => {
-    errors.push(errorMessage(error));
+  const settings = await loadActiveNodeConnectionSettings().catch(() => {
+    errors.push('settings-unavailable');
     return undefined;
   });
   const registeredWallet = await walletService
     .loadRegisteredWallet()
-    .catch(error => {
-      errors.push(errorMessage(error));
+    .catch(() => {
+      errors.push('wallet-registry-unavailable');
       return undefined;
-    });
-  const registeredWallets = await walletService
-    .loadRegisteredWallets()
-    .catch(error => {
-      errors.push(errorMessage(error));
-      return [];
     });
   const fastWallets = await walletService
     .loadFastReceiveIdentities()
-    .catch(error => {
-      errors.push(errorMessage(error));
+    .catch(() => {
+      errors.push('fast-wallet-registry-unavailable');
       return [];
     });
   const activeFastWallets = settings
     ? fastWallets.filter(wallet => wallet.network === settings.network)
     : fastWallets;
-  const fastWalletScannerUrl = settings
+  const scannerUrl = settings
     ? fastReceiveScannerUrlForSettings(settings)
     : undefined;
   const fastWalletChecks = await Promise.all(
     activeFastWallets.map(async wallet => {
-      const baseResult = {
-        id: wallet.id,
-        label: wallet.label,
-        network: wallet.network,
-        scannerUrl: fastWalletScannerUrl,
-      };
-
-      if (!fastWalletScannerUrl) {
-        return {
-          ...baseResult,
-          checked: false,
-          error: 'Fast Wallet scanner is disabled',
-          hosted: false,
-          scannerStatus: 'disabled',
-        };
+      if (!scannerUrl) {
+        return { checked: false, hosted: false };
       }
-
       try {
-        const result = await checkFastReceiveWatchRegistration({
-          identityId: wallet.id,
-          scannerUrl: fastWalletScannerUrl,
-        });
-        return {
-          ...baseResult,
-          checked: true,
-          hosted: result.registered,
-          lastScannedHeight: result.lastScannedHeight,
-          notificationsEnabled: result.notificationsEnabled,
-          scannerStatus: result.scannerStatus,
-        };
-      } catch (error) {
-        const message = errorMessage(error);
-        errors.push(`Fast Wallet ${wallet.label}: ${message}`);
-        return {
-          ...baseResult,
-          checked: false,
-          error: message,
-          hosted: false,
-          scannerStatus: 'check-error',
-        };
+        const result = await walletService.checkFastReceiveRegistration(
+          wallet.id,
+          scannerUrl,
+        );
+        return { checked: true, hosted: result.registered };
+      } catch {
+        errors.push('fast-wallet-check-failed');
+        return { checked: false, hosted: false };
       }
     }),
   );
+
   const activeSession = walletService.getActiveSession();
-  const snapshot = activeSession
-    ? await walletService.snapshot(activeSession).catch(error => {
-        errors.push(errorMessage(error));
+  const rawSnapshot = activeSession
+    ? await walletService.snapshot(activeSession).catch(() => {
+        errors.push('wallet-snapshot-unavailable');
         return undefined;
       })
     : undefined;
-  const hardwareStatus = activeSession?.hardwareDevice
-    ? await walletService
-        .getHardwareWalletStatus(activeSession)
-        .catch(error => {
-          errors.push(errorMessage(error));
-          return undefined;
-        })
-    : undefined;
-  const linkedWithMonero = await walletService
-    .linkedWithMonero()
-    .catch(error => {
-      errors.push(errorMessage(error));
-      return false;
-    });
-  const ledgerTransport = await walletService
+  const linkedWithMonero = await walletService.linkedWithMonero().catch(() => {
+    errors.push('native-core-unavailable');
+    return false;
+  });
+  const rawLedgerTransport = await walletService
     .getLedgerTransportStatus()
-    .catch(error => {
-      errors.push(errorMessage(error));
+    .catch(() => {
+      errors.push('ledger-status-unavailable');
       return undefined;
     });
+
   const daemonBaseUrl = settings
     ? createDaemonBaseUrl(settings.daemon.address, settings.daemon.useSsl)
     : undefined;
@@ -136,84 +95,80 @@ export async function runWalletDiagnostics(trigger = 'manual') {
           method: 'get_info',
           params: {},
         }),
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         method: 'POST',
       })
     : undefined;
+
   const diagnostics = {
-    activeSession,
     daemon: {
       getInfo: summarizeGetInfo(daemonGetInfo),
       jsonRpcGetInfo: summarizeGetInfo(daemonJsonRpcGetInfo),
     },
-    errors,
+    errors: Array.from(new Set(errors)),
     fastWallet: {
       checkedCount: fastWalletChecks.filter(wallet => wallet.checked).length,
       configuredCount: activeFastWallets.length,
       hostedCount: fastWalletChecks.filter(
         wallet => wallet.checked && wallet.hosted,
       ).length,
-      identities: fastWalletChecks,
-      scannerUrl: fastWalletScannerUrl,
     },
-    hardwareStatus,
-    ledgerTransport,
-    native: {
-      linkedWithMonero,
-    },
-    registeredWallet: registeredWallet
+    ledgerTransport: rawLedgerTransport
       ? {
-          createdAt: registeredWallet.createdAt,
-          lastOpenedAt: registeredWallet.lastOpenedAt,
-          network: registeredWallet.network,
-          path: registeredWallet.path,
-          walletName: registeredWallet.walletName,
+          available: rawLedgerTransport.available,
+          deviceCount: rawLedgerTransport.deviceCount,
+          deviceName: '',
+          message: rawLedgerTransport.permissionGranted
+            ? 'Ready'
+            : 'Permission required',
+          permissionGranted: rawLedgerTransport.permissionGranted,
+          platform: rawLedgerTransport.platform,
+          requiresUserAction: rawLedgerTransport.requiresUserAction,
+          supported: rawLedgerTransport.supported,
+          transport: rawLedgerTransport.transport,
         }
       : undefined,
+    native: { linkedWithMonero },
+    registeredWallet: registeredWallet ? { present: true } : undefined,
     settings: settings
       ? {
-          daemonAddress: settings.daemon.address,
-          grpcEndpoint: settings.grpcEndpoint,
+          grpcConfigured: settings.grpcEndpoint.length > 0,
           mode: settings.mode,
           network: settings.network,
           trusted: settings.daemon.trusted,
           useSsl: settings.daemon.useSsl ?? false,
         }
       : undefined,
-    snapshot,
-    timestamp: new Date().toISOString(),
-    trigger,
+    snapshot: rawSnapshot
+      ? {
+          daemonHeight: rawSnapshot.daemonHeight,
+          synchronized: rawSnapshot.synchronized,
+          walletHeight: rawSnapshot.walletHeight,
+        }
+      : undefined,
   };
 
-  await emitWalletDiagnosticsLine(
-    `${WALLET_DIAGNOSTIC_LOG_PREFIX} ${JSON.stringify({
-      activeWalletId: registeredWallet?.id,
-      event: 'walletInventory',
-      fastWallets: fastWalletChecks,
-      registeredWallets: registeredWallets.map(wallet => ({
-        hasCredential: Boolean(wallet.credentialKey),
-        id: wallet.id,
-        kind: wallet.kind,
-        network: wallet.network,
-      })),
-      timestamp: new Date().toISOString(),
-      trigger,
-    })}`,
-  );
-
-  await emitWalletDiagnosticsLine(
-    `${WALLET_DIAGNOSTIC_LOG_PREFIX} ${JSON.stringify(diagnostics)}`,
-  );
+  logWalletEvent('WalletDiagnostics', 'health-check.complete', {
+    checkedCount: diagnostics.fastWallet.checkedCount,
+    configuredCount: diagnostics.fastWallet.configuredCount,
+    hostedCount: diagnostics.fastWallet.hostedCount,
+    linked: diagnostics.native.linkedWithMonero,
+    status: diagnostics.errors.length === 0 ? 'ready' : 'warning',
+    trigger: normalizeTrigger(trigger),
+  });
   return diagnostics;
+}
+
+function normalizeTrigger(trigger: string) {
+  return trigger === 'manual' || trigger === 'boot' || trigger === 'url'
+    ? trigger
+    : 'other';
 }
 
 function createDaemonBaseUrl(address: string, useSsl?: boolean): string {
   if (/^https?:\/\//i.test(address)) {
     return address;
   }
-
   return `${useSsl ? 'https' : 'http'}://${address}`;
 }
 
@@ -224,75 +179,53 @@ async function fetchJsonWithTimeout(
 ): Promise<HttpDiagnosticResult> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<HttpDiagnosticResult>(resolve => {
-    timeout = setTimeout(() => {
-      resolve({
-        error: `timeout after ${timeoutMs}ms`,
-        ok: false,
-      });
-    }, timeoutMs);
+    timeout = setTimeout(
+      () => resolve({ error: 'timeout', ok: false }),
+      timeoutMs,
+    );
   });
   const fetchPromise = fetch(url, init)
-    .then(async response => {
-      const text = await response.text();
-      return {
-        json: parseJson(text),
-        ok: response.ok,
-        status: response.status,
-      };
-    })
-    .catch(error => ({
-      error: errorMessage(error),
-      ok: false,
+    .then(async response => ({
+      json: parseJson(await response.text()),
+      ok: response.ok,
+      status: response.status,
     }))
+    .catch(() => ({ error: 'request-failed', ok: false }))
     .finally(() => {
       if (timeout) {
         clearTimeout(timeout);
       }
     });
-
   return Promise.race([fetchPromise, timeoutPromise]);
 }
 
 function parseJson(value: string): JsonRecord | undefined {
   try {
     const parsed: unknown = JSON.parse(value);
-    if (typeof parsed === 'object' && parsed !== null) {
-      return parsed as JsonRecord;
-    }
+    return isRecord(parsed) ? parsed : undefined;
   } catch {
     return undefined;
   }
-
-  return undefined;
 }
 
 function summarizeGetInfo(result: HttpDiagnosticResult | undefined) {
   if (!result) {
     return undefined;
   }
-
   const payload = isRecord(result.json?.result)
     ? result.json.result
     : result.json;
   return {
     error: result.error,
     height: payload?.height,
-    nettype: payload?.nettype,
+    httpStatus: result.status,
     ok: result.ok,
-    restricted: payload?.restricted,
     status: payload?.status,
     synchronized: payload?.synchronized,
     targetHeight: payload?.target_height,
-    topBlockHash: payload?.top_block_hash,
-    txPoolSize: payload?.tx_pool_size,
-    httpStatus: result.status,
   };
 }
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

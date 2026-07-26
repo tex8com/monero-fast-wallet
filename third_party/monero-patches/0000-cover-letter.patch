@@ -1,0 +1,85 @@
+From e7fe4ff6f0a0fef58ca031d2a75c168a42242b42 Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <rolandkohlhuber@0E:7C:CE:E3:20:02.(none)>
+Date: Thu, 23 Jul 2026 16:56:39 -0500
+Subject: [PATCH 00/14] *** SUBJECT HERE ***
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+*** BLURB HERE ***
+
+omesh (14):
+  fix: Ledger crash on macOS 26+ (PAC pointer authentication trap)
+  feat: all modifications - fast crypto + increased limits + Ledger fix
+  feat: add gzip decompression support for RPC responses
+  perf: parallel block fetch with 8 connections in
+    pull_and_parse_next_blocks
+  perf: parallel fast_refresh + hot-block diagnostics + corruption
+    recovery
+  perf: tune parallel sync — 16 clients, speculative prefetch alignment,
+    RAII safety
+  grpc-stream: opt-in cmake infrastructure + skeleton client (no logic
+    yet)
+  grpc-stream: real client implementation + standalone smoke-test binary
+  grpc-stream: wallet2 integration — pull_blocks routes through gRPC
+    stream when endpoint is set
+  grpc-stream: CUPRATE_GRPC_ENDPOINT env var fallback in wallet2::init
+  grpc-stream: fix -- use gRPC in background-sync mode + disable
+    traditional prefetch when active
+  grpc-stream: open stream at m_blockchain.size(), not caller
+    start_height
+  grpc-stream: detect drift and reopen when stream falls behind wallet +
+    pop_wait_ms metric
+  Expose mobile gRPC wallet core support
+
+ .github/workflows/build.yml                   | 254 -----
+ .github/workflows/depends.yml                 | 113 ---
+ .github/workflows/gitian.yml                  |  49 -
+ .gitignore                                    |   1 +
+ .gitmodules                                   |   2 +-
+ CMakeLists.txt                                |   7 +
+ contrib/epee/include/net/http_client.h        |   6 +-
+ .../include/storages/http_abstract_invoke.h   | 105 +-
+ contrib/epee/src/CMakeLists.txt               |   1 +
+ external/monero-fast-crypto/.gitignore        |   3 +
+ external/monero-fast-crypto/Cargo.lock        | 177 ++++
+ external/monero-fast-crypto/Cargo.toml        |  15 +
+ .../include/monero_fast_crypto.h              |  70 ++
+ external/monero-fast-crypto/src/lib.rs        | 149 +++
+ external/randomx                              |   2 +-
+ src/crypto/CMakeLists.txt                     |  22 +-
+ src/crypto/crypto.cpp                         |  19 +-
+ src/cryptonote_basic/miner.cpp                |  12 +-
+ src/cryptonote_config.h                       |   6 +-
+ src/device/device_io_hid.cpp                  |  37 +-
+ src/wallet/CMakeLists.txt                     |  10 +
+ src/wallet/api/wallet.cpp                     |  18 +
+ src/wallet/api/wallet.h                       |   2 +
+ src/wallet/api/wallet2_api.h                  |  12 +
+ src/wallet/grpc_stream/CMakeLists.txt         | 105 ++
+ src/wallet/grpc_stream/cuprate_stream.proto   | 103 ++
+ .../grpc_stream/grpc_block_stream_client.cpp  | 376 +++++++
+ .../grpc_stream/grpc_block_stream_client.h    | 102 ++
+ src/wallet/grpc_stream/grpc_stream_status.h   |  18 +
+ src/wallet/grpc_stream/test_client.cpp        |  69 ++
+ src/wallet/wallet2.cpp                        | 947 +++++++++++++++++-
+ src/wallet/wallet2.h                          |  37 +-
+ 32 files changed, 2369 insertions(+), 480 deletions(-)
+ delete mode 100644 .github/workflows/build.yml
+ delete mode 100644 .github/workflows/depends.yml
+ delete mode 100644 .github/workflows/gitian.yml
+ create mode 100644 external/monero-fast-crypto/.gitignore
+ create mode 100644 external/monero-fast-crypto/Cargo.lock
+ create mode 100644 external/monero-fast-crypto/Cargo.toml
+ create mode 100644 external/monero-fast-crypto/include/monero_fast_crypto.h
+ create mode 100644 external/monero-fast-crypto/src/lib.rs
+ create mode 100644 src/wallet/grpc_stream/CMakeLists.txt
+ create mode 100644 src/wallet/grpc_stream/cuprate_stream.proto
+ create mode 100644 src/wallet/grpc_stream/grpc_block_stream_client.cpp
+ create mode 100644 src/wallet/grpc_stream/grpc_block_stream_client.h
+ create mode 100644 src/wallet/grpc_stream/grpc_stream_status.h
+ create mode 100644 src/wallet/grpc_stream/test_client.cpp
+
+-- 
+2.50.1 (Apple Git-155)
+

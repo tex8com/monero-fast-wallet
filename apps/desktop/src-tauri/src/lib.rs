@@ -5,13 +5,20 @@ mod fast_wallet;
 mod linux_notification_agent;
 mod native_wallet;
 mod node_settings;
+mod platform_auth;
 mod secure_store;
 mod wallet_core;
 mod wallet_registry;
 mod windows_notification_agent;
 
+use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, HashSet}, fs, sync::Mutex, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    sync::Mutex,
+    time::Duration,
+};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 use zeroize::Zeroize;
@@ -40,15 +47,41 @@ struct LedgerViewKeyExportState(Mutex<HashSet<String>>);
 /// durable secret stays in Keychain/Credential Manager/libsecret, while every
 /// native wallet session is closed on lock.
 struct AppProtectionState(Mutex<bool>);
+/// Monotonic focus generation used by the native 15-second background lock.
+/// A focus regain invalidates every pending lock worker.
+struct WindowSecurityState(Mutex<u64>);
+/// Review data is captured from the native prepare result and renderer request
+/// once, then consumed exactly once at commit. The renderer cannot replace the
+/// reviewed recipient, amount, or fee by submitting only a pending ID.
+struct PendingTransactionApprovalState(Mutex<HashMap<String, PendingTransactionApproval>>);
+#[derive(Clone)]
+struct PendingTransactionApproval {
+    wallet_id: String,
+    address: String,
+    amount_atomic: String,
+    fee_atomic: String,
+    expires_at: u64,
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppProtectionStatus {
     configured: bool,
     locked: bool,
+    mode: Option<String>,
+    password_configured: bool,
+    system_auth: platform_auth::SystemAuthStatus,
 }
 #[derive(Debug, Deserialize)]
 struct AppProtectionPasswordInput {
     password: String,
+}
+#[derive(Debug, Deserialize)]
+struct AppProtectionModeInput {
+    mode: String,
+    #[serde(default)]
+    password: String,
+    #[serde(default)]
+    current_password: String,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,11 +93,8 @@ struct CreateWalletInput {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RestoreWalletInput {
+struct RestoreWalletNativeInput {
     wallet_name: String,
-    password: String,
-    mnemonic: String,
-    seed_offset: Option<String>,
     network: String,
     restore_height: Option<u64>,
 }
@@ -181,6 +211,14 @@ struct PrepareTransactionInput {
 struct CommitTransactionInput {
     wallet_id: String,
     pending_id: String,
+    app_password: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PresentRecoverySeedInput {
+    wallet_id: String,
+    registration_id: String,
+    app_password: String,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -225,19 +263,17 @@ struct CreateFastWalletInput {
     restore_height: Option<u64>,
 }
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FastWalletEnableInput {
     identity_id: String,
     scanner_url: String,
-    scanner_auth_token: Option<String>,
 }
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LedgerFastWalletEnableInput {
     identity_id: String,
     source_wallet_id: String,
     scanner_url: String,
-    scanner_auth_token: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -280,34 +316,46 @@ struct ScannerWatchResponse {
 #[tauri::command]
 fn notification_installation_status(
     app: AppHandle,
+    protection: State<'_, AppProtectionState>,
 ) -> Result<desktop_notifications::NotificationInstallationStatus, String> {
+    require_app_unlocked(&protection)?;
     desktop_notifications::status(&app)
 }
 
 #[tauri::command]
 fn request_notification_installation(
     app: AppHandle,
+    protection: State<'_, AppProtectionState>,
     input: desktop_notifications::RequestNotificationInstallationInput,
 ) -> Result<desktop_notifications::NotificationInstallationStatus, String> {
+    require_app_unlocked(&protection)?;
     desktop_notifications::request_installation(&app, input)
 }
 
 #[tauri::command]
 fn disable_notification_installation(
     app: AppHandle,
+    protection: State<'_, AppProtectionState>,
 ) -> Result<desktop_notifications::NotificationInstallationStatus, String> {
+    require_app_unlocked(&protection)?;
     desktop_notifications::disable_installation(&app)
 }
 
 #[tauri::command]
 fn consume_pending_notification_open(
     app: AppHandle,
+    protection: State<'_, AppProtectionState>,
 ) -> Result<Option<desktop_notifications::NotificationEvent>, String> {
+    require_app_unlocked(&protection)?;
     desktop_notifications::consume_pending_open(&app)
 }
 
 #[tauri::command]
-fn background_notification_agent_config_path(app: AppHandle) -> Result<Option<String>, String> {
+fn background_notification_agent_config_path(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+) -> Result<Option<String>, String> {
+    require_app_unlocked(&protection)?;
     desktop_notifications::background_agent_config_path(&app)
 }
 
@@ -356,7 +404,11 @@ async fn fetch_market_backup(input: MarketBackupInput) -> Result<String, String>
 }
 
 #[tauri::command]
-fn ledger_transport_status(state: State<'_, NativeWalletState>) -> Result<String, String> {
+fn ledger_transport_status(
+    state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
+) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     state
         .0
         .lock()
@@ -365,12 +417,24 @@ fn ledger_transport_status(state: State<'_, NativeWalletState>) -> Result<String
 }
 
 #[tauri::command]
-fn store_wallet_password(wallet_id: String, password: String) -> Result<(), String> {
+fn store_wallet_password(
+    protection: State<'_, AppProtectionState>,
+    wallet_id: String,
+    mut password: String,
+) -> Result<(), String> {
+    if let Err(error) = require_app_unlocked(&protection) {
+        password.zeroize();
+        return Err(error);
+    }
     secure_store::store_wallet_password(&wallet_id, password)
 }
 
 #[tauri::command]
-fn delete_wallet_password(wallet_id: String) -> Result<(), String> {
+fn delete_wallet_password(
+    protection: State<'_, AppProtectionState>,
+    wallet_id: String,
+) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     secure_store::delete_wallet_password(&wallet_id)
 }
 
@@ -389,102 +453,273 @@ fn require_app_unlocked(state: &AppProtectionState) -> Result<(), String> {
     Ok(())
 }
 
-fn secrets_match(left: &str, right: &str) -> bool {
-    let mut difference = (left.len() ^ right.len()) as u8;
-    for (a, b) in left.bytes().zip(right.bytes()) {
-        difference |= a ^ b;
-    }
-    difference == 0
+fn require_fresh_app_password(password: &mut String) -> Result<(), String> {
+    let result = (|| {
+        if !secure_store::app_protection_configured()? {
+            return Err("App protection is not configured on this device.".to_owned());
+        }
+        let (failures, blocked_until) = secure_store::load_app_unlock_throttle()?;
+        let current_time = now();
+        if blocked_until > current_time {
+            return Err(format!(
+                "Too many authorization attempts. Retry in {} seconds.",
+                blocked_until - current_time
+            ));
+        }
+        if !secure_store::verify_app_protection_password(password)? {
+            let next_failures = failures.saturating_add(1);
+            let delay = (1_u64 << next_failures.saturating_sub(1).min(8)).min(300);
+            secure_store::store_app_unlock_throttle(
+                next_failures,
+                current_time.saturating_add(delay),
+            )?;
+            return Err(format!(
+                "The app password is incorrect. Retry in {delay} seconds."
+            ));
+        }
+        secure_store::clear_app_unlock_throttle()
+    })();
+    password.zeroize();
+    result
 }
 
-#[tauri::command]
-fn app_protection_status(
-    protection: State<'_, AppProtectionState>,
+async fn app_protection_snapshot(
+    protection: &AppProtectionState,
 ) -> Result<AppProtectionStatus, String> {
-    let configured = secure_store::load_app_protection_password()?.is_some();
+    let mode = secure_store::load_app_protection_mode()?;
+    let configured = mode.is_some();
     Ok(AppProtectionStatus {
         configured,
-        locked: configured && app_is_locked(&protection)?,
+        locked: !configured || app_is_locked(protection)?,
+        mode,
+        password_configured: secure_store::app_protection_password_configured()?,
+        system_auth: platform_auth::status().await,
     })
 }
 
+async fn require_fresh_app_authorization(
+    app: AppHandle,
+    password: &mut String,
+    reason: &str,
+) -> Result<(), String> {
+    match secure_store::load_app_protection_mode()?.as_deref() {
+        Some("password") => require_fresh_app_password(password),
+        Some("system") => {
+            if platform_auth::status().await.requires_recovery_password && !password.is_empty() {
+                return require_fresh_app_password(password);
+            }
+            password.zeroize();
+            platform_auth::authenticate(app, reason).await
+        }
+        _ => {
+            password.zeroize();
+            Err("App protection is not configured on this device.".to_owned())
+        }
+    }
+}
+
 #[tauri::command]
-fn set_app_protection_password(
+async fn app_protection_status(
+    protection: State<'_, AppProtectionState>,
+) -> Result<AppProtectionStatus, String> {
+    app_protection_snapshot(&protection).await
+}
+
+#[tauri::command]
+async fn set_app_protection_password(
     protection: State<'_, AppProtectionState>,
     mut input: AppProtectionPasswordInput,
 ) -> Result<AppProtectionStatus, String> {
-    let already_configured = secure_store::load_app_protection_password()?.is_some();
+    let already_configured = secure_store::app_protection_configured()?;
     if already_configured && app_is_locked(&protection)? {
         input.password.zeroize();
         return Err("Unlock Monero Fast Wallet before changing the app password.".to_owned());
     }
-    if input.password.chars().count() < 8 {
+    if input.password.chars().count() < 12 {
         input.password.zeroize();
-        return Err("Use an app password with at least 8 characters.".to_owned());
+        return Err("Use an app password with at least 12 characters.".to_owned());
     }
     secure_store::store_app_protection_password(std::mem::take(&mut input.password))?;
+    secure_store::store_app_protection_mode("password")?;
+    secure_store::clear_app_unlock_throttle()?;
     *protection
         .0
         .lock()
         .map_err(|_| "App protection state is busy.".to_owned())? = false;
     eprintln!("MONERO_DESKTOP_APP_PROTECTION configured");
-    Ok(AppProtectionStatus { configured: true, locked: false })
+    app_protection_snapshot(&protection).await
 }
 
 #[tauri::command]
-fn verify_app_protection_password(
+async fn verify_app_protection_password(
     protection: State<'_, AppProtectionState>,
     mut input: AppProtectionPasswordInput,
 ) -> Result<AppProtectionStatus, String> {
-    let mut stored = secure_store::load_app_protection_password()?
-        .ok_or_else(|| "App protection is not configured on this device.".to_owned())?;
-    let matches = secrets_match(&stored, &input.password);
-    stored.zeroize();
+    if !secure_store::app_protection_configured()? {
+        input.password.zeroize();
+        return Err("App protection is not configured on this device.".to_owned());
+    }
+    if secure_store::load_app_protection_mode()?.as_deref() == Some("system")
+        && !platform_auth::status().await.requires_recovery_password
+    {
+        input.password.zeroize();
+        return Err("Use the secure system sign-in configured for this app.".to_owned());
+    }
+    let (failures, blocked_until) = secure_store::load_app_unlock_throttle()?;
+    let current_time = now();
+    if blocked_until > current_time {
+        input.password.zeroize();
+        return Err(format!(
+            "Too many unlock attempts. Retry in {} seconds.",
+            blocked_until - current_time
+        ));
+    }
+    let matches = secure_store::verify_app_protection_password(&input.password)?;
     input.password.zeroize();
     if !matches {
+        let next_failures = failures.saturating_add(1);
+        let delay = (1_u64 << next_failures.saturating_sub(1).min(8)).min(300);
+        secure_store::store_app_unlock_throttle(next_failures, current_time.saturating_add(delay))?;
         eprintln!("MONERO_DESKTOP_APP_PROTECTION unlock-rejected");
-        return Err("The app password is incorrect.".to_owned());
+        return Err(format!(
+            "The app password is incorrect. Retry in {delay} seconds."
+        ));
     }
+    secure_store::clear_app_unlock_throttle()?;
     *protection
         .0
         .lock()
         .map_err(|_| "App protection state is busy.".to_owned())? = false;
     eprintln!("MONERO_DESKTOP_APP_PROTECTION unlocked");
-    Ok(AppProtectionStatus { configured: true, locked: false })
+    app_protection_snapshot(&protection).await
 }
 
 #[tauri::command]
-fn clear_app_protection_password(
+async fn set_app_protection_mode(
+    app: AppHandle,
     protection: State<'_, AppProtectionState>,
+    mut input: AppProtectionModeInput,
 ) -> Result<AppProtectionStatus, String> {
-    require_app_unlocked(&protection)?;
-    secure_store::delete_app_protection_password()?;
+    let already_configured = secure_store::app_protection_configured()?;
+    if already_configured && app_is_locked(&protection)? {
+        input.password.zeroize();
+        input.current_password.zeroize();
+        return Err("Unlock Monero Fast Wallet before changing app protection.".to_owned());
+    }
+    let current_mode = secure_store::load_app_protection_mode()?;
+    if already_configured {
+        if let Err(error) = require_fresh_app_authorization(
+            app.clone(),
+            &mut input.current_password,
+            "Confirm your identity before changing how this app is protected.",
+        )
+        .await
+        {
+            input.password.zeroize();
+            return Err(error);
+        }
+    } else {
+        input.current_password.zeroize();
+    }
+    match input.mode.as_str() {
+        "password" => {
+            if input.password.chars().count() < 12 {
+                input.password.zeroize();
+                return Err("Use an app password with at least 12 characters.".to_owned());
+            }
+            secure_store::store_app_protection_password(std::mem::take(&mut input.password))?;
+            secure_store::store_app_protection_mode("password")?;
+        }
+        "system" => {
+            let system = platform_auth::status().await;
+            if !system.available {
+                input.password.zeroize();
+                return Err(system.detail);
+            }
+            if system.requires_recovery_password && input.password.chars().count() < 12 {
+                input.password.zeroize();
+                return Err(
+                    "Linux fingerprint protection also needs a recovery app password with at least 12 characters."
+                        .to_owned(),
+                );
+            }
+            if current_mode.as_deref() != Some("system") {
+                if let Err(error) = platform_auth::authenticate(
+                    app,
+                    "Confirm system sign-in for Monero Fast Wallet",
+                )
+                .await
+                {
+                    input.password.zeroize();
+                    return Err(error);
+                }
+            }
+            if system.requires_recovery_password {
+                secure_store::store_app_protection_password(std::mem::take(&mut input.password))?;
+            } else {
+                input.password.zeroize();
+            }
+            secure_store::store_app_protection_mode("system")?;
+        }
+        _ => {
+            input.password.zeroize();
+            return Err("Choose app password or secure system sign-in.".to_owned());
+        }
+    }
+    secure_store::clear_app_unlock_throttle()?;
     *protection
         .0
         .lock()
         .map_err(|_| "App protection state is busy.".to_owned())? = false;
-    eprintln!("MONERO_DESKTOP_APP_PROTECTION removed");
-    Ok(AppProtectionStatus { configured: false, locked: false })
+    eprintln!("MONERO_DESKTOP_APP_PROTECTION mode={}", input.mode);
+    app_protection_snapshot(&protection).await
 }
 
 #[tauri::command]
-fn lock_app(
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, WalletSessionState>,
-    fast_sessions: State<'_, FastWalletSessionState>,
+async fn verify_system_auth(
+    app: AppHandle,
     protection: State<'_, AppProtectionState>,
+) -> Result<AppProtectionStatus, String> {
+    if secure_store::load_app_protection_mode()?.as_deref() != Some("system") {
+        return Err("Secure system sign-in is not configured for this app.".to_owned());
+    }
+    platform_auth::authenticate(app, "Unlock Monero Fast Wallet").await?;
+    *protection
+        .0
+        .lock()
+        .map_err(|_| "App protection state is busy.".to_owned())? = false;
+    eprintln!("MONERO_DESKTOP_APP_PROTECTION system-unlocked");
+    app_protection_snapshot(&protection).await
+}
+
+fn lock_app_native(
+    state: &NativeWalletState,
+    sessions: &WalletSessionState,
+    fast_sessions: &FastWalletSessionState,
+    approvals: &PendingTransactionApprovalState,
+    protection: &AppProtectionState,
 ) -> Result<(), String> {
-    if secure_store::load_app_protection_password()?.is_none() {
-        return Err("Set an app password before using app lock.".to_owned());
+    if !secure_store::app_protection_configured()? {
+        return Err("Set an app password before using Monero Fast Wallet.".to_owned());
     }
     *protection
         .0
         .lock()
         .map_err(|_| "App protection state is busy.".to_owned())? = true;
     let wallet_ids = {
-        let normal = sessions.0.lock().map_err(|_| "Wallet session state is busy.".to_owned())?;
-        let fast = fast_sessions.0.lock().map_err(|_| "Fast Wallet session state is busy.".to_owned())?;
-        normal.values().chain(fast.values()).cloned().collect::<HashSet<_>>()
+        let normal = sessions
+            .0
+            .lock()
+            .map_err(|_| "Wallet session state is busy.".to_owned())?;
+        let fast = fast_sessions
+            .0
+            .lock()
+            .map_err(|_| "Fast Wallet session state is busy.".to_owned())?;
+        normal
+            .values()
+            .chain(fast.values())
+            .cloned()
+            .collect::<HashSet<_>>()
     };
     let mut close_error = None;
     for wallet_id in wallet_ids {
@@ -497,14 +732,46 @@ fn lock_app(
             close_error.get_or_insert(error);
         }
     }
-    sessions.0.lock().map_err(|_| "Wallet session state is busy.".to_owned())?.clear();
-    fast_sessions.0.lock().map_err(|_| "Fast Wallet session state is busy.".to_owned())?.clear();
+    sessions
+        .0
+        .lock()
+        .map_err(|_| "Wallet session state is busy.".to_owned())?
+        .clear();
+    fast_sessions
+        .0
+        .lock()
+        .map_err(|_| "Fast Wallet session state is busy.".to_owned())?
+        .clear();
+    approvals
+        .0
+        .lock()
+        .map_err(|_| "Transaction approval state is busy.".to_owned())?
+        .clear();
     secure_store::clear_session_secret_cache()?;
     eprintln!("MONERO_DESKTOP_APP_PROTECTION locked");
     if let Some(error) = close_error {
-        return Err(format!("Monero Fast Wallet is locked, but a wallet session reported: {error}"));
+        return Err(format!(
+            "Monero Fast Wallet is locked, but a wallet session reported: {error}"
+        ));
     }
     Ok(())
+}
+
+#[tauri::command]
+fn lock_app(
+    state: State<'_, NativeWalletState>,
+    sessions: State<'_, WalletSessionState>,
+    fast_sessions: State<'_, FastWalletSessionState>,
+    approvals: State<'_, PendingTransactionApprovalState>,
+    protection: State<'_, AppProtectionState>,
+) -> Result<(), String> {
+    lock_app_native(
+        &state,
+        &sessions,
+        &fast_sessions,
+        &approvals,
+        &protection,
+    )
 }
 
 #[tauri::command]
@@ -546,19 +813,22 @@ fn create_wallet(
     )
 }
 #[tauri::command]
-fn restore_wallet(
+async fn restore_wallet_with_native_seed(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
     protection: State<'_, AppProtectionState>,
-    mut input: RestoreWalletInput,
+    input: RestoreWalletNativeInput,
 ) -> Result<WalletOperationResponse, String> {
+    require_app_unlocked(&protection)?;
+    let seed = platform_auth::prompt_recovery_seed(app.clone()).await?;
     require_app_unlocked(&protection)?;
     let wallet_name = next_wallet_file_name(&app, &input.wallet_name, "wallet")?;
     let wallet_network = input.network.clone();
     let restore_height = input.restore_height.filter(|height| *height > 0);
     let path = wallet_path(&app, &wallet_name)?;
-    let mut password = wallet_password_or_generated(&mut input.password)?;
+    let mut empty_password = String::new();
+    let mut password = wallet_password_or_generated(&mut empty_password)?;
     let result = state
         .0
         .lock()
@@ -566,12 +836,11 @@ fn restore_wallet(
         .restore(
             &path,
             &password,
-            &input.mnemonic,
-            input.seed_offset.as_deref().unwrap_or(""),
+            &seed,
+            "",
             network(&input.network)?,
             input.restore_height.unwrap_or(0),
         );
-    input.mnemonic.zeroize();
     let wallet_id = match result {
         Ok(wallet_id) => wallet_id,
         Err(error) => {
@@ -700,19 +969,27 @@ fn create_hardware_wallet(
                 .lock()
                 .map_err(|_| "Native wallet is busy.".to_owned())?
                 .address(&response.wallet_id, 1, 0)
-                .and_then(|address| fast_wallet::new_record(
-                    format!("ledger-fast-{}", response.wallet.id),
-                    "Ledger Fast Wallet".to_owned(),
-                    address,
-                    wallet_network.clone(),
-                    response.wallet.id.clone(),
-                    restore_height.unwrap_or(0),
-                    1,
-                ))
+                .and_then(|address| {
+                    fast_wallet::new_record(
+                        format!("ledger-fast-{}", response.wallet.id),
+                        "Ledger Fast Wallet".to_owned(),
+                        address,
+                        wallet_network.clone(),
+                        response.wallet.id.clone(),
+                        restore_height.unwrap_or(0),
+                        1,
+                    )
+                })
                 .and_then(|record| fast_wallet::insert(&app, record))
             {
-                Ok(_) => diagnostics::record(&app, "ledger.fast-wallet-local-ready", &[("account", "1".to_owned())]),
-                Err(error) => eprintln!("MONERO_DESKTOP_LEDGER_FAST local-record-failed error={error}"),
+                Ok(_) => diagnostics::record(
+                    &app,
+                    "ledger.fast-wallet-local-ready",
+                    &[("account", "1".to_owned())],
+                ),
+                Err(error) => {
+                    eprintln!("MONERO_DESKTOP_LEDGER_FAST local-record-failed error={error}")
+                }
             }
         }
         wallet_registry::upsert_preserving_active(&app, fast_registration)?;
@@ -738,12 +1015,16 @@ fn enable_ledger_read_only(
         .wallets
         .into_iter()
         .find(|wallet| wallet.id == input.source_registration_id)
-        .ok_or_else(|| "The selected Ledger wallet is no longer saved on this device.".to_owned())?;
+        .ok_or_else(|| {
+            "The selected Ledger wallet is no longer saved on this device.".to_owned()
+        })?;
     if source.kind != "hardware" || source.role.as_deref().unwrap_or("standard") != "standard" {
         return Err("Choose a normal Ledger wallet for the local read-only copy.".to_owned());
     }
     if input.source_wallet_id.trim().is_empty() {
-        return Err("Open and unlock the Ledger wallet before enabling local read-only sync.".to_owned());
+        return Err(
+            "Open and unlock the Ledger wallet before enabling local read-only sync.".to_owned(),
+        );
     }
     let active_native_id = sessions
         .0
@@ -751,9 +1032,15 @@ fn enable_ledger_read_only(
         .map_err(|_| "Wallet session state is busy.".to_owned())?
         .get(&source.id)
         .cloned()
-        .ok_or_else(|| "Open and unlock the Ledger wallet first, then approve Export view key on the Ledger.".to_owned())?;
+        .ok_or_else(|| {
+            "Open and unlock the Ledger wallet first, then approve Export view key on the Ledger."
+                .to_owned()
+        })?;
     if active_native_id != input.source_wallet_id {
-        return Err("The selected Ledger session changed. Open the Ledger wallet again and retry.".to_owned());
+        return Err(
+            "The selected Ledger session changed. Open the Ledger wallet again and retry."
+                .to_owned(),
+        );
     }
     begin_ledger_view_key_export(&app, &exports, &source.id, "open-ledger-session")?;
     let result = create_ledger_read_only_from_open_source(
@@ -789,17 +1076,22 @@ fn begin_ledger_view_key_export(
         .lock()
         .map_err(|_| "Ledger view-key export state is busy.".to_owned())?;
     if !in_flight.insert(source_registration_id.to_owned()) {
-        diagnostics::record(app, "ledger.view-key-export-duplicate-blocked", &[("flow", flow.to_owned())]);
+        diagnostics::record(
+            app,
+            "ledger.view-key-export-duplicate-blocked",
+            &[("flow", flow.to_owned())],
+        );
         return Err("A Ledger view-key approval is already in progress. Approve or reject the request on the Ledger before trying again.".to_owned());
     }
-    diagnostics::record(app, "ledger.view-key-export-flow-started", &[("flow", flow.to_owned())]);
+    diagnostics::record(
+        app,
+        "ledger.view-key-export-flow-started",
+        &[("flow", flow.to_owned())],
+    );
     Ok(())
 }
 
-fn finish_ledger_view_key_export(
-    exports: &LedgerViewKeyExportState,
-    source_registration_id: &str,
-) {
+fn finish_ledger_view_key_export(exports: &LedgerViewKeyExportState, source_registration_id: &str) {
     if let Ok(mut in_flight) = exports.0.lock() {
         in_flight.remove(source_registration_id);
     }
@@ -815,7 +1107,10 @@ fn create_ledger_read_only_from_open_source(
     export_flow: &str,
 ) -> Result<WalletOperationResponse, String> {
     if ledger_read_only_exists(app, &source.id)? {
-        return Err("This Ledger already has a local read-only copy. Open it from your wallet list.".to_owned());
+        return Err(
+            "This Ledger already has a local read-only copy. Open it from your wallet list."
+                .to_owned(),
+        );
     }
 
     // One command must result in exactly one Core export request.  The
@@ -846,7 +1141,10 @@ fn create_ledger_read_only_from_open_source(
             diagnostics::record(
                 app,
                 "ledger.view-key-export-failed",
-                &[("flow", export_flow.to_owned()), ("stage", "core".to_owned())],
+                &[
+                    ("flow", export_flow.to_owned()),
+                    ("stage", "core".to_owned()),
+                ],
             );
             return Err(error);
         }
@@ -854,12 +1152,18 @@ fn create_ledger_read_only_from_open_source(
     let mut exported: NativeHardwareViewKeyExport = serde_json::from_str(&exported_json)
         .map_err(|_| "The Ledger returned an invalid view-key response.".to_owned())?;
     exported_json.zeroize();
-    if exported.network != source.network || exported.address.trim().is_empty() || exported.private_view_key.trim().is_empty() {
+    if exported.network != source.network
+        || exported.address.trim().is_empty()
+        || exported.private_view_key.trim().is_empty()
+    {
         exported.private_view_key.zeroize();
         diagnostics::record(
             app,
             "ledger.view-key-export-failed",
-            &[("flow", export_flow.to_owned()), ("stage", "verification".to_owned())],
+            &[
+                ("flow", export_flow.to_owned()),
+                ("stage", "verification".to_owned()),
+            ],
         );
         return Err("The Ledger view key could not be verified for this wallet.".to_owned());
     }
@@ -890,7 +1194,10 @@ fn create_ledger_read_only_from_open_source(
             diagnostics::record(
                 app,
                 "ledger.view-key-export-failed",
-                &[("flow", export_flow.to_owned()), ("stage", "read-only-create".to_owned())],
+                &[
+                    ("flow", export_flow.to_owned()),
+                    ("stage", "read-only-create".to_owned()),
+                ],
             );
             return Err(error);
         }
@@ -908,7 +1215,10 @@ fn create_ledger_read_only_from_open_source(
         diagnostics::record(
             app,
             "ledger.view-key-export-failed",
-            &[("flow", export_flow.to_owned()), ("stage", "secure-store-write".to_owned())],
+            &[
+                ("flow", export_flow.to_owned()),
+                ("stage", "secure-store-write".to_owned()),
+            ],
         );
         return Err(error);
     }
@@ -927,9 +1237,14 @@ fn create_ledger_read_only_from_open_source(
             diagnostics::record(
                 app,
                 "ledger.view-key-export-failed",
-                &[("flow", export_flow.to_owned()), ("stage", "secure-store-verify".to_owned())],
+                &[
+                    ("flow", export_flow.to_owned()),
+                    ("stage", "secure-store-verify".to_owned()),
+                ],
             );
-            return Err("The Ledger private view key could not be verified in secure storage.".to_owned());
+            return Err(
+                "The Ledger private view key could not be verified in secure storage.".to_owned(),
+            );
         }
         Err(error) => {
             let _ = secure_store::delete_ledger_private_view_key(&source.id);
@@ -942,7 +1257,10 @@ fn create_ledger_read_only_from_open_source(
             diagnostics::record(
                 app,
                 "ledger.view-key-export-failed",
-                &[("flow", export_flow.to_owned()), ("stage", "secure-store-verify".to_owned())],
+                &[
+                    ("flow", export_flow.to_owned()),
+                    ("stage", "secure-store-verify".to_owned()),
+                ],
             );
             return Err(error);
         }
@@ -976,7 +1294,10 @@ fn create_ledger_read_only_from_open_source(
             diagnostics::record(
                 app,
                 "ledger.view-key-export-failed",
-                &[("flow", export_flow.to_owned()), ("stage", "registration".to_owned())],
+                &[
+                    ("flow", export_flow.to_owned()),
+                    ("stage", "registration".to_owned()),
+                ],
             );
             Err(error)
         }
@@ -1001,7 +1322,9 @@ fn create_ledger_read_only_from_device(
         .wallets
         .into_iter()
         .find(|wallet| wallet.id == input.source_registration_id)
-        .ok_or_else(|| "The selected Ledger wallet is no longer saved on this device.".to_owned())?;
+        .ok_or_else(|| {
+            "The selected Ledger wallet is no longer saved on this device.".to_owned()
+        })?;
     if source.kind != "hardware" || source.role.as_deref().unwrap_or("standard") != "standard" {
         return Err("Choose a normal Ledger wallet for the local read-only copy.".to_owned());
     }
@@ -1009,7 +1332,10 @@ fn create_ledger_read_only_from_device(
     // second click after a successful export would still wake the Ledger and
     // can look like another private-view-key approval to the owner.
     if ledger_read_only_exists(&app, &source.id)? {
-        return Err("This Ledger already has a local read-only copy. Open it from your wallet list.".to_owned());
+        return Err(
+            "This Ledger already has a local read-only copy. Open it from your wallet list."
+                .to_owned(),
+        );
     }
     begin_ledger_view_key_export(&app, &exports, &source.id, "recovery-device-session")?;
 
@@ -1046,11 +1372,7 @@ fn create_ledger_read_only_from_device(
             ));
         }
     };
-    diagnostics::record(
-        &app,
-        "ledger.recovery-session-opened",
-        &[],
-    );
+    diagnostics::record(&app, "ledger.recovery-session-opened", &[]);
 
     // create_from_device already established this short-lived session and
     // obtained the user-approved view key. Reconnecting here would prompt the
@@ -1077,8 +1399,10 @@ fn create_ledger_read_only_from_device(
 #[tauri::command]
 fn wallet_open_requires_password(
     app: AppHandle,
+    protection: State<'_, AppProtectionState>,
     input: WalletOpenCredentialInput,
 ) -> Result<bool, String> {
+    require_app_unlocked(&protection)?;
     let registration = registration_for_open(
         &app,
         &input.wallet_name,
@@ -1238,8 +1562,10 @@ fn open_wallet(
 fn close_wallet(
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     state
         .0
         .lock()
@@ -1255,8 +1581,10 @@ fn close_wallet(
 #[tauri::command]
 fn rename_wallet(
     app: AppHandle,
+    protection: State<'_, AppProtectionState>,
     input: RenameWalletInput,
 ) -> Result<wallet_registry::RegisteredWallet, String> {
+    require_app_unlocked(&protection)?;
     wallet_registry::rename_wallet(&app, &input.wallet_id, &input.display_name)
 }
 #[tauri::command]
@@ -1264,8 +1592,10 @@ fn remove_registered_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     input: RemoveRegisteredWalletInput,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     // Remove any live native session before hiding its registration. This
     // mirrors mobile's "remove from app" behavior while deliberately keeping
     // the encrypted wallet file and Ledger/seed intact.
@@ -1310,7 +1640,10 @@ fn remove_registered_wallet(
     let removed_view_only_source_ids = registry
         .wallets
         .iter()
-        .filter(|wallet| wallet.id == input.wallet_id || wallet.source_wallet_id.as_deref() == Some(input.wallet_id.as_str()))
+        .filter(|wallet| {
+            wallet.id == input.wallet_id
+                || wallet.source_wallet_id.as_deref() == Some(input.wallet_id.as_str())
+        })
         .filter_map(|wallet| {
             (wallet.kind == "view-only")
                 .then(|| wallet.source_wallet_id.clone())
@@ -1320,7 +1653,11 @@ fn remove_registered_wallet(
     for source_id in removed_view_only_source_ids {
         let _ = secure_store::delete_ledger_private_view_key(&source_id);
     }
-    if registry.wallets.iter().any(|wallet| wallet.id == input.wallet_id && wallet.kind == "hardware") {
+    if registry
+        .wallets
+        .iter()
+        .any(|wallet| wallet.id == input.wallet_id && wallet.kind == "hardware")
+    {
         let _ = secure_store::delete_ledger_private_view_key(&input.wallet_id);
     }
     wallet_registry::remove(&app, &input.wallet_id)?;
@@ -1330,7 +1667,9 @@ fn remove_registered_wallet(
 fn list_registered_wallets(
     app: AppHandle,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
 ) -> Result<Vec<RegisteredWalletView>, String> {
+    require_app_unlocked(&protection)?;
     let registry = wallet_registry::list(&app)?;
     let active_wallet_id = registry.active_wallet_id.clone();
     let sessions = sessions
@@ -1375,14 +1714,11 @@ fn activate_registered_wallet(
     })
 }
 #[tauri::command]
-fn mark_wallet_seed_backed_up(
+fn list_fast_wallets(
     app: AppHandle,
-    wallet_id: String,
-) -> Result<wallet_registry::RegisteredWallet, String> {
-    wallet_registry::mark_seed_backed_up(&app, &wallet_id)
-}
-#[tauri::command]
-fn list_fast_wallets(app: AppHandle) -> Result<Vec<fast_wallet::FastWalletRecord>, String> {
+    protection: State<'_, AppProtectionState>,
+) -> Result<Vec<fast_wallet::FastWalletRecord>, String> {
+    require_app_unlocked(&protection)?;
     fast_wallet::list(&app)
 }
 #[tauri::command]
@@ -1395,6 +1731,7 @@ fn open_fast_wallet(
 ) -> Result<FastWalletOpenResponse, String> {
     require_app_unlocked(&protection)?;
     let wallet = fast_wallet::get(&app, &input.identity_id)?;
+    fast_wallet::require_independent_software(&wallet)?;
     if let Some(wallet_id) = sessions
         .0
         .lock()
@@ -1491,8 +1828,10 @@ fn open_fast_wallet(
 fn close_fast_wallet(
     state: State<'_, NativeWalletState>,
     sessions: State<'_, FastWalletSessionState>,
+    protection: State<'_, AppProtectionState>,
     input: FastWalletIdInput,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     let wallet_id = sessions
         .0
         .lock()
@@ -1558,17 +1897,12 @@ fn create_fast_wallet(
         .filter(|height| *height > 1)
         .or(source.restore_height)
         .unwrap_or(0);
-    // The renderer deliberately never receives the device-held wallet
-    // credential. A blank UI value therefore means "use the existing secure
-    // credential for this already unlocked source wallet".
-    let mut source_password = if input.password.trim().is_empty() {
-        secure_store::load_wallet_password(&source.id)?.ok_or_else(|| {
-            "The source wallet credential is not available on this device.".to_owned()
-        })?
-    } else {
-        std::mem::take(&mut input.password)
-    };
+    // A software Fast Wallet is a wholly independent random wallet. It also
+    // receives its own high-entropy file password so compromise of either
+    // secure-store entry does not unlock the other wallet file.
     input.password.zeroize();
+    let mut empty_password = String::new();
+    let mut fast_password = wallet_password_or_generated(&mut empty_password)?;
     let raw = state
         .0
         .lock()
@@ -1577,24 +1911,29 @@ fn create_fast_wallet(
             source_wallet_id: &source_session_id,
             identity_id: &identity_id,
             path: &path,
-            password: &source_password,
+            password: &fast_password,
             label: &label,
             restore_height,
             derivation_index,
         });
-    let mut password_for_store = source_password.clone();
-    source_password.zeroize();
     let mut raw = match raw {
         Ok(value) => value,
         Err(error) => {
-            password_for_store.zeroize();
+            fast_password.zeroize();
             return Err(error);
         }
     };
     // Retain the credential before parsing public metadata. It never crosses
     // the Tauri boundary and the local identity remains recoverable if a
     // later metadata write is interrupted.
-    secure_store::store_fast_wallet_password(&identity_id, password_for_store)?;
+    if let Err(error) =
+        secure_store::store_fast_wallet_password(&identity_id, std::mem::take(&mut fast_password))
+    {
+        let _ = secure_store::delete_fast_wallet_password(&identity_id);
+        remove_temporary_wallet_files(&path);
+        raw.zeroize();
+        return Err(error);
+    }
     let parsed = serde_json::from_str::<NativeFastWalletIdentity>(&raw);
     raw.zeroize();
     let identity = parsed.map_err(|_| "The native Fast Wallet identity was invalid.".to_owned())?;
@@ -1634,18 +1973,12 @@ async fn enable_fast_wallet(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     protection: State<'_, AppProtectionState>,
-    mut input: FastWalletEnableInput,
+    input: FastWalletEnableInput,
 ) -> Result<fast_wallet::FastWalletRecord, String> {
     require_app_unlocked(&protection)?;
     let mut record = fast_wallet::get(&app, &input.identity_id)?;
+    fast_wallet::require_independent_software(&record)?;
     let scanner_url = fast_wallet::scanner_url(&input.scanner_url)?;
-    if let Some(mut supplied_token) = input.scanner_auth_token.take() {
-        let token = supplied_token.trim().to_owned();
-        supplied_token.zeroize();
-        if !token.is_empty() {
-            secure_store::store_fast_scanner_token(&record.id, token)?;
-        }
-    }
     let mut password = secure_store::load_fast_wallet_password(&record.id)?
         .ok_or_else(|| "The Fast Wallet password is not available in secure storage. Create a new Fast Wallet identity before enabling the scanner.".to_owned())?;
     let path = fast_wallet::wallet_path(&app, &record.id)?;
@@ -1707,7 +2040,7 @@ async fn enable_ledger_fast_wallet(
     sessions: State<'_, WalletSessionState>,
     exports: State<'_, LedgerViewKeyExportState>,
     protection: State<'_, AppProtectionState>,
-    mut input: LedgerFastWalletEnableInput,
+    input: LedgerFastWalletEnableInput,
 ) -> Result<fast_wallet::FastWalletRecord, String> {
     require_app_unlocked(&protection)?;
     let mut record = fast_wallet::get(&app, &input.identity_id)?;
@@ -1725,18 +2058,17 @@ async fn enable_ledger_fast_wallet(
         .map_err(|_| "Wallet session state is busy.".to_owned())?
         .get(&source.id)
         .cloned()
-        .ok_or_else(|| "Open the normal Ledger wallet first, then approve Export view key once on the Ledger.".to_owned())?;
+        .ok_or_else(|| {
+            "Open the normal Ledger wallet first, then approve Export view key once on the Ledger."
+                .to_owned()
+        })?;
     if source_session_id != input.source_wallet_id {
-        return Err("The selected Ledger session changed. Open the normal Ledger wallet again and retry.".to_owned());
+        return Err(
+            "The selected Ledger session changed. Open the normal Ledger wallet again and retry."
+                .to_owned(),
+        );
     }
     let scanner_url = fast_wallet::scanner_url(&input.scanner_url)?;
-    if let Some(mut supplied_token) = input.scanner_auth_token.take() {
-        let token = supplied_token.trim().to_owned();
-        supplied_token.zeroize();
-        if !token.is_empty() {
-            secure_store::store_fast_scanner_token(&record.id, token)?;
-        }
-    }
     begin_ledger_view_key_export(&app, &exports, &source.id, "ledger-fast-scanner")?;
     diagnostics::record(
         &app,
@@ -1759,7 +2091,9 @@ async fn enable_ledger_fast_wallet(
         );
         if exported.network != source.network || exported.private_view_key.trim().is_empty() {
             exported.private_view_key.zeroize();
-            return Err("The Ledger view key could not be verified for this Fast Wallet.".to_owned());
+            return Err(
+                "The Ledger view key could not be verified for this Fast Wallet.".to_owned(),
+            );
         }
         let account_address = state
             .0
@@ -1788,13 +2122,19 @@ async fn enable_ledger_fast_wallet(
             &record,
             &mut payload,
             subscription_id.as_deref(),
-        ).await;
+        )
+        .await;
         payload.private_view_key.zeroize();
         let response = response?;
         apply_scanner_response(&mut record, &scanner_url, response)?;
-        diagnostics::record(&app, "ledger.fast-wallet-scanner-enabled", &[("account", "1".to_owned())]);
+        diagnostics::record(
+            &app,
+            "ledger.fast-wallet-scanner-enabled",
+            &[("account", "1".to_owned())],
+        );
         fast_wallet::update(&app, record)
-    })().await;
+    })()
+    .await;
     finish_ledger_view_key_export(&exports, &source.id);
     if result.is_err() {
         diagnostics::record(
@@ -1808,19 +2148,24 @@ async fn enable_ledger_fast_wallet(
 #[tauri::command]
 async fn refresh_fast_wallet_status(
     app: AppHandle,
+    protection: State<'_, AppProtectionState>,
     input: FastWalletIdInput,
 ) -> Result<fast_wallet::FastWalletRecord, String> {
+    require_app_unlocked(&protection)?;
     let mut record = fast_wallet::get(&app, &input.identity_id)?;
+    if record.status == "legacy-blocked" {
+        return Ok(record);
+    }
     let scanner_url = if record.scanner_url.is_empty() {
         return Ok(record);
     } else {
         fast_wallet::scanner_url(&record.scanner_url)?
     };
-    let mut token = secure_store::load_fast_scanner_token(&record.id)?;
-    let result = get_fast_wallet_scanner_status(&scanner_url, &record.id, token.as_deref()).await;
-    if let Some(value) = token.as_mut() {
-        value.zeroize();
-    }
+    let mut token = secure_store::load_fast_scanner_token(&record.id)?.ok_or_else(|| {
+        "The scanner management credential is missing. Disable this test registration on the scanner and enable it again.".to_owned()
+    })?;
+    let result = get_fast_wallet_scanner_status(&scanner_url, &record.id, &token).await;
+    token.zeroize();
     match result {
         Ok(Some(response)) => {
             if let Err(error) = apply_scanner_response(&mut record, &scanner_url, response) {
@@ -1846,17 +2191,18 @@ async fn refresh_fast_wallet_status(
 #[tauri::command]
 async fn disable_fast_wallet(
     app: AppHandle,
+    protection: State<'_, AppProtectionState>,
     input: FastWalletIdInput,
 ) -> Result<fast_wallet::FastWalletRecord, String> {
+    require_app_unlocked(&protection)?;
     let mut record = fast_wallet::get(&app, &input.identity_id)?;
     if !record.scanner_url.is_empty() {
         let scanner_url = fast_wallet::scanner_url(&record.scanner_url)?;
-        let mut token = secure_store::load_fast_scanner_token(&record.id)?;
-        let result =
-            delete_fast_wallet_scanner_watch(&scanner_url, &record.id, token.as_deref()).await;
-        if let Some(value) = token.as_mut() {
-            value.zeroize();
-        }
+        let mut token = secure_store::load_fast_scanner_token(&record.id)?.ok_or_else(|| {
+            "The scanner management credential is missing. Reset this test registration before retrying.".to_owned()
+        })?;
+        let result = delete_fast_wallet_scanner_watch(&scanner_url, &record.id, &token).await;
+        token.zeroize();
         let response = result?;
         if response.identity_id != record.id {
             record.status = "server-mismatch".to_owned();
@@ -1905,7 +2251,7 @@ async fn register_fast_wallet_with_scanner(
         );
     }
     let client = fast_scanner_client()?;
-    let mut token = secure_store::load_fast_scanner_token(&record.id)?;
+    let mut token = secure_store::ensure_fast_scanner_token(&record.id)?;
     let mut request = ScannerRegisterRequest {
         identity_id: record.id.clone(),
         address: record.address.clone(),
@@ -1914,17 +2260,13 @@ async fn register_fast_wallet_with_scanner(
         restore_height: record.restore_height,
         device_id: subscription_id.map(str::to_owned),
     };
-    let mut call = client
+    let call = client
         .post(format!("{scanner_url}/v1/fast-receive/watch"))
-        .header(reqwest::header::ACCEPT, "application/json");
-    if let Some(value) = token.as_deref() {
-        call = call.bearer_auth(value);
-    }
+        .header(reqwest::header::ACCEPT, "application/json")
+        .bearer_auth(&token);
     let response = call.json(&request).send().await;
     request.private_view_key.zeroize();
-    if let Some(value) = token.as_mut() {
-        value.zeroize();
-    }
+    token.zeroize();
     let response = response.map_err(|_| "Fast Wallet scanner could not be reached.".to_owned())?;
     parse_scanner_response(response).await
 }
@@ -1941,16 +2283,14 @@ fn notification_subscription_id(app: &AppHandle) -> Result<Option<String>, Strin
 async fn get_fast_wallet_scanner_status(
     scanner_url: &str,
     identity_id: &str,
-    token: Option<&str>,
+    token: &str,
 ) -> Result<Option<ScannerWatchResponse>, String> {
     fast_wallet::validate_id(identity_id)?;
     let client = fast_scanner_client()?;
-    let mut call = client
+    let call = client
         .get(format!("{scanner_url}/v1/fast-receive/watch/{identity_id}"))
-        .header(reqwest::header::ACCEPT, "application/json");
-    if let Some(value) = token {
-        call = call.bearer_auth(value);
-    }
+        .header(reqwest::header::ACCEPT, "application/json")
+        .bearer_auth(token);
     let response = call
         .send()
         .await
@@ -1964,16 +2304,14 @@ async fn get_fast_wallet_scanner_status(
 async fn delete_fast_wallet_scanner_watch(
     scanner_url: &str,
     identity_id: &str,
-    token: Option<&str>,
+    token: &str,
 ) -> Result<ScannerWatchResponse, String> {
     fast_wallet::validate_id(identity_id)?;
     let client = fast_scanner_client()?;
-    let mut call = client
+    let call = client
         .delete(format!("{scanner_url}/v1/fast-receive/watch/{identity_id}"))
-        .header(reqwest::header::ACCEPT, "application/json");
-    if let Some(value) = token {
-        call = call.bearer_auth(value);
-    }
+        .header(reqwest::header::ACCEPT, "application/json")
+        .bearer_auth(token);
     let response = call
         .send()
         .await
@@ -2043,16 +2381,23 @@ fn now() -> u64 {
 #[tauri::command]
 fn load_node_settings(
     app: AppHandle,
+    protection: State<'_, AppProtectionState>,
     network: String,
 ) -> Result<node_settings::NodeProfile, String> {
+    require_app_unlocked(&protection)?;
     node_settings::load(&app, &network)
 }
 #[tauri::command]
 fn save_node_settings(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     mut input: NodeSettingsInput,
 ) -> Result<node_settings::NodeProfile, String> {
+    if let Err(error) = require_app_unlocked(&protection) {
+        input.password.zeroize();
+        return Err(error);
+    }
     let existing = node_settings::load(&app, &input.network)?;
     let password_supplied = !input.password.trim().is_empty();
     let password_stored = !input.clear_password && (password_supplied || existing.password_stored);
@@ -2107,7 +2452,15 @@ fn save_node_settings(
     Ok(profile)
 }
 #[tauri::command]
-fn set_daemon(state: State<'_, NativeWalletState>, mut input: DaemonInput) -> Result<(), String> {
+fn set_daemon(
+    state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
+    mut input: DaemonInput,
+) -> Result<(), String> {
+    if let Err(error) = require_app_unlocked(&protection) {
+        input.password.zeroize();
+        return Err(error);
+    }
     let result = state
         .0
         .lock()
@@ -2127,8 +2480,10 @@ fn set_daemon(state: State<'_, NativeWalletState>, mut input: DaemonInput) -> Re
 #[tauri::command]
 fn start_wallet_refresh(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     state
         .0
         .lock()
@@ -2138,8 +2493,10 @@ fn start_wallet_refresh(
 #[tauri::command]
 fn stop_wallet_refresh(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     state
         .0
         .lock()
@@ -2149,8 +2506,10 @@ fn stop_wallet_refresh(
 #[tauri::command]
 fn wallet_address(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
     state
         .0
@@ -2159,15 +2518,64 @@ fn wallet_address(
         .address(&input.wallet_id, account_index, 0)
 }
 #[tauri::command]
-fn wallet_recovery_seed(
+async fn present_recovery_seed(
+    app: AppHandle,
     state: State<'_, NativeWalletState>,
-    input: WalletIdInput,
-) -> Result<String, String> {
-    state
+    sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
+    mut input: PresentRecoverySeedInput,
+) -> Result<bool, String> {
+    require_app_unlocked(&protection)?;
+    require_fresh_app_authorization(
+        app.clone(),
+        &mut input.app_password,
+        "Approve showing the recovery seed",
+    )
+    .await?;
+
+    let registry = wallet_registry::list(&app)?;
+    let registration = registry
+        .wallets
+        .into_iter()
+        .find(|wallet| wallet.id == input.registration_id)
+        .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
+    if registration.kind != "software"
+        || registration.role.as_deref() == Some("fast")
+        || registration.id.starts_with("fast-")
+    {
+        return Err(
+            "Recovery seeds cannot be revealed for Fast, hardware, or watch-only wallets."
+                .to_owned(),
+        );
+    }
+    let native_wallet_id = sessions
+        .0
+        .lock()
+        .map_err(|_| "Wallet session state is busy.".to_owned())?
+        .get(&registration.id)
+        .cloned()
+        .ok_or_else(|| "Open this software wallet before backing it up.".to_owned())?;
+    if native_wallet_id != input.wallet_id {
+        return Err("The recovery-seed request does not match the open wallet.".to_owned());
+    }
+
+    let mut seed = state
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
-        .recovery_seed(&input.wallet_id)
+        .recovery_seed(&native_wallet_id)?;
+    let result = MessageDialog::new()
+        .set_level(MessageLevel::Warning)
+        .set_title("Offline recovery-seed backup")
+        .set_description(&seed)
+        .set_buttons(MessageButtons::OkCancel)
+        .show();
+    seed.zeroize();
+    let confirmed = matches!(result, MessageDialogResult::Ok | MessageDialogResult::Yes);
+    if confirmed {
+        wallet_registry::mark_seed_backed_up(&app, &registration.id)?;
+    }
+    Ok(confirmed)
 }
 fn snapshot_for_account(
     wallet: &native_wallet::NativeWallet,
@@ -2201,8 +2609,10 @@ fn snapshot_for_account(
 #[tauri::command]
 fn wallet_snapshot(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
     let wallet = state
         .0
@@ -2215,7 +2625,9 @@ fn registered_wallet_snapshots(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
     sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
 ) -> Result<Vec<RegisteredWalletSnapshot>, String> {
+    require_app_unlocked(&protection)?;
     let registered = wallet_registry::list(&app)?;
     let session_ids = sessions
         .0
@@ -2230,19 +2642,29 @@ fn registered_wallet_snapshots(
         .wallets
         .into_iter()
         .filter_map(|registration| {
-            session_ids.get(&registration.id).map(|session_id| (registration, session_id))
+            session_ids
+                .get(&registration.id)
+                .map(|session_id| (registration, session_id))
         })
-        .map(|(registration, session_id)| Ok(RegisteredWalletSnapshot {
-            registration_id: registration.id,
-            snapshot: snapshot_for_account(&wallet, session_id, registration.account_index.unwrap_or(0))?,
-        }))
+        .map(|(registration, session_id)| {
+            Ok(RegisteredWalletSnapshot {
+                registration_id: registration.id,
+                snapshot: snapshot_for_account(
+                    &wallet,
+                    session_id,
+                    registration.account_index.unwrap_or(0),
+                )?,
+            })
+        })
         .collect()
 }
 #[tauri::command]
 fn wallet_balance(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
     state
         .0
@@ -2253,8 +2675,10 @@ fn wallet_balance(
 #[tauri::command]
 fn wallet_unlocked_balance(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
     state
         .0
@@ -2265,8 +2689,10 @@ fn wallet_unlocked_balance(
 #[tauri::command]
 fn create_subaddress(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: SubaddressInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
     state
         .0
@@ -2277,8 +2703,10 @@ fn create_subaddress(
 #[tauri::command]
 fn wallet_transactions(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
     let raw = state
         .0
@@ -2302,10 +2730,13 @@ fn wallet_transactions(
 #[tauri::command]
 fn prepare_transaction(
     state: State<'_, NativeWalletState>,
+    approvals: State<'_, PendingTransactionApprovalState>,
+    protection: State<'_, AppProtectionState>,
     input: PrepareTransactionInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
-    state
+    let raw = state
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
@@ -2316,13 +2747,82 @@ fn prepare_transaction(
             input.payment_id.as_deref().unwrap_or(""),
             input.priority.as_deref().unwrap_or("low"),
             account_index,
-        )
+        )?;
+    let prepared: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|_| "The native transaction review was invalid.".to_owned())?;
+    let pending_id = prepared
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "The native transaction review has no pending ID.".to_owned())?;
+    let amount_atomic = prepared
+        .get("amountAtomic")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "The native transaction review has no amount.".to_owned())?;
+    let fee_atomic = prepared
+        .get("feeAtomic")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "The native transaction review has no fee.".to_owned())?;
+    let mut pending = approvals
+        .0
+        .lock()
+        .map_err(|_| "Transaction approval state is busy.".to_owned())?;
+    let current_time = now();
+    pending.retain(|_, approval| approval.expires_at > current_time);
+    pending.insert(
+        pending_id.to_owned(),
+        PendingTransactionApproval {
+            wallet_id: input.wallet_id,
+            address: input.address,
+            amount_atomic: amount_atomic.to_owned(),
+            fee_atomic: fee_atomic.to_owned(),
+            expires_at: current_time.saturating_add(120),
+        },
+    );
+    Ok(raw)
 }
 #[tauri::command]
-fn commit_transaction(
+async fn commit_transaction(
+    app: AppHandle,
     state: State<'_, NativeWalletState>,
-    input: CommitTransactionInput,
+    approvals: State<'_, PendingTransactionApprovalState>,
+    protection: State<'_, AppProtectionState>,
+    mut input: CommitTransactionInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
+    require_fresh_app_authorization(
+        app,
+        &mut input.app_password,
+        "Approve this Monero transaction",
+    )
+    .await?;
+    let approval = approvals
+        .0
+        .lock()
+        .map_err(|_| "Transaction approval state is busy.".to_owned())?
+        .remove(&input.pending_id)
+        .ok_or_else(|| {
+            "This transaction review is missing, expired, or was already used.".to_owned()
+        })?;
+    if approval.wallet_id != input.wallet_id {
+        return Err("The transaction review belongs to a different wallet.".to_owned());
+    }
+    if approval.expires_at <= now() {
+        return Err("The transaction review expired. Prepare it again.".to_owned());
+    }
+    let description = format!(
+        "Recipient:\n{}\n\nAmount (atomic XMR): {}\nNetwork fee (atomic XMR): {}\n\nApprove this exact transaction?",
+        approval.address, approval.amount_atomic, approval.fee_atomic
+    );
+    let decision = MessageDialog::new()
+        .set_level(MessageLevel::Warning)
+        .set_title("Final transaction approval")
+        .set_description(description)
+        .set_buttons(MessageButtons::YesNo)
+        .show();
+    if decision != MessageDialogResult::Yes {
+        return Err("Transaction cancelled in the trusted native confirmation.".to_owned());
+    }
     state
         .0
         .lock()
@@ -2332,8 +2832,10 @@ fn commit_transaction(
 #[tauri::command]
 fn wallet_hardware_status(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     state
         .0
         .lock()
@@ -2343,8 +2845,10 @@ fn wallet_hardware_status(
 #[tauri::command]
 fn reconnect_hardware_wallet(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: WalletIdInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     state
         .0
         .lock()
@@ -2354,8 +2858,10 @@ fn reconnect_hardware_wallet(
 #[tauri::command]
 fn show_hardware_wallet_address(
     state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
     input: HardwareAddressInput,
 ) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
     let address_index = checked_account_index(input.address_index)?;
     state
@@ -2367,75 +2873,97 @@ fn show_hardware_wallet_address(
 #[tauri::command]
 async fn community_load_profile(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
 ) -> Result<community::CommunityProfile, String> {
+    require_app_unlocked(&protection)?;
     state.load_profile().await
 }
 #[tauri::command]
 async fn community_update_profile(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
     input: community::CommunityProfileUpdateInput,
 ) -> Result<community::CommunityProfile, String> {
+    require_app_unlocked(&protection)?;
     state.update_profile(input).await
 }
 #[tauri::command]
 async fn community_list_nearby(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
     input: community::CommunityRadiusInput,
 ) -> Result<Vec<community::CommunityNearby>, String> {
+    require_app_unlocked(&protection)?;
     state.list_nearby(input.radius_km).await
 }
 #[tauri::command]
 async fn community_list_contacts(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
 ) -> Result<Vec<community::CommunityContact>, String> {
+    require_app_unlocked(&protection)?;
     state.list_contacts().await
 }
 #[tauri::command]
 async fn community_request_contact(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
     input: community::CommunityPeerInput,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     state.request_contact(&input.peer_id).await
 }
 #[tauri::command]
 async fn community_accept_contact(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
     input: community::CommunityPeerInput,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     state.accept_contact(&input.peer_id).await
 }
 #[tauri::command]
 async fn community_list_messages(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
     input: community::CommunityMessagesInput,
 ) -> Result<Vec<community::CommunityMessage>, String> {
+    require_app_unlocked(&protection)?;
     state.list_messages(&input.peer_id, input.after_ms).await
 }
 #[tauri::command]
 async fn community_send_message(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
     input: community::CommunitySendMessageInput,
 ) -> Result<community::CommunityMessage, String> {
+    require_app_unlocked(&protection)?;
     state.send_message(&input.peer_id, &input.body).await
 }
 #[tauri::command]
 async fn community_block_profile(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
     input: community::CommunityPeerInput,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     state.block_profile(&input.peer_id).await
 }
 #[tauri::command]
 async fn community_report_profile(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
     input: community::CommunityReportInput,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     state.report_profile(&input.peer_id, &input.reason).await
 }
 #[tauri::command]
 async fn community_delete_identity(
     state: State<'_, community::CommunityState>,
+    protection: State<'_, AppProtectionState>,
 ) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
     state.delete_identity().await
 }
 fn market_backup_url(kind: &str, timeframe: Option<&str>) -> Result<String, String> {
@@ -2570,7 +3098,10 @@ fn finish_wallet_operation_with_password(
         diagnostics::record(
             app,
             "wallet.credential-store-failed",
-            &[("kind", wallet.kind.clone()), ("reason", "secure-store".to_owned())],
+            &[
+                ("kind", wallet.kind.clone()),
+                ("reason", "secure-store".to_owned()),
+            ],
         );
         // A wallet without its device-held credential would not meet the
         // passwordless setup promise. Close the native wallet before it is
@@ -2585,7 +3116,10 @@ fn finish_wallet_operation_with_password(
     diagnostics::record(
         app,
         "wallet.credential-stored",
-        &[("kind", wallet.kind.clone()), ("verified", "true".to_owned())],
+        &[
+            ("kind", wallet.kind.clone()),
+            ("verified", "true".to_owned()),
+        ],
     );
     match finish_wallet_operation(app, state, sessions, wallet_id, wallet) {
         Ok(response) => Ok(response),
@@ -2754,9 +3288,8 @@ pub fn run() {
     // Fail closed when the OS credential store cannot be read. The renderer
     // can show the exact storage error, but native sessions must never open
     // before the app-wide boundary has been confirmed.
-    let initially_locked = match secure_store::load_app_protection_password() {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
+    let initially_locked = match secure_store::app_protection_configured() {
+        Ok(_) => true,
         Err(error) => {
             eprintln!("MONERO_DESKTOP_APP_PROTECTION status-read-failed: {error}");
             true
@@ -2770,9 +3303,65 @@ pub fn run() {
         .manage(WalletSessionState(Mutex::new(HashMap::new())))
         .manage(FastWalletSessionState(Mutex::new(HashMap::new())))
         .manage(LedgerViewKeyExportState(Mutex::new(HashSet::new())))
+        .manage(PendingTransactionApprovalState(Mutex::new(HashMap::new())))
         .manage(AppProtectionState(Mutex::new(initially_locked)))
+        .manage(WindowSecurityState(Mutex::new(0)))
         .manage(community::CommunityState::new().expect("Community client initialization"))
         .setup(|app| {
+            let main_window = app
+                .get_webview_window("main")
+                .ok_or_else(|| "The main wallet window is unavailable.".to_owned())?;
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            main_window
+                .set_content_protected(true)
+                .map_err(|error| format!("Screen-capture protection failed: {error}"))?;
+
+            let lifecycle_app = app.handle().clone();
+            main_window.on_window_event(move |event| {
+                if let tauri::WindowEvent::Focused(focused) = event {
+                    let generation = {
+                        let lifecycle = lifecycle_app.state::<WindowSecurityState>();
+                        let Ok(mut current) = lifecycle.0.lock() else {
+                            return;
+                        };
+                        *current = current.wrapping_add(1);
+                        *current
+                    };
+                    if *focused {
+                        return;
+                    }
+                    let lock_app_handle = lifecycle_app.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(15));
+                        let still_unfocused = lock_app_handle
+                            .state::<WindowSecurityState>()
+                            .0
+                            .lock()
+                            .map(|current| *current == generation)
+                            .unwrap_or(false);
+                        if !still_unfocused {
+                            return;
+                        }
+                        let state = lock_app_handle.state::<NativeWalletState>();
+                        let sessions = lock_app_handle.state::<WalletSessionState>();
+                        let fast_sessions = lock_app_handle.state::<FastWalletSessionState>();
+                        let approvals =
+                            lock_app_handle.state::<PendingTransactionApprovalState>();
+                        let protection = lock_app_handle.state::<AppProtectionState>();
+                        if let Err(error) = lock_app_native(
+                            &state,
+                            &sessions,
+                            &fast_sessions,
+                            &approvals,
+                            &protection,
+                        ) {
+                            eprintln!(
+                                "MONERO_DESKTOP_APP_PROTECTION background-lock-failed: {error}"
+                            );
+                        }
+                    });
+                }
+            });
             if std::env::var("MONERO_DESKTOP_TEST_NOTIFICATION_ON_START").as_deref() == Ok("1") {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
@@ -2864,14 +3453,15 @@ pub fn run() {
             app_protection_status,
             set_app_protection_password,
             verify_app_protection_password,
-            clear_app_protection_password,
+            set_app_protection_mode,
+            verify_system_auth,
             lock_app,
             fetch_market_backup,
             ledger_transport_status,
             store_wallet_password,
             delete_wallet_password,
             create_wallet,
-            restore_wallet,
+            restore_wallet_with_native_seed,
             create_hardware_wallet,
             enable_ledger_read_only,
             create_ledger_read_only_from_device,
@@ -2882,7 +3472,6 @@ pub fn run() {
             remove_registered_wallet,
             list_registered_wallets,
             activate_registered_wallet,
-            mark_wallet_seed_backed_up,
             list_fast_wallets,
             open_fast_wallet,
             close_fast_wallet,
@@ -2902,7 +3491,7 @@ pub fn run() {
             start_wallet_refresh,
             stop_wallet_refresh,
             wallet_address,
-            wallet_recovery_seed,
+            present_recovery_seed,
             wallet_snapshot,
             registered_wallet_snapshots,
             wallet_balance,
@@ -2932,11 +3521,23 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{market_backup_url, wallet_file_path_is_available};
+    use super::{
+        market_backup_url, require_app_unlocked, wallet_file_path_is_available, AppProtectionState,
+    };
     use std::{
         fs,
+        sync::Mutex,
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn native_authorization_fails_closed_while_the_app_is_locked() {
+        let locked = AppProtectionState(Mutex::new(true));
+        assert!(require_app_unlocked(&locked).is_err());
+
+        let unlocked = AppProtectionState(Mutex::new(false));
+        assert!(require_app_unlocked(&unlocked).is_ok());
+    }
 
     #[test]
     fn market_backup_only_allows_expected_bitfinex_routes() {

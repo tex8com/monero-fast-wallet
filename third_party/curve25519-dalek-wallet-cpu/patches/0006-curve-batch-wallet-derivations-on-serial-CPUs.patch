@@ -1,0 +1,352 @@
+From b63ac1ee40ea2137e95b1816f88ce390f648bd6a Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <rolandkohlhuber@Rolands-MacBook-Air.local>
+Date: Sat, 25 Jul 2026 16:30:19 -0500
+Subject: [PATCH 6/6] curve: batch wallet derivations on serial CPUs
+
+---
+ curve25519-dalek/src/backend/mod.rs           |  29 ++++
+ .../serial/scalar_mul/variable_base.rs        |  51 ++++++
+ curve25519-dalek/src/edwards.rs               | 157 ++++++++++++++++++
+ curve25519-dalek/src/field.rs                 |  18 +-
+ 4 files changed, 252 insertions(+), 3 deletions(-)
+
+diff --git a/curve25519-dalek/src/backend/mod.rs b/curve25519-dalek/src/backend/mod.rs
+index 87a0645..39a7472 100644
+--- a/curve25519-dalek/src/backend/mod.rs
++++ b/curve25519-dalek/src/backend/mod.rs
+@@ -266,6 +266,35 @@ pub fn variable_base_mul_precomputed(
+     }
+ }
+ 
++/// Perform two independent constant-time variable-base scalar
++/// multiplications with a precomputed signed radix-16 scalar.
++pub fn variable_base_mul_precomputed_pair(
++    points: [&EdwardsPoint; 2],
++    scalar_digits: &[i8; 64],
++) -> [EdwardsPoint; 2] {
++    match get_selected_backend() {
++        #[cfg(curve25519_dalek_backend = "simd")]
++        BackendKind::Avx2 => [
++            vector::scalar_mul::variable_base::spec_avx2::mul_precomputed(points[0], scalar_digits),
++            vector::scalar_mul::variable_base::spec_avx2::mul_precomputed(points[1], scalar_digits),
++        ],
++        #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
++        BackendKind::Avx512 => [
++            vector::scalar_mul::variable_base::spec_avx512ifma_avx512vl::mul_precomputed(
++                points[0],
++                scalar_digits,
++            ),
++            vector::scalar_mul::variable_base::spec_avx512ifma_avx512vl::mul_precomputed(
++                points[1],
++                scalar_digits,
++            ),
++        ],
++        BackendKind::Serial => {
++            serial::scalar_mul::variable_base::mul_precomputed_pair(points, scalar_digits)
++        }
++    }
++}
++
+ /// Compute \\(aA + bB\\) in variable time, where \\(B\\) is the Ed25519 basepoint.
+ #[allow(non_snake_case)]
+ pub fn vartime_double_base_mul(a: &Scalar, A: &EdwardsPoint, b: &Scalar) -> EdwardsPoint {
+diff --git a/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs b/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs
+index 94b6409..64e7281 100644
+--- a/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs
++++ b/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs
+@@ -22,6 +22,19 @@ pub(crate) fn mul_precomputed(point: &EdwardsPoint, scalar_digits: &[i8; 64]) ->
+     mul_with_lookup_table(&lookup_table, scalar_digits)
+ }
+ 
++/// Perform two independent constant-time variable-base multiplications while
++/// exposing both instruction streams to the compiler.
++pub(crate) fn mul_precomputed_pair(
++    points: [&EdwardsPoint; 2],
++    scalar_digits: &[i8; 64],
++) -> [EdwardsPoint; 2] {
++    let lookup_tables = [
++        lookup_table_by_doubling(points[0]),
++        lookup_table_by_doubling(points[1]),
++    ];
++    mul_pair_with_lookup_tables(&lookup_tables, scalar_digits)
++}
++
+ fn lookup_table_by_doubling(point: &EdwardsPoint) -> LookupTable<ProjectiveNielsPoint> {
+     let p1 = *point;
+     let p2 = p1.double();
+@@ -74,3 +87,41 @@ fn mul_with_lookup_table(lookup_table: &LookupTable<ProjectiveNielsPoint>, scala
+     }
+     tmp1.as_extended()
+ }
++
++fn mul_pair_with_lookup_tables(
++    lookup_tables: &[LookupTable<ProjectiveNielsPoint>; 2],
++    scalar_digits: &[i8; 64],
++) -> [EdwardsPoint; 2] {
++    let identity = EdwardsPoint::identity();
++    let mut tmp1_a = &identity + &lookup_tables[0].select(scalar_digits[63]);
++    let mut tmp1_b = &identity + &lookup_tables[1].select(scalar_digits[63]);
++
++    for i in (0..63).rev() {
++        let mut tmp2_a = tmp1_a.as_projective();
++        let mut tmp2_b = tmp1_b.as_projective();
++        tmp1_a = tmp2_a.double();
++        tmp1_b = tmp2_b.double();
++
++        tmp2_a = tmp1_a.as_projective();
++        tmp2_b = tmp1_b.as_projective();
++        tmp1_a = tmp2_a.double();
++        tmp1_b = tmp2_b.double();
++
++        tmp2_a = tmp1_a.as_projective();
++        tmp2_b = tmp1_b.as_projective();
++        tmp1_a = tmp2_a.double();
++        tmp1_b = tmp2_b.double();
++
++        tmp2_a = tmp1_a.as_projective();
++        tmp2_b = tmp1_b.as_projective();
++        tmp1_a = tmp2_a.double();
++        tmp1_b = tmp2_b.double();
++
++        let tmp3_a = tmp1_a.as_extended();
++        let tmp3_b = tmp1_b.as_extended();
++        tmp1_a = &tmp3_a + &lookup_tables[0].select(scalar_digits[i]);
++        tmp1_b = &tmp3_b + &lookup_tables[1].select(scalar_digits[i]);
++    }
++
++    [tmp1_a.as_extended(), tmp1_b.as_extended()]
++}
+diff --git a/curve25519-dalek/src/edwards.rs b/curve25519-dalek/src/edwards.rs
+index bb32fc4..6f9a945 100644
+--- a/curve25519-dalek/src/edwards.rs
++++ b/curve25519-dalek/src/edwards.rs
+@@ -163,6 +163,37 @@ pub struct PreparedVariableBaseScalar {
+     radix_16: [i8; 64],
+ }
+ 
++/// Reusable storage for batched prepared variable-base multiplication and
++/// Edwards compression.
++#[cfg(feature = "alloc")]
++#[derive(Default)]
++pub struct PreparedVariableBaseBatchWorkspace {
++    decoded: alloc::vec::Vec<EdwardsPoint>,
++    products: alloc::vec::Vec<EdwardsPoint>,
++    reciprocals: alloc::vec::Vec<FieldElement>,
++    inversion_scratch: alloc::vec::Vec<FieldElement>,
++    compressed: alloc::vec::Vec<CompressedEdwardsY>,
++}
++
++#[cfg(feature = "alloc")]
++impl PreparedVariableBaseBatchWorkspace {
++    /// Create an empty reusable workspace.
++    pub fn new() -> Self {
++        Self::default()
++    }
++}
++
++#[cfg(all(feature = "alloc", feature = "zeroize"))]
++impl Drop for PreparedVariableBaseBatchWorkspace {
++    fn drop(&mut self) {
++        self.decoded.zeroize();
++        self.products.zeroize();
++        self.reciprocals.zeroize();
++        self.inversion_scratch.zeroize();
++        self.compressed.zeroize();
++    }
++}
++
+ impl PreparedVariableBaseScalar {
+     /// Prepare a scalar for repeated variable-base multiplication.
+     pub fn new(scalar: &Scalar) -> Self {
+@@ -175,6 +206,64 @@ impl PreparedVariableBaseScalar {
+     pub fn mul(&self, point: &EdwardsPoint) -> EdwardsPoint {
+         crate::backend::variable_base_mul_precomputed(point, &self.radix_16)
+     }
++
++    /// Multiply two points by this prepared scalar in constant time.
++    pub fn mul_pair(&self, points: [&EdwardsPoint; 2]) -> [EdwardsPoint; 2] {
++        crate::backend::variable_base_mul_precomputed_pair(points, &self.radix_16)
++    }
++
++    /// Decode, multiply, and compress a batch of points while reusing caller
++    /// storage. Returns `None` if any compressed input is invalid.
++    #[cfg(feature = "alloc")]
++    pub fn mul_compress_batch<'a>(
++        &self,
++        encoded_points: &[CompressedEdwardsY],
++        workspace: &'a mut PreparedVariableBaseBatchWorkspace,
++    ) -> Option<&'a [CompressedEdwardsY]> {
++        let PreparedVariableBaseBatchWorkspace {
++            decoded,
++            products,
++            reciprocals,
++            inversion_scratch,
++            compressed,
++        } = workspace;
++
++        decoded.clear();
++        decoded.reserve(encoded_points.len());
++        for encoded in encoded_points {
++            decoded.push(encoded.decompress()?);
++        }
++
++        products.clear();
++        products.reserve(decoded.len());
++        let mut pairs = decoded.chunks_exact(2);
++        for pair in pairs.by_ref() {
++            products.extend_from_slice(&self.mul_pair([&pair[0], &pair[1]]));
++        }
++        if let Some(point) = pairs.remainder().first() {
++            products.push(self.mul(point));
++        }
++
++        reciprocals.clear();
++        reciprocals.extend(products.iter().map(|point| point.Z));
++        FieldElement::batch_invert_with_scratch(reciprocals, inversion_scratch);
++
++        compressed.clear();
++        compressed.reserve(products.len());
++        compressed.extend(
++            products
++                .iter()
++                .zip(reciprocals.iter())
++                .map(|(point, recip)| {
++                    let x = &point.X * recip;
++                    let y = &point.Y * recip;
++                    let mut encoded = y.as_bytes();
++                    encoded[31] ^= x.is_negative().unwrap_u8() << 7;
++                    CompressedEdwardsY(encoded)
++                }),
++        );
++        Some(compressed)
++    }
+ }
+ 
+ #[cfg(feature = "zeroize")]
+@@ -606,6 +695,30 @@ impl EdwardsPoint {
+         CompressedEdwardsY(s)
+     }
+ 
++    /// Compress a batch of points using one shared field inversion.
++    ///
++    /// This produces exactly the same encodings as calling [`Self::compress`]
++    /// for every point, but uses Montgomery's batch-inversion trick to
++    /// amortize the expensive inversion across the batch.
++    #[cfg(feature = "alloc")]
++    pub fn compress_batch(points: &[EdwardsPoint]) -> alloc::vec::Vec<CompressedEdwardsY> {
++        let mut reciprocals: alloc::vec::Vec<FieldElement> =
++            points.iter().map(|point| point.Z).collect();
++        FieldElement::batch_invert(&mut reciprocals);
++
++        points
++            .iter()
++            .zip(reciprocals.iter())
++            .map(|(point, recip)| {
++                let x = &point.X * recip;
++                let y = &point.Y * recip;
++                let mut encoded = y.as_bytes();
++                encoded[31] ^= x.is_negative().unwrap_u8() << 7;
++                CompressedEdwardsY(encoded)
++            })
++            .collect()
++    }
++
+     #[cfg(feature = "digest")]
+     /// Maps the digest of the input bytes to the curve. This is NOT a hash-to-curve function, as
+     /// it produces points with a non-uniform distribution. Rather, it performs something that
+@@ -1830,6 +1943,50 @@ mod test {
+         assert_eq!(prepared.mul(&point).compress(), expected.compress());
+     }
+ 
++    #[test]
++    fn prepared_variable_base_pair_matches_single() {
++        let prepared = PreparedVariableBaseScalar::new(&Scalar::from(0x1234_5678u64));
++        let point_a = Scalar::from(17u64) * constants::ED25519_BASEPOINT_POINT;
++        let point_b = Scalar::from(29u64) * constants::ED25519_BASEPOINT_POINT;
++        let paired = prepared.mul_pair([&point_a, &point_b]);
++
++        assert_eq!(paired[0].compress(), prepared.mul(&point_a).compress());
++        assert_eq!(paired[1].compress(), prepared.mul(&point_b).compress());
++    }
++
++    #[test]
++    #[cfg(feature = "alloc")]
++    fn prepared_variable_base_batch_matches_single_and_reuses_workspace() {
++        let prepared = PreparedVariableBaseScalar::new(&Scalar::from(0x1234_5678u64));
++        let points = [
++            Scalar::from(17u64) * constants::ED25519_BASEPOINT_POINT,
++            Scalar::from(29u64) * constants::ED25519_BASEPOINT_POINT,
++            Scalar::from(43u64) * constants::ED25519_BASEPOINT_POINT,
++        ];
++        let encoded = points.map(|point| point.compress());
++        let expected = points.map(|point| prepared.mul(&point).compress());
++
++        assert_eq!(EdwardsPoint::compress_batch(&points), encoded);
++
++        let mut workspace = PreparedVariableBaseBatchWorkspace::new();
++        assert_eq!(
++            prepared
++                .mul_compress_batch(&encoded, &mut workspace)
++                .expect("valid compressed points"),
++            expected
++        );
++        assert_eq!(
++            prepared
++                .mul_compress_batch(&encoded[..2], &mut workspace)
++                .expect("valid compressed points"),
++            &expected[..2]
++        );
++        assert!(prepared
++            .mul_compress_batch(&[], &mut workspace)
++            .expect("empty batch is valid")
++            .is_empty());
++    }
++
+     /// Test basepoint.double() versus the 2*basepoint constant.
+     #[test]
+     fn basepoint_double_vs_basepoint2() {
+diff --git a/curve25519-dalek/src/field.rs b/curve25519-dalek/src/field.rs
+index 68c9c8b..1d0028b 100644
+--- a/curve25519-dalek/src/field.rs
++++ b/curve25519-dalek/src/field.rs
+@@ -159,12 +159,24 @@ impl FieldElement {
+     /// When an input `FieldElement` is zero, its value is unchanged.
+     #[cfg(feature = "alloc")]
+     pub(crate) fn batch_invert(inputs: &mut [FieldElement]) {
++        let mut scratch = alloc::vec::Vec::new();
++        Self::batch_invert_with_scratch(inputs, &mut scratch);
++    }
++
++    /// Replace each input with its inverse while reusing caller-owned scratch
++    /// storage.
++    #[cfg(feature = "alloc")]
++    pub(crate) fn batch_invert_with_scratch(
++        inputs: &mut [FieldElement],
++        scratch: &mut alloc::vec::Vec<FieldElement>,
++    ) {
+         // Montgomery’s Trick and Fast Implementation of Masked AES
+         // Genelle, Prouff and Quisquater
+         // Section 3.2
+ 
+         let n = inputs.len();
+-        let mut scratch = vec![FieldElement::ONE; n];
++        scratch.clear();
++        scratch.resize(n, FieldElement::ONE);
+ 
+         // Keep an accumulator of all of the previous products
+         let mut acc = FieldElement::ONE;
+@@ -185,12 +197,12 @@ impl FieldElement {
+ 
+         // Pass through the vector backwards to compute the inverses
+         // in place
+-        for (input, scratch) in inputs.iter_mut().rev().zip(scratch.into_iter().rev()) {
++        for (input, scratch) in inputs.iter_mut().rev().zip(scratch.iter().rev()) {
+             let tmp = &acc * input;
+             // input <- acc * scratch, then acc <- tmp
+             // Again, we skip zeros in a constant-time way
+             let nz = !input.is_zero();
+-            input.conditional_assign(&(&acc * &scratch), nz);
++            input.conditional_assign(&(&acc * scratch), nz);
+             acc.conditional_assign(&tmp, nz);
+         }
+     }

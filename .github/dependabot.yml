@@ -1,0 +1,63 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /apps/mobile
+    schedule:
+      interval: weekly
+    groups:
+      mobile-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /apps/desktop
+    schedule:
+      interval: weekly
+    groups:
+      desktop-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: bundler
+    directory: /apps/mobile
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gradle
+    directory: /apps/mobile/android
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: /apps/desktop/src-tauri
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: /node/cuprate
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: /services/enthusiast-discovery
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: /services/monero-news
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: /services/notification-gateway
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: cargo
+    directory: /services/notify-scanner
+    schedule:
+      interval: weekly

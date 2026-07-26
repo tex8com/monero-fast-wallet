@@ -1,0 +1,167 @@
+From f19940bbc4afd8bda4ae29f07383e8c565aee9b7 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Mon, 6 Jul 2026 12:50:19 -0500
+Subject: [PATCH 18/41] Fix output distribution RPC for wallet sends
+
+---
+ .../cuprated/src/rpc/handlers/json_rpc.rs     |  7 +++-
+ rpc/interface/src/rpc_handler_dummy.rs        |  1 +
+ rpc/types/src/json.rs                         | 24 ++++++++++++
+ rpc/types/src/misc/distribution.rs            | 39 ++++++++++++++++---
+ 4 files changed, 64 insertions(+), 7 deletions(-)
+
+diff --git a/binaries/cuprated/src/rpc/handlers/json_rpc.rs b/binaries/cuprated/src/rpc/handlers/json_rpc.rs
+index e0cd347..fe1d8c1 100644
+--- a/binaries/cuprated/src/rpc/handlers/json_rpc.rs
++++ b/binaries/cuprated/src/rpc/handlers/json_rpc.rs
+@@ -114,7 +114,12 @@ pub async fn map_request(
+         }
+         Req::RelayTx(r) => Resp::RelayTx(not_available()?),
+         Req::SyncInfo(r) => Resp::SyncInfo(sync_info(state, r).await?),
+-        Req::GetTransactionPoolBacklog(r) => Resp::GetTransactionPoolBacklog(not_available()?),
++        Req::GetTransactionPoolBacklog(r) => {
++            Resp::GetTransactionPoolBacklog(get_transaction_pool_backlog(state, r).await?)
++        }
++        Req::GetOutputDistribution(r) => {
++            Resp::GetOutputDistribution(get_output_distribution(state, r).await?)
++        }
+         Req::GetMinerData(r) => Resp::GetMinerData(not_available()?),
+         Req::PruneBlockchain(r) => Resp::PruneBlockchain(not_available()?),
+         Req::CalcPow(r) => Resp::CalcPow(not_available()?),
+diff --git a/rpc/interface/src/rpc_handler_dummy.rs b/rpc/interface/src/rpc_handler_dummy.rs
+index e7bf41a..686675a 100644
+--- a/rpc/interface/src/rpc_handler_dummy.rs
++++ b/rpc/interface/src/rpc_handler_dummy.rs
+@@ -86,6 +86,7 @@ impl Service<JsonRpcRequest> for RpcHandlerDummy {
+             Req::GetTransactionPoolBacklog(_) => {
+                 Resp::GetTransactionPoolBacklog(Default::default())
+             }
++            Req::GetOutputDistribution(_) => Resp::GetOutputDistribution(Default::default()),
+             Req::GetMinerData(_) => Resp::GetMinerData(Default::default()),
+             Req::PruneBlockchain(_) => Resp::PruneBlockchain(Default::default()),
+             Req::CalcPow(_) => Resp::CalcPow(Default::default()),
+diff --git a/rpc/types/src/json.rs b/rpc/types/src/json.rs
+index ee79cc3..789fdee 100644
+--- a/rpc/types/src/json.rs
++++ b/rpc/types/src/json.rs
+@@ -766,6 +766,7 @@ pub enum JsonRpcRequest {
+     RelayTx(RelayTxRequest),
+     SyncInfo(SyncInfoRequest),
+     GetTransactionPoolBacklog(GetTransactionPoolBacklogRequest),
++    GetOutputDistribution(GetOutputDistributionRequest),
+     GetMinerData(GetMinerDataRequest),
+     PruneBlockchain(PruneBlockchainRequest),
+     CalcPow(CalcPowRequest),
+@@ -792,6 +793,7 @@ impl RpcCallValue for JsonRpcRequest {
+             Self::GetVersion(x) => x.is_restricted(),
+             Self::GetFeeEstimate(x) => x.is_restricted(),
+             Self::GetTransactionPoolBacklog(x) => x.is_restricted(),
++            Self::GetOutputDistribution(x) => x.is_restricted(),
+             Self::GetMinerData(x) => x.is_restricted(),
+             Self::AddAuxPow(x) => x.is_restricted(),
+             Self::GetTxIdsLoose(x) => x.is_restricted(),
+@@ -828,6 +830,7 @@ impl RpcCallValue for JsonRpcRequest {
+             Self::GetVersion(x) => x.is_empty(),
+             Self::GetFeeEstimate(x) => x.is_empty(),
+             Self::GetTransactionPoolBacklog(x) => x.is_empty(),
++            Self::GetOutputDistribution(x) => x.is_empty(),
+             Self::GetMinerData(x) => x.is_empty(),
+             Self::AddAuxPow(x) => x.is_empty(),
+             Self::GetTxIdsLoose(x) => x.is_empty(),
+@@ -901,6 +904,7 @@ pub enum JsonRpcResponse {
+     RelayTx(RelayTxResponse),
+     SyncInfo(SyncInfoResponse),
+     GetTransactionPoolBacklog(GetTransactionPoolBacklogResponse),
++    GetOutputDistribution(GetOutputDistributionResponse),
+     GetMinerData(GetMinerDataResponse),
+     PruneBlockchain(PruneBlockchainResponse),
+     CalcPow(CalcPowResponse),
+@@ -1829,6 +1833,26 @@ mod test {
+         );
+     }
+ 
++    #[test]
++    fn get_output_distribution_json_rpc_request() {
++        let request = from_str::<JsonRpcRequest>(json::GET_OUTPUT_DISTRIBUTION_REQUEST).unwrap();
++        let JsonRpcRequest::GetOutputDistribution(request) = request else {
++            unreachable!();
++        };
++
++        assert_eq!(
++            request,
++            GetOutputDistributionRequest {
++                amounts: vec![628780000],
++                from_height: 1462078,
++                binary: true,
++                compress: false,
++                cumulative: false,
++                to_height: 0,
++            }
++        );
++    }
++
+     // TODO: enable test after binary string imp}
+     // #[test]
+     // fn get_output_distribution_response() {
+diff --git a/rpc/types/src/misc/distribution.rs b/rpc/types/src/misc/distribution.rs
+index 6a630cb..ada86fe 100644
+--- a/rpc/types/src/misc/distribution.rs
++++ b/rpc/types/src/misc/distribution.rs
+@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
+ use cuprate_epee_encoding::{
+     epee_object, error,
+     macros::bytes::{Buf, BufMut},
+-    read_epee_value, write_field, EpeeObject, EpeeObjectBuilder, EpeeValue,
++    read_epee_value, write_field, EpeeObject, EpeeObjectBuilder,
+ };
+ 
+ //---------------------------------------------------------------------------------------------------- Free
+@@ -308,11 +308,10 @@ impl EpeeObject for Distribution {
+             }) => {
+                 let compressed_data = compress_integer_array(&distribution);
+ 
+-                start_height.write(w)?;
+-                base.write(w)?;
+-                compressed_data.write(w)?;
+-                amount.write(w)?;
+-
++                write_field(start_height, "start_height", w)?;
++                write_field(base, "base", w)?;
++                write_field(compressed_data, "compressed_data", w)?;
++                write_field(amount, "amount", w)?;
+                 write_field(true, "binary", w)?;
+                 write_field(true, "compress", w)?;
+             }
+@@ -348,4 +347,32 @@ mod tests {
+         let expected = vec![16_384, 16_383, 16_382, 16_381];
+         assert_eq!(expected, varints);
+     }
++
++    #[cfg(feature = "epee")]
++    #[test]
++    fn compressed_binary_epee_roundtrip() {
++        use crate::{base::AccessResponseBase, json::GetOutputDistributionResponse};
++
++        let response = GetOutputDistributionResponse {
++            base: AccessResponseBase::OK,
++            distributions: vec![Distribution::CompressedBinary(
++                DistributionCompressedBinary {
++                    start_height: 1,
++                    base: 2,
++                    distribution: vec![16_384, 16_383, 16_382, 16_381],
++                    amount: 0,
++                },
++            )],
++        };
++
++        let bytes = cuprate_epee_encoding::to_bytes(response.clone()).unwrap();
++        assert!(bytes
++            .as_ref()
++            .windows("compressed_data".len())
++            .any(|window| window == b"compressed_data"));
++
++        let mut bytes = bytes.freeze();
++        let decoded = cuprate_epee_encoding::from_bytes(&mut bytes).unwrap();
++        assert_eq!(response, decoded);
++    }
+ }

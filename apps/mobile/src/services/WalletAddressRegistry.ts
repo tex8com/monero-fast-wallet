@@ -1,4 +1,7 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  loadProtectedMetadata,
+  storeProtectedMetadata,
+} from './ProtectedMetadataStorage';
 
 export const WALLET_ADDRESS_REGISTRY_STORAGE_KEY =
   'monero-fast-wallet.wallet-addresses.v1';
@@ -38,9 +41,11 @@ export async function upsertWalletAddress(
   const normalized = normalize(address);
   const registry = await loadRegistry();
   const addresses = registry.addresses.some(item => item.id === normalized.id)
-    ? registry.addresses.map(item => (item.id === normalized.id ? normalized : item))
+    ? registry.addresses.map(item =>
+        item.id === normalized.id ? normalized : item,
+      )
     : [...registry.addresses, normalized];
-  await saveRegistry({version: 1, addresses});
+  await saveRegistry({ version: 1, addresses });
   return loadWalletAddresses(normalized.walletId);
 }
 
@@ -48,7 +53,9 @@ export async function removeWalletAddresses(walletId: string): Promise<void> {
   const registry = await loadRegistry();
   await saveRegistry({
     version: 1,
-    addresses: registry.addresses.filter(address => address.walletId !== walletId),
+    addresses: registry.addresses.filter(
+      address => address.walletId !== walletId,
+    ),
   });
 }
 
@@ -73,33 +80,45 @@ export function createWalletAddressRecord(input: {
 }
 
 async function loadRegistry(): Promise<WalletAddressRegistryState> {
-  const value = await AsyncStorage.getItem(WALLET_ADDRESS_REGISTRY_STORAGE_KEY);
+  const value = await loadProtectedMetadata(
+    WALLET_ADDRESS_REGISTRY_STORAGE_KEY,
+  );
   if (!value) {
-    return {version: 1, addresses: []};
+    return { version: 1, addresses: [] };
   }
 
   try {
     const parsed: unknown = JSON.parse(value);
-    if (!isRecord(parsed) || parsed.version !== 1 || !Array.isArray(parsed.addresses)) {
-      return {version: 1, addresses: []};
+    if (
+      !isRecord(parsed) ||
+      parsed.version !== 1 ||
+      !Array.isArray(parsed.addresses)
+    ) {
+      return { version: 1, addresses: [] };
     }
     return {
       version: 1,
       addresses: parsed.addresses
         .map(parse)
-        .filter((address): address is WalletAddressRecord => address !== undefined),
+        .filter(
+          (address): address is WalletAddressRecord => address !== undefined,
+        ),
     };
   } catch {
-    return {version: 1, addresses: []};
+    return { version: 1, addresses: [] };
   }
 }
 
-async function saveRegistry(registry: WalletAddressRegistryState): Promise<void> {
+async function saveRegistry(
+  registry: WalletAddressRegistryState,
+): Promise<void> {
   const byId = new Map<string, WalletAddressRecord>();
-  registry.addresses.map(normalize).forEach(address => byId.set(address.id, address));
-  await AsyncStorage.setItem(
+  registry.addresses
+    .map(normalize)
+    .forEach(address => byId.set(address.id, address));
+  await storeProtectedMetadata(
     WALLET_ADDRESS_REGISTRY_STORAGE_KEY,
-    JSON.stringify({version: 1, addresses: Array.from(byId.values())}),
+    JSON.stringify({ version: 1, addresses: Array.from(byId.values()) }),
   );
 }
 

@@ -1,8 +1,10 @@
 pub mod api;
 pub mod cuprate;
+pub mod hardware;
 pub mod model;
 pub mod notifications;
 pub mod scanner;
+pub mod scanpack;
 pub mod store;
 
 pub use api::{router, router_with_key_image_status_source, router_with_runtime, ApiState};
@@ -12,6 +14,7 @@ pub use cuprate::{
     CuprateHttpKeyImageStatusSource, CuprateHttpMempoolSource, DecodedCuprateBlocks,
     HostedViewKeyBlockMatcher, HostedViewKeyMempoolMatcher, KeyImageStatusSource,
 };
+pub use hardware::HardwareHostedViewKeyMatcher;
 pub use model::{
     DetectionStatus, KeyImageStatusItem, KeyImageStatusRecord, KeyImageStatusRequest,
     KeyImageStatusResponse, MatchedOutput, MatchedOutputResponse, Network, NotificationStatus,
@@ -27,4 +30,8 @@ pub use scanner::{
     MempoolSource, OutputMatcher, ScannedBlock, ScannedMempoolTx, ScannedOutput, ScannerRun,
     ScannerWorker,
 };
-pub use store::{parse_storage_key, EncryptedJsonFileStore, InMemoryWatchStore, WatchStore};
+pub use scanpack::ScanPackBlockSource;
+pub use store::{
+    backup_storage_file, parse_storage_key, restore_storage_file, rotate_storage_key,
+    verify_storage_file, EncryptedJsonFileStore, InMemoryWatchStore, WatchStore,
+};

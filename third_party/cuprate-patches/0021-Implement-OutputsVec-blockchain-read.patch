@@ -1,0 +1,124 @@
+From 1fa5e5b1b6b6ad67828349afa03ad57c74415b7c Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Mon, 6 Jul 2026 20:52:33 -0500
+Subject: [PATCH 21/41] Implement OutputsVec blockchain read
+
+---
+ storage/blockchain/src/service/read.rs  | 39 +++++++++++++++++++--
+ storage/blockchain/src/service/tests.rs | 46 +++++++++++++++++++++++++
+ 2 files changed, 83 insertions(+), 2 deletions(-)
+
+diff --git a/storage/blockchain/src/service/read.rs b/storage/blockchain/src/service/read.rs
+index 01d9bb0..d028b32 100644
+--- a/storage/blockchain/src/service/read.rs
++++ b/storage/blockchain/src/service/read.rs
+@@ -32,7 +32,7 @@ use cuprate_types::{
+     blockchain::{BlockchainReadRequest, BlockchainResponse},
+     output_cache::OutputCache,
+     rpc::{OutputDistributionData, OutputHistogramInput},
+-    Chain, ChainId, ExtendedBlockHeader, OutputDistributionInput, TxsInBlock,
++    Chain, ChainId, ExtendedBlockHeader, OutputDistributionInput, OutputOnChain, TxsInBlock,
+ };
+ 
+ use crate::{
+@@ -588,7 +588,42 @@ fn outputs_vec(
+     outputs: Vec<(Amount, AmountIndex)>,
+     get_txid: bool,
+ ) -> ResponseResult {
+-    Ok(BlockchainResponse::OutputsVec(todo!()))
++    // Prepare tx/tables in `ThreadLocal`.
++    let env_inner = env.env_inner();
++    let tx_ro = thread_local(env);
++    let tables = thread_local(env);
++
++    let mut outputs = outputs
++        .into_par_iter()
++        .enumerate()
++        .map(|(index, (amount, amount_index))| {
++            let tx_ro = tx_ro.get_or_try(|| env_inner.tx_ro())?;
++            let tables = get_tables!(env_inner, tx_ro, tables)?.as_ref();
++
++            let id = PreRctOutputId {
++                amount,
++                amount_index,
++            };
++
++            let output_on_chain = id_to_output_on_chain(&id, get_txid, tables)?;
++
++            Ok((index, amount, amount_index, output_on_chain))
++        })
++        .collect::<DbResult<Vec<_>>>()?;
++
++    outputs.sort_by_key(|(index, _, _, _)| *index);
++
++    let mut grouped = Vec::<(Amount, Vec<(AmountIndex, OutputOnChain)>)>::new();
++    for (_, amount, amount_index, output_on_chain) in outputs {
++        match grouped.last_mut() {
++            Some((last_amount, amount_outputs)) if *last_amount == amount => {
++                amount_outputs.push((amount_index, output_on_chain));
++            }
++            _ => grouped.push((amount, vec![(amount_index, output_on_chain)])),
++        }
++    }
++
++    Ok(BlockchainResponse::OutputsVec(grouped))
+ }
+ 
+ /// [`BlockchainReadRequest::NumberOutputsWithAmount`].
+diff --git a/storage/blockchain/src/service/tests.rs b/storage/blockchain/src/service/tests.rs
+index d980e9a..1e2d1f1 100644
+--- a/storage/blockchain/src/service/tests.rs
++++ b/storage/blockchain/src/service/tests.rs
+@@ -319,6 +319,52 @@ async fn test_template(
+         }
+     }
+ 
++    let outputs_vec_request = map
++        .iter()
++        .flat_map(|(amount, amount_index_set)| {
++            amount_index_set
++                .iter()
++                .map(|amount_index| (*amount, *amount_index))
++        })
++        .collect::<Vec<_>>();
++
++    let expected_outputs_vec = outputs_vec_request
++        .iter()
++        .map(|(amount, amount_index)| {
++            let id = PreRctOutputId {
++                amount: *amount,
++                amount_index: *amount_index,
++            };
++
++            (
++                *amount,
++                *amount_index,
++                id_to_output_on_chain(&id, false, &tables).unwrap(),
++            )
++        })
++        .collect::<Vec<_>>();
++
++    let request = BlockchainReadRequest::OutputsVec {
++        outputs: outputs_vec_request,
++        get_txid: false,
++    };
++    let response = reader.clone().oneshot(request).await;
++    println!("Response::OutputsVec response: {response:#?}");
++    let Ok(BlockchainResponse::OutputsVec(response)) = response else {
++        panic!("{response:#?}")
++    };
++
++    let response_outputs_vec = response
++        .into_iter()
++        .flat_map(|(amount, amount_index_vec)| {
++            amount_index_vec
++                .into_iter()
++                .map(move |(amount_index, output)| (amount, amount_index, output))
++        })
++        .collect::<Vec<_>>();
++
++    assert_eq!(expected_outputs_vec, response_outputs_vec);
++
+     // Assert the amount of `Output`'s returned is as expected.
+     let table_output_len = tables.outputs().len().unwrap() + tables.rct_outputs().len().unwrap();
+     assert_eq!(output_count as u64, table_output_len);

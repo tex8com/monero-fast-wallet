@@ -19,7 +19,7 @@ __not_public_32_bit = []
 cuprate-fixed-bytes = { workspace = true, default-features = false }
 cuprate-hex         = { workspace = true, default-features = false }
 
-paste = "1.0.15"
+paste = { package = "pastey", version = "0.2.3" }
 ref-cast = "1.0.23"
 bytes = { workspace = true }
 thiserror = { workspace = true, optional = true}

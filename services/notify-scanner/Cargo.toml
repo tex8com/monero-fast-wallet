@@ -11,11 +11,13 @@ base64 = "0.22"
 bytes = "1"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 cuprate-epee-encoding = { path = "../../node/cuprate/net/epee-encoding", features = ["std"] }
+cuprate-fixed-bytes = { path = "../../node/cuprate/types/fixed-bytes", features = ["std"] }
 cuprate-rpc-types = { path = "../../node/cuprate/rpc/types", features = ["epee", "serde"] }
 cuprate-types = { path = "../../node/cuprate/types/types", features = ["epee", "json", "rpc", "serde"] }
 curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
 hex = "0.4"
 http = "1"
+libc = "0.2"
 monero-address = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
 monero-oxide = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
 monero-rpc = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
@@ -28,8 +30,13 @@ thiserror = "2"
 tokio = { version = "1", features = ["fs", "macros", "net", "rt-multi-thread", "signal"], default-features = false }
 tonic = { version = "0.12", features = ["transport"] }
 prost = "0.13"
+rayon = { version = "1", optional = true }
 ureq = "2"
 zeroize = "1"
+
+[features]
+default = []
+epyc = ["dep:rayon"]
 
 [dev-dependencies]
 tempfile = "3"

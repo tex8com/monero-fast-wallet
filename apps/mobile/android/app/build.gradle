@@ -1,7 +1,9 @@
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
-if (file("google-services.json").exists()) {
+def moneroSkipGoogleServices =
+        (findProperty("moneroSkipGoogleServices") ?: "false").toString().toBoolean()
+if (file("google-services.json").exists() && !moneroSkipGoogleServices) {
     apply plugin: "com.google.gms.google-services"
 }
 
@@ -60,7 +62,7 @@ react {
 /**
  * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
  */
-def enableProguardInReleaseBuilds = false
+def enableProguardInReleaseBuilds = true
 
 /**
  * The preferred build flavor of JavaScriptCore (JSC)
@@ -73,7 +75,9 @@ def enableProguardInReleaseBuilds = false
  * give correct results when using with locales other than en-US. Note that
  * this variant is about 6MiB larger per architecture than default.
  */
-def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
+def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.0.1'
+def moneroWalletApplicationId =
+        (findProperty("moneroWalletApplicationId") ?: "com.tex8.monerowallet").toString()
 def moneroWalletBridgeWithMonero =
         (findProperty("moneroWalletBridgeWithMonero") ?: "false").toString().toBoolean()
 def moneroSourceDir = (findProperty("moneroSourceDir") ?: "").toString()
@@ -113,7 +117,7 @@ android {
 
     namespace "com.monerowallet"
     defaultConfig {
-        applicationId "com.tex8.monerowallet"
+        applicationId moneroWalletApplicationId
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Increment for each shareable APK so Android accepts it as an update
@@ -163,6 +167,7 @@ android {
                 signingConfig signingConfigs.release
             }
             minifyEnabled enableProguardInReleaseBuilds
+            shrinkResources enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
     }
@@ -198,6 +203,7 @@ dependencies {
     // launched before React's activity has focus and then remain invisible.
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("com.lambdapioneer.argon2kt:argon2kt:1.6.0")
     testImplementation("junit:junit:4.13.2")
 
     androidTestImplementation("androidx.test:core:1.6.1")

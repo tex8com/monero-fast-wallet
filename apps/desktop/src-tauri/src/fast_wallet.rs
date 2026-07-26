@@ -9,6 +9,10 @@ use tauri::{AppHandle, Manager};
 
 const REGISTRY_FILE: &str = "fast-wallet-registry.json";
 const REGISTRY_VERSION: u8 = 1;
+pub const INDEPENDENT_SOFTWARE_ID_PREFIX: &str = "fast-receive-v2-";
+const LEGACY_SOFTWARE_ID_PREFIX: &str = "fast-receive-";
+const LEGACY_DISABLED_MESSAGE: &str =
+    "This legacy Fast Wallet is disabled because its seed can reveal the source wallet. Keep its encrypted wallet files and use the guarded migration/recovery flow.";
 
 /// Public metadata for a separately-derived Fast Wallet. This file deliberately
 /// contains neither a wallet path nor any password, seed, private key, or
@@ -71,7 +75,7 @@ pub fn insert(app: &AppHandle, record: FastWalletRecord) -> Result<FastWalletRec
     {
         return Err("A Fast Wallet with this identity already exists on this device.".to_owned());
     }
-    validate_record(&record)?;
+    let record = normalize_record(record)?;
     registry.wallets.push(record.clone());
     save(app, registry)?;
     Ok(record)
@@ -86,7 +90,7 @@ pub fn update(app: &AppHandle, mut record: FastWalletRecord) -> Result<FastWalle
         .ok_or_else(|| "Fast Wallet was not found on this device.".to_owned())?;
     record.created_at = registry.wallets[index].created_at;
     record.updated_at = now();
-    validate_record(&record)?;
+    let record = normalize_record(record)?;
     registry.wallets[index] = record.clone();
     save(app, registry)?;
     Ok(record)
@@ -120,16 +124,18 @@ pub fn wallet_path(app: &AppHandle, identity_id: &str) -> Result<String, String>
 pub fn scanner_url(value: &str) -> Result<String, String> {
     let trimmed = value.trim().trim_end_matches('/');
     let parsed = reqwest::Url::parse(trimmed)
-        .map_err(|_| "Scanner URL must be an HTTP(S) URL.".to_owned())?;
-    if !matches!(parsed.scheme(), "https" | "http")
+        .map_err(|_| "Scanner URL must be a valid HTTPS origin.".to_owned())?;
+    if parsed.scheme() != "https"
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
+        || !matches!(parsed.path(), "" | "/")
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {
         return Err(
-            "Scanner URL must be an HTTP(S) origin without credentials or query text.".to_owned(),
+            "Scanner URL must be an HTTPS origin without credentials, paths, queries, or fragments."
+                .to_owned(),
         );
     }
     Ok(trimmed.to_owned())
@@ -162,14 +168,30 @@ pub fn new_record(
         created_at: timestamp,
         updated_at: timestamp,
     };
-    validate_record(&record)?;
-    Ok(record)
+    normalize_record(record)
 }
 
 pub fn identity_id(derivation_index: u64) -> String {
     // The scanner accepts a compact, ASCII identifier. Seconds plus a local
-    // derivation index prevent collisions across the user's wallets.
-    format!("fast-receive-{derivation_index}-{}", now())
+    // ordinal prevent collisions across the user's independent wallets.
+    format!(
+        "{INDEPENDENT_SOFTWARE_ID_PREFIX}{derivation_index}-{}",
+        now()
+    )
+}
+
+pub fn is_independent_software_id(identity_id: &str) -> bool {
+    identity_id.starts_with(INDEPENDENT_SOFTWARE_ID_PREFIX)
+}
+
+pub fn require_independent_software(record: &FastWalletRecord) -> Result<(), String> {
+    if is_independent_software_id(&record.id) {
+        Ok(())
+    } else if is_legacy_software_id(&record.id) {
+        Err(LEGACY_DISABLED_MESSAGE.to_owned())
+    } else {
+        Err("This Fast Wallet is not an independent software Fast Wallet.".to_owned())
+    }
 }
 
 fn load(app: &AppHandle) -> Result<FastWalletRegistry, String> {
@@ -191,7 +213,7 @@ fn normalize(mut registry: FastWalletRegistry) -> Result<FastWalletRegistry, Str
     }
     let mut records = Vec::with_capacity(registry.wallets.len());
     for record in registry.wallets.drain(..) {
-        validate_record(&record)?;
+        let record = normalize_record(record)?;
         if let Some(index) = records
             .iter()
             .position(|item: &FastWalletRecord| item.id == record.id)
@@ -246,7 +268,12 @@ fn validate_record(record: &FastWalletRecord) -> Result<(), String> {
     let source_valid = validate_id(&record.source_registration_id).is_ok();
     let status_valid = matches!(
         record.status.as_str(),
-        "local-only" | "enabled" | "disabled" | "registration-error" | "server-mismatch"
+        "local-only"
+            | "enabled"
+            | "disabled"
+            | "registration-error"
+            | "server-mismatch"
+            | "legacy-blocked"
     );
     let scanner_status_valid = !record.scanner_status.trim().is_empty()
         && record.scanner_status.len() <= 64
@@ -264,6 +291,20 @@ fn validate_record(record: &FastWalletRecord) -> Result<(), String> {
         return Err("The Fast Wallet list contains invalid data.".to_owned());
     }
     Ok(())
+}
+
+fn normalize_record(mut record: FastWalletRecord) -> Result<FastWalletRecord, String> {
+    if is_legacy_software_id(&record.id) {
+        record.status = "legacy-blocked".to_owned();
+        record.scanner_status = "legacy-blocked".to_owned();
+        record.notifications_enabled = false;
+    }
+    validate_record(&record)?;
+    Ok(record)
+}
+
+fn is_legacy_software_id(identity_id: &str) -> bool {
+    identity_id.starts_with(LEGACY_SOFTWARE_ID_PREFIX) && !is_independent_software_id(identity_id)
 }
 
 pub fn validate_id(value: &str) -> Result<(), String> {
@@ -288,12 +329,15 @@ fn now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{new_record, scanner_url, validate_id};
+    use super::{
+        identity_id, is_independent_software_id, new_record, require_independent_software,
+        scanner_url, validate_id,
+    };
 
     #[test]
     fn record_contains_no_wallet_path_or_secret() {
         let record = new_record(
-            "fast-receive-0-1".to_owned(),
+            "fast-receive-v2-0-1".to_owned(),
             "Fast Wallet".to_owned(),
             "4".repeat(95),
             "mainnet".to_owned(),
@@ -315,13 +359,33 @@ mod tests {
             "https://xmr.tex8.com"
         );
         assert!(scanner_url("ftp://xmr.tex8.com").is_err());
+        assert!(scanner_url("http://xmr.tex8.com").is_err());
         assert!(scanner_url("https://token@example.com").is_err());
         assert!(scanner_url("https://xmr.tex8.com/?token=x").is_err());
     }
 
     #[test]
     fn identity_id_is_path_safe() {
-        assert!(validate_id("fast-receive-0-123").is_ok());
+        let id = identity_id(0);
+        assert!(is_independent_software_id(&id));
+        assert!(validate_id(&id).is_ok());
         assert!(validate_id("../fast").is_err());
+    }
+
+    #[test]
+    fn legacy_software_identity_is_rejected() {
+        let record = new_record(
+            "fast-receive-0-legacy".to_owned(),
+            "Legacy Fast Wallet".to_owned(),
+            "4".repeat(95),
+            "mainnet".to_owned(),
+            "software-mainnet-primary".to_owned(),
+            123,
+            0,
+        )
+        .expect("legacy metadata remains readable");
+        assert!(require_independent_software(&record)
+            .expect_err("legacy identity must be blocked")
+            .contains("legacy Fast Wallet"));
     }
 }

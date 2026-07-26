@@ -1,0 +1,211 @@
+From 3ad39e0865642243f672209ff1977523b9aee43f Mon Sep 17 00:00:00 2001
+From: TEX8 Patch Verification <patch-verification@localhost>
+Date: Thu, 23 Jul 2026 18:13:37 -0500
+Subject: [PATCH] Adapt gRPC wallet stream to daemon distance
+
+---
+ .../grpc_stream/grpc_block_stream_client.cpp  | 18 +++--
+ .../grpc_stream/grpc_block_stream_client.h    |  7 +-
+ src/wallet/wallet2.cpp                        | 73 ++++++++++++++++++-
+ 3 files changed, 89 insertions(+), 9 deletions(-)
+
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+index b64d3e4..8161712 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.cpp
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -49,7 +49,7 @@ namespace {
+     constexpr int GRPC_HTTP2_BUFFER_BYTES = 64 * 1024 * 1024;
+     constexpr int GRPC_HTTP2_MAX_FRAME_BYTES = 16 * 1024 * 1024 - 1;
+ 
+-    size_t queue_capacity()
++    size_t default_queue_capacity()
+     {
+         static const size_t cap = []() -> size_t {
+             const char *env = std::getenv("CUPRATE_GRPC_QUEUE_CAPACITY");
+@@ -112,6 +112,7 @@ struct cuprate_grpc_stream_client::impl {
+     uint64_t    total_blocks = 0;
+     uint64_t    total_bytes = 0;
+     uint64_t    backpressure_waits = 0;
++    size_t      queue_capacity = DEFAULT_QUEUE_CAPACITY;
+ };
+ 
+ cuprate_grpc_stream_client::cuprate_grpc_stream_client()
+@@ -142,7 +143,7 @@ bool cuprate_grpc_stream_client::connect(const std::string& target)
+     std::fprintf(stderr,
+         "[GRPC client] CONNECT target=%s queue_capacity=%zu max_msg=%d http2_buffer=%d max_frame=%d (channel created -- gRPC connect is lazy, first RPC opens TCP)\n",
+         target.c_str(),
+-        queue_capacity(),
++        default_queue_capacity(),
+         MAX_GRPC_MESSAGE_BYTES,
+         GRPC_HTTP2_BUFFER_BYTES,
+         GRPC_HTTP2_MAX_FRAME_BYTES);
+@@ -154,7 +155,8 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+                                              bool prune,
+                                              uint32_t chunk_blocks_hint,
+                                              const std::string& client_request_id,
+-                                             const std::vector<std::string>& chain_locator)
++                                             const std::vector<std::string>& chain_locator,
++                                             size_t queue_capacity_hint)
+ {
+     if (!p_->stub) {
+         p_->last_error_code = -1;
+@@ -179,6 +181,11 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+     p_->total_blocks = 0;
+     p_->total_bytes = 0;
+     p_->backpressure_waits = 0;
++    const size_t requested_queue_capacity = queue_capacity_hint > 0
++        ? queue_capacity_hint
++        : default_queue_capacity();
++    p_->queue_capacity = std::max<size_t>(1,
++        std::min(requested_queue_capacity, MAX_QUEUE_CAPACITY));
+ 
+     cuprate::stream::v1::StreamBlocksRequest req;
+     req.set_start_height(start_height);
+@@ -194,12 +201,13 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+     p_->reader = p_->stub->StreamBlocks(p_->ctx.get(), req);
+ 
+     std::fprintf(stderr,
+-        "[GRPC client] OPEN client_req_id=%s start=%llu stop=%llu prune=%d chunk_hint=%u locator_hashes=%zu\n",
++        "[GRPC client] OPEN client_req_id=%s start=%llu stop=%llu prune=%d chunk_hint=%u queue_capacity=%zu locator_hashes=%zu\n",
+         client_request_id.c_str(),
+         (unsigned long long)start_height,
+         (unsigned long long)stop_height,
+         prune ? 1 : 0,
+         chunk_blocks_hint,
++        p_->queue_capacity,
+         chain_locator.size());
+ 
+     p_->recv_thread = std::thread([this]() {
+@@ -230,7 +238,7 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             std::unique_lock<std::mutex> lk(p_->mu);
+             const auto t_enq0 = std::chrono::steady_clock::now();
+             p_->cv_not_full.wait(lk, [this]() {
+-                return p_->queue.size() < queue_capacity() || p_->cancelled;
++                return p_->queue.size() < p_->queue_capacity || p_->cancelled;
+             });
+             const double enq_wait_ms = std::chrono::duration<double, std::milli>(
+                 std::chrono::steady_clock::now() - t_enq0).count();
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.h b/src/wallet/grpc_stream/grpc_block_stream_client.h
+index 8ecc9af..dd33bd4 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.h
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.h
+@@ -26,6 +26,7 @@
+ 
+ #pragma once
+ 
++#include <cstddef>
+ #include <cstdint>
+ #include <memory>
+ #include <string>
+@@ -57,13 +58,15 @@ public:
+     //
+     // `client_request_id` is echoed in the cuprated [GRPC StreamBlocks] log
+     // line of every chunk — pass a per-sync-session id so wallet logs and
+-    // server logs line up without a shared clock.
++    // server logs line up without a shared clock. `queue_capacity_hint` is a
++    // per-stream bound; zero keeps the CUPRATE_GRPC_QUEUE_CAPACITY setting.
+     bool open_stream(uint64_t start_height,
+                      uint64_t stop_height,
+                      bool prune,
+                      uint32_t chunk_blocks_hint,
+                      const std::string& client_request_id,
+-                     const std::vector<std::string>& chain_locator = {});
++                     const std::vector<std::string>& chain_locator = {},
++                     size_t queue_capacity_hint = 0);
+ 
+     // Pop the next chunk's epee payload (blocking up to `timeout_ms`).
+     // Returns false on timeout, end-of-stream, or error.
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 0a8f1a5..089a69c 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3333,6 +3333,75 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     const uint64_t effective_start = first && wallet_height > 0
+       ? wallet_height - 1
+       : std::max(start_height, wallet_height);
++    uint64_t stream_stop_height = 0;
++    uint32_t stream_chunk_hint = m_grpc_stream_chunk_hint;
++    size_t stream_queue_capacity = 0;
++
++    // A daemon that is behind this wallet cannot provide a forward stream.
++    // Its chain locator resolves to an old common block, after which the
++    // current client repeatedly opens and cancels gRPC before HTTP recovery.
++    // Keep recovery on the established bin-RPC path until the daemon catches
++    // up; do not permanently disable gRPC for subsequent refreshes.
++    uint64_t daemon_height = 0;
++    const boost::optional<std::string> height_error = m_node_rpc_proxy.get_height(daemon_height);
++    if (height_error)
++    {
++      MWARNING("grpc_stream: daemon height preflight failed: " << *height_error
++        << " -- retaining the existing unbounded stream plan");
++    }
++    else if (daemon_height <= wallet_height)
++    {
++      MWARNING("grpc_stream: daemon height=" << daemon_height
++        << " is not ahead of wallet height=" << wallet_height
++        << " -- using bin RPC recovery instead of an invalid gRPC forward stream");
++      return false;
++    }
++    else if (effective_start >= daemon_height)
++    {
++      MWARNING("grpc_stream: effective start=" << effective_start
++        << " is at or above daemon height=" << daemon_height
++        << " -- using bin RPC recovery instead of an invalid gRPC forward stream");
++      return false;
++    }
++    else
++    {
++      // A single ordered stream is intentional: HTTP/2 flow control already
++      // overlaps server serialisation, transfer and wallet scanning. Three
++      // buffered chunks keep that pipeline full without unbounded memory;
++      // independent parallel streams would add reordering/reorg complexity.
++      constexpr uint32_t minimum_chunk_hint = 16;
++      const uint32_t configured_chunk_hint = std::max<uint32_t>(minimum_chunk_hint,
++        std::min<uint32_t>(m_grpc_stream_chunk_hint, 10000));
++      const uint64_t blocks_to_tip = daemon_height - effective_start;
++      const uint64_t three_chunk_window = static_cast<uint64_t>(configured_chunk_hint) * 3;
++      const char* plan = "continuous";
++      stream_queue_capacity = 3;
++
++      if (blocks_to_tip <= configured_chunk_hint)
++      {
++        stream_chunk_hint = static_cast<uint32_t>(std::max<uint64_t>(
++          minimum_chunk_hint, blocks_to_tip));
++        stream_stop_height = daemon_height - 1;
++        stream_queue_capacity = 1;
++        plan = "one-chunk";
++      }
++      else if (blocks_to_tip <= three_chunk_window)
++      {
++        stream_chunk_hint = static_cast<uint32_t>(std::max<uint64_t>(
++          minimum_chunk_hint, (blocks_to_tip + 2) / 3));
++        stream_stop_height = daemon_height - 1;
++        plan = "three-chunk";
++      }
++
++      MWARNING("grpc_stream: adaptive plan=" << plan
++        << " wallet_height=" << wallet_height
++        << " daemon_height=" << daemon_height
++        << " blocks_to_tip=" << blocks_to_tip
++        << " start=" << effective_start
++        << " stop=" << stream_stop_height
++        << " chunk_hint=" << stream_chunk_hint
++        << " queue_capacity=" << stream_queue_capacity);
++    }
+     if (!m_grpc_stream_client)
+       m_grpc_stream_client = std::make_unique<cuprate_grpc_stream::cuprate_grpc_stream_client>();
+     m_grpc_stream_client->close();
+@@ -3363,8 +3432,8 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       chain_locator.emplace_back(
+           reinterpret_cast<const char*>(&genesis_or_oldest), sizeof(genesis_or_oldest));
+     }
+-    if (!m_grpc_stream_client->open_stream(effective_start, /*stop=*/0, /*prune=*/true,
+-        m_grpc_stream_chunk_hint, m_grpc_stream_session_id, chain_locator))
++    if (!m_grpc_stream_client->open_stream(effective_start, stream_stop_height, /*prune=*/true,
++        stream_chunk_hint, m_grpc_stream_session_id, chain_locator, stream_queue_capacity))
+     {
+       MWARNING("grpc_stream: open_stream failed at start=" << effective_start
+         << " err=" << m_grpc_stream_client->last_error_message()
+-- 
+2.50.1 (Apple Git-155)
+

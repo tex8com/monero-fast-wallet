@@ -51,11 +51,16 @@ explicitly documented.
   gRPC endpoint and uses daemon RPC only. Node profile settings persist across
   app restarts; daemon passwords are stored through native secure storage and
   are not persisted in JavaScript storage.
-- The native bridge exposes `storeSecret`, `deleteSecret`, and
-  `setDaemonWithStoredPassword`. iOS stores daemon credentials in Keychain;
-  Android encrypts them with an Android Keystore AES-GCM key before writing the
-  ciphertext to private app preferences. Settings shows only a stored-password
-  marker plus a clear action after save.
+- The native bridge exposes only purpose-bound secret operations:
+  `ensureWalletSecret`, `deleteWalletSecret`, `storeDaemonPassword`, and
+  `deleteDaemonPassword`. It does not expose a generic JavaScript-readable
+  secret API. iOS stores daemon credentials in Keychain; Android encrypts them
+  with an Android Keystore AES-GCM key before writing the ciphertext to private
+  app preferences. Settings shows only a stored-password marker plus a clear
+  action after save.
+- Recovery words are entered in a native iOS or Android system screen and are
+  passed directly to the native wallet core. They never enter React state or a
+  TurboModule argument.
 - Has a React Native new-architecture TurboModule spec at
   `specs/NativeMoneroWallet.ts`.
 - iOS has an Objective-C++ module that calls the shared C++ `WalletEngine`.
@@ -65,10 +70,10 @@ explicitly documented.
 - iOS exposes CLI diagnostics through `npm run ios:diagnostics`; it launches the
   simulator app and prints a single `MONERO_WALLET_DIAGNOSTICS` JSON line with
   native-link and daemon `/get_info` status.
-- iOS allows direct HTTP daemon access for user-selected Monero nodes. Keep
-  `NSAllowsArbitraryLoads=true` without `NSAllowsLocalNetworking`, because on
-  modern iOS the local-networking ATS key can cause external HTTP daemon
-  requests to be blocked again.
+- iOS and Android reject cleartext application traffic globally. Scanner,
+  push, News, Community, update, and market traffic must use HTTPS. Any
+  explicitly selected cleartext Monero daemon is isolated to the native Core
+  transport and must never be reused for a credential or key upload.
 - Android exposes matching build/install, diagnostics, and log scripts. The
   Android build script fails closed if the real Monero link manifest is missing,
   so normal CLI builds do not silently fall back to shell mode.
@@ -168,7 +173,11 @@ at `xmr.tex8.com:18089` through both `/get_info` and `/json_rpc`; optimized
 wallet refresh uses `xmr.tex8.com:18091` for gRPC block streaming.
 
 Fast Wallet is a separate spendable software wallet, not a receive-only
-address. The app stores its restore height with the wallet registration. An
+address. New software Fast Wallets use fresh random entropy and their own
+device-protected wallet-file credential; they are not derived from the source
+wallet seed. Legacy v1 Fast Wallets are blocked and retained only for a guarded
+recovery/migration flow. The app stores each v2 restore height with the wallet
+registration. An
 older cache is repaired once from that height, after which normal continuous
 wallet-core sync keeps it live. The hosted scanner provides early mempool/block
 notifications; it does not replace local spend-state verification before send.

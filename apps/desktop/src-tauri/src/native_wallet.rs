@@ -2,6 +2,7 @@ use std::{
     ffi::{c_char, c_int, CStr, CString},
     ptr::NonNull,
 };
+use zeroize::Zeroizing;
 
 #[repr(C)]
 struct RawCore {
@@ -215,13 +216,13 @@ impl NativeWallet {
         network: u8,
     ) -> Result<String, String> {
         let path = c(path)?;
-        let password = c(password)?;
+        let password = secret_c(password)?;
         let language = c(language)?;
         self.result(unsafe {
             tex8_desktop_wallet_create(
                 self.core.as_ptr(),
                 path.as_ptr(),
-                password.as_ptr(),
+                password.as_ptr().cast(),
                 language.as_ptr(),
                 network,
             )
@@ -240,16 +241,16 @@ impl NativeWallet {
         restore_height: u64,
     ) -> Result<String, String> {
         let path = c(path)?;
-        let password = c(password)?;
-        let mnemonic = c(mnemonic)?;
-        let seed_offset = c(seed_offset)?;
+        let password = secret_c(password)?;
+        let mnemonic = secret_c(mnemonic)?;
+        let seed_offset = secret_c(seed_offset)?;
         self.result(unsafe {
             tex8_desktop_wallet_restore(
                 self.core.as_ptr(),
                 path.as_ptr(),
-                password.as_ptr(),
-                mnemonic.as_ptr(),
-                seed_offset.as_ptr(),
+                password.as_ptr().cast(),
+                mnemonic.as_ptr().cast(),
+                seed_offset.as_ptr().cast(),
                 network,
                 restore_height,
             )
@@ -272,14 +273,14 @@ impl NativeWallet {
     }
     pub fn create_from_device(&self, request: HardwareWalletCreate<'_>) -> Result<String, String> {
         let path = c(request.path)?;
-        let password = c(request.password)?;
+        let password = secret_c(request.password)?;
         let device_name = c(request.device_name)?;
         let subaddress_lookahead = c(request.subaddress_lookahead)?;
         self.result(unsafe {
             tex8_desktop_wallet_create_from_device(
                 self.core.as_ptr(),
                 path.as_ptr(),
-                password.as_ptr(),
+                password.as_ptr().cast(),
                 request.network,
                 device_name.as_ptr(),
                 request.restore_height,
@@ -290,18 +291,18 @@ impl NativeWallet {
     }
     pub fn create_view_only(&self, request: ViewOnlyWalletCreate<'_>) -> Result<String, String> {
         let path = c(request.path)?;
-        let password = c(request.password)?;
+        let password = secret_c(request.password)?;
         let address = c(request.address)?;
-        let private_view_key = c(request.private_view_key)?;
+        let private_view_key = secret_c(request.private_view_key)?;
         self.result(unsafe {
             tex8_desktop_wallet_create_view_only(
                 self.core.as_ptr(),
                 path.as_ptr(),
-                password.as_ptr(),
+                password.as_ptr().cast(),
                 request.network,
                 request.restore_height,
                 address.as_ptr(),
-                private_view_key.as_ptr(),
+                private_view_key.as_ptr().cast(),
             )
         })
     }
@@ -316,7 +317,7 @@ impl NativeWallet {
         let wallet_id = c(config.wallet_id)?;
         let address = c(config.address)?;
         let username = c(config.username)?;
-        let password = c(config.password)?;
+        let password = secret_c(config.password)?;
         let proxy_address = c(config.proxy_address)?;
         self.result(unsafe {
             tex8_desktop_wallet_set_daemon(
@@ -326,7 +327,7 @@ impl NativeWallet {
                 config.trusted.into(),
                 config.use_ssl.into(),
                 username.as_ptr(),
-                password.as_ptr(),
+                password.as_ptr().cast(),
                 proxy_address.as_ptr(),
             )
         })
@@ -417,7 +418,7 @@ impl NativeWallet {
         let source_wallet_id = c(request.source_wallet_id)?;
         let identity_id = c(request.identity_id)?;
         let path = c(request.path)?;
-        let password = c(request.password)?;
+        let password = secret_c(request.password)?;
         let label = c(request.label)?;
         self.result(unsafe {
             tex8_desktop_wallet_create_fast_receive_identity(
@@ -425,7 +426,7 @@ impl NativeWallet {
                 source_wallet_id.as_ptr(),
                 identity_id.as_ptr(),
                 path.as_ptr(),
-                password.as_ptr(),
+                password.as_ptr().cast(),
                 label.as_ptr(),
                 request.restore_height,
                 request.derivation_index,
@@ -444,13 +445,13 @@ impl NativeWallet {
     ) -> Result<String, String> {
         let identity_id = c(identity_id)?;
         let path = c(path)?;
-        let password = c(password)?;
+        let password = secret_c(password)?;
         self.result(unsafe {
             tex8_desktop_wallet_fast_receive_registration_payload(
                 self.core.as_ptr(),
                 identity_id.as_ptr(),
                 path.as_ptr(),
-                password.as_ptr(),
+                password.as_ptr().cast(),
                 network,
                 restore_height,
             )
@@ -546,11 +547,11 @@ impl NativeWallet {
         F: FnOnce(*mut RawCore, *const c_char, *const c_char) -> RawResult,
     {
         let path = c(path)?;
-        let password = c(password)?;
+        let password = secret_c(password)?;
         self.result(operation(
             self.core.as_ptr(),
             path.as_ptr(),
-            password.as_ptr(),
+            password.as_ptr().cast(),
         ))
     }
     fn result(&self, mut result: RawResult) -> Result<String, String> {
@@ -574,6 +575,19 @@ impl Drop for NativeWallet {
 }
 fn c(value: &str) -> Result<CString, String> {
     CString::new(value).map_err(|_| "Invalid text input.".to_owned())
+}
+
+/// `CString` does not promise to wipe its allocation. Sensitive values use a
+/// NUL-terminated zeroizing buffer so the Rust-side FFI copy is erased as soon
+/// as the native call returns.
+fn secret_c(value: &str) -> Result<Zeroizing<Vec<u8>>, String> {
+    if value.as_bytes().contains(&0) {
+        return Err("Invalid sensitive text input.".to_owned());
+    }
+    let mut bytes = Zeroizing::new(Vec::with_capacity(value.len() + 1));
+    bytes.extend_from_slice(value.as_bytes());
+    bytes.push(0);
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -615,29 +629,30 @@ mod tests {
             let subaddress = wallet.create_subaddress(&wallet_id, 0, "desktop smoke")?;
             assert!(subaddress.contains("address"));
 
-            let fast_path = root.join("fast-receive").to_string_lossy().into_owned();
+            let fast_identity_id = "fast-receive-v2-0-desktop-smoke";
+            let fast_path = root.join(fast_identity_id).to_string_lossy().into_owned();
             let fast_identity = wallet.create_fast_receive_identity(FastReceiveIdentityCreate {
                 source_wallet_id: &wallet_id,
-                identity_id: "fast-receive-0-desktop-smoke",
+                identity_id: fast_identity_id,
                 path: &fast_path,
-                password: "test-password",
+                password: "independent-fast-password",
                 label: "Fast Wallet",
                 restore_height: 0,
                 derivation_index: 0,
             })?;
-            assert!(fast_identity.contains("fast-receive-0-desktop-smoke"));
+            assert!(fast_identity.contains(fast_identity_id));
             assert!(fast_identity.contains("\"address\":\"4"));
             let mut registration_payload = wallet.fast_receive_registration_payload(
-                "fast-receive-0-desktop-smoke",
+                fast_identity_id,
                 &fast_path,
-                "test-password",
+                "independent-fast-password",
                 0,
                 0,
             )?;
             assert!(registration_payload.contains("privateViewKey"));
-            assert!(registration_payload.contains("fast-receive-0-desktop-smoke"));
+            assert!(registration_payload.contains(fast_identity_id));
             registration_payload.zeroize();
-            let opened_fast_id = wallet.open(&fast_path, "test-password", 0, 0)?;
+            let opened_fast_id = wallet.open(&fast_path, "independent-fast-password", 0, 0)?;
             let fast_address = wallet.address(&opened_fast_id, 0, 0)?;
             assert!(fast_address.starts_with('4'));
             assert!(wallet.snapshot(&opened_fast_id)?.contains("primaryAddress"));

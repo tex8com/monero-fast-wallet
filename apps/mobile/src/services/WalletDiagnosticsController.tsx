@@ -1,10 +1,8 @@
 import { useEffect } from 'react';
 import { Linking } from 'react-native';
 
-import {
-  emitWalletDiagnosticsLine,
-  runWalletDiagnostics,
-} from './WalletDiagnostics';
+import { runWalletDiagnostics } from './WalletDiagnostics';
+import { logWalletEvent } from './WalletLogger';
 
 const DIAGNOSTICS_URL_PATTERN = /^[a-z][a-z0-9+.-]*:\/\/diagnostics(?:\/|$)/i;
 const BOOT_DIAGNOSTICS_DELAY_MS = 1500;
@@ -24,7 +22,7 @@ export function WalletDiagnosticsController() {
       : undefined;
 
     const handleUrl = (url: string | null) => {
-      if (!url || !isDiagnosticsUrl(url)) {
+      if (!__DEV__ || !url || !isDiagnosticsUrl(url)) {
         return;
       }
 
@@ -59,10 +57,9 @@ function shouldRunBootDiagnostics(): boolean {
 }
 
 function logDiagnosticsError(trigger: string, error: unknown) {
-  const line = `MONERO_WALLET_DIAGNOSTICS ${JSON.stringify({
-    error: error instanceof Error ? error.message : String(error),
-    timestamp: new Date().toISOString(),
+  logWalletEvent('WalletDiagnostics', 'health-check.error', {
+    status: 'error',
     trigger,
-  })}`;
-  emitWalletDiagnosticsLine(line).catch(() => undefined);
+    hasError: Boolean(error),
+  });
 }

@@ -199,7 +199,7 @@ for label in "${targets[@]}"; do
     if [[ -f "${lib_path}" ]]; then
       libraries+=("${lib_path}")
     elif [[ "${strict_optional}" == "1" ]]; then
-      warn_missing "${lib_path}" || true
+      warn_missing "${lib_path}" || missing_count=$((missing_count + 1))
     fi
   done
 
@@ -231,6 +231,7 @@ for label in "${targets[@]}"; do
     echo "MONERO_WALLET_CORE_LIBRARY = ${aggregate_lib}"
     echo "MONERO_WALLET_API_INCLUDE_DIR = ${monero_source_dir}/src/wallet/api"
     echo "MONERO_WALLET_BRIDGE_INCLUDE_DIR = ${repo_root}/native/monero-bridge/cpp"
+    echo "MONERO_SODIUM_INCLUDE_DIR = ${dependency_prefix}/include"
     echo "MONERO_WALLET_SYSTEM_LIBRARIES = ${system_libraries[*]}"
   } > "${xcconfig_path}"
 

@@ -16,13 +16,13 @@ jest.mock("@react-native-async-storage/async-storage", () => {
   };
 });
 
-const mockStoreSecret = jest.fn(async () => undefined);
-const mockDeleteSecret = jest.fn(async () => undefined);
+const mockStoreDaemonPassword = jest.fn(async () => undefined);
+const mockDeleteDaemonPassword = jest.fn(async () => undefined);
 
 jest.mock("../NativeMoneroWallet", () => ({
   requireNativeMoneroWallet: () => ({
-    storeSecret: mockStoreSecret,
-    deleteSecret: mockDeleteSecret,
+    storeDaemonPassword: mockStoreDaemonPassword,
+    deleteDaemonPassword: mockDeleteDaemonPassword,
   }),
 }));
 
@@ -44,8 +44,8 @@ import {
 describe("NodeConnectionSettings", () => {
   beforeEach(async () => {
     await AsyncStorage.clear();
-    mockStoreSecret.mockClear();
-    mockDeleteSecret.mockClear();
+    mockStoreDaemonPassword.mockClear();
+    mockDeleteDaemonPassword.mockClear();
   });
 
   it("defaults to optimized Cuprate gRPC ports", () => {
@@ -259,10 +259,7 @@ describe("NodeConnectionSettings", () => {
 
     expect(persisted).not.toBeNull();
     expect(persisted).not.toContain("wallet-password");
-    expect(mockStoreSecret).toHaveBeenCalledWith(
-      NODE_DAEMON_PASSWORD_SECRET_KEY,
-      "wallet-password",
-    );
+    expect(mockStoreDaemonPassword).toHaveBeenCalledWith("wallet-password");
     expect(JSON.parse(persisted ?? "{}")).toEqual({
       mode: "custom",
       network: "mainnet",

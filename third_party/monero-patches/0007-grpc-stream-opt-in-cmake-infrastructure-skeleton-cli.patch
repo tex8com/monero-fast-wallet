@@ -1,0 +1,508 @@
+From 2526e754e162e6708046a3e4c8403f13898f042c Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Sun, 19 Apr 2026 09:25:04 -0500
+Subject: [PATCH 07/14] grpc-stream: opt-in cmake infrastructure + skeleton
+ client (no logic yet)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Phase 1c step 1 — adds the build wiring for the cuprate gRPC streaming sync
+client. Skeleton implementation only; methods return false / no-op so the
+target compiles cleanly and we get a sanity check on the build setup before
+the real client lands in step 2.
+
+Build is opt-in via -DMONERO_ENABLE_GRPC_STREAM=ON. Default OFF — existing
+build setups are completely unaffected.
+
+Build deps when enabled:
+  macOS: brew install grpc cmake
+  Linux: apt install libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc
+
+CMake design notes:
+- New static library cuprate_grpc_stream lives under src/wallet/grpc_stream/.
+  Wallet links it conditionally (target_link_libraries(wallet PRIVATE
+  cuprate_grpc_stream) in CMake; #if MONERO_GRPC_STREAM in source).
+- Pimpl-wrapped client (grpc_block_stream_client.h) keeps grpc++ headers OUT
+  of wallet2's translation unit. Wallet2 only sees a bare header that uses
+  std types, so the existing Boost-Asio + epee build stays clean of
+  abseil/grpc ABI.
+- Uses pkg-config (grpc++, grpc, protobuf) instead of find_package(gRPC
+  CONFIG): the CMake-config path imports a modern protobuf::libupb target
+  set that conflicts with the vintage protobuf Monero pulls in via Trezor
+  device support. pkg-config sidesteps the imported-target machinery and
+  just hands us include paths + library names — no double-import error.
+- Bumps CXX_STANDARD to 17 just for the cuprate_grpc_stream target — modern
+  abseil headers (which grpc++ depends on) use std::is_same_v et al.
+  Monero's default of C++14 stays intact for everything else.
+
+Verified locally on macOS 26 (AppleClang 17, gRPC 1.80, protobuf 34.1):
+configure clean, `make cuprate_grpc_stream` builds the library cleanly
+(only deprecation warnings out of upstream grpc++ headers). Default-OFF
+build path (no flag) untouched.
+
+Real client implementation (channel + recv thread + bounded queue +
+extensive PERF logging) lands in the next commit.
+---
+ CMakeLists.txt                                |   7 ++
+ src/wallet/CMakeLists.txt                     |   7 ++
+ src/wallet/grpc_stream/CMakeLists.txt         |  89 +++++++++++++++
+ src/wallet/grpc_stream/cuprate_stream.proto   | 103 ++++++++++++++++++
+ .../grpc_stream/grpc_block_stream_client.cpp  |  93 ++++++++++++++++
+ .../grpc_stream/grpc_block_stream_client.h    | 102 +++++++++++++++++
+ 6 files changed, 401 insertions(+)
+ create mode 100644 src/wallet/grpc_stream/CMakeLists.txt
+ create mode 100644 src/wallet/grpc_stream/cuprate_stream.proto
+ create mode 100644 src/wallet/grpc_stream/grpc_block_stream_client.cpp
+ create mode 100644 src/wallet/grpc_stream/grpc_block_stream_client.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9b922046..44409bb9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -49,6 +49,13 @@ message(STATUS "CMake version ${CMAKE_VERSION}")
+ project(monero)
+ 
+ option (USE_CCACHE "Use ccache if a usable instance is found" ON)
++# Cuprate gRPC streaming sync — opt-in. Requires libgrpc++ + protobuf at build time.
++# When enabled, the wallet can pull blocks via a server-streaming gRPC call against
++# a cuprated node with [rpc.grpc] enable=true (see tex8com/cuprate fast-rpc branch).
++# Single HTTP/2 stream typically delivers ~1.6-1.8x more throughput than 16 parallel
++# bin RPC connections — the goal is full link saturation. Default OFF so existing
++# build setups are not affected.
++option (MONERO_ENABLE_GRPC_STREAM "Enable cuprate gRPC streaming sync support" OFF)
+ if (USE_CCACHE)
+ 	include(FindCcache) # Has to be included after the project() macro, to be able to read the CXX variable.
+ else()
+diff --git a/src/wallet/CMakeLists.txt b/src/wallet/CMakeLists.txt
+index 6095f99d..1553c64c 100644
+--- a/src/wallet/CMakeLists.txt
++++ b/src/wallet/CMakeLists.txt
+@@ -66,6 +66,13 @@ target_link_libraries(wallet
+   PRIVATE
+     ${EXTRA_LIBRARIES})
+ 
++# Optional cuprate gRPC streaming sync support (off by default).
++if(MONERO_ENABLE_GRPC_STREAM)
++  add_subdirectory(grpc_stream)
++  target_link_libraries(wallet PRIVATE cuprate_grpc_stream)
++  target_compile_definitions(wallet PRIVATE MONERO_GRPC_STREAM=1)
++endif()
++
+ if(NOT IOS)
+   set(wallet_rpc_sources
+     wallet_rpc_server.cpp)
+diff --git a/src/wallet/grpc_stream/CMakeLists.txt b/src/wallet/grpc_stream/CMakeLists.txt
+new file mode 100644
+index 00000000..a1e38a98
+--- /dev/null
++++ b/src/wallet/grpc_stream/CMakeLists.txt
+@@ -0,0 +1,89 @@
++# cuprate gRPC streaming sync library — only built when MONERO_ENABLE_GRPC_STREAM=ON.
++#
++# Compiles the cuprate_stream.proto file via protoc + grpc_cpp_plugin, then wraps
++# the generated stub in a Pimpl C++ class (`cuprate_grpc_stream_client`) so the
++# wallet2 translation unit does NOT need to include grpc++ headers — keeps the
++# wallet's existing Boost-Asio / epee build clean of grpc/abseil ABI.
++#
++# Build deps:
++#   macOS: brew install grpc
++#   Linux: apt install libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc
++
++# Monero pulls a vintage Protobuf in via Trezor device support, which conflicts
++# with the modern protobuf::libupb targets that gRPC's CMake config exports.
++# Use pkg-config instead — it just hands us include paths + library names, no
++# imported-target machinery, no double-import errors.
++find_package(PkgConfig REQUIRED)
++pkg_check_modules(GRPCPP   REQUIRED grpc++)
++pkg_check_modules(GRPC     REQUIRED grpc)
++pkg_check_modules(PROTOBUF REQUIRED protobuf)
++
++if(NOT DEFINED GRPC_CPP_PLUGIN_PATH)
++    find_program(GRPC_CPP_PLUGIN_PATH grpc_cpp_plugin REQUIRED)
++endif()
++
++set(PROTO_FILE  "${CMAKE_CURRENT_SOURCE_DIR}/cuprate_stream.proto")
++set(PROTO_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
++file(MAKE_DIRECTORY "${PROTO_OUT_DIR}")
++
++set(GENERATED_PB
++    "${PROTO_OUT_DIR}/cuprate_stream.pb.cc"
++    "${PROTO_OUT_DIR}/cuprate_stream.pb.h"
++    "${PROTO_OUT_DIR}/cuprate_stream.grpc.pb.cc"
++    "${PROTO_OUT_DIR}/cuprate_stream.grpc.pb.h"
++)
++
++add_custom_command(
++    OUTPUT ${GENERATED_PB}
++    COMMAND protoc
++        --proto_path=${CMAKE_CURRENT_SOURCE_DIR}
++        --cpp_out=${PROTO_OUT_DIR}
++        --grpc_out=${PROTO_OUT_DIR}
++        --plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN_PATH}
++        ${PROTO_FILE}
++    DEPENDS ${PROTO_FILE}
++    COMMENT "protoc + grpc_cpp_plugin: cuprate_stream.proto"
++    VERBATIM
++)
++
++add_library(cuprate_grpc_stream STATIC
++    grpc_block_stream_client.cpp
++    ${GENERATED_PB}
++)
++
++# Modern abseil/grpc++ headers require C++17 (uses std::is_same_v etc.)
++# Monero's default is C++14 — bump just our target so the rest is unaffected.
++set_target_properties(cuprate_grpc_stream PROPERTIES
++    CXX_STANDARD 17
++    CXX_STANDARD_REQUIRED ON
++)
++
++target_include_directories(cuprate_grpc_stream
++    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}
++    PRIVATE ${PROTO_OUT_DIR}
++            ${GRPCPP_INCLUDE_DIRS}
++            ${GRPC_INCLUDE_DIRS}
++            ${PROTOBUF_INCLUDE_DIRS}
++)
++
++target_link_directories(cuprate_grpc_stream
++    PRIVATE
++            ${GRPCPP_LIBRARY_DIRS}
++            ${GRPC_LIBRARY_DIRS}
++            ${PROTOBUF_LIBRARY_DIRS}
++)
++
++target_link_libraries(cuprate_grpc_stream
++    PRIVATE
++        ${GRPCPP_LIBRARIES}
++        ${GRPC_LIBRARIES}
++        ${PROTOBUF_LIBRARIES}
++)
++
++# Suppress noisy warnings in protobuf-generated code under our strict flags.
++if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
++    set_source_files_properties(${GENERATED_PB}
++        PROPERTIES COMPILE_FLAGS
++        "-Wno-unused-parameter -Wno-deprecated-declarations -Wno-unused-variable"
++    )
++endif()
+diff --git a/src/wallet/grpc_stream/cuprate_stream.proto b/src/wallet/grpc_stream/cuprate_stream.proto
+new file mode 100644
+index 00000000..44a069b2
+--- /dev/null
++++ b/src/wallet/grpc_stream/cuprate_stream.proto
+@@ -0,0 +1,103 @@
++// Cuprate streaming RPC for high-throughput wallet sync.
++//
++// Coexists side-by-side with the legacy bin RPC (binary epee on HTTP/1.1).
++// Standard wallets keep using bin RPC unchanged; "smart" wallets that opt
++// into this service get HTTP/2 multiplexing + server-streaming, which removes
++// the per-TCP-connection variance ceiling that limits the bin RPC to roughly
++// half of the available link bandwidth.
++//
++// Design choice — payload is epee, transport is gRPC:
++//
++// Each BlockChunk.payload is the same epee-serialized GetBlocksResponse the
++// bin RPC produces (with most fields empty — only blocks, output_indices,
++// start_height, current_height, status are populated). The wallet decodes it
++// with its EXISTING `COMMAND_RPC_GET_BLOCKS_FAST::response` deserializer, so
++// no new payload parser is needed on the wallet side. The protobuf layer is
++// purely the envelope that gives us HTTP/2 multiplexing + flow control +
++// server-streaming. That is where ALL of the network-layer wins come from;
++// the inner serialization format is irrelevant for throughput on crypto
++// payloads (which are near-incompressible regardless).
++//
++// Status: experimental. Wire-compatibility is NOT promised across versions
++// until v1; pin the proto file to the cuprated commit you build against.
++
++syntax = "proto3";
++
++package cuprate.stream.v1;
++
++service BlockStream {
++  // Server-streaming RPC. The server pushes BlockChunks at the rate the
++  // backend can produce them, throttled by HTTP/2 flow control on the
++  // client side. The stream terminates when:
++  //   - stop_height (if set) is reached, OR
++  //   - tip is reached (current chain top served), OR
++  //   - the client cancels the RPC
++  //
++  // The server emits BlockChunks with strictly monotonically increasing
++  // start_heights and contiguous block ranges (no gaps, no overlap). On
++  // chain-tip catch-up the server MAY pause the stream (no chunks) until a
++  // new block is available; the client should not interpret a pause as
++  // end-of-stream.
++  rpc StreamBlocks(StreamBlocksRequest) returns (stream BlockChunk);
++
++  // Future: streaming hash-only sync (replaces bin `get_hashes` for the
++  // fast_refresh phase). Not implemented yet — the wallet still uses the
++  // BlockHashInRange DIRECT-BULK path via bin RPC, which is already fast
++  // enough (~12 ms per 100k hashes).
++  // rpc StreamHashes(StreamHashesRequest) returns (stream HashChunk);
++}
++
++message StreamBlocksRequest {
++  // First block height to send (inclusive).
++  uint64 start_height = 1;
++
++  // Last block height to send (inclusive). 0 = stream to current tip.
++  uint64 stop_height = 2;
++
++  // If true, server prunes RCT prunable data before sending (typical wallet
++  // sync — saves ~5x bandwidth). If false, full blocks are sent.
++  bool prune = 3;
++
++  // Hint for preferred chunk size (number of blocks per BlockChunk).
++  // Server may ignore or clamp. 0 = server default (currently 200).
++  uint32 chunk_blocks_hint = 4;
++
++  // If true, miner txs are stripped (parity with bin RPC's no_miner_tx).
++  bool no_miner_tx = 5;
++
++  // Opaque request id supplied by the client, echoed back in every chunk's
++  // PERF log entry on the server. Lets the wallet correlate its own log
++  // lines with server logs without a shared clock. Keep <= 64 chars.
++  string client_request_id = 6;
++}
++
++message BlockChunk {
++  // Height of the first block in this chunk's payload. Subsequent blocks in
++  // this chunk are at start_height+1, start_height+2, ...
++  uint64 start_height = 1;
++
++  // Sequence number of this chunk within the stream (0, 1, 2, ...).
++  // Useful for detecting drops/duplicates in client logs.
++  uint64 chunk_seq = 2;
++
++  // Current chain tip height as observed by the server when this chunk was
++  // emitted. Lets the wallet update its progress bar without a separate
++  // get_info round-trip. Will increase across chunks as new blocks arrive.
++  uint64 chain_tip = 3;
++
++  // Server-side request id (auto-generated if client did not supply one).
++  // Echoed in every chunk so the client can correlate.
++  string server_request_id = 4;
++
++  // The epee-serialized payload — exactly the wire format the bin RPC's
++  // GetBlocks endpoint returns. Most fields are empty/default (no pool
++  // info, no daemon_time, no base.untrusted etc.) — only `blocks`,
++  // `output_indices`, `start_height`, `current_height` and `status` are
++  // populated. Decode on the wallet side with the existing
++  // `COMMAND_RPC_GET_BLOCKS_FAST::response` epee deserializer.
++  bytes payload = 5;
++
++  // For diagnostics/logging only — redundant with payload contents.
++  uint32 n_blocks = 6;
++  uint32 payload_bytes = 7;
++}
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+new file mode 100644
+index 00000000..dfea3bf9
+--- /dev/null
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -0,0 +1,93 @@
++// Cuprate gRPC streaming sync client — skeleton implementation.
++//
++// This file provides only the Pimpl scaffolding so the build wires up
++// cleanly. The real client (channel + recv thread + queue + logging)
++// lands in the next commit.
++
++#include "grpc_block_stream_client.h"
++
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <cstdio>
++#include <deque>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <thread>
++
++#include <grpcpp/grpcpp.h>
++#include "cuprate_stream.grpc.pb.h"
++
++namespace cuprate_grpc_stream {
++
++struct cuprate_grpc_stream_client::impl {
++    std::shared_ptr<grpc::Channel> channel;
++    std::unique_ptr<cuprate::stream::v1::BlockStream::Stub> stub;
++
++    int         last_error_code = 0;
++    std::string last_error_message;
++    bool        stream_ended_ok = false;
++
++    uint64_t    last_chunk_start_height = 0;
++    uint64_t    last_chunk_seq = 0;
++    uint64_t    last_chunk_chain_tip = 0;
++    uint32_t    last_chunk_n_blocks = 0;
++    uint32_t    last_chunk_payload_bytes = 0;
++    std::string last_chunk_server_request_id;
++};
++
++cuprate_grpc_stream_client::cuprate_grpc_stream_client()
++  : p_(std::make_unique<impl>())
++{}
++
++cuprate_grpc_stream_client::~cuprate_grpc_stream_client() = default;
++
++bool cuprate_grpc_stream_client::connect(const std::string& target)
++{
++    if (target.empty()) {
++        p_->last_error_code = -1;
++        p_->last_error_message = "empty target";
++        return false;
++    }
++    grpc::ChannelArguments ch_args;
++    ch_args.SetMaxReceiveMessageSize(64 * 1024 * 1024);
++    ch_args.SetMaxSendMessageSize(64 * 1024 * 1024);
++    p_->channel = grpc::CreateCustomChannel(target, grpc::InsecureChannelCredentials(), ch_args);
++    p_->stub = cuprate::stream::v1::BlockStream::NewStub(p_->channel);
++    std::fprintf(stderr, "[GRPC client] connect target=%s (channel created — connect is lazy)\n", target.c_str());
++    return true;
++}
++
++bool cuprate_grpc_stream_client::open_stream(uint64_t /*start_height*/,
++                                             uint64_t /*stop_height*/,
++                                             bool /*prune*/,
++                                             uint32_t /*chunk_blocks_hint*/,
++                                             const std::string& /*client_request_id*/)
++{
++    p_->last_error_code = -2;
++    p_->last_error_message = "open_stream: not implemented in skeleton (commit 2)";
++    return false;
++}
++
++bool cuprate_grpc_stream_client::next_chunk_payload(std::string& /*out_epee_bytes*/, uint32_t /*timeout_ms*/)
++{
++    p_->last_error_code = -2;
++    p_->last_error_message = "next_chunk_payload: not implemented in skeleton (commit 2)";
++    return false;
++}
++
++bool cuprate_grpc_stream_client::stream_ended_ok() const { return p_->stream_ended_ok; }
++void cuprate_grpc_stream_client::close() {}
++
++uint64_t    cuprate_grpc_stream_client::last_chunk_start_height()      const { return p_->last_chunk_start_height; }
++uint64_t    cuprate_grpc_stream_client::last_chunk_seq()               const { return p_->last_chunk_seq; }
++uint64_t    cuprate_grpc_stream_client::last_chunk_chain_tip()         const { return p_->last_chunk_chain_tip; }
++uint32_t    cuprate_grpc_stream_client::last_chunk_n_blocks()          const { return p_->last_chunk_n_blocks; }
++uint32_t    cuprate_grpc_stream_client::last_chunk_payload_bytes()     const { return p_->last_chunk_payload_bytes; }
++std::string cuprate_grpc_stream_client::last_chunk_server_request_id() const { return p_->last_chunk_server_request_id; }
++
++int         cuprate_grpc_stream_client::last_error_code()    const { return p_->last_error_code; }
++std::string cuprate_grpc_stream_client::last_error_message() const { return p_->last_error_message; }
++
++} // namespace cuprate_grpc_stream
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.h b/src/wallet/grpc_stream/grpc_block_stream_client.h
+new file mode 100644
+index 00000000..8b0e3985
+--- /dev/null
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.h
+@@ -0,0 +1,102 @@
++// Cuprate gRPC streaming sync client.
++//
++// Pimpl-wrapped C++ client for the cuprate.stream.v1.BlockStream service.
++// Hides grpc++ headers from wallet2.cpp so the wallet can be built without
++// pulling abseil/grpc into every translation unit.
++//
++// Usage pattern:
++//   cuprate_grpc_stream_client client;
++//   if (!client.connect("host:18091")) return false;
++//   if (!client.open_stream(start_h, 0, /*prune=*/true, /*chunk_hint=*/1000)) return false;
++//   std::string epee_payload;
++//   while (client.next_chunk_payload(epee_payload, /*timeout_ms=*/30000)) {
++//     // epee_payload is exactly the wire format the bin RPC's GetBlocks
++//     // returns -- decode with the existing
++//     // COMMAND_RPC_GET_BLOCKS_FAST::response deserializer.
++//     ...
++//   }
++//   client.close();
++//
++// Thread model: a single background recv thread (started by open_stream)
++// drains the gRPC stream into a bounded queue. next_chunk_payload pops from
++// the queue with a timeout. close() shuts the stream down deterministically.
++//
++// Errors and end-of-stream are both reported as `next_chunk_payload returns
++// false`. Use last_error_code()/last_error_message() to distinguish.
++
++#pragma once
++
++#include <cstdint>
++#include <memory>
++#include <string>
++
++namespace cuprate_grpc_stream {
++
++class cuprate_grpc_stream_client
++{
++public:
++    cuprate_grpc_stream_client();
++    ~cuprate_grpc_stream_client();
++
++    cuprate_grpc_stream_client(const cuprate_grpc_stream_client&) = delete;
++    cuprate_grpc_stream_client& operator=(const cuprate_grpc_stream_client&) = delete;
++
++    // Establish a gRPC channel to `target` (e.g. "host:18091"). Returns true
++    // on success. Note: gRPC channel creation is lazy — actual TCP connection
++    // happens on the first RPC call. This function only validates the target
++    // string and constructs the channel object.
++    bool connect(const std::string& target);
++
++    // Open a server-streaming StreamBlocks call. Spawns a background thread
++    // that drains the stream into the internal queue. Returns true on
++    // successful stream open. Pass stop_height = 0 to stream until tip.
++    //
++    // `chunk_blocks_hint` follows the proto contract — server clamps to
++    // [16, 2000]. Sweet spot per smoke tests: 1000.
++    //
++    // `client_request_id` is echoed in the cuprated [GRPC StreamBlocks] log
++    // line of every chunk — pass a per-sync-session id so wallet logs and
++    // server logs line up without a shared clock.
++    bool open_stream(uint64_t start_height,
++                     uint64_t stop_height,
++                     bool prune,
++                     uint32_t chunk_blocks_hint,
++                     const std::string& client_request_id);
++
++    // Pop the next chunk's epee payload (blocking up to `timeout_ms`).
++    // Returns false on timeout, end-of-stream, or error.
++    //
++    // On success, `out_epee_bytes` is exactly the wire format the bin RPC
++    // GetBlocks returns. Decode with the wallet's existing
++    // COMMAND_RPC_GET_BLOCKS_FAST::response deserializer (load_t_from_binary).
++    //
++    // Diagnostics about the chunk (server_request_id, chunk_seq, n_blocks,
++    // chain_tip, start_height) are exposed via last_chunk_*() accessors.
++    bool next_chunk_payload(std::string& out_epee_bytes, uint32_t timeout_ms);
++
++    // True iff the stream has terminated cleanly (server reached tip /
++    // stop_height) — distinguishes from "still streaming, just timed out
++    // waiting for a chunk".
++    bool stream_ended_ok() const;
++
++    // Close the stream and join the recv thread. Idempotent.
++    void close();
++
++    // Last-chunk diagnostics (set by next_chunk_payload on success).
++    uint64_t    last_chunk_start_height() const;
++    uint64_t    last_chunk_seq()         const;
++    uint64_t    last_chunk_chain_tip()   const;
++    uint32_t    last_chunk_n_blocks()    const;
++    uint32_t    last_chunk_payload_bytes() const;
++    std::string last_chunk_server_request_id() const;
++
++    // Last-error info (set on any failure).
++    int         last_error_code()    const;
++    std::string last_error_message() const;
++
++private:
++    struct impl;
++    std::unique_ptr<impl> p_;
++};
++
++} // namespace cuprate_grpc_stream
+-- 
+2.50.1 (Apple Git-155)
+

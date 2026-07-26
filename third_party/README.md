@@ -1,51 +1,39 @@
-# Third-Party Forks
+# Third-Party Core Integration
 
-This directory holds pinned source used by product builds.
+Monero Core is always fetched from the official upstream repository. TEX8
+changes live only as an ordered patch series under `monero-patches/`; the full
+Core source is intentionally not vendored in this repository.
 
-## Monero Fork
+The verified base is Monero `v0.18.4.6`, commit
+`dbcc7d212c094bd1a45f7291dbb99a4b4627a96d`. The exact source URL, immutable
+base commit and patch order are in `monero-patches/upstream.lock` and
+`monero-patches/series`.
 
-Target path:
-
-```text
-third_party/monero
-```
-
-Current local source:
-
-```text
-$HOME/Documents/Projects/monero-gui/monero
-```
-
-Current observed branch/commit:
-
-```text
-branch: fast-crypto
-remote: https://github.com/tex8com/monero.git
-commit: e7fe4ff6f0a0fef58ca031d2a75c168a42242b42
-```
-
-This is the current clean release pin for the forked wallet core. It contains
-the mobile-facing `libwallet_api` gRPC endpoint methods and the wallet-core
-changes used by the native bridge.
-
-Current RandomX submodule pin used by that Monero commit:
-
-```text
-remote: https://github.com/tex8com/RandomX.git
-branch: tex8/mobile-jit-toggle
-commit: ba354fde486d721502aeebf265b6005342b08128
-```
-
-The product repo currently records the fork pin here instead of vendoring the
-full source tree. To materialize the pinned checkout locally:
+To materialize a buildable Core checkout:
 
 ```sh
-git clone https://github.com/tex8com/monero.git third_party/monero
-cd third_party/monero
-git checkout e7fe4ff6f0a0fef58ca031d2a75c168a42242b42
-git submodule sync --recursive
-git submodule update --init --recursive
+tools/monero-upstream/prepare-patched-core.sh \
+  /Volumes/4TB/monero-fast-wallet-build/monero-v0.18.4.6-tex8
 ```
 
-If this directory is converted to a Git submodule later, keep the submodule
-checked out at the same commit before treating a build as reproducible.
+The command refuses to overwrite an existing directory and stops on the first
+patch conflict. This makes upstream changes explicit and reviewable rather
+than silently carrying a modified Core worktree forward.
+
+The current Monero product series contains 21 patches. Its resulting tree is
+the tree of fork commit `cdcfa8151322a3fdd9306af97ab0c54092ac1e37` on
+`agent/desktop-metal-product-20260725`.
+
+Additional benchmark-only instrumentation and the staged CUDA/full worktree
+diff live in `monero-experimental-patches/`. They are preserved for review but
+are not part of the ordered production series.
+
+Cuprate remains a separately updateable fork. Its complete TEX8 production
+history from base `3147170485c82baec4b5a5f10bdac67316c5923d` through
+`cd1ec57ab44301b93a21e9b504b9d913b88fc871` is reproduced by the ordered
+41-patch series in `cuprate-patches/`.
+
+The Curve25519 CPU patches are under `curve25519-dalek-wallet-cpu/`. Source
+harnesses and text evidence for the original Ref10 baseline, CPU, Metal,
+mobile and CUDA measurements are indexed in
+`../docs/WALLET_ACCELERATION_TESTBENCH_INDEX.md`.

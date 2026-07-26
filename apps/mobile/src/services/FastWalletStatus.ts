@@ -66,6 +66,14 @@ export function fastWalletStatusPresentation(
         ready: false,
         tone: 'warning',
       };
+    case 'legacy-blocked':
+      return {
+        canRetry: false,
+        description: t('fastWallet.status.legacyBlockedDescription'),
+        label: t('fastWallet.status.legacyBlocked'),
+        ready: false,
+        tone: 'danger',
+      };
     case 'local-only':
     default:
       return {

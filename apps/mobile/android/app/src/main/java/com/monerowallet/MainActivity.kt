@@ -1,13 +1,25 @@
 package com.monerowallet
 
 import android.content.Intent
+import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
 import com.facebook.react.defaults.DefaultReactActivityDelegate
 
 class MainActivity : ReactActivity() {
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    // Wallet balances, addresses, QR codes and recovery material must not be
+    // copied into screenshots, recordings, or Android's recent-app preview.
+    window.setFlags(
+      WindowManager.LayoutParams.FLAG_SECURE,
+      WindowManager.LayoutParams.FLAG_SECURE,
+    )
+  }
 
   /**
    * Returns the name of the main component registered from JavaScript. This is used to schedule
@@ -31,8 +43,16 @@ class MainActivity : ReactActivity() {
     // Do this on the native lifecycle boundary. Android can freeze the React
     // bridge before its AppState callback has finished, which otherwise leaves
     // the Monero Core cache at the old scan height for the next app launch.
-    runCatching { NativeMoneroWalletJni.persistOpenWallets() }
-      .onFailure { error -> Log.w(TAG, "Could not persist open wallet caches", error) }
+    NativeAppAuthorization.lock()
+    NativeSensitiveApprovalState.clear()
+    runCatching {
+      NativeMoneroWalletJni.persistOpenWallets()
+      NativeMoneroWalletJni.closeAllWallets()
+    }.onFailure {
+      if (BuildConfig.DEBUG) {
+        Log.w(TAG, "Could not close native wallet sessions")
+      }
+    }
     super.onPause()
   }
 

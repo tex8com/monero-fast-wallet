@@ -80,6 +80,7 @@ pub fn init_rpc_servers(
 
         let rpc_handler = CupratedRpcHandler::new(
             restricted,
+            network,
             blockchain_read.clone(),
             blockchain_context.clone(),
             txpool_read.clone(),
@@ -102,6 +103,7 @@ pub fn init_rpc_servers(
     if config.grpc.enable {
         let grpc_handler = CupratedRpcHandler::new(
             false, // gRPC service is unrestricted (same data exposure as bin RPC unrestricted)
+            network,
             blockchain_read.clone(),
             blockchain_context.clone(),
             txpool_read.clone(),

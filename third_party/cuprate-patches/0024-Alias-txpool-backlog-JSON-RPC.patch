@@ -1,0 +1,51 @@
+From 290e4305873d993bf533913c4c643b0d9d694f63 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Mon, 6 Jul 2026 21:42:58 -0500
+Subject: [PATCH 24/41] Alias txpool backlog JSON RPC
+
+---
+ rpc/types/src/json.rs | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/rpc/types/src/json.rs b/rpc/types/src/json.rs
+index 789fdee..fca99ce 100644
+--- a/rpc/types/src/json.rs
++++ b/rpc/types/src/json.rs
+@@ -765,6 +765,7 @@ pub enum JsonRpcRequest {
+     GetAlternateChains(GetAlternateChainsRequest),
+     RelayTx(RelayTxRequest),
+     SyncInfo(SyncInfoRequest),
++    #[cfg_attr(feature = "serde", serde(rename = "get_txpool_backlog"))]
+     GetTransactionPoolBacklog(GetTransactionPoolBacklogRequest),
+     GetOutputDistribution(GetOutputDistributionRequest),
+     GetMinerData(GetMinerDataRequest),
+@@ -921,7 +922,7 @@ mod test {
+     use hex_literal::hex;
+     use pretty_assertions::assert_eq;
+     use serde::de::DeserializeOwned;
+-    use serde_json::{from_str, from_value, Value};
++    use serde_json::{from_str, from_value, json, Value};
+ 
+     use cuprate_test_utils::rpc::data::json;
+     use cuprate_types::HardFork;
+@@ -1853,6 +1854,20 @@ mod test {
+         );
+     }
+ 
++    #[test]
++    fn get_txpool_backlog_json_rpc_request() {
++        let request = from_value::<JsonRpcRequest>(json!({
++            "method": "get_txpool_backlog",
++            "params": {}
++        }))
++        .unwrap();
++
++        assert_eq!(
++            request,
++            JsonRpcRequest::GetTransactionPoolBacklog(GetTransactionPoolBacklogRequest {})
++        );
++    }
++
+     // TODO: enable test after binary string imp}
+     // #[test]
+     // fn get_output_distribution_response() {

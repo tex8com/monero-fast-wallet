@@ -146,8 +146,7 @@ async fn get_block_template(
         return Err(anyhow!("Too big extra_nonce size"));
     }
 
-    // TODO: This should be `cuprated`'s active network.
-    let network = match Network::Mainnet {
+    let network = match state.network {
         Network::Mainnet => monero_address::Network::Mainnet,
         Network::Stagenet => monero_address::Network::Stagenet,
         Network::Testnet => monero_address::Network::Testnet,
@@ -505,8 +504,7 @@ async fn get_info(
 
     let (incoming_connections_count, outgoing_connections_count) = (0u64, 0u64); // TODO: wire up address book
 
-    // TODO: This should be `cuprated`'s active network.
-    let network = Network::Mainnet;
+    let network = state.network;
 
     let (mainnet, testnet, stagenet) = match network {
         Network::Mainnet => (true, false, false),

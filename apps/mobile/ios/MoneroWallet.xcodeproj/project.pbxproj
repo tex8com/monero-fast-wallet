@@ -352,11 +352,14 @@
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
 					"TEX8_WALLET_BRIDGE_WITH_MONERO=$(TEX8_WALLET_BRIDGE_WITH_MONERO)",
+					"TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=$(TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM)",
+					"TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=$(TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS)",
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../../native/monero-bridge/cpp",
 					"$(MONERO_SOURCE_DIR)/src/wallet/api",
+					"$(MONERO_SODIUM_INCLUDE_DIR)",
 				);
 				INFOPLIST_FILE = MoneroWallet/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Monero;
@@ -368,6 +371,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				MONERO_SOURCE_DIR = "$(SRCROOT)/../../../../monero-gui/monero";
+				MONERO_SODIUM_INCLUDE_DIR = "$(MONERO_SOURCE_DIR)/contrib/depends/aarch64-apple-darwin/include";
 				MONERO_WALLET_CORE_LIBRARY = "$(SRCROOT)/../../../build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a";
 				MONERO_WALLET_URL_SCHEME = tex8monero;
 				OTHER_LDFLAGS = (
@@ -385,6 +389,8 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEX8_WALLET_BRIDGE_WITH_MONERO = 1;
+				TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM = 1;
+				TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Debug;
@@ -403,11 +409,14 @@
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
 					"TEX8_WALLET_BRIDGE_WITH_MONERO=$(TEX8_WALLET_BRIDGE_WITH_MONERO)",
+					"TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=$(TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM)",
+					"TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=$(TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS)",
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(SRCROOT)/../../../native/monero-bridge/cpp",
 					"$(MONERO_SOURCE_DIR)/src/wallet/api",
+					"$(MONERO_SODIUM_INCLUDE_DIR)",
 				);
 				INFOPLIST_FILE = MoneroWallet/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Monero;
@@ -419,6 +428,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				MONERO_SOURCE_DIR = "$(SRCROOT)/../../../../monero-gui/monero";
+				MONERO_SODIUM_INCLUDE_DIR = "$(MONERO_SOURCE_DIR)/contrib/depends/aarch64-apple-darwin/include";
 				MONERO_WALLET_CORE_LIBRARY = "$(SRCROOT)/../../../build/ios-monero-link-manifests/$(PLATFORM_NAME)/libtex8_monero_wallet_core.a";
 				MONERO_WALLET_URL_SCHEME = tex8monero;
 				OTHER_LDFLAGS = (
@@ -435,6 +445,8 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEX8_WALLET_BRIDGE_WITH_MONERO = 1;
+				TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM = 1;
+				TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS = 1;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Release;

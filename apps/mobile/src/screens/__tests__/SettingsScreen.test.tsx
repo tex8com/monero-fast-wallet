@@ -1,12 +1,12 @@
-import React from "react";
-import ReactTestRenderer from "react-test-renderer";
-import { TextInput } from "react-native";
+import React from 'react';
+import ReactTestRenderer from 'react-test-renderer';
+import { TextInput } from 'react-native';
 
-import { LanguageProvider } from "../../i18n";
-import { AppSecurityProvider } from "../../services/AppSecurity";
-import SettingsScreen from "../SettingsScreen";
+import { LanguageProvider } from '../../i18n';
+import { AppSecurityProvider } from '../../services/AppSecurity';
+import SettingsScreen from '../SettingsScreen';
 
-jest.mock("@react-native-async-storage/async-storage", () => {
+jest.mock('@react-native-async-storage/async-storage', () => {
   const storage = new Map<string, string>();
 
   return {
@@ -23,18 +23,18 @@ jest.mock("@react-native-async-storage/async-storage", () => {
   };
 });
 
-jest.mock("react-native-safe-area-context", () => ({
+jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
 
-jest.mock("../../services/NativeMoneroWallet", () => ({
+jest.mock('../../services/NativeMoneroWallet', () => ({
   requireNativeMoneroWallet: () => ({
-    deleteSecret: jest.fn(async () => undefined),
-    storeSecret: jest.fn(async () => undefined),
+    deleteDaemonPassword: jest.fn(async () => undefined),
+    storeDaemonPassword: jest.fn(async () => undefined),
   }),
 }));
 
-jest.mock("../../services/WalletDiagnostics", () => ({
+jest.mock('../../services/WalletDiagnostics', () => ({
   runWalletDiagnostics: jest.fn(async () => ({
     daemon: {
       getInfo: { ok: true, height: 1 },
@@ -47,24 +47,30 @@ jest.mock("../../services/WalletDiagnostics", () => ({
   })),
 }));
 
-jest.mock("../../services/WalletService", () => ({
+jest.mock('../../services/WalletService', () => ({
   walletService: {
     applyNodeConnectionToActive: jest.fn(async () => true),
+    getAppProtectionStatus: jest.fn(async () => ({
+      configured: true,
+      locked: false,
+      mode: 'password',
+    })),
+    lockApp: jest.fn(async () => undefined),
     refreshFastReceiveRegistrationStatusesForSettings: jest.fn(
       async () => undefined,
     ),
   },
 }));
 
-jest.mock("../../services/WalletState", () => ({
+jest.mock('../../services/WalletState', () => ({
   useWalletState: () => ({
     lockWallet: jest.fn(async () => undefined),
     session: undefined,
   }),
 }));
 
-describe("SettingsScreen", () => {
-  it("shows editable Tex8 daemon and gRPC endpoint fields", async () => {
+describe('SettingsScreen', () => {
+  it('shows editable Tex8 daemon and gRPC endpoint fields', async () => {
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
 
     await ReactTestRenderer.act(async () => {
@@ -81,7 +87,7 @@ describe("SettingsScreen", () => {
       .findAllByType(TextInput)
       .map(input => input.props.placeholder);
 
-    expect(placeholders).toContain("xmr.tex8.com:18089");
-    expect(placeholders).toContain("xmr.tex8.com:18091");
+    expect(placeholders).toContain('xmr.tex8.com:18089');
+    expect(placeholders).toContain('xmr.tex8.com:18091');
   });
 });

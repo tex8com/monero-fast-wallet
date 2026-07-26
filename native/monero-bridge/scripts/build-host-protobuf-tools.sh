@@ -4,7 +4,8 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
 
-protobuf_version="${PROTOBUF_VERSION:-v31.1}"
+protobuf_version="v31.1"
+protobuf_commit="74211c0dfc2777318ab53c2cd2c317a2ef9012de"
 output_root="${OUTPUT_ROOT:-${repo_root}/build/host-protobuf-tools}"
 sources_dir="${SOURCES_DIR:-${repo_root}/build/host-sources}"
 build_root="${BUILD_ROOT:-${repo_root}/build/host-protobuf-${protobuf_version}}"
@@ -14,11 +15,11 @@ clean_after_install="${CLEAN_AFTER_INSTALL:-1}"
 source_dir="${sources_dir}/protobuf-${protobuf_version}"
 install_dir="${output_root}/protobuf-${protobuf_version}"
 
-if [[ ! -f "${source_dir}/CMakeLists.txt" ]]; then
-  rm -rf "${source_dir}"
-  git clone --depth 1 --branch "${protobuf_version}" https://github.com/protocolbuffers/protobuf "${source_dir}"
-  git -C "${source_dir}" submodule update --init --depth 1 third_party/utf8_range
-fi
+"${script_dir}/checkout-pinned-source.sh" \
+  https://github.com/protocolbuffers/protobuf.git \
+  "${protobuf_commit}" \
+  "${source_dir}" \
+  third_party/utf8_range
 
 rm -rf "${build_root}"
 cmake -S "${source_dir}" -B "${build_root}" -G Ninja \

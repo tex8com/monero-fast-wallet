@@ -1,0 +1,227 @@
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index af1f03d2c..578e2edab 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -29,6 +29,9 @@
+ // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
+ 
+ #include <algorithm>
++#include <cstdarg>
++#include <cstdio>
++#include <cstdlib>
+ #include <numeric>
+ #include <tuple>
+ #include <queue>
+@@ -164,6 +167,28 @@ std::string tools::wallet2::default_daemon_address = "";
+ 
+ namespace
+ {
++  bool sync_trace_enabled()
++  {
++    static const bool enabled = [] {
++      const char *value = std::getenv("MONERO_SYNC_TRACE");
++      return value != nullptr && std::string(value) == "1";
++    }();
++    return enabled;
++  }
++
++  void sync_trace(const char *format, ...)
++  {
++    if (!sync_trace_enabled())
++      return;
++    std::fputs("SYNC_TRACE ", stderr);
++    va_list args;
++    va_start(args, format);
++    std::vfprintf(stderr, format, args);
++    va_end(args);
++    std::fputc('\n', stderr);
++    std::fflush(stderr);
++  }
++
+   std::string get_default_ringdb_path()
+   {
+     boost::filesystem::path dir = tools::get_default_data_dir();
+@@ -3189,12 +3214,19 @@ void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_heigh
+   req.requested_info = (first && !m_background_syncing) ? COMMAND_RPC_GET_BLOCKS_FAST::BLOCKS_AND_POOL : COMMAND_RPC_GET_BLOCKS_FAST::BLOCKS_ONLY;
+   if (try_incremental && !m_background_syncing)
+     req.pool_info_since = m_pool_info_query_time;
++  int64_t http_ms = 0;
++  uint64_t http_bytes_received = 0;
+ 
+   {
+     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+     uint64_t pre_call_credits = m_rpc_payment_state.credits;
+     req.client = get_client_signature();
++    const uint64_t bytes_received_before = m_http_client->get_bytes_received();
++    const auto t_http0 = std::chrono::steady_clock::now();
+     bool r = net_utils::invoke_http_bin("/getblocks.bin", req, res, *m_http_client, rpc_timeout);
++    http_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - t_http0).count();
++    http_bytes_received = m_http_client->get_bytes_received() - bytes_received_before;
+     THROW_ON_RPC_RESPONSE_ERROR(r, {}, res, "getblocks.bin", error::get_blocks_error, get_rpc_status(res.status));
+     THROW_WALLET_EXCEPTION_IF(res.blocks.size() != res.output_indices.size(), error::wallet_internal_error,
+         "mismatched blocks (" + boost::lexical_cast<std::string>(res.blocks.size()) + ") and output_indices (" +
+@@ -3207,6 +3239,12 @@ void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_heigh
+   blocks = std::move(res.blocks);
+   o_indices = std::move(res.output_indices);
+   current_height = res.current_height;
++  sync_trace("stage=http_getblocks request_start=%llu response_start=%llu blocks=%zu output_indices=%zu current_height=%llu http_ms=%lld bytes_rx=%llu max_block_count=%llu",
++      static_cast<unsigned long long>(start_height),
++      static_cast<unsigned long long>(blocks_start_height),
++      blocks.size(), o_indices.size(), static_cast<unsigned long long>(current_height),
++      static_cast<long long>(http_ms), static_cast<unsigned long long>(http_bytes_received),
++      static_cast<unsigned long long>(req.max_block_count));
+   if (res.pool_info_extent != COMMAND_RPC_GET_BLOCKS_FAST::NONE)
+     m_pool_info_query_time = res.daemon_time;
+ 
+@@ -3238,22 +3276,35 @@ void wallet2::pull_hashes(uint64_t start_height, uint64_t &blocks_start_height,
+   req.block_ids = short_chain_history;
+ 
+   req.start_height = start_height;
++  int64_t http_ms = 0;
++  uint64_t http_bytes_received = 0;
+ 
+   {
+     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+     req.client = get_client_signature();
+     uint64_t pre_call_credits = m_rpc_payment_state.credits;
++    const uint64_t bytes_received_before = m_http_client->get_bytes_received();
++    const auto t_http0 = std::chrono::steady_clock::now();
+     bool r = net_utils::invoke_http_bin("/gethashes.bin", req, res, *m_http_client, rpc_timeout);
++    http_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - t_http0).count();
++    http_bytes_received = m_http_client->get_bytes_received() - bytes_received_before;
+     THROW_ON_RPC_RESPONSE_ERROR(r, {}, res, "gethashes.bin", error::get_hashes_error, get_rpc_status(res.status));
+     check_rpc_cost("/gethashes.bin", res.credits, pre_call_credits, 1 + res.m_block_ids.size() * COST_PER_BLOCK_HASH);
+   }
+ 
+   blocks_start_height = res.start_height;
+   hashes = std::move(res.m_block_ids);
++  sync_trace("stage=http_gethashes request_start=%llu response_start=%llu hashes=%zu http_ms=%lld bytes_rx=%llu",
++      static_cast<unsigned long long>(start_height),
++      static_cast<unsigned long long>(blocks_start_height), hashes.size(),
++      static_cast<long long>(http_ms), static_cast<unsigned long long>(http_bytes_received));
+ }
+ //----------------------------------------------------------------------------------------------------
+ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cryptonote::block_complete_entry> &blocks, const std::vector<parsed_block> &parsed_blocks, uint64_t& blocks_added, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache)
+ {
++  const auto t_scan0 = std::chrono::steady_clock::now();
++  const auto t_cache0 = std::chrono::steady_clock::now();
+   size_t current_index = start_height;
+   blocks_added = 0;
+ 
+@@ -3289,11 +3340,16 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+   }
+   THROW_WALLET_EXCEPTION_IF(txidx != num_txes, error::wallet_internal_error, "txidx does not match tx_cache_data size");
+   THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
++  sync_trace("stage=scan_cache start=%llu blocks=%zu txs=%zu ms=%lld",
++      static_cast<unsigned long long>(start_height), blocks.size(), num_txes,
++      static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now() - t_cache0).count()));
+ 
+   hw::device &hwdev =  m_account.get_device();
+   hw::reset_mode rst(hwdev);
+   hwdev.set_mode(hw::device::TRANSACTION_PARSE);
+   const cryptonote::account_keys &keys = m_account.get_keys();
++  const auto t_key_derivation0 = std::chrono::steady_clock::now();
+ 
+   auto gender = [&](wallet2::is_out_data &iod) {
+     if (!hwdev.generate_key_derivation(iod.pkey, keys.m_view_secret_key, iod.derivation))
+@@ -3317,7 +3373,12 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+     }, true);
+   }
+   THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
++  sync_trace("stage=scan_key_derivation start=%llu blocks=%zu txs=%zu ms=%lld",
++      static_cast<unsigned long long>(start_height), blocks.size(), num_txes,
++      static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now() - t_key_derivation0).count()));
+ 
++  const auto t_output_scan0 = std::chrono::steady_clock::now();
+   auto geniod = [&](const cryptonote::transaction &tx, size_t n_vouts, size_t txidx) {
+     for (size_t k = 0; k < n_vouts; ++k)
+     {
+@@ -3407,9 +3468,14 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+     THROW_WALLET_EXCEPTION_IF(num_batch_txes != geniods.size(), error::wallet_internal_error, "txes batched for thread pool did not reach expected value");
+   }
+   THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
++  sync_trace("stage=scan_output_scan start=%llu blocks=%zu txs=%zu ms=%lld",
++      static_cast<unsigned long long>(start_height), blocks.size(), num_txes,
++      static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now() - t_output_scan0).count()));
+ 
+   hwdev.set_mode(hw::device::NONE);
+ 
++  const auto t_wallet_tx0 = std::chrono::steady_clock::now();
+   size_t tx_cache_data_offset = 0;
+   for (size_t i = 0; i < blocks.size(); ++i)
+   {
+@@ -3444,6 +3510,18 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+     ++current_index;
+     tx_cache_data_offset += 1 + parsed_blocks[i].txes.size();
+   }
++  sync_trace("stage=scan_chain_commit start=%llu blocks=%zu blocks_added=%llu txs=%zu ms=%lld",
++      static_cast<unsigned long long>(start_height), blocks.size(),
++      static_cast<unsigned long long>(blocks_added), num_txes,
++      static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now() - t_wallet_tx0).count()));
++  sync_trace("stage=scan_total start=%llu blocks=%zu blocks_added=%llu txs=%zu ms=%lld",
++      static_cast<unsigned long long>(start_height), blocks.size(),
++      static_cast<unsigned long long>(blocks_added), num_txes,
++      static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now() - t_scan0).count()));
++  sync_trace("stage=scan_chain start=%llu chain_height=%zu",
++      static_cast<unsigned long long>(start_height), m_blockchain.size());
+ }
+ //----------------------------------------------------------------------------------------------------
+ void wallet2::refresh(bool trusted_daemon)
+@@ -3500,18 +3578,24 @@ void wallet2::pull_and_parse_next_blocks(bool first, bool try_incremental, uint6
+     // pull the new blocks
+     std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> o_indices;
+     uint64_t current_height;
++    const auto t_pull0 = std::chrono::steady_clock::now();
+     pull_blocks(first, try_incremental, start_height, blocks_start_height, short_chain_history, blocks, o_indices, current_height);
++    const auto pull_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - t_pull0).count();
+     THROW_WALLET_EXCEPTION_IF(blocks.size() != o_indices.size(), error::wallet_internal_error, "Mismatched sizes of blocks and o_indices");
+ 
+     tools::threadpool& tpool = tools::threadpool::getInstanceForCompute();
+     tools::threadpool::waiter waiter(tpool);
+     parsed_blocks.resize(blocks.size());
++    const auto t_parse_blocks0 = std::chrono::steady_clock::now();
+     for (size_t i = 0; i < blocks.size(); ++i)
+     {
+       tpool.submit(&waiter, boost::bind(&wallet2::parse_block_round, this, std::cref(blocks[i].block),
+         std::ref(parsed_blocks[i].block), std::ref(parsed_blocks[i].hash), std::ref(parsed_blocks[i].error)), true);
+     }
+     THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
++    const auto parse_blocks_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - t_parse_blocks0).count();
+     for (size_t i = 0; i < blocks.size(); ++i)
+     {
+       if (parsed_blocks[i].error)
+@@ -3540,9 +3624,12 @@ void wallet2::pull_and_parse_next_blocks(bool first, bool try_incremental, uint6
+     }
+ 
+     boost::mutex error_lock;
++    size_t tx_blobs_to_parse = 0;
++    const auto t_parse_txs0 = std::chrono::steady_clock::now();
+     for (size_t i = 0; i < blocks.size(); ++i)
+     {
+       parsed_blocks[i].txes.resize(blocks[i].txs.size());
++      tx_blobs_to_parse += blocks[i].txs.size();
+       for (size_t j = 0; j < blocks[i].txs.size(); ++j)
+       {
+         tpool.submit(&waiter, [&, i, j](){
+@@ -3555,6 +3642,12 @@ void wallet2::pull_and_parse_next_blocks(bool first, bool try_incremental, uint6
+       }
+     }
+     THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
++    const auto parse_txs_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - t_parse_txs0).count();
++    sync_trace("stage=pull_parse start=%llu blocks=%zu txs=%zu pull_ms=%lld parse_blocks_ms=%lld parse_txs_ms=%lld current_height=%llu",
++        static_cast<unsigned long long>(blocks_start_height), blocks.size(), tx_blobs_to_parse,
++        static_cast<long long>(pull_ms), static_cast<long long>(parse_blocks_ms),
++        static_cast<long long>(parse_txs_ms), static_cast<unsigned long long>(current_height));
+     last = !blocks.empty() && cryptonote::get_block_height(parsed_blocks.back().block) + 1 == current_height;
+   }
+   catch(...)

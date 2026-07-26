@@ -12,8 +12,8 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 desktop_dir="$(cd "${script_dir}/.." && pwd)"
 repo_root="$(cd "${desktop_dir}/../.." && pwd)"
-default_monero_source="$(cd "${repo_root}/../monero-gui/monero" 2>/dev/null && pwd || true)"
-monero_source_dir="${MONERO_SOURCE_DIR:-${default_monero_source}}"
+source "${repo_root}/native/monero-bridge/scripts/prepare-patched-monero-core.sh"
+monero_source_dir="${MONERO_SOURCE_DIR}"
 ledger_view_key_patch="${repo_root}/native/desktop-bridge/patches/monero-ledger-view-key-api.patch"
 
 if [[ -z "${monero_source_dir}" || ! -f "${monero_source_dir}/CMakeLists.txt" ]]; then
@@ -41,19 +41,22 @@ fi
 # Keep this build separate from any developer prefix.  The suffix is not a
 # platform triplet: it records the deployment contract of every static object
 # we link into the desktop application.
-depends_prefix="${MONERO_DESKTOP_DEPENDS_PREFIX:-${monero_source_dir}/contrib/depends/aarch64-apple-darwin-macos12}"
-monero_build_dir="${MONERO_DESKTOP_BUILD_DIR:-${monero_source_dir}/build/tex8-desktop-wallet-api-macos12}"
+depends_prefix="${MONERO_DESKTOP_DEPENDS_PREFIX:-${repo_root}/build/desktop-monero-deps/aarch64-apple-darwin-macos12}"
+monero_build_dir="${MONERO_DESKTOP_BUILD_DIR:-${repo_root}/build/desktop-monero-wallet-api-macos12}"
 toolchain_file="${repo_root}/native/desktop-bridge/cmake/monero-core-macos-arm64-toolchain.cmake"
 fast_crypto_dir="${monero_source_dir}/external/monero-fast-crypto"
 # Monero's source checkout is shared with other local projects. The optional
 # target override keeps the very large Rust build cache out of that checkout.
-fast_crypto_target_dir="${MONERO_DESKTOP_FAST_CRYPTO_TARGET_DIR:-${fast_crypto_dir}/target}"
+fast_crypto_target_dir="${MONERO_DESKTOP_FAST_CRYPTO_TARGET_DIR:-${repo_root}/build/desktop-fast-crypto-macos}"
 fast_crypto_source="${fast_crypto_target_dir}/release/libmonero_fast_crypto.dylib"
+metal_target_dir="${MONERO_DESKTOP_METAL_TARGET_DIR:-${repo_root}/build/desktop-metal-macos}"
+metal_source="${metal_target_dir}/monero_wallet_derivation.metallib"
 # Keep the generated dynamic library outside src-tauri.  `tauri dev` watches
 # that directory and would otherwise restart itself whenever the build helper
 # refreshes the library.
 staged_library_dir="${desktop_dir}/native-libs"
 staged_fast_crypto="${staged_library_dir}/libmonero_fast_crypto.dylib"
+staged_metal="${staged_library_dir}/monero_wallet_derivation.metallib"
 
 if [[ ! -x "${cmake_bin}" || ! -x "${ninja_bin}" ]]; then
   echo "CMake and Ninja are required for the native Monero build." >&2
@@ -100,6 +103,12 @@ done
 export MONERO_DEPENDS_PREFIX="${depends_prefix}"
 export MACOSX_DEPLOYMENT_TARGET=12.0
 mkdir -p "${depends_prefix}" "${monero_build_dir}" "${fast_crypto_target_dir}"
+"${repo_root}/native/monero-bridge/scripts/build-desktop-fast-crypto.sh" \
+  "${fast_crypto_dir}" \
+  "${fast_crypto_target_dir}"
+"${repo_root}/native/monero-bridge/scripts/build-desktop-metal-backend.sh" \
+  "${monero_source_dir}" \
+  "${metal_target_dir}"
 "${cmake_bin}" -S "${monero_source_dir}" -B "${monero_build_dir}" -G Ninja \
   -DCMAKE_MAKE_PROGRAM="${ninja_bin}" \
   -DCMAKE_TOOLCHAIN_FILE="${toolchain_file}" \
@@ -123,13 +132,11 @@ mkdir -p "${depends_prefix}" "${monero_build_dir}" "${fast_crypto_target_dir}"
 # MONERO_DESKTOP_BUILD_JOBS=1.
 "${cmake_bin}" --build "${monero_build_dir}" --target wallet_api --parallel "${MONERO_DESKTOP_BUILD_JOBS:-4}"
 
-(
-  cd "${fast_crypto_dir}"
-  CARGO_TARGET_DIR="${fast_crypto_target_dir}" cargo build --release
-)
 [[ -f "${fast_crypto_source}" ]] || { echo "Rust fast-crypto dylib was not produced." >&2; return 1 2>/dev/null || exit 1; }
+[[ -f "${metal_source}" ]] || { echo "Wallet Metal library was not produced." >&2; return 1 2>/dev/null || exit 1; }
 mkdir -p "${staged_library_dir}"
 ditto "${fast_crypto_source}" "${staged_fast_crypto}"
+ditto "${metal_source}" "${staged_metal}"
 install_name_tool -id '@rpath/libmonero_fast_crypto.dylib' "${staged_fast_crypto}"
 
 archives=(
@@ -166,6 +173,7 @@ done
 link_args+=(
   '-Wl,-framework,Foundation' '-Wl,-framework,ApplicationServices'
   '-Wl,-framework,AppKit' '-Wl,-framework,IOKit'
+  '-Wl,-framework,Metal'
   '-Wl,-framework,CoreFoundation' '-Wl,-framework,Security'
   '-lc++' '-lz' '-lbz2'
 )
@@ -173,9 +181,14 @@ link_args+=(
 export DESKTOP_MONERO_SOURCE_DIR="${monero_source_dir}"
 export DESKTOP_MONERO_WALLET_API_LIBRARY="${monero_build_dir}/lib/libwallet_api.a"
 export DESKTOP_MONERO_FAST_CRYPTO_LIBRARY="${staged_fast_crypto}"
+export DESKTOP_MONERO_METAL_LIBRARY="${staged_metal}"
 export DESKTOP_MONERO_EXTRA_LINK_ARGS="$(IFS=';'; echo "${link_args[*]}")"
 export DESKTOP_REQUIRE_MONERO=1
 # The dynamically linked Rust hashing library is staged beside the desktop
 # project. Export it for `tauri dev` and native test binaries as well, so both
 # use exactly the same artifact as the application bundle.
 export DYLD_LIBRARY_PATH="${staged_library_dir}:${DYLD_LIBRARY_PATH:-}"
+# `tauri dev` does not create an application Resources directory. The native
+# backend accepts this build-owned path; packaged apps discover the same
+# metallib below Contents/Resources without an environment override.
+export MONERO_METAL_LIBRARY_PATH="${staged_metal}"

@@ -1,0 +1,75 @@
+From 628c52e6b0667988efff4cb7d4b144a0552cdb43 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Sun, 19 Apr 2026 16:41:44 -0500
+Subject: [PATCH 11/14] grpc-stream: fix -- use gRPC in background-sync mode +
+ disable traditional prefetch when active
+
+Two bugs found during the first end-to-end wallet test (view-only Ledger
+restore against 152.53.133.188:18091):
+
+1. gRPC never fired. Wallet log showed 0 "[GRPC client]" entries despite
+   "grpc_stream endpoint set to '152.53.133.188:18091'" at init time.
+   Root cause: pull_blocks' gate included `!m_background_syncing`. View-
+   only Ledger wallets (view-key-only restore, spend key never leaves
+   the device) are PERMANENTLY in m_background_syncing mode -- so the
+   gate blocked every call and every pull fell through to bin RPC.
+   Background sync only affects wallet-side key-image handling; it has
+   no bearing on the daemon block transport. Remove that check.
+
+2. Even with the fix above, 16 bin-RPC prefetches would still fire in
+   parallel against a running gRPC stream. The previous commit only
+   disabled the speculative-prefetch block via do_speculative; the
+   traditional parallel-prefetch block (runs when !do_speculative) had
+   no such guard. Two transport paths racing for the same height range
+   is wasteful and hides the stream's actual throughput in logs. Gate
+   the traditional block on !grpc_stream_active_now too.
+
+Bumped the "PERF pull_blocks via gRPC stream" log from MDEBUG to
+MWARNING so it shows up at the wallet's default log level -- otherwise
+verifying the stream actually fires requires running at debug level.
+---
+ src/wallet/wallet2.cpp | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 654b571b..445a660c 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3373,14 +3373,20 @@ void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_heigh
+   // Fast path: cuprate gRPC streaming sync. Falls through to bin RPC below
+   // if the endpoint is unset, the stream errored, or end-of-stream is hit
+   // (next refresh cycle will reopen).
++  //
++  // `first` stays on bin-RPC because that call also requests the mempool
++  // snapshot (requested_info = BLOCKS_AND_POOL), which the stream does not
++  // carry. m_background_syncing deliberately DOES NOT gate here — view-only
++  // Ledger wallets are permanently in background-sync mode and still want
++  // the stream; background sync only affects wallet-side key-image logic,
++  // not the daemon block-transport path.
+   if (!m_grpc_stream_endpoint.empty()
+       && !m_grpc_stream_fallback_to_bin
+-      && !first  // first==true needs pool info, which the grpc path doesn't carry yet
+-      && !m_background_syncing)
++      && !first)
+   {
+     if (try_pull_blocks_grpc(start_height, blocks_start_height, blocks, o_indices, current_height))
+     {
+-      MDEBUG("Pulled blocks via gRPC stream: start=" << blocks_start_height
++      MWARNING("PERF pull_blocks via gRPC stream: start=" << blocks_start_height
+         << " count=" << blocks.size() << " tip=" << current_height);
+       return;
+     }
+@@ -3975,7 +3981,9 @@ void wallet2::pull_and_parse_next_blocks(bool first, bool try_incremental, uint6
+ 
+     // Traditional parallel prefetch path (disabled when speculative ran successfully).
+     // Still used for iter#1 (first=true → speculative skipped) and for the final catch-up round.
+-    if (!do_speculative && !blocks.empty() && blocks.size() >= 10 && !m_pull_clients.empty())
++    // Also disabled when gRPC streaming is active — the stream already delivers
++    // chunks continuously; 16 parallel bin-RPC prefetches would race against it.
++    if (!do_speculative && !grpc_stream_active_now && !blocks.empty() && blocks.size() >= 10 && !m_pull_clients.empty())
+     {
+       const size_t PREFETCH_BATCH_CAP = 1500;
+       const size_t batch_size = std::min(blocks.size(), PREFETCH_BATCH_CAP);
+-- 
+2.50.1 (Apple Git-155)
+

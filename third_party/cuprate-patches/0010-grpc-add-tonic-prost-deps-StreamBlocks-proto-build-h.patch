@@ -1,0 +1,705 @@
+From 9cef65b10ccd8011210efcd6e2c832710bf2f7f3 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Sun, 19 Apr 2026 08:25:33 -0500
+Subject: [PATCH 10/41] grpc: add tonic + prost deps + StreamBlocks proto +
+ build hook (no service yet)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Phase 1a step 1 of the gRPC streaming RPC for high-throughput wallet sync.
+This commit only adds the infrastructure — proto definition, build-time
+codegen, and dependency wiring. No service implementation, no server
+spawn, no behavioural change. `cargo check -p cuprated` passes, generated
+bindings land at $OUT_DIR/cuprate.stream.v1.rs.
+
+Why streaming RPC at all: bin RPC over HTTP/1.1 caps wallet sync at
+~12.6 MB/s (50 % of a 25 MB/s link) due to per-TCP-connection variance
+across the 16 parallel pull clients — slowest connection of the batch
+gates each iteration. HTTP/2 multiplexing on a single connection plus
+server-streaming removes both the variance ceiling and the per-batch
+round-trip wait. Realistic estimate: 1.6–1.8x more throughput on the
+network layer, ~3 min Ledger restore down to ~2 min.
+
+Why side-by-side with bin RPC, not a replacement: standard wallets keep
+working unchanged. Only "smart" wallets that opt into the streaming
+endpoint get the win. No risk to existing setups.
+
+Proto design notes (proto/cuprate_stream.proto):
+- BlockChunk.blocks[i] is the same epee-serialized block_complete_entry
+  the bin RPC produces, so the wallet reuses its existing parser — no
+  second deserializer needed.
+- chain_tip travels in every chunk so the wallet updates its progress
+  bar without a separate get_info round-trip (the same get_info call
+  that today blocks for 12 s behind in-flight 50 MB block responses).
+- client_request_id / server_request_id / chunk_seq are baked in from
+  day one so cross-machine correlation works without later patches.
+
+Build dep: protoc on PATH. macOS `brew install protobuf`, Linux
+`apt install protobuf-compiler`. Already installed on Roland's macOS dev
+box (libprotoc 34.1).
+---
+ Cargo.lock                                   | 265 +++++++++++++++++--
+ Cargo.toml                                   |   3 +
+ binaries/cuprated/Cargo.toml                 |   3 +
+ binaries/cuprated/build.rs                   |  17 ++
+ binaries/cuprated/proto/cuprate_stream.proto | 100 +++++++
+ 5 files changed, 369 insertions(+), 19 deletions(-)
+ create mode 100644 binaries/cuprated/proto/cuprate_stream.proto
+
+diff --git a/Cargo.lock b/Cargo.lock
+index f45b3af..cb503e2 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -354,13 +354,40 @@ version = "1.5.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+ 
++[[package]]
++name = "axum"
++version = "0.7.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
++dependencies = [
++ "async-trait",
++ "axum-core 0.4.5",
++ "bytes",
++ "futures-util",
++ "http",
++ "http-body",
++ "http-body-util",
++ "itoa",
++ "matchit 0.7.3",
++ "memchr",
++ "mime",
++ "percent-encoding",
++ "pin-project-lite",
++ "rustversion",
++ "serde",
++ "sync_wrapper",
++ "tower 0.5.2",
++ "tower-layer",
++ "tower-service",
++]
++
+ [[package]]
+ name = "axum"
+ version = "0.8.6"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8a18ed336352031311f4e0b4dd2ff392d4fbb370777c9d18d7fc9d7359f73871"
+ dependencies = [
+- "axum-core",
++ "axum-core 0.5.5",
+  "bytes",
+  "futures-util",
+  "http",
+@@ -369,7 +396,7 @@ dependencies = [
+  "hyper",
+  "hyper-util",
+  "itoa",
+- "matchit",
++ "matchit 0.8.4",
+  "memchr",
+  "mime",
+  "percent-encoding",
+@@ -379,7 +406,27 @@ dependencies = [
+  "serde_path_to_error",
+  "sync_wrapper",
+  "tokio",
+- "tower",
++ "tower 0.5.2",
++ "tower-layer",
++ "tower-service",
++]
++
++[[package]]
++name = "axum-core"
++version = "0.4.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "09f2bd6146b97ae3359fa0cc6d6b376d9539582c7b4220f041a33ec24c226199"
++dependencies = [
++ "async-trait",
++ "bytes",
++ "futures-util",
++ "http",
++ "http-body",
++ "http-body-util",
++ "mime",
++ "pin-project-lite",
++ "rustversion",
++ "sync_wrapper",
+  "tower-layer",
+  "tower-service",
+ ]
+@@ -1067,7 +1114,7 @@ dependencies = [
+  "thiserror 2.0.17",
+  "tokio",
+  "tokio-util",
+- "tower",
++ "tower 0.5.2",
+  "tracing",
+ ]
+ 
+@@ -1108,7 +1155,7 @@ dependencies = [
+  "tempfile",
+  "thread_local",
+  "tokio",
+- "tower",
++ "tower 0.5.2",
+ ]
+ 
+ [[package]]
+@@ -1135,7 +1182,7 @@ dependencies = [
+  "thread_local",
+  "tokio",
+  "tokio-test",
+- "tower",
++ "tower 0.5.2",
+  "tracing",
+ ]
+ 
+@@ -1156,7 +1203,7 @@ dependencies = [
+  "thread_local",
+  "tokio",
+  "tokio-util",
+- "tower",
++ "tower 0.5.2",
+  "tracing",
+ ]
+ 
+@@ -1214,7 +1261,7 @@ dependencies = [
+  "thiserror 2.0.17",
+  "tokio",
+  "tokio-util",
+- "tower",
++ "tower 0.5.2",
+  "tracing",
+ ]
+ 
+@@ -1245,7 +1292,7 @@ dependencies = [
+  "futures",
+  "rayon",
+  "serde",
+- "tower",
++ "tower 0.5.2",
+  "tracing",
+ ]
+ 
+@@ -1282,7 +1329,7 @@ dependencies = [
+  "tempfile",
+  "tokio",
+  "tokio-test",
+- "tower",
++ "tower 0.5.2",
+ ]
+ 
+ [[package]]
+@@ -1393,7 +1440,7 @@ dependencies = [
+  "tokio-stream",
+  "tokio-test",
+  "tokio-util",
+- "tower",
++ "tower 0.5.2",
+  "tracing",
+ ]
+ 
+@@ -1426,7 +1473,7 @@ dependencies = [
+  "tokio-stream",
+  "tokio-test",
+  "tokio-util",
+- "tower",
++ "tower 0.5.2",
+  "tracing",
+ ]
+ 
+@@ -1463,7 +1510,7 @@ name = "cuprate-rpc-interface"
+ version = "0.0.0"
+ dependencies = [
+  "anyhow",
+- "axum",
++ "axum 0.8.6",
+  "cuprate-epee-encoding",
+  "cuprate-helper",
+  "cuprate-json-rpc",
+@@ -1475,7 +1522,7 @@ dependencies = [
+  "serde",
+  "serde_json",
+  "tokio",
+- "tower",
++ "tower 0.5.2",
+  "ureq",
+ ]
+ 
+@@ -1543,7 +1590,7 @@ dependencies = [
+  "tempfile",
+  "thiserror 2.0.17",
+  "tokio",
+- "tower",
++ "tower 0.5.2",
+  "tracing",
+ ]
+ 
+@@ -1606,7 +1653,7 @@ dependencies = [
+  "anyhow",
+  "arti-client",
+  "async-trait",
+- "axum",
++ "axum 0.8.6",
+  "bitflags 2.10.0",
+  "borsh",
+  "bytemuck",
+@@ -1658,6 +1705,7 @@ dependencies = [
+  "paste",
+  "pin-project",
+  "pretty_assertions",
++ "prost",
+  "rand 0.8.5",
+  "rand_distr",
+  "randomx-rs",
+@@ -1675,10 +1723,12 @@ dependencies = [
+  "tokio-util",
+  "toml 0.9.8",
+  "toml_edit 0.23.7",
++ "tonic",
++ "tonic-build",
+  "tor-hsservice",
+  "tor-persist",
+  "tor-rtcompat",
+- "tower",
++ "tower 0.5.2",
+  "tower-http",
+  "tracing",
+  "tracing-appender",
+@@ -2246,6 +2296,12 @@ version = "0.1.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "52051878f80a721bb68ebfbc930e07b65ba72f2da88968ea5c06fd6ca3d3a127"
+ 
++[[package]]
++name = "fixedbitset"
++version = "0.5.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
++
+ [[package]]
+ name = "flate2"
+ version = "1.1.5"
+@@ -2811,6 +2867,19 @@ dependencies = [
+  "tower-service",
+ ]
+ 
++[[package]]
++name = "hyper-timeout"
++version = "0.5.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2b90d566bffbce6a75bd8b09a05aa8c2cb1fabb6cb348f8840c9e4c90a0d83b0"
++dependencies = [
++ "hyper",
++ "hyper-util",
++ "pin-project-lite",
++ "tokio",
++ "tower-service",
++]
++
+ [[package]]
+ name = "hyper-util"
+ version = "0.1.17"
+@@ -2826,7 +2895,7 @@ dependencies = [
+  "hyper",
+  "libc",
+  "pin-project-lite",
+- "socket2",
++ "socket2 0.6.1",
+  "tokio",
+  "tower-service",
+  "tracing",
+@@ -3258,6 +3327,12 @@ dependencies = [
+  "regex-automata",
+ ]
+ 
++[[package]]
++name = "matchit"
++version = "0.7.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
++
+ [[package]]
+ name = "matchit"
+ version = "0.8.4"
+@@ -3518,6 +3593,12 @@ dependencies = [
+  "zeroize",
+ ]
+ 
++[[package]]
++name = "multimap"
++version = "0.10.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
++
+ [[package]]
+ name = "native-tls"
+ version = "0.2.14"
+@@ -3902,6 +3983,16 @@ version = "2.3.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+ 
++[[package]]
++name = "petgraph"
++version = "0.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3672b37090dbd86368a4145bc067582552b29c27377cad4e0a306c97f9bd7772"
++dependencies = [
++ "fixedbitset",
++ "indexmap 2.12.0",
++]
++
+ [[package]]
+ name = "phf"
+ version = "0.11.3"
+@@ -4123,6 +4214,16 @@ dependencies = [
+  "yansi",
+ ]
+ 
++[[package]]
++name = "prettyplease"
++version = "0.2.37"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
++dependencies = [
++ "proc-macro2",
++ "syn 2.0.109",
++]
++
+ [[package]]
+ name = "primeorder"
+ version = "0.13.6"
+@@ -4191,6 +4292,58 @@ dependencies = [
+  "syn 2.0.109",
+ ]
+ 
++[[package]]
++name = "prost"
++version = "0.13.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
++dependencies = [
++ "bytes",
++ "prost-derive",
++]
++
++[[package]]
++name = "prost-build"
++version = "0.13.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
++dependencies = [
++ "heck",
++ "itertools 0.14.0",
++ "log",
++ "multimap",
++ "once_cell",
++ "petgraph",
++ "prettyplease",
++ "prost",
++ "prost-types",
++ "regex",
++ "syn 2.0.109",
++ "tempfile",
++]
++
++[[package]]
++name = "prost-derive"
++version = "0.13.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
++dependencies = [
++ "anyhow",
++ "itertools 0.14.0",
++ "proc-macro2",
++ "quote",
++ "syn 2.0.109",
++]
++
++[[package]]
++name = "prost-types"
++version = "0.13.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "52c2c1bf36ddb1a1c396b3601a3cec27c2462e45f07c386894ec3ccf5332bd16"
++dependencies = [
++ "prost",
++]
++
+ [[package]]
+ name = "pwd-grp"
+ version = "1.0.2"
+@@ -5029,6 +5182,16 @@ version = "1.15.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+ 
++[[package]]
++name = "socket2"
++version = "0.5.10"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
++dependencies = [
++ "libc",
++ "windows-sys 0.52.0",
++]
++
+ [[package]]
+ name = "socket2"
+ version = "0.6.1"
+@@ -5374,7 +5537,7 @@ dependencies = [
+  "parking_lot",
+  "pin-project-lite",
+  "signal-hook-registry",
+- "socket2",
++ "socket2 0.6.1",
+  "tokio-macros",
+  "windows-sys 0.61.2",
+ ]
+@@ -5545,6 +5708,50 @@ version = "1.0.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "df8b2b54733674ad286d16267dcfc7a71ed5c776e4ac7aa3c3e2561f7c637bf2"
+ 
++[[package]]
++name = "tonic"
++version = "0.12.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "877c5b330756d856ffcc4553ab34a5684481ade925ecc54bcd1bf02b1d0d4d52"
++dependencies = [
++ "async-stream",
++ "async-trait",
++ "axum 0.7.9",
++ "base64",
++ "bytes",
++ "h2",
++ "http",
++ "http-body",
++ "http-body-util",
++ "hyper",
++ "hyper-timeout",
++ "hyper-util",
++ "percent-encoding",
++ "pin-project",
++ "prost",
++ "socket2 0.5.10",
++ "tokio",
++ "tokio-stream",
++ "tower 0.4.13",
++ "tower-layer",
++ "tower-service",
++ "tracing",
++]
++
++[[package]]
++name = "tonic-build"
++version = "0.12.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9557ce109ea773b399c9b9e5dca39294110b74f1f342cb347a80d1fce8c26a11"
++dependencies = [
++ "prettyplease",
++ "proc-macro2",
++ "prost-build",
++ "prost-types",
++ "quote",
++ "syn 2.0.109",
++]
++
+ [[package]]
+ name = "tor-async-utils"
+ version = "0.33.0"
+@@ -6540,6 +6747,26 @@ dependencies = [
+  "tor-memquota",
+ ]
+ 
++[[package]]
++name = "tower"
++version = "0.4.13"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b8fa9be0de6cf49e536ce1851f987bd21a43b771b09473c3549a6c853db37c1c"
++dependencies = [
++ "futures-core",
++ "futures-util",
++ "indexmap 1.9.3",
++ "pin-project",
++ "pin-project-lite",
++ "rand 0.8.5",
++ "slab",
++ "tokio",
++ "tokio-util",
++ "tower-layer",
++ "tower-service",
++ "tracing",
++]
++
+ [[package]]
+ name = "tower"
+ version = "0.5.2"
+diff --git a/Cargo.toml b/Cargo.toml
+index 3ab3d6c..3383d99 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -207,6 +207,9 @@ tokio-util            = { version = "0.7", default-features = false }
+ tokio-stream          = { version = "0.1", default-features = false }
+ tokio-socks           = { git = "https://github.com/Cuprate/tokio-socks.git", rev = "8737caf", default-features = false }
+ tokio                 = { version = "1", default-features = false }
++tonic                 = { version = "0.12", default-features = false }
++tonic-build           = { version = "0.12", default-features = false }
++prost                 = { version = "0.13", default-features = false }
+ tower                 = { version = "0.5", default-features = false }
+ tower-http            = { version = "0.6", default-features = false }
+ toml                  = { version = "0.9", default-features = false }
+diff --git a/binaries/cuprated/Cargo.toml b/binaries/cuprated/Cargo.toml
+index 7db90d6..9978a85 100644
+--- a/binaries/cuprated/Cargo.toml
++++ b/binaries/cuprated/Cargo.toml
+@@ -88,6 +88,8 @@ toml_edit             = { workspace = true, features = ["parse", "display"] }
+ tor-hsservice         = { workspace = true, optional = true }
+ tor-persist           = { workspace = true, optional = true }
+ tor-rtcompat          = { workspace = true, optional = true }
++tonic                 = { workspace = true, features = ["transport", "codegen", "prost"] }
++prost                 = { workspace = true, features = ["std", "derive"] }
+ tower                 = { workspace = true, features = ["limit"] }
+ tower-http            = { workspace = true, features = ["limit", "compression-gzip"] }
+ tracing-appender      = { workspace = true }
+@@ -101,6 +103,7 @@ pretty_assertions = { workspace = true }
+ [build-dependencies]
+ cuprate-hex = { workspace = true }
+ serde_json  = { workspace = true, features = ["std"] }
++tonic-build = { workspace = true, features = ["prost", "transport"] }
+ 
+ [lints]
+ workspace = true
+diff --git a/binaries/cuprated/build.rs b/binaries/cuprated/build.rs
+index 1731321..79ff52b 100644
+--- a/binaries/cuprated/build.rs
++++ b/binaries/cuprated/build.rs
+@@ -1,5 +1,22 @@
+ fn main() {
+     generate_fast_sync_hashes();
++    compile_grpc_proto();
++}
++
++/// Compiles the gRPC streaming proto file into Rust bindings.
++///
++/// Output is written to `$OUT_DIR/cuprate.stream.v1.rs` and pulled into the
++/// crate via `tonic::include_proto!("cuprate.stream.v1")` from `src/rpc/grpc.rs`.
++///
++/// Requires `protoc` on PATH. macOS: `brew install protobuf`.
++/// Linux: `apt install protobuf-compiler`.
++fn compile_grpc_proto() {
++    println!("cargo::rerun-if-changed=proto/cuprate_stream.proto");
++    tonic_build::configure()
++        .build_server(true)
++        .build_client(false)
++        .compile_protos(&["proto/cuprate_stream.proto"], &["proto"])
++        .expect("failed to compile gRPC proto — is protoc installed?");
+ }
+ 
+ /// Generates `fast_sync_hashes.rs` from `fast_sync_hashes.json`.
+diff --git a/binaries/cuprated/proto/cuprate_stream.proto b/binaries/cuprated/proto/cuprate_stream.proto
+new file mode 100644
+index 0000000..72195fe
+--- /dev/null
++++ b/binaries/cuprated/proto/cuprate_stream.proto
+@@ -0,0 +1,100 @@
++// Cuprate streaming RPC for high-throughput wallet sync.
++//
++// Coexists side-by-side with the legacy bin RPC (binary epee on HTTP/1.1).
++// Standard wallets keep using bin RPC unchanged; "smart" wallets that opt
++// into this service get HTTP/2 multiplexing + server-streaming, which removes
++// the per-TCP-connection variance ceiling that limits the bin RPC to roughly
++// half of the available link bandwidth.
++//
++// Block payload format: each `BlockChunk.blocks[i]` is the same epee-serialized
++// `block_complete_entry` blob the bin RPC produces — so the wallet can reuse
++// its existing block-parser without writing a second deserializer.
++//
++// Status: experimental. Wire-compatibility is NOT promised across versions
++// until v1; pin the proto file to the cuprated commit you build against.
++
++syntax = "proto3";
++
++package cuprate.stream.v1;
++
++service BlockStream {
++  // Server-streaming RPC. The server pushes BlockChunks at the rate the
++  // backend can produce them, throttled by HTTP/2 flow control on the
++  // client side. The stream terminates when:
++  //   - stop_height (if set) is reached, OR
++  //   - tip is reached (current chain top served), OR
++  //   - the client cancels the RPC
++  //
++  // The server MUST emit BlockChunks with strictly monotonically increasing
++  // start_heights and contiguous block ranges (no gaps, no overlap). On
++  // chain-tip catch-up the server MAY pause the stream (no chunks) until
++  // a new block is available; the client should not interpret a pause as
++  // end-of-stream.
++  rpc StreamBlocks(StreamBlocksRequest) returns (stream BlockChunk);
++
++  // Future: streaming hash-only sync (replaces bin `get_hashes` for the
++  // fast_refresh phase).  Not implemented yet — wallet still uses
++  // BlockHashInRange via bin RPC for that.
++  // rpc StreamHashes(StreamHashesRequest) returns (stream HashChunk);
++}
++
++message StreamBlocksRequest {
++  // First block height to send (inclusive).
++  uint64 start_height = 1;
++
++  // Last block height to send (inclusive). 0 = stream to current tip.
++  uint64 stop_height = 2;
++
++  // If true, server prunes RCT prunable data before sending (typical wallet
++  // sync — saves ~5x bandwidth). If false, full blocks are sent.
++  bool prune = 3;
++
++  // Hint for preferred chunk size (number of blocks per BlockChunk message).
++  // Server may ignore or clamp. 0 = server default (currently 100).
++  uint32 chunk_blocks_hint = 4;
++
++  // If true, miner txs are stripped (parity with bin RPC's no_miner_tx).
++  bool no_miner_tx = 5;
++
++  // Opaque request id supplied by the client, echoed back in every chunk's
++  // PERF log entry on the server. Lets the wallet correlate its own log
++  // lines with server logs without a shared clock. Keep <= 64 chars.
++  string client_request_id = 6;
++}
++
++message BlockChunk {
++  // Height of `blocks[0]`. Subsequent blocks in this chunk are at
++  // start_height+1, start_height+2, ...
++  uint64 start_height = 1;
++
++  // Each entry is a fully epee-serialized `block_complete_entry` exactly
++  // as the bin RPC would emit it. Reuses the wallet's existing parser.
++  repeated bytes blocks = 2;
++
++  // Per-tx output indices, parallel to `blocks` and to the txs within each
++  // block. `indices[i].tx[j].idx` corresponds to the j-th tx of the i-th
++  // block in this chunk. Empty if the wallet does not need indices
++  // (currently always populated for parity with bin RPC).
++  repeated BlockOutputIndices indices = 3;
++
++  // Current chain tip height as observed by the server when this chunk was
++  // emitted. Lets the wallet update its progress bar without a separate
++  // get_info round-trip. Will increase across chunks as new blocks arrive.
++  uint64 chain_tip = 4;
++
++  // Server-side request id (auto-generated if client did not supply one).
++  // Echoed in every chunk so the client can correlate.
++  string server_request_id = 5;
++
++  // Sequence number of this chunk within the stream (0, 1, 2, ...).
++  // Useful for detecting drops/duplicates in logs.
++  uint64 chunk_seq = 6;
++}
++
++message BlockOutputIndices {
++  repeated TxOutputIndices tx = 1;
++}
++
++message TxOutputIndices {
++  repeated uint64 idx = 1;
++}

@@ -19,6 +19,13 @@ void printUsage(const char* binary) {
       << "  " << binary
       << " create <mainnet|testnet|stagenet> <wallet-path> <password|@file>\n"
       << "  " << binary
+      << " create-refresh <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> <restore-height>\n"
+      << "  " << binary
+      << " create-restore-refresh <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> <restore-height> <daemon-host:port>"
+         " [grpc-host:port|-] [max-seconds]\n"
+      << "  " << binary
       << " address <mainnet|testnet|stagenet> <wallet-path>"
          " <password|@file>\n"
       << "  " << binary
@@ -35,6 +42,13 @@ void printUsage(const char* binary) {
       << "  " << binary
       << " refresh <mainnet|testnet|stagenet> <wallet-path> <password|@file>"
          " <daemon-host:port> [grpc-host:port|-] [seconds] [restore-height]\n"
+      << "  " << binary
+      << " restore-refresh <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> <mnemonic|@file> <restore-height>"
+         " <daemon-host:port> [grpc-host:port|-] [max-seconds]\n"
+      << " template-refresh <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> <restore-height> <daemon-host:port>"
+         " [grpc-host:port|-] [max-seconds]\n"
       << "  " << binary
       << " send <mainnet|testnet|stagenet> <wallet-path> <password|@file>"
          " <daemon-host:port> <grpc-host:port|-> <recipient> <amount-atomic>"
@@ -266,6 +280,130 @@ int main(int argc, char** argv) {
       return 0;
     }
 
+    if (command == "create-refresh") {
+      if (argc != 6) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+
+      CreateWalletRequest request;
+      request.network = parseNetwork(argv[2]);
+      request.path = argv[3];
+      request.password = resolveSecretArgument(argv[4]);
+      request.restoreHeight = parseSeconds(argv[5]);
+      if (request.restoreHeight == 0) {
+        throw WalletEngineError("restore-height must be greater than zero");
+      }
+
+      const WalletId walletId = engine.createWallet(request);
+      const auto snapshot = engine.snapshot(walletId);
+      std::cout << "wallet_created=true\n";
+      std::cout << "wallet_height=" << snapshot.walletHeight << "\n";
+      std::cout << "restore_height=" << request.restoreHeight << "\n";
+
+      engine.closeWallet(walletId);
+      return 0;
+    }
+
+    if (command == "create-restore-refresh") {
+      if (argc < 7 || argc > 9) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+
+      CreateWalletRequest request;
+      request.network = parseNetwork(argv[2]);
+      request.path = argv[3];
+      request.password = resolveSecretArgument(argv[4]);
+      request.restoreHeight = parseSeconds(argv[5]);
+      if (request.restoreHeight == 0) {
+        throw WalletEngineError("restore-height must be greater than zero");
+      }
+      const uint64_t maxSeconds = argc >= 9 ? parseSeconds(argv[8]) : 3600;
+
+      // A newly generated wallet carries today's creation timestamp. Core then
+      // skips older blocks, which would turn this historical benchmark into a
+      // transport-only measurement. Recovering a just-generated seed gives the
+      // test wallet Core's conservative recovery timestamp, so each block is
+      // actually view-key scanned. The mnemonic remains in memory only.
+      const std::string seedSourcePath = request.path + ".benchmark-seed-source";
+      if (std::filesystem::exists(seedSourcePath) ||
+          std::filesystem::exists(seedSourcePath + ".keys")) {
+        throw WalletEngineError(
+            "benchmark seed source path already exists: " + seedSourcePath);
+      }
+      CreateWalletRequest seedSourceRequest = request;
+      seedSourceRequest.path = seedSourcePath;
+      seedSourceRequest.restoreHeight = 0;
+      const WalletId seedSourceId = engine.createWallet(seedSourceRequest);
+      const std::string mnemonic = engine.getSeed(seedSourceId);
+      engine.closeWallet(seedSourceId, false);
+      std::error_code removeError;
+      std::filesystem::remove(seedSourcePath, removeError);
+      removeError.clear();
+      std::filesystem::remove(seedSourcePath + ".keys", removeError);
+      removeError.clear();
+      std::filesystem::remove(seedSourcePath + ".address.txt", removeError);
+
+      RestoreWalletRequest restoreRequest;
+      restoreRequest.network = request.network;
+      restoreRequest.path = request.path;
+      restoreRequest.password = request.password;
+      restoreRequest.mnemonic = mnemonic;
+      restoreRequest.restoreHeight = request.restoreHeight;
+      restoreRequest.kdfRounds = request.kdfRounds;
+      const WalletId walletId = engine.restoreWallet(restoreRequest);
+      applyNode(engine, walletId, argv[6], argc >= 8 ? argv[7] : "");
+
+      const auto initial = engine.snapshot(walletId);
+      const auto started = std::chrono::steady_clock::now();
+      engine.startRefresh(walletId);
+
+      bool synchronized = false;
+      auto finalSnapshot = initial;
+      const auto deadline = started + std::chrono::seconds(maxSeconds);
+      while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        finalSnapshot = engine.snapshot(walletId);
+        if (finalSnapshot.synchronized &&
+            finalSnapshot.walletHeight >= finalSnapshot.daemonHeight) {
+          synchronized = true;
+          break;
+        }
+      }
+      engine.stopRefresh(walletId);
+      finalSnapshot = engine.snapshot(walletId);
+      const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - started).count();
+
+      std::cout << "benchmark_mode=create-restore-refresh\n";
+      std::cout << "benchmark_wallet_mode=recovered-generated-seed\n";
+      std::cout << "benchmark_block_scan=enabled\n";
+      std::cout << "benchmark_restore_height=" << request.restoreHeight << "\n";
+      std::cout << "benchmark_initial_wallet_height=" << initial.walletHeight << "\n";
+      std::cout << "benchmark_initial_refresh_from_height="
+                << initial.refreshFromHeight << "\n";
+      std::cout << "benchmark_final_wallet_height=" << finalSnapshot.walletHeight << "\n";
+      std::cout << "benchmark_final_refresh_from_height="
+                << finalSnapshot.refreshFromHeight << "\n";
+      std::cout << "benchmark_daemon_height=" << finalSnapshot.daemonHeight << "\n";
+      std::cout << "benchmark_elapsed_ms=" << elapsedMs << "\n";
+      std::cout << "benchmark_http_bytes_received="
+                << (finalSnapshot.daemonBytesReceived - initial.daemonBytesReceived) << "\n";
+      std::cout << "benchmark_http_bytes_sent="
+                << (finalSnapshot.daemonBytesSent - initial.daemonBytesSent) << "\n";
+      std::cout << "benchmark_synchronized=" << (synchronized ? "true" : "false")
+                << "\n";
+      std::cout << "benchmark_timeout_seconds=" << maxSeconds << "\n";
+
+      engine.closeWallet(walletId);
+      return synchronized ? 0 : 1;
+    }
+
     if (command == "address") {
       if (argc != 5) {
         printUsage(argv[0]);
@@ -316,9 +454,10 @@ int main(int argc, char** argv) {
 
       CreateFastReceiveIdentityRequest identityRequest;
       identityRequest.sourceWalletId = walletA;
-      identityRequest.identityId = "proof-fast-receive-0";
-      identityRequest.path = childPath(workdir, "fast-receive-0");
-      identityRequest.password = password;
+      identityRequest.identityId = "fast-receive-v2-0-proof";
+      identityRequest.path =
+          childPath(workdir, "fast-receive-v2-0-proof");
+      identityRequest.password = "independent-fast-wallet-password";
       identityRequest.label = "Proof Fast Receive";
       identityRequest.derivationIndex = 0;
       identityRequest.restoreHeight = 0;
@@ -330,6 +469,75 @@ int main(int argc, char** argv) {
       if (identity.address == addressA) {
         throw WalletEngineError(
             "fast receive identity address must differ from main wallet");
+      }
+
+      OpenWalletRequest fastOpenRequest;
+      fastOpenRequest.path = identityRequest.path;
+      fastOpenRequest.password = identityRequest.password;
+      fastOpenRequest.network = network;
+      const WalletId fastWalletId = engine.openWallet(fastOpenRequest);
+      if (engine.getAddress(fastWalletId) != identity.address) {
+        throw WalletEngineError(
+            "independent fast receive wallet address changed after open");
+      }
+      const std::string fastSeed = engine.getSeed(fastWalletId);
+      engine.closeWallet(fastWalletId);
+
+      // Re-run the exact inverse operation that recovered the parent from a
+      // legacy v1 Fast Wallet seed. With independent v2 entropy, it must
+      // produce an unrelated wallet.
+      RestoreWalletRequest parentRecoveryAttempt;
+      parentRecoveryAttempt.path =
+          childPath(workdir, "parent-recovery-attempt");
+      parentRecoveryAttempt.password = password;
+      parentRecoveryAttempt.mnemonic = fastSeed;
+      parentRecoveryAttempt.seedOffset =
+          "tex8-monero-fast-receive-v1:0";
+      parentRecoveryAttempt.network = network;
+      const WalletId parentRecoveryAttemptId =
+          engine.restoreWallet(parentRecoveryAttempt);
+      if (engine.getAddress(parentRecoveryAttemptId) == addressA) {
+        throw WalletEngineError(
+            "independent Fast Wallet seed unexpectedly recovered source wallet");
+      }
+      engine.closeWallet(parentRecoveryAttemptId);
+
+      bool legacyIdentityCreationRejected = false;
+      try {
+        auto legacyRequest = identityRequest;
+        legacyRequest.identityId = "fast-receive-0-legacy";
+        legacyRequest.path =
+            childPath(workdir, "fast-receive-0-legacy");
+        (void)engine.createFastReceiveIdentity(legacyRequest);
+      } catch (const WalletEngineError&) {
+        legacyIdentityCreationRejected = true;
+      }
+      if (!legacyIdentityCreationRejected) {
+        throw WalletEngineError(
+            "legacy fast receive identity creation was not rejected");
+      }
+
+      CreateWalletRequest legacyPathRequest;
+      legacyPathRequest.path =
+          childPath(workdir, "fast-receive-0-legacy-open");
+      legacyPathRequest.password = password;
+      legacyPathRequest.network = network;
+      const WalletId legacyPathWallet =
+          engine.createWallet(legacyPathRequest);
+      engine.closeWallet(legacyPathWallet);
+      OpenWalletRequest legacyOpenRequest;
+      legacyOpenRequest.path = legacyPathRequest.path;
+      legacyOpenRequest.password = password;
+      legacyOpenRequest.network = network;
+      bool legacyWalletOpenRejected = false;
+      try {
+        (void)engine.openWallet(legacyOpenRequest);
+      } catch (const WalletEngineError&) {
+        legacyWalletOpenRejected = true;
+      }
+      if (!legacyWalletOpenRejected) {
+        throw WalletEngineError(
+            "legacy fast receive wallet open was not rejected");
       }
 
       const auto ownedKeyImages = engine.getOwnedOutputKeyImages(walletA);
@@ -377,6 +585,9 @@ int main(int argc, char** argv) {
                 << "\n";
       std::cout << "fast_receive_restore_height=" << identity.restoreHeight
                 << "\n";
+      std::cout << "fast_receive_parent_recovery_rejected=true\n";
+      std::cout << "legacy_fast_receive_creation_rejected=true\n";
+      std::cout << "legacy_fast_receive_open_rejected=true\n";
       std::cout << "empty_key_image_reconciliation=true\n";
       std::cout << "mismatched_key_image_reconciliation_rejected=true\n";
       std::cout << "proof_result=pass\n";
@@ -441,6 +652,118 @@ int main(int argc, char** argv) {
 
       engine.closeWallet(walletId);
       return 0;
+    }
+
+    if (command == "restore-refresh") {
+      if (argc < 9 || argc > 10) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+
+      RestoreWalletRequest request;
+      request.network = parseNetwork(argv[2]);
+      request.path = argv[3];
+      request.password = resolveSecretArgument(argv[4]);
+      // A mnemonic is accepted through the same @file mechanism as a
+      // password. This command deliberately never prints it, an address, or
+      // any key material: benchmark logs are expected to be retained.
+      request.mnemonic = resolveSecretArgument(argv[5]);
+      request.restoreHeight = parseSeconds(argv[6]);
+      if (request.restoreHeight == 0) {
+        throw WalletEngineError("restore-height must be greater than zero");
+      }
+
+      const uint64_t maxSeconds = argc >= 10 ? parseSeconds(argv[9]) : 900;
+      const WalletId walletId = engine.restoreWallet(request);
+      applyNode(engine, walletId, argv[7], argc >= 9 ? argv[8] : "");
+
+      const auto initial = engine.snapshot(walletId);
+      const auto started = std::chrono::steady_clock::now();
+      engine.startRefresh(walletId);
+
+      bool synchronized = false;
+      auto finalSnapshot = initial;
+      const auto deadline = started + std::chrono::seconds(maxSeconds);
+      while (std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        finalSnapshot = engine.snapshot(walletId);
+        if (finalSnapshot.synchronized &&
+            finalSnapshot.walletHeight >= finalSnapshot.daemonHeight) {
+          synchronized = true;
+          break;
+        }
+      }
+      engine.stopRefresh(walletId);
+      finalSnapshot = engine.snapshot(walletId);
+      const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - started).count();
+
+      std::cout << "benchmark_mode=restore-refresh\n";
+      std::cout << "benchmark_restore_height=" << request.restoreHeight << "\n";
+      std::cout << "benchmark_initial_wallet_height=" << initial.walletHeight << "\n";
+      std::cout << "benchmark_final_wallet_height=" << finalSnapshot.walletHeight << "\n";
+      std::cout << "benchmark_daemon_height=" << finalSnapshot.daemonHeight << "\n";
+      std::cout << "benchmark_elapsed_ms=" << elapsedMs << "\n";
+      std::cout << "benchmark_http_bytes_received="
+                << (finalSnapshot.daemonBytesReceived - initial.daemonBytesReceived) << "\n";
+      std::cout << "benchmark_http_bytes_sent="
+                << (finalSnapshot.daemonBytesSent - initial.daemonBytesSent) << "\n";
+      std::cout << "benchmark_synchronized=" << (synchronized ? "true" : "false")
+                << "\n";
+      std::cout << "benchmark_timeout_seconds=" << maxSeconds << "\n";
+
+      engine.closeWallet(walletId);
+      return synchronized ? 0 : 1;
+    }
+
+    if (command == "template-refresh") {
+      if (argc < 8 || argc > 9) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+
+      OpenWalletRequest request;
+      request.network = parseNetwork(argv[2]);
+      request.path = argv[3];
+      request.password = resolveSecretArgument(argv[4]);
+      request.restoreHeight = parseSeconds(argv[5]);
+      if (request.restoreHeight == 0) {
+        throw WalletEngineError("restore-height must be greater than zero");
+      }
+
+      const uint64_t maxSeconds = argc >= 9 ? parseSeconds(argv[8]) : 900;
+      const WalletId walletId = engine.openWallet(request);
+      applyNode(engine, walletId, argv[6], argc >= 8 ? argv[7] : "");
+
+      const auto initial = engine.snapshot(walletId);
+      const auto started = std::chrono::steady_clock::now();
+      engine.rescanBlockchain(walletId);
+      const auto finalSnapshot = engine.snapshot(walletId);
+      const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - started).count();
+      const bool synchronized = finalSnapshot.synchronized &&
+          finalSnapshot.walletHeight >= finalSnapshot.daemonHeight;
+
+      std::cout << "benchmark_mode=template-rescan\n";
+      std::cout << "benchmark_restore_height=" << request.restoreHeight << "\n";
+      std::cout << "benchmark_initial_wallet_height=" << initial.walletHeight << "\n";
+      std::cout << "benchmark_final_wallet_height=" << finalSnapshot.walletHeight << "\n";
+      std::cout << "benchmark_daemon_height=" << finalSnapshot.daemonHeight << "\n";
+      std::cout << "benchmark_elapsed_ms=" << elapsedMs << "\n";
+      std::cout << "benchmark_http_bytes_received="
+                << (finalSnapshot.daemonBytesReceived - initial.daemonBytesReceived) << "\n";
+      std::cout << "benchmark_http_bytes_sent="
+                << (finalSnapshot.daemonBytesSent - initial.daemonBytesSent) << "\n";
+      std::cout << "benchmark_synchronized=" << (synchronized ? "true" : "false")
+                << "\n";
+      std::cout << "benchmark_timeout_seconds=" << maxSeconds << "\n";
+
+      engine.closeWallet(walletId);
+      return synchronized ? 0 : 1;
     }
 
     if (command == "send") {

@@ -241,6 +241,7 @@ for label in "${targets[@]}"; do
     echo "# Android ABI: ${android_abi}"
     echo "set(MONERO_WALLET_API_LIBRARY \"${wallet_api_lib}\")"
     echo "set(MONERO_FAST_CRYPTO_LIBRARY \"${fast_crypto_lib}\")"
+    echo "set(MONERO_WALLET_DEPENDENCY_INCLUDE_DIR \"${dependency_prefix}/include\")"
     write_cmake_list_from_csv MONERO_WALLET_EXTRA_LIBRARY_DIRS "${extra_library_dirs_csv}"
     write_cmake_list MONERO_WALLET_EXTRA_LIBRARIES "${monero_libraries[@]}"
     write_cmake_list_from_csv MONERO_WALLET_EXTRA_LINK_OPTIONS "${extra_link_options_csv}"

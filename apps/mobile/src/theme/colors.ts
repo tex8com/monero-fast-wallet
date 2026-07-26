@@ -15,7 +15,7 @@ export const colors = {
 
   textPrimary:   "#FFFFFF",
   textSecondary: "#8888AA",
-  textMuted:     "#555570",
+  textMuted:     "#A0A0BA",
   textGreen:     "#00D68F",
   textRed:       "#FF4466",
 
@@ -23,7 +23,7 @@ export const colors = {
   borderLight:   "#353560",
 
   tabBar:        "#0D0D1A",
-  tabInactive:   "#555570",
+  tabInactive:   "#A0A0BA",
 
   success:       "#00D68F",
   error:         "#FF4466",

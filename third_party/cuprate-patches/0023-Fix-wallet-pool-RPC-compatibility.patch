@@ -1,0 +1,170 @@
+From da26b387badd9b460fc469156d79683f428bf40f Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Mon, 6 Jul 2026 21:36:36 -0500
+Subject: [PATCH 23/41] Fix wallet pool RPC compatibility
+
+---
+ rpc/interface/Cargo.toml            |  2 +-
+ rpc/interface/src/route/bin.rs      | 77 ++++++++++++++++++++---------
+ rpc/interface/src/route/json_rpc.rs | 17 ++++++-
+ 3 files changed, 72 insertions(+), 24 deletions(-)
+
+diff --git a/rpc/interface/Cargo.toml b/rpc/interface/Cargo.toml
+index d301543..c7a67a1 100644
+--- a/rpc/interface/Cargo.toml
++++ b/rpc/interface/Cargo.toml
+@@ -21,6 +21,7 @@ cuprate-helper        = { workspace = true, features = ["asynch"], default-featu
+ anyhow     = { workspace = true }
+ axum       = { workspace = true, features = ["json"], default-features = false }
+ serde      = { workspace = true, optional = true }
++serde_json = { workspace = true, features = ["std"] }
+ tower      = { workspace = true, features = ["util"] }
+ paste      = { workspace = true }
+ flate2     = "1"
+@@ -30,7 +31,6 @@ futures    = { workspace = true, optional = true }
+ cuprate-test-utils = { workspace = true }
+ 
+ axum       = { workspace = true, features = ["json", "tokio", "http2"] }
+-serde_json = { workspace = true, features = ["std"] }
+ tokio      = { workspace = true, features = ["full"] }
+ ureq       = { version = "2.10.1", features = ["json"] }
+ 
+diff --git a/rpc/interface/src/route/bin.rs b/rpc/interface/src/route/bin.rs
+index 778920e..67b2754 100644
+--- a/rpc/interface/src/route/bin.rs
++++ b/rpc/interface/src/route/bin.rs
+@@ -1,9 +1,14 @@
+ //! Binary route functions.
+ 
+ //---------------------------------------------------------------------------------------------------- Import
+-use axum::{body::Bytes, extract::State, http::{StatusCode, HeaderMap, header}};
+-use tower::ServiceExt;
++use axum::{
++    body::Bytes,
++    extract::State,
++    http::{header, HeaderMap, StatusCode},
++    response::IntoResponse,
++};
+ use std::sync::atomic::{AtomicU64, Ordering};
++use tower::ServiceExt;
+ 
+ static ACTIVE_REQUESTS: AtomicU64 = AtomicU64::new(0);
+ static TOTAL_REQUESTS: AtomicU64 = AtomicU64::new(0);
+@@ -32,7 +37,8 @@ fn maybe_gzip(data: Bytes, accept_encoding: Option<&str>) -> (Bytes, bool, u128)
+             use flate2::Compression;
+             use std::io::Write;
+ 
+-            let mut encoder = GzEncoder::new(Vec::with_capacity(data.len() / 3), Compression::fast());
++            let mut encoder =
++                GzEncoder::new(Vec::with_capacity(data.len() / 3), Compression::fast());
+             if encoder.write_all(&data).is_ok() {
+                 if let Ok(compressed) = encoder.finish() {
+                     if compressed.len() < data.len() {
+@@ -95,23 +101,6 @@ macro_rules! generate_endpoints_with_input {
+     }};
+ }
+ 
+-/// This macro generates route functions that expect _no_ input.
+-macro_rules! generate_endpoints_with_no_input {
+-    ($(
+-        $endpoint:ident => $variant:ident
+-    ),*) => { paste::paste! {
+-        $(
+-            pub(crate) async fn $endpoint<H: RpcHandler>(
+-                State(handler): State<H>,
+-                headers: HeaderMap,
+-            ) -> Result<axum::response::Response, StatusCode> {
+-                const REQUEST: BinRequest = BinRequest::$variant([<$variant Request>] {});
+-                generate_endpoints_inner!($variant, handler, headers, REQUEST)
+-            }
+-        )*
+-    }};
+-}
+-
+ /// De-duplicated inner function body.
+ macro_rules! generate_endpoints_inner {
+     ($variant:ident, $handler:ident, $headers:ident, $request:expr_2021) => {
+@@ -157,8 +146,52 @@ generate_endpoints_with_input! {
+     get_output_distribution => GetOutputDistribution
+ }
+ 
+-generate_endpoints_with_no_input! {
+-    get_transaction_pool_hashes => GetTransactionPoolHashes
++pub(crate) async fn get_transaction_pool_hashes<H: RpcHandler>(
++    State(handler): State<H>,
++) -> Result<axum::response::Response, StatusCode> {
++    let request = BinRequest::GetTransactionPoolHashes(GetTransactionPoolHashesRequest {});
++    let response = handler.oneshot(request).await.map_err(|e| {
++        eprintln!("BIN RPC handler error: {e:?}");
++        StatusCode::INTERNAL_SERVER_ERROR
++    })?;
++
++    let BinResponse::GetTransactionPoolHashes(response) = response else {
++        panic!("RPC handler returned incorrect response");
++    };
++
++    let mut body = Vec::new();
++    body.extend_from_slice(
++        br#"{"credits":0,"top_hash":"","status":"OK","untrusted":false,"tx_hashes":"#,
++    );
++    push_epee_json_string(&mut body, response.tx_hashes.take_bytes().as_ref());
++    body.push(b'}');
++
++    Ok((
++        [(header::CONTENT_TYPE, "application/json")],
++        Bytes::from(body),
++    )
++        .into_response())
++}
++
++fn push_epee_json_string(json: &mut Vec<u8>, bytes: &[u8]) {
++    json.push(b'"');
++
++    for byte in bytes {
++        match *byte {
++            b'\x08' => json.extend_from_slice(br"\b"),
++            b'\x0c' => json.extend_from_slice(br"\f"),
++            b'\n' => json.extend_from_slice(br"\n"),
++            b'\r' => json.extend_from_slice(br"\r"),
++            b'\t' => json.extend_from_slice(br"\t"),
++            b'\x0b' => json.extend_from_slice(br"\v"),
++            b'"' => json.extend_from_slice(br#"\""#),
++            b'\\' => json.extend_from_slice(br"\\"),
++            b'/' => json.extend_from_slice(br"\/"),
++            byte => json.push(byte),
++        }
++    }
++
++    json.push(b'"');
+ }
+ 
+ //---------------------------------------------------------------------------------------------------- Tests
+diff --git a/rpc/interface/src/route/json_rpc.rs b/rpc/interface/src/route/json_rpc.rs
+index f871b75..8db00c1 100644
+--- a/rpc/interface/src/route/json_rpc.rs
++++ b/rpc/interface/src/route/json_rpc.rs
+@@ -16,8 +16,23 @@ use crate::rpc_handler::RpcHandler;
+ /// The `/json_rpc` route function used in [`crate::RouterBuilder`].
+ pub(crate) async fn json_rpc<H: RpcHandler>(
+     State(handler): State<H>,
+-    Json(request): Json<cuprate_json_rpc::Request<JsonRpcRequest>>,
++    Json(mut request): Json<serde_json::Value>,
+ ) -> Result<Json<Response<JsonRpcResponse>>, StatusCode> {
++    if let Some(object) = request.as_object_mut() {
++        if object.contains_key("method") && !object.contains_key("params") {
++            object.insert(
++                "params".to_string(),
++                serde_json::Value::Object(Default::default()),
++            );
++        }
++    }
++
++    let request: cuprate_json_rpc::Request<JsonRpcRequest> = serde_json::from_value(request)
++        .map_err(|e| {
++            eprintln!("JSON-RPC deserialization error: {e:?}");
++            StatusCode::UNPROCESSABLE_ENTITY
++        })?;
++
+     // TODO: <https://www.jsonrpc.org/specification#notification>
+     //
+     // JSON-RPC notifications (requests without `id`)

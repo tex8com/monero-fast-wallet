@@ -167,7 +167,7 @@ axum                  = { version = "0.8", default-features = false }
 anyhow                = { version = "1", default-features = false }
 arc-swap              = { version = "1", default-features = false }
 arrayvec              = { version = "0.7", default-features = false }
-arti-client           = { version = "0.33", default-features = false }
+arti-client           = { version = "0.44", default-features = false }
 async-trait           = { version = "0.1", default-features = false }
 bitflags              = { version = "2", default-features = false }
 blake3                = { version = "1", default-features = false }
@@ -190,13 +190,13 @@ indexmap              = { version = "2", default-features = false }
 monero-address        = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc", default-features = false }
 monero-oxide          = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc", default-features = false, features = ["std"] }
 nu-ansi-term          = { version = "0.46", default-features = false }
-paste                 = { version = "1", default-features = false }
+paste                 = { package = "pastey", version = "0.2.3", default-features = false }
 pin-project           = { version = "1", default-features = false }
-randomx-rs            = { git = "https://github.com/Cuprate/randomx-rs.git", rev = "567bdca", default-features = false }
+randomx-rs            = { git = "https://github.com/Cuprate/randomx-rs.git", rev = "567bdcade871f2391dc67eb90d38efaa78c24003", default-features = false }
 rand                  = { version = "0.8", default-features = false }
 rand_distr            = { version = "0.4", default-features = false }
 rayon                 = { version = "1", default-features = false }
-safelog               = { version = "0.4", default-features = false }
+safelog               = { version = "0.9", default-features = false }
 serde_bytes           = { version = "0.11", default-features = false }
 serde_json            = { version = "1", default-features = false }
 serde                 = { version = "1", default-features = false }
@@ -205,7 +205,7 @@ thiserror             = { version = "2", default-features = false }
 thread_local          = { version = "1", default-features = false }
 tokio-util            = { version = "0.7", default-features = false }
 tokio-stream          = { version = "0.1", default-features = false }
-tokio-socks           = { git = "https://github.com/Cuprate/tokio-socks.git", rev = "8737caf", default-features = false }
+tokio-socks           = { git = "https://github.com/Cuprate/tokio-socks.git", rev = "8737caf429a86ab181954444fac4f9b917795b19", default-features = false }
 tokio                 = { version = "1", default-features = false }
 tonic                 = { version = "0.12", default-features = false }
 tonic-build           = { version = "0.12", default-features = false }
@@ -214,12 +214,12 @@ tower                 = { version = "0.5", default-features = false }
 tower-http            = { version = "0.6", default-features = false }
 toml                  = { version = "0.9", default-features = false }
 toml_edit             = { version = "0.23", default-features = false }
-tor-cell              = { version = "0.33", default-features = false }
-tor-config-path       = { version = "0.33", default-features = false }
-tor-hsservice         = { version = "0.33", default-features = false }
-tor-persist           = { version = "0.33", default-features = false }
-tor-proto             = { version = "0.33", default-features = false }
-tor-rtcompat          = { version = "0.33", default-features = false }
+tor-cell              = { version = "0.44", default-features = false }
+tor-config-path       = { version = "0.44", default-features = false }
+tor-hsservice         = { version = "0.44", default-features = false }
+tor-persist           = { version = "0.44", default-features = false }
+tor-proto             = { version = "0.44", default-features = false }
+tor-rtcompat          = { version = "0.44", default-features = false }
 tracing-appender      = { version = "0.2", default-features = false }
 tracing-subscriber    = { version = "0.3", default-features = false }
 tracing               = { version = "0.1", default-features = false }

@@ -7,7 +7,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
-grpc_version="${GRPC_VERSION:-v1.80.0}"
+grpc_version="v1.80.0"
+grpc_commit="f5e2d6e856176c2f6b7691032adfefe21e5f64c1"
 output_root="${OUTPUT_ROOT:-${repo_root}/build/host-grpc-sdk}"
 source_dir="${GRPC_SOURCE_DIR:-${output_root}/sources/grpc-${grpc_version}}"
 build_dir="${BUILD_DIR:-${output_root}/build/grpc-${grpc_version}}"
@@ -52,35 +53,17 @@ ln -sfn "${openssl_source_root}/include/openssl" "${openssl_root}/include/openss
 ln -sfn "${openssl_source_root}/lib/libssl.a" "${openssl_root}/lib/libssl.a"
 ln -sfn "${openssl_source_root}/lib/libcrypto.a" "${openssl_root}/lib/libcrypto.a"
 
-required_source_files=(
-  "${source_dir}/CMakeLists.txt"
-  "${source_dir}/third_party/abseil-cpp/CMakeLists.txt"
-  "${source_dir}/third_party/cares/cares/CMakeLists.txt"
-  "${source_dir}/third_party/protobuf/CMakeLists.txt"
-  "${source_dir}/third_party/re2/CMakeLists.txt"
-  "${source_dir}/third_party/zlib/CMakeLists.txt"
-)
-source_ready=1
-for required_source_file in "${required_source_files[@]}"; do
-  if [[ ! -f "${required_source_file}" ]]; then
-    source_ready=0
-    break
-  fi
-done
-
-if [[ "${source_ready}" != "1" ]]; then
-  # The SDK needs only the libraries used by gRPC++ itself. Do not recurse
-  # through optional benchmark, bloaty, xDS, or language-plugin trees.
-  rm -rf "${source_dir}"
-  mkdir -p "$(dirname "${source_dir}")"
-  git clone --depth 1 --branch "${grpc_version}" https://github.com/grpc/grpc "${source_dir}"
-  git -C "${source_dir}" submodule update --init --depth 1 \
-    third_party/abseil-cpp \
-    third_party/cares/cares \
-    third_party/protobuf \
-    third_party/re2 \
-    third_party/zlib
-fi
+# The SDK needs only the libraries used by gRPC++ itself. Do not recurse
+# through optional benchmark, bloaty, xDS, or language-plugin trees.
+"${script_dir}/checkout-pinned-source.sh" \
+  https://github.com/grpc/grpc.git \
+  "${grpc_commit}" \
+  "${source_dir}" \
+  third_party/abseil-cpp \
+  third_party/cares/cares \
+  third_party/protobuf \
+  third_party/re2 \
+  third_party/zlib
 
 "${cmake_bin}" -S "${source_dir}" -B "${build_dir}" -G Ninja \
   -DCMAKE_MAKE_PROGRAM="${ninja_bin}" \

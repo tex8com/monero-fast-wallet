@@ -1,5 +1,9 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import {
+  deleteProtectedMetadata,
+  loadProtectedMetadata,
+  storeProtectedMetadata,
+} from './ProtectedMetadataStorage';
 import { logWalletEvent } from './WalletLogger';
 
 const STORAGE_KEY = 'monero-wallet.enthusiast-discovery.v1';
@@ -136,7 +140,7 @@ function parseAccount(raw: string | null): CommunityAccount | undefined {
 }
 
 async function loadAccount(): Promise<CommunityAccount | undefined> {
-  return parseAccount(await AsyncStorage.getItem(ACCOUNT_STORAGE_KEY));
+  return parseAccount(await loadProtectedMetadata(ACCOUNT_STORAGE_KEY));
 }
 
 async function communityRequest<T>(
@@ -205,7 +209,7 @@ async function ensureCommunityAccount(): Promise<CommunityAccount> {
     accessToken: String(created.access_token),
     displayName,
   };
-  await AsyncStorage.setItem(ACCOUNT_STORAGE_KEY, JSON.stringify(account));
+  await storeProtectedMetadata(ACCOUNT_STORAGE_KEY, JSON.stringify(account));
   return account;
 }
 
@@ -281,12 +285,12 @@ async function savePreference(
     ...preference,
     updatedAt: new Date().toISOString(),
   };
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  await storeProtectedMetadata(STORAGE_KEY, JSON.stringify(next));
   return next;
 }
 
 export async function loadEnthusiastDiscoveryPreference(): Promise<EnthusiastDiscoveryPreference> {
-  return parsePreference(await AsyncStorage.getItem(STORAGE_KEY));
+  return parsePreference(await loadProtectedMetadata(STORAGE_KEY));
 }
 
 export async function setEnthusiastDiscoveryEnabled(
@@ -589,7 +593,7 @@ export async function updateCommunityDisplayName(
     },
     updatedAccount,
   );
-  await AsyncStorage.setItem(
+  await storeProtectedMetadata(
     ACCOUNT_STORAGE_KEY,
     JSON.stringify(updatedAccount),
   );
@@ -712,6 +716,6 @@ export async function deleteCommunityIdentity(): Promise<void> {
   if (account) {
     await communityRequest('/v1/profile', { method: 'DELETE' }, account);
   }
-  await AsyncStorage.removeItem(ACCOUNT_STORAGE_KEY);
+  await deleteProtectedMetadata(ACCOUNT_STORAGE_KEY);
   approximateAreaId = undefined;
 }

@@ -1,0 +1,49 @@
+From 110d9b00cb6b75f4a35eef88d13a2b05416794f8 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Mon, 6 Jul 2026 22:47:54 -0500
+Subject: [PATCH 27/41] Alias block headers range JSON RPC
+
+---
+ rpc/types/src/json.rs | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/rpc/types/src/json.rs b/rpc/types/src/json.rs
+index 2d20333..d08ce15 100644
+--- a/rpc/types/src/json.rs
++++ b/rpc/types/src/json.rs
+@@ -771,6 +771,7 @@ pub enum JsonRpcRequest {
+     GetLastBlockHeader(GetLastBlockHeaderRequest),
+     GetBlockHeaderByHash(GetBlockHeaderByHashRequest),
+     GetBlockHeaderByHeight(GetBlockHeaderByHeightRequest),
++    #[cfg_attr(feature = "serde", serde(alias = "getblockheadersrange"))]
+     GetBlockHeadersRange(GetBlockHeadersRangeRequest),
+     GetBlock(GetBlockRequest),
+     GetConnections(GetConnectionsRequest),
+@@ -1894,6 +1895,27 @@ mod test {
+         );
+     }
+ 
++    #[test]
++    fn get_block_headers_range_monero_alias_json_rpc_request() {
++        let request = from_value::<JsonRpcRequest>(json!({
++            "method": "getblockheadersrange",
++            "params": {
++                "start_height": 1,
++                "end_height": 2
++            }
++        }))
++        .unwrap();
++
++        assert_eq!(
++            request,
++            JsonRpcRequest::GetBlockHeadersRange(GetBlockHeadersRangeRequest {
++                start_height: 1,
++                end_height: 2,
++                fill_pow_hash: false,
++            })
++        );
++    }
++
+     #[test]
+     fn rpc_access_info_json_rpc_request() {
+         let request = from_value::<JsonRpcRequest>(json!({

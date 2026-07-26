@@ -12,6 +12,7 @@ BACKUP_ROOT="${BACKUP_ROOT:-/srv/monero-fast-wallet/monero-fast-wallet-deploy-ba
 ENV_FILE="$RUNTIME/notify-scanner.env"
 SERVICE_PATH="/etc/systemd/system/notify-scanner.service"
 SNIPPET_PATH="/etc/nginx/snippets/notify-scanner-tex8-location.conf"
+RATE_LIMIT_PATH="/etc/nginx/conf.d/notify-scanner-rate-limit.conf"
 SITE_PATH="/etc/nginx/sites-available/xmr.tex8.com"
 SITE_ENABLED="/etc/nginx/sites-enabled/xmr.tex8.com"
 
@@ -50,6 +51,9 @@ fi
 if [[ -f "$SNIPPET_PATH" ]]; then
   cp -a "$SNIPPET_PATH" "$backup/notify-scanner-tex8-location.conf"
 fi
+if [[ -f "$RATE_LIMIT_PATH" ]]; then
+  cp -a "$RATE_LIMIT_PATH" "$backup/notify-scanner-rate-limit.conf"
+fi
 if [[ -f "$SITE_PATH" ]]; then
   cp -a "$SITE_PATH" "$backup/xmr.tex8.com.nginx"
 fi
@@ -77,12 +81,9 @@ if [[ -n "$COMMIT" ]]; then
 fi
 
 sudo -u "$DEPLOY_USER" -H bash -lc \
-  "cd '$source_dir' && /home/$DEPLOY_USER/.cargo/bin/cargo build --release --manifest-path services/notify-scanner/Cargo.toml"
+  "cd '$source_dir' && PATH=\"/home/$DEPLOY_USER/.cargo/bin:\$PATH\" ops/notify-scanner/build-epyc.sh"
 
-binary_path="$source_dir/target/release/notify-scanner"
-if [[ ! -x "$binary_path" ]]; then
-  binary_path="$source_dir/services/notify-scanner/target/release/notify-scanner"
-fi
+binary_path="$source_dir/build/notify-scanner-epyc/cargo-target/release/notify-scanner"
 if [[ ! -x "$binary_path" ]]; then
   echo "Built notify-scanner binary was not found" >&2
   find "$source_dir" -path '*/target/release/notify-scanner' -type f -print >&2
@@ -93,6 +94,9 @@ install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -d "$RUNTIME" "$RUNTIME/bin"
 install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0755 \
   "$binary_path" \
   "$RUNTIME/bin/notify-scanner"
+install -o "$DEPLOY_USER" -g "$DEPLOY_USER" -m 0644 \
+  "$source_dir/build/notify-scanner-epyc/cargo-target/release/notify-scanner-epyc-build.env" \
+  "$RUNTIME/bin/notify-scanner-epyc-build.env"
 
 touch "$ENV_FILE"
 chown "$DEPLOY_USER:$DEPLOY_USER" "$ENV_FILE"
@@ -111,6 +115,10 @@ ensure_env "NOTIFY_SCANNER_WATCH_DB" "$RUNTIME/notify-scanner-watch.json.enc"
 ensure_env "NOTIFY_SCANNER_STORAGE_KEY" "$(openssl rand -hex 32)"
 ensure_env "NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT" "private-node-ip:18091"
 ensure_env "NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT" "private-node-ip:18089"
+ensure_env "NOTIFY_SCANNER_SCANPACK_DIRECTORY" "/var/lib/cuprate/wallet-scan-cache-100k"
+ensure_env "NOTIFY_SCANNER_SCANPACK_NETWORK" "mainnet"
+ensure_env "NOTIFY_SCANNER_SCANPACK_REFRESH_MS" "10000"
+ensure_env "NOTIFY_SCANNER_DERIVATION_WORKERS" "12"
 ensure_env "NOTIFY_SCANNER_BLOCK_SCAN_MAX_BLOCKS" "25"
 ensure_env "NOTIFY_SCANNER_BLOCK_SCAN_INTERVAL_MS" "10000"
 ensure_env "NOTIFY_SCANNER_CUPRATE_GRPC_CHUNK_BLOCKS" "200"
@@ -125,6 +133,9 @@ install -o root -g root -m 0755 -d /etc/nginx/snippets /etc/nginx/sites-availabl
 install -o root -g root -m 0644 \
   "$source_dir/ops/notify-scanner/notify-scanner-tex8-location.conf" \
   "$SNIPPET_PATH"
+install -o root -g root -m 0644 \
+  "$source_dir/ops/notify-scanner/notify-scanner-rate-limit.conf" \
+  "$RATE_LIMIT_PATH"
 
 cat >"$SITE_PATH" <<'NGINX'
 server {
@@ -139,7 +150,7 @@ ln -sf "$SITE_PATH" "$SITE_ENABLED"
 next_checkout="${CHECKOUT}.next-$timestamp"
 rm -rf "$next_checkout"
 cp -a "$source_dir" "$next_checkout"
-rm -rf "$next_checkout/target" "$next_checkout/services/notify-scanner/target"
+rm -rf "$next_checkout/target" "$next_checkout/services/notify-scanner/target" "$next_checkout/build"
 chown -R "$DEPLOY_USER:$DEPLOY_USER" "$next_checkout"
 rm -rf "${CHECKOUT}.previous"
 if [[ -d "$CHECKOUT" ]]; then

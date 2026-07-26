@@ -9,8 +9,8 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Error};
 use cuprate_constants::rpc::{
-    GET_BLOCKS_BIN_MAX_BLOCK_COUNT, GET_BLOCKS_BIN_MAX_TX_COUNT, RESTRICTED_BLOCK_COUNT,
-    RESTRICTED_TRANSACTIONS_COUNT,
+    GET_BLOCKS_BIN_LEGACY_DEFAULT_BLOCK_COUNT, GET_BLOCKS_BIN_MAX_BLOCK_COUNT,
+    GET_BLOCKS_BIN_MAX_TX_COUNT, RESTRICTED_BLOCK_COUNT, RESTRICTED_TRANSACTIONS_COUNT,
 };
 use cuprate_fixed_bytes::ByteArrayVec;
 use cuprate_helper::cast::{u64_to_usize, usize_to_u64};
@@ -169,11 +169,7 @@ async fn get_blocks(
         }
     }
 
-    let max_blocks = if max_block_count == 0 {
-        GET_BLOCKS_BIN_MAX_BLOCK_COUNT
-    } else {
-        max_block_count.min(GET_BLOCKS_BIN_MAX_BLOCK_COUNT)
-    };
+    let max_blocks = effective_get_blocks_limit(max_block_count);
 
     let (first_known_height, chain_height) = if !block_hashes.is_empty() || start_height == 0 {
         let n_hashes = block_hashes.len();
@@ -246,6 +242,35 @@ async fn get_blocks(
         output_indices,
         ..resp
     })
+}
+
+/// Resolve the client supplied `/getblocks.bin` block limit.
+///
+/// A zero value is not an unlimited request in Monero Core. It is the legacy
+/// form used by unmodified wallets, whose server-side default is 1,000.
+/// Explicit clients may still use Cuprate's larger ceiling.
+fn effective_get_blocks_limit(max_block_count: u64) -> u64 {
+    if max_block_count == 0 {
+        GET_BLOCKS_BIN_LEGACY_DEFAULT_BLOCK_COUNT
+    } else {
+        max_block_count.min(GET_BLOCKS_BIN_MAX_BLOCK_COUNT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effective_get_blocks_limit;
+
+    #[test]
+    fn getblocks_zero_uses_monero_legacy_default() {
+        assert_eq!(effective_get_blocks_limit(0), 1_000);
+    }
+
+    #[test]
+    fn getblocks_explicit_limit_is_preserved_up_to_cuprate_ceiling() {
+        assert_eq!(effective_get_blocks_limit(750), 750);
+        assert_eq!(effective_get_blocks_limit(20_000), 10_000);
+    }
 }
 
 fn split_pool_info(

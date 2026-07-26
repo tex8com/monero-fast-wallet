@@ -1,0 +1,11 @@
+# Official Monero base. Update this file only after the patch series applies
+# cleanly and the wallet build/test gates pass against the new commit.
+upstream_url=https://github.com/monero-project/monero.git
+upstream_ref=v0.18.4.6
+upstream_commit=dbcc7d212c094bd1a45f7291dbb99a4b4627a96d
+upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
+patched_tree=54263a2dd826208595362926ba9fed7485668317
+
+# The applied patch files in series are the source of truth. `git am` creates
+# a new local integration commit on every fresh checkout, so its SHA must not
+# be pinned here.

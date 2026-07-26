@@ -79,6 +79,14 @@ pub const OUTPUT_HISTOGRAM_RECENT_CUTOFF_RESTRICTION: Duration = Duration::from_
 #[doc = monero_definition_link!(a1dc85c5373a30f14aaf7dcfdd95f5a7375d3623, "/src/cryptonote_config.h", 128)]
 pub const GET_BLOCKS_BIN_MAX_BLOCK_COUNT: u64 = 10_000; // was: 1000
 
+/// Default block count for legacy `/getblocks.bin` callers that omit a limit.
+///
+/// Monero Core treats `max_block_count == 0` as its canonical 1,000-block
+/// default. Keep Cuprate's larger explicit ceiling separate: a newer caller
+/// can request more, but an unmodified upstream wallet must not receive an
+/// unexpectedly huge response and block its refresh thread while it is read.
+pub const GET_BLOCKS_BIN_LEGACY_DEFAULT_BLOCK_COUNT: u64 = 1_000;
+
 /// Maximum amount of requestable transactions in `/get_blocks.bin`.
 #[doc = monero_definition_link!(a1dc85c5373a30f14aaf7dcfdd95f5a7375d3623, "/src/cryptonote_config.h", 129)]
 pub const GET_BLOCKS_BIN_MAX_TX_COUNT: u64 = 200_000;

@@ -4,22 +4,22 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
 
-grpc_version="${GRPC_VERSION:-v1.80.0}"
+grpc_version="v1.80.0"
+grpc_commit="f5e2d6e856176c2f6b7691032adfefe21e5f64c1"
 source_dir="${GRPC_SOURCE_DIR:-${repo_root}/build/android-deps/sources/grpc-${grpc_version}}"
 output_root="${OUTPUT_ROOT:-${repo_root}/build/host-grpc-tools}"
 build_dir="${BUILD_DIR:-${output_root}/grpc-${grpc_version}-build}"
 jobs="${JOBS:-8}"
 
-if [[ ! -f "${source_dir}/CMakeLists.txt" ]]; then
-  mkdir -p "$(dirname "${source_dir}")"
-  git clone --depth 1 --branch "${grpc_version}" https://github.com/grpc/grpc "${source_dir}"
-  git -C "${source_dir}" submodule update --init --depth 1 \
-    third_party/abseil-cpp \
-    third_party/cares/cares \
-    third_party/protobuf \
-    third_party/re2 \
-    third_party/zlib
-fi
+"${script_dir}/checkout-pinned-source.sh" \
+  https://github.com/grpc/grpc.git \
+  "${grpc_commit}" \
+  "${source_dir}" \
+  third_party/abseil-cpp \
+  third_party/cares/cares \
+  third_party/protobuf \
+  third_party/re2 \
+  third_party/zlib
 
 cmake -S "${source_dir}" -B "${build_dir}" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \

@@ -14,18 +14,39 @@ if [ ! -d "$BUILD_ROOT" ]; then
 fi
 
 export PATH="$HOME/Library/Python/3.9/bin:$PATH"
-export TARGETS=ios-sim-arm64
+export TARGETS="${MONERO_IOS_TARGETS:-ios-sim-arm64}"
 export CLEAN_AFTER_INSTALL=1
 export JOBS="${JOBS:-8}"
 export MONERO_IOS_DEPENDENCY_ROOT="$BUILD_ROOT/ios-deps"
-export MONERO_FAST_CRYPTO_ROOT="$BUILD_ROOT/mobile-fast-crypto"
+export MONERO_FAST_CRYPTO_ROOT="$BUILD_ROOT/mobile-fast-crypto-tex8-patched"
+export MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-$BUILD_ROOT/monero-v0.18.4.6-tex8-patched}"
+export MONERO_IOS_GRPC_DEPENDENCY_ROOT="$MONERO_IOS_DEPENDENCY_ROOT"
+export MONERO_ENABLE_GRPC_STREAM=ON
+export MONERO_IOS_HOST_TOOLS_ROOT="$BUILD_ROOT/host-protobuf-tools"
+export PROTOC_PATH="$BUILD_ROOT/host-protobuf-tools/protobuf-v31.1/bin/protoc"
+export GRPC_CPP_PLUGIN_PATH="$BUILD_ROOT/host-grpc-tools/v1.80.0/bin/grpc_cpp_plugin"
+
+source "$REPO_ROOT/native/monero-bridge/scripts/prepare-patched-monero-core.sh"
+
+if [ ! -x "$PROTOC_PATH" ]; then
+  OUTPUT_ROOT="$BUILD_ROOT/host-protobuf-tools" \
+    "$REPO_ROOT/native/monero-bridge/scripts/build-host-protobuf-tools.sh"
+fi
+if [ ! -x "$GRPC_CPP_PLUGIN_PATH" ]; then
+  OUTPUT_ROOT="$BUILD_ROOT/host-grpc-tools" \
+    "$REPO_ROOT/native/monero-bridge/scripts/build-host-grpc-cpp-plugin.sh"
+fi
 
 OUTPUT_ROOT="$MONERO_IOS_DEPENDENCY_ROOT" \
   "$REPO_ROOT/native/monero-bridge/scripts/build-ios-monero-deps.sh"
-OUTPUT_ROOT="$BUILD_ROOT/ios-monero-wallet" SKIP_FAST_CRYPTO=0 \
+OUTPUT_ROOT="$MONERO_IOS_GRPC_DEPENDENCY_ROOT" \
+  "$REPO_ROOT/native/monero-bridge/scripts/build-ios-grpc.sh"
+OUTPUT_ROOT="$BUILD_ROOT/ios-monero-wallet-tex8-patched" SKIP_FAST_CRYPTO=0 \
   "$REPO_ROOT/native/monero-bridge/scripts/build-ios-monero-wallet-api.sh"
-MONERO_IOS_BUILD_ROOT="$BUILD_ROOT/ios-monero-wallet" \
-  OUTPUT_DIR="$BUILD_ROOT/ios-monero-link-manifests" \
+MONERO_IOS_BUILD_ROOT="$BUILD_ROOT/ios-monero-wallet-tex8-patched" \
+  OUTPUT_DIR="$BUILD_ROOT/ios-monero-link-manifests-tex8-patched" \
+  STRICT_OPTIONAL=1 \
   "$REPO_ROOT/native/monero-bridge/scripts/generate-ios-monero-link-manifests.sh"
 
-echo "Simulator core ready: $BUILD_ROOT/ios-monero-link-manifests/iphonesimulator/libtex8_monero_wallet_core.a"
+echo "Authenticated Monero tree: $MONERO_PATCHED_SOURCE_TREE"
+echo "iOS core ready: $BUILD_ROOT/ios-monero-link-manifests-tex8-patched"

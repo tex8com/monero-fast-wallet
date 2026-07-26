@@ -1,0 +1,255 @@
+From 4b757bda990e040d50fbc15ed38ce93bef28209a Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <roland@tex8.com>
+Date: Fri, 24 Jul 2026 16:08:40 -0500
+Subject: [PATCH 32/41] wallet sync: support pruned range reads
+
+---
+ binaries/cuprated/src/rpc/grpc.rs             |  3 +-
+ binaries/cuprated/src/rpc/handlers/bin.rs     |  2 +
+ .../cuprated/src/rpc/service/blockchain.rs    |  2 +
+ storage/blockchain/src/ops/block.rs           | 86 +++++++++++++------
+ storage/blockchain/src/service/read.rs        |  5 +-
+ types/types/src/blockchain.rs                 |  4 +-
+ 6 files changed, 73 insertions(+), 29 deletions(-)
+
+diff --git a/binaries/cuprated/src/rpc/grpc.rs b/binaries/cuprated/src/rpc/grpc.rs
+index c398735..08be469 100644
+--- a/binaries/cuprated/src/rpc/grpc.rs
++++ b/binaries/cuprated/src/rpc/grpc.rs
+@@ -242,7 +242,7 @@ async fn fetch_chunk(
+ 
+     let want = chunk_blocks.min(target_end - start);
+     let t_fetch = Instant::now();
+-    let range_read = sync_range_reads_enabled() && !prune;
++    let range_read = sync_range_reads_enabled();
+     let (blocks, fetch_metrics, prepared_output_indices, prepared_index_metrics) = if range_read {
+         let (blocks, output_indices, fetch_metrics, index_metrics) =
+             bin_handlers::capped_wallet_scan_range_with_metrics(
+@@ -250,6 +250,7 @@ async fn fetch_chunk(
+                 start,
+                 chain_height,
+                 want,
++                prune,
+                 no_miner_tx,
+                 MAX_GRPC_CHUNK_RESPONSE_BYTES,
+                 MAX_GRPC_CHUNK_TX_COUNT,
+diff --git a/binaries/cuprated/src/rpc/handlers/bin.rs b/binaries/cuprated/src/rpc/handlers/bin.rs
+index 32cdcbf..152ba55 100644
+--- a/binaries/cuprated/src/rpc/handlers/bin.rs
++++ b/binaries/cuprated/src/rpc/handlers/bin.rs
+@@ -448,6 +448,7 @@ pub(crate) async fn capped_wallet_scan_range_with_metrics(
+     response_start_height: usize,
+     chain_height: usize,
+     block_count: usize,
++    prune: bool,
+     no_miner_tx: bool,
+     max_response_bytes: usize,
+     max_tx_count: usize,
+@@ -468,6 +469,7 @@ pub(crate) async fn capped_wallet_scan_range_with_metrics(
+         &mut state.blockchain_read,
+         response_start_height,
+         end_height,
++        prune,
+     )
+     .await?;
+     let database_ms = t_database.elapsed().as_secs_f64() * 1000.0;
+diff --git a/binaries/cuprated/src/rpc/service/blockchain.rs b/binaries/cuprated/src/rpc/service/blockchain.rs
+index 41fbf6b..a66f263 100644
+--- a/binaries/cuprated/src/rpc/service/blockchain.rs
++++ b/binaries/cuprated/src/rpc/service/blockchain.rs
+@@ -544,6 +544,7 @@ pub async fn wallet_scan_range(
+     blockchain_read: &mut BlockchainReadHandle,
+     start_height: usize,
+     end_height: usize,
++    prune: bool,
+ ) -> Result<WalletScanRange, Error> {
+     let BlockchainResponse::WalletScanRange(range) = blockchain_read
+         .ready()
+@@ -551,6 +552,7 @@ pub async fn wallet_scan_range(
+         .call(BlockchainReadRequest::WalletScanRange {
+             start_height,
+             end_height,
++            prune,
+         })
+         .await?
+     else {
+diff --git a/storage/blockchain/src/ops/block.rs b/storage/blockchain/src/ops/block.rs
+index d612b95..aeb5de4 100644
+--- a/storage/blockchain/src/ops/block.rs
++++ b/storage/blockchain/src/ops/block.rs
+@@ -19,9 +19,9 @@ use cuprate_helper::{
+     tx::tx_fee,
+ };
+ use cuprate_types::{
+-    AltBlockInformation, BlockCompleteEntry, ChainId, ExtendedBlockHeader, HardFork,
+-    PrunedTxBlobEntry, TransactionBlobs, VerifiedBlockInformation, VerifiedTransactionInformation,
+-    blockchain::WalletScanRange,
++    blockchain::WalletScanRange, AltBlockInformation, BlockCompleteEntry, ChainId,
++    ExtendedBlockHeader, HardFork, PrunedTxBlobEntry, TransactionBlobs, VerifiedBlockInformation,
++    VerifiedTransactionInformation,
+ };
+ 
+ use crate::{
+@@ -309,6 +309,7 @@ pub fn get_block_complete_entry_from_height(
+ pub fn get_wallet_scan_range(
+     start_height: BlockHeight,
+     end_height: BlockHeight,
++    prune: bool,
+     tables: &impl TablesIter,
+ ) -> Result<WalletScanRange, RuntimeError> {
+     if start_height >= end_height {
+@@ -400,23 +401,52 @@ pub fn get_wallet_scan_range(
+             .expect("The number of txs per block will not exceed u64::MAX");
+         block.extend_from_slice(bytemuck::must_cast_slice(&tx_hashes.0));
+ 
+-        let normal_txs = tx_blobs
++        let ordinary_tx_blobs = tx_blobs
+             .get(tx_offset.saturating_add(1)..tx_end)
+             .ok_or(RuntimeError::KeyNotFound)?
+-            .iter()
+-            .cloned()
+-            .map(Bytes::from)
+-            .collect();
++            .iter();
++        let txs = if prune {
++            let pruned_entries = ordinary_tx_blobs
++                .map(|tx_blob| {
++                    let tx = Transaction::read(&mut tx_blob.as_slice()).map_err(|_| {
++                        RuntimeError::Io(std::io::Error::other("failed to parse tx"))
++                    })?;
++
++                    if tx.version() == 1 {
++                        Ok(PrunedTxBlobEntry {
++                            blob: Bytes::from(tx_blob.clone()),
++                            prunable_hash: ByteArray::from([0u8; 32]),
++                        })
++                    } else {
++                        let (pruned_tx, prunable_bytes) = tx.pruned_with_prunable();
++                        if prunable_bytes.is_empty() {
++                            Ok(PrunedTxBlobEntry {
++                                blob: Bytes::from(tx_blob.clone()),
++                                prunable_hash: ByteArray::from([0u8; 32]),
++                            })
++                        } else {
++                            Ok(PrunedTxBlobEntry {
++                                blob: Bytes::from(pruned_tx.serialize()),
++                                prunable_hash: ByteArray::from(keccak256(&prunable_bytes)),
++                            })
++                        }
++                    }
++                })
++                .collect::<Result<_, RuntimeError>>()?;
++            TransactionBlobs::Pruned(pruned_entries)
++        } else {
++            TransactionBlobs::Normal(ordinary_tx_blobs.cloned().map(Bytes::from).collect())
++        };
+         let block_outputs = tx_outputs
+             .get(tx_offset..tx_end)
+             .ok_or(RuntimeError::KeyNotFound)?
+             .to_vec();
+ 
+         blocks.push(BlockCompleteEntry {
+-            pruned: false,
++            pruned: prune,
+             block: Bytes::from(block),
+             block_weight: 0,
+-            txs: TransactionBlobs::Normal(normal_txs),
++            txs,
+         });
+         output_indices.push(block_outputs);
+         tx_offset = tx_end;
+@@ -688,22 +718,26 @@ mod test {
+ 
+             // The 1B range reader must return byte-identical block entries
+             // and the same per-transaction output indices as the legacy
+-            // independent lookup path.
+-            let wallet_scan = get_wallet_scan_range(0, blocks.len(), &tables).unwrap();
+-            assert_eq!(wallet_scan.blocks.len(), blocks.len());
+-            assert_eq!(wallet_scan.output_indices.len(), blocks.len());
+-            for height in 0..blocks.len() {
+-                assert_eq!(
+-                    wallet_scan.blocks[height],
+-                    get_block_complete_entry_from_height(&height, &tables).unwrap()
+-                );
+-                let info = get_block_info(&height, tables.block_infos()).unwrap();
+-                let tx_count = tables.block_txs_hashes().get(&height).unwrap().0.len() + 1;
+-                let expected_indices = (info.mining_tx_index
+-                    ..info.mining_tx_index + usize_to_u64(tx_count))
+-                    .map(|tx_id| tables.tx_outputs().get(&tx_id).unwrap().0)
+-                    .collect::<Vec<_>>();
+-                assert_eq!(wallet_scan.output_indices[height], expected_indices);
++            // independent lookup path, for both normal and pruned responses.
++            for prune in [false, true] {
++                let wallet_scan = get_wallet_scan_range(0, blocks.len(), prune, &tables).unwrap();
++                assert_eq!(wallet_scan.blocks.len(), blocks.len());
++                assert_eq!(wallet_scan.output_indices.len(), blocks.len());
++                for height in 0..blocks.len() {
++                    let legacy = if prune {
++                        get_block_complete_entry_from_height_pruned(&height, &tables).unwrap()
++                    } else {
++                        get_block_complete_entry_from_height(&height, &tables).unwrap()
++                    };
++                    assert_eq!(wallet_scan.blocks[height], legacy);
++                    let info = get_block_info(&height, tables.block_infos()).unwrap();
++                    let tx_count = tables.block_txs_hashes().get(&height).unwrap().0.len() + 1;
++                    let expected_indices = (info.mining_tx_index
++                        ..info.mining_tx_index + usize_to_u64(tx_count))
++                        .map(|tx_id| tables.tx_outputs().get(&tx_id).unwrap().0)
++                        .collect::<Vec<_>>();
++                    assert_eq!(wallet_scan.output_indices[height], expected_indices);
++                }
+             }
+ 
+             // Both height and hash should result in getting the same data.
+diff --git a/storage/blockchain/src/service/read.rs b/storage/blockchain/src/service/read.rs
+index 9d57a5f..4c569ac 100644
+--- a/storage/blockchain/src/service/read.rs
++++ b/storage/blockchain/src/service/read.rs
+@@ -118,7 +118,8 @@ fn map_request(
+         R::WalletScanRange {
+             start_height,
+             end_height,
+-        } => wallet_scan_range(env, start_height, end_height),
++            prune,
++        } => wallet_scan_range(env, start_height, end_height, prune),
+         R::BlockCompleteEntriesByHeightPruned(heights) => {
+             block_complete_entries_by_height_pruned(env, heights)
+         }
+@@ -298,6 +299,7 @@ fn wallet_scan_range(
+     env: &ConcreteEnv,
+     start_height: BlockHeight,
+     end_height: BlockHeight,
++    prune: bool,
+ ) -> ResponseResult {
+     let env_inner = env.env_inner();
+     let tx_ro = env_inner.tx_ro()?;
+@@ -306,6 +308,7 @@ fn wallet_scan_range(
+     Ok(BlockchainResponse::WalletScanRange(get_wallet_scan_range(
+         start_height,
+         end_height,
++        prune,
+         &tables,
+     )?))
+ }
+diff --git a/types/types/src/blockchain.rs b/types/types/src/blockchain.rs
+index 046b5ca..a7ffbfe 100644
+--- a/types/types/src/blockchain.rs
++++ b/types/types/src/blockchain.rs
+@@ -57,7 +57,7 @@ pub enum BlockchainReadRequest {
+     /// The input is the block heights.
+     BlockCompleteEntriesByHeight(Vec<usize>),
+ 
+-    /// Request a consecutive, unpruned wallet-scan range.
++    /// Request a consecutive wallet-scan range.
+     ///
+     /// The range is half-open (`start_height..end_height`). Implementations
+     /// should use ordered table iteration rather than independent lookups.
+@@ -66,6 +66,8 @@ pub enum BlockchainReadRequest {
+         start_height: usize,
+         /// End height, exclusive.
+         end_height: usize,
++        /// Return ordinary transaction blobs in the standard pruned wire form.
++        prune: bool,
+     },
+ 
+     /// Same as above but returns pruned TX blobs.

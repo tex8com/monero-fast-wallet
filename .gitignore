@@ -10,6 +10,11 @@ target/
 !.env.example
 secrets/
 
+# Local screenshots and compiled benchmark executables are not source.
+.codex-*.png
+tools/transport-protocol-bench/transport-protocol-bench
+tools/transport-protocol-bench/transport-protocol-bench-linux-amd64
+
 # Local runtime state and recovery artefacts. These can contain encrypted
 # wallet-watch registrations and must never become part of project history.
 notify-scanner-watch.json.enc

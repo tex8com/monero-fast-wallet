@@ -955,6 +955,17 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePersistOpenWallets(
   }
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCloseAllWallets(
+    JNIEnv* env,
+    jclass) {
+  try {
+    walletEngine().closeAllWallets(true);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeGetAddress(
     JNIEnv* env,
@@ -1002,11 +1013,12 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeGetSeed(
     jstring walletId,
     jstring seedOffset) {
   try {
-    return toJavaString(
-        env,
-        walletEngine().getSeed(
-            toStdString(env, walletId),
-            toStdString(env, seedOffset)));
+    auto seed = walletEngine().getSeed(
+        toStdString(env, walletId),
+        toStdString(env, seedOffset));
+    auto* result = toJavaString(env, seed);
+    tex8::wallet::secureClear(seed);
+    return result;
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;

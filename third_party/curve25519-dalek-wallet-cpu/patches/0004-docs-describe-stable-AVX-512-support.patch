@@ -1,0 +1,37 @@
+From e54f13c409ae49cf2f19a86da7a5bc6cf082a9a4 Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <rolandkohlhuber@Rolands-MacBook-Air.local>
+Date: Sat, 25 Jul 2026 14:26:06 -0500
+Subject: [PATCH 4/6] docs: describe stable AVX-512 support
+
+---
+ curve25519-dalek/README.md | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/curve25519-dalek/README.md b/curve25519-dalek/README.md
+index c918d69..dbf34ca 100644
+--- a/curve25519-dalek/README.md
++++ b/curve25519-dalek/README.md
+@@ -148,16 +148,20 @@ $ cargo build --target i686-unknown-linux-gnu
+ 
+ ## SIMD backend
+ 
+-The specific SIMD backend (AVX512 / AVX2 / `serial` default) is selected automatically at runtime, depending on the currently available CPU features, and whether Rust nightly is being used for compilation. The precise conditions are specified below.
++The specific SIMD backend (AVX512 / AVX2 / `serial` default) is selected
++automatically at runtime, depending on the currently available CPU features.
++AVX512 requires Rust 1.89 or newer, where its target features and intrinsics
++are stable, or an older nightly compiler.
+ 
+ For a given CPU feature, you can also specify an appropriate `-C target_feature` to build a binary which assumes the required SIMD instructions are always available. Don't do this if you don't have a good reason.
+ 
+ | Backend | `RUSTFLAGS`                               | Requires nightly? |
+ | :---    | :---                                      | :---              |
+ | avx2    | `-C target_feature=+avx2`                 | no                |
+-| avx512  | `-C target_feature=+avx512ifma,+avx512vl` | yes               |
++| avx512  | `-C target_feature=+avx512ifma,+avx512vl` | before Rust 1.89  |
+ 
+-If compiled on a non-nightly compiler, `curve25519-dalek` will not include AVX512 code, and therefore will never select it at runtime.
++Stable compilers before Rust 1.89 do not include AVX512 code and fall back to
++AVX2 or the serial backend.
+ 
+ # Documentation
+ 

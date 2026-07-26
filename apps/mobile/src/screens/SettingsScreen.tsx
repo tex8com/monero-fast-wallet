@@ -1,26 +1,25 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
   Alert,
-  Modal,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
   Switch,
   TextInput,
-} from "react-native";
-import { colors, spacing, radius } from "../theme/colors";
-import MoneroLogo from "../components/MoneroLogo";
-import { Icon } from "../components/Icon";
+} from 'react-native';
+import { colors, spacing, radius } from '../theme/colors';
+import MoneroLogo from '../components/MoneroLogo';
+import { Icon } from '../components/Icon';
 import {
   languageNames,
   supportedLanguages,
   type TranslationKey,
   useI18n,
-} from "../i18n";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { MoneroNetwork } from "../services/NativeMoneroWallet";
+} from '../i18n';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import type { MoneroNetwork } from '../services/NativeMoneroWallet';
 import {
   applyNodeModeDefaults,
   applyNodeNetworkDefaults,
@@ -31,23 +30,23 @@ import {
   nodeConnectionDraftToSettings,
   nodeConnectionSettingsToDraft,
   saveActiveNodeConnectionSettings,
-} from "../services/NodeConnectionSettings";
+} from '../services/NodeConnectionSettings';
 import type {
   NodeConnectionDraft,
   NodeConnectionMode,
-} from "../services/NodeConnectionSettings";
-import { runWalletDiagnostics } from "../services/WalletDiagnostics";
-import { walletService } from "../services/WalletService";
-import { useWalletState } from "../services/WalletState";
+} from '../services/NodeConnectionSettings';
+import { runWalletDiagnostics } from '../services/WalletDiagnostics';
+import { walletService } from '../services/WalletService';
+import { useWalletState } from '../services/WalletState';
 import {
   type AppProtectionMode,
   useAppSecurity,
-} from "../services/AppSecurity";
+} from '../services/AppSecurity';
 import {
   loadFastWalletPreference,
   saveFastWalletPreference,
   type FastWalletPreference,
-} from "../services/FastWalletPreference";
+} from '../services/FastWalletPreference';
 
 type DiagnosticRow = {
   label: string;
@@ -58,24 +57,22 @@ type DiagnosticRow = {
 type WalletDiagnosticsResult = Awaited<ReturnType<typeof runWalletDiagnostics>>;
 
 const NODE_MODES: { value: NodeConnectionMode; labelKey: TranslationKey }[] = [
-  { value: "optimized-grpc", labelKey: "settings.nodeModeTex8" },
-  { value: "original-rpc", labelKey: "settings.nodeModeOriginal" },
+  { value: 'optimized-grpc', labelKey: 'settings.nodeModeTex8' },
+  { value: 'original-rpc', labelKey: 'settings.nodeModeOriginal' },
 ];
 
 const NETWORKS: { value: MoneroNetwork; label: string }[] = [
-  { value: "mainnet", label: "Mainnet" },
-  { value: "testnet", label: "Testnet" },
-  { value: "stagenet", label: "Stagenet" },
+  { value: 'mainnet', label: 'Mainnet' },
+  { value: 'testnet', label: 'Testnet' },
+  { value: 'stagenet', label: 'Stagenet' },
 ];
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { language, setLanguage, t } = useI18n();
   const { registeredWallet, session } = useWalletState();
-  const {
-    mode: savedProtectionMode,
-    setMode: setAppProtectionMode,
-  } = useAppSecurity();
+  const { mode: savedProtectionMode, setMode: setAppProtectionMode } =
+    useAppSecurity();
   const bottomPadding = Math.max(180, insets.bottom + 150);
   const [draft, setDraft] = useState<NodeConnectionDraft>(() =>
     nodeConnectionSettingsToDraft(getActiveNodeConnectionSettings()),
@@ -85,20 +82,18 @@ export default function SettingsScreen() {
   );
   const [isLoadingNodeSettings, setIsLoadingNodeSettings] = useState(true);
   const [isSavingNodeSettings, setIsSavingNodeSettings] = useState(false);
-  const [nodeStatusText, setNodeStatusText] = useState("Loading");
-  const [diagnosticsStatusText, setDiagnosticsStatusText] =
-    useState("Ready");
+  const [nodeStatusText, setNodeStatusText] = useState('Loading');
+  const [diagnosticsStatusText, setDiagnosticsStatusText] = useState('Ready');
   const [diagnosticRows, setDiagnosticRows] = useState<DiagnosticRow[]>([]);
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
-  const [recoverySeed, setRecoverySeed] = useState<string | undefined>();
   const [isRevealingSeed, setIsRevealingSeed] = useState(false);
   const [protectionMode, setProtectionMode] =
     useState<AppProtectionMode>(savedProtectionMode);
-  const [appPassword, setAppPassword] = useState("");
-  const [confirmAppPassword, setConfirmAppPassword] = useState("");
+  const [appPassword, setAppPassword] = useState('');
+  const [confirmAppPassword, setConfirmAppPassword] = useState('');
   const [isSavingAppProtection, setIsSavingAppProtection] = useState(false);
   const [fastWalletPreference, setFastWalletPreference] =
-    useState<FastWalletPreference>("disabled");
+    useState<FastWalletPreference>('disabled');
 
   useEffect(() => {
     setProtectionMode(savedProtectionMode);
@@ -109,11 +104,13 @@ export default function SettingsScreen() {
     void loadFastWalletPreference().then(preference => {
       if (mounted && preference) setFastWalletPreference(preference);
     });
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   function changeFastWalletPreference(enabled: boolean) {
-    const next: FastWalletPreference = enabled ? "enabled" : "disabled";
+    const next: FastWalletPreference = enabled ? 'enabled' : 'disabled';
     setFastWalletPreference(next);
     void saveFastWalletPreference(next).catch(() => undefined);
   }
@@ -128,17 +125,20 @@ export default function SettingsScreen() {
         }
 
         const visibleSettings =
-          settings.mode === "custom"
-            ? createDefaultNodeConnectionSettings(settings.network, "optimized-grpc")
+          settings.mode === 'custom'
+            ? createDefaultNodeConnectionSettings(
+                settings.network,
+                'optimized-grpc',
+              )
             : settings;
 
         setSavedSettings(visibleSettings);
         setDraft(nodeConnectionSettingsToDraft(visibleSettings));
-        setNodeStatusText("Saved");
+        setNodeStatusText('Saved');
       })
       .catch(() => {
         if (mounted) {
-          setNodeStatusText("Default");
+          setNodeStatusText('Default');
         }
       })
       .finally(() => {
@@ -159,13 +159,13 @@ export default function SettingsScreen() {
 
   const canSave =
     resolvedSettings.daemon.address.length > 0 &&
-    (draft.mode !== "optimized-grpc" ||
+    (draft.mode !== 'optimized-grpc' ||
       resolvedSettings.grpcEndpoint.length > 0);
   const hasChanges =
     JSON.stringify(resolvedSettings) !== JSON.stringify(savedSettings);
-  const isOriginalRpc = draft.mode === "original-rpc";
+  const isOriginalRpc = draft.mode === 'original-rpc';
   const nodeStatus =
-    hasChanges && !isLoadingNodeSettings ? "Unsaved" : nodeStatusText;
+    hasChanges && !isLoadingNodeSettings ? 'Unsaved' : nodeStatusText;
   const displayedNodeStatus = translateStatusText(nodeStatus, t);
   const displayedDiagnosticsStatus = translateStatusText(
     diagnosticsStatusText,
@@ -224,18 +224,20 @@ export default function SettingsScreen() {
     }
 
     setIsSavingNodeSettings(true);
-    setNodeStatusText("Saving");
+    setNodeStatusText('Saving');
 
     try {
       const saved = await saveActiveNodeConnectionSettings(resolvedSettings);
       const applied = await walletService.applyNodeConnectionToActive(saved);
-      await walletService.refreshFastReceiveRegistrationStatusesForSettings(saved);
+      await walletService.refreshFastReceiveRegistrationStatusesForSettings(
+        saved,
+      );
 
       setSavedSettings(saved);
       setDraft(nodeConnectionSettingsToDraft(saved));
-      setNodeStatusText(applied ? "Applied" : "Saved");
+      setNodeStatusText(applied ? 'Applied' : 'Saved');
     } catch {
-      setNodeStatusText("Error");
+      setNodeStatusText('Error');
     } finally {
       setIsSavingNodeSettings(false);
     }
@@ -247,21 +249,23 @@ export default function SettingsScreen() {
     }
 
     setIsRunningDiagnostics(true);
-    setDiagnosticsStatusText("Running");
+    setDiagnosticsStatusText('Running');
 
     try {
-      const diagnostics = await runWalletDiagnostics("settings");
+      const diagnostics = await runWalletDiagnostics('settings');
       setDiagnosticRows(createDiagnosticRows(diagnostics));
-      setDiagnosticsStatusText(diagnostics.errors.length > 0 ? "Warnings" : "Ready");
+      setDiagnosticsStatusText(
+        diagnostics.errors.length > 0 ? 'Warnings' : 'Ready',
+      );
     } catch (error) {
       setDiagnosticRows([
         {
-          label: "Error",
+          label: 'Error',
           value: errorMessage(error),
           warning: true,
         },
       ]);
-      setDiagnosticsStatusText("Error");
+      setDiagnosticsStatusText('Error');
     } finally {
       setIsRunningDiagnostics(false);
     }
@@ -269,32 +273,47 @@ export default function SettingsScreen() {
 
   async function revealRecoverySeed() {
     if (!session) {
-      Alert.alert(t("settings.recoverySeedTitle"), t("settings.recoverySeedUnavailable"));
+      Alert.alert(
+        t('settings.recoverySeedTitle'),
+        t('settings.recoverySeedUnavailable'),
+      );
       return;
     }
-    if (registeredWallet?.kind === "hardware" || session.hardwareDevice) {
-      Alert.alert(t("settings.recoverySeedTitle"), t("settings.recoverySeedHardware"));
+    if (registeredWallet?.kind === 'hardware' || session.hardwareDevice) {
+      Alert.alert(
+        t('settings.recoverySeedTitle'),
+        t('settings.recoverySeedHardware'),
+      );
       return;
     }
 
     setIsRevealingSeed(true);
     try {
-      setRecoverySeed(await walletService.getSeed(session));
+      await walletService.presentRecoverySeed(
+        session,
+        t('settings.recoverySeedWarning'),
+      );
     } catch {
-      Alert.alert(t("settings.recoverySeedTitle"), t("settings.recoverySeedError"));
+      Alert.alert(
+        t('settings.recoverySeedTitle'),
+        t('settings.recoverySeedError'),
+      );
     } finally {
       setIsRevealingSeed(false);
     }
   }
 
   async function saveAppProtection() {
-    if (protectionMode === "password") {
-      if (appPassword.length < 8) {
-        Alert.alert(t("settings.appProtection"), t("settings.passwordMinimum"));
+    if (protectionMode === 'password') {
+      if (appPassword.length < 12) {
+        Alert.alert(t('settings.appProtection'), t('settings.passwordMinimum'));
         return;
       }
       if (appPassword !== confirmAppPassword) {
-        Alert.alert(t("settings.appProtection"), t("settings.passwordMismatch"));
+        Alert.alert(
+          t('settings.appProtection'),
+          t('settings.passwordMismatch'),
+        );
         return;
       }
     }
@@ -303,13 +322,16 @@ export default function SettingsScreen() {
     try {
       await setAppProtectionMode(
         protectionMode,
-        protectionMode === "password" ? appPassword : undefined,
+        protectionMode === 'password' ? appPassword : undefined,
       );
-      setAppPassword("");
-      setConfirmAppPassword("");
-      Alert.alert(t("settings.appProtection"), t("settings.appProtectionSaved"));
+      setAppPassword('');
+      setConfirmAppPassword('');
+      Alert.alert(
+        t('settings.appProtection'),
+        t('settings.appProtectionSaved'),
+      );
     } catch (error) {
-      Alert.alert(t("settings.appProtection"), errorMessage(error));
+      Alert.alert(t('settings.appProtection'), errorMessage(error));
     } finally {
       setIsSavingAppProtection(false);
     }
@@ -317,32 +339,27 @@ export default function SettingsScreen() {
 
   return (
     <View style={s.container}>
-      <ScrollView contentContainerStyle={[s.scroll, { paddingBottom: bottomPadding }]}>
+      <ScrollView
+        contentContainerStyle={[s.scroll, { paddingBottom: bottomPadding }]}
+      >
         <View style={s.header}>
           <MoneroLogo size={44} />
-          <Text style={s.title}>{t("settings.title")}</Text>
+          <Text style={s.title}>{t('settings.title')}</Text>
           <Text style={s.version}>Version 1.0.0 (MVP)</Text>
         </View>
 
         <View style={s.section}>
           <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>{t("settings.language")}</Text>
-            <Text style={s.nodeStatus}>
-              {languageNames[language]}
-            </Text>
+            <Text style={s.sectionTitle}>{t('settings.language')}</Text>
+            <Text style={s.nodeStatus}>{languageNames[language]}</Text>
           </View>
           <View style={s.nodePanel}>
-            <Text style={s.languageHelp}>
-              {t("settings.languageSubtitle")}
-            </Text>
+            <Text style={s.languageHelp}>{t('settings.languageSubtitle')}</Text>
             <View style={s.segmented}>
               {supportedLanguages.map(code => (
                 <TouchableOpacity
                   key={code}
-                  style={[
-                    s.segment,
-                    language === code && s.segmentActive,
-                  ]}
+                  style={[s.segment, language === code && s.segmentActive]}
                   activeOpacity={0.75}
                   onPress={() => {
                     setLanguage(code).catch(() => undefined);
@@ -365,37 +382,46 @@ export default function SettingsScreen() {
         </View>
 
         <View style={s.section}>
-          <Text style={s.sectionTitle}>{t("settings.appProtection")}</Text>
+          <Text style={s.sectionTitle}>{t('settings.appProtection')}</Text>
           <View style={s.nodePanel}>
-            <Text style={s.passwordHint}>{t("settings.appProtectionHint")}</Text>
+            <Text style={s.passwordHint}>
+              {t('settings.appProtectionHint')}
+            </Text>
             <View style={s.segmented}>
-              {([
-                ["none", t("settings.noProtection")],
-                ["biometric", t("settings.biometrics")],
-                ["password", t("settings.appPassword")],
-              ] as const).map(([nextMode, label]) => (
+              {(
+                [
+                  ['biometric', t('settings.biometrics')],
+                  ['password', t('settings.appPassword')],
+                ] as const
+              ).map(([nextMode, label]) => (
                 <TouchableOpacity
                   key={nextMode}
                   accessibilityRole="button"
                   onPress={() => setProtectionMode(nextMode)}
-                  style={[s.segment, protectionMode === nextMode && s.segmentActive]}
+                  style={[
+                    s.segment,
+                    protectionMode === nextMode && s.segmentActive,
+                  ]}
                 >
                   <Text
                     numberOfLines={1}
                     adjustsFontSizeToFit
-                    style={[s.segmentText, protectionMode === nextMode && s.segmentTextActive]}
+                    style={[
+                      s.segmentText,
+                      protectionMode === nextMode && s.segmentTextActive,
+                    ]}
                   >
                     {label}
                   </Text>
                 </TouchableOpacity>
               ))}
             </View>
-            {protectionMode === "password" ? (
+            {protectionMode === 'password' ? (
               <>
                 <TextInput
                   value={appPassword}
                   onChangeText={setAppPassword}
-                  placeholder={t("settings.setAppPassword")}
+                  placeholder={t('settings.setAppPassword')}
                   placeholderTextColor={colors.textMuted}
                   secureTextEntry
                   autoCapitalize="none"
@@ -405,7 +431,7 @@ export default function SettingsScreen() {
                 <TextInput
                   value={confirmAppPassword}
                   onChangeText={setConfirmAppPassword}
-                  placeholder={t("settings.confirmAppPassword")}
+                  placeholder={t('settings.confirmAppPassword')}
                   placeholderTextColor={colors.textMuted}
                   secureTextEntry
                   autoCapitalize="none"
@@ -418,25 +444,29 @@ export default function SettingsScreen() {
               activeOpacity={0.8}
               disabled={
                 isSavingAppProtection ||
-                (protectionMode === "password" && (!appPassword || !confirmAppPassword))
+                (protectionMode === 'password' &&
+                  (!appPassword || !confirmAppPassword))
               }
               onPress={() => void saveAppProtection()}
               style={[
                 s.secondaryButton,
                 (isSavingAppProtection ||
-                  (protectionMode === "password" && (!appPassword || !confirmAppPassword))) &&
+                  (protectionMode === 'password' &&
+                    (!appPassword || !confirmAppPassword))) &&
                   s.primaryButtonDisabled,
               ]}
             >
               <Text style={s.secondaryButtonText}>
-                {isSavingAppProtection ? t("action.working") : t("settings.saveAppProtection")}
+                {isSavingAppProtection
+                  ? t('action.working')
+                  : t('settings.saveAppProtection')}
               </Text>
             </TouchableOpacity>
           </View>
         </View>
 
         <View style={s.section}>
-          <Text style={s.sectionTitle}>{t("settings.wallet")}</Text>
+          <Text style={s.sectionTitle}>{t('settings.wallet')}</Text>
           <View style={s.sectionCard}>
             <TouchableOpacity
               accessibilityRole="button"
@@ -449,8 +479,10 @@ export default function SettingsScreen() {
                 <Icon name="key" size={20} color={colors.orange} />
               </View>
               <View style={s.rowCopy}>
-                <Text style={s.rowLabel}>{t("settings.showBackupSeed")}</Text>
-                <Text style={s.rowHint}>{t("settings.recoverySeedDescription")}</Text>
+                <Text style={s.rowLabel}>{t('settings.showBackupSeed')}</Text>
+                <Text style={s.rowHint}>
+                  {t('settings.recoverySeedDescription')}
+                </Text>
               </View>
               <Icon name="chevron-right" size={18} color={colors.textMuted} />
             </TouchableOpacity>
@@ -460,36 +492,64 @@ export default function SettingsScreen() {
         <View style={s.section}>
           <Text style={s.sectionTitle}>Privacy mode</Text>
           <View style={s.nodePanel}>
-            <Text style={s.passwordHint}>Choose the default for future normal and Ledger wallets. Existing wallets are unchanged.</Text>
+            <Text style={s.passwordHint}>
+              Choose the default for future normal and Ledger wallets. Existing
+              wallets are unchanged.
+            </Text>
             <View style={s.segmented}>
               <TouchableOpacity
-                style={[s.segment, fastWalletPreference === "disabled" && s.segmentActive]}
+                style={[
+                  s.segment,
+                  fastWalletPreference === 'disabled' && s.segmentActive,
+                ]}
                 activeOpacity={0.75}
                 onPress={() => changeFastWalletPreference(false)}
               >
-                <Text style={[s.segmentText, fastWalletPreference === "disabled" && s.segmentTextActive]}>Privacy only</Text>
+                <Text
+                  style={[
+                    s.segmentText,
+                    fastWalletPreference === 'disabled' && s.segmentTextActive,
+                  ]}
+                >
+                  Privacy only
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[s.segment, fastWalletPreference === "enabled" && s.segmentActive]}
+                style={[
+                  s.segment,
+                  fastWalletPreference === 'enabled' && s.segmentActive,
+                ]}
                 activeOpacity={0.75}
                 onPress={() => changeFastWalletPreference(true)}
               >
-                <Text style={[s.segmentText, fastWalletPreference === "enabled" && s.segmentTextActive]}>Privacy + comfort</Text>
+                <Text
+                  style={[
+                    s.segmentText,
+                    fastWalletPreference === 'enabled' && s.segmentTextActive,
+                  ]}
+                >
+                  Privacy + comfort
+                </Text>
               </TouchableOpacity>
             </View>
-            <Text style={s.switchValue}>{fastWalletPreference === "enabled" ? "Privacy + comfort adds a separate Fast Wallet for quick incoming-payment alerts. Your normal wallet stays unchanged." : "Privacy only creates normal local wallets by default. You can add a Fast Wallet later."} Scanner hosting always needs separate approval.</Text>
+            <Text style={s.switchValue}>
+              {fastWalletPreference === 'enabled'
+                ? 'Privacy + comfort adds a separate Fast Wallet for quick incoming-payment alerts. Your normal wallet stays unchanged.'
+                : 'Privacy only creates normal local wallets by default. You can add a Fast Wallet later.'}{' '}
+              Scanner hosting always needs separate approval.
+            </Text>
           </View>
         </View>
 
         <View style={s.section}>
           <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>{t("settings.node")}</Text>
+            <Text style={s.sectionTitle}>{t('settings.node')}</Text>
             <Text style={[s.nodeStatus, hasChanges && s.nodeStatusDirty]}>
               {displayedNodeStatus}
             </Text>
           </View>
           <View style={s.nodePanel}>
-            <Text style={s.fieldLabel}>{t("settings.mode")}</Text>
+            <Text style={s.fieldLabel}>{t('settings.mode')}</Text>
             <View style={s.segmented}>
               {NODE_MODES.map(mode => (
                 <TouchableOpacity
@@ -515,7 +575,7 @@ export default function SettingsScreen() {
               ))}
             </View>
 
-            <Text style={s.fieldLabel}>{t("settings.network")}</Text>
+            <Text style={s.fieldLabel}>{t('settings.network')}</Text>
             <View style={s.segmented}>
               {NETWORKS.map(network => (
                 <TouchableOpacity
@@ -549,30 +609,30 @@ export default function SettingsScreen() {
               />
               <Text style={s.nodeHintText}>
                 {isOriginalRpc
-                  ? t("settings.originalNodeHelp")
-                  : t("settings.tex8NodeHelp")}
+                  ? t('settings.originalNodeHelp')
+                  : t('settings.tex8NodeHelp')}
               </Text>
             </View>
 
             {isOriginalRpc ? (
               <NodeInput
-                label={t("settings.originalNodeAddress")}
+                label={t('settings.originalNodeAddress')}
                 value={draft.daemonAddress}
-                onChangeText={value => updateDraft("daemonAddress", value)}
+                onChangeText={value => updateDraft('daemonAddress', value)}
                 placeholder="host:port"
               />
             ) : (
               <>
                 <NodeInput
-                  label={t("settings.fastWalletServerAddress")}
+                  label={t('settings.fastWalletServerAddress')}
                   value={draft.daemonAddress}
                   onChangeText={updateFastWalletServerAddress}
                   placeholder="xmr.tex8.com:18089"
                 />
                 <NodeInput
-                  label={t("settings.grpcEndpoint")}
+                  label={t('settings.grpcEndpoint')}
                   value={draft.grpcEndpoint}
-                  onChangeText={value => updateDraft("grpcEndpoint", value)}
+                  onChangeText={value => updateDraft('grpcEndpoint', value)}
                   placeholder="xmr.tex8.com:18091"
                 />
               </>
@@ -580,12 +640,14 @@ export default function SettingsScreen() {
 
             <View style={s.switchRow}>
               <View style={s.switchText}>
-                <Text style={s.switchTitle}>{t("settings.trustedDaemon")}</Text>
-                <Text style={s.switchValue}>{draft.trusted ? t("common.on") : t("common.off")}</Text>
+                <Text style={s.switchTitle}>{t('settings.trustedDaemon')}</Text>
+                <Text style={s.switchValue}>
+                  {draft.trusted ? t('common.on') : t('common.off')}
+                </Text>
               </View>
               <Switch
                 value={draft.trusted}
-                onValueChange={value => updateDraft("trusted", value)}
+                onValueChange={value => updateDraft('trusted', value)}
                 trackColor={{ false: colors.surface, true: colors.orange }}
                 thumbColor="#FFF"
               />
@@ -593,12 +655,14 @@ export default function SettingsScreen() {
 
             <View style={s.switchRow}>
               <View style={s.switchText}>
-                <Text style={s.switchTitle}>{t("settings.daemonTls")}</Text>
-                <Text style={s.switchValue}>{draft.useSsl ? t("common.on") : t("common.off")}</Text>
+                <Text style={s.switchTitle}>{t('settings.daemonTls')}</Text>
+                <Text style={s.switchValue}>
+                  {draft.useSsl ? t('common.on') : t('common.off')}
+                </Text>
               </View>
               <Switch
                 value={draft.useSsl}
-                onValueChange={value => updateDraft("useSsl", value)}
+                onValueChange={value => updateDraft('useSsl', value)}
                 trackColor={{ false: colors.surface, true: colors.orange }}
                 thumbColor="#FFF"
               />
@@ -610,7 +674,7 @@ export default function SettingsScreen() {
                 activeOpacity={0.75}
                 onPress={resetNodeDefaults}
               >
-                <Text style={s.secondaryButtonText}>{t("action.reset")}</Text>
+                <Text style={s.secondaryButtonText}>{t('action.reset')}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
@@ -624,7 +688,7 @@ export default function SettingsScreen() {
               >
                 <Icon name="check" size={18} color="#FFF" />
                 <Text style={s.primaryButtonText}>
-                  {isSavingNodeSettings ? t("action.saving") : t("action.save")}
+                  {isSavingNodeSettings ? t('action.saving') : t('action.save')}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -633,11 +697,11 @@ export default function SettingsScreen() {
 
         <View style={s.section}>
           <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>{t("settings.diagnostics")}</Text>
+            <Text style={s.sectionTitle}>{t('settings.diagnostics')}</Text>
             <Text
               style={[
                 s.nodeStatus,
-                diagnosticsStatusText !== "Ready" && s.nodeStatusDirty,
+                diagnosticsStatusText !== 'Ready' && s.nodeStatusDirty,
               ]}
             >
               {displayedDiagnosticsStatus}
@@ -675,7 +739,9 @@ export default function SettingsScreen() {
             >
               <Icon name="info" size={18} color="#FFF" />
               <Text style={s.primaryButtonText}>
-                {isRunningDiagnostics ? t("status.running") : t("action.runDiagnostics")}
+                {isRunningDiagnostics
+                  ? t('status.running')
+                  : t('action.runDiagnostics')}
               </Text>
             </TouchableOpacity>
           </View>
@@ -683,27 +749,6 @@ export default function SettingsScreen() {
 
         <View style={s.bottomSpacer} />
       </ScrollView>
-      <Modal
-        animationType="slide"
-        transparent
-        visible={Boolean(recoverySeed)}
-        onRequestClose={() => setRecoverySeed(undefined)}
-      >
-        <View style={s.seedModalBackdrop}>
-          <View style={s.seedModalCard}>
-            <Text style={s.seedModalTitle}>{t("settings.recoverySeedTitle")}</Text>
-            <Text style={s.seedModalHint}>{t("settings.recoverySeedWarning")}</Text>
-            <Text selectable style={s.seedText}>{recoverySeed}</Text>
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={() => setRecoverySeed(undefined)}
-              style={s.primaryButton}
-            >
-              <Text style={s.primaryButtonText}>{t("action.close")}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -715,30 +760,30 @@ type Translator = (
 
 function translateStatusText(value: string, t: Translator): string {
   switch (value) {
-    case "Applied":
-      return t("status.applied");
-    case "Creating":
-      return t("status.creating");
-    case "Default":
-      return t("settings.default");
-    case "Error":
-      return t("status.error");
-    case "Loading":
-      return t("settings.loading");
-    case "Off":
-      return t("common.off");
-    case "Ready":
-      return t("status.ready");
-    case "Running":
-      return t("status.running");
-    case "Saved":
-      return t("status.saved");
-    case "Saving":
-      return t("action.saving");
-    case "Unsaved":
-      return t("settings.unsaved");
-    case "Warnings":
-      return t("status.warnings");
+    case 'Applied':
+      return t('status.applied');
+    case 'Creating':
+      return t('status.creating');
+    case 'Default':
+      return t('settings.default');
+    case 'Error':
+      return t('status.error');
+    case 'Loading':
+      return t('settings.loading');
+    case 'Off':
+      return t('common.off');
+    case 'Ready':
+      return t('status.ready');
+    case 'Running':
+      return t('status.running');
+    case 'Saved':
+      return t('status.saved');
+    case 'Saving':
+      return t('action.saving');
+    case 'Unsaved':
+      return t('settings.unsaved');
+    case 'Warnings':
+      return t('status.warnings');
     default:
       return value;
   }
@@ -782,39 +827,39 @@ function createDiagnosticRows(
 ): DiagnosticRow[] {
   const rows: DiagnosticRow[] = [
     {
-      label: "Mode",
-      value: diagnostics.settings?.mode ?? "Default",
+      label: 'Mode',
+      value: diagnostics.settings?.mode ?? 'Default',
     },
     {
-      label: "Daemon",
+      label: 'Daemon',
       value: formatDaemonDiagnostic(diagnostics.daemon.getInfo),
       warning: isDaemonWarning(diagnostics.daemon.getInfo),
     },
     {
-      label: "JSON RPC",
+      label: 'JSON RPC',
       value: formatDaemonDiagnostic(diagnostics.daemon.jsonRpcGetInfo),
       warning: isDaemonWarning(diagnostics.daemon.jsonRpcGetInfo),
     },
     {
-      label: "gRPC",
-      value: diagnostics.settings?.grpcEndpoint || "Disabled",
+      label: 'gRPC',
+      value: diagnostics.settings?.grpcConfigured ? 'Configured' : 'Disabled',
     },
     {
-      label: "Native",
-      value: diagnostics.native.linkedWithMonero ? "Linked" : "Missing",
+      label: 'Native',
+      value: diagnostics.native.linkedWithMonero ? 'Linked' : 'Missing',
       warning: !diagnostics.native.linkedWithMonero,
     },
     {
-      label: "Wallet",
+      label: 'Wallet',
       value: formatWalletDiagnostic(diagnostics),
     },
     {
-      label: "Fast Wallet view key",
+      label: 'Fast Wallet view key',
       value: formatFastWalletDiagnostic(diagnostics.fastWallet),
       warning: isFastWalletDiagnosticWarning(diagnostics.fastWallet),
     },
     {
-      label: "Ledger",
+      label: 'Ledger',
       value: formatLedgerDiagnostic(diagnostics.ledgerTransport),
       warning: diagnostics.ledgerTransport
         ? diagnostics.ledgerTransport.requiresUserAction
@@ -824,7 +869,7 @@ function createDiagnosticRows(
 
   if (diagnostics.errors.length > 0) {
     rows.push({
-      label: "Errors",
+      label: 'Errors',
       value: String(diagnostics.errors.length),
       warning: true,
     });
@@ -834,52 +879,50 @@ function createDiagnosticRows(
 }
 
 function formatDaemonDiagnostic(
-  result: WalletDiagnosticsResult["daemon"]["getInfo"],
+  result: WalletDiagnosticsResult['daemon']['getInfo'],
 ): string {
   if (!result) {
-    return "Not configured";
+    return 'Not configured';
   }
   if (result.error) {
-    return "Error";
+    return 'Error';
   }
   if (!result.ok) {
-    return result.httpStatus ? `HTTP ${result.httpStatus}` : "Unavailable";
+    return result.httpStatus ? `HTTP ${result.httpStatus}` : 'Unavailable';
   }
 
-  const status = toDisplayValue(result.status, "OK");
-  const height = toDisplayValue(result.height, "?");
-  const sync = result.synchronized === true ? "synced" : "syncing";
+  const status = toDisplayValue(result.status, 'OK');
+  const height = toDisplayValue(result.height, '?');
+  const sync = result.synchronized === true ? 'synced' : 'syncing';
   return `${status} ${sync} ${height}`;
 }
 
 function isDaemonWarning(
-  result: WalletDiagnosticsResult["daemon"]["getInfo"],
+  result: WalletDiagnosticsResult['daemon']['getInfo'],
 ): boolean {
   return !result || Boolean(result.error) || !result.ok;
 }
 
-function formatWalletDiagnostic(
-  diagnostics: WalletDiagnosticsResult,
-): string {
+function formatWalletDiagnostic(diagnostics: WalletDiagnosticsResult): string {
   if (diagnostics.snapshot) {
-    const walletHeight = toDisplayValue(diagnostics.snapshot.walletHeight, "?");
-    const daemonHeight = toDisplayValue(diagnostics.snapshot.daemonHeight, "?");
+    const walletHeight = toDisplayValue(diagnostics.snapshot.walletHeight, '?');
+    const daemonHeight = toDisplayValue(diagnostics.snapshot.daemonHeight, '?');
     return diagnostics.snapshot.synchronized
       ? `Synced ${walletHeight}`
       : `${walletHeight}/${daemonHeight}`;
   }
 
-  return diagnostics.registeredWallet ? "Registered" : "None";
+  return diagnostics.registeredWallet ? 'Registered' : 'None';
 }
 
 function formatFastWalletDiagnostic(
-  fastWallet: WalletDiagnosticsResult["fastWallet"],
+  fastWallet: WalletDiagnosticsResult['fastWallet'],
 ): string {
   if (fastWallet.configuredCount === 0) {
-    return "Not configured";
+    return 'Not configured';
   }
   if (fastWallet.checkedCount === 0) {
-    return "Check failed";
+    return 'Check failed';
   }
   if (fastWallet.hostedCount === 0) {
     return `Not hosted 0/${fastWallet.configuredCount}`;
@@ -888,7 +931,7 @@ function formatFastWalletDiagnostic(
 }
 
 function isFastWalletDiagnosticWarning(
-  fastWallet: WalletDiagnosticsResult["fastWallet"],
+  fastWallet: WalletDiagnosticsResult['fastWallet'],
 ): boolean {
   return (
     fastWallet.configuredCount > 0 &&
@@ -898,28 +941,28 @@ function isFastWalletDiagnosticWarning(
 }
 
 function formatLedgerDiagnostic(
-  status: WalletDiagnosticsResult["ledgerTransport"],
+  status: WalletDiagnosticsResult['ledgerTransport'],
 ): string {
   if (!status) {
-    return "Unknown";
+    return 'Unknown';
   }
   if (!status.supported) {
-    return "Unsupported";
+    return 'Unsupported';
   }
   if (!status.available) {
-    return "Not connected";
+    return 'Not connected';
   }
   if (status.permissionGranted) {
-    return status.deviceName || "Ready";
+    return status.deviceName || 'Ready';
   }
-  return status.message || "Permission";
+  return status.message || 'Permission';
 }
 
 function toDisplayValue(value: unknown, fallback: string): string {
-  if (typeof value === "string" && value.length > 0) {
+  if (typeof value === 'string' && value.length > 0) {
     return value;
   }
-  if (typeof value === "number" || typeof value === "boolean") {
+  if (typeof value === 'number' || typeof value === 'boolean') {
     return String(value);
   }
   return fallback;
@@ -932,72 +975,269 @@ function errorMessage(error: unknown): string {
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   scroll: { paddingHorizontal: spacing.lg, paddingTop: 60 },
-  header: { alignItems: "center", marginBottom: 32, gap: 8 },
-  title: { color: colors.textPrimary, fontSize: 22, fontWeight: "700", marginTop: 8 },
+  header: { alignItems: 'center', marginBottom: 32, gap: 8 },
+  title: {
+    color: colors.textPrimary,
+    fontSize: 22,
+    fontWeight: '700',
+    marginTop: 8,
+  },
   version: { color: colors.textMuted, fontSize: 13 },
   section: { marginBottom: 24 },
-  sectionHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  sectionTitle: { color: colors.textSecondary, fontSize: 12, fontWeight: "600", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 8, paddingLeft: 4 },
-  sectionCard: { backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, overflow: "hidden" },
-  nodeStatus: { color: colors.success, fontSize: 12, fontWeight: "700", marginBottom: 8, paddingRight: 4 },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sectionTitle: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+    paddingLeft: 4,
+  },
+  sectionCard: {
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
+  },
+  nodeStatus: {
+    color: colors.success,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8,
+    paddingRight: 4,
+  },
   nodeStatusDirty: { color: colors.warning },
-  nodePanel: { backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.md, gap: 12 },
+  nodePanel: {
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+    gap: 12,
+  },
   rowDisabled: { opacity: 0.5 },
   rowCopy: { flex: 1, gap: 3 },
   rowHint: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
-  passwordPanel: { borderTopWidth: 1, borderTopColor: colors.border, padding: spacing.md, gap: 10 },
-  passwordTitle: { color: colors.textPrimary, fontSize: 15, fontWeight: "700" },
+  passwordPanel: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    padding: spacing.md,
+    gap: 10,
+  },
+  passwordTitle: { color: colors.textPrimary, fontSize: 15, fontWeight: '700' },
   passwordHint: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
-  seedModalBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.66)", padding: spacing.lg },
-  seedModalCard: { backgroundColor: colors.bgCard, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border, padding: spacing.lg, gap: 14 },
-  seedModalTitle: { color: colors.textPrimary, fontSize: 22, fontWeight: "800" },
-  seedModalHint: { color: colors.warning, fontSize: 13, lineHeight: 19 },
-  seedText: { color: colors.textPrimary, fontSize: 16, lineHeight: 26, fontWeight: "600", backgroundColor: colors.bgElevated, borderRadius: radius.md, padding: spacing.md },
   languageHelp: { color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
-  nodeHintBox: { flexDirection: "row", alignItems: "flex-start", gap: 9, borderRadius: radius.md, borderWidth: 1, borderColor: "rgba(242,104,34,0.18)", backgroundColor: "rgba(242,104,34,0.08)", padding: spacing.md },
-  nodeHintText: { flex: 1, color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
-  segmented: { flexDirection: "row", backgroundColor: colors.bgInput, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: 4, gap: 4 },
-  segment: { flex: 1, minHeight: 38, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, paddingHorizontal: 6 },
+  nodeHintBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(242,104,34,0.18)',
+    backgroundColor: 'rgba(242,104,34,0.08)',
+    padding: spacing.md,
+  },
+  nodeHintText: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  segmented: {
+    flexDirection: 'row',
+    backgroundColor: colors.bgInput,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 4,
+    gap: 4,
+  },
+  segment: {
+    flex: 1,
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.sm,
+    paddingHorizontal: 6,
+  },
   segmentActive: { backgroundColor: colors.orange },
-  segmentText: { color: colors.textSecondary, fontSize: 12, fontWeight: "700", textAlign: "center" },
-  segmentTextActive: { color: "#FFF" },
+  segmentText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  segmentTextActive: { color: '#FFF' },
   inputGroup: { gap: 6 },
-  fieldLabel: { color: colors.textSecondary, fontSize: 12, fontWeight: "700", paddingLeft: 2 },
-  input: { minHeight: 46, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.bgInput, color: colors.textPrimary, fontSize: 14, paddingHorizontal: 14 },
+  fieldLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+    paddingLeft: 2,
+  },
+  input: {
+    minHeight: 46,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+    color: colors.textPrimary,
+    fontSize: 14,
+    paddingHorizontal: 14,
+  },
   inputDisabled: { color: colors.textMuted, opacity: 0.72 },
-  switchRow: { minHeight: 52, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: radius.md, backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
+  switchRow: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: radius.md,
+    backgroundColor: colors.bgInput,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 14,
+  },
   switchText: { flex: 1, paddingRight: 12 },
-  switchTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: "600" },
+  switchTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '600' },
   switchValue: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
   advancedFields: { gap: 12 },
-  secretRow: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, paddingHorizontal: 2 },
-  secretText: { flex: 1, color: colors.textMuted, fontSize: 12, fontWeight: "600" },
-  secretButton: { minHeight: 34, paddingHorizontal: 12, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, borderWidth: 1, borderColor: colors.borderLight, backgroundColor: colors.bgInput },
-  secretButtonText: { color: colors.textPrimary, fontSize: 12, fontWeight: "800" },
-  nodeActions: { flexDirection: "row", gap: 10, marginTop: 2 },
-  secondaryButton: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.md, borderWidth: 1, borderColor: colors.borderLight, backgroundColor: colors.bgInput },
-  secondaryButtonText: { color: colors.textPrimary, fontSize: 14, fontWeight: "700" },
-  primaryButton: { flex: 1, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, backgroundColor: colors.orange },
+  secretRow: {
+    minHeight: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 2,
+  },
+  secretText: {
+    flex: 1,
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  secretButton: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    backgroundColor: colors.bgInput,
+  },
+  secretButtonText: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  nodeActions: { flexDirection: 'row', gap: 10, marginTop: 2 },
+  secondaryButton: {
+    flex: 1,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderLight,
+    backgroundColor: colors.bgInput,
+  },
+  secondaryButtonText: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  primaryButton: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderRadius: radius.md,
+    backgroundColor: colors.orange,
+  },
   primaryButtonDisabled: { opacity: 0.45 },
-  primaryButtonText: { color: "#FFF", fontSize: 14, fontWeight: "800" },
+  primaryButtonText: { color: '#FFF', fontSize: 14, fontWeight: '800' },
   identityList: { gap: 8 },
-  identityRow: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 10, borderRadius: radius.md, backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12 },
-  identityIcon: { width: 28, alignItems: "center", justifyContent: "center" },
+  identityRow: {
+    minHeight: 58,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgInput,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+  },
+  identityIcon: { width: 28, alignItems: 'center', justifyContent: 'center' },
   identityText: { flex: 1, minWidth: 0 },
-  identityLabel: { color: colors.textPrimary, fontSize: 14, fontWeight: "700" },
+  identityLabel: { color: colors.textPrimary, fontSize: 14, fontWeight: '700' },
   identityAddress: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
-  identityStatus: { color: colors.textSecondary, fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
+  identityStatus: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
   diagnosticList: { gap: 8 },
-  diagnosticRow: { minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, borderRadius: radius.md, backgroundColor: colors.bgInput, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12 },
-  diagnosticLabel: { color: colors.textSecondary, fontSize: 12, fontWeight: "800", textTransform: "uppercase" },
-  diagnosticValue: { flex: 1, color: colors.textPrimary, fontSize: 13, fontWeight: "700", textAlign: "right" },
+  diagnosticRow: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgInput,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+  },
+  diagnosticLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  diagnosticValue: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
   diagnosticValueWarning: { color: colors.warning },
-  row: { flexDirection: "row", alignItems: "center", paddingVertical: 16, paddingHorizontal: spacing.md, gap: 12 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: spacing.md,
+    gap: 12,
+  },
   rowBorder: { borderBottomWidth: 1, borderBottomColor: colors.border },
-  rowIconWrap: { width: 28, alignItems: "center", justifyContent: "center" },
-  rowLabel: { flex: 1, color: colors.textPrimary, fontSize: 15, fontWeight: "500" },
-  logoutBtn: { marginTop: 8, paddingVertical: 16, alignItems: "center", backgroundColor: "rgba(255,68,102,0.1)", borderRadius: radius.md, borderWidth: 1, borderColor: "rgba(255,68,102,0.2)" },
+  rowIconWrap: { width: 28, alignItems: 'center', justifyContent: 'center' },
+  rowLabel: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  logoutBtn: {
+    marginTop: 8,
+    paddingVertical: 16,
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,68,102,0.1)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(255,68,102,0.2)',
+  },
   logoutBtnDisabled: { opacity: 0.45 },
-  logoutText: { color: colors.error, fontSize: 16, fontWeight: "600" },
+  logoutText: { color: colors.error, fontSize: 16, fontWeight: '600' },
   bottomSpacer: { height: 24 },
 });

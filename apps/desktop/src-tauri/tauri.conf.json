@@ -44,7 +44,10 @@
       "infoPlist": "Info.plist",
       "frameworks": [
         "../native-libs/libmonero_fast_crypto.dylib"
-      ]
+      ],
+      "files": {
+        "Resources/monero_wallet_derivation.metallib": "../native-libs/monero_wallet_derivation.metallib"
+      }
     }
   }
 }

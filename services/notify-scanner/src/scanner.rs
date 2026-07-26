@@ -6,7 +6,11 @@ use crate::{
     store::WatchStore,
 };
 use anyhow::{anyhow, Result};
-use std::{cmp, collections::BTreeSet, sync::Arc};
+use std::{
+    cmp,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 pub trait BlockSource {
     fn next_blocks(
@@ -23,6 +27,17 @@ pub trait OutputMatcher {
         watch: &WatchRegistration,
         block: &ScannedBlock,
     ) -> Result<Vec<MatchedOutputCandidate>>;
+
+    fn match_blocks(
+        &self,
+        watch: &WatchRegistration,
+        blocks: &[ScannedBlock],
+    ) -> Result<Vec<Vec<MatchedOutputCandidate>>> {
+        blocks
+            .iter()
+            .map(|block| self.match_block(watch, block))
+            .collect()
+    }
 }
 
 pub trait MempoolSource {
@@ -35,6 +50,16 @@ pub trait MempoolOutputMatcher {
         watch: &WatchRegistration,
         tx: &ScannedMempoolTx,
     ) -> Result<Vec<MatchedOutputCandidate>>;
+
+    fn match_mempool_txs(
+        &self,
+        watch: &WatchRegistration,
+        txs: &[ScannedMempoolTx],
+    ) -> Result<Vec<Vec<MatchedOutputCandidate>>> {
+        txs.iter()
+            .map(|tx| self.match_mempool_tx(watch, tx))
+            .collect()
+    }
 }
 
 pub struct ScannerWorker<S, M> {
@@ -67,46 +92,62 @@ where
             ..ScannerRun::default()
         };
 
-        for mut watch in watches {
+        let mut groups = BTreeMap::<(Network, u64), Vec<WatchRegistration>>::new();
+        for watch in watches {
+            groups
+                .entry((watch.network, watch.last_scanned_height))
+                .or_default()
+                .push(watch);
+        }
+
+        for ((network, from_height_exclusive), grouped_watches) in groups {
             let mut blocks = self.block_source.next_blocks(
-                watch.network,
-                watch.last_scanned_height,
+                network,
+                from_height_exclusive,
                 max_blocks_per_watch,
             )?;
             blocks.sort_by_key(|block| block.height);
 
-            let mut advanced = false;
-            for block in blocks {
-                if block.height <= watch.last_scanned_height {
-                    continue;
-                }
-                let expected_height = watch.last_scanned_height.saturating_add(1);
-                if block.height != expected_height {
+            for mut watch in grouped_watches {
+                let mut advanced = false;
+                let matches = self.matcher.match_blocks(&watch, &blocks)?;
+                if matches.len() != blocks.len() {
                     return Err(anyhow!(
-                        "block source gap for identity {}: expected height {} got {}",
-                        watch.identity_id,
-                        expected_height,
-                        block.height
+                        "matcher result count mismatch for identity {}",
+                        watch.identity_id
                     ));
                 }
+                for (block, candidates) in blocks.iter().zip(matches) {
+                    if block.height <= watch.last_scanned_height {
+                        continue;
+                    }
+                    let expected_height = watch.last_scanned_height.saturating_add(1);
+                    if block.height != expected_height {
+                        return Err(anyhow!(
+                            "block source gap for identity {}: expected height {} got {}",
+                            watch.identity_id,
+                            expected_height,
+                            block.height
+                        ));
+                    }
 
-                let candidates = self.matcher.match_block(&watch, &block)?;
-                for candidate in candidates {
-                    let output = candidate.into_matched_output(&watch.identity_id, now_ms)?;
-                    self.store.upsert_match(output)?;
-                    run.matched_outputs += 1;
+                    for candidate in candidates {
+                        let output = candidate.into_matched_output(&watch.identity_id, now_ms)?;
+                        self.store.upsert_match(output)?;
+                        run.matched_outputs += 1;
+                    }
+
+                    watch.last_scanned_height = block.height;
+                    watch.updated_at_ms = now_ms;
+                    self.store.upsert(watch.clone())?;
+                    run.scanned_blocks += 1;
+                    run.highest_scanned_height = cmp::max(run.highest_scanned_height, block.height);
+                    advanced = true;
                 }
 
-                watch.last_scanned_height = block.height;
-                watch.updated_at_ms = now_ms;
-                self.store.upsert(watch.clone())?;
-                run.scanned_blocks += 1;
-                run.highest_scanned_height = cmp::max(run.highest_scanned_height, block.height);
-                advanced = true;
-            }
-
-            if advanced {
-                run.advanced_identities += 1;
+                if advanced {
+                    run.advanced_identities += 1;
+                }
             }
         }
 
@@ -140,36 +181,49 @@ where
             ..MempoolRun::default()
         };
 
+        let mut groups = BTreeMap::<Network, Vec<WatchRegistration>>::new();
         for watch in watches {
-            let txs = self.mempool_source.current_transactions(watch.network)?;
-            let mut currently_seen = BTreeSet::new();
+            groups.entry(watch.network).or_default().push(watch);
+        }
 
-            for tx in &txs {
-                let candidates = self.matcher.match_mempool_tx(&watch, tx)?;
-                for candidate in candidates {
-                    let match_id = matched_output_id(
-                        &watch.identity_id,
-                        &candidate.tx_id,
-                        candidate.output_index,
-                    );
-                    currently_seen.insert(match_id);
-                    let output = candidate.into_mempool_output(
-                        &watch.identity_id,
-                        tx.received_ms,
-                        now_ms,
-                    )?;
-                    self.store.upsert_match(output)?;
-                    run.pending_outputs += 1;
+        for (network, grouped_watches) in groups {
+            let txs = self.mempool_source.current_transactions(network)?;
+            for watch in grouped_watches {
+                let mut currently_seen = BTreeSet::new();
+                let matches = self.matcher.match_mempool_txs(&watch, &txs)?;
+                if matches.len() != txs.len() {
+                    return Err(anyhow!(
+                        "mempool matcher result count mismatch for identity {}",
+                        watch.identity_id
+                    ));
                 }
-            }
 
-            let existing_matches = self.store.list_matches(&watch.identity_id)?;
-            for output in existing_matches {
-                if output.detection_status == DetectionStatus::PendingMempool
-                    && !currently_seen.contains(&output.id)
-                {
-                    self.store.upsert_match(output.dropped_mempool(now_ms))?;
-                    run.dropped_outputs += 1;
+                for (tx, candidates) in txs.iter().zip(matches) {
+                    for candidate in candidates {
+                        let match_id = matched_output_id(
+                            &watch.identity_id,
+                            &candidate.tx_id,
+                            candidate.output_index,
+                        );
+                        currently_seen.insert(match_id);
+                        let output = candidate.into_mempool_output(
+                            &watch.identity_id,
+                            tx.received_ms,
+                            now_ms,
+                        )?;
+                        self.store.upsert_match(output)?;
+                        run.pending_outputs += 1;
+                    }
+                }
+
+                let existing_matches = self.store.list_matches(&watch.identity_id)?;
+                for output in existing_matches {
+                    if output.detection_status == DetectionStatus::PendingMempool
+                        && !currently_seen.contains(&output.id)
+                    {
+                        self.store.upsert_match(output.dropped_mempool(now_ms))?;
+                        run.dropped_outputs += 1;
+                    }
                 }
             }
         }
@@ -267,13 +321,17 @@ mod tests {
         store::InMemoryWatchStore,
     };
     use anyhow::anyhow;
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     fn watch(identity_id: &str, restore_height: u64) -> WatchRegistration {
         WatchRegistration {
             identity_id: identity_id.to_owned(),
             address: "9".repeat(95),
             private_view_key: "c".repeat(64),
+            management_token_hash: "0".repeat(64),
             network: Network::Stagenet,
             restore_height,
             push_token: Some("push-token".to_owned()),
@@ -315,16 +373,18 @@ mod tests {
     #[derive(Default)]
     struct MemoryMempoolSource {
         txs: Vec<ScannedMempoolTx>,
+        calls: Arc<AtomicUsize>,
     }
 
     impl MemoryMempoolSource {
-        fn with_txs(txs: Vec<ScannedMempoolTx>) -> Self {
-            Self { txs }
+        fn with_txs(txs: Vec<ScannedMempoolTx>, calls: Arc<AtomicUsize>) -> Self {
+            Self { txs, calls }
         }
     }
 
     impl MempoolSource for MemoryMempoolSource {
         fn current_transactions(&mut self, _network: Network) -> Result<Vec<ScannedMempoolTx>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(self.txs.clone())
         }
     }
@@ -332,10 +392,15 @@ mod tests {
     #[derive(Default)]
     struct MemoryBlockSource {
         blocks: BTreeMap<NetworkHeightKey, ScannedBlock>,
+        calls: Arc<AtomicUsize>,
     }
 
     impl MemoryBlockSource {
         fn with_blocks(blocks: Vec<ScannedBlock>) -> Self {
+            Self::with_blocks_and_counter(blocks, Arc::new(AtomicUsize::new(0)))
+        }
+
+        fn with_blocks_and_counter(blocks: Vec<ScannedBlock>, calls: Arc<AtomicUsize>) -> Self {
             Self {
                 blocks: blocks
                     .into_iter()
@@ -349,6 +414,7 @@ mod tests {
                         )
                     })
                     .collect(),
+                calls,
             }
         }
     }
@@ -360,6 +426,7 @@ mod tests {
             from_height_exclusive: u64,
             max_blocks: usize,
         ) -> Result<Vec<ScannedBlock>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(self
                 .blocks
                 .iter()
@@ -490,6 +557,25 @@ mod tests {
     }
 
     #[test]
+    fn scanner_fetches_a_shared_cursor_only_once() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        store.upsert(watch("fast-a", 10)).unwrap();
+        store.upsert(watch("fast-b", 10)).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut worker = ScannerWorker::new(
+            store,
+            MemoryBlockSource::with_blocks_and_counter(vec![block(10, vec![])], calls.clone()),
+            MarkerMatcher,
+        );
+
+        let run = worker.scan_once(10, 2000).unwrap();
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(run.advanced_identities, 2);
+        assert_eq!(run.scanned_blocks, 2);
+    }
+
+    #[test]
     fn scanner_does_not_advance_when_matcher_fails() {
         let store = Arc::new(InMemoryWatchStore::default());
         store.upsert(watch("fast-a", 10)).unwrap();
@@ -535,7 +621,7 @@ mod tests {
         )];
         let mut worker = MempoolScannerWorker::new(
             store.clone(),
-            MemoryMempoolSource::with_txs(txs),
+            MemoryMempoolSource::with_txs(txs, Arc::new(AtomicUsize::new(0))),
             MempoolMarkerMatcher,
         );
 
@@ -563,7 +649,7 @@ mod tests {
         let txs = vec![mempool_tx('1', vec![output('1', 0, "fast-a")])];
         let mut mempool_worker = MempoolScannerWorker::new(
             store.clone(),
-            MemoryMempoolSource::with_txs(txs),
+            MemoryMempoolSource::with_txs(txs, Arc::new(AtomicUsize::new(0))),
             MempoolMarkerMatcher,
         );
         mempool_worker.scan_once(2000).unwrap();
@@ -594,14 +680,14 @@ mod tests {
         let txs = vec![mempool_tx('1', vec![output('1', 0, "fast-a")])];
         let mut first_worker = MempoolScannerWorker::new(
             store.clone(),
-            MemoryMempoolSource::with_txs(txs),
+            MemoryMempoolSource::with_txs(txs, Arc::new(AtomicUsize::new(0))),
             MempoolMarkerMatcher,
         );
         first_worker.scan_once(2000).unwrap();
 
         let mut second_worker = MempoolScannerWorker::new(
             store.clone(),
-            MemoryMempoolSource::with_txs(Vec::new()),
+            MemoryMempoolSource::with_txs(Vec::new(), Arc::new(AtomicUsize::new(0))),
             MempoolMarkerMatcher,
         );
         let run = second_worker.scan_once(3000).unwrap();
@@ -611,5 +697,22 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].detection_status, DetectionStatus::Dropped);
         assert_eq!(matches[0].mempool_first_seen_ms, Some(1500));
+    }
+
+    #[test]
+    fn mempool_snapshot_is_fetched_once_per_network() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        store.upsert(watch("fast-a", 10)).unwrap();
+        store.upsert(watch("fast-b", 10)).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut worker = MempoolScannerWorker::new(
+            store,
+            MemoryMempoolSource::with_txs(Vec::new(), calls.clone()),
+            MempoolMarkerMatcher,
+        );
+
+        worker.scan_once(2000).unwrap();
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }

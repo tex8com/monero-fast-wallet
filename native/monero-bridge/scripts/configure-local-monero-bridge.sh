@@ -7,6 +7,8 @@ repo_root="$(cd "${script_dir}/../../.." && pwd)"
 monero_source_dir="${MONERO_SOURCE_DIR:-${repo_root}/../monero-gui/monero}"
 monero_build_dir="${MONERO_BUILD_DIR:-${monero_source_dir}/build/tex8-wallet-api}"
 bridge_build_dir="${BRIDGE_BUILD_DIR:-${repo_root}/build/native-bridge-monero}"
+grpc_stream_enabled="${MONERO_WALLET_BRIDGE_WITH_GRPC_STREAM:-ON}"
+tex8_extensions_enabled="${MONERO_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS:-ON}"
 cmake_bin="${CMAKE_BIN:-$(command -v cmake 2>/dev/null || true)}"
 
 if [[ -z "${cmake_bin}" || ! -x "${cmake_bin}" ]]; then
@@ -40,11 +42,12 @@ append_semicolon_list() {
 # to combine it with Homebrew libraries. This lets the testbench validate the
 # same libwallet_api that Tauri uses and keeps every generated file outside
 # the source checkout when BRIDGE_BUILD_DIR is supplied by the caller.
+# An upstream-patched checkout may intentionally reuse a separately materialized
+# depends prefix, so do not require it to live below MONERO_SOURCE_DIR.
+depends_prefix="${MONERO_DEPENDS_PREFIX:-${monero_source_dir}/contrib/depends/aarch64-apple-darwin-macos12}"
 if [[ "$(uname -s)" == "Darwin" &&
       -f "${monero_build_dir}/lib/libwallet_api.a" &&
-      -d "${monero_source_dir}/contrib/depends/aarch64-apple-darwin-macos12" ]]; then
-  depends_prefix="${MONERO_DEPENDS_PREFIX:-${monero_source_dir}/contrib/depends/aarch64-apple-darwin-macos12}"
-  fast_crypto_archive="${MONERO_FAST_CRYPTO_LIBRARY:-${monero_source_dir}/external/monero-fast-crypto/target/release/libmonero_fast_crypto.a}"
+      -d "${depends_prefix}" ]]; then
   archives=(
     "${monero_build_dir}/lib/libwallet_api.a" "${monero_build_dir}/lib/libwallet.a"
     "${monero_build_dir}/src/rpc/librpc_base.a" "${monero_build_dir}/src/multisig/libmultisig.a"
@@ -60,7 +63,6 @@ if [[ "$(uname -s)" == "Darwin" &&
     "${monero_build_dir}/contrib/epee/src/libepee.a" "${monero_build_dir}/external/db_drivers/liblmdb/liblmdb.a"
     "${monero_build_dir}/external/easylogging++/libeasylogging.a"
     "${monero_build_dir}/external/randomx/librandomx.a" "${monero_build_dir}/src/libversion.a"
-    "${fast_crypto_archive}"
     "${depends_prefix}/lib/libboost_chrono.a" "${depends_prefix}/lib/libboost_date_time.a"
     "${depends_prefix}/lib/libboost_filesystem.a" "${depends_prefix}/lib/libboost_locale.a"
     "${depends_prefix}/lib/libboost_program_options.a" "${depends_prefix}/lib/libboost_regex.a"
@@ -71,6 +73,14 @@ if [[ "$(uname -s)" == "Darwin" &&
     "${depends_prefix}/lib/libcrypto.a" "${depends_prefix}/lib/libexpat.a"
     "${depends_prefix}/lib/libiconv.a"
   )
+  if [[ "${grpc_stream_enabled}" == "ON" ]]; then
+    fast_crypto_archive="${MONERO_FAST_CRYPTO_LIBRARY:-${monero_source_dir}/external/monero-fast-crypto/target/release/libmonero_fast_crypto.a}"
+    archives+=(
+      "${monero_build_dir}/lib/libcuprate_grpc_stream.a"
+      "${depends_prefix}/lib/libprotobuf.a"
+      "${fast_crypto_archive}"
+    )
+  fi
   link_args=()
   for archive in "${archives[@]}"; do
     [[ -f "${archive}" ]] || { echo "Missing native archive: ${archive}" >&2; exit 1; }
@@ -82,9 +92,18 @@ if [[ "$(uname -s)" == "Darwin" &&
     '-Wl,-framework,CoreFoundation' '-Wl,-framework,Security'
     '-lc++' '-lz' '-lbz2'
   )
+  if [[ "${grpc_stream_enabled}" == "ON" ]]; then
+    # libcuprate_grpc_stream is static; link the matching Homebrew gRPC,
+    # protobuf and Abseil dependency closure after the force-loaded archives.
+    while IFS= read -r grpc_link_flag; do
+      [[ -n "${grpc_link_flag}" ]] && link_args+=("${grpc_link_flag}")
+    done < <(pkg-config --libs grpc++ grpc protobuf | tr ' ' '\n')
+  fi
 
   "${cmake_bin}" -S "${repo_root}/native/monero-bridge" -B "${bridge_build_dir}" \
     -DMONERO_WALLET_BRIDGE_WITH_MONERO=ON \
+    -DMONERO_WALLET_BRIDGE_WITH_GRPC_STREAM="${grpc_stream_enabled}" \
+    -DMONERO_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS="${tex8_extensions_enabled}" \
     -DMONERO_SOURCE_DIR="${monero_source_dir}" \
     -DMONERO_WALLET_API_LIBRARY="${monero_build_dir}/lib/libwallet_api.a" \
     -DMONERO_WALLET_EXTRA_LINK_OPTIONS="$(join_by_semicolon "${link_args[@]}")"

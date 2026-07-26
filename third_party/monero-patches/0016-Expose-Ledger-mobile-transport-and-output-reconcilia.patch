@@ -1,0 +1,641 @@
+From 1eaed0b23c2f45f70adf65958262ddc7ab053639 Mon Sep 17 00:00:00 2001
+From: TEX8 Patch Integrator <patches@tex8.local>
+Date: Thu, 23 Jul 2026 17:35:15 -0500
+Subject: [PATCH] Expose Ledger mobile transport and output reconciliation APIs
+
+
+diff --git a/src/device/device_ledger.cpp b/src/device/device_ledger.cpp
+index 6dde4a5..eb6c51f 100644
+--- a/src/device/device_ledger.cpp
++++ b/src/device/device_ledger.cpp
+@@ -37,6 +37,8 @@
+ #include <boost/thread/locks.hpp> 
+ #include <boost/thread/lock_guard.hpp>
+ 
++#include <mutex>
++
+ namespace hw {
+ 
+   namespace ledger {
+@@ -54,6 +56,34 @@ namespace hw {
+       apdu_verbose = verbose;
+     }
+ 
++    namespace {
++      std::mutex ble_transport_mutex;
++      ble_transport_callbacks registered_ble_transport;
++
++      ble_transport_callbacks get_ble_transport_callbacks() {
++        std::lock_guard<std::mutex> lock(ble_transport_mutex);
++        return registered_ble_transport;
++      }
++    }
++
++    void set_ble_transport_callbacks(const ble_transport_callbacks &callbacks) {
++      std::lock_guard<std::mutex> lock(ble_transport_mutex);
++      registered_ble_transport = callbacks;
++    }
++
++    void clear_ble_transport_callbacks() {
++      std::lock_guard<std::mutex> lock(ble_transport_mutex);
++      registered_ble_transport = {};
++    }
++
++    bool ble_transport_available() {
++      const auto callbacks = get_ble_transport_callbacks();
++      return callbacks.connect != nullptr &&
++             callbacks.disconnect != nullptr &&
++             callbacks.connected != nullptr &&
++             callbacks.exchange != nullptr;
++    }
++
+     #define TRACKD MTRACE("hw")
+     #define ASSERT_SW(sw,ok,msk) CHECK_AND_ASSERT_THROW_MES(((sw)&(msk))==(ok), \
+       "Wrong Device Status: " << "0x" << std::hex << (sw) << " (" << Status::to_string(sw) << "), " << \
+@@ -297,7 +327,11 @@ namespace hw {
+     #define INS_GET_RESPONSE                    0xc0
+ 
+ 
+-    device_ledger::device_ledger(): hw_device(0x0101, 0x05, 64, 2000) {
++    device_ledger::device_ledger()
++    #if defined(HAVE_HIDAPI)
++      : hw_device(0x0101, 0x05, 64, 2000)
++    #endif
++    {
+       this->id = device_id++;
+       this->reset_buffer();      
+       this->mode = NONE;
+@@ -458,7 +492,7 @@ namespace hw {
+     unsigned int device_ledger::exchange(unsigned int ok, unsigned int mask) {
+       logCMD();
+ 
+-      this->length_recv =  hw_device.exchange(this->buffer_send, this->length_send, this->buffer_recv, BUFFER_SEND_SIZE, false);
++      this->length_recv = transport_exchange(false);
+       ASSERT_X(this->length_recv>=2, "Communication error, less than tow bytes received");
+ 
+       this->length_recv -= 2;
+@@ -475,7 +509,7 @@ namespace hw {
+     unsigned int device_ledger::exchange_wait_on_input(unsigned int ok, unsigned int mask) {
+       logCMD();
+       unsigned int deny = 0;
+-      this->length_recv =  hw_device.exchange(this->buffer_send, this->length_send, this->buffer_recv, BUFFER_SEND_SIZE, true);
++      this->length_recv = transport_exchange(true);
+       ASSERT_X(this->length_recv>=2, "Communication error, less than two bytes received");
+ 
+       this->length_recv -= 2;
+@@ -514,14 +548,7 @@ namespace hw {
+       return this->name;
+     }
+ 
+-    bool device_ledger::init(void) {
+-      this->controle_device = &hw::get_device("default");
+-      this->release();
+-      hw_device.init();      
+-      MDEBUG( "Device "<<this->id <<" HIDUSB inited");
+-      return true;
+-    }
+-    
++    #if defined(HAVE_HIDAPI)
+     static const std::vector<hw::io::hid_conn_params> known_devices {
+         {0x2c97, 0x0001, 0, 0xffa0}, 
+         {0x2c97, 0x0004, 0, 0xffa0},       
+@@ -530,10 +557,104 @@ namespace hw {
+         {0x2c97, 0x0007, 0, 0xffa0},
+         {0x2c97, 0x0008, 0, 0xffa0},
+     };
++    #endif
++
++    bool device_ledger::wants_ble_transport() const {
++      return this->name.find(":ble") != std::string::npos;
++    }
++
++    bool device_ledger::transport_connect() {
++      if (!wants_ble_transport()) {
++      #if defined(HAVE_HIDAPI)
++        hw_device.connect(known_devices);
++        return true;
++      #else
++        ASSERT_X(false, "Ledger USB transport is unavailable in this build");
++      #endif
++      }
++
++      const auto callbacks = get_ble_transport_callbacks();
++      ASSERT_X(callbacks.connect != nullptr,
++               "Ledger BLE transport is unavailable on this platform");
++      return callbacks.connect(callbacks.context);
++    }
++
++    void device_ledger::transport_disconnect() {
++      if (!wants_ble_transport()) {
++      #if defined(HAVE_HIDAPI)
++        hw_device.disconnect();
++      #endif
++        return;
++      }
++
++      const auto callbacks = get_ble_transport_callbacks();
++      if (callbacks.disconnect != nullptr) {
++        callbacks.disconnect(callbacks.context);
++      }
++    }
++
++    bool device_ledger::transport_connected() const {
++      if (!wants_ble_transport()) {
++      #if defined(HAVE_HIDAPI)
++        return hw_device.connected();
++      #else
++        return false;
++      #endif
++      }
++
++      const auto callbacks = get_ble_transport_callbacks();
++      return callbacks.connected != nullptr && callbacks.connected(callbacks.context);
++    }
++
++    unsigned int device_ledger::transport_exchange(bool user_input) {
++      if (!wants_ble_transport()) {
++      #if defined(HAVE_HIDAPI)
++        return hw_device.exchange(this->buffer_send,
++                                  this->length_send,
++                                  this->buffer_recv,
++                                  BUFFER_RECV_SIZE,
++                                  user_input);
++      #else
++        ASSERT_X(false, "Ledger USB transport is unavailable in this build");
++      #endif
++      }
++
++      const auto callbacks = get_ble_transport_callbacks();
++      ASSERT_X(callbacks.exchange != nullptr,
++               "Ledger BLE transport is unavailable on this platform");
++      const int received = callbacks.exchange(callbacks.context,
++                                              this->buffer_send,
++                                              this->length_send,
++                                              this->buffer_recv,
++                                              BUFFER_RECV_SIZE,
++                                              user_input);
++      ASSERT_X(received >= 0, "Ledger BLE transport exchange failed");
++      ASSERT_X(static_cast<unsigned int>(received) <= BUFFER_RECV_SIZE,
++               "Ledger BLE transport returned an oversized response");
++      return static_cast<unsigned int>(received);
++    }
++
++    bool device_ledger::init(void) {
++      this->controle_device = &hw::get_device("default");
++      this->release();
++      if (!wants_ble_transport()) {
++      #if defined(HAVE_HIDAPI)
++        hw_device.init();
++        MDEBUG( "Device "<<this->id <<" HIDUSB inited");
++      #else
++        ASSERT_X(false, "Ledger USB transport is unavailable in this build");
++      #endif
++      } else {
++        ASSERT_X(ble_transport_available(),
++                 "Ledger BLE transport is unavailable on this platform");
++        MDEBUG( "Device "<<this->id <<" BLE transport inited");
++      }
++      return true;
++    }
+ 
+     bool device_ledger::connect(void) {
+       this->disconnect();
+-      hw_device.connect(known_devices);
++      ASSERT_X(this->transport_connect(), "Unable to connect to Ledger device");
+       this->reset();
+       #ifdef DEBUG_HWDEVICE
+       cryptonote::account_public_address pubkey;
+@@ -547,17 +668,21 @@ namespace hw {
+     }
+ 
+     bool device_ledger::connected(void) const {
+-      return hw_device.connected();
++      return transport_connected();
+     }
+ 
+     bool device_ledger::disconnect() {
+-      hw_device.disconnect();
++      transport_disconnect();
+       return true;
+     }
+ 
+     bool device_ledger::release() {
+       this->disconnect();
+-      hw_device.release();
++      if (!wants_ble_transport()) {
++      #if defined(HAVE_HIDAPI)
++        hw_device.release();
++      #endif
++      }
+       return true;
+     }
+ 
+@@ -615,7 +740,17 @@ namespace hw {
+         memset(vkey.data, 0x00, 32);
+         memset(skey.data, 0xFF, 32);
+ 
++        // connect() has already completed this explicit device approval for
++        // the current Ledger session. account_base::create_from_device()
++        // calls us again immediately afterwards; requesting a second export
++        // would show the same confirmation twice without changing the keys.
++        if (this->has_view_key) {
++            MINFO("Ledger view-key export reused from the current device session");
++            return true;
++        }
++
+         //spcialkey, normal conf handled in decrypt
++        MINFO("Ledger view-key export requested from device");
+         send_simple(INS_GET_KEY, 0x02);
+ 
+         //View key is retrievied, if allowed, to speed up blockchain parsing
+@@ -2376,4 +2511,3 @@ namespace hw {
+ 
+   }
+ }
+-
+diff --git a/src/device/device_ledger.hpp b/src/device/device_ledger.hpp
+index 61ac6f9..76e925d 100644
+--- a/src/device/device_ledger.hpp
++++ b/src/device/device_ledger.hpp
+@@ -34,7 +34,9 @@
+ #include <string>
+ #include "device.hpp"
+ #include "log.hpp"
++#if defined(HAVE_HIDAPI)
+ #include "device_io_hid.hpp"
++#endif
+ #include <boost/thread/mutex.hpp>
+ #include <boost/thread/recursive_mutex.hpp>
+ 
+@@ -58,6 +60,23 @@ namespace hw {
+ 
+     #ifdef WITH_DEVICE_LEDGER
+ 
++    struct ble_transport_callbacks {
++        void *context = nullptr;
++        bool (*connect)(void *context) = nullptr;
++        void (*disconnect)(void *context) = nullptr;
++        bool (*connected)(void *context) = nullptr;
++        int (*exchange)(void *context,
++                        const unsigned char *command,
++                        unsigned int command_length,
++                        unsigned char *response,
++                        unsigned int response_capacity,
++                        bool user_input) = nullptr;
++    };
++
++    void set_ble_transport_callbacks(const ble_transport_callbacks &callbacks);
++    void clear_ble_transport_callbacks();
++    bool ble_transport_available();
++
+     // Origin: https://github.com/LedgerHQ/ledger-app-monero/blob/master/src/monero_types.h
+     #define SW_OK                                   0x9000
+     #define SW_WRONG_LENGTH                         0x6700
+@@ -148,7 +167,9 @@ namespace hw {
+         mutable boost::mutex   command_locker;
+ 
+         //IO
++#if defined(HAVE_HIDAPI)
+         hw::io::device_io_hid hw_device;
++#endif
+         unsigned int  length_send;
+         unsigned char buffer_send[BUFFER_SEND_SIZE];
+         unsigned int  length_recv;
+@@ -159,6 +180,11 @@ namespace hw {
+         void logRESP(void);
+         unsigned int exchange(unsigned int ok=SW_OK, unsigned int mask=0xFFFF);
+         unsigned int exchange_wait_on_input(unsigned int ok=SW_OK, unsigned int mask=0xFFFF);
++        bool wants_ble_transport() const;
++        bool transport_connect();
++        void transport_disconnect();
++        bool transport_connected() const;
++        unsigned int transport_exchange(bool user_input);
+         void reset_buffer(void);
+         int  set_command_header(unsigned char ins, unsigned char p1 = 0x00, unsigned char p2 = 0x00);
+         int  set_command_header_noopt(unsigned char ins, unsigned char p1 = 0x00, unsigned char p2 = 0x00);
+@@ -222,6 +248,15 @@ namespace hw {
+         /* ======================================================================= */
+         bool  get_public_address(cryptonote::account_public_address &pubkey) override;
+         bool  get_secret_keys(crypto::secret_key &viewkey , crypto::secret_key &spendkey) override;
++        // The account object deliberately receives a fake view key for a
++        // Ledger wallet. Expose the real key only after get_secret_keys()
++        // received a user-approved export from the device, so the wallet API
++        // can create an explicitly requested local read-only companion.
++        bool exported_view_key(crypto::secret_key &out) const {
++            if (!has_view_key) return false;
++            out = viewkey;
++            return true;
++        }
+         bool  generate_chacha_key(const cryptonote::account_keys &keys, crypto::chacha_key &key, uint64_t kdf_rounds) override;
+         void  display_address(const cryptonote::subaddress_index& index, const boost::optional<crypto::hash8> &payment_id) override;
+ 
+@@ -302,4 +337,3 @@ namespace hw {
+   }
+ 
+ }
+-
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 5cd6532..c0aea67 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -38,6 +38,7 @@
+ #include "subaddress_account.h"
+ #include "common_defines.h"
+ #include "common/util.h"
++#include "device/device_ledger.hpp"
+ 
+ #include "mnemonics/electrum-words.h"
+ #include "mnemonics/english.h"
+@@ -90,6 +91,34 @@ using namespace cryptonote;
+ 
+ namespace Monero {
+ 
++    void setLedgerBleTransportCallbacks(const LedgerBleTransportCallbacks &callbacks) {
++    #ifdef WITH_DEVICE_LEDGER
++        hw::ledger::ble_transport_callbacks native_callbacks;
++        native_callbacks.context = callbacks.context;
++        native_callbacks.connect = callbacks.connect;
++        native_callbacks.disconnect = callbacks.disconnect;
++        native_callbacks.connected = callbacks.connected;
++        native_callbacks.exchange = callbacks.exchange;
++        hw::ledger::set_ble_transport_callbacks(native_callbacks);
++    #else
++        (void)callbacks;
++    #endif
++    }
++
++    void clearLedgerBleTransportCallbacks() {
++    #ifdef WITH_DEVICE_LEDGER
++        hw::ledger::clear_ble_transport_callbacks();
++    #endif
++    }
++
++    bool ledgerBleTransportAvailable() {
++    #ifdef WITH_DEVICE_LEDGER
++        return hw::ledger::ble_transport_available();
++    #else
++        return false;
++    #endif
++    }
++
+ namespace {
+     // copy-pasted from simplewallet
+     static const int    DEFAULT_REFRESH_INTERVAL_MILLIS = 1000 * 10;
+@@ -924,6 +953,22 @@ std::string WalletImpl::secretViewKey() const
+     return epee::string_tools::pod_to_hex(unwrap(unwrap(m_wallet->get_account().get_keys().m_view_secret_key)));
+ }
+ 
++std::string WalletImpl::hardwarePrivateViewKey() const
++{
++#ifdef WITH_DEVICE_LEDGER
++    if (m_wallet->get_device_type() != hw::device::LEDGER)
++        return "";
++    const auto& device = static_cast<const hw::ledger::device_ledger&>(
++        m_wallet->get_account().get_device());
++    crypto::secret_key private_view_key;
++    if (!device.exported_view_key(private_view_key))
++        return "";
++    return epee::string_tools::pod_to_hex(unwrap(unwrap(private_view_key)));
++#else
++    return "";
++#endif
++}
++
+ std::string WalletImpl::publicViewKey() const
+ {
+     return epee::string_tools::pod_to_hex(m_wallet->get_account().get_keys().m_account_address.m_view_public_key);
+@@ -1290,6 +1335,60 @@ bool WalletImpl::importKeyImages(const string &filename)
+   return true;
+ }
+ 
++std::vector<std::string> WalletImpl::ownedOutputKeyImages() const
++{
++  std::vector<std::string> result;
++  try
++  {
++    const auto key_images = m_wallet->owned_output_key_images();
++    result.reserve(key_images.size());
++    for (const auto &key_image : key_images)
++      result.push_back(epee::string_tools::pod_to_hex(key_image));
++  }
++  catch (const std::exception &e)
++  {
++    LOG_ERROR("Error listing owned output key images: " << e.what());
++    setStatusError(e.what());
++  }
++  return result;
++}
++
++size_t WalletImpl::reconcileOutputKeyImages(
++    const std::vector<std::string> &keyImages,
++    const std::vector<bool> &spentStates,
++    uint64_t checkedHeight)
++{
++  clearStatus();
++  if (keyImages.size() != spentStates.size())
++  {
++    setStatusError(tr("Key image and spent-state counts do not match"));
++    return 0;
++  }
++
++  try
++  {
++    std::vector<std::pair<crypto::key_image, bool>> states;
++    states.reserve(keyImages.size());
++    for (size_t i = 0; i < keyImages.size(); ++i)
++    {
++      crypto::key_image key_image;
++      if (!epee::string_tools::hex_to_pod(keyImages[i], key_image))
++      {
++        setStatusError(tr("Failed to parse key image"));
++        return 0;
++      }
++      states.emplace_back(key_image, spentStates[i]);
++    }
++    return m_wallet->reconcile_output_key_images(states, checkedHeight);
++  }
++  catch (const std::exception &e)
++  {
++    LOG_ERROR("Error reconciling output key images: " << e.what());
++    setStatusError(e.what());
++    return 0;
++  }
++}
++
+ bool WalletImpl::exportOutputs(const string &filename, bool all)
+ {
+     if (checkBackgroundSync("cannot export outputs"))
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 5c54341..eaefb2b 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -95,6 +95,7 @@ public:
+     std::string address(uint32_t accountIndex = 0, uint32_t addressIndex = 0) const override;
+     std::string integratedAddress(const std::string &payment_id) const override;
+     std::string secretViewKey() const override;
++    std::string hardwarePrivateViewKey() const override;
+     std::string publicViewKey() const override;
+     std::string secretSpendKey() const override;
+     std::string publicSpendKey() const override;
+@@ -169,6 +170,11 @@ public:
+     virtual UnsignedTransaction * loadUnsignedTx(const std::string &unsigned_filename) override;
+     bool exportKeyImages(const std::string &filename, bool all = false) override;
+     bool importKeyImages(const std::string &filename) override;
++    std::vector<std::string> ownedOutputKeyImages() const override;
++    size_t reconcileOutputKeyImages(
++        const std::vector<std::string> &keyImages,
++        const std::vector<bool> &spentStates,
++        uint64_t checkedHeight) override;
+     bool exportOutputs(const std::string &filename, bool all = false) override;
+     bool importOutputs(const std::string &filename) override;
+     bool scanTransactions(const std::vector<std::string> &txids) override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 33a74cd..c25ec44 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -49,6 +49,23 @@ enum NetworkType : uint8_t {
+     STAGENET
+ };
+ 
++struct LedgerBleTransportCallbacks {
++    void *context = nullptr;
++    bool (*connect)(void *context) = nullptr;
++    void (*disconnect)(void *context) = nullptr;
++    bool (*connected)(void *context) = nullptr;
++    int (*exchange)(void *context,
++                    const unsigned char *command,
++                    unsigned int command_length,
++                    unsigned char *response,
++                    unsigned int response_capacity,
++                    bool user_input) = nullptr;
++};
++
++void setLedgerBleTransportCallbacks(const LedgerBleTransportCallbacks &callbacks);
++void clearLedgerBleTransportCallbacks();
++bool ledgerBleTransportAvailable();
++
+     namespace Utils {
+         bool isAddressLocal(const std::string &hostaddr);
+         void onStartup();
+@@ -492,6 +509,12 @@ struct Wallet
+     * \return                  - secret view key
+     */
+     virtual std::string secretViewKey() const = 0;
++    /*!
++     * \brief hardwarePrivateViewKey - returns a user-approved Ledger view key
++     * only after the hardware device has exported it. This method never
++     * exposes a spend key and returns an empty value for unsupported devices.
++     */
++    virtual std::string hardwarePrivateViewKey() const = 0;
+ 
+    /*!
+     * \brief publicViewKey     - returns public view key
+@@ -933,6 +956,26 @@ struct Wallet
+     */
+     virtual bool importKeyImages(const std::string &filename) = 0;
+ 
++    /**
++     * \brief ownedOutputKeyImages returns every locally known owned-output key
++     * image. The values are linkable spend metadata, not private keys, and are
++     * intended for explicit spent-status reconciliation only.
++     */
++    virtual std::vector<std::string> ownedOutputKeyImages() const = 0;
++
++    /**
++     * \brief reconcileOutputKeyImages applies authoritative spent/unspent
++     * states for locally owned outputs.
++     * \param keyImages 64-character hex key images owned by this wallet
++     * \param spentStates true for spent, false for unspent
++     * \param checkedHeight chain height at which the states were checked
++     * \return number of outputs whose local state changed
++     */
++    virtual size_t reconcileOutputKeyImages(
++        const std::vector<std::string> &keyImages,
++        const std::vector<bool> &spentStates,
++        uint64_t checkedHeight) = 0;
++
+     /*!
+      * \brief importOutputs - exports outputs to file
+      * \param filename
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 045bb83..0a8f1a5 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -14924,6 +14924,59 @@ std::pair<uint64_t, std::vector<std::pair<crypto::key_image, crypto::signature>>
+   return std::make_pair(offset, ski);
+ }
+ 
++std::vector<crypto::key_image> wallet2::owned_output_key_images() const
++{
++  std::vector<crypto::key_image> key_images;
++  key_images.reserve(m_transfers.size());
++  for (const transfer_details &td : m_transfers)
++  {
++    if (td.m_key_image_known && !td.m_key_image_partial)
++      key_images.push_back(td.m_key_image);
++  }
++  return key_images;
++}
++
++size_t wallet2::reconcile_output_key_images(
++    const std::vector<std::pair<crypto::key_image, bool>> &spent_states,
++    uint64_t checked_height)
++{
++  const uint64_t spent_height = std::max<uint64_t>(checked_height, 1);
++  size_t changed = 0;
++  std::unordered_set<crypto::key_image> seen;
++  seen.reserve(spent_states.size());
++
++  for (const auto &state : spent_states)
++  {
++    THROW_WALLET_EXCEPTION_IF(
++        !seen.insert(state.first).second,
++        error::wallet_internal_error,
++        "Duplicate key image in spent-state reconciliation");
++
++    const auto it = m_key_images.find(state.first);
++    THROW_WALLET_EXCEPTION_IF(
++        it == m_key_images.end(),
++        error::wallet_internal_error,
++        "Spent-state reconciliation contains a key image not owned by this wallet");
++
++    transfer_details &td = m_transfers[it->second];
++    if (!td.m_key_image_known || td.m_key_image_partial)
++      continue;
++
++    if (state.second && !td.m_spent)
++    {
++      set_spent(it->second, spent_height);
++      ++changed;
++    }
++    else if (!state.second && td.m_spent)
++    {
++      set_unspent(it->second);
++      ++changed;
++    }
++  }
++
++  return changed;
++}
++
+ uint64_t wallet2::import_key_images(const std::string &filename, uint64_t &spent, uint64_t &unspent)
+ {
+   PERF_TIMER(import_key_images_fsu);
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 9c330c9..ba2a34d 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1650,6 +1650,10 @@ private:
+     void import_blockchain(const std::tuple<size_t, crypto::hash, std::vector<crypto::hash>> &bc);
+     bool export_key_images(const std::string &filename, bool all = false) const;
+     std::pair<uint64_t, std::vector<std::pair<crypto::key_image, crypto::signature>>> export_key_images(bool all = false) const;
++    std::vector<crypto::key_image> owned_output_key_images() const;
++    size_t reconcile_output_key_images(
++        const std::vector<std::pair<crypto::key_image, bool>> &spent_states,
++        uint64_t checked_height);
+     uint64_t import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, size_t offset, uint64_t &spent, uint64_t &unspent, bool check_spent = true);
+     uint64_t import_key_images(const std::string &filename, uint64_t &spent, uint64_t &unspent);
+     bool import_key_images(std::vector<crypto::key_image> key_images, size_t offset=0, boost::optional<std::unordered_set<size_t>> selected_transfers=boost::none);
+-- 
+2.50.1 (Apple Git-155)
+

@@ -218,9 +218,9 @@ describe('WalletRegistry', () => {
     );
     const fast = await upsertRegisteredWallet(
       createRegisteredWallet({
-        id: 'fast-receive-0',
+        id: 'fast-receive-v2-0',
         walletName: 'Fast Wallet',
-        path: '/app/wallets/mainnet/fast-receive-0',
+        path: '/app/wallets/mainnet/fast-receive-v2-0',
         network: 'mainnet',
         kind: 'fast',
         credentialKey: 'monero.wallet.software.mainnet.primary.v1',
@@ -230,7 +230,7 @@ describe('WalletRegistry', () => {
     );
 
     expect(fast).toMatchObject({
-      id: 'fast-receive-0',
+      id: 'fast-receive-v2-0',
       kind: 'fast',
       seedBackupStatus: 'not-required',
       restoreHeight: 3714305,

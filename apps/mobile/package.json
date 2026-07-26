@@ -2,6 +2,7 @@
   "name": "MoneroWallet",
   "version": "0.0.1",
   "private": true,
+  "packageManager": "npm@11.16.0",
   "scripts": {
     "android": "bash scripts/android-build-install.sh",
     "android:build": "bash scripts/android-build.sh",
@@ -16,7 +17,10 @@
     "ios:logs": "bash scripts/ios-logs.sh",
     "ios:metro": "bash scripts/ios-ensure-metro.sh",
     "firebase:check": "node scripts/check-firebase-config.js",
+    "test:build-integrity": "node scripts/test-build-integrity-contract.js",
+    "test:dependency-compat": "node scripts/test-brace-expansion-compat.js",
     "test:release-contract": "node scripts/test-release-signing-contract.js",
+    "test:security": "npm run test:dependency-compat && npm run test:build-integrity && npm run test:release-contract && npm run lint && npm test -- --runInBand",
     "lint": "eslint .",
     "start": "react-native start",
     "test": "jest"
@@ -58,9 +62,9 @@
     "@babel/core": "^7.25.2",
     "@babel/preset-env": "^7.25.3",
     "@babel/runtime": "^7.25.0",
-    "@react-native-community/cli": "20.1.0",
-    "@react-native-community/cli-platform-android": "20.1.0",
-    "@react-native-community/cli-platform-ios": "20.1.0",
+    "@react-native-community/cli": "20.2.0",
+    "@react-native-community/cli-platform-android": "20.2.0",
+    "@react-native-community/cli-platform-ios": "20.2.0",
     "@react-native/babel-preset": "0.85.1",
     "@react-native/eslint-config": "0.85.1",
     "@react-native/jest-preset": "0.85.1",
@@ -69,6 +73,7 @@
     "@types/jest": "^29.5.13",
     "@types/react": "^19.2.0",
     "@types/react-test-renderer": "^19.1.0",
+    "brace-expansion": "file:vendor/brace-expansion-compat",
     "eslint": "^8.19.0",
     "jest": "^29.6.3",
     "prettier": "2.8.8",
@@ -78,5 +83,13 @@
   },
   "engines": {
     "node": ">= 22.11.0"
+  },
+  "overrides": {
+    "brace-expansion": "$brace-expansion"
+  },
+  "allowScripts": {
+    "@firebase/util@1.14.0": true,
+    "protobufjs@7.6.5": true,
+    "fsevents": false
   }
 }

@@ -181,3 +181,83 @@ Current funded wallet inventory:
   transaction details stay in local, non-versioned acceptance logs.
 - `wallet-b` is the paired mainnet send/receive test wallet.
 - Password files stay local beside the wallet files and must never be printed.
+
+## Wallet-sync baseline
+
+`run-sync-benchmark.sh` measures a clean restore through the native
+`WalletEngine` proof runner; it does not use `monero-wallet-cli` as the product
+wallet path and never broadcasts. It writes separate logs, CPU/RSS samples,
+metadata, and `summary.tsv` under `build/wallet-testbench/sync-results`.
+
+Use a dedicated benchmark mnemonic, never a user's main wallet seed:
+
+```sh
+export TESTBENCH_SYNC_SEED_FILE=/secure/benchmark-mnemonic.txt
+export TESTBENCH_SYNC_PASSWORD_FILE=/secure/benchmark-password.txt
+export TESTBENCH_SYNC_NETWORK=stagenet
+export TESTBENCH_SYNC_RESTORE_HEIGHT=<positive block height>
+
+# A: upstream-compatible runner + monerod; B: fork + monerod;
+# C: fork + Cuprate RPC/gRPC; D: adaptive-stream fork + Cuprate RPC/gRPC.
+export TESTBENCH_SYNC_RUNNER_A=/path/to/upstream/monero_wallet_bridge_smoke
+export TESTBENCH_SYNC_RPC_A=<monerod-host:port>
+export TESTBENCH_SYNC_RUNNER_B=/path/to/fork/monero_wallet_bridge_smoke
+export TESTBENCH_SYNC_RPC_B=<monerod-host:port>
+export TESTBENCH_SYNC_RUNNER_C=/path/to/fork/monero_wallet_bridge_smoke
+export TESTBENCH_SYNC_RPC_C=<cuprate-host:port>
+export TESTBENCH_SYNC_GRPC_C=<cuprate-host:port>
+export TESTBENCH_SYNC_RUNNER_D=/path/to/adaptive/monero_wallet_bridge_smoke
+export TESTBENCH_SYNC_RPC_D=<cuprate-host:port>
+export TESTBENCH_SYNC_GRPC_D=<cuprate-host:port>
+tools/wallet-testbench/run-sync-benchmark.sh restore all
+```
+
+For the isolated TEX8 Stagenet node, use `private-node-ip:48089` (RPC) and
+`private-node-ip:48091` (gRPC) for profile C. Do not use an SSH proxy.
+
+This is stage one only. Resume, concurrent-wallet, restart, reorg/cache, and
+Ledger scenarios require controlled test infrastructure and must be recorded
+as separate runs rather than substituted with a restore result. See
+`docs/WALLET_SYNC_EVALUATION_2026-07-23.md` for the decision gate and privacy
+constraints.
+
+`summary.tsv` names the implementation and records elapsed time, blocks/s,
+authoritative gRPC payload MiB/s (from the one stream-close record), gRPC
+chunk count, output-scan and transaction-hash-cache rates, TCP bytes in/out,
+CPU user/system seconds, and maximum RSS. `client-network-accounting.txt`
+defines the separate network column consistently: client-side TCP-RX payload
+bytes from `nettop`, divided by the client-process time; it excludes IP/TCP
+packet headers and carries the prior counter across a socket reset. The raw
+CSV is retained, so the derived value is auditable. The legacy HTTP payload
+has no gRPC envelope; its TCP-RX total is therefore taken from this same
+per-process accounting rather than guessed from log lines. A clean restore comparison runs profiles serially: that is the
+only fair way to compare one-wallet speed. Concurrent wallets are a separate
+aggregate-throughput stress scenario, never mixed into the baseline table.
+
+## Raw ScanPack transport diagnostics
+
+`run-raw-grpc-payload-mainnet.sh` is deliberately not a wallet benchmark. It
+drains the real pruned `StreamBlocks`/ScanPack payload from a fixed height,
+but does not decode it, derive keys, scan outputs or commit a chain. It exists
+only to distinguish an actual gRPC/WAN transport ceiling from wallet CPU.
+
+The script writes the same preflight/postflight, client CPU/RSS and network
+samples, server socket/CPU/RAM/I/O archive, service journals and SHA-256
+manifest as an E2E run. It never restarts Cuprate or changes server
+configuration. Invoke it with `bash`, a unique Run-ID, and no inline secrets:
+
+```sh
+RAW_GRPC_TEST_MODE=range_pool \
+RAW_GRPC_RANGE_CONNECTIONS=4 \
+RAW_GRPC_RANGE_BLOCKS=40000 \
+RAW_GRPC_RANGE_BOOTSTRAP_BLOCKS=1000 \
+RAW_GRPC_CHUNK_HINT=256 \
+bash tools/wallet-testbench/run-raw-grpc-payload-mainnet.sh <unique-run-id>
+```
+
+`RAW_GRPC_TEST_MODE=range_pool` tests the product-like ordered temporary
+spool. `fanout` snapshots a tip and drains disjoint streams concurrently,
+without an order, spool, parser or scanner; it is a transport ceiling test
+only. Neither mode belongs in the Original/Fast/ScanPack Wallet comparison
+table. The full D6 results and their artifact hashes are in
+`docs/WALLET_SYNC_BENCHMARK_RESULTS.md`.

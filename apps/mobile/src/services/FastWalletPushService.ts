@@ -1,7 +1,10 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import { checkNotifications, RESULTS } from 'react-native-permissions';
 
+import {
+  loadProtectedMetadata,
+  storeProtectedMetadata,
+} from './ProtectedMetadataStorage';
 import { logWalletEvent } from './WalletLogger';
 
 declare const require: (moduleName: string) => any;
@@ -64,7 +67,9 @@ export interface FastWalletPushRegistration {
 }
 
 export type NotificationAuthorizationStatus =
-  'authorized' | 'denied' | 'not_determined';
+  | 'authorized'
+  | 'denied'
+  | 'not_determined';
 
 export async function getNotificationAuthorizationStatus(): Promise<NotificationAuthorizationStatus> {
   if (Platform.OS === 'android') {
@@ -107,17 +112,17 @@ function createSubscriptionId(): string {
 }
 
 async function getOrCreateSubscriptionId(): Promise<string> {
-  const current = await AsyncStorage.getItem(SUBSCRIPTION_ID_KEY);
+  const current = await loadProtectedMetadata(SUBSCRIPTION_ID_KEY);
   if (current?.trim()) {
     return current.trim();
   }
   const subscriptionId = createSubscriptionId();
-  await AsyncStorage.setItem(SUBSCRIPTION_ID_KEY, subscriptionId);
+  await storeProtectedMetadata(SUBSCRIPTION_ID_KEY, subscriptionId);
   return subscriptionId;
 }
 
 async function getStoredSubscriptionId(): Promise<string | undefined> {
-  const value = await AsyncStorage.getItem(SUBSCRIPTION_ID_KEY);
+  const value = await loadProtectedMetadata(SUBSCRIPTION_ID_KEY);
   return value?.trim() || undefined;
 }
 
@@ -330,14 +335,16 @@ async function handleRemoteMessage(
   if (!event) {
     return;
   }
-  const previousId = await AsyncStorage.getItem(LAST_EVENT_ID_KEY);
+  const previousId = await loadProtectedMetadata(LAST_EVENT_ID_KEY).catch(
+    () => null,
+  );
   if (previousId === event.eventId) {
     return;
   }
   await Promise.all([
-    AsyncStorage.setItem(LAST_EVENT_KEY, JSON.stringify(event)),
-    AsyncStorage.setItem(LAST_EVENT_ID_KEY, event.eventId),
-  ]);
+    storeProtectedMetadata(LAST_EVENT_KEY, JSON.stringify(event)),
+    storeProtectedMetadata(LAST_EVENT_ID_KEY, event.eventId),
+  ]).catch(() => undefined);
   listeners.forEach(listener => listener(event));
   if (options.foreground) {
     await showAndroidForegroundNotification(message, event);
@@ -406,7 +413,7 @@ function subscribe(listener: (event: FastWalletPushEvent) => void): () => void {
 }
 
 async function getLastEvent(): Promise<FastWalletPushEvent | undefined> {
-  const raw = await AsyncStorage.getItem(LAST_EVENT_KEY);
+  const raw = await loadProtectedMetadata(LAST_EVENT_KEY);
   if (!raw) {
     return undefined;
   }

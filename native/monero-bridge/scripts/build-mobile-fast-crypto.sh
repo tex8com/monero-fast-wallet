@@ -15,6 +15,12 @@ if [[ ! -f "${fast_crypto_dir}/Cargo.toml" ]]; then
   exit 1
 fi
 
+# The wallet batch API depends on the authenticated Dalek extensions carried
+# by third_party/curve25519-dalek-wallet-cpu. Without this Cargo override a
+# mobile build would resolve the public 4.1.3 crate, which deliberately lacks
+# those APIs.
+source "${script_dir}/prepare-wallet-crypto-cpu-backend.sh"
+
 find_android_ndk_home() {
   local candidates=()
 
@@ -45,6 +51,8 @@ mkdir -p "${output_dir}"
   echo "MONERO_SOURCE_DIR=${monero_source_dir}"
   echo "FAST_CRYPTO_DIR=${fast_crypto_dir}"
   echo "OUTPUT_DIR=${output_dir}"
+  echo "MONERO_WALLET_DALEK_CRATE_DIR=${MONERO_WALLET_DALEK_CRATE_DIR}"
+  echo "MONERO_WALLET_DALEK_TREE=${MONERO_WALLET_DALEK_TREE}"
 } > "${manifest}"
 
 build_target() {
@@ -71,9 +79,10 @@ build_target() {
     fi
   fi
 
-  cargo build \
+  cargo --config "$(wallet_cpu_cargo_config)" build \
     --manifest-path "${fast_crypto_dir}/Cargo.toml" \
     --release \
+    --locked \
     --target "${rust_target}"
 
   local source_lib="${fast_crypto_dir}/target/${rust_target}/release/libmonero_fast_crypto.a"

@@ -126,7 +126,14 @@ services/
 node/
   cuprate/             pinned Cuprate fork source snapshot
 third_party/
-  monero/              recorded Monero fork pin or future submodule
+  monero-patches/      ordered production Monero Core patch series
+  cuprate-patches/     ordered production Cuprate patch series
+  curve25519-dalek-wallet-cpu/
+                       ordered CPU acceleration patch series
+  monero-experimental-patches/
+                       optional tracing and CUDA-stage worktree snapshots
+tools/
+  wallet-*-testbench/  CPU, Metal, mobile and CUDA benchmark sources
 docs/
   ROADMAP.md
   PRODUCT_TRUST_USABILITY_PLAN.md
@@ -158,7 +165,11 @@ The wallet core comes from the official Monero implementation through our fork.
 - Our local fork checkout: `$HOME/Documents/Projects/monero-gui/monero`
 - Fork remote: `https://github.com/tex8com/monero.git`
 - Current pinned commit:
-  `e7fe4ff6f0a0fef58ca031d2a75c168a42242b42`
+  `cdcfa8151322a3fdd9306af97ab0c54092ac1e37`
+- Reproducible product series:
+  `third_party/monero-patches/series`
+- Acceleration sources and evidence:
+  `docs/WALLET_ACCELERATION_TESTBENCH_INDEX.md`
 
 The app does not shell out to `monero-wallet-cli`. The production path is:
 
@@ -184,11 +195,15 @@ The repo should be prepared as an open-source product from the start:
 Before the first public release, add or verify:
 
 - `LICENSE` and third-party license summary
-- security disclosure policy
+- [`SECURITY.md`](SECURITY.md), the
+  [threat model](docs/THREAT_MODEL.md), the
+  [incident runbook](docs/SECURITY_INCIDENT_RESPONSE.md), and working private
+  reporting/response ownership
 - build instructions for Android, iOS, scanner, and forked wallet core
 - privacy model and fast receive warning text
 - testbench instructions and latest passing gate matrix
-- release checklist with pinned Monero/Cuprate commits
+- the [secure release checklist](docs/SECURE_RELEASE_CHECKLIST.md) with pinned
+  Monero/Cuprate commits and artifact evidence
 
 ## Native Bridge Status
 

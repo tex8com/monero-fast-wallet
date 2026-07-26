@@ -232,8 +232,7 @@ export default function WalletsScreen({ navigation }: any) {
     setBusy(true);
     setFastActionError(undefined);
     try {
-      const result = await walletService.createFastReceiveIdentity({
-      });
+      const result = await walletService.createFastReceiveIdentity({});
       const scannerUrl = fastReceiveScannerUrlForSettings(nodeSettings);
       const pushSubscriptionId = scannerUrl
         ? await FastWalletPushService.enableFastWalletNotifications()
@@ -249,7 +248,6 @@ export default function WalletsScreen({ navigation }: any) {
       const enabled = scannerUrl
         ? await walletService.enableFastReceiveIdentity({
             identityId: result.identity.id,
-            secretKey: session?.credentialKey,
             scannerUrl,
             pushSubscriptionId,
           })
@@ -308,7 +306,6 @@ export default function WalletsScreen({ navigation }: any) {
         await FastWalletPushService.enableFastWalletNotifications();
       const result = await walletService.enableFastReceiveIdentity({
         identityId: identity.id,
-        secretKey: session?.credentialKey,
         pushSubscriptionId: registration.subscriptionId,
         scannerUrl,
       });

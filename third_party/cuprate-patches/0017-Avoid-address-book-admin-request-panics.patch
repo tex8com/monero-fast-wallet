@@ -1,0 +1,99 @@
+From 55ca0710ca35ac567f803d2734725edd4aa1c7fd Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Sat, 4 Jul 2026 19:17:46 -0500
+Subject: [PATCH 17/41] Avoid address book admin request panics
+
+---
+ p2p/address-book/src/book.rs                  | 31 ++++++++++++++-----
+ .../src/client/handshaker/builder/dummy.rs    | 21 ++++++++-----
+ 2 files changed, 38 insertions(+), 14 deletions(-)
+
+diff --git a/p2p/address-book/src/book.rs b/p2p/address-book/src/book.rs
+index 04befa7..bb1f3f3 100644
+--- a/p2p/address-book/src/book.rs
++++ b/p2p/address-book/src/book.rs
+@@ -23,6 +23,7 @@ use cuprate_p2p_core::{
+     client::InternalPeerID,
+     handles::ConnectionHandle,
+     services::{AddressBookRequest, AddressBookResponse, ZoneSpecificPeerListEntryBase},
++    types::Peerlist,
+     NetZoneAddress, NetworkZone,
+ };
+ use cuprate_pruning::PruningSeed;
+@@ -420,13 +421,29 @@ impl<Z: BorshNetworkZone> Service<AddressBookRequest<Z>> for AddressBook<Z> {
+             AddressBookRequest::OwnAddress => {
+                 Ok(AddressBookResponse::OwnAddress(self.cfg.our_own_address))
+             }
+-            AddressBookRequest::Peerlist
+-            | AddressBookRequest::PeerlistSize
+-            | AddressBookRequest::ConnectionCount
+-            | AddressBookRequest::SetBan(_)
+-            | AddressBookRequest::GetBans
+-            | AddressBookRequest::ConnectionInfo => {
+-                todo!("finish https://github.com/Cuprate/cuprate/pull/297")
++            AddressBookRequest::Peerlist => Ok(AddressBookResponse::Peerlist(Peerlist {
++                white: self.white_list.peers.values().copied().collect(),
++                grey: self.gray_list.peers.values().copied().collect(),
++            })),
++            AddressBookRequest::PeerlistSize => Ok(AddressBookResponse::PeerlistSize {
++                white: self.white_list.len(),
++                grey: self.gray_list.len(),
++            }),
++            AddressBookRequest::ConnectionCount => Ok(AddressBookResponse::ConnectionCount {
++                incoming: 0,
++                outgoing: self.connected_peers.len(),
++            }),
++            AddressBookRequest::SetBan(set_ban) => {
++                if let Some(duration) = set_ban.ban {
++                    self.ban_peer(set_ban.address, duration);
++                } else {
++                    self.banned_peers.remove(&set_ban.address.ban_id());
++                }
++                Ok(AddressBookResponse::Ok)
++            }
++            AddressBookRequest::GetBans => Ok(AddressBookResponse::GetBans(Vec::new())),
++            AddressBookRequest::ConnectionInfo => {
++                Ok(AddressBookResponse::ConnectionInfo(Vec::new()))
+             }
+         };
+ 
+diff --git a/p2p/p2p-core/src/client/handshaker/builder/dummy.rs b/p2p/p2p-core/src/client/handshaker/builder/dummy.rs
+index 6550e15..f2da3b0 100644
+--- a/p2p/p2p-core/src/client/handshaker/builder/dummy.rs
++++ b/p2p/p2p-core/src/client/handshaker/builder/dummy.rs
+@@ -11,6 +11,7 @@ use crate::{
+     services::{
+         AddressBookRequest, AddressBookResponse, CoreSyncDataRequest, CoreSyncDataResponse,
+     },
++    types::Peerlist,
+     NetworkZone, ProtocolRequest, ProtocolResponse,
+ };
+ 
+@@ -108,14 +109,20 @@ impl<N: NetworkZone> Service<AddressBookRequest<N>> for DummyAddressBook {
+                 unban_instant: None,
+             },
+             AddressBookRequest::OwnAddress => AddressBookResponse::OwnAddress(None),
+-            AddressBookRequest::Peerlist
+-            | AddressBookRequest::PeerlistSize
+-            | AddressBookRequest::ConnectionCount
+-            | AddressBookRequest::SetBan(_)
+-            | AddressBookRequest::GetBans
+-            | AddressBookRequest::ConnectionInfo => {
+-                todo!("finish https://github.com/Cuprate/cuprate/pull/297")
++            AddressBookRequest::Peerlist => AddressBookResponse::Peerlist(Peerlist {
++                white: Vec::new(),
++                grey: Vec::new(),
++            }),
++            AddressBookRequest::PeerlistSize => {
++                AddressBookResponse::PeerlistSize { white: 0, grey: 0 }
+             }
++            AddressBookRequest::ConnectionCount => AddressBookResponse::ConnectionCount {
++                incoming: 0,
++                outgoing: 0,
++            },
++            AddressBookRequest::SetBan(_) => AddressBookResponse::Ok,
++            AddressBookRequest::GetBans => AddressBookResponse::GetBans(Vec::new()),
++            AddressBookRequest::ConnectionInfo => AddressBookResponse::ConnectionInfo(Vec::new()),
+         }))
+     }
+ }

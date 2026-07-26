@@ -11,6 +11,9 @@ CONFIGURATION="${MONERO_WALLET_IOS_CONFIGURATION:-Release}"
 DERIVED_DATA_PATH="${IOS_DERIVED_DATA_PATH:-}"
 REPO_ROOT="$(cd "$APP_ROOT/../.." && pwd)"
 MONERO_IOS_BUILD_ROOT="${MONERO_IOS_BUILD_ROOT:-}"
+MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-}"
+WITH_GRPC_STREAM="${MONERO_WALLET_IOS_WITH_GRPC_STREAM:-1}"
+WITH_TEX8_EXTENSIONS="${MONERO_WALLET_IOS_WITH_TEX8_EXTENSIONS:-1}"
 
 if [ -z "$DERIVED_DATA_PATH" ] && [ -d "/Volumes/4TB/monero-fast-wallet-build" ]; then
   DERIVED_DATA_PATH="/Volumes/4TB/monero-fast-wallet-build/ios-derived-data"
@@ -22,6 +25,9 @@ fi
 if [ -z "$MONERO_IOS_BUILD_ROOT" ]; then
   MONERO_IOS_BUILD_ROOT="$REPO_ROOT/build"
 fi
+if [ -z "$MONERO_SOURCE_DIR" ]; then
+  MONERO_SOURCE_DIR="$MONERO_IOS_BUILD_ROOT/monero-v0.18.4.6-tex8-patched"
+fi
 
 # The iOS manifest generator uses the stable build-target label `ios-sim-arm64`.
 # Older build roots may expose a matching `iphonesimulator` symlink, but new and
@@ -29,11 +35,12 @@ fi
 # link. Prefer the real label so a simulator build finds the validated core
 # without an environment override; retain the legacy location as a fallback.
 if [ -z "${MONERO_WALLET_CORE_LIBRARY:-}" ]; then
-  MONERO_WALLET_CORE_LIBRARY="$MONERO_IOS_BUILD_ROOT/ios-monero-link-manifests/ios-sim-arm64/libtex8_monero_wallet_core.a"
+  MONERO_WALLET_CORE_LIBRARY="$MONERO_IOS_BUILD_ROOT/ios-monero-link-manifests-tex8-patched/ios-sim-arm64/libtex8_monero_wallet_core.a"
   if [ ! -f "$MONERO_WALLET_CORE_LIBRARY" ]; then
-    MONERO_WALLET_CORE_LIBRARY="$MONERO_IOS_BUILD_ROOT/ios-monero-link-manifests/iphonesimulator/libtex8_monero_wallet_core.a"
+    MONERO_WALLET_CORE_LIBRARY="$MONERO_IOS_BUILD_ROOT/ios-monero-link-manifests-tex8-patched/iphonesimulator/libtex8_monero_wallet_core.a"
   fi
 fi
+MONERO_SODIUM_INCLUDE_DIR="${MONERO_SODIUM_INCLUDE_DIR:-$MONERO_IOS_BUILD_ROOT/ios-deps/ios-sim-arm64/include}"
 
 if [ -z "$DEVICE" ]; then
   DEVICE="$(xcrun simctl list devices booted | awk -F '[()]' '/Booted/ { print $2; exit }')"
@@ -59,7 +66,11 @@ xcodebuild_args=(
   PRODUCT_BUNDLE_IDENTIFIER="$APP_ID" \
   MONERO_WALLET_URL_SCHEME="$URL_SCHEME" \
   TEX8_WALLET_BRIDGE_WITH_MONERO=1 \
+  TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM="$WITH_GRPC_STREAM" \
+  TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS="$WITH_TEX8_EXTENSIONS" \
+  MONERO_SOURCE_DIR="$MONERO_SOURCE_DIR" \
   MONERO_WALLET_CORE_LIBRARY="$MONERO_WALLET_CORE_LIBRARY" \
+  MONERO_SODIUM_INCLUDE_DIR="$MONERO_SODIUM_INCLUDE_DIR" \
   FORCE_BUNDLING=1 \
   ONLY_ACTIVE_ARCH=YES \
   build
@@ -74,6 +85,8 @@ fi
 if [ "$SHELL_MODE" = "1" ]; then
   xcodebuild_args+=(
     TEX8_WALLET_BRIDGE_WITH_MONERO=0
+    TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=0
+    TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=0
     MONERO_WALLET_CORE_LIBRARY=
   )
 fi

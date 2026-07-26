@@ -1,0 +1,113 @@
+From 5141db7f5b4b6175df436f915f54eb9411539db6 Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <rolandkohlhuber@Rolands-MacBook-Air.local>
+Date: Sat, 25 Jul 2026 14:17:04 -0500
+Subject: [PATCH 2/6] curve: build wallet lookup tables with doubling chains
+
+---
+ .../serial/scalar_mul/variable_base.rs        | 33 +++++++++++++++--
+ .../vector/scalar_mul/variable_base.rs        | 35 +++++++++++++++++--
+ 2 files changed, 62 insertions(+), 6 deletions(-)
+
+diff --git a/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs b/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs
+index 1a9e6a7..94b6409 100644
+--- a/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs
++++ b/curve25519-dalek/src/backend/serial/scalar_mul/variable_base.rs
+@@ -9,16 +9,43 @@ use crate::window::LookupTable;
+ /// Perform constant-time, variable-base scalar multiplication.
+ #[rustfmt::skip] // keep alignment of explanatory comments
+ pub(crate) fn mul(point: &EdwardsPoint, scalar: &Scalar) -> EdwardsPoint {
++    let lookup_table = LookupTable::<ProjectiveNielsPoint>::from(point);
+     let scalar_digits = scalar.as_radix_16();
+-    mul_precomputed(point, &scalar_digits)
++    mul_with_lookup_table(&lookup_table, &scalar_digits)
+ }
+ 
+ /// Perform constant-time, variable-base scalar multiplication using an
+ /// already computed signed radix-16 representation of the scalar.
+ #[rustfmt::skip]
+ pub(crate) fn mul_precomputed(point: &EdwardsPoint, scalar_digits: &[i8; 64]) -> EdwardsPoint {
+-    // Construct a lookup table of [P,2P,3P,4P,5P,6P,7P,8P]
+-    let lookup_table = LookupTable::<ProjectiveNielsPoint>::from(point);
++    let lookup_table = lookup_table_by_doubling(point);
++    mul_with_lookup_table(&lookup_table, scalar_digits)
++}
++
++fn lookup_table_by_doubling(point: &EdwardsPoint) -> LookupTable<ProjectiveNielsPoint> {
++    let p1 = *point;
++    let p2 = p1.double();
++    let p3 = &p1 + &p2;
++    let p4 = p2.double();
++    let p5 = &p1 + &p4;
++    let p6 = p3.double();
++    let p7 = &p1 + &p6;
++    let p8 = p4.double();
++
++    LookupTable([
++        p1.as_projective_niels(),
++        p2.as_projective_niels(),
++        p3.as_projective_niels(),
++        p4.as_projective_niels(),
++        p5.as_projective_niels(),
++        p6.as_projective_niels(),
++        p7.as_projective_niels(),
++        p8.as_projective_niels(),
++    ])
++}
++
++#[rustfmt::skip]
++fn mul_with_lookup_table(lookup_table: &LookupTable<ProjectiveNielsPoint>, scalar_digits: &[i8; 64]) -> EdwardsPoint {
+     // Compute s*P as
+     //
+     //    s*P = P*(s_0 +   s_1*16^1 +   s_2*16^2 + ... +   s_63*16^63)
+diff --git a/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs b/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs
+index 6d32ac3..b3ee5ee 100644
+--- a/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs
++++ b/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs
+@@ -19,15 +19,44 @@ pub mod spec {
+ 
+     /// Perform constant-time, variable-base scalar multiplication.
+     pub fn mul(point: &EdwardsPoint, scalar: &Scalar) -> EdwardsPoint {
++        let lookup_table = LookupTable::<CachedPoint>::from(point);
+         let scalar_digits = scalar.as_radix_16();
+-        mul_precomputed(point, &scalar_digits)
++        mul_with_lookup_table(&lookup_table, &scalar_digits)
+     }
+ 
+     /// Perform constant-time, variable-base scalar multiplication using an
+     /// already computed signed radix-16 representation of the scalar.
+     pub fn mul_precomputed(point: &EdwardsPoint, scalar_digits: &[i8; 64]) -> EdwardsPoint {
+-        // Construct a lookup table of [P,2P,3P,4P,5P,6P,7P,8P]
+-        let lookup_table = LookupTable::<CachedPoint>::from(point);
++        let lookup_table = lookup_table_by_doubling(point);
++        mul_with_lookup_table(&lookup_table, scalar_digits)
++    }
++
++    fn lookup_table_by_doubling(point: &EdwardsPoint) -> LookupTable<CachedPoint> {
++        let p1 = ExtendedPoint::from(*point);
++        let p2 = p1.double();
++        let p3 = &p1 + &CachedPoint::from(p2);
++        let p4 = p2.double();
++        let p5 = &p1 + &CachedPoint::from(p4);
++        let p6 = p3.double();
++        let p7 = &p1 + &CachedPoint::from(p6);
++        let p8 = p4.double();
++
++        LookupTable([
++            CachedPoint::from(p1),
++            CachedPoint::from(p2),
++            CachedPoint::from(p3),
++            CachedPoint::from(p4),
++            CachedPoint::from(p5),
++            CachedPoint::from(p6),
++            CachedPoint::from(p7),
++            CachedPoint::from(p8),
++        ])
++    }
++
++    fn mul_with_lookup_table(
++        lookup_table: &LookupTable<CachedPoint>,
++        scalar_digits: &[i8; 64],
++    ) -> EdwardsPoint {
+         // Compute s*P as
+         //
+         //    s*P = P*(s_0 +   s_1*16^1 +   s_2*16^2 + ... +   s_63*16^63)

@@ -1,0 +1,944 @@
+From cdcfa8151322a3fdd9306af97ab0c54092ac1e37 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sat, 25 Jul 2026 18:25:09 -0500
+Subject: [PATCH] wallet: add native Metal derivation backend
+
+---
+ .../include/monero_fast_metal.h               |  59 +++
+ .../src/monero_fast_metal.mm                  | 414 ++++++++++++++++++
+ src/crypto/CMakeLists.txt                     |  20 +
+ src/crypto/crypto.cpp                         |  45 ++
+ tools/wallet-metal-product-testbench/main.cpp | 211 +++++++++
+ .../run-product-metal-testbench.sh            |  92 ++++
+ 6 files changed, 841 insertions(+)
+ create mode 100644 external/monero-fast-metal/include/monero_fast_metal.h
+ create mode 100644 external/monero-fast-metal/src/monero_fast_metal.mm
+ create mode 100644 tools/wallet-metal-product-testbench/main.cpp
+ create mode 100755 tools/wallet-metal-product-testbench/run-product-metal-testbench.sh
+
+diff --git a/external/monero-fast-metal/include/monero_fast_metal.h b/external/monero-fast-metal/include/monero_fast_metal.h
+new file mode 100644
+index 000000000..4cde26b4a
+--- /dev/null
++++ b/external/monero-fast-metal/include/monero_fast_metal.h
+@@ -0,0 +1,59 @@
++/*
++ * Native macOS Metal backend for the wallet scan's shared-scalar key
++ * derivation batch. This API is intentionally below wallet2: view keys never
++ * cross into Tauri/JavaScript.
++ */
++#ifndef MONERO_FAST_METAL_H
++#define MONERO_FAST_METAL_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++enum
++{
++  MONERO_FAST_METAL_UNAVAILABLE = -1,
++  MONERO_FAST_METAL_INVALID_ARGUMENT = -2,
++  MONERO_FAST_METAL_EXECUTION_ERROR = -3
++};
++
++/*
++ * Returns 1 when the default Metal device, packaged metallib, and all three
++ * compute pipelines are usable. Returns 0 otherwise.
++ */
++int fast_metal_derivation_available(void);
++
++/*
++ * Computes D[i] = 8 * Scalar::from_bytes_mod_order(scalar) * points[i].
++ *
++ * results: output, count * 32 bytes
++ * scalar:  one shared 32-byte wallet view scalar
++ * points:  input, count * 32-byte compressed Edwards points
++ * valid:   output, count bytes; 1 for a valid point, 0 otherwise
++ *
++ * A non-negative result is the number of valid derivations. A negative result
++ * is one of MONERO_FAST_METAL_* above and requires a CPU fallback. The call is
++ * synchronous; all GPU work is complete and secret-dependent shared buffers
++ * have been overwritten before it returns.
++ */
++int64_t fast_metal_generate_key_derivation_batch_same_scalar(
++    uint8_t *results,
++    const uint8_t *scalar,
++    const uint8_t *points,
++    uint8_t *valid,
++    size_t count);
++
++/*
++ * Stable process-lifetime diagnostic for the first initialization or dispatch
++ * failure. The returned string is never a wallet key or point.
++ */
++const char *fast_metal_derivation_last_error(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* MONERO_FAST_METAL_H */
+diff --git a/external/monero-fast-metal/src/monero_fast_metal.mm b/external/monero-fast-metal/src/monero_fast_metal.mm
+new file mode 100644
+index 000000000..a7a54fc4d
+--- /dev/null
++++ b/external/monero-fast-metal/src/monero_fast_metal.mm
+@@ -0,0 +1,414 @@
++#define __STDC_WANT_LIB_EXT1__ 1
++
++#import <Foundation/Foundation.h>
++#import <Metal/Metal.h>
++
++#include "monero_fast_metal.h"
++
++#include <algorithm>
++#include <cstdint>
++#include <cstring>
++#include <limits>
++#include <mutex>
++#include <string>
++#include <vector>
++
++namespace
++{
++  constexpr NSUInteger PROJECTIVE_THREADS = 256;
++  constexpr NSUInteger INVERSE_THREADS = 16;
++  constexpr NSUInteger COMPRESS_THREADS = 128;
++  constexpr uint32_t BATCH_INVERSION_CHUNK = 16;
++
++  struct Parameters
++  {
++    uint32_t count;
++    uint32_t batch_chunk_size;
++  };
++
++  void secure_zero(void *memory, size_t bytes)
++  {
++    // macOS guarantees the C11 bounds-checked memset_s call is not removed by
++    // the optimizer; unlike a volatile byte loop it still uses the platform's
++    // optimized bulk-memory implementation.
++    (void)memset_s(memory, bytes, 0, bytes);
++  }
++
++  std::string describe_error(NSString *prefix, NSError *error)
++  {
++    NSString *description = error == nil ? @"unknown error" : error.localizedDescription;
++    NSString *combined = [NSString stringWithFormat:@"%@: %@", prefix, description];
++    return std::string(combined.UTF8String == nullptr ? "Metal error" : combined.UTF8String);
++  }
++
++  std::vector<NSString *> library_candidates()
++  {
++    NSDictionary<NSString *, NSString *> *environment =
++      NSProcessInfo.processInfo.environment;
++    NSString *configured = environment[@"MONERO_METAL_LIBRARY_PATH"];
++    if (configured.length != 0)
++      return {configured};
++
++    NSMutableArray<NSString *> *paths = [NSMutableArray array];
++    NSString *resource = NSBundle.mainBundle.resourcePath;
++    if (resource.length != 0)
++    {
++      [paths addObject:[resource stringByAppendingPathComponent:
++        @"monero_wallet_derivation.metallib"]];
++      [paths addObject:[resource stringByAppendingPathComponent:
++        @"_up_/native-libs/monero_wallet_derivation.metallib"]];
++      [paths addObject:[resource stringByAppendingPathComponent:
++        @"native-libs/monero_wallet_derivation.metallib"]];
++    }
++
++    NSString *executable = NSBundle.mainBundle.executablePath;
++    if (executable.length != 0)
++    {
++      NSString *directory = executable.stringByDeletingLastPathComponent;
++      [paths addObject:[directory stringByAppendingPathComponent:
++        @"monero_wallet_derivation.metallib"]];
++    }
++
++    std::vector<NSString *> result;
++    result.reserve(paths.count);
++    for (NSString *path in paths)
++      result.push_back(path);
++    return result;
++  }
++
++  class MetalDerivationContext
++  {
++  public:
++    bool available()
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      return initialize_locked();
++    }
++
++    int64_t derive(
++        uint8_t *results,
++        const uint8_t *scalar,
++        const uint8_t *points,
++        uint8_t *valid,
++        size_t count)
++    {
++      if (count == 0)
++        return 0;
++      if (results == nullptr || scalar == nullptr || points == nullptr || valid == nullptr)
++        return MONERO_FAST_METAL_INVALID_ARGUMENT;
++      if (count > std::numeric_limits<uint32_t>::max()
++          || count > std::numeric_limits<size_t>::max() / 120
++          || count > std::numeric_limits<size_t>::max() / 32)
++        return MONERO_FAST_METAL_INVALID_ARGUMENT;
++
++      @autoreleasepool
++      {
++        std::lock_guard<std::mutex> lock(mutex_);
++        if (!initialize_locked())
++          return MONERO_FAST_METAL_UNAVAILABLE;
++
++        const size_t point_bytes = count * 32;
++        const size_t projective_bytes = count * 30 * sizeof(uint32_t);
++        const size_t inverse_bytes = count * 10 * sizeof(uint32_t);
++        Parameters parameters{
++          static_cast<uint32_t>(count),
++          BATCH_INVERSION_CHUNK
++        };
++
++        if (!ensure_buffers_locked(count))
++        {
++          last_error_ = "Metal shared-buffer allocation failed";
++          zero_secret_buffers(point_bytes, projective_bytes, inverse_bytes);
++          return MONERO_FAST_METAL_EXECUTION_ERROR;
++        }
++        std::memcpy(scalar_buffer_.contents, scalar, 32);
++        std::memcpy(point_buffer_.contents, points, point_bytes);
++        std::memcpy(parameter_buffer_.contents, &parameters, sizeof(parameters));
++
++        id<MTLCommandBuffer> command = [queue_ commandBuffer];
++        if (command == nil)
++        {
++          last_error_ = "Metal command-buffer allocation failed";
++          zero_secret_buffers(point_bytes, projective_bytes, inverse_bytes);
++          return MONERO_FAST_METAL_EXECUTION_ERROR;
++        }
++        command.label = @"Monero wallet key derivation batch";
++
++        id<MTLComputeCommandEncoder> projective_encoder =
++          [command computeCommandEncoder];
++        if (projective_encoder == nil)
++        {
++          last_error_ = "Metal projective encoder allocation failed";
++          zero_secret_buffers(point_bytes, projective_bytes, inverse_bytes);
++          return MONERO_FAST_METAL_EXECUTION_ERROR;
++        }
++        [projective_encoder setComputePipelineState:projective_pipeline_];
++        [projective_encoder setBuffer:scalar_buffer_ offset:0 atIndex:0];
++        [projective_encoder setBuffer:point_buffer_ offset:0 atIndex:1];
++        [projective_encoder setBuffer:projective_buffer_ offset:0 atIndex:2];
++        [projective_encoder setBuffer:valid_buffer_ offset:0 atIndex:3];
++        [projective_encoder setBuffer:parameter_buffer_ offset:0 atIndex:4];
++        [projective_encoder
++          dispatchThreads:MTLSizeMake(count, 1, 1)
++          threadsPerThreadgroup:MTLSizeMake(
++            std::min(PROJECTIVE_THREADS, projective_pipeline_.maxTotalThreadsPerThreadgroup),
++            1,
++            1)];
++        [projective_encoder endEncoding];
++
++        id<MTLComputeCommandEncoder> inverse_encoder =
++          [command computeCommandEncoder];
++        if (inverse_encoder == nil)
++        {
++          last_error_ = "Metal inverse encoder allocation failed";
++          zero_secret_buffers(point_bytes, projective_bytes, inverse_bytes);
++          return MONERO_FAST_METAL_EXECUTION_ERROR;
++        }
++        const NSUInteger inverse_count =
++          (count + BATCH_INVERSION_CHUNK - 1) / BATCH_INVERSION_CHUNK;
++        [inverse_encoder setComputePipelineState:inverse_pipeline_];
++        [inverse_encoder setBuffer:projective_buffer_ offset:0 atIndex:0];
++        [inverse_encoder setBuffer:inverse_buffer_ offset:0 atIndex:1];
++        [inverse_encoder setBuffer:valid_buffer_ offset:0 atIndex:2];
++        [inverse_encoder setBuffer:parameter_buffer_ offset:0 atIndex:3];
++        [inverse_encoder
++          dispatchThreads:MTLSizeMake(inverse_count, 1, 1)
++          threadsPerThreadgroup:MTLSizeMake(
++            std::min({
++              INVERSE_THREADS,
++              inverse_count,
++              inverse_pipeline_.maxTotalThreadsPerThreadgroup
++            }),
++            1,
++            1)];
++        [inverse_encoder endEncoding];
++
++        id<MTLComputeCommandEncoder> compress_encoder =
++          [command computeCommandEncoder];
++        if (compress_encoder == nil)
++        {
++          last_error_ = "Metal compression encoder allocation failed";
++          zero_secret_buffers(point_bytes, projective_bytes, inverse_bytes);
++          return MONERO_FAST_METAL_EXECUTION_ERROR;
++        }
++        [compress_encoder setComputePipelineState:compress_pipeline_];
++        [compress_encoder setBuffer:projective_buffer_ offset:0 atIndex:0];
++        [compress_encoder setBuffer:inverse_buffer_ offset:0 atIndex:1];
++        [compress_encoder setBuffer:result_buffer_ offset:0 atIndex:2];
++        [compress_encoder setBuffer:valid_buffer_ offset:0 atIndex:3];
++        [compress_encoder setBuffer:parameter_buffer_ offset:0 atIndex:4];
++        [compress_encoder
++          dispatchThreads:MTLSizeMake(count, 1, 1)
++          threadsPerThreadgroup:MTLSizeMake(
++            std::min(COMPRESS_THREADS, compress_pipeline_.maxTotalThreadsPerThreadgroup),
++            1,
++            1)];
++        [compress_encoder endEncoding];
++
++        [command commit];
++        [command waitUntilCompleted];
++        if (command.status != MTLCommandBufferStatusCompleted || command.error != nil)
++        {
++          last_error_ = describe_error(@"Metal key-derivation command failed", command.error);
++          zero_secret_buffers(point_bytes, projective_bytes, inverse_bytes);
++          return MONERO_FAST_METAL_EXECUTION_ERROR;
++        }
++
++        std::memcpy(results, result_buffer_.contents, point_bytes);
++        std::memcpy(valid, valid_buffer_.contents, count);
++        int64_t successes = 0;
++        for (size_t index = 0; index < count; ++index)
++          successes += valid[index] == 1 ? 1 : 0;
++
++        zero_secret_buffers(point_bytes, projective_bytes, inverse_bytes);
++        return successes;
++      }
++    }
++
++    const char *last_error()
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      return last_error_.c_str();
++    }
++
++  private:
++    bool initialize_locked()
++    {
++      if (initialized_)
++        return ready_;
++      initialized_ = true;
++
++      device_ = MTLCreateSystemDefaultDevice();
++      if (device_ == nil)
++      {
++        last_error_ = "No default Metal device";
++        return false;
++      }
++      queue_ = [device_ newCommandQueue];
++      if (queue_ == nil)
++      {
++        last_error_ = "Metal command-queue creation failed";
++        return false;
++      }
++
++      NSFileManager *files = NSFileManager.defaultManager;
++      NSString *library_path = nil;
++      for (NSString *candidate : library_candidates())
++      {
++        if ([files isReadableFileAtPath:candidate])
++        {
++          library_path = candidate;
++          break;
++        }
++      }
++      if (library_path == nil)
++      {
++        last_error_ = "Packaged monero_wallet_derivation.metallib not found";
++        return false;
++      }
++
++      NSError *error = nil;
++      id<MTLLibrary> library =
++        [device_ newLibraryWithURL:[NSURL fileURLWithPath:library_path] error:&error];
++      if (library == nil)
++      {
++        last_error_ = describe_error(@"Cannot load wallet metallib", error);
++        return false;
++      }
++
++      projective_pipeline_ = make_pipeline(
++        library, @"derivation_m12_projective_chunkinvert");
++      inverse_pipeline_ = make_pipeline(
++        library, @"derivation_m12_chunk_inverse");
++      compress_pipeline_ = make_pipeline(
++        library, @"derivation_m12_compress_chunkinvert");
++      ready_ = projective_pipeline_ != nil
++        && inverse_pipeline_ != nil
++        && compress_pipeline_ != nil;
++      return ready_;
++    }
++
++    id<MTLComputePipelineState> make_pipeline(
++        id<MTLLibrary> library,
++        NSString *name)
++    {
++      id<MTLFunction> function = [library newFunctionWithName:name];
++      if (function == nil)
++      {
++        last_error_ = std::string("Metal function missing: ") + name.UTF8String;
++        return nil;
++      }
++      NSError *error = nil;
++      id<MTLComputePipelineState> pipeline =
++        [device_ newComputePipelineStateWithFunction:function error:&error];
++      if (pipeline == nil)
++        last_error_ = describe_error(
++          [NSString stringWithFormat:@"Cannot create %@ pipeline", name], error);
++      return pipeline;
++    }
++
++    bool ensure_buffers_locked(size_t count)
++    {
++      if (buffer_capacity_ >= count)
++        return true;
++
++      const size_t point_bytes = count * 32;
++      const size_t projective_bytes = count * 30 * sizeof(uint32_t);
++      const size_t inverse_bytes = count * 10 * sizeof(uint32_t);
++      scalar_buffer_ =
++        [device_ newBufferWithLength:32 options:MTLResourceStorageModeShared];
++      point_buffer_ =
++        [device_ newBufferWithLength:point_bytes options:MTLResourceStorageModeShared];
++      result_buffer_ =
++        [device_ newBufferWithLength:point_bytes options:MTLResourceStorageModeShared];
++      valid_buffer_ =
++        [device_ newBufferWithLength:count options:MTLResourceStorageModeShared];
++      projective_buffer_ =
++        [device_ newBufferWithLength:projective_bytes options:MTLResourceStorageModeShared];
++      inverse_buffer_ =
++        [device_ newBufferWithLength:inverse_bytes options:MTLResourceStorageModeShared];
++      parameter_buffer_ =
++        [device_ newBufferWithLength:sizeof(Parameters)
++                             options:MTLResourceStorageModeShared];
++
++      if (scalar_buffer_ == nil || point_buffer_ == nil || result_buffer_ == nil
++          || valid_buffer_ == nil || projective_buffer_ == nil
++          || inverse_buffer_ == nil || parameter_buffer_ == nil)
++        return false;
++
++      scalar_buffer_.label = @"wallet_view_scalar";
++      point_buffer_.label = @"wallet_transaction_public_keys";
++      result_buffer_.label = @"wallet_key_derivations";
++      valid_buffer_.label = @"wallet_key_derivation_validity";
++      projective_buffer_.label = @"wallet_key_derivation_projective_xyz";
++      inverse_buffer_.label = @"wallet_key_derivation_inverse_z";
++      parameter_buffer_.label = @"wallet_key_derivation_parameters";
++      buffer_capacity_ = count;
++      return true;
++    }
++
++    static void zero_buffer(id<MTLBuffer> buffer, size_t bytes)
++    {
++      if (buffer != nil && buffer.contents != nullptr)
++        secure_zero(buffer.contents, (std::min)(bytes, static_cast<size_t>(buffer.length)));
++    }
++
++    void zero_secret_buffers(
++        size_t result_bytes,
++        size_t projective_bytes,
++        size_t inverse_bytes)
++    {
++      zero_buffer(scalar_buffer_, 32);
++      zero_buffer(result_buffer_, result_bytes);
++      zero_buffer(projective_buffer_, projective_bytes);
++      zero_buffer(inverse_buffer_, inverse_bytes);
++    }
++
++    std::mutex mutex_;
++    bool initialized_ = false;
++    bool ready_ = false;
++    std::string last_error_;
++    id<MTLDevice> device_ = nil;
++    id<MTLCommandQueue> queue_ = nil;
++    id<MTLComputePipelineState> projective_pipeline_ = nil;
++    id<MTLComputePipelineState> inverse_pipeline_ = nil;
++    id<MTLComputePipelineState> compress_pipeline_ = nil;
++    size_t buffer_capacity_ = 0;
++    id<MTLBuffer> scalar_buffer_ = nil;
++    id<MTLBuffer> point_buffer_ = nil;
++    id<MTLBuffer> result_buffer_ = nil;
++    id<MTLBuffer> valid_buffer_ = nil;
++    id<MTLBuffer> projective_buffer_ = nil;
++    id<MTLBuffer> inverse_buffer_ = nil;
++    id<MTLBuffer> parameter_buffer_ = nil;
++  };
++
++  MetalDerivationContext &context()
++  {
++    static MetalDerivationContext instance;
++    return instance;
++  }
++}
++
++extern "C" int fast_metal_derivation_available(void)
++{
++  @autoreleasepool
++  {
++    return context().available() ? 1 : 0;
++  }
++}
++
++extern "C" int64_t fast_metal_generate_key_derivation_batch_same_scalar(
++    uint8_t *results,
++    const uint8_t *scalar,
++    const uint8_t *points,
++    uint8_t *valid,
++    size_t count)
++{
++  return context().derive(results, scalar, points, valid, count);
++}
++
++extern "C" const char *fast_metal_derivation_last_error(void)
++{
++  return context().last_error();
++}
+diff --git a/src/crypto/CMakeLists.txt b/src/crypto/CMakeLists.txt
+index 8686dcc92..06a728157 100644
+--- a/src/crypto/CMakeLists.txt
++++ b/src/crypto/CMakeLists.txt
+@@ -50,6 +50,16 @@ set(crypto_sources
+   CryptonightR_JIT.c
+   tree-hash.c)
+ 
++if(APPLE AND NOT IOS)
++  enable_language(OBJCXX)
++  set(MONERO_FAST_METAL_SOURCE
++    "${CMAKE_CURRENT_SOURCE_DIR}/../../external/monero-fast-metal/src/monero_fast_metal.mm")
++  list(APPEND crypto_sources "${MONERO_FAST_METAL_SOURCE}")
++  set_source_files_properties(
++    "${MONERO_FAST_METAL_SOURCE}"
++    PROPERTIES COMPILE_FLAGS "-fobjc-arc")
++endif()
++
+ if(ARCH_ID STREQUAL "i386" OR ARCH_ID STREQUAL "x86_64" OR ARCH_ID STREQUAL "x86-64" OR ARCH_ID STREQUAL "amd64")
+ list(APPEND crypto_sources CryptonightR_template.S)
+ endif()
+@@ -72,6 +82,11 @@ include_directories(
+   ${RANDOMX_INCLUDE}
+   "${MONERO_FAST_CRYPTO_INCLUDE_DIR}")
+ 
++if(APPLE AND NOT IOS)
++  include_directories(
++    "${CMAKE_CURRENT_SOURCE_DIR}/../../external/monero-fast-metal/include")
++endif()
++
+ set(crypto_headers)
+ 
+ monero_find_all_headers(crypto_private_headers "${CMAKE_CURRENT_SOURCE_DIR}")
+@@ -95,6 +110,11 @@ target_link_libraries(cncrypto
+   PRIVATE
+     ${EXTRA_LIBRARIES})
+ 
++if(APPLE AND NOT IOS)
++  target_compile_definitions(cncrypto PRIVATE MONERO_FAST_METAL=1)
++  target_link_libraries(cncrypto PRIVATE "-framework Foundation" "-framework Metal")
++endif()
++
+ if (ARM)
+   option(NO_OPTIMIZED_MULTIPLY_ON_ARM
+ 	   "Compute multiply using generic C implementation instead of ARM ASM" OFF)
+diff --git a/src/crypto/crypto.cpp b/src/crypto/crypto.cpp
+index 64add3bdb..cc3405eef 100644
+--- a/src/crypto/crypto.cpp
++++ b/src/crypto/crypto.cpp
+@@ -30,10 +30,12 @@
+ 
+ #include <unistd.h>
+ #include <cassert>
++#include <cerrno>
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstdlib>
+ #include <cstring>
++#include <limits>
+ #include <boost/thread/mutex.hpp>
+ #include <boost/thread/lock_guard.hpp>
+ #include <boost/shared_ptr.hpp>
+@@ -43,6 +45,9 @@
+ #include "crypto.h"
+ #include "hash.h"
+ #include "monero_fast_crypto.h"
++#ifdef MONERO_FAST_METAL
++#include "monero_fast_metal.h"
++#endif
+ 
+ #include "cryptonote_config.h"
+ 
+@@ -56,6 +61,32 @@ namespace {
+     abort();
+ #endif
+   }
++
++#ifdef MONERO_FAST_METAL
++  bool metal_derivation_batch_enabled(size_t count)
++  {
++    const char *enabled = std::getenv("MONERO_METAL_DERIVATION_BATCH");
++    if (enabled != nullptr && std::strcmp(enabled, "0") == 0)
++      return false;
++
++    // The precompiled product backend was measured against the exact packaged
++    // Rust C ABI on Apple M4. Metal is slower at 1,024 records, but already
++    // 1.38x faster at 2,048 and scales further from there.
++    constexpr size_t DEFAULT_MINIMUM = 2048;
++    size_t minimum = DEFAULT_MINIMUM;
++    const char *configured = std::getenv("MONERO_METAL_DERIVATION_MIN_POINTS");
++    if (configured != nullptr && *configured != '\0')
++    {
++      errno = 0;
++      char *end = nullptr;
++      const unsigned long long parsed = std::strtoull(configured, &end, 10);
++      if (errno == 0 && end != nullptr && *end == '\0'
++          && parsed <= std::numeric_limits<size_t>::max())
++        minimum = static_cast<size_t>(parsed);
++    }
++    return count >= minimum;
++  }
++#endif
+ }
+ 
+ namespace crypto {
+@@ -202,6 +233,20 @@ namespace crypto {
+       size_t count, size_t workers) {
+     if (count == 0)
+       return 0;
++#ifdef MONERO_FAST_METAL
++    if (metal_derivation_batch_enabled(count))
++    {
++      const int64_t metal_successes =
++        fast_metal_generate_key_derivation_batch_same_scalar(
++          reinterpret_cast<uint8_t*>(derivations),
++          reinterpret_cast<const uint8_t*>(&unwrap(key2)),
++          reinterpret_cast<const uint8_t*>(points),
++          valid,
++          count);
++      if (metal_successes >= 0)
++        return static_cast<size_t>(metal_successes);
++    }
++#endif
+     return fast_generate_key_derivation_batch_same_scalar(
+         reinterpret_cast<uint8_t*>(derivations),
+         reinterpret_cast<const uint8_t*>(&unwrap(key2)),
+diff --git a/tools/wallet-metal-product-testbench/main.cpp b/tools/wallet-metal-product-testbench/main.cpp
+new file mode 100644
+index 000000000..b2690f713
+--- /dev/null
++++ b/tools/wallet-metal-product-testbench/main.cpp
+@@ -0,0 +1,211 @@
++#include "monero_fast_metal.h"
++
++#include <chrono>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <iomanip>
++#include <iostream>
++#include <limits>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++namespace
++{
++  constexpr uint8_t MAGIC[8] = {
++    0x4d, 0x57, 0x4d, 0x54, 0x56, 0x31, 0x00, 0x00
++  };
++  constexpr size_t HEADER_BYTES = 88;
++
++  struct Corpus
++  {
++    uint8_t scalar[32];
++    std::vector<uint8_t> points;
++    std::vector<uint8_t> expected;
++    size_t valid_count;
++  };
++
++  uint32_t read_le32(const uint8_t *bytes)
++  {
++    return static_cast<uint32_t>(bytes[0])
++      | static_cast<uint32_t>(bytes[1]) << 8
++      | static_cast<uint32_t>(bytes[2]) << 16
++      | static_cast<uint32_t>(bytes[3]) << 24;
++  }
++
++  std::vector<uint8_t> read_file(const std::string &path)
++  {
++    std::ifstream input(path, std::ios::binary | std::ios::ate);
++    if (!input)
++      throw std::runtime_error("cannot open vector file");
++    const std::streamsize length = input.tellg();
++    if (length < 0)
++      throw std::runtime_error("cannot determine vector-file size");
++    input.seekg(0);
++    std::vector<uint8_t> bytes(static_cast<size_t>(length));
++    if (!input.read(reinterpret_cast<char *>(bytes.data()), length))
++      throw std::runtime_error("cannot read vector file");
++    return bytes;
++  }
++
++  Corpus read_corpus(const std::string &path)
++  {
++    const std::vector<uint8_t> bytes = read_file(path);
++    if (bytes.size() < HEADER_BYTES
++        || std::memcmp(bytes.data(), MAGIC, sizeof(MAGIC)) != 0)
++      throw std::runtime_error("invalid MWMTV1 header");
++    if (read_le32(bytes.data() + 8) != 1)
++      throw std::runtime_error("unsupported MWMTV1 version");
++    const size_t count = read_le32(bytes.data() + 12);
++    if (count == 0
++        || count > (std::numeric_limits<size_t>::max() - HEADER_BYTES) / 64
++        || bytes.size() != HEADER_BYTES + count * 64)
++      throw std::runtime_error("invalid MWMTV1 record count");
++
++    Corpus corpus;
++    std::memcpy(corpus.scalar, bytes.data() + 16, 32);
++    corpus.valid_count = count;
++    corpus.points.reserve((count + 1) * 32);
++    corpus.expected.reserve((count + 1) * 32);
++    for (size_t index = 0; index < count; ++index)
++    {
++      const size_t offset = HEADER_BYTES + index * 64;
++      corpus.points.insert(
++        corpus.points.end(), bytes.begin() + offset, bytes.begin() + offset + 32);
++      corpus.expected.insert(
++        corpus.expected.end(),
++        bytes.begin() + offset + 32,
++        bytes.begin() + offset + 64);
++    }
++    corpus.points.insert(
++      corpus.points.end(), bytes.begin() + 56, bytes.begin() + 88);
++    corpus.expected.resize((count + 1) * 32, 0);
++    return corpus;
++  }
++
++  size_t positive(const char *text, const char *name)
++  {
++    char *end = nullptr;
++    const unsigned long long parsed = std::strtoull(text, &end, 10);
++    if (end == text || end == nullptr || *end != '\0' || parsed == 0
++        || parsed > std::numeric_limits<size_t>::max())
++      throw std::runtime_error(std::string(name) + " requires a positive integer");
++    return static_cast<size_t>(parsed);
++  }
++
++  void validate(
++      const Corpus &corpus,
++      const std::vector<uint8_t> &results,
++      const std::vector<uint8_t> &valid,
++      int64_t successes)
++  {
++    if (successes != static_cast<int64_t>(corpus.valid_count))
++      throw std::runtime_error("unexpected Metal success count");
++    for (size_t index = 0; index < corpus.valid_count; ++index)
++    {
++      if (valid[index] != 1)
++        throw std::runtime_error("valid point was rejected");
++    }
++    if (valid.back() != 0)
++      throw std::runtime_error("invalid point was accepted");
++    if (results != corpus.expected)
++      throw std::runtime_error("Metal result differs from Dalek vector");
++  }
++}
++
++int main(int argc, char **argv)
++{
++  try
++  {
++    std::string vector_path;
++    size_t rounds = 1;
++    size_t warmup_rounds = 1;
++    for (int index = 1; index < argc; ++index)
++    {
++      const std::string argument = argv[index];
++      if (argument == "--vectors" && index + 1 < argc)
++        vector_path = argv[++index];
++      else if (argument == "--rounds" && index + 1 < argc)
++        rounds = positive(argv[++index], "--rounds");
++      else if (argument == "--warmup-rounds" && index + 1 < argc)
++        warmup_rounds = positive(argv[++index], "--warmup-rounds");
++      else
++        throw std::runtime_error("usage: --vectors PATH [--rounds N] [--warmup-rounds N]");
++    }
++    if (vector_path.empty())
++      throw std::runtime_error("--vectors is required");
++
++    const Corpus corpus = read_corpus(vector_path);
++    const size_t dispatch_count = corpus.valid_count + 1;
++    std::vector<uint8_t> results(dispatch_count * 32);
++    std::vector<uint8_t> valid(dispatch_count);
++
++    if (fast_metal_derivation_available() != 1)
++      throw std::runtime_error(
++        std::string("Metal backend unavailable: ")
++        + fast_metal_derivation_last_error());
++
++    auto run = [&](size_t run_count, bool timed) {
++      std::chrono::nanoseconds elapsed{0};
++      for (size_t round = 0; round < run_count; ++round)
++      {
++        const auto start = std::chrono::steady_clock::now();
++        const int64_t successes =
++          fast_metal_generate_key_derivation_batch_same_scalar(
++            results.data(),
++            corpus.scalar,
++            corpus.points.data(),
++            valid.data(),
++            dispatch_count);
++        const auto end = std::chrono::steady_clock::now();
++        if (successes < 0)
++          throw std::runtime_error(
++            std::string("Metal dispatch failed: ")
++            + fast_metal_derivation_last_error());
++        validate(corpus, results, valid, successes);
++        if (timed)
++          elapsed += end - start;
++      }
++      return elapsed;
++    };
++
++    run(warmup_rounds, false);
++    const std::chrono::nanoseconds elapsed = run(rounds, true);
++    const double seconds = static_cast<double>(elapsed.count()) / 1.0e9;
++    const size_t operations = corpus.valid_count * rounds;
++    const size_t logical_bytes =
++      (32 + corpus.valid_count * 32 + corpus.valid_count * 32
++        + corpus.valid_count) * rounds;
++
++    std::cout << "testbench=wallet_metal_product_backend_v1\n";
++    std::cout << "backend=native_objcxx_precompiled_metallib\n";
++    std::cout << "algorithm=monero_generate_key_derivation_8_times_a_times_r\n";
++    std::cout << "points_per_round=" << corpus.valid_count << '\n';
++    std::cout << "dispatch_records_per_round=" << dispatch_count << '\n';
++    std::cout << "timed_rounds=" << rounds << '\n';
++    std::cout << "warmup_rounds=" << warmup_rounds << '\n';
++    std::cout << "operations=" << operations << '\n';
++    std::cout << "host_submit_wait_ns=" << elapsed.count() << '\n';
++    std::cout << std::fixed << std::setprecision(9)
++      << "host_submit_wait_seconds=" << seconds << '\n';
++    std::cout << std::setprecision(3)
++      << "derivations_per_second=" << static_cast<double>(operations) / seconds
++      << '\n';
++    std::cout << "logical_payload_bytes=" << logical_bytes << '\n';
++    std::cout << std::setprecision(6)
++      << "logical_payload_mib_per_second="
++      << static_cast<double>(logical_bytes) / seconds / 1048576.0 << '\n';
++    std::cout << "dalek_byte_validation=pass\n";
++    std::cout << "invalid_point_validation=pass\n";
++    std::cout << "validation=pass\n";
++    return 0;
++  }
++  catch (const std::exception &error)
++  {
++    std::cerr << "wallet Metal product testbench error: "
++      << error.what() << '\n';
++    return 1;
++  }
++}
+diff --git a/tools/wallet-metal-product-testbench/run-product-metal-testbench.sh b/tools/wallet-metal-product-testbench/run-product-metal-testbench.sh
+new file mode 100755
+index 000000000..0efbb8111
+--- /dev/null
++++ b/tools/wallet-metal-product-testbench/run-product-metal-testbench.sh
+@@ -0,0 +1,92 @@
++#!/usr/bin/env bash
++# Build and measure the exact native product host against public Dalek vectors.
++set -euo pipefail
++
++tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++source_root="$(cd "${tool_dir}/../.." && pwd)"
++vector_tool_dir="${source_root}/tools/wallet-crypto-testbench"
++metal_source="${source_root}/tools/wallet-metal-testbench/derivation_radix2625_chunkinvert.metal"
++metal_host="${source_root}/external/monero-fast-metal/src/monero_fast_metal.mm"
++metal_include="${source_root}/external/monero-fast-metal/include"
++results_root="${WALLET_METAL_PRODUCT_RESULTS_DIR:-${source_root}/build/wallet-metal-product-testbench}"
++run_id="${WALLET_METAL_PRODUCT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$(hostname -s)}"
++point_count="${WALLET_METAL_PRODUCT_POINTS:-8192}"
++result_dir="${results_root}/${run_id}"
++
++[[ "$(uname -s)" == "Darwin" ]] || { echo "The Metal product test requires macOS." >&2; exit 2; }
++[[ "${point_count}" =~ ^[1-9][0-9]*$ ]] || { echo "WALLET_METAL_PRODUCT_POINTS must be positive." >&2; exit 2; }
++[[ ! -e "${result_dir}" ]] || { echo "Result directory exists: ${result_dir}" >&2; exit 2; }
++mkdir -p "${result_dir}"
++
++sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
++
++{
++  echo "schema=wallet_metal_product_benchmark_v1"
++  echo "run_id=${run_id}"
++  echo "started_utc=$(date -u +%FT%TZ)"
++  echo "hostname=$(hostname)"
++  echo "uname=$(uname -a)"
++  echo "macos=$(sw_vers | tr '\n' ';')"
++  echo "hardware=$(system_profiler SPHardwareDataType | tr '\n' ';')"
++  echo "display=$(system_profiler SPDisplaysDataType | tr '\n' ';')"
++  echo "xcode=$(xcodebuild -version | tr '\n' ';')"
++  echo "metal_compiler=$(xcrun -sdk macosx metal -v 2>&1 | tr '\n' ';')"
++  echo "kernel_sha256=$(sha256_file "${metal_source}")"
++  echo "host_sha256=$(sha256_file "${metal_host}")"
++  echo "testbench_sha256=$(sha256_file "${tool_dir}/main.cpp")"
++  echo "points_per_round=${point_count}"
++  echo "command=$0 $*"
++} > "${result_dir}/metadata.env"
++
++if [[ -n "${WALLET_METAL_PRODUCT_VECTOR_FILE:-}" ]]; then
++  [[ -f "${WALLET_METAL_PRODUCT_VECTOR_FILE}" ]] || {
++    echo "Vector file not found: ${WALLET_METAL_PRODUCT_VECTOR_FILE}" >&2
++    exit 66
++  }
++  cp "${WALLET_METAL_PRODUCT_VECTOR_FILE}" "${result_dir}/vectors.mwmtv1"
++  echo "source=${WALLET_METAL_PRODUCT_VECTOR_FILE}" > "${result_dir}/vector-export.log"
++else
++  (cd "${vector_tool_dir}" && cargo build --release --locked) \
++    > "${result_dir}/vector-build.log" 2>&1
++  "${vector_tool_dir}/target/release/monero-wallet-crypto-testbench" \
++    --points "${point_count}" \
++    --export-metal-vectors "${result_dir}/vectors.mwmtv1" \
++    > "${result_dir}/vector-export.log" 2>&1
++fi
++
++xcrun -sdk macosx metal -c -mmacosx-version-min=12.0 \
++  "${metal_source}" -o "${result_dir}/monero_wallet_derivation.air" \
++  > "${result_dir}/metal-compile.log" 2>&1
++xcrun -sdk macosx metallib \
++  "${result_dir}/monero_wallet_derivation.air" \
++  -o "${result_dir}/monero_wallet_derivation.metallib" \
++  > "${result_dir}/metallib-link.log" 2>&1
++
++xcrun clang++ -O3 -std=c++17 -mmacosx-version-min=12.0 \
++  -I"${metal_include}" \
++  -c "${tool_dir}/main.cpp" -o "${result_dir}/main.o" \
++  > "${result_dir}/host-build.log" 2>&1
++xcrun clang++ -O3 -std=c++17 -fobjc-arc -mmacosx-version-min=12.0 \
++  -I"${metal_include}" \
++  -c "${metal_host}" -o "${result_dir}/monero_fast_metal.o" \
++  >> "${result_dir}/host-build.log" 2>&1
++xcrun clang++ \
++  "${result_dir}/main.o" "${result_dir}/monero_fast_metal.o" \
++  -framework Foundation -framework Metal \
++  -o "${result_dir}/wallet-metal-product-testbench" \
++  >> "${result_dir}/host-build.log" 2>&1
++
++export MONERO_METAL_LIBRARY_PATH="${result_dir}/monero_wallet_derivation.metallib"
++/usr/bin/time -l "${result_dir}/wallet-metal-product-testbench" \
++  --vectors "${result_dir}/vectors.mwmtv1" "$@" \
++  > "${result_dir}/result.log" 2> "${result_dir}/time.log"
++
++{
++  echo "finished_utc=$(date -u +%FT%TZ)"
++  echo "vectors_sha256=$(sha256_file "${result_dir}/vectors.mwmtv1")"
++  echo "metallib_sha256=$(sha256_file "${result_dir}/monero_wallet_derivation.metallib")"
++  echo "binary_sha256=$(sha256_file "${result_dir}/wallet-metal-product-testbench")"
++} >> "${result_dir}/metadata.env"
++
++echo "result_dir=${result_dir}"
++cat "${result_dir}/result.log"

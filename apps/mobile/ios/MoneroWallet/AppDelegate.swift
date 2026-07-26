@@ -7,6 +7,7 @@ import FirebaseCore
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
   var window: UIWindow?
+  private var privacyShield: UIView?
 
   var reactNativeDelegate: ReactNativeDelegate?
   var reactNativeFactory: RCTReactNativeFactory?
@@ -36,7 +37,26 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       launchOptions: launchOptions
     )
 
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(screenCaptureStateChanged),
+      name: UIScreen.capturedDidChangeNotification,
+      object: nil
+    )
+
     return true
+  }
+
+  func applicationWillResignActive(_ application: UIApplication) {
+    showPrivacyShield()
+  }
+
+  func applicationDidBecomeActive(_ application: UIApplication) {
+    if UIScreen.main.isCaptured {
+      showPrivacyShield()
+    } else {
+      hidePrivacyShield()
+    }
   }
 
   func application(
@@ -57,6 +77,42 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       continue: userActivity,
       restorationHandler: restorationHandler
     )
+  }
+
+  @objc private func screenCaptureStateChanged() {
+    if UIScreen.main.isCaptured {
+      showPrivacyShield()
+    } else if UIApplication.shared.applicationState == .active {
+      hidePrivacyShield()
+    }
+  }
+
+  private func showPrivacyShield() {
+    guard let window, privacyShield == nil else { return }
+    let shield = UIView(frame: window.bounds)
+    shield.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    shield.backgroundColor = UIColor(red: 0.025, green: 0.025, blue: 0.055, alpha: 1)
+
+    let label = UILabel()
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.text = "Monero Fast Wallet\nLocked for privacy"
+    label.numberOfLines = 2
+    label.textAlignment = .center
+    label.textColor = .white
+    label.font = UIFont.systemFont(ofSize: 20, weight: .semibold)
+    shield.addSubview(label)
+    NSLayoutConstraint.activate([
+      label.centerXAnchor.constraint(equalTo: shield.centerXAnchor),
+      label.centerYAnchor.constraint(equalTo: shield.centerYAnchor),
+    ])
+
+    window.addSubview(shield)
+    privacyShield = shield
+  }
+
+  private func hidePrivacyShield() {
+    privacyShield?.removeFromSuperview()
+    privacyShield = nil
   }
 }
 

@@ -224,6 +224,7 @@ mod tests {
             identity_id: "fast-wallet-1".to_string(),
             address: "9".repeat(95),
             private_view_key: "a".repeat(64),
+            management_token_hash: "0".repeat(64),
             network: Network::Mainnet,
             restore_height: 10,
             push_token: None,

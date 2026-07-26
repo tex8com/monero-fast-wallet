@@ -9,6 +9,7 @@ use tower::Service;
 
 use cuprate_blockchain::service::{BlockchainReadHandle, BlockchainWriteHandle};
 use cuprate_consensus::BlockchainContextService;
+use cuprate_helper::network::Network;
 use cuprate_pruning::PruningSeed;
 use cuprate_rpc_interface::RpcHandler;
 use cuprate_rpc_types::{
@@ -161,6 +162,10 @@ pub struct CupratedRpcHandler {
     /// This is not `pub` on purpose, as it should not be mutated after [`Self::new`].
     restricted: bool,
 
+    /// Active Cuprate network. RPC responses must report this accurately so a
+    /// Stagenet wallet never mistakes this isolated node for Mainnet.
+    pub network: Network,
+
     /// Read handle to the blockchain database.
     pub blockchain_read: BlockchainReadHandle,
 
@@ -177,6 +182,7 @@ impl CupratedRpcHandler {
     /// Create a new [`Self`].
     pub const fn new(
         restricted: bool,
+        network: Network,
         blockchain_read: BlockchainReadHandle,
         blockchain_context: BlockchainContextService,
         txpool_read: TxpoolReadHandle,
@@ -184,6 +190,7 @@ impl CupratedRpcHandler {
     ) -> Self {
         Self {
             restricted,
+            network,
             blockchain_read,
             blockchain_context,
             txpool_read,

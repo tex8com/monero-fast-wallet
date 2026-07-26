@@ -12,7 +12,6 @@ import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -39,7 +38,6 @@ class NearbyLocationModule(
       Manifest.permission.ACCESS_FINE_LOCATION,
     ) == PackageManager.PERMISSION_GRANTED
     if (!hasCoarse && !hasFine) {
-      Log.w(NAME, "Location permission is not granted")
       promise.reject("LOCATION_PERMISSION_DENIED", "Location permission is not granted")
       return
     }
@@ -57,7 +55,6 @@ class NearbyLocationModule(
     val providers = preferredProviders.filter { provider -> runCatching { manager.isProviderEnabled(provider) }.getOrDefault(false) }
 
     if (providers.isEmpty()) {
-      Log.w(NAME, "No enabled location provider is available")
       promise.reject("LOCATION_UNAVAILABLE", "No location provider is available")
       return
     }
@@ -65,7 +62,6 @@ class NearbyLocationModule(
     val fallback = providers
       .mapNotNull { provider -> runCatching { manager.getLastKnownLocation(provider) }.getOrNull() }
       .maxByOrNull { location -> location.time }
-    Log.i(NAME, "Location request started; providers=$providers precise=$hasFine fallback=${fallback != null}")
     val finished = AtomicBoolean(false)
     val handler = Handler(Looper.getMainLooper())
     val cancellations = mutableListOf<CancellationSignal>()
@@ -73,15 +69,12 @@ class NearbyLocationModule(
     val complete: (Location?) -> Unit = { location ->
       if (finished.compareAndSet(false, true)) {
         cancellations.forEach { cancellation -> cancellation.cancel() }
-        listeners.forEach { (provider, listener) ->
+        listeners.forEach { (_, listener) ->
           runCatching { manager.removeUpdates(listener) }
-            .onFailure { error -> Log.d(NAME, "Could not remove $provider listener", error) }
         }
         if (location != null) {
-          Log.i(NAME, "Location request completed; provider=${location.provider} accuracy=${location.accuracy}")
           promise.resolve(locationMap(location))
         } else {
-          Log.w(NAME, "Location request completed without a location")
           promise.reject("LOCATION_UNAVAILABLE", "No location is currently available")
         }
       }
@@ -102,12 +95,8 @@ class NearbyLocationModule(
             ) { location ->
               if (location != null) {
                 complete(location)
-              } else {
-                Log.d(NAME, "Provider $provider returned no current location")
               }
             }
-          }.onFailure { error ->
-            Log.w(NAME, "Provider $provider request failed", error)
           }
         }
         return
@@ -125,12 +114,9 @@ class NearbyLocationModule(
         runCatching {
           @Suppress("DEPRECATION")
           manager.requestSingleUpdate(provider, listener, Looper.getMainLooper())
-        }.onFailure { error ->
-          Log.w(NAME, "Provider $provider request failed", error)
         }
       }
-    } catch (error: RuntimeException) {
-      Log.e(NAME, "Location request failed", error)
+    } catch (_: RuntimeException) {
       complete(fallback)
     }
   }

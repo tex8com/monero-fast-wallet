@@ -29,8 +29,8 @@ const mockNativeWallet = {
     platform: 'ios',
     supported: false,
   })),
-  ensureSecret: jest.fn(async () => undefined),
-  deleteSecret: jest.fn(async () => undefined),
+  ensureWalletSecret: jest.fn(async () => undefined),
+  deleteWalletSecret: jest.fn(async () => undefined),
   deleteWalletFiles: jest.fn(async () => undefined),
   logDiagnostics: jest.fn(async () => undefined),
   createWalletFromDeviceWithStoredSecret: jest.fn(async () => ({
@@ -103,9 +103,9 @@ describe('WalletService registered wallet opening', () => {
   it('keeps a Fast Wallet out of the local Monero core', async () => {
     await saveRegisteredWallet(
       createRegisteredWallet({
-        id: 'fast-receive-0-20260709T012217',
+        id: 'fast-receive-v2-0-20260709T012217',
         walletName: 'Fast Wallet',
-        path: '/old-container/wallets/mainnet/fast-receive-0-20260709T012217',
+        path: '/old-container/wallets/mainnet/fast-receive-v2-0-20260709T012217',
         network: 'mainnet',
         kind: 'fast',
         credentialKey: 'monero.wallet.software.mainnet.primary.v1',
@@ -237,7 +237,7 @@ describe('WalletService registered wallet opening', () => {
     expect(mockNativeWallet.deleteWalletFiles).toHaveBeenCalledWith(
       '/current-container/wallets/mainnet/ledger-private-ledger-view',
     );
-    expect(mockNativeWallet.deleteSecret).toHaveBeenCalledWith(
+    expect(mockNativeWallet.deleteWalletSecret).toHaveBeenCalledWith(
       'monero.wallet.hardware-view.mainnet.ledger-private.v1',
     );
     await expect(loadRegisteredWallets()).resolves.toEqual([]);

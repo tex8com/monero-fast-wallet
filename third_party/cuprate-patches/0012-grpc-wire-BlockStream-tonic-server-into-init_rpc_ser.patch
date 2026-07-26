@@ -1,0 +1,218 @@
+From c1199a32d9549e7ac9e391beff17c1d86a25c0a7 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Sun, 19 Apr 2026 08:42:33 -0500
+Subject: [PATCH 12/41] grpc: wire BlockStream tonic server into
+ init_rpc_servers + GrpcConfig
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Phase 1a step 3 — the streaming server is now actually started when
+config.rpc.grpc.enable is true. Release build clean (3:14 from cold).
+Default is disabled (opt-in), so this commit is a no-op for any operator
+who doesn't explicitly turn it on — bin RPC continues to be the only
+exposed surface.
+
+Config (src/config/rpc.rs):
+- New GrpcConfig with address / port / enable / public-bind safety guard.
+  Same shape as UnrestrictedRpcConfig but standalone (no shared block) —
+  gRPC doesn't have the restricted/unrestricted split since the streaming
+  endpoint exposes the same blockchain data the unrestricted bin RPC does.
+- grpc_rpc_port(): default 18091 mainnet, 28091 testnet, 38091 stagenet —
+  follows the +10 pattern from the existing 18081/18089 choice.
+- Public-bind guard: panics on non-local address unless
+  i_know_what_im_doing_allow_public_grpc is set, mirroring the
+  i_know_what_im_doing_allow_public_unrestricted_rpc guard for bin RPC.
+
+Server wire-up (src/rpc/server.rs):
+- After the bin RPC spawn loop, an additional tokio task spawns the gRPC
+  server when enabled. Uses tonic::transport::Server::builder().add_service.
+- Reuses the same blockchain_read / blockchain_context / txpool_read /
+  tx_handler clones — the streaming service feeds from the same internal
+  state as the bin RPC, so all of cuprate's data-layer optimizations
+  (TX-pruning, batch index lookup, BlockHashInRange) apply transparently.
+- One eprintln "[GRPC] Starting BlockStream server at <addr>" on boot so
+  the operator can see in the log that the streaming endpoint is live;
+  the per-stream PERF logs from grpc.rs take over from there.
+
+Next: gRPC client in monero-gui wallet (Phase 1b) — first end-to-end
+streaming sync test against this server with grpcurl, then wallet
+integration.
+---
+ binaries/cuprated/src/config.rs     |  2 +-
+ binaries/cuprated/src/config/rpc.rs | 70 +++++++++++++++++++++++++++++
+ binaries/cuprated/src/rpc/server.rs | 53 +++++++++++++++++++++-
+ 3 files changed, 122 insertions(+), 3 deletions(-)
+
+diff --git a/binaries/cuprated/src/config.rs b/binaries/cuprated/src/config.rs
+index 46cc811..4d819c2 100644
+--- a/binaries/cuprated/src/config.rs
++++ b/binaries/cuprated/src/config.rs
+@@ -48,7 +48,7 @@ mod macros;
+ use fs::FileSystemConfig;
+ pub use p2p::{p2p_port, P2PConfig};
+ use rayon::RayonConfig;
+-pub use rpc::{restricted_rpc_port, unrestricted_rpc_port, RpcConfig};
++pub use rpc::{grpc_rpc_port, restricted_rpc_port, unrestricted_rpc_port, GrpcConfig, RpcConfig};
+ pub use storage::{StorageConfig, TxpoolConfig};
+ use tokio::TokioConfig;
+ use tor::TorConfig;
+diff --git a/binaries/cuprated/src/config/rpc.rs b/binaries/cuprated/src/config/rpc.rs
+index b747ed2..13ff88c 100644
+--- a/binaries/cuprated/src/config/rpc.rs
++++ b/binaries/cuprated/src/config/rpc.rs
+@@ -21,6 +21,14 @@ config_struct! {
+         #[child = true]
+         /// Configuration for the restricted RPC server.
+         pub restricted: RestrictedRpcConfig,
++
++        #[child = true]
++        /// Configuration for the gRPC streaming RPC server (opt-in,
++        /// disabled by default). Uses HTTP/2 multiplexing + server-streaming
++        /// to remove the per-TCP-connection variance that limits the bin
++        /// RPC. Compatible wallets can opt in for ~1.6-1.8x more throughput;
++        /// standard wallets keep using bin RPC unchanged.
++        pub grpc: GrpcConfig,
+     }
+ }
+ 
+@@ -119,6 +127,68 @@ impl Default for RestrictedRpcConfig {
+     }
+ }
+ 
++config_struct! {
++    /// gRPC streaming server config (opt-in, disabled by default).
++    #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
++    #[serde(deny_unknown_fields, default)]
++    pub struct GrpcConfig {
++        /// The address the gRPC server will listen on.
++        ///
++        /// Type     | IPv4/IPv6 address
++        /// Examples | "127.0.0.1", "0.0.0.0", "::"
++        pub address: IpAddr,
++
++        /// The port the gRPC server will listen on.
++        ///
++        /// Type         | Number or "Default"
++        /// Valid values | 0..65534, "Default"
++        /// Examples     | 18091, 28091, 38091
++        pub port: DefaultOrCustom<u16>,
++
++        /// Toggle the gRPC server.
++        ///
++        /// Default `false` — opt-in.
++        ///
++        /// Type     | boolean
++        /// Examples | true, false
++        pub enable: bool,
++
++        /// Allow the gRPC server to bind a non-local address.
++        ///
++        /// Same safety guard as unrestricted bin RPC: refuses to start on
++        /// a public address unless explicitly set to true. The gRPC service
++        /// exposes the same blockchain data the unrestricted bin RPC does,
++        /// so the same risk profile applies.
++        ///
++        /// Type     | boolean
++        /// Examples | true, false
++        pub i_know_what_im_doing_allow_public_grpc: bool,
++    }
++}
++
++impl Default for GrpcConfig {
++    fn default() -> Self {
++        Self {
++            address: IpAddr::V4(Ipv4Addr::LOCALHOST),
++            port: DefaultOrCustom::Default,
++            enable: false,
++            i_know_what_im_doing_allow_public_grpc: false,
++        }
++    }
++}
++
++/// Gets the port to listen on for the gRPC streaming server.
++pub const fn grpc_rpc_port(config: DefaultOrCustom<u16>, network: Network) -> u16 {
++    match config {
++        DefaultOrCustom::Default => match network {
++            Network::Mainnet => 18091,
++            Network::Stagenet => 38091,
++            Network::Testnet => 28091,
++        },
++        DefaultOrCustom::Custom(port) => port,
++    }
++}
++
+ /// Gets the port to listen on for restricted RPC connections.
+ pub const fn restricted_rpc_port(config: DefaultOrCustom<u16>, network: Network) -> u16 {
+     match config {
+diff --git a/binaries/cuprated/src/rpc/server.rs b/binaries/cuprated/src/rpc/server.rs
+index 3f6fd99..ec45f7f 100644
+--- a/binaries/cuprated/src/rpc/server.rs
++++ b/binaries/cuprated/src/rpc/server.rs
+@@ -19,8 +19,8 @@ use cuprate_rpc_interface::{RouterBuilder, RpcHandler};
+ use cuprate_txpool::service::TxpoolReadHandle;
+ 
+ use crate::{
+-    config::{restricted_rpc_port, unrestricted_rpc_port, RpcConfig},
+-    rpc::{rpc_handler::BlockchainManagerHandle, CupratedRpcHandler},
++    config::{grpc_rpc_port, restricted_rpc_port, unrestricted_rpc_port, GrpcConfig, RpcConfig},
++    rpc::{grpc, rpc_handler::BlockchainManagerHandle, CupratedRpcHandler},
+     txpool::IncomingTxHandler,
+ };
+ 
+@@ -97,6 +97,55 @@ pub fn init_rpc_servers(
+             .unwrap();
+         });
+     }
++
++    // Optional gRPC streaming server (opt-in, disabled by default).
++    if config.grpc.enable {
++        let grpc_handler = CupratedRpcHandler::new(
++            false, // gRPC service is unrestricted (same data exposure as bin RPC unrestricted)
++            blockchain_read.clone(),
++            blockchain_context.clone(),
++            txpool_read.clone(),
++            tx_handler.clone(),
++        );
++        let grpc_addr = config.grpc.address;
++        let grpc_port = grpc_rpc_port(config.grpc.port, network);
++        let allow_public = config.grpc.i_know_what_im_doing_allow_public_grpc;
++        if !cuprate_helper::net::ip_is_local(grpc_addr) && !allow_public {
++            panic!("Refusing to start gRPC RPC on a non-local address ({grpc_addr}) without i_know_what_im_doing_allow_public_grpc");
++        }
++        if !cuprate_helper::net::ip_is_local(grpc_addr) {
++            warn!(address = %grpc_addr, "Starting gRPC server on non-local address");
++        }
++        let bind = SocketAddr::new(grpc_addr, grpc_port);
++        tokio::task::spawn(async move {
++            if let Err(e) = run_grpc_server(grpc_handler, bind).await {
++                eprintln!("[GRPC] server task exited with error: {e:?}");
++            }
++        });
++    } else {
++        info!("gRPC streaming RPC disabled (set rpc.grpc.enable = true to enable)");
++    }
++}
++
++/// Initializes and runs the gRPC streaming RPC server (tonic, HTTP/2).
++///
++/// The function only returns when the server itself returns or an error
++/// occurs. Coexists with the bin RPC axum server on a separate port.
++async fn run_grpc_server(rpc_handler: CupratedRpcHandler, address: SocketAddr) -> Result<(), Error> {
++    use tonic::transport::Server;
++
++    eprintln!("[GRPC] Starting BlockStream server at {address}");
++    info!(address = %address, "Starting gRPC streaming server");
++
++    let svc = grpc::block_stream_service(rpc_handler);
++
++    Server::builder()
++        .add_service(svc)
++        .serve(address)
++        .await
++        .map_err(|e| anyhow::anyhow!("tonic server error: {e}"))?;
++
++    Ok(())
+ }
+ 
+ /// This initializes and runs an RPC server.

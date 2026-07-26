@@ -6,7 +6,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/android-common.sh"
 VARIANT="${MONERO_WALLET_ANDROID_VARIANT:-release}"
 VARIANT_CAPITALIZED="$(capitalize_variant "$VARIANT")"
 ARCHITECTURES="${MONERO_WALLET_ANDROID_ARCHITECTURES:-arm64-v8a}"
-MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
 MONERO_LINK_ROOT="${MONERO_WALLET_LINK_ROOT:-${REPO_ROOT}/build/android-monero-link-manifests}"
 MONERO_TARGET="${MONERO_WALLET_ANDROID_TARGET:-android-arm64}"
 REQUIRE_MONERO="${MONERO_WALLET_ANDROID_REQUIRE_MONERO:-1}"
@@ -14,13 +13,25 @@ GRADLE_TASK="${MONERO_WALLET_ANDROID_GRADLE_TASK:-assemble${VARIANT_CAPITALIZED}
 EXTERNAL_BUILD_ROOT="${MONERO_WALLET_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
 APP_BUILD_DIR="${ANDROID_DIR}/app/build"
 
+if [ -z "${MONERO_SOURCE_DIR:-}" ] \
+  && [ -d "${EXTERNAL_BUILD_ROOT}/monero-v0.18.4.6-tex8-patched" ]; then
+  MONERO_SOURCE_DIR="${EXTERNAL_BUILD_ROOT}/monero-v0.18.4.6-tex8-patched"
+fi
+MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
+
 # Native Android artifacts are intentionally kept off the small system volume.
 # A local override remains authoritative; this fallback only makes the standard
 # external build location work without requiring a long environment variable.
 if [ -z "${MONERO_WALLET_LINK_ROOT:-}" ] \
-  && [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ] \
-  && [ -f "/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests/${MONERO_TARGET}/link.cmake" ]; then
-  MONERO_LINK_ROOT="/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests"
+  && [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ]; then
+  for external_manifest_root in \
+    "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-tex8-patched" \
+    "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests"; do
+    if [ -f "${external_manifest_root}/${MONERO_TARGET}/link.cmake" ]; then
+      MONERO_LINK_ROOT="${external_manifest_root}"
+      break
+    fi
+  done
 fi
 
 GRADLE_ARGS=(
@@ -34,6 +45,11 @@ GRADLE_ARGS=(
 if [ -d "${EXTERNAL_BUILD_ROOT}" ]; then
   APP_BUILD_DIR="${MONERO_WALLET_ANDROID_BUILD_DIR:-${EXTERNAL_BUILD_ROOT}/mobile-android-app-build}"
   export GRADLE_USER_HOME="${MONERO_WALLET_GRADLE_USER_HOME:-${EXTERNAL_BUILD_ROOT}/mobile-gradle-user-home}"
+  export TMPDIR="${MONERO_WALLET_ANDROID_TMPDIR:-${EXTERNAL_BUILD_ROOT}/mobile-android-tmp}"
+  mkdir -p "${GRADLE_USER_HOME}" "${TMPDIR}"
+  GRADLE_ARGS+=(
+    "--project-cache-dir=${MONERO_WALLET_ANDROID_PROJECT_CACHE_DIR:-${EXTERNAL_BUILD_ROOT}/mobile-android-project-cache}"
+  )
   GRADLE_ARGS+=("-PmoneroWalletExternalBuildDir=${APP_BUILD_DIR}")
 
   # React Native dependencies own their Android Gradle outputs. AGP writes

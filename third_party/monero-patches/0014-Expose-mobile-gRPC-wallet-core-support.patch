@@ -1,0 +1,794 @@
+From e7fe4ff6f0a0fef58ca031d2a75c168a42242b42 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Tue, 7 Jul 2026 09:52:25 -0500
+Subject: [PATCH 14/14] Expose mobile gRPC wallet core support
+
+---
+ .gitmodules                                   |   2 +-
+ .../include/monero_fast_crypto.h              |  31 ++-
+ external/randomx                              |   2 +-
+ src/crypto/CMakeLists.txt                     |  24 ++-
+ src/crypto/crypto.cpp                         |   5 +-
+ src/cryptonote_basic/miner.cpp                |  12 +-
+ src/wallet/api/wallet.cpp                     |  18 ++
+ src/wallet/api/wallet.h                       |   2 +
+ src/wallet/api/wallet2_api.h                  |  12 ++
+ src/wallet/grpc_stream/CMakeLists.txt         |   5 +-
+ .../grpc_stream/grpc_block_stream_client.cpp  |  58 ++++-
+ .../grpc_stream/grpc_block_stream_client.h    |   2 +-
+ src/wallet/grpc_stream/grpc_stream_status.h   |  18 ++
+ src/wallet/wallet2.cpp                        | 204 ++++++++++++++----
+ src/wallet/wallet2.h                          |   3 +-
+ 15 files changed, 334 insertions(+), 64 deletions(-)
+ create mode 100644 src/wallet/grpc_stream/grpc_stream_status.h
+
+diff --git a/.gitmodules b/.gitmodules
+index 721cce3b..cbd7706d 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -9,7 +9,7 @@
+ 	url = https://github.com/trezor/trezor-common.git
+ [submodule "external/randomx"]
+ 	path = external/randomx
+-	url = https://github.com/tevador/RandomX
++	url = https://github.com/tex8com/RandomX.git
+ [submodule "external/supercop"]
+ 	path = external/supercop
+ 	url = https://github.com/monero-project/supercop
+diff --git a/external/monero-fast-crypto/include/monero_fast_crypto.h b/external/monero-fast-crypto/include/monero_fast_crypto.h
+index 185b47ed..53c1d5ac 100644
+--- a/external/monero-fast-crypto/include/monero_fast_crypto.h
++++ b/external/monero-fast-crypto/include/monero_fast_crypto.h
+@@ -1,7 +1,8 @@
+ /*
+  * monero_fast_crypto.h
+  *
+- * Drop-in replacement for Monero's ge_scalarmult using curve25519-dalek.
++ * Drop-in replacement for hot Monero key-derivation operations using
++ * curve25519-dalek.
+  * ~3.5x faster than ref10 on Apple Silicon (ARM NEON).
+  *
+  * Link with: libmonero_fast_crypto.a
+@@ -10,12 +11,25 @@
+ #ifndef MONERO_FAST_CRYPTO_H
+ #define MONERO_FAST_CRYPTO_H
+ 
++#include <stddef.h>
+ #include <stdint.h>
+ 
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ 
++/*
++ * Fast Monero key derivation.
++ * Replaces: ge_scalarmult() + ge_mul8() in generate_key_derivation().
++ *
++ * result: output, 32 bytes (compressed point)
++ * scalar: input, 32 bytes
++ * point:  input, 32 bytes (compressed point)
++ *
++ * Returns 0 on success, -1 on invalid point.
++ */
++int fast_generate_key_derivation(uint8_t *result, const uint8_t *scalar, const uint8_t *point);
++
+ /*
+  * Fast variable-base scalar multiplication on Ed25519.
+  * Replaces: ge_scalarmult() in crypto-ops.c
+@@ -34,6 +48,21 @@ int fast_ge_scalarmult(uint8_t *result, const uint8_t *scalar, const uint8_t *po
+  */
+ int fast_ge_scalarmult_base(uint8_t *result, const uint8_t *scalar);
+ 
++/*
++ * Batch key derivation.
++ *
++ * results: output, count * 32 bytes
++ * scalars: input, count * 32 bytes
++ * points:  input, count * 32 bytes
++ *
++ * Returns the number of successful derivations.
++ */
++size_t fast_generate_key_derivation_batch(
++    uint8_t *results,
++    const uint8_t *scalars,
++    const uint8_t *points,
++    size_t count);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/external/randomx b/external/randomx
+index 102f8acf..ba354fde 160000
+--- a/external/randomx
++++ b/external/randomx
+@@ -1 +1 @@
+-Subproject commit 102f8acf90a7649ada410de5499a7ec62e49e1da
++Subproject commit ba354fde486d721502aeebf265b6005342b08128
+diff --git a/src/crypto/CMakeLists.txt b/src/crypto/CMakeLists.txt
+index 645b7944..8686dcc9 100644
+--- a/src/crypto/CMakeLists.txt
++++ b/src/crypto/CMakeLists.txt
+@@ -54,7 +54,23 @@ if(ARCH_ID STREQUAL "i386" OR ARCH_ID STREQUAL "x86_64" OR ARCH_ID STREQUAL "x86
+ list(APPEND crypto_sources CryptonightR_template.S)
+ endif()
+ 
+-include_directories(${RANDOMX_INCLUDE})
++set(
++  MONERO_FAST_CRYPTO_INCLUDE_DIR
++  "${CMAKE_CURRENT_SOURCE_DIR}/../../external/monero-fast-crypto/include"
++  CACHE PATH
++  "Path to monero-fast-crypto headers"
++)
++
++set(
++  MONERO_FAST_CRYPTO_LIBRARY
++  "${CMAKE_CURRENT_SOURCE_DIR}/../../external/monero-fast-crypto/target/release/libmonero_fast_crypto.a"
++  CACHE FILEPATH
++  "Path to the target-specific monero-fast-crypto static library"
++)
++
++include_directories(
++  ${RANDOMX_INCLUDE}
++  "${MONERO_FAST_CRYPTO_INCLUDE_DIR}")
+ 
+ set(crypto_headers)
+ 
+@@ -66,8 +82,8 @@ monero_add_library(cncrypto
+   ${crypto_sources}
+   ${crypto_headers}
+   ${crypto_private_headers})
+-# curve25519-dalek fast crypto (Rust static library)
+-set(FAST_CRYPTO_LIB "${CMAKE_CURRENT_SOURCE_DIR}/../../external/monero-fast-crypto/target/release/libmonero_fast_crypto.a")
++
++message(STATUS "Using monero-fast-crypto library: ${MONERO_FAST_CRYPTO_LIBRARY}")
+ 
+ target_link_libraries(cncrypto
+   PUBLIC
+@@ -75,7 +91,7 @@ target_link_libraries(cncrypto
+     randomx
+     ${Boost_SYSTEM_LIBRARY}
+     ${SODIUM_LIBRARY}
+-    ${FAST_CRYPTO_LIB}
++    ${MONERO_FAST_CRYPTO_LIBRARY}
+   PRIVATE
+     ${EXTRA_LIBRARIES})
+ 
+diff --git a/src/crypto/crypto.cpp b/src/crypto/crypto.cpp
+index 34af1a8d..90d7aabf 100644
+--- a/src/crypto/crypto.cpp
++++ b/src/crypto/crypto.cpp
+@@ -42,13 +42,10 @@
+ #include "warnings.h"
+ #include "crypto.h"
+ #include "hash.h"
++#include "monero_fast_crypto.h"
+ 
+ #include "cryptonote_config.h"
+ 
+-extern "C" {
+-  int fast_generate_key_derivation(uint8_t *result, const uint8_t *scalar, const uint8_t *point);
+-}
+-
+ namespace {
+   static void local_abort(const char *msg)
+   {
+diff --git a/src/cryptonote_basic/miner.cpp b/src/cryptonote_basic/miner.cpp
+index 71b8f78c..b48b8b4f 100644
+--- a/src/cryptonote_basic/miner.cpp
++++ b/src/cryptonote_basic/miner.cpp
+@@ -46,13 +46,15 @@
+ #include <boost/filesystem.hpp>
+ 
+ #ifdef __APPLE__
++  #include <TargetConditionals.h>
+   #include <sys/times.h>
+-  #include <IOKit/IOKitLib.h>
+-  #include <IOKit/ps/IOPSKeys.h>
+-  #include <IOKit/ps/IOPowerSources.h>
+   #include <mach/mach_host.h>
+   #include <AvailabilityMacros.h>
+-  #include <TargetConditionals.h>
++  #if !TARGET_OS_IPHONE
++    #include <IOKit/IOKitLib.h>
++    #include <IOKit/ps/IOPSKeys.h>
++    #include <IOKit/ps/IOPowerSources.h>
++  #endif
+ #elif defined(__linux__)
+   #include <unistd.h>
+   #include <sys/resource.h>
+@@ -980,7 +982,7 @@ namespace cryptonote
+ 
+     #elif defined(__APPLE__) 
+       
+-      #if TARGET_OS_MAC && (!defined(MAC_OS_X_VERSION_MIN_REQUIRED) || MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_7)
++      #if !TARGET_OS_IPHONE && TARGET_OS_MAC && (!defined(MAC_OS_X_VERSION_MIN_REQUIRED) || MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_7)
+         return boost::logic::tribool(IOPSGetTimeRemainingEstimate() != kIOPSTimeRemainingUnlimited);
+       #else
+         // iOS or OSX <10.7
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 165b21c9..5cd65326 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -996,6 +996,24 @@ bool WalletImpl::init(const std::string &daemon_address, uint64_t upper_transact
+     return doInit(daemon_address, proxy_address, upper_transaction_size_limit, use_ssl);
+ }
+ 
++void WalletImpl::setGrpcStreamEndpoint(const std::string &endpoint)
++{
++#ifdef MONERO_GRPC_STREAM
++    m_wallet->set_grpc_stream_endpoint(endpoint);
++#else
++    (void)endpoint;
++#endif
++}
++
++std::string WalletImpl::grpcStreamEndpoint() const
++{
++#ifdef MONERO_GRPC_STREAM
++    return m_wallet->get_grpc_stream_endpoint();
++#else
++    return {};
++#endif
++}
++
+ bool WalletImpl::lightWalletLogin(bool &isNewWallet) const
+ {
+   return m_wallet->light_wallet_login(isNewWallet);
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 1f199a72..5c54341c 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -105,6 +105,8 @@ public:
+     std::string filename() const override;
+     std::string keysFilename() const override;
+     bool init(const std::string &daemon_address, uint64_t upper_transaction_size_limit = 0, const std::string &daemon_username = "", const std::string &daemon_password = "", bool use_ssl = false, bool lightWallet = false, const std::string &proxy_address = "") override;
++    void setGrpcStreamEndpoint(const std::string &endpoint) override;
++    std::string grpcStreamEndpoint() const override;
+     bool connectToDaemon() override;
+     ConnectionStatus connected() const override;
+     void setTrustedDaemon(bool arg) override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index e349df17..33a74cd4 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -554,6 +554,18 @@ struct Wallet
+      */
+     virtual bool init(const std::string &daemon_address, uint64_t upper_transaction_size_limit = 0, const std::string &daemon_username = "", const std::string &daemon_password = "", bool use_ssl = false, bool lightWallet = false, const std::string &proxy_address = "") = 0;
+ 
++    /*!
++     * \brief setGrpcStreamEndpoint - enables/disables the forked Cuprate gRPC
++     * streaming sync endpoint when the wallet core was built with
++     * MONERO_GRPC_STREAM. Passing an empty string disables streaming sync.
++     */
++    virtual void setGrpcStreamEndpoint(const std::string &endpoint) = 0;
++
++    /*!
++     * \brief grpcStreamEndpoint - returns the configured Cuprate gRPC stream endpoint.
++     */
++    virtual std::string grpcStreamEndpoint() const = 0;
++
+    /*!
+     * \brief createWatchOnly - Creates a watch only wallet
+     * \param path - where to store the wallet
+diff --git a/src/wallet/grpc_stream/CMakeLists.txt b/src/wallet/grpc_stream/CMakeLists.txt
+index e56b6aa3..0eeb26fc 100644
+--- a/src/wallet/grpc_stream/CMakeLists.txt
++++ b/src/wallet/grpc_stream/CMakeLists.txt
+@@ -21,6 +21,9 @@ pkg_check_modules(PROTOBUF REQUIRED protobuf)
+ if(NOT DEFINED GRPC_CPP_PLUGIN_PATH)
+     find_program(GRPC_CPP_PLUGIN_PATH grpc_cpp_plugin REQUIRED)
+ endif()
++if(NOT DEFINED PROTOC_PATH)
++    find_program(PROTOC_PATH protoc REQUIRED)
++endif()
+ 
+ set(PROTO_FILE  "${CMAKE_CURRENT_SOURCE_DIR}/cuprate_stream.proto")
+ set(PROTO_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
+@@ -35,7 +38,7 @@ set(GENERATED_PB
+ 
+ add_custom_command(
+     OUTPUT ${GENERATED_PB}
+-    COMMAND protoc
++    COMMAND ${PROTOC_PATH}
+         --proto_path=${CMAKE_CURRENT_SOURCE_DIR}
+         --cpp_out=${PROTO_OUT_DIR}
+         --grpc_out=${PROTO_OUT_DIR}
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+index d2c68f25..c3643640 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.cpp
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -14,11 +14,15 @@
+ // instead of bloating memory.
+ 
+ #include "grpc_block_stream_client.h"
++#include "grpc_stream_status.h"
+ 
++#include <algorithm>
+ #include <atomic>
++#include <cerrno>
+ #include <chrono>
+ #include <condition_variable>
+ #include <cstdio>
++#include <cstdlib>
+ #include <deque>
+ #include <memory>
+ #include <mutex>
+@@ -26,13 +30,42 @@
+ #include <thread>
+ #include <utility>
+ 
++#include <grpc/impl/channel_arg_names.h>
+ #include <grpcpp/grpcpp.h>
+ #include "cuprate_stream.grpc.pb.h"
+ 
+ namespace cuprate_grpc_stream {
+ 
++std::atomic<int64_t>& last_successful_chunk_unix_ms()
++{
++    static std::atomic<int64_t> s_last{0};
++    return s_last;
++}
++
+ namespace {
+-    constexpr size_t QUEUE_CAPACITY = 4;
++    constexpr size_t DEFAULT_QUEUE_CAPACITY = 32;
++    constexpr size_t MAX_QUEUE_CAPACITY = 128;
++    constexpr int MAX_GRPC_MESSAGE_BYTES = 1024 * 1024 * 1024;
++    constexpr int GRPC_HTTP2_BUFFER_BYTES = 64 * 1024 * 1024;
++    constexpr int GRPC_HTTP2_MAX_FRAME_BYTES = 16 * 1024 * 1024 - 1;
++
++    size_t queue_capacity()
++    {
++        static const size_t cap = []() -> size_t {
++            const char *env = std::getenv("CUPRATE_GRPC_QUEUE_CAPACITY");
++            if (!env || !*env)
++                return DEFAULT_QUEUE_CAPACITY;
++
++            errno = 0;
++            char *endptr = nullptr;
++            const unsigned long parsed = std::strtoul(env, &endptr, 10);
++            if (errno != 0 || !endptr || *endptr != '\0' || parsed == 0)
++                return DEFAULT_QUEUE_CAPACITY;
++
++            return static_cast<size_t>(std::max(1UL, std::min(parsed, static_cast<unsigned long>(MAX_QUEUE_CAPACITY))));
++        }();
++        return cap;
++    }
+ }
+ 
+ struct chunk_record {
+@@ -98,13 +131,21 @@ bool cuprate_grpc_stream_client::connect(const std::string& target)
+         return false;
+     }
+     grpc::ChannelArguments ch_args;
+-    ch_args.SetMaxReceiveMessageSize(64 * 1024 * 1024);
+-    ch_args.SetMaxSendMessageSize(64 * 1024 * 1024);
++    ch_args.SetMaxReceiveMessageSize(MAX_GRPC_MESSAGE_BYTES);
++    ch_args.SetMaxSendMessageSize(MAX_GRPC_MESSAGE_BYTES);
++    ch_args.SetInt(GRPC_ARG_HTTP2_STREAM_LOOKAHEAD_BYTES, GRPC_HTTP2_BUFFER_BYTES);
++    ch_args.SetInt(GRPC_ARG_HTTP2_WRITE_BUFFER_SIZE, GRPC_HTTP2_BUFFER_BYTES);
++    ch_args.SetInt(GRPC_ARG_HTTP2_MAX_FRAME_SIZE, GRPC_HTTP2_MAX_FRAME_BYTES);
++    ch_args.SetInt(GRPC_ARG_HTTP2_BDP_PROBE, 1);
+     p_->channel = grpc::CreateCustomChannel(target, grpc::InsecureChannelCredentials(), ch_args);
+     p_->stub = cuprate::stream::v1::BlockStream::NewStub(p_->channel);
+     std::fprintf(stderr,
+-        "[GRPC client] CONNECT target=%s (channel created -- gRPC connect is lazy, first RPC opens TCP)\n",
+-        target.c_str());
++        "[GRPC client] CONNECT target=%s queue_capacity=%zu max_msg=%d http2_buffer=%d max_frame=%d (channel created -- gRPC connect is lazy, first RPC opens TCP)\n",
++        target.c_str(),
++        queue_capacity(),
++        MAX_GRPC_MESSAGE_BYTES,
++        GRPC_HTTP2_BUFFER_BYTES,
++        GRPC_HTTP2_MAX_FRAME_BYTES);
+     return true;
+ }
+ 
+@@ -185,7 +226,7 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             std::unique_lock<std::mutex> lk(p_->mu);
+             const auto t_enq0 = std::chrono::steady_clock::now();
+             p_->cv_not_full.wait(lk, [this]() {
+-                return p_->queue.size() < QUEUE_CAPACITY || p_->cancelled;
++                return p_->queue.size() < queue_capacity() || p_->cancelled;
+             });
+             const double enq_wait_ms = std::chrono::duration<double, std::milli>(
+                 std::chrono::steady_clock::now() - t_enq0).count();
+@@ -227,6 +268,11 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+ 
+             p_->queue.push_back(std::move(rec));
+             lk.unlock();
++            // Publish liveness timestamp read by the Qt GUI badge.
++            last_successful_chunk_unix_ms().store(
++                std::chrono::duration_cast<std::chrono::milliseconds>(
++                    std::chrono::system_clock::now().time_since_epoch()).count(),
++                std::memory_order_relaxed);
+             p_->cv_not_empty.notify_one();
+         }
+ 
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.h b/src/wallet/grpc_stream/grpc_block_stream_client.h
+index 8b0e3985..fcdd771f 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.h
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.h
+@@ -52,7 +52,7 @@ public:
+     // successful stream open. Pass stop_height = 0 to stream until tip.
+     //
+     // `chunk_blocks_hint` follows the proto contract — server clamps to
+-    // [16, 2000]. Sweet spot per smoke tests: 1000.
++    // [16, 10000]. For high-throughput tests use CUPRATE_GRPC_CHUNK_HINT=10000.
+     //
+     // `client_request_id` is echoed in the cuprated [GRPC StreamBlocks] log
+     // line of every chunk — pass a per-sync-session id so wallet logs and
+diff --git a/src/wallet/grpc_stream/grpc_stream_status.h b/src/wallet/grpc_stream/grpc_stream_status.h
+new file mode 100644
+index 00000000..92fe08e2
+--- /dev/null
++++ b/src/wallet/grpc_stream/grpc_stream_status.h
+@@ -0,0 +1,18 @@
++// Tiny header exposing the gRPC-stream liveness timestamp without pulling in
++// the full wallet2.h (which would drag in all of Boost and epee into every
++// including translation unit). Both wallet2.cpp (which publishes) and the
++// Qt Wallet wrapper (which reads for the GUI badge) include only this.
++
++#pragma once
++
++#include <atomic>
++#include <cstdint>
++
++namespace cuprate_grpc_stream {
++
++// Unix ms timestamp of the last successful gRPC-stream chunk pop. 0 means
++// no chunk has ever arrived. Readers compare against "now - 10 000 ms" to
++// decide "stream live right now".
++std::atomic<int64_t>& last_successful_chunk_unix_ms();
++
++} // namespace cuprate_grpc_stream
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index f6f15518..2f761a55 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -29,7 +29,9 @@
+ // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
+ 
+ #include <algorithm>
++#include <cerrno>
+ #include <chrono>
++#include <cstdlib>
+ #include <thread>
+ #include <numeric>
+ #include <tuple>
+@@ -1440,6 +1442,7 @@ bool wallet2::set_proxy(const std::string &address)
+ #ifdef MONERO_GRPC_STREAM
+ void wallet2::set_grpc_stream_endpoint(const std::string &endpoint)
+ {
++  m_grpc_stream_endpoint_explicitly_set = true;
+   // Close any in-flight stream first (idempotent if none).
+   if (m_grpc_stream_client)
+     m_grpc_stream_client->close();
+@@ -1461,13 +1464,35 @@ bool wallet2::init(std::string daemon_address, boost::optional<epee::net_utils::
+   m_upper_transaction_weight_limit = upper_transaction_weight_limit;
+ 
+ #ifdef MONERO_GRPC_STREAM
++  if (const char *chunk_hint_env = std::getenv("CUPRATE_GRPC_CHUNK_HINT"))
++  {
++    if (*chunk_hint_env)
++    {
++      errno = 0;
++      char *endptr = nullptr;
++      const unsigned long parsed = std::strtoul(chunk_hint_env, &endptr, 10);
++      if (errno == 0 && endptr && *endptr == '\0')
++      {
++        const unsigned long clamped = std::max(16UL, std::min(parsed, 10000UL));
++        m_grpc_stream_chunk_hint = static_cast<uint32_t>(clamped);
++        MWARNING("grpc_stream chunk hint set to " << m_grpc_stream_chunk_hint
++          << " from CUPRATE_GRPC_CHUNK_HINT='" << chunk_hint_env << "'");
++      }
++      else
++      {
++        MWARNING("grpc_stream ignoring invalid CUPRATE_GRPC_CHUNK_HINT='"
++          << chunk_hint_env << "'");
++      }
++    }
++  }
++
+   // Env-var fallback: if the caller hasn't set an endpoint explicitly via
+   // set_grpc_stream_endpoint(), honor CUPRATE_GRPC_ENDPOINT. Lets existing
+-  // wallet binaries opt into streaming sync without code changes -- useful
+-  // for testing before the GUI gets a proper settings UI.
+-  if (m_grpc_stream_endpoint.empty())
++  // CLI/test binaries opt into streaming sync without code changes.
++  if (!m_grpc_stream_endpoint_explicitly_set && m_grpc_stream_endpoint.empty())
+   {
+-    if (const char* env = std::getenv("CUPRATE_GRPC_ENDPOINT"); env && *env)
++    const char* env = std::getenv("CUPRATE_GRPC_ENDPOINT");
++    if (env && *env)
+     {
+       set_grpc_stream_endpoint(env);
+     }
+@@ -3277,7 +3302,7 @@ void wallet2::process_pool_info_extent(const cryptonote::COMMAND_RPC_GET_BLOCKS_
+ }
+ //----------------------------------------------------------------------------------------------------
+ #ifdef MONERO_GRPC_STREAM
+-bool wallet2::try_pull_blocks_grpc(uint64_t start_height, uint64_t &blocks_start_height,
++bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height, uint64_t &blocks_start_height,
+     std::vector<cryptonote::block_complete_entry> &blocks,
+     std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices,
+     uint64_t &current_height)
+@@ -3298,11 +3323,15 @@ bool wallet2::try_pull_blocks_grpc(uint64_t start_height, uint64_t &blocks_start
+   // Only open on first call and on hard stream failure below.
+   if (!m_grpc_stream_active)
+   {
+-    // Open at max(caller start_height, m_blockchain.size()) — the max
+-    // handles both restore-from-height (caller passes user's birthday)
+-    // and continuation from current sync point. Only reached when no
+-    // stream is live, so the concurrency issue above does not apply.
+-    const uint64_t effective_start = std::max(start_height, static_cast<uint64_t>(m_blockchain.size()));
++    // Open at max(caller start_height, m_blockchain.size()) for continuation.
++    // On the first pull of a refresh there is no concurrent block-processing
++    // task yet, so keep the normal 1-block overlap that bin RPC gets through
++    // short_chain_history. That preserves split/reorg detection while still
++    // starting the block transport through gRPC immediately.
++    const uint64_t wallet_height = static_cast<uint64_t>(m_blockchain.size());
++    const uint64_t effective_start = first && wallet_height > 0
++      ? wallet_height - 1
++      : std::max(start_height, wallet_height);
+     if (!m_grpc_stream_client)
+       m_grpc_stream_client = std::make_unique<cuprate_grpc_stream::cuprate_grpc_stream_client>();
+     m_grpc_stream_client->close();
+@@ -3384,15 +3413,23 @@ bool wallet2::try_pull_blocks_grpc(uint64_t start_height, uint64_t &blocks_start
+   // current tip so subsequent chunks are fresh.
+   const uint64_t chunk_end_exclusive = res.start_height + res.blocks.size();
+   const uint64_t wallet_tip = m_blockchain.size();
+-  if (chunk_end_exclusive <= wallet_tip)
++  // Drift heuristic with large tolerance. m_blockchain.size() is read from the
++  // pull-task thread while the main thread may be committing a prior batch,
++  // so small skew (up to one batch ~= 1000 blocks) is normal and must NOT
++  // trigger a reopen -- doing so loses ~2.5s of server warmup per false
++  // positive. Only reopen when the chunk is *clearly* way behind the wallet,
++  // which happens only on genuine state drift (e.g. wallet advanced via a
++  // separate bin-RPC path while the stream was stuck).
++  constexpr uint64_t DRIFT_TOLERANCE = 5000;
++  if (chunk_end_exclusive + DRIFT_TOLERANCE <= wallet_tip)
+   {
+     MWARNING("grpc_stream: popped chunk [" << res.start_height << ".."
+-      << chunk_end_exclusive << ") is entirely behind wallet tip=" << wallet_tip
+-      << " -- stream drifted; closing for reopen at current tip");
++      << chunk_end_exclusive << ") is >" << DRIFT_TOLERANCE
++      << " blocks behind wallet tip=" << wallet_tip
++      << " -- genuine stream drift; closing for reopen at current tip");
+     m_grpc_stream_client->close();
+     m_grpc_stream_active = false;
+-    return false;  // caller falls back to bin RPC for this iter;
+-                   // next iter reopens the stream at the new wallet tip
++    return false;
+   }
+ 
+   blocks_start_height = res.start_height;
+@@ -3422,18 +3459,30 @@ void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_heigh
+   // if the endpoint is unset, the stream errored, or end-of-stream is hit
+   // (next refresh cycle will reopen).
+   //
+-  // `first` stays on bin-RPC because that call also requests the mempool
+-  // snapshot (requested_info = BLOCKS_AND_POOL), which the stream does not
+-  // carry. m_background_syncing deliberately DOES NOT gate here — view-only
+-  // Ledger wallets are permanently in background-sync mode and still want
+-  // the stream; background sync only affects wallet-side key-image logic,
+-  // not the daemon block-transport path.
++  // The first refresh pull starts with gRPC too. The stream carries blocks
++  // only, so when that first gRPC pull succeeds we refresh the tx pool through
++  // the normal RPC pool path below before returning. m_background_syncing
++  // deliberately DOES NOT gate here — view-only Ledger wallets are permanently
++  // in background-sync mode and still want the stream; background sync only
++  // affects wallet-side key-image logic, not the daemon block-transport path.
+   if (!m_grpc_stream_endpoint.empty()
+-      && !m_grpc_stream_fallback_to_bin
+-      && !first)
++      && !m_grpc_stream_fallback_to_bin)
+   {
+-    if (try_pull_blocks_grpc(start_height, blocks_start_height, blocks, o_indices, current_height))
++    if (try_pull_blocks_grpc(first, start_height, blocks_start_height, blocks, o_indices, current_height))
+     {
++      if (first && !m_background_syncing)
++      {
++        MWARNING("grpc_stream: first pull used gRPC; updating tx pool via RPC");
++        try
++        {
++          update_pool_state(m_process_pool_txs, true, try_incremental);
++        }
++        catch (const std::exception &e)
++        {
++          MWARNING("grpc_stream: tx pool update after first gRPC pull failed: "
++            << e.what() << " -- keeping gRPC block batch");
++        }
++      }
+       MWARNING("PERF pull_blocks via gRPC stream: start=" << blocks_start_height
+         << " count=" << blocks.size() << " tip=" << current_height);
+       return;
+@@ -3619,12 +3668,14 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+   blocks_added = 0;
+ 
+   THROW_WALLET_EXCEPTION_IF(blocks.size() != parsed_blocks.size(), error::wallet_internal_error, "size mismatch");
+-  if (!m_blockchain.is_in_bounds(current_index))
++  const bool appending_at_tip = current_index == m_blockchain.size();
++  if (!appending_at_tip && !m_blockchain.is_in_bounds(current_index))
+   {
+     MWARNING("PERF HASHCHAIN_BOUNDS_FAIL start_height=" << start_height
+       << " current_index=" << current_index
+       << " m_blockchain.size=" << m_blockchain.size()
+       << " m_blockchain.offset=" << m_blockchain.offset()
++      << " appending_at_tip=" << appending_at_tip
+       << " blocks=" << blocks.size());
+     THROW_WALLET_EXCEPTION(error::out_of_hashchain_bounds_error);
+   }
+@@ -3685,16 +3736,22 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+     }
+   };
+ 
+-  for (size_t i = 0; i < tx_cache_data.size(); ++i)
++  constexpr size_t DERIVATION_BATCH_SIZE = 100;
++  for (size_t batch_start = 0; batch_start < tx_cache_data.size(); batch_start += DERIVATION_BATCH_SIZE)
+   {
+-    if (tx_cache_data[i].empty())
+-      continue;
+-    tpool.submit(&waiter, [&gender, &tx_cache_data, i]() {
+-      auto &slot = tx_cache_data[i];
+-      for (auto &iod: slot.primary)
+-        gender(iod);
+-      for (auto &iod: slot.additional)
+-        gender(iod);
++    const size_t batch_end = std::min(batch_start + DERIVATION_BATCH_SIZE, tx_cache_data.size());
++    THROW_WALLET_EXCEPTION_IF(batch_end < batch_start, error::wallet_internal_error, "Derivation batch end overflow");
++    tpool.submit(&waiter, [&gender, &tx_cache_data, batch_start, batch_end]() {
++      for (size_t i = batch_start; i < batch_end; ++i)
++      {
++        auto &slot = tx_cache_data[i];
++        if (slot.empty())
++          continue;
++        for (auto &iod: slot.primary)
++          gender(iod);
++        for (auto &iod: slot.additional)
++          gender(iod);
++      }
+     }, true);
+   }
+   THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
+@@ -4909,11 +4966,18 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
+         m_node_rpc_proxy.set_height(m_blockchain.size());
+         break;
+       }
++      static std::chrono::steady_clock::time_point s_last_iter_end_tp{};
++      const auto t_iter_begin = std::chrono::steady_clock::now();
++      const int64_t inter_iter_idle_ms = (s_last_iter_end_tp.time_since_epoch().count() == 0) ? 0 :
++          std::chrono::duration_cast<std::chrono::milliseconds>(t_iter_begin - s_last_iter_end_tp).count();
+       MWARNING("PERF refresh_iter#" << iter_count << " BEGIN first=" << first << " last=" << last
+         << " blocks_fetched=" << blocks_fetched
+         << " m_blockchain.size=" << m_blockchain.size()
+-        << " blocks_pending_processing=" << blocks.size());
++        << " blocks_pending_processing=" << blocks.size()
++        << " inter_iter_idle_ms=" << inter_iter_idle_ms);
+       auto t_submit0 = std::chrono::steady_clock::now();
++      std::chrono::steady_clock::time_point t1_proc_for_log = t_submit0;
++      int64_t proc_ms_for_log = 0;
+       if (!last)
+       {
+         // Capture prev blocks_start_height by value for speculative prefetch.
+@@ -4928,10 +4992,10 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
+         {
+           auto t0_proc = std::chrono::steady_clock::now();
+           process_parsed_blocks(blocks_start_height, blocks, parsed_blocks, added_blocks, output_tracker_cache.get());
+-          auto t1_proc = std::chrono::steady_clock::now();
++          t1_proc_for_log = std::chrono::steady_clock::now();
++          proc_ms_for_log = std::chrono::duration_cast<std::chrono::milliseconds>(t1_proc_for_log - t0_proc).count();
+           MWARNING("PERF refresh_iter#" << iter_count << " process_parsed_blocks wrapper: "
+-            << blocks.size() << " blocks in "
+-            << std::chrono::duration_cast<std::chrono::milliseconds>(t1_proc - t0_proc).count() << "ms");
++            << blocks.size() << " blocks in " << proc_ms_for_log << "ms");
+         }
+         catch (const tools::error::out_of_hashchain_bounds_error&)
+         {
+@@ -4988,13 +5052,74 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
+         }
+         catch (const std::exception &e)
+         {
+-          MERROR("Error parsing blocks: " << e.what());
++          const std::string msg = e.what();
++          // Chain-split recovery: daemon's block at our recorded height has a
++          // different hash than what m_blockchain stored. Happens when the
++          // wallet was synced earlier against a different node / fork state
++          // whose hashes diverged from the current daemon's view. The GUI's
++          // soft "Rescan Wallet Blockchain" does NOT truncate m_blockchain,
++          // so the same split keeps retriggering forever.
++          //
++          // Hard recovery: wipe m_blockchain back to genesis and restart the
++          // refresh from scratch. The next fast_refresh rebuilds the hash
++          // chain from the current daemon, so the split goes away on first
++          // try. Keys and transfer data are untouched.
++          if (msg.find("split starts from the first block in response") != std::string::npos)
++          {
++            MWARNING("PERF CHAIN_SPLIT recovery: detected persistent split, "
++              << "wiping m_blockchain to genesis for hard resync. "
++              << "m_blockchain.size=" << m_blockchain.size()
++              << " msg='" << msg << "'");
++
++            // CRITICAL: join the async pull-task FIRST. worker threads in
++            // pull_and_parse_next_blocks are still referencing `blocks` and
++            // `parsed_blocks` at this point; clearing under their feet is a
++            // use-after-free and crashes in tx deserialization (seen: SIGSEGV
++            // in cryptonote::transaction_prefix::member_do_serialize).
++            // waiter.wait() blocks until all submitted tasks return — the
++            // tasks themselves may throw (same split error), which is fine;
++            // we ignore their result here because we're throwing away the
++            // buffers anyway.
++            try { (void)waiter.wait(); } catch (...) {}
++
++            cryptonote::block genesis;
++            generate_genesis(genesis);
++            m_blockchain.clear();
++            m_blockchain.push_back(get_block_hash(genesis));
++            short_chain_history.clear();
++            get_short_chain_history(short_chain_history);
++            start_height = 0;
++            first = true;
++            blocks.clear();
++            parsed_blocks.clear();
++            next_blocks.clear();
++            next_parsed_blocks.clear();
++#ifdef MONERO_GRPC_STREAM
++            if (m_grpc_stream_client)
++              m_grpc_stream_client->close();
++            m_grpc_stream_active = false;
++            m_grpc_stream_fallback_to_bin = false;
++#endif
++            throw std::runtime_error(""); // loop again, fast_refresh rebuilds the chain
++          }
++          MERROR("Error parsing blocks: " << msg);
+           exception = std::current_exception();
+           error = true;
+         }
+         blocks_fetched += added_blocks;
+       }
++      const auto t_wait0 = std::chrono::steady_clock::now();
+       THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
++      const auto t_wait1 = std::chrono::steady_clock::now();
++      const int64_t waiter_wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_wait1 - t_wait0).count();
++      // Bottleneck signal from waiter_wait_ms:
++      //   large  -> main thread (scan) finished BEFORE pull task -> pull/network is the bottleneck
++      //   ~0     -> pull finished before scan -> scan is the bottleneck (pull threads idle waiting)
++      // Compare with proc_ms_for_log for ratio.
++      MWARNING("PERF refresh_iter#" << iter_count << " pipeline: proc_ms=" << proc_ms_for_log
++        << " waiter_wait_ms=" << waiter_wait_ms
++        << " bound=" << (waiter_wait_ms > proc_ms_for_log ? "NETWORK" : "SCAN")
++        << " overlap_ratio=" << (proc_ms_for_log == 0 ? 0.0 : static_cast<double>(proc_ms_for_log) / (proc_ms_for_log + waiter_wait_ms)));
+ 
+       // handle error from async fetching thread
+       if (error)
+@@ -5025,6 +5150,7 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
+       blocks = std::move(next_blocks);
+       parsed_blocks = std::move(next_parsed_blocks);
+       auto t_iter1 = std::chrono::steady_clock::now();
++      s_last_iter_end_tp = t_iter1;
+       MWARNING("PERF refresh_iter#" << iter_count << " END in "
+         << std::chrono::duration_cast<std::chrono::milliseconds>(t_iter1 - t_iter0).count() << "ms"
+         << " blocks_fetched=" << blocks_fetched
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index be94712d..82c5faca 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1879,7 +1879,7 @@ private:
+     // Try to satisfy a pull_blocks call via the cuprate gRPC stream instead
+     // of bin RPC. Returns true on success (out params populated), false on
+     // any error — caller should fall back to bin RPC for this iteration.
+-    bool try_pull_blocks_grpc(uint64_t start_height, uint64_t &blocks_start_height,
++    bool try_pull_blocks_grpc(bool first, uint64_t start_height, uint64_t &blocks_start_height,
+         std::vector<cryptonote::block_complete_entry> &blocks,
+         std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices,
+         uint64_t &current_height);
+@@ -2001,6 +2001,7 @@ private:
+     std::string  m_grpc_stream_session_id;
+     bool         m_grpc_stream_active = false;
+     bool         m_grpc_stream_fallback_to_bin = false;
++    bool         m_grpc_stream_endpoint_explicitly_set = false;
+     uint32_t     m_grpc_stream_chunk_hint = 1000;
+ #endif
+     hashchain m_blockchain;
+-- 
+2.50.1 (Apple Git-155)
+

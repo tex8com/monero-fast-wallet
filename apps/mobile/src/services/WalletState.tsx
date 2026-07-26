@@ -970,22 +970,9 @@ export function WalletStateProvider({
         return;
       }
 
-      if (
-        nextState === 'active' &&
-        appSecurityMode === 'none' &&
-        backgroundLockedWalletsRef.current
-      ) {
-        backgroundLockedWalletsRef.current = false;
-        globallyLockedRef.current = false;
-        autoOpenAttemptedWalletIdsRef.current.clear();
-        setAutoOpenGeneration(current => current + 1);
-        logWalletEvent('WalletState', 'appBackground.resumeWallets', {
-          protectionMode: 'none',
-        });
-      }
     });
     return () => subscription.remove();
-  }, [appSecurityMode, lockWallet]);
+  }, [lockWallet]);
 
   const reconnectHardwareWallet = useCallback(async () => {
     const activeSession = sessionRef.current;

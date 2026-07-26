@@ -1,0 +1,65 @@
+# Dedicated Stagenet Cuprate for wallet-sync benchmarks.
+# It shares the existing WireGuard address with TEX8 services, but has its own
+# ports and independent storage. It never touches the production Cuprate.
+network = "Stagenet"
+fast_sync = true
+
+[tracing.stdout]
+level = "info"
+
+[tracing.file]
+level = "debug"
+max_log_files = 3
+
+[tokio]
+threads = 2
+
+[rayon]
+threads = 2
+
+[p2p.clear_net]
+enable_inbound = false
+listen_on = "127.0.0.1"
+enable_inbound_v6 = false
+listen_on_v6 = "::"
+p2p_port = 48080
+outbound_connections = 8
+extra_outbound_connections = 1
+max_inbound_connections = 0
+gray_peers_percent = 0.7
+
+[rpc.unrestricted]
+i_know_what_im_doing_allow_public_unrestricted_rpc = false
+address = "127.0.0.1"
+port = 48081
+enable = false
+
+[rpc.restricted]
+advertise = false
+# Access is restricted by the host firewall to the benchmark Mac's WireGuard
+# address. The service is separated from existing Cuprate instances by ports.
+address = "private-node-ip"
+port = 48089
+enable = true
+
+[rpc.grpc]
+address = "private-node-ip"
+port = 48091
+enable = true
+i_know_what_im_doing_allow_public_grpc = false
+
+[storage]
+reader_threads = 2
+
+[storage.txpool]
+max_txpool_byte_size = 25_000_000
+maximum_age_secs = 86400
+
+[fs]
+data_directory = "/srv/monero-fast-wallet/cuprate-sync-benchmark/data"
+cache_directory = "/srv/monero-fast-wallet/cuprate-sync-benchmark/cache"
+
+[tor.arti]
+directory_path = "/srv/monero-fast-wallet/cuprate-sync-benchmark/arti"
+isolated_circuit = false
+onion_service_pow = false

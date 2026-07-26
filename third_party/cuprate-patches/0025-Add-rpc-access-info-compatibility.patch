@@ -1,0 +1,162 @@
+From db4d7c697b9ee9c34fce7c0fa6696fe6e4ed726f Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Mon, 6 Jul 2026 21:59:13 -0500
+Subject: [PATCH 25/41] Add rpc access info compatibility
+
+---
+ .../cuprated/src/rpc/handlers/json_rpc.rs     | 24 +++++++++-
+ rpc/interface/src/rpc_handler_dummy.rs        |  1 +
+ rpc/types/src/json.rs                         | 44 +++++++++++++++++++
+ 3 files changed, 67 insertions(+), 2 deletions(-)
+
+diff --git a/binaries/cuprated/src/rpc/handlers/json_rpc.rs b/binaries/cuprated/src/rpc/handlers/json_rpc.rs
+index fe1d8c1..9be7207 100644
+--- a/binaries/cuprated/src/rpc/handlers/json_rpc.rs
++++ b/binaries/cuprated/src/rpc/handlers/json_rpc.rs
+@@ -48,8 +48,9 @@ use cuprate_rpc_types::{
+         GetTxIdsLooseResponse, GetVersionRequest, GetVersionResponse, HardForkInfoRequest,
+         HardForkInfoResponse, JsonRpcRequest, JsonRpcResponse, OnGetBlockHashRequest,
+         OnGetBlockHashResponse, PruneBlockchainRequest, PruneBlockchainResponse, RelayTxRequest,
+-        RelayTxResponse, SetBansRequest, SetBansResponse, SubmitBlockRequest, SubmitBlockResponse,
+-        SyncInfoRequest, SyncInfoResponse,
++        RelayTxResponse, RpcAccessInfoRequest, RpcAccessInfoResponse, SetBansRequest,
++        SetBansResponse, SubmitBlockRequest, SubmitBlockResponse, SyncInfoRequest,
++        SyncInfoResponse,
+     },
+     misc::{BlockHeader, ChainInfo, Distribution, GetBan, HistogramEntry, Status, SyncInfoPeer},
+     CORE_RPC_VERSION,
+@@ -120,6 +121,7 @@ pub async fn map_request(
+         Req::GetOutputDistribution(r) => {
+             Resp::GetOutputDistribution(get_output_distribution(state, r).await?)
+         }
++        Req::RpcAccessInfo(r) => Resp::RpcAccessInfo(rpc_access_info(state, r).await?),
+         Req::GetMinerData(r) => Resp::GetMinerData(not_available()?),
+         Req::PruneBlockchain(r) => Resp::PruneBlockchain(not_available()?),
+         Req::CalcPow(r) => Resp::CalcPow(not_available()?),
+@@ -937,6 +939,24 @@ async fn get_output_distribution(
+     shared::get_output_distribution(state, request).await
+ }
+ 
++/// <https://github.com/monero-project/monero/blob/cc73fe71162d564ffda8e549b79a350bca53c454/src/rpc/core_rpc_server.cpp#L3459-L3530>
++async fn rpc_access_info(
++    _: CupratedRpcHandler,
++    _: RpcAccessInfoRequest,
++) -> Result<RpcAccessInfoResponse, Error> {
++    Ok(RpcAccessInfoResponse {
++        base: AccessResponseBase::OK,
++        hashing_blob: String::new(),
++        seed_height: 0,
++        seed_hash: String::new(),
++        next_seed_hash: String::new(),
++        cookie: 0,
++        diff: 0,
++        credits_per_hash_found: 0,
++        height: 0,
++    })
++}
++
+ /// <https://github.com/monero-project/monero/blob/cc73fe71162d564ffda8e549b79a350bca53c454/src/rpc/core_rpc_server.cpp#L1998-L2033>
+ async fn get_miner_data(
+     mut state: CupratedRpcHandler,
+diff --git a/rpc/interface/src/rpc_handler_dummy.rs b/rpc/interface/src/rpc_handler_dummy.rs
+index 686675a..b6feeaf 100644
+--- a/rpc/interface/src/rpc_handler_dummy.rs
++++ b/rpc/interface/src/rpc_handler_dummy.rs
+@@ -87,6 +87,7 @@ impl Service<JsonRpcRequest> for RpcHandlerDummy {
+                 Resp::GetTransactionPoolBacklog(Default::default())
+             }
+             Req::GetOutputDistribution(_) => Resp::GetOutputDistribution(Default::default()),
++            Req::RpcAccessInfo(_) => Resp::RpcAccessInfo(Default::default()),
+             Req::GetMinerData(_) => Resp::GetMinerData(Default::default()),
+             Req::PruneBlockchain(_) => Resp::PruneBlockchain(Default::default()),
+             Req::CalcPow(_) => Resp::CalcPow(Default::default()),
+diff --git a/rpc/types/src/json.rs b/rpc/types/src/json.rs
+index fca99ce..2d20333 100644
+--- a/rpc/types/src/json.rs
++++ b/rpc/types/src/json.rs
+@@ -615,6 +615,28 @@ define_request_and_response! {
+     }
+ }
+ 
++define_request_and_response! {
++    rpc_access_info,
++    "cc73fe71162d564ffda8e549b79a350bca53c454" =>
++    core_rpc_server_commands_defs.h => 2525..=2559,
++    RpcAccessInfo,
++
++    Request {
++        client: String = default::<String>(), "default",
++    },
++
++    AccessResponseBase {
++        hashing_blob: String = default::<String>(), "default",
++        seed_height: u64 = default::<u64>(), "default",
++        seed_hash: String = default::<String>(), "default",
++        next_seed_hash: String = default::<String>(), "default",
++        cookie: u32 = default::<u32>(), "default",
++        diff: u64 = default::<u64>(), "default",
++        credits_per_hash_found: u64 = default::<u64>(), "default",
++        height: u64 = default::<u64>(), "default",
++    }
++}
++
+ define_request_and_response! {
+     get_miner_data,
+     "cc73fe71162d564ffda8e549b79a350bca53c454" =>
+@@ -768,6 +790,7 @@ pub enum JsonRpcRequest {
+     #[cfg_attr(feature = "serde", serde(rename = "get_txpool_backlog"))]
+     GetTransactionPoolBacklog(GetTransactionPoolBacklogRequest),
+     GetOutputDistribution(GetOutputDistributionRequest),
++    RpcAccessInfo(RpcAccessInfoRequest),
+     GetMinerData(GetMinerDataRequest),
+     PruneBlockchain(PruneBlockchainRequest),
+     CalcPow(CalcPowRequest),
+@@ -795,6 +818,7 @@ impl RpcCallValue for JsonRpcRequest {
+             Self::GetFeeEstimate(x) => x.is_restricted(),
+             Self::GetTransactionPoolBacklog(x) => x.is_restricted(),
+             Self::GetOutputDistribution(x) => x.is_restricted(),
++            Self::RpcAccessInfo(x) => x.is_restricted(),
+             Self::GetMinerData(x) => x.is_restricted(),
+             Self::AddAuxPow(x) => x.is_restricted(),
+             Self::GetTxIdsLoose(x) => x.is_restricted(),
+@@ -832,6 +856,7 @@ impl RpcCallValue for JsonRpcRequest {
+             Self::GetFeeEstimate(x) => x.is_empty(),
+             Self::GetTransactionPoolBacklog(x) => x.is_empty(),
+             Self::GetOutputDistribution(x) => x.is_empty(),
++            Self::RpcAccessInfo(x) => x.is_empty(),
+             Self::GetMinerData(x) => x.is_empty(),
+             Self::AddAuxPow(x) => x.is_empty(),
+             Self::GetTxIdsLoose(x) => x.is_empty(),
+@@ -906,6 +931,7 @@ pub enum JsonRpcResponse {
+     SyncInfo(SyncInfoResponse),
+     GetTransactionPoolBacklog(GetTransactionPoolBacklogResponse),
+     GetOutputDistribution(GetOutputDistributionResponse),
++    RpcAccessInfo(RpcAccessInfoResponse),
+     GetMinerData(GetMinerDataResponse),
+     PruneBlockchain(PruneBlockchainResponse),
+     CalcPow(CalcPowResponse),
+@@ -1868,6 +1894,24 @@ mod test {
+         );
+     }
+ 
++    #[test]
++    fn rpc_access_info_json_rpc_request() {
++        let request = from_value::<JsonRpcRequest>(json!({
++            "method": "rpc_access_info",
++            "params": {
++                "client": ""
++            }
++        }))
++        .unwrap();
++
++        assert_eq!(
++            request,
++            JsonRpcRequest::RpcAccessInfo(RpcAccessInfoRequest {
++                client: String::new()
++            })
++        );
++    }
++
+     // TODO: enable test after binary string imp}
+     // #[test]
+     // fn get_output_distribution_response() {

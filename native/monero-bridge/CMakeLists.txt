@@ -8,6 +8,24 @@ option(
   OFF
 )
 
+option(
+  MONERO_WALLET_BRIDGE_WITH_GRPC_STREAM
+  "Expose the optional TEX8 gRPC endpoint on a Monero build that provides it"
+  ON
+)
+
+option(
+  MONERO_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
+  "Expose optional Wallet API and Ledger extensions supplied by the TEX8 Core fork"
+  ON
+)
+
+option(
+  MONERO_WALLET_BRIDGE_ENABLE_SANITIZERS
+  "Build bridge verification targets with AddressSanitizer and UndefinedBehaviorSanitizer"
+  OFF
+)
+
 set(
   MONERO_SOURCE_DIR
   ""
@@ -67,6 +85,26 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
     PRIVATE TEX8_WALLET_BRIDGE_WITH_MONERO=1
   )
 
+  if(MONERO_WALLET_BRIDGE_WITH_GRPC_STREAM)
+    target_compile_definitions(monero_wallet_bridge
+      PRIVATE TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=1
+    )
+  else()
+    target_compile_definitions(monero_wallet_bridge
+      PRIVATE TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=0
+    )
+  endif()
+
+  if(MONERO_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS)
+    target_compile_definitions(monero_wallet_bridge
+      PRIVATE TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=1
+    )
+  else()
+    target_compile_definitions(monero_wallet_bridge
+      PRIVATE TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=0
+    )
+  endif()
+
   target_include_directories(monero_wallet_bridge
     PRIVATE
       ${MONERO_SOURCE_DIR}/src/wallet/api
@@ -100,6 +138,8 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
 else()
   target_compile_definitions(monero_wallet_bridge
     PRIVATE TEX8_WALLET_BRIDGE_WITH_MONERO=0
+    PRIVATE TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=0
+    PRIVATE TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=0
   )
 endif()
 
@@ -109,4 +149,41 @@ add_executable(monero_wallet_bridge_smoke
 
 target_link_libraries(monero_wallet_bridge_smoke
   PRIVATE monero_wallet_bridge
+)
+
+add_executable(monero_wallet_bridge_security_boundary
+  proof/security_boundary.cpp
+)
+
+target_link_libraries(monero_wallet_bridge_security_boundary
+  PRIVATE monero_wallet_bridge
+)
+
+if(MONERO_WALLET_BRIDGE_ENABLE_SANITIZERS)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    foreach(
+      sanitizer_target
+      monero_wallet_bridge
+      monero_wallet_bridge_smoke
+      monero_wallet_bridge_security_boundary
+    )
+      target_compile_options(
+        ${sanitizer_target}
+        PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined
+      )
+      target_link_options(
+        ${sanitizer_target}
+        PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined
+      )
+    endforeach()
+  else()
+    message(FATAL_ERROR "Native bridge sanitizers require Clang or GCC")
+  endif()
+endif()
+
+enable_testing()
+add_test(NAME monero_wallet_bridge_smoke COMMAND monero_wallet_bridge_smoke)
+add_test(
+  NAME monero_wallet_bridge_security_boundary
+  COMMAND monero_wallet_bridge_security_boundary
 )

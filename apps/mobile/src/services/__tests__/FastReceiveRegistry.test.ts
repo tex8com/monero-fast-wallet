@@ -22,6 +22,7 @@ import {
   createFastReceiveIdentityId,
   createFastReceiveIdentityRecord,
   FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
+  isIndependentFastReceiveIdentityId,
   loadFastReceiveIdentities,
   nextFastReceiveDerivationIndex,
   removeFastReceiveIdentity,
@@ -36,9 +37,9 @@ describe('FastReceiveRegistry', () => {
   it('persists fast receive metadata without private keys', async () => {
     const record = createFastReceiveIdentityRecord(
       {
-        id: 'fast-receive-0',
+        id: 'fast-receive-v2-0',
         label: 'Fast Receive',
-        path: '/app/wallets/stagenet/fast-receive-0',
+        path: '/app/wallets/stagenet/fast-receive-v2-0',
         address: '54A1testAddress',
         network: 'stagenet',
         restoreHeight: 123,
@@ -47,7 +48,8 @@ describe('FastReceiveRegistry', () => {
       },
       '2026-06-17T00:00:00.000Z',
       {
-        credentialKey: 'monero.wallet.software.stagenet.primary.v1',
+        credentialKey:
+          'monero.wallet.fast.stagenet.fast-receive-v2-0.v2',
         sourceWalletId: 'software-stagenet-primary',
       },
     );
@@ -60,12 +62,13 @@ describe('FastReceiveRegistry', () => {
     expect(persisted).not.toBeNull();
     expect(JSON.parse(persisted ?? '[]')).toEqual([
       {
-        id: 'fast-receive-0',
+        id: 'fast-receive-v2-0',
         label: 'Fast Wallet',
-        path: '/app/wallets/stagenet/fast-receive-0',
+        path: '/app/wallets/stagenet/fast-receive-v2-0',
         address: '54A1testAddress',
         network: 'stagenet',
-        credentialKey: 'monero.wallet.software.stagenet.primary.v1',
+        credentialKey:
+          'monero.wallet.fast.stagenet.fast-receive-v2-0.v2',
         sourceWalletId: 'software-stagenet-primary',
         restoreHeight: 123,
         derivationIndex: 0,
@@ -88,9 +91,9 @@ describe('FastReceiveRegistry', () => {
     await upsertFastReceiveIdentity(
       createFastReceiveIdentityRecord(
         {
-          id: 'fast-receive-0',
+          id: 'fast-receive-v2-0',
           label: 'Fast Receive',
-          path: '/app/wallets/stagenet/fast-receive-0',
+          path: '/app/wallets/stagenet/fast-receive-v2-0',
           address: '54A1testAddress',
           network: 'stagenet',
           restoreHeight: 10,
@@ -108,18 +111,51 @@ describe('FastReceiveRegistry', () => {
   });
 
   it('creates stable path-safe identity ids', () => {
-    expect(
-      createFastReceiveIdentityId(2, new Date('2026-06-17T12:34:56.000Z')),
-    ).toBe('fast-receive-2-20260617T123456');
+    const id = createFastReceiveIdentityId(
+      2,
+      new Date('2026-06-17T12:34:56.000Z'),
+    );
+    expect(id).toBe('fast-receive-v2-2-20260617T123456');
+    expect(isIndependentFastReceiveIdentityId(id)).toBe(true);
+  });
+
+  it('marks legacy v1 identities as blocked without deleting metadata', async () => {
+    await AsyncStorage.setItem(
+      FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
+      JSON.stringify([
+        {
+          id: 'fast-receive-2-legacy',
+          label: 'Legacy Fast Wallet',
+          path: '/app/wallets/stagenet/fast-receive-2-legacy',
+          address: '54A1legacyAddress',
+          network: 'stagenet',
+          restoreHeight: 123,
+          derivationIndex: 2,
+          status: 'enabled',
+          scannerStatus: 'enabled',
+          scannerUrl: 'https://xmr.tex8.com',
+          createdAt: '2026-06-17T00:00:00.000Z',
+          updatedAt: '2026-06-17T00:00:00.000Z',
+        },
+      ]),
+    );
+
+    await expect(loadFastReceiveIdentities()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'fast-receive-2-legacy',
+        status: 'legacy-blocked',
+        scannerStatus: 'legacy-blocked',
+      }),
+    ]);
   });
 
   it('removes a fast receive identity from the local registry', async () => {
     await upsertFastReceiveIdentity(
       createFastReceiveIdentityRecord(
         {
-          id: 'fast-receive-0',
+          id: 'fast-receive-v2-0',
           label: 'Fast Receive',
-          path: '/app/wallets/stagenet/fast-receive-0',
+          path: '/app/wallets/stagenet/fast-receive-v2-0',
           address: '54A1testAddress',
           network: 'stagenet',
           restoreHeight: 10,
@@ -130,7 +166,7 @@ describe('FastReceiveRegistry', () => {
       ),
     );
 
-    const next = await removeFastReceiveIdentity('fast-receive-0');
+    const next = await removeFastReceiveIdentity('fast-receive-v2-0');
 
     expect(next).toEqual([]);
     expect(await loadFastReceiveIdentities()).toEqual([]);

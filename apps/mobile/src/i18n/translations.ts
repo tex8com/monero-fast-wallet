@@ -71,10 +71,24 @@ const en = {
   'sync.wallet': 'Wallet sync',
   'sync.walletName': '{wallet}',
   'security.appProtection': 'App protection',
+  'security.preparingProtection': 'Preparing secure app protection…',
   'security.biometricPrompt': 'Unlock Monero Fast Wallet',
   'security.biometricUnavailable': 'Biometric unlock is not available on this device.',
   'security.enterPassword': 'Enter app password',
   'security.passwordIncorrect': 'The app password is incorrect.',
+  'security.setUpAppProtectionHint':
+    'Choose how you would like to unlock the app. You can change this later in Settings.',
+  'security.useBiometrics': 'Fingerprint or face unlock',
+  'security.biometricsRecommended': 'Recommended',
+  'security.biometricsFallback': 'If needed, you can use your device code.',
+  'security.useAppPassword': 'App password',
+  'security.passwordAlternative': 'Use a password you choose',
+  'security.passwordRule': 'Use at least 12 characters. A short sentence is easiest to remember.',
+  'security.showPassword': 'Show password',
+  'security.hidePassword': 'Hide password',
+  'security.passwordRecoveryHelp':
+    'Important: If you forget this password, you need your recovery words to restore your wallets.',
+  'security.continueWithBiometrics': 'Continue with biometrics',
   'security.unlockApp': 'Unlock app',
   'security.unlockAppHint': 'Unlock once to access all your saved wallets.',
   'security.unlockFailed': 'The app could not be unlocked.',
@@ -122,6 +136,9 @@ const en = {
   'fastWallet.status.localOnly': 'Local only',
   'fastWallet.status.localOnlyDescription':
     'This receive address is ready. Connect it to the Fast Wallet server to enable automatic payment alerts.',
+  'fastWallet.status.legacyBlocked': 'Security update required',
+  'fastWallet.status.legacyBlockedDescription':
+    'This legacy Fast Wallet is blocked because its seed can reveal the source wallet. Keep its files and use the guarded migration flow.',
   'fastWallet.status.paused': 'Fast paused',
   'fastWallet.status.serverChangedDescription':
     'Connect this Fast Wallet once to the selected Fast Wallet server.',
@@ -461,7 +478,7 @@ const en = {
   'settings.autoLock': 'Auto-lock (5 min)',
   'settings.appProtection': 'App protection',
   'settings.appProtectionHint':
-    'Choose whether this app opens freely, with biometrics, or with one app password. This applies to all saved wallets.',
+    'Choose how to unlock the app: biometrics or an app password. This protects all saved wallets.',
   'settings.noProtection': 'No protection',
   'settings.biometrics': 'Biometrics',
   'settings.appPassword': 'App password',
@@ -499,7 +516,7 @@ const en = {
   'settings.passwordChangeHint': 'The new password stays only in this device’s secure storage.',
   'settings.passwordChanged': 'Wallet password changed.',
   'settings.passwordHardware': 'A Ledger password is managed on the Ledger device.',
-  'settings.passwordMinimum': 'Use at least 8 characters.',
+  'settings.passwordMinimum': 'Use at least 12 characters.',
   'settings.passwordMismatch': 'The new passwords do not match.',
   'settings.privacyPolicy': 'Privacy policy',
   'settings.proxy': 'Proxy',
@@ -639,10 +656,25 @@ const de: Record<keyof typeof en, string> = {
   'sync.wallet': 'Wallet-Sync',
   'sync.walletName': '{wallet}',
   'security.appProtection': 'App-Schutz',
+  'security.preparingProtection': 'Sicherer App-Schutz wird vorbereitet…',
   'security.biometricPrompt': 'Monero Fast Wallet entsperren',
   'security.biometricUnavailable': 'Biometrisches Entsperren ist auf diesem Gerät nicht verfügbar.',
   'security.enterPassword': 'App-Passwort eingeben',
   'security.passwordIncorrect': 'Das App-Passwort ist nicht korrekt.',
+  'security.setUpAppProtectionHint':
+    'Wähle, wie du die App entsperren möchtest. Du kannst das später in den Einstellungen ändern.',
+  'security.useBiometrics': 'Fingerabdruck oder Gesicht',
+  'security.biometricsRecommended': 'Empfohlen',
+  'security.biometricsFallback': 'Falls nötig, kannst du den Gerätecode verwenden.',
+  'security.useAppPassword': 'App-Passwort',
+  'security.passwordAlternative': 'Ein eigenes Passwort verwenden',
+  'security.passwordRule':
+    'Verwende mindestens 12 Zeichen. Ein kurzer Satz ist am einfachsten zu merken.',
+  'security.showPassword': 'Passwort anzeigen',
+  'security.hidePassword': 'Passwort verbergen',
+  'security.passwordRecoveryHelp':
+    'Wichtig: Wenn du dieses Passwort vergisst, brauchst du deine Wiederherstellungswörter, um deine Wallets wiederherzustellen.',
+  'security.continueWithBiometrics': 'Mit Biometrie fortfahren',
   'security.unlockApp': 'App entsperren',
   'security.unlockAppHint': 'Einmal entsperren, um alle gespeicherten Wallets zu verwenden.',
   'security.unlockFailed': 'Die App konnte nicht entsperrt werden.',
@@ -691,6 +723,9 @@ const de: Record<keyof typeof en, string> = {
   'fastWallet.status.localOnly': 'Nur lokal',
   'fastWallet.status.localOnlyDescription':
     'Diese Empfangsadresse ist bereit. Verbinde sie mit dem Fast-Wallet-Server für automatische Zahlungshinweise.',
+  'fastWallet.status.legacyBlocked': 'Sicherheitsupdate nötig',
+  'fastWallet.status.legacyBlockedDescription':
+    'Diese alte Fast Wallet ist gesperrt, weil ihr Seed die Quell-Wallet offenlegen kann. Behalte die Dateien und nutze den geschützten Migrationsweg.',
   'fastWallet.status.paused': 'Fast pausiert',
   'fastWallet.status.serverChangedDescription':
     'Verbinde diese Fast Wallet einmal mit dem ausgewählten Fast-Wallet-Server.',
@@ -1041,7 +1076,7 @@ const de: Record<keyof typeof en, string> = {
   'settings.autoLock': 'Auto-Sperre (5 Min.)',
   'settings.appProtection': 'App-Schutz',
   'settings.appProtectionHint':
-    'Wähle, ob die App frei, mit Biometrie oder mit einem einzigen App-Passwort geöffnet wird. Das gilt für alle gespeicherten Wallets.',
+    'Wähle, wie die App entsperrt wird: mit Biometrie oder einem App-Passwort. Das schützt alle gespeicherten Wallets.',
   'settings.noProtection': 'Kein Schutz',
   'settings.biometrics': 'Biometrie',
   'settings.appPassword': 'App-Passwort',
@@ -1079,7 +1114,7 @@ const de: Record<keyof typeof en, string> = {
   'settings.passwordChangeHint': 'Das neue Passwort bleibt nur im sicheren Speicher dieses Geräts.',
   'settings.passwordChanged': 'Wallet-Passwort geändert.',
   'settings.passwordHardware': 'Ein Ledger-Passwort wird direkt auf dem Ledger verwaltet.',
-  'settings.passwordMinimum': 'Verwende mindestens 8 Zeichen.',
+  'settings.passwordMinimum': 'Verwende mindestens 12 Zeichen.',
   'settings.passwordMismatch': 'Die neuen Passwörter stimmen nicht überein.',
   'settings.privacyPolicy': 'Datenschutzrichtlinie',
   'settings.proxy': 'Proxy',

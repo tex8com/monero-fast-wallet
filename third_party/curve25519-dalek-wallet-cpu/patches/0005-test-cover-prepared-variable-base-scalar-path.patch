@@ -1,0 +1,28 @@
+From 47f2382055a23a21da26f02a319af584e9c0002c Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <rolandkohlhuber@Rolands-MacBook-Air.local>
+Date: Sat, 25 Jul 2026 14:43:16 -0500
+Subject: [PATCH 5/6] test: cover prepared variable-base scalar path
+
+---
+ curve25519-dalek/src/edwards.rs | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/curve25519-dalek/src/edwards.rs b/curve25519-dalek/src/edwards.rs
+index 82bac08..bb32fc4 100644
+--- a/curve25519-dalek/src/edwards.rs
++++ b/curve25519-dalek/src/edwards.rs
+@@ -1822,6 +1822,14 @@ mod test {
+         assert_eq!(aB.compress(), A_TIMES_BASEPOINT);
+     }
+ 
++    #[test]
++    fn prepared_variable_base_scalar_matches_regular_multiplication() {
++        let point = Scalar::from(37u64) * constants::ED25519_BASEPOINT_POINT;
++        let expected = A_SCALAR * point;
++        let prepared = PreparedVariableBaseScalar::new(&A_SCALAR);
++        assert_eq!(prepared.mul(&point).compress(), expected.compress());
++    }
++
+     /// Test basepoint.double() versus the 2*basepoint constant.
+     #[test]
+     fn basepoint_double_vs_basepoint2() {

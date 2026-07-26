@@ -3,6 +3,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cctype>
+#include <exception>
 #include <initializer_list>
 #include <iostream>
 #include <limits>
@@ -35,22 +36,59 @@ std::string backendNotLinkedMessage() {
 }
 
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
-std::string maskDiagnosticId(const std::string& value) {
-  if (value.size() <= 14) {
-    return value;
-  }
-
-  return value.substr(0, 8) + "..." + value.substr(value.size() - 6);
+std::string maskDiagnosticId(const std::string&) {
+  // Kept only to avoid duplicating diagnostic call-site plumbing. The logger
+  // also rejects the walletId field, so no stable wallet identifier is emitted.
+  return "omitted";
 }
 
 void logEngineDiagnostic(
     const std::string& event,
     const std::initializer_list<std::pair<std::string, std::string>>& fields) {
+#if defined(NDEBUG)
+  (void)event;
+  (void)fields;
+#else
+  static const std::set<std::string> safeFields = {
+      "accountIndex",
+      "cacheResetHeight",
+      "changed",
+      "checkedHeight",
+      "confirmedIncomingCount",
+      "confirmedOutgoingCount",
+      "count",
+      "currentHeight",
+      "daemonBytesReceived",
+      "daemonBytesSent",
+      "daemonHeight",
+      "daemonTargetHeight",
+      "duplicates",
+      "heightAfterStop",
+      "heightBeforeStop",
+      "initialized",
+      "network",
+      "pendingIncomingCount",
+      "pendingOutgoingCount",
+      "refreshFromHeight",
+      "requestedRestoreHeight",
+      "restoreHeight",
+      "status",
+      "store",
+      "synchronized",
+      "transactionCount",
+      "transport",
+      "trusted",
+      "useSsl",
+      "walletHeight",
+  };
   std::ostringstream message;
   message << "MONERO_WALLET_DIAGNOSTICS native=cpp event=" << event
           << " fields={";
   bool first = true;
   for (const auto& field : fields) {
+    if (safeFields.find(field.first) == safeFields.end()) {
+      continue;
+    }
     if (!first) {
       message << ", ";
     }
@@ -66,6 +104,7 @@ void logEngineDiagnostic(
       ANDROID_LOG_INFO, "NativeMoneroWallet", message.str().c_str());
 #else
   std::cerr << message.str() << std::endl;
+#endif
 #endif
 }
 
@@ -125,10 +164,42 @@ std::string deviceTypeName(Monero::Wallet::Device deviceType) {
   return "unknown";
 }
 
-std::string fastReceiveSeedOffset(uint64_t derivationIndex) {
-  std::ostringstream out;
-  out << "tex8-monero-fast-receive-v1:" << derivationIndex;
-  return out.str();
+constexpr const char* kIndependentFastReceiveIdPrefix = "fast-receive-v2-";
+constexpr const char* kLegacyFastReceiveIdPrefix = "fast-receive-";
+
+std::string walletFileName(const std::string& path) {
+  const auto separator = path.find_last_of("/\\");
+  return separator == std::string::npos
+      ? path
+      : path.substr(separator + 1);
+}
+
+bool isIndependentFastReceiveIdentityId(const std::string& identityId) {
+  return identityId.rfind(kIndependentFastReceiveIdPrefix, 0) == 0;
+}
+
+bool pathBelongsToFastReceiveIdentity(
+    const std::string& path,
+    const std::string& identityId) {
+  const auto fileName = walletFileName(path);
+  return fileName == identityId ||
+      fileName.rfind(identityId + ".", 0) == 0;
+}
+
+bool isIndependentFastReceiveWalletPath(const std::string& path) {
+  return walletFileName(path).rfind(kIndependentFastReceiveIdPrefix, 0) == 0;
+}
+
+bool isLegacyFastReceiveWalletPath(const std::string& path) {
+  const auto fileName = walletFileName(path);
+  return fileName.rfind(kLegacyFastReceiveIdPrefix, 0) == 0 &&
+      fileName.rfind(kIndependentFastReceiveIdPrefix, 0) != 0;
+}
+
+std::string legacyFastReceiveDisabledMessage() {
+  return "legacy Fast Wallet v1 is disabled because its seed is reversibly "
+         "linked to the source wallet; keep the encrypted wallet files and "
+         "use the guarded recovery/migration flow";
 }
 
 void setEstimatedRefreshHeightForNewWallet(Monero::Wallet* wallet) {
@@ -143,7 +214,7 @@ void setEstimatedRefreshHeightForNewWallet(Monero::Wallet* wallet) {
 }
 
 uint64_t fastReceiveDerivationIndexFromId(const std::string& identityId) {
-  const std::string prefix = "fast-receive-";
+  const std::string prefix = kIndependentFastReceiveIdPrefix;
   if (identityId.rfind(prefix, 0) != 0) {
     return 0;
   }
@@ -390,6 +461,7 @@ class WalletEngine::Impl {
     std::string grpcEndpoint;
     HardwareWalletStatus hardwareStatus;
     std::unique_ptr<HardwareWalletListener> hardwareListener;
+    bool recoverySeedAllowed{false};
     std::unordered_map<std::string, Monero::PendingTransaction*>
         pendingTransactions;
   };
@@ -429,7 +501,17 @@ class WalletEngine::Impl {
         toMoneroNetwork(request.network),
         request.kdfRounds);
     throwIfWalletFailed(wallet, "createWallet");
-    setEstimatedRefreshHeightForNewWallet(wallet);
+    if (request.restoreHeight > 1) {
+      wallet->setRefreshFromBlockHeight(request.restoreHeight);
+      // WalletImpl otherwise recognizes a newly created wallet during daemon
+      // initialization and replaces this explicit height with the daemon tip
+      // as a fast-refresh shortcut. An explicit historical height is an
+      // intentional restore request, so preserve it through initialization.
+      wallet->setRecoveringFromSeed(true);
+      throwIfWalletFailed(wallet, "createWallet.setRefreshFromBlockHeight");
+    } else {
+      setEstimatedRefreshHeightForNewWallet(wallet);
+    }
     return addWallet("createWallet", request.path, request.network, wallet);
   }
 
@@ -452,6 +534,10 @@ class WalletEngine::Impl {
   }
 
   WalletId openWallet(const OpenWalletRequest& request) {
+    if (isLegacyFastReceiveWalletPath(request.path)) {
+      throw WalletEngineError(legacyFastReceiveDisabledMessage());
+    }
+
     auto* wallet = manager_->openWallet(
         request.path,
         request.password,
@@ -576,6 +662,7 @@ class WalletEngine::Impl {
   }
 
   HardwareViewKeyExport exportHardwarePrivateViewKey(const WalletId& walletId) {
+#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
     std::lock_guard<std::mutex> lock(mutex_);
     auto& session = getLocked(walletId);
     if (session.wallet->getDeviceType() == Monero::Wallet::Device_Software) {
@@ -594,6 +681,10 @@ class WalletEngine::Impl {
     }
     return HardwareViewKeyExport{
         session.wallet->address(0, 0), privateViewKey, session.network};
+#else
+    (void)walletId;
+    throw WalletEngineError("hardware view-key export requires the TEX8 Core extension");
+#endif
   }
 
   FastReceiveIdentity createFastReceiveIdentity(
@@ -604,11 +695,19 @@ class WalletEngine::Impl {
     if (request.identityId.empty()) {
       throw WalletEngineError("fast receive identity id must not be empty");
     }
+    if (!isIndependentFastReceiveIdentityId(request.identityId)) {
+      throw WalletEngineError(
+          "new software Fast Wallets require an independent v2 identity");
+    }
     if (request.path.empty()) {
       throw WalletEngineError("fast receive wallet path must not be empty");
     }
+    if (!pathBelongsToFastReceiveIdentity(
+            request.path, request.identityId)) {
+      throw WalletEngineError(
+          "fast receive wallet path does not match its identity");
+    }
 
-    std::string mnemonic;
     NetworkType network;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -619,22 +718,18 @@ class WalletEngine::Impl {
       }
 
       network = source.network;
-      mnemonic = source.wallet->seed(
-          fastReceiveSeedOffset(request.derivationIndex));
     }
 
-    if (mnemonic.empty()) {
-      throw WalletEngineError("failed to derive fast receive seed");
-    }
-
-    auto* wallet = manager_->recoveryWallet(
+    // Fast Wallet v2 is a fresh Monero wallet with independent random entropy.
+    // The source wallet is consulted only to bind the network and prove that
+    // the user has an active software-wallet session. Its seed and keys are
+    // never read, transformed, or reused.
+    auto* wallet = manager_->createWallet(
         request.path,
         request.password,
-        mnemonic,
+        "English",
         toMoneroNetwork(network),
-        request.restoreHeight,
-        request.kdfRounds,
-        "");
+        request.kdfRounds);
 
     try {
       throwIfWalletFailed(wallet, "createFastReceiveIdentity");
@@ -644,6 +739,10 @@ class WalletEngine::Impl {
       }
       if (restoreHeight > 1) {
         wallet->setRefreshFromBlockHeight(restoreHeight);
+        wallet->setRecoveringFromSeed(true);
+        throwIfWalletFailed(
+            wallet,
+            "createFastReceiveIdentity.setRefreshFromBlockHeight");
       }
 
       FastReceiveIdentity identity;
@@ -683,8 +782,15 @@ class WalletEngine::Impl {
     if (identityId.empty()) {
       throw WalletEngineError("fast receive identity id must not be empty");
     }
+    if (!isIndependentFastReceiveIdentityId(identityId)) {
+      throw WalletEngineError(legacyFastReceiveDisabledMessage());
+    }
     if (path.empty()) {
       throw WalletEngineError("fast receive wallet path must not be empty");
+    }
+    if (!pathBelongsToFastReceiveIdentity(path, identityId)) {
+      throw WalletEngineError(
+          "fast receive wallet path does not match its identity");
     }
 
     auto* wallet = manager_->openWallet(
@@ -767,6 +873,37 @@ class WalletEngine::Impl {
     if (session->wallet != nullptr) {
       closeSessionWallet(*session, store, "closeWallet");
       session->wallet = nullptr;
+    }
+  }
+
+  void closeAllWallets(bool store) {
+    std::vector<std::unique_ptr<WalletSession>> sessions;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      sessions.reserve(wallets_.size());
+      for (auto& item : wallets_) {
+        sessions.push_back(std::move(item.second));
+      }
+      wallets_.clear();
+    }
+
+    std::exception_ptr firstError;
+    for (auto& session : sessions) {
+      disposePendingTransactions(*session);
+      if (session->wallet == nullptr) {
+        continue;
+      }
+      try {
+        closeSessionWallet(*session, store, "closeAllWallets");
+      } catch (...) {
+        if (!firstError) {
+          firstError = std::current_exception();
+        }
+      }
+      session->wallet = nullptr;
+    }
+    if (firstError) {
+      std::rethrow_exception(firstError);
     }
   }
 
@@ -900,10 +1037,17 @@ class WalletEngine::Impl {
   }
 
   void setGrpcEndpoint(const WalletId& walletId, const std::string& endpoint) {
+#if TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM
     std::lock_guard<std::mutex> lock(mutex_);
     auto& session = getLocked(walletId);
     session.grpcEndpoint = endpoint;
     session.wallet->setGrpcStreamEndpoint(endpoint);
+#else
+    (void)walletId;
+    (void)endpoint;
+    throw WalletEngineError(
+        "this Monero Core build does not include the optional gRPC stream");
+#endif
   }
 
   void startRefresh(const WalletId& walletId) {
@@ -968,6 +1112,16 @@ class WalletEngine::Impl {
     wallet->pauseRefresh();
     wallet->stop();
     throwIfWalletFailed(wallet, "refresh");
+  }
+
+  void rescanBlockchain(const WalletId& walletId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto* wallet = getLocked(walletId).wallet;
+    if (!wallet->rescanBlockchain()) {
+      throwIfWalletFailed(wallet, "rescanBlockchain");
+      throw WalletEngineError("rescanBlockchain failed");
+    }
+    throwIfWalletFailed(wallet, "rescanBlockchain");
   }
 
   void persistOpenWallets() {
@@ -1037,7 +1191,12 @@ class WalletEngine::Impl {
       const WalletId& walletId,
       const std::string& seedOffset) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return getLocked(walletId).wallet->seed(seedOffset);
+    const auto& session = getLocked(walletId);
+    if (!session.recoverySeedAllowed) {
+      throw WalletEngineError(
+          "recovery-seed reveal is unavailable for Fast, hardware, and watch-only wallets");
+    }
+    return session.wallet->seed(seedOffset);
   }
 
   uint64_t getBalance(const WalletId& walletId, uint32_t accountIndex) const {
@@ -1055,7 +1214,7 @@ class WalletEngine::Impl {
   WalletSnapshot snapshot(const WalletId& walletId) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto& session = getLocked(walletId);
-    const auto* wallet = session.wallet;
+    auto* wallet = session.wallet;
 
     WalletSnapshot result;
     result.id = session.id;
@@ -1066,6 +1225,9 @@ class WalletEngine::Impl {
     result.walletHeight = wallet->blockChainHeight();
     result.daemonHeight = wallet->daemonBlockChainHeight();
     result.daemonTargetHeight = wallet->daemonBlockChainTargetHeight();
+    result.refreshFromHeight = wallet->getRefreshFromBlockHeight();
+    result.daemonBytesReceived = wallet->getBytesReceived();
+    result.daemonBytesSent = wallet->getBytesSent();
     result.synchronized = wallet->synchronized();
     int status = Monero::Wallet::Status_Ok;
     std::string statusError;
@@ -1076,6 +1238,9 @@ class WalletEngine::Impl {
          {"walletHeight", std::to_string(result.walletHeight)},
          {"daemonHeight", std::to_string(result.daemonHeight)},
          {"daemonTargetHeight", std::to_string(result.daemonTargetHeight)},
+         {"refreshFromHeight", std::to_string(result.refreshFromHeight)},
+         {"daemonBytesReceived", std::to_string(result.daemonBytesReceived)},
+         {"daemonBytesSent", std::to_string(result.daemonBytesSent)},
          {"status", std::to_string(status)},
          {"synchronized", result.synchronized ? "true" : "false"}});
     return result;
@@ -1177,6 +1342,7 @@ class WalletEngine::Impl {
 
   std::vector<std::string> getOwnedOutputKeyImages(
       const WalletId& walletId) const {
+#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
     std::lock_guard<std::mutex> lock(mutex_);
     auto* wallet = getLocked(walletId).wallet;
     const auto keyImages = wallet->ownedOutputKeyImages();
@@ -1186,6 +1352,10 @@ class WalletEngine::Impl {
         {{"walletId", maskDiagnosticId(walletId)},
          {"count", std::to_string(keyImages.size())}});
     return keyImages;
+#else
+    (void)walletId;
+    throw WalletEngineError("owned key-image access requires the TEX8 Core extension");
+#endif
   }
 
   size_t reconcileOutputKeyImages(
@@ -1193,6 +1363,7 @@ class WalletEngine::Impl {
       const std::vector<std::string>& keyImages,
       const std::vector<bool>& spentStates,
       uint64_t checkedHeight) {
+#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
     if (keyImages.size() != spentStates.size()) {
       throw WalletEngineError(
           "key image and spent-state counts do not match");
@@ -1212,6 +1383,13 @@ class WalletEngine::Impl {
          {"changed", std::to_string(changed)},
          {"checkedHeight", std::to_string(checkedHeight)}});
     return changed;
+#else
+    (void)walletId;
+    (void)keyImages;
+    (void)spentStates;
+    (void)checkedHeight;
+    throw WalletEngineError("key-image reconciliation requires the TEX8 Core extension");
+#endif
   }
 
   PreparedTransaction prepareTransaction(
@@ -1397,6 +1575,10 @@ class WalletEngine::Impl {
     session->wallet = wallet;
     session->network = network;
     session->cacheResetHeight = cacheResetHeight;
+    session->recoverySeedAllowed =
+        !isIndependentFastReceiveWalletPath(path) &&
+        wallet->getDeviceType() == Monero::Wallet::Device_Software &&
+        !wallet->watchOnly();
     session->hardwareStatus.walletId = session->id;
     updateHardwareStatusFromWallet(*session);
 
@@ -1495,7 +1677,7 @@ bool WalletEngine::linkedWithMonero() {
 
 void WalletEngine::setLedgerBleTransportCallbacks(
     const LedgerBleTransportCallbacks& callbacks) {
-#if TEX8_WALLET_BRIDGE_WITH_MONERO
+#if TEX8_WALLET_BRIDGE_WITH_MONERO && TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
   Monero::LedgerBleTransportCallbacks moneroCallbacks;
   moneroCallbacks.context = callbacks.context;
   moneroCallbacks.connect = callbacks.connect;
@@ -1509,13 +1691,13 @@ void WalletEngine::setLedgerBleTransportCallbacks(
 }
 
 void WalletEngine::clearLedgerBleTransportCallbacks() {
-#if TEX8_WALLET_BRIDGE_WITH_MONERO
+#if TEX8_WALLET_BRIDGE_WITH_MONERO && TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
   Monero::clearLedgerBleTransportCallbacks();
 #endif
 }
 
 bool WalletEngine::ledgerBleTransportAvailable() {
-#if TEX8_WALLET_BRIDGE_WITH_MONERO
+#if TEX8_WALLET_BRIDGE_WITH_MONERO && TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
   return Monero::ledgerBleTransportAvailable();
 #else
   return false;
@@ -1622,6 +1804,14 @@ void WalletEngine::closeWallet(const WalletId& walletId, bool store) {
 #endif
 }
 
+void WalletEngine::closeAllWallets(bool store) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->closeAllWallets(store);
+#else
+  (void)store;
+#endif
+}
+
 void WalletEngine::setWalletPassword(
     const WalletId& walletId,
     const std::string& newPassword) {
@@ -1670,6 +1860,15 @@ void WalletEngine::startRefresh(const WalletId& walletId) {
 void WalletEngine::stopRefresh(const WalletId& walletId) {
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
   impl_->stopRefresh(walletId);
+#else
+  (void)walletId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::rescanBlockchain(const WalletId& walletId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->rescanBlockchain(walletId);
 #else
   (void)walletId;
   throw WalletEngineError(backendNotLinkedMessage());

@@ -8,10 +8,28 @@ APP_ID="${MONERO_WALLET_ANDROID_APP_ID:-com.tex8.monerowallet}"
 VARIANT="${MONERO_WALLET_ANDROID_VARIANT:-debug}"
 VARIANT_CAPITALIZED="$(capitalize_variant "$VARIANT")"
 ARCHITECTURES="${MONERO_WALLET_ANDROID_ARCHITECTURES:-arm64-v8a}"
-MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
 MONERO_LINK_ROOT="${MONERO_WALLET_LINK_ROOT:-${REPO_ROOT}/build/android-monero-link-manifests}"
 MONERO_TARGET="${MONERO_WALLET_ANDROID_TARGET:-android-arm64}"
 REQUIRE_MONERO="${MONERO_WALLET_ANDROID_REQUIRE_MONERO:-1}"
+EXTERNAL_BUILD_ROOT="${MONERO_WALLET_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
+
+if [ -z "${MONERO_SOURCE_DIR:-}" ] \
+  && [ -d "${EXTERNAL_BUILD_ROOT}/monero-v0.18.4.6-tex8-patched" ]; then
+  MONERO_SOURCE_DIR="${EXTERNAL_BUILD_ROOT}/monero-v0.18.4.6-tex8-patched"
+fi
+MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
+
+if [ -z "${MONERO_WALLET_LINK_ROOT:-}" ] \
+  && [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ]; then
+  for external_manifest_root in \
+    "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-tex8-patched" \
+    "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests"; do
+    if [ -f "${external_manifest_root}/${MONERO_TARGET}/link.cmake" ]; then
+      MONERO_LINK_ROOT="${external_manifest_root}"
+      break
+    fi
+  done
+fi
 
 GRADLE_ARGS=(
   ":app:install${VARIANT_CAPITALIZED}"

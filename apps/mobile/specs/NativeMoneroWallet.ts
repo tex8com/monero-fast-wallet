@@ -92,6 +92,12 @@ export type BiometricAuthResult = {
   message: string;
 };
 
+export type AppProtectionStatus = {
+  configured: boolean;
+  locked: boolean;
+  mode: string;
+};
+
 export type FastReceiveIdentity = {
   id: string;
   label: string;
@@ -123,13 +129,27 @@ export interface Spec extends TurboModule {
 
   authenticateBiometric(reason: string): Promise<BiometricAuthResult>;
 
-  storeSecret(key: string, value: string): Promise<void>;
+  getAppProtectionStatus(): Promise<AppProtectionStatus>;
 
-  verifySecret(key: string, value: string): Promise<boolean>;
+  configureAppProtection(mode: string, password: string): Promise<void>;
 
-  ensureSecret(key: string): Promise<void>;
+  unlockApp(password: string, reason: string): Promise<BiometricAuthResult>;
 
-  deleteSecret(key: string): Promise<void>;
+  lockApp(): Promise<void>;
+
+  ensureWalletSecret(key: string): Promise<void>;
+
+  deleteWalletSecret(key: string): Promise<void>;
+
+  storeDaemonPassword(value: string): Promise<void>;
+
+  deleteDaemonPassword(): Promise<void>;
+
+  storeProtectedMetadata(key: string, value: string): Promise<void>;
+
+  loadProtectedMetadata(key: string): Promise<string>;
+
+  deleteProtectedMetadata(key: string): Promise<void>;
 
   defaultWalletPath(walletName: string, network: string): Promise<string>;
 
@@ -147,25 +167,14 @@ export interface Spec extends TurboModule {
     network: string,
   ): Promise<string>;
 
-  restoreWallet(
-    path: string,
-    password: string,
-    mnemonic: string,
-    seedOffset: string,
-    network: string,
-    restoreHeight: number,
-  ): Promise<string>;
-
   /**
-   * Restores a software wallet with the app-managed secret held in the
-   * platform secure store. This keeps wallet-file encryption without adding
-   * a second, per-wallet password prompt to the user experience.
+   * Presents an operating-system-owned recovery-seed form and consumes the
+   * entered words inside native code. The seed is never an argument or return
+   * value on the React Native boundary.
    */
-  restoreWalletWithStoredSecret(
+  restoreWalletWithNativeSeed(
     path: string,
     secretKey: string,
-    mnemonic: string,
-    seedOffset: string,
     network: string,
     restoreHeight: number,
   ): Promise<string>;
@@ -247,7 +256,7 @@ export interface Spec extends TurboModule {
     network: string,
     restoreHeight: number,
     scannerUrl: string,
-    scannerAuthToken: string,
+    scannerAuthSecretKey: string,
     pushToken: string,
   ): Promise<FastReceiveIdentity>;
 
@@ -258,15 +267,28 @@ export interface Spec extends TurboModule {
     network: string,
     restoreHeight: number,
     scannerUrl: string,
-    scannerAuthToken: string,
+    scannerAuthSecretKey: string,
     pushToken: string,
   ): Promise<FastReceiveIdentity>;
 
   disableFastReceiveIdentity(
     identityId: string,
     scannerUrl: string,
-    scannerAuthToken: string,
+    scannerAuthSecretKey: string,
   ): Promise<FastReceiveIdentity>;
+
+  getFastReceiveScannerStatusWithStoredSecret(
+    identityId: string,
+    scannerUrl: string,
+    scannerAuthSecretKey: string,
+  ): Promise<string>;
+
+  checkFastReceiveKeyImagesWithStoredSecret(
+    identityId: string,
+    scannerUrl: string,
+    scannerAuthSecretKey: string,
+    keyImagesJson: string,
+  ): Promise<string>;
 
   closeWallet(walletId: string, storeFlag: number): Promise<void>;
 
@@ -308,9 +330,7 @@ export interface Spec extends TurboModule {
     label: string,
   ): Promise<WalletSubaddress>;
 
-  setWalletPassword(walletId: string, newPassword: string): Promise<void>;
-
-  getSeed(walletId: string, seedOffset: string): Promise<string>;
+  presentRecoverySeed(walletId: string, reason: string): Promise<boolean>;
 
   getBalance(walletId: string, accountIndex: number): Promise<string>;
 

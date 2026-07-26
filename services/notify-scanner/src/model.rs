@@ -70,6 +70,8 @@ pub struct WatchRegistration {
     pub identity_id: String,
     pub address: String,
     pub private_view_key: String,
+    #[serde(default)]
+    pub management_token_hash: String,
     pub network: Network,
     pub restore_height: u64,
     pub push_token: Option<String>,
@@ -85,6 +87,7 @@ impl fmt::Debug for WatchRegistration {
             .field("identity_id", &"<redacted>")
             .field("address", &"<redacted>")
             .field("private_view_key", &"<redacted>")
+            .field("management_token_hash", &"<redacted>")
             .field("network", &self.network)
             .field("restore_height", &self.restore_height)
             .field(
@@ -112,6 +115,7 @@ impl WatchRegistration {
             identity_id: request.identity_id.trim().to_owned(),
             address: request.address.trim().to_owned(),
             private_view_key: request.private_view_key.trim().to_owned(),
+            management_token_hash: String::new(),
             network: request.network,
             restore_height: request.restore_height,
             push_token: request

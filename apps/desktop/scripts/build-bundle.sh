@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-bundle="${1:?Usage: build-bundle.sh <dmg|nsis|appimage>}"
+bundle="${1:?Usage: build-bundle.sh <app|dmg|nsis|appimage>}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 desktop_dir="$(cd "${script_dir}/.." && pwd)"
 
 case "${bundle}" in
+  app)
+    [[ "$(uname -s)" == "Darwin" ]] || { echo "macOS app builds require macOS." >&2; exit 1; }
+    ;;
   dmg)
     [[ "$(uname -s)" == "Darwin" ]] || { echo "DMG builds require macOS." >&2; exit 1; }
     ;;
@@ -28,7 +31,7 @@ elif [[ "${bundle}" == "appimage" ]]; then
   tauri_config_args=(--config src-tauri/tauri.linux.conf.json)
 fi
 
-if [[ "${bundle}" == "dmg" ]]; then
+if [[ "${bundle}" == "app" || "${bundle}" == "dmg" ]]; then
   # This exports the native wallet link configuration and stages the Rust
   # crypto dylib where the Tauri macOS bundler expects it.
   source "${script_dir}/prepare-macos-monero-core.sh"

@@ -1,0 +1,6 @@
+patches/0001-curve-reuse-prepared-scalar-digits-across-wallet-bat.patch
+patches/0002-curve-build-wallet-lookup-tables-with-doubling-chain.patch
+patches/0003-curve-enable-stable-AVX-512-IFMA-on-Rust-1.89-or-new.patch
+patches/0004-docs-describe-stable-AVX-512-support.patch
+patches/0005-test-cover-prepared-variable-base-scalar-path.patch
+patches/0006-curve-batch-wallet-derivations-on-serial-CPUs.patch

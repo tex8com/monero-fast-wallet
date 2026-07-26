@@ -479,8 +479,8 @@ fn now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        hardware_wallet, ledger_read_only_wallet, normalize, remove_from_registry,
-        software_wallet, WalletRegistry,
+        hardware_wallet, ledger_read_only_wallet, normalize, remove_from_registry, software_wallet,
+        WalletRegistry,
     };
 
     #[test]
@@ -561,15 +561,13 @@ mod tests {
     #[test]
     fn ledger_read_only_wallet_is_local_and_requires_its_ledger_source() {
         let source = hardware_wallet("ledger-1", "mainnet", Some(42), None, None, None);
-        let read_only = ledger_read_only_wallet(
-            "ledger-read-1",
-            "mainnet",
-            Some(42),
-            &source.id,
-        );
+        let read_only = ledger_read_only_wallet("ledger-read-1", "mainnet", Some(42), &source.id);
         assert_eq!(read_only.kind, "view-only");
         assert_eq!(read_only.seed_backup_status, "not-required");
-        assert_eq!(read_only.source_wallet_id.as_deref(), Some(source.id.as_str()));
+        assert_eq!(
+            read_only.source_wallet_id.as_deref(),
+            Some(source.id.as_str())
+        );
         assert!(normalize(WalletRegistry {
             version: 1,
             active_wallet_id: Some(read_only.id.clone()),
@@ -640,12 +638,8 @@ mod tests {
             Some("fast"),
             Some(&source.id),
         );
-        let read_only_child = ledger_read_only_wallet(
-            "ledger-read-1",
-            "mainnet",
-            Some(42),
-            &source.id,
-        );
+        let read_only_child =
+            ledger_read_only_wallet("ledger-read-1", "mainnet", Some(42), &source.id);
         let registry = remove_from_registry(
             WalletRegistry {
                 version: 1,

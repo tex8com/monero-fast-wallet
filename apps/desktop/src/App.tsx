@@ -29,13 +29,24 @@ type Section = 'home' | 'wallets' | 'setup' | 'onboarding' | 'send' | 'receive' 
 type Network = 'mainnet' | 'testnet' | 'stagenet';
 type SetupMode = 'create' | 'restore' | 'open' | 'ledger';
 type WalletCoreStatus = { linked: boolean; releaseReady: boolean; backend: string; message: string };
-type AppProtectionStatus = { configured: boolean; locked: boolean };
+type AppProtectionMode = 'password' | 'system';
+type SystemAuthStatus = { available: boolean; label: string; detail: string; requiresRecoveryPassword: boolean };
+type AppProtectionStatus = {
+  configured: boolean;
+  locked: boolean;
+  mode: AppProtectionMode | null;
+  passwordConfigured: boolean;
+  systemAuth: SystemAuthStatus;
+};
 type RegisteredWallet = { id: string; displayName?: string; walletName: string; network: Network; kind: string; seedBackupStatus: 'pending' | 'verified' | 'not-required'; restoreHeight?: number; accountIndex?: number; addressIndex?: number; role?: 'standard' | 'fast'; sourceWalletId?: string; createdAt: number; lastOpenedAt: number; isOpen?: boolean; isActive?: boolean };
 type WalletOperationResponse = { walletId: string; wallet: RegisteredWallet };
 type RegisteredWalletSnapshot = { registrationId: string; snapshot: string };
 type LedgerTransportStatus = { platform: string; transport: 'ble'; supported: boolean; available: boolean; permissionGranted: boolean; requiresUserAction: boolean; deviceCount: number; message: string };
 type SetupRequest = { walletName: string; network: Network; mode: 'open' } | null;
-type SeedBackup = { nativeWalletId: string; wallet: RegisteredWallet; seed: string };
+type SeedRevealRequest = {
+  nativeWalletId: string;
+  wallet: RegisteredWallet;
+};
 type NativeSubaddress = { accountIndex: number; addressIndex: number; address: string; label: string };
 type NativePreparedTransaction = { id: string; status: string; error: string; amountAtomic: string; dustAtomic: string; feeAtomic: string; txCount: string; txIds: string[]; subaddressAccounts: number[]; subaddressIndices: number[] };
 type NativeTransaction = { hash: string; paymentId: string; description: string; label: string; direction: string; pending: boolean; failed: boolean; coinbase: boolean; amountAtomic: string; feeAtomic: string; blockHeight: string; confirmations: string; unlockTime: string; timestamp: string; subaddressAccount: number; subaddressIndices: number[]; transfers: Array<{ amountAtomic: string; address: string }> };
@@ -45,7 +56,7 @@ type CommunityProfile = { identityId: string; displayName: string; bio: string; 
 type CommunityNearby = CommunityProfile & { approximateDistanceKm: number; relationship: 'none' | 'outgoing' | 'incoming' | 'connected' };
 type CommunityContact = CommunityProfile & { status: 'outgoing' | 'incoming' | 'connected' };
 type CommunityMessage = { id: string; senderId: string; recipientId: string; body: string; sentAtMs: number };
-type FastWalletRecord = { id: string; label: string; address: string; network: Network; sourceRegistrationId: string; restoreHeight: number; derivationIndex: number; status: 'local-only' | 'enabled' | 'disabled' | 'registration-error' | 'server-mismatch'; scannerStatus: string; scannerUrl: string; scannerCheckedAt?: number; lastScannedHeight?: number; notificationsEnabled: boolean; createdAt: number; updatedAt: number };
+type FastWalletRecord = { id: string; label: string; address: string; network: Network; sourceRegistrationId: string; restoreHeight: number; derivationIndex: number; status: 'local-only' | 'enabled' | 'disabled' | 'registration-error' | 'server-mismatch' | 'legacy-blocked'; scannerStatus: string; scannerUrl: string; scannerCheckedAt?: number; lastScannedHeight?: number; notificationsEnabled: boolean; createdAt: number; updatedAt: number };
 type FastWalletOpenResponse = { walletId: string; wallet: FastWalletRecord };
 type NodeProfile = { mode: 'optimized-grpc' | 'original-rpc' | 'custom'; network: Network; daemonAddress: string; grpcEndpoint: string; trusted: boolean; useSsl: boolean; username: string; proxyAddress: string; passwordStored: boolean; updatedAt: number };
 type SettingsDiagnostic = { label: string; value: string; tone?: 'good' | 'warning' | 'neutral' };
@@ -150,11 +161,13 @@ export default function App() {
   const [wallets, setWallets] = useState<RegisteredWallet[]>([]);
   const [fastWalletPreference, setFastWalletPreference] = useState<FastWalletPreference | null>(() => loadFastWalletPreference());
   const [setupRequest, setSetupRequest] = useState<SetupRequest>(null);
-  const [seedBackup, setSeedBackup] = useState<SeedBackup | null>(null);
+  const [seedRevealRequest, setSeedRevealRequest] = useState<SeedRevealRequest | null>(null);
+  const [seedAuthorizationPassword, setSeedAuthorizationPassword] = useState('');
+  const [seedRevealBusy, setSeedRevealBusy] = useState(false);
   const [status, setStatus] = useState<WalletCoreStatus | null>(null);
   const [appProtection, setAppProtection] = useState<AppProtectionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [autoLockEnabled, setAutoLockEnabled] = useState(() => window.localStorage.getItem('tex8-monero-auto-lock') !== 'false');
+  const [autoLockEnabled] = useState(true);
   const startupWalletSessionsInitializedRef = useRef(false);
   const primaryNavigation = useMemo(() => primarySections(t), [t]);
   const secondaryNavigation = useMemo(() => secondarySections(t), [t]);
@@ -174,13 +187,16 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
     invoke<WalletCoreStatus>('wallet_core_status').then((value) => mounted && setStatus(value)).catch(() => mounted && setError('The desktop host could not verify the native wallet core.'));
-    invoke<AppProtectionStatus>('app_protection_status').then((value) => mounted && setAppProtection(value)).catch((reason) => mounted && setError(errorMessage(reason, 'App protection could not read secure storage.')));
-    reloadWallets();
+    invoke<AppProtectionStatus>('app_protection_status').then((value) => {
+      if (!mounted) return;
+      setAppProtection(value);
+      if (!value.locked) void reloadWallets();
+    }).catch((reason) => mounted && setError(errorMessage(reason, 'App protection could not read secure storage.')));
     return () => { mounted = false; };
   }, [reloadWallets]);
 
   const activateWallet = useCallback(async (result: WalletOperationResponse) => {
-    setActiveWalletId(result.walletId); setActiveWallet(result.wallet); setSeedBackup(null); setError(null); setSection('home'); await reloadWallets();
+    setActiveWalletId(result.walletId); setActiveWallet(result.wallet); setSeedRevealRequest(null); setError(null); setSection('home'); await reloadWallets();
   }, [reloadWallets]);
   const activateOpenWallet = async (wallet: RegisteredWallet) => {
     try { await activateWallet(await invoke<WalletOperationResponse>('activate_registered_wallet', { walletId: wallet.id })); }
@@ -202,28 +218,41 @@ export default function App() {
   };
   const revealRecoverySeed = async (wallet = activeWallet, walletId = activeWalletId) => {
     if (!wallet || !walletId) return;
-    try {
-      const seed = await invoke<string>('wallet_recovery_seed', { input: { walletId } });
-      setSeedBackup({ nativeWalletId: walletId, wallet, seed });
-    } catch (reason) { setError(errorMessage(reason, 'The recovery seed could not be read from the native wallet.')); }
+    setSeedAuthorizationPassword('');
+    setSeedRevealRequest({ nativeWalletId: walletId, wallet });
   };
   const createdWallet = async (result: WalletOperationResponse) => {
     await activateWallet(result);
-    await revealRecoverySeed(result.wallet, result.walletId);
+    setSeedAuthorizationPassword('');
+    setSeedRevealRequest({ nativeWalletId: result.walletId, wallet: result.wallet });
   };
-  const confirmSeedBackup = async () => {
-    if (!seedBackup) return;
+  const presentRecoverySeed = async () => {
+    if (!seedRevealRequest || (appProtection?.mode === 'password' && !seedAuthorizationPassword) || seedRevealBusy) return;
+    setSeedRevealBusy(true);
     try {
-      const updated = await invoke<RegisteredWallet>('mark_wallet_seed_backed_up', { walletId: seedBackup.wallet.id });
-      setActiveWallet(updated); setSeedBackup(null); await reloadWallets();
-    } catch (reason) { setError(errorMessage(reason, 'The seed backup status could not be saved.')); }
+      const confirmed = await invoke<boolean>('present_recovery_seed', {
+        input: {
+          walletId: seedRevealRequest.nativeWalletId,
+          registrationId: seedRevealRequest.wallet.id,
+          appPassword: seedAuthorizationPassword,
+        },
+      });
+      setSeedAuthorizationPassword('');
+      setSeedRevealRequest(null);
+      if (confirmed) await reloadWallets();
+    } catch (reason) {
+      setSeedAuthorizationPassword('');
+      setError(errorMessage(reason, 'The trusted recovery-seed view could not be opened.'));
+    } finally {
+      setSeedRevealBusy(false);
+    }
   };
   const closeActiveWallet = useCallback(async () => {
     if (!activeWalletId) return;
     const walletToUnlock = activeWallet;
     try {
       await invoke<void>('close_wallet', { input: { walletId: activeWalletId } });
-      setActiveWalletId(null); setActiveWallet(null); setSeedBackup(null); await reloadWallets();
+      setActiveWalletId(null); setActiveWallet(null); setSeedRevealRequest(null); await reloadWallets();
       // Locking must never strand the user on an unrelated overview. Go
       // straight to the small, dedicated open flow for the wallet they chose
       // to lock so reopening is a single, obvious action.
@@ -236,17 +265,13 @@ export default function App() {
   const lockDesktopApp = useCallback(async () => {
     try {
       await invoke<void>('lock_app');
-      setActiveWalletId(null); setActiveWallet(null); setSeedBackup(null); setSetupRequest(null);
-      setSection('home'); setAppProtection({ configured: true, locked: true });
+      setActiveWalletId(null); setActiveWallet(null); setSeedRevealRequest(null); setSetupRequest(null);
+      setSection('home'); setAppProtection(current => current ? { ...current, configured: true, locked: true } : current);
       await reloadWallets();
     } catch (reason) { setError(errorMessage(reason, 'Monero Fast Wallet could not be locked.')); }
   }, [reloadWallets]);
-  const setAppPassword = useCallback(async (password: string) => {
-    const result = await invoke<AppProtectionStatus>('set_app_protection_password', { input: { password } });
-    setAppProtection(result);
-  }, []);
-  const clearAppPassword = useCallback(async () => {
-    const result = await invoke<AppProtectionStatus>('clear_app_protection_password');
+  const setAppProtectionMode = useCallback(async (mode: AppProtectionMode, password = '', currentPassword = '') => {
+    const result = await invoke<AppProtectionStatus>('set_app_protection_mode', { input: { mode, password, currentPassword } });
     setAppProtection(result);
   }, []);
   const removeWallet = useCallback(async (wallet: RegisteredWallet) => {
@@ -257,7 +282,7 @@ export default function App() {
       if (removingActiveWallet) {
         setActiveWalletId(null);
         setActiveWallet(null);
-        setSeedBackup(null);
+        setSeedRevealRequest(null);
       }
       await reloadWallets();
     } catch (reason) {
@@ -309,21 +334,20 @@ export default function App() {
     return () => { cancelled = true; };
   }, [activateWallet, appProtection?.locked, linked, wallets]);
 
-  useEffect(() => { window.localStorage.setItem('tex8-monero-auto-lock', autoLockEnabled ? 'true' : 'false'); }, [autoLockEnabled]);
   useEffect(() => {
     if (wallets.length === 0 && !fastWalletPreference && section !== 'setup') setSection('onboarding');
   }, [fastWalletPreference, section, wallets.length]);
   useEffect(() => {
-    if (!autoLockEnabled || !activeWalletId || appProtection?.configured !== true) return;
-    let timer: number | undefined;
-    const cancel = () => { if (timer !== undefined) { window.clearTimeout(timer); timer = undefined; } };
-    const schedule = () => { cancel(); timer = window.setTimeout(() => void lockDesktopApp(), 5 * 60 * 1000); };
-    const visibility = () => { if (document.visibilityState === 'hidden') schedule(); else cancel(); };
+    if (!activeWalletId || appProtection?.configured !== true) return;
+    // Hiding the renderer is an immediate defense. A separate native window
+    // listener closes sessions after 15 seconds without focus even when this
+    // JavaScript context is frozen or compromised.
+    const visibility = () => { if (document.visibilityState === 'hidden') void lockDesktopApp(); };
     document.addEventListener('visibilitychange', visibility);
-    return () => { cancel(); document.removeEventListener('visibilitychange', visibility); };
-  }, [activeWalletId, appProtection?.configured, autoLockEnabled, lockDesktopApp]);
-  if (!appProtection) return <main className="app-shell app-protection-loading"><p>Preparing secure app protection…</p></main>;
-  if (appProtection.locked) return <AppProtectionGate onUnlocked={(value) => { setAppProtection(value); startupWalletSessionsInitializedRef.current = false; }} />;
+    return () => { document.removeEventListener('visibilitychange', visibility); };
+  }, [activeWalletId, appProtection?.configured, lockDesktopApp]);
+  if (!appProtection) return <main className="app-shell app-protection-loading"><p>{t('protection.preparing')}</p></main>;
+  if (appProtection.locked || !appProtection.configured) return <AppProtectionGate status={appProtection} onUnlocked={(value) => { setAppProtection(value); startupWalletSessionsInitializedRef.current = false; void reloadWallets(); }} />;
   return <main className="app-shell">
     <aside className="sidebar" aria-label="Main navigation">
       <div className="brand"><img className="brand-mark" src="/monero-mark.png" alt="" /><div><strong>Monero<span>Fast Wallet</span></strong><small>{t('shell.desktop')}</small></div></div>
@@ -339,14 +363,14 @@ export default function App() {
       {section === 'wallets' && <Wallets linked={linked} walletId={activeWalletId} wallets={wallets} activeWallet={activeWallet} onSetup={startSetup} onOpen={openSavedWallet} onOpened={(result) => void activateWallet(result)} onRenamed={() => void reloadWallets()} onRemove={removeWallet} onActivity={() => setSection('activity')} />}
       {section === 'onboarding' && <ExperienceModeOnboarding onSelect={selectFastWalletPreference} />}
       {section === 'setup' && <Setup key={setupRequest ? `${setupRequest.walletName}-${setupRequest.network}` : `new-wallet-${fastWalletPreference ?? 'legacy'}`} linked={linked} initial={setupRequest} wallets={wallets} fastWalletPreference={fastWalletPreference} onSelectSaved={openSavedWallet} onOpened={(result) => void activateWallet(result)} onCreated={(result) => void createdWallet(result)} />}
-      {section === 'send' && <Send linked={linked} walletId={activeWalletId} wallet={activeWallet} />}
+      {section === 'send' && <Send linked={linked} walletId={activeWalletId} wallet={activeWallet} appProtection={appProtection} />}
       {section === 'receive' && <Receive linked={linked} walletId={activeWalletId} wallet={activeWallet} onActivity={() => setSection('activity')} />}
       {section === 'activity' && <Activity linked={linked} walletId={activeWalletId} wallet={activeWallet} />}
       {section === 'community' && <Community />}
       {section === 'assistant' && <Assistant wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
-      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} autoLockEnabled={autoLockEnabled} onAutoLockChange={setAutoLockEnabled} appProtection={appProtection} fastWalletPreference={fastWalletPreference} onFastWalletPreferenceChange={(preference) => { saveFastWalletPreference(preference); setFastWalletPreference(preference); }} onSetAppPassword={setAppPassword} onClearAppPassword={clearAppPassword} onLockApp={lockDesktopApp} />}
+      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} autoLockEnabled={autoLockEnabled} appProtection={appProtection} fastWalletPreference={fastWalletPreference} onFastWalletPreferenceChange={(preference) => { saveFastWalletPreference(preference); setFastWalletPreference(preference); }} onSetAppProtectionMode={setAppProtectionMode} onLockApp={lockDesktopApp} />}
       {section === 'menu' && <DesktopMenu wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
-      {seedBackup && <RecoverySeedOverlay wallet={seedBackup.wallet} seed={seedBackup.seed} onConfirm={() => void confirmSeedBackup()} onDismiss={() => setSeedBackup(null)} />}
+      {seedRevealRequest && <SensitiveAuthorizationOverlay title="Show recovery seed securely" description={appProtection.mode === 'system' ? `Confirm with ${appProtection.systemAuth.label}. The recovery seed opens only in a protected system window.` : 'Enter your app password. The recovery seed opens only in a protected system window.'} password={seedAuthorizationPassword} mode={appProtection.mode ?? 'password'} systemLabel={appProtection.systemAuth.label} allowPasswordFallback={appProtection.systemAuth.requiresRecoveryPassword && appProtection.passwordConfigured} busy={seedRevealBusy} onPasswordChange={setSeedAuthorizationPassword} onConfirm={() => void presentRecoverySeed()} onDismiss={() => { setSeedAuthorizationPassword(''); setSeedRevealRequest(null); }} />}
     </section>
   </main>;
 }
@@ -359,19 +383,83 @@ function ExperienceModeOnboarding({ onSelect }: { onSelect: (preference: FastWal
 
 function NavItem({ item, active, onSelect }: { item: { id: Section; label: string; icon: string }; active: Section; onSelect: (section: Section) => void }) { return <button className={item.id === active ? 'nav-item active' : 'nav-item'} onClick={() => onSelect(item.id)} type="button"><span>{item.icon}</span>{item.label}</button>; }
 
-function AppProtectionGate({ onUnlocked }: { onUnlocked: (status: AppProtectionStatus) => void }) {
+function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus; onUnlocked: (status: AppProtectionStatus) => void }) {
+  const { t } = useI18n();
   const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [mode, setMode] = useState<AppProtectionMode>(
+    status.configured ? status.mode ?? 'password' : status.systemAuth.available ? 'system' : 'password',
+  );
+  const [useRecoveryPassword, setUseRecoveryPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const unlock = async () => {
+    const needsPassword = mode === 'password' || (mode === 'system' && status.systemAuth.requiresRecoveryPassword);
+    if (!status.configured && needsPassword && password !== confirmation) {
+      setError(t('protection.passwordMismatch'));
+      return;
+    }
+    if (!status.configured && needsPassword && password.length < 12) {
+      setError(t('protection.passwordMinimum'));
+      return;
+    }
     setBusy(true); setError(null);
     try {
-      const status = await invoke<AppProtectionStatus>('verify_app_protection_password', { input: { password } });
-      setPassword(''); onUnlocked(status);
-    } catch (reason) { setPassword(''); setError(errorMessage(reason, 'The app could not be unlocked.')); }
+      const nextStatus = !status.configured
+        ? await invoke<AppProtectionStatus>('set_app_protection_mode', { input: { mode, password } })
+        : status.mode === 'system' && !useRecoveryPassword
+          ? await invoke<AppProtectionStatus>('verify_system_auth')
+          : await invoke<AppProtectionStatus>('verify_app_protection_password', { input: { password } });
+      setPassword(''); setConfirmation(''); onUnlocked(nextStatus);
+    } catch (reason) { setPassword(''); setConfirmation(''); setError(errorMessage(reason, 'The app could not be unlocked.')); }
     finally { setBusy(false); }
   };
-  return <main className="app-shell app-protection-gate"><section className="app-protection-card" role="dialog" aria-modal="true" aria-labelledby="app-protection-title"><img src="/monero-mark.png" alt="" /><p className="eyebrow">Monero Fast Wallet</p><h1 id="app-protection-title">Unlock app</h1><p>Your saved wallets open together only after this app is unlocked. There is no password per wallet.</p><form onSubmit={(event) => { event.preventDefault(); void unlock(); }}><label>App password<input autoFocus autoComplete="current-password" onChange={(event) => setPassword(event.target.value)} type="password" value={password} /></label><button className="primary" disabled={busy || !password} type="submit">{busy ? 'Unlocking…' : 'Unlock Monero Fast Wallet'}</button></form>{error && <p className="setup-message">{error}</p>}<small>Stored only in this device’s secure OS storage.</small></section></main>;
+  const setup = !status.configured;
+  const passwordForm = setup
+    ? mode === 'password' || status.systemAuth.requiresRecoveryPassword
+    : status.mode === 'password' || useRecoveryPassword;
+  const primaryLabel = busy
+    ? setup ? 'Protecting…' : 'Unlocking…'
+    : setup
+      ? mode === 'system' ? `Set up ${status.systemAuth.label}` : 'Use app password'
+      : status.mode === 'system' && !useRecoveryPassword ? `${t('protection.unlock')} · ${status.systemAuth.label}` : t('protection.unlock');
+  return <main className="app-protection-gate">
+    <section className="app-protection-card" role="dialog" aria-modal="true" aria-labelledby="app-protection-title">
+      <img src="/monero-mark.png" alt="" />
+      <p className="eyebrow">Monero Fast Wallet</p>
+      <h1 id="app-protection-title">{setup ? t('protection.protectTitle') : t('protection.unlockTitle')}</h1>
+      <p>{setup
+        ? t('protection.choose')
+        : status.mode === 'system' ? t('protection.unlockSystem', { system: status.systemAuth.label }) : t('protection.unlockPassword')}
+      </p>
+      {setup && <div className="protection-mode-choices" role="radiogroup" aria-label="App protection">
+        <button className={mode === 'system' ? 'selected' : ''} disabled={!status.systemAuth.available || busy} onClick={() => { setMode('system'); setError(null); }} role="radio" aria-checked={mode === 'system'} type="button">
+          <span>◎</span><strong>{status.systemAuth.label}</strong><small>{status.systemAuth.available ? `${t('protection.recommended')} · ${status.systemAuth.detail}` : status.systemAuth.detail}</small>
+        </button>
+        <button className={mode === 'password' ? 'selected' : ''} disabled={busy} onClick={() => { setMode('password'); setError(null); }} role="radio" aria-checked={mode === 'password'} type="button">
+          <span>•••</span><strong>{t('protection.appPassword')}</strong><small>{t('protection.appPasswordHint')}</small>
+        </button>
+      </div>}
+      <form onSubmit={(event) => { event.preventDefault(); void unlock(); }}>
+        {passwordForm && <label>
+          {mode === 'system' ? t('protection.recoveryPassword') : t('protection.appPassword')}
+          <input autoFocus autoComplete={setup ? 'new-password' : 'current-password'} minLength={setup ? 12 : undefined} onChange={(event) => setPassword(event.target.value)} type="password" value={password} />
+        </label>}
+        {setup && passwordForm && <label>
+          {t('protection.confirmPassword')}
+          <input autoComplete="new-password" minLength={12} onChange={(event) => setConfirmation(event.target.value)} type="password" value={confirmation} />
+        </label>}
+        <button className="primary" disabled={busy || (passwordForm && (!password || (setup && !confirmation)))} type="submit">
+          {primaryLabel}
+        </button>
+      </form>
+      {!setup && status.mode === 'system' && status.systemAuth.requiresRecoveryPassword && status.passwordConfigured && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUseRecoveryPassword(value => !value); setPassword(''); setError(null); }} type="button">
+        {useRecoveryPassword ? `Use ${status.systemAuth.label}` : 'Use recovery app password instead'}
+      </button>}
+      {error && <p className="setup-message">{error}</p>}
+      <small>{t('protection.biometricPrivacy')}</small>
+    </section>
+  </main>;
 }
 
 function DesktopWalletSwitcher({ wallets, activeWallet, onSelect, onManage }: { wallets: RegisteredWallet[]; activeWallet: RegisteredWallet | null; onSelect: (wallet: RegisteredWallet) => void; onManage: () => void }) {
@@ -713,7 +801,6 @@ function LedgerViewKeyExportOverlay() {
 function Setup({ linked, initial, wallets, fastWalletPreference, onSelectSaved, onOpened, onCreated }: { linked: boolean; initial: SetupRequest; wallets: RegisteredWallet[]; fastWalletPreference: FastWalletPreference | null; onSelectSaved: (wallet: RegisteredWallet) => void; onOpened: (result: WalletOperationResponse) => void; onCreated: (result: WalletOperationResponse) => void }) {
   const { t } = useI18n();
   const [mode, setMode] = useState<SetupMode>(initial?.mode ?? 'create');
-  const [mnemonic, setMnemonic] = useState('');
   const [restoreStartDate, setRestoreStartDate] = useState('');
   const [credentialUnavailable, setCredentialUnavailable] = useState(false);
   const [ledgerReadOnlyRecovery, setLedgerReadOnlyRecovery] = useState(false);
@@ -801,15 +888,15 @@ function Setup({ linked, initial, wallets, fastWalletPreference, onSelectSaved, 
     try {
       const input = mode === 'ledger'
         ? { walletName: '', password: '', network, deviceName: ledgerTransport === 'ble' ? 'Ledger:ble' : 'Ledger', restoreHeight, accountIndex: 0, role: 'standard', createFast: createFastWallet }
-        : { walletName: mode === 'open' ? initial?.walletName ?? '' : '', password: '', network, ...(mode === 'create' ? { language: 'English' } : {}), ...(mode === 'restore' ? { mnemonic, restoreHeight } : {}) };
-      const command = mode === 'create' ? 'create_wallet' : mode === 'restore' ? 'restore_wallet' : mode === 'ledger' ? 'create_hardware_wallet' : 'open_wallet';
+        : { walletName: mode === 'open' ? initial?.walletName ?? '' : '', password: '', network, ...(mode === 'create' ? { language: 'English' } : {}), ...(mode === 'restore' ? { restoreHeight } : {}) };
+      const command = mode === 'create' ? 'create_wallet' : mode === 'restore' ? 'restore_wallet_with_native_seed' : mode === 'ledger' ? 'create_hardware_wallet' : 'open_wallet';
       const result = await invoke<WalletOperationResponse>(command, { input });
       if (createFastWallet && (mode === 'create' || mode === 'restore') && result.wallet.kind === 'software') {
         try {
           const existing = await invoke<FastWalletRecord[]>('list_fast_wallets');
           if (!existing.some(item => item.sourceRegistrationId === result.wallet.id)) {
             await invoke<FastWalletRecord>('create_fast_wallet', { input: { sourceWalletId: result.walletId, sourceRegistrationId: result.wallet.id, label: 'Fast Wallet', password: '', restoreHeight } });
-            // A local Fast Wallet is safe to create by default. Never infer a
+            // A local independent Fast Wallet is safe to create by default. Never infer a
             // remote scanner capability from a fallback URL: uploading its
             // private view key happens later only from the explicit scanner
             // setup, with an approved configured endpoint.
@@ -818,7 +905,6 @@ function Setup({ linked, initial, wallets, fastWalletPreference, onSelectSaved, 
           setMessage(errorMessage(reason, 'The local Fast Wallet could not be created.'));
         }
       }
-      setMnemonic('');
       if (mode === 'create') onCreated(result); else onOpened(result);
     } catch (reason) {
       const detail = errorMessage(reason, t('setup.operationFailed'));
@@ -849,11 +935,11 @@ function Setup({ linked, initial, wallets, fastWalletPreference, onSelectSaved, 
     : [{ id: 'create', title: t('setup.create'), detail: t('setup.createDetail') }, { id: 'ledger', title: t('setup.ledger'), detail: t('setup.ledgerDetail') }, { id: 'restore', title: t('setup.import'), detail: t('setup.importDetail') }];
   const scanDate = <><label>{t('setup.scanStart')} <small>{t('common.optional')}</small><input value={restoreStartDate} onChange={(event) => setRestoreStartDate(event.target.value)} type="date" max={todayRestoreDate()} /></label><small className="restore-start-hint">{t('setup.scanDateHint')}</small></>;
   const fastChoice = <label className="fast-setup-choice"><input checked={createFastWallet} onChange={(event) => setCreateFastWallet(event.target.checked)} type="checkbox" /><span><strong>Fast Wallet</strong><small>{mode === 'ledger' ? 'Create the separate Ledger Fast Wallet in reserved account 1. It receives only; spending remains exclusively on your Ledger.' : 'A separate receive wallet is created and only its private view key is registered for private incoming-payment alerts.'}</small></span></label>;
-  return <><section className="setup-grid simple-setup"><header><p className="eyebrow">{initial?.mode === 'open' ? t('wallets.unlock') : t('setup.eyebrow')}</p><h2>{initial?.mode === 'open' ? t('setup.open') : t('setup.title')}</h2><p>{initial?.mode === 'open' ? openDescription : t('setup.subtitle')}</p></header>{!initial && wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{walletTypeLabel(wallet, t)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : item.id === 'restore' ? '⇣' : '↗'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{mode === 'open' ? networkLabel(network) : t('common.mainnet')}</p><h2>{label}</h2><p>{openDescription}</p><div className="wallet-form">{mode === 'restore' && <><label>{t('setup.seed')}<textarea value={mnemonic} onChange={(event) => setMnemonic(event.target.value)} placeholder={t('setup.seedPlaceholder')} autoComplete="off" /></label>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}</>}{(mode === 'create' || mode === 'restore' || mode === 'ledger') && fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy || credentialUnavailable || (mode === 'restore' && !mnemonic.trim())} type="button">{actionLabel}</button>{ledgerReadOnlyRecovery && selectedOpeningLedger && <section className="ledger-read-only-recovery"><h3>Enable secure local read-only sync</h3><p>Approve <b>Export view key</b> once on the connected Ledger. Only the private view key is encrypted in system secure storage and the local read-only wallet; the spend key never leaves the Ledger.</p><label className="fast-consent"><input checked={ledgerViewKeyConsent} onChange={(event) => setLedgerViewKeyConsent(event.target.checked)} type="checkbox" />I approve storing this Ledger’s private view key locally for read-only sync.</label><button className="secondary" disabled={!ledgerViewKeyConsent || busy} onClick={() => void createLedgerReadOnly()} type="button">{busy ? t('setup.working') : 'Export view key & enable sync'}</button></section>}{message && <p className="setup-message">{message}</p>}</div></article></section>{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay />}</>;
+  return <><section className="setup-grid simple-setup"><header><p className="eyebrow">{initial?.mode === 'open' ? t('wallets.unlock') : t('setup.eyebrow')}</p><h2>{initial?.mode === 'open' ? t('setup.open') : t('setup.title')}</h2><p>{initial?.mode === 'open' ? openDescription : t('setup.subtitle')}</p></header>{!initial && wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{walletTypeLabel(wallet, t)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : item.id === 'restore' ? '⇣' : '↗'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{mode === 'open' ? networkLabel(network) : t('common.mainnet')}</p><h2>{label}</h2><p>{openDescription}</p><div className="wallet-form">{mode === 'restore' && <><p className="native-seed-notice">Your 25 recovery words are entered in a separate protected system window after you continue.</p>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}</>}{(mode === 'create' || mode === 'restore' || mode === 'ledger') && fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy || credentialUnavailable} type="button">{actionLabel}</button>{ledgerReadOnlyRecovery && selectedOpeningLedger && <section className="ledger-read-only-recovery"><h3>Enable secure local read-only sync</h3><p>Approve <b>Export view key</b> once on the connected Ledger. Only the private view key is encrypted in system secure storage and the local read-only wallet; the spend key never leaves the Ledger.</p><label className="fast-consent"><input checked={ledgerViewKeyConsent} onChange={(event) => setLedgerViewKeyConsent(event.target.checked)} type="checkbox" />I approve storing this Ledger’s private view key locally for read-only sync.</label><button className="secondary" disabled={!ledgerViewKeyConsent || busy} onClick={() => void createLedgerReadOnly()} type="button">{busy ? t('setup.working') : 'Export view key & enable sync'}</button></section>}{message && <p className="setup-message">{message}</p>}</div></article></section>{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay />}</>;
 }
 
 function FastWallets({ linked, sourceWalletId, sourceWallet }: { linked: boolean; sourceWalletId: string | null; sourceWallet: RegisteredWallet | null }) {
-  const [wallets, setWallets] = useState<FastWalletRecord[]>([]); const [label, setLabel] = useState('Fast Wallet'); const [restoreHeight, setRestoreHeight] = useState(''); const [scannerUrl, setScannerUrl] = useState('https://xmr.tex8.com'); const [scannerToken, setScannerToken] = useState(''); const [enableScanner, setEnableScanner] = useState(true); const [consent, setConsent] = useState(false); const [busy, setBusy] = useState(false); const [ledgerViewKeyExportPending, setLedgerViewKeyExportPending] = useState(false); const [message, setMessage] = useState<string | null>(null); const [openIdentityId, setOpenIdentityId] = useState<string | null>(null); const [openWalletId, setOpenWalletId] = useState<string | null>(null); const [snapshot, setSnapshot] = useState<NativeWalletSnapshot | null>(null); const [showInfo, setShowInfo] = useState(false);
+  const [wallets, setWallets] = useState<FastWalletRecord[]>([]); const [label, setLabel] = useState('Fast Wallet'); const [restoreHeight, setRestoreHeight] = useState(''); const [scannerUrl, setScannerUrl] = useState('https://xmr.tex8.com'); const [enableScanner, setEnableScanner] = useState(true); const [consent, setConsent] = useState(false); const [busy, setBusy] = useState(false); const [ledgerViewKeyExportPending, setLedgerViewKeyExportPending] = useState(false); const [message, setMessage] = useState<string | null>(null); const [openIdentityId, setOpenIdentityId] = useState<string | null>(null); const [openWalletId, setOpenWalletId] = useState<string | null>(null); const [snapshot, setSnapshot] = useState<NativeWalletSnapshot | null>(null); const [showInfo, setShowInfo] = useState(false);
   const load = useCallback(async () => { try { setWallets(await invoke<FastWalletRecord[]>('list_fast_wallets')); } catch (reason) { setMessage(errorMessage(reason, 'The Fast Wallet list could not be loaded.')); } }, []);
   useEffect(() => { void load(); }, [load]);
   const create = async () => {
@@ -867,22 +953,22 @@ function FastWallets({ linked, sourceWalletId, sourceWallet }: { linked: boolean
       // Wallet must never introduce a second user-managed password.
       const created = await invoke<FastWalletRecord>('create_fast_wallet', { input: { sourceWalletId, sourceRegistrationId: sourceWallet.id, label, password: '', restoreHeight: height } });
       if (enableScanner) {
-        const enabled = await invoke<FastWalletRecord>('enable_fast_wallet', { input: { identityId: created.id, scannerUrl, scannerAuthToken: scannerToken.trim() || undefined } });
-        setWallets((items) => [...items.filter((item) => item.id !== enabled.id), enabled]); setScannerToken(''); setMessage('Fast Wallet created and scanner registration enabled.');
+        const enabled = await invoke<FastWalletRecord>('enable_fast_wallet', { input: { identityId: created.id, scannerUrl } });
+        setWallets((items) => [...items.filter((item) => item.id !== enabled.id), enabled]); setMessage('Fast Wallet created and scanner registration enabled with a device-generated credential.');
       } else {
         setWallets((items) => [...items, created]); setMessage('Fast Wallet created locally. Scanner registration is off.');
       }
-    } catch (reason) { setScannerToken(''); setMessage(errorMessage(reason, 'The Fast Wallet could not be created.')); }
+    } catch (reason) { setMessage(errorMessage(reason, 'The Fast Wallet could not be created.')); }
     finally { setBusy(false); }
   };
   const refresh = async (identityId: string) => { setBusy(true); try { const updated = await invoke<FastWalletRecord>('refresh_fast_wallet_status', { input: { identityId } }); setWallets((items) => items.map((item) => item.id === updated.id ? updated : item)); setMessage('Scanner status refreshed.'); } catch (reason) { setMessage(errorMessage(reason, 'The scanner status could not be refreshed.')); } finally { setBusy(false); } };
-  const enable = async (identityId: string, currentUrl: string) => { if (!consent) { setMessage('Confirm the scanner privacy choice before enabling scanning.'); return; } const ledgerFast = sourceWallet?.kind === 'hardware'; if (ledgerFast && !sourceWalletId) { setMessage('Open the normal Ledger wallet before enabling its Fast Wallet scanner.'); return; } setBusy(true); if (ledgerFast) setLedgerViewKeyExportPending(true); try { const command = ledgerFast ? 'enable_ledger_fast_wallet' : 'enable_fast_wallet'; const input = ledgerFast ? { identityId, sourceWalletId, scannerUrl: currentUrl || scannerUrl, scannerAuthToken: scannerToken.trim() || undefined } : { identityId, scannerUrl: currentUrl || scannerUrl, scannerAuthToken: scannerToken.trim() || undefined }; const updated = await invoke<FastWalletRecord>(command, { input }); setWallets((items) => items.map((item) => item.id === updated.id ? updated : item)); setScannerToken(''); setMessage('Scanner registration enabled.'); } catch (reason) { setMessage(errorMessage(reason, 'The scanner registration could not be enabled.')); } finally { setLedgerViewKeyExportPending(false); setBusy(false); } };
+  const enable = async (identityId: string, currentUrl: string) => { if (!consent) { setMessage('Confirm the scanner privacy choice before enabling scanning.'); return; } const ledgerFast = sourceWallet?.kind === 'hardware'; if (ledgerFast && !sourceWalletId) { setMessage('Open the normal Ledger wallet before enabling its Fast Wallet scanner.'); return; } setBusy(true); if (ledgerFast) setLedgerViewKeyExportPending(true); try { const command = ledgerFast ? 'enable_ledger_fast_wallet' : 'enable_fast_wallet'; const input = ledgerFast ? { identityId, sourceWalletId, scannerUrl: currentUrl || scannerUrl } : { identityId, scannerUrl: currentUrl || scannerUrl }; const updated = await invoke<FastWalletRecord>(command, { input }); setWallets((items) => items.map((item) => item.id === updated.id ? updated : item)); setMessage('Scanner registration enabled with a device-generated per-wallet credential.'); } catch (reason) { setMessage(errorMessage(reason, 'The scanner registration could not be enabled.')); } finally { setLedgerViewKeyExportPending(false); setBusy(false); } };
   const disable = async (identityId: string) => { setBusy(true); try { const updated = await invoke<FastWalletRecord>('disable_fast_wallet', { input: { identityId } }); setWallets((items) => items.map((item) => item.id === updated.id ? updated : item)); setMessage('Scanner watch removed and its local scanner credential was forgotten.'); } catch (reason) { setMessage(errorMessage(reason, 'The scanner watch could not be removed.')); } finally { setBusy(false); } };
   const openLocal = async (identityId: string) => { const selected = wallets.find((wallet) => wallet.id === identityId); if (selected && sourceWallet?.kind === 'hardware' && selected.sourceRegistrationId === sourceWallet.id) { setMessage('Select “Ledger Fast Wallet” from the wallet selector to receive. It shares the already-open Ledger session and does not open a second device connection.'); return; } setBusy(true); try { if (openIdentityId && openIdentityId !== identityId) await invoke<void>('close_fast_wallet', { input: { identityId: openIdentityId } }); const opened = await invoke<FastWalletOpenResponse>('open_fast_wallet', { input: { identityId } }); await invoke<void>('start_wallet_refresh', { input: { walletId: opened.walletId } }); const raw = await invoke<string>('wallet_snapshot', { input: { walletId: opened.walletId } }); setOpenIdentityId(opened.wallet.id); setOpenWalletId(opened.walletId); setSnapshot(parseNativeJson<NativeWalletSnapshot>(raw, 'The Fast Wallet snapshot was invalid.')); setMessage('Fast Wallet opened locally for receiving and sync. Fast spending remains disabled until desktop key-image reconciliation is implemented.'); } catch (reason) { setMessage(errorMessage(reason, 'The Fast Wallet could not be opened.')); } finally { setBusy(false); } };
   const closeLocal = async () => { if (!openIdentityId) return; setBusy(true); try { await invoke<void>('close_fast_wallet', { input: { identityId: openIdentityId } }); setOpenIdentityId(null); setOpenWalletId(null); setSnapshot(null); setMessage('Fast Wallet closed locally.'); } catch (reason) { setMessage(errorMessage(reason, 'The Fast Wallet could not be closed.')); } finally { setBusy(false); } };
   const refreshLocal = async () => { if (!openWalletId) return; setBusy(true); try { await invoke<void>('start_wallet_refresh', { input: { walletId: openWalletId } }); const raw = await invoke<string>('wallet_snapshot', { input: { walletId: openWalletId } }); setSnapshot(parseNativeJson<NativeWalletSnapshot>(raw, 'The Fast Wallet snapshot was invalid.')); setMessage('Fast Wallet refresh started.'); } catch (reason) { setMessage(errorMessage(reason, 'The Fast Wallet could not be refreshed.')); } finally { setBusy(false); } };
-  if (!linked) return <WalletFeature linked={linked} title="Fast Wallet" text="Fast Wallet uses a separate locally-derived identity and needs the native Monero core." />;
-  return <><section className="fast-wallet-page"><header><div><p className="eyebrow">Opt-in isolated receive identity</p><h2>Fast Wallet</h2><p>Create a distinct receive wallet from an open software wallet. The scanner receives only the Fast Wallet private view key after your explicit consent – never the main-wallet seed, spend key, or private view key.</p></div><div className="button-row"><button className="quiet-button" onClick={() => setShowInfo(true)} type="button">ⓘ What is Fast Wallet?</button><button className="secondary" disabled={busy} onClick={() => void load()} type="button">Refresh list</button></div></header>{sourceWallet?.kind === 'hardware' ? <article className="fast-wallet-notice"><h3>Ledger Fast Wallet</h3><p>Your Ledger Fast Wallet is created by default during Ledger setup as account 1. Select it from the wallet selector to receive. Enable the scanner below only after consent: the Ledger asks once for <b>Export view key</b>, then this prompt closes automatically.</p></article> : !sourceWalletId || !sourceWallet ? <article className="fast-wallet-notice"><h3>Open a software wallet first</h3><p>Fast Wallet creation uses the currently unlocked software wallet to derive a separate local identity.</p></article> : <article className="fast-wallet-create"><div><h3>Create a Fast Wallet</h3><p>Fast scanning is selected by default. Turn it off to create the isolated local receive identity without contacting a scanner.</p></div><div className="fast-wallet-form"><label>Label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength={80} /></label><label>Scan from height (optional)<input value={restoreHeight} onChange={(event) => setRestoreHeight(event.target.value)} inputMode="numeric" placeholder={sourceWallet.restoreHeight ? String(sourceWallet.restoreHeight) : 'Native estimate'} /></label><label className="checkbox"><input checked={enableScanner} onChange={(event) => setEnableScanner(event.target.checked)} type="checkbox" />Enable scanner after creation</label>{enableScanner && <><label>Scanner URL<input value={scannerUrl} onChange={(event) => setScannerUrl(event.target.value)} placeholder="https://xmr.tex8.com" autoComplete="off" /></label><label>Scanner token (optional)<input value={scannerToken} onChange={(event) => setScannerToken(event.target.value)} type="password" autoComplete="off" placeholder="Stored only in secure system storage" /></label><label className="fast-consent"><input checked={consent} onChange={(event) => setConsent(event.target.checked)} type="checkbox" />I understand that this sends only this new Fast Wallet’s private view key and public address to the selected scanner.</label></>}</div><button className="primary" disabled={busy || (enableScanner && !consent)} onClick={() => void create()} type="button">{busy ? 'Working…' : enableScanner ? 'Create & enable Fast Wallet' : 'Create Fast Wallet locally'}</button></article>}<section className="fast-wallet-list"><h3>Your Fast Wallets</h3>{wallets.length === 0 ? <p className="community-empty">No Fast Wallet identities yet.</p> : wallets.map((wallet) => <article className="fast-wallet-row" key={wallet.id}><div className="fast-wallet-row-head"><div><strong>{wallet.label}</strong><span className={wallet.status === 'enabled' ? 'wallet-chip' : 'wallet-chip warning'}>{wallet.status}</span></div><small>{networkLabel(wallet.network)} · scanner: {wallet.scannerStatus}</small></div><code className="address-output">{wallet.address}</code><p>Derived identity {wallet.derivationIndex} · scan from {wallet.restoreHeight}{wallet.lastScannedHeight !== undefined ? ` · scanner checked through ${wallet.lastScannedHeight}` : ''}</p>{openIdentityId === wallet.id && <div className="fast-wallet-live"><strong>Local receive wallet open</strong><span>{syncLabel(snapshot)}</span><span>{snapshot ? `${snapshot.balanceAtomic} atomic · ${snapshot.unlockedBalanceAtomic} unlocked` : 'Loading native wallet state…'}</span><p>Receive and sync are active locally. Fast spending is deliberately unavailable until desktop key-image reconciliation is implemented.</p></div>}<div className="button-row">{openIdentityId === wallet.id ? <><button className="secondary" disabled={busy} onClick={() => void refreshLocal()} type="button">Refresh local wallet</button><button className="quiet-button" disabled={busy} onClick={() => void closeLocal()} type="button">Close Fast Wallet</button></> : <button className="secondary" disabled={busy} onClick={() => void openLocal(wallet.id)} type="button">Open for receive</button>}<button className="secondary" disabled={busy || !wallet.scannerUrl} onClick={() => void refresh(wallet.id)} type="button">Refresh scanner</button>{wallet.status === 'enabled' ? <button className="danger-button" disabled={busy} onClick={() => void disable(wallet.id)} type="button">Disable scanner</button> : <button className="secondary" disabled={busy || !consent} onClick={() => void enable(wallet.id, wallet.scannerUrl)} type="button">Enable scanner</button>}</div></article>)}</section>{wallets.some((wallet) => wallet.status !== 'enabled') && <article className="fast-wallet-enable"><h3>Enable an existing Fast Wallet</h3><p>Use this only after reviewing the same scanner privacy choice. An optional token is retained in secure system storage and is never shown again.</p><label>Scanner URL<input value={scannerUrl} onChange={(event) => setScannerUrl(event.target.value)} placeholder="https://xmr.tex8.com" /></label><label>Scanner token (optional)<input value={scannerToken} onChange={(event) => setScannerToken(event.target.value)} type="password" autoComplete="off" /></label><label className="fast-consent"><input checked={consent} onChange={(event) => setConsent(event.target.checked)} type="checkbox" />I approve sending the isolated Fast Wallet view key to this scanner.</label></article>}{message && <p className="setup-message">{message}</p>}</section>{showInfo && <FastWalletInfoOverlay onClose={() => setShowInfo(false)} />}{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay />}</>;
+  if (!linked) return <WalletFeature linked={linked} title="Fast Wallet" text="Fast Wallet uses a separate independently random identity and needs the native Monero core." />;
+  return <><section className="fast-wallet-page"><header><div><p className="eyebrow">Opt-in isolated receive identity</p><h2>Fast Wallet</h2><p>Create a distinct independently random receive wallet while a software wallet is open. The scanner receives only the Fast Wallet private view key after your explicit consent – never the main-wallet seed, spend key, or private view key.</p></div><div className="button-row"><button className="quiet-button" onClick={() => setShowInfo(true)} type="button">ⓘ What is Fast Wallet?</button><button className="secondary" disabled={busy} onClick={() => void load()} type="button">Refresh list</button></div></header>{sourceWallet?.kind === 'hardware' ? <article className="fast-wallet-notice"><h3>Ledger Fast Wallet</h3><p>Your Ledger Fast Wallet is created by default during Ledger setup as account 1. Select it from the wallet selector to receive. Enable the scanner below only after consent: the Ledger asks once for <b>Export view key</b>, then this prompt closes automatically.</p></article> : !sourceWalletId || !sourceWallet ? <article className="fast-wallet-notice"><h3>Open a software wallet first</h3><p>The open wallet only supplies the network context. The new Fast Wallet uses fresh random entropy and its own protected file credential.</p></article> : <article className="fast-wallet-create"><div><h3>Create a Fast Wallet</h3><p>Fast scanning is selected by default. Turn it off to create the isolated local receive identity without contacting a scanner.</p></div><div className="fast-wallet-form"><label>Label<input value={label} onChange={(event) => setLabel(event.target.value)} maxLength={80} /></label><label>Scan from height (optional)<input value={restoreHeight} onChange={(event) => setRestoreHeight(event.target.value)} inputMode="numeric" placeholder={sourceWallet.restoreHeight ? String(sourceWallet.restoreHeight) : 'Native estimate'} /></label><label className="checkbox"><input checked={enableScanner} onChange={(event) => setEnableScanner(event.target.checked)} type="checkbox" />Enable scanner after creation</label>{enableScanner && <><label>Scanner URL<input value={scannerUrl} onChange={(event) => setScannerUrl(event.target.value)} placeholder="https://xmr.tex8.com" autoComplete="off" /></label><p>A unique 256-bit scanner credential is generated automatically and kept in secure system storage.</p><label className="fast-consent"><input checked={consent} onChange={(event) => setConsent(event.target.checked)} type="checkbox" />I understand that this sends only this new Fast Wallet’s private view key and public address to the selected scanner.</label></>}</div><button className="primary" disabled={busy || (enableScanner && !consent)} onClick={() => void create()} type="button">{busy ? 'Working…' : enableScanner ? 'Create & enable Fast Wallet' : 'Create Fast Wallet locally'}</button></article>}<section className="fast-wallet-list"><h3>Your Fast Wallets</h3>{wallets.length === 0 ? <p className="community-empty">No Fast Wallet identities yet.</p> : wallets.map((wallet) => <article className="fast-wallet-row" key={wallet.id}><div className="fast-wallet-row-head"><div><strong>{wallet.label}</strong><span className={wallet.status === 'enabled' ? 'wallet-chip' : 'wallet-chip warning'}>{wallet.status}</span></div><small>{networkLabel(wallet.network)} · scanner: {wallet.scannerStatus}</small></div><code className="address-output">{wallet.address}</code>{wallet.status === 'legacy-blocked' ? <p>Security block: this v1 wallet can expose its source seed. Keep the encrypted files and use the guarded migration/recovery flow.</p> : <p>Independent wallet {wallet.derivationIndex} · scan from {wallet.restoreHeight}{wallet.lastScannedHeight !== undefined ? ` · scanner checked through ${wallet.lastScannedHeight}` : ''}</p>}{openIdentityId === wallet.id && <div className="fast-wallet-live"><strong>Local receive wallet open</strong><span>{syncLabel(snapshot)}</span><span>{snapshot ? `${snapshot.balanceAtomic} atomic · ${snapshot.unlockedBalanceAtomic} unlocked` : 'Loading native wallet state…'}</span><p>Receive and sync are active locally. Fast spending is deliberately unavailable until desktop key-image reconciliation is implemented.</p></div>}<div className="button-row">{openIdentityId === wallet.id ? <><button className="secondary" disabled={busy} onClick={() => void refreshLocal()} type="button">Refresh local wallet</button><button className="quiet-button" disabled={busy} onClick={() => void closeLocal()} type="button">Close Fast Wallet</button></> : <button className="secondary" disabled={busy || wallet.status === 'legacy-blocked'} onClick={() => void openLocal(wallet.id)} type="button">Open for receive</button>}<button className="secondary" disabled={busy || !wallet.scannerUrl || wallet.status === 'legacy-blocked'} onClick={() => void refresh(wallet.id)} type="button">Refresh scanner</button>{wallet.status === 'enabled' || (wallet.status === 'legacy-blocked' && Boolean(wallet.scannerUrl)) ? <button className="danger-button" disabled={busy} onClick={() => void disable(wallet.id)} type="button">Disable scanner</button> : <button className="secondary" disabled={busy || !consent || wallet.status === 'legacy-blocked'} onClick={() => void enable(wallet.id, wallet.scannerUrl)} type="button">Enable scanner</button>}</div></article>)}</section>{wallets.some((wallet) => wallet.status !== 'enabled' && wallet.status !== 'legacy-blocked') && <article className="fast-wallet-enable"><h3>Enable an existing Fast Wallet</h3><p>Use this only after reviewing the same scanner privacy choice. A new per-wallet scanner credential is generated automatically and never shown to the renderer.</p><label>Scanner URL<input value={scannerUrl} onChange={(event) => setScannerUrl(event.target.value)} placeholder="https://xmr.tex8.com" /></label><label className="fast-consent"><input checked={consent} onChange={(event) => setConsent(event.target.checked)} type="checkbox" />I approve sending the isolated Fast Wallet view key to this scanner.</label></article>}{message && <p className="setup-message">{message}</p>}</section>{showInfo && <FastWalletInfoOverlay onClose={() => setShowInfo(false)} />}{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay />}</>;
 }
 
 function FastWalletInfoOverlay({ onClose }: { onClose: () => void }) {
@@ -893,7 +979,7 @@ function WalletFeature({ linked, title, text }: { linked: boolean; title: string
 
 type SendStep = 'recipient-choice' | 'manual-recipient' | 'address-book' | 'amount' | 'review';
 
-function Send({ linked, walletId, wallet }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null }) {
+function Send({ linked, walletId, wallet, appProtection }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; appProtection: AppProtectionStatus }) {
   const { t } = useI18n();
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
@@ -901,6 +987,8 @@ function Send({ linked, walletId, wallet }: { linked: boolean; walletId: string 
   const [sweepAll, setSweepAll] = useState(false);
   const [snapshot, setSnapshot] = useState<NativeWalletSnapshot | null>(null);
   const [review, setReview] = useState<NativePreparedTransaction | null>(null);
+  const [authorizationPassword, setAuthorizationPassword] = useState('');
+  const [useAuthorizationPasswordFallback, setUseAuthorizationPasswordFallback] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [contacts, setContacts] = useState<RecipientContact[]>(() => loadRecipientContacts());
@@ -955,6 +1043,8 @@ function Send({ linked, walletId, wallet }: { linked: boolean; walletId: string 
       const prepared = parseNativeJson<NativePreparedTransaction>(raw, t('send.preparationFailed'));
       if (prepared.status !== 'ok') throw new Error(prepared.error || t('send.preparationFailed'));
       setReview(prepared);
+      setAuthorizationPassword('');
+      setUseAuthorizationPasswordFallback(false);
       if (sweepAll) setAmount(formatAtomicXmr(prepared.amountAtomic, 12));
       setStep('review');
     } catch (reason) { setMessage(errorMessage(reason, t('send.preparationFailed'))); }
@@ -965,14 +1055,14 @@ function Send({ linked, walletId, wallet }: { linked: boolean; walletId: string 
     if (!walletId || !review) return;
     setBusy(true); setMessage(null);
     try {
-      const raw = await invoke<string>('commit_transaction', { input: { walletId, pendingId: review.id } });
+      const raw = await invoke<string>('commit_transaction', { input: { walletId, pendingId: review.id, appPassword: authorizationPassword } });
       const result = parseNativeJson<NativePreparedTransaction>(raw, t('send.broadcastFailed'));
       if (result.status !== 'ok') throw new Error(result.error || t('send.broadcastFailed'));
-      setReview(null); setAmount(''); setSweepAll(false); setMessage(t('send.sent')); setStep('recipient-choice');
+      setReview(null); setAuthorizationPassword(''); setUseAuthorizationPasswordFallback(false); setAmount(''); setSweepAll(false); setMessage(t('send.sent')); setStep('recipient-choice');
       setRecentContacts(rememberRecipient(address.trim(), contacts));
       setAddress('');
       await loadSnapshot(true);
-    } catch (reason) { setMessage(errorMessage(reason, t('send.broadcastFailed'))); }
+    } catch (reason) { setAuthorizationPassword(''); setMessage(errorMessage(reason, t('send.broadcastFailed'))); }
     finally { setBusy(false); }
   };
 
@@ -1003,7 +1093,7 @@ function Send({ linked, walletId, wallet }: { linked: boolean; walletId: string 
     {step === 'manual-recipient' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.recipient')}</h2><p>{t('send.manualRecipientHint')}</p></header><label>{t('send.recipient')}<span className="recipient-address-input"><input value={address} onChange={(event) => { setAddress(event.target.value); setReview(null); setMessage(null); }} placeholder={t('send.recipientPlaceholder')} autoComplete="off" spellCheck="false" /><button className="paste-button" onClick={() => void pasteRecipient()} type="button">{t('common.paste')}</button></span></label><section className="recipient-picker" aria-label={t('send.addressBook')}>{contacts.length > 0 && <div><strong>{t('send.addressBook')}</strong><div className="recipient-chips">{contacts.slice(0, 3).map((contact) => <button className={contact.donor ? 'recipient-chip donor' : 'recipient-chip'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div><button className="quiet-button address-book-link" onClick={() => setStep('address-book')} type="button">{t('send.viewMore')} ›</button></div>}{recentContacts.length > 0 && <div><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}</section><button className="primary" onClick={() => { if (!address.trim()) { setMessage(t('send.recipientRequired')); return; } setMessage(null); setStep('amount'); }} type="button">{t('common.continue')}</button></>}
     {step === 'address-book' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.addressBook')}</h2><p>Choose a saved recipient. Donation stays first when configured for this release.</p></header><section className="address-book-panel">{contacts.length > 0 ? <div className="address-book-list">{contacts.map((contact) => <button className={contact.donor ? 'address-book-entry donor' : 'address-book-entry'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><span>{contact.donor ? '♥' : '◎'}</span><div><strong>{contact.label}</strong><small>{shortHash(contact.address)}</small></div><b>›</b></button>)}</div> : <p className="community-empty">No saved addresses yet. Add one below or paste an address instead.</p>}{recentContacts.length > 0 && <div className="address-book-recents"><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}<div className="address-book-add"><strong>Add address</strong><label>Name<input value={contactLabel} onChange={(event) => setContactLabel(event.target.value)} maxLength={80} /></label><label>{t('send.recipient')}<input value={contactAddress} onChange={(event) => setContactAddress(event.target.value)} autoComplete="off" spellCheck="false" placeholder={t('send.recipientPlaceholder')} /></label><button className="secondary" onClick={saveContact} type="button">Save address</button></div></section></>}
     {step === 'amount' && <><button className="quiet-button step-back" onClick={() => setStep('manual-recipient')} type="button">‹ {t('common.back')}</button><header><h2>{t('send.amount')}</h2><p>{t('send.available')}: {snapshot ? `${formatAtomicXmr(snapshot.unlockedBalanceAtomic, 12)} XMR` : t('common.loading')}</p></header><section className="recipient-summary"><span>{t('send.recipient')}</span><strong>{shortHash(address.trim())}</strong><button className="quiet-button" onClick={() => setStep('manual-recipient')} type="button">{t('common.change')}</button></section><div className="transaction-form-grid"><label>{t('send.amount')}<span className="amount-field"><input value={amount} onChange={(event) => { setAmount(event.target.value); setSweepAll(false); setReview(null); }} inputMode="decimal" placeholder={t('send.amountPlaceholder')} /><em>XMR</em></span></label><button className="secondary amount-max" disabled={!snapshot || busy} onClick={useMaximum} type="button">{t('send.max')}</button></div>{sweepAll && <p className="transaction-note">{t('send.sweepAll')}</p>}<button className="primary" disabled={busy} onClick={() => void prepare()} type="button">{busy ? t('send.preparing') : t('send.review')}</button></>}
-    {step === 'review' && review && <><button className="quiet-button step-back" disabled={busy} onClick={() => { setReview(null); setStep('amount'); }} type="button">‹ {t('common.back')}</button><section className="review-card"><header><strong>{t('send.reviewTitle')}</strong><p>{t('send.reviewSubtitle')}</p></header><code>{address.trim()}</code><dl className="review-details"><div><dt>{t('send.amount')}</dt><dd>{formatAtomicXmr(review.amountAtomic, 12)} XMR</dd></div><div><dt>{t('send.networkFee')}</dt><dd>{formatAtomicXmr(review.feeAtomic, 12)} XMR</dd></div><div><dt>{t('send.total')}</dt><dd>{formatAtomicXmr(totalAtomic.toString(), 12)} XMR</dd></div></dl>{wallet?.kind === 'hardware' && <p className="transaction-note">{t('send.ledgerHint')}</p>}{review.error && <p className="setup-message">{review.error}</p>}<button className="primary" disabled={busy} onClick={() => void commit()} type="button">{busy ? t('send.sending') : t('send.confirm')}</button></section></>}
+    {step === 'review' && review && <><button className="quiet-button step-back" disabled={busy} onClick={() => { setReview(null); setAuthorizationPassword(''); setUseAuthorizationPasswordFallback(false); setStep('amount'); }} type="button">‹ {t('common.back')}</button><section className="review-card"><header><strong>{t('send.reviewTitle')}</strong><p>{t('send.reviewSubtitle')}</p></header><code>{address.trim()}</code><dl className="review-details"><div><dt>{t('send.amount')}</dt><dd>{formatAtomicXmr(review.amountAtomic, 12)} XMR</dd></div><div><dt>{t('send.networkFee')}</dt><dd>{formatAtomicXmr(review.feeAtomic, 12)} XMR</dd></div><div><dt>{t('send.total')}</dt><dd>{formatAtomicXmr(totalAtomic.toString(), 12)} XMR</dd></div></dl>{appProtection.mode === 'password' || useAuthorizationPasswordFallback ? <label>{appProtection.mode === 'system' ? 'Recovery app password' : 'App password'}<input value={authorizationPassword} onChange={(event) => setAuthorizationPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="Required for final approval" /></label> : <p className="transaction-note">You will confirm this payment with {appProtection.systemAuth.label}.</p>}{appProtection.mode === 'system' && appProtection.systemAuth.requiresRecoveryPassword && appProtection.passwordConfigured && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUseAuthorizationPasswordFallback(value => !value); setAuthorizationPassword(''); }} type="button">{useAuthorizationPasswordFallback ? `Use ${appProtection.systemAuth.label}` : 'Use recovery app password instead'}</button>}<p className="transaction-note">The operating system will show this exact recipient, amount, and fee once more before broadcast.</p>{wallet?.kind === 'hardware' && <p className="transaction-note">{t('send.ledgerHint')}</p>}{review.error && <p className="setup-message">{review.error}</p>}<button className="primary" disabled={busy || ((appProtection.mode === 'password' || useAuthorizationPasswordFallback) && !authorizationPassword)} onClick={() => void commit()} type="button">{busy ? t('send.sending') : appProtection.mode === 'system' && !useAuthorizationPasswordFallback ? `Confirm with ${appProtection.systemAuth.label}` : t('send.confirm')}</button></section></>}
     {message && <p className="setup-message">{message}</p>}
     {amount && !review && parseXmrToAtomic(amount) && <small className="amount-preview">{formatAtomicXmr(amountAtomic, 12)} XMR</small>}
     <DesktopRecipientQrScanner open={scannerOpen} onClose={() => setScannerOpen(false)} onScanned={(scannedAddress) => { setAddress(scannedAddress); setReview(null); setMessage(null); setScannerOpen(false); setStep('amount'); }} />
@@ -1234,7 +1324,7 @@ function Settings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoL
   return <section className="settings-page"><header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>Settings</h2><p>Desktop wallet controls mirror the mobile app while keeping keys and credentials local.</p></div><span>Desktop</span></header><section className="settings-section"><header><h3>Wallet</h3><small>{wallet ? `${wallet.walletName} · ${networkLabel(wallet.network)} · ${wallet.kind}` : 'No wallet open'}</small></header><article className="settings-panel settings-wallet-actions"><div><div><strong>Recovery seed</strong><p>{wallet?.kind === 'hardware' ? 'The recovery seed remains on the Ledger device.' : 'Reveal only while this local wallet is open.'}</p></div></div><button className="secondary" disabled={!walletId || wallet?.kind === 'hardware'} onClick={onRevealSeed} type="button">Show recovery seed</button></article><article className="settings-panel password-change"><div><strong>Change wallet password</strong><p>Changing the password requires the wallet to be open. The new password is never saved by this app.</p></div><div className="password-fields"><input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="New wallet password" /><input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="Confirm new password" /><button className="secondary" disabled={!walletId || changingPassword || !newPassword || !confirmPassword} onClick={() => void saveNewPassword()} type="button">{changingPassword ? 'Changing…' : 'Change password'}</button></div></article></section><section className="settings-section"><header><h3>Security</h3><small>Local controls</small></header><article className="settings-panel settings-toggle-row"><div><strong>Auto-lock after 5 minutes</strong><p>Locks the open wallet after the desktop app has been in the background for five minutes.</p></div><label className="toggle"><input checked={autoLockEnabled} onChange={(event) => onAutoLockChange(event.target.checked)} type="checkbox" /><span /></label></article><article className="settings-panel settings-info-row"><div><strong>Secure storage</strong><p>Node credentials and Fast Wallet scanner credentials stay in macOS Keychain. Recovery seeds and spend keys are never stored in this settings view.</p></div><span className="status-good">Keychain</span></article></section><section className="settings-section"><header><h3>Node</h3><small>{changed ? 'Unsaved changes' : savedProfile ? 'Saved' : 'Loading'}</small></header><article className="settings-panel node-settings"><p>{wallet ? `${wallet.walletName} uses its ${networkLabel(wallet.network)} profile when you save that network.` : 'Configure a network profile before opening a wallet.'}</p>{profile && <><div className="settings-field"><span>Network</span><div className="node-mode">{(['mainnet', 'testnet', 'stagenet'] as Network[]).map((item) => <button className={network === item ? 'selected' : ''} onClick={() => setNetwork(item)} key={item} type="button">{networkLabel(item)}</button>)}</div></div><div className="settings-field"><span>Connection</span><div className="node-mode">{([['optimized-grpc', 'Optimized'], ['original-rpc', 'Original RPC'], ['custom', 'Custom']] as const).map(([mode, label]) => <button className={profile.mode === mode ? 'selected' : ''} onClick={() => changeMode(mode)} key={mode} type="button">{label}</button>)}</div></div><div className="node-hint">{profile.mode === 'original-rpc' ? 'Original Monero daemon RPC. gRPC is disabled for this profile.' : profile.mode === 'optimized-grpc' ? 'Optimized Cuprate gRPC profile, matching the mobile default.' : 'Custom node endpoints remain local to this device.'}</div><div className="settings-form-grid"><label>Daemon address<input value={profile.daemonAddress} onChange={(event) => setProfile({ ...profile, daemonAddress: event.target.value })} placeholder="node.example:18089" autoComplete="off" /></label>{profile.mode !== 'original-rpc' && <label>Cuprate gRPC endpoint<input value={profile.grpcEndpoint} onChange={(event) => setProfile({ ...profile, grpcEndpoint: event.target.value })} placeholder="node.example:18091" autoComplete="off" /></label>}<label>Node username <small>Optional</small><input value={profile.username} onChange={(event) => setProfile({ ...profile, username: event.target.value })} autoComplete="off" /></label><label>Node password <small>Optional · Keychain only</small><input value={password} onChange={(event) => { setPassword(event.target.value); setClearPassword(false); }} type="password" autoComplete="new-password" placeholder={profile.passwordStored ? 'Password stored in Keychain' : 'Stored only in Keychain'} /></label><label>SOCKS5 proxy <small>Optional</small><input value={profile.proxyAddress} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.value })} placeholder="127.0.0.1:9050" autoComplete="off" /></label></div><div className="settings-checkboxes"><label className="checkbox"><input checked={profile.trusted} onChange={(event) => setProfile({ ...profile, trusted: event.target.checked })} type="checkbox" />Trusted node</label><label className="checkbox"><input checked={profile.useSsl} onChange={(event) => setProfile({ ...profile, useSsl: event.target.checked })} type="checkbox" />Use SSL/TLS for daemon RPC</label><label className="checkbox"><input checked={torEnabled} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.checked ? '127.0.0.1:9050' : '' })} type="checkbox" />Use Tor via local SOCKS5</label>{profile.passwordStored && <label className="checkbox"><input checked={clearPassword} onChange={(event) => setClearPassword(event.target.checked)} type="checkbox" />Forget stored node password</label>}</div><div className="settings-actions"><button className="secondary" onClick={reset} type="button">Reset defaults</button><button className="primary" disabled={busy || !changed} onClick={() => void save()} type="button">{busy ? 'Saving…' : wallet?.network === profile.network && walletId ? 'Save & apply node' : 'Save node profile'}</button></div></>}</article></section><section className="settings-section"><header><h3>Diagnostics</h3><small>{diagnosing ? 'Running…' : diagnostics.length ? 'Updated' : 'Ready'}</small></header><article className="settings-panel">{diagnostics.length > 0 && <div className="settings-diagnostics">{diagnostics.map((item) => <div key={item.label}><span>{item.label}</span><strong className={item.tone ?? 'neutral'}>{item.value}</strong></div>)}</div>}<button className="primary" disabled={diagnosing} onClick={() => void runDiagnostics()} type="button">{diagnosing ? 'Running diagnostics…' : 'Run diagnostics'}</button></article></section><section className="settings-section settings-about"><header><h3>About</h3><small>Local desktop build</small></header><article className="settings-panel"><div><strong>Privacy by design</strong><p>The packaged interface contains no remote web content. Wallet keys, passwords, transaction signing, and recovery seeds remain in the native Monero core.</p></div><div><strong>Market display</strong><p>Dashboard values use XMR/USD, the same default display as the mobile wallet.</p></div><div><strong>Open-source components</strong><p>Built with Tauri, React, Rust, and the pinned fork of Monero libwallet_api.</p></div></article></section><button className="danger-button settings-lock" disabled={!walletId} onClick={onCloseWallet} type="button">Close wallet</button>{message && <p className="setup-message">{message}</p>}</section>;
 }
 
-function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoLockEnabled, onAutoLockChange, appProtection, fastWalletPreference, onFastWalletPreferenceChange, onSetAppPassword, onClearAppPassword, onLockApp }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; autoLockEnabled: boolean; onAutoLockChange: (value: boolean) => void; appProtection: AppProtectionStatus; fastWalletPreference: FastWalletPreference | null; onFastWalletPreferenceChange: (preference: FastWalletPreference) => void; onSetAppPassword: (password: string) => Promise<void>; onClearAppPassword: () => Promise<void>; onLockApp: () => Promise<void> }) {
+function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoLockEnabled, appProtection, fastWalletPreference, onFastWalletPreferenceChange, onSetAppProtectionMode, onLockApp }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; autoLockEnabled: boolean; appProtection: AppProtectionStatus; fastWalletPreference: FastWalletPreference | null; onFastWalletPreferenceChange: (preference: FastWalletPreference) => void; onSetAppProtectionMode: (mode: AppProtectionMode, password?: string, currentPassword?: string) => Promise<void>; onLockApp: () => Promise<void> }) {
   const { language, setLanguage, t } = useI18n();
   const [network, setNetwork] = useState<Network>(wallet?.network ?? 'mainnet');
   const [profile, setProfile] = useState<NodeProfile | null>(null);
@@ -1248,9 +1338,12 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
   const [fastWalletDiagnostics, setFastWalletDiagnostics] = useState<FastWalletRecord[]>([]);
   const [appPassword, setAppPassword] = useState('');
   const [appPasswordConfirm, setAppPasswordConfirm] = useState('');
+  const [currentAppPassword, setCurrentAppPassword] = useState('');
   const [appProtectionBusy, setAppProtectionBusy] = useState(false);
+  const [protectionMode, setProtectionMode] = useState<AppProtectionMode>(appProtection.mode ?? 'password');
 
   useEffect(() => { if (wallet?.network) setNetwork(wallet.network); }, [wallet?.network]);
+  useEffect(() => { if (appProtection.mode) setProtectionMode(appProtection.mode); }, [appProtection.mode]);
   const load = useCallback(async () => {
     try {
       const loaded = await invoke<NodeProfile>('load_node_settings', { network });
@@ -1303,17 +1396,14 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
     } catch (reason) { setMessage(errorMessage(reason, t('settings.notificationsError'))); }
     finally { setNotificationBusy(false); }
   };
-  const saveAppPassword = async () => {
-    if (appPassword !== appPasswordConfirm) { setMessage('The two app passwords do not match.'); return; }
+  const saveAppProtection = async () => {
+    const needsPassword = protectionMode === 'password' || appProtection.systemAuth.requiresRecoveryPassword;
+    if (needsPassword && appPassword !== appPasswordConfirm) { setMessage('The two app passwords do not match.'); return; }
+    if (needsPassword && appPassword.length < 12) { setMessage('Use an app password with at least 12 characters.'); return; }
     setAppProtectionBusy(true); setMessage(null);
-    try { await onSetAppPassword(appPassword); setAppPassword(''); setAppPasswordConfirm(''); setMessage('App protection is enabled for all saved wallets.'); }
-    catch (reason) { setMessage(errorMessage(reason, 'App protection could not be enabled.')); }
-    finally { setAppProtectionBusy(false); }
-  };
-  const removeAppPassword = async () => {
-    setAppProtectionBusy(true); setMessage(null);
-    try { await onClearAppPassword(); setMessage('App protection was removed from this device.'); }
-    catch (reason) { setMessage(errorMessage(reason, 'App protection could not be changed.')); }
+    if (appProtection.mode === 'password' && !currentAppPassword) { setMessage('Enter your current app password first.'); return; }
+    try { await onSetAppProtectionMode(protectionMode, appPassword, currentAppPassword); setAppPassword(''); setAppPasswordConfirm(''); setCurrentAppPassword(''); setMessage(protectionMode === 'system' ? `${appProtection.systemAuth.label} now protects this app.` : 'Your app password now protects this app.'); }
+    catch (reason) { setCurrentAppPassword(''); setMessage(errorMessage(reason, 'App protection could not be changed.')); }
     finally { setAppProtectionBusy(false); }
   };
   return <section className="settings-page">
@@ -1327,8 +1417,8 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
       <article className="settings-panel settings-info-row"><div><strong>{t('settings.unlock')}</strong><p>{t('settings.unlockHint')}</p></div><span className="status-good">{t('settings.keychain')}</span></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.security')}</h3><small>{t('settings.localDevice')}</small></header>
-      <article className="settings-panel app-protection-settings"><div><strong>One app password</strong><p>{appProtection.configured ? 'Enabled. It protects every saved wallet together and wallet files never ask for a separate password.' : 'Set one password for Monero Fast Wallet. It works with macOS Keychain, Windows Credential Manager, and Linux secret storage.'}</p></div>{appProtection.configured ? <div className="settings-actions"><button className="secondary" disabled={appProtectionBusy} onClick={() => void onLockApp()} type="button">Lock app now</button><button className="quiet-button" disabled={appProtectionBusy} onClick={() => void removeAppPassword()} type="button">Remove app password</button></div> : <div className="password-fields"><input value={appPassword} onChange={(event) => setAppPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="App password (at least 8 characters)" /><input value={appPasswordConfirm} onChange={(event) => setAppPasswordConfirm(event.target.value)} type="password" autoComplete="new-password" placeholder="Confirm app password" /><button className="primary" disabled={appProtectionBusy || !appPassword || !appPasswordConfirm} onClick={() => void saveAppPassword()} type="button">{appProtectionBusy ? 'Saving…' : 'Protect app'}</button></div>}</article>
-      <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.autoLock')}</strong><p>{appProtection.configured ? 'Locks every open wallet after the desktop app has been in the background for five minutes.' : 'Enable app protection first to use automatic app lock.'}</p></div><label className="toggle"><input checked={autoLockEnabled} disabled={!appProtection.configured} onChange={(event) => onAutoLockChange(event.target.checked)} type="checkbox" /><span /></label></article>
+      <article className="settings-panel app-protection-settings"><div><strong>App lock</strong><p>Choose the easiest secure way to unlock all saved wallets on this device.</p></div><div className="settings-actions"><button className="secondary" disabled={appProtectionBusy} onClick={() => void onLockApp()} type="button">Lock app now</button></div><div className="protection-mode-choices compact"><button className={protectionMode === 'system' ? 'selected' : ''} disabled={!appProtection.systemAuth.available || appProtectionBusy} onClick={() => { setProtectionMode('system'); setAppPassword(''); setAppPasswordConfirm(''); }} type="button"><span>◎</span><strong>{appProtection.systemAuth.label}</strong><small>{appProtection.systemAuth.available ? 'Recommended · quick and protected by your device' : appProtection.systemAuth.detail}</small></button><button className={protectionMode === 'password' ? 'selected' : ''} disabled={appProtectionBusy} onClick={() => { setProtectionMode('password'); setAppPassword(''); setAppPasswordConfirm(''); }} type="button"><span>•••</span><strong>App password</strong><small>A separate password only for this app</small></button></div>{appProtection.mode === 'password' && <div className="password-fields"><input value={currentAppPassword} onChange={(event) => setCurrentAppPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="Current app password" /></div>}{(protectionMode === 'password' || appProtection.systemAuth.requiresRecoveryPassword) && <div className="password-fields"><input value={appPassword} onChange={(event) => setAppPassword(event.target.value)} type="password" autoComplete="new-password" placeholder={protectionMode === 'system' ? 'Recovery app password (at least 12 characters)' : 'New app password (at least 12 characters)'} /><input value={appPasswordConfirm} onChange={(event) => setAppPasswordConfirm(event.target.value)} type="password" autoComplete="new-password" placeholder="Confirm password" /></div>}<button className="primary protection-save" disabled={appProtectionBusy || (appProtection.mode === 'password' && !currentAppPassword) || ((protectionMode === 'password' || appProtection.systemAuth.requiresRecoveryPassword) && (!appPassword || !appPasswordConfirm)) || protectionMode === appProtection.mode && protectionMode === 'system'} onClick={() => void saveAppProtection()} type="button">{appProtectionBusy ? 'Saving…' : protectionMode === 'system' ? `Use ${appProtection.systemAuth.label}` : 'Set app password'}</button><small>Changing protection always asks you to confirm your identity first. Biometric data never enters this app.</small></article>
+      <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.autoLock')}</strong><p>{t('settings.autoLockHint')}</p></div><label className="toggle"><input checked={autoLockEnabled} disabled readOnly type="checkbox" /><span /></label></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.notifications')}</h3><small>{notificationState?.permission === 'granted' ? t('settings.notificationsReady') : t('settings.notificationsOff')}</small></header>
       <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.fastWalletSignals')}</strong><p>{t('settings.fastWalletSignalsHint')}</p></div><label className="toggle"><input checked={notificationState?.fastWalletSignalsEnabled === true} disabled={notificationBusy} onChange={(event) => void setFastWalletNotifications(event.target.checked)} type="checkbox" /><span /></label></article>
@@ -1351,7 +1441,8 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
   </section>;
 }
 
-function RecoverySeedOverlay({ wallet, seed, onConfirm, onDismiss }: { wallet: RegisteredWallet; seed: string; onConfirm: () => void; onDismiss: () => void }) {
-  const [confirmed, setConfirmed] = useState(false);
-  return <div className="seed-overlay" role="dialog" aria-modal="true" aria-labelledby="recovery-seed-title"><section className="seed-dialog"><p className="eyebrow">Offline backup</p><h2 id="recovery-seed-title">Write down the recovery seed</h2><p>This is the recovery seed for <strong>{walletDisplayName(wallet)}</strong>. Keep it offline, in the correct order, and never share it. This view is not saved in the desktop wallet list.</p><code className="seed-output">{seed}</code><label className="checkbox seed-confirm"><input checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} type="checkbox" />I wrote down the complete seed and stored it safely.</label><div className="dialog-actions"><button className="quiet-button" onClick={onDismiss} type="button">Close without confirming</button><button className="primary" disabled={!confirmed} onClick={onConfirm} type="button">Mark backup complete</button></div></section></div>;
+function SensitiveAuthorizationOverlay({ title, description, password, mode, systemLabel, allowPasswordFallback, busy, onPasswordChange, onConfirm, onDismiss }: { title: string; description: string; password: string; mode: AppProtectionMode; systemLabel: string; allowPasswordFallback: boolean; busy: boolean; onPasswordChange: (value: string) => void; onConfirm: () => void; onDismiss: () => void }) {
+  const [usePasswordFallback, setUsePasswordFallback] = useState(false);
+  const usesPassword = mode === 'password' || usePasswordFallback;
+  return <div className="seed-overlay" role="dialog" aria-modal="true" aria-labelledby="sensitive-authorization-title"><section className="seed-dialog"><p className="eyebrow">Confirm it is you</p><h2 id="sensitive-authorization-title">{title}</h2><p>{description}</p>{usesPassword && <input autoFocus value={password} onChange={(event) => onPasswordChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && password) onConfirm(); }} type="password" autoComplete="current-password" placeholder={mode === 'system' ? 'Recovery app password' : 'App password'} />}{mode === 'system' && allowPasswordFallback && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUsePasswordFallback(value => !value); onPasswordChange(''); }} type="button">{usePasswordFallback ? `Use ${systemLabel}` : 'Use recovery app password instead'}</button>}<div className="dialog-actions"><button className="quiet-button" disabled={busy} onClick={onDismiss} type="button">Cancel</button><button className="primary" disabled={busy || (usesPassword && !password)} onClick={onConfirm} type="button">{busy ? 'Confirming…' : usesPassword ? 'Continue securely' : `Confirm with ${systemLabel}`}</button></div></section></div>;
 }

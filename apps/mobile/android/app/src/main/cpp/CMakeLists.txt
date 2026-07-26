@@ -12,6 +12,18 @@ option(
   OFF
 )
 
+option(
+  MONERO_WALLET_BRIDGE_WITH_GRPC_STREAM
+  "Expose the TEX8 gRPC wallet stream provided by the patched Monero core"
+  ON
+)
+
+option(
+  MONERO_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
+  "Expose the optional Wallet API and Ledger extensions supplied by the TEX8 Core fork"
+  ON
+)
+
 set(
   MONERO_SOURCE_DIR
   ""
@@ -73,6 +85,13 @@ set(
   ""
   CACHE STRING
   "Additional library directories for the current Android ABI"
+)
+
+set(
+  MONERO_WALLET_DEPENDENCY_INCLUDE_DIR
+  ""
+  CACHE PATH
+  "Dependency include directory for the current Android ABI"
 )
 
 set(
@@ -183,10 +202,37 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
     PRIVATE TEX8_WALLET_BRIDGE_WITH_MONERO=1
   )
 
+  if(MONERO_WALLET_BRIDGE_WITH_GRPC_STREAM)
+    target_compile_definitions(monero_wallet_bridge_jni
+      PRIVATE TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=1
+    )
+  else()
+    target_compile_definitions(monero_wallet_bridge_jni
+      PRIVATE TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=0
+    )
+  endif()
+
+  if(MONERO_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS)
+    target_compile_definitions(monero_wallet_bridge_jni
+      PRIVATE TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=1
+    )
+  else()
+    target_compile_definitions(monero_wallet_bridge_jni
+      PRIVATE TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=0
+    )
+  endif()
+
   target_include_directories(monero_wallet_bridge_jni
     PRIVATE
       "${MONERO_SOURCE_DIR}/src/wallet/api"
   )
+
+  if(MONERO_WALLET_DEPENDENCY_INCLUDE_DIR)
+    target_include_directories(monero_wallet_bridge_jni
+      PRIVATE
+        "${MONERO_WALLET_DEPENDENCY_INCLUDE_DIR}"
+    )
+  endif()
 
   target_link_libraries(monero_wallet_bridge_jni
     PRIVATE
@@ -220,6 +266,9 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
   endif()
 else()
   target_compile_definitions(monero_wallet_bridge_jni
-    PRIVATE TEX8_WALLET_BRIDGE_WITH_MONERO=0
+    PRIVATE
+      TEX8_WALLET_BRIDGE_WITH_MONERO=0
+      TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=0
+      TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=0
   )
 endif()

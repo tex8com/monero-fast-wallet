@@ -5,14 +5,15 @@ const COMMANDS: &[&str] = &[
     "app_protection_status",
     "set_app_protection_password",
     "verify_app_protection_password",
-    "clear_app_protection_password",
+    "set_app_protection_mode",
+    "verify_system_auth",
     "lock_app",
     "fetch_market_backup",
     "ledger_transport_status",
     "store_wallet_password",
     "delete_wallet_password",
     "create_wallet",
-    "restore_wallet",
+    "restore_wallet_with_native_seed",
     "create_hardware_wallet",
     "enable_ledger_read_only",
     "create_ledger_read_only_from_device",
@@ -22,7 +23,6 @@ const COMMANDS: &[&str] = &[
     "remove_registered_wallet",
     "list_registered_wallets",
     "activate_registered_wallet",
-    "mark_wallet_seed_backed_up",
     "list_fast_wallets",
     "open_fast_wallet",
     "close_fast_wallet",
@@ -43,7 +43,7 @@ const COMMANDS: &[&str] = &[
     "start_wallet_refresh",
     "stop_wallet_refresh",
     "wallet_address",
-    "wallet_recovery_seed",
+    "present_recovery_seed",
     "wallet_snapshot",
     "registered_wallet_snapshots",
     "wallet_balance",
@@ -146,8 +146,11 @@ fn main() {
         desktop_bridge_dir.join("cpp/DesktopWalletCore.cpp"),
         desktop_bridge_dir.join("cpp/DesktopNotificationsMac.mm"),
         desktop_bridge_dir.join("cpp/DesktopLedgerBleMac.mm"),
+        desktop_bridge_dir.join("cpp/DesktopPlatformAuthMac.mm"),
+        desktop_bridge_dir.join("cpp/DesktopPlatformAuthWindows.cpp"),
         desktop_bridge_dir.join("include/DesktopWalletCore.h"),
         desktop_bridge_dir.join("include/DesktopLedgerBle.h"),
+        desktop_bridge_dir.join("include/DesktopPlatformAuth.h"),
     ] {
         println!("cargo:rerun-if-changed={}", file.display());
     }
@@ -176,7 +179,11 @@ fn main() {
     if cfg!(target_os = "windows") {
         // The Windows host uses MSVC while the real Monero core is a separate
         // GNU/ARM64 DLL. Keep this host on the stable C ABI proxy only.
-        native.file(desktop_bridge_dir.join("cpp/DesktopWalletCoreWindowsProxy.cpp"));
+        native
+            .file(desktop_bridge_dir.join("cpp/DesktopWalletCoreWindowsProxy.cpp"))
+            .file(desktop_bridge_dir.join("cpp/DesktopPlatformAuthWindows.cpp"));
+        println!("cargo:rustc-link-lib=runtimeobject");
+        println!("cargo:rustc-link-lib=windowsapp");
     } else {
         native
             .file(bridge_dir.join("cpp/WalletEngine.cpp"))
@@ -187,10 +194,13 @@ fn main() {
         native
             .flag_if_supported("-fobjc-arc")
             .file(desktop_bridge_dir.join("cpp/DesktopNotificationsMac.mm"))
-            .file(desktop_bridge_dir.join("cpp/DesktopLedgerBleMac.mm"));
+            .file(desktop_bridge_dir.join("cpp/DesktopLedgerBleMac.mm"))
+            .file(desktop_bridge_dir.join("cpp/DesktopPlatformAuthMac.mm"));
         println!("cargo:rustc-link-lib=framework=AppKit");
         println!("cargo:rustc-link-lib=framework=CoreBluetooth");
         println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=LocalAuthentication");
+        println!("cargo:rustc-link-lib=framework=Metal");
         println!("cargo:rustc-link-lib=framework=UserNotifications");
     }
 

@@ -25,6 +25,18 @@ const mockLedgerTransportStatus = {
 };
 
 const mockNativeMoneroWalletTurboModule = {
+  getAppProtectionStatus: jest.fn(async () => ({
+    configured: true,
+    locked: false,
+    mode: "password",
+  })),
+  configureAppProtection: jest.fn(async () => undefined),
+  unlockApp: jest.fn(async () => ({
+    success: true,
+    biometryType: "none",
+    message: "App unlocked",
+  })),
+  lockApp: jest.fn(async () => undefined),
   authenticateBiometric: jest.fn(async () => ({
     success: true,
     biometryType: "biometric",
@@ -38,9 +50,9 @@ const mockNativeMoneroWalletTurboModule = {
   ),
   deleteWalletFiles: jest.fn(async () => undefined),
   createFastReceiveIdentity: jest.fn(async () => ({
-    id: "fast-receive-0",
+    id: "fast-receive-v2-0",
     label: "Fast Receive",
-    path: "/tmp/fast-receive-0",
+    path: "/tmp/fast-receive-v2-0",
     address: "54A1testAddress",
     network: "stagenet",
     restoreHeight: 10,
@@ -48,9 +60,9 @@ const mockNativeMoneroWalletTurboModule = {
     scannerStatus: "local-only",
   })),
   createFastReceiveIdentityWithStoredSecret: jest.fn(async () => ({
-    id: "fast-receive-0",
+    id: "fast-receive-v2-0",
     label: "Fast Receive",
-    path: "/tmp/fast-receive-0",
+    path: "/tmp/fast-receive-v2-0",
     address: "54A1testAddress",
     network: "stagenet",
     restoreHeight: 10,
@@ -58,9 +70,9 @@ const mockNativeMoneroWalletTurboModule = {
     scannerStatus: "local-only",
   })),
   enableFastReceiveIdentity: jest.fn(async () => ({
-    id: "fast-receive-0",
+    id: "fast-receive-v2-0",
     label: "Fast Receive",
-    path: "/tmp/fast-receive-0",
+    path: "/tmp/fast-receive-v2-0",
     address: "54A1testAddress",
     network: "stagenet",
     restoreHeight: 10,
@@ -68,15 +80,17 @@ const mockNativeMoneroWalletTurboModule = {
     scannerStatus: "enabled",
   })),
   disableFastReceiveIdentity: jest.fn(async () => ({
-    id: "fast-receive-0",
+    id: "fast-receive-v2-0",
     label: "Fast Receive",
-    path: "/tmp/fast-receive-0",
+    path: "/tmp/fast-receive-v2-0",
     address: "54A1testAddress",
     network: "stagenet",
     restoreHeight: 10,
     derivationIndex: 0,
     scannerStatus: "disabled",
   })),
+  getFastReceiveScannerStatusWithStoredSecret: jest.fn(async () => ""),
+  checkFastReceiveKeyImagesWithStoredSecret: jest.fn(async () => "{}"),
   getBiometricAuthStatus: jest.fn(async () => ({
     platform: "android",
     supported: true,
@@ -220,17 +234,17 @@ describe("NativeMoneroWallet hardware bridge", () => {
     await expect(
       nativeWallet.createFastReceiveIdentity({
         sourceWalletId: "wallet-1",
-        identityId: "fast-receive-0",
-        path: "/tmp/fast-receive-0",
+        identityId: "fast-receive-v2-0",
+        path: "/tmp/fast-receive-v2-0",
         password: "local-wallet-password",
         label: "Fast Receive",
         restoreHeight: 10,
         derivationIndex: 0,
       }),
     ).resolves.toEqual({
-      id: "fast-receive-0",
+      id: "fast-receive-v2-0",
       label: "Fast Receive",
-      path: "/tmp/fast-receive-0",
+      path: "/tmp/fast-receive-v2-0",
       address: "54A1testAddress",
       network: "stagenet",
       restoreHeight: 10,
@@ -242,8 +256,8 @@ describe("NativeMoneroWallet hardware bridge", () => {
       mockNativeMoneroWalletTurboModule.createFastReceiveIdentity,
     ).toHaveBeenCalledWith(
       "wallet-1",
-      "fast-receive-0",
-      "/tmp/fast-receive-0",
+      "fast-receive-v2-0",
+      "/tmp/fast-receive-v2-0",
       "local-wallet-password",
       "Fast Receive",
       10,
@@ -289,37 +303,38 @@ describe("NativeMoneroWallet hardware bridge", () => {
     );
   });
 
-  it("passes fast receive scanner registration inputs without a JavaScript view key", async () => {
+  it("passes only a secure-store key alias for scanner authorization", async () => {
     const { requireNativeMoneroWallet } =
       require("../NativeMoneroWallet") as typeof import("../NativeMoneroWallet");
     const nativeWallet = requireNativeMoneroWallet();
 
     await expect(
       nativeWallet.enableFastReceiveIdentity({
-        identityId: "fast-receive-0",
-        path: "/tmp/fast-receive-0",
+        identityId: "fast-receive-v2-0",
+        path: "/tmp/fast-receive-v2-0",
         password: "local-wallet-password",
         network: "stagenet",
         restoreHeight: 123,
         scannerUrl: "https://xmr.tex8.com",
-        scannerAuthToken: "secret-token",
+        scannerAuthSecretKey:
+          "monero.wallet.fast-scanner.fast-receive-v2-0.v1",
         pushSubscriptionId: "push-subscription-id",
       }),
     ).resolves.toMatchObject({
-      id: "fast-receive-0",
+      id: "fast-receive-v2-0",
       scannerStatus: "enabled",
     });
 
     expect(
       mockNativeMoneroWalletTurboModule.enableFastReceiveIdentity,
     ).toHaveBeenCalledWith(
-      "fast-receive-0",
-      "/tmp/fast-receive-0",
+      "fast-receive-v2-0",
+      "/tmp/fast-receive-v2-0",
       "local-wallet-password",
       "stagenet",
       123,
       "https://xmr.tex8.com",
-      "secret-token",
+      "monero.wallet.fast-scanner.fast-receive-v2-0.v1",
       "push-subscription-id",
     );
     expect(
@@ -327,6 +342,11 @@ describe("NativeMoneroWallet hardware bridge", () => {
         mockNativeMoneroWalletTurboModule.enableFastReceiveIdentity.mock.calls,
       ),
     ).not.toContain("privateViewKey");
+    expect(
+      JSON.stringify(
+        mockNativeMoneroWalletTurboModule.enableFastReceiveIdentity.mock.calls,
+      ),
+    ).not.toContain("secret-token");
   });
 
   it("passes transaction history and prepared send DTOs through the wrapper", async () => {

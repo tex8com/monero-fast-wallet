@@ -9,11 +9,20 @@ const desktopRoot = resolve(here, '..');
 const repoRoot = resolve(desktopRoot, '..', '..');
 
 const appSource = readFileSync(resolve(desktopRoot, 'src', 'App.tsx'), 'utf8');
+const i18nSource = readFileSync(resolve(desktopRoot, 'src', 'i18n.tsx'), 'utf8');
 const stylesSource = readFileSync(resolve(desktopRoot, 'src', 'styles.css'), 'utf8');
 const parityDoc = readFileSync(resolve(repoRoot, 'docs', 'DESKTOP_PARITY_MATRIX.md'), 'utf8');
 const tauriBuild = readFileSync(resolve(desktopRoot, 'src-tauri', 'build.rs'), 'utf8');
 const tauriCapability = readFileSync(resolve(desktopRoot, 'src-tauri', 'capabilities', 'main.json'), 'utf8');
+const secureStoreSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'secure_store.rs'), 'utf8');
 const ledgerCorePatch = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'patches', 'monero-ledger-view-key-api.patch'), 'utf8');
+
+function rustFunction(source, name) {
+  const start = source.indexOf(`fn ${name}(`);
+  assert.notEqual(start, -1, `missing Rust command ${name}`);
+  const nextCommand = source.indexOf('#[tauri::command]', start + 3);
+  return source.slice(start, nextCommand === -1 ? source.length : nextCommand);
+}
 
 test('desktop primary navigation matches the mobile bottom menu contract', () => {
   const primaryMatch = appSource.match(/function primarySections[\s\S]*?return \[([\s\S]*?)\];\s*}/);
@@ -153,6 +162,20 @@ test('Ledger Fast Wallet scanner approval has the same single automatic instruct
   assert.match(fastSource, /setLedgerViewKeyExportPending\(false\); setBusy\(false\);/);
 });
 
+test('desktop generates a separate scanner capability inside the native boundary', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const registerSource = hostSource.slice(
+    hostSource.indexOf('async fn register_fast_wallet_with_scanner'),
+    hostSource.indexOf('fn notification_subscription_id'),
+  );
+  assert.match(secureStoreSource, /fn ensure_fast_scanner_token/);
+  assert.match(secureStoreSource, /let mut entropy = \[0_u8; 32\]/);
+  assert.match(registerSource, /ensure_fast_scanner_token/);
+  assert.match(registerSource, /\.bearer_auth\(&token\)/);
+  assert.doesNotMatch(hostSource, /scanner_auth_token/);
+  assert.doesNotMatch(appSource, /scannerAuthToken|scannerToken|Scanner token/);
+});
+
 test('Ledger read-only sync consumes the Core-approved view key without reconnecting', () => {
   const bridgeSource = readFileSync(resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletEngine.cpp'), 'utf8');
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
@@ -210,17 +233,90 @@ test('both desktop Ledger read-only flows keep one instruction dialog open until
 
 test('desktop uses one app-wide unlock boundary before restoring wallet sessions', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
-  for (const command of ['app_protection_status', 'set_app_protection_password', 'verify_app_protection_password', 'clear_app_protection_password', 'lock_app']) {
+  for (const command of ['app_protection_status', 'set_app_protection_password', 'verify_app_protection_password', 'set_app_protection_mode', 'verify_system_auth', 'lock_app']) {
     assert.match(tauriBuild, new RegExp(`"${command}"`));
     assert.match(tauriCapability, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
   }
   assert.match(appSource, /appProtection\?\.locked !== false/);
   assert.match(appSource, /function AppProtectionGate/);
-  assert.match(appSource, /There is no password per wallet/);
+  assert.match(appSource, /t\('protection\.choose'\)/);
+  assert.match(appSource, /t\('protection\.biometricPrivacy'\)/);
+  assert.match(i18nSource, /Choose the quick system sign-in or your own app password\./);
+  assert.match(i18nSource, /Wähle die schnelle Geräte-Anmeldung oder ein eigenes App-Passwort\./);
+  assert.match(i18nSource, /Your biometric data stays with the operating system\./);
+  assert.match(i18nSource, /Deine biometrischen Daten bleiben beim Betriebssystem\./);
   assert.match(hostSource, /fn lock_app\(/);
   assert.match(hostSource, /FastWalletSessionState/);
   assert.match(hostSource, /MONERO_DESKTOP_APP_PROTECTION locked/);
   assert.match(hostSource, /require_app_unlocked\(&protection\)\?/);
+  assert.match(hostSource, /require_fresh_app_authorization/);
+  assert.match(secureStoreSource, /Argon2/);
+  assert.match(secureStoreSource, /store_app_protection_mode/);
+  assert.doesNotMatch(tauriBuild, /"clear_app_protection_password"/);
+  assert.doesNotMatch(tauriCapability, /"allow-clear-app-protection-password"/);
+});
+
+test('every renderer-accessible wallet and privacy command fails closed behind the native lock', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const protectedCommands = [
+    'ledger_transport_status',
+    'store_wallet_password',
+    'delete_wallet_password',
+    'wallet_open_requires_password',
+    'open_wallet',
+    'close_wallet',
+    'rename_wallet',
+    'remove_registered_wallet',
+    'list_registered_wallets',
+    'activate_registered_wallet',
+    'list_fast_wallets',
+    'open_fast_wallet',
+    'close_fast_wallet',
+    'create_fast_wallet',
+    'enable_fast_wallet',
+    'enable_ledger_fast_wallet',
+    'refresh_fast_wallet_status',
+    'disable_fast_wallet',
+    'load_node_settings',
+    'save_node_settings',
+    'set_daemon',
+    'start_wallet_refresh',
+    'stop_wallet_refresh',
+    'wallet_address',
+    'present_recovery_seed',
+    'wallet_snapshot',
+    'registered_wallet_snapshots',
+    'wallet_balance',
+    'wallet_unlocked_balance',
+    'create_subaddress',
+    'wallet_transactions',
+    'prepare_transaction',
+    'commit_transaction',
+    'wallet_hardware_status',
+    'reconnect_hardware_wallet',
+    'show_hardware_wallet_address',
+    'notification_installation_status',
+    'request_notification_installation',
+    'disable_notification_installation',
+    'consume_pending_notification_open',
+    'background_notification_agent_config_path',
+    'community_load_profile',
+    'community_update_profile',
+    'community_list_nearby',
+    'community_list_contacts',
+    'community_request_contact',
+    'community_accept_contact',
+    'community_list_messages',
+    'community_send_message',
+    'community_block_profile',
+    'community_report_profile',
+    'community_delete_identity',
+  ];
+  for (const command of protectedCommands) {
+    const source = rustFunction(hostSource, command);
+    assert.match(source, /protection: State<'_, AppProtectionState>/, `${command} must receive native protection state`);
+    assert.match(source, /require_app_unlocked\(&protection\)/, `${command} must fail closed while locked`);
+  }
 });
 
 test('desktop exposes no per-wallet password command or current settings control', () => {

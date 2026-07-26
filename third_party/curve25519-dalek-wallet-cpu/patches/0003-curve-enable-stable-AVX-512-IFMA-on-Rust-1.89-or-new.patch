@@ -1,0 +1,292 @@
+From 79fc0bec7150b525f8868a19fa2b3bed17beece9 Mon Sep 17 00:00:00 2001
+From: Roland Kohlhuber <rolandkohlhuber@Rolands-MacBook-Air.local>
+Date: Sat, 25 Jul 2026 14:25:34 -0500
+Subject: [PATCH 3/6] curve: enable stable AVX-512 IFMA on Rust 1.89 or newer
+
+---
+ curve25519-dalek/build.rs                     | 18 ++++++++----
+ curve25519-dalek/src/backend/mod.rs           | 28 +++++++++++--------
+ curve25519-dalek/src/backend/vector/mod.rs    |  2 +-
+ .../backend/vector/scalar_mul/pippenger.rs    |  2 +-
+ .../vector/scalar_mul/precomputed_straus.rs   |  2 +-
+ .../src/backend/vector/scalar_mul/straus.rs   |  2 +-
+ .../vector/scalar_mul/variable_base.rs        | 26 ++---------------
+ .../vector/scalar_mul/vartime_double_base.rs  |  2 +-
+ curve25519-dalek/src/lib.rs                   |  7 ++++-
+ 9 files changed, 42 insertions(+), 47 deletions(-)
+
+diff --git a/curve25519-dalek/build.rs b/curve25519-dalek/build.rs
+index 97fa285..e129c57 100644
+--- a/curve25519-dalek/build.rs
++++ b/curve25519-dalek/build.rs
+@@ -35,15 +35,21 @@ fn main() {
+ 
+     println!("cargo:rustc-cfg=curve25519_dalek_bits=\"{curve25519_dalek_bits}\"");
+ 
+-    if rustc_version::version_meta()
+-        .expect("failed to detect rustc version")
+-        .channel
+-        == rustc_version::Channel::Nightly
+-    {
++    let rustc_version_meta = rustc_version::version_meta().expect("failed to detect rustc version");
++    if rustc_version_meta.channel == rustc_version::Channel::Nightly {
+         println!("cargo:rustc-cfg=nightly");
+     }
+ 
+-    let rustc_version = rustc_version::version().expect("failed to detect rustc version");
++    let rustc_version = rustc_version_meta.semver;
++    let avx512_stable =
++        rustc_version.major > 1 || (rustc_version.major == 1 && rustc_version.minor >= 89);
++    if avx512_stable {
++        println!("cargo:rustc-cfg=curve25519_dalek_avx512_stable");
++    }
++    if avx512_stable || rustc_version_meta.channel == rustc_version::Channel::Nightly {
++        println!("cargo:rustc-cfg=curve25519_dalek_avx512");
++    }
++
+     if rustc_version.major == 1 && rustc_version.minor <= 64 {
+         // Old versions of Rust complain when you have an `unsafe fn` and you use `unsafe {}` inside,
+         // so for those we want to apply the `#[allow(unused_unsafe)]` attribute to get rid of that warning.
+diff --git a/curve25519-dalek/src/backend/mod.rs b/curve25519-dalek/src/backend/mod.rs
+index 8f7808d..87a0645 100644
+--- a/curve25519-dalek/src/backend/mod.rs
++++ b/curve25519-dalek/src/backend/mod.rs
+@@ -46,14 +46,14 @@ pub mod vector;
+ enum BackendKind {
+     #[cfg(curve25519_dalek_backend = "simd")]
+     Avx2,
+-    #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++    #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
+     Avx512,
+     Serial,
+ }
+ 
+ #[inline]
+ fn get_selected_backend() -> BackendKind {
+-    #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++    #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
+     {
+         cpufeatures::new!(cpuid_avx512, "avx512ifma", "avx512vl");
+         let token_avx512: cpuid_avx512::InitToken = cpuid_avx512::init();
+@@ -88,7 +88,10 @@ where
+         #[cfg(curve25519_dalek_backend = "simd")]
+         BackendKind::Avx2 =>
+             vector::scalar_mul::pippenger::spec_avx2::Pippenger::optional_multiscalar_mul::<I, J>(scalars, points),
+-        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++        #[cfg(all(
++            curve25519_dalek_backend = "simd",
++            curve25519_dalek_avx512
++        ))]
+         BackendKind::Avx512 =>
+             vector::scalar_mul::pippenger::spec_avx512ifma_avx512vl::Pippenger::optional_multiscalar_mul::<I, J>(scalars, points),
+         BackendKind::Serial =>
+@@ -100,7 +103,7 @@ where
+ pub(crate) enum VartimePrecomputedStraus {
+     #[cfg(curve25519_dalek_backend = "simd")]
+     Avx2(vector::scalar_mul::precomputed_straus::spec_avx2::VartimePrecomputedStraus),
+-    #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++    #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
+     Avx512ifma(
+         vector::scalar_mul::precomputed_straus::spec_avx512ifma_avx512vl::VartimePrecomputedStraus,
+     ),
+@@ -120,7 +123,10 @@ impl VartimePrecomputedStraus {
+             #[cfg(curve25519_dalek_backend = "simd")]
+             BackendKind::Avx2 =>
+                 VartimePrecomputedStraus::Avx2(vector::scalar_mul::precomputed_straus::spec_avx2::VartimePrecomputedStraus::new(static_points)),
+-            #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++            #[cfg(all(
++                curve25519_dalek_backend = "simd",
++                curve25519_dalek_avx512
++            ))]
+             BackendKind::Avx512 =>
+                 VartimePrecomputedStraus::Avx512ifma(vector::scalar_mul::precomputed_straus::spec_avx512ifma_avx512vl::VartimePrecomputedStraus::new(static_points)),
+             BackendKind::Serial =>
+@@ -150,7 +156,7 @@ impl VartimePrecomputedStraus {
+                 dynamic_scalars,
+                 dynamic_points,
+             ),
+-            #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++            #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
+             VartimePrecomputedStraus::Avx512ifma(inner) => inner.optional_mixed_multiscalar_mul(
+                 static_scalars,
+                 dynamic_scalars,
+@@ -181,7 +187,7 @@ where
+         BackendKind::Avx2 => {
+             vector::scalar_mul::straus::spec_avx2::Straus::multiscalar_mul::<I, J>(scalars, points)
+         }
+-        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++        #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
+         BackendKind::Avx512 => {
+             vector::scalar_mul::straus::spec_avx512ifma_avx512vl::Straus::multiscalar_mul::<I, J>(
+                 scalars, points,
+@@ -210,7 +216,7 @@ where
+                 scalars, points,
+             )
+         }
+-        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++        #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
+         BackendKind::Avx512 => {
+             vector::scalar_mul::straus::spec_avx512ifma_avx512vl::Straus::optional_multiscalar_mul::<
+                 I,
+@@ -228,7 +234,7 @@ pub fn variable_base_mul(point: &EdwardsPoint, scalar: &Scalar) -> EdwardsPoint
+     match get_selected_backend() {
+         #[cfg(curve25519_dalek_backend = "simd")]
+         BackendKind::Avx2 => vector::scalar_mul::variable_base::spec_avx2::mul(point, scalar),
+-        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++        #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
+         BackendKind::Avx512 => {
+             vector::scalar_mul::variable_base::spec_avx512ifma_avx512vl::mul(point, scalar)
+         }
+@@ -247,7 +253,7 @@ pub fn variable_base_mul_precomputed(
+         BackendKind::Avx2 => {
+             vector::scalar_mul::variable_base::spec_avx2::mul_precomputed(point, scalar_digits)
+         }
+-        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++        #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
+         BackendKind::Avx512 => {
+             vector::scalar_mul::variable_base::spec_avx512ifma_avx512vl::mul_precomputed(
+                 point,
+@@ -266,7 +272,7 @@ pub fn vartime_double_base_mul(a: &Scalar, A: &EdwardsPoint, b: &Scalar) -> Edwa
+     match get_selected_backend() {
+         #[cfg(curve25519_dalek_backend = "simd")]
+         BackendKind::Avx2 => vector::scalar_mul::vartime_double_base::spec_avx2::mul(a, A, b),
+-        #[cfg(all(curve25519_dalek_backend = "simd", nightly))]
++        #[cfg(all(curve25519_dalek_backend = "simd", curve25519_dalek_avx512))]
+         BackendKind::Avx512 => {
+             vector::scalar_mul::vartime_double_base::spec_avx512ifma_avx512vl::mul(a, A, b)
+         }
+diff --git a/curve25519-dalek/src/backend/vector/mod.rs b/curve25519-dalek/src/backend/vector/mod.rs
+index 2839dca..b06189a 100644
+--- a/curve25519-dalek/src/backend/vector/mod.rs
++++ b/curve25519-dalek/src/backend/vector/mod.rs
+@@ -16,7 +16,7 @@ pub mod packed_simd;
+ 
+ pub mod avx2;
+ 
+-#[cfg(nightly)]
++#[cfg(curve25519_dalek_avx512)]
+ pub mod ifma;
+ 
+ pub mod scalar_mul;
+diff --git a/curve25519-dalek/src/backend/vector/scalar_mul/pippenger.rs b/curve25519-dalek/src/backend/vector/scalar_mul/pippenger.rs
+index 1376c4e..d7e26a0 100644
+--- a/curve25519-dalek/src/backend/vector/scalar_mul/pippenger.rs
++++ b/curve25519-dalek/src/backend/vector/scalar_mul/pippenger.rs
+@@ -11,7 +11,7 @@
+ 
+ #[curve25519_dalek_derive::unsafe_target_feature_specialize(
+     "avx2",
+-    conditional("avx512ifma,avx512vl", nightly)
++    conditional("avx512ifma,avx512vl", curve25519_dalek_avx512)
+ )]
+ pub mod spec {
+ 
+diff --git a/curve25519-dalek/src/backend/vector/scalar_mul/precomputed_straus.rs b/curve25519-dalek/src/backend/vector/scalar_mul/precomputed_straus.rs
+index 515b404..b2b31d7 100644
+--- a/curve25519-dalek/src/backend/vector/scalar_mul/precomputed_straus.rs
++++ b/curve25519-dalek/src/backend/vector/scalar_mul/precomputed_straus.rs
+@@ -13,7 +13,7 @@
+ 
+ #[curve25519_dalek_derive::unsafe_target_feature_specialize(
+     "avx2",
+-    conditional("avx512ifma,avx512vl", nightly)
++    conditional("avx512ifma,avx512vl", curve25519_dalek_avx512)
+ )]
+ pub mod spec {
+ 
+diff --git a/curve25519-dalek/src/backend/vector/scalar_mul/straus.rs b/curve25519-dalek/src/backend/vector/scalar_mul/straus.rs
+index 413e6fd..964c675 100644
+--- a/curve25519-dalek/src/backend/vector/scalar_mul/straus.rs
++++ b/curve25519-dalek/src/backend/vector/scalar_mul/straus.rs
+@@ -13,7 +13,7 @@
+ 
+ #[curve25519_dalek_derive::unsafe_target_feature_specialize(
+     "avx2",
+-    conditional("avx512ifma,avx512vl", nightly)
++    conditional("avx512ifma,avx512vl", curve25519_dalek_avx512)
+ )]
+ pub mod spec {
+ 
+diff --git a/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs b/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs
+index b3ee5ee..3327811 100644
+--- a/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs
++++ b/curve25519-dalek/src/backend/vector/scalar_mul/variable_base.rs
+@@ -2,7 +2,7 @@
+ 
+ #[curve25519_dalek_derive::unsafe_target_feature_specialize(
+     "avx2",
+-    conditional("avx512ifma,avx512vl", nightly)
++    conditional("avx512ifma,avx512vl", curve25519_dalek_avx512)
+ )]
+ pub mod spec {
+ 
+@@ -27,32 +27,10 @@ pub mod spec {
+     /// Perform constant-time, variable-base scalar multiplication using an
+     /// already computed signed radix-16 representation of the scalar.
+     pub fn mul_precomputed(point: &EdwardsPoint, scalar_digits: &[i8; 64]) -> EdwardsPoint {
+-        let lookup_table = lookup_table_by_doubling(point);
++        let lookup_table = LookupTable::<CachedPoint>::from(point);
+         mul_with_lookup_table(&lookup_table, scalar_digits)
+     }
+ 
+-    fn lookup_table_by_doubling(point: &EdwardsPoint) -> LookupTable<CachedPoint> {
+-        let p1 = ExtendedPoint::from(*point);
+-        let p2 = p1.double();
+-        let p3 = &p1 + &CachedPoint::from(p2);
+-        let p4 = p2.double();
+-        let p5 = &p1 + &CachedPoint::from(p4);
+-        let p6 = p3.double();
+-        let p7 = &p1 + &CachedPoint::from(p6);
+-        let p8 = p4.double();
+-
+-        LookupTable([
+-            CachedPoint::from(p1),
+-            CachedPoint::from(p2),
+-            CachedPoint::from(p3),
+-            CachedPoint::from(p4),
+-            CachedPoint::from(p5),
+-            CachedPoint::from(p6),
+-            CachedPoint::from(p7),
+-            CachedPoint::from(p8),
+-        ])
+-    }
+-
+     fn mul_with_lookup_table(
+         lookup_table: &LookupTable<CachedPoint>,
+         scalar_digits: &[i8; 64],
+diff --git a/curve25519-dalek/src/backend/vector/scalar_mul/vartime_double_base.rs b/curve25519-dalek/src/backend/vector/scalar_mul/vartime_double_base.rs
+index ea2af8a..30b8359 100644
+--- a/curve25519-dalek/src/backend/vector/scalar_mul/vartime_double_base.rs
++++ b/curve25519-dalek/src/backend/vector/scalar_mul/vartime_double_base.rs
+@@ -13,7 +13,7 @@
+ 
+ #[curve25519_dalek_derive::unsafe_target_feature_specialize(
+     "avx2",
+-    conditional("avx512ifma,avx512vl", nightly)
++    conditional("avx512ifma,avx512vl", curve25519_dalek_avx512)
+ )]
+ pub mod spec {
+ 
+diff --git a/curve25519-dalek/src/lib.rs b/curve25519-dalek/src/lib.rs
+index fecfe88..c4f227a 100644
+--- a/curve25519-dalek/src/lib.rs
++++ b/curve25519-dalek/src/lib.rs
+@@ -14,12 +14,17 @@
+     all(
+         curve25519_dalek_backend = "simd",
+         nightly,
++        not(curve25519_dalek_avx512_stable),
+         any(target_arch = "x86", target_arch = "x86_64")
+     ),
+     feature(stdarch_x86_avx512)
+ )]
+ #![cfg_attr(
+-    all(curve25519_dalek_backend = "simd", nightly),
++    all(
++        curve25519_dalek_backend = "simd",
++        nightly,
++        not(curve25519_dalek_avx512_stable)
++    ),
+     feature(avx512_target_feature)
+ )]
+ #![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg, doc_cfg_hide))]

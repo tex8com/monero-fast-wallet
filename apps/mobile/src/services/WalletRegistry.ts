@@ -1,6 +1,8 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
 import type { MoneroNetwork } from './NativeMoneroWallet';
+import {
+  loadProtectedMetadata,
+  storeProtectedMetadata,
+} from './ProtectedMetadataStorage';
 
 export const WALLET_REGISTRY_STORAGE_KEY =
   'monero-fast-wallet.wallet-registry.v1';
@@ -70,7 +72,7 @@ export async function loadRegisteredWallets(): Promise<RegisteredWallet[]> {
 }
 
 export async function loadWalletRegistry(): Promise<WalletRegistryState> {
-  const value = await AsyncStorage.getItem(WALLET_REGISTRY_STORAGE_KEY);
+  const value = await loadProtectedMetadata(WALLET_REGISTRY_STORAGE_KEY);
   return parseWalletRegistry(value);
 }
 
@@ -78,7 +80,7 @@ export async function saveWalletRegistry(
   registry: WalletRegistryState,
 ): Promise<WalletRegistryState> {
   const normalized = normalizeWalletRegistry(registry);
-  await AsyncStorage.setItem(
+  await storeProtectedMetadata(
     WALLET_REGISTRY_STORAGE_KEY,
     JSON.stringify(normalized),
   );
@@ -526,10 +528,10 @@ function defaultWalletDisplayName(
   const suffix = walletName.startsWith(`${prefix}-`)
     ? walletName.slice(prefix.length + 1)
     : walletName.startsWith(`${legacyPrefix}-`)
-      ? walletName.slice(legacyPrefix.length + 1)
-      : walletName === prefix || walletName === legacyPrefix
-        ? '1'
-        : undefined;
+    ? walletName.slice(legacyPrefix.length + 1)
+    : walletName === prefix || walletName === legacyPrefix
+    ? '1'
+    : undefined;
   const number = suffix && /^\d+$/.test(suffix) ? Number(suffix) : 1;
   return `${title} ${number}`;
 }

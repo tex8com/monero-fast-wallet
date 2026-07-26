@@ -40,6 +40,10 @@ class WalletEngine {
       NetworkType network,
       uint64_t restoreHeightHint = 0);
   void closeWallet(const WalletId& walletId, bool store = true);
+  // Invalidates every wallet session and pending transaction. Platform
+  // lifecycle handlers call this directly when the application is locked so
+  // JavaScript cannot keep native spend authority alive in the background.
+  void closeAllWallets(bool store = true);
   void setWalletPassword(
       const WalletId& walletId,
       const std::string& newPassword);
@@ -49,6 +53,7 @@ class WalletEngine {
 
   void startRefresh(const WalletId& walletId);
   void stopRefresh(const WalletId& walletId);
+  void rescanBlockchain(const WalletId& walletId);
   // Synchronously settle and persist every open Core wallet. Android calls
   // this from the native activity lifecycle before JavaScript can be paused.
   void persistOpenWallets();

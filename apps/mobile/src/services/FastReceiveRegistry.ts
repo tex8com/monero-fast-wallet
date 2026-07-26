@@ -1,16 +1,23 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
 import type { FastReceiveIdentity, MoneroNetwork } from './NativeMoneroWallet';
+import {
+  loadProtectedMetadata,
+  storeProtectedMetadata,
+} from './ProtectedMetadataStorage';
 
 export const FAST_RECEIVE_IDENTITIES_STORAGE_KEY =
   'monero-fast-wallet.fast-receive-identities.v1';
+export const INDEPENDENT_FAST_RECEIVE_ID_PREFIX = 'fast-receive-v2-';
+const FAST_RECEIVE_ID_PATTERN = /^[0-9A-Za-z_-]{1,80}$/;
+export const LEGACY_FAST_RECEIVE_DISABLED_MESSAGE =
+  'This legacy Fast Wallet is disabled because its seed can reveal the source wallet. Keep its wallet files and use the guarded migration/recovery flow.';
 
 export type FastReceiveIdentityStatus =
   | 'local-only'
   | 'enabled'
   | 'disabled'
   | 'registration-error'
-  | 'server-mismatch';
+  | 'server-mismatch'
+  | 'legacy-blocked';
 
 export interface FastReceiveIdentityRecord {
   id: string;
@@ -35,7 +42,9 @@ export interface FastReceiveIdentityRecord {
 export async function loadFastReceiveIdentities(): Promise<
   FastReceiveIdentityRecord[]
 > {
-  const value = await AsyncStorage.getItem(FAST_RECEIVE_IDENTITIES_STORAGE_KEY);
+  const value = await loadProtectedMetadata(
+    FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
+  );
   return parseFastReceiveIdentities(value);
 }
 
@@ -43,7 +52,7 @@ export async function saveFastReceiveIdentities(
   identities: FastReceiveIdentityRecord[],
 ): Promise<FastReceiveIdentityRecord[]> {
   const normalized = identities.map(normalizeFastReceiveIdentity);
-  await AsyncStorage.setItem(
+  await storeProtectedMetadata(
     FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
     JSON.stringify(normalized),
   );
@@ -118,14 +127,38 @@ export function createFastReceiveIdentityId(
     .toISOString()
     .replace(/[^0-9A-Za-z]/g, '')
     .slice(0, 15);
-  return `fast-receive-${derivationIndex}-${stamp}`;
+  return `${INDEPENDENT_FAST_RECEIVE_ID_PREFIX}${derivationIndex}-${stamp}`;
+}
+
+export function isIndependentFastReceiveIdentityId(
+  identityId: string,
+): boolean {
+  return (
+    identityId.startsWith(INDEPENDENT_FAST_RECEIVE_ID_PREFIX) &&
+    FAST_RECEIVE_ID_PATTERN.test(identityId)
+  );
+}
+
+export function assertIndependentFastReceiveIdentityId(
+  identityId: string,
+): void {
+  if (!isIndependentFastReceiveIdentityId(identityId)) {
+    throw new Error(LEGACY_FAST_RECEIVE_DISABLED_MESSAGE);
+  }
+}
+
+export function fastReceiveScannerCredentialKey(identityId: string): string {
+  assertIndependentFastReceiveIdentityId(identityId);
+  return `monero.wallet.fast-scanner.${identityId}.v1`;
 }
 
 function normalizeFastReceiveIdentity(
   identity: FastReceiveIdentityRecord,
 ): FastReceiveIdentityRecord {
+  const id = cleanRequired(identity.id, 'id');
+  const independent = isIndependentFastReceiveIdentityId(id);
   return {
-    id: cleanRequired(identity.id, 'id'),
+    id,
     label: normalizeLabel(identity.label),
     path: cleanRequired(identity.path, 'path'),
     address: cleanRequired(identity.address, 'address'),
@@ -134,8 +167,10 @@ function normalizeFastReceiveIdentity(
     sourceWalletId: cleanOptional(identity.sourceWalletId),
     restoreHeight: nonNegativeNumber(identity.restoreHeight),
     derivationIndex: nonNegativeNumber(identity.derivationIndex),
-    status: normalizeStatus(identity.status),
-    scannerStatus: identity.scannerStatus.trim() || identity.status,
+    status: independent ? normalizeStatus(identity.status) : 'legacy-blocked',
+    scannerStatus: independent
+      ? identity.scannerStatus.trim() || identity.status
+      : 'legacy-blocked',
     scannerUrl: (identity.scannerUrl ?? '').trim(),
     scannerCheckedAt: cleanOptional(identity.scannerCheckedAt),
     lastScannedHeight: optionalNonNegativeNumber(identity.lastScannedHeight),
@@ -294,7 +329,8 @@ function parseStatus(value: unknown): FastReceiveIdentityStatus | undefined {
     value === 'enabled' ||
     value === 'disabled' ||
     value === 'registration-error' ||
-    value === 'server-mismatch'
+    value === 'server-mismatch' ||
+    value === 'legacy-blocked'
   ) {
     return value;
   }

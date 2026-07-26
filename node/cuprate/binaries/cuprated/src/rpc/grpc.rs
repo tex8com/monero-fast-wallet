@@ -27,6 +27,7 @@ use tonic::{Request, Response, Status};
 
 use crate::rpc::{
     handlers::{bin as bin_handlers, helper as bin_helper},
+    service::blockchain,
     CupratedRpcHandler,
 };
 
@@ -69,22 +70,43 @@ pub mod proto {
 use proto::block_stream_server::{BlockStream, BlockStreamServer};
 use proto::{BlockChunk, StreamBlocksRequest};
 
-const DEFAULT_CHUNK_BLOCKS: usize = 200;
+// Conservative mobile-safe defaults. The server must never turn a client's
+// optimistic hint into unbounded queued memory; an adaptive protocol, if
+// introduced later, must remain within these hard caps.
+const DEFAULT_CHUNK_BLOCKS: usize = 64;
 const MIN_CHUNK_BLOCKS: usize = 16;
-const MAX_CHUNK_BLOCKS: usize = 10000;
-const MAX_GRPC_CHUNK_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
-const MAX_GRPC_CHUNK_TX_COUNT: usize = 1_000_000;
-pub const MAX_GRPC_MESSAGE_BYTES: usize = 1024 * 1024 * 1024;
-pub const GRPC_HTTP2_STREAM_WINDOW_BYTES: u32 = 512 * 1024 * 1024;
+const MAX_CHUNK_BLOCKS: usize = 512;
+const MAX_GRPC_CHUNK_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GRPC_CHUNK_TX_COUNT: usize = 50_000;
+pub const MAX_GRPC_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+pub const GRPC_HTTP2_STREAM_WINDOW_BYTES: u32 = 16 * 1024 * 1024;
 pub const GRPC_HTTP2_CONNECTION_WINDOW_BYTES: u32 = 512 * 1024 * 1024;
 
 /// mpsc capacity between producer task and HTTP/2 send loop. Small on
 /// purpose in production, but high-throughput wallet restore tests need enough
 /// room to absorb scanner stalls without immediately stalling HTTP/2.
-const CHANNEL_CAPACITY: usize = 32;
+const CHANNEL_CAPACITY: usize = 4;
+const MAX_CHAIN_LOCATOR_HASHES: usize = 256;
+// Hard global admission gate for the experimental public service. Wallet-side
+// pooling is bounded at eight channels; this prevents one node from accepting
+// an unbounded number of expensive block encoders at once.
+const MAX_ACTIVE_STREAMS: u64 = 64;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_STREAMS: AtomicU64 = AtomicU64::new(0);
+
+fn try_acquire_stream() -> Result<u64, Status> {
+    let mut active = ACTIVE_STREAMS.load(Ordering::Acquire);
+    loop {
+        if active >= MAX_ACTIVE_STREAMS {
+            return Err(Status::resource_exhausted("gRPC block-stream capacity reached"));
+        }
+        match ACTIVE_STREAMS.compare_exchange_weak(active, active + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Ok(active + 1),
+            Err(now) => active = now,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct BlockStreamService {
@@ -107,6 +129,7 @@ impl BlockStream for BlockStreamService {
             chunk_blocks_hint,
             no_miner_tx,
             client_request_id,
+            chain_locator,
         } = request.into_inner();
 
         let counter_id = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -122,21 +145,24 @@ impl BlockStream for BlockStreamService {
             n => (n as usize).clamp(MIN_CHUNK_BLOCKS, MAX_CHUNK_BLOCKS),
         };
 
-        let active = ACTIVE_STREAMS.fetch_add(1, Ordering::SeqCst) + 1;
+        let active = try_acquire_stream()?;
         let open_epoch_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
 
+        let mut handler = self.handler.clone();
+        let effective_start =
+            resolve_stream_start(&mut handler, start_height, chain_locator).await?;
+
         eprintln!(
-            "[GRPC StreamBlocks] OPEN id={} client_req_id={} start={} stop={} prune={} no_miner_tx={} chunk_blocks={} max_chunk_bytes={} max_chunk_txs={} active_streams={} open_epoch_ms={}",
-            server_req_id, client_id_label, start_height, stop_height, prune, no_miner_tx,
+            "[GRPC StreamBlocks] OPEN id={} client_req_id={} start={} effective_start={} stop={} prune={} no_miner_tx={} chunk_blocks={} max_chunk_bytes={} max_chunk_txs={} active_streams={} open_epoch_ms={}",
+            server_req_id, client_id_label, start_height, effective_start, stop_height, prune, no_miner_tx,
             chunk_blocks, MAX_GRPC_CHUNK_RESPONSE_BYTES, MAX_GRPC_CHUNK_TX_COUNT, active,
             open_epoch_ms,
         );
 
         let (tx, rx) = mpsc::channel::<Result<BlockChunk, Status>>(CHANNEL_CAPACITY);
-        let mut handler = self.handler.clone();
         let id_for_task = server_req_id.clone();
         let id_for_close = server_req_id.clone();
 
@@ -144,7 +170,7 @@ impl BlockStream for BlockStreamService {
             let r = produce_block_stream(
                 &mut handler,
                 tx,
-                start_height,
+                effective_start,
                 stop_height,
                 prune,
                 chunk_blocks,
@@ -163,6 +189,37 @@ impl BlockStream for BlockStreamService {
 
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
     }
+}
+
+async fn resolve_stream_start(
+    state: &mut CupratedRpcHandler,
+    requested_start: u64,
+    chain_locator: Vec<Vec<u8>>,
+) -> Result<u64, Status> {
+    if chain_locator.is_empty() {
+        return Ok(requested_start);
+    }
+    if chain_locator.len() > MAX_CHAIN_LOCATOR_HASHES {
+        return Err(Status::invalid_argument("chain locator exceeds 256 hashes"));
+    }
+
+    let mut hashes = Vec::with_capacity(chain_locator.len());
+    for hash in chain_locator {
+        let bytes: [u8; 32] = hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| Status::invalid_argument("each chain locator hash must be 32 bytes"))?;
+        hashes.push(bytes);
+    }
+
+    let (_, first_known_height, _) =
+        blockchain::next_chain_entry(&mut state.blockchain_read, hashes, 1)
+            .await
+            .map_err(|error| Status::internal(format!("chain locator lookup failed: {error}")))?;
+
+    first_known_height
+        .map(usize_to_u64)
+        .ok_or_else(|| Status::failed_precondition("chain locator has no common block"))
 }
 
 async fn produce_block_stream(

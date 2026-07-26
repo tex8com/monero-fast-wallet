@@ -1,0 +1,207 @@
+From 4e7242032753b5300627fe697a1a456fa118ff3a Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Wed, 8 Jul 2026 11:47:56 -0500
+Subject: [PATCH 29/41] Implement get_transactions blockchain lookup
+
+---
+ .../cuprated/src/rpc/handlers/other_json.rs   |  9 ++-
+ storage/blockchain/src/service/read.rs        | 63 ++++++++++++++++---
+ storage/blockchain/src/service/tests.rs       | 59 ++++++++++++++++-
+ 3 files changed, 118 insertions(+), 13 deletions(-)
+
+diff --git a/binaries/cuprated/src/rpc/handlers/other_json.rs b/binaries/cuprated/src/rpc/handlers/other_json.rs
+index 2575d84..1753a12 100644
+--- a/binaries/cuprated/src/rpc/handlers/other_json.rs
++++ b/binaries/cuprated/src/rpc/handlers/other_json.rs
+@@ -169,18 +169,17 @@ async fn get_transactions(
+                 (HexVec(tx.pruned_blob), HexVec(tx.prunable_blob))
+             };
+ 
+-            let as_hex = if pruned_as_hex.is_empty() {
+-                // `monerod` will insert a `""` into the `txs_as_hex` array for pruned transactions.
+-                // curl http://127.0.0.1:18081/get_transactions -d '{"txs_hashes":["4c8b98753d1577d225a497a50f453827cff3aa023a4add60ec4ce4f923f75de8"]}' -H 'Content-Type: application/json'
++            // `monerod` inserts `""` into `txs_as_hex` only when returning pruned transactions.
++            let as_hex = if request.prune && !pruned_as_hex.is_empty() {
+                 HexVec::new()
+             } else {
+-                HexVec(tx.tx_blob)
++                HexVec(tx.tx_blob.clone())
+             };
+ 
+             txs_as_hex.push(as_hex.clone());
+ 
+             let as_json = if request.decode_as_json {
+-                let tx = Transaction::read(&mut as_hex.as_slice())?;
++                let tx = Transaction::read(&mut tx.tx_blob.as_slice())?;
+                 let json_type = cuprate_types::json::tx::Transaction::from(tx);
+                 let json = serde_json::to_string(&json_type).unwrap();
+                 txs_as_json.push(json.clone());
+diff --git a/storage/blockchain/src/service/read.rs b/storage/blockchain/src/service/read.rs
+index d028b32..8f0ad35 100644
+--- a/storage/blockchain/src/service/read.rs
++++ b/storage/blockchain/src/service/read.rs
+@@ -27,12 +27,13 @@ use thread_local::ThreadLocal;
+ 
+ use cuprate_database::{ConcreteEnv, DatabaseRo, DbResult, Env, EnvInner, RuntimeError};
+ use cuprate_database_service::{init_thread_pool, DatabaseReadService, ReaderThreads};
+-use cuprate_helper::map::combine_low_high_bits_to_u128;
++use cuprate_helper::{cast::usize_to_u64, map::combine_low_high_bits_to_u128};
+ use cuprate_types::{
+     blockchain::{BlockchainReadRequest, BlockchainResponse},
+     output_cache::OutputCache,
+     rpc::{OutputDistributionData, OutputHistogramInput},
+-    Chain, ChainId, ExtendedBlockHeader, OutputDistributionInput, OutputOnChain, TxsInBlock,
++    Chain, ChainId, ExtendedBlockHeader, OutputDistributionInput, OutputOnChain, TxInBlockchain,
++    TxsInBlock,
+ };
+ 
+ use crate::{
+@@ -57,7 +58,7 @@ use crate::{
+     },
+     tables::{
+         AltBlockHeights, BlockHeights, BlockInfos, OpenTables, RctOutputs, Tables, TablesIter,
+-        TxIds, TxOutputs,
++        TxBlobs, TxHeights, TxIds, TxOutputs,
+     },
+     types::{
+         AltBlockHeight, Amount, AmountIndex, BlockHash, BlockHeight, KeyImage, PreRctOutputId,
+@@ -1011,10 +1012,58 @@ fn alt_chain_count(env: &ConcreteEnv) -> ResponseResult {
+ 
+ /// [`BlockchainReadRequest::Transactions`]
+ fn transactions(env: &ConcreteEnv, tx_hashes: HashSet<[u8; 32]>) -> ResponseResult {
+-    Ok(BlockchainResponse::Transactions {
+-        txs: todo!(),
+-        missed_txs: todo!(),
+-    })
++    let env_inner = env.env_inner();
++    let tx_ro = env_inner.tx_ro()?;
++
++    let table_block_heights = env_inner.open_db_ro::<BlockHeights>(&tx_ro)?;
++    let table_block_infos = env_inner.open_db_ro::<BlockInfos>(&tx_ro)?;
++    let table_tx_ids = env_inner.open_db_ro::<TxIds>(&tx_ro)?;
++    let table_tx_blobs = env_inner.open_db_ro::<TxBlobs>(&tx_ro)?;
++    let table_tx_heights = env_inner.open_db_ro::<TxHeights>(&tx_ro)?;
++    let table_tx_outputs = env_inner.open_db_ro::<TxOutputs>(&tx_ro)?;
++
++    let mut top_height = None;
++    let mut txs = Vec::with_capacity(tx_hashes.len());
++    let mut missed_txs = Vec::new();
++
++    for tx_hash in tx_hashes {
++        let tx_id = match table_tx_ids.get(&tx_hash) {
++            Ok(tx_id) => tx_id,
++            Err(RuntimeError::KeyNotFound) => {
++                missed_txs.push(tx_hash);
++                continue;
++            }
++            Err(e) => return Err(e),
++        };
++
++        let block_height = table_tx_heights.get(&tx_id)?;
++        let block_info = table_block_infos.get(&block_height)?;
++        let tx_blob = table_tx_blobs.get(&tx_id)?.0;
++        let output_indices = table_tx_outputs.get(&tx_id)?.0;
++        let top_height = match top_height {
++            Some(top_height) => top_height,
++            None => {
++                let height = top_block_height(&table_block_heights)?;
++                top_height = Some(height);
++                height
++            }
++        };
++        let confirmations = top_height.saturating_sub(block_height).saturating_add(1);
++
++        txs.push(TxInBlockchain {
++            block_height: usize_to_u64(block_height),
++            block_timestamp: block_info.timestamp,
++            confirmations: usize_to_u64(confirmations),
++            output_indices,
++            tx_hash,
++            tx_blob,
++            pruned_blob: Vec::new(),
++            prunable_blob: Vec::new(),
++            prunable_hash: [0; 32],
++        });
++    }
++
++    Ok(BlockchainResponse::Transactions { txs, missed_txs })
+ }
+ 
+ /// [`BlockchainReadRequest::TotalRctOutputs`]
+diff --git a/storage/blockchain/src/service/tests.rs b/storage/blockchain/src/service/tests.rs
+index 1e2d1f1..4b68e1a 100644
+--- a/storage/blockchain/src/service/tests.rs
++++ b/storage/blockchain/src/service/tests.rs
+@@ -6,7 +6,10 @@
+ #![allow(clippy::await_holding_lock, clippy::too_many_lines)]
+ 
+ //---------------------------------------------------------------------------------------------------- Use
+-use std::{collections::HashMap, sync::Arc};
++use std::{
++    collections::{HashMap, HashSet},
++    sync::Arc,
++};
+ 
+ use indexmap::{IndexMap, IndexSet};
+ use pretty_assertions::assert_eq;
+@@ -380,6 +383,60 @@ fn init_drop() {
+     let (_reader, _writer, _env, _tempdir) = init_service();
+ }
+ 
++#[tokio::test]
++async fn transactions_reports_unknown_hashes_without_crashing() {
++    let (reader, _writer, _env, _tempdir) = init_service();
++    let missing_hash = [0x42; 32];
++
++    let response = reader
++        .oneshot(BlockchainReadRequest::Transactions {
++            tx_hashes: HashSet::from([missing_hash]),
++        })
++        .await
++        .unwrap();
++
++    let BlockchainResponse::Transactions { txs, missed_txs } = response else {
++        panic!("{response:#?}");
++    };
++
++    assert!(txs.is_empty());
++    assert_eq!(missed_txs, vec![missing_hash]);
++}
++
++#[tokio::test]
++async fn transactions_returns_confirmed_tx_and_misses() {
++    let (reader, mut writer, _env, _tempdir) = init_service();
++    let mut block = BLOCK_V1_TX2.clone();
++    block.height = 0;
++    let expected_tx = block.txs[0].clone();
++    let missing_hash = [0x24; 32];
++
++    let response = writer
++        .call(BlockchainWriteRequest::WriteBlock(block))
++        .await
++        .unwrap();
++    assert_eq!(response, BlockchainResponse::Ok);
++
++    let response = reader
++        .oneshot(BlockchainReadRequest::Transactions {
++            tx_hashes: HashSet::from([expected_tx.tx_hash, missing_hash]),
++        })
++        .await
++        .unwrap();
++
++    let BlockchainResponse::Transactions { txs, missed_txs } = response else {
++        panic!("{response:#?}");
++    };
++
++    assert_eq!(missed_txs, vec![missing_hash]);
++    assert_eq!(txs.len(), 1);
++    assert_eq!(txs[0].block_height, 0);
++    assert_eq!(txs[0].confirmations, 1);
++    assert_eq!(txs[0].tx_hash, expected_tx.tx_hash);
++    assert_eq!(txs[0].tx_blob, expected_tx.tx_blob);
++    assert!(!txs[0].output_indices.is_empty());
++}
++
+ #[tokio::test]
+ async fn rct_output_distribution() {
+     let (reader, mut writer, _env, _tempdir) = init_service();

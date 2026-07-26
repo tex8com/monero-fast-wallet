@@ -9,7 +9,7 @@ use crate::{
     store::WatchStore,
 };
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -18,29 +18,104 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    sync::Arc,
+    collections::HashMap,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+const MAX_REQUEST_BODY_BYTES: usize = 96 * 1024;
+const CAPABILITY_RATE_LIMIT_REQUESTS: u32 = 120;
+const CAPABILITY_RATE_LIMIT_WINDOW_MS: u64 = 60_000;
+const CAPABILITY_RATE_LIMIT_SUBJECTS: usize = 8_192;
 
 #[derive(Clone)]
 pub struct ApiState {
     pub store: Arc<dyn WatchStore>,
-    pub auth_token: Option<String>,
+    pub internal_auth_token: Option<String>,
     pub key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
     pub test_auth_token: Option<String>,
     pub notification_sink: Option<Arc<dyn NotificationSink>>,
+    capability_rate_limiter: Arc<CapabilityRateLimiter>,
 }
 
-pub fn router(store: Arc<dyn WatchStore>, auth_token: Option<String>) -> Router {
-    router_with_key_image_status_source(store, auth_token, None)
+struct CapabilityRateLimiter {
+    entries: Mutex<HashMap<String, RateWindow>>,
+    max_requests: u32,
+    window_ms: u64,
+    max_subjects: usize,
+}
+
+#[derive(Clone, Copy)]
+struct RateWindow {
+    started_at_ms: u64,
+    requests: u32,
+}
+
+impl CapabilityRateLimiter {
+    fn production() -> Self {
+        Self::new(
+            CAPABILITY_RATE_LIMIT_REQUESTS,
+            CAPABILITY_RATE_LIMIT_WINDOW_MS,
+            CAPABILITY_RATE_LIMIT_SUBJECTS,
+        )
+    }
+
+    fn new(max_requests: u32, window_ms: u64, max_subjects: usize) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            max_requests,
+            window_ms,
+            max_subjects,
+        }
+    }
+
+    fn check(&self, scope: &str, token: &str, now_ms: u64) -> Result<(), ApiError> {
+        let subject = rate_limit_subject(scope, token);
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| ApiError::Internal("rate limiter unavailable".to_owned()))?;
+        let stale_after = self.window_ms.saturating_mul(2);
+        entries.retain(|_, window| now_ms.saturating_sub(window.started_at_ms) < stale_after);
+
+        if !entries.contains_key(&subject) && entries.len() >= self.max_subjects {
+            return Err(ApiError::TooManyRequests);
+        }
+
+        let window = entries.entry(subject).or_insert(RateWindow {
+            started_at_ms: now_ms,
+            requests: 0,
+        });
+        if now_ms.saturating_sub(window.started_at_ms) >= self.window_ms {
+            *window = RateWindow {
+                started_at_ms: now_ms,
+                requests: 0,
+            };
+        }
+        if window.requests >= self.max_requests {
+            return Err(ApiError::TooManyRequests);
+        }
+        window.requests = window.requests.saturating_add(1);
+        Ok(())
+    }
+}
+
+pub fn router(store: Arc<dyn WatchStore>, internal_auth_token: Option<String>) -> Router {
+    router_with_key_image_status_source(store, internal_auth_token, None)
 }
 
 pub fn router_with_key_image_status_source(
     store: Arc<dyn WatchStore>,
-    auth_token: Option<String>,
+    internal_auth_token: Option<String>,
     key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
 ) -> Router {
-    router_with_runtime(store, auth_token, key_image_status_source, None, None)
+    router_with_runtime(
+        store,
+        internal_auth_token,
+        key_image_status_source,
+        None,
+        None,
+    )
 }
 
 /// Builds the scanner API with its optional, independently authenticated test
@@ -48,7 +123,7 @@ pub fn router_with_key_image_status_source(
 /// token is configured.
 pub fn router_with_runtime(
     store: Arc<dyn WatchStore>,
-    auth_token: Option<String>,
+    internal_auth_token: Option<String>,
     key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
     test_auth_token: Option<String>,
     notification_sink: Option<Arc<dyn NotificationSink>>,
@@ -71,12 +146,14 @@ pub fn router_with_runtime(
             post(simulate_incoming_transaction),
         )
         .route("/v1/fast-receive/key-images/status", post(key_image_status))
+        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(ApiState {
             store,
-            auth_token,
+            internal_auth_token,
             key_image_status_source,
             test_auth_token,
             notification_sink,
+            capability_rate_limiter: Arc::new(CapabilityRateLimiter::production()),
         })
 }
 
@@ -93,13 +170,19 @@ async fn register_watch(
     headers: HeaderMap,
     Json(request): Json<RegisterWatchRequest>,
 ) -> Result<Json<WatchResponse>, ApiError> {
-    authenticate(&state, &headers)?;
+    let token = rate_limited_bearer_token(&state, &headers, "watch")?;
+    let management_token_hash = management_token_hash(token)?;
     let now_ms = now_ms();
     let mut registration = WatchRegistration::from_request(request, now_ms)?;
 
     if let Some(existing) = state.store.get(&registration.identity_id)? {
+        authenticate_watch_hash(&existing, &management_token_hash)?;
         registration.created_at_ms = existing.created_at_ms;
+        registration.last_scanned_height = registration
+            .last_scanned_height
+            .max(existing.last_scanned_height);
     }
+    registration.management_token_hash = management_token_hash;
 
     let stored = state.store.upsert(registration)?;
     Ok(Json(stored.response("enabled")))
@@ -110,7 +193,11 @@ async fn remove_watch(
     headers: HeaderMap,
     Path(identity_id): Path<String>,
 ) -> Result<Json<WatchResponse>, ApiError> {
-    authenticate(&state, &headers)?;
+    let record = state
+        .store
+        .get(&identity_id)?
+        .ok_or_else(|| ApiError::NotFound("watch identity not found".to_owned()))?;
+    authenticate_watch(&state, &record, &headers)?;
     let removed = state.store.remove(&identity_id)?;
     let response = removed
         .map(|record| record.response("disabled"))
@@ -131,10 +218,10 @@ async fn get_watch(
     headers: HeaderMap,
     Path(identity_id): Path<String>,
 ) -> Result<Json<WatchResponse>, ApiError> {
-    authenticate(&state, &headers)?;
     let Some(record) = state.store.get(&identity_id)? else {
         return Err(ApiError::NotFound("watch identity not found".to_owned()));
     };
+    authenticate_watch(&state, &record, &headers)?;
 
     Ok(Json(record.response("enabled")))
 }
@@ -144,7 +231,7 @@ async fn register_match(
     headers: HeaderMap,
     Json(request): Json<RegisterMatchedOutputRequest>,
 ) -> Result<Json<MatchedOutputResponse>, ApiError> {
-    authenticate(&state, &headers)?;
+    authenticate_internal(&state, &headers)?;
     if state.store.get(request.identity_id.trim())?.is_none() {
         return Err(ApiError::NotFound("watch identity not found".to_owned()));
     }
@@ -193,7 +280,11 @@ async fn list_matches(
     headers: HeaderMap,
     Path(identity_id): Path<String>,
 ) -> Result<Json<Vec<MatchedOutputResponse>>, ApiError> {
-    authenticate(&state, &headers)?;
+    let watch = state
+        .store
+        .get(&identity_id)?
+        .ok_or_else(|| ApiError::NotFound("watch identity not found".to_owned()))?;
+    authenticate_watch(&state, &watch, &headers)?;
     let matches = state
         .store
         .list_matches(&identity_id)?
@@ -208,8 +299,12 @@ async fn key_image_status(
     headers: HeaderMap,
     Json(request): Json<KeyImageStatusRequest>,
 ) -> Result<Json<KeyImageStatusResponse>, ApiError> {
-    authenticate(&state, &headers)?;
     request.validate()?;
+    let watch = state
+        .store
+        .get(&request.identity_id)?
+        .ok_or_else(|| ApiError::NotFound("watch identity not found".to_owned()))?;
+    authenticate_watch(&state, &watch, &headers)?;
     if let Some(source) = &state.key_image_status_source {
         let now_ms = now_ms();
         for checked in source.check_key_images(&request.key_images)? {
@@ -253,17 +348,78 @@ async fn key_image_status(
     }))
 }
 
-fn authenticate(state: &ApiState, headers: &HeaderMap) -> Result<(), ApiError> {
-    let Some(expected) = &state.auth_token else {
-        return Ok(());
-    };
+fn authenticate_watch(
+    state: &ApiState,
+    watch: &WatchRegistration,
+    headers: &HeaderMap,
+) -> Result<(), ApiError> {
+    let token = rate_limited_bearer_token(state, headers, "watch")?;
+    let actual_hash = management_token_hash(token)?;
+    authenticate_watch_hash(watch, &actual_hash)
+}
 
-    let expected_header = format!("Bearer {expected}");
-    let actual = headers
+fn authenticate_watch_hash(watch: &WatchRegistration, actual_hash: &str) -> Result<(), ApiError> {
+    if watch.management_token_hash.len() == 64
+        && constant_time_eq(
+            watch.management_token_hash.as_bytes(),
+            actual_hash.as_bytes(),
+        )
+    {
+        Ok(())
+    } else {
+        Err(ApiError::Unauthorized)
+    }
+}
+
+fn management_token_hash(token: &str) -> Result<String, ApiError> {
+    if token.len() < 43
+        || token.len() > 256
+        || !token
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && !byte.is_ascii_whitespace())
+    {
+        return Err(ApiError::Unauthorized);
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"monero-fast-wallet-watch-management-v1\0");
+    digest.update(token.as_bytes());
+    Ok(hex::encode(digest.finalize()))
+}
+
+fn required_bearer_token(headers: &HeaderMap) -> Result<&str, ApiError> {
+    let value = headers
         .get(http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
+        .and_then(|value| value.to_str().ok())
+        .ok_or(ApiError::Unauthorized)?;
+    let token = value
+        .strip_prefix("Bearer ")
+        .ok_or(ApiError::Unauthorized)?;
+    if token.is_empty() || token.trim() != token {
+        return Err(ApiError::Unauthorized);
+    }
+    Ok(token)
+}
 
-    if actual == Some(expected_header.as_str()) {
+fn rate_limited_bearer_token<'a>(
+    state: &ApiState,
+    headers: &'a HeaderMap,
+    scope: &str,
+) -> Result<&'a str, ApiError> {
+    let token = required_bearer_token(headers)?;
+    state
+        .capability_rate_limiter
+        .check(scope, token, now_ms())?;
+    Ok(token)
+}
+
+fn authenticate_internal(state: &ApiState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let Some(expected) = &state.internal_auth_token else {
+        return Err(ApiError::NotFound(
+            "internal match route is disabled".to_owned(),
+        ));
+    };
+    let actual = rate_limited_bearer_token(state, headers, "internal")?;
+    if constant_time_eq(expected.as_bytes(), actual.as_bytes()) {
         Ok(())
     } else {
         Err(ApiError::Unauthorized)
@@ -274,15 +430,33 @@ fn authenticate_test(state: &ApiState, headers: &HeaderMap) -> Result<(), ApiErr
     let Some(expected) = &state.test_auth_token else {
         return Err(ApiError::NotFound("test route is disabled".to_owned()));
     };
-    let expected_header = format!("Bearer {expected}");
-    let actual = headers
-        .get(http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-    if actual == Some(expected_header.as_str()) {
+    let actual = rate_limited_bearer_token(state, headers, "test")?;
+    if constant_time_eq(expected.as_bytes(), actual.as_bytes()) {
         Ok(())
     } else {
         Err(ApiError::Unauthorized)
     }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    let mut difference = left.len() ^ right.len();
+    let max_len = left.len().max(right.len());
+    for index in 0..max_len {
+        difference |= usize::from(
+            left.get(index).copied().unwrap_or_default()
+                ^ right.get(index).copied().unwrap_or_default(),
+        );
+    }
+    difference == 0
+}
+
+fn rate_limit_subject(scope: &str, token: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"monero-fast-wallet-api-rate-limit-v1\0");
+    digest.update(scope.as_bytes());
+    digest.update([0]);
+    digest.update(token.as_bytes());
+    hex::encode(digest.finalize())
 }
 
 fn synthetic_test_transaction_id(identity_id: &str, now_ms: u64) -> String {
@@ -448,6 +622,7 @@ const PROJECT_PAGE_HTML: &str = r#"<!doctype html>
 #[derive(Debug)]
 enum ApiError {
     Unauthorized,
+    TooManyRequests,
     NotFound(String),
     BadRequest(String),
     ServiceUnavailable(String),
@@ -461,8 +636,10 @@ impl From<crate::model::WatchValidationError> for ApiError {
 }
 
 impl From<anyhow::Error> for ApiError {
-    fn from(error: anyhow::Error) -> Self {
-        Self::Internal(error.to_string())
+    fn from(_error: anyhow::Error) -> Self {
+        // Filesystem paths, upstream endpoints, and storage context must not
+        // cross the public API boundary. Operational details stay server-side.
+        Self::Internal("internal service error".to_owned())
     }
 }
 
@@ -470,6 +647,10 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_owned()),
+            Self::TooManyRequests => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "request limit exceeded".to_owned(),
+            ),
             Self::NotFound(message) => (StatusCode::NOT_FOUND, message),
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             Self::ServiceUnavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
@@ -497,6 +678,26 @@ mod tests {
     use http::{Request, StatusCode};
     use std::sync::Mutex;
     use tower::ServiceExt;
+
+    const WATCH_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const OTHER_WATCH_TOKEN: &str =
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    fn stored_watch(identity_id: &str) -> WatchRegistration {
+        WatchRegistration {
+            identity_id: identity_id.to_owned(),
+            address: "9".repeat(95),
+            private_view_key: "c".repeat(64),
+            management_token_hash: management_token_hash(WATCH_TOKEN).unwrap(),
+            network: Network::Stagenet,
+            restore_height: 1,
+            push_token: None,
+            device_id: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            last_scanned_height: 0,
+        }
+    }
 
     #[derive(Default)]
     struct RecordingNotificationSink {
@@ -581,7 +782,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/v1/fast-receive/watch")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -598,7 +799,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/v1/fast-receive/watch/fast-receive-0")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -615,7 +816,7 @@ mod tests {
                 Request::builder()
                     .method("DELETE")
                     .uri("/v1/fast-receive/watch/fast-receive-0")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -624,6 +825,66 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(store.get("fast-receive-0").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn isolates_each_watch_behind_its_own_hashed_management_token() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        let app = router(store.clone(), Some("internal-secret".to_owned()));
+        let body = serde_json::json!({
+            "identity_id": "fast-receive-0",
+            "address": "9".repeat(95),
+            "private_view_key": "c".repeat(64),
+            "network": Network::Stagenet,
+            "restore_height": 12
+        });
+
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/fast-receive/watch")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+
+        let stored = store.get("fast-receive-0").unwrap().unwrap();
+        assert_eq!(stored.management_token_hash.len(), 64);
+        assert_ne!(stored.management_token_hash, WATCH_TOKEN);
+
+        let read_with_other_token = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/fast-receive/watch/fast-receive-0")
+                    .header("authorization", format!("Bearer {OTHER_WATCH_TOKEN}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_with_other_token.status(), StatusCode::UNAUTHORIZED);
+
+        let update_with_other_token = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/fast-receive/watch")
+                    .header("authorization", format!("Bearer {OTHER_WATCH_TOKEN}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(update_with_other_token.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -638,7 +899,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/v1/fast-receive/watch/fast-receive-missing")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -677,6 +938,56 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[test]
+    fn rate_limits_hashed_capabilities_and_resets_the_window() {
+        let limiter = CapabilityRateLimiter::new(2, 1_000, 4);
+
+        assert!(limiter.check("watch", WATCH_TOKEN, 10).is_ok());
+        assert!(limiter.check("watch", WATCH_TOKEN, 11).is_ok());
+        assert!(matches!(
+            limiter.check("watch", WATCH_TOKEN, 12),
+            Err(ApiError::TooManyRequests)
+        ));
+        assert!(limiter.check("watch", WATCH_TOKEN, 1_010).is_ok());
+
+        let entries = limiter.entries.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(!entries.contains_key(WATCH_TOKEN));
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_request_bodies_before_json_parsing() {
+        let app = router(
+            Arc::new(InMemoryWatchStore::default()),
+            Some("secret".to_owned()),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/fast-receive/watch")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("x".repeat(MAX_REQUEST_BODY_BYTES + 1)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn public_internal_errors_are_opaque() {
+        let canary = "/private/scanner/watch-db secret-view-key-canary";
+        let response = ApiError::from(anyhow::anyhow!(canary)).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert_eq!(body, r#"{"error":"internal service error"}"#);
+        assert!(!body.contains(canary));
+    }
+
     #[tokio::test]
     async fn stores_lists_and_removes_matched_outputs() {
         let store = Arc::new(InMemoryWatchStore::default());
@@ -693,7 +1004,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/v1/fast-receive/watch")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
                     .header("content-type", "application/json")
                     .body(Body::from(watch.to_string()))
                     .unwrap(),
@@ -727,7 +1038,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/v1/fast-receive/watch/fast-receive-0/matches")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -746,7 +1057,7 @@ mod tests {
             Request::builder()
                 .method("DELETE")
                 .uri("/v1/fast-receive/watch/fast-receive-0")
-                .header("authorization", "Bearer secret")
+                .header("authorization", format!("Bearer {WATCH_TOKEN}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -763,6 +1074,7 @@ mod tests {
                 identity_id: "fast-receive-0".to_owned(),
                 address: "9".repeat(95),
                 private_view_key: "c".repeat(64),
+                management_token_hash: management_token_hash(WATCH_TOKEN).unwrap(),
                 network: Network::Stagenet,
                 restore_height: 1,
                 push_token: None,
@@ -804,6 +1116,7 @@ mod tests {
                 identity_id: "fast-receive-0".to_owned(),
                 address: "9".repeat(95),
                 private_view_key: "c".repeat(64),
+                management_token_hash: management_token_hash(WATCH_TOKEN).unwrap(),
                 network: Network::Stagenet,
                 restore_height: 1,
                 push_token: None,
@@ -870,6 +1183,7 @@ mod tests {
     #[tokio::test]
     async fn reports_key_image_status_without_spend_authority() {
         let store = Arc::new(InMemoryWatchStore::default());
+        store.upsert(stored_watch("fast-receive-0")).unwrap();
         store
             .upsert_key_image_status(KeyImageStatusRecord {
                 identity_id: "fast-receive-0".to_owned(),
@@ -890,7 +1204,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/v1/fast-receive/key-images/status")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -904,6 +1218,7 @@ mod tests {
     #[tokio::test]
     async fn refreshes_key_image_status_from_live_source_and_persists_it() {
         let store = Arc::new(InMemoryWatchStore::default());
+        store.upsert(stored_watch("fast-receive-0")).unwrap();
         let app = router_with_key_image_status_source(
             store.clone(),
             Some("secret".to_owned()),
@@ -919,7 +1234,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/v1/fast-receive/key-images/status")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),

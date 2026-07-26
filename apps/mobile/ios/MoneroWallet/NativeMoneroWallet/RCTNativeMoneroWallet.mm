@@ -5,11 +5,20 @@
 
 #import <CoreBluetooth/CoreBluetooth.h>
 #import <CoreLocation/CoreLocation.h>
+#import <CommonCrypto/CommonCryptor.h>
+#import <CommonCrypto/CommonDigest.h>
+#import <CommonCrypto/CommonKeyDerivation.h>
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <React/RCTBridgeModule.h>
 #import <Security/Security.h>
+#import <UIKit/UIKit.h>
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+#import <sodium.h>
+#endif
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -782,9 +791,29 @@ NSDictionary *diagnosticFields(NSDictionary *fields, NSDictionary *extra) {
 }
 
 void logNativeEvent(NSString *event, NSDictionary *fields) {
+#if DEBUG
+  static NSSet<NSString *> *allowedFields;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    allowedFields = [NSSet setWithArray:@[
+      @"count", @"elapsedMs", @"queuedMs", @"txCount",
+    ]];
+  });
+  NSMutableDictionary *safeFields = [NSMutableDictionary dictionary];
+  [fields enumerateKeysAndObjectsUsingBlock:
+      ^(NSString *key, id value, __unused BOOL *stop) {
+    if ([allowedFields containsObject:key] &&
+        [value isKindOfClass:[NSNumber class]]) {
+      safeFields[key] = value;
+    }
+  }];
   NSLog(@"MONERO_WALLET_DIAGNOSTICS native=ios event=%@ fields=%@",
         event ?: @"",
-        fields ?: @{});
+        safeFields);
+#else
+  (void)event;
+  (void)fields;
+#endif
 }
 
 NetworkType toNetworkType(NSString *network) {
@@ -879,6 +908,35 @@ NSString *checkedSecretKey(NSString *value) {
   return trimmed;
 }
 
+NSString *checkedWalletSecretKey(NSString *value) {
+  NSString *checked = checkedSecretKey(value);
+  if (![checked hasPrefix:@"monero.wallet."] ||
+      [checked hasPrefix:@"monero.wallet.app."]) {
+    throw WalletEngineError(
+        "wallet credential key is outside the managed wallet namespace");
+  }
+  return checked;
+}
+
+NSString *protectedMetadataSecretKey(NSString *value) {
+  NSString *normalized = [value stringByTrimmingCharactersInSet:
+      NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (normalized.length == 0 || normalized.length > 256 ||
+      [normalized rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet]
+              .location != NSNotFound) {
+    throw WalletEngineError("protected metadata key is invalid");
+  }
+  NSData *data = [normalized dataUsingEncoding:NSUTF8StringEncoding];
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(data.bytes, static_cast<CC_LONG>(data.length), digest);
+  NSMutableString *result = [NSMutableString stringWithString:@"metadata."];
+  for (size_t index = 0; index < sizeof(digest); index += 1) {
+    [result appendFormat:@"%02x", digest[index]];
+  }
+  memset(digest, 0, sizeof(digest));
+  return result;
+}
+
 NSMutableDictionary *keychainQuery(NSString *key) {
   return [@{
     (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
@@ -902,7 +960,7 @@ void storeKeychainSecret(NSString *key, NSString *value) {
   NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
   query[(__bridge id)kSecValueData] = data;
   query[(__bridge id)kSecAttrAccessible] =
-      (__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
+      (__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly;
 
   OSStatus status = SecItemAdd((__bridge CFDictionaryRef)query, nil);
   if (status != errSecSuccess) {
@@ -951,6 +1009,279 @@ void ensureKeychainSecret(NSString *key) {
   if (readKeychainSecret(key) == nil) {
     storeKeychainSecret(key, generateSecretValue());
   }
+}
+
+NSString *const kAppProtectionModeKey =
+    @"monero.wallet.app.protection.mode.v2";
+NSString *const kAppPasswordVerifierKey =
+    @"monero.wallet.app.password.verifier.v2";
+NSString *const kNodeDaemonPasswordSecretKey =
+    @"monero-fast-wallet.node-connection.daemon-password.v1";
+NSString *const kAppUnlockFailuresKey =
+    @"monero.wallet.app.unlock.failures.v2";
+NSString *const kAppUnlockBlockedUntilKey =
+    @"monero.wallet.app.unlock.blocked-until.v2";
+NSString *const kAppPasswordLegacyVerifierVersion = @"pbkdf2-sha256-v1";
+NSString *const kAppPasswordArgon2Prefix =
+    @"$argon2id$v=19$m=65536,t=3,p=1$";
+constexpr uint32_t kAppPasswordIterations = 310000;
+constexpr size_t kAppPasswordSaltBytes = 16;
+constexpr size_t kAppPasswordHashBytes = 32;
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+constexpr unsigned long long kAppPasswordArgon2Iterations = 3;
+constexpr size_t kAppPasswordArgon2MemoryBytes = 64 * 1024 * 1024;
+#endif
+constexpr NSUInteger kMaxProtectedMetadataBytes = 256 * 1024;
+NSString *const kProtectedMetadataVersion = @"metadata-v1";
+
+NSString *createLegacyAppPasswordVerifier(NSString *password) {
+  if (password.length < 12 || password.length > 1024) {
+    throw WalletEngineError(
+        "App password must contain between 12 and 1024 characters");
+  }
+
+  std::vector<uint8_t> salt(kAppPasswordSaltBytes);
+  std::vector<uint8_t> hash(kAppPasswordHashBytes);
+  if (SecRandomCopyBytes(kSecRandomDefault, salt.size(), salt.data()) !=
+      errSecSuccess) {
+    throw WalletEngineError("failed to generate app password salt");
+  }
+  NSData *passwordData =
+      [password dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+  const int result = CCKeyDerivationPBKDF(
+      kCCPBKDF2,
+      static_cast<const char *>(passwordData.bytes),
+      passwordData.length,
+      salt.data(),
+      salt.size(),
+      kCCPRFHmacAlgSHA256,
+      kAppPasswordIterations,
+      hash.data(),
+      hash.size());
+  if (result != kCCSuccess) {
+    std::fill(salt.begin(), salt.end(), 0);
+    std::fill(hash.begin(), hash.end(), 0);
+    throw WalletEngineError("failed to derive app password verifier");
+  }
+
+  NSData *saltData = [NSData dataWithBytes:salt.data() length:salt.size()];
+  NSData *hashData = [NSData dataWithBytes:hash.data() length:hash.size()];
+  NSString *verifier = [NSString stringWithFormat:
+      @"%@:%u:%@:%@",
+      kAppPasswordLegacyVerifierVersion,
+      kAppPasswordIterations,
+      [saltData base64EncodedStringWithOptions:0],
+      [hashData base64EncodedStringWithOptions:0]];
+  std::fill(salt.begin(), salt.end(), 0);
+  std::fill(hash.begin(), hash.end(), 0);
+  return verifier;
+}
+
+NSString *createAppPasswordVerifier(NSString *password) {
+  if (password.length < 12 || password.length > 1024) {
+    throw WalletEngineError(
+        "App password must contain between 12 and 1024 characters");
+  }
+
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  if (sodium_init() < 0) {
+    throw WalletEngineError("failed to initialize native Argon2id");
+  }
+  NSData *passwordData =
+      [password dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+  std::array<char, crypto_pwhash_argon2id_STRBYTES> encoded{};
+  const int result = crypto_pwhash_argon2id_str(
+      encoded.data(),
+      static_cast<const char *>(passwordData.bytes),
+      passwordData.length,
+      kAppPasswordArgon2Iterations,
+      kAppPasswordArgon2MemoryBytes);
+  if (result != 0) {
+    sodium_memzero(encoded.data(), encoded.size());
+    throw WalletEngineError("failed to derive app password verifier");
+  }
+  NSString *verifier = [NSString stringWithUTF8String:encoded.data()];
+  sodium_memzero(encoded.data(), encoded.size());
+  if (verifier == nil || ![verifier hasPrefix:kAppPasswordArgon2Prefix]) {
+    throw WalletEngineError("native Argon2id returned unexpected parameters");
+  }
+  return verifier;
+#else
+  // UI-only shell builds have no linked native dependency archive. They are
+  // never releasable and retain the legacy verifier only for visual testing.
+  return createLegacyAppPasswordVerifier(password);
+#endif
+}
+
+BOOL verifyAppPassword(NSString *password, NSString *verifier) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  if ([verifier hasPrefix:kAppPasswordArgon2Prefix]) {
+    if (sodium_init() < 0) {
+      return NO;
+    }
+    NSData *passwordData =
+        [password dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+    return crypto_pwhash_argon2id_str_verify(
+        verifier.UTF8String,
+        static_cast<const char *>(passwordData.bytes),
+        passwordData.length) == 0;
+  }
+#endif
+
+  NSArray<NSString *> *parts = [verifier componentsSeparatedByString:@":"];
+  if (parts.count != 4 ||
+      ![parts[0] isEqualToString:kAppPasswordLegacyVerifierVersion]) {
+    return NO;
+  }
+  NSInteger iterations = parts[1].integerValue;
+  if (iterations < kAppPasswordIterations || iterations > 1000000) {
+    return NO;
+  }
+  NSData *saltData =
+      [[NSData alloc] initWithBase64EncodedString:parts[2] options:0];
+  NSData *expectedData =
+      [[NSData alloc] initWithBase64EncodedString:parts[3] options:0];
+  if (saltData.length != kAppPasswordSaltBytes ||
+      expectedData.length != kAppPasswordHashBytes) {
+    return NO;
+  }
+
+  std::vector<uint8_t> actual(kAppPasswordHashBytes);
+  NSData *passwordData =
+      [password dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+  const int result = CCKeyDerivationPBKDF(
+      kCCPBKDF2,
+      static_cast<const char *>(passwordData.bytes),
+      passwordData.length,
+      static_cast<const uint8_t *>(saltData.bytes),
+      saltData.length,
+      kCCPRFHmacAlgSHA256,
+      static_cast<uint32_t>(iterations),
+      actual.data(),
+      actual.size());
+  if (result != kCCSuccess) {
+    std::fill(actual.begin(), actual.end(), 0);
+    return NO;
+  }
+
+  const uint8_t *expected =
+      static_cast<const uint8_t *>(expectedData.bytes);
+  uint8_t difference = 0;
+  for (size_t index = 0; index < actual.size(); ++index) {
+    difference |= actual[index] ^ expected[index];
+  }
+  std::fill(actual.begin(), actual.end(), 0);
+  return difference == 0;
+}
+
+void upgradeAppPasswordVerifierIfNeeded(NSString *password,
+                                        NSString *verifier) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  if (![verifier hasPrefix:kAppPasswordArgon2Prefix]) {
+    storeKeychainSecret(
+        kAppPasswordVerifierKey,
+        createAppPasswordVerifier(password));
+  }
+#else
+  (void)password;
+  (void)verifier;
+#endif
+}
+
+struct NativeUnlockThrottle {
+  NSInteger failures;
+  uint64_t blockedUntilMs;
+};
+
+NativeUnlockThrottle nativeUnlockThrottle() {
+  NSString *failures = readKeychainSecret(kAppUnlockFailuresKey);
+  NSString *blockedUntil = readKeychainSecret(kAppUnlockBlockedUntilKey);
+  return {
+    MAX(0, failures.integerValue),
+    static_cast<uint64_t>(MAX(0LL, blockedUntil.longLongValue)),
+  };
+}
+
+void clearNativeUnlockThrottle() {
+  deleteKeychainSecret(kAppUnlockFailuresKey);
+  deleteKeychainSecret(kAppUnlockBlockedUntilKey);
+}
+
+void recordNativeUnlockFailure(NSInteger failures) {
+  const NSInteger checkedFailures = MIN(MAX(failures, 1), 1000000);
+  const NSInteger exponent = MIN(MAX(checkedFailures - 1, 0), 8);
+  const uint64_t delaySeconds =
+      std::min<uint64_t>(1ULL << exponent, 300);
+  const uint64_t nowMs =
+      static_cast<uint64_t>(NSDate.date.timeIntervalSince1970 * 1000.0);
+  storeKeychainSecret(
+      kAppUnlockFailuresKey,
+      [NSString stringWithFormat:@"%ld", (long)checkedFailures]);
+  storeKeychainSecret(
+      kAppUnlockBlockedUntilKey,
+      [NSString stringWithFormat:@"%llu",
+          static_cast<unsigned long long>(nowMs + delaySeconds * 1000)]);
+}
+
+UIViewController *activeViewController() {
+  UIWindow *keyWindow = nil;
+  for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+    if (![scene isKindOfClass:[UIWindowScene class]]) {
+      continue;
+    }
+    UIWindowScene *windowScene = (UIWindowScene *)scene;
+    if (windowScene.activationState != UISceneActivationStateForegroundActive &&
+        windowScene.activationState != UISceneActivationStateForegroundInactive) {
+      continue;
+    }
+    for (UIWindow *window in windowScene.windows) {
+      if (window.isKeyWindow) {
+        keyWindow = window;
+        break;
+      }
+    }
+    if (keyWindow != nil) {
+      break;
+    }
+  }
+  UIViewController *controller = keyWindow.rootViewController;
+  while (controller.presentedViewController != nil) {
+    controller = controller.presentedViewController;
+  }
+  if ([controller isKindOfClass:[UINavigationController class]]) {
+    controller = ((UINavigationController *)controller).visibleViewController;
+  }
+  if ([controller isKindOfClass:[UITabBarController class]]) {
+    controller = ((UITabBarController *)controller).selectedViewController;
+  }
+  return controller;
+}
+
+NSString *formatAtomicXmr(NSString *value) {
+  NSString *digits =
+      [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (digits.length == 0 ||
+      [digits rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet]
+              .location != NSNotFound) {
+    return @"invalid amount";
+  }
+  while (digits.length > 1 && [digits hasPrefix:@"0"]) {
+    digits = [digits substringFromIndex:1];
+  }
+  while (digits.length < 13) {
+    digits = [@"0" stringByAppendingString:digits];
+  }
+  NSString *whole = [digits substringToIndex:digits.length - 12];
+  while (whole.length > 1 && [whole hasPrefix:@"0"]) {
+    whole = [whole substringFromIndex:1];
+  }
+  NSString *fraction = [digits substringFromIndex:digits.length - 12];
+  while ([fraction hasSuffix:@"0"]) {
+    fraction = [fraction substringToIndex:fraction.length - 1];
+  }
+  return fraction.length == 0
+      ? [NSString stringWithFormat:@"%@ XMR", whole]
+      : [NSString stringWithFormat:@"%@.%@ XMR", whole, fraction];
 }
 
 NSDictionary *toDictionary(const WalletSnapshot &snapshot) {
@@ -1177,6 +1508,21 @@ NSDictionary *biometricAuthResultDictionary(BOOL success,
   };
 }
 
+NSString *checkedFastReceiveScannerIdentityId(NSString *identityId) {
+  NSString *trimmed = [identityId stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSCharacterSet *allowed = [NSCharacterSet
+      characterSetWithCharactersInString:
+          @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"];
+  if (trimmed.length == 0 ||
+      trimmed.length > 80 ||
+      ![trimmed hasPrefix:@"fast-receive-v2-"] ||
+      [trimmed rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound) {
+    throw WalletEngineError("Fast receive identity is invalid");
+  }
+  return trimmed;
+}
+
 NSString *normalizeScannerBaseUrl(NSString *scannerUrl) {
   NSString *trimmed = [scannerUrl stringByTrimmingCharactersInSet:
       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -1184,18 +1530,33 @@ NSString *normalizeScannerBaseUrl(NSString *scannerUrl) {
     trimmed = [trimmed substringToIndex:trimmed.length - 1];
   }
 
-  if (![trimmed hasPrefix:@"https://"] && ![trimmed hasPrefix:@"http://"]) {
-    throw WalletEngineError("scannerUrl must start with http:// or https://");
+  NSURLComponents *components =
+      [NSURLComponents componentsWithString:trimmed];
+  BOOL pathIsOrigin =
+      components.path.length == 0 || [components.path isEqualToString:@"/"];
+  if (components == nil ||
+      ![components.scheme.lowercaseString isEqualToString:@"https"] ||
+      components.host.length == 0 ||
+      components.user.length > 0 ||
+      components.password.length > 0 ||
+      components.query.length > 0 ||
+      components.fragment.length > 0 ||
+      !pathIsOrigin) {
+    throw WalletEngineError(
+        "scannerUrl must be an HTTPS origin without credentials, paths, "
+        "queries, or fragments");
   }
 
-  return trimmed;
+  components.path = @"";
+  return components.string;
 }
 
-void scannerRequest(NSString *method,
-                    NSString *scannerUrl,
-                    NSString *route,
-                    NSString *scannerAuthToken,
-                    NSDictionary *body) {
+NSString *scannerRequest(NSString *method,
+                         NSString *scannerUrl,
+                         NSString *route,
+                         NSString *scannerAuthToken,
+                         NSDictionary *body,
+                         BOOL allowNotFound = NO) {
   NSString *urlString = [normalizeScannerBaseUrl(scannerUrl) stringByAppendingString:route];
   NSURL *url = [NSURL URLWithString:urlString];
   if (url == nil) {
@@ -1209,10 +1570,17 @@ void scannerRequest(NSString *method,
 
   NSString *token = [scannerAuthToken stringByTrimmingCharactersInSet:
       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-  if (token.length > 0) {
-    [request setValue:[@"Bearer " stringByAppendingString:token]
-        forHTTPHeaderField:@"Authorization"];
+  if (token.length < 43 || token.length > 256) {
+    throw WalletEngineError("Fast receive scanner credential is invalid");
   }
+  for (NSUInteger index = 0; index < token.length; index += 1) {
+    unichar character = [token characterAtIndex:index];
+    if (character < 33 || character > 126) {
+      throw WalletEngineError("Fast receive scanner credential is invalid");
+    }
+  }
+  [request setValue:[@"Bearer " stringByAppendingString:token]
+      forHTTPHeaderField:@"Authorization"];
 
   if (body != nil) {
     NSError *jsonError = nil;
@@ -1228,12 +1596,13 @@ void scannerRequest(NSString *method,
   dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
   __block NSError *requestError = nil;
   __block NSInteger statusCode = 0;
+  __block NSData *responseData = nil;
 
   NSURLSessionDataTask *task =
       [[NSURLSession sharedSession] dataTaskWithRequest:request
                                       completionHandler:
           ^(NSData *data, NSURLResponse *response, NSError *error) {
-            (void)data;
+            responseData = data;
             requestError = error;
             NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
             if ([httpResponse isKindOfClass:[NSHTTPURLResponse class]]) {
@@ -1248,16 +1617,31 @@ void scannerRequest(NSString *method,
     throw WalletEngineError("Fast receive scanner request failed: " +
                             toStdString(requestError.localizedDescription ?: @"unknown error"));
   }
+  if (allowNotFound && statusCode == 404) {
+    return @"";
+  }
   if (statusCode < 200 || statusCode > 299) {
     throw WalletEngineError("Fast receive scanner request failed with HTTP " +
                             std::to_string(statusCode));
   }
+  if (responseData.length > 1024 * 1024) {
+    throw WalletEngineError("Fast receive scanner response is too large");
+  }
+  NSString *responseBody =
+      [[NSString alloc] initWithData:(responseData ?: [NSData data])
+                           encoding:NSUTF8StringEncoding];
+  if (responseBody == nil) {
+    throw WalletEngineError("Fast receive scanner response was not UTF-8");
+  }
+  return responseBody;
 }
 
 NSDictionary *watchRegistrationBody(const FastReceiveRegistrationPayload &payload,
                                     NSString *pushToken) {
+  NSString *identityId =
+      checkedFastReceiveScannerIdentityId(toNSString(payload.identity.id));
   NSMutableDictionary *body = [@{
-    @"identity_id": toNSString(payload.identity.id),
+    @"identity_id": identityId,
     @"address": toNSString(payload.identity.address),
     @"private_view_key": toNSString(payload.privateViewKey),
     @"network": networkName(payload.identity.network),
@@ -1284,17 +1668,23 @@ void rejectWithException(RCTPromiseRejectBlock reject, const std::exception &err
 } // namespace
 
 typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
+typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message);
 
 @implementation RCTNativeMoneroWallet {
   std::unique_ptr<WalletEngine> _engine;
   std::string _engineInitError;
   dispatch_queue_t _walletQueue;
+  std::atomic_bool _appAuthorized;
+  NSMutableDictionary<NSString *, NSDictionary *> *_pendingTransactionApprovals;
+  id _backgroundObserver;
 }
 
 - (instancetype)init
 {
   self = [super init];
   if (self) {
+    _appAuthorized.store(false);
+    _pendingTransactionApprovals = [NSMutableDictionary dictionary];
     _walletQueue = dispatch_queue_create("org.tex8.NativeMoneroWallet", DISPATCH_QUEUE_SERIAL);
     try {
       LedgerBleTransportCallbacks callbacks;
@@ -1307,8 +1697,40 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     } catch (const std::exception &error) {
       _engineInitError = error.what();
     }
+    __weak RCTNativeMoneroWallet *weakSelf = self;
+    _backgroundObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationWillResignActiveNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(__unused NSNotification *notification) {
+      RCTNativeMoneroWallet *strongSelf = weakSelf;
+      if (strongSelf == nil) {
+        return;
+      }
+      strongSelf->_appAuthorized.store(false);
+      dispatch_async(strongSelf->_walletQueue, ^{
+        [strongSelf->_pendingTransactionApprovals removeAllObjects];
+        if (!strongSelf->_engine) {
+          return;
+        }
+        try {
+          strongSelf->_engine->closeAllWallets(true);
+        } catch (const std::exception &) {
+#if DEBUG
+          NSLog(@"Native wallet close on app lock failed");
+#endif
+        }
+      });
+    }];
   }
   return self;
+}
+
+- (void)dealloc
+{
+  if (_backgroundObserver != nil) {
+    [[NSNotificationCenter defaultCenter] removeObserver:_backgroundObserver];
+  }
 }
 
 + (NSString *)moduleName
@@ -1348,6 +1770,12 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
           diagnosticFields(fields, @{
             @"queuedMs": @(startedAt - queuedAt),
           }));
+    }
+
+    if (!_appAuthorized.load()) {
+      NSString *message = @"The native app session is locked";
+      reject(@"monero_wallet_ios_app_locked", message, nil);
+      return;
     }
 
     if (!_engine) {
@@ -1393,6 +1821,17 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
   });
 }
 
+- (BOOL)requireAppAuthorized:(RCTPromiseRejectBlock)reject
+{
+  if (_appAuthorized.load()) {
+    return YES;
+  }
+  reject(@"monero_wallet_ios_app_locked",
+         @"The native app session is locked",
+         nil);
+  return NO;
+}
+
 - (void)linkedWithMonero:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject
 {
@@ -1405,7 +1844,12 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                 reject:(RCTPromiseRejectBlock)reject
 {
   (void)reject;
-  NSLog(@"%@", message);
+#if DEBUG
+  if ([message hasPrefix:@"MONERO_WALLET_DIAGNOSTICS "] &&
+      message.length <= 2048) {
+    NSLog(@"%@", message);
+  }
+#endif
   resolve([NSNull null]);
 }
 
@@ -1436,19 +1880,29 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                       resolve:(RCTPromiseResolveBlock)resolve
                        reject:(RCTPromiseRejectBlock)reject
 {
+  [self beginBiometricAuthentication:reason
+                        authorizeApp:NO
+                             resolve:resolve
+                              reject:reject];
+}
+
+- (void)beginBiometricAuthentication:(NSString *)reason
+                         authorizeApp:(BOOL)authorizeApp
+                              resolve:(RCTPromiseResolveBlock)resolve
+                               reject:(RCTPromiseRejectBlock)reject
+{
   (void)reject;
   LAContext *context = [[LAContext alloc] init];
   NSError *error = nil;
   BOOL canEvaluate =
-      [context canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
+      [context canEvaluatePolicy:LAPolicyDeviceOwnerAuthentication
                            error:&error];
 
   if (!canEvaluate) {
-    NSDictionary *status = biometricAuthStatusDictionary();
     resolve(biometricAuthResultDictionary(
         NO,
-        status[@"biometryType"],
-        status[@"message"] ?: @"Biometric unlock is unavailable"));
+        @"none",
+        error.localizedDescription ?: @"Device authentication is unavailable"));
     return;
   }
 
@@ -1456,62 +1910,421 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
   NSString *localizedReason = reason.length > 0
       ? reason
       : @"Confirm biometrics to unlock your local wallet";
-  [context evaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
+  [context evaluatePolicy:LAPolicyDeviceOwnerAuthentication
           localizedReason:localizedReason
                     reply:^(BOOL success, NSError *authenticationError) {
     NSString *message = success
         ? @"Biometric unlock confirmed"
         : (authenticationError.localizedDescription ?: @"Biometric unlock was cancelled");
     dispatch_async(dispatch_get_main_queue(), ^{
+      if (success && authorizeApp) {
+        clearNativeUnlockThrottle();
+        _appAuthorized.store(true);
+      }
       resolve(biometricAuthResultDictionary(success, biometryType, message));
     });
   }];
 }
 
-- (void)storeSecret:(NSString *)key
-              value:(NSString *)value
-            resolve:(RCTPromiseResolveBlock)resolve
-             reject:(RCTPromiseRejectBlock)reject
+- (void)requestFreshAuthorization:(NSString *)reason
+                       completion:(SensitiveAuthorizationCompletion)completion
+{
+  if (!_appAuthorized.load()) {
+    completion(NO, @"The native app session is locked");
+    return;
+  }
+
+  NSString *mode = nil;
+  try {
+    mode = readKeychainSecret(kAppProtectionModeKey);
+  } catch (const std::exception &error) {
+    completion(NO, toNSString(error.what()));
+    return;
+  }
+
+  if ([mode isEqualToString:@"biometric"]) {
+    LAContext *context = [[LAContext alloc] init];
+    NSError *error = nil;
+    if (![context canEvaluatePolicy:LAPolicyDeviceOwnerAuthentication
+                              error:&error]) {
+      completion(NO, error.localizedDescription ?: @"Device authentication is unavailable");
+      return;
+    }
+    NSString *localizedReason = reason.length > 0
+        ? reason
+        : @"Confirm this sensitive wallet action";
+    [context evaluatePolicy:LAPolicyDeviceOwnerAuthentication
+            localizedReason:localizedReason
+                      reply:^(BOOL success, NSError *authenticationError) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        const BOOL stillAuthorized = _appAuthorized.load();
+        completion(
+            success && stillAuthorized,
+            success && stillAuthorized
+                ? @"Sensitive action confirmed"
+                : (authenticationError.localizedDescription
+                    ?: @"Biometric confirmation was cancelled"));
+      });
+    }];
+    return;
+  }
+
+  if (![mode isEqualToString:@"password"]) {
+    completion(NO, @"App protection has not been configured");
+    return;
+  }
+
+  dispatch_async(dispatch_get_main_queue(), ^{
+    const NativeUnlockThrottle throttle = nativeUnlockThrottle();
+    const uint64_t nowMs =
+        static_cast<uint64_t>(NSDate.date.timeIntervalSince1970 * 1000.0);
+    if (throttle.blockedUntilMs > nowMs) {
+      const uint64_t seconds = (throttle.blockedUntilMs - nowMs + 999) / 1000;
+      completion(
+          NO,
+          [NSString stringWithFormat:@"Try again in %llu seconds.",
+              static_cast<unsigned long long>(seconds)]);
+      return;
+    }
+    UIViewController *controller = activeViewController();
+    if (controller == nil) {
+      completion(NO, @"Password confirmation requires an active app screen");
+      return;
+    }
+
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:@"Confirm sensitive action"
+                                            message:(reason.length > 0
+                                                ? reason
+                                                : @"Enter your app password to continue.")
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+      textField.placeholder = @"App password";
+      textField.secureTextEntry = YES;
+      textField.autocorrectionType = UITextAutocorrectionTypeNo;
+      textField.spellCheckingType = UITextSpellCheckingTypeNo;
+    }];
+    [alert addAction:
+        [UIAlertAction actionWithTitle:@"Cancel"
+                                 style:UIAlertActionStyleCancel
+                               handler:^(__unused UIAlertAction *action) {
+      alert.textFields.firstObject.text = @"";
+      completion(NO, @"Confirmation cancelled");
+    }]];
+    [alert addAction:
+        [UIAlertAction actionWithTitle:@"Confirm"
+                                 style:UIAlertActionStyleDefault
+                               handler:^(__unused UIAlertAction *action) {
+      UITextField *field = alert.textFields.firstObject;
+      NSString *password = field.text ?: @"";
+      field.text = @"";
+      try {
+        const NativeUnlockThrottle currentThrottle = nativeUnlockThrottle();
+        const uint64_t currentTime =
+            static_cast<uint64_t>(NSDate.date.timeIntervalSince1970 * 1000.0);
+        if (currentThrottle.blockedUntilMs > currentTime) {
+          const uint64_t seconds =
+              (currentThrottle.blockedUntilMs - currentTime + 999) / 1000;
+          completion(
+              NO,
+              [NSString stringWithFormat:@"Try again in %llu seconds.",
+                  static_cast<unsigned long long>(seconds)]);
+          return;
+        }
+        NSString *verifier = readKeychainSecret(kAppPasswordVerifierKey) ?: @"";
+        if (!verifyAppPassword(password, verifier)) {
+          recordNativeUnlockFailure(currentThrottle.failures + 1);
+          completion(NO, @"Incorrect app password");
+          return;
+        }
+        upgradeAppPasswordVerifierIfNeeded(password, verifier);
+        if (!_appAuthorized.load()) {
+          completion(NO, @"The native app session was locked");
+          return;
+        }
+        clearNativeUnlockThrottle();
+        completion(YES, @"Sensitive action confirmed");
+      } catch (const std::exception &error) {
+        completion(NO, toNSString(error.what()));
+      }
+    }]];
+    [controller presentViewController:alert animated:YES completion:nil];
+  });
+}
+
+- (void)getAppProtectionStatus:(RCTPromiseResolveBlock)resolve
+                        reject:(RCTPromiseRejectBlock)reject
 {
   try {
-    storeKeychainSecret(key, value);
+    NSString *mode = readKeychainSecret(kAppProtectionModeKey);
+    BOOL configured =
+        [mode isEqualToString:@"password"] || [mode isEqualToString:@"biometric"];
+    resolve(@{
+      @"configured": @(configured),
+      @"locked": @(!_appAuthorized.load()),
+      @"mode": [mode isEqualToString:@"biometric"] ? @"biometric" : @"password",
+    });
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+  }
+}
+
+- (void)configureAppProtection:(NSString *)mode
+                      password:(NSString *)password
+                       resolve:(RCTPromiseResolveBlock)resolve
+                        reject:(RCTPromiseRejectBlock)reject
+{
+  NSString *currentMode = nil;
+  try {
+    currentMode = readKeychainSecret(kAppProtectionModeKey);
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+    return;
+  }
+  if (currentMode != nil && !_appAuthorized.load()) {
+    reject(@"monero_wallet_ios_app_locked",
+           @"The native app session is locked",
+           nil);
+    return;
+  }
+
+  void (^applyProtectionChange)(void) = ^{
+    try {
+      if ([mode isEqualToString:@"password"]) {
+        storeKeychainSecret(
+            kAppPasswordVerifierKey,
+            createAppPasswordVerifier(password));
+      } else if ([mode isEqualToString:@"biometric"]) {
+        NSDictionary *status = biometricAuthStatusDictionary();
+        if (![status[@"supported"] boolValue] ||
+            ![status[@"available"] boolValue] ||
+            ![status[@"enrolled"] boolValue]) {
+          throw WalletEngineError(
+              toStdString(status[@"message"] ?: @"Biometric unlock is unavailable"));
+        }
+        deleteKeychainSecret(kAppPasswordVerifierKey);
+      } else {
+        throw WalletEngineError("Unsupported app protection mode");
+      }
+      storeKeychainSecret(kAppProtectionModeKey, mode);
+      clearNativeUnlockThrottle();
+      // Selecting biometrics is only configuration. The following system
+      // authentication prompt is what grants wallet access.
+      _appAuthorized.store([mode isEqualToString:@"password"]);
+      resolve([NSNull null]);
+    } catch (const std::exception &error) {
+      rejectWithException(reject, error);
+    }
+  };
+
+  if (currentMode == nil) {
+    applyProtectionChange();
+    return;
+  }
+  [self requestFreshAuthorization:
+            @"Confirm your identity before changing how this app is protected."
+                        completion:^(BOOL authorized, NSString *message) {
+    if (!authorized) {
+      reject(@"monero_wallet_ios_sensitive_auth_failed",
+             message ?: @"Identity confirmation failed",
+             nil);
+      return;
+    }
+    applyProtectionChange();
+  }];
+}
+
+- (void)unlockApp:(NSString *)password
+           reason:(NSString *)reason
+          resolve:(RCTPromiseResolveBlock)resolve
+           reject:(RCTPromiseRejectBlock)reject
+{
+  try {
+    NSString *mode = readKeychainSecret(kAppProtectionModeKey);
+    if (mode == nil) {
+      resolve(biometricAuthResultDictionary(
+          NO, @"none", @"App protection has not been configured"));
+      return;
+    }
+    if ([mode isEqualToString:@"biometric"]) {
+      [self beginBiometricAuthentication:reason
+                            authorizeApp:YES
+                                 resolve:resolve
+                                  reject:reject];
+      return;
+    }
+    if (![mode isEqualToString:@"password"]) {
+      resolve(biometricAuthResultDictionary(
+          NO, @"none", @"Unsupported app protection mode"));
+      return;
+    }
+
+    const NativeUnlockThrottle throttle = nativeUnlockThrottle();
+    const uint64_t nowMs =
+        static_cast<uint64_t>(NSDate.date.timeIntervalSince1970 * 1000.0);
+    if (throttle.blockedUntilMs > nowMs) {
+      const uint64_t seconds =
+          (throttle.blockedUntilMs - nowMs + 999) / 1000;
+      resolve(biometricAuthResultDictionary(
+          NO,
+          @"none",
+          [NSString stringWithFormat:@"Try again in %llu seconds.",
+              static_cast<unsigned long long>(seconds)]));
+      return;
+    }
+
+    NSString *verifier = readKeychainSecret(kAppPasswordVerifierKey) ?: @"";
+    if (!verifyAppPassword(password, verifier)) {
+      recordNativeUnlockFailure(throttle.failures + 1);
+      resolve(biometricAuthResultDictionary(
+          NO, @"none", @"Incorrect app password"));
+      return;
+    }
+    upgradeAppPasswordVerifierIfNeeded(password, verifier);
+    clearNativeUnlockThrottle();
+    _appAuthorized.store(true);
+    resolve(biometricAuthResultDictionary(YES, @"none", @"App unlocked"));
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+  }
+}
+
+- (void)lockApp:(RCTPromiseResolveBlock)resolve
+         reject:(RCTPromiseRejectBlock)reject
+{
+  _appAuthorized.store(false);
+  dispatch_async(_walletQueue, ^{
+    [_pendingTransactionApprovals removeAllObjects];
+    if (!_engine) {
+      resolve([NSNull null]);
+      return;
+    }
+    try {
+      _engine->closeAllWallets(true);
+      resolve([NSNull null]);
+    } catch (const std::exception &error) {
+      rejectWithException(reject, error);
+    }
+  });
+}
+
+- (void)ensureWalletSecret:(NSString *)key
+                    resolve:(RCTPromiseResolveBlock)resolve
+                     reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  try {
+    ensureKeychainSecret(checkedWalletSecretKey(key));
     resolve([NSNull null]);
   } catch (const std::exception &error) {
     rejectWithException(reject, error);
   }
 }
 
-- (void)verifySecret:(NSString *)key
-               value:(NSString *)value
-             resolve:(RCTPromiseResolveBlock)resolve
-              reject:(RCTPromiseRejectBlock)reject
+- (void)deleteWalletSecret:(NSString *)key
+                    resolve:(RCTPromiseResolveBlock)resolve
+                     reject:(RCTPromiseRejectBlock)reject
 {
-  try {
-    NSString *storedValue = readKeychainSecret(key);
-    resolve(@(storedValue != nil && [storedValue isEqualToString:value]));
-  } catch (const std::exception &error) {
-    rejectWithException(reject, error);
+  if (![self requireAppAuthorized:reject]) {
+    return;
   }
-}
-
-- (void)ensureSecret:(NSString *)key
-             resolve:(RCTPromiseResolveBlock)resolve
-              reject:(RCTPromiseRejectBlock)reject
-{
   try {
-    ensureKeychainSecret(key);
+    deleteKeychainSecret(checkedWalletSecretKey(key));
     resolve([NSNull null]);
   } catch (const std::exception &error) {
     rejectWithException(reject, error);
   }
 }
 
-- (void)deleteSecret:(NSString *)key
-             resolve:(RCTPromiseResolveBlock)resolve
-              reject:(RCTPromiseRejectBlock)reject
+- (void)storeDaemonPassword:(NSString *)value
+                    resolve:(RCTPromiseResolveBlock)resolve
+                     reject:(RCTPromiseRejectBlock)reject
 {
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
   try {
-    deleteKeychainSecret(key);
+    if (value.length == 0 || value.length > 1024) {
+      throw WalletEngineError(
+          "daemon password must contain between 1 and 1024 characters");
+    }
+    storeKeychainSecret(kNodeDaemonPasswordSecretKey, value);
+    resolve([NSNull null]);
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+  }
+}
+
+- (void)deleteDaemonPassword:(RCTPromiseResolveBlock)resolve
+                      reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  try {
+    deleteKeychainSecret(kNodeDaemonPasswordSecretKey);
+    resolve([NSNull null]);
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+  }
+}
+
+- (void)storeProtectedMetadata:(NSString *)key
+                         value:(NSString *)value
+                       resolve:(RCTPromiseResolveBlock)resolve
+                        reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  try {
+    NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+    if (data.length > kMaxProtectedMetadataBytes) {
+      throw WalletEngineError("protected metadata is too large");
+    }
+    storeKeychainSecret(
+        protectedMetadataSecretKey(key),
+        [NSString stringWithFormat:@"%@:%@", kProtectedMetadataVersion, value]);
+    resolve([NSNull null]);
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+  }
+}
+
+- (void)loadProtectedMetadata:(NSString *)key
+                       resolve:(RCTPromiseResolveBlock)resolve
+                        reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  try {
+    NSString *stored = readKeychainSecret(protectedMetadataSecretKey(key));
+    if (stored == nil) {
+      resolve(@"");
+      return;
+    }
+    NSString *prefix = [kProtectedMetadataVersion stringByAppendingString:@":"];
+    if (![stored hasPrefix:prefix]) {
+      throw WalletEngineError("protected metadata version is unsupported");
+    }
+    resolve([stored substringFromIndex:prefix.length]);
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+  }
+}
+
+- (void)deleteProtectedMetadata:(NSString *)key
+                         resolve:(RCTPromiseResolveBlock)resolve
+                          reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  try {
+    deleteKeychainSecret(protectedMetadataSecretKey(key));
     resolve([NSNull null]);
   } catch (const std::exception &error) {
     rejectWithException(reject, error);
@@ -1522,6 +2335,9 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                   resolve:(RCTPromiseResolveBlock)resolve
                    reject:(RCTPromiseRejectBlock)reject
 {
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
   try {
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSURL *appSupportUrl = [fileManager URLForDirectory:NSApplicationSupportDirectory
@@ -1572,6 +2388,9 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                   resolve:(RCTPromiseResolveBlock)resolve
                    reject:(RCTPromiseRejectBlock)reject
 {
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
   try {
     NSString *checkedWalletName = checkedPathSegment(walletName, "walletName");
     NSString *checkedNetwork = checkedPathSegment(network, "network");
@@ -1657,85 +2476,193 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
   }];
 }
 
-- (void)restoreWallet:(NSString *)path
-             password:(NSString *)password
-             mnemonic:(NSString *)mnemonic
-           seedOffset:(NSString *)seedOffset
-              network:(NSString *)network
-        restoreHeight:(double)restoreHeight
-              resolve:(RCTPromiseResolveBlock)resolve
-               reject:(RCTPromiseRejectBlock)reject
+- (void)restoreWalletWithNativeSeed:(NSString *)path
+                          secretKey:(NSString *)secretKey
+                            network:(NSString *)network
+                      restoreHeight:(double)restoreHeight
+                            resolve:(RCTPromiseResolveBlock)resolve
+                             reject:(RCTPromiseRejectBlock)reject
 {
-  NSArray<NSString *> *seedWords = [[mnemonic stringByTrimmingCharactersInSet:
-      [NSCharacterSet whitespaceAndNewlineCharacterSet]]
-      componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-  NSPredicate *nonEmpty =
-      [NSPredicate predicateWithBlock:^BOOL(NSString *word,
-                                            NSDictionary<NSString *, id> *bindings) {
-    (void)bindings;
-    return word.length > 0;
-  }];
-  [self runOnWalletQueue:resolve
-                  reject:reject
-               operation:@"restoreWallet"
-                  fields:@{
-                    @"hasSeedOffset": @(seedOffset.length > 0),
-                    @"network": network ?: @"",
-                    @"restoreHeight": @(restoreHeight),
-                    @"seedWordCount": @([[seedWords filteredArrayUsingPredicate:nonEmpty] count]),
-                    @"walletFile": walletFileName(path),
-                  }
-                    work:^id(WalletEngine &engine) {
-    RestoreWalletRequest request;
-    request.path = toStdString(path);
-    request.password = toStdString(password);
-    request.mnemonic = toStdString(mnemonic);
-    request.seedOffset = toStdString(seedOffset);
-    request.network = toNetworkType(network);
-    request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
-    return toNSString(engine.restoreWallet(request));
-  }];
-}
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
 
-- (void)restoreWalletWithStoredSecret:(NSString *)path
-                            secretKey:(NSString *)secretKey
-                             mnemonic:(NSString *)mnemonic
-                           seedOffset:(NSString *)seedOffset
-                              network:(NSString *)network
-                        restoreHeight:(double)restoreHeight
-                              resolve:(RCTPromiseResolveBlock)resolve
-                               reject:(RCTPromiseRejectBlock)reject
-{
-  NSArray<NSString *> *seedWords = [[mnemonic stringByTrimmingCharactersInSet:
-      [NSCharacterSet whitespaceAndNewlineCharacterSet]]
-      componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-  NSPredicate *nonEmpty =
-      [NSPredicate predicateWithBlock:^BOOL(NSString *word,
-                                            NSDictionary<NSString *, id> *bindings) {
-    (void)bindings;
-    return word.length > 0;
-  }];
-  [self runOnWalletQueue:resolve
-                  reject:reject
-               operation:@"restoreWalletWithStoredSecret"
-                  fields:@{
-                    @"hasSeedOffset": @(seedOffset.length > 0),
-                    @"hasStoredSecret": @YES,
-                    @"network": network ?: @"",
-                    @"restoreHeight": @(restoreHeight),
-                    @"seedWordCount": @([[seedWords filteredArrayUsingPredicate:nonEmpty] count]),
-                    @"walletFile": walletFileName(path),
-                  }
-                    work:^id(WalletEngine &engine) {
-    RestoreWalletRequest request;
-    request.path = toStdString(path);
-    request.password = toStdString(readRequiredKeychainSecret(secretKey));
-    request.mnemonic = toStdString(mnemonic);
-    request.seedOffset = toStdString(seedOffset);
-    request.network = toNetworkType(network);
-    request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
-    return toNSString(engine.restoreWallet(request));
-  }];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIViewController *presenter = activeViewController();
+    if (presenter == nil || !_appAuthorized.load()) {
+      reject(@"monero_wallet_ios_native_seed_ui_unavailable",
+             @"The secure recovery screen is unavailable",
+             nil);
+      return;
+    }
+    const BOOL german =
+        [[NSLocale preferredLanguages].firstObject hasPrefix:@"de"];
+    NSString *titleText =
+        german ? @"Wallet wiederherstellen" : @"Restore wallet";
+    NSString *detailText = german
+        ? @"Gib deine 25 Wiederherstellungswörter ein. Sie bleiben auf diesem Gerät."
+        : @"Enter your 25 recovery words. They stay on this device.";
+    NSString *wordsLabel =
+        german ? @"25 Wiederherstellungswörter" : @"25 recovery words";
+    NSString *cancelText = german ? @"Abbrechen" : @"Cancel";
+    NSString *restoreText = german ? @"Wiederherstellen" : @"Restore";
+    NSString *incompleteText =
+        german ? @"Bitte gib alle 25 Wörter ein." : @"Please enter all 25 words.";
+
+    UIViewController *recovery = [UIViewController new];
+    recovery.modalPresentationStyle = UIModalPresentationFormSheet;
+    recovery.modalInPresentation = YES;
+    recovery.preferredContentSize = CGSizeMake(540, 500);
+    recovery.view.backgroundColor = UIColor.systemBackgroundColor;
+
+    UILabel *title = [UILabel new];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle1];
+    title.adjustsFontForContentSizeCategory = YES;
+    title.numberOfLines = 0;
+    title.text = titleText;
+
+    UILabel *detail = [UILabel new];
+    detail.translatesAutoresizingMaskIntoConstraints = NO;
+    detail.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    detail.adjustsFontForContentSizeCategory = YES;
+    detail.numberOfLines = 0;
+    detail.text = detailText;
+
+    UITextView *seedInput = [UITextView new];
+    seedInput.translatesAutoresizingMaskIntoConstraints = NO;
+    seedInput.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    seedInput.adjustsFontForContentSizeCategory = YES;
+    seedInput.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    seedInput.autocorrectionType = UITextAutocorrectionTypeNo;
+    seedInput.spellCheckingType = UITextSpellCheckingTypeNo;
+    seedInput.textContentType = nil;
+    seedInput.layer.borderColor = UIColor.separatorColor.CGColor;
+    seedInput.layer.borderWidth = 1;
+    seedInput.layer.cornerRadius = 10;
+    seedInput.accessibilityLabel = wordsLabel;
+
+    UILabel *errorLabel = [UILabel new];
+    errorLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    errorLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    errorLabel.adjustsFontForContentSizeCategory = YES;
+    errorLabel.numberOfLines = 0;
+    errorLabel.textColor = UIColor.systemRedColor;
+    errorLabel.text = @"";
+
+    UIButton *cancelButton =
+        [UIButton buttonWithType:UIButtonTypeSystem primaryAction:
+          [UIAction actionWithTitle:cancelText
+                              image:nil
+                         identifier:nil
+                            handler:^(__unused UIAction *action) {
+      seedInput.text = @"";
+      [recovery dismissViewControllerAnimated:YES completion:^{
+        reject(@"monero_wallet_ios_native_seed_cancelled",
+               @"Wallet recovery was cancelled",
+               nil);
+      }];
+    }]];
+    cancelButton.translatesAutoresizingMaskIntoConstraints = NO;
+
+    __weak RCTNativeMoneroWallet *weakSelf = self;
+    UIButton *restoreButton =
+        [UIButton buttonWithType:UIButtonTypeSystem primaryAction:
+          [UIAction actionWithTitle:restoreText
+                              image:nil
+                         identifier:nil
+                            handler:^(__unused UIAction *action) {
+      NSArray<NSString *> *parts =
+          [seedInput.text componentsSeparatedByCharactersInSet:
+              NSCharacterSet.whitespaceAndNewlineCharacterSet];
+      NSMutableArray<NSString *> *words = [NSMutableArray arrayWithCapacity:25];
+      for (NSString *part in parts) {
+        if (part.length > 0) {
+          [words addObject:part.lowercaseString];
+        }
+      }
+      if (words.count != 25) {
+        errorLabel.text = incompleteText;
+        UIAccessibilityPostNotification(
+            UIAccessibilityAnnouncementNotification,
+            errorLabel.text);
+        return;
+      }
+
+      NSString *nativeSeed = [words componentsJoinedByString:@" "];
+      seedInput.text = @"";
+      [recovery dismissViewControllerAnimated:YES completion:^{
+        RCTNativeMoneroWallet *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+          reject(@"monero_wallet_ios_native_seed_ui_unavailable",
+                 @"The secure recovery screen closed",
+                 nil);
+          return;
+        }
+        [strongSelf runOnWalletQueue:resolve
+                              reject:reject
+                           operation:@"restoreWalletWithNativeSeed"
+                              fields:@{
+                                @"hasStoredSecret": @YES,
+                                @"network": network ?: @"",
+                                @"restoreHeight": @(restoreHeight),
+                                @"seedBoundaryNative": @YES,
+                                @"walletFile": walletFileName(path),
+                              }
+                                work:^id(WalletEngine &engine) {
+          RestoreWalletRequest request;
+          request.path = toStdString(path);
+          request.password = toStdString(readRequiredKeychainSecret(secretKey));
+          request.mnemonic = toStdString(nativeSeed);
+          request.seedOffset = "";
+          request.network = toNetworkType(network);
+          request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
+          return toNSString(engine.restoreWallet(request));
+        }];
+      }];
+    }]];
+    restoreButton.translatesAutoresizingMaskIntoConstraints = NO;
+    restoreButton.configuration = [UIButtonConfiguration filledButtonConfiguration];
+
+    UIStackView *actions =
+        [[UIStackView alloc] initWithArrangedSubviews:@[cancelButton, restoreButton]];
+    actions.translatesAutoresizingMaskIntoConstraints = NO;
+    actions.axis = UILayoutConstraintAxisHorizontal;
+    actions.alignment = UIStackViewAlignmentFill;
+    actions.distribution = UIStackViewDistributionFillEqually;
+    actions.spacing = 12;
+
+    [recovery.view addSubview:title];
+    [recovery.view addSubview:detail];
+    [recovery.view addSubview:seedInput];
+    [recovery.view addSubview:errorLabel];
+    [recovery.view addSubview:actions];
+    UILayoutGuide *safe = recovery.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+      [title.topAnchor constraintEqualToAnchor:safe.topAnchor constant:24],
+      [title.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:24],
+      [title.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-24],
+      [detail.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:12],
+      [detail.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+      [detail.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+      [seedInput.topAnchor constraintEqualToAnchor:detail.bottomAnchor constant:16],
+      [seedInput.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+      [seedInput.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+      [seedInput.heightAnchor constraintGreaterThanOrEqualToConstant:180],
+      [errorLabel.topAnchor constraintEqualToAnchor:seedInput.bottomAnchor constant:8],
+      [errorLabel.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+      [errorLabel.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+      [actions.topAnchor constraintGreaterThanOrEqualToAnchor:errorLabel.bottomAnchor constant:12],
+      [actions.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+      [actions.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+      [actions.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-24],
+      [actions.heightAnchor constraintGreaterThanOrEqualToConstant:50],
+    ]];
+
+    [presenter presentViewController:recovery animated:YES completion:^{
+      [seedInput becomeFirstResponder];
+    }];
+  });
 }
 
 - (void)openWallet:(NSString *)path
@@ -1983,7 +2910,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                            network:(NSString *)network
                      restoreHeight:(double)restoreHeight
                        scannerUrl:(NSString *)scannerUrl
-                 scannerAuthToken:(NSString *)scannerAuthToken
+              scannerAuthSecretKey:(NSString *)scannerAuthSecretKey
                         pushToken:(NSString *)pushToken
                           resolve:(RCTPromiseResolveBlock)resolve
                            reject:(RCTPromiseRejectBlock)reject
@@ -2008,7 +2935,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     scannerRequest(@"POST",
                    scannerUrl,
                    @"/v1/fast-receive/watch",
-                   scannerAuthToken,
+                   readRequiredKeychainSecret(scannerAuthSecretKey),
                    watchRegistrationBody(payload, pushToken));
     payload.identity.scannerStatus = "enabled";
     return toDictionary(payload.identity);
@@ -2021,7 +2948,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                                          network:(NSString *)network
                                    restoreHeight:(double)restoreHeight
                                       scannerUrl:(NSString *)scannerUrl
-                                scannerAuthToken:(NSString *)scannerAuthToken
+                             scannerAuthSecretKey:(NSString *)scannerAuthSecretKey
                                        pushToken:(NSString *)pushToken
                                          resolve:(RCTPromiseResolveBlock)resolve
                                           reject:(RCTPromiseRejectBlock)reject
@@ -2047,7 +2974,7 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     scannerRequest(@"POST",
                    scannerUrl,
                    @"/v1/fast-receive/watch",
-                   scannerAuthToken,
+                   readRequiredKeychainSecret(scannerAuthSecretKey),
                    watchRegistrationBody(payload, pushToken));
     payload.identity.scannerStatus = "enabled";
     return toDictionary(payload.identity);
@@ -2056,23 +2983,38 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
 
 - (void)disableFastReceiveIdentity:(NSString *)identityId
                         scannerUrl:(NSString *)scannerUrl
-                  scannerAuthToken:(NSString *)scannerAuthToken
+               scannerAuthSecretKey:(NSString *)scannerAuthSecretKey
                            resolve:(RCTPromiseResolveBlock)resolve
                             reject:(RCTPromiseRejectBlock)reject
 {
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
   uint64_t startedAt = diagnosticNowMs();
   logNativeEvent(@"disableFastReceiveIdentity.start", @{
     @"identityId": identityId ?: @"",
     @"scannerUrl": scannerUrl ?: @"",
   });
   dispatch_async(_walletQueue, ^{
+    if (!_appAuthorized.load()) {
+      reject(@"monero_wallet_ios_app_locked",
+             @"The native app session is locked",
+             nil);
+      return;
+    }
     try {
+      NSString *checkedIdentityId =
+          checkedFastReceiveScannerIdentityId(identityId);
       NSString *encodedIdentityId =
-          [identityId stringByAddingPercentEncodingWithAllowedCharacters:
-              [NSCharacterSet URLPathAllowedCharacterSet]] ?: identityId;
+          [checkedIdentityId stringByAddingPercentEncodingWithAllowedCharacters:
+              [NSCharacterSet URLPathAllowedCharacterSet]] ?: checkedIdentityId;
       NSString *route =
           [@"/v1/fast-receive/watch/" stringByAppendingString:encodedIdentityId];
-      scannerRequest(@"DELETE", scannerUrl, route, scannerAuthToken, nil);
+      scannerRequest(@"DELETE",
+                     scannerUrl,
+                     route,
+                     readRequiredKeychainSecret(scannerAuthSecretKey),
+                     nil);
       logNativeEvent(@"disableFastReceiveIdentity.success", @{
         @"elapsedMs": @(diagnosticNowMs() - startedAt),
         @"identityId": identityId ?: @"",
@@ -2098,6 +3040,98 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
       rejectWithException(reject, error);
     }
   });
+}
+
+- (void)getFastReceiveScannerStatusWithStoredSecret:(NSString *)identityId
+                                          scannerUrl:(NSString *)scannerUrl
+                                scannerAuthSecretKey:(NSString *)scannerAuthSecretKey
+                                             resolve:(RCTPromiseResolveBlock)resolve
+                                              reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"getFastReceiveScannerStatusWithStoredSecret"
+                  fields:@{
+                    @"identityId": maskIdentifier(identityId),
+                    @"scannerUrl": scannerUrl ?: @"",
+                  }
+                    work:^id(WalletEngine &engine) {
+    (void)engine;
+    NSString *checkedIdentityId =
+        checkedFastReceiveScannerIdentityId(identityId);
+    NSString *encodedIdentityId =
+        [checkedIdentityId stringByAddingPercentEncodingWithAllowedCharacters:
+            [NSCharacterSet URLPathAllowedCharacterSet]] ?: checkedIdentityId;
+    NSString *route =
+        [@"/v1/fast-receive/watch/" stringByAppendingString:encodedIdentityId];
+    return scannerRequest(@"GET",
+                          scannerUrl,
+                          route,
+                          readRequiredKeychainSecret(scannerAuthSecretKey),
+                          nil,
+                          YES);
+  }];
+}
+
+- (void)checkFastReceiveKeyImagesWithStoredSecret:(NSString *)identityId
+                                        scannerUrl:(NSString *)scannerUrl
+                              scannerAuthSecretKey:(NSString *)scannerAuthSecretKey
+                                    keyImagesJson:(NSString *)keyImagesJson
+                                           resolve:(RCTPromiseResolveBlock)resolve
+                                            reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"checkFastReceiveKeyImagesWithStoredSecret"
+                  fields:@{
+                    @"identityId": maskIdentifier(identityId),
+                    @"scannerUrl": scannerUrl ?: @"",
+                  }
+                    work:^id(WalletEngine &engine) {
+    (void)engine;
+    NSString *checkedIdentityId =
+        checkedFastReceiveScannerIdentityId(identityId);
+    NSData *jsonData =
+        [keyImagesJson dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+    NSError *jsonError = nil;
+    id parsed = [NSJSONSerialization JSONObjectWithData:jsonData
+                                                options:0
+                                                  error:&jsonError];
+    if (![parsed isKindOfClass:[NSArray class]]) {
+      throw WalletEngineError("keyImages must be a JSON array");
+    }
+    NSArray *keyImages = (NSArray *)parsed;
+    if (keyImages.count == 0 || keyImages.count > 1024) {
+      throw WalletEngineError("keyImages must contain between 1 and 1024 items");
+    }
+    NSMutableArray *normalized = [NSMutableArray arrayWithCapacity:keyImages.count];
+    NSCharacterSet *hexCharacters =
+        [NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"];
+    for (id value in keyImages) {
+      if (![value isKindOfClass:[NSString class]]) {
+        throw WalletEngineError(
+            "keyImages must contain 64-character hex key images");
+      }
+      NSString *keyImage =
+          [(NSString *)value lowercaseString];
+      if (keyImage.length != 64 ||
+          [keyImage rangeOfCharacterFromSet:hexCharacters.invertedSet].location !=
+              NSNotFound) {
+        throw WalletEngineError(
+            "keyImages must contain 64-character hex key images");
+      }
+      [normalized addObject:keyImage];
+    }
+    return scannerRequest(
+        @"POST",
+        scannerUrl,
+        @"/v1/fast-receive/key-images/status",
+        readRequiredKeychainSecret(scannerAuthSecretKey),
+        @{
+          @"identity_id": checkedIdentityId,
+          @"key_images": normalized,
+        });
+  }];
 }
 
 - (void)closeWallet:(NSString *)walletId
@@ -2285,40 +3319,76 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
   }];
 }
 
-- (void)getSeed:(NSString *)walletId
-     seedOffset:(NSString *)seedOffset
-        resolve:(RCTPromiseResolveBlock)resolve
-         reject:(RCTPromiseRejectBlock)reject
+- (void)presentRecoverySeed:(NSString *)walletId
+                     reason:(NSString *)reason
+                    resolve:(RCTPromiseResolveBlock)resolve
+                     reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve
-                  reject:reject
-               operation:@"getSeed"
-                  fields:@{
-                    @"hasSeedOffset": @(seedOffset.length > 0),
-                    @"walletId": maskIdentifier(walletId),
-                  }
-                    work:^id(WalletEngine &engine) {
-    return toNSString(engine.getSeed(
-        toStdString(walletId),
-        toStdString(seedOffset)));
-  }];
-}
-
-- (void)setWalletPassword:(NSString *)walletId
-              newPassword:(NSString *)newPassword
-                  resolve:(RCTPromiseResolveBlock)resolve
-                   reject:(RCTPromiseRejectBlock)reject
-{
-  [self runOnWalletQueue:resolve
-                  reject:reject
-               operation:@"setWalletPassword"
-                  fields:@{
-                    @"hasNewPassword": @(newPassword.length > 0),
-                    @"walletId": maskIdentifier(walletId),
-                  }
-                    work:^id(WalletEngine &engine) {
-    engine.setWalletPassword(toStdString(walletId), toStdString(newPassword));
-    return nil;
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  [self requestFreshAuthorization:
+            (reason.length > 0
+                ? reason
+                : @"Confirm your identity to view the recovery seed.")
+                       completion:^(BOOL authorized, NSString *message) {
+    if (!authorized) {
+      reject(@"monero_wallet_ios_sensitive_auth_failed", message, nil);
+      return;
+    }
+    dispatch_async(_walletQueue, ^{
+      if (!_appAuthorized.load()) {
+        reject(@"monero_wallet_ios_app_locked",
+               @"The native app session was locked",
+               nil);
+        return;
+      }
+      if (!_engine) {
+        NSString *message = _engineInitError.empty()
+            ? @"WalletEngine failed to initialize"
+            : toNSString(_engineInitError);
+        reject(@"monero_wallet_init_failed", message, nil);
+        return;
+      }
+      try {
+        std::string nativeSeed =
+            _engine->getSeed(toStdString(walletId), std::string());
+        NSString *seed = toNSString(nativeSeed);
+        tex8::wallet::secureClear(nativeSeed);
+        dispatch_async(dispatch_get_main_queue(), ^{
+          UIViewController *controller = activeViewController();
+          if (controller == nil || !_appAuthorized.load()) {
+            reject(@"monero_wallet_ios_seed_dialog_unavailable",
+                   @"Recovery seed display requires an active, unlocked app screen",
+                   nil);
+            return;
+          }
+          NSString *warning = reason.length > 0
+              ? reason
+              : @"Write these words down offline.";
+          UIAlertController *alert =
+              [UIAlertController alertControllerWithTitle:@"Recovery seed"
+                                                  message:
+                  [NSString stringWithFormat:@"%@\n\n%@", warning, seed]
+                                           preferredStyle:UIAlertControllerStyleAlert];
+          [alert addAction:
+              [UIAlertAction actionWithTitle:@"Close"
+                                       style:UIAlertActionStyleCancel
+                                     handler:^(__unused UIAlertAction *action) {
+            resolve(@NO);
+          }]];
+          [alert addAction:
+              [UIAlertAction actionWithTitle:@"I wrote it down"
+                                       style:UIAlertActionStyleDefault
+                                     handler:^(__unused UIAlertAction *action) {
+            resolve(@YES);
+          }]];
+          [controller presentViewController:alert animated:YES completion:nil];
+        });
+      } catch (const std::exception &error) {
+        rejectWithException(reject, error);
+      }
+    });
   }];
 }
 
@@ -2467,7 +3537,24 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
     request.paymentId = toStdString(paymentId);
     request.priority = toStdString(priority);
     request.accountIndex = toIndex(accountIndex, "accountIndex");
-    return toDictionary(engine.prepareTransaction(request));
+    const auto prepared = engine.prepareTransaction(request);
+    if (prepared.id.empty()) {
+      throw WalletEngineError(
+          prepared.error.empty()
+              ? "Native transaction preparation did not return an approval id"
+              : prepared.error);
+    }
+    NSString *preparedId = toNSString(prepared.id);
+    [_pendingTransactionApprovals removeAllObjects];
+    _pendingTransactionApprovals[preparedId] = @{
+      @"walletId": walletId,
+      @"pendingId": preparedId,
+      @"address": address ?: @"",
+      @"amountAtomic": toNSString(std::to_string(prepared.amountAtomic)),
+      @"feeAtomic": toNSString(std::to_string(prepared.feeAtomic)),
+      @"expiresAtMs": @(diagnosticNowMs() + 120000),
+    };
+    return toDictionary(prepared);
   }];
 }
 
@@ -2476,18 +3563,89 @@ typedef id _Nullable (^WalletWorkBlock)(WalletEngine &engine);
                   resolve:(RCTPromiseResolveBlock)resolve
                    reject:(RCTPromiseRejectBlock)reject
 {
-  [self runOnWalletQueue:resolve
-                  reject:reject
-               operation:@"commitTransaction"
-                  fields:@{
-                    @"pendingId": maskIdentifier(pendingId),
-                    @"walletId": maskIdentifier(walletId),
-                  }
-                    work:^id(WalletEngine &engine) {
-    return toDictionary(engine.commitTransaction(
-        toStdString(walletId),
-        toStdString(pendingId)));
-  }];
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  dispatch_async(_walletQueue, ^{
+    NSDictionary *approval = _pendingTransactionApprovals[pendingId];
+    [_pendingTransactionApprovals removeObjectForKey:pendingId];
+    if (approval == nil ||
+        ![approval[@"walletId"] isEqualToString:walletId] ||
+        [approval[@"expiresAtMs"] unsignedLongLongValue] < diagnosticNowMs()) {
+      reject(
+          @"monero_wallet_ios_transaction_approval_missing",
+          @"Transaction approval is missing, expired, or already used. Prepare it again.",
+          nil);
+      return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      UIViewController *controller = activeViewController();
+      if (controller == nil || !_appAuthorized.load()) {
+        reject(@"monero_wallet_ios_transaction_dialog_unavailable",
+               @"Transaction confirmation requires an active, unlocked app screen",
+               nil);
+        return;
+      }
+      NSString *amountAtomic = approval[@"amountAtomic"] ?: @"0";
+      NSString *feeAtomic = approval[@"feeAtomic"] ?: @"0";
+      NSString *confirmation = [NSString stringWithFormat:
+          @"Recipient\n%@\n\nAmount\n%@ (%@ atomic units)\n\n"
+           "Network fee\n%@ (%@ atomic units)",
+          approval[@"address"] ?: @"",
+          formatAtomicXmr(amountAtomic),
+          amountAtomic,
+          formatAtomicXmr(feeAtomic),
+          feeAtomic];
+      UIAlertController *alert =
+          [UIAlertController alertControllerWithTitle:@"Confirm transaction"
+                                              message:confirmation
+                                       preferredStyle:UIAlertControllerStyleAlert];
+      [alert addAction:
+          [UIAlertAction actionWithTitle:@"Cancel"
+                                   style:UIAlertActionStyleCancel
+                                 handler:^(__unused UIAlertAction *action) {
+        reject(@"monero_wallet_ios_transaction_cancelled",
+               @"Transaction cancelled",
+               nil);
+      }]];
+      [alert addAction:
+          [UIAlertAction actionWithTitle:@"Authorize and send"
+                                   style:UIAlertActionStyleDefault
+                                 handler:^(__unused UIAlertAction *action) {
+        [self requestFreshAuthorization:
+                  @"Authorize the transaction shown in the previous system dialog."
+                                 completion:^(BOOL authorized, NSString *message) {
+          if (!authorized) {
+            reject(@"monero_wallet_ios_transaction_auth_failed", message, nil);
+            return;
+          }
+          dispatch_async(_walletQueue, ^{
+            if (!_appAuthorized.load()) {
+              reject(@"monero_wallet_ios_app_locked",
+                     @"The native app session was locked",
+                     nil);
+              return;
+            }
+            if (!_engine) {
+              reject(@"monero_wallet_init_failed",
+                     @"WalletEngine failed to initialize",
+                     nil);
+              return;
+            }
+            try {
+              const auto committed = _engine->commitTransaction(
+                  toStdString(walletId),
+                  toStdString(pendingId));
+              resolve(toDictionary(committed));
+            } catch (const std::exception &error) {
+              rejectWithException(reject, error);
+            }
+          });
+        }];
+      }]];
+      [controller presentViewController:alert animated:YES completion:nil];
+    });
+  });
 }
 
 - (void)getHardwareWalletStatus:(NSString *)walletId

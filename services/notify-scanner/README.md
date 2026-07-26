@@ -48,11 +48,27 @@ mobile push service. It is not an FCM/APNs token. The legacy `push_token`
 field remains readable for storage compatibility but is never used for
 delivery.
 
-If `NOTIFY_SCANNER_AUTH_TOKEN` is set, clients must send:
+Every watch-management request must send a unique, randomly generated
+32-byte-or-stronger capability:
 
 ```text
-Authorization: Bearer <token>
+Authorization: Bearer <per-watch-management-capability>
 ```
+
+The scanner stores only a domain-separated SHA-256 hash of that capability.
+Creating a new watch binds the capability to the identity; reading, updating,
+deleting, listing matches, and checking key images all require the same
+capability. A capability for one watch cannot manage another watch. There is
+no unauthenticated compatibility mode.
+
+The application limits each hashed capability to 120 requests per minute and
+rejects request bodies larger than 96 KiB before JSON parsing. The production
+nginx configuration adds an independent per-IP request limit, connection
+limit, body limit, and proxy timeouts. These defaults are a safety boundary,
+not a substitute for deployment monitoring and load testing.
+The encrypted store accepts at most 100,000 watches and retains at most 4,096
+opaque matches plus 4,096 key-image status records per watch, pruning the
+oldest privacy records first.
 
 `GET /v1/fast-receive/watch/:identity_id` returns only non-secret scanner
 state for that watch record. Mobile clients use it after node/server switches
@@ -79,6 +95,12 @@ returned by the match API. Unknown detail fields are rejected. Processing the
 same output twice still updates the same opaque event instead of creating a
 duplicate.
 
+This internal route is disabled unless
+`NOTIFY_SCANNER_INTERNAL_AUTH_TOKEN` is configured. Its token is separate from
+all per-watch capabilities and must never be distributed to apps.
+The production reverse proxy also returns `404` for this exact route, so match
+injection is reachable only through the loopback listener.
+
 `POST /v1/fast-receive/key-images/status` is the fast spend-reconciliation
 query. The app derives key images locally and asks the server for known spent
 state:
@@ -104,8 +126,16 @@ return `unknown` from the local cache.
 export NOTIFY_SCANNER_STORAGE_KEY=<32-byte hex or base64 key>
 export NOTIFY_SCANNER_WATCH_DB=./notify-scanner-watch.json.enc
 export NOTIFY_SCANNER_BIND=127.0.0.1:8087
-export NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT=xmr.tex8.com:18091
+# Preferred on the node host: direct, read-only access to Cuprate's ScanPack.
+export NOTIFY_SCANNER_SCANPACK_DIRECTORY=/var/lib/cuprate/wallet-scan-cache-100k
+export NOTIFY_SCANNER_SCANPACK_NETWORK=mainnet
+export NOTIFY_SCANNER_SCANPACK_REFRESH_MS=10000
+export NOTIFY_SCANNER_DERIVATION_WORKERS=12
+# gRPC remains the block-source fallback when no ScanPack directory is set.
+export NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT=127.0.0.1:18091
+# RPC is still used for the mempool and key-image spent status.
 export NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT=xmr.tex8.com:18089
+export NOTIFY_SCANNER_INTERNAL_AUTH_TOKEN=<dedicated-32-byte-or-stronger-secret>
 export NOTIFY_SCANNER_PUSH_ENDPOINT=http://127.0.0.1:4020/api/v1/internal/mobile/fast-wallet-push-events
 export NOTIFY_SCANNER_PUSH_AUTH_TOKEN=<scanner-to-cloud-secret>
 export NOTIFY_SCANNER_PUSH_TENANT_ID=monero-wallet
@@ -115,14 +145,62 @@ export NOTIFY_SCANNER_PUSH_TIMEOUT_MS=10000
 # Optional: enables the separately authenticated test-only payment signal route.
 # It is intentionally not the scanner API token.
 export NOTIFY_SCANNER_TEST_AUTH_TOKEN=<dedicated-test-only-secret>
-cargo run --manifest-path services/notify-scanner/Cargo.toml
+ops/notify-scanner/build-epyc.sh
+./build/notify-scanner-epyc/cargo-target/release/notify-scanner
 ```
+
+When `NOTIFY_SCANNER_SCANPACK_DIRECTORY` is set, block scanning does not call
+Cuprate gRPC. Cuprate is the sole ScanPack writer and the scanner opens only
+regular, non-symlinked, non-group/world-writable `MWSPACK1` files with
+read-only descriptors. The systemd unit gives the scanner an explicit
+read-only mount view of the cache and no write permission to Cuprate data.
+Mempool snapshots and key-image status remain small RPC calls because ScanPack
+contains confirmed block data only.
+
+The EPYC build authenticates the pinned Dalek patch tree before compiling. It
+uses a portable x86-64 binary with runtime AVX-512 IFMA/AVX2 selection rather
+than assuming every deployment CPU supports AVX-512.
 
 The scanner database is encrypted at rest with XChaCha20-Poly1305. It stores
 watch records, opaque detection events, and key-image status records in one sealed
-JSON file. If `NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT` is set, the service starts
-an optional background block scanner. If `NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT`
-is also set, the same loop scans the txpool for early pending hints.
+JSON file. Writes are atomic and durable: the current snapshot and an
+authenticated `.previous` recovery snapshot are kept with file mode `0600` in
+a directory with mode `0700`. A corrupt current snapshot is recovered only
+from a backup that authenticates with the active key.
+
+Use the storage administration binary while the scanner service is stopped.
+Keys are read only from environment variables so they do not appear in command
+history or process arguments:
+
+```sh
+# Verify the active database.
+NOTIFY_SCANNER_STORAGE_KEY="$ACTIVE_KEY" \
+  cargo run --locked --bin storage_admin -- verify "$WATCH_DB"
+
+# Create and authenticate an encrypted off-host backup.
+NOTIFY_SCANNER_STORAGE_KEY="$ACTIVE_KEY" \
+  cargo run --locked --bin storage_admin -- backup "$WATCH_DB" "$BACKUP_PATH"
+
+# Restore only after authenticating the encrypted backup.
+NOTIFY_SCANNER_STORAGE_KEY="$ACTIVE_KEY" \
+  cargo run --locked --bin storage_admin -- restore "$BACKUP_PATH" "$WATCH_DB"
+
+# Rotate both the primary and recovery snapshots to a new key.
+NOTIFY_SCANNER_OLD_STORAGE_KEY="$ACTIVE_KEY" \
+NOTIFY_SCANNER_NEW_STORAGE_KEY="$NEW_KEY" \
+  cargo run --locked --bin storage_admin -- rotate-key "$WATCH_DB"
+```
+
+Keep at least one tested backup on a separate encrypted host and one offline
+copy. After a restore, start the scanner without public ingress first, verify
+health and watch counts, then re-enable ingress. Never delete the old key until
+the new primary, `.previous`, and off-host backup have all passed `verify`.
+
+If either `NOTIFY_SCANNER_SCANPACK_DIRECTORY` or
+`NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT` is set, the service starts the
+background block scanner. ScanPack takes precedence. If
+`NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT` is also set, the same loop scans one
+txpool snapshot per network for early pending hints.
 
 Opening an existing database rewrites it immediately to the current schema.
 Legacy raw match ids become one-way `evt_...` fingerprints, and old transaction,
@@ -175,20 +253,38 @@ generic `incoming_transaction` notification that an actual scanner match uses.
 
 The crate now contains the first production-safe scanner worker boundary:
 
-- `BlockSource` supplies ordered blocks from Cuprate or a test source.
+- `BlockSource` supplies ordered blocks from a local read-only ScanPack,
+  Cuprate gRPC, or a test source.
 - `OutputMatcher` owns Monero output detection for a watch record.
 - `ScannerWorker` reads registered watch records, processes blocks after
   `last_scanned_height`, stores matches idempotently, and advances the watch
   height only after a block is processed successfully.
+- Watches at the same network and cursor share one block fetch. Decoded packs
+  are held in a bounded cache so different watch groups do not repeatedly
+  decode the same immutable package.
 - Block heights must be contiguous. If a source skips a height, the worker
   fails the run without advancing, so it cannot silently miss a block.
 
-The worker tests use an in-memory block source and deterministic matcher. Real
-Cuprate block payloads should be decoded with `decode_get_blocks_payload`, then
-matched with `HostedViewKeyBlockMatcher`, which uses `monero-wallet::Scanner`
-and validates that the hosted private view key matches the registered address.
-Pruned block payloads are rejected because hosted scanning needs the RingCT
-base data.
+The production `HardwareHostedViewKeyMatcher` validates that the private view
+key belongs to the registered address, prepares the view scalar once per
+wallet/block-window invocation and batches all unique transaction public keys
+across that fetched window. The EPYC feature processes 16-point chunks in a
+fixed Rayon pool using
+runtime-selected AVX-512 IFMA or AVX2. Primary and additional transaction keys,
+view tags, ordinary outputs, and miner outputs are covered. The same results
+are checked against `monero-wallet::Scanner` fixtures.
+
+ScanPack's pruned transactions retain the transaction prefix and RingCT base,
+which is sufficient for ownership detection. The scanner deliberately does
+not re-verify RingCT proofs already accepted by the canonical Cuprate node;
+notifications remain generic wake-up hints and the device wallet core is the
+authority for balances and spendability.
+
+`MWSPACK1` version 1 has no cryptographic package checksum or canonical
+generation identifier. The reader enforces format/size/permission limits and
+chain continuity inside each requested window, but the writer-side reorg
+invalidation test is still a release requirement. Until that is complete,
+ScanPack notifications must not be treated as proof of payment.
 
 ## Mempool Tracking
 

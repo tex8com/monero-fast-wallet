@@ -2,13 +2,13 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 <development|production> [debug|release]" >&2
+  echo "Usage: $0 <development|local|production> [debug|release]" >&2
   exit 64
 }
 
 mode="${1:-}"
 build_kind="${2:-debug}"
-[[ "${mode}" == "development" || "${mode}" == "production" ]] || usage
+[[ "${mode}" == "development" || "${mode}" == "local" || "${mode}" == "production" ]] || usage
 [[ "${build_kind}" == "debug" || "${build_kind}" == "release" ]] || usage
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,8 +30,16 @@ else
   profile_path="${repo_dir}/secrets/codesign/Monero_Fast_Wallet_Desktop_Developer_ID.provisionprofile"
   entitlements_path="${desktop_dir}/src-tauri/Entitlements.production.plist"
   identity="${MONERO_DESKTOP_CODESIGN_IDENTITY:-Developer ID Application: Nordhain LLC (F98729Y989)}"
-  # A trusted timestamp is mandatory for a notarizable Developer ID artifact.
-  timestamp_args=(--timestamp)
+  if [[ "${mode}" == "production" ]]; then
+    # A trusted timestamp is mandatory for a notarizable Developer ID artifact.
+    timestamp_args=(--timestamp)
+  else
+    # Local test packages keep the same stable Developer ID identity used by
+    # releases, but do not depend on the external Apple timestamp service.
+    # They are intentionally not notarized; release-macos-signed.sh remains
+    # the only production publication path.
+    timestamp_args=(--timestamp=none)
+  fi
 fi
 
 [[ -d "${app_path}" ]] || { echo "App bundle is missing: ${app_path}" >&2; exit 1; }

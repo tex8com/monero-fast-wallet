@@ -1,0 +1,24 @@
+From 2145f1bf94ecacf36bfa44100b01fa586614f213 Mon Sep 17 00:00:00 2001
+From: omesh <roland@nordhain.com>
+Date: Mon, 6 Jul 2026 23:25:33 -0500
+Subject: [PATCH 28/41] Allow top block in header range RPC
+
+---
+ binaries/cuprated/src/rpc/handlers/json_rpc.rs | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/binaries/cuprated/src/rpc/handlers/json_rpc.rs b/binaries/cuprated/src/rpc/handlers/json_rpc.rs
+index 9be7207..dd1452d 100644
+--- a/binaries/cuprated/src/rpc/handlers/json_rpc.rs
++++ b/binaries/cuprated/src/rpc/handlers/json_rpc.rs
+@@ -360,8 +360,8 @@ async fn get_block_headers_range(
+ ) -> Result<GetBlockHeadersRangeResponse, Error> {
+     let (top_height, _) = helper::top_height(&mut state).await?;
+ 
+-    if request.start_height >= top_height
+-        || request.end_height >= top_height
++    if request.start_height > top_height
++        || request.end_height > top_height
+         || request.start_height > request.end_height
+     {
+         return Err(anyhow!("Invalid start/end heights"));

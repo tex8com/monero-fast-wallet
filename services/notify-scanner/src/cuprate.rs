@@ -12,7 +12,7 @@ use cuprate_types::{
     rpc::{BlockOutputIndices, KeyImageSpentStatus},
     BlockCompleteEntry, TransactionBlobs,
 };
-use curve25519_dalek::Scalar;
+use curve25519_dalek::{constants::ED25519_BASEPOINT_TABLE, edwards::EdwardsPoint, Scalar};
 use monero_address::{MoneroAddress, Network as MoneroAddressNetwork};
 use monero_oxide::{
     block::{Block, BlockHeader},
@@ -96,6 +96,7 @@ impl CuprateGrpcBlockSource {
             chunk_blocks_hint,
             no_miner_tx: false,
             client_request_id: format!("notify-scanner-{start_height}-{stop_height}"),
+            chain_locator: Vec::new(),
         };
         let mut stream = client.stream_blocks(request).await?.into_inner();
         let mut blocks = Vec::with_capacity(max_blocks);
@@ -332,23 +333,43 @@ pub fn decode_get_blocks_payload(payload: &[u8]) -> Result<DecodedCuprateBlocks>
 }
 
 pub fn decode_get_blocks_response(response: GetBlocksResponse) -> Result<DecodedCuprateBlocks> {
-    let mut blocks = Vec::with_capacity(response.blocks.len());
-
-    for (offset, entry) in response.blocks.iter().enumerate() {
-        let height_offset = u64::try_from(offset).context("block offset exceeded u64")?;
-        let height = response
-            .start_height
-            .checked_add(height_offset)
-            .context("block height overflow")?;
-        let block_indices = response.output_indices.get(offset);
-        blocks.push(decode_block_entry(height, entry, block_indices)?);
-    }
+    let blocks = decode_block_entries(
+        response.start_height,
+        &response.blocks,
+        &response.output_indices,
+    )?;
 
     Ok(DecodedCuprateBlocks {
         start_height: response.start_height,
         current_height: response.current_height,
         blocks,
     })
+}
+
+pub(crate) fn decode_block_entries(
+    start_height: u64,
+    entries: &[BlockCompleteEntry],
+    output_indices: &[BlockOutputIndices],
+) -> Result<Vec<ScannedBlock>> {
+    if entries.len() != output_indices.len() {
+        bail!(
+            "block/output-index count mismatch: blocks={} indices={}",
+            entries.len(),
+            output_indices.len()
+        );
+    }
+    let mut blocks = Vec::with_capacity(entries.len());
+
+    for (offset, entry) in entries.iter().enumerate() {
+        let height_offset = u64::try_from(offset).context("block offset exceeded u64")?;
+        let height = start_height
+            .checked_add(height_offset)
+            .context("block height overflow")?;
+        let block_indices = output_indices.get(offset);
+        blocks.push(decode_block_entry(height, entry, block_indices)?);
+    }
+
+    Ok(blocks)
 }
 
 pub fn decode_mempool_transaction_blob(
@@ -365,7 +386,7 @@ pub fn decode_mempool_transaction_blob(
     Ok(ScannedMempoolTx {
         tx_id: hex::encode(tx_hash),
         received_ms: received_unix_secs.saturating_mul(1000),
-        outputs: scanned_outputs_for_transaction(tx_hash, &tx)?,
+        outputs: scanned_outputs_for_transaction(tx_hash, tx.prefix())?,
         scannable_block: Some(Box::new(scannable_block_for_mempool_tx(
             tx_hash,
             received_unix_secs,
@@ -514,70 +535,82 @@ fn decode_block_entry(
     block_indices: Option<&BlockOutputIndices>,
 ) -> Result<ScannedBlock> {
     let block = read_block(entry.block.as_ref()).context("failed to parse block blob")?;
-    let tx_blobs = match &entry.txs {
-        TransactionBlobs::Normal(txs) => txs,
-        TransactionBlobs::None if block.transactions.is_empty() => {
-            let empty: &[Bytes] = &[];
-            return build_scanned_block(height, block, empty, block_indices);
+    let pruned_txs = match &entry.txs {
+        TransactionBlobs::Normal(txs) => {
+            if txs.len() != block.transactions.len() {
+                bail!(
+                    "block {} transaction blob count mismatch: expected {} got {}",
+                    height,
+                    block.transactions.len(),
+                    txs.len()
+                );
+            }
+            let mut parsed = Vec::with_capacity(txs.len());
+            for (expected_hash, tx_blob) in block.transactions.iter().zip(txs.iter()) {
+                let tx = read_full_transaction(tx_blob.as_ref())
+                    .context("failed to parse block transaction")?;
+                if &tx.hash() != expected_hash {
+                    bail!("block {} transaction hash mismatch", height);
+                }
+                parsed.push(Transaction::<Pruned>::from(tx));
+            }
+            parsed
         }
+        TransactionBlobs::Pruned(txs) => {
+            if txs.len() != block.transactions.len() {
+                bail!(
+                    "block {} pruned transaction blob count mismatch: expected {} got {}",
+                    height,
+                    block.transactions.len(),
+                    txs.len()
+                );
+            }
+            txs.iter()
+                .map(|tx| {
+                    read_pruned_transaction(tx.blob.as_ref())
+                        .context("failed to parse pruned block transaction")
+                })
+                .collect::<Result<Vec<_>>>()?
+        }
+        TransactionBlobs::None if block.transactions.is_empty() => Vec::new(),
         TransactionBlobs::None => {
             bail!(
                 "block {} has transaction hashes but no transaction blobs",
                 height
             )
         }
-        TransactionBlobs::Pruned(_) => {
-            bail!(
-                "block {} contains pruned transaction blobs; hosted scanning needs unpruned blobs",
-                height
-            )
-        }
     };
 
-    build_scanned_block(height, block, tx_blobs, block_indices)
+    build_scanned_block(height, block, pruned_txs, block_indices)
 }
 
 fn build_scanned_block(
     height: u64,
     block: Block,
-    tx_blobs: &[Bytes],
+    pruned_txs: Vec<Transaction<Pruned>>,
     block_indices: Option<&BlockOutputIndices>,
 ) -> Result<ScannedBlock> {
-    if tx_blobs.len() != block.transactions.len() {
+    if pruned_txs.len() != block.transactions.len() {
         bail!(
-            "block {} transaction blob count mismatch: expected {} got {}",
+            "block {} parsed transaction count mismatch: expected {} got {}",
             height,
             block.transactions.len(),
-            tx_blobs.len()
+            pruned_txs.len()
         );
-    }
-
-    let mut full_txs = Vec::with_capacity(tx_blobs.len());
-    for (expected_hash, tx_blob) in block.transactions.iter().zip(tx_blobs.iter()) {
-        let tx =
-            read_full_transaction(tx_blob.as_ref()).context("failed to parse block transaction")?;
-        let actual_hash = tx.hash();
-        if &actual_hash != expected_hash {
-            bail!("block {} transaction hash mismatch", height);
-        }
-        full_txs.push(tx);
     }
 
     let mut outputs = scanned_outputs_for_transaction(
         block.miner_transaction().hash(),
-        block.miner_transaction(),
+        block.miner_transaction().prefix(),
     )?;
-    for tx in &full_txs {
-        outputs.extend(scanned_outputs_for_transaction(tx.hash(), tx)?);
+    for (tx_hash, tx) in block.transactions.iter().zip(&pruned_txs) {
+        outputs.extend(scanned_outputs_for_transaction(*tx_hash, tx.prefix())?);
     }
 
-    let first_ringct_index = first_ringct_output_index(&block, &full_txs, block_indices)?;
+    let first_ringct_index = first_ringct_output_index(&block, &pruned_txs, block_indices)?;
     let scannable_block = ScannableBlock {
         block: block.clone(),
-        transactions: full_txs
-            .into_iter()
-            .map(Transaction::<Pruned>::from)
-            .collect(),
+        transactions: pruned_txs,
         output_index_for_first_ringct_output: first_ringct_index,
     };
 
@@ -608,12 +641,24 @@ fn read_full_transaction(blob: &[u8]) -> Result<Transaction<NotPruned>> {
     Ok(tx)
 }
 
+fn read_pruned_transaction(blob: &[u8]) -> Result<Transaction<Pruned>> {
+    let mut reader = blob;
+    let tx = Transaction::<Pruned>::read(&mut reader)?;
+    if !reader.is_empty() {
+        bail!(
+            "pruned transaction blob has {} trailing bytes",
+            reader.len()
+        );
+    }
+    Ok(tx)
+}
+
 fn scanned_outputs_for_transaction(
     tx_hash: [u8; 32],
-    tx: &Transaction<NotPruned>,
+    prefix: &TransactionPrefix,
 ) -> Result<Vec<ScannedOutput>> {
     let tx_id = hex::encode(tx_hash);
-    tx.prefix()
+    prefix
         .outputs
         .iter()
         .enumerate()
@@ -664,20 +709,22 @@ fn scannable_block_for_mempool_tx(
 
 fn first_ringct_output_index(
     block: &Block,
-    full_txs: &[Transaction<NotPruned>],
+    txs: &[Transaction<Pruned>],
     block_indices: Option<&BlockOutputIndices>,
 ) -> Result<Option<u64>> {
     if let Some(index) =
-        first_ringct_output_index_in_tx(0, block.miner_transaction(), block_indices)?
+        first_ringct_output_index_in_tx(0, block.miner_transaction().prefix(), block_indices)?
     {
         return Ok(Some(index));
     }
 
-    for (tx_offset, tx) in full_txs.iter().enumerate() {
+    for (tx_offset, tx) in txs.iter().enumerate() {
         let tx_position = tx_offset
             .checked_add(1)
             .context("transaction position overflow")?;
-        if let Some(index) = first_ringct_output_index_in_tx(tx_position, tx, block_indices)? {
+        if let Some(index) =
+            first_ringct_output_index_in_tx(tx_position, tx.prefix(), block_indices)?
+        {
             return Ok(Some(index));
         }
     }
@@ -687,10 +734,10 @@ fn first_ringct_output_index(
 
 fn first_ringct_output_index_in_tx(
     tx_position: usize,
-    tx: &Transaction<NotPruned>,
+    prefix: &TransactionPrefix,
     block_indices: Option<&BlockOutputIndices>,
 ) -> Result<Option<u64>> {
-    for (output_index, output) in tx.prefix().outputs.iter().enumerate() {
+    for (output_index, output) in prefix.outputs.iter().enumerate() {
         if output.amount.is_some() {
             continue;
         }
@@ -711,15 +758,20 @@ fn first_ringct_output_index_in_tx(
 }
 
 fn view_pair_from_watch(watch: &WatchRegistration) -> Result<ViewPair> {
+    let (spend, private_view) = validated_hosted_keys(watch)?;
+    ViewPair::new(spend, private_view).context("invalid hosted view pair")
+}
+
+pub(crate) fn validated_hosted_keys(
+    watch: &WatchRegistration,
+) -> Result<(EdwardsPoint, Zeroizing<Scalar>)> {
     let address = MoneroAddress::from_str(monero_address_network(watch.network), &watch.address)
         .context("invalid hosted address")?;
-    let private_view = parse_private_view_key(&watch.private_view_key)?;
-    let pair = ViewPair::new(address.spend(), Zeroizing::new(private_view))
-        .context("invalid hosted view pair")?;
-    if pair.view() != address.view() {
+    let private_view = Zeroizing::new(parse_private_view_key(&watch.private_view_key)?);
+    if &*private_view * ED25519_BASEPOINT_TABLE != address.view() {
         bail!("private view key does not match hosted address public view key");
     }
-    Ok(pair)
+    Ok((address.spend(), private_view))
 }
 
 fn parse_private_view_key(value: &str) -> Result<Scalar> {
@@ -789,6 +841,7 @@ mod tests {
             identity_id: "identity-a".to_owned(),
             address,
             private_view_key: hex::encode(private_view.to_bytes()),
+            management_token_hash: "0".repeat(64),
             network,
             restore_height: 1,
             push_token: None,

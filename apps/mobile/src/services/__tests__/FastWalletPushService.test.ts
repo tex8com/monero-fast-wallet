@@ -55,7 +55,7 @@ describe("FastWalletPushService", () => {
           state: "confirmed",
           txId: "a".repeat(64),
           type: "monero.fast_wallet.incoming",
-          walletId: "fast-receive-1",
+          walletId: "fast-receive-v2-1",
         },
       }),
     ).toBeUndefined();
