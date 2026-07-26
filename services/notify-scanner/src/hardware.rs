@@ -93,52 +93,57 @@ impl HardwareHostedViewKeyMatcher {
         watch: &WatchRegistration,
         scannables: &[&ScannableBlock],
     ) -> Result<Vec<Vec<MatchedOutputCandidate>>> {
-        for scannable in scannables {
-            if scannable.block.header.hardfork_version > 16 {
-                bail!(
-                    "unsupported Monero hardfork version {}",
-                    scannable.block.header.hardfork_version
-                );
-            }
-            if scannable.block.transactions.len() != scannable.transactions.len() {
-                bail!("scannable block transaction count mismatch");
-            }
+        let prepared = prepare_scannables(scannables)?;
+        self.match_prepared(watch, &prepared, true)
+    }
+
+    fn match_scannables_for_watches(
+        &self,
+        watches: &[WatchRegistration],
+        scannables: &[&ScannableBlock],
+    ) -> Result<Vec<Vec<Vec<MatchedOutputCandidate>>>> {
+        let prepared = prepare_scannables(scannables)?;
+        if watches.len() <= 1 {
+            return watches
+                .iter()
+                .map(|watch| self.match_prepared(watch, &prepared, true))
+                .collect();
         }
 
+        #[cfg(feature = "epyc")]
+        {
+            return self.pool.install(|| {
+                watches
+                    .par_iter()
+                    .map(|watch| self.match_prepared(watch, &prepared, false))
+                    .collect()
+            });
+        }
+        #[cfg(not(feature = "epyc"))]
+        watches
+            .iter()
+            .map(|watch| self.match_prepared(watch, &prepared, false))
+            .collect()
+    }
+
+    fn match_prepared(
+        &self,
+        watch: &WatchRegistration,
+        prepared: &PreparedScannables,
+        parallelize_points: bool,
+    ) -> Result<Vec<Vec<MatchedOutputCandidate>>> {
         let (spend, private_view) = validated_hosted_keys(watch)?;
-        let mut points = Vec::<CompressedEdwardsY>::new();
-        let mut point_indices = BTreeMap::<[u8; 32], usize>::new();
-        let mut prepared = Vec::new();
-
-        for (scannable_index, scannable) in scannables.iter().enumerate() {
-            let miner = scannable.block.miner_transaction();
-            prepare_transaction(
-                scannable_index,
-                miner.hash(),
-                miner.prefix(),
-                &mut points,
-                &mut point_indices,
-                &mut prepared,
-            );
-            for (tx_index, tx) in scannable.transactions.iter().enumerate() {
-                prepare_transaction(
-                    scannable_index,
-                    scannable.block.transactions[tx_index],
-                    tx.prefix(),
-                    &mut points,
-                    &mut point_indices,
-                    &mut prepared,
-                );
-            }
-        }
-
-        let mut matches = vec![Vec::new(); scannables.len()];
-        if points.is_empty() {
+        let mut matches = vec![Vec::new(); prepared.scannable_count];
+        if prepared.points.is_empty() {
             return Ok(matches);
         }
-        let derivations = self.derive_points(&private_view, &points);
+        let derivations = if parallelize_points {
+            self.derive_points(&private_view, &prepared.points)
+        } else {
+            self.derive_points_locally(&private_view, &prepared.points)
+        };
 
-        for prepared_tx in prepared {
+        for prepared_tx in &prepared.transactions {
             for (output_index, output) in prepared_tx.outputs.iter().enumerate() {
                 let Some(output_key) = output.key.decompress() else {
                     continue;
@@ -186,6 +191,45 @@ impl HardwareHostedViewKeyMatcher {
             .match_scannables(watch, &[scannable])?
             .pop()
             .unwrap_or_default())
+    }
+
+    #[cfg(feature = "epyc")]
+    fn derive_points_locally(
+        &self,
+        private_view: &Scalar,
+        points: &[CompressedEdwardsY],
+    ) -> Vec<Option<[u8; 32]>> {
+        let cofactored_view = Scalar::from(8_u64) * private_view;
+        let prepared = PreparedVariableBaseScalar::new(&cofactored_view);
+        let mut workspace = PreparedVariableBaseBatchWorkspace::new();
+        points
+            .chunks(DERIVATION_BATCH_SIZE)
+            .flat_map(|chunk| {
+                if let Some(compressed) = prepared.mul_compress_batch(chunk, &mut workspace) {
+                    return compressed
+                        .iter()
+                        .map(|point| Some(point.to_bytes()))
+                        .collect::<Vec<_>>();
+                }
+                chunk
+                    .iter()
+                    .map(|point| {
+                        point
+                            .decompress()
+                            .map(|point| prepared.mul(&point).compress().to_bytes())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[cfg(not(feature = "epyc"))]
+    fn derive_points_locally(
+        &self,
+        private_view: &Scalar,
+        points: &[CompressedEdwardsY],
+    ) -> Vec<Option<[u8; 32]>> {
+        self.derive_points(private_view, points)
     }
 
     #[cfg(feature = "epyc")]
@@ -241,6 +285,52 @@ impl HardwareHostedViewKeyMatcher {
     }
 }
 
+fn prepare_scannables(scannables: &[&ScannableBlock]) -> Result<PreparedScannables> {
+    for scannable in scannables {
+        if scannable.block.header.hardfork_version > 16 {
+            bail!(
+                "unsupported Monero hardfork version {}",
+                scannable.block.header.hardfork_version
+            );
+        }
+        if scannable.block.transactions.len() != scannable.transactions.len() {
+            bail!("scannable block transaction count mismatch");
+        }
+    }
+
+    let mut points = Vec::<CompressedEdwardsY>::new();
+    let mut point_indices = BTreeMap::<[u8; 32], usize>::new();
+    let mut transactions = Vec::new();
+
+    for (scannable_index, scannable) in scannables.iter().enumerate() {
+        let miner = scannable.block.miner_transaction();
+        prepare_transaction(
+            scannable_index,
+            miner.hash(),
+            miner.prefix(),
+            &mut points,
+            &mut point_indices,
+            &mut transactions,
+        );
+        for (tx_index, tx) in scannable.transactions.iter().enumerate() {
+            prepare_transaction(
+                scannable_index,
+                scannable.block.transactions[tx_index],
+                tx.prefix(),
+                &mut points,
+                &mut point_indices,
+                &mut transactions,
+            );
+        }
+    }
+
+    Ok(PreparedScannables {
+        scannable_count: scannables.len(),
+        points,
+        transactions,
+    })
+}
+
 impl Default for HardwareHostedViewKeyMatcher {
     fn default() -> Self {
         let workers = std::thread::available_parallelism()
@@ -283,6 +373,25 @@ impl OutputMatcher for HardwareHostedViewKeyMatcher {
             .collect::<Result<Vec<_>>>()?;
         self.match_scannables(watch, &scannables)
     }
+
+    fn match_blocks_for_watches(
+        &self,
+        watches: &[WatchRegistration],
+        blocks: &[ScannedBlock],
+    ) -> Result<Vec<Vec<Vec<MatchedOutputCandidate>>>> {
+        let scannables = blocks
+            .iter()
+            .map(|block| {
+                block.scannable_block.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "block {} has no Monero scannable payload for hardware matching",
+                        block.height
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.match_scannables_for_watches(watches, &scannables)
+    }
 }
 
 impl MempoolOutputMatcher for HardwareHostedViewKeyMatcher {
@@ -312,6 +421,28 @@ impl MempoolOutputMatcher for HardwareHostedViewKeyMatcher {
             .collect::<Result<Vec<_>>>()?;
         self.match_scannables(watch, &scannables)
     }
+
+    fn match_mempool_txs_for_watches(
+        &self,
+        watches: &[WatchRegistration],
+        txs: &[ScannedMempoolTx],
+    ) -> Result<Vec<Vec<Vec<MatchedOutputCandidate>>>> {
+        let scannables = txs
+            .iter()
+            .map(|tx| {
+                tx.scannable_block.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("mempool transaction has no Monero scannable payload")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.match_scannables_for_watches(watches, &scannables)
+    }
+}
+
+struct PreparedScannables {
+    scannable_count: usize,
+    points: Vec<CompressedEdwardsY>,
+    transactions: Vec<PreparedTransaction>,
 }
 
 struct PreparedTransaction {
@@ -383,7 +514,7 @@ mod tests {
     use super::*;
     use crate::{
         model::Network,
-        scanner::{OutputMatcher, ScannedBlock},
+        scanner::{MempoolOutputMatcher, OutputMatcher, ScannedBlock, ScannedMempoolTx},
     };
     use curve25519_dalek::{constants::ED25519_BASEPOINT_TABLE, Scalar};
     use monero_address::Network as AddressNetwork;
@@ -565,6 +696,53 @@ mod tests {
             hardware[0].output_index,
             reference[0].index_in_transaction()
         );
+    }
+
+    #[test]
+    fn multi_watch_batches_match_individual_block_and_mempool_results() {
+        let (watch, block) = incoming_fixture();
+        let private_view = Scalar::from(37_u64);
+        let private_spend = Scalar::from(41_u64);
+        let spend = &private_spend * ED25519_BASEPOINT_TABLE;
+        let pair = ViewPair::new(spend, Zeroizing::new(private_view)).unwrap();
+        let mut decoy = watch.clone();
+        decoy.identity_id = "identity-decoy".to_owned();
+        decoy.address = pair.legacy_address(AddressNetwork::Mainnet).to_string();
+        decoy.private_view_key = hex::encode(private_view.to_bytes());
+        let watches = vec![watch, decoy];
+        let blocks = vec![block.clone()];
+        let matcher = HardwareHostedViewKeyMatcher::new(2).unwrap();
+
+        let individual_blocks = watches
+            .iter()
+            .map(|watch| matcher.match_blocks(watch, &blocks))
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let batched_blocks = matcher
+            .match_blocks_for_watches(&watches, &blocks)
+            .unwrap();
+        assert_eq!(batched_blocks, individual_blocks);
+        assert_eq!(batched_blocks[0][0].len(), 1);
+        assert!(batched_blocks[1][0].is_empty());
+
+        let tx = ScannedMempoolTx {
+            tx_id: "a".repeat(64),
+            received_ms: 1,
+            outputs: vec![],
+            scannable_block: block.scannable_block,
+        };
+        let txs = vec![tx];
+        let individual_mempool = watches
+            .iter()
+            .map(|watch| matcher.match_mempool_txs(watch, &txs))
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let batched_mempool = matcher
+            .match_mempool_txs_for_watches(&watches, &txs)
+            .unwrap();
+        assert_eq!(batched_mempool, individual_mempool);
+        assert_eq!(batched_mempool[0][0].len(), 1);
+        assert!(batched_mempool[1][0].is_empty());
     }
 
     #[test]

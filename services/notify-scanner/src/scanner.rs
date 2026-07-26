@@ -38,6 +38,17 @@ pub trait OutputMatcher {
             .map(|block| self.match_block(watch, block))
             .collect()
     }
+
+    fn match_blocks_for_watches(
+        &self,
+        watches: &[WatchRegistration],
+        blocks: &[ScannedBlock],
+    ) -> Result<Vec<Vec<Vec<MatchedOutputCandidate>>>> {
+        watches
+            .iter()
+            .map(|watch| self.match_blocks(watch, blocks))
+            .collect()
+    }
 }
 
 pub trait MempoolSource {
@@ -58,6 +69,17 @@ pub trait MempoolOutputMatcher {
     ) -> Result<Vec<Vec<MatchedOutputCandidate>>> {
         txs.iter()
             .map(|tx| self.match_mempool_tx(watch, tx))
+            .collect()
+    }
+
+    fn match_mempool_txs_for_watches(
+        &self,
+        watches: &[WatchRegistration],
+        txs: &[ScannedMempoolTx],
+    ) -> Result<Vec<Vec<Vec<MatchedOutputCandidate>>>> {
+        watches
+            .iter()
+            .map(|watch| self.match_mempool_txs(watch, txs))
             .collect()
     }
 }
@@ -108,9 +130,15 @@ where
             )?;
             blocks.sort_by_key(|block| block.height);
 
-            for mut watch in grouped_watches {
+            let grouped_matches = self
+                .matcher
+                .match_blocks_for_watches(&grouped_watches, &blocks)?;
+            if grouped_matches.len() != grouped_watches.len() {
+                return Err(anyhow!("matcher watch result count mismatch"));
+            }
+
+            for (mut watch, matches) in grouped_watches.into_iter().zip(grouped_matches) {
                 let mut advanced = false;
-                let matches = self.matcher.match_blocks(&watch, &blocks)?;
                 if matches.len() != blocks.len() {
                     return Err(anyhow!(
                         "matcher result count mismatch for identity {}",
@@ -188,9 +216,15 @@ where
 
         for (network, grouped_watches) in groups {
             let txs = self.mempool_source.current_transactions(network)?;
-            for watch in grouped_watches {
+            let grouped_matches = self
+                .matcher
+                .match_mempool_txs_for_watches(&grouped_watches, &txs)?;
+            if grouped_matches.len() != grouped_watches.len() {
+                return Err(anyhow!("mempool matcher watch result count mismatch"));
+            }
+
+            for (watch, matches) in grouped_watches.into_iter().zip(grouped_matches) {
                 let mut currently_seen = BTreeSet::new();
-                let matches = self.matcher.match_mempool_txs(&watch, &txs)?;
                 if matches.len() != txs.len() {
                     return Err(anyhow!(
                         "mempool matcher result count mismatch for identity {}",
