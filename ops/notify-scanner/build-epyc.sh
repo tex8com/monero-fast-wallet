@@ -12,6 +12,7 @@ scanner_manifest="${scanner_stage_crate}/Cargo.toml"
 scanner_lock="${scanner_stage_crate}/Cargo.lock"
 scanner_epyc_lock="${scanner_repo_root}/ops/notify-scanner/Cargo.epyc.lock"
 scanner_cargo_target="${scanner_target_dir}/cargo-target"
+scanner_build_benchmarks="${NOTIFY_SCANNER_BUILD_BENCHMARKS:-0}"
 
 source "${scanner_repo_root}/native/monero-bridge/scripts/prepare-wallet-crypto-cpu-backend.sh"
 
@@ -49,11 +50,16 @@ else
   ln -s "${scanner_repo_root}/node" "${scanner_stage_root}/node"
 fi
 
+scanner_bins=(--bin notify-scanner)
+if [[ "${scanner_build_benchmarks}" == "1" ]]; then
+  scanner_bins+=(--bin scan_source_bench)
+fi
+
 RUSTFLAGS="${NOTIFY_SCANNER_RUSTFLAGS:--C target-cpu=x86-64}" \
 CARGO_TARGET_DIR="${scanner_cargo_target}" \
   cargo --config "$(wallet_cpu_cargo_config)" build \
     --manifest-path "${scanner_manifest}" \
-    --bin notify-scanner \
+    "${scanner_bins[@]}" \
     --features epyc \
     --release \
     --locked
@@ -79,6 +85,7 @@ scanner_metadata="${scanner_cargo_target}/release/notify-scanner-epyc-build.env"
   echo "dalek_tree=${MONERO_WALLET_DALEK_TREE}"
   echo "epyc_lock_sha256=$(scanner_sha256 "${scanner_epyc_lock}")"
   echo "features=epyc"
+  echo "benchmark_binary_built=${scanner_build_benchmarks}"
   echo "rustc=$(rustc --version)"
   echo "cargo=$(cargo --version)"
   echo "binary=${scanner_binary}"

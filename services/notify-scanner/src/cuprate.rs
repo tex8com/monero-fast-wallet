@@ -32,6 +32,7 @@ mod grpc {
 use grpc::{block_stream_client::BlockStreamClient, StreamBlocksRequest};
 
 const DEFAULT_GRPC_CHUNK_BLOCKS: u32 = 200;
+const MAX_GRPC_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MEMPOOL_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_KEY_IMAGE_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_HTTP_ATTEMPTS: usize = 3;
@@ -88,7 +89,9 @@ impl CuprateGrpcBlockSource {
             .context("stop height overflow")?;
 
         let endpoint = Endpoint::from_shared(endpoint)?.connect().await?;
-        let mut client = BlockStreamClient::new(endpoint);
+        let mut client = BlockStreamClient::new(endpoint)
+            .max_decoding_message_size(MAX_GRPC_MESSAGE_BYTES)
+            .max_encoding_message_size(MAX_GRPC_MESSAGE_BYTES);
         let request = StreamBlocksRequest {
             start_height,
             stop_height,
