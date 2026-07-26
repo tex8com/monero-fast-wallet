@@ -390,6 +390,9 @@ fn prune_key_image_statuses_for_identity(
 fn merge_matched_output(existing: &MatchedOutput, incoming: MatchedOutput) -> MatchedOutput {
     let mut stored = incoming;
     stored.created_at_ms = existing.created_at_ms;
+    if stored.notification_group_id.is_empty() {
+        stored.notification_group_id = existing.notification_group_id.clone();
+    }
 
     if stored.mempool_first_seen_ms.is_none() {
         stored.mempool_first_seen_ms = existing.mempool_first_seen_ms;
@@ -413,11 +416,23 @@ fn merge_matched_output(existing: &MatchedOutput, incoming: MatchedOutput) -> Ma
         stored.detection_status = DetectionStatus::Confirmed;
     }
 
-    if existing.detection_status == stored.detection_status
-        && existing.notification_status != NotificationStatus::Pending
-        && stored.notification_status == NotificationStatus::Pending
-    {
-        stored.notification_status = existing.notification_status.clone();
+    if stored.notification_status == NotificationStatus::Pending {
+        let reactivated_after_invalid_detection = matches!(
+            existing.detection_status,
+            DetectionStatus::Dropped | DetectionStatus::Reorged
+        ) && matches!(
+            stored.detection_status,
+            DetectionStatus::PendingMempool
+                | DetectionStatus::Detected
+                | DetectionStatus::Confirmed
+        ) && existing.notification_status
+            == NotificationStatus::Suppressed;
+
+        if existing.notification_status != NotificationStatus::Pending
+            && !reactivated_after_invalid_detection
+        {
+            stored.notification_status = existing.notification_status.clone();
+        }
     }
 
     stored
@@ -682,6 +697,7 @@ mod tests {
     fn matched_output() -> MatchedOutput {
         MatchedOutput {
             id: format!("fast-receive-0:{}:1", "1".repeat(64)),
+            notification_group_id: "grp_test-payment".to_owned(),
             identity_id: "fast-receive-0".to_owned(),
             detection_status: DetectionStatus::Detected,
             notification_status: NotificationStatus::Pending,
@@ -690,6 +706,44 @@ mod tests {
             mempool_first_seen_ms: None,
             mempool_last_seen_ms: None,
         }
+    }
+
+    #[test]
+    fn sent_notification_remains_terminal_when_a_mempool_match_confirms() {
+        let mut existing = matched_output();
+        existing.detection_status = DetectionStatus::PendingMempool;
+        existing.notification_status = NotificationStatus::Sent;
+        existing.mempool_first_seen_ms = Some(2);
+        existing.mempool_last_seen_ms = Some(3);
+
+        let mut confirmed = matched_output();
+        confirmed.detection_status = DetectionStatus::Confirmed;
+        confirmed.notification_status = NotificationStatus::Pending;
+        confirmed.updated_at_ms = 4;
+
+        let merged = merge_matched_output(&existing, confirmed);
+
+        assert_eq!(merged.detection_status, DetectionStatus::Confirmed);
+        assert_eq!(merged.notification_status, NotificationStatus::Sent);
+        assert_eq!(merged.mempool_first_seen_ms, Some(2));
+        assert_eq!(merged.mempool_last_seen_ms, Some(3));
+    }
+
+    #[test]
+    fn suppressed_drop_is_reactivated_if_the_payment_later_confirms() {
+        let mut existing = matched_output();
+        existing.detection_status = DetectionStatus::Dropped;
+        existing.notification_status = NotificationStatus::Suppressed;
+
+        let mut confirmed = matched_output();
+        confirmed.detection_status = DetectionStatus::Confirmed;
+        confirmed.notification_status = NotificationStatus::Pending;
+        confirmed.updated_at_ms = 4;
+
+        let merged = merge_matched_output(&existing, confirmed);
+
+        assert_eq!(merged.detection_status, DetectionStatus::Confirmed);
+        assert_eq!(merged.notification_status, NotificationStatus::Pending);
     }
 
     #[test]

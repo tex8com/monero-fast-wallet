@@ -589,7 +589,7 @@ const PROJECT_PAGE_HTML: &str = r#"<!doctype html>
         <h2>Public Endpoints</h2>
         <ul>
           <li>Cuprate JSON RPC: <code>xmr.tex8.com:18089</code></li>
-          <li>Cuprate gRPC stream: <code>xmr.tex8.com:18091</code></li>
+          <li>Cuprate gRPC: internal scanner fallback</li>
           <li>Scanner health: <code>/healthz</code></li>
           <li>Fast Receive API: <code>/v1/fast-receive</code></li>
         </ul>

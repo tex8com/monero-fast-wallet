@@ -131,8 +131,8 @@ export NOTIFY_SCANNER_SCANPACK_DIRECTORY=/var/lib/cuprate/wallet-scan-cache-100k
 export NOTIFY_SCANNER_SCANPACK_NETWORK=mainnet
 export NOTIFY_SCANNER_SCANPACK_REFRESH_MS=10000
 export NOTIFY_SCANNER_DERIVATION_WORKERS=12
-# gRPC remains the block-source fallback when no ScanPack directory is set.
-export NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT=127.0.0.1:18091
+# Local gRPC remains the block-source fallback when no ScanPack directory is set.
+export NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT=127.0.0.1:48091
 # RPC is still used for the mempool and key-image spent status.
 export NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT=xmr.tex8.com:18089
 export NOTIFY_SCANNER_INTERNAL_AUTH_TOKEN=<dedicated-32-byte-or-stronger-secret>
@@ -156,6 +156,9 @@ read-only descriptors. The systemd unit gives the scanner an explicit
 read-only mount view of the cache and no write permission to Cuprate data.
 Mempool snapshots and key-image status remain small RPC calls because ScanPack
 contains confirmed block data only.
+
+The local gRPC fallback requests pruned transactions, accepts Cuprate's fixed
+16 MiB message limit, and is expected at `127.0.0.1:48091` on the TEX8 host.
 
 The EPYC build authenticates the pinned Dalek patch tree before compiling. It
 uses a portable x86-64 binary with runtime AVX-512 IFMA/AVX2 selection rather
@@ -219,10 +222,20 @@ and transactions, then builds `monero-rpc` `ScannableBlock` values for hosted
 view-key scanning. Ownership is checked without reading or retaining the
 decoded amount from the matched output. The crate also checks key-image spent
 state through Cuprate RPC for fast spend reconciliation. The push dispatcher
-sends the same generic `incoming_transaction` signal to Tex8 Cloud after a new
-mempool match, confirmation, drop, or reorg.
-It marks a notification as sent only after the cloud endpoint accepts it and
-retries failures on the next scanner pass.
+sends the generic `incoming_transaction` signal at most once per payment
+transaction, including a transaction with multiple matching outputs. Matching
+outputs share an opaque notification group; neither the transaction id nor the
+amount is stored in that group. A mempool match normally triggers that one
+early signal. The later block confirmation updates the same stored record
+silently. If the payment was never observed in the mempool, its first block
+match triggers the one signal as a reliability fallback. Confirmation counts,
+drops, and reorgs do not create additional pushes.
+
+The dispatcher marks a notification as sent only after the cloud endpoint
+accepts it and retries failures on the next scanner pass. Its opaque event id
+remains stable across the mempool-to-block transition, so the cloud gateway can
+also deduplicate an accepted delivery if the scanner loses the response before
+persisting `sent`.
 
 The app sends the anonymous cloud `subscriptionId` as `device_id` during watch
 registration. The scanner never needs an FCM token. Legacy `push_token` values
@@ -262,17 +275,19 @@ The crate now contains the first production-safe scanner worker boundary:
 - Watches at the same network and cursor share one block fetch. Decoded packs
   are held in a bounded cache so different watch groups do not repeatedly
   decode the same immutable package.
+- The hardware matcher prepares and deduplicates the transaction keys once per
+  shared block window, then distributes all watches over the fixed EPYC worker
+  pool. It does not parse the same block window again for every wallet.
 - Block heights must be contiguous. If a source skips a height, the worker
   fails the run without advancing, so it cannot silently miss a block.
 
-The production `HardwareHostedViewKeyMatcher` validates that the private view
-key belongs to the registered address, prepares the view scalar once per
-wallet/block-window invocation and batches all unique transaction public keys
-across that fetched window. The EPYC feature processes 16-point chunks in a
-fixed Rayon pool using
-runtime-selected AVX-512 IFMA or AVX2. Primary and additional transaction keys,
-view tags, ordinary outputs, and miner outputs are covered. The same results
-are checked against `monero-wallet::Scanner` fixtures.
+The production `HardwareHostedViewKeyMatcher` validates that each private view
+key belongs to the registered address, prepares its view scalar once per
+block-window invocation, and processes the window's shared transaction-key set
+in 16-point chunks. The fixed Rayon pool uses runtime-selected AVX-512 IFMA or
+AVX2. Primary and additional transaction keys, view tags, ordinary outputs,
+and miner outputs are covered. The same results are checked against
+`monero-wallet::Scanner` fixtures.
 
 ScanPack's pruned transactions retain the transaction prefix and RingCT base,
 which is sufficient for ownership detection. The scanner deliberately does
@@ -298,15 +313,45 @@ Fast Receive also needs a mempool path for early notifications:
 - The later block scanner derives the same one-way fingerprint, so a confirmed
   block match updates the pending record instead of creating a duplicate.
 - If a pending mempool match disappears before confirmation, it is marked
-  `dropped`.
+  `dropped`; an unsent hint is suppressed rather than delivered as a false
+  incoming-payment signal.
+- If that suppressed payment later reappears in the mempool or confirms in a
+  block, it becomes eligible for the single signal again. A signal already
+  marked `sent` is terminal and is never reopened by a status change.
+- Multiple matching outputs in one transaction share one opaque notification
+  group and therefore still produce only one push.
 
 Mempool matches are notification hints only. The app must never treat them as
 spendable funds until wallet-core verification sees the transaction confirmed
-and reconciles spend state.
+and reconciles spend state. The wallet tracks confirmation and spendability
+locally after the generic wake-up; the service deliberately sends no
+per-confirmation or 15-confirmation notification.
 
-The mempool worker state machine is implemented and tested. The production
-crypto matcher for txpool transactions is also implemented by wrapping each
-full txpool transaction blob in a synthetic in-memory `ScannableBlock` and
-running it through `monero-wallet::Scanner`. These matches are still only
-pending notification hints. They must be confirmed by a later block scan and
-local wallet-core verification.
+The mempool worker state machine is implemented and tested. Full txpool
+transaction blobs are wrapped in synthetic in-memory `ScannableBlock` values,
+prepared once per snapshot, and checked for all watches by the same hardware
+multi-wallet matcher. These matches are still only pending notification hints.
+They must be confirmed by a later block scan and local wallet-core
+verification.
+
+## Read-only source and multi-wallet benchmark
+
+The diagnostic binary uses only deterministic synthetic watch keys. It checks
+that ScanPack and gRPC return identical block heights, hashes, and transaction
+counts before timing either source:
+
+```sh
+NOTIFY_SCANNER_BUILD_BENCHMARKS=1 \
+  ops/notify-scanner/build-epyc.sh
+
+NOTIFY_SCANNER_BENCH_SCANPACK_DIRECTORY=/var/lib/cuprate/wallet-scan-cache-100k \
+NOTIFY_SCANNER_BENCH_GRPC_ENDPOINT=127.0.0.1:48091 \
+NOTIFY_SCANNER_BENCH_RPC_ENDPOINT=private-node-ip:18089 \
+NOTIFY_SCANNER_BENCH_WATCH_COUNTS=100,1000,10000 \
+NOTIFY_SCANNER_BENCH_BLOCKS=25 \
+  ./build/notify-scanner-epyc/cargo-target/release/scan_source_bench
+```
+
+Set `NOTIFY_SCANNER_BENCH_COMPARE_INDIVIDUAL=1` to compare the production
+multi-wallet batch with the old per-wallet preparation path. The benchmark
+never reads the encrypted production watch database.

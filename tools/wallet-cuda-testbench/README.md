@@ -1,36 +1,35 @@
-# Wallet-CUDA-Testbench
+# Wallet CUDA testbench
 
-Diese Testbench misst ausschließlich den isolierten Wallet-Kryptokern
+This testbench measures only the isolated wallet crypto core
 
 ```text
 D = (8 * Scalar::from_bytes_mod_order(a)) * R
 ```
 
-Sie verarbeitet deterministische, öffentliche `MWMTV1`-Vektoren. Echte
-Wallet-Schlüssel dürfen weder in Vektordateien noch in GPU-Puffern verwendet
-werden.
+It processes deterministic, public `MWMTV1` vectors. True wallet keys must not
+be used in vector files or in GPU buffers.
 
-## Implementierte Kandidaten
+## Implementing candidates
 
-| Variante | Zweck | Register/Thread | lokaler Speicher/Thread |
-|---|---|---:|---:|
-| C0 `layout` | Dispatch- und Layoutobergrenze, keine Kryptografie | 22 | 0 B |
-| C1 `ladder` | konstante 256-Bit-Ladder, Additionsketten | 255 | 80 B |
-| C2 `radix16` | Radix-16 und 8er-Niels-Tabelle im 16-Bit-Feldkern | 255 | 9.616 B |
-| C3 `radix2625-chunk` | 10-Limb-Feldkern und dreistufige Chunk-Inversion | 255 | 952 B |
-| C4 `radix2625-direct` | C3-Feldkern als Einpass-Kernel | 255 | 952 B |
-| C5 `radix2625-radix8` | 4er-Niels-Tabelle, signierte Radix-8-Ziffern | 255 | 176 B |
-| C6 `radix2625-radix8-sqrt-ratio` | C5 mit kombinierter Dalek-`sqrt_ratio_i`-Punktdekompression | 255 | 176 B |
+| Variant | Purpose | Register/Thread | Local memory/thread |
+| --- | --- | ---: | ---: |
+| C0 `layout` | Dispatch and layout cap, no cryptography | 22 | 0 B |
+| C1 `ladder` | constant 256-bit chargers, addition chains | 255 | 80 B |
+| C2 `radix16` | Radix-16 and 8-Niels table in the 16-bit field core | 255 | 9.616 BB |
+| C3 `radix2625-chunk` | 10-Limb Field Core and Three-Stage Chunk Inversion | 255 | 952 B |
+| C4 `radix2625-direct` | C3 field core as a one-pass kernel | 255 | 952 B |
+| C5 `radix2625-radix8` | Table of 4, signed Radix 8 digits | 255 | 176 B |
+| C6 `radix2625-radix8-sqrt-ratio` | C5 with combined Dalek-`sqrt_ratio_i`-point decompression | 255 | 176 B |
 
-Die Werte stammen aus `ptxas` für `sm_86`. C6 ist der aktuelle Kandidat für
-die RTX 3090. C5s kleinere Tabelle kostet mehr Punktadditionen, reduziert aber
-die für CUDA besonders teuren Spill-Zugriffe deutlich. C6 vermeidet darüber
-hinaus eine getrennte Inversion und Quadratwurzel beim Dekomprimieren von `R`.
+The values are taken from `ptxas` for `sm_86`. C6 is the current candidate for
+the RTX 3090. C5’s smaller table costs more point additions, but significantly
+reduces the spill accesses that are particularly expensive for CUDA. C6 also
+avoids separate inversion and square root when decompressing `R`.
 
-## Lokale Byteprüfung
+## Local byte testing
 
-Der portable Referenzlauf benötigt kein CUDA und prüft dieselben Ergebnisbytes
-und denselben ungültigen Punkt wie der GPU-Lauf:
+The portable reference run does not require a CUDA and checks the same result
+bytes and the same invalid point as the GPU run:
 
 ```sh
 clang++ -O3 -std=c++17 -Wall -Wextra -Werror \
@@ -41,10 +40,10 @@ clang++ -O3 -std=c++17 -Wall -Wextra -Werror \
   --variant all
 ```
 
-## SCP- und Build-Ablauf
+## SCP and build sequence
 
-Der Quelltext wird lokal geändert und anschließend kopiert. Auf der
-GPU-Instanz wird kein Quelltext angelegt oder editiert:
+The source text is changed locally and then copied. No source text is created or
+edited on the GPU instance:
 
 ```sh
 scp derivation_core.cuh derivation_radix2625.cuh vector_corpus.hpp \
@@ -55,7 +54,7 @@ ssh GPU \
    /workspace/monero-cuda/wallet-cuda-testbench'
 ```
 
-Beispiel für den bestätigten C5-Lauf:
+Example of the confirmed C5 run:
 
 ```sh
 ./wallet-cuda-testbench \
@@ -66,98 +65,95 @@ Beispiel für den bestätigten C5-Lauf:
   --threads-per-block 32
 ```
 
-## RTX-3090-Ergebnisse
+## RTX 3090 results
 
-System: Vast-Instanz `45848910`, RTX 3090 mit 24 GB, Compute Capability 8.6,
-CUDA 12.8, Treiber 595.71.05 und einem vom Host gesetzten 300-W-Limit. Alle
-Tabellenwerte sind der Median aus drei formalen Läufen und enthalten nur die
-GPU-Event-Zeit der Kernelpipeline.
+System: Vast instance `45848910`, RTX 3090 with 24 GB, Compute Capability 8.6,
+CUDA 12.8, driver 595.71.05 and a 300W limit set by the host. All table values
+are the median of three formal runs and contain only the GPU event time of the
+kernel pipeline.
 
-| Punkte/Charge | C1 Ladder | C2 Radix-16/16-Bit | C3 Chunk | C4 direkt | C5 Radix-8 |
-|---:|---:|---:|---:|---:|---:|
+| Points/batch | C1 Ladder | C2 Radix-16/16-bit | C3 Chunk | C4 Directly | C5 Radix-8 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
 | 8 | 598 | 862 | 3.586 | 3.584 | 5.358 |
 | 64 | 4.790 | 6.886 | 28.660 | 28.671 | 42.869 |
 | 1.024 | 78.540 | 101.987 | 471.261 | 467.071 | 657.714 |
 | 8.192 | 627.866 | 418.892 | 3.606.365 | 3.639.870 | **5.309.030** |
 | 131.072 | 1.428.556 | 729.860 | 4.143.638 | 4.171.474 | **9.534.593** |
 
-C0 ist keine Kryptografie und wird deshalb nicht als Beschleunigungswert
-verwendet. Bei 8.192 Punkten erreicht C5 gegenüber dem Median der
-Single-Thread-Original-Ref10-Messung (`27.030,166/s`) den Faktor
-**196,41×**. Gegenüber C1 beträgt der Faktor **8,456×**.
+C0 is not cryptography and is therefore not used as an acceleration value. At 8.192 points, C5, compared with the median single-thread original Ref10
+measurement (`27.030,166/s`), achieves a factor of **196,41×**. Compared with
+C1, the factor is **8,456×**.
 
-Der zusätzliche Dauerlauf verarbeitete 131.072.000 Ableitungen in
-13,683650391 Sekunden:
+The additional continuous run processed 131.072.000 derivatives in 13,683650391
+seconds:
 
 ```text
-9.578.730,548 Ableitungen/s
-Temperatur: 52–69 °C
-Leistung:   maximal 299,55 W
-SM-Takt:    maximal 1.740 MHz
+9.578.730,548 derivations/s
+Temperature: 52–69 °C
+Power: maximum 299,55 W
+SM clock: maximum 1.740 MHz
 validation=pass
 ```
 
-## RTX-3090-C6-Ergebnisse
+## RTX 3090 C6 results
 
-System: Vast-Instanz `45854234`, RTX 3090 mit 24 GB, Compute Capability 8.6,
-CUDA 12.8, Treiber 590.48.01 und 350-W-Limit. C5 und C6 wurden alternierend
-auf demselben Host mit jeweils fünf formalen Läufen und 128 Threads pro Block
-vermessen. Die Tabelle enthält den Median der GPU-Event-Zeit.
+System: Vast instance `45854234`, RTX 3090 with 24 GB, Compute Capability 8.6,
+CUDA 12.8, Driver 590.48.01 and 350W limit. C5 and C6 were measured alternately
+on the same host, each with five formal runs and 128 threads per block. The
+table contains the median GPU event time.
 
-| Punkte/Charge | C5 Radix-8 | C6 `sqrt_ratio_i` | C6/C5 |
-|---:|---:|---:|---:|
+| Points/batch | C5 Radix-8 | C6 `sqrt_ratio_i` | C6/C5 |
+| ---: | ---: | ---: | ---: |
 | 8.192 | 6.111.302 | **6.462.993** | **1,0575×** |
 | 131.072 | 10.331.329 | **10.948.124** | **1,0597×** |
 
-Gegenüber der Single-Thread-Original-Ref10-Messung (`27.030,166/s`) erreicht
-C6 bei 131.072 Punkten den Faktor **405,03×**.
+Compared to the single-thread original ref10 measurement (`27.030,166/s`), C6
+achieves the factor **131.072** at 405,03× points.
 
-Der C6-Dauerlauf verarbeitete 262.144.000 Ableitungen in 24,294734375
-Sekunden:
+The C6 continuous run processed 262.144.000 derivatives in 24,294734375 seconds:
 
 ```text
-10.790.157,075 Ableitungen/s
-GPU-Auslastung:    100 % in allen aktiven Telemetrie-Samples
-Speicherauslastung:  0 %
-Leistung:          Median 348,82 W, maximal 349,27 W bei 350 W Limit
-Temperatur:        51–65 °C
-SM-Takt:           Median 1.830 MHz, 1.815–1.845 MHz
+10.790.157,075 derivations/s
+GPU utilization: 100% in all active telemetry samples
+Memory utilization:  0 %
+Power: Median 348,82 W, maximum 349,27 W at 350 W limit
+Temperature: 51–65 °C
+SM clock: median 1.830 MHz, 1.815–1.845 MHz
 validation=pass
 ```
 
-C5 und C6 benötigen beide 255 Register und 176 B lokalen Speicher pro Thread.
-Bei 128 Threads pro Block passen deshalb statisch zwei Blöcke beziehungsweise
-acht Warps auf jeden Ampere-SM: 16,7 % theoretische Warp-Occupancy. Die
-Telemetrie zeigt gleichzeitig 100 % GPU- und 0 % Speicherauslastung; der
-aktuelle Kernel ist damit Compute-, Register- und Power-limitiert, nicht durch
-globale Speicherbandbreite.
+C5 and C6 both require 255 registers and 176 B of local memory per thread. With
+128 threads per block, two blocks or eight warps fit statically on each
+Ampere-SM: 16,7% theoretical warp-occupancy. Telemetry simultaneously shows 100%
+GPU and 0% memory utilization; The current kernel is therefore compute, register
+and power limited, not by global memory bandwidth.
 
-## Prüfstatus
+## Test status
 
-- Bytegleich gegen Curve25519-Dalek 4.1.3: bestanden.
-- Dalek-verworfener Punkt: `valid=0` und 32 Nullbytes, bestanden.
-- C5-Skalarrekodierung: Null, Eins, Gruppenordnung, `ff…ff` und 10.000
-  deterministische 256-Bit-Eingaben rekonstruiert, bestanden.
-- C6-`sqrt_ratio_i`: portable Byteprüfung gegen Curve25519-Dalek 4.1.3 für
-  1.024 Punkte sowie GPU-Prüfungen für 8 bis 131.072 Punkte, bestanden.
-- Drei formale Wiederholungen je Variante und Corpusgröße: bestanden.
-- CUDA Compute Sanitizer `memcheck`: alle C0–C5-Pfade ohne Fehler.
-- `initcheck`: C3–C5 ohne Fehler.
-- C6 `memcheck` und `initcheck`: jeweils 0 Fehler.
-- `synccheck` und `racecheck`: C1/C2 ohne Fehler beziehungsweise Hazards.
-- Blockgrößen 32, 64, 128 und 256: vermessen.
-- C3-Chunkgrößen 1, 2, 4, 8, 16, 32, 64 und 128: vermessen.
-- Registergrenze 192 gegen den natürlichen 255-Register-Build: vermessen und
-  verworfen.
+- Bytelike against Curve25519-Dalek 4.1.3: passed.
+- Dalek rejected point: `valid=0` and 32 null bytes, passed.
+- C5 scalar recoding: zero, one, group ordering, `ff…ff` and 10.000
+  deterministic 256-bit inputs reconstructed, passed.
+- C6-`sqrt_ratio_i`: portable byte test versus Curve25519-Dalek 4.1.3 for 1.024
+  points and GPU tests for 8 to 131.072 points.
+- Three formal repetitions per variant and corpus size: passed.
+- CUDA Compute Sanitizer `memcheck`: all C0–C5 paths without error.
+- `initcheck`: C3–C5 without error.
+- C6 `memcheck` and `initcheck`: 0 errors each.
+- `synccheck` and `racecheck`: C1/C2 without errors or hazards.
+- Block sizes 32, 64, 128 and 256: measured.
+- C3 chunk variables 1, 2, 4, 8, 16, 32, 64 and 128:
+- Register boundary 192 against the natural 255 register build: measured and
+  discarded.
 
-Nsight Compute konnte auf dem Mietsystem keine Performance-Counter lesen
-(`ERR_NVGPUCTRPERM`). Die Ressourcenwerte stammen deshalb aus
-`nvcc -Xptxas=-v`; Timing erfolgt mit CUDA Events.
+Nsight Compute could not read a performance counter on the rental system
+(`ERR_NVGPUCTRPERM`). The resource values are therefore taken from `nvcc
+-Xptxas=-v` Timing takes place with CUDA events.
 
-Die vollständigen Rohdaten liegen unter
-`build/wallet-cuda-testbench/rtx3090-vast-45848910-20260725/` (C0–C5) und
+The complete raw data are available at
+`build/wallet-cuda-testbench/rtx3090-vast-45848910-20260725/` (C0–C5) and
 `build/wallet-cuda-testbench/rtx3090-c6-vast-45854234-20260725/` (C5/C6).
 
-Die vollständige Auswertung der nachfolgenden C7–C11-Experimente auf der
-RTX 3090 sowie aller SM-120-Messungen auf der RTX 5090 steht in
+The complete evaluation of the subsequent C7–C11 experiments on the RTX 3090 as
+well as all SM-120 measurements on the RTX 5090 is available in
 [`RESULTS-2026-07-25.md`](RESULTS-2026-07-25.md).

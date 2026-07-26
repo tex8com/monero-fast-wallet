@@ -156,6 +156,7 @@ Node and app diagnostics:
 npm run check:node
 
 npm run ios:build-install
+npm run ios:build-install-debug
 npm run ios:diagnostics
 npm run ios:logs
 
@@ -165,8 +166,10 @@ npm run android:diagnostics
 npm run android:logs
 ```
 
-`ios:build-install` bundles JavaScript into the Debug simulator app, installs
-it, and launches it. `ios:diagnostics` restarts the app and reads only
+`ios:build-install` bundles JavaScript into the Release simulator app, installs
+it, and launches it. Use `ios:build-install-debug` before `ios:diagnostics`,
+because diagnostics are deliberately compiled out of Release builds.
+`ios:diagnostics` restarts the Debug app and reads only
 `MONERO_WALLET_DIAGNOSTICS` JSON lines from the iOS system log.
 The current simulator gate confirms the app can reach the live Cuprate daemon
 at `xmr.tex8.com:18089` through both `/get_info` and `/json_rpc`; optimized

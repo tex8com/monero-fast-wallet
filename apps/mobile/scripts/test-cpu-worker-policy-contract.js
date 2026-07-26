@@ -124,6 +124,14 @@ assert.match(
 );
 assert.match(iosBuildInstall, /monero-v0\.18\.4\.6-tex8-patched/);
 assert.match(iosBuildInstall, /ios-monero-link-manifests-tex8-patched/);
+assert.match(iosBuildInstall, /prepare-patched-monero-core\.sh/);
+assert.match(iosBuildInstall, /generate-codegen-artifacts\.js/);
+assert.match(iosBuildInstall, /AsyncStorageSpec\/AsyncStorageSpec\.h/);
+assert.match(
+  iosBuildInstall,
+  /NativeMoneroWalletSpec\/NativeMoneroWalletSpec\.h/,
+);
+assert.match(iosBuildInstall, /MoneroWallet\.debug\.dylib/);
 for (const source of [iosBuildInstall, iosProject]) {
   assert.match(source, /TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM/);
   assert.match(source, /TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS/);

@@ -95,7 +95,9 @@ impl CuprateGrpcBlockSource {
         let request = StreamBlocksRequest {
             start_height,
             stop_height,
-            prune: false,
+            // Hosted ownership detection needs the transaction prefix and
+            // RingCT base, not the large prunable proof payload.
+            prune: true,
             chunk_blocks_hint,
             no_miner_tx: false,
             client_request_id: format!("notify-scanner-{start_height}-{stop_height}"),
@@ -888,8 +890,8 @@ mod tests {
     #[test]
     fn normalizes_cuprate_endpoints() {
         assert_eq!(
-            normalize_grpc_endpoint("xmr.tex8.com:18091").unwrap(),
-            "http://xmr.tex8.com:18091"
+            normalize_grpc_endpoint("127.0.0.1:48091").unwrap(),
+            "http://127.0.0.1:48091"
         );
         assert_eq!(
             normalize_http_endpoint("http://tex8.com:18089/").unwrap(),
@@ -1028,7 +1030,7 @@ mod tests {
     #[ignore = "requires live Cuprate gRPC endpoint"]
     fn live_cuprate_grpc_source_fetches_block() {
         let endpoint = env::var("NOTIFY_SCANNER_TEST_GRPC_ENDPOINT")
-            .unwrap_or_else(|_| "xmr.tex8.com:18091".to_owned());
+            .unwrap_or_else(|_| "127.0.0.1:48091".to_owned());
         let from_height_exclusive = env::var("NOTIFY_SCANNER_TEST_FROM_HEIGHT")
             .ok()
             .and_then(|value| value.parse().ok())

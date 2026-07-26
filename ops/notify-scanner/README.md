@@ -1,8 +1,10 @@
 # Notify Scanner Deployment
 
 This directory contains the production wiring for the Fast Receive scanner API.
-Raw Monero RPC/gRPC still uses the Cuprate public IP, but the scanner API is
-normal HTTPS and should be reached through the existing `tex8.com` TLS route.
+Raw Monero RPC still uses the Cuprate public IP, while the scanner uses the
+local Cuprate gRPC listener only as a block-source fallback. The scanner API
+is normal HTTPS and should be reached through the existing `tex8.com` TLS
+route.
 
 Production scanner URL:
 
@@ -20,9 +22,8 @@ xmr.tex8.com A 152.53.133.188
 Cloudflare proxy: DNS only
 ```
 
-The DNS record must stay unproxied because the wallet uses raw Cuprate ports
-on the same host. Cloudflare's HTTP proxy is not suitable for `18089` and
-`18091`.
+The DNS record must stay unproxied because the wallet uses raw Cuprate RPC on
+the same host. Cloudflare's HTTP proxy is not suitable for `18089`.
 
 Expected acceptance check:
 
@@ -87,7 +88,9 @@ enabled, a server-only `NOTIFY_SCANNER_AUTH_TOKEN`.
 NOTIFY_SCANNER_BIND=127.0.0.1:8087
 NOTIFY_SCANNER_WATCH_DB=/srv/monero-fast-wallet/monero-fast-wallet-runtime/notify-scanner-watch.json.enc
 NOTIFY_SCANNER_STORAGE_KEY=<32-byte hex or base64 key>
-NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT=private-node-ip:18091
+NOTIFY_SCANNER_SCANPACK_DIRECTORY=/var/lib/cuprate/wallet-scan-cache-100k
+NOTIFY_SCANNER_SCANPACK_NETWORK=mainnet
+NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT=127.0.0.1:48091
 NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT=http://private-node-ip:18089
 NOTIFY_SCANNER_BLOCK_SCAN_MAX_BLOCKS=25
 NOTIFY_SCANNER_BLOCK_SCAN_INTERVAL_MS=10000

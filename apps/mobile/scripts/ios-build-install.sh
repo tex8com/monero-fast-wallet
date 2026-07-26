@@ -29,6 +29,14 @@ if [ -z "$MONERO_SOURCE_DIR" ]; then
   MONERO_SOURCE_DIR="$MONERO_IOS_BUILD_ROOT/monero-v0.18.4.6-tex8-patched"
 fi
 
+if [ "$SHELL_MODE" != "1" ]; then
+  # The external build root may have been cleaned after producing the static
+  # archive. Re-materialize and authenticate the exact patched Monero tree so
+  # WalletEngine.cpp always compiles against the matching wallet2_api.h.
+  export MONERO_SOURCE_DIR
+  source "$REPO_ROOT/native/monero-bridge/scripts/prepare-patched-monero-core.sh"
+fi
+
 # The iOS manifest generator uses the stable build-target label `ios-sim-arm64`.
 # Older build roots may expose a matching `iphonesimulator` symlink, but new and
 # existing external build roots are not guaranteed to have that compatibility
@@ -56,6 +64,34 @@ if [ -z "$DEVICE" ]; then
   echo "No booted iOS simulator found. Boot one or set IOS_SIMULATOR_UDID." >&2
   exit 2
 fi
+
+# React Native's Xcode copy phases consume generated headers before the regular
+# codegen phase has necessarily populated them on a clean build. Generate the
+# complete iOS artifacts up front so first-run builds cannot fail on a missing
+# AsyncStorageSpec or NativeMoneroWalletSpec header.
+REACT_NATIVE_ROOT="$APP_ROOT/node_modules/react-native"
+CODEGEN_SCRIPT="$REACT_NATIVE_ROOT/scripts/generate-codegen-artifacts.js"
+if [ ! -f "$CODEGEN_SCRIPT" ]; then
+  echo "Missing React Native codegen script: $CODEGEN_SCRIPT" >&2
+  echo "Install mobile dependencies before building the iOS app." >&2
+  exit 1
+fi
+(
+  cd "$REACT_NATIVE_ROOT"
+  node scripts/generate-codegen-artifacts.js \
+    --path "$APP_ROOT" \
+    --outputPath "$APP_ROOT/ios" \
+    --targetPlatform ios
+)
+for codegen_header in \
+  "$APP_ROOT/ios/build/generated/ios/ReactCodegen/AsyncStorageSpec/AsyncStorageSpec.h" \
+  "$APP_ROOT/ios/build/generated/ios/ReactCodegen/NativeMoneroWalletSpec/NativeMoneroWalletSpec.h"
+do
+  if [ ! -f "$codegen_header" ]; then
+    echo "React Native codegen did not produce: $codegen_header" >&2
+    exit 1
+  fi
+done
 
 xcodebuild_args=(
   -workspace "$APP_ROOT/ios/MoneroWallet.xcworkspace" \
@@ -109,10 +145,17 @@ fi
 
 if [ "$SHELL_MODE" != "1" ]; then
   APP_BINARY="$APP_PATH/MoneroWallet"
+  CORE_LINK_BINARY="$APP_BINARY"
+  # Current Xcode versions put the target's implementation into a separate
+  # debug dylib while the bundle executable is only a small loader.
+  if [ -f "$APP_PATH/MoneroWallet.debug.dylib" ]; then
+    CORE_LINK_BINARY="$APP_PATH/MoneroWallet.debug.dylib"
+  fi
   # With pipefail enabled, grep -q exits after the first match and can make
   # nm fail with SIGPIPE on a valid, large Release binary. Consume the stream
   # fully so this is a real core-link check rather than a false negative.
-  if [ ! -f "$APP_BINARY" ] || ! nm -arch arm64 "$APP_BINARY" | grep "WalletManagerFactory" >/dev/null; then
+  if [ ! -f "$APP_BINARY" ] \
+      || ! nm -arch arm64 "$CORE_LINK_BINARY" | grep "WalletManagerFactory" >/dev/null; then
     echo "Built simulator app does not contain the native Monero wallet core." >&2
     exit 1
   fi

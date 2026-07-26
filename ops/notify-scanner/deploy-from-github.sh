@@ -110,10 +110,23 @@ ensure_env() {
   fi
 }
 
+replace_env_if_equals() {
+  local name="$1"
+  local old_value="$2"
+  local new_value="$3"
+  if grep -Fqx "${name}=${old_value}" "$ENV_FILE"; then
+    sed -i "s#^${name}=${old_value}\$#${name}=${new_value}#" "$ENV_FILE"
+  fi
+}
+
 ensure_env "NOTIFY_SCANNER_BIND" "127.0.0.1:8087"
 ensure_env "NOTIFY_SCANNER_WATCH_DB" "$RUNTIME/notify-scanner-watch.json.enc"
 ensure_env "NOTIFY_SCANNER_STORAGE_KEY" "$(openssl rand -hex 32)"
-ensure_env "NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT" "private-node-ip:18091"
+ensure_env "NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT" "127.0.0.1:48091"
+replace_env_if_equals \
+  "NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT" \
+  "private-node-ip:18091" \
+  "127.0.0.1:48091"
 ensure_env "NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT" "private-node-ip:18089"
 ensure_env "NOTIFY_SCANNER_SCANPACK_DIRECTORY" "/var/lib/cuprate/wallet-scan-cache-100k"
 ensure_env "NOTIFY_SCANNER_SCANPACK_NETWORK" "mainnet"

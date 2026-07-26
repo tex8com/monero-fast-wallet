@@ -1,12 +1,12 @@
-# Wallet-Metal-Testbench
+# Wallet Metal testbench
 
-Dies ist die GPU-Teststrecke für den Wallet-Scan. Sie enthält keine
-Produktintegration und verarbeitet ausschließlich deterministische, öffentliche
-Testdaten. Ein echter View Key darf weder in den Testvektor noch in den GPU-Puffer.
+This is the GPU test track for the wallet scan. It does not contain product
+integration and only processes deterministic, public test data. A real view key
+must not enter the test vector or the GPU buffer.
 
-## M0 – Layout und Dispatch (historische Baseline)
+## M0 – Layout and Dispatch (historical baseline)
 
-M0 bindet genau die später benötigten Puffer:
+M0 binds exactly the buffers needed later:
 
 ```text
 View-Key: 32 Byte
@@ -15,35 +15,33 @@ D:        N × 32 Byte
 valid:    N × 1 Byte
 ```
 
-Der Kernel kopiert nur `R` bytegleich nach `D` und setzt `valid`. Er misst
-Metal-Initialisierung, Unified-Memory-Übergabe, Dispatch und Ergebnisabnahme.
-**M0 enthält keine Edwards25519-Arithmetik; seine Werte sind keine
-Ableitungen/s und dürfen nicht mit CPU-Kryptowerten verglichen werden.**
+The kernel only copies `R` to `D` and sets `valid`. It measures metal
+initialization, unified memory delivery, dispatch and acceptance of results.
+**M0 does not contain Edwards25519 arithmetic; its values are not derivations/s
+and must not be compared with CPU crypto values.**
 
-## M1 – vollständige Referenzableitung
+## M1 – complete reference derivation
 
-`derivation.metal` implementiert die gleiche Operation wie der aktuelle
-Rust-Adapter:
+`derivation.metal` implements the same operation as the current Rust adapter:
 
 ```text
 D = (8 * Scalar::from_bytes_mod_order(a)) * R
 ```
 
-Der Kernel enthält Feldarithmetik modulo `2^255 - 19`, vollständige
-Extended-Edwards-Formeln, Punktdekodierung, Skalarreduktion modulo der
-Ed25519-Gruppenordnung und komprimierte Ausgabe. Sein Ziel ist zunächst
-Korrektheit, nicht Höchstleistung.
+The kernel contains field arithmetic modulo `2^255 - 19`, full extended-edwards
+formulas, point decoding, scalar reduction modulo of the Ed25519 group order and
+compressed output. His goal is first of all correctness, not maximum
+performance.
 
-Vor jeder M1-Messung baut
-`tools/wallet-crypto-testbench` eine binäre `MWMTV1`-Vektordatei. Sie enthält
-deterministische, öffentliche Punkte und für jeden Punkt das Byte-genaue
-Ergebnis des vorhandenen Dalek-Adapters. Zusätzlich enthält sie einen von
-Dalek verworfenen Punkt. Der Metal-Lauf besteht nur, wenn:
+Before each M1 measurement, `tools/wallet-crypto-testbench` builds a binary
+`MWMTV1` vector file. It contains deterministic, public points and for each
+point the byte-accurate result of the existing Dalek adapter. In addition, it
+contains a point discarded by Dalek. The metal run only exists if:
 
-1. jedes der `N` Ergebnisse exakt den 32 Dalek-Bytes entspricht und
-2. der ungültige Punkt `valid=0` und 32 Nullbytes liefert.
+1. Each of the `N` results corresponds exactly to the 32 Dalek bytes and
+2. the invalid point provides `valid=0` and 32 null bytes.
 
-Beispiel für einen kleinen Korrektheitslauf:
+Example of a small correctness run:
 
 ```sh
 WALLET_METAL_M1_POINTS=8 \
@@ -52,18 +50,18 @@ bash tools/wallet-metal-testbench/run-metal-m1-derivation-testbench.sh \
   --rounds 1 --warmup-rounds 1 --threads-per-group 32
 ```
 
-Der Vektorexport ist eine Korrektheitsvoraussetzung, keine CPU-Performance-
-Messung. `m1_derivations_per_second` darf erst nach `validation=pass` mit der
-CPU-Ableitungsrate verglichen werden; er bleibt dennoch eine isolierte
-Kryptokern-Messung, keine Wallet-Sync-Rate.
+Vector export is a correctness requirement, not a CPU performance measurement.
+`m1_derivations_per_second` may only be compared to the CPU derivation rate
+after `validation=pass`; Nevertheless, it remains an isolated crypto core
+measurement, not a wallet sync rate.
 
-## M2 – gemeinsamer Skalar pro Threadgruppe
+## M2 – common scalar per thread group
 
-`derivation_m2_group_scalar` verwendet die unveränderte M1-Mathematik und
-dieselben `MWMTV1`-Vektoren. Der einzige Unterschied ist die Ausführung: Da
-eine Wallet-Scan-Charge einen gemeinsamen View-Skalar hat, reduziert und
-multipliziert eine Lane den Skalar mit 8 einmal pro Threadgruppe; die übrigen
-Lanes übernehmen das 32-Byte-Ergebnis nach einer Threadgroup-Barriere.
+`derivation_m2_group_scalar` uses unchanged M1 mathematics and the same `MWMTV1`
+vectors. The only difference is the execution: Since a wallet scan batch has a
+common view scalar, one lane reduces and multiplies the scalar by 8 once per
+thread group; The remaining lanes adopt the 32-byte result after a thread group
+barrier.
 
 ```sh
 WALLET_METAL_M1_POINTS=8192 \
@@ -73,26 +71,26 @@ bash tools/wallet-metal-testbench/run-metal-m1-derivation-testbench.sh \
   --rounds 3 --warmup-rounds 1 --threads-per-group 32
 ```
 
-M2 gilt nur dann als Verbesserung, wenn dieselben Byte- und Fehlerpfadprüfungen
-wie M1 bestehen. Auch M2 bleibt ein Testkern, nicht Wallet-Produktcode.
+M2 is considered an improvement only if it passes the same byte and fault path
+checks as M1. M2 also remains a test core, not wallet product code.
 
-## M4 – Dalek-Radix-16 mit projektiven Niels-Tabellen
+## M4 – Dalek-Radix-16 with projective Niels tables
 
-M4 übernimmt den Algorithmus der variablen Basispunkt-Multiplikation aus
-`curve25519-dalek` 4.1.3, statt nur eine einzelne Feldoperation zu verändern:
+M4 adopts the algorithm of variable basis point multiplication from
+`curve25519-dalek` 4.1.3 instead of just modifying a single field operation:
 
-1. Es erzeugt pro Eingangspunkt eine Tabelle `P, 2P, …, 8P` in
-   Projektiv-Niels-Koordinaten.
-2. Den bereits auf `8*a mod l` gefalteten Skalar zerlegt es in 64 signierte
-   Radix-16-Ziffern (`[-8, 8]`).
-3. Es verarbeitet die Ziffern von oben nach unten mit je vier Doublings in
-   P2-Koordinaten und einer Niels-Tabellenaddition.
+1. It generates a table `P, 2P, …, 8P` in Projectiv-Niels coordinates per entry
+   point.
+2. The scalar already folded into `8*a mod l` is broken down into 64 signed
+   Radix-16 digits (`[-8, 8]`).
+3. It processes the digits from top to bottom with four Doublings in P2
+   coordinates and a Niels table addition.
 
-Damit sinkt die Anzahl der Punktadditionen im Multiplikationshauptpfad von 256
-auf 64; der Tabellenaufbau benötigt zusätzlich sieben Additionen. Die
-Punktdekodierung, Skalarvertrag, Ergebniscodierung und der M2-Threadgroup-
-Skalarpfad bleiben unverändert. M4 wird erst nach vollständiger Byteprüfung
-gegen dieselben `MWMTV1`-Dalek-Vektoren als Kandidat betrachtet.
+This reduces the number of point additions in the main multiplication path from
+256 to 64; the table structure requires an additional seven additions. Point
+decoding, scalar contract, result coding and the M2 threadgroup scalar path
+remain unchanged. M4 is considered a candidate only after full byte testing
+against the same `MWMTV1`-Dalek vectors.
 
 ```sh
 WALLET_METAL_M1_POINTS=8192 \
@@ -102,21 +100,21 @@ bash tools/wallet-metal-testbench/run-metal-m1-derivation-testbench.sh \
   --rounds 3 --warmup-rounds 1 --threads-per-group 32
 ```
 
-## M5 – M4 plus Dalek-Feld-Additionsketten
+## M5 – M4 plus Dalek field addition chains
 
-M5 behält den vollständigen M4-Skalarmultiplikationspfad bei, ersetzt jedoch
-die generische Binärexponentiation beim Dekodieren und Kodieren der Punkte:
+M5 maintains the full M4 scalar multiplication path, but replaces the generic
+binary exposure when decoding and encoding the points:
 
-- Feldinversion `x^(p-2)`: dieselbe `pow22501`-Additionskette wie Dalek,
-  254 Quadrierungen und 11 volle Multiplikationen;
-- Quadratwurzel `x^((p+3)/8)`: dieselbe Kette, 252 Quadrierungen und 11 volle
-  Multiplikationen.
+- field inversion `x^(p-2)`: same `pow22501` addition chain as Dalek, 254
+  squares and 11 full multiplications;
+- Square root `x^((p+3)/8)`: same chain, 252 squares and 11 full
+  multiplications.
 
-M4 führt im Referenzfeldkern für diese Exponenten noch eine volle
-Multiplikation für fast jedes gesetzte Exponentbit aus. M5 ändert **nicht** die
-Feldrepräsentation, die Reduktion oder die Punktformeln; damit ist die
-Auditoberfläche gegenüber einem neuen Feldkern klein. Der obligatorische
-Dalek-Byte- und Ungültig-Punkt-Test bleibt unverändert.
+M4 executes a full multiplication for almost every set exponent bit for these
+exponents in the reference field core. M5 does **not** change the field
+representation, the reduction or the point formulas; Thus, the audit surface is
+small compared to a new field core. The mandatory Dalek byte and invalid point
+test remains unchanged.
 
 ```sh
 WALLET_METAL_M1_POINTS=8192 \
@@ -126,20 +124,20 @@ bash tools/wallet-metal-testbench/run-metal-m1-derivation-testbench.sh \
   --rounds 3 --warmup-rounds 1 --threads-per-group 32
 ```
 
-## M12/M16 – 25/26-Bit-Feldkern und blockweise Batch-Inversion
+## M12/M16 – 25/26-bit field core and blockwise batch inversion
 
-`derivation_radix2625_chunkinvert.metal` ist der aktuelle Metal-Kandidat. Er
-behält die Radix-16-Punktmultiplikation und Dalek-Additionsketten bei, verwendet
-aber Daleks unsigned 10-Limb-Feldrepräsentation. Die Ausgabe läuft in drei
-geordneten Metal-Pässen:
+`derivation_radix2625_chunkinvert.metal` is the current metal candidate. It
+maintains Radix-16 point multiplication and Dalek addition chains, but uses
+Dalek's unsigned 10-Limb field representation. The edition runs in three ordered
+metal passes:
 
-1. Punktdekodierung und Skalarmultiplikation in Projektivkoordinaten;
-2. Montgomery-Batch-Inversion in unabhängigen 16-Punkte-Chunks;
-3. parallele affine Konvertierung und komprimierte Edwards-Ausgabe.
+1. point decoding and scalar multiplication in projective coordinates;
+2. Montgomery batch inversion in independent 16-point chunks;
+3. Parallel affine conversion and compressed Edwards output.
 
-Der Host verwendet für jeden In-Flight-Slot getrennte Projektiv-, Inversen-,
-Ergebnis- und Gültigkeitspuffer. Der Fehlerpfad und der vollständige
-Dalek-Byteabgleich gelten unverändert.
+The host uses separate projective, inverse, result and validity buffers for each
+in-flight slot. The error path and the complete Dalek byte matching are
+unchanged.
 
 ```sh
 WALLET_METAL_M1_POINTS=8192 \
@@ -155,24 +153,23 @@ bash tools/wallet-metal-testbench/run-metal-m1-derivation-testbench.sh \
   --batch-inversion-chunk-size 16
 ```
 
-M16 verwendet denselben M12-Kern und dieselbe Mathematik. Nur die
-Threadgruppengröße wird für die drei Pässe getrennt gewählt. Die oben
-angegebenen Werte sind die auf einem Apple M4 formal bestätigte Einstellung.
-Andere GPUs müssen mit der öffentlichen Testbench separat abgestimmt werden;
-`--threads-per-group` bleibt der gemeinsame Rückfallwert für Projektiv- und
-Kompressionspass.
+M16 uses the same M12 core and the same mathematics. Only the thread group size
+is selected separately for the three passes. The above values are the setting
+formally confirmed on an Apple M4. Other GPUs must be matched separately with
+the public testbench; `--threads-per-group` remains the common fallback value
+for projective and compression pass.
 
-Die übrigen Entwicklungsstufen wurden getrennt vermessen und verworfen
-beziehungsweise in M12 übernommen:
+The remaining development stages were measured separately and discarded or
+adopted in M12:
 
-- M7: erster 25/26-Bit-Port;
-- M8: verzögerter Carry bei Additionen;
-- M9: kanonische Limb-Vergleiche;
-- M10: gemeinsam kodierte Skalarziffern;
-- M11: korrekte, aber langsame serielle Batch-Inversion;
-- M13: korrekte, aber langsame reine 32-Bit-Radix-`2^13`-Arithmetik.
-- M14: korrekter, aber langsamerer paralleler Threadgroup-Scan;
-- M15: korrekter, aber langsamerer 32-Lane-SIMD-Scan.
+- M7: first 25/26-bit port;
+- M8: delayed carry on additions;
+- M9: canonical limb comparisons;
+- M10: commonly coded scalar numerals;
+- M11: correct but slow serial batch inversion;
+- M13: correct but slow pure 32-bit radix `2^13`-arithmetic.
+- M14: correct but slower parallel thread group scan;
+- M15: correct but slower 32-lane SIMD scan.
 
-Keine dieser Dateien ist Produktintegration. Der Testbench darf weiterhin
-keinen echten Wallet-Schlüssel verarbeiten.
+None of these files are product integration. The testbench must still not
+process a real wallet key.

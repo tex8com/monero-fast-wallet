@@ -1,31 +1,31 @@
-# Wallet-Krypto-Testbench
+# Wallet Crypto-Testbench
 
-Dieser Testbench misst ausschließlich die Monero-Key-Derivation `D = 8 * a * R`.
-Er enthält weder Node-Transport, Datenbankzugriffe, ScanPack, Blockparser noch
-Wallet-Commit. Damit dürfen seine Derivations/s niemals mit Blöcken/s,
-Payload-MiB/s oder vollständiger Wallet-Syncdauer gleichgesetzt werden.
+This testbench measures only the Monero key derivation `D = 8 * a * R`. It does
+not contain node transport, database access, ScanPack, blockparser or wallet
+commit. Thus, its derivatives must never be equated with blocks, payload MiB/s
+or complete wallet sync duration.
 
-## Varianten
+## Variants
 
-- `dalek_direct_parallel`: Direkter `curve25519-dalek`-Aufruf mit dem
-  ursprünglichen Algorithmus.
-- `wallet_scalar_ffi_parallel`: Aktueller Produktadapter
-  `fast_generate_key_derivation` unter demselben Worker-Budget.
+- `dalek_direct_parallel`: Direct `curve25519-dalek` call using the original
+  algorithm.
+- `wallet_scalar_ffi_parallel`: Current product adapter
+  `fast_generate_key_derivation` under the same worker budget.
 
-Vor jeder Zeitmessung validiert der Testbench für alle Punkte die Bytegleichheit
-der beiden Wege sowie den Fehlerpfad für einen ungültig kodierten Punkt. Der
-Korpus besteht aus deterministisch erzeugten, gültigen Edwards25519-Punkten;
-Korpusaufbau und Prüfung liegen außerhalb der Zeitmessung. Das simuliert die
-Form der Transaktions-Public-Keys im Wallet, ersetzt aber keinen vollständigen
-Wallet-Sync-Test.
+Before each time measurement, the testbench validates the byte equality of the
+two paths for all points as well as the error path for an invalidly coded point.
+The corpus consists of deterministically generated, valid Edwards25519 points;
+Corpus construction and testing are outside of timekeeping. This simulates the
+form of the transactional public keys in the wallet, but does not replace a
+complete wallet sync test.
 
-## Ausführung
+## Implementation
 
 ```sh
 tools/wallet-crypto-testbench/run-derivation-benchmark.sh \
   --workers 10 --points 131072 --rounds 100 --warmup-rounds 2 --variant all
 ```
 
-Jeder Lauf erzeugt einen neuen Ergebnisordner unter
-`build/wallet-crypto-testbench/` mit Build-Log, vollständiger Umgebung,
-Quell-Checksummen, Rohwerten und `/usr/bin/time`-Ressourcenwerten.
+Each run creates a new result folder at `build/wallet-crypto-testbench/` with
+build log, full environment, source checksums, raw values and `/usr/bin/time`
+resource values.

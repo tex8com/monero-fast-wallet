@@ -30,6 +30,7 @@ fn main() -> Result<()> {
     let source_rounds = parsed_env("NOTIFY_SCANNER_BENCH_SOURCE_ROUNDS", DEFAULT_SOURCE_ROUNDS)?;
     let scan_rounds = parsed_env("NOTIFY_SCANNER_BENCH_SCAN_ROUNDS", DEFAULT_SCAN_ROUNDS)?;
     let workers = parsed_env("NOTIFY_SCANNER_BENCH_WORKERS", DEFAULT_WORKERS)?;
+    let compare_individual = parsed_env::<u8>("NOTIFY_SCANNER_BENCH_COMPARE_INDIVIDUAL", 0)? == 1;
     let watch_counts = parsed_watch_counts()?;
     if block_count == 0 || source_rounds == 0 || scan_rounds == 0 || workers == 0 {
         bail!("block, round, and worker counts must be greater than zero");
@@ -45,9 +46,17 @@ fn main() -> Result<()> {
     let (cache_start, cache_end) = scanpack
         .cached_interval()
         .context("ScanPack directory is empty")?;
-    let selected_end = cache_end
-        .checked_sub(safety_blocks)
-        .context("ScanPack cache is smaller than the safety margin")?;
+    let selected_end = match env::var("NOTIFY_SCANNER_BENCH_END_EXCLUSIVE") {
+        Ok(value) => value
+            .parse::<u64>()
+            .context("invalid NOTIFY_SCANNER_BENCH_END_EXCLUSIVE")?,
+        Err(env::VarError::NotPresent) => cache_end
+            .checked_sub(safety_blocks)
+            .context("ScanPack cache is smaller than the safety margin")?,
+        Err(error) => {
+            return Err(error).context("failed to read NOTIFY_SCANNER_BENCH_END_EXCLUSIVE")
+        }
+    };
     let selected_start = selected_end
         .checked_sub(u64::try_from(block_count)?)
         .context("ScanPack cache is smaller than the requested block window")?;
@@ -150,6 +159,7 @@ fn main() -> Result<()> {
         );
         let mut samples = Vec::with_capacity(scan_rounds);
         let mut match_count = None;
+        let mut last_batch_results = None;
         for _ in 0..scan_rounds {
             let started = Instant::now();
             let matches = matcher
@@ -163,7 +173,8 @@ fn main() -> Result<()> {
             {
                 bail!("block batch result changed between rounds");
             }
-            black_box(matches);
+            black_box(&matches);
+            last_batch_results = Some(matches);
         }
         let scan_median = median(&mut samples);
         let derivations = transaction_keys
@@ -182,6 +193,27 @@ fn main() -> Result<()> {
             millis(scanpack_pipeline),
             millis(grpc_pipeline)
         );
+
+        if compare_individual {
+            let started = Instant::now();
+            let individual = selected_watches
+                .iter()
+                .map(|watch| matcher.match_blocks(watch, &scanpack_blocks))
+                .collect::<Result<Vec<_>>>()
+                .context("individual block scan failed")?;
+            let individual_elapsed = started.elapsed();
+            if last_batch_results.as_ref() != Some(&individual) {
+                bail!("multi-watch block batch differs from individual scanning");
+            }
+            println!(
+                "BLOCK_BATCH_COMPARE,watches={},batch_ms={:.3},individual_ms={:.3},speedup={:.3}",
+                watch_count,
+                millis(scan_median),
+                millis(individual_elapsed),
+                individual_elapsed.as_secs_f64() / scan_median.as_secs_f64()
+            );
+            black_box(individual);
+        }
     }
 
     if let Some(rpc_endpoint) = rpc_endpoint {
@@ -206,6 +238,7 @@ fn main() -> Result<()> {
             );
             let mut samples = Vec::with_capacity(scan_rounds);
             let mut match_count = None;
+            let mut last_batch_results = None;
             for _ in 0..scan_rounds {
                 let started = Instant::now();
                 let matches = matcher
@@ -219,7 +252,8 @@ fn main() -> Result<()> {
                 {
                     bail!("mempool batch result changed between rounds");
                 }
-                black_box(matches);
+                black_box(&matches);
+                last_batch_results = Some(matches);
             }
             let scan_median = median(&mut samples);
             let derivations = mempool_keys
@@ -234,6 +268,27 @@ fn main() -> Result<()> {
                 rate(*watch_count, scan_median),
                 match_count.unwrap_or(0)
             );
+
+            if compare_individual {
+                let started = Instant::now();
+                let individual = selected_watches
+                    .iter()
+                    .map(|watch| matcher.match_mempool_txs(watch, &mempool_txs))
+                    .collect::<Result<Vec<_>>>()
+                    .context("individual mempool scan failed")?;
+                let individual_elapsed = started.elapsed();
+                if last_batch_results.as_ref() != Some(&individual) {
+                    bail!("multi-watch mempool batch differs from individual scanning");
+                }
+                println!(
+                    "MEMPOOL_BATCH_COMPARE,watches={},batch_ms={:.3},individual_ms={:.3},speedup={:.3}",
+                    watch_count,
+                    millis(scan_median),
+                    millis(individual_elapsed),
+                    individual_elapsed.as_secs_f64() / scan_median.as_secs_f64()
+                );
+                black_box(individual);
+            }
         }
     }
 

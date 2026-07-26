@@ -12,6 +12,7 @@
     "check:node": "bash scripts/check-node.sh",
     "ios": "react-native run-ios",
     "ios:build-install": "bash scripts/ios-build-install.sh",
+    "ios:build-install-debug": "MONERO_WALLET_IOS_CONFIGURATION=Debug bash scripts/ios-build-install.sh",
     "ios:build-simulator-core": "bash scripts/ios-build-simulator-core.sh",
     "ios:diagnostics": "bash scripts/ios-diagnostics.sh",
     "ios:logs": "bash scripts/ios-logs.sh",

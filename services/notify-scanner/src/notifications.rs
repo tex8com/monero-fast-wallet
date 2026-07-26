@@ -5,7 +5,11 @@ use crate::{
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 const CONTRACT_VERSION: &str = "monero-fast-wallet-push.v2";
 
@@ -93,6 +97,35 @@ pub fn dispatch_pending_notifications(
 ) -> Result<NotificationDispatchRun> {
     let mut run = NotificationDispatchRun::default();
     for watch in store.list()? {
+        let mut outputs = store.list_matches(&watch.identity_id)?;
+        for output in &mut outputs {
+            if output.notification_status == NotificationStatus::Pending
+                && matches!(
+                    output.detection_status,
+                    DetectionStatus::Dropped | DetectionStatus::Reorged
+                )
+            {
+                output.notification_status = NotificationStatus::Suppressed;
+                output.updated_at_ms = output.updated_at_ms.max(now_ms);
+                store.upsert_match(output.clone())?;
+            }
+        }
+
+        let sent_groups = outputs
+            .iter()
+            .filter(|output| output.notification_status == NotificationStatus::Sent)
+            .map(notification_group_key)
+            .collect::<BTreeSet<_>>();
+        for output in &mut outputs {
+            if output.notification_status == NotificationStatus::Pending
+                && sent_groups.contains(&notification_group_key(output))
+            {
+                output.notification_status = NotificationStatus::Sent;
+                output.updated_at_ms = output.updated_at_ms.max(now_ms);
+                store.upsert_match(output.clone())?;
+            }
+        }
+
         if watch
             .device_id
             .as_deref()
@@ -100,24 +133,35 @@ pub fn dispatch_pending_notifications(
             .filter(|value| !value.is_empty())
             .is_none()
         {
-            run.skipped_without_subscription += store
-                .list_matches(&watch.identity_id)?
+            run.skipped_without_subscription += outputs
                 .into_iter()
                 .filter(|output| output.notification_status == NotificationStatus::Pending)
-                .count();
+                .map(|output| notification_group_key(&output))
+                .collect::<BTreeSet<_>>()
+                .len();
             continue;
         }
 
-        for mut output in store.list_matches(&watch.identity_id)? {
-            if output.notification_status != NotificationStatus::Pending {
-                continue;
-            }
+        let mut pending_groups = BTreeMap::<String, Vec<MatchedOutput>>::new();
+        for output in outputs
+            .into_iter()
+            .filter(|output| output.notification_status == NotificationStatus::Pending)
+        {
+            pending_groups
+                .entry(notification_group_key(&output))
+                .or_default()
+                .push(output);
+        }
+
+        for mut grouped_outputs in pending_groups.into_values() {
             run.pending += 1;
-            match sink.send(&watch, &output) {
+            match sink.send(&watch, &grouped_outputs[0]) {
                 Ok(()) => {
-                    output.notification_status = NotificationStatus::Sent;
-                    output.updated_at_ms = output.updated_at_ms.max(now_ms);
-                    store.upsert_match(output)?;
+                    for output in &mut grouped_outputs {
+                        output.notification_status = NotificationStatus::Sent;
+                        output.updated_at_ms = output.updated_at_ms.max(now_ms);
+                        store.upsert_match(output.clone())?;
+                    }
                     run.sent += 1;
                 }
                 Err(error) => {
@@ -162,17 +206,19 @@ impl<'a> FastWalletPushEvent<'a> {
     }
 }
 
+fn notification_group_key(output: &MatchedOutput) -> String {
+    let group_id = output.notification_group_id.trim();
+    if group_id.is_empty() {
+        output.id.clone()
+    } else {
+        group_id.to_owned()
+    }
+}
+
 fn notification_event_id(output: &MatchedOutput) -> String {
     let mut digest = Sha256::new();
     digest.update(b"monero-fast-wallet-push-signal-v2\0");
-    digest.update(output.id.as_bytes());
-    digest.update([0]);
-    digest.update(match output.detection_status {
-        DetectionStatus::PendingMempool | DetectionStatus::Detected => b"pending".as_slice(),
-        DetectionStatus::Confirmed => b"confirmed".as_slice(),
-        DetectionStatus::Dropped => b"dropped".as_slice(),
-        DetectionStatus::Reorged => b"reorged".as_slice(),
-    });
+    digest.update(notification_group_key(output).as_bytes());
     format!("sig_{}", hex::encode(digest.finalize()))
 }
 
@@ -238,6 +284,7 @@ mod tests {
     fn output() -> MatchedOutput {
         MatchedOutput {
             id: "match-1".to_string(),
+            notification_group_id: "group-1".to_string(),
             identity_id: "fast-wallet-1".to_string(),
             detection_status: DetectionStatus::PendingMempool,
             notification_status: NotificationStatus::Pending,
@@ -264,6 +311,83 @@ mod tests {
         assert_eq!(
             store.list_matches("fast-wallet-1").unwrap()[0].notification_status,
             NotificationStatus::Sent
+        );
+    }
+
+    #[test]
+    fn dispatcher_does_not_send_again_when_the_mempool_match_confirms() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        store.upsert(watch(Some("subscription-1"))).unwrap();
+        store.upsert_match(output()).unwrap();
+        let sink = RecordingSink::default();
+
+        let first = dispatch_pending_notifications(store.clone(), &sink, 3).unwrap();
+        let mut confirmed = output();
+        confirmed.detection_status = DetectionStatus::Confirmed;
+        confirmed.updated_at_ms = 4;
+        store.upsert_match(confirmed).unwrap();
+        let second = dispatch_pending_notifications(store.clone(), &sink, 5).unwrap();
+
+        assert_eq!(first.sent, 1);
+        assert_eq!(second.sent, 0);
+        assert_eq!(sink.events.lock().unwrap().len(), 1);
+        let stored = store.list_matches("fast-wallet-1").unwrap().remove(0);
+        assert_eq!(stored.detection_status, DetectionStatus::Confirmed);
+        assert_eq!(stored.notification_status, NotificationStatus::Sent);
+    }
+
+    #[test]
+    fn dispatcher_sends_only_once_for_multiple_outputs_in_one_transaction() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        store.upsert(watch(Some("subscription-1"))).unwrap();
+        let first_output = output();
+        let mut second_output = output();
+        second_output.id = "match-2".to_string();
+        store.upsert_match(first_output).unwrap();
+        store.upsert_match(second_output).unwrap();
+        let sink = RecordingSink::default();
+
+        let run = dispatch_pending_notifications(store.clone(), &sink, 3).unwrap();
+
+        assert_eq!(run.pending, 1);
+        assert_eq!(run.sent, 1);
+        assert_eq!(sink.events.lock().unwrap().len(), 1);
+        assert!(store
+            .list_matches("fast-wallet-1")
+            .unwrap()
+            .into_iter()
+            .all(|output| output.notification_status == NotificationStatus::Sent));
+    }
+
+    #[test]
+    fn dispatcher_suppresses_an_invalid_pending_hint_before_delivery() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        store.upsert(watch(Some("subscription-1"))).unwrap();
+        let mut dropped = output();
+        dropped.detection_status = DetectionStatus::Dropped;
+        store.upsert_match(dropped).unwrap();
+        let sink = RecordingSink::default();
+
+        let run = dispatch_pending_notifications(store.clone(), &sink, 3).unwrap();
+
+        assert_eq!(run.pending, 0);
+        assert_eq!(run.sent, 0);
+        assert!(sink.events.lock().unwrap().is_empty());
+        assert_eq!(
+            store.list_matches("fast-wallet-1").unwrap()[0].notification_status,
+            NotificationStatus::Suppressed
+        );
+    }
+
+    #[test]
+    fn notification_event_id_is_stable_across_confirmation() {
+        let pending = output();
+        let mut confirmed = pending.clone();
+        confirmed.detection_status = DetectionStatus::Confirmed;
+
+        assert_eq!(
+            notification_event_id(&pending),
+            notification_event_id(&confirmed)
         );
     }
 

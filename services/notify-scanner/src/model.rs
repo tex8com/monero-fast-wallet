@@ -201,6 +201,8 @@ pub enum NotificationStatus {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct MatchedOutput {
     pub id: String,
+    #[serde(default)]
+    pub notification_group_id: String,
     pub identity_id: String,
     pub detection_status: DetectionStatus,
     pub notification_status: NotificationStatus,
@@ -216,6 +218,7 @@ impl fmt::Debug for MatchedOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MatchedOutput")
             .field("id", &"<redacted>")
+            .field("notification_group_id", &"<redacted>")
             .field("identity_id", &"<redacted>")
             .field("detection_status", &self.detection_status)
             .field("notification_status", &self.notification_status)
@@ -238,6 +241,7 @@ impl MatchedOutput {
         let output_index = request.output_index;
         Ok(Self {
             id: matched_output_id(&identity_id, &tx_id, output_index),
+            notification_group_id: matched_notification_group_id(&identity_id, &tx_id),
             identity_id,
             detection_status: DetectionStatus::Confirmed,
             notification_status: NotificationStatus::Pending,
@@ -264,6 +268,7 @@ impl MatchedOutput {
         let tx_id = request.tx_id.trim().to_lowercase();
         Ok(Self {
             id: matched_output_id(&identity_id, &tx_id, output_index),
+            notification_group_id: matched_notification_group_id(&identity_id, &tx_id),
             identity_id,
             detection_status: DetectionStatus::PendingMempool,
             notification_status: NotificationStatus::Pending,
@@ -277,6 +282,9 @@ impl MatchedOutput {
     pub fn dropped_mempool(mut self, now_ms: u64) -> Self {
         if self.detection_status != DetectionStatus::Confirmed {
             self.detection_status = DetectionStatus::Dropped;
+            if self.notification_status == NotificationStatus::Pending {
+                self.notification_status = NotificationStatus::Suppressed;
+            }
             self.updated_at_ms = now_ms;
         }
         self
@@ -471,6 +479,15 @@ pub fn matched_output_id(identity_id: &str, tx_id: &str, output_index: u64) -> S
     format!("evt_{}", hex::encode(digest.finalize()))
 }
 
+pub fn matched_notification_group_id(identity_id: &str, tx_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"monero-fast-wallet-notification-group-v1\0");
+    digest.update(identity_id.trim().as_bytes());
+    digest.update([0]);
+    digest.update(tx_id.trim().to_ascii_lowercase().as_bytes());
+    format!("grp_{}", hex::encode(digest.finalize()))
+}
+
 pub fn privacy_safe_detection_id(value: &str) -> String {
     let value = value.trim();
     if value.len() == 68
@@ -541,8 +558,14 @@ mod tests {
         assert!(!format!("{request:?}").contains(&tx_id));
         let output = MatchedOutput::from_request(request, 1234).unwrap();
         assert_eq!(output.id, matched_output_id("fast-receive-0", &tx_id, 7));
+        assert_eq!(
+            output.notification_group_id,
+            matched_notification_group_id("fast-receive-0", &tx_id)
+        );
         assert!(output.id.starts_with("evt_"));
+        assert!(output.notification_group_id.starts_with("grp_"));
         assert!(!output.id.contains(&tx_id));
+        assert!(!output.notification_group_id.contains(&tx_id));
         assert_eq!(output.detection_status, DetectionStatus::Confirmed);
     }
 
@@ -555,6 +578,18 @@ mod tests {
         assert_eq!(output.detection_status, DetectionStatus::PendingMempool);
         assert_eq!(output.mempool_first_seen_ms, Some(1234));
         assert_eq!(output.mempool_last_seen_ms, Some(1234));
+    }
+
+    #[test]
+    fn suppresses_an_unsent_mempool_hint_when_the_transaction_disappears() {
+        let output =
+            MatchedOutput::from_mempool_candidate("fast-receive-0", "1".repeat(64), 7, 1234)
+                .unwrap()
+                .dropped_mempool(2345);
+
+        assert_eq!(output.detection_status, DetectionStatus::Dropped);
+        assert_eq!(output.notification_status, NotificationStatus::Suppressed);
+        assert_eq!(output.updated_at_ms, 2345);
     }
 
     #[test]

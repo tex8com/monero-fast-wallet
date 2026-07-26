@@ -677,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn block_confirmation_updates_mempool_match_without_duplicate() {
+    fn block_confirmation_updates_mempool_match_without_second_notification() {
         let store = Arc::new(InMemoryWatchStore::default());
         store.upsert(watch("fast-a", 10)).unwrap();
         let txs = vec![mempool_tx('1', vec![output('1', 0, "fast-a")])];
@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(matches[0].detection_status, DetectionStatus::Confirmed);
         assert_eq!(matches[0].mempool_first_seen_ms, Some(1500));
         assert_eq!(matches[0].mempool_last_seen_ms, Some(2000));
-        assert_eq!(matches[0].notification_status, NotificationStatus::Pending);
+        assert_eq!(matches[0].notification_status, NotificationStatus::Sent);
     }
 
     #[test]
@@ -730,6 +730,10 @@ mod tests {
         let matches = store.list_matches("fast-a").unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].detection_status, DetectionStatus::Dropped);
+        assert_eq!(
+            matches[0].notification_status,
+            NotificationStatus::Suppressed
+        );
         assert_eq!(matches[0].mempool_first_seen_ms, Some(1500));
     }
 
