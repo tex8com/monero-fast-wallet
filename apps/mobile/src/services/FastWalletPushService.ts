@@ -256,15 +256,18 @@ export async function requestMobilePushProviderToken(): Promise<MobilePushProvid
 }
 
 async function refreshRegistrationQuietly(token?: string): Promise<void> {
-  const subscriptionId = await getStoredSubscriptionId();
-  if (!subscriptionId) {
-    return;
-  }
-  const instance = messagingInstance();
-  if (!instance) {
-    return;
-  }
   try {
+    // Protected metadata is unavailable while the native app session is
+    // locked. Treat that expected startup state like every other quiet refresh
+    // failure so it is recorded without becoming an unhandled promise.
+    const subscriptionId = await getStoredSubscriptionId();
+    if (!subscriptionId) {
+      return;
+    }
+    const instance = messagingInstance();
+    if (!instance) {
+      return;
+    }
     await instance.setAutoInitEnabled?.(true);
     await instance.registerDeviceForRemoteMessages?.();
     const nextToken = token || (await instance.getToken());

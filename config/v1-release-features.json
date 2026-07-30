@@ -5,7 +5,21 @@
     "mfwNameResolverOrigins": [],
     "mfwNameGenesis": null,
     "privatePhoneDirectory": null,
-    "moneroEnthusiastV1": null
+    "moneroEnthusiastV1": {
+      "apiOrigin": "https://xmr.tex8.com",
+      "matrixHomeserver": "https://xmr.tex8.com",
+      "catalogOrigin": "https://xmr.tex8.com",
+      "catalogScope": "global-v1",
+      "catalogVerifyingKeyHex": "15b9aca4dbea7390793594ba7117dad0c3673cf12c6e1780f2eb7ab09c59c071",
+      "advertisingOrigin": "https://xmr.tex8.com",
+      "advertisingVerifyingKeyHex": "70f012dccf3cfae6e8746b3dec2f6a02e394a663157132a087860d0404647987",
+      "advertisingCountry": "PA",
+      "artifactVerifyingKeyHex": "3bf04038083505e086a280bbb3caacbf62c886ad4e113c312d5cf8c0674aea72",
+      "artifactManifestResource": "artifact-manifest.json",
+      "pteResource": "harrier-v1.pte",
+      "tokenizerResource": "tokenizer.json",
+      "conformanceResource": "conformance.json"
+    }
   },
   "features": {
     "localFastWallet": true,
@@ -15,7 +29,7 @@
     "scannerKeyImageSpendAuthority": false,
     "officialWorker": false,
     "privateWorkerPairing": false,
-    "moneroEnthusiastV1": false,
+    "moneroEnthusiastV1": true,
     "legacyCommunity": false,
     "news": false,
     "assistant": false,

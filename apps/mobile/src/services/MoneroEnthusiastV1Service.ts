@@ -215,7 +215,14 @@ export const MoneroEnthusiastV1Service = {
     runCommunityV1('appealChatReport', { caseId, reason }),
   submitProfile: (draft: CommunityV1ContentDraft) =>
     runCommunityV1<CommunityV1ContentRecord>('submitContent', { draft }),
+  submitContent: (draft: CommunityV1ContentDraft) =>
+    runCommunityV1<CommunityV1ContentRecord>('submitContent', { draft }),
   resubmitProfile: (publicId: string, draft: CommunityV1ContentDraft) =>
+    runCommunityV1<CommunityV1ContentRecord>('resubmitContent', {
+      publicId,
+      draft,
+    }),
+  resubmitContent: (publicId: string, draft: CommunityV1ContentDraft) =>
     runCommunityV1<CommunityV1ContentRecord>('resubmitContent', {
       publicId,
       draft,

@@ -55,6 +55,33 @@ describe('MoneroEnthusiastV1Service', () => {
     expect(mockRunNative.mock.calls[0][1]).not.toContain('embedding');
   });
 
+  it('submits a product listing through the native boundary', async () => {
+    const draft = {
+      kind: 'product_listing' as const,
+      title: 'Private test product',
+      summary: 'A test description that is stored as an unpublished draft.',
+      roles: [],
+      categories: ['privacy', 'software'],
+      languages: ['en'],
+      media: [],
+    };
+    mockRunNative.mockResolvedValueOnce(
+      JSON.stringify({
+        publicId: 'content_0123456789abcdef0123456789abcdef',
+        revision: 1,
+        draft,
+        status: 'awaiting_screening',
+      }),
+    );
+
+    await MoneroEnthusiastV1Service.submitContent(draft);
+
+    expect(mockRunNative).toHaveBeenCalledWith(
+      'submitContent',
+      JSON.stringify({ draft }),
+    );
+  });
+
   it('rejects operation names outside the native allowlist shape', async () => {
     await expect(runCommunityV1('../identity/delete')).rejects.toThrow(
       'Invalid Community operation',

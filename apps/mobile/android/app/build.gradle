@@ -92,7 +92,10 @@ def moneroFastWalletProtocolRoot = (findProperty("moneroFastWalletProtocolRoot")
 def moneroCommunityMatrixLibrary = (findProperty("moneroCommunityMatrixLibrary") ?: "").toString()
 def moneroCommunityMatrixRoot = (findProperty("moneroCommunityMatrixRoot") ?: "").toString()
 def moneroCommunityHarrierLibrary = (findProperty("moneroCommunityHarrierLibrary") ?: "").toString()
-def moneroCommunityAssetRoot = (findProperty("moneroCommunityAssetRoot") ?: "").toString().trim()
+def moneroCommunityAssetRoot = (
+        findProperty("moneroCommunityAssetRoot")
+                ?: file("${rootDir}/../../../build/community-v1-release-assets").absolutePath
+).toString().trim()
 def fastWalletGatewayOrigin = (findProperty("fastWalletGatewayOrigin") ?: "").toString().trim()
 def fastWalletRegistrationOrigin = (findProperty("fastWalletRegistrationOrigin") ?: "").toString().trim()
 def fastWalletOfficialWorkerRootId =

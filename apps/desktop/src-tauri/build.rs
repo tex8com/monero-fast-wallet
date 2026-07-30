@@ -137,6 +137,7 @@ fn main() {
 
     let attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS));
+    remove_stale_tauri_resources();
     tauri_build::try_build(attributes).expect("failed to build Tauri application manifest");
 
     let capability_path = manifest_dir.join("capabilities/main.json");
@@ -312,6 +313,34 @@ fn main() {
         "cargo:rustc-env=TEX8_DESKTOP_MONERO_LINKED={}",
         if linked_with_monero { "1" } else { "0" }
     );
+}
+
+fn remove_stale_tauri_resources() {
+    let Some(out_dir) = env::var_os("OUT_DIR").map(PathBuf::from) else {
+        return;
+    };
+    let Some(profile_dir) = out_dir.ancestors().nth(3) else {
+        return;
+    };
+
+    // tauri-build copies bundle resources directly into target/{debug,release}
+    // without first removing an existing destination. Older staged Community
+    // assets were read-only, so the next incremental build failed with EACCES.
+    // Remove only our exact generated resource names before Tauri copies the
+    // verified, owner-writable staging files again.
+    for resource in [
+        "artifact-manifest.json",
+        "harrier-v1.pte",
+        "tokenizer.json",
+        "conformance.json",
+    ] {
+        let path = profile_dir.join(resource);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove stale Tauri resource {}: {error}", path.display()),
+        }
+    }
 }
 
 fn configure_fast_wallet_release(manifest_dir: &std::path::Path) {

@@ -1,0 +1,24 @@
+[Unit]
+Description=Private Matrix Synapse for Monero Enthusiast
+Documentation=https://element-hq.github.io/synapse/latest/
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=120s
+TimeoutStopSec=30s
+ExecStartPre=-/usr/bin/docker rm -f monero-enthusiast-synapse
+ExecStart=/usr/bin/docker run --rm --name monero-enthusiast-synapse --network host --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m --mount type=bind,source=/var/lib/monero-enthusiast-synapse,target=/data matrixdotorg/synapse:v1.157.0
+ExecStop=/usr/bin/docker stop --time 20 monero-enthusiast-synapse
+
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/monero-enthusiast-synapse /var/lib/docker
+
+[Install]
+WantedBy=multi-user.target

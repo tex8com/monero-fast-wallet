@@ -6,7 +6,7 @@ manifest_path="${repo_root}/config/v1-release-features.json"
 generated_header="${DERIVED_FILE_DIR}/tex8_v1_release_features.h"
 resource_root="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
 bundled_manifest="${resource_root}/v1-release-features.json"
-asset_root="${MONERO_COMMUNITY_ASSET_ROOT:-}"
+asset_root="${MONERO_COMMUNITY_ASSET_ROOT:-${repo_root}/build/community-v1-release-assets}"
 
 mkdir -p "${DERIVED_FILE_DIR}" "${resource_root}"
 
@@ -93,6 +93,10 @@ ruby -rjson -rfileutils -ruri -e '
       end
       destination = File.join(destination_root, resource)
       FileUtils.mkdir_p(File.dirname(destination))
+      # Release assets are intentionally made read-only after staging. Remove
+      # the previous build product before an incremental build copies the
+      # refreshed asset, otherwise FileUtils.cp fails with EACCES.
+      FileUtils.rm_f(destination)
       FileUtils.cp(source, destination)
       File.chmod(0444, destination)
     end

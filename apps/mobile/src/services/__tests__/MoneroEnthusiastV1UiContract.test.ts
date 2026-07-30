@@ -20,6 +20,9 @@ describe('Monero Enthusiast V1 app boundary', () => {
     expect(tabs).toContain('key: "MoneroEnthusiast"');
     expect(screen).toContain('getMoneroEnthusiastV1Status');
     expect(screen).toContain('MoneroEnthusiastV1Service.search');
+    expect(screen).toContain('submitProductListing');
+    expect(screen).toContain("kind: 'product_listing'");
+    expect(screen).toContain('MoneroEnthusiastV1Service.submitContent(draft)');
     expect(service).toContain('confirmedExactMessage');
     expect(service).toContain('runMoneroEnthusiastV1Operation');
     expect(service).toContain('FORBIDDEN_NATIVE_FIELDS');

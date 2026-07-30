@@ -1,0 +1,52 @@
+[Unit]
+Description=Monero Enthusiast V1 private Community API
+Documentation=https://github.com/tex8com/monero-fast-wallet
+Wants=network-online.target monero-enthusiast-synapse.service
+After=network-online.target monero-enthusiast-synapse.service
+
+[Service]
+Type=simple
+User=monero-enthusiast
+Group=monero-enthusiast
+Environment=ENTHUSIAST_V1_BIND=127.0.0.1:8092
+Environment=ENTHUSIAST_V1_INTERNAL_BIND=127.0.0.1:8093
+Environment=ENTHUSIAST_V1_ACCOUNT_DB=/var/lib/monero-enthusiast/accounts.sqlite3
+Environment=ENTHUSIAST_V1_PUBLICATION_DB=/var/lib/monero-enthusiast/publication.sqlite3
+Environment=ENTHUSIAST_V1_CONTACT_DB=/var/lib/monero-enthusiast/contacts.sqlite3
+Environment=ENTHUSIAST_V1_CHAT_REPORT_DB=/var/lib/monero-enthusiast/chat-reports.sqlite3
+Environment=ENTHUSIAST_V1_NOTIFICATION_DB=/var/lib/monero-enthusiast/notifications.sqlite3
+Environment=ENTHUSIAST_V1_QUERY_CONTRIBUTION_DB=/var/lib/monero-enthusiast/query-contributions.sqlite3
+Environment=ENTHUSIAST_V1_QUERY_MIN_CONTRIBUTORS=3
+Environment=ENTHUSIAST_SYNAPSE_ADMIN_ORIGIN=http://127.0.0.1:8008
+Environment=ENTHUSIAST_SYNAPSE_ADMIN_TOKEN_FILE=/etc/monero-fast-wallet/enthusiast-synapse-admin-token
+Environment=ENTHUSIAST_MATRIX_HOMESERVER=https://xmr.tex8.com
+Environment=ENTHUSIAST_MATRIX_SERVER_NAME=xmr.tex8.com
+EnvironmentFile=/etc/monero-fast-wallet/enthusiast-v1.env
+ExecStart=/usr/local/bin/enthusiast-v1
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+StateDirectory=monero-enthusiast
+UMask=0077
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/monero-fast-wallet/enthusiast-synapse-admin-token
+ReadWritePaths=/var/lib/monero-enthusiast
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

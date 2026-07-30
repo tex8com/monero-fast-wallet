@@ -14,6 +14,7 @@ import {
   type AppStateStatus,
   InteractionManager,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StatusBar,
@@ -326,6 +327,46 @@ export function AppSecurityProvider({
   );
   const protectedContentHidden = !ready || locked || !configured;
   const canMountProtectedContent = ready && configured;
+  const securityModalVisible =
+    protectedContentHidden || securityResetInProgress;
+  const securitySurface =
+    !ready || securityResetInProgress ? (
+      <View
+        accessibilityViewIsModal
+        importantForAccessibility="yes"
+        style={styles.preparingOverlay}
+      >
+        <Text accessibilityRole="header" style={styles.preparingText}>
+          {securityResetInProgress
+            ? t('security.passwordResetInProgress')
+            : t('security.preparingProtection')}
+        </Text>
+      </View>
+    ) : !configured && onboardingStage === 'welcome' ? (
+      <InitialProtectionWelcome
+        screenTransitionStartedAtMs={screenTransitionStartedAtMs}
+        onContinue={startedAtMs => {
+          logWalletEvent('AppSecurity', 'onboardingWelcome.getStarted', {
+            elapsedMs: 0,
+          });
+          setScreenTransitionStartedAtMs(startedAtMs);
+          setOnboardingStage('protection');
+        }}
+      />
+    ) : (
+      <AppSecurityLockScreen
+        configured={configured}
+        mode={mode}
+        onConfigure={setMode}
+        onProtectionSubmit={startedAtMs => {
+          setInitialProtectionTransitionStartedAtMs(startedAtMs);
+          setScreenTransitionStartedAtMs(startedAtMs);
+        }}
+        onUnlock={() => setLocked(false)}
+        screenTransitionStartedAtMs={screenTransitionStartedAtMs}
+        onSecurityReset={beginSecurityReset}
+      />
+    );
 
   return (
     <AppSecurityContext.Provider value={value}>
@@ -344,43 +385,19 @@ export function AppSecurityProvider({
           {children}
         </View>
       ) : null}
-      {!ready || securityResetInProgress ? (
-        <View
-          accessibilityViewIsModal
-          importantForAccessibility="yes"
-          style={styles.preparingOverlay}
-        >
-          <Text accessibilityRole="header" style={styles.preparingText}>
-            {securityResetInProgress
-              ? t('security.passwordResetInProgress')
-              : t('security.preparingProtection')}
-          </Text>
+      <Modal
+        animationType="none"
+        hardwareAccelerated
+        navigationBarTranslucent
+        onRequestClose={() => undefined}
+        statusBarTranslucent
+        transparent={false}
+        visible={securityModalVisible}
+      >
+        <View style={styles.securityModal}>
+          {securityModalVisible ? securitySurface : null}
         </View>
-      ) : !configured && onboardingStage === 'welcome' ? (
-        <InitialProtectionWelcome
-          screenTransitionStartedAtMs={screenTransitionStartedAtMs}
-          onContinue={startedAtMs => {
-            logWalletEvent('AppSecurity', 'onboardingWelcome.getStarted', {
-              elapsedMs: 0,
-            });
-            setScreenTransitionStartedAtMs(startedAtMs);
-            setOnboardingStage('protection');
-          }}
-        />
-      ) : locked || !configured ? (
-        <AppSecurityLockScreen
-          configured={configured}
-          mode={mode}
-          onConfigure={setMode}
-          onProtectionSubmit={startedAtMs => {
-            setInitialProtectionTransitionStartedAtMs(startedAtMs);
-            setScreenTransitionStartedAtMs(startedAtMs);
-          }}
-          onUnlock={() => setLocked(false)}
-          screenTransitionStartedAtMs={screenTransitionStartedAtMs}
-          onSecurityReset={beginSecurityReset}
-        />
-      ) : null}
+      </Modal>
     </AppSecurityContext.Provider>
   );
 }
@@ -906,6 +923,7 @@ export function useAppSecurity() {
 const styles = StyleSheet.create({
   protectedContent: { flex: 1 },
   protectedContentHidden: { display: 'none' },
+  securityModal: { flex: 1, backgroundColor: colors.bg },
   welcomeContainer: {
     ...StyleSheet.absoluteFill,
     zIndex: 100,

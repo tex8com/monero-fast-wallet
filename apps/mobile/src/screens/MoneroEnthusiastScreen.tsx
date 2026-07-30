@@ -65,6 +65,9 @@ export default function MoneroEnthusiastScreen() {
   const [contacts, setContacts] = useState<CommunityV1Contact[]>([]);
   const [profileName, setProfileName] = useState('');
   const [profileAbout, setProfileAbout] = useState('');
+  const [productTitle, setProductTitle] = useState('');
+  const [productDescription, setProductDescription] = useState('');
+  const [productCategories, setProductCategories] = useState('');
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState<CommunityV1QuerySuggestion[]>(
     [],
@@ -87,6 +90,10 @@ export default function MoneroEnthusiastScreen() {
 
   const profile = useMemo(
     () => content.find(item => item.draft.kind === 'profile'),
+    [content],
+  );
+  const productListings = useMemo(
+    () => content.filter(item => item.draft.kind === 'product_listing'),
     [content],
   );
 
@@ -217,6 +224,47 @@ export default function MoneroEnthusiastScreen() {
       await loadPrivateData();
     } catch {
       setNotice(t('communityV1.profileFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitProductListing = async () => {
+    if (!productTitle.trim() || !productDescription.trim()) {
+      return;
+    }
+    const categories = Array.from(
+      new Set(
+        productCategories
+          .split(',')
+          .map(value => value.trim())
+          .filter(Boolean),
+      ),
+    ).slice(0, 16);
+    if (categories.some(value => value.length > 64)) {
+      setNotice(t('communityV1.productCategoriesInvalid'));
+      return;
+    }
+    setBusy(true);
+    setNotice(null);
+    const draft: CommunityV1ContentDraft = {
+      kind: 'product_listing',
+      title: productTitle.trim(),
+      summary: productDescription.trim(),
+      roles: [],
+      categories,
+      languages: [language],
+      media: [],
+    };
+    try {
+      await MoneroEnthusiastV1Service.submitContent(draft);
+      setProductTitle('');
+      setProductDescription('');
+      setProductCategories('');
+      setNotice(t('communityV1.productSubmitted'));
+      await loadPrivateData();
+    } catch {
+      setNotice(t('communityV1.productFailed'));
     } finally {
       setBusy(false);
     }
@@ -640,6 +688,54 @@ export default function MoneroEnthusiastScreen() {
                 label={t('communityV1.submitReview')}
                 onPress={saveProfile}
               />
+            </Section>
+
+            <Section title={t('communityV1.productListing')}>
+              <Text style={s.cardText}>
+                {t('communityV1.productListingText')}
+              </Text>
+              <Field
+                label={t('communityV1.productTitle')}
+                maxLength={120}
+                onChangeText={setProductTitle}
+                value={productTitle}
+              />
+              <Field
+                label={t('communityV1.productDescription')}
+                maxLength={2000}
+                multiline
+                onChangeText={setProductDescription}
+                value={productDescription}
+              />
+              <Field
+                autoCapitalize="none"
+                label={t('communityV1.productCategories')}
+                maxLength={512}
+                onChangeText={setProductCategories}
+                value={productCategories}
+              />
+              <Text style={s.small}>
+                {t('communityV1.productCategoriesHint')}
+              </Text>
+              <ActionButton
+                disabled={
+                  busy ||
+                  account?.suspended ||
+                  !productTitle.trim() ||
+                  !productDescription.trim()
+                }
+                label={t('communityV1.submitProduct')}
+                onPress={submitProductListing}
+              />
+              {productListings.map(listing => (
+                <View key={listing.publicId} style={s.resultCard}>
+                  <Text style={s.resultTitle}>{listing.draft.title}</Text>
+                  <Text style={s.cardText}>{listing.draft.summary}</Text>
+                  <Text style={s.small}>
+                    {t('communityV1.reviewStatus')}: {listing.status}
+                  </Text>
+                </View>
+              ))}
             </Section>
 
             <Section title={t('communityV1.discover')}>

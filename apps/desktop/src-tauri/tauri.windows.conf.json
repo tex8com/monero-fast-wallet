@@ -1,8 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "resources": [
-      "target/release/monero-fast-walletd.exe"
-    ]
+    "resources": {
+      "target/release/monero-fast-walletd.exe": "target/release/monero-fast-walletd.exe",
+      "../../../build/community-v1-release-assets/artifact-manifest.json": "artifact-manifest.json",
+      "../../../build/community-v1-release-assets/harrier-v1.pte": "harrier-v1.pte",
+      "../../../build/community-v1-release-assets/tokenizer.json": "tokenizer.json",
+      "../../../build/community-v1-release-assets/conformance.json": "conformance.json"
+    }
   }
 }

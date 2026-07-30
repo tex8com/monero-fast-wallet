@@ -188,7 +188,15 @@ export default function App() {
       if (!mounted) return;
       setAppProtection(value);
       if (!value.locked) void reloadWallets();
-    }).catch((reason) => mounted && setError(errorMessage(reason, 'App protection could not read secure storage.')));
+    }).catch((reason) => {
+      if (!mounted) return;
+      const message = errorMessage(
+        reason,
+        'App protection could not read secure storage.',
+      );
+      console.error('MONERO_DESKTOP_APP_PROTECTION status-load-failed', message);
+      setError(message);
+    });
     return () => { mounted = false; };
   }, [reloadWallets]);
 
@@ -333,7 +341,15 @@ export default function App() {
     document.addEventListener('visibilitychange', visibility);
     return () => { document.removeEventListener('visibilitychange', visibility); };
   }, [activeWalletId, appProtection?.configured, lockDesktopApp]);
-  if (!appProtection) return <main className="app-shell app-protection-loading"><p>{t('protection.preparing')}</p></main>;
+  if (!appProtection) return <main className="app-shell app-protection-loading">
+    <section className="app-protection-card" role={error ? 'alert' : 'status'}>
+      <img src="/monero-mark.png" alt="" />
+      <p className="eyebrow">Monero Fast Wallet</p>
+      <h1>{error ? 'Secure storage is unavailable' : t('protection.preparing')}</h1>
+      <p>{error ?? t('protection.preparing')}</p>
+      {error && <button className="primary" onClick={() => window.location.reload()} type="button">Retry</button>}
+    </section>
+  </main>;
   if (appProtection.locked || !appProtection.configured) return <AppProtectionGate status={appProtection} onUnlocked={(value) => { setAppProtection(value); startupWalletSessionsInitializedRef.current = false; void reloadWallets(); }} />;
   return <main className="app-shell">
     <aside className="sidebar" aria-label="Main navigation">
@@ -1613,6 +1629,9 @@ function MoneroEnthusiastV1() {
   const [contacts, setContacts] = useState<CommunityV1Chat[]>([]);
   const [profileName, setProfileName] = useState('');
   const [profileSummary, setProfileSummary] = useState('');
+  const [productTitle, setProductTitle] = useState('');
+  const [productDescription, setProductDescription] = useState('');
+  const [productCategories, setProductCategories] = useState('');
   const [chat, setChat] = useState<CommunityV1Chat | null>(null);
   const [chatMessages, setChatMessages] = useState<CommunityV1MatrixMessage[]>([]);
   const [chatBody, setChatBody] = useState('');
@@ -1680,6 +1699,35 @@ function MoneroEnthusiastV1() {
       await loadPrivateData();
     } catch (reason) {
       setMessage(errorMessage(reason, t('communityV1.profileFailed')));
+    } finally {
+      setLoading(false);
+    }
+  };
+  const submitProductListing = async () => {
+    const categories = Array.from(new Set(productCategories.split(',').map((value) => value.trim()).filter(Boolean))).slice(0, 16);
+    if (categories.some((value) => value.length > 64)) {
+      setMessage(t('communityV1.productCategoriesInvalid'));
+      return;
+    }
+    setLoading(true); setMessage(null);
+    try {
+      const input = {
+        kind: 'product_listing',
+        title: productTitle.trim(),
+        summary: productDescription.trim(),
+        roles: [],
+        categories,
+        languages: ['en'],
+        coarseRegion: null,
+        radiusKm: null,
+        media: [],
+      };
+      await invoke('enthusiast_v1_submit_content', { input });
+      setProductTitle(''); setProductDescription(''); setProductCategories('');
+      setMessage(t('communityV1.productSubmitted'));
+      await loadPrivateData();
+    } catch (reason) {
+      setMessage(errorMessage(reason, t('communityV1.productFailed')));
     } finally {
       setLoading(false);
     }
@@ -1826,6 +1874,14 @@ function MoneroEnthusiastV1() {
           const canAppeal = outcome.affectedAuthor && ['reject', 'hide', 'remove'].includes(outcome.decision ?? '');
           return <div className="enthusiast-v1-outcome"><strong>{t('communityV1.moderationDecision')}</strong><p>{outcome.decisionReason}</p>{outcome.appealPending ? <small>{t('communityV1.appealPending')}</small> : canAppeal ? <><textarea value={contentAppealReason} onChange={(event) => setContentAppealReason(event.target.value)} maxLength={2000} placeholder={t('communityV1.appealReason')} /><button className="secondary" disabled={loading || !contentAppealReason.trim()} onClick={() => void submitContentAppeal(outcome.caseId)} type="button">{t('communityV1.sendAppeal')}</button></> : null}</div>;
         })()}
+      </article>
+      <article className="enthusiast-v1-editor">
+        <header><div><strong>{t('communityV1.productListing')}</strong><p>{t('communityV1.productListingText')}</p></div></header>
+        <label>{t('communityV1.productTitle')}<input value={productTitle} onChange={(event) => setProductTitle(event.target.value)} maxLength={120} /></label>
+        <label>{t('communityV1.productDescription')}<textarea value={productDescription} onChange={(event) => setProductDescription(event.target.value)} maxLength={2000} /></label>
+        <label>{t('communityV1.productCategories')}<input value={productCategories} onChange={(event) => setProductCategories(event.target.value)} maxLength={512} /><small>{t('communityV1.productCategoriesHint')}</small></label>
+        <button className="primary" disabled={loading || account?.suspended || !productTitle.trim() || !productDescription.trim()} onClick={() => void submitProductListing()} type="button">{t('communityV1.submitProduct')}</button>
+        {content.filter((item) => item.draft.kind === 'product_listing').map((listing) => <div className="enthusiast-v1-outcome" key={listing.publicId}><strong>{listing.draft.title}</strong><p>{listing.draft.summary}</p><small>{t('communityV1.reviewStatus')}: {listing.status.replaceAll('_', ' ')}</small></div>)}
       </article>
       <section className="enthusiast-v1-contacts">
         <h3>{t('communityV1.contacts')}</h3>

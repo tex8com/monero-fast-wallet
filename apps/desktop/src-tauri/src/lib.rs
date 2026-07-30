@@ -5103,10 +5103,15 @@ pub fn run() {
             true
         }
     };
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+    let builder = if desktop_updates_enabled() {
+        builder.plugin(tauri_plugin_updater::Builder::new().build())
+    } else {
+        builder
+    };
+    builder
         .manage(NativeWalletState(Mutex::new(
             native_wallet::NativeWallet::new().expect("native wallet core initialization"),
         )))
@@ -5379,6 +5384,13 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Monero Fast Wallet desktop");
+}
+
+fn desktop_updates_enabled() -> bool {
+    serde_json::from_str::<serde_json::Value>(include_str!("../../../../config/app-update.json"))
+        .ok()
+        .and_then(|config| config["desktop"]["enabled"].as_bool())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

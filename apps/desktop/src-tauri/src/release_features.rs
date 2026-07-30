@@ -232,7 +232,7 @@ mod tests {
     };
 
     #[test]
-    fn safe_v1_disables_legacy_secret_and_ledger_paths() {
+    fn safe_v1_disables_legacy_paths_and_enables_valid_community_v1() {
         assert!(!enabled("plaintextFastWalletHosting"));
         assert!(!enabled("ledgerFastWallet"));
         assert!(!enabled("scannerKeyImageSpendAuthority"));
@@ -241,7 +241,10 @@ mod tests {
         assert!(!enabled("mfwNameRegistration"));
         assert!(mfw_name_resolver_origins().is_none());
         assert!(mfw_name_genesis("mainnet").is_none());
-        assert!(monero_enthusiast_v1_config().is_none());
+        let community = monero_enthusiast_v1_config()
+            .expect("the signed Community V1 test release must have a valid configuration");
+        assert_eq!(community.api_origin, "https://xmr.tex8.com");
+        assert_eq!(community.catalog_scope, "global-v1");
     }
 
     #[test]

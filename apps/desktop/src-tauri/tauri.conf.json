@@ -28,6 +28,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../../../build/community-v1-release-assets/artifact-manifest.json": "artifact-manifest.json",
+      "../../../build/community-v1-release-assets/harrier-v1.pte": "harrier-v1.pte",
+      "../../../build/community-v1-release-assets/tokenizer.json": "tokenizer.json",
+      "../../../build/community-v1-release-assets/conformance.json": "conformance.json"
+    },
     "category": "Finance",
     "shortDescription": "Self-custodial Monero wallet",
     "longDescription": "Monero Fast Wallet is a self-custodial desktop wallet powered by the forked Monero wallet core.",

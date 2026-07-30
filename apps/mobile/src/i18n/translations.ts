@@ -91,6 +91,20 @@ const en = {
   'communityV1.submitReview': 'Send for review',
   'communityV1.profileSubmitted': 'Your profile was sent for a safety review.',
   'communityV1.profileFailed': 'Your profile could not be saved.',
+  'communityV1.productListing': 'Create a product listing',
+  'communityV1.productListingText':
+    'The listing is sent to the Community server for review. Your wallet details are never attached.',
+  'communityV1.productTitle': 'Product title',
+  'communityV1.productDescription': 'Description and important details',
+  'communityV1.productCategories': 'Categories',
+  'communityV1.productCategoriesHint':
+    'Optional. Separate categories with commas, for example: books, privacy.',
+  'communityV1.productCategoriesInvalid':
+    'Each category must be no longer than 64 characters.',
+  'communityV1.submitProduct': 'Send product for review',
+  'communityV1.productSubmitted':
+    'Your product listing is now stored on the server and waiting for review.',
+  'communityV1.productFailed': 'The product listing could not be submitted.',
   'communityV1.discover': 'Find people and ideas',
   'communityV1.searchLabel': 'What are you looking for?',
   'communityV1.noResults': 'No matching public entries were found.',
@@ -1050,6 +1064,21 @@ const de: Record<keyof typeof en, string> = {
   'communityV1.profileSubmitted':
     'Dein Profil wurde zur Sicherheitsprüfung gesendet.',
   'communityV1.profileFailed': 'Dein Profil konnte nicht gespeichert werden.',
+  'communityV1.productListing': 'Produktangebot erstellen',
+  'communityV1.productListingText':
+    'Das Angebot wird zur Prüfung an den Community-Server gesendet. Deine Wallet-Daten werden niemals angehängt.',
+  'communityV1.productTitle': 'Produkttitel',
+  'communityV1.productDescription': 'Beschreibung und wichtige Details',
+  'communityV1.productCategories': 'Kategorien',
+  'communityV1.productCategoriesHint':
+    'Optional. Trenne Kategorien mit Kommas, zum Beispiel: Bücher, Datenschutz.',
+  'communityV1.productCategoriesInvalid':
+    'Jede Kategorie darf höchstens 64 Zeichen lang sein.',
+  'communityV1.submitProduct': 'Produkt zur Prüfung senden',
+  'communityV1.productSubmitted':
+    'Dein Produktangebot ist jetzt auf dem Server gespeichert und wartet auf die Prüfung.',
+  'communityV1.productFailed':
+    'Das Produktangebot konnte nicht gesendet werden.',
   'communityV1.discover': 'Menschen und Ideen finden',
   'communityV1.searchLabel': 'Wonach suchst du?',
   'communityV1.noResults': 'Keine passenden öffentlichen Einträge gefunden.',

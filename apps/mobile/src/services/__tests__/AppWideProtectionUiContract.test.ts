@@ -161,6 +161,15 @@ describe('app-wide protection UI contract', () => {
     expect(appSecuritySource).toContain(
       "protectedContentHidden: { display: 'none' }",
     );
+    expect(appSecuritySource).toContain(
+      'visible={securityModalVisible}',
+    );
+    expect(appSecuritySource).toContain(
+      'onRequestClose={() => undefined}',
+    );
+    expect(appSecuritySource).toContain(
+      'securityModal: { flex: 1, backgroundColor: colors.bg }',
+    );
     expect(androidNativeSource).toContain('requireAppAuthorized');
     expect(androidNativeSource).toContain('recordNativeUnlockFailure');
     expect(androidNativeSource).toContain(
@@ -226,6 +235,9 @@ describe('app-wide protection UI contract', () => {
     expect(scannerSource).toContain("'camera-permission'");
     expect(discoverySource).toContain("'location-permission'");
     expect(pushSource).toContain("'notification-permission'");
+    expect(pushSource).toMatch(
+      /try \{\s+\/\/ Protected metadata[\s\S]+?await getStoredSubscriptionId\(\)/,
+    );
     expect(contactsSource).toContain("'contacts-permission'");
     expect(androidNativeSource).toContain(
       'override fun beginSystemUiInterruption',
