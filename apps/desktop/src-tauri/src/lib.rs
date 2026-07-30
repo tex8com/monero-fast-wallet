@@ -645,12 +645,23 @@ async fn app_protection_snapshot(
 ) -> Result<AppProtectionStatus, String> {
     let mode = secure_store::load_app_protection_mode()?;
     let configured = mode.is_some();
+    let system_auth = platform_auth::status().await;
+    // Password mode necessarily has a verifier. On macOS and Windows, system
+    // authentication has its own OS fallback and does not need another
+    // Keychain read merely to render startup status.
+    let password_configured = match mode.as_deref() {
+        Some("password") => true,
+        Some("system") if system_auth.requires_recovery_password => {
+            secure_store::app_protection_password_configured()?
+        }
+        _ => false,
+    };
     Ok(AppProtectionStatus {
         configured,
         locked: !configured || app_is_locked(protection)?,
         mode,
-        password_configured: secure_store::app_protection_password_configured()?,
-        system_auth: platform_auth::status().await,
+        password_configured,
+        system_auth,
     })
 }
 
@@ -679,6 +690,15 @@ async fn require_fresh_app_authorization(
 async fn app_protection_status(
     protection: State<'_, AppProtectionState>,
 ) -> Result<AppProtectionStatus, String> {
+    app_protection_snapshot(&protection).await
+}
+
+#[tauri::command]
+async fn retry_app_protection_status(
+    protection: State<'_, AppProtectionState>,
+) -> Result<AppProtectionStatus, String> {
+    secure_store::retry_failed_secret_reads()?;
+    eprintln!("MONERO_DESKTOP_APP_PROTECTION status-retry-requested");
     app_protection_snapshot(&protection).await
 }
 
@@ -857,9 +877,9 @@ fn lock_app_native(
     protection: &AppProtectionState,
     community_v1: &enthusiast_v1::CommunityV1State,
 ) -> Result<(), String> {
-    if !secure_store::app_protection_configured()? {
-        return Err("Set an app password before using Monero Fast Wallet.".to_owned());
-    }
+    // Locking is a one-way in-memory transition and must never read Keychain.
+    // A Keychain authorization dialog itself removes window focus; reading
+    // Keychain here would therefore create a self-sustaining prompt loop.
     *protection
         .0
         .lock()
@@ -4492,6 +4512,96 @@ async fn enthusiast_v1_contribute_query(
 }
 
 #[tauri::command]
+async fn enthusiast_v1_search(
+    app: AppHandle,
+    state: State<'_, enthusiast_v1::CommunityV1State>,
+    protection: State<'_, AppProtectionState>,
+    input: serde_json::Value,
+) -> Result<Vec<enthusiast_v1::CommunityV1SearchResult>, String> {
+    require_app_unlocked(&protection)?;
+    state.search(&app, input).await
+}
+
+#[tauri::command]
+async fn enthusiast_v1_suggestions(
+    app: AppHandle,
+    state: State<'_, enthusiast_v1::CommunityV1State>,
+    protection: State<'_, AppProtectionState>,
+    input: serde_json::Value,
+) -> Result<Vec<enthusiast_v1::CommunityV1QuerySuggestion>, String> {
+    require_app_unlocked(&protection)?;
+    state.suggestions(&app, input).await
+}
+
+#[tauri::command]
+fn enthusiast_v1_clear_search_history(
+    state: State<'_, enthusiast_v1::CommunityV1State>,
+    protection: State<'_, AppProtectionState>,
+) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
+    state.clear_search_history()
+}
+
+#[tauri::command]
+async fn enthusiast_v1_enable_notifications(
+    app: AppHandle,
+    state: State<'_, enthusiast_v1::CommunityV1State>,
+    protection: State<'_, AppProtectionState>,
+    locale: Option<String>,
+) -> Result<serde_json::Value, String> {
+    require_app_unlocked(&protection)?;
+    if !cfg!(target_os = "macos") {
+        return Err(
+            "Community notifications currently require the APNs desktop provider on macOS."
+                .to_owned(),
+        );
+    }
+    desktop_notifications::request_installation(
+        &app,
+        desktop_notifications::RequestNotificationInstallationInput {
+            permission_status: "authorized".to_owned(),
+            locale,
+            app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            background_mode_enabled: Some(false),
+        },
+    )?;
+    let polling_app = app.clone();
+    let notification = tauri::async_runtime::spawn_blocking(move || {
+        let mut latest = desktop_notifications::status(&polling_app)?;
+        for _ in 0..40 {
+            if latest.installation.provider == "apns"
+                && latest.installation.provider_status == "ready"
+                && !latest.installation.endpoint.is_empty()
+            {
+                return Ok(latest);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            latest = desktop_notifications::status(&polling_app)?;
+        }
+        Ok::<_, String>(latest)
+    })
+    .await
+    .map_err(|_| "Desktop notification registration stopped unexpectedly.".to_owned())??;
+    if notification.installation.provider != "apns"
+        || notification.installation.provider_status != "ready"
+        || notification.installation.endpoint.is_empty()
+    {
+        return Err(
+            "Notification permission was requested, but the APNs device token is not ready yet."
+                .to_owned(),
+        );
+    }
+    state
+        .register_notification(
+            &app,
+            &notification.installation.installation_id,
+            &notification.installation.provider,
+            &notification.installation.endpoint,
+        )
+        .await
+}
+
+#[tauri::command]
 async fn enthusiast_v1_initialize(
     app: AppHandle,
     state: State<'_, enthusiast_v1::CommunityV1State>,
@@ -5273,6 +5383,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             wallet_core_status,
             app_protection_status,
+            retry_app_protection_status,
             set_app_protection_password,
             verify_app_protection_password,
             set_app_protection_mode,
@@ -5359,6 +5470,10 @@ pub fn run() {
             enthusiast_v1_query_contribution_enabled,
             enthusiast_v1_set_query_contribution_enabled,
             enthusiast_v1_contribute_query,
+            enthusiast_v1_search,
+            enthusiast_v1_suggestions,
+            enthusiast_v1_clear_search_history,
+            enthusiast_v1_enable_notifications,
             enthusiast_v1_initialize,
             enthusiast_v1_start,
             enthusiast_v1_delete_identity,

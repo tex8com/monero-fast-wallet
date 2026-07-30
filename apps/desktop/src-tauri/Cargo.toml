@@ -20,6 +20,8 @@ tauri-build = { version = "2.4", features = [] }
 [dependencies]
 argon2 = "0.5"
 community-matrix-core = { path = "../../../native/community-matrix-core" }
+community-runtime-core = { path = "../../../native/community-runtime-core", features = ["native-harrier"] }
+ed25519-dalek = "2"
 fast-wallet-protocol = { path = "../../../native/fast-wallet-protocol" }
 getrandom = "0.2"
 hex = "0.4"

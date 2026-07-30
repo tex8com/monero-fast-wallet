@@ -23,7 +23,7 @@ if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   echo "This recipe requires an Apple Silicon macOS host." >&2
   exit 2
 fi
-for required_command in cmake curl git python3 shasum xcrun; do
+for required_command in cmake curl git libtool python3 shasum xcrun; do
   if ! command -v "${required_command}" >/dev/null 2>&1; then
     echo "Missing required command: ${required_command}" >&2
     exit 2
@@ -132,11 +132,38 @@ fetch_apple_artifact threadpool \
 
 cmake -S "${RUNTIME_DIRECTORY}" -B "${BUILD_DIRECTORY}" \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_OSX_DEPLOYMENT_TARGET="${TEX8_HARRIER_MACOS_DEPLOYMENT_TARGET:-12.0}" \
   -DTEX8_HARRIER_TOKENIZERS_SOURCE="${TOKENIZERS_DIRECTORY}" \
   -DTEX8_HARRIER_EXECUTORCH_APPLE_ROOT="${APPLE_ROOT}" \
   -DTEX8_HARRIER_WITH_EXECUTORCH=ON \
   -DTEX8_HARRIER_BUILD_TESTBENCH=ON
 cmake --build "${BUILD_DIRECTORY}" --config Release --parallel
+
+# CMake carries these dependencies transitively while linking the conformance
+# executable, but Cargo only receives archive paths. Flatten the exact native
+# tokenizer dependencies into one deterministic archive so the packaged Tauri
+# application links the same implementation as the conformance test.
+DEPENDENCY_BUNDLE="${BUILD_DIRECTORY}/libtex8_community_harrier_dependencies.a"
+DEPENDENCY_BUNDLE_TEMP="${DEPENDENCY_BUNDLE}.tmp"
+DEPENDENCY_ARCHIVES=(
+  "${BUILD_DIRECTORY}/tokenizers/sp-build/src/libsentencepiece.a"
+  "${BUILD_DIRECTORY}/tokenizers/third-party/re2/libre2.a"
+)
+while IFS= read -r archive; do
+  DEPENDENCY_ARCHIVES+=("${archive}")
+done < <(
+  find "${BUILD_DIRECTORY}/tokenizers/third-party/abseil-cpp" \
+    -type f -name 'libabsl*.a' -print | LC_ALL=C sort
+)
+for archive in "${DEPENDENCY_ARCHIVES[@]}"; do
+  if [[ ! -f "${archive}" ]]; then
+    echo "Missing tokenizer dependency archive: ${archive}" >&2
+    exit 1
+  fi
+done
+rm -f "${DEPENDENCY_BUNDLE_TEMP}"
+libtool -static -o "${DEPENDENCY_BUNDLE_TEMP}" "${DEPENDENCY_ARCHIVES[@]}"
+mv "${DEPENDENCY_BUNDLE_TEMP}" "${DEPENDENCY_BUNDLE}"
 
 "${BUILD_DIRECTORY}/community_harrier_native_vectors" \
   "${PTE_PATH}" \

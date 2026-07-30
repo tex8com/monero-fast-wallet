@@ -51,6 +51,12 @@ fast_crypto_target_dir="${MONERO_DESKTOP_FAST_CRYPTO_TARGET_DIR:-${repo_root}/bu
 fast_crypto_source="${fast_crypto_target_dir}/release/libmonero_fast_crypto.dylib"
 metal_target_dir="${MONERO_DESKTOP_METAL_TARGET_DIR:-${repo_root}/build/desktop-metal-macos}"
 metal_source="${metal_target_dir}/monero_wallet_derivation.metallib"
+community_build_root="${MONERO_DESKTOP_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
+community_cache_dir="${TEX8_HARRIER_CACHE_DIRECTORY:-${community_build_root}/harrier}"
+community_runtime_library="${DESKTOP_COMMUNITY_HARRIER_RUNTIME_LIBRARY:-${community_cache_dir}/native-runtime-build/libtex8_community_harrier_runtime.a}"
+community_tokenizers_library="${DESKTOP_COMMUNITY_HARRIER_TOKENIZERS_LIBRARY:-${community_cache_dir}/native-runtime-build/tokenizers/libtokenizers.a}"
+community_dependencies_library="${community_cache_dir}/native-runtime-build/libtex8_community_harrier_dependencies.a"
+community_executorch_root="${DESKTOP_COMMUNITY_EXECUTORCH_APPLE_ROOT:-${community_cache_dir}/executorch-apple-1.3.1}"
 # Keep the generated dynamic library outside src-tauri.  `tauri dev` watches
 # that directory and would otherwise restart itself whenever the build helper
 # refreshes the library.
@@ -134,6 +140,17 @@ mkdir -p "${depends_prefix}" "${monero_build_dir}" "${fast_crypto_target_dir}"
 
 [[ -f "${fast_crypto_source}" ]] || { echo "Rust fast-crypto dylib was not produced." >&2; return 1 2>/dev/null || exit 1; }
 [[ -f "${metal_source}" ]] || { echo "Wallet Metal library was not produced." >&2; return 1 2>/dev/null || exit 1; }
+for community_artifact in \
+  "${community_runtime_library}" \
+  "${community_tokenizers_library}" \
+  "${community_dependencies_library}" \
+  "${community_executorch_root}/executorch.xcframework/macos-arm64/libexecutorch_macos.a"; do
+  if [[ ! -f "${community_artifact}" ]]; then
+    echo "Verified desktop Community runtime is missing: ${community_artifact}" >&2
+    echo "Rebuild it with native/community-harrier-runtime/scripts/build-apple-native.sh." >&2
+    return 1 2>/dev/null || exit 1
+  fi
+done
 mkdir -p "${staged_library_dir}"
 ditto "${fast_crypto_source}" "${staged_fast_crypto}"
 ditto "${metal_source}" "${staged_metal}"
@@ -183,6 +200,9 @@ export DESKTOP_MONERO_WALLET_API_LIBRARY="${monero_build_dir}/lib/libwallet_api.
 export DESKTOP_MONERO_FAST_CRYPTO_LIBRARY="${staged_fast_crypto}"
 export DESKTOP_MONERO_METAL_LIBRARY="${staged_metal}"
 export DESKTOP_MONERO_EXTRA_LINK_ARGS="$(IFS=';'; echo "${link_args[*]}")"
+export DESKTOP_COMMUNITY_HARRIER_RUNTIME_LIBRARY="${community_runtime_library}"
+export DESKTOP_COMMUNITY_HARRIER_TOKENIZERS_LIBRARY="${community_tokenizers_library}"
+export DESKTOP_COMMUNITY_EXECUTORCH_APPLE_ROOT="${community_executorch_root}"
 export DESKTOP_REQUIRE_MONERO=1
 # The dynamically linked Rust hashing library is staged beside the desktop
 # project. Export it for `tauri dev` and native test binaries as well, so both

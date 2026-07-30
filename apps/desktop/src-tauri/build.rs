@@ -1,8 +1,9 @@
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, path::PathBuf, process::Command};
 
 const COMMANDS: &[&str] = &[
     "wallet_core_status",
     "app_protection_status",
+    "retry_app_protection_status",
     "set_app_protection_password",
     "verify_app_protection_password",
     "set_app_protection_mode",
@@ -89,6 +90,10 @@ const COMMANDS: &[&str] = &[
     "enthusiast_v1_query_contribution_enabled",
     "enthusiast_v1_set_query_contribution_enabled",
     "enthusiast_v1_contribute_query",
+    "enthusiast_v1_search",
+    "enthusiast_v1_suggestions",
+    "enthusiast_v1_clear_search_history",
+    "enthusiast_v1_enable_notifications",
     "enthusiast_v1_initialize",
     "enthusiast_v1_start",
     "enthusiast_v1_delete_identity",
@@ -116,6 +121,7 @@ const COMMANDS: &[&str] = &[
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest path"));
     configure_fast_wallet_release(&manifest_dir);
+    configure_community_harrier();
 
     // On macOS, `tauri dev` embeds the .icns data into the debug executable
     // before assigning it to NSApplication. Track every configured icon so an
@@ -313,6 +319,92 @@ fn main() {
         "cargo:rustc-env=TEX8_DESKTOP_MONERO_LINKED={}",
         if linked_with_monero { "1" } else { "0" }
     );
+}
+
+fn configure_community_harrier() {
+    println!("cargo:rustc-check-cfg=cfg(desktop_community_harrier)");
+    const VARIABLES: [&str; 3] = [
+        "DESKTOP_COMMUNITY_HARRIER_RUNTIME_LIBRARY",
+        "DESKTOP_COMMUNITY_HARRIER_TOKENIZERS_LIBRARY",
+        "DESKTOP_COMMUNITY_EXECUTORCH_APPLE_ROOT",
+    ];
+    for variable in VARIABLES {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
+
+    let configured = VARIABLES.map(|variable| env::var_os(variable).map(PathBuf::from));
+    if configured.iter().all(Option::is_none) {
+        return;
+    }
+    if configured.iter().any(Option::is_none) {
+        panic!(
+            "the desktop Community runtime library, tokenizers library, and ExecuTorch Apple root must be configured together"
+        );
+    }
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
+        || env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("aarch64")
+    {
+        panic!("the configured desktop Community runtime currently supports Apple Silicon macOS");
+    }
+
+    let runtime = configured[0].as_ref().expect("checked runtime library");
+    let tokenizers = configured[1].as_ref().expect("checked tokenizers library");
+    let executorch = configured[2].as_ref().expect("checked ExecuTorch root");
+    let dependencies = runtime
+        .parent()
+        .expect("Community runtime library has a parent directory")
+        .join("libtex8_community_harrier_dependencies.a");
+    let archives = [
+        runtime.clone(),
+        tokenizers.clone(),
+        dependencies,
+        executorch.join("executorch.xcframework/macos-arm64/libexecutorch_macos.a"),
+        executorch.join("backend_xnnpack.xcframework/macos-arm64/libbackend_xnnpack_macos.a"),
+        executorch.join("kernels_optimized.xcframework/macos-arm64/libkernels_optimized_macos.a"),
+        executorch.join("kernels_quantized.xcframework/macos-arm64/libkernels_quantized_macos.a"),
+        executorch.join("kernels_torchao.xcframework/macos-arm64/libkernels_torchao_macos.a"),
+        executorch.join("threadpool.xcframework/macos-arm64/libthreadpool_macos.a"),
+    ];
+    for archive in archives {
+        if !archive.is_file() {
+            panic!(
+                "configured desktop Community archive does not exist: {}",
+                archive.display()
+            );
+        }
+        let force_load = format!("-Wl,-force_load,{}", archive.display());
+        // This Cargo package also contains the small Windows/Linux notification
+        // agent. It never embeds or calls the macOS Harrier runtime, so global
+        // link arguments would bloat it and make its independent link depend
+        // on Apple's Accelerate/BLAS symbols.
+        println!("cargo:rustc-link-arg-cdylib={force_load}");
+        println!("cargo:rustc-link-arg-bin=monero-wallet-desktop={force_load}");
+    }
+
+    let swiftc = Command::new("xcrun")
+        .args(["--find", "swiftc"])
+        .output()
+        .expect("locate the Apple Swift runtime");
+    if !swiftc.status.success() {
+        panic!("xcrun could not locate the Apple Swift runtime");
+    }
+    let swiftc = String::from_utf8(swiftc.stdout).expect("Swift compiler path is UTF-8");
+    let swift_bin = PathBuf::from(swiftc.trim())
+        .parent()
+        .expect("Swift compiler has a parent directory")
+        .to_path_buf();
+    let swift_library = swift_bin.join("../lib/swift/macosx");
+    if !swift_library.is_dir() {
+        panic!(
+            "Apple Swift runtime library directory does not exist: {}",
+            swift_library.display()
+        );
+    }
+    println!("cargo:rustc-link-search=native={}", swift_library.display());
+    println!("cargo:rustc-link-lib=c++");
+    println!("cargo:rustc-link-lib=framework=Accelerate");
+    println!("cargo:rustc-link-lib=framework=Foundation");
+    println!("cargo:rustc-cfg=desktop_community_harrier");
 }
 
 fn remove_stale_tauri_resources() {

@@ -60,6 +60,23 @@ type CommunityV1MessagePage = { messages: CommunityV1MatrixMessage[]; next?: str
 type CommunityV1SelectedMessage = { roomId: string; eventId: string; senderId: string; body: string; timestampMs: number };
 type CommunityV1ModerationOutcome = { caseId: string; status: string; decision?: string; decisionReason?: string; resolvedAtMs?: number; appealPending: boolean };
 type CommunityV1ContentModerationOutcome = { caseId: string; publicId: string; revision: number; source: string; status: string; decision?: string; decisionReason?: string; resolvedAtMs?: number; appealPending: boolean; affectedAuthor: boolean };
+type CommunityV1QuerySuggestion = { queryId: string; displayText: string; language: string; weight: number };
+type CommunityV1SearchResult = {
+  item: {
+    publicId: string;
+    ownerPublicId: string;
+    kind: 'profile' | 'post' | 'service_listing' | 'product_listing';
+    title: string;
+    summary: string;
+    categories: string[];
+    languages: string[];
+    coarseRegion?: string;
+    sponsored: boolean;
+  };
+  semanticDistance: number;
+  personalAdjustment: number;
+  combinedScore: number;
+};
 type FastWalletRecord = { id: string; label: string; address: string; network: Network; sourceRegistrationId: string; restoreHeight: number; derivationIndex: number; seedBackupStatus: 'pending' | 'verified'; seedBackedUpAt?: number; status: 'local-only' | 'enabled' | 'disabled' | 'registration-error' | 'server-mismatch' | 'legacy-blocked'; scannerStatus: string; scannerUrl: string; scannerCheckedAt?: number; lastScannedHeight?: number; notificationsEnabled: boolean; alertStatus: 'off' | 'setting-up' | 'on' | 'needs-attention'; assignmentHandle?: string; assignmentEpoch?: number; assignmentExpiresAt?: number; watchMessageId?: string; createdAt: number; updatedAt: number };
 type FastWalletOpenResponse = { walletId: string; wallet: FastWalletRecord };
 type NodeProfile = { mode: 'optimized-grpc' | 'original-rpc' | 'custom'; network: Network; daemonAddress: string; grpcEndpoint: string; trusted: boolean; useSsl: boolean; username: string; proxyAddress: string; passwordStored: boolean; updatedAt: number };
@@ -162,6 +179,7 @@ export default function App() {
   const [status, setStatus] = useState<WalletCoreStatus | null>(null);
   const [appProtection, setAppProtection] = useState<AppProtectionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [appProtectionRetrying, setAppProtectionRetrying] = useState(false);
   const [autoLockEnabled] = useState(true);
   const startupWalletSessionsInitializedRef = useRef(false);
   const primaryNavigation = useMemo(() => primarySections(t), [t]);
@@ -181,24 +199,40 @@ export default function App() {
     catch (reason) { setError(errorMessage(reason, 'The local wallet list could not be loaded.')); }
   }, []);
 
-  useEffect(() => {
-    let mounted = true;
-    invoke<WalletCoreStatus>('wallet_core_status').then((value) => mounted && setStatus(value)).catch(() => mounted && setError('The desktop host could not verify the native wallet core.'));
-    invoke<AppProtectionStatus>('app_protection_status').then((value) => {
-      if (!mounted) return;
+  const loadAppProtection = useCallback(async (explicitRetry = false) => {
+    setAppProtectionRetrying(explicitRetry);
+    if (explicitRetry) {
+      console.info('MONERO_DESKTOP_APP_PROTECTION status-retry-requested');
+      setError(null);
+    }
+    try {
+      const value = await invoke<AppProtectionStatus>(
+        explicitRetry ? 'retry_app_protection_status' : 'app_protection_status',
+      );
       setAppProtection(value);
+      setError(null);
       if (!value.locked) void reloadWallets();
-    }).catch((reason) => {
-      if (!mounted) return;
+    } catch (reason) {
       const message = errorMessage(
         reason,
         'App protection could not read secure storage.',
       );
-      console.error('MONERO_DESKTOP_APP_PROTECTION status-load-failed', message);
+      console.error(
+        explicitRetry
+          ? 'MONERO_DESKTOP_APP_PROTECTION status-retry-failed'
+          : 'MONERO_DESKTOP_APP_PROTECTION status-load-failed',
+        message,
+      );
       setError(message);
-    });
-    return () => { mounted = false; };
+    } finally {
+      setAppProtectionRetrying(false);
+    }
   }, [reloadWallets]);
+
+  useEffect(() => {
+    invoke<WalletCoreStatus>('wallet_core_status').then(setStatus).catch(() => setError('The desktop host could not verify the native wallet core.'));
+    void loadAppProtection();
+  }, [loadAppProtection]);
 
   const activateWallet = useCallback(async (result: WalletOperationResponse) => {
     setActiveWalletId(result.walletId); setActiveWallet(result.wallet); setSeedRevealRequest(null); setError(null); setSection('home'); await reloadWallets();
@@ -347,7 +381,7 @@ export default function App() {
       <p className="eyebrow">Monero Fast Wallet</p>
       <h1>{error ? 'Secure storage is unavailable' : t('protection.preparing')}</h1>
       <p>{error ?? t('protection.preparing')}</p>
-      {error && <button className="primary" onClick={() => window.location.reload()} type="button">Retry</button>}
+      {error && <button className="primary" disabled={appProtectionRetrying} onClick={() => void loadAppProtection(true)} type="button">{appProtectionRetrying ? 'Retrying…' : 'Retry'}</button>}
     </section>
   </main>;
   if (appProtection.locked || !appProtection.configured) return <AppProtectionGate status={appProtection} onUnlocked={(value) => { setAppProtection(value); startupWalletSessionsInitializedRef.current = false; void reloadWallets(); }} />;
@@ -1619,7 +1653,7 @@ function Assistant({ wallet, walletId, onNavigate }: { wallet: RegisteredWallet 
  * renderer and receives public readiness flags only.
  */
 function MoneroEnthusiastV1() {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const [status, setStatus] = useState<MoneroEnthusiastV1Status | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -1641,6 +1675,10 @@ function MoneroEnthusiastV1() {
   const [appealReason, setAppealReason] = useState('');
   const [contentOutcomes, setContentOutcomes] = useState<CommunityV1ContentModerationOutcome[]>([]);
   const [contentAppealReason, setContentAppealReason] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchSuggestions, setSearchSuggestions] = useState<CommunityV1QuerySuggestion[]>([]);
+  const [searchResults, setSearchResults] = useState<CommunityV1SearchResult[]>([]);
+  const [searched, setSearched] = useState(false);
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -1676,6 +1714,22 @@ function MoneroEnthusiastV1() {
     }
   }, [status?.identityExists, status?.matrixReady, t]);
   useEffect(() => { void loadPrivateData(); }, [loadPrivateData]);
+  useEffect(() => {
+    const prefix = searchQuery.trim();
+    if (!status?.catalogReady || prefix.length < 2) {
+      setSearchSuggestions([]);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void invoke<CommunityV1QuerySuggestion[]>('enthusiast_v1_suggestions', {
+        input: { prefix, language, limit: 6 },
+      }).then(setSearchSuggestions).catch((reason) => {
+        console.warn('MONERO_DESKTOP_COMMUNITY suggestions-failed', errorMessage(reason, t('communityV1.suggestionsFailed')));
+        setSearchSuggestions([]);
+      });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [language, searchQuery, status?.catalogReady, t]);
   const ready = status?.ready === true;
   const begin = async () => {
     setLoading(true); setMessage(null);
@@ -1739,6 +1793,63 @@ function MoneroEnthusiastV1() {
       await loadPrivateData();
     } catch (reason) {
       setMessage(errorMessage(reason, t('communityV1.contactFailed')));
+    } finally {
+      setLoading(false);
+    }
+  };
+  const searchLocalCatalog = async (suggested?: string) => {
+    const query = (suggested ?? searchQuery).trim();
+    if (!query) return;
+    setLoading(true); setMessage(null); setSearchQuery(query); setSearchSuggestions([]);
+    try {
+      const results = await invoke<CommunityV1SearchResult[]>('enthusiast_v1_search', {
+        input: {
+          query,
+          language,
+          limit: 20,
+          kinds: [],
+          coarseRegion: null,
+          includeAdvertising: false,
+        },
+      });
+      setSearchResults(results); setSearched(true);
+      void invoke('enthusiast_v1_contribute_query', { query, language }).catch((reason) => {
+        console.warn('MONERO_DESKTOP_COMMUNITY query-contribution-failed', errorMessage(reason, 'Query contribution failed.'));
+      });
+    } catch (reason) {
+      setSearchResults([]); setSearched(true);
+      setMessage(errorMessage(reason, t('communityV1.searchFailed')));
+    } finally {
+      setLoading(false);
+    }
+  };
+  const requestSearchContact = async (peerId: string) => {
+    setLoading(true); setMessage(null);
+    try {
+      await invoke('enthusiast_v1_request_contact', { peerId });
+      setMessage(t('communityV1.contactRequested'));
+      await loadPrivateData();
+    } catch (reason) {
+      setMessage(errorMessage(reason, t('communityV1.contactFailed')));
+    } finally {
+      setLoading(false);
+    }
+  };
+  const clearSearchHistory = async () => {
+    try {
+      await invoke('enthusiast_v1_clear_search_history');
+      setSearchSuggestions([]); setMessage(t('communityV1.searchHistoryCleared'));
+    } catch (reason) {
+      setMessage(errorMessage(reason, t('communityV1.searchHistoryFailed')));
+    }
+  };
+  const enableCommunityNotifications = async () => {
+    setLoading(true); setMessage(null);
+    try {
+      await invoke('enthusiast_v1_enable_notifications', { locale: navigator.language });
+      setMessage(t('communityV1.notificationsEnabled'));
+    } catch (reason) {
+      setMessage(errorMessage(reason, t('communityV1.notificationsFailed')));
     } finally {
       setLoading(false);
     }
@@ -1862,6 +1973,15 @@ function MoneroEnthusiastV1() {
     </article>
     {status?.identityExists && status.matrixReady && <div className="enthusiast-v1-workspace">
       {account?.suspended && <article className="feature-lock"><strong>{t('communityV1.suspended')}</strong><p>{t('communityV1.suspendedText')}</p>{moderationOutcome?.decisionReason && <p><strong>{t('communityV1.reason')}:</strong> {moderationOutcome.decisionReason}</p>}{moderationOutcome?.appealPending ? <p>{t('communityV1.appealPending')}</p> : <><label>{t('communityV1.appealReason')}<textarea value={appealReason} onChange={(event) => setAppealReason(event.target.value)} maxLength={2000} /></label><button className="secondary" disabled={loading || !appealReason.trim()} onClick={() => void submitAppeal()} type="button">{t('communityV1.sendAppeal')}</button></>}</article>}
+      <article className="enthusiast-v1-search">
+        <header><div><strong>{t('communityV1.discovery')}</strong><p>{t('communityV1.discoveryText')}</p></div><button className="quiet-button" disabled={loading} onClick={() => void clearSearchHistory()} type="button">{t('communityV1.clearSearchHistory')}</button></header>
+        <form onSubmit={(event) => { event.preventDefault(); void searchLocalCatalog(); }}>
+          <input aria-label={t('communityV1.searchLabel')} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} maxLength={160} placeholder={t('communityV1.searchPlaceholder')} />
+          <button className="primary" disabled={loading || !status?.catalogReady || !searchQuery.trim()} type="submit">{t('communityV1.search')}</button>
+        </form>
+        {searchSuggestions.length > 0 && <div className="enthusiast-v1-suggestions">{searchSuggestions.map((suggestion) => <button className="quiet-button" key={suggestion.queryId} onClick={() => void searchLocalCatalog(suggestion.displayText)} type="button">{suggestion.displayText}</button>)}</div>}
+        {searched && (searchResults.length === 0 ? <p className="enthusiast-v1-empty">{t('communityV1.noSearchResults')}</p> : <div className="enthusiast-v1-results">{searchResults.map((result) => <article key={`${result.item.publicId}-${result.item.ownerPublicId}`}><div><small>{result.item.kind === 'profile' ? t('communityV1.kindProfile') : result.item.kind === 'post' ? t('communityV1.kindPost') : result.item.kind === 'service_listing' ? t('communityV1.kindService') : t('communityV1.kindProduct')}</small><strong>{result.item.title}</strong><p>{result.item.summary}</p>{result.item.categories.length > 0 && <span>{result.item.categories.join(' · ')}</span>}</div><button className="secondary" disabled={loading || account?.suspended} onClick={() => void requestSearchContact(result.item.ownerPublicId)} type="button">{t('communityV1.connect')}</button></article>)}</div>)}
+      </article>
       <article className="enthusiast-v1-editor">
         <header><div><strong>{t('communityV1.publicProfile')}</strong><p>{t('communityV1.publicProfileText')}</p></div>{content.find((item) => item.draft.kind === 'profile') && <span>{content.find((item) => item.draft.kind === 'profile')?.status.replaceAll('_', ' ')}</span>}</header>
         <label>{t('communityV1.publicName')}<input value={profileName} onChange={(event) => setProfileName(event.target.value)} maxLength={120} /></label>
@@ -1884,7 +2004,7 @@ function MoneroEnthusiastV1() {
         {content.filter((item) => item.draft.kind === 'product_listing').map((listing) => <div className="enthusiast-v1-outcome" key={listing.publicId}><strong>{listing.draft.title}</strong><p>{listing.draft.summary}</p><small>{t('communityV1.reviewStatus')}: {listing.status.replaceAll('_', ' ')}</small></div>)}
       </article>
       <section className="enthusiast-v1-contacts">
-        <h3>{t('communityV1.contacts')}</h3>
+        <header><div><h3>{t('communityV1.contacts')}</h3><p>{t('communityV1.notificationsText')}</p></div><button className="secondary" disabled={loading} onClick={() => void enableCommunityNotifications()} type="button">{t('communityV1.enableNotifications')}</button></header>
         {pending.length > 0 && <div>{pending.map((request) => <article key={request.requestId}><div><strong>{t('communityV1.contactRequest')}</strong><p>{t('communityV1.contactRequestText')}</p></div><div><button className="quiet-button" disabled={loading} onClick={() => void answerContact(request.requestId, false)} type="button">{t('communityV1.decline')}</button><button className="secondary" disabled={loading} onClick={() => void answerContact(request.requestId, true)} type="button">{t('communityV1.accept')}</button></div></article>)}</div>}
         {contacts.length === 0 ? <p>{t('communityV1.noContacts')}</p> : contacts.map((contact) => <article key={contact.peerId}><div><strong>{t('communityV1.privateContact')}</strong><p>{t('communityV1.privateContactText')}</p></div><button className="secondary" disabled={loading} onClick={() => void openChat(contact.peerId)} type="button">{t('communityV1.openChat')}</button></article>)}
       </section>

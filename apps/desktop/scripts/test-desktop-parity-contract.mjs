@@ -15,6 +15,7 @@ const parityDoc = readFileSync(resolve(repoRoot, 'docs', 'DESKTOP_PARITY_MATRIX.
 const tauriBuild = readFileSync(resolve(desktopRoot, 'src-tauri', 'build.rs'), 'utf8');
 const tauriCapability = readFileSync(resolve(desktopRoot, 'src-tauri', 'capabilities', 'main.json'), 'utf8');
 const secureStoreSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'secure_store.rs'), 'utf8');
+const enthusiastV1Source = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'enthusiast_v1.rs'), 'utf8');
 const enrollmentSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'fast_wallet_enrollment.rs'), 'utf8');
 const desktopNotificationsSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'desktop_notifications.rs'), 'utf8');
 const ledgerCorePatch = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'patches', 'monero-ledger-view-key-api.patch'), 'utf8');
@@ -299,7 +300,7 @@ test('both desktop Ledger read-only flows keep one instruction dialog open until
 
 test('desktop uses one app-wide unlock boundary before restoring wallet sessions', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
-  for (const command of ['app_protection_status', 'set_app_protection_password', 'verify_app_protection_password', 'set_app_protection_mode', 'verify_system_auth', 'lock_app']) {
+  for (const command of ['app_protection_status', 'retry_app_protection_status', 'set_app_protection_password', 'verify_app_protection_password', 'set_app_protection_mode', 'verify_system_auth', 'lock_app']) {
     assert.match(tauriBuild, new RegExp(`"${command}"`));
     assert.match(tauriCapability, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
   }
@@ -320,6 +321,45 @@ test('desktop uses one app-wide unlock boundary before restoring wallet sessions
   assert.match(secureStoreSource, /store_app_protection_mode/);
   assert.doesNotMatch(tauriBuild, /"clear_app_protection_password"/);
   assert.doesNotMatch(tauriCapability, /"allow-clear-app-protection-password"/);
+});
+
+test('desktop Keychain failures cannot create a focus-loss prompt loop', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const lockSource = hostSource.slice(
+    hostSource.indexOf('fn lock_app_native('),
+    hostSource.indexOf('#[tauri::command]\nfn lock_app('),
+  );
+  assert.match(secureStoreSource, /SessionSecretCacheEntry::Failure/);
+  assert.match(secureStoreSource, /failure-cache-hit/);
+  assert.match(secureStoreSource, /retry_failed_secret_reads/);
+  assert.match(appSource, /'retry_app_protection_status'/);
+  assert.match(appSource, /status-retry-requested/);
+  assert.doesNotMatch(appSource, /window\.location\.reload\(\)/);
+  assert.doesNotMatch(lockSource, /app_protection_configured|load_app_protection_mode|load_secret/);
+  assert.match(lockSource, /Locking is a one-way in-memory transition/);
+});
+
+test('desktop Community V1 matches mobile local search, contacts, history, and notification contracts', () => {
+  for (const command of [
+    'enthusiast_v1_search',
+    'enthusiast_v1_suggestions',
+    'enthusiast_v1_clear_search_history',
+    'enthusiast_v1_request_contact',
+    'enthusiast_v1_enable_notifications',
+  ]) {
+    assert.match(tauriBuild, new RegExp(`"${command}"`));
+    assert.match(tauriCapability, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
+    assert.match(appSource, new RegExp(`'${command}'`));
+  }
+  assert.match(enthusiastV1Source, /NativeHarrier::load_verified_xnnpack/);
+  assert.match(enthusiastV1Source, /open_with_keys_and_query_cache/);
+  assert.match(enthusiastV1Source, /install_catalog/);
+  assert.match(enthusiastV1Source, /install_query_catalog/);
+  assert.match(enthusiastV1Source, /ensure_community_v1_search_store_key/);
+  assert.match(enthusiastV1Source, /No complete, signed Community catalog/);
+  assert.match(appSource, /MONERO_DESKTOP_COMMUNITY suggestions-failed/);
+  assert.match(appSource, /communityV1\.clearSearchHistory/);
+  assert.match(appSource, /result\.item\.ownerPublicId/);
 });
 
 test('every renderer-accessible wallet and privacy command fails closed behind the native lock', () => {

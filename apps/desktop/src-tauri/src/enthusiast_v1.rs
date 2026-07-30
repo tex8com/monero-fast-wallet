@@ -2,8 +2,17 @@ use crate::{release_features, secure_store};
 use community_matrix_core::{
     MatrixClientConfig, MatrixE2eeClient, MatrixMessagePage, SelectedMessageReport,
 };
+#[cfg(desktop_community_harrier)]
+use community_runtime_core::{
+    CommunityLocalCore, CommunitySearchRequest, CommunitySuggestionRequest, NativeHarrier,
+    PublicQuerySuggestion, PublicSearchResult,
+};
+#[cfg(desktop_community_harrier)]
+use ed25519_dalek::VerifyingKey;
 use reqwest::{Client, Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
+#[cfg(desktop_community_harrier)]
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -14,10 +23,16 @@ use unicode_normalization::UnicodeNormalization;
 use zeroize::{Zeroize, Zeroizing};
 
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+#[cfg(desktop_community_harrier)]
+const MAX_CATALOG_MANIFEST_BYTES: usize = 1024 * 1024;
+#[cfg(desktop_community_harrier)]
+const MAX_CATALOG_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct CommunityV1State {
     http: Client,
     matrix: Mutex<Option<Arc<MatrixE2eeClient>>>,
+    #[cfg(desktop_community_harrier)]
+    search: Mutex<Option<CommunityLocalCore<NativeHarrier>>>,
 }
 
 impl CommunityV1State {
@@ -32,6 +47,8 @@ impl CommunityV1State {
         Ok(Self {
             http,
             matrix: Mutex::new(None),
+            #[cfg(desktop_community_harrier)]
+            search: Mutex::new(None),
         })
     }
 
@@ -41,7 +58,13 @@ impl CommunityV1State {
                 "Private Community is not enabled in this release.",
             );
         };
-        let packaged = verified_resources_present(app, &config).unwrap_or(false);
+        let packaged =
+            native_search_linked() && verified_resources_present(app, &config).unwrap_or(false);
+        if !packaged {
+            return CommunityV1Status::unavailable(
+                "The verified local discovery runtime is not packaged.",
+            );
+        }
         let identity_exists = secure_store::load_community_v1_account()
             .map(|account| account.is_some())
             .unwrap_or(false);
@@ -54,10 +77,7 @@ impl CommunityV1State {
                 .lock()
                 .map(|matrix| matrix.is_some())
                 .unwrap_or(false);
-        // A file-presence check never claims that the signed catalog has been
-        // cryptographically installed. Only the native search runtime may set
-        // this flag once its active generation has been verified.
-        let catalog_ready = false;
+        let catalog_ready = self.catalog_ready();
         CommunityV1Status {
             packaged,
             ready: packaged && identity_exists && matrix_ready && catalog_ready,
@@ -78,6 +98,7 @@ impl CommunityV1State {
 
     pub async fn initialize(&self, app: &AppHandle) -> Result<CommunityV1Status, String> {
         let config = require_config(app)?;
+        self.initialize_runtime(app, &config).await?;
         if secure_store::load_community_v1_account()?.is_some() {
             self.start(app).await?;
             return Ok(self.status(app).await);
@@ -130,6 +151,7 @@ impl CommunityV1State {
 
     pub async fn start(&self, app: &AppHandle) -> Result<(), String> {
         let config = require_config(app)?;
+        self.initialize_runtime(app, &config).await?;
         let Some(mut account_json) = secure_store::load_community_v1_account()? else {
             return Err("No Community profile exists on this device.".to_owned());
         };
@@ -217,6 +239,121 @@ impl CommunityV1State {
             eligible_for_review: receipt.eligible_for_review,
             filtered: false,
         })
+    }
+
+    #[cfg(desktop_community_harrier)]
+    pub async fn search(
+        &self,
+        app: &AppHandle,
+        request: serde_json::Value,
+    ) -> Result<Vec<CommunityV1SearchResult>, String> {
+        let config = require_config(app)?;
+        self.initialize_runtime(app, &config).await?;
+        let request: CommunitySearchRequest = serde_json::from_value(request)
+            .map_err(|_| "The local Community search request is invalid.".to_owned())?;
+        let runtime = self
+            .search
+            .lock()
+            .map_err(|_| "Local Community search is busy.".to_owned())?;
+        let runtime = runtime
+            .as_ref()
+            .ok_or_else(|| "Local Community search is not ready.".to_owned())?;
+        runtime
+            .search(&request, now_ms())
+            .map(|results| results.into_iter().map(PublicSearchResult::from).collect())
+            .map_err(|_| "Local Community search could not be completed.".to_owned())
+    }
+
+    #[cfg(not(desktop_community_harrier))]
+    pub async fn search(
+        &self,
+        _app: &AppHandle,
+        _request: serde_json::Value,
+    ) -> Result<Vec<CommunityV1SearchResult>, String> {
+        Err("Local Community search is not packaged for this desktop build.".to_owned())
+    }
+
+    #[cfg(desktop_community_harrier)]
+    pub async fn suggestions(
+        &self,
+        app: &AppHandle,
+        request: serde_json::Value,
+    ) -> Result<Vec<CommunityV1QuerySuggestion>, String> {
+        let config = require_config(app)?;
+        self.initialize_runtime(app, &config).await?;
+        let request: CommunitySuggestionRequest = serde_json::from_value(request)
+            .map_err(|_| "The local search suggestion request is invalid.".to_owned())?;
+        let runtime = self
+            .search
+            .lock()
+            .map_err(|_| "Local Community search is busy.".to_owned())?;
+        let runtime = runtime
+            .as_ref()
+            .ok_or_else(|| "Local Community search is not ready.".to_owned())?;
+        runtime
+            .suggestions(&request, now_ms())
+            .map_err(|_| "Local search suggestions could not be loaded.".to_owned())
+    }
+
+    #[cfg(not(desktop_community_harrier))]
+    pub async fn suggestions(
+        &self,
+        _app: &AppHandle,
+        _request: serde_json::Value,
+    ) -> Result<Vec<CommunityV1QuerySuggestion>, String> {
+        Err("Local Community search is not packaged for this desktop build.".to_owned())
+    }
+
+    pub fn clear_search_history(&self) -> Result<(), String> {
+        #[cfg(desktop_community_harrier)]
+        {
+            let runtime = self
+                .search
+                .lock()
+                .map_err(|_| "Local Community search is busy.".to_owned())?;
+            let runtime = runtime
+                .as_ref()
+                .ok_or_else(|| "Local Community search is not ready.".to_owned())?;
+            return runtime
+                .clear_query_cache()
+                .map_err(|_| "Local search history could not be cleared.".to_owned());
+        }
+        #[cfg(not(desktop_community_harrier))]
+        Err("Local Community search is not packaged for this desktop build.".to_owned())
+    }
+
+    pub async fn register_notification(
+        &self,
+        app: &AppHandle,
+        installation_id: &str,
+        provider: &str,
+        token: &str,
+    ) -> Result<serde_json::Value, String> {
+        validate_public_identifier("notification installation", installation_id)?;
+        if provider != "apns" {
+            return Err(
+                "Community notifications currently require APNs on desktop macOS.".to_owned(),
+            );
+        }
+        if token.len() != 64
+            || !token
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err("The Community notification token is invalid.".to_owned());
+        }
+        let config = require_config(app)?;
+        self.authorized_json(
+            &config,
+            Method::POST,
+            &["v2", "notifications", "installations"],
+            Some(serde_json::json!({
+                "installationId": installation_id,
+                "provider": provider,
+                "token": token,
+            })),
+        )
+        .await
     }
 
     pub async fn chat_report_outcome(
@@ -572,6 +709,14 @@ impl CommunityV1State {
         }
         secure_store::delete_community_v1_matrix_session()?;
         secure_store::delete_community_v1_matrix_store_key()?;
+        #[cfg(desktop_community_harrier)]
+        {
+            self.search
+                .lock()
+                .map_err(|_| "Local Community search is busy.".to_owned())?
+                .take();
+        }
+        secure_store::delete_community_v1_search_store_key()?;
         secure_store::delete_community_v1_account()?;
         let store = matrix_store_path(app)?;
         match std::fs::remove_dir_all(&store) {
@@ -579,7 +724,164 @@ impl CommunityV1State {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err("The local private chat store could not be removed.".to_owned()),
         }
+        let search_store = search_store_path(app)?;
+        match std::fs::remove_dir_all(&search_store) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("The local private search store could not be removed.".to_owned()),
+        }
         Ok(())
+    }
+
+    #[cfg(desktop_community_harrier)]
+    async fn initialize_runtime(
+        &self,
+        app: &AppHandle,
+        config: &release_features::MoneroEnthusiastV1Config,
+    ) -> Result<(), String> {
+        if self.catalog_ready() {
+            return Ok(());
+        }
+        let resources = verified_resource_paths(app, config)?;
+        let artifact_manifest = std::fs::read(&resources.artifact_manifest)
+            .map_err(|_| "The verified local discovery manifest is unavailable.".to_owned())?;
+        if artifact_manifest.len() > MAX_CATALOG_MANIFEST_BYTES {
+            return Err("The verified local discovery manifest is too large.".to_owned());
+        }
+        let catalog_key = verifying_key(&config.catalog_verifying_key_hex, "catalog")?;
+        let advertising_key =
+            verifying_key(&config.advertising_verifying_key_hex, "advertising catalog")?;
+        let artifact_key = verifying_key(&config.artifact_verifying_key_hex, "artifact")?;
+        let harrier = NativeHarrier::load_verified_xnnpack(
+            &artifact_manifest,
+            &resources.pte,
+            &resources.tokenizer,
+            &resources.conformance,
+            &artifact_key,
+        )
+        .map_err(|_| "The verified local discovery model could not be opened.".to_owned())?;
+        let store = search_store_path(app)?;
+        std::fs::create_dir_all(&store)
+            .map_err(|_| "The local Community search store is unavailable.".to_owned())?;
+        let query_cache_key = secure_store::ensure_community_v1_search_store_key()?;
+        let runtime = CommunityLocalCore::open_with_keys_and_query_cache(
+            &store,
+            config.catalog_scope.clone(),
+            catalog_key,
+            advertising_key,
+            query_cache_key,
+            harrier,
+        )
+        .map_err(|_| "The local Community search store could not be opened.".to_owned())?;
+
+        let now = now_ms();
+        let scope = percent_encode_path_segment(&config.catalog_scope)?;
+        if let (Ok(manifest), Ok(payload)) = (
+            self.download_catalog_asset(
+                &config.catalog_origin,
+                &format!("v1/catalogs/{scope}/current/manifest.json"),
+                MAX_CATALOG_MANIFEST_BYTES,
+            )
+            .await,
+            self.download_catalog_asset(
+                &config.catalog_origin,
+                &format!("v1/catalogs/{scope}/current/catalog.json"),
+                MAX_CATALOG_BYTES,
+            )
+            .await,
+        ) {
+            runtime
+                .install_catalog(&manifest, &payload, now)
+                .map_err(|_| "The signed Community catalog was rejected.".to_owned())?;
+        }
+        if let (Ok(manifest), Ok(payload)) = (
+            self.download_catalog_asset(
+                &config.catalog_origin,
+                &format!("v1/queries/{scope}/current/manifest.json"),
+                MAX_CATALOG_MANIFEST_BYTES,
+            )
+            .await,
+            self.download_catalog_asset(
+                &config.catalog_origin,
+                &format!("v1/queries/{scope}/current/queries.json"),
+                MAX_CATALOG_BYTES,
+            )
+            .await,
+        ) {
+            runtime
+                .install_query_catalog(&manifest, &payload, now)
+                .map_err(|_| "The signed Community query catalog was rejected.".to_owned())?;
+        }
+        runtime.status(now).map_err(|_| {
+            "No complete, signed Community catalog is available on this computer.".to_owned()
+        })?;
+        *self
+            .search
+            .lock()
+            .map_err(|_| "Local Community search is busy.".to_owned())? = Some(runtime);
+        Ok(())
+    }
+
+    #[cfg(not(desktop_community_harrier))]
+    async fn initialize_runtime(
+        &self,
+        _app: &AppHandle,
+        _config: &release_features::MoneroEnthusiastV1Config,
+    ) -> Result<(), String> {
+        Err("Local Community search is not packaged for this desktop build.".to_owned())
+    }
+
+    #[cfg(desktop_community_harrier)]
+    async fn download_catalog_asset(
+        &self,
+        origin: &str,
+        path: &str,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, String> {
+        let url = endpoint(origin, path)?;
+        let mut response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|_| "The signed Community catalog could not be downloaded.".to_owned())?;
+        if !response.status().is_success()
+            || response
+                .content_length()
+                .is_some_and(|length| length > maximum_bytes as u64)
+        {
+            return Err("The signed Community catalog is unavailable.".to_owned());
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| "The signed Community catalog could not be read.".to_owned())?
+        {
+            if bytes.len().saturating_add(chunk.len()) > maximum_bytes {
+                return Err("The signed Community catalog is too large.".to_owned());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    }
+
+    fn catalog_ready(&self) -> bool {
+        #[cfg(desktop_community_harrier)]
+        {
+            return self
+                .search
+                .lock()
+                .ok()
+                .and_then(|runtime| {
+                    runtime
+                        .as_ref()
+                        .map(|runtime| runtime.status(now_ms()).is_ok())
+                })
+                .unwrap_or(false);
+        }
+        #[cfg(not(desktop_community_harrier))]
+        false
     }
 
     async fn provision_and_login(
@@ -661,6 +963,10 @@ impl CommunityV1State {
         if let Ok(mut matrix) = self.matrix.lock() {
             *matrix = None;
         }
+        #[cfg(desktop_community_harrier)]
+        if let Ok(mut search) = self.search.lock() {
+            *search = None;
+        }
     }
 
     fn matrix_client(&self) -> Result<Arc<MatrixE2eeClient>, String> {
@@ -715,6 +1021,16 @@ pub struct CommunityV1Status {
     pub matrix_ready: bool,
     pub reason: String,
 }
+
+#[cfg(desktop_community_harrier)]
+pub type CommunityV1SearchResult = PublicSearchResult;
+#[cfg(not(desktop_community_harrier))]
+pub type CommunityV1SearchResult = serde_json::Value;
+
+#[cfg(desktop_community_harrier)]
+pub type CommunityV1QuerySuggestion = PublicQuerySuggestion;
+#[cfg(not(desktop_community_harrier))]
+pub type CommunityV1QuerySuggestion = serde_json::Value;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -909,16 +1225,37 @@ impl Drop for CreateIdentityResponse {
 
 fn require_config(app: &AppHandle) -> Result<release_features::MoneroEnthusiastV1Config, String> {
     release_features::monero_enthusiast_v1_config()
-        .filter(|config| verified_resources_present(app, config).unwrap_or(false))
+        .filter(|config| {
+            native_search_linked() && verified_resources_present(app, config).unwrap_or(false)
+        })
         .ok_or_else(|| {
             "The verified private Community runtime is not available in this release.".to_owned()
         })
+}
+
+fn native_search_linked() -> bool {
+    cfg!(desktop_community_harrier)
+}
+
+#[cfg_attr(not(desktop_community_harrier), allow(dead_code))]
+struct CommunityResourcePaths {
+    artifact_manifest: PathBuf,
+    pte: PathBuf,
+    tokenizer: PathBuf,
+    conformance: PathBuf,
 }
 
 fn verified_resources_present(
     app: &AppHandle,
     config: &release_features::MoneroEnthusiastV1Config,
 ) -> Result<bool, String> {
+    verified_resource_paths(app, config).map(|_| true)
+}
+
+fn verified_resource_paths(
+    app: &AppHandle,
+    config: &release_features::MoneroEnthusiastV1Config,
+) -> Result<CommunityResourcePaths, String> {
     let root = app
         .path()
         .resource_dir()
@@ -926,26 +1263,61 @@ fn verified_resources_present(
     let canonical_root = root
         .canonicalize()
         .map_err(|_| "The application resource directory is unavailable.".to_owned())?;
-    for relative in [
-        &config.artifact_manifest_resource,
-        &config.pte_resource,
-        &config.tokenizer_resource,
-        &config.conformance_resource,
-    ] {
+    let resolve = |relative: &str| -> Result<PathBuf, String> {
         let candidate = root.join(relative);
         let metadata = std::fs::symlink_metadata(&candidate)
             .map_err(|_| "A verified local discovery file is missing.".to_owned())?;
         if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Ok(false);
+            return Err("A verified local discovery file is unsafe.".to_owned());
         }
         let canonical = candidate
             .canonicalize()
             .map_err(|_| "A local discovery file is unavailable.".to_owned())?;
         if !canonical.starts_with(&canonical_root) {
-            return Ok(false);
+            return Err("A verified local discovery file is unsafe.".to_owned());
         }
+        Ok(canonical)
+    };
+    Ok(CommunityResourcePaths {
+        artifact_manifest: resolve(&config.artifact_manifest_resource)?,
+        pte: resolve(&config.pte_resource)?,
+        tokenizer: resolve(&config.tokenizer_resource)?,
+        conformance: resolve(&config.conformance_resource)?,
+    })
+}
+
+#[cfg(desktop_community_harrier)]
+fn verifying_key(value: &str, label: &str) -> Result<VerifyingKey, String> {
+    let bytes =
+        hex::decode(value).map_err(|_| format!("The {label} verification key is invalid."))?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| format!("The {label} verification key is invalid."))?;
+    VerifyingKey::from_bytes(&bytes)
+        .map_err(|_| format!("The {label} verification key is invalid."))
+}
+
+#[cfg(desktop_community_harrier)]
+fn percent_encode_path_segment(value: &str) -> Result<String, String> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("The Community catalog scope is invalid.".to_owned());
     }
-    Ok(true)
+    Ok(value.to_owned())
+}
+
+#[cfg(desktop_community_harrier)]
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 fn endpoint(origin: &str, path: &str) -> Result<Url, String> {
@@ -1196,6 +1568,31 @@ fn matrix_store_path(app: &AppHandle) -> Result<PathBuf, String> {
         .unwrap_or(true)
     {
         return Err("Private chat storage is unsafe.".to_owned());
+    }
+    Ok(path)
+}
+
+fn search_store_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let path = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "Private application storage is unavailable.".to_owned())?
+        .join("community-v1")
+        .join("catalog");
+    for existing in path.ancestors().take(3) {
+        if let Ok(metadata) = std::fs::symlink_metadata(existing) {
+            if metadata.file_type().is_symlink() {
+                return Err("Local Community search storage is unsafe.".to_owned());
+            }
+        }
+    }
+    std::fs::create_dir_all(&path)
+        .map_err(|_| "Local Community search storage could not be created.".to_owned())?;
+    if std::fs::symlink_metadata(&path)
+        .map(|metadata| metadata.file_type().is_symlink() || !metadata.is_dir())
+        .unwrap_or(true)
+    {
+        return Err("Local Community search storage is unsafe.".to_owned());
     }
     Ok(path)
 }

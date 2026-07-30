@@ -14,6 +14,7 @@ const COMMUNITY_ACCOUNT_IDENTIFIER: &str = "primary";
 const COMMUNITY_V1_ACCOUNT_IDENTIFIER: &str = "v1-primary";
 const COMMUNITY_V1_MATRIX_SESSION_IDENTIFIER: &str = "v1-matrix-session";
 const COMMUNITY_V1_MATRIX_STORE_KEY_IDENTIFIER: &str = "v1-matrix-store-key";
+const COMMUNITY_V1_SEARCH_STORE_KEY_IDENTIFIER: &str = "v1-search-store-key";
 const APP_PROTECTION_IDENTIFIER: &str = "app-protection";
 const APP_PROTECTION_MODE_IDENTIFIER: &str = "app-protection-mode";
 const APP_UNLOCK_THROTTLE_IDENTIFIER: &str = "app-unlock-throttle";
@@ -26,13 +27,71 @@ const APP_PASSWORD_ARGON2_HASH_BYTES: usize = 32;
 const APP_PASSWORD_ARGON2_PREFIX: &str = "$argon2id$v=19$m=65536,t=3,p=1$";
 const LEGACY_APP_PASSWORD_ARGON2_PREFIX: &str = "$argon2id$v=19$m=19456,t=2,p=1$";
 
-/// Values read from the platform credential store are held only while the
-/// app-wide protection is unlocked.  Opening several wallets in parallel must
-/// not trigger repeated OS credential dialogs for the same entry.
-static SESSION_SECRET_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+enum SessionSecretCacheEntry {
+    Secret(String),
+    Missing,
+    Failure(String),
+}
 
-fn session_secret_cache() -> &'static Mutex<HashMap<String, String>> {
-    SESSION_SECRET_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+impl SessionSecretCacheEntry {
+    fn zeroize_secret(&mut self) {
+        if let Self::Secret(value) = self {
+            value.zeroize();
+        }
+    }
+}
+
+#[derive(Default)]
+struct SessionSecretCache {
+    entries: HashMap<String, SessionSecretCacheEntry>,
+}
+
+impl SessionSecretCache {
+    fn lookup(&self, key: &str) -> Option<Result<Option<String>, String>> {
+        self.entries.get(key).map(|entry| match entry {
+            SessionSecretCacheEntry::Secret(value) => Ok(Some(value.clone())),
+            SessionSecretCacheEntry::Missing => Ok(None),
+            SessionSecretCacheEntry::Failure(error) => Err(error.clone()),
+        })
+    }
+
+    fn replace(&mut self, key: String, entry: SessionSecretCacheEntry) {
+        if let Some(mut previous) = self.entries.insert(key, entry) {
+            previous.zeroize_secret();
+        }
+    }
+
+    fn remove(&mut self, key: &str) {
+        if let Some(mut previous) = self.entries.remove(key) {
+            previous.zeroize_secret();
+        }
+    }
+
+    fn clear_unlocked_secrets(&mut self) {
+        self.entries.retain(|key, entry| {
+            let keep = key.starts_with("app-protection-password:")
+                || key.starts_with("app-protection-mode:")
+                || key.starts_with("app-unlock-throttle:");
+            if !keep {
+                entry.zeroize_secret();
+            }
+            keep
+        });
+    }
+
+    fn clear_failures(&mut self) {
+        self.entries
+            .retain(|_, entry| !matches!(entry, SessionSecretCacheEntry::Failure(_)));
+    }
+}
+
+/// Successful, missing, and failed reads are cached for the current app
+/// process. In particular, a denied macOS Keychain read must not immediately
+/// open the same system password dialog again.
+static SESSION_SECRET_CACHE: OnceLock<Mutex<SessionSecretCache>> = OnceLock::new();
+
+fn session_secret_cache() -> &'static Mutex<SessionSecretCache> {
+    SESSION_SECRET_CACHE.get_or_init(|| Mutex::new(SessionSecretCache::default()))
 }
 
 fn cache_key(prefix: &str, identifier: &str) -> String {
@@ -43,20 +102,32 @@ fn cache_secret(prefix: &str, identifier: &str, value: &str) -> Result<(), Strin
     let mut cache = session_secret_cache()
         .lock()
         .map_err(|_| "Secure session cache is busy.".to_owned())?;
-    if let Some(mut previous) = cache.insert(cache_key(prefix, identifier), value.to_owned()) {
-        previous.zeroize();
-    }
+    cache.replace(
+        cache_key(prefix, identifier),
+        SessionSecretCacheEntry::Secret(value.to_owned()),
+    );
     Ok(())
 }
 
+/// Locking clears wallet, node, Community, and scanner credentials. The
+/// app-protection mode, Argon2 verifier, and throttle remain process-local so
+/// the lock screen itself never starts a second OS credential prompt.
 pub fn clear_session_secret_cache() -> Result<(), String> {
     let mut cache = session_secret_cache()
         .lock()
         .map_err(|_| "Secure session cache is busy.".to_owned())?;
-    for value in cache.values_mut() {
-        value.zeroize();
-    }
-    cache.clear();
+    cache.clear_unlocked_secrets();
+    Ok(())
+}
+
+/// Failed reads are retried only after an explicit user action. This is kept
+/// separate from the normal lock path to prevent a denied Keychain dialog from
+/// turning focus loss into an infinite prompt loop.
+pub fn retry_failed_secret_reads() -> Result<(), String> {
+    let mut cache = session_secret_cache()
+        .lock()
+        .map_err(|_| "Secure session cache is busy.".to_owned())?;
+    cache.clear_failures();
     Ok(())
 }
 
@@ -579,6 +650,49 @@ pub fn delete_community_v1_matrix_store_key() -> Result<(), String> {
     )
 }
 
+/// The encrypted local search-history database uses an independent random
+/// key. Search terms and their embeddings never enter the renderer's durable
+/// storage or the wallet credential namespace.
+#[cfg(desktop_community_harrier)]
+pub fn ensure_community_v1_search_store_key() -> Result<[u8; 32], String> {
+    if let Some(mut existing) = load_secret(
+        "community-search",
+        COMMUNITY_V1_SEARCH_STORE_KEY_IDENTIFIER,
+        "private search-history storage key",
+    )? {
+        let decoded = hex::decode(&existing)
+            .map_err(|_| "The private search-history storage key is invalid.".to_owned())?;
+        existing.zeroize();
+        return decoded
+            .try_into()
+            .map_err(|_| "The private search-history storage key is invalid.".to_owned());
+    }
+    let mut key = [0_u8; 32];
+    getrandom::getrandom(&mut key)
+        .map_err(|_| "A private search-history storage key could not be generated.".to_owned())?;
+    let mut encoded = hex::encode(key);
+    let stored = store_secret(
+        "community-search",
+        COMMUNITY_V1_SEARCH_STORE_KEY_IDENTIFIER,
+        encoded.clone(),
+        "private search-history storage key",
+    );
+    encoded.zeroize();
+    if let Err(error) = stored {
+        key.zeroize();
+        return Err(error);
+    }
+    Ok(key)
+}
+
+pub fn delete_community_v1_search_store_key() -> Result<(), String> {
+    delete_secret(
+        "community-search",
+        COMMUNITY_V1_SEARCH_STORE_KEY_IDENTIFIER,
+        "private search-history storage key",
+    )
+}
+
 fn account_name(wallet_id: &str) -> Result<String, String> {
     account_name_with_prefix("wallet-password", wallet_id)
 }
@@ -622,37 +736,46 @@ fn load_secret(prefix: &str, identifier: &str, label: &str) -> Result<Option<Str
     let mut cache = session_secret_cache()
         .lock()
         .map_err(|_| "Secure session cache is busy.".to_owned())?;
-    if let Some(value) = cache.get(&key).cloned() {
-        eprintln!("MONERO_DESKTOP_SECURE_STORE cache-hit kind={prefix}");
-        return Ok(Some(value));
+    if let Some(cached) = cache.lookup(&key) {
+        match &cached {
+            Ok(Some(_)) => eprintln!("MONERO_DESKTOP_SECURE_STORE cache-hit kind={prefix}"),
+            Ok(None) => eprintln!("MONERO_DESKTOP_SECURE_STORE missing-cache-hit kind={prefix}"),
+            Err(_) => {
+                eprintln!("MONERO_DESKTOP_SECURE_STORE failure-cache-hit kind={prefix}")
+            }
+        }
+        return cached;
     }
     let account = account_name_with_prefix(prefix, identifier)?;
     let entry = Entry::new(SERVICE_NAME, &account)
         .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
     match entry.get_password() {
         Ok(value) => {
-            if let Some(mut previous) = cache.insert(key, value.clone()) {
-                previous.zeroize();
-            }
+            cache.replace(key, SessionSecretCacheEntry::Secret(value.clone()));
             eprintln!("MONERO_DESKTOP_SECURE_STORE platform-read kind={prefix}");
             Ok(Some(value))
         }
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(_) => Err(format!(
-            "The {label} could not be read from secure storage."
-        )),
+        Err(keyring::Error::NoEntry) => {
+            cache.replace(key, SessionSecretCacheEntry::Missing);
+            Ok(None)
+        }
+        Err(_) => {
+            let error = format!("The {label} could not be read from secure storage.");
+            cache.replace(key, SessionSecretCacheEntry::Failure(error.clone()));
+            eprintln!(
+                "MONERO_DESKTOP_SECURE_STORE platform-read-failed kind={prefix} retry=explicit"
+            );
+            Err(error)
+        }
     }
 }
 
 fn delete_secret(prefix: &str, identifier: &str, label: &str) -> Result<(), String> {
     let key = cache_key(prefix, identifier);
-    if let Some(mut value) = session_secret_cache()
+    session_secret_cache()
         .lock()
         .map_err(|_| "Secure session cache is busy.".to_owned())?
-        .remove(&key)
-    {
-        value.zeroize();
-    }
+        .remove(&key);
     let account = account_name_with_prefix(prefix, identifier)?;
     let entry = Entry::new(SERVICE_NAME, &account)
         .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
@@ -669,7 +792,8 @@ mod tests {
     use super::{
         account_name, account_name_with_prefix, constant_time_match, delete_wallet_password,
         hash_app_protection_password, load_wallet_password, store_wallet_password,
-        verify_app_protection_hash, APP_PASSWORD_ARGON2_PREFIX,
+        verify_app_protection_hash, SessionSecretCache, SessionSecretCacheEntry,
+        APP_PASSWORD_ARGON2_PREFIX,
     };
 
     #[test]
@@ -705,6 +829,43 @@ mod tests {
         assert!(!verify_app_protection_hash(&encoded, "wrong password"));
         assert!(constant_time_match("same", "same"));
         assert!(!constant_time_match("same", "different"));
+    }
+
+    #[test]
+    fn app_protection_cache_survives_lock_and_failures_require_explicit_retry() {
+        let mut cache = SessionSecretCache::default();
+        cache.replace(
+            "app-protection-password:test".to_owned(),
+            SessionSecretCacheEntry::Secret("argon2-verifier".to_owned()),
+        );
+        cache.replace(
+            "wallet-password:test".to_owned(),
+            SessionSecretCacheEntry::Secret("wallet-secret".to_owned()),
+        );
+        cache.replace(
+            "app-protection-mode:test".to_owned(),
+            SessionSecretCacheEntry::Failure("keychain denied".to_owned()),
+        );
+
+        cache.clear_unlocked_secrets();
+        assert_eq!(
+            cache
+                .lookup("app-protection-password:test")
+                .expect("cached app protection verifier")
+                .expect("cached verifier read"),
+            Some("argon2-verifier".to_owned())
+        );
+        assert!(cache.lookup("wallet-password:test").is_none());
+        assert_eq!(
+            cache
+                .lookup("app-protection-mode:test")
+                .expect("cached Keychain failure")
+                .expect_err("failure must remain cached"),
+            "keychain denied"
+        );
+
+        cache.clear_failures();
+        assert!(cache.lookup("app-protection-mode:test").is_none());
     }
 
     #[test]
