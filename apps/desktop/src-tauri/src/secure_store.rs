@@ -759,14 +759,36 @@ fn load_secret(prefix: &str, identifier: &str, label: &str) -> Result<Option<Str
             cache.replace(key, SessionSecretCacheEntry::Missing);
             Ok(None)
         }
-        Err(_) => {
+        Err(platform_error) => {
+            // The keyring error contains only the platform status, never the
+            // credential value. Keep it in native diagnostics so a denied,
+            // locked, or stale macOS Keychain item can be distinguished
+            // without ever logging an account identifier or secret.
             let error = format!("The {label} could not be read from secure storage.");
             cache.replace(key, SessionSecretCacheEntry::Failure(error.clone()));
             eprintln!(
-                "MONERO_DESKTOP_SECURE_STORE platform-read-failed kind={prefix} retry=explicit"
+                "MONERO_DESKTOP_SECURE_STORE platform-read-failed kind={prefix} retry=explicit platform_error={}",
+                keyring_error_diagnostic(&platform_error)
             );
             Err(error)
         }
+    }
+}
+
+fn keyring_error_diagnostic(error: &keyring::Error) -> String {
+    match error {
+        keyring::Error::PlatformFailure(source) => {
+            format!("platform-failure:{source}")
+        }
+        keyring::Error::NoStorageAccess(source) => {
+            format!("no-storage-access:{source}")
+        }
+        keyring::Error::NoEntry => "no-entry".to_owned(),
+        keyring::Error::BadEncoding(_) => "bad-encoding".to_owned(),
+        keyring::Error::TooLong(_, _) => "attribute-too-long".to_owned(),
+        keyring::Error::Invalid(_, _) => "invalid-attribute".to_owned(),
+        keyring::Error::Ambiguous(items) => format!("ambiguous:{}", items.len()),
+        _ => "unknown".to_owned(),
     }
 }
 
