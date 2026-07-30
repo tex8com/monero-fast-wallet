@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0d1017" />
+    <meta
+      name="description"
+      content="TEX8 Monero Fast Wallet – Android-Diagnoseversion herunterladen."
+    />
+    <title>TEX8 Monero Fast Wallet – Android Download</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        background: #0d1017;
+        color: #f6f7fb;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(circle at 50% 0%, rgba(255, 102, 0, 0.18), transparent 42%),
+          linear-gradient(160deg, #141924 0%, #0d1017 62%);
+      }
+
+      main {
+        width: min(100%, 520px);
+        padding: clamp(28px, 7vw, 48px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 28px;
+        text-align: center;
+        background: rgba(20, 25, 36, 0.88);
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.42);
+        backdrop-filter: blur(18px);
+      }
+
+      .logo {
+        width: 82px;
+        height: 82px;
+        margin: 0 auto 24px;
+        display: grid;
+        place-items: center;
+        border-radius: 24px;
+        color: #fff;
+        font-size: 38px;
+        font-weight: 900;
+        letter-spacing: -4px;
+        background: linear-gradient(145deg, #ff7a1a, #ef4f00);
+        box-shadow: 0 16px 38px rgba(255, 102, 0, 0.3);
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: #ff8a3d;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(28px, 8vw, 42px);
+        line-height: 1.08;
+        letter-spacing: -0.04em;
+      }
+
+      .intro {
+        margin: 18px auto 28px;
+        color: #b9c0cf;
+        font-size: 16px;
+        line-height: 1.6;
+      }
+
+      .download {
+        min-height: 58px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        border-radius: 16px;
+        color: #fff;
+        font-size: 17px;
+        font-weight: 850;
+        text-decoration: none;
+        background: linear-gradient(135deg, #ff7216, #eb4f00);
+        box-shadow: 0 14px 34px rgba(255, 94, 0, 0.28);
+        transition:
+          transform 160ms ease,
+          box-shadow 160ms ease;
+      }
+
+      .download:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 18px 42px rgba(255, 94, 0, 0.36);
+      }
+
+      .download:focus-visible {
+        outline: 3px solid #fff;
+        outline-offset: 4px;
+      }
+
+      .download svg {
+        width: 22px;
+        height: 22px;
+      }
+
+      .details {
+        display: flex;
+        justify-content: center;
+        gap: 9px;
+        margin: 18px 0 0;
+        color: #8f98aa;
+        font-size: 13px;
+      }
+
+      .notice {
+        margin: 28px 0 0;
+        padding: 15px 16px;
+        border: 1px solid rgba(255, 184, 77, 0.2);
+        border-radius: 14px;
+        color: #d4b98f;
+        font-size: 13px;
+        line-height: 1.5;
+        background: rgba(255, 153, 0, 0.07);
+      }
+
+      .hash {
+        margin: 18px 0 0;
+        color: #737d90;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 10px;
+        line-height: 1.55;
+        overflow-wrap: anywhere;
+      }
+
+      footer {
+        margin-top: 26px;
+        color: #697386;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="logo" aria-hidden="true">M</div>
+      <p class="eyebrow">TEX8 Android Test Build</p>
+      <h1>Monero Fast Wallet</h1>
+      <p class="intro">
+        Lade die aktuelle Diagnoseversion für Android herunter. Screenshots sind
+        in dieser Version für Bugreports freigeschaltet.
+      </p>
+
+      <a
+        class="download"
+        href="/xmr.apk?v=1.0.23-protection-f5771ac4"
+        download="TEX8-Monero-Fast-Wallet-v1.0.23.apk"
+      >
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M12 3v12m0 0 5-5m-5 5-5-5M5 20h14"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        APK herunterladen
+      </a>
+
+      <p class="details">
+        <span>Version 1.0.23</span>
+        <span aria-hidden="true">•</span>
+        <span>64,8 MiB</span>
+        <span aria-hidden="true">•</span>
+        <span>Android 7+</span>
+      </p>
+
+      <p class="notice">
+        Diagnoseversion: Der Screenshot-Schutz ist deaktiviert. Zeige in
+        Screenshots niemals Seed, private Schlüssel oder sensible Wallet-Daten.
+      </p>
+
+      <p class="hash">
+        SHA-256:
+        f5771ac4cecfdbd8432caeabdbd64845b9a79d9206f15cb4d5f2b5c57e88268d
+      </p>
+
+      <footer>© TEX8 · Self-custodial Monero Wallet</footer>
+    </main>
+  </body>
+</html>

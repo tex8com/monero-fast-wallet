@@ -88,6 +88,9 @@ pub fn save(app: &AppHandle, mut profile: NodeProfile) -> Result<NodeProfile, St
     Ok(profile)
 }
 
+// This mirrors the flat Tauri command payload. Keeping the independently
+// validated connection fields explicit prevents hidden defaults.
+#[allow(clippy::too_many_arguments)]
 pub fn profile(
     mode: String,
     network: String,

@@ -19,6 +19,7 @@ export CLEAN_AFTER_INSTALL=1
 export JOBS="${JOBS:-8}"
 export MONERO_IOS_DEPENDENCY_ROOT="$BUILD_ROOT/ios-deps"
 export MONERO_FAST_CRYPTO_ROOT="$BUILD_ROOT/mobile-fast-crypto-tex8-patched"
+export MONERO_FAST_WALLET_PROTOCOL_ROOT="$BUILD_ROOT/mobile-fast-wallet-protocol"
 export MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-$BUILD_ROOT/monero-v0.18.4.6-tex8-patched}"
 export MONERO_IOS_GRPC_DEPENDENCY_ROOT="$MONERO_IOS_DEPENDENCY_ROOT"
 export MONERO_ENABLE_GRPC_STREAM=ON
@@ -27,6 +28,9 @@ export PROTOC_PATH="$BUILD_ROOT/host-protobuf-tools/protobuf-v31.1/bin/protoc"
 export GRPC_CPP_PLUGIN_PATH="$BUILD_ROOT/host-grpc-tools/v1.80.0/bin/grpc_cpp_plugin"
 
 source "$REPO_ROOT/native/monero-bridge/scripts/prepare-patched-monero-core.sh"
+
+TARGETS=ios-sim-arm64 OUTPUT_DIR="$MONERO_FAST_WALLET_PROTOCOL_ROOT" \
+  "$REPO_ROOT/native/fast-wallet-protocol/build-mobile.sh"
 
 if [ ! -x "$PROTOC_PATH" ]; then
   OUTPUT_ROOT="$BUILD_ROOT/host-protobuf-tools" \

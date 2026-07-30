@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 2,
+  "capturedAt": "2026-07-30T12:01:44-05:00",
+  "purpose": "Production community-query-v2 regression after removing Monero query-prompt bias",
+  "platform": {
+    "device": "MacBook Air",
+    "chip": "Apple M4",
+    "architecture": "arm64",
+    "os": "macOS 26.5.2",
+    "osBuild": "25F84"
+  },
+  "artifact": {
+    "modelId": "microsoft/harrier-oss-v1-270m",
+    "sourceRevision": "31de22b673913c7d658c0f03f792d77c2dcf8ebd",
+    "sourceWeightsSha256": "90933b6826b61afd9331e0ebe3c0598b421a32eda5fb301a114fe36f306cb51a",
+    "tokenizerSha256": "6852f8d561078cc0cebe70ca03c5bfdd0d60a45f9d2e0e1e4cc05b68e9ec329e",
+    "target": "xnnpack-a8w8",
+    "pteSha256": "237b9297d51ec3904042d06de340755365483da0be0054fa05b9d17468274d02",
+    "embeddingDimension": 640,
+    "queryPromptVersion": "community-query-v2",
+    "queryInstruction": "Instruct: Given a community search query, retrieve relevant public profiles, posts, services, products, news, and clearly labeled advertisements\nQuery: "
+  },
+  "migration": {
+    "legacyQueryPromptVersion": "community-query-v1",
+    "legacyPromptAccepted": false,
+    "localQueryCacheSchema": 3,
+    "legacyCacheSchemasSecurelyDiscarded": [
+      1,
+      2
+    ],
+    "productReembeddingRequired": false,
+    "queryReembeddingRequired": true,
+    "legacySignedQueryCatalogAccepted": false
+  },
+  "workload": {
+    "products": 12,
+    "distinctQueries": 60,
+    "labeledPairs": 120,
+    "positivePairs": 60,
+    "hardNegativePairs": 60,
+    "installedProductVectors": 84,
+    "vectorsPerProduct": 7,
+    "truncatedChunks": 0,
+    "database": "community-search-core SQLite + USearch",
+    "deduplication": "best vector hit per product"
+  },
+  "quality": {
+    "top1": {
+      "matches": 60,
+      "queries": 60,
+      "rate": 1.0
+    },
+    "recallAt5": {
+      "matches": 60,
+      "queries": 60,
+      "rate": 1.0
+    },
+    "meanReciprocalRank": 1.0,
+    "meanNdcgAt5": 1.0,
+    "polarityDecisionsCorrect": 120,
+    "polarityDecisions": 120,
+    "rocAucAcrossLabeledPairs": 0.9377777777777778,
+    "positiveMeanSimilarity": 0.69759136,
+    "negativeMeanSimilarity": 0.5639335,
+    "meanSimilarityGap": 0.13365787,
+    "failures": []
+  },
+  "beforeAfter": {
+    "legacyTop1Matches": 47,
+    "fixedTop1Matches": 60,
+    "queries": 60,
+    "legacyWrongPrivacyWalletWinners": 13,
+    "fixedWrongPrivacyWalletWinners": 0
+  },
+  "performance": {
+    "measuredEmbeddings": 204,
+    "embeddingsPerSecond": 15.031947309161136,
+    "embeddingMeasurementMs": 13571.096000028774,
+    "searchCalls": 12000,
+    "meanSearchMs": 5.613941951333333,
+    "note": "Local macOS ExecuTorch/XNNPACK measurement, not Pixel performance"
+  },
+  "conformance": {
+    "referenceVectorsSha256": "e5731dc99b676e4186646c9a1d277ad1d20717231ee04f70da0a3fd10d0c39fd",
+    "preparedInputsSha256": "4f942d9a068722e9fbc593ae0f907cc857282240a950b41983a850f6aa0eb379",
+    "pythonExecuTorchMinimumCosine": 0.9972097182273364,
+    "nativeMacosMinimumCosine": 0.9972097182273364,
+    "referenceCases": 36,
+    "passed": true
+  },
+  "rawRunSha256": {
+    "prepared": "92fb67e263ef26da9703710b87a3039b8b921784b9d950a49236152cb69ec5e9",
+    "embeddings": "5ca4ed86895490377ecf39632e5dd2fa5ce1f10b188f4feb11fb97fd9dd6de8c",
+    "results": "9d95fd27196b2bf628428a861b4d7628700aa79d2c3e7565d3bf3cc575d50bd8",
+    "pythonConformance": "7f9f4001fa40ad2ee76257b6450c74036686d9afb687b3df5ee09bee4564016f",
+    "nativeMacosConformance": "1d5e2c6bf451e87203a344e77416ad486c5d0bf6dd2680b1fb274fdc185d5ca5"
+  },
+  "privacy": {
+    "fullVectorsCommitted": false,
+    "queryTextLogged": false,
+    "deviceLogsUsed": false
+  }
+}

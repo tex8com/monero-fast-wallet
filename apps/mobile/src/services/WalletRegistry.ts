@@ -49,9 +49,9 @@ export interface WalletRegistryState {
 }
 
 /**
- * Fast Wallet is a scanner-service role, not a local Monero Core session.
- * Ledger Fast Wallets intentionally keep `kind: hardware` so their source is
- * preserved; `role: fast` is therefore just as authoritative as `kind: fast`.
+ * Independent Fast Wallets are ordinary local software wallets with a
+ * dedicated receive identity and mandatory seed backup. `role: fast` remains
+ * readable only so old, unsupported Ledger registrations can be removed.
  */
 export function isFastWalletRegistration(
   wallet: Pick<RegisteredWallet, 'kind' | 'role'> | null | undefined,
@@ -162,7 +162,7 @@ export function createRegisteredWallet(input: {
     kind,
     seedBackupStatus:
       input.seedBackupStatus ??
-      (kind === 'software' ? 'pending' : 'not-required'),
+      (kind === 'software' || kind === 'fast' ? 'pending' : 'not-required'),
     seedBackedUpAt: input.seedBackedUpAt,
     credentialKey: input.credentialKey,
     viewOnlyPath: input.viewOnlyPath,
@@ -272,8 +272,12 @@ export async function markRegisteredWalletSeedBackedUp(
 
   const updated = normalizeRegisteredWallet({
     ...wallet,
-    seedBackupStatus: wallet.kind === 'software' ? 'verified' : 'not-required',
-    seedBackedUpAt: wallet.kind === 'software' ? now : undefined,
+    seedBackupStatus:
+      wallet.kind === 'software' || wallet.kind === 'fast'
+        ? 'verified'
+        : 'not-required',
+    seedBackedUpAt:
+      wallet.kind === 'software' || wallet.kind === 'fast' ? now : undefined,
   });
 
   await saveWalletRegistry({
@@ -335,8 +339,10 @@ function normalizeRegisteredWallet(wallet: RegisteredWallet): RegisteredWallet {
   const walletName = wallet.walletName.trim();
   const createdAt = cleanRequired(wallet.createdAt, 'createdAt');
   const seedBackupStatus =
-    kind === 'software'
-      ? normalizeSeedBackupStatus(wallet.seedBackupStatus)
+    kind === 'software' || kind === 'fast'
+      ? wallet.seedBackupStatus === 'not-required'
+        ? 'pending'
+        : normalizeSeedBackupStatus(wallet.seedBackupStatus)
       : 'not-required';
   const normalized: RegisteredWallet = {
     id:
@@ -480,7 +486,8 @@ function parseRegisteredWalletRecord(
     network,
     kind,
     seedBackupStatus:
-      seedBackupStatus ?? (kind === 'software' ? 'verified' : 'not-required'),
+      seedBackupStatus ??
+      (kind === 'software' ? 'verified' : kind === 'fast' ? 'pending' : 'not-required'),
     seedBackedUpAt,
     credentialKey,
     viewOnlyPath,

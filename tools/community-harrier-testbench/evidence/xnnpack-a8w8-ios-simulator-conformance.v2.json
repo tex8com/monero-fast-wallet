@@ -1,0 +1,20 @@
+{
+  "artifactSha256": "237b9297d51ec3904042d06de340755365483da0be0054fa05b9d17468274d02",
+  "averageInferenceMs": 98.717,
+  "backend": "xnnpack-a8w8",
+  "cases": 36,
+  "device": "iPhone 17 Pro",
+  "loadMs": 1551.229,
+  "minimumCosine": 0.99721,
+  "operatingSystem": "iOS 26.5 Simulator",
+  "passed": true,
+  "preparedInputsSha256": "4f942d9a068722e9fbc593ae0f907cc857282240a950b41983a850f6aa0eb379",
+  "queryPromptVersion": "community-query-v2",
+  "referenceSha256": "e5731dc99b676e4186646c9a1d277ad1d20717231ee04f70da0a3fd10d0c39fd",
+  "requiredCosine": 0.98,
+  "runtime": "executorch",
+  "runtimeVersion": "1.3.1",
+  "schemaVersion": 1,
+  "status": "accepted",
+  "totalMs": 5177.195
+}

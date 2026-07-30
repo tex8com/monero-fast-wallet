@@ -14,6 +14,61 @@ MONERO_IOS_BUILD_ROOT="${MONERO_IOS_BUILD_ROOT:-}"
 MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-}"
 WITH_GRPC_STREAM="${MONERO_WALLET_IOS_WITH_GRPC_STREAM:-1}"
 WITH_TEX8_EXTENSIONS="${MONERO_WALLET_IOS_WITH_TEX8_EXTENSIONS:-1}"
+FAST_WALLET_GATEWAY_ORIGIN="${FAST_WALLET_GATEWAY_ORIGIN:-}"
+FAST_WALLET_REGISTRATION_ORIGIN="${FAST_WALLET_REGISTRATION_ORIGIN:-}"
+FAST_WALLET_OFFICIAL_WORKER_ROOT_ID="${FAST_WALLET_OFFICIAL_WORKER_ROOT_ID:-}"
+FEATURE_MANIFEST="$REPO_ROOT/config/v1-release-features.json"
+read_v1_feature() {
+  node -e '
+    const manifest = require(process.argv[1]);
+    if (manifest.schemaVersion !== 1 || manifest.profile !== "safe-wallet-v1") process.exit(2);
+    process.stdout.write(manifest.features[process.argv[2]] === true ? "YES" : "NO");
+  ' "$FEATURE_MANIFEST" "$1"
+}
+read_private_phone_parameter() {
+  node -e '
+    const manifest = require(process.argv[1]);
+    const config = manifest.parameters.privatePhoneDirectory;
+    if (!config) {
+      process.stdout.write(process.argv[2] === "maximumBytes" ||
+        process.argv[2] === "epoch" ? "0" : "");
+      process.exit(0);
+    }
+    const values = {
+      epoch: config.epoch,
+      verificationOrigin: config.verification?.origin,
+      evaluatorOneOrigin: config.evaluators?.[0]?.origin,
+      evaluatorTwoOrigin: config.evaluators?.[1]?.origin,
+      evaluatorOnePublicKey: config.evaluators?.[0]?.publicKeyHex,
+      evaluatorTwoPublicKey: config.evaluators?.[1]?.publicKeyHex,
+      directoryOrigin: config.snapshot?.origin,
+      directoryPublicKey: config.snapshot?.directoryPublicKeyHex,
+      verificationPublicKey: config.snapshot?.verificationPublicKeyHex,
+      maximumBytes: config.snapshot?.maximumBytes,
+    };
+    const value = values[process.argv[2]];
+    if (typeof value !== "string" && typeof value !== "number") process.exit(3);
+    process.stdout.write(String(value));
+  ' "$FEATURE_MANIFEST" "$1"
+}
+FAST_WALLET_OFFICIAL_WORKER_ENABLED="$(read_v1_feature officialWorker)"
+FAST_WALLET_PRIVATE_WORKER_PAIRING_ENABLED="$(read_v1_feature privateWorkerPairing)"
+PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED="$(read_v1_feature deviceContactDiscovery)"
+PRIVATE_PHONE_EPOCH="$(read_private_phone_parameter epoch)"
+PRIVATE_PHONE_VERIFICATION_ORIGIN="$(read_private_phone_parameter verificationOrigin)"
+PRIVATE_PHONE_EVALUATOR_ONE_ORIGIN="$(read_private_phone_parameter evaluatorOneOrigin)"
+PRIVATE_PHONE_EVALUATOR_TWO_ORIGIN="$(read_private_phone_parameter evaluatorTwoOrigin)"
+PRIVATE_PHONE_EVALUATOR_ONE_PUBLIC_KEY="$(read_private_phone_parameter evaluatorOnePublicKey)"
+PRIVATE_PHONE_EVALUATOR_TWO_PUBLIC_KEY="$(read_private_phone_parameter evaluatorTwoPublicKey)"
+PRIVATE_PHONE_DIRECTORY_ORIGIN="$(read_private_phone_parameter directoryOrigin)"
+PRIVATE_PHONE_DIRECTORY_PUBLIC_KEY="$(read_private_phone_parameter directoryPublicKey)"
+PRIVATE_PHONE_VERIFICATION_PUBLIC_KEY="$(read_private_phone_parameter verificationPublicKey)"
+PRIVATE_PHONE_MAXIMUM_SNAPSHOT_BYTES="$(read_private_phone_parameter maximumBytes)"
+if [ "$PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED" = "YES" ] && \
+   [ -z "$PRIVATE_PHONE_DIRECTORY_ORIGIN" ]; then
+  echo "deviceContactDiscovery requires pinned privatePhoneDirectory parameters" >&2
+  exit 1
+fi
 
 if [ -z "$DERIVED_DATA_PATH" ] && [ -d "/Volumes/4TB/monero-fast-wallet-build" ]; then
   DERIVED_DATA_PATH="/Volumes/4TB/monero-fast-wallet-build/ios-derived-data"
@@ -49,6 +104,13 @@ if [ -z "${MONERO_WALLET_CORE_LIBRARY:-}" ]; then
   fi
 fi
 MONERO_SODIUM_INCLUDE_DIR="${MONERO_SODIUM_INCLUDE_DIR:-$MONERO_IOS_BUILD_ROOT/ios-deps/ios-sim-arm64/include}"
+MONERO_FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-$MONERO_IOS_BUILD_ROOT/mobile-fast-wallet-protocol}"
+MONERO_FAST_WALLET_PROTOCOL_LIBRARY="${MONERO_FAST_WALLET_PROTOCOL_LIBRARY:-$MONERO_FAST_WALLET_PROTOCOL_ROOT/ios-sim-arm64/libfast_wallet_protocol.a}"
+
+if [ ! -f "$MONERO_FAST_WALLET_PROTOCOL_LIBRARY" ]; then
+  TARGETS=ios-sim-arm64 OUTPUT_DIR="$MONERO_FAST_WALLET_PROTOCOL_ROOT" \
+    "$REPO_ROOT/native/fast-wallet-protocol/build-mobile.sh"
+fi
 
 if [ -z "$DEVICE" ]; then
   DEVICE="$(xcrun simctl list devices booted | awk -F '[()]' '/Booted/ { print $2; exit }')"
@@ -101,11 +163,28 @@ xcodebuild_args=(
   -destination "id=$DEVICE" \
   PRODUCT_BUNDLE_IDENTIFIER="$APP_ID" \
   MONERO_WALLET_URL_SCHEME="$URL_SCHEME" \
+  FAST_WALLET_GATEWAY_ORIGIN="$FAST_WALLET_GATEWAY_ORIGIN" \
+  FAST_WALLET_REGISTRATION_ORIGIN="$FAST_WALLET_REGISTRATION_ORIGIN" \
+  FAST_WALLET_OFFICIAL_WORKER_ROOT_ID="$FAST_WALLET_OFFICIAL_WORKER_ROOT_ID" \
+  FAST_WALLET_OFFICIAL_WORKER_ENABLED="$FAST_WALLET_OFFICIAL_WORKER_ENABLED" \
+  FAST_WALLET_PRIVATE_WORKER_PAIRING_ENABLED="$FAST_WALLET_PRIVATE_WORKER_PAIRING_ENABLED" \
+  PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED="$PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED" \
+  PRIVATE_PHONE_EPOCH="$PRIVATE_PHONE_EPOCH" \
+  PRIVATE_PHONE_VERIFICATION_ORIGIN="$PRIVATE_PHONE_VERIFICATION_ORIGIN" \
+  PRIVATE_PHONE_EVALUATOR_ONE_ORIGIN="$PRIVATE_PHONE_EVALUATOR_ONE_ORIGIN" \
+  PRIVATE_PHONE_EVALUATOR_TWO_ORIGIN="$PRIVATE_PHONE_EVALUATOR_TWO_ORIGIN" \
+  PRIVATE_PHONE_EVALUATOR_ONE_PUBLIC_KEY="$PRIVATE_PHONE_EVALUATOR_ONE_PUBLIC_KEY" \
+  PRIVATE_PHONE_EVALUATOR_TWO_PUBLIC_KEY="$PRIVATE_PHONE_EVALUATOR_TWO_PUBLIC_KEY" \
+  PRIVATE_PHONE_DIRECTORY_ORIGIN="$PRIVATE_PHONE_DIRECTORY_ORIGIN" \
+  PRIVATE_PHONE_DIRECTORY_PUBLIC_KEY="$PRIVATE_PHONE_DIRECTORY_PUBLIC_KEY" \
+  PRIVATE_PHONE_VERIFICATION_PUBLIC_KEY="$PRIVATE_PHONE_VERIFICATION_PUBLIC_KEY" \
+  PRIVATE_PHONE_MAXIMUM_SNAPSHOT_BYTES="$PRIVATE_PHONE_MAXIMUM_SNAPSHOT_BYTES" \
   TEX8_WALLET_BRIDGE_WITH_MONERO=1 \
   TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM="$WITH_GRPC_STREAM" \
   TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS="$WITH_TEX8_EXTENSIONS" \
   MONERO_SOURCE_DIR="$MONERO_SOURCE_DIR" \
   MONERO_WALLET_CORE_LIBRARY="$MONERO_WALLET_CORE_LIBRARY" \
+  MONERO_FAST_WALLET_PROTOCOL_LIBRARY="$MONERO_FAST_WALLET_PROTOCOL_LIBRARY" \
   MONERO_SODIUM_INCLUDE_DIR="$MONERO_SODIUM_INCLUDE_DIR" \
   FORCE_BUNDLING=1 \
   ONLY_ACTIVE_ARCH=YES \
@@ -124,6 +203,7 @@ if [ "$SHELL_MODE" = "1" ]; then
     TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=0
     TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=0
     MONERO_WALLET_CORE_LIBRARY=
+    MONERO_FAST_WALLET_PROTOCOL_LIBRARY="$MONERO_FAST_WALLET_PROTOCOL_LIBRARY"
   )
 fi
 

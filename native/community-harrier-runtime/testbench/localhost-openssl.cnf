@@ -1,0 +1,27 @@
+[req]
+prompt = no
+distinguished_name = distinguished_name
+
+[distinguished_name]
+CN = TEX8 Harrier Simulator Test
+O = TEX8
+
+[v3_ca]
+basicConstraints = critical, CA:true
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+
+[server_request]
+subjectAltName = @server_names
+
+[server_certificate]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @server_names
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+
+[server_names]
+IP.1 = 127.0.0.1

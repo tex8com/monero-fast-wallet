@@ -232,7 +232,7 @@ describe('WalletRegistry', () => {
     expect(fast).toMatchObject({
       id: 'fast-receive-v2-0',
       kind: 'fast',
-      seedBackupStatus: 'not-required',
+      seedBackupStatus: 'pending',
       restoreHeight: 3714305,
     });
     expect((await loadRegisteredWallet())?.id).toBe(primary.id);

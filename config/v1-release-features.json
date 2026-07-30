@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "profile": "safe-wallet-v1",
+  "parameters": {
+    "mfwNameResolverOrigins": [],
+    "mfwNameGenesis": null,
+    "privatePhoneDirectory": null,
+    "moneroEnthusiastV1": null
+  },
+  "features": {
+    "localFastWallet": true,
+    "automaticFastWalletCreation": false,
+    "plaintextFastWalletHosting": false,
+    "ledgerFastWallet": false,
+    "scannerKeyImageSpendAuthority": false,
+    "officialWorker": false,
+    "privateWorkerPairing": false,
+    "moneroEnthusiastV1": false,
+    "legacyCommunity": false,
+    "news": false,
+    "assistant": false,
+    "marketplace": false,
+    "mfwNameResolution": false,
+    "mfwNameRegistration": false,
+    "deviceContactDiscovery": false,
+    "publicLedger": false
+  }
+}

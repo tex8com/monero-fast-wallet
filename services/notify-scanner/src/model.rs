@@ -76,9 +76,13 @@ pub struct WatchRegistration {
     pub restore_height: u64,
     pub push_token: Option<String>,
     pub device_id: Option<String>,
+    #[serde(default)]
+    pub worker_assignment_epoch: Option<u64>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     pub last_scanned_height: u64,
+    #[serde(default)]
+    pub last_scanned_hash: Option<String>,
 }
 
 impl fmt::Debug for WatchRegistration {
@@ -95,9 +99,11 @@ impl fmt::Debug for WatchRegistration {
                 &self.push_token.as_ref().map(|_| "<redacted>"),
             )
             .field("device_id", &self.device_id.as_ref().map(|_| "<redacted>"))
+            .field("worker_assignment_epoch", &self.worker_assignment_epoch)
             .field("created_at_ms", &self.created_at_ms)
             .field("updated_at_ms", &self.updated_at_ms)
             .field("last_scanned_height", &self.last_scanned_height)
+            .field("last_scanned_hash", &self.last_scanned_hash)
             .finish()
     }
 }
@@ -110,6 +116,7 @@ impl WatchRegistration {
         request.validate()?;
         Ok(Self {
             last_scanned_height: request.restore_height.saturating_sub(1),
+            last_scanned_hash: None,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             identity_id: request.identity_id.trim().to_owned(),
@@ -126,6 +133,7 @@ impl WatchRegistration {
                 .device_id
                 .map(clean_optional)
                 .filter(|v| !v.is_empty()),
+            worker_assignment_epoch: None,
         })
     }
 
@@ -137,7 +145,8 @@ impl WatchRegistration {
             network: self.network,
             restore_height: self.restore_height,
             last_scanned_height: self.last_scanned_height,
-            notifications_enabled: self.device_id.is_some(),
+            notifications_enabled: self.device_id.is_some()
+                || self.worker_assignment_epoch.is_some(),
         }
     }
 }
@@ -318,98 +327,6 @@ impl MatchedOutput {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-pub struct KeyImageStatusRequest {
-    pub identity_id: String,
-    pub key_images: Vec<String>,
-}
-
-impl fmt::Debug for KeyImageStatusRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("KeyImageStatusRequest")
-            .field("identity_id", &self.identity_id)
-            .field(
-                "key_images",
-                &format_args!("<{} redacted>", self.key_images.len()),
-            )
-            .finish()
-    }
-}
-
-impl KeyImageStatusRequest {
-    pub fn validate(&self) -> Result<(), WatchValidationError> {
-        validate_identity_id(&self.identity_id)?;
-        if self.key_images.is_empty() || self.key_images.len() > 1024 {
-            return Err(WatchValidationError::InvalidKeyImageList);
-        }
-        for key_image in &self.key_images {
-            validate_hex_32("key_image", key_image)?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SpentStatus {
-    Unknown,
-    Unspent,
-    Spent,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-pub struct KeyImageStatusRecord {
-    pub identity_id: String,
-    pub key_image: String,
-    pub status: SpentStatus,
-    pub checked_height: u64,
-    pub updated_at_ms: u64,
-}
-
-impl fmt::Debug for KeyImageStatusRecord {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("KeyImageStatusRecord")
-            .field("identity_id", &self.identity_id)
-            .field("key_image", &"<redacted>")
-            .field("status", &self.status)
-            .field("checked_height", &self.checked_height)
-            .field("updated_at_ms", &self.updated_at_ms)
-            .finish()
-    }
-}
-
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
-pub struct KeyImageStatusResponse {
-    pub identity_id: String,
-    pub items: Vec<KeyImageStatusItem>,
-}
-
-impl fmt::Debug for KeyImageStatusResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("KeyImageStatusResponse")
-            .field("identity_id", &self.identity_id)
-            .field("items", &self.items)
-            .finish()
-    }
-}
-
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
-pub struct KeyImageStatusItem {
-    pub key_image: String,
-    pub status: SpentStatus,
-    pub checked_height: u64,
-}
-
-impl fmt::Debug for KeyImageStatusItem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("KeyImageStatusItem")
-            .field("key_image", &"<redacted>")
-            .field("status", &self.status)
-            .field("checked_height", &self.checked_height)
-            .finish()
-    }
-}
-
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum WatchValidationError {
     #[error("identity_id must be 1..128 chars and contain only letters, numbers, dot, underscore, colon, or dash")]
@@ -422,8 +339,6 @@ pub enum WatchValidationError {
     InvalidNetwork,
     #[error("{0} must be a 64 character hex string")]
     InvalidHex32(&'static str),
-    #[error("key_images must contain 1..1024 entries")]
-    InvalidKeyImageList,
 }
 
 fn validate_identity_id(value: &str) -> Result<(), WatchValidationError> {
@@ -501,10 +416,6 @@ pub fn privacy_safe_detection_id(value: &str) -> String {
     digest.update(b"monero-fast-wallet-stored-detection-v2\0");
     digest.update(value.as_bytes());
     format!("evt_{}", hex::encode(digest.finalize()))
-}
-
-pub fn key_image_status_id(identity_id: &str, key_image: &str) -> String {
-    format!("{}:{}", identity_id, key_image.trim().to_lowercase())
 }
 
 #[cfg(test)]
@@ -590,38 +501,5 @@ mod tests {
         assert_eq!(output.detection_status, DetectionStatus::Dropped);
         assert_eq!(output.notification_status, NotificationStatus::Suppressed);
         assert_eq!(output.updated_at_ms, 2345);
-    }
-
-    #[test]
-    fn rejects_empty_key_image_status_query() {
-        let request = KeyImageStatusRequest {
-            identity_id: "fast-receive-0".to_owned(),
-            key_images: Vec::new(),
-        };
-
-        assert_eq!(
-            request.validate(),
-            Err(WatchValidationError::InvalidKeyImageList)
-        );
-    }
-
-    #[test]
-    fn redacts_key_image_status_debug() {
-        let key_image = "3".repeat(64);
-        let request = KeyImageStatusRequest {
-            identity_id: "fast-receive-0".to_owned(),
-            key_images: vec![key_image.clone()],
-        };
-        let response = KeyImageStatusResponse {
-            identity_id: "fast-receive-0".to_owned(),
-            items: vec![KeyImageStatusItem {
-                key_image: key_image.clone(),
-                status: SpentStatus::Unknown,
-                checked_height: 0,
-            }],
-        };
-
-        assert!(!format!("{request:?}").contains(&key_image));
-        assert!(!format!("{response:?}").contains(&key_image));
     }
 }

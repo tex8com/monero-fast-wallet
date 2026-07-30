@@ -4,6 +4,7 @@ import {
   loadProtectedMetadata,
   storeProtectedMetadata,
 } from './ProtectedMetadataStorage';
+import { withSystemUiInterruption } from './SystemUiInterruption';
 import { logWalletEvent } from './WalletLogger';
 
 const STORAGE_KEY = 'monero-wallet.enthusiast-discovery.v1';
@@ -347,7 +348,10 @@ async function requestAndroidLocationPermission(): Promise<boolean> {
     logWalletEvent('community-location', 'permission.already-granted');
     return true;
   }
-  const result = await PermissionsAndroid.requestMultiple([fine, coarse]);
+  const result = await withSystemUiInterruption(
+    'location-permission',
+    () => PermissionsAndroid.requestMultiple([fine, coarse]),
+  );
   const granted =
     result[fine] === PermissionsAndroid.RESULTS.GRANTED ||
     result[coarse] === PermissionsAndroid.RESULTS.GRANTED;

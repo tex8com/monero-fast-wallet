@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "appId": "com.tex8.monerowallet",
+  "channel": "stable",
+  "checkDelayMs": 12000,
+  "mobile": {
+    "enabled": true,
+    "manifestUrl": "https://tex8.com/xmr/update.json",
+    "allowedHosts": [
+      "tex8.com",
+      "apps.apple.com",
+      "play.google.com"
+    ],
+    "androidDelivery": "direct-apk",
+    "iosDelivery": "app-store"
+  },
+  "desktop": {
+    "enabled": false,
+    "endpoint": "https://tex8.com/xmr/updates/{{target}}/{{arch}}/{{current_version}}",
+    "reason": "Enable after the offline Tauri updater key is backed up and the first signed platform artifacts are published."
+  }
+}

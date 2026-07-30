@@ -66,6 +66,8 @@ hex-literal           = { workspace = true }
 indexmap              = { workspace = true }
 monero-address        = { workspace = true }
 monero-oxide          = { workspace = true, features = ["std", "compile-time-generators"] }
+monero-rpc            = { workspace = true }
+monero-wallet         = { workspace = true }
 nu-ansi-term          = { workspace = true }
 paste                 = { workspace = true }
 pin-project           = { workspace = true }
@@ -81,7 +83,7 @@ strum                 = { workspace = true }
 thiserror             = { workspace = true }
 thread_local          = { workspace = true }
 tokio-util            = { workspace = true, features = ["rt"] }
-tokio-stream          = { workspace = true, features = ["sync"] }
+tokio-stream          = { workspace = true, features = ["sync", "net"] }
 tokio                 = { workspace = true }
 toml                  = { workspace = true, features = ["parse", "display", "serde"]}
 toml_edit             = { workspace = true, features = ["parse", "display"] }
@@ -95,6 +97,12 @@ tower-http            = { workspace = true, features = ["limit", "compression-gz
 tracing-appender      = { workspace = true }
 tracing-subscriber    = { workspace = true, features = ["std", "fmt", "default"] }
 tracing               = { workspace = true, features = ["default"] }
+ed25519-dalek         = { version = "2" }
+fs2                   = { version = "0.4" }
+libc                  = { version = "0.2" }
+scanpack-format       = { path = "../../../../native/scanpack-format" }
+mfw-recipient-protocol = { path = "../../../../native/mfw-recipient-protocol" }
+zeroize               = { version = "1" }
 
 [dev-dependencies]
 tempfile          = { workspace = true }
@@ -107,4 +115,3 @@ tonic-build = { workspace = true, features = ["prost", "transport"] }
 
 [lints]
 workspace = true
-

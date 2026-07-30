@@ -11,8 +11,16 @@ under your control.
 > approved for a public mainnet release**. Signed release artifacts, physical
 > platform and Ledger validation, an independent security review, and several
 > operational and recovery tests remain open release gates. See the
+> [Safe V1 Release Implementation Plan](docs/FAST_WALLET_V1_RELEASE_IMPLEMENTATION_PLAN.md),
 > [Release Gate Matrix](docs/RELEASE_GATE_MATRIX.md) and
 > [Security Audit](docs/SECURITY_AUDIT_2026-07-24.md) for details.
+>
+> **V1 scope:** The first public version is planned to include complete `.mfw`
+> registration and resolution plus the replacement Monero Enthusiast feature.
+> Both are required deliverables, but their production flags remain disabled
+> until their separate security, service, signed-artifact, physical-platform,
+> legal, and independent-review gates pass. The legacy non-E2EE Community is
+> not part of V1.
 
 [Features](#features) ·
 [Benefits](#key-benefits) ·
@@ -76,8 +84,12 @@ transactions, spending rules, or consensus.
   details
 - Send in two explicit steps: prepare and review the transaction, then confirm
   and submit it
-- Use a local address book, a configurable donation entry, and the three most
-  recently used recipients
+- Use a local address book and the three most recently used recipients. The
+  dormant configurable donation entry is not enabled in the production plan.
+- Claim/register, renew, owner-update or revoke a public `.mfw` name and resolve
+  one into the exact selected Monero network before native Send review. This is
+  required V1 scope, but remains release-gated until the registry, payment,
+  finality, expiry, recovery, reorganization, and physical-device tests pass.
 - Choose a restore date backed by a shared, deliberately conservative
   restore-height model
 - Switch between mainnet, stagenet, and supported test configurations
@@ -124,31 +136,45 @@ physical validation on every platform remains a release gate.
 - Native-layer Ledger Nano X BLE transport for iOS and Android
 - On-device address and signing confirmation
 - Local read-only synchronization after an explicitly approved view-key export
-- A separate Fast Wallet receiving identity for Ledger flows as well
+- An optional separately backed-up software Fast Wallet for users who also use
+  a Ledger
 
 > The source path is implemented, but a feature becomes release-accepted only
 > after repeatable create, open, reconnect, address-display, and signing tests
 > on physical devices.
+>
+> Ledger support is feature-gated out of the minimal public V1 until that
+> acceptance is complete. A Ledger account such as account 1 is not an isolated
+> hosted Fast Wallet root and its private view key must not be uploaded.
 
 ### Fast Receive and notifications
 
 Fast Receive is an explicitly optional convenience mode:
 
-1. The application creates a **separate** receiving wallet with its own view
-   and spend keys.
-2. Only that isolated identity's address and private view key, its network, and
-   restore height are sent to the scanner after consent.
-3. The scanner reads confirmed ScanPack data in read-only mode or uses the
-   Cuprate gRPC fallback.
-4. A match creates only a hashed, opaque event ID.
-5. The application receives an “activity detected” signal and uses its local
-   wallet core to determine the amount, transaction, and spendability again.
+1. The application creates a **separate**, recoverable software wallet with its
+   own view key, spend key, and mandatory recovery-seed backup.
+2. The user explicitly selects the built-in TEX8 Worker or pairs one private
+   Worker by signed QR descriptor.
+3. Native code encrypts that Fast Wallet's watch directly to the exact selected
+   Worker. A separate mailbox Relay stores only HPKE ciphertext.
+4. The outbound-only Worker reads one shared block/mempool stream from
+   Cuprate/ScanPack for all watches and requests only a bounded generic wake for
+   its exact active assignments.
+5. The Gateway alone holds provider delivery data. The application receives an
+   “activity detected” signal and uses its local wallet core to determine the
+   amount, transaction, confirmation, and spendability again.
 
-The server **never** receives a seed, private spend key, or primary-wallet view
-key. Watch records use random management capabilities that are stored only as
-hashes. The database is encrypted with XChaCha20-Poly1305, written atomically,
-versioned for backup, and designed for key rotation. Rate, connection, size,
-and quantity limits are implemented.
+The Relay **never** receives plaintext wallet keys. The selected Worker receives
+only the isolated Fast Wallet view key; no server component receives a seed,
+private spend key, or primary-wallet view key, and no Worker receives a raw
+FCM/APNs token. The broader signed public Directory, Community Worker,
+capacity-reservation, and validator architecture is deliberately post-V1. See
+the
+[`Safe V1 Release Implementation Plan`](docs/FAST_WALLET_V1_RELEASE_IMPLEMENTATION_PLAN.md),
+[`FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md`](docs/FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md)
+and
+[`PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md`](docs/PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md)
+for the minimal and later target contracts.
 
 Notification paths:
 
@@ -162,25 +188,37 @@ Notification paths:
 All push messages remain generic. Wallet names, addresses, amounts,
 transaction IDs, block heights, seeds, and keys are forbidden in the payload.
 
-### Community, News, and Assistant
+### Monero Enthusiast V1, News, and Assistant
 
-- Optional discovery of Monero enthusiasts within a broad region
-- Exact coordinates are immediately reduced to a five-character geohash and
-  are neither stored nor uploaded
-- Pseudonymous profiles, 30-minute presence, mutual contact approval, chat,
-  blocking, reporting, rate limiting, and identity deletion
-- The Community database is encrypted at rest; the current chat is **not
-  end-to-end encrypted**
-- A separate Community service with no wallet API or wallet data
-- Monero News through a separate TEX8 cache of official Monero sources, with
-  no wallet, account, or identity data
-- A local, status-aware Tex8 Assistant entry point without an automatic remote
-  model call
+The first public product version includes a new, optional **Monero Enthusiast
+V1** surface:
 
-The live Community route passed the complete 11/11 contract test during the
-documented audit. The News endpoint was unavailable during that same
-validation and must be presented as “unavailable” with a retry option until a
-new live validation succeeds.
+- pseudonymous profiles and public listings that remain separate from wallet
+  addresses, balances, transactions, seeds, and keys;
+- immutable signed public catalogs, on-device Harrier inference, SQLite +
+  USearch discovery, and optional local-only personalization;
+- contact requests and Matrix end-to-end encrypted chat;
+- encrypted local drafts, reporting, blocking, human-reviewable moderation,
+  reasons, appeals, deletion, and automatic listing expiry after at most
+  30 days;
+- optional user-confirmed coarse location without storing or publishing an
+  exact GPS point;
+- no marketplace checkout, price matching, trading, escrow, custody, exchange,
+  or payment intermediation.
+
+The replacement implementation exists substantially in source, but remains
+disabled until its signed production catalogs and model packages, services,
+Matrix recovery and E2EE evidence, moderation operations, physical
+two-client/platform runs, legal approval, and independent review pass. The
+older `enthusiast-discovery` route and its server-readable chat are retained
+only as disabled historical code. Its earlier 11/11 live contract result does
+not count as acceptance of Monero Enthusiast V1, and the application must never
+fall back to it.
+
+News and Assistant remain separate, disabled capabilities rather than required
+V1 features. A future News or sponsored-content decision must never use wallet
+addresses, balances, transactions, contacts, view keys, or payment timing for
+targeting.
 
 ### Deliberately not offered as finished features
 
@@ -199,7 +237,7 @@ features:
 | Seed | Local / Ledger only | Local / Ledger only |
 | Private spend key | Local / Ledger only | Local / Ledger only |
 | Primary-wallet view key | Local only | Local only |
-| Separate Fast view key | Does not exist | Sent to the scanner after consent |
+| Separate Fast view key | Does not exist | Encrypted to the selected Worker after consent |
 | Server can spend | No | No |
 | Payment signal while the app is closed | No | Yes, generic and opaque |
 | Final payment verification | Local wallet core | Local wallet core |
@@ -212,6 +250,10 @@ that boundary can use the normal local-wallet mode.
 
 Learn more:
 [Privacy Model](docs/PRIVACY_MODEL.md) ·
+[Decentralized Private View-Key Hosting](docs/DECENTRALIZED_PRIVATE_VIEW_KEY_HOSTING.md) ·
+[Fast Wallet Slot, Recovery, And Private Workers](docs/FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md) ·
+[Public Service Directory, Relay, And Mempool](docs/PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md) ·
+[Directory/Relay/Worker Architecture Audit](docs/DIRECTORY_RELAY_WORKER_ARCHITECTURE_AUDIT_2026-07-26.md) ·
 [Threat Model](docs/THREAT_MODEL.md) ·
 [Security Policy](SECURITY.md)
 
@@ -410,7 +452,7 @@ automatically mean that an end-user artifact has been released.
 | macOS | Tauri 2 app with locally linked core; create/open/seed/subaddress tested; Metal backend packaged | Sign, notarize, staple, and repeat wallet, Ledger, and push validation for the exact app |
 | Windows | UI, Rust host, protection contracts, and notification-agent contracts are present | Build and load the native core as a DLL, then complete wallet, Ledger, push, and installer validation |
 | Linux | ARM64 AppImage assembled locally with the core; DBus agent contract is present | Clean-user, real-node, Ledger, notification, and package validation |
-| Services | Community was live during the audit; Scanner, Gateway, News, and Cuprate exist as separate components | Repeatable validation of current live routes, backups, rotation, restore, load, reorganization handling, and monitoring |
+| Services | Scanner, Gateway, Cuprate, and the replacement Monero Enthusiast V1 service stack exist as separate components; the old Community health route was live during an earlier audit but is not the V1 product | Deploy and validate the exact V1 services, signed catalogs, backups, rotation, restore, load, abuse operations, reorganization handling, and monitoring |
 
 The precise, auditable status is documented in
 [Platform Integration Status](docs/PLATFORM_INTEGRATION_STATUS.md) and the
@@ -465,7 +507,10 @@ packages/
 services/
   notify-scanner/                 optional hosted-view-key scanner
   notification-gateway/          opaque WSS/push delivery
-  enthusiast-discovery/          separate Community API
+  enthusiast-v1/                 replacement V1 publication/contact API
+  enthusiast-moderation-console/ loopback-only moderation interface
+  enthusiast-operations/         isolated operations and catalog tooling
+  enthusiast-discovery/          disabled legacy Community reference
   monero-news/                    cache of official Monero news
 
 node/
@@ -569,7 +614,9 @@ Each Rust service has its own `Cargo.toml` and lockfile. For example:
 ```bash
 cargo test --locked --manifest-path services/notify-scanner/Cargo.toml
 cargo test --locked --manifest-path services/notification-gateway/Cargo.toml
-cargo test --locked --manifest-path services/enthusiast-discovery/Cargo.toml
+cargo test --locked --manifest-path services/enthusiast-v1/Cargo.toml
+cargo test --locked --manifest-path services/enthusiast-moderation-console/Cargo.toml
+cargo test --locked --manifest-path services/enthusiast-operations/Cargo.toml
 cargo test --locked --manifest-path services/monero-news/Cargo.toml
 ```
 
@@ -582,7 +629,7 @@ Never use a real wallet, seed, or production key in a testbench, log, or issue.
 | Mobile | 28 Jest suites / 131 tests passed; lint passed |
 | Desktop renderer and platform contracts | Build and 42 contracts passed |
 | Desktop Rust | 30 tests passed; 1 real credential-store test deliberately ignored |
-| Community live | 11/11 contract checks passed |
+| Legacy Community live check | 11/11 historical contract checks passed; this is not Monero Enthusiast V1 acceptance |
 | Native bridge | ASan and UBSan smoke/hostile-input checks passed |
 | Supply chain | npm audits found no known vulnerabilities; Rust exceptions are explicit and time-limited |
 | Benchmarks | Accepted CPU, Metal, Vulkan, and CUDA output was validated byte-for-byte |
@@ -601,6 +648,11 @@ current state of a later modified working copy.
 - [Backend Testing](docs/BACKEND_TESTING.md)
 - [Release Gates](docs/RELEASE_GATE_MATRIX.md)
 - [Benchmark Index](docs/WALLET_ACCELERATION_TESTBENCH_INDEX.md)
+- [Open Source And Sustainable Funding](docs/OPEN_SOURCE_AND_SUSTAINABILITY.md)
+- [Decentralized Private View-Key Hosting](docs/DECENTRALIZED_PRIVATE_VIEW_KEY_HOSTING.md)
+- [Fast Wallet Slot, Recovery, And Private Workers](docs/FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md)
+- [Public Service Directory, Relay, And Mempool](docs/PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md)
+- [Directory/Relay/Worker Architecture Audit](docs/DIRECTORY_RELAY_WORKER_ARCHITECTURE_AUDIT_2026-07-26.md)
 
 ## Project principles
 
@@ -611,6 +663,8 @@ current state of a later modified working copy.
 5. **A benchmark is only as useful as its clearly stated measurement boundary.**
 6. **Server signals never replace local wallet verification.**
 7. **Compatibility with Monero is more important than a proprietary shortcut.**
+8. **Project-authored software is open source; revenue comes from operation,
+   sponsorship, and optional merchant services, never wallet-private data.**
 
 ---
 

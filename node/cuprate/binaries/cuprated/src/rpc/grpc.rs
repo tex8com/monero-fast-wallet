@@ -25,11 +25,13 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+use crate::mfw_name_index::SharedNameIndex;
 use crate::rpc::{
     handlers::{bin as bin_handlers, helper as bin_helper},
     service::blockchain,
     CupratedRpcHandler,
 };
+use mfw_recipient_protocol::{Network as MfwNetwork, ResolutionStatus};
 
 #[allow(
     clippy::unnecessary_qualifications,
@@ -68,7 +70,9 @@ pub mod proto {
 }
 
 use proto::block_stream_server::{BlockStream, BlockStreamServer};
-use proto::{BlockChunk, StreamBlocksRequest};
+use proto::{
+    BlockChunk, MfwNameStatus, ResolveMfwNameRequest, ResolveMfwNameResponse, StreamBlocksRequest,
+};
 
 // Conservative mobile-safe defaults. The server must never turn a client's
 // optimistic hint into unbounded queued memory; an adaptive protocol, if
@@ -99,9 +103,16 @@ fn try_acquire_stream() -> Result<u64, Status> {
     let mut active = ACTIVE_STREAMS.load(Ordering::Acquire);
     loop {
         if active >= MAX_ACTIVE_STREAMS {
-            return Err(Status::resource_exhausted("gRPC block-stream capacity reached"));
+            return Err(Status::resource_exhausted(
+                "gRPC block-stream capacity reached",
+            ));
         }
-        match ACTIVE_STREAMS.compare_exchange_weak(active, active + 1, Ordering::AcqRel, Ordering::Acquire) {
+        match ACTIVE_STREAMS.compare_exchange_weak(
+            active,
+            active + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
             Ok(_) => return Ok(active + 1),
             Err(now) => active = now,
         }
@@ -111,6 +122,7 @@ fn try_acquire_stream() -> Result<u64, Status> {
 #[derive(Clone)]
 pub struct BlockStreamService {
     pub handler: CupratedRpcHandler,
+    pub mfw_name_index: Option<SharedNameIndex>,
 }
 
 #[tonic::async_trait]
@@ -188,6 +200,82 @@ impl BlockStream for BlockStreamService {
         });
 
         Ok(Response::new(Box::pin(ReceiverStream::new(rx))))
+    }
+
+    async fn resolve_mfw_name(
+        &self,
+        request: Request<ResolveMfwNameRequest>,
+    ) -> Result<Response<ResolveMfwNameResponse>, Status> {
+        let index = self
+            .mfw_name_index
+            .as_ref()
+            .ok_or_else(|| Status::unavailable("MFW name index is disabled"))?;
+        if !index.is_ready() {
+            return Err(Status::unavailable(
+                "MFW name index is restoring or catching up",
+            ));
+        }
+        let guard = index.read().await;
+        if !index.is_ready() {
+            return Err(Status::unavailable(
+                "MFW name index changed while resolving",
+            ));
+        }
+        let resolution = guard
+            .resolve(&request.into_inner().name)
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let network = match guard.parameters().network {
+            MfwNetwork::Mainnet => 0,
+            MfwNetwork::Testnet => 1,
+            MfwNetwork::Stagenet => 2,
+        };
+        let status = match resolution.status {
+            ResolutionStatus::NotFound => MfwNameStatus::NotFound,
+            ResolutionStatus::Reserved => MfwNameStatus::Reserved,
+            ResolutionStatus::Provisional => MfwNameStatus::Provisional,
+            ResolutionStatus::Finalized => MfwNameStatus::Finalized,
+            ResolutionStatus::Expired => MfwNameStatus::Expired,
+            ResolutionStatus::Revoked => MfwNameStatus::Revoked,
+        };
+        let (address_kind, public_spend_key, public_view_key) =
+            resolution
+                .address
+                .map_or((0, Vec::new(), Vec::new()), |address| {
+                    (
+                        address.kind as u32,
+                        address.public_spend_key.to_vec(),
+                        address.public_view_key.to_vec(),
+                    )
+                });
+        Ok(Response::new(ResolveMfwNameResponse {
+            canonical_name: resolution.name.display_name(),
+            status: status as i32,
+            network,
+            address_kind,
+            public_spend_key,
+            public_view_key,
+            owner_public_key: resolution
+                .owner_public_key
+                .map_or_else(Vec::new, |value| value.to_vec()),
+            sequence: resolution.sequence.unwrap_or(0),
+            record_height: resolution.record_height.unwrap_or(0),
+            source_txid: resolution
+                .source_txid
+                .map_or_else(Vec::new, |value| value.to_vec()),
+            expiry_height: resolution.expiry_height.unwrap_or(0),
+            chain_tip_height: resolution.chain_tip_height.unwrap_or(0),
+            confirmations: resolution.confirmations,
+            record_payload: resolution.record_payload.unwrap_or_default(),
+            signing_owner_public_key: resolution
+                .signing_owner_public_key
+                .map_or_else(Vec::new, |value| value.to_vec()),
+            record_block_hash: resolution
+                .record_block_hash
+                .map_or_else(Vec::new, |value| value.to_vec()),
+            chain_tip_hash: resolution
+                .chain_tip_hash
+                .map_or_else(Vec::new, |value| value.to_vec()),
+        }))
     }
 }
 
@@ -376,8 +464,14 @@ async fn produce_block_stream(
 }
 
 /// Build the tonic gRPC service ready to be added to a tonic Server.
-pub fn block_stream_service(handler: CupratedRpcHandler) -> BlockStreamServer<BlockStreamService> {
-    BlockStreamServer::new(BlockStreamService { handler })
-        .max_encoding_message_size(MAX_GRPC_MESSAGE_BYTES)
-        .max_decoding_message_size(MAX_GRPC_MESSAGE_BYTES)
+pub fn block_stream_service(
+    handler: CupratedRpcHandler,
+    mfw_name_index: Option<SharedNameIndex>,
+) -> BlockStreamServer<BlockStreamService> {
+    BlockStreamServer::new(BlockStreamService {
+        handler,
+        mfw_name_index,
+    })
+    .max_encoding_message_size(MAX_GRPC_MESSAGE_BYTES)
+    .max_decoding_message_size(MAX_GRPC_MESSAGE_BYTES)
 }

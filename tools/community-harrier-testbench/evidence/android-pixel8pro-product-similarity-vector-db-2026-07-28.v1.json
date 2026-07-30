@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-28",
+  "device": {
+    "class": "physical",
+    "manufacturer": "Google",
+    "model": "Pixel 8 Pro",
+    "soc": "Google Tensor G3",
+    "abi": "arm64-v8a",
+    "androidRelease": "17",
+    "apiLevel": 37
+  },
+  "embeddingRuntime": {
+    "modelId": "microsoft/harrier-oss-v1-270m",
+    "sourceRevision": "31de22b673913c7d658c0f03f792d77c2dcf8ebd",
+    "sourceWeightsSha256": "90933b6826b61afd9331e0ebe3c0598b421a32eda5fb301a114fe36f306cb51a",
+    "tokenizerSha256": "6852f8d561078cc0cebe70ca03c5bfdd0d60a45f9d2e0e1e4cc05b68e9ec329e",
+    "pteSha256": "237b9297d51ec3904042d06de340755365483da0be0054fa05b9d17468274d02",
+    "artifactTarget": "xnnpack_a8w8",
+    "executorchVersion": "1.3.1",
+    "embeddingDimension": 640,
+    "maximumInputTokens": 256,
+    "backend": "XNNPACK CPU"
+  },
+  "workload": {
+    "products": 4,
+    "productKinds": [
+      "privacy-wallet",
+      "garden-robot",
+      "coffee-grinder",
+      "travel-backpack"
+    ],
+    "evaluatedPairs": 20,
+    "positivePairs": 12,
+    "negativePairs": 8,
+    "titleCharactersPerProduct": 255,
+    "bulletsPerProduct": 5,
+    "charactersPerBullet": 255,
+    "descriptionCharactersPerProduct": 1800,
+    "minimumFullProductTokens": 666,
+    "maximumFullProductTokens": 773,
+    "truncatedProducts": 4
+  },
+  "embeddingMeasurement": {
+    "warmups": 1,
+    "measuredEmbeddings": 24,
+    "loadMs": 2245.599976,
+    "measurementMs": 36747.177101,
+    "embeddingsPerSecond": 0.6531113923128231
+  },
+  "vectorDatabase": {
+    "implementation": "community-search-core SQLite + USearch",
+    "metric": "cosine",
+    "scalar": "f32",
+    "installedItems": 4,
+    "installMs": 102.578979,
+    "measuredSearchCalls": 2000,
+    "totalSearchMs": 1010.640829,
+    "meanSearchMs": 0.5053204145,
+    "indexBytes": 10928,
+    "sqliteBytes": 77824
+  },
+  "evaluation": {
+    "expectedTopMatches": 17,
+    "expectedTopTotal": 20,
+    "polarityDecisionsCorrect": 17,
+    "polarityDecisionsTotal": 20,
+    "positiveMeanSimilarity": 0.65619165,
+    "negativeMeanSimilarity": 0.50546676,
+    "meanSimilarityGap": 0.15072489,
+    "minimumPositiveSimilarity": 0.47906357,
+    "maximumNegativeSimilarity": 0.5923805,
+    "completeScoreSeparation": false,
+    "rocAuc": 0.8854166666666666
+  },
+  "cases": [
+    {
+      "id": "positive-wallet-1",
+      "polarity": "positive",
+      "evaluatedProductId": "privacy-wallet",
+      "pairSimilarity": 0.7970382,
+      "evaluatedRank": 1,
+      "topProductId": "privacy-wallet"
+    },
+    {
+      "id": "positive-wallet-bullet-tail",
+      "polarity": "positive",
+      "evaluatedProductId": "privacy-wallet",
+      "pairSimilarity": 0.6700452,
+      "evaluatedRank": 1,
+      "topProductId": "privacy-wallet"
+    },
+    {
+      "id": "positive-wallet-description-tail",
+      "polarity": "positive",
+      "evaluatedProductId": "privacy-wallet",
+      "pairSimilarity": 0.62183404,
+      "evaluatedRank": 1,
+      "topProductId": "privacy-wallet"
+    },
+    {
+      "id": "positive-garden-1",
+      "polarity": "positive",
+      "evaluatedProductId": "garden-robot",
+      "pairSimilarity": 0.74782264,
+      "evaluatedRank": 1,
+      "topProductId": "garden-robot"
+    },
+    {
+      "id": "positive-garden-bullet-tail",
+      "polarity": "positive",
+      "evaluatedProductId": "garden-robot",
+      "pairSimilarity": 0.6386832,
+      "evaluatedRank": 1,
+      "topProductId": "garden-robot"
+    },
+    {
+      "id": "positive-garden-description-tail",
+      "polarity": "positive",
+      "evaluatedProductId": "garden-robot",
+      "pairSimilarity": 0.530828,
+      "evaluatedRank": 2,
+      "topProductId": "privacy-wallet"
+    },
+    {
+      "id": "positive-coffee-1",
+      "polarity": "positive",
+      "evaluatedProductId": "coffee-grinder",
+      "pairSimilarity": 0.7695018,
+      "evaluatedRank": 1,
+      "topProductId": "coffee-grinder"
+    },
+    {
+      "id": "positive-coffee-bullet-tail",
+      "polarity": "positive",
+      "evaluatedProductId": "coffee-grinder",
+      "pairSimilarity": 0.6663204,
+      "evaluatedRank": 1,
+      "topProductId": "coffee-grinder"
+    },
+    {
+      "id": "positive-coffee-description-tail",
+      "polarity": "positive",
+      "evaluatedProductId": "coffee-grinder",
+      "pairSimilarity": 0.49329633,
+      "evaluatedRank": 2,
+      "topProductId": "privacy-wallet"
+    },
+    {
+      "id": "positive-backpack-1",
+      "polarity": "positive",
+      "evaluatedProductId": "travel-backpack",
+      "pairSimilarity": 0.77557075,
+      "evaluatedRank": 1,
+      "topProductId": "travel-backpack"
+    },
+    {
+      "id": "positive-backpack-bullet-tail",
+      "polarity": "positive",
+      "evaluatedProductId": "travel-backpack",
+      "pairSimilarity": 0.6842958,
+      "evaluatedRank": 1,
+      "topProductId": "travel-backpack"
+    },
+    {
+      "id": "positive-backpack-description-tail",
+      "polarity": "positive",
+      "evaluatedProductId": "travel-backpack",
+      "pairSimilarity": 0.47906357,
+      "evaluatedRank": 2,
+      "topProductId": "privacy-wallet"
+    },
+    {
+      "id": "negative-wallet-vs-garden",
+      "polarity": "negative",
+      "evaluatedProductId": "privacy-wallet",
+      "pairSimilarity": 0.5923805,
+      "evaluatedRank": 2,
+      "topProductId": "garden-robot"
+    },
+    {
+      "id": "negative-wallet-vs-coffee",
+      "polarity": "negative",
+      "evaluatedProductId": "privacy-wallet",
+      "pairSimilarity": 0.5847374,
+      "evaluatedRank": 2,
+      "topProductId": "coffee-grinder"
+    },
+    {
+      "id": "negative-garden-vs-wallet",
+      "polarity": "negative",
+      "evaluatedProductId": "garden-robot",
+      "pairSimilarity": 0.45644766,
+      "evaluatedRank": 2,
+      "topProductId": "privacy-wallet"
+    },
+    {
+      "id": "negative-garden-vs-backpack",
+      "polarity": "negative",
+      "evaluatedProductId": "garden-robot",
+      "pairSimilarity": 0.50069106,
+      "evaluatedRank": 4,
+      "topProductId": "travel-backpack"
+    },
+    {
+      "id": "negative-coffee-vs-wallet",
+      "polarity": "negative",
+      "evaluatedProductId": "coffee-grinder",
+      "pairSimilarity": 0.43084502,
+      "evaluatedRank": 4,
+      "topProductId": "privacy-wallet"
+    },
+    {
+      "id": "negative-coffee-vs-garden",
+      "polarity": "negative",
+      "evaluatedProductId": "coffee-grinder",
+      "pairSimilarity": 0.5442814,
+      "evaluatedRank": 3,
+      "topProductId": "garden-robot"
+    },
+    {
+      "id": "negative-backpack-vs-coffee",
+      "polarity": "negative",
+      "evaluatedProductId": "travel-backpack",
+      "pairSimilarity": 0.4586959,
+      "evaluatedRank": 4,
+      "topProductId": "coffee-grinder"
+    },
+    {
+      "id": "negative-backpack-vs-wallet",
+      "polarity": "negative",
+      "evaluatedProductId": "travel-backpack",
+      "pairSimilarity": 0.47565478,
+      "evaluatedRank": 2,
+      "topProductId": "privacy-wallet"
+    }
+  ],
+  "privacy": {
+    "deviceLogsContainPreparedText": false,
+    "deviceLogsContainEmbeddings": false,
+    "largeModelCommittedToGit": false,
+    "fullEmbeddingVectorsCommittedToGit": false
+  }
+}

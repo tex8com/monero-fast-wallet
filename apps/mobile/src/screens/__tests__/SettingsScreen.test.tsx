@@ -1,9 +1,10 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
-import { TextInput } from 'react-native';
+import { Alert, Text, TextInput, TouchableOpacity } from 'react-native';
 
 import { LanguageProvider } from '../../i18n';
 import { AppSecurityProvider } from '../../services/AppSecurity';
+import { walletService } from '../../services/WalletService';
 import SettingsScreen from '../SettingsScreen';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -50,10 +51,18 @@ jest.mock('../../services/WalletDiagnostics', () => ({
 jest.mock('../../services/WalletService', () => ({
   walletService: {
     applyNodeConnectionToActive: jest.fn(async () => true),
+    configureAppProtection: jest.fn(async () => undefined),
     getAppProtectionStatus: jest.fn(async () => ({
       configured: true,
       locked: false,
       mode: 'password',
+    })),
+    getBiometricAuthStatus: jest.fn(async () => ({
+      available: true,
+      biometryType: 'fingerprint',
+      enrolled: true,
+      message: '',
+      supported: true,
     })),
     lockApp: jest.fn(async () => undefined),
     refreshFastReceiveRegistrationStatusesForSettings: jest.fn(
@@ -61,6 +70,8 @@ jest.mock('../../services/WalletService', () => ({
     ),
   },
 }));
+
+const mockedWalletService = walletService as jest.Mocked<typeof walletService>;
 
 jest.mock('../../services/WalletState', () => ({
   useWalletState: () => ({
@@ -70,9 +81,29 @@ jest.mock('../../services/WalletState', () => ({
 }));
 
 describe('SettingsScreen', () => {
-  it('shows editable Tex8 daemon and gRPC endpoint fields', async () => {
-    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
 
+  function buttonWithText(
+    renderer: ReactTestRenderer.ReactTestRenderer,
+    label: string,
+  ) {
+    const button = renderer.root.findAllByType(TouchableOpacity).find(node =>
+      node
+        .findAllByType(Text)
+        .some(textNode =>
+          textNode.props.children?.toString().includes(label),
+        ),
+    );
+    if (!button) {
+      throw new Error(`Button not found: ${label}`);
+    }
+    return button;
+  }
+
+  async function renderSettings() {
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
     await ReactTestRenderer.act(async () => {
       renderer = ReactTestRenderer.create(
         <LanguageProvider>
@@ -82,12 +113,71 @@ describe('SettingsScreen', () => {
         </LanguageProvider>,
       );
     });
+    return renderer!;
+  }
 
-    const placeholders = renderer!.root
+  it('shows editable Tex8 daemon and gRPC endpoint fields', async () => {
+    const renderer = await renderSettings();
+
+    const placeholders = renderer.root
       .findAllByType(TextInput)
       .map(input => input.props.placeholder);
 
     expect(placeholders).toContain('xmr.tex8.com:18089');
     expect(placeholders).toContain('xmr.tex8.com:18091');
+  });
+
+  it('changes an existing app password from Settings', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const renderer = await renderSettings();
+    const inputs = renderer.root.findAllByType(TextInput);
+    const password = inputs.find(
+      input => input.props.placeholder === 'Set app password',
+    );
+    const confirmation = inputs.find(
+      input => input.props.placeholder === 'Confirm app password',
+    );
+    expect(password).toBeDefined();
+    expect(confirmation).toBeDefined();
+
+    await ReactTestRenderer.act(async () => {
+      password!.props.onChangeText('replacement password');
+      confirmation!.props.onChangeText('replacement password');
+    });
+    await ReactTestRenderer.act(async () => {
+      await buttonWithText(renderer, 'Save protection').props.onPress();
+    });
+
+    expect(alert).toHaveBeenLastCalledWith(
+      'App protection',
+      'App protection saved.',
+    );
+    expect(mockedWalletService.configureAppProtection).toHaveBeenCalledWith(
+      'password',
+      'replacement password',
+    );
+  });
+
+  it('switches an existing password configuration to biometrics from Settings', async () => {
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+    const renderer = await renderSettings();
+
+    await ReactTestRenderer.act(async () => {
+      buttonWithText(renderer, 'Biometrics').props.onPress();
+    });
+    await ReactTestRenderer.act(async () => {
+      await buttonWithText(renderer, 'Save protection').props.onPress();
+    });
+
+    // A React Native alert would cover Android's native biometric prompt and
+    // make the automatic first unlock fail. The operating-system prompt is the
+    // only success UI for this mode switch.
+    expect(alert).not.toHaveBeenCalled();
+    expect(mockedWalletService.getBiometricAuthStatus).toHaveBeenCalledTimes(1);
+    expect(mockedWalletService.configureAppProtection).toHaveBeenCalledWith(
+      'biometric',
+      '',
+    );
+    expect(mockedWalletService.lockApp).toHaveBeenCalledTimes(1);
   });
 });

@@ -106,9 +106,9 @@ async function fetchNews(force = false) {
   }
 }
 
-export function useMoneroNews() {
+export function useMoneroNews(enabled = true) {
   const [items, setItems] = useState<MoneroNewsItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
   const [unavailable, setUnavailable] = useState(false);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttempt = useRef(0);
@@ -120,6 +120,13 @@ export function useMoneroNews() {
   }, []);
 
   const refresh = useCallback(async (force = false, automatic = false) => {
+    if (!enabled) {
+      clearRetry();
+      setItems([]);
+      setLoading(false);
+      setUnavailable(false);
+      return;
+    }
     if (!automatic) {
       clearRetry();
       retryAttempt.current = 0;
@@ -142,12 +149,19 @@ export function useMoneroNews() {
     } finally {
       setLoading(false);
     }
-  }, [clearRetry]);
+  }, [clearRetry, enabled]);
 
   useEffect(() => {
+    if (!enabled) {
+      clearRetry();
+      setItems([]);
+      setLoading(false);
+      setUnavailable(false);
+      return clearRetry;
+    }
     refresh().catch(() => undefined);
     return clearRetry;
-  }, [clearRetry, refresh]);
+  }, [clearRetry, enabled, refresh]);
 
   return { items, loading, unavailable, refresh: () => refresh(true) };
 }

@@ -1,0 +1,83 @@
+{
+  "artifact": {
+    "manifestSha256": "ee4e46dc630917ed0475bb0b64301d06ab153d22f3446c57b1e1e25ad49249c0",
+    "pteBytes": 270419584,
+    "pteSha256": "237b9297d51ec3904042d06de340755365483da0be0054fa05b9d17468274d02",
+    "target": "xnnpack_a8w8",
+    "tokenizerSha256": "6852f8d561078cc0cebe70ca03c5bfdd0d60a45f9d2e0e1e4cc05b68e9ec329e"
+  },
+  "build": {
+    "bundleRemovedTargetReferenceCount": 0,
+    "cleanBuildDirectoryWasAbsent": true,
+    "projectRemovedTargetReferenceCount": 0,
+    "reusedPreviousIosBuild": false,
+    "rustDependenciesRecompiled": true,
+    "simulatorDiagnosticCodeSigning": "disabled-by-design"
+  },
+  "capturedAt": "2026-07-28T19:25:47-05:00",
+  "downloads": [
+    {
+      "bytes": 901,
+      "durationMs": 57.408,
+      "route": "/v1/catalogs/simulator-v1/current/manifest.json"
+    },
+    {
+      "bytes": 18079,
+      "durationMs": 11.508,
+      "route": "/v1/catalogs/simulator-v1/current/catalog.json"
+    },
+    {
+      "bytes": 900,
+      "durationMs": 10.639,
+      "route": "/v1/queries/simulator-v1/current/manifest.json"
+    },
+    {
+      "bytes": 8999,
+      "durationMs": 12.741,
+      "route": "/v1/queries/simulator-v1/current/queries.json"
+    }
+  ],
+  "fixture": {
+    "origin": "https://127.0.0.1:18443/",
+    "redirectsAllowed": false,
+    "signedWithTestOnlyKeys": true,
+    "tlsCertificateValidityDays": 397,
+    "tlsTrustBypassed": false
+  },
+  "host": {
+    "architecture": "arm64",
+    "chip": "Apple M4",
+    "memoryGiB": 16,
+    "xcode": "26.6"
+  },
+  "privacy": {
+    "embeddingsLogged": false,
+    "queryTextLogged": false,
+    "searchExecutedLocally": true
+  },
+  "releaseEvidence": false,
+  "result": {
+    "catalogSequence": 1,
+    "installMs": 78.092,
+    "querySequence": 1,
+    "resultCount": 2,
+    "runtimeReadyMs": 3536.152,
+    "searchMs": 166.665,
+    "signatureVerification": "accepted",
+    "status": "accepted",
+    "suggestionCount": 1,
+    "topPublicId": "privacy-software",
+    "totalMs": 3893.089
+  },
+  "screenshot": "tools/community-harrier-testbench/test-results/ios-simulator-catalog-download-search-a8w8-only-2026-07-28.png",
+  "runtime": {
+    "backend": "xnnpack",
+    "executorch": "1.3.1"
+  },
+  "schemaVersion": 1,
+  "simulator": {
+    "device": "iPhone 17 Pro",
+    "iOS": "26.5",
+    "minimumLinkedIOS": "17.0"
+  }
+}

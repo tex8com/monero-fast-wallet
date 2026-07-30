@@ -25,6 +25,7 @@ $RNFirebaseAsStaticFramework = linkage == 'static'
 
 target 'MoneroWallet' do
   config = use_native_modules!
+  pod 'libPhoneNumber-iOS', '~> 1.7.3'
 
   use_react_native!(
     :path => config[:reactNativePath],

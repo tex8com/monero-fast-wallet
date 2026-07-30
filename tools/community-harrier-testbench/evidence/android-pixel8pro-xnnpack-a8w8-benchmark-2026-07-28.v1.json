@@ -1,0 +1,110 @@
+{
+  "artifact": {
+    "pteBytes": 270419584,
+    "pteSha256": "237b9297d51ec3904042d06de340755365483da0be0054fa05b9d17468274d02",
+    "target": "xnnpack_a8w8"
+  },
+  "capturedAt": "2026-07-28T19:43:48-05:00",
+  "conditions": {
+    "batteryPercentAfter": 21,
+    "batteryPercentBefore": 19,
+    "batterySaverEnabled": false,
+    "batteryTemperatureCelsiusAfter": 27.2,
+    "batteryTemperatureCelsiusBefore": 26.8,
+    "cpuOnline": "0-8",
+    "thermalStatusAfter": 0,
+    "thermalStatusBefore": 0,
+    "usbCharging": true
+  },
+  "device": {
+    "abi": "arm64-v8a",
+    "android": "17",
+    "api": 37,
+    "buildFingerprint": "google/husky/husky:17/CP2A.260705.006/15641320:user/release-keys",
+    "codename": "husky",
+    "kernel": "6.1.157-android14-11-gbd23337e42e7-ab14791245",
+    "memoryKiB": 11850752,
+    "model": "Pixel 8 Pro",
+    "securityPatch": "2026-07-05",
+    "soc": "Google Tensor G3"
+  },
+  "measurement": {
+    "aggregateEmbeddingsPerSecond": 0.682067,
+    "aggregateIterations": 90,
+    "aggregateMeanMsPerEmbedding": 1466.131,
+    "aggregateMeasurementMs": 131951.779,
+    "maximumRunEmbeddingsPerSecond": 0.697413,
+    "medianRunEmbeddingsPerSecond": 0.694864,
+    "minimumRunEmbeddingsPerSecond": 0.65557,
+    "runRatePopulationStdDev": 0.019152
+  },
+  "privacy": {
+    "embeddingValuesLogged": false,
+    "preparedTextLogged": false
+  },
+  "releaseEvidence": false,
+  "runs": [
+    {
+      "embeddingsPerSecond": 0.694864,
+      "iterations": 30,
+      "loadMs": 1257.068,
+      "maximumMs": 1538.496,
+      "meanMs": 1439.132,
+      "medianMs": 1438.408,
+      "minimumMs": 1174.159,
+      "outputNorm": 1.000000025,
+      "p95Ms": 1530.204,
+      "warmups": 5
+    },
+    {
+      "embeddingsPerSecond": 0.65557,
+      "iterations": 30,
+      "loadMs": 1832.908,
+      "maximumMs": 2570.008,
+      "meanMs": 1525.39,
+      "medianMs": 1452.666,
+      "minimumMs": 1181.451,
+      "outputNorm": 1.000000025,
+      "p95Ms": 2125.409,
+      "warmups": 5
+    },
+    {
+      "embeddingsPerSecond": 0.697413,
+      "iterations": 30,
+      "loadMs": 1500.429,
+      "maximumMs": 1525.957,
+      "meanMs": 1433.871,
+      "medianMs": 1430.095,
+      "minimumMs": 1393.57,
+      "outputNorm": 1.000000025,
+      "p95Ms": 1483.249,
+      "warmups": 5
+    }
+  ],
+  "runtime": {
+    "availableProcessors": 9,
+    "backend": "xnnpack",
+    "executorchAndroidAar": "org.pytorch:executorch-android:1.3.1"
+  },
+  "schemaVersion": 1,
+  "test": {
+    "embeddingDimension": 640,
+    "excludes": [
+      "model load",
+      "input tensor creation",
+      "tokenization",
+      "catalog search",
+      "React Native"
+    ],
+    "includes": [
+      "ExecuTorch forward",
+      "JNI output materialization",
+      "embedding shape and L2-norm validation"
+    ],
+    "inputCaseId": "q-de-privacy",
+    "inputTokens": 40,
+    "mode": "isolated ADB debug benchmark",
+    "paddedTokens": 256,
+    "sameFrozenInputRepeated": true
+  }
+}

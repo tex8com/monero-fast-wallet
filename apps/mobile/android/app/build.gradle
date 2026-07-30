@@ -87,10 +87,149 @@ def moneroWalletApiLibrary = (findProperty("moneroWalletApiLibrary") ?: "").toSt
 def moneroWalletApiRoot = (findProperty("moneroWalletApiRoot") ?: "").toString()
 def moneroFastCryptoLibrary = (findProperty("moneroFastCryptoLibrary") ?: "").toString()
 def moneroFastCryptoRoot = (findProperty("moneroFastCryptoRoot") ?: "").toString()
+def moneroFastWalletProtocolLibrary = (findProperty("moneroFastWalletProtocolLibrary") ?: "").toString()
+def moneroFastWalletProtocolRoot = (findProperty("moneroFastWalletProtocolRoot") ?: "").toString()
+def moneroCommunityMatrixLibrary = (findProperty("moneroCommunityMatrixLibrary") ?: "").toString()
+def moneroCommunityMatrixRoot = (findProperty("moneroCommunityMatrixRoot") ?: "").toString()
+def moneroCommunityHarrierLibrary = (findProperty("moneroCommunityHarrierLibrary") ?: "").toString()
+def moneroCommunityAssetRoot = (findProperty("moneroCommunityAssetRoot") ?: "").toString().trim()
+def fastWalletGatewayOrigin = (findProperty("fastWalletGatewayOrigin") ?: "").toString().trim()
+def fastWalletRegistrationOrigin = (findProperty("fastWalletRegistrationOrigin") ?: "").toString().trim()
+def fastWalletOfficialWorkerRootId =
+        (findProperty("fastWalletOfficialWorkerRootId") ?: "").toString().trim()
+def mobileAppVersionManifest =
+        new groovy.json.JsonSlurper().parse(file("${rootDir}/../../../config/mobile-app-version.json"))
+if (mobileAppVersionManifest.schemaVersion != 1 ||
+        !(mobileAppVersionManifest.versionName instanceof String) ||
+        !(mobileAppVersionManifest.androidVersionCode instanceof Number)) {
+    throw new GradleException("Unsupported mobile app version manifest")
+}
+def v1ReleaseFeatureManifest =
+        new groovy.json.JsonSlurper().parse(file("${rootDir}/../../../config/v1-release-features.json"))
+if (v1ReleaseFeatureManifest.schemaVersion != 1 ||
+        v1ReleaseFeatureManifest.profile != "safe-wallet-v1") {
+    throw new GradleException("Unsupported V1 release feature manifest")
+}
+def fastWalletOfficialWorkerEnabled =
+        v1ReleaseFeatureManifest.features.officialWorker == true
+def fastWalletPrivateWorkerPairingEnabled =
+        v1ReleaseFeatureManifest.features.privateWorkerPairing == true
+def privatePhoneDeviceContactsEnabled =
+        v1ReleaseFeatureManifest.features.deviceContactDiscovery == true
+def moneroEnthusiastV1Enabled =
+        v1ReleaseFeatureManifest.features.moneroEnthusiastV1 == true
+def moneroEnthusiastConfig =
+        v1ReleaseFeatureManifest.parameters.moneroEnthusiastV1
+def communityHttpsOrigin = { value ->
+    if (!(value instanceof String) || value.length() > 200) {
+        return false
+    }
+    try {
+        def uri = new URI(value)
+        return uri.scheme == "https" &&
+                uri.host != null &&
+                uri.rawUserInfo == null &&
+                (uri.rawPath == null || uri.rawPath == "" || uri.rawPath == "/") &&
+                uri.rawQuery == null &&
+                uri.rawFragment == null
+    } catch (Exception ignored) {
+        return false
+    }
+}
+def communitySafeResource = { value ->
+    value instanceof String &&
+            !value.isEmpty() &&
+            value.length() <= 256 &&
+            !value.startsWith("/") &&
+            !value.split("/").any { part -> part.isEmpty() || part == ".." } &&
+            value ==~ /^[A-Za-z0-9._\\/-]+$/
+}
+if (moneroEnthusiastV1Enabled) {
+    if (!(moneroEnthusiastConfig instanceof Map) ||
+            !communityHttpsOrigin(moneroEnthusiastConfig.apiOrigin) ||
+            !communityHttpsOrigin(moneroEnthusiastConfig.matrixHomeserver) ||
+            !communityHttpsOrigin(moneroEnthusiastConfig.catalogOrigin) ||
+            !communityHttpsOrigin(moneroEnthusiastConfig.advertisingOrigin) ||
+            !(moneroEnthusiastConfig.catalogScope instanceof String) ||
+            !(moneroEnthusiastConfig.catalogScope ==~ /^[A-Za-z0-9_-]{1,128}$/) ||
+            !(moneroEnthusiastConfig.catalogVerifyingKeyHex ==~ /^[0-9a-f]{64}$/) ||
+            !(moneroEnthusiastConfig.advertisingVerifyingKeyHex ==~ /^[0-9a-f]{64}$/) ||
+            !(moneroEnthusiastConfig.advertisingCountry ==~ /^[A-Z]{2}$/) ||
+            !(moneroEnthusiastConfig.artifactVerifyingKeyHex ==~ /^[0-9a-f]{64}$/) ||
+            !communitySafeResource(moneroEnthusiastConfig.artifactManifestResource) ||
+            !communitySafeResource(moneroEnthusiastConfig.pteResource) ||
+            !communitySafeResource(moneroEnthusiastConfig.tokenizerResource) ||
+            !communitySafeResource(moneroEnthusiastConfig.conformanceResource)) {
+        throw new GradleException(
+                "moneroEnthusiastV1 requires a complete pinned HTTPS release configuration"
+        )
+    }
+    if (moneroCommunityAssetRoot.isEmpty() || !file(moneroCommunityAssetRoot).isDirectory()) {
+        throw new GradleException(
+                "moneroEnthusiastV1 requires moneroCommunityAssetRoot with verified native assets"
+        )
+    }
+    [
+            moneroEnthusiastConfig.artifactManifestResource,
+            moneroEnthusiastConfig.pteResource,
+            moneroEnthusiastConfig.tokenizerResource,
+            moneroEnthusiastConfig.conformanceResource,
+    ].each { resource ->
+        if (!new File(moneroCommunityAssetRoot, resource).isFile()) {
+            throw new GradleException("Missing Monero Enthusiast asset: ${resource}")
+        }
+    }
+}
+def communityConfigValue = { name ->
+    moneroEnthusiastConfig instanceof Map
+            ? (moneroEnthusiastConfig[name] ?: "").toString()
+            : ""
+}
+def privatePhoneDirectoryConfig =
+        v1ReleaseFeatureManifest.parameters.privatePhoneDirectory
+if (privatePhoneDeviceContactsEnabled && privatePhoneDirectoryConfig == null) {
+    throw new GradleException(
+            "deviceContactDiscovery requires a pinned privatePhoneDirectory release configuration"
+    )
+}
+def privatePhoneEvaluators =
+        privatePhoneDirectoryConfig?.evaluators instanceof List
+                ? privatePhoneDirectoryConfig.evaluators
+                : []
+def privatePhoneSnapshotConfig = privatePhoneDirectoryConfig?.snapshot
+def privatePhoneVerificationConfig = privatePhoneDirectoryConfig?.verification
+def privatePhoneEpoch = privatePhoneDirectoryConfig?.epoch ?: 0
+def privatePhoneVerificationOrigin =
+        privatePhoneVerificationConfig?.origin ?: ""
+def privatePhoneEvaluatorOneOrigin =
+        privatePhoneEvaluators.size() == 2 ? privatePhoneEvaluators[0].origin : ""
+def privatePhoneEvaluatorTwoOrigin =
+        privatePhoneEvaluators.size() == 2 ? privatePhoneEvaluators[1].origin : ""
+def privatePhoneEvaluatorOnePublicKey =
+        privatePhoneEvaluators.size() == 2 ? privatePhoneEvaluators[0].publicKeyHex : ""
+def privatePhoneEvaluatorTwoPublicKey =
+        privatePhoneEvaluators.size() == 2 ? privatePhoneEvaluators[1].publicKeyHex : ""
+def privatePhoneDirectoryOrigin = privatePhoneSnapshotConfig?.origin ?: ""
+def privatePhoneDirectoryPublicKey =
+        privatePhoneSnapshotConfig?.directoryPublicKeyHex ?: ""
+def privatePhoneVerificationPublicKey =
+        privatePhoneSnapshotConfig?.verificationPublicKeyHex ?: ""
+def privatePhoneMaximumSnapshotBytes =
+        privatePhoneSnapshotConfig?.maximumBytes ?: 0
 def moneroWalletExtraLibraries = (findProperty("moneroWalletExtraLibraries") ?: "").toString()
 def moneroWalletExtraLibraryDirs = (findProperty("moneroWalletExtraLibraryDirs") ?: "").toString()
 def moneroWalletExtraLinkOptions = (findProperty("moneroWalletExtraLinkOptions") ?: "").toString()
 def moneroWalletExternalBuildDir = (findProperty("moneroWalletExternalBuildDir") ?: System.getenv("MONERO_WALLET_ANDROID_BUILD_DIR") ?: "").toString().trim()
+def moneroWalletAllowScreenCapture = (
+        findProperty("moneroWalletAllowScreenCapture")
+                ?: System.getenv("MONERO_WALLET_ALLOW_SCREEN_CAPTURE")
+                ?: "false"
+).toString().trim().toBoolean()
+def moneroWalletDiagnosticsEnabled = (
+        findProperty("moneroWalletDiagnosticsEnabled")
+                ?: System.getenv("MONERO_WALLET_DIAGNOSTICS")
+                ?: "false"
+).toString().trim().toBoolean()
 def uploadStoreFile = (System.getenv("MONERO_UPLOAD_STORE_FILE") ?: "").trim()
 def uploadStorePassword = (System.getenv("MONERO_UPLOAD_STORE_PASSWORD") ?: "").trim()
 def uploadKeyAlias = (System.getenv("MONERO_UPLOAD_KEY_ALIAS") ?: "").trim()
@@ -122,13 +261,81 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Increment for each shareable APK so Android accepts it as an update
         // over the previous locally installed release.
-        versionCode 8
-        versionName "1.0.7"
+        versionCode mobileAppVersionManifest.androidVersionCode as int
+        versionName mobileAppVersionManifest.versionName
+        // Production builds stay protected by default. A deliberate local
+        // diagnostics build may opt in so bug screenshots can be captured.
+        buildConfigField "boolean", "ALLOW_SCREEN_CAPTURE",
+                moneroWalletAllowScreenCapture.toString()
+        // Structured diagnostics are a separate, fail-closed capability.
+        // Production releases neither persist nor emit wallet lifecycle logs.
+        buildConfigField "boolean", "WALLET_DIAGNOSTICS_ENABLED",
+                moneroWalletDiagnosticsEnabled.toString()
+        buildConfigField "String", "FAST_WALLET_GATEWAY_ORIGIN",
+                groovy.json.JsonOutput.toJson(fastWalletGatewayOrigin)
+        buildConfigField "String", "FAST_WALLET_REGISTRATION_ORIGIN",
+                groovy.json.JsonOutput.toJson(fastWalletRegistrationOrigin)
+        buildConfigField "String", "FAST_WALLET_OFFICIAL_WORKER_ROOT_ID",
+                groovy.json.JsonOutput.toJson(fastWalletOfficialWorkerRootId)
+        buildConfigField "boolean", "FAST_WALLET_OFFICIAL_WORKER_ENABLED",
+                fastWalletOfficialWorkerEnabled.toString()
+        buildConfigField "boolean", "FAST_WALLET_PRIVATE_WORKER_PAIRING_ENABLED",
+                fastWalletPrivateWorkerPairingEnabled.toString()
+        buildConfigField "boolean", "PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED",
+                privatePhoneDeviceContactsEnabled.toString()
+        buildConfigField "boolean", "MONERO_ENTHUSIAST_V1_ENABLED",
+                moneroEnthusiastV1Enabled.toString()
+        buildConfigField "String", "MONERO_ENTHUSIAST_API_ORIGIN",
+                groovy.json.JsonOutput.toJson(communityConfigValue("apiOrigin"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_MATRIX_HOMESERVER",
+                groovy.json.JsonOutput.toJson(communityConfigValue("matrixHomeserver"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_CATALOG_ORIGIN",
+                groovy.json.JsonOutput.toJson(communityConfigValue("catalogOrigin"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_CATALOG_SCOPE",
+                groovy.json.JsonOutput.toJson(communityConfigValue("catalogScope"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_CATALOG_KEY_HEX",
+                groovy.json.JsonOutput.toJson(communityConfigValue("catalogVerifyingKeyHex"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_ADVERTISING_ORIGIN",
+                groovy.json.JsonOutput.toJson(communityConfigValue("advertisingOrigin"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_ADVERTISING_KEY_HEX",
+                groovy.json.JsonOutput.toJson(communityConfigValue("advertisingVerifyingKeyHex"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_ADVERTISING_COUNTRY",
+                groovy.json.JsonOutput.toJson(communityConfigValue("advertisingCountry"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_ARTIFACT_KEY_HEX",
+                groovy.json.JsonOutput.toJson(communityConfigValue("artifactVerifyingKeyHex"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_ARTIFACT_MANIFEST_RESOURCE",
+                groovy.json.JsonOutput.toJson(communityConfigValue("artifactManifestResource"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_PTE_RESOURCE",
+                groovy.json.JsonOutput.toJson(communityConfigValue("pteResource"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_TOKENIZER_RESOURCE",
+                groovy.json.JsonOutput.toJson(communityConfigValue("tokenizerResource"))
+        buildConfigField "String", "MONERO_ENTHUSIAST_CONFORMANCE_RESOURCE",
+                groovy.json.JsonOutput.toJson(communityConfigValue("conformanceResource"))
+        buildConfigField "long", "PRIVATE_PHONE_EPOCH", "${privatePhoneEpoch}L"
+        buildConfigField "String", "PRIVATE_PHONE_VERIFICATION_ORIGIN",
+                groovy.json.JsonOutput.toJson(privatePhoneVerificationOrigin)
+        buildConfigField "String", "PRIVATE_PHONE_EVALUATOR_ONE_ORIGIN",
+                groovy.json.JsonOutput.toJson(privatePhoneEvaluatorOneOrigin)
+        buildConfigField "String", "PRIVATE_PHONE_EVALUATOR_TWO_ORIGIN",
+                groovy.json.JsonOutput.toJson(privatePhoneEvaluatorTwoOrigin)
+        buildConfigField "String", "PRIVATE_PHONE_EVALUATOR_ONE_PUBLIC_KEY",
+                groovy.json.JsonOutput.toJson(privatePhoneEvaluatorOnePublicKey)
+        buildConfigField "String", "PRIVATE_PHONE_EVALUATOR_TWO_PUBLIC_KEY",
+                groovy.json.JsonOutput.toJson(privatePhoneEvaluatorTwoPublicKey)
+        buildConfigField "String", "PRIVATE_PHONE_DIRECTORY_ORIGIN",
+                groovy.json.JsonOutput.toJson(privatePhoneDirectoryOrigin)
+        buildConfigField "String", "PRIVATE_PHONE_DIRECTORY_PUBLIC_KEY",
+                groovy.json.JsonOutput.toJson(privatePhoneDirectoryPublicKey)
+        buildConfigField "String", "PRIVATE_PHONE_VERIFICATION_PUBLIC_KEY",
+                groovy.json.JsonOutput.toJson(privatePhoneVerificationPublicKey)
+        buildConfigField "int", "PRIVATE_PHONE_MAXIMUM_SNAPSHOT_BYTES",
+                privatePhoneMaximumSnapshotBytes.toString()
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
                 cppFlags "-std=c++17 -fexceptions -frtti"
                 arguments "-DMONERO_WALLET_BRIDGE_WITH_MONERO=${moneroWalletBridgeWithMonero ? "ON" : "OFF"}",
+                        "-DMONERO_WALLET_DIAGNOSTICS=${moneroWalletDiagnosticsEnabled ? "ON" : "OFF"}",
                         "-DMONERO_SOURCE_DIR=${moneroSourceDir}",
                         "-DMONERO_WALLET_LINK_MANIFEST=${moneroWalletLinkManifest}",
                         "-DMONERO_WALLET_LINK_ROOT=${moneroWalletLinkRoot}",
@@ -136,10 +343,27 @@ android {
                         "-DMONERO_WALLET_API_ROOT=${moneroWalletApiRoot}",
                         "-DMONERO_FAST_CRYPTO_LIBRARY=${moneroFastCryptoLibrary}",
                         "-DMONERO_FAST_CRYPTO_ROOT=${moneroFastCryptoRoot}",
+                        "-DMONERO_FAST_WALLET_PROTOCOL_LIBRARY=${moneroFastWalletProtocolLibrary}",
+                        "-DMONERO_FAST_WALLET_PROTOCOL_ROOT=${moneroFastWalletProtocolRoot}",
+                        "-DMONERO_COMMUNITY_MATRIX_LIBRARY=${moneroCommunityMatrixLibrary}",
+                        "-DMONERO_COMMUNITY_MATRIX_ROOT=${moneroCommunityMatrixRoot}",
+                        "-DMONERO_COMMUNITY_HARRIER_LIBRARY=${moneroCommunityHarrierLibrary}",
+                        "-DMONERO_ENTHUSIAST_V1_ENABLED=${moneroEnthusiastV1Enabled ? "ON" : "OFF"}",
                         "-DMONERO_WALLET_EXTRA_LIBRARIES=${moneroWalletExtraLibraries}",
                         "-DMONERO_WALLET_EXTRA_LIBRARY_DIRS=${moneroWalletExtraLibraryDirs}",
                         "-DMONERO_WALLET_EXTRA_LINK_OPTIONS=${moneroWalletExtraLinkOptions}"
             }
+        }
+    }
+
+    if (moneroEnthusiastV1Enabled) {
+        sourceSets {
+            main {
+                assets.srcDir(moneroCommunityAssetRoot)
+            }
+        }
+        androidResources {
+            noCompress += ["pte"]
         }
     }
     signingConfigs {

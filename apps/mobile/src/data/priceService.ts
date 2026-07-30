@@ -1,17 +1,20 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useState } from 'react';
 
-const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
-const BITFINEX_BASE = 'https://api-pub.bitfinex.com/v2';
+const TEX8_MARKET_BASE = 'https://xmr.tex8.com/api/v1/market';
 const CACHE_TTL = 60_000;
+const PERSISTED_PRICE_TTL = 24 * 60 * 60 * 1_000;
 const PERSISTED_CHART_TTL = 24 * 60 * 60 * 1_000;
-const REQUEST_TIMEOUT_MS = 12_000;
+const REQUEST_TIMEOUT_MS = 6_000;
+const PRICE_CACHE_KEY = '@tex8/monero/market-price';
 const CHART_CACHE_PREFIX = '@tex8/monero/market-chart/';
 
 export interface PriceData {
   price: number;
   change24h: number;
   loading: boolean;
+  error: boolean;
+  refresh: () => void;
 }
 
 export interface ChartPoint {
@@ -27,29 +30,17 @@ export interface ChartData {
 }
 
 type ChartCache = { points: ChartPoint[]; ts: number };
+type PriceCache = { price: number; change24h: number; ts: number };
 
-let cachedPrice: { price: number; change24h: number; ts: number } | null = null;
+let cachedPrice: PriceCache | null = null;
 const chartCache: Record<string, ChartCache | undefined> = {};
 
-const TF_DAYS: Record<string, string> = {
-  '24H': '1',
-  '7D': '7',
-  '1M': '30',
-  '1Y': '365',
-  Max: 'max',
-};
-
-const BITFINEX_CANDLES: Record<string, { interval: string; limit: number }> = {
-  '24H': { interval: '1h', limit: 25 },
-  '7D': { interval: '6h', limit: 29 },
-  '1M': { interval: '12h', limit: 61 },
-  '1Y': { interval: '1D', limit: 366 },
-  Max: { interval: '1D', limit: 10_000 },
-};
-
-async function fetchJson(url: string): Promise<unknown> {
+async function fetchJson(
+  url: string,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<unknown> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       headers: { Accept: 'application/json' },
@@ -77,26 +68,37 @@ function validPoint(timestamp: unknown, price: unknown): ChartPoint | null {
   return { timestamp, price };
 }
 
-function coinGeckoPoints(value: unknown): ChartPoint[] {
-  if (!value || typeof value !== 'object' || !Array.isArray((value as { prices?: unknown }).prices)) {
-    return [];
+function tex8Quote(
+  value: unknown,
+): { price: number; change24h: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const quote = value as { price?: unknown; change24h?: unknown };
+  if (
+    typeof quote.price !== 'number' ||
+    !Number.isFinite(quote.price) ||
+    quote.price <= 0 ||
+    typeof quote.change24h !== 'number' ||
+    !Number.isFinite(quote.change24h)
+  ) {
+    return null;
   }
-  return (value as { prices: unknown[] }).prices.flatMap(entry => {
-    if (!Array.isArray(entry)) return [];
-    const point = validPoint(entry[0], entry[1]);
-    return point ? [point] : [];
-  });
+  return { price: quote.price, change24h: quote.change24h };
 }
 
-function bitfinexPoints(value: unknown): ChartPoint[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .flatMap(entry => {
-      if (!Array.isArray(entry)) return [];
-      const point = validPoint(entry[0], entry[2]);
-      return point ? [point] : [];
-    })
-    .reverse();
+function tex8Points(value: unknown): ChartPoint[] {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    !Array.isArray((value as { points?: unknown }).points)
+  ) {
+    return [];
+  }
+  return (value as { points: unknown[] }).points.flatMap(entry => {
+    if (!entry || typeof entry !== 'object') return [];
+    const point = entry as { timestamp?: unknown; price?: unknown };
+    const valid = validPoint(point.timestamp, point.price);
+    return valid ? [valid] : [];
+  });
 }
 
 function downsampleChartPoints(points: ChartPoint[], maximum = 120): ChartPoint[] {
@@ -130,6 +132,47 @@ async function loadPersistedChart(tf: string): Promise<ChartCache | null> {
   }
 }
 
+async function loadPersistedPrice(): Promise<PriceCache | null> {
+  if (cachedPrice) return cachedPrice;
+  try {
+    const raw = await AsyncStorage.getItem(PRICE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PriceCache>;
+    if (
+      typeof parsed.ts !== 'number' ||
+      Date.now() - parsed.ts > PERSISTED_PRICE_TTL ||
+      typeof parsed.price !== 'number' ||
+      !Number.isFinite(parsed.price) ||
+      parsed.price <= 0 ||
+      typeof parsed.change24h !== 'number' ||
+      !Number.isFinite(parsed.change24h)
+    ) {
+      return null;
+    }
+    cachedPrice = {
+      price: parsed.price,
+      change24h: parsed.change24h,
+      ts: parsed.ts,
+    };
+    return cachedPrice;
+  } catch {
+    return null;
+  }
+}
+
+async function persistPrice(
+  value: Omit<PriceCache, 'ts'>,
+): Promise<PriceCache> {
+  const cached = { ...value, ts: Date.now() };
+  cachedPrice = cached;
+  try {
+    await AsyncStorage.setItem(PRICE_CACHE_KEY, JSON.stringify(cached));
+  } catch {
+    // The live quote remains useful even if optional local caching fails.
+  }
+  return cached;
+}
+
 async function persistChart(tf: string, points: ChartPoint[]): Promise<ChartCache> {
   const cached = { points, ts: Date.now() };
   chartCache[tf] = cached;
@@ -141,84 +184,88 @@ async function persistChart(tf: string, points: ChartPoint[]): Promise<ChartCach
   return cached;
 }
 
-async function fetchPriceFromCoinGecko(): Promise<{ price: number; change24h: number }> {
-  const data = await fetchJson(
-    `${COINGECKO_BASE}/simple/price?ids=monero&vs_currencies=usd&include_24hr_change=true`,
-  );
-  const monero = data && typeof data === 'object'
-    ? (data as { monero?: { usd?: unknown; usd_24h_change?: unknown } }).monero
-    : undefined;
-  if (typeof monero?.usd !== 'number' || !Number.isFinite(monero.usd)) {
-    throw new Error('Primary market source did not return an XMR/USD price.');
+async function fetchPriceFromTex8(): Promise<{
+  price: number;
+  change24h: number;
+}> {
+  const result = tex8Quote(await fetchJson(`${TEX8_MARKET_BASE}/quote`));
+  if (!result) {
+    throw new Error('TEX8 market API did not return a valid XMR/USD quote.');
   }
-  return {
-    price: monero.usd,
-    change24h:
-      typeof monero.usd_24h_change === 'number' && Number.isFinite(monero.usd_24h_change)
-        ? monero.usd_24h_change
-        : 0,
-  };
+  return result;
 }
 
-async function fetchPriceFromBitfinex(): Promise<{ price: number; change24h: number }> {
-  const data = await fetchJson(`${BITFINEX_BASE}/ticker/tXMRUSD`);
-  if (!Array.isArray(data) || typeof data[6] !== 'number' || !Number.isFinite(data[6])) {
-    throw new Error('Backup market source did not return an XMR/USD price.');
+async function fetchPrice(
+  force = false,
+): Promise<{ price: number; change24h: number }> {
+  if (!force && cachedPrice && Date.now() - cachedPrice.ts < CACHE_TTL) {
+    return cachedPrice;
   }
-  return {
-    price: data[6],
-    change24h: typeof data[5] === 'number' && Number.isFinite(data[5]) ? data[5] * 100 : 0,
-  };
+  const result = await fetchPriceFromTex8();
+  return persistPrice(result);
 }
 
-async function fetchPrice(): Promise<{ price: number; change24h: number }> {
-  if (cachedPrice && Date.now() - cachedPrice.ts < CACHE_TTL) return cachedPrice;
-  const result = await fetchPriceFromCoinGecko().catch(() => fetchPriceFromBitfinex());
-  cachedPrice = { ...result, ts: Date.now() };
-  return cachedPrice;
-}
-
-async function fetchCoinGeckoChart(tf: string): Promise<ChartPoint[]> {
+async function fetchTex8Chart(tf: string): Promise<ChartPoint[]> {
   const data = await fetchJson(
-    `${COINGECKO_BASE}/coins/monero/market_chart?vs_currency=usd&days=${TF_DAYS[tf] ?? '1'}`,
+    `${TEX8_MARKET_BASE}/chart?timeframe=${encodeURIComponent(tf)}`,
   );
-  const points = downsampleChartPoints(coinGeckoPoints(data));
-  if (points.length < 2) throw new Error('Primary market chart did not contain enough price points.');
-  return points;
-}
-
-async function fetchBitfinexChart(tf: string): Promise<ChartPoint[]> {
-  const candle = BITFINEX_CANDLES[tf] ?? BITFINEX_CANDLES['24H'];
-  const data = await fetchJson(
-    `${BITFINEX_BASE}/candles/trade:${candle.interval}:tXMRUSD/hist?limit=${candle.limit}&sort=-1`,
-  );
-  const points = downsampleChartPoints(bitfinexPoints(data));
-  if (points.length < 2) throw new Error('Backup market chart did not contain enough price points.');
+  const points = downsampleChartPoints(tex8Points(data));
+  if (points.length < 2) {
+    throw new Error('TEX8 market API did not return enough chart points.');
+  }
   return points;
 }
 
 async function fetchChart(tf: string, force = false): Promise<ChartPoint[]> {
   const existing = chartCache[tf];
   if (!force && existing && Date.now() - existing.ts < CACHE_TTL * 5) return existing.points;
-  const points = await fetchCoinGeckoChart(tf).catch(() => fetchBitfinexChart(tf));
+  const points = await fetchTex8Chart(tf);
   return (await persistChart(tf, points)).points;
 }
 
 export function useXmrPrice(): PriceData {
-  const [data, setData] = useState<PriceData>({
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const [data, setData] = useState<Omit<PriceData, 'refresh'>>({
     price: cachedPrice?.price ?? 0,
     change24h: cachedPrice?.change24h ?? 0,
     loading: !cachedPrice,
+    error: false,
   });
+  const refresh = useCallback(
+    () => setRefreshVersion(version => version + 1),
+    [],
+  );
 
   useEffect(() => {
     let mounted = true;
     const load = async () => {
+      const persisted = await loadPersistedPrice();
+      if (mounted && persisted) {
+        setData({
+          price: persisted.price,
+          change24h: persisted.change24h,
+          loading: false,
+          error: false,
+        });
+      }
       try {
-        const quote = await fetchPrice();
-        if (mounted) setData({ price: quote.price, change24h: quote.change24h, loading: false });
+        const quote = await fetchPrice(refreshVersion > 0);
+        if (mounted) {
+          setData({
+            price: quote.price,
+            change24h: quote.change24h,
+            loading: false,
+            error: false,
+          });
+        }
       } catch {
-        if (mounted) setData(current => ({ ...current, loading: false }));
+        if (mounted) {
+          setData(current => ({
+            ...current,
+            loading: false,
+            error: current.price <= 0,
+          }));
+        }
       }
     };
     load();
@@ -229,9 +276,9 @@ export function useXmrPrice(): PriceData {
       mounted = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [refreshVersion]);
 
-  return data;
+  return { ...data, refresh };
 }
 
 export function useXmrChart(tf: string): ChartData {

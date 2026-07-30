@@ -19,6 +19,7 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
+  applyGlobalFastWalletDeliveryState,
   createFastReceiveIdentityId,
   createFastReceiveIdentityRecord,
   FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
@@ -170,5 +171,52 @@ describe('FastReceiveRegistry', () => {
 
     expect(next).toEqual([]);
     expect(await loadFastReceiveIdentities()).toEqual([]);
+  });
+
+  it('models provider delivery as one installation-wide switch', () => {
+    const first = {
+      ...createFastReceiveIdentityRecord({
+        id: 'fast-receive-v2-first',
+        label: 'First',
+        path: '/wallets/first',
+        address: '54A1firstAddress',
+        network: 'stagenet' as const,
+        restoreHeight: 1,
+        derivationIndex: 0,
+        scannerStatus: 'enabled',
+      }),
+      assignmentHandle: '11'.repeat(32),
+      notificationsEnabled: false,
+    };
+    const localOnly = createFastReceiveIdentityRecord({
+      id: 'fast-receive-v2-local',
+      label: 'Local',
+      path: '/wallets/local',
+      address: '54A1localAddress',
+      network: 'stagenet',
+      restoreHeight: 2,
+      derivationIndex: 1,
+      scannerStatus: 'local-only',
+    });
+
+    const enabled = applyGlobalFastWalletDeliveryState(
+      [first, localOnly],
+      true,
+      '2026-07-26T00:00:00.000Z',
+    );
+    expect(enabled.map(identity => identity.notificationsEnabled)).toEqual([
+      true,
+      false,
+    ]);
+
+    const disabled = applyGlobalFastWalletDeliveryState(
+      enabled,
+      false,
+      '2026-07-26T00:01:00.000Z',
+    );
+    expect(disabled.map(identity => identity.notificationsEnabled)).toEqual([
+      false,
+      false,
+    ]);
   });
 });

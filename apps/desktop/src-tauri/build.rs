@@ -14,9 +14,11 @@ const COMMANDS: &[&str] = &[
     "delete_wallet_password",
     "create_wallet",
     "restore_wallet_with_native_seed",
+    "restore_fast_wallet_with_native_seed",
     "create_hardware_wallet",
     "enable_ledger_read_only",
     "create_ledger_read_only_from_device",
+    "wallet_open_requires_password",
     "open_wallet",
     "close_wallet",
     "rename_wallet",
@@ -26,11 +28,16 @@ const COMMANDS: &[&str] = &[
     "list_fast_wallets",
     "open_fast_wallet",
     "close_fast_wallet",
+    "remove_fast_wallet",
+    "present_fast_wallet_recovery_seed",
     "create_fast_wallet",
+    "pair_private_fast_wallet_worker",
+    "enable_encrypted_fast_wallet_alerts",
+    "turn_off_fast_wallet_alerts",
+    "delete_hosted_fast_wallet_data",
     "enable_fast_wallet",
     "enable_ledger_fast_wallet",
     "refresh_fast_wallet_status",
-    "poll_fast_wallet_push_signals",
     "notification_installation_status",
     "request_notification_installation",
     "disable_notification_installation",
@@ -43,6 +50,18 @@ const COMMANDS: &[&str] = &[
     "start_wallet_refresh",
     "stop_wallet_refresh",
     "wallet_address",
+    "validate_recipient_address",
+    "verify_mfw_name_record_address",
+    "list_mfw_names",
+    "resolve_mfw_name_for_payment",
+    "check_mfw_name_availability",
+    "prepare_mfw_name_registration",
+    "prepare_mfw_name_claim",
+    "prepare_mfw_name_transition",
+    "export_mfw_name_recovery",
+    "import_mfw_name_recovery",
+    "refresh_mfw_name",
+    "remove_mfw_name_local",
     "present_recovery_seed",
     "wallet_snapshot",
     "registered_wallet_snapshots",
@@ -66,10 +85,37 @@ const COMMANDS: &[&str] = &[
     "community_block_profile",
     "community_report_profile",
     "community_delete_identity",
+    "enthusiast_v1_status",
+    "enthusiast_v1_query_contribution_enabled",
+    "enthusiast_v1_set_query_contribution_enabled",
+    "enthusiast_v1_contribute_query",
+    "enthusiast_v1_initialize",
+    "enthusiast_v1_start",
+    "enthusiast_v1_delete_identity",
+    "enthusiast_v1_account_status",
+    "enthusiast_v1_chat_report_outcome",
+    "enthusiast_v1_appeal_chat_report",
+    "enthusiast_v1_content_moderation_outcomes",
+    "enthusiast_v1_appeal_content_moderation",
+    "enthusiast_v1_submit_content",
+    "enthusiast_v1_resubmit_content",
+    "enthusiast_v1_content_status",
+    "enthusiast_v1_list_content",
+    "enthusiast_v1_request_contact",
+    "enthusiast_v1_pending_contacts",
+    "enthusiast_v1_accepted_contacts",
+    "enthusiast_v1_respond_contact",
+    "enthusiast_v1_open_chat",
+    "enthusiast_v1_messages",
+    "enthusiast_v1_send_message",
+    "enthusiast_v1_report_preview",
+    "enthusiast_v1_report_message",
+    "enthusiast_v1_block_contact",
 ];
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest path"));
+    configure_fast_wallet_release(&manifest_dir);
 
     // On macOS, `tauri dev` embeds the .icns data into the debug executable
     // before assigning it to NSApplication. Track every configured icon so an
@@ -105,6 +151,7 @@ fn main() {
     let repo_root = manifest_dir.join("../../..");
     let bridge_dir = repo_root.join("native/monero-bridge");
     let desktop_bridge_dir = repo_root.join("native/desktop-bridge");
+    let fast_wallet_protocol_dir = repo_root.join("native/fast-wallet-protocol");
     let source_dir = env::var_os("DESKTOP_MONERO_SOURCE_DIR").map(PathBuf::from);
     let wallet_api = env::var_os("DESKTOP_MONERO_WALLET_API_LIBRARY").map(PathBuf::from);
     let windows_core_dll = env::var_os("DESKTOP_WINDOWS_MONERO_CORE_DLL").map(PathBuf::from);
@@ -151,6 +198,7 @@ fn main() {
         desktop_bridge_dir.join("include/DesktopWalletCore.h"),
         desktop_bridge_dir.join("include/DesktopLedgerBle.h"),
         desktop_bridge_dir.join("include/DesktopPlatformAuth.h"),
+        fast_wallet_protocol_dir.join("include/fast_wallet_protocol.h"),
     ] {
         println!("cargo:rerun-if-changed={}", file.display());
     }
@@ -174,7 +222,8 @@ fn main() {
         .flag_if_supported("/std:c++17")
         .flag_if_supported("-std=c++17")
         .include(bridge_dir.join("cpp"))
-        .include(desktop_bridge_dir.join("include"));
+        .include(desktop_bridge_dir.join("include"))
+        .include(fast_wallet_protocol_dir.join("include"));
 
     if cfg!(target_os = "windows") {
         // The Windows host uses MSVC while the real Monero core is a separate
@@ -263,4 +312,71 @@ fn main() {
         "cargo:rustc-env=TEX8_DESKTOP_MONERO_LINKED={}",
         if linked_with_monero { "1" } else { "0" }
     );
+}
+
+fn configure_fast_wallet_release(manifest_dir: &std::path::Path) {
+    let feature_manifest_path = manifest_dir.join("../../../config/v1-release-features.json");
+    println!("cargo:rerun-if-changed={}", feature_manifest_path.display());
+    for variable in [
+        "FAST_WALLET_GATEWAY_ORIGIN",
+        "FAST_WALLET_OFFICIAL_WORKER_ROOT_ID",
+    ] {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
+
+    let raw = fs::read_to_string(&feature_manifest_path)
+        .expect("read immutable V1 release feature manifest");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&raw).expect("parse immutable V1 release feature manifest");
+    let official_enabled = manifest
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        == Some(1)
+        && manifest.get("profile").and_then(serde_json::Value::as_str) == Some("safe-wallet-v1")
+        && manifest
+            .pointer("/features/officialWorker")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
+    let private_enabled = manifest
+        .pointer("/features/privateWorkerPairing")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let gateway_origin = env::var("FAST_WALLET_GATEWAY_ORIGIN").unwrap_or_default();
+    let official_root = env::var("FAST_WALLET_OFFICIAL_WORKER_ROOT_ID").unwrap_or_default();
+    if (official_enabled || private_enabled) && !valid_https_origin(&gateway_origin) {
+        panic!(
+            "remote Fast Wallet alerts require FAST_WALLET_GATEWAY_ORIGIN as an exact HTTPS origin"
+        );
+    }
+    if official_enabled && !canonical_hex_32(&official_root) {
+        panic!(
+            "officialWorker requires FAST_WALLET_OFFICIAL_WORKER_ROOT_ID as 32-byte lowercase hex"
+        );
+    }
+    println!(
+        "cargo:rustc-env=TEX8_FAST_WALLET_GATEWAY_ORIGIN={}",
+        gateway_origin.trim().trim_end_matches('/')
+    );
+    println!(
+        "cargo:rustc-env=TEX8_FAST_WALLET_OFFICIAL_WORKER_ROOT_ID={}",
+        official_root.trim()
+    );
+}
+
+fn valid_https_origin(value: &str) -> bool {
+    let value = value.trim().trim_end_matches('/');
+    let Some(authority) = value.strip_prefix("https://") else {
+        return false;
+    };
+    !authority.is_empty()
+        && !authority.contains(['/', '?', '#', '@'])
+        && !authority.chars().any(char::is_whitespace)
+}
+
+fn canonical_hex_32(value: &str) -> bool {
+    let value = value.trim();
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }

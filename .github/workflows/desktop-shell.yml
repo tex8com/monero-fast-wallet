@@ -4,6 +4,12 @@ on:
   pull_request:
     paths:
       - 'apps/desktop/**'
+      - 'config/v1-release-features.json'
+      - 'packages/community-search-core/**'
+      - 'packages/wallet-shared/**'
+      - 'native/community-harrier-runtime/**'
+      - 'native/community-runtime-core/**'
+      - 'native/community-matrix-core/**'
       - 'native/desktop-bridge/**'
       - 'native/monero-bridge/**'
       - '.github/workflows/desktop-shell.yml'
@@ -11,6 +17,12 @@ on:
     branches: [main]
     paths:
       - 'apps/desktop/**'
+      - 'config/v1-release-features.json'
+      - 'packages/community-search-core/**'
+      - 'packages/wallet-shared/**'
+      - 'native/community-harrier-runtime/**'
+      - 'native/community-runtime-core/**'
+      - 'native/community-matrix-core/**'
       - 'native/desktop-bridge/**'
       - 'native/monero-bridge/**'
       - '.github/workflows/desktop-shell.yml'

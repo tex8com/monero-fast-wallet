@@ -1,9 +1,7 @@
 use crate::{
-    cuprate::KeyImageStatusSource,
     model::{
-        KeyImageStatusItem, KeyImageStatusRecord, KeyImageStatusRequest, KeyImageStatusResponse,
         MatchedOutput, MatchedOutputResponse, RegisterMatchedOutputRequest, RegisterWatchRequest,
-        SpentStatus, WatchRegistration, WatchResponse,
+        WatchRegistration, WatchResponse,
     },
     notifications::NotificationSink,
     store::WatchStore,
@@ -32,9 +30,9 @@ const CAPABILITY_RATE_LIMIT_SUBJECTS: usize = 8_192;
 pub struct ApiState {
     pub store: Arc<dyn WatchStore>,
     pub internal_auth_token: Option<String>,
-    pub key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
     pub test_auth_token: Option<String>,
     pub notification_sink: Option<Arc<dyn NotificationSink>>,
+    allow_legacy_plaintext_registration: bool,
     capability_rate_limiter: Arc<CapabilityRateLimiter>,
 }
 
@@ -101,21 +99,7 @@ impl CapabilityRateLimiter {
 }
 
 pub fn router(store: Arc<dyn WatchStore>, internal_auth_token: Option<String>) -> Router {
-    router_with_key_image_status_source(store, internal_auth_token, None)
-}
-
-pub fn router_with_key_image_status_source(
-    store: Arc<dyn WatchStore>,
-    internal_auth_token: Option<String>,
-    key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
-) -> Router {
-    router_with_runtime(
-        store,
-        internal_auth_token,
-        key_image_status_source,
-        None,
-        None,
-    )
+    router_with_runtime(store, internal_auth_token, None, None)
 }
 
 /// Builds the scanner API with its optional, independently authenticated test
@@ -124,9 +108,24 @@ pub fn router_with_key_image_status_source(
 pub fn router_with_runtime(
     store: Arc<dyn WatchStore>,
     internal_auth_token: Option<String>,
-    key_image_status_source: Option<Arc<dyn KeyImageStatusSource>>,
     test_auth_token: Option<String>,
     notification_sink: Option<Arc<dyn NotificationSink>>,
+) -> Router {
+    build_router(
+        store,
+        internal_auth_token,
+        test_auth_token,
+        notification_sink,
+        crate::release_features::enabled("plaintextFastWalletHosting"),
+    )
+}
+
+fn build_router(
+    store: Arc<dyn WatchStore>,
+    internal_auth_token: Option<String>,
+    test_auth_token: Option<String>,
+    notification_sink: Option<Arc<dyn NotificationSink>>,
+    allow_legacy_plaintext_registration: bool,
 ) -> Router {
     Router::new()
         .route("/", get(project_page))
@@ -145,14 +144,13 @@ pub fn router_with_runtime(
             "/v1/fast-receive/test/incoming-transaction",
             post(simulate_incoming_transaction),
         )
-        .route("/v1/fast-receive/key-images/status", post(key_image_status))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
         .with_state(ApiState {
             store,
             internal_auth_token,
-            key_image_status_source,
             test_auth_token,
             notification_sink,
+            allow_legacy_plaintext_registration,
             capability_rate_limiter: Arc::new(CapabilityRateLimiter::production()),
         })
 }
@@ -170,6 +168,11 @@ async fn register_watch(
     headers: HeaderMap,
     Json(request): Json<RegisterWatchRequest>,
 ) -> Result<Json<WatchResponse>, ApiError> {
+    if !state.allow_legacy_plaintext_registration {
+        return Err(ApiError::Gone(
+            "legacy plaintext Fast Wallet registration is disabled".to_owned(),
+        ));
+    }
     let token = rate_limited_bearer_token(&state, &headers, "watch")?;
     let management_token_hash = management_token_hash(token)?;
     let now_ms = now_ms();
@@ -178,9 +181,10 @@ async fn register_watch(
     if let Some(existing) = state.store.get(&registration.identity_id)? {
         authenticate_watch_hash(&existing, &management_token_hash)?;
         registration.created_at_ms = existing.created_at_ms;
-        registration.last_scanned_height = registration
-            .last_scanned_height
-            .max(existing.last_scanned_height);
+        if existing.last_scanned_height >= registration.last_scanned_height {
+            registration.last_scanned_height = existing.last_scanned_height;
+            registration.last_scanned_hash = existing.last_scanned_hash;
+        }
     }
     registration.management_token_hash = management_token_hash;
 
@@ -292,60 +296,6 @@ async fn list_matches(
         .map(|output| output.response())
         .collect();
     Ok(Json(matches))
-}
-
-async fn key_image_status(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    Json(request): Json<KeyImageStatusRequest>,
-) -> Result<Json<KeyImageStatusResponse>, ApiError> {
-    request.validate()?;
-    let watch = state
-        .store
-        .get(&request.identity_id)?
-        .ok_or_else(|| ApiError::NotFound("watch identity not found".to_owned()))?;
-    authenticate_watch(&state, &watch, &headers)?;
-    if let Some(source) = &state.key_image_status_source {
-        let now_ms = now_ms();
-        for checked in source.check_key_images(&request.key_images)? {
-            state.store.upsert_key_image_status(KeyImageStatusRecord {
-                identity_id: request.identity_id.clone(),
-                key_image: checked.key_image,
-                status: checked.status,
-                checked_height: checked.checked_height,
-                updated_at_ms: now_ms,
-            })?;
-        }
-    }
-
-    let known = state
-        .store
-        .get_key_image_statuses(&request.identity_id, &request.key_images)?;
-
-    let items = request
-        .key_images
-        .iter()
-        .map(|key_image| {
-            known
-                .iter()
-                .find(|record| record.key_image.eq_ignore_ascii_case(key_image))
-                .map(|record| KeyImageStatusItem {
-                    key_image: key_image.to_owned(),
-                    status: record.status,
-                    checked_height: record.checked_height,
-                })
-                .unwrap_or_else(|| KeyImageStatusItem {
-                    key_image: key_image.to_owned(),
-                    status: SpentStatus::Unknown,
-                    checked_height: 0,
-                })
-        })
-        .collect();
-
-    Ok(Json(KeyImageStatusResponse {
-        identity_id: request.identity_id,
-        items,
-    }))
 }
 
 fn authenticate_watch(
@@ -623,6 +573,7 @@ const PROJECT_PAGE_HTML: &str = r#"<!doctype html>
 enum ApiError {
     Unauthorized,
     TooManyRequests,
+    Gone(String),
     NotFound(String),
     BadRequest(String),
     ServiceUnavailable(String),
@@ -651,6 +602,7 @@ impl IntoResponse for ApiError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "request limit exceeded".to_owned(),
             ),
+            Self::Gone(message) => (StatusCode::GONE, message),
             Self::NotFound(message) => (StatusCode::NOT_FOUND, message),
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             Self::ServiceUnavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
@@ -668,12 +620,7 @@ struct ErrorResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        cuprate::{CheckedKeyImageStatus, KeyImageStatusSource},
-        model::{KeyImageStatusRecord, Network},
-        notifications::NotificationSink,
-        store::InMemoryWatchStore,
-    };
+    use crate::{model::Network, notifications::NotificationSink, store::InMemoryWatchStore};
     use axum::body::{to_bytes, Body};
     use http::{Request, StatusCode};
     use std::sync::Mutex;
@@ -683,20 +630,11 @@ mod tests {
     const OTHER_WATCH_TOKEN: &str =
         "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
-    fn stored_watch(identity_id: &str) -> WatchRegistration {
-        WatchRegistration {
-            identity_id: identity_id.to_owned(),
-            address: "9".repeat(95),
-            private_view_key: "c".repeat(64),
-            management_token_hash: management_token_hash(WATCH_TOKEN).unwrap(),
-            network: Network::Stagenet,
-            restore_height: 1,
-            push_token: None,
-            device_id: None,
-            created_at_ms: 1,
-            updated_at_ms: 1,
-            last_scanned_height: 0,
-        }
+    fn legacy_test_router(
+        store: Arc<dyn WatchStore>,
+        internal_auth_token: Option<String>,
+    ) -> Router {
+        build_router(store, internal_auth_token, None, None, true)
     }
 
     #[derive(Default)]
@@ -711,29 +649,6 @@ mod tests {
                 .unwrap()
                 .push((watch.identity_id.clone(), output.id.clone()));
             Ok(())
-        }
-    }
-
-    #[derive(Clone)]
-    struct StaticKeyImageStatusSource;
-
-    impl KeyImageStatusSource for StaticKeyImageStatusSource {
-        fn check_key_images(
-            &self,
-            key_images: &[String],
-        ) -> anyhow::Result<Vec<CheckedKeyImageStatus>> {
-            Ok(key_images
-                .iter()
-                .map(|key_image| CheckedKeyImageStatus {
-                    key_image: key_image.trim().to_lowercase(),
-                    status: if key_image.starts_with('4') {
-                        SpentStatus::Spent
-                    } else {
-                        SpentStatus::Unspent
-                    },
-                    checked_height: 123,
-                })
-                .collect())
         }
     }
 
@@ -764,9 +679,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registers_and_removes_watch_record() {
+    async fn production_v1_rejects_plaintext_watch_registration() {
         let store = Arc::new(InMemoryWatchStore::default());
         let app = router(store.clone(), Some("secret".to_owned()));
+        let body = serde_json::json!({
+            "identity_id": "fast-receive-0",
+            "address": "9".repeat(95),
+            "private_view_key": "c".repeat(64),
+            "network": Network::Stagenet,
+            "restore_height": 12
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/fast-receive/watch")
+                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::GONE);
+        assert!(store.get("fast-receive-0").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn registers_and_removes_watch_record() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        let app = legacy_test_router(store.clone(), Some("secret".to_owned()));
         let body = serde_json::json!({
             "identity_id": "fast-receive-0",
             "address": "9".repeat(95),
@@ -830,7 +774,7 @@ mod tests {
     #[tokio::test]
     async fn isolates_each_watch_behind_its_own_hashed_management_token() {
         let store = Arc::new(InMemoryWatchStore::default());
-        let app = router(store.clone(), Some("internal-secret".to_owned()));
+        let app = legacy_test_router(store.clone(), Some("internal-secret".to_owned()));
         let body = serde_json::json!({
             "identity_id": "fast-receive-0",
             "address": "9".repeat(95),
@@ -911,7 +855,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_missing_bearer_token() {
-        let app = router(
+        let app = legacy_test_router(
             Arc::new(InMemoryWatchStore::default()),
             Some("secret".to_owned()),
         );
@@ -991,7 +935,7 @@ mod tests {
     #[tokio::test]
     async fn stores_lists_and_removes_matched_outputs() {
         let store = Arc::new(InMemoryWatchStore::default());
-        let app = router(store.clone(), Some("secret".to_owned()));
+        let app = legacy_test_router(store.clone(), Some("secret".to_owned()));
         let watch = serde_json::json!({
             "identity_id": "fast-receive-0",
             "address": "9".repeat(95),
@@ -1079,9 +1023,11 @@ mod tests {
                 restore_height: 1,
                 push_token: None,
                 device_id: None,
+                worker_assignment_epoch: None,
                 created_at_ms: 1,
                 updated_at_ms: 1,
                 last_scanned_height: 0,
+                last_scanned_hash: None,
             })
             .unwrap();
         let app = router(store, Some("secret".to_owned()));
@@ -1121,16 +1067,17 @@ mod tests {
                 restore_height: 1,
                 push_token: None,
                 device_id: Some("desktop-installation-1".to_owned()),
+                worker_assignment_epoch: None,
                 created_at_ms: 1,
                 updated_at_ms: 1,
                 last_scanned_height: 0,
+                last_scanned_hash: None,
             })
             .unwrap();
         let sink = Arc::new(RecordingNotificationSink::default());
         let app = router_with_runtime(
             store.clone(),
             Some("scanner-auth".to_owned()),
-            None,
             Some("test-auth".to_owned()),
             Some(sink.clone()),
         );
@@ -1178,86 +1125,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn reports_key_image_status_without_spend_authority() {
-        let store = Arc::new(InMemoryWatchStore::default());
-        store.upsert(stored_watch("fast-receive-0")).unwrap();
-        store
-            .upsert_key_image_status(KeyImageStatusRecord {
-                identity_id: "fast-receive-0".to_owned(),
-                key_image: "2".repeat(64),
-                status: SpentStatus::Spent,
-                checked_height: 100,
-                updated_at_ms: 1,
-            })
-            .unwrap();
-        let app = router(store, Some("secret".to_owned()));
-        let body = serde_json::json!({
-            "identity_id": "fast-receive-0",
-            "key_images": ["2".repeat(64), "3".repeat(64)]
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/fast-receive/key-images/status")
-                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn refreshes_key_image_status_from_live_source_and_persists_it() {
-        let store = Arc::new(InMemoryWatchStore::default());
-        store.upsert(stored_watch("fast-receive-0")).unwrap();
-        let app = router_with_key_image_status_source(
-            store.clone(),
-            Some("secret".to_owned()),
-            Some(Arc::new(StaticKeyImageStatusSource)),
-        );
-        let body = serde_json::json!({
-            "identity_id": "fast-receive-0",
-            "key_images": ["4".repeat(64), "5".repeat(64)]
-        });
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/fast-receive/key-images/status")
-                    .header("authorization", format!("Bearer {WATCH_TOKEN}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        let response: KeyImageStatusResponse = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(response.items[0].status, SpentStatus::Spent);
-        assert_eq!(response.items[1].status, SpentStatus::Unspent);
-        assert_eq!(response.items[0].checked_height, 123);
-
-        let stored = store
-            .get_key_image_statuses("fast-receive-0", &["4".repeat(64), "5".repeat(64)])
-            .unwrap();
-        assert_eq!(stored.len(), 2);
-        assert!(stored
-            .iter()
-            .any(|record| record.status == SpentStatus::Spent));
-        assert!(stored
-            .iter()
-            .all(|record| record.checked_height == 123 && record.updated_at_ms > 0));
     }
 }

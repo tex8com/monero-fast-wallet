@@ -1,0 +1,205 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Mon, 27 Jul 2026 15:25:00 -0500
+Subject: [PATCH] wallet: expose purpose-bound extra nonce transactions
+
+Keep raw tx_extra away from application frontends while allowing the native
+wallet boundary to construct one standard tx_extra_nonce field. Encode its
+bounded string length as the canonical varint consumed by Monero's generic
+tx_extra parser; the legacy payment-ID helper only remains suitable below the
+128-byte varint boundary.
+
+This supports signed MFW name COMMIT, CLAIM and RENEW records without changing
+transaction consensus or accepting arbitrary raw tx_extra fields.
+---
+ src/wallet/api/wallet.cpp      | 62 ++++++++++++++++++++++++++++++++--
+ src/wallet/api/wallet.h        | 17 ++++++++++
+ src/wallet/api/wallet2_api.h   | 25 ++++++++++++++
+ 3 files changed, 102 insertions(+), 2 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index c0aea67..8e3c705 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -38,11 +38,13 @@
+ #include "subaddress_account.h"
+ #include "common_defines.h"
+ #include "common/util.h"
++#include "common/varint.h"
+ #include "device/device_ledger.hpp"
+ 
+ #include "mnemonics/electrum-words.h"
+ #include "mnemonics/english.h"
+ #include <boost/format.hpp>
++#include <iterator>
+ #include <sstream>
+ #include <unordered_map>
+ 
+@@ -1777,6 +1779,18 @@ PendingTransaction* WalletImpl::restoreMultisigTransaction(const string& signDat
+ 
+ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<string> &dst_addr, const string &payment_id, optional<std::vector<uint64_t>> amount, uint32_t mixin_count, PendingTransaction::Priority priority, uint32_t subaddr_account, std::set<uint32_t> subaddr_indices)
+ 
++{
++    return createTransactionMultDestWithExtraNonce(
++        dst_addr, payment_id, amount, mixin_count, priority, subaddr_account,
++        std::move(subaddr_indices), "");
++}
++
++PendingTransaction *WalletImpl::createTransactionMultDestWithExtraNonce(
++    const std::vector<string> &dst_addr, const string &payment_id,
++    optional<std::vector<uint64_t>> amount, uint32_t mixin_count,
++    PendingTransaction::Priority priority, uint32_t subaddr_account,
++    std::set<uint32_t> subaddr_indices, const std::string &caller_extra_nonce)
++
+ {
+     clearStatus();
+     // Pause refresh thread while creating transaction
+@@ -1793,7 +1807,7 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<stri
+             break;
+ 
+         std::vector<uint8_t> extra;
+-        std::string extra_nonce;
++        std::string extra_nonce = caller_extra_nonce;
+         vector<cryptonote::tx_destination_entry> dsts;
+         if (!amount && dst_addr.size() > 1) {
+             setStatusError(tr("Sending all requires one destination address"));
+@@ -1803,6 +1817,14 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<stri
+             setStatusError(tr("Destinations and amounts are unequal"));
+             break;
+         }
++        if (caller_extra_nonce.size() > TX_EXTRA_NONCE_MAX_COUNT) {
++            setStatusError(tr("transaction extra nonce exceeds 255 bytes"));
++            break;
++        }
++        if (!payment_id.empty() && !caller_extra_nonce.empty()) {
++            setStatusError(tr("a transaction cannot combine a payment id and custom extra nonce"));
++            break;
++        }
+         if (!payment_id.empty()) {
+             crypto::hash payment_id_long;
+             if (tools::wallet2::parse_long_payment_id(payment_id, payment_id_long)) {
+@@ -1847,7 +1869,23 @@ PendingTransaction *WalletImpl::createTransactionMultDest(const std::vector<stri
+         if (error) {
+             break;
+         }
+-        if (!extra_nonce.empty() && !add_extra_nonce_to_tx_extra(extra, extra_nonce)) {
++        if (!caller_extra_nonce.empty()) {
++            // The legacy add_extra_nonce_to_tx_extra helper writes a
++            // single-byte length. Monero's generic tx_extra parser reads a
++            // canonical varint, so that helper is not parseable for nonce
++            // payloads >= 128 bytes. MFW name CLAIM/RENEW records can exceed
++            // that boundary; encode this purpose-bound field exactly as the
++            // parser and tx_extra sorter expect.
++            extra.push_back(TX_EXTRA_NONCE);
++            tools::write_varint(
++                std::back_inserter(extra),
++                static_cast<uint64_t>(caller_extra_nonce.size()));
++            extra.insert(
++                extra.end(),
++                caller_extra_nonce.begin(),
++                caller_extra_nonce.end());
++        } else if (!extra_nonce.empty() &&
++                   !add_extra_nonce_to_tx_extra(extra, extra_nonce)) {
+             setStatusError(tr("failed to set up payment id, though it was decoded correctly"));
+             break;
+         }
+@@ -1949,6 +1987,26 @@ PendingTransaction *WalletImpl::createTransaction(const string &dst_addr, const
+     return createTransactionMultDest(std::vector<string> {dst_addr}, payment_id, amount ? (std::vector<uint64_t> {*amount}) : (optional<std::vector<uint64_t>>()), mixin_count, priority, subaddr_account, subaddr_indices);
+ }
+ 
++PendingTransaction *WalletImpl::createTransactionWithExtraNonce(
++    const string &dst_addr, optional<uint64_t> amount,
++    const std::string &extra_nonce, uint32_t mixin_count,
++    PendingTransaction::Priority priority, uint32_t subaddr_account,
++    std::set<uint32_t> subaddr_indices)
++
++{
++    if (extra_nonce.empty()) {
++        return createTransaction(dst_addr, "", amount, mixin_count, priority,
++            subaddr_account, std::move(subaddr_indices));
++    }
++    return createTransactionMultDestWithExtraNonce(
++        std::vector<string> {dst_addr}, "",
++        amount ? optional<std::vector<uint64_t>>(
++                     std::vector<uint64_t> {*amount})
++               : optional<std::vector<uint64_t>>(),
++        mixin_count, priority, subaddr_account, std::move(subaddr_indices),
++        extra_nonce);
++}
++
+ PendingTransaction *WalletImpl::createSweepUnmixableTransaction()
+ 
+ {
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index eaefb2b..f1ca5e4 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -165,6 +165,14 @@ public:
+                                         PendingTransaction::Priority priority = PendingTransaction::Priority_Low,
+                                         uint32_t subaddr_account = 0,
+                                         std::set<uint32_t> subaddr_indices = {}) override;
++    PendingTransaction * createTransactionWithExtraNonce(
++                                        const std::string &dst_addr,
++                                        optional<uint64_t> amount,
++                                        const std::string &extra_nonce,
++                                        uint32_t mixin_count,
++                                        PendingTransaction::Priority priority = PendingTransaction::Priority_Low,
++                                        uint32_t subaddr_account = 0,
++                                        std::set<uint32_t> subaddr_indices = {}) override;
+     virtual PendingTransaction * createSweepUnmixableTransaction() override;
+     bool submitTransaction(const std::string &fileName) override;
+     virtual UnsignedTransaction * loadUnsignedTx(const std::string &unsigned_filename) override;
+@@ -255,6 +263,15 @@ private:
+     void pendingTxPostProcess(PendingTransactionImpl * pending);
+     bool doInit(const std::string &daemon_address, const std::string &proxy_address, uint64_t upper_transaction_size_limit = 0, bool ssl = false);
+     bool checkBackgroundSync(const std::string &message) const;
++    PendingTransaction * createTransactionMultDestWithExtraNonce(
++                                        const std::vector<std::string> &dst_addr,
++                                        const std::string &payment_id,
++                                        optional<std::vector<uint64_t>> amount,
++                                        uint32_t mixin_count,
++                                        PendingTransaction::Priority priority,
++                                        uint32_t subaddr_account,
++                                        std::set<uint32_t> subaddr_indices,
++                                        const std::string &extra_nonce);
+ 
+ private:
+     friend class PendingTransactionImpl;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index c25ec44..a27aebd 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -905,6 +905,31 @@ struct Wallet
+                                                    uint32_t subaddr_account = 0,
+                                                    std::set<uint32_t> subaddr_indices = {}) = 0;
+ 
++    /*!
++     * \brief createTransactionWithExtraNonce creates a transaction carrying
++     *        one caller-provided standard tx_extra nonce.
++     * \param dst_addr          destination address as string
++     * \param amount            amount
++     * \param extra_nonce       canonical nonce payload, maximum 255 bytes
++     * \param mixin_count       mixin count. if 0 passed, wallet uses default
++     * \param priority          transaction priority
++     * \param subaddr_account   source account
++     * \param subaddr_indices   source subaddresses
++     * \return                  PendingTransaction object
++     *
++     * The caller supplies only the nonce payload. Core writes the standard
++     * TX_EXTRA_NONCE tag and canonical varint length, preventing a frontend
++     * from injecting a malformed raw tx_extra field.
++     */
++    virtual PendingTransaction * createTransactionWithExtraNonce(
++                                                   const std::string &dst_addr,
++                                                   optional<uint64_t> amount,
++                                                   const std::string &extra_nonce,
++                                                   uint32_t mixin_count,
++                                                   PendingTransaction::Priority = PendingTransaction::Priority_Low,
++                                                   uint32_t subaddr_account = 0,
++                                                   std::set<uint32_t> subaddr_indices = {}) = 0;
++
+     /*!
+      * \brief createSweepUnmixableTransaction creates transaction with unmixable outputs.
+      * \return                  PendingTransaction object. caller is responsible to check PendingTransaction::status()
+-- 
+2.51.0

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,6 @@ import {
   Linking,
   ActivityIndicator,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
 import Svg, {
   Path,
   Defs,
@@ -20,6 +19,7 @@ import Svg, {
 } from 'react-native-svg';
 import { colors } from '../theme/colors';
 import MoneroLogo from '../components/MoneroLogo';
+import { Icon } from '../components/Icon';
 import SyncStatusBar from '../components/SyncStatusBar';
 import TransactionRow, {
   transactionRowKey,
@@ -35,36 +35,26 @@ import {
   xmrToUsd,
 } from '../data/priceService';
 import { type MoneroNewsCategory, useMoneroNews } from '../data/moneroNews';
-import { useNotificationAuthorization } from '../hooks/useNotificationAuthorization';
+import { useLocalAdvertisement } from '../data/advertisements';
+import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 import { useI18n } from '../i18n';
-import type { FastReceiveIdentityRecord } from '../services/FastReceiveRegistry';
-import {
-  fastWalletSelectorTone,
-  fastWalletStatusPresentation,
-} from '../services/FastWalletStatus';
-import {
-  getActiveNodeConnectionSettings,
-  loadActiveNodeConnectionSettings,
-} from '../services/NodeConnectionSettings';
-import type { NodeConnectionMode } from '../services/NodeConnectionSettings';
 import { useWalletState } from '../services/WalletState';
-import {
-  isFastWalletRegistration,
-  walletDisplayName,
-} from '../services/WalletRegistry';
+import { walletDisplayName } from '../services/WalletRegistry';
 import {
   atomicXmrToNumber,
   formatAtomicXmr,
   subtractAtomic,
   toAtomicBigInt,
 } from '../services/WalletFormat';
-import { walletService } from '../services/WalletService';
 import { presentWalletSync } from '../../../../packages/wallet-shared/src/walletSync';
+import {
+  type CommunityV1Advertisement,
+  MoneroEnthusiastV1Service,
+} from '../services/MoneroEnthusiastV1Service';
 
 const W = Dimensions.get('window').width;
 const CHART_W = W - 40;
 const CHART_H = 160;
-const FAST_WALLET_STATUS_REFRESH_MS = 30_000;
 const TIMEFRAMES = ['24H', '7D', '1M', '1Y', 'Max'];
 
 /* ── SVG Chart ─────────────────────────────────────────────────────── */
@@ -212,46 +202,83 @@ function IcoDown({ c }: { c: string }) {
     </Svg>
   );
 }
-function fastWalletDashboardOption(
-  identity: FastReceiveIdentityRecord,
-  t: ReturnType<typeof useI18n>['t'],
-  tex8Node: boolean,
-  notificationsAuthorized: boolean,
-): WalletOption {
-  const status = fastWalletStatusPresentation(
-    identity,
-    tex8Node,
-    t,
-    notificationsAuthorized,
+
+function AdvertisementCard({
+  advertisement,
+}: {
+  advertisement: CommunityV1Advertisement;
+}) {
+  const { t } = useI18n();
+  const [showReason, setShowReason] = useState(false);
+  const recordedCampaigns = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (recordedCampaigns.current.has(advertisement.campaignId)) return;
+    recordedCampaigns.current.add(advertisement.campaignId);
+    MoneroEnthusiastV1Service.recordAdvertisementView(
+      advertisement.campaignId,
+    ).catch(() => undefined);
+  }, [advertisement.campaignId]);
+
+  return (
+    <View style={s.adCard}>
+      <View style={s.adHeader}>
+        <Text style={s.adLabel}>
+          {advertisement.sponsorshipLabel === 'sponsored'
+            ? t('advertising.sponsored')
+            : t('advertising.advertisement')}
+        </Text>
+        <Text style={s.advertiser}>
+          {t('advertising.paidBy', {
+            advertiser: advertisement.paidByDisplayName,
+          })}
+        </Text>
+      </View>
+      <Text style={s.adTitle}>{advertisement.title}</Text>
+      <Text style={s.adBody}>{advertisement.body}</Text>
+      <View style={s.adActions}>
+        <TouchableOpacity
+          accessibilityRole="link"
+          style={s.adOpenButton}
+          onPress={() =>
+            Linking.openURL(advertisement.destinationUrl).catch(() => undefined)
+          }
+        >
+          <Text style={s.adOpenText}>{t('advertising.learnMore')} ↗</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          accessibilityRole="button"
+          onPress={() => setShowReason(value => !value)}
+        >
+          <Text style={s.adWhy}>{t('advertising.why')}</Text>
+        </TouchableOpacity>
+      </View>
+      {showReason ? (
+        <Text style={s.adReason}>
+          {advertisement.selectionReason === 'local_interests'
+            ? t('advertising.reasonLocal')
+            : t('advertising.reasonContextual')}
+        </Text>
+      ) : null}
+    </View>
   );
-  return {
-    id: identity.id,
-    address: identity.address,
-    badge: t('walletSelector.fast'),
-    detail: status.label,
-    kind: 'fast',
-    label: identity.label,
-    meta: identity.network,
-    tone: fastWalletSelectorTone(status),
-  };
 }
 
 /* ── Home Screen ─────────────────────────────────────────────────────── */
 export default function HomeScreen({ navigation }: any) {
   const [tf, setTf] = useState('24H');
+  const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
   const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>(
     'all',
   );
-  const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
-    FastReceiveIdentityRecord[]
-  >([]);
-  const [nodeMode, setNodeMode] = useState<NodeConnectionMode>(
-    getActiveNodeConnectionSettings().mode,
-  );
   const { dateLocale, t } = useI18n();
-  const { authorized: notificationsAuthorized } =
-    useNotificationAuthorization();
-  const { price, change24h, loading: priceLoading } = useXmrPrice();
+  const {
+    price,
+    change24h,
+    loading: priceLoading,
+    error: priceError,
+    refresh: refreshPrice,
+  } = useXmrPrice();
   const {
     points,
     loading: chartLoading,
@@ -263,12 +290,16 @@ export default function HomeScreen({ navigation }: any) {
     loading: newsLoading,
     unavailable: newsUnavailable,
     refresh: refreshNews,
-  } = useMoneroNews();
+  } = useMoneroNews(v1ReleaseFeatures.news);
+  const advertisement = useLocalAdvertisement(
+    v1ReleaseFeatures.moneroEnthusiastV1 && v1ReleaseFeatures.news,
+  );
   const {
     error,
     registeredWallet,
     registeredWallets,
     isRegisteredWalletOpen,
+    openRegisteredWalletById,
     session,
     setActiveRegisteredWallet,
     snapshot,
@@ -287,76 +318,48 @@ export default function HomeScreen({ navigation }: any) {
     minFractionDigits: 4,
   });
   const showLocked = lockedAtomic > 0n;
-  const selectedFastIdentity =
-    registeredWallet && isFastWalletRegistration(registeredWallet)
-      ? fastReceiveIdentities.find(
-          identity => identity.id === registeredWallet.id,
-        )
-      : undefined;
-  const selectedFastStatus = selectedFastIdentity
-    ? fastWalletStatusPresentation(
-        selectedFastIdentity,
-        nodeMode === 'optimized-grpc',
-        t,
-        notificationsAuthorized,
-      )
-    : undefined;
-  const selectedFastWallet = isFastWalletRegistration(registeredWallet);
-  const hasSyncError =
-    !selectedFastWallet && (status === 'error' || Boolean(error));
+  const hasSyncError = status === 'error' || Boolean(error);
   const syncPresentation = presentWalletSync(snapshot, {
     startHeight: syncStartHeight,
   });
-  const syncColor = selectedFastStatus
-    ? selectedFastStatus.tone === 'success'
-      ? colors.success
-      : selectedFastStatus.tone === 'danger'
-        ? colors.error
-        : selectedFastStatus.tone === 'muted'
-          ? colors.textMuted
-          : colors.warning
-    : hasSyncError
-      ? colors.error
-      : status === 'open'
-        ? colors.success
-        : status === 'syncing' || status === 'opening'
-          ? colors.warning
-          : colors.orange;
-  const syncText = selectedFastStatus
-    ? selectedFastStatus.label
-    : selectedFastWallet
-      ? t('fastWallet.status.settingUp')
-      : hasSyncError
-        ? t('sync.error')
-        : status === 'open'
-          ? t('status.live')
-          : status === 'syncing'
-            ? syncPresentation.phase === 'finalizing'
-              ? t('sync.verifyingRecent')
-              : syncPresentation.phase === 'waiting-for-node'
-                ? t('sync.connectingNode')
-                : t('sync.scanningBlocks')
-            : status === 'opening'
-              ? t('action.open')
-              : status === 'locked'
-                ? t('status.locked')
-                : t('status.setup');
+  const syncColor = hasSyncError
+    ? colors.error
+    : status === 'open'
+    ? colors.success
+    : status === 'syncing' || status === 'opening'
+    ? colors.warning
+    : colors.orange;
+  const syncText = hasSyncError
+    ? t('sync.error')
+    : status === 'open'
+    ? t('status.live')
+    : status === 'syncing'
+    ? syncPresentation.phase === 'finalizing'
+      ? t('sync.verifyingRecent')
+      : syncPresentation.phase === 'waiting-for-node'
+      ? t('sync.connectingNode')
+      : t('sync.scanningBlocks')
+    : status === 'opening'
+    ? t('action.open')
+    : status === 'locked'
+    ? t('status.locked')
+    : t('status.setup');
 
   const positive =
     tf === '24H'
       ? change24h >= 0
       : points.length >= 2
-        ? points[points.length - 1].price >= points[0].price
-        : true;
+      ? points[points.length - 1].price >= points[0].price
+      : true;
 
   const changePercent =
     tf === '24H'
       ? change24h
       : points.length >= 2
-        ? ((points[points.length - 1].price - points[0].price) /
-            points[0].price) *
-          100
-        : 0;
+      ? ((points[points.length - 1].price - points[0].price) /
+          points[0].price) *
+        100
+      : 0;
 
   const changeUsd = price > 0 ? Math.abs((changePercent / 100) * price) : 0;
   const walletSnapshotMap = useMemo(
@@ -387,24 +390,8 @@ export default function HomeScreen({ navigation }: any) {
     [newsCategory, newsItems],
   );
   const homeWalletOptions = useMemo<WalletSelectorItem[]>(
-    () => [
-      ...registeredWallets.filter(wallet => !isFastWalletRegistration(wallet)),
-      ...fastReceiveIdentities.map(identity =>
-        fastWalletDashboardOption(
-          identity,
-          t,
-          nodeMode === 'optimized-grpc',
-          notificationsAuthorized,
-        ),
-      ),
-    ],
-    [
-      fastReceiveIdentities,
-      nodeMode,
-      notificationsAuthorized,
-      registeredWallets,
-      t,
-    ],
+    () => registeredWallets,
+    [registeredWallets],
   );
   const openWalletSetup = () =>
     navigation.navigate(
@@ -426,69 +413,32 @@ export default function HomeScreen({ navigation }: any) {
   };
   const selectWallet = async (wallet: WalletOption) => {
     const walletId = wallet.id;
-    if (wallet.kind === 'fast') {
-      if (walletId !== registeredWallet?.id) {
-        await setActiveRegisteredWallet(walletId);
-      }
-      return;
-    }
-    if (isRegisteredWalletOpen(walletId)) {
-      if (walletId !== registeredWallet?.id) {
-        await setActiveRegisteredWallet(walletId);
-      }
+    if (openingWalletId) {
       return;
     }
 
-    let selectedWallet = registeredWallet;
-    const changedWallet = walletId !== registeredWallet?.id;
-    if (changedWallet) {
-      selectedWallet = await setActiveRegisteredWallet(walletId);
+    setOpeningWalletId(walletId);
+    try {
+      if (isRegisteredWalletOpen(walletId)) {
+        if (walletId !== registeredWallet?.id) {
+          await setActiveRegisteredWallet(walletId);
+        }
+        return;
+      }
+
+      const opened = await openRegisteredWalletById(walletId);
+      if (!opened) {
+        navigation.navigate('WalletSetup', {
+          mode: 'open',
+          openRequestId: Date.now(),
+        });
+      }
+    } catch {
+      // WalletState exposes the exact opening error on the active wallet card.
+    } finally {
+      setOpeningWalletId(undefined);
     }
-    if (changedWallet && selectedWallet?.credentialKey) {
-      return;
-    }
-    navigation.navigate('WalletSetup', {
-      mode: 'open',
-      openRequestId: Date.now(),
-    });
   };
-
-  useFocusEffect(
-    useCallback(() => {
-      let mounted = true;
-      let refreshInFlight = false;
-      const refreshFastWalletStatus = async () => {
-        if (refreshInFlight) {
-          return;
-        }
-
-        refreshInFlight = true;
-        try {
-          const [identities, settings] = await Promise.all([
-            walletService.loadFastReceiveIdentitiesForActiveNode(),
-            loadActiveNodeConnectionSettings(),
-          ]);
-          if (mounted) {
-            setFastReceiveIdentities(identities);
-            setNodeMode(settings.mode);
-          }
-        } finally {
-          refreshInFlight = false;
-        }
-      };
-
-      refreshFastWalletStatus().catch(() => undefined);
-      const interval = setInterval(
-        () => refreshFastWalletStatus().catch(() => undefined),
-        FAST_WALLET_STATUS_REFRESH_MS,
-      );
-
-      return () => {
-        mounted = false;
-        clearInterval(interval);
-      };
-    }, []),
-  );
 
   return (
     <View style={s.container}>
@@ -508,7 +458,7 @@ export default function HomeScreen({ navigation }: any) {
           </View>
         </View>
 
-        {registeredWallet && !selectedFastWallet ? (
+        {registeredWallet ? (
           <View style={s.syncStatusWrap}>
             <SyncStatusBar
               error={error}
@@ -518,26 +468,6 @@ export default function HomeScreen({ navigation }: any) {
               status={status}
               walletName={walletDisplayName(registeredWallet)}
             />
-          </View>
-        ) : registeredWallet && selectedFastWallet ? (
-          <View style={s.syncStatusWrap}>
-            <View style={s.fastWalletStatusCard}>
-              <View style={s.fastWalletStatusTopRow}>
-                <View style={s.fastWalletStatusTitleGroup}>
-                  <Text style={s.fastWalletStatusTitle} numberOfLines={1}>
-                    {walletDisplayName(registeredWallet)}
-                  </Text>
-                  <Text style={[s.fastWalletStatusLabel, { color: syncColor }]}>
-                    {syncText}
-                  </Text>
-                </View>
-                <View style={[s.syncDot, { backgroundColor: syncColor }]} />
-              </View>
-              <Text style={s.fastWalletStatusDescription} numberOfLines={2}>
-                {selectedFastStatus?.description ??
-                  t('fastWallet.status.settingUpDescription')}
-              </Text>
-            </View>
           </View>
         ) : null}
 
@@ -549,6 +479,18 @@ export default function HomeScreen({ navigation }: any) {
               size="large"
               style={{ marginVertical: 12 }}
             />
+          ) : priceError || price <= 0 ? (
+            <View style={s.priceUnavailable}>
+              <Text style={s.priceUnavailableText}>
+                {t('home.priceUnavailable')}
+              </Text>
+              <TouchableOpacity
+                style={s.chartRetryButton}
+                onPress={refreshPrice}
+              >
+                <Text style={s.chartRetryText}>{t('action.retry')}</Text>
+              </TouchableOpacity>
+            </View>
           ) : (
             <>
               <Text style={s.priceBig}>
@@ -630,106 +572,114 @@ export default function HomeScreen({ navigation }: any) {
           ))}
         </View>
 
-        <View style={s.newsCard}>
-          <View style={s.newsHeader}>
-            <View>
-              <Text style={s.newsEyebrow}>{t('home.newsSource')}</Text>
-              <Text style={s.newsTitle}>{t('home.newsTitle')}</Text>
-            </View>
-            <TouchableOpacity
-              onPress={() =>
-                Linking.openURL('https://www.getmonero.org/blog/').catch(
-                  () => undefined,
-                )
-              }
-            >
-              <Text style={s.newsSourceLink}>{t('home.newsSourceLink')} ↗</Text>
-            </TouchableOpacity>
-          </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={s.newsFilters}
-          >
-            {(['all', 'network', 'wallet', 'ecosystem'] as const).map(
-              category => (
-                <TouchableOpacity
-                  key={category}
-                  style={[
-                    s.newsFilter,
-                    newsCategory === category && s.newsFilterActive,
-                  ]}
-                  onPress={() => setNewsCategory(category)}
-                >
-                  <Text
-                    style={[
-                      s.newsFilterText,
-                      newsCategory === category && s.newsFilterTextActive,
-                    ]}
-                  >
-                    {category === 'all'
-                      ? t('home.newsAll')
-                      : category === 'network'
-                        ? t('home.newsNetwork')
-                        : category === 'wallet'
-                          ? t('home.newsWallet')
-                          : t('home.newsEcosystem')}
-                  </Text>
-                </TouchableOpacity>
-              ),
-            )}
-          </ScrollView>
-          {newsLoading && newsItems.length === 0 ? (
-            <Text style={s.newsStatus}>{t('home.newsLoading')}</Text>
-          ) : newsUnavailable && newsItems.length === 0 ? (
-            <View style={s.newsUnavailable}>
-              <Text style={s.newsStatus}>{t('home.newsUnavailable')}</Text>
-              <TouchableOpacity onPress={refreshNews}>
-                <Text style={s.newsRetry}>{t('action.retry')}</Text>
+        {v1ReleaseFeatures.news ? (
+          <View style={s.newsCard}>
+            <View style={s.newsHeader}>
+              <View>
+                <Text style={s.newsEyebrow}>{t('home.newsSource')}</Text>
+                <Text style={s.newsTitle}>{t('home.newsTitle')}</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() =>
+                  Linking.openURL('https://www.getmonero.org/blog/').catch(
+                    () => undefined,
+                  )
+                }
+              >
+                <Text style={s.newsSourceLink}>
+                  {t('home.newsSourceLink')} ↗
+                </Text>
               </TouchableOpacity>
             </View>
-          ) : visibleNews.length === 0 ? (
-            <Text style={s.newsStatus}>{t('home.newsEmpty')}</Text>
-          ) : (
             <ScrollView
               horizontal
-              pagingEnabled
-              decelerationRate="fast"
               showsHorizontalScrollIndicator={false}
-              contentContainerStyle={s.newsPages}
+              contentContainerStyle={s.newsFilters}
             >
-              {visibleNews.slice(0, 8).map(item => (
-                <TouchableOpacity
-                  key={item.id}
-                  style={s.newsPage}
-                  onPress={() =>
-                    Linking.openURL(item.url).catch(() => undefined)
-                  }
-                  activeOpacity={0.8}
-                >
-                  <Text style={s.newsCategory}>
-                    {item.category === 'network'
-                      ? t('home.newsNetwork')
-                      : item.category === 'wallet'
+              {(['all', 'network', 'wallet', 'ecosystem'] as const).map(
+                category => (
+                  <TouchableOpacity
+                    key={category}
+                    style={[
+                      s.newsFilter,
+                      newsCategory === category && s.newsFilterActive,
+                    ]}
+                    onPress={() => setNewsCategory(category)}
+                  >
+                    <Text
+                      style={[
+                        s.newsFilterText,
+                        newsCategory === category && s.newsFilterTextActive,
+                      ]}
+                    >
+                      {category === 'all'
+                        ? t('home.newsAll')
+                        : category === 'network'
+                        ? t('home.newsNetwork')
+                        : category === 'wallet'
                         ? t('home.newsWallet')
                         : t('home.newsEcosystem')}
-                  </Text>
-                  <Text numberOfLines={2} style={s.newsItemTitle}>
-                    {item.title}
-                  </Text>
-                  <Text numberOfLines={2} style={s.newsSummary}>
-                    {item.summary}
-                  </Text>
-                  <Text style={s.newsDate}>
-                    {new Intl.DateTimeFormat(dateLocale, {
-                      dateStyle: 'medium',
-                    }).format(new Date(item.publishedAt))}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+                    </Text>
+                  </TouchableOpacity>
+                ),
+              )}
             </ScrollView>
-          )}
-        </View>
+            {newsLoading && newsItems.length === 0 ? (
+              <Text style={s.newsStatus}>{t('home.newsLoading')}</Text>
+            ) : newsUnavailable && newsItems.length === 0 ? (
+              <View style={s.newsUnavailable}>
+                <Text style={s.newsStatus}>{t('home.newsUnavailable')}</Text>
+                <TouchableOpacity onPress={refreshNews}>
+                  <Text style={s.newsRetry}>{t('action.retry')}</Text>
+                </TouchableOpacity>
+              </View>
+            ) : visibleNews.length === 0 ? (
+              <Text style={s.newsStatus}>{t('home.newsEmpty')}</Text>
+            ) : (
+              <ScrollView
+                horizontal
+                pagingEnabled
+                decelerationRate="fast"
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={s.newsPages}
+              >
+                {visibleNews.slice(0, 8).map(item => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={s.newsPage}
+                    onPress={() =>
+                      Linking.openURL(item.url).catch(() => undefined)
+                    }
+                    activeOpacity={0.8}
+                  >
+                    <Text style={s.newsCategory}>
+                      {item.category === 'network'
+                        ? t('home.newsNetwork')
+                        : item.category === 'wallet'
+                        ? t('home.newsWallet')
+                        : t('home.newsEcosystem')}
+                    </Text>
+                    <Text numberOfLines={2} style={s.newsItemTitle}>
+                      {item.title}
+                    </Text>
+                    <Text numberOfLines={2} style={s.newsSummary}>
+                      {item.summary}
+                    </Text>
+                    <Text style={s.newsDate}>
+                      {new Intl.DateTimeFormat(dateLocale, {
+                        dateStyle: 'medium',
+                      }).format(new Date(item.publishedAt))}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        ) : null}
+
+        {advertisement ? (
+          <AdvertisementCard advertisement={advertisement} />
+        ) : null}
 
         {/* Action Buttons */}
         <View style={s.actRow}>
@@ -755,6 +705,27 @@ export default function HomeScreen({ navigation }: any) {
           </TouchableOpacity>
         </View>
 
+        {v1ReleaseFeatures.mfwNameRegistration ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={t('mfwNames.claimYourAddress')}
+            activeOpacity={0.78}
+            style={s.nameClaimCard}
+            onPress={() => openWalletRoute('MfwNames')}
+          >
+            <View style={s.nameClaimIcon}>
+              <Icon name="key" size={24} color={colors.orange} />
+            </View>
+            <View style={s.nameClaimCopy}>
+              <Text style={s.nameClaimTitle}>
+                {t('mfwNames.claimYourAddress')}
+              </Text>
+              <Text style={s.nameClaimText}>{t('mfwNames.subtitle')}</Text>
+            </View>
+            <Icon name="chevron-right" size={22} color={colors.orange} />
+          </TouchableOpacity>
+        ) : null}
+
         {/* Balance Card */}
         <View style={s.balCard}>
           <Text style={s.balLabel}>{t('home.totalBalance')}</Text>
@@ -776,7 +747,7 @@ export default function HomeScreen({ navigation }: any) {
               </Text>
             </View>
           )}
-          {!hasOpenWallet && !selectedFastWallet ? (
+          {!hasOpenWallet ? (
             <TouchableOpacity style={s.balOpenButton} onPress={openWalletSetup}>
               <Text style={s.balOpenButtonText}>
                 {registeredWallet
@@ -796,6 +767,7 @@ export default function HomeScreen({ navigation }: any) {
           <View style={s.walletSelectorWrap}>
             <WalletSelector
               activeWalletId={registeredWallet?.id}
+              openingWalletId={openingWalletId}
               snapshots={walletSnapshotMap}
               titleKey="home.allWallets"
               wallets={homeWalletOptions}
@@ -807,15 +779,13 @@ export default function HomeScreen({ navigation }: any) {
         {/* Transactions */}
         <View style={s.secRow}>
           <Text style={s.secTitle}>{t('home.transactions')}</Text>
-          {!selectedFastWallet ? (
-            <TouchableOpacity
-              accessibilityRole="button"
-              activeOpacity={0.7}
-              onPress={() => navigation.navigate('Transactions')}
-            >
-              <Text style={s.secLink}>{t('transactions.viewMore')}</Text>
-            </TouchableOpacity>
-          ) : null}
+          <TouchableOpacity
+            accessibilityRole="button"
+            activeOpacity={0.7}
+            onPress={() => navigation.navigate('Transactions')}
+          >
+            <Text style={s.secLink}>{t('transactions.viewMore')}</Text>
+          </TouchableOpacity>
         </View>
 
         {hasOpenWallet && transactions.length > 0 ? (
@@ -839,20 +809,14 @@ export default function HomeScreen({ navigation }: any) {
         ) : (
           <View style={s.emptyTxCard}>
             <Text style={s.emptyTxTitle}>
-              {selectedFastWallet
-                ? (selectedFastStatus?.label ??
-                  t('home.fastWalletTransactionsTitle'))
-                : hasOpenWallet
-                  ? t('home.noTransactions')
-                  : t('home.walletNotOpen')}
+              {hasOpenWallet
+                ? t('home.noTransactions')
+                : t('home.walletNotOpen')}
             </Text>
             <Text style={s.emptyTxText}>
-              {selectedFastWallet
-                ? (selectedFastStatus?.description ??
-                  t('home.fastWalletTransactionsText'))
-                : hasOpenWallet
-                  ? t('home.noTransactionsText')
-                  : t('home.openWalletToLoad')}
+              {hasOpenWallet
+                ? t('home.noTransactionsText')
+                : t('home.openWalletToLoad')}
             </Text>
           </View>
         )}
@@ -925,6 +889,17 @@ const s = StyleSheet.create({
   },
 
   priceSection: { paddingHorizontal: 20, marginBottom: 8 },
+  priceUnavailable: {
+    minHeight: 70,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  priceUnavailableText: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontWeight: '600',
+  },
   priceBig: {
     color: '#FFF',
     fontSize: 42,
@@ -1094,6 +1069,67 @@ const s = StyleSheet.create({
     marginTop: 'auto',
     paddingTop: 10,
   },
+  adCard: {
+    marginHorizontal: 20,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: `${colors.orange}66`,
+    borderRadius: 16,
+    backgroundColor: colors.orangeMuted,
+    padding: 16,
+  },
+  adHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  adLabel: {
+    color: colors.orange,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  advertiser: {
+    color: colors.textMuted,
+    flex: 1,
+    fontSize: 10,
+    textAlign: 'right',
+  },
+  adTitle: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+    lineHeight: 21,
+    marginTop: 10,
+  },
+  adBody: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 5,
+  },
+  adActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 14,
+  },
+  adOpenButton: {
+    borderRadius: 9,
+    backgroundColor: colors.orange,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  adOpenText: { color: '#FFF', fontSize: 12, fontWeight: '800' },
+  adWhy: { color: colors.textSecondary, fontSize: 11, fontWeight: '700' },
+  adReason: {
+    color: colors.textMuted,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 11,
+  },
 
   actRow: { flexDirection: 'row', paddingHorizontal: 20, marginBottom: 24 },
   actBtn: { flex: 1, alignItems: 'center' },
@@ -1110,6 +1146,33 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     marginTop: 10,
+  },
+  nameClaimCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
+    marginHorizontal: 20,
+    marginBottom: 20,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: `${colors.orange}66`,
+    backgroundColor: colors.orangeMuted,
+  },
+  nameClaimIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.bgCard,
+  },
+  nameClaimCopy: { flex: 1, gap: 3 },
+  nameClaimTitle: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  nameClaimText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
   },
 
   balCard: {

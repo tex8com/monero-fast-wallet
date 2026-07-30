@@ -20,10 +20,16 @@ async fn main() -> Result<(), String> {
 }
 
 async fn shutdown_signal() {
-    let ctrl_c = async { let _ = tokio::signal::ctrl_c().await; };
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
     #[cfg(unix)]
     let terminate = async {
-        let Ok(mut signal) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) else { return; };
+        let Ok(mut signal) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            return;
+        };
         signal.recv().await;
     };
     #[cfg(not(unix))]

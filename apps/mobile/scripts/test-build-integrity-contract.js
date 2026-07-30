@@ -27,6 +27,83 @@ assert.match(appGradle, /jsc-android:2026004\.0\.1/);
 assert.match(appGradle, /def enableProguardInReleaseBuilds = true/);
 assert.match(appGradle, /shrinkResources enableProguardInReleaseBuilds/);
 assert.match(appGradle, /Release signing is required/);
+assert.match(appGradle, /config\/mobile-app-version\.json/);
+assert.match(
+  appGradle,
+  /versionCode mobileAppVersionManifest\.androidVersionCode as int/,
+);
+assert.match(
+  appGradle,
+  /versionName mobileAppVersionManifest\.versionName/,
+);
+assert.match(
+  appGradle,
+  /MONERO_WALLET_ALLOW_SCREEN_CAPTURE[\s\S]*\?: "false"/,
+);
+assert.match(
+  appGradle,
+  /buildConfigField "boolean", "ALLOW_SCREEN_CAPTURE"/,
+);
+
+const mainActivity = read(
+  'android/app/src/main/java/com/monerowallet/MainActivity.kt',
+);
+assert.match(
+  mainActivity,
+  /if \(BuildConfig\.ALLOW_SCREEN_CAPTURE\)[\s\S]*clearFlags\([\s\S]*FLAG_SECURE[\s\S]*else[\s\S]*setFlags\(/,
+);
+assert.match(mainActivity, /onPostResume\(\)[\s\S]*applyScreenCapturePolicy\(\)/);
+
+const walletSetup = read('src/screens/WalletSetupScreen.tsx');
+assert.match(walletSetup, /config\/mobile-app-version\.json/);
+assert.match(
+  walletSetup,
+  /<Text style=\{s\.version\}>v\{mobileAppVersion\.versionName\}<\/Text>/,
+);
+
+const androidCommon = read('scripts/android-common.sh');
+const androidBuild = read('scripts/android-build.sh');
+const androidBuildInstall = read('scripts/android-build-install.sh');
+assert.match(
+  androidCommon,
+  /fast_wallet_protocol_artifact_needs_rebuild\(\)/,
+);
+assert.match(androidCommon, /-newer "\$artifact"/);
+for (const buildScript of [androidBuild, androidBuildInstall]) {
+  assert.match(
+    buildScript,
+    /fast_wallet_protocol_artifact_needs_rebuild/,
+  );
+  assert.match(
+    buildScript,
+    /MONERO_SOURCE_DIR="\$\{MONERO_SOURCE_DIR\}"/,
+  );
+}
+
+const androidCmake = read('android/app/src/main/cpp/CMakeLists.txt');
+assert.match(androidCmake, /MONERO_WALLET_API_HEADER_SHA256/);
+assert.match(androidCmake, /MONERO_WALLET_API_LIBRARY_SHA256/);
+assert.match(
+  androidCmake,
+  /wallet2_api\.h does not match[\s\S]*libwallet_api\.a/,
+);
+const walletApiBuilder = read(
+  '../../native/monero-bridge/scripts/build-android-monero-wallet-api.sh',
+);
+assert.match(walletApiBuilder, /\.tex8-wallet-api-header\.sha256/);
+assert.match(walletApiBuilder, /Stamped wallet_api ABI/);
+const androidManifestGenerator = read(
+  '../../native/monero-bridge/scripts/generate-android-monero-link-manifests.sh',
+);
+assert.match(
+  androidManifestGenerator,
+  /MONERO_WALLET_API_HEADER_SHA256/,
+);
+assert.match(
+  androidManifestGenerator,
+  /MONERO_WALLET_API_LIBRARY_SHA256/,
+);
+assert.match(androidManifestGenerator, /wallet_api ABI mismatch/);
 
 const verification = read('android/gradle/verification-metadata.xml');
 assert.match(verification, /<verify-metadata>true<\/verify-metadata>/);

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <exception>
 #include <initializer_list>
 #include <iostream>
@@ -36,6 +37,26 @@ std::string backendNotLinkedMessage() {
 }
 
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
+bool isCanonicalMfwNameExtraNonce(const std::vector<uint8_t>& nonce) {
+  constexpr uint8_t arbitraryDataMarker = 0x7f;
+  constexpr uint8_t protocolVersion = 1;
+  constexpr std::size_t commitNonceBytes = 1 + 38;
+  constexpr std::size_t minimumNameRecordNonceBytes = 1 + 190;
+  constexpr std::size_t maximumNameRecordNonceBytes = 1 + 251;
+  if (nonce.size() < 1 + 6 || nonce[0] != arbitraryDataMarker ||
+      nonce[1] != 'M' || nonce[2] != 'F' || nonce[3] != 'W' ||
+      nonce[4] != 'N' || nonce[5] != protocolVersion) {
+    return false;
+  }
+  const uint8_t operation = nonce[6];
+  if (operation == 1) {
+    return nonce.size() == commitNonceBytes;
+  }
+  return operation >= 2 && operation <= 5 &&
+      nonce.size() >= minimumNameRecordNonceBytes &&
+      nonce.size() <= maximumNameRecordNonceBytes;
+}
+
 std::string maskDiagnosticId(const std::string&) {
   // Kept only to avoid duplicating diagnostic call-site plumbing. The logger
   // also rejects the walletId field, so no stable wallet identifier is emitted.
@@ -45,7 +66,7 @@ std::string maskDiagnosticId(const std::string&) {
 void logEngineDiagnostic(
     const std::string& event,
     const std::initializer_list<std::pair<std::string, std::string>>& fields) {
-#if defined(NDEBUG)
+#if defined(NDEBUG) && !TEX8_WALLET_DIAGNOSTICS
   (void)event;
   (void)fields;
 #else
@@ -63,6 +84,7 @@ void logEngineDiagnostic(
       "daemonHeight",
       "daemonTargetHeight",
       "duplicates",
+      "elapsedMs",
       "heightAfterStop",
       "heightBeforeStop",
       "initialized",
@@ -184,10 +206,6 @@ bool pathBelongsToFastReceiveIdentity(
   const auto fileName = walletFileName(path);
   return fileName == identityId ||
       fileName.rfind(identityId + ".", 0) == 0;
-}
-
-bool isIndependentFastReceiveWalletPath(const std::string& path) {
-  return walletFileName(path).rfind(kIndependentFastReceiveIdPrefix, 0) == 0;
 }
 
 bool isLegacyFastReceiveWalletPath(const std::string& path) {
@@ -494,12 +512,19 @@ class WalletEngine::Impl {
   }
 
   WalletId createWallet(const CreateWalletRequest& request) {
+    const auto managerStartedAt = std::chrono::steady_clock::now();
+    logEngineDiagnostic("createWallet.manager.start", {});
     auto* wallet = manager_->createWallet(
         request.path,
         request.password,
         request.language,
         toMoneroNetwork(request.network),
         request.kdfRounds);
+    logEngineDiagnostic(
+        "createWallet.manager.success",
+        {{"elapsedMs",
+          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - managerStartedAt).count())}});
     throwIfWalletFailed(wallet, "createWallet");
     if (request.restoreHeight > 1) {
       wallet->setRefreshFromBlockHeight(request.restoreHeight);
@@ -522,6 +547,8 @@ class WalletEngine::Impl {
             {"network", std::to_string(static_cast<int>(request.network))},
             {"requestedRestoreHeight", std::to_string(request.restoreHeight)},
         });
+    const auto managerStartedAt = std::chrono::steady_clock::now();
+    logEngineDiagnostic("restoreWallet.manager.start", {});
     auto* wallet = manager_->recoveryWallet(
         request.path,
         request.password,
@@ -530,6 +557,11 @@ class WalletEngine::Impl {
         request.restoreHeight,
         request.kdfRounds,
         request.seedOffset);
+    logEngineDiagnostic(
+        "restoreWallet.manager.success",
+        {{"elapsedMs",
+          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - managerStartedAt).count())}});
     return addWallet("restoreWallet", request.path, request.network, wallet);
   }
 
@@ -538,12 +570,20 @@ class WalletEngine::Impl {
       throw WalletEngineError(legacyFastReceiveDisabledMessage());
     }
 
+    const auto managerStartedAt = std::chrono::steady_clock::now();
+    logEngineDiagnostic("openWallet.manager.start", {});
     auto* wallet = manager_->openWallet(
         request.path,
         request.password,
         toMoneroNetwork(request.network),
         request.kdfRounds);
+    logEngineDiagnostic(
+        "openWallet.manager.success",
+        {{"elapsedMs",
+          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - managerStartedAt).count())}});
     try {
+      logEngineDiagnostic("openWallet.validation.start", {});
       throwIfWalletFailed(wallet, "openWallet");
       if (request.restoreHeight > 1) {
         // Scan-start height applies only when creating or importing a wallet.
@@ -556,6 +596,7 @@ class WalletEngine::Impl {
                 {"walletHeight", std::to_string(wallet->blockChainHeight())},
             });
       }
+      logEngineDiagnostic("openWallet.validation.success", {});
     } catch (...) {
       if (wallet != nullptr) {
         manager_->closeWallet(wallet, false);
@@ -563,11 +604,14 @@ class WalletEngine::Impl {
       throw;
     }
 
-    return addWallet(
+    logEngineDiagnostic("openWallet.session.start", {});
+    const auto walletId = addWallet(
         "openWallet",
         request.path,
         request.network,
         wallet);
+    logEngineDiagnostic("openWallet.session.success", {});
+    return walletId;
   }
 
   WalletId createWalletFromDevice(const CreateWalletFromDeviceRequest& request) {
@@ -1194,7 +1238,7 @@ class WalletEngine::Impl {
     const auto& session = getLocked(walletId);
     if (!session.recoverySeedAllowed) {
       throw WalletEngineError(
-          "recovery-seed reveal is unavailable for Fast, hardware, and watch-only wallets");
+          "recovery-seed reveal is unavailable for hardware and watch-only wallets");
     }
     return session.wallet->seed(seedOffset);
   }
@@ -1407,14 +1451,38 @@ class WalletEngine::Impl {
     if (!request.amountAtomic.empty()) {
       optionalAmount = parseAtomicAmount(request.amountAtomic);
     }
-    auto* pending = session.wallet->createTransaction(
-        request.address,
-        request.paymentId,
-        optionalAmount,
-        request.mixinCount,
-        parseTransactionPriority(request.priority),
-        request.accountIndex,
-        std::set<uint32_t>{});
+    Monero::PendingTransaction* pending = nullptr;
+    if (request.mfwNameExtraNonce.empty()) {
+      pending = session.wallet->createTransaction(
+          request.address,
+          request.paymentId,
+          optionalAmount,
+          request.mixinCount,
+          parseTransactionPriority(request.priority),
+          request.accountIndex,
+          std::set<uint32_t>{});
+    } else {
+#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
+      if (!request.paymentId.empty() ||
+          !isCanonicalMfwNameExtraNonce(request.mfwNameExtraNonce)) {
+        throw WalletEngineError("MFW name transaction nonce is invalid");
+      }
+      const std::string nonce(
+          reinterpret_cast<const char*>(request.mfwNameExtraNonce.data()),
+          request.mfwNameExtraNonce.size());
+      pending = session.wallet->createTransactionWithExtraNonce(
+          request.address,
+          optionalAmount,
+          nonce,
+          request.mixinCount,
+          parseTransactionPriority(request.priority),
+          request.accountIndex,
+          std::set<uint32_t>{});
+#else
+      throw WalletEngineError(
+          "MFW name transactions require the TEX8 Monero Core extension");
+#endif
+    }
     if (pending == nullptr) {
       throw WalletEngineError("Monero returned a null pending transaction");
     }
@@ -1426,6 +1494,13 @@ class WalletEngine::Impl {
       if (result.error.empty()) {
         result.error = "transaction preparation failed";
       }
+      result.id.clear();
+      session.wallet->disposeTransaction(pending);
+      return result;
+    }
+    if (!request.mfwNameExtraNonce.empty() && pending->txCount() != 1) {
+      result.error =
+          "MFW name operation must fit in exactly one transaction";
       result.id.clear();
       session.wallet->disposeTransaction(pending);
       return result;
@@ -1576,7 +1651,6 @@ class WalletEngine::Impl {
     session->network = network;
     session->cacheResetHeight = cacheResetHeight;
     session->recoverySeedAllowed =
-        !isIndependentFastReceiveWalletPath(path) &&
         wallet->getDeviceType() == Monero::Wallet::Device_Software &&
         !wallet->watchOnly();
     session->hardwareStatus.walletId = session->id;
@@ -1891,6 +1965,23 @@ std::string WalletEngine::getAddress(
   (void)walletId;
   (void)accountIndex;
   (void)addressIndex;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+std::string WalletEngine::validateRecipientAddress(
+    const std::string& address,
+    NetworkType network) const {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  if (address.empty() || address.size() > 128 ||
+      !Monero::Wallet::addressValid(address, toMoneroNetwork(network))) {
+    throw WalletEngineError(
+        "recipient address is not valid for the selected Monero network");
+  }
+  return address;
+#else
+  (void)address;
+  (void)network;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }

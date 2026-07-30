@@ -1,9 +1,13 @@
 //! Binary route functions.
 
 //---------------------------------------------------------------------------------------------------- Import
-use axum::{body::Bytes, extract::State, http::{StatusCode, HeaderMap, header}};
-use tower::ServiceExt;
+use axum::{
+    body::Bytes,
+    extract::State,
+    http::{header, HeaderMap, StatusCode},
+};
 use std::sync::atomic::{AtomicU64, Ordering};
+use tower::ServiceExt;
 
 static ACTIVE_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_REQUESTS: AtomicU64 = AtomicU64::new(0);
@@ -32,7 +36,8 @@ fn maybe_gzip(data: Bytes, accept_encoding: Option<&str>) -> (Bytes, bool, u128)
             use flate2::Compression;
             use std::io::Write;
 
-            let mut encoder = GzEncoder::new(Vec::with_capacity(data.len() / 3), Compression::fast());
+            let mut encoder =
+                GzEncoder::new(Vec::with_capacity(data.len() / 3), Compression::fast());
             if encoder.write_all(&data).is_ok() {
                 if let Ok(compressed) = encoder.finish() {
                     if compressed.len() < data.len() {

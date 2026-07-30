@@ -13,7 +13,7 @@ abs_path() {
 
 monero_source_dir="${MONERO_SOURCE_DIR:-${repo_root}/../monero-gui/monero}"
 monero_ios_build_root="$(abs_path "${MONERO_IOS_BUILD_ROOT:-${repo_root}/build/ios-monero-wallet}")"
-fast_crypto_root="$(abs_path "${MONERO_FAST_CRYPTO_ROOT:-${repo_root}/build/mobile-fast-crypto}")"
+mobile_runtime_root="$(abs_path "${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${repo_root}/build/mobile-fast-wallet-protocol}")"
 dependency_root="$(abs_path "${MONERO_IOS_DEPENDENCY_ROOT:-${repo_root}/build/ios-deps}")"
 grpc_dependency_root="$(abs_path "${MONERO_IOS_GRPC_DEPENDENCY_ROOT:-${dependency_root}}")"
 output_dir="$(abs_path "${OUTPUT_DIR:-${repo_root}/build/ios-monero-link-manifests}")"
@@ -177,7 +177,11 @@ for label in "${targets[@]}"; do
   monero_build_dir="${monero_ios_build_root}/${label}"
   dependency_prefix="${MONERO_IOS_DEPENDENCY_PREFIX:-${dependency_root}/${label}}"
   grpc_dependency_prefix="${MONERO_IOS_GRPC_DEPENDENCY_PREFIX:-${grpc_dependency_root}/${label}}"
-  fast_crypto_lib="${fast_crypto_root}/${label}/libmonero_fast_crypto.a"
+  # This separate archive carries both the Fast Wallet protocol and the
+  # authenticated monero-fast-crypto C ABIs. It is deliberately not folded
+  # into the Monero aggregate below: Xcode links it exactly once beside that
+  # aggregate, avoiding duplicate Rust runtimes and stale protocol symbols.
+  fast_crypto_lib="${mobile_runtime_root}/${label}/libfast_wallet_protocol.a"
   manifest_dir="${output_dir}/${label}"
   aggregate_lib="${manifest_dir}/libtex8_monero_wallet_core.a"
   xcconfig_path="${manifest_dir}/MoneroWalletCore.xcconfig"
@@ -203,7 +207,6 @@ for label in "${targets[@]}"; do
     fi
   done
 
-  libraries+=("${fast_crypto_lib}")
   warn_missing "${fast_crypto_lib}" || missing_count=$((missing_count + 1))
 
   for rel_path in "${dependency_library_rel_paths[@]}"; do

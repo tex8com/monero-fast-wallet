@@ -1,6 +1,7 @@
 {
   "react-native": {
     "analytics_auto_collection_enabled": false,
+    "app_check_token_auto_refresh": false,
     "messaging_auto_init_enabled": false,
     "messaging_android_notification_channel_id": "monero_transactions",
     "messaging_ios_auto_register_for_remote_messages": false,

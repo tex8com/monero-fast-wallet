@@ -125,6 +125,10 @@ if ! sudo nginx -T 2>&1 | grep -qF 'location ^~ /news/ {'; then
   echo "Nginx reloaded without the required /news/ route." >&2
   false
 fi
+if ! sudo nginx -T 2>&1 | grep -qF 'location ^~ /api/ {'; then
+  echo "Nginx reloaded without the required /api/ route." >&2
+  false
+fi
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8091/healthz
 echo "Validating the local HTTPS Nginx news route..."
 response_headers="$(mktemp)"
@@ -145,12 +149,27 @@ if [[ "$local_route_status" != "200" ]]; then
 fi
 grep -qi '^X-Monero-News-Proxy: 1' "$response_headers"
 grep -q '"items"' "$response_body"
+local_market_status="$(curl --noproxy '*' --silent --show-error --max-time 25 \
+  --resolve xmr.tex8.com:443:127.0.0.1 \
+  --output "$response_body" \
+  --write-out '%{http_code}' \
+  'https://xmr.tex8.com/api/v1/market/quote' || true)"
+if [[ "$local_market_status" != "200" ]]; then
+  echo "Local HTTPS market-route validation returned HTTP ${local_market_status:-no response}." >&2
+  sed -n '1,20p' "$response_body" >&2 || true
+  false
+fi
+grep -q '"price"' "$response_body"
 rm -f "$response_headers" "$response_body"
 trap - EXIT
 
 echo "Validating the public news route..."
 curl --noproxy '*' --fail --silent --show-error --max-time 25 \
   'https://xmr.tex8.com/news/v1/news?limit=1' | grep -q '"items"'
+curl --noproxy '*' --fail --silent --show-error --max-time 25 \
+  'https://xmr.tex8.com/api/v1/market/quote' | grep -q '"price"'
+curl --noproxy '*' --fail --silent --show-error --max-time 25 \
+  'https://xmr.tex8.com/api/v1/market/chart?timeframe=24H' | grep -q '"points"'
 
 committed=1
 trap - ERR

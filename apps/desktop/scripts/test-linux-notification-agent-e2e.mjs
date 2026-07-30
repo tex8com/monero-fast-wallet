@@ -34,12 +34,18 @@ const agentPath = process.env.MONERO_FAST_WALLETD
 // a wallet identifier nor a transaction detail enters this script.
 const liveServiceUrl = process.env.MONERO_LINUX_PUSH_SERVICE_URL?.trim();
 const liveInstallationId = process.env.MONERO_LINUX_PUSH_INSTALLATION_ID?.trim();
-if (Boolean(liveServiceUrl) !== Boolean(liveInstallationId)) {
-  throw new Error('Set both MONERO_LINUX_PUSH_SERVICE_URL and MONERO_LINUX_PUSH_INSTALLATION_ID for a live Linux push test.');
+const liveInstallationAuth = process.env.MONERO_LINUX_PUSH_INSTALLATION_AUTH?.trim();
+if (new Set([Boolean(liveServiceUrl), Boolean(liveInstallationId), Boolean(liveInstallationAuth)]).size !== 1) {
+  throw new Error('Set MONERO_LINUX_PUSH_SERVICE_URL, MONERO_LINUX_PUSH_INSTALLATION_ID, and MONERO_LINUX_PUSH_INSTALLATION_AUTH together for a live Linux push test.');
 }
 const sessionBus = process.env.DBUS_SESSION_BUS_ADDRESS
   ?? `unix:path=/run/user/${process.getuid()}/bus`;
-const environment = { ...process.env, DBUS_SESSION_BUS_ADDRESS: sessionBus };
+const installationAuth = liveInstallationAuth ?? '07'.repeat(32);
+const environment = {
+  ...process.env,
+  DBUS_SESSION_BUS_ADDRESS: sessionBus,
+  MONERO_FAST_WALLETD_TEST_AUTH: installationAuth,
+};
 const temporaryDirectory = await mkdtemp(join(tmpdir(), 'monero-linux-push-'));
 const startedMarker = join(temporaryDirectory, 'wallet-opened');
 const launcherPath = join(temporaryDirectory, 'open-wallet.sh');
@@ -84,6 +90,7 @@ try {
     service.on('upgrade', (request, socket) => {
       assert.equal(request.url, '/stream');
       assert.equal(request.headers['x-fast-wallet-installation-id'], 'linux-e2e-installation');
+      assert.equal(request.headers['x-fast-wallet-installation-auth'], installationAuth);
       const key = request.headers['sec-websocket-key'];
       assert.equal(typeof key, 'string');
       const accept = createHash('sha1')
@@ -125,8 +132,8 @@ try {
     serviceUrl = `http://127.0.0.1:${service.address().port}`;
   }
   await writeFile(configPath, JSON.stringify({
-    // Version 4 is the non-polling durable stream contract.
-    version: 4,
+    // Version 5 separates the public installation id from its authentication.
+    version: 5,
     installationId: liveInstallationId ?? 'linux-e2e-installation',
     platform: 'linux',
     provider: 'linux-agent',

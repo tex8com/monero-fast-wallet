@@ -1,0 +1,20 @@
+{
+  "name": "@tex8/app-update-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Framework-neutral update policy and lifecycle shared by TEX8 mobile and desktop apps.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

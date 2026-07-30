@@ -10,10 +10,15 @@ use std::{
 use zeroize::Zeroize;
 
 const SERVICE_NAME: &str = "com.tex8.monerowallet.desktop";
-const COMMUNITY_ACCOUNT_NAME: &str = "community-account";
+const COMMUNITY_ACCOUNT_IDENTIFIER: &str = "primary";
+const COMMUNITY_V1_ACCOUNT_IDENTIFIER: &str = "v1-primary";
+const COMMUNITY_V1_MATRIX_SESSION_IDENTIFIER: &str = "v1-matrix-session";
+const COMMUNITY_V1_MATRIX_STORE_KEY_IDENTIFIER: &str = "v1-matrix-store-key";
 const APP_PROTECTION_IDENTIFIER: &str = "app-protection";
 const APP_PROTECTION_MODE_IDENTIFIER: &str = "app-protection-mode";
 const APP_UNLOCK_THROTTLE_IDENTIFIER: &str = "app-unlock-throttle";
+const NOTIFICATION_AUTH_PREFIX: &str = "notification-installation-auth";
+const FAST_WALLET_ASSIGNMENT_PREFIX: &str = "fast-wallet-assignment";
 const APP_PASSWORD_ARGON2_MEMORY_KIB: u32 = 65_536;
 const APP_PASSWORD_ARGON2_ITERATIONS: u32 = 3;
 const APP_PASSWORD_ARGON2_PARALLELISM: u32 = 1;
@@ -185,6 +190,75 @@ pub fn clear_app_unlock_throttle() -> Result<(), String> {
     )
 }
 
+pub fn store_notification_installation_auth(
+    installation_id: &str,
+    auth_secret: String,
+) -> Result<(), String> {
+    store_secret(
+        NOTIFICATION_AUTH_PREFIX,
+        installation_id,
+        auth_secret,
+        "notification installation credential",
+    )
+}
+
+pub fn load_notification_installation_auth(
+    installation_id: &str,
+) -> Result<Option<String>, String> {
+    load_secret(
+        NOTIFICATION_AUTH_PREFIX,
+        installation_id,
+        "notification installation credential",
+    )
+}
+
+/// Crash-safe assignment state is secret-adjacent routing material. Keeping it
+/// in the operating-system credential store prevents a copied public registry
+/// from becoming a management capability for hosted scan data.
+pub fn store_fast_wallet_assignment_state(identity_id: &str, state: String) -> Result<(), String> {
+    store_secret(
+        FAST_WALLET_ASSIGNMENT_PREFIX,
+        identity_id,
+        state,
+        "Fast Wallet assignment state",
+    )
+}
+
+pub fn load_fast_wallet_assignment_state(identity_id: &str) -> Result<Option<String>, String> {
+    load_secret(
+        FAST_WALLET_ASSIGNMENT_PREFIX,
+        identity_id,
+        "Fast Wallet assignment state",
+    )
+}
+
+pub fn delete_fast_wallet_assignment_state(identity_id: &str) -> Result<(), String> {
+    delete_secret(
+        FAST_WALLET_ASSIGNMENT_PREFIX,
+        identity_id,
+        "Fast Wallet assignment state",
+    )
+}
+
+/// The paired descriptor is public and signed, but its trust decision belongs
+/// to the native authorization boundary rather than renderer-controlled state.
+pub fn store_fast_wallet_private_worker(network: &str, value: String) -> Result<(), String> {
+    store_secret(
+        "fast-wallet-private-worker",
+        network,
+        value,
+        "paired private scan service",
+    )
+}
+
+pub fn load_fast_wallet_private_worker(network: &str) -> Result<Option<String>, String> {
+    load_secret(
+        "fast-wallet-private-worker",
+        network,
+        "paired private scan service",
+    )
+}
+
 fn hash_app_protection_password(password: &str) -> Result<String, String> {
     let mut salt_bytes = [0_u8; 16];
     getrandom::getrandom(&mut salt_bytes)
@@ -301,6 +375,21 @@ pub fn delete_ledger_private_view_key(wallet_id: &str) -> Result<(), String> {
     )
 }
 
+/// The .mfw owner private key and commit salt are a separate authority from
+/// the Monero wallet. They stay together in one versioned OS-credential-store
+/// record and are never returned to the renderer.
+pub fn store_mfw_name_owner_state(name_id: &str, state: String) -> Result<(), String> {
+    store_secret("mfw-name-owner", name_id, state, "MFW name owner state")
+}
+
+pub fn load_mfw_name_owner_state(name_id: &str) -> Result<Option<String>, String> {
+    load_secret("mfw-name-owner", name_id, "MFW name owner state")
+}
+
+pub fn delete_mfw_name_owner_state(name_id: &str) -> Result<(), String> {
+    delete_secret("mfw-name-owner", name_id, "MFW name owner state")
+}
+
 /// A Fast Wallet is a separately-derived local wallet. Its password is kept
 /// only in the OS credential store so a scanner registration can reopen the
 /// identity without revealing the password to the renderer.
@@ -382,37 +471,112 @@ pub fn delete_node_daemon_password(network: &str) -> Result<(), String> {
 /// Community access tokens are anonymous profile credentials, not wallet
 /// credentials. They still stay in the OS keychain so the renderer never owns
 /// or persists a bearer token.
-pub fn store_community_account(mut account: String) -> Result<(), String> {
-    let result = (|| {
-        let entry = Entry::new(SERVICE_NAME, COMMUNITY_ACCOUNT_NAME)
-            .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
-        entry
-            .set_password(&account)
-            .map_err(|_| "The Community identity could not be saved in secure storage.".to_owned())
-    })();
-    account.zeroize();
-    result
+pub fn store_community_account(account: String) -> Result<(), String> {
+    store_secret(
+        "community-account",
+        COMMUNITY_ACCOUNT_IDENTIFIER,
+        account,
+        "Community identity",
+    )
 }
 
 pub fn load_community_account() -> Result<Option<String>, String> {
-    let entry = Entry::new(SERVICE_NAME, COMMUNITY_ACCOUNT_NAME)
-        .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
-    match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(_) => Err("The Community identity could not be read from secure storage.".to_owned()),
-    }
+    load_secret(
+        "community-account",
+        COMMUNITY_ACCOUNT_IDENTIFIER,
+        "Community identity",
+    )
 }
 
 pub fn delete_community_account() -> Result<(), String> {
-    let entry = Entry::new(SERVICE_NAME, COMMUNITY_ACCOUNT_NAME)
-        .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(_) => {
-            Err("The Community identity could not be removed from secure storage.".to_owned())
+    delete_secret(
+        "community-account",
+        COMMUNITY_ACCOUNT_IDENTIFIER,
+        "Community identity",
+    )
+}
+
+pub fn store_community_v1_account(account: String) -> Result<(), String> {
+    store_secret(
+        "community-account",
+        COMMUNITY_V1_ACCOUNT_IDENTIFIER,
+        account,
+        "Monero Enthusiast identity",
+    )
+}
+
+pub fn load_community_v1_account() -> Result<Option<String>, String> {
+    load_secret(
+        "community-account",
+        COMMUNITY_V1_ACCOUNT_IDENTIFIER,
+        "Monero Enthusiast identity",
+    )
+}
+
+pub fn delete_community_v1_account() -> Result<(), String> {
+    delete_secret(
+        "community-account",
+        COMMUNITY_V1_ACCOUNT_IDENTIFIER,
+        "Monero Enthusiast identity",
+    )
+}
+
+pub fn store_community_v1_matrix_session(session: String) -> Result<(), String> {
+    store_secret(
+        "community-matrix",
+        COMMUNITY_V1_MATRIX_SESSION_IDENTIFIER,
+        session,
+        "private chat session",
+    )
+}
+
+pub fn load_community_v1_matrix_session() -> Result<Option<String>, String> {
+    load_secret(
+        "community-matrix",
+        COMMUNITY_V1_MATRIX_SESSION_IDENTIFIER,
+        "private chat session",
+    )
+}
+
+pub fn delete_community_v1_matrix_session() -> Result<(), String> {
+    delete_secret(
+        "community-matrix",
+        COMMUNITY_V1_MATRIX_SESSION_IDENTIFIER,
+        "private chat session",
+    )
+}
+
+pub fn ensure_community_v1_matrix_store_key() -> Result<String, String> {
+    if let Some(existing) = load_secret(
+        "community-matrix",
+        COMMUNITY_V1_MATRIX_STORE_KEY_IDENTIFIER,
+        "private chat storage key",
+    )? {
+        if existing.len() == 64 && existing.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Ok(existing);
         }
+        return Err("The private chat storage key is invalid.".to_owned());
     }
+    let mut entropy = [0_u8; 32];
+    getrandom::getrandom(&mut entropy)
+        .map_err(|_| "A private chat storage key could not be generated.".to_owned())?;
+    let encoded = hex::encode(entropy);
+    entropy.zeroize();
+    store_secret(
+        "community-matrix",
+        COMMUNITY_V1_MATRIX_STORE_KEY_IDENTIFIER,
+        encoded.clone(),
+        "private chat storage key",
+    )?;
+    Ok(encoded)
+}
+
+pub fn delete_community_v1_matrix_store_key() -> Result<(), String> {
+    delete_secret(
+        "community-matrix",
+        COMMUNITY_V1_MATRIX_STORE_KEY_IDENTIFIER,
+        "private chat storage key",
+    )
 }
 
 fn account_name(wallet_id: &str) -> Result<String, String> {

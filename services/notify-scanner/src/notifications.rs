@@ -126,13 +126,7 @@ pub fn dispatch_pending_notifications(
             }
         }
 
-        if watch
-            .device_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
-        {
+        if !has_notification_target(&watch) {
             run.skipped_without_subscription += outputs
                 .into_iter()
                 .filter(|output| output.notification_status == NotificationStatus::Pending)
@@ -172,6 +166,15 @@ pub fn dispatch_pending_notifications(
         }
     }
     Ok(run)
+}
+
+fn has_notification_target(watch: &WatchRegistration) -> bool {
+    watch
+        .device_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        || watch.worker_assignment_epoch.is_some()
 }
 
 #[derive(Serialize)]
@@ -275,9 +278,11 @@ mod tests {
             restore_height: 10,
             push_token: None,
             device_id: device_id.map(str::to_string),
+            worker_assignment_epoch: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             last_scanned_height: 9,
+            last_scanned_hash: None,
         }
     }
 

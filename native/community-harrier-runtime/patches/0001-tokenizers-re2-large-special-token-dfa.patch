@@ -1,0 +1,38 @@
+From 864d60de1bc489be981a0dd67b12277980e98668 Mon Sep 17 00:00:00 2001
+From: TEX8 <opensource@tex8.com>
+Date: Tue, 28 Jul 2026 09:44:00 -0500
+Subject: [PATCH] tokenizers: size RE2 for large special-token sets
+
+Gemma 3's tokenizer contains thousands of added tokens. HFTokenizer combines
+them into a roughly 97 KiB regular expression. RE2's 8 MiB default DFA budget
+is exhausted for every encode, which forces repeated NFA fallback and emits a
+misleading out-of-memory log line.
+
+Use a bounded 64 MiB RE2 budget for tokenizer regexes. This is a ceiling, not
+an eager allocation, and keeps the existing safe NFA fallback.
+---
+ src/re2_regex.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/re2_regex.cpp b/src/re2_regex.cpp
+index 3e79a6d..9da18ca 100644
+--- a/src/re2_regex.cpp
++++ b/src/re2_regex.cpp
+@@ -10,8 +10,14 @@
+ 
+ namespace tokenizers {
+ 
++namespace {
++constexpr int64_t kTokenizerRegexMaximumMemory = 64 * 1024 * 1024;
++} // namespace
++
+ Error Re2Regex::compile(const std::string& pattern) {
+-  regex_ = std::make_unique<re2::RE2>(pattern);
++  re2::RE2::Options options;
++  options.set_max_mem(kTokenizerRegexMaximumMemory);
++  regex_ = std::make_unique<re2::RE2>(pattern, options);
+   // Warmup re2 as it is slow on the first run, void the return value as it's
+   // not needed Refer to
+   // https://github.com/google/re2/blob/6dcd83d60f7944926bfd308cc13979fc53dd69ca/re2/fuzzing/re2_fuzzer.cc#L136-L141
+-- 
+2.50.1

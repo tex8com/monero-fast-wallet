@@ -48,7 +48,7 @@ const mockNativeMoneroWalletTurboModule = {
   createViewOnlyWalletFromHardwareWithStoredSecret: jest.fn(
     async () => "wallet-ledger-view",
   ),
-  deleteWalletFiles: jest.fn(async () => undefined),
+  deleteEmptyWalletFiles: jest.fn(async () => undefined),
   createFastReceiveIdentity: jest.fn(async () => ({
     id: "fast-receive-v2-0",
     label: "Fast Receive",
@@ -90,7 +90,6 @@ const mockNativeMoneroWalletTurboModule = {
     scannerStatus: "disabled",
   })),
   getFastReceiveScannerStatusWithStoredSecret: jest.fn(async () => ""),
-  checkFastReceiveKeyImagesWithStoredSecret: jest.fn(async () => "{}"),
   getBiometricAuthStatus: jest.fn(async () => ({
     platform: "android",
     supported: true,
@@ -297,8 +296,12 @@ describe("NativeMoneroWallet hardware bridge", () => {
       ),
     ).not.toContain("privateViewKey");
 
-    await nativeWallet.deleteWalletFiles("/tmp/wallet-ledger-view");
-    expect(mockNativeMoneroWalletTurboModule.deleteWalletFiles).toHaveBeenCalledWith(
+    await nativeWallet.deleteEmptyWalletFiles(
+      "wallet-ledger-view",
+      "/tmp/wallet-ledger-view",
+    );
+    expect(mockNativeMoneroWalletTurboModule.deleteEmptyWalletFiles).toHaveBeenCalledWith(
+      "wallet-ledger-view",
       "/tmp/wallet-ledger-view",
     );
   });

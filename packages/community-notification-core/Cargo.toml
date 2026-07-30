@@ -1,0 +1,20 @@
+[package]
+name = "community-notification-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+
+[dependencies]
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+hex = "0.4"
+reqwest = { version = "0.12", features = ["blocking", "http2", "json", "rustls-tls"], default-features = false }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"

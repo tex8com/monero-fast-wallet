@@ -1,0 +1,46 @@
+diff --git a/src/crypto/randomx/jit_compiler_x86.cpp b/src/crypto/randomx/jit_compiler_x86.cpp
+--- a/src/crypto/randomx/jit_compiler_x86.cpp
++++ b/src/crypto/randomx/jit_compiler_x86.cpp
+@@ -43,6 +43,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #include "crypto/randomx/soft_aes.h"
+ #include "crypto/rx/Profiler.h"
+ 
++#ifndef XMRIG_FORCE_JIT_32B_BRANCH_ALIGNMENT
++#define XMRIG_FORCE_JIT_32B_BRANCH_ALIGNMENT 0
++#endif
++
+ #ifdef XMRIG_FIX_RYZEN
+ #   include "crypto/rx/RxFix.h"
+ #endif
+@@ -228,7 +232,7 @@ namespace randomx {
+ 	constexpr size_t codeOffsetIncrement = 59 * 64;
+ 
+ 	JitCompilerX86::JitCompilerX86(bool hugePagesEnable, bool optimizedInitDatasetEnable) {
+-		BranchesWithin32B = xmrig::Cpu::info()->jccErratum();
++		BranchesWithin32B = xmrig::Cpu::info()->jccErratum() || XMRIG_FORCE_JIT_32B_BRANCH_ALIGNMENT;
+ 
+ 		hasAES = xmrig::Cpu::info()->hasAES();
+ 
+diff --git a/src/crypto/randomx/randomx.cpp b/src/crypto/randomx/randomx.cpp
+--- a/src/crypto/randomx/randomx.cpp
++++ b/src/crypto/randomx/randomx.cpp
+@@ -49,6 +49,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #include "crypto/rx/Profiler.h"
+ #include "base/net/stratum/Job.h"
+ 
++#ifndef XMRIG_FORCE_JIT_32B_BRANCH_ALIGNMENT
++#define XMRIG_FORCE_JIT_32B_BRANCH_ALIGNMENT 0
++#endif
++
+ RandomX_ConfigurationMoneroV2::RandomX_ConfigurationMoneroV2()
+ {
+ 	ProgramSize = 384;
+@@ -356,7 +360,7 @@ void RandomX_ConfigurationBase::Apply()
+ 	INST_HANDLE(FSQRT_R, FDIV_M);
+ 
+ #if defined(_M_X64) || defined(__x86_64__)
+-	if (xmrig::Cpu::info()->jccErratum()) {
++	if (xmrig::Cpu::info()->jccErratum() || XMRIG_FORCE_JIT_32B_BRANCH_ALIGNMENT) {
+ 		INST_HANDLE2(CBRANCH, CBRANCH<true>, FSQRT_R);
+ 	}
+ 	else {

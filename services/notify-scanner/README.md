@@ -24,7 +24,6 @@ GET    /v1/fast-receive/watch/:identity_id
 DELETE /v1/fast-receive/watch/:identity_id
 GET    /v1/fast-receive/watch/:identity_id/matches
 POST   /v1/fast-receive/matches
-POST   /v1/fast-receive/key-images/status
 ```
 
 `GET /` is a public human-readable service page with GitHub and documentation
@@ -57,9 +56,9 @@ Authorization: Bearer <per-watch-management-capability>
 
 The scanner stores only a domain-separated SHA-256 hash of that capability.
 Creating a new watch binds the capability to the identity; reading, updating,
-deleting, listing matches, and checking key images all require the same
-capability. A capability for one watch cannot manage another watch. There is
-no unauthenticated compatibility mode.
+deleting, and listing matches all require the same capability. A capability
+for one watch cannot manage another watch. There is no unauthenticated
+compatibility mode.
 
 The application limits each hashed capability to 120 requests per minute and
 rejects request bodies larger than 96 KiB before JSON parsing. The production
@@ -67,8 +66,7 @@ nginx configuration adds an independent per-IP request limit, connection
 limit, body limit, and proxy timeouts. These defaults are a safety boundary,
 not a substitute for deployment monitoring and load testing.
 The encrypted store accepts at most 100,000 watches and retains at most 4,096
-opaque matches plus 4,096 key-image status records per watch, pruning the
-oldest privacy records first.
+opaque matches per watch, pruning the oldest privacy records first.
 
 `GET /v1/fast-receive/watch/:identity_id` returns only non-secret scanner
 state for that watch record. Mobile clients use it after node/server switches
@@ -101,24 +99,10 @@ all per-watch capabilities and must never be distributed to apps.
 The production reverse proxy also returns `404` for this exact route, so match
 injection is reachable only through the loopback listener.
 
-`POST /v1/fast-receive/key-images/status` is the fast spend-reconciliation
-query. The app derives key images locally and asks the server for known spent
-state:
-
-```json
-{
-  "identity_id": "fast-receive-0-20260701T120000",
-  "key_images": ["64 hex chars"]
-}
-```
-
-If `NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT` is configured, the API checks
-Cuprate `/is_key_image_spent`, stamps the result with the current daemon
-height from `/get_info`, persists it in the key-image status table, and
-returns `unspent` or `spent`. Cuprate's mempool-spent status is returned as
-`spent` because the output must not be selected for a new transaction while a
-spend is pending. Without a configured Cuprate RPC source, unknown key images
-return `unknown` from the local cache.
+Spend state is deliberately outside this service. On first setup or restore,
+the local native Monero wallet scans from its restore height and reconstructs
+received and spent outputs. Later refreshes are incremental. Monero key images
+remain inside the local wallet Core and are never uploaded to this scanner.
 
 ## Runtime
 
@@ -130,10 +114,13 @@ export NOTIFY_SCANNER_BIND=127.0.0.1:8087
 export NOTIFY_SCANNER_SCANPACK_DIRECTORY=/var/lib/cuprate/wallet-scan-cache-100k
 export NOTIFY_SCANNER_SCANPACK_NETWORK=mainnet
 export NOTIFY_SCANNER_SCANPACK_REFRESH_MS=10000
+export NOTIFY_SCANNER_SCANPACK_PUBLIC_KEY=<pinned-32-byte-lowercase-Ed25519-public-key>
+export NOTIFY_SCANNER_SCANPACK_MAX_LAG_BLOCKS=3
+export NOTIFY_SCANNER_SCANPACK_MAX_STATUS_AGE_MS=30000
 export NOTIFY_SCANNER_DERIVATION_WORKERS=12
 # Local gRPC remains the block-source fallback when no ScanPack directory is set.
 export NOTIFY_SCANNER_CUPRATE_GRPC_ENDPOINT=127.0.0.1:48091
-# RPC is still used for the mempool and key-image spent status.
+# RPC is used only for the current mempool snapshot.
 export NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT=xmr.tex8.com:18089
 export NOTIFY_SCANNER_INTERNAL_AUTH_TOKEN=<dedicated-32-byte-or-stronger-secret>
 export NOTIFY_SCANNER_PUSH_ENDPOINT=http://127.0.0.1:4020/api/v1/internal/mobile/fast-wallet-push-events
@@ -154,8 +141,15 @@ Cuprate gRPC. Cuprate is the sole ScanPack writer and the scanner opens only
 regular, non-symlinked, non-group/world-writable `MWSPACK1` files with
 read-only descriptors. The systemd unit gives the scanner an explicit
 read-only mount view of the cache and no write permission to Cuprate data.
-Mempool snapshots and key-image status remain small RPC calls because ScanPack
-contains confirmed block data only.
+Every generation is signed by the pinned Ed25519 key, chained to the previous
+generation and contains content-addressed package hashes plus start/end block
+hashes. A separately signed current-status statement binds that manifest to
+Cuprate's observed canonical height. A bad signature, generation gap, reorg,
+package mutation, noncanonical status, excessive block lag or stale status
+stops cursor advancement and makes the source unavailable.
+Mempool snapshots remain small RPC calls because ScanPack contains confirmed
+block data only. The client obtains spend state from its own local wallet
+refresh, not from this service.
 
 The local gRPC fallback requests pruned transactions, accepts Cuprate's fixed
 16 MiB message limit, and is expected at `127.0.0.1:48091` on the TEX8 host.
@@ -165,8 +159,8 @@ uses a portable x86-64 binary with runtime AVX-512 IFMA/AVX2 selection rather
 than assuming every deployment CPU supports AVX-512.
 
 The scanner database is encrypted at rest with XChaCha20-Poly1305. It stores
-watch records, opaque detection events, and key-image status records in one sealed
-JSON file. Writes are atomic and durable: the current snapshot and an
+watch records and opaque detection events in one sealed JSON file. Writes are
+atomic and durable: the current snapshot and an
 authenticated `.previous` recovery snapshot are kept with file mode `0600` in
 a directory with mode `0700`. A corrupt current snapshot is recovered only
 from a backup that authenticates with the active key.
@@ -220,8 +214,8 @@ export NOTIFY_SCANNER_CUPRATE_GRPC_CHUNK_BLOCKS=200
 The crate decodes Cuprate `GetBlocksResponse` Epee payloads into Monero blocks
 and transactions, then builds `monero-rpc` `ScannableBlock` values for hosted
 view-key scanning. Ownership is checked without reading or retaining the
-decoded amount from the matched output. The crate also checks key-image spent
-state through Cuprate RPC for fast spend reconciliation. The push dispatcher
+decoded amount from the matched output. Spend reconciliation remains entirely
+inside each client's native Monero wallet. The push dispatcher
 sends the generic `incoming_transaction` signal at most once per payment
 transaction, including a transaction with multiple matching outputs. Matching
 outputs share an opaque notification group; neither the transaction id nor the
@@ -345,6 +339,7 @@ NOTIFY_SCANNER_BUILD_BENCHMARKS=1 \
   ops/notify-scanner/build-epyc.sh
 
 NOTIFY_SCANNER_BENCH_SCANPACK_DIRECTORY=/var/lib/cuprate/wallet-scan-cache-100k \
+NOTIFY_SCANNER_BENCH_SCANPACK_PUBLIC_KEY=<pinned-32-byte-lowercase-Ed25519-public-key> \
 NOTIFY_SCANNER_BENCH_GRPC_ENDPOINT=127.0.0.1:48091 \
 NOTIFY_SCANNER_BENCH_RPC_ENDPOINT=private-node-ip:18089 \
 NOTIFY_SCANNER_BENCH_WATCH_COUNTS=100,1000,10000 \

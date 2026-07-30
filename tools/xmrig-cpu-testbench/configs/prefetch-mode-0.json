@@ -1,0 +1,35 @@
+{
+  "autosave": false,
+  "randomx": {
+    "init": -1,
+    "init-avx2": -1,
+    "mode": "auto",
+    "1gb-pages": true,
+    "rdmsr": true,
+    "wrmsr": true,
+    "cache_qos": false,
+    "numa": true,
+    "scratchpad_prefetch_mode": 0
+  },
+  "cpu": {
+    "enabled": true,
+    "huge-pages": true,
+    "huge-pages-jit": false,
+    "memory-pool": false,
+    "yield": true,
+    "asm": true,
+    "rx": [
+      0, 1, 2, 3, 4, 5, 6, 7,
+      8, 9, 10, 11, 12, 13, 14, 15,
+      16, 17, 18, 19, 20, 21, 22, 23,
+      24, 25, 26, 27, 28, 29, 30, 31
+    ]
+  },
+  "opencl": false,
+  "cuda": false,
+  "benchmark": {
+    "size": "100K",
+    "algo": "rx/0",
+    "submit": false
+  }
+}

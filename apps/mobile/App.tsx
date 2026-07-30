@@ -14,6 +14,7 @@ import { AppSecurityProvider } from './src/services/AppSecurity';
 import { WalletStateProvider } from './src/services/WalletState';
 import { useWalletState } from './src/services/WalletState';
 import IncomingPaymentNotice from './src/components/IncomingPaymentNotice';
+import { AppUpdateService } from './src/services/AppUpdateService';
 
 const navigationRef = createNavigationContainerRef<any>();
 
@@ -32,7 +33,6 @@ function WalletUnlockRedirect({ ready }: { ready: boolean }) {
     // wallet behind an overview or a hidden menu action. A device credential
     // already prompts through the operating system's biometric sheet.
     const requiresVisibleUnlock =
-      unlockRequestId !== undefined ||
       registeredWallet.kind === 'hardware' ||
       !registeredWallet.credentialKey ||
       status === 'error';
@@ -57,6 +57,7 @@ function WalletUnlockRedirect({ ready }: { ready: boolean }) {
 
 function App() {
   useEffect(() => FastWalletPushService.startLifecycle(), []);
+  useEffect(() => AppUpdateService.initialize(), []);
   const [navigationReady, setNavigationReady] = useState(false);
 
   return (

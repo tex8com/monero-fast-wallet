@@ -1,4 +1,10 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -38,10 +44,7 @@ import {
   toAtomicBigInt,
 } from '../services/WalletFormat';
 import { useWalletState } from '../services/WalletState';
-import {
-  isFastWalletRegistration,
-  walletDisplayName,
-} from '../services/WalletRegistry';
+import { walletDisplayName } from '../services/WalletRegistry';
 import { walletService, type WalletSession } from '../services/WalletService';
 import {
   loadRecentRecipients,
@@ -50,8 +53,31 @@ import {
   saveRecipientContacts,
   type RecipientContact,
 } from '../services/RecipientAddressBook';
+import {
+  validateMfwNameSendPreset,
+  type MfwNameSendPreset,
+} from '../services/MfwNameRegistration';
+import {
+  isMfwNameCandidate,
+  resolveConfiguredMfwNameForPayment,
+} from '../services/MfwNameResolutionService';
+import {
+  acceptRecipientReview,
+  createPrivatePhoneSendPreset,
+  createRecipientReview,
+  maskPhoneNumber,
+  recipientFingerprint,
+  validatePrivatePhoneSendPreset,
+  type RecipientReview,
+} from '../services/RecipientReview';
 
-type Step = 'recipient-choice' | 'manual-recipient' | 'address-book' | 'amount' | 'confirm';
+type Step =
+  | 'recipient-choice'
+  | 'manual-recipient'
+  | 'address-book'
+  | 'recipient-review'
+  | 'amount'
+  | 'confirm';
 
 function shortAddress(value: string, fallback: string) {
   if (!value) {
@@ -63,7 +89,7 @@ function shortAddress(value: string, fallback: string) {
   return `${value.slice(0, 8)}...${value.slice(-6)}`;
 }
 
-export default function SendScreen({ navigation }: any) {
+export default function SendScreen({ navigation, route }: any) {
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [step, setStep] = useState<Step>('recipient-choice');
@@ -79,6 +105,14 @@ export default function SendScreen({ navigation }: any) {
     WalletSession | undefined
   >();
   const [sending, setSending] = useState(false);
+  const [mfwNamePreset, setMfwNamePreset] = useState<
+    MfwNameSendPreset | undefined
+  >();
+  const consumedMfwFlowId = useRef<string | undefined>(undefined);
+  const [recipientReview, setRecipientReview] = useState<
+    RecipientReview | undefined
+  >();
+  const consumedPrivatePhoneFlowId = useRef<string | undefined>(undefined);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [sweepAll, setSweepAll] = useState(false);
   const [recipientContacts, setRecipientContacts] = useState<
@@ -89,7 +123,7 @@ export default function SendScreen({ navigation }: any) {
   );
   const [contactLabel, setContactLabel] = useState('');
   const [contactAddress, setContactAddress] = useState('');
-  const { t } = useI18n();
+  const { dateLocale, t } = useI18n();
   const { price } = useXmrPrice();
   const {
     error: walletError,
@@ -129,8 +163,8 @@ export default function SendScreen({ navigation }: any) {
         minFractionDigits: 2,
       })
     : status === 'locked'
-      ? t('status.locked')
-      : '0.00';
+    ? t('status.locked')
+    : '0.00';
   const preparedFee = preparedTx
     ? formatAtomicXmr(preparedTx.feeAtomic, { maxFractionDigits: 12 })
     : undefined;
@@ -163,16 +197,120 @@ export default function SendScreen({ navigation }: any) {
   );
   const sendWalletOptions = useMemo<WalletSelectorItem[]>(
     () =>
-      registeredWallets
-        .filter(wallet => !isFastWalletRegistration(wallet))
-        .filter(wallet => {
-          const candidate = walletSnapshotMap[wallet.id];
-          return (
-            candidate && toAtomicBigInt(candidate.unlockedBalanceAtomic) > 0n
-          );
-        }),
+      registeredWallets.filter(wallet => {
+        const candidate = walletSnapshotMap[wallet.id];
+        return (
+          candidate && toAtomicBigInt(candidate.unlockedBalanceAtomic) > 0n
+        );
+      }),
     [registeredWallets, walletSnapshotMap],
   );
+  const routeMfwNamePreset = useMemo(
+    () =>
+      validateMfwNameSendPreset(route?.params?.mfwNameSendPreset as unknown),
+    [route?.params?.mfwNameSendPreset],
+  );
+  const routePrivatePhonePreset = useMemo(
+    () =>
+      validatePrivatePhoneSendPreset(
+        route?.params?.privatePhoneSendPreset as unknown,
+      ),
+    [route?.params?.privatePhoneSendPreset],
+  );
+
+  useEffect(() => {
+    const preset = routeMfwNamePreset;
+    if (!preset || consumedMfwFlowId.current === preset.flowId) {
+      return;
+    }
+    if (registeredWallet?.id !== preset.walletRegistrationId) {
+      setActiveRegisteredWallet(preset.walletRegistrationId).catch(error => {
+        setSendError(error instanceof Error ? error.message : String(error));
+      });
+      return;
+    }
+    if (!session || session.registrationId !== preset.walletRegistrationId) {
+      setSendError(t('mfwNames.openSelectedWallet'));
+      return;
+    }
+
+    consumedMfwFlowId.current = preset.flowId;
+    setMfwNamePreset(preset);
+    setAddress(preset.destinationAddress);
+    setAmount(
+      formatAtomicXmr(preset.preparedTransaction.amountAtomic, {
+        maxFractionDigits: 12,
+      }),
+    );
+    setPreparedTx(preset.preparedTransaction);
+    setPreparedSession(session);
+    setSweepAll(false);
+    setSendError(undefined);
+    setSendStatus(undefined);
+    setStep('confirm');
+  }, [
+    registeredWallet?.id,
+    routeMfwNamePreset,
+    session,
+    setActiveRegisteredWallet,
+    t,
+  ]);
+
+  useEffect(() => {
+    const preset = routePrivatePhonePreset;
+    if (!preset || consumedPrivatePhoneFlowId.current === preset.flowId) {
+      return;
+    }
+    const activeNetwork = session?.network ?? registeredWallet?.network;
+    if (!activeNetwork) {
+      setSendError(t('send.openWalletBeforeSending'));
+      return;
+    }
+    if (activeNetwork !== preset.network) {
+      setSendError(t('send.privateContactWrongNetwork'));
+      return;
+    }
+    if (!session) {
+      setSendError(t('send.openWalletBeforeSending'));
+      return;
+    }
+
+    consumedPrivatePhoneFlowId.current = preset.flowId;
+    let active = true;
+    walletService
+      .validateRecipientAddress(preset.address, preset.network)
+      .then(validatedAddress =>
+        createPrivatePhoneSendPreset({
+          flowId: preset.flowId,
+          phoneNumber: preset.privatePhoneNumber,
+          displayName: preset.displayName,
+          network: preset.network,
+          address: validatedAddress,
+          issuedAt: preset.resolvedAt,
+          expiresAt: preset.expiresAt,
+          sequence: preset.sequence,
+        }),
+      )
+      .then(recheckedPreset => {
+        if (!active) return;
+        setAddress(recheckedPreset.address);
+        setRecipientReview(recheckedPreset);
+        setPreparedTx(undefined);
+        setPreparedSession(undefined);
+        setSweepAll(false);
+        setSendError(undefined);
+        setSendStatus(undefined);
+        setStep('recipient-review');
+      })
+      .catch(() => {
+        if (active) {
+          setSendError(t('send.privateContactUnavailable'));
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [registeredWallet?.network, routePrivatePhonePreset, session, t]);
 
   useFocusEffect(
     useCallback(() => {
@@ -338,6 +476,7 @@ export default function SendScreen({ navigation }: any) {
     setSending(true);
     setSendError(undefined);
     try {
+      const completedNamePreset = mfwNamePreset;
       const committed = await walletService.commitTransaction(
         transactionSession,
         preparedTx.id,
@@ -354,11 +493,25 @@ export default function SendScreen({ navigation }: any) {
       setPreparedSession(undefined);
       setSweepAll(false);
       setSendStatus(t('send.transactionBroadcast'));
+      setMfwNamePreset(undefined);
+      setRecipientReview(undefined);
       setStep('recipient-choice');
-      setRecentRecipients(
-        await rememberRecipient(address.trim(), recipientContacts),
-      );
+      if (!completedNamePreset) {
+        setRecentRecipients(
+          await rememberRecipient(address.trim(), recipientContacts),
+        );
+      }
       await Promise.all([refreshSnapshot(), refreshTransactions()]);
+      if (completedNamePreset) {
+        navigation.navigate('MfwNames', {
+          mfwNameBroadcast: {
+            registrationId: completedNamePreset.registrationId,
+            kind: completedNamePreset.kind,
+            years: completedNamePreset.years,
+            txIds: committed.txIds,
+          },
+        });
+      }
     } catch (error) {
       setSendError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -366,11 +519,48 @@ export default function SendScreen({ navigation }: any) {
     }
   };
 
+  const validateRecipientAndContinue = async (
+    candidate: string,
+    source: 'manual-address' | 'qr-code' | 'address-book' = 'manual-address',
+    displayName = '',
+  ) => {
+    const network = session?.network ?? registeredWallet?.network;
+    if (!network) {
+      setSendError(t('send.openWalletBeforeSending'));
+      return;
+    }
+    const isMfwName = isMfwNameCandidate(candidate);
+    try {
+      const validated = isMfwName
+        ? await resolveConfiguredMfwNameForPayment(candidate, network)
+        : await walletService.validateRecipientAddress(candidate, network);
+      setAddress(validated);
+      setRecipientReview(
+        createRecipientReview({
+          source: isMfwName ? 'mfw-name' : source,
+          network,
+          address: validated,
+          displayName: isMfwName ? candidate.trim().toLowerCase() : displayName,
+        }),
+      );
+      setSendError(undefined);
+      clearPreparedTransaction();
+      setStep('recipient-review');
+    } catch {
+      setSendError(
+        t(
+          isMfwName ? 'send.mfwUnavailable' : 'send.invalidRecipientForNetwork',
+        ),
+      );
+    }
+  };
+
   const selectRecipientContact = (contact: RecipientContact) => {
-    setAddress(contact.address);
-    setSendError(undefined);
-    clearPreparedTransaction();
-    setStep('amount');
+    validateRecipientAndContinue(
+      contact.address,
+      'address-book',
+      contact.label,
+    ).catch(() => undefined);
   };
 
   const saveContact = async () => {
@@ -380,12 +570,27 @@ export default function SendScreen({ navigation }: any) {
       setSendError(t('send.contactDetailsRequired'));
       return;
     }
+    const network = session?.network ?? registeredWallet?.network;
+    if (!network) {
+      setSendError(t('send.openWalletBeforeSending'));
+      return;
+    }
+    let validatedAddress: string;
+    try {
+      validatedAddress = await walletService.validateRecipientAddress(
+        contactAddressValue,
+        network,
+      );
+    } catch {
+      setSendError(t('send.invalidRecipientForNetwork'));
+      return;
+    }
     const next = await saveRecipientContacts([
       ...recipientContacts,
       {
         id: `contact:${Date.now()}`,
         label,
-        address: contactAddressValue,
+        address: validatedAddress,
       },
     ]);
     setRecipientContacts(next);
@@ -404,15 +609,27 @@ export default function SendScreen({ navigation }: any) {
         >
           <TouchableOpacity
             style={s.backButton}
-            onPress={() => setStep('amount')}
+            onPress={() =>
+              mfwNamePreset
+                ? navigation.navigate('MfwNames')
+                : setStep('amount')
+            }
             activeOpacity={0.7}
           >
             <Icon name="arrow-left" size={20} color={colors.textSecondary} />
             <Text style={s.backText}>{t('action.back')}</Text>
           </TouchableOpacity>
 
-          <Text style={s.title}>{t('send.reviewPayment')}</Text>
-          <Text style={s.subtitle}>{t('send.confirmDetails')}</Text>
+          <Text style={s.title}>
+            {mfwNamePreset
+              ? t('mfwNames.reviewTitle')
+              : t('send.reviewPayment')}
+          </Text>
+          <Text style={s.subtitle}>
+            {mfwNamePreset
+              ? t('mfwNames.reviewSubtitle')
+              : t('send.confirmDetails')}
+          </Text>
 
           <View style={s.confirmAmountCard}>
             <Text style={s.confirmAmount}>{reviewAmount} XMR</Text>
@@ -420,11 +637,65 @@ export default function SendScreen({ navigation }: any) {
           </View>
 
           <View style={s.card}>
+            {mfwNamePreset ? (
+              <>
+                <ReviewRow
+                  label={t('mfwNames.name')}
+                  value={mfwNamePreset.name}
+                  strong
+                />
+                <Divider />
+                <ReviewRow
+                  label={t('mfwNames.operation')}
+                  value={
+                    mfwNamePreset.kind === 'commit'
+                      ? t('mfwNames.commitTitle')
+                      : mfwNamePreset.kind === 'update'
+                      ? t('mfwNames.updateTitle')
+                      : mfwNamePreset.kind === 'renew'
+                      ? t('mfwNames.renewTitle')
+                      : mfwNamePreset.kind === 'revoke'
+                      ? t('mfwNames.revokeTitle')
+                      : t('mfwNames.claimTitle')
+                  }
+                />
+                {mfwNamePreset.kind === 'commit' ||
+                mfwNamePreset.kind === 'claim' ||
+                mfwNamePreset.kind === 'renew' ? (
+                  <>
+                    <Divider />
+                    <ReviewRow
+                      label={t('mfwNames.term')}
+                      value={t('mfwNames.termValue', {
+                        count: mfwNamePreset.years,
+                      })}
+                    />
+                  </>
+                ) : null}
+                <Divider />
+              </>
+            ) : null}
             <ReviewRow
               label={t('send.recipient')}
-              value={shortAddress(address, t('send.noRecipient'))}
+              value={address || t('send.noRecipient')}
               mono
+              wrap
             />
+            {recipientReview ? (
+              <>
+                <Divider />
+                <ReviewRow
+                  label={t('send.resolutionSource')}
+                  value={t(recipientSourceKey(recipientReview.source))}
+                />
+                <Divider />
+                <ReviewRow
+                  label={t('send.addressFingerprint')}
+                  value={recipientFingerprint(recipientReview.address)}
+                  mono
+                />
+              </>
+            ) : null}
             <Divider />
             <ReviewRow
               label={t('send.networkFee')}
@@ -465,7 +736,133 @@ export default function SendScreen({ navigation }: any) {
             >
               <Icon name="send" size={20} color="#FFF" strokeWidth={2} />
               <Text style={s.primaryBtnText}>
-                {sending ? t('action.working') : t('action.sendNow')}
+                {sending
+                  ? t('action.working')
+                  : mfwNamePreset?.kind === 'commit'
+                  ? t('mfwNames.confirmCommit')
+                  : mfwNamePreset?.kind === 'claim'
+                  ? t('mfwNames.confirmClaim')
+                  : mfwNamePreset?.kind === 'renew'
+                  ? t('mfwNames.confirmRenew')
+                  : mfwNamePreset?.kind === 'update'
+                  ? t('mfwNames.confirmUpdate')
+                  : mfwNamePreset?.kind === 'revoke'
+                  ? t('mfwNames.confirmRevoke')
+                  : t('action.sendNow')}
+              </Text>
+            </LinearGradient>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
+    );
+  }
+
+  if (step === 'recipient-review' && recipientReview) {
+    const phoneLabel = recipientReview.privatePhoneNumber
+      ? maskPhoneNumber(recipientReview.privatePhoneNumber)
+      : '';
+    return (
+      <View style={s.container}>
+        <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
+        <ScrollView
+          contentContainerStyle={s.confirmScroll}
+          showsVerticalScrollIndicator={false}
+        >
+          <TouchableOpacity
+            accessibilityRole="button"
+            style={s.backButton}
+            onPress={() => {
+              setRecipientReview(undefined);
+              setAddress('');
+              setSendError(undefined);
+              setStep('recipient-choice');
+            }}
+          >
+            <Icon name="arrow-left" size={20} color={colors.textSecondary} />
+            <Text style={s.backText}>{t('action.back')}</Text>
+          </TouchableOpacity>
+
+          <Text style={s.title}>{t('send.checkRecipientTitle')}</Text>
+          <Text style={s.subtitle}>{t('send.checkRecipientDescription')}</Text>
+
+          <View style={s.recipientReviewCard}>
+            {recipientReview.displayName ? (
+              <>
+                <Text style={s.recipientReviewName}>
+                  {recipientReview.displayName}
+                </Text>
+                {phoneLabel ? (
+                  <Text style={s.recipientReviewPhone}>{phoneLabel}</Text>
+                ) : null}
+              </>
+            ) : null}
+            <Text style={s.fieldLabel}>{t('send.resolutionSource')}</Text>
+            <Text style={s.recipientReviewMeta}>
+              {t(recipientSourceKey(recipientReview.source))}
+            </Text>
+            <Text style={s.fieldLabel}>{t('send.fullAddress')}</Text>
+            <Text selectable style={s.recipientReviewAddress}>
+              {recipientReview.address}
+            </Text>
+            <Text style={s.fieldLabel}>{t('send.addressFingerprint')}</Text>
+            <Text style={s.recipientReviewFingerprint}>
+              {recipientFingerprint(recipientReview.address)}
+            </Text>
+            {recipientReview.expiresAt ? (
+              <>
+                <Text style={s.fieldLabel}>{t('send.sharingFreshness')}</Text>
+                <Text style={s.recipientReviewMeta}>
+                  {t('send.sharedUntil', {
+                    date: new Date(
+                      recipientReview.expiresAt * 1000,
+                    ).toLocaleString(dateLocale),
+                  })}
+                </Text>
+              </>
+            ) : null}
+          </View>
+
+          {recipientReview.addressChanged ? (
+            <View style={s.addressChangedWarning}>
+              <Icon name="info" size={20} color={colors.error} />
+              <Text style={s.addressChangedText}>
+                {t('send.addressChangedWarning')}
+              </Text>
+            </View>
+          ) : (
+            <View style={s.privacyBox}>
+              <Icon name="lock" size={17} color={colors.orange} />
+              <Text style={s.privacyText}>{t('send.checkRecipientHint')}</Text>
+            </View>
+          )}
+
+          {sendError ? <Text style={s.errorText}>{sendError}</Text> : null}
+          <TouchableOpacity
+            accessibilityLabel={t('send.useThisRecipient')}
+            accessibilityRole="button"
+            disabled={sending}
+            onPress={() => {
+              setSending(true);
+              setSendError(undefined);
+              acceptRecipientReview(recipientReview)
+                .then(() => setStep('amount'))
+                .catch(error => {
+                  setSendError(
+                    error instanceof Error ? error.message : String(error),
+                  );
+                })
+                .finally(() => setSending(false));
+            }}
+            style={s.formCta}
+          >
+            <LinearGradient
+              colors={[colors.orange, colors.orangeDark]}
+              style={[s.primaryBtn, sending && s.primaryBtnDisabled]}
+            >
+              <Text style={s.primaryBtnText}>
+                {recipientReview.addressChanged
+                  ? t('send.confirmChangedAddress')
+                  : t('send.useThisRecipient')}
               </Text>
             </LinearGradient>
           </TouchableOpacity>
@@ -484,8 +881,7 @@ export default function SendScreen({ navigation }: any) {
         setSendError(t('send.noRecipient'));
         return;
       }
-      setSendError(undefined);
-      setStep('amount');
+      validateRecipientAndContinue(address).catch(() => undefined);
     };
 
     return (
@@ -531,7 +927,10 @@ export default function SendScreen({ navigation }: any) {
                 accessibilityRole="button"
                 accessibilityLabel={t('send.manualRecipient')}
                 activeOpacity={0.78}
-                onPress={() => setStep('manual-recipient')}
+                onPress={() => {
+                  setRecipientReview(undefined);
+                  setStep('manual-recipient');
+                }}
                 style={s.choiceCard}
               >
                 <View style={s.choiceIcon}>
@@ -562,9 +961,7 @@ export default function SendScreen({ navigation }: any) {
                   <Text style={[s.choiceTitle, s.choiceTitleDark]}>
                     {t('send.addressBook')}
                   </Text>
-                  <Text style={s.choiceText}>
-                    {t('send.addressBookHint')}
-                  </Text>
+                  <Text style={s.choiceText}>{t('send.addressBookHint')}</Text>
                 </View>
                 <Icon name="chevron-right" size={22} color={colors.orange} />
               </TouchableOpacity>
@@ -624,6 +1021,7 @@ export default function SendScreen({ navigation }: any) {
                   value={address}
                   onChangeText={value => {
                     setAddress(value);
+                    setRecipientReview(undefined);
                     setSendError(undefined);
                     clearPreparedTransaction();
                   }}
@@ -640,6 +1038,7 @@ export default function SendScreen({ navigation }: any) {
                       .then(value => {
                         if (value.trim()) {
                           setAddress(value.trim());
+                          setRecipientReview(undefined);
                           setSendError(undefined);
                           clearPreparedTransaction();
                         }
@@ -656,7 +1055,9 @@ export default function SendScreen({ navigation }: any) {
                   {recipientContacts.length > 0 ? (
                     <>
                       <View style={s.quickRecipientsHeader}>
-                        <Text style={s.fieldLabel}>{t('send.addressBook')}</Text>
+                        <Text style={s.fieldLabel}>
+                          {t('send.addressBook')}
+                        </Text>
                         <TouchableOpacity
                           accessibilityRole="button"
                           onPress={() => setStep('address-book')}
@@ -731,33 +1132,54 @@ export default function SendScreen({ navigation }: any) {
                   setStep('recipient-choice');
                 }}
               >
-                <Icon name="arrow-left" size={20} color={colors.textSecondary} />
+                <Icon
+                  name="arrow-left"
+                  size={20}
+                  color={colors.textSecondary}
+                />
                 <Text style={s.backText}>{t('action.back')}</Text>
               </TouchableOpacity>
               <Text style={s.addressBookTitle}>{t('send.addressBook')}</Text>
-              <Text style={s.addressBookDescription}>{t('send.addressBookHint')}</Text>
+              <Text style={s.addressBookDescription}>
+                {t('send.addressBookHint')}
+              </Text>
 
               {recipientContacts.length > 0 ? (
                 <View style={s.addressBookList}>
                   {recipientContacts.map(contact => (
                     <TouchableOpacity
                       key={contact.id}
-                      style={[s.addressBookRecipient, contact.donor && s.donorRecipient]}
+                      style={[
+                        s.addressBookRecipient,
+                        contact.donor && s.donorRecipient,
+                      ]}
                       onPress={() => selectRecipientContact(contact)}
                     >
                       <View style={s.addressBookRecipientIcon}>
-                        <Icon name={contact.donor ? 'wallet' : 'users'} size={20} color={contact.donor ? '#FFF' : colors.orange} />
+                        <Icon
+                          name={contact.donor ? 'wallet' : 'users'}
+                          size={20}
+                          color={contact.donor ? '#FFF' : colors.orange}
+                        />
                       </View>
                       <View style={s.choiceCopy}>
                         <Text style={s.contactName}>{contact.label}</Text>
-                        <Text style={s.contactAddress} numberOfLines={1}>{shortAddress(contact.address, contact.address)}</Text>
+                        <Text style={s.contactAddress} numberOfLines={1}>
+                          {shortAddress(contact.address, contact.address)}
+                        </Text>
                       </View>
-                      <Icon name="chevron-right" size={20} color={colors.orange} />
+                      <Icon
+                        name="chevron-right"
+                        size={20}
+                        color={colors.orange}
+                      />
                     </TouchableOpacity>
                   ))}
                 </View>
               ) : (
-                <Text style={s.emptyAddressBook}>{t('send.noSavedContacts')}</Text>
+                <Text style={s.emptyAddressBook}>
+                  {t('send.noSavedContacts')}
+                </Text>
               )}
 
               {recentRecipients.length > 0 ? (
@@ -765,9 +1187,15 @@ export default function SendScreen({ navigation }: any) {
                   <Text style={s.fieldLabel}>{t('send.recentContacts')}</Text>
                   <View style={s.contactRow}>
                     {recentRecipients.map(contact => (
-                      <TouchableOpacity key={contact.id} style={s.contactChip} onPress={() => selectRecipientContact(contact)}>
+                      <TouchableOpacity
+                        key={contact.id}
+                        style={s.contactChip}
+                        onPress={() => selectRecipientContact(contact)}
+                      >
                         <Text style={s.contactName}>{contact.label}</Text>
-                        <Text style={s.contactAddress} numberOfLines={1}>{shortAddress(contact.address, contact.address)}</Text>
+                        <Text style={s.contactAddress} numberOfLines={1}>
+                          {shortAddress(contact.address, contact.address)}
+                        </Text>
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -794,7 +1222,11 @@ export default function SendScreen({ navigation }: any) {
                   autoCorrect={false}
                   multiline
                 />
-                <TouchableOpacity accessibilityRole="button" onPress={() => void saveContact()} style={s.addContactButton}>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  onPress={() => saveContact().catch(() => undefined)}
+                  style={s.addContactButton}
+                >
                   <Icon name="plus" size={18} color={colors.orange} />
                   <Text style={s.addContactText}>{t('send.saveContact')}</Text>
                 </TouchableOpacity>
@@ -807,11 +1239,10 @@ export default function SendScreen({ navigation }: any) {
           visible={scannerVisible}
           onClose={() => setScannerVisible(false)}
           onScanned={scannedAddress => {
-            setAddress(scannedAddress);
-            setSendError(undefined);
-            clearPreparedTransaction();
             setScannerVisible(false);
-            setStep('amount');
+            validateRecipientAndContinue(scannedAddress, 'qr-code').catch(
+              () => undefined,
+            );
           }}
         />
       </KeyboardAvoidingView>
@@ -863,15 +1294,30 @@ export default function SendScreen({ navigation }: any) {
         ) : null}
 
         <View style={s.recipientSummaryCard}>
-          <View>
+          <View style={s.recipientSummaryCopy}>
             <Text style={s.fieldLabel}>{t('send.recipient')}</Text>
-            <Text style={s.recipientSummaryAddress} numberOfLines={1}>
-              {shortAddress(address, t('send.noRecipient'))}
+            {recipientReview?.displayName ? (
+              <Text style={s.recipientSummaryName}>
+                {recipientReview.displayName}
+              </Text>
+            ) : null}
+            <Text selectable style={s.recipientSummaryAddress}>
+              {address || t('send.noRecipient')}
             </Text>
+            {recipientReview ? (
+              <Text style={s.recipientSummaryMeta}>
+                {t(recipientSourceKey(recipientReview.source))}
+                {' · '}
+                {recipientFingerprint(recipientReview.address)}
+              </Text>
+            ) : null}
           </View>
           <TouchableOpacity
             accessibilityRole="button"
-            onPress={() => setStep('manual-recipient')}
+            onPress={() => {
+              setRecipientReview(undefined);
+              setStep('manual-recipient');
+            }}
           >
             <Text style={s.changeRecipient}>{t('action.change')}</Text>
           </TouchableOpacity>
@@ -1003,14 +1449,29 @@ export default function SendScreen({ navigation }: any) {
         visible={scannerVisible}
         onClose={() => setScannerVisible(false)}
         onScanned={scannedAddress => {
-          setAddress(scannedAddress);
-          setSendError(undefined);
-          clearPreparedTransaction();
           setScannerVisible(false);
+          validateRecipientAndContinue(scannedAddress, 'qr-code').catch(
+            () => undefined,
+          );
         }}
       />
     </KeyboardAvoidingView>
   );
+}
+
+function recipientSourceKey(source: RecipientReview['source']) {
+  switch (source) {
+    case 'qr-code':
+      return 'send.sourceQr';
+    case 'address-book':
+      return 'send.sourceAddressBook';
+    case 'mfw-name':
+      return 'send.sourceMfwName';
+    case 'private-phone':
+      return 'send.sourcePrivateContact';
+    default:
+      return 'send.sourceManual';
+  }
 }
 
 function ReviewRow({
@@ -1018,11 +1479,13 @@ function ReviewRow({
   value,
   strong,
   mono,
+  wrap,
 }: {
   label: string;
   value: string;
   strong?: boolean;
   mono?: boolean;
+  wrap?: boolean;
 }) {
   return (
     <View style={s.reviewRow}>
@@ -1033,7 +1496,7 @@ function ReviewRow({
           strong && s.reviewValueStrong,
           mono && s.reviewValueMono,
         ]}
-        numberOfLines={1}
+        numberOfLines={wrap ? undefined : 1}
       >
         {value}
       </Text>
@@ -1152,8 +1615,17 @@ const s = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgCard,
   },
-  addressBookTitle: { color: colors.textPrimary, fontSize: 22, fontWeight: '900' },
-  addressBookDescription: { color: colors.textSecondary, fontSize: 13, lineHeight: 19, marginTop: 5 },
+  addressBookTitle: {
+    color: colors.textPrimary,
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  addressBookDescription: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 5,
+  },
   addressBookList: { marginTop: 18, gap: 8 },
   addressBookRecipient: {
     flexDirection: 'row',
@@ -1178,7 +1650,12 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(242,104,34,0.12)',
   },
   addressBookRecent: { marginTop: 22 },
-  emptyAddressBook: { color: colors.textMuted, fontSize: 13, lineHeight: 19, marginTop: 18 },
+  emptyAddressBook: {
+    color: colors.textMuted,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 18,
+  },
   addContactCard: {
     marginTop: 24,
     gap: 10,
@@ -1207,7 +1684,8 @@ const s = StyleSheet.create({
   recipientSummaryCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    gap: spacing.md,
     padding: spacing.md,
     borderRadius: radius.md,
     borderWidth: 1,
@@ -1215,13 +1693,83 @@ const s = StyleSheet.create({
     backgroundColor: colors.bgCard,
     marginBottom: 12,
   },
+  recipientSummaryCopy: { flex: 1, minWidth: 0 },
+  recipientSummaryName: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 5,
+  },
   recipientSummaryAddress: {
     color: colors.textPrimary,
     marginTop: 5,
-    fontSize: 15,
+    fontSize: 12,
+    lineHeight: 17,
     fontFamily: 'monospace',
   },
+  recipientSummaryMeta: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 6,
+  },
   changeRecipient: { color: colors.orange, fontWeight: '800', fontSize: 14 },
+
+  recipientReviewCard: {
+    backgroundColor: colors.bgCard,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    marginTop: spacing.lg,
+    padding: spacing.md,
+  },
+  recipientReviewName: {
+    color: colors.textPrimary,
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  recipientReviewPhone: {
+    color: colors.textSecondary,
+    fontFamily: 'monospace',
+    fontSize: 14,
+  },
+  recipientReviewAddress: {
+    color: colors.textPrimary,
+    fontFamily: 'monospace',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  recipientReviewFingerprint: {
+    color: colors.orange,
+    fontFamily: 'monospace',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  recipientReviewMeta: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  addressChangedWarning: {
+    alignItems: 'flex-start',
+    backgroundColor: 'rgba(255,80,80,0.1)',
+    borderColor: colors.error,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+    padding: spacing.md,
+  },
+  addressChangedText: {
+    color: colors.error,
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
 
   sectionHeaderRecent: {
     flexDirection: 'row',

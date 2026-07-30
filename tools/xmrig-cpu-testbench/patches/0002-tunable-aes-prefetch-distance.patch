@@ -1,0 +1,51 @@
+diff --git a/src/crypto/randomx/aes_hash.cpp b/src/crypto/randomx/aes_hash.cpp
+index cb2db2e2..08c31d27 100644
+--- a/src/crypto/randomx/aes_hash.cpp
++++ b/src/crypto/randomx/aes_hash.cpp
+@@ -41,5 +41,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #include "backend/cpu/Cpu.h"
+ 
++#ifndef XMRIG_AES_PREFETCH_DISTANCE
++#define XMRIG_AES_PREFETCH_DISTANCE 7168
++#endif
++
+ #ifdef XMRIG_RISCV
+ #include "crypto/randomx/aes_hash_rv64_vector.hpp"
+ #include "crypto/randomx/aes_hash_rv64_zvkned.hpp"
+@@ -328,6 +332,8 @@ void hashAndFillAes1Rx4(void *scratchpad, size_t scratchpadSize, void *hash, void
+ 	rx_vec_i128 fill_state2 = rx_load_vec_i128((rx_vec_i128*)fill_state + 2);
+ 	rx_vec_i128 fill_state3 = rx_load_vec_i128((rx_vec_i128*)fill_state + 3);
+ 
+-	constexpr int PREFETCH_DISTANCE = 7168;
++	constexpr int PREFETCH_DISTANCE = XMRIG_AES_PREFETCH_DISTANCE;
++	static_assert(PREFETCH_DISTANCE > 0 && PREFETCH_DISTANCE % 128 == 0,
++		"XMRIG_AES_PREFETCH_DISTANCE must be a positive multiple of 128");
+ 	const char* prefetchPtr = ((const char*)scratchpad) + PREFETCH_DISTANCE;
+ 	scratchpadEnd -= PREFETCH_DISTANCE;
+ 
+diff --git a/src/crypto/randomx/aes_hash_vaes512.cpp b/src/crypto/randomx/aes_hash_vaes512.cpp
+index 27a458aa..a98e597f 100644
+--- a/src/crypto/randomx/aes_hash_vaes512.cpp
++++ b/src/crypto/randomx/aes_hash_vaes512.cpp
+@@ -31,6 +31,10 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #include <cstdint>
+ #include <immintrin.h>
+ 
++#ifndef XMRIG_AES_PREFETCH_DISTANCE
++#define XMRIG_AES_PREFETCH_DISTANCE 7168
++#endif
++
+ #define REVERSE_4(A, B, C, D) D, C, B, A
+ 
+ alignas(64) static const uint32_t AES_HASH_1R_STATE[] = {
+@@ -86,7 +90,9 @@ void hashAndFillAes1Rx4_VAES512(void *scratchpad, size_t scratchpadSize, void *ha
+ 	// dec_data[3] = hash_state[3]
+ 	__m512i dec_data = _mm512_mask_blend_epi64(mask, initial_fill_state, initial_hash_state);
+ 
+-	constexpr int PREFETCH_DISTANCE = 7168;
++	constexpr int PREFETCH_DISTANCE = XMRIG_AES_PREFETCH_DISTANCE;
++	static_assert(PREFETCH_DISTANCE > 0 && PREFETCH_DISTANCE % 256 == 0,
++		"XMRIG_AES_PREFETCH_DISTANCE must be a positive multiple of 256");
+ 
+ 	const uint8_t* prefetchPtr = scratchpadPtr + PREFETCH_DISTANCE;
+ 	scratchpadEnd -= PREFETCH_DISTANCE;

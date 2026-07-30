@@ -42,11 +42,11 @@ import {
   type AppProtectionMode,
   useAppSecurity,
 } from '../services/AppSecurity';
+import mobileAppVersion from '../../../../config/mobile-app-version.json';
 import {
-  loadFastWalletPreference,
-  saveFastWalletPreference,
-  type FastWalletPreference,
-} from '../services/FastWalletPreference';
+  loadCommunityQueryContributionState,
+  setCommunityQueryContributionEnabled,
+} from '../services/CommunityQueryContribution';
 
 type DiagnosticRow = {
   label: string;
@@ -92,8 +92,7 @@ export default function SettingsScreen() {
   const [appPassword, setAppPassword] = useState('');
   const [confirmAppPassword, setConfirmAppPassword] = useState('');
   const [isSavingAppProtection, setIsSavingAppProtection] = useState(false);
-  const [fastWalletPreference, setFastWalletPreference] =
-    useState<FastWalletPreference>('disabled');
+  const [shareCommunitySearches, setShareCommunitySearches] = useState(true);
 
   useEffect(() => {
     setProtectionMode(savedProtectionMode);
@@ -101,18 +100,28 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     let mounted = true;
-    void loadFastWalletPreference().then(preference => {
-      if (mounted && preference) setFastWalletPreference(preference);
-    });
+    loadCommunityQueryContributionState()
+      .then(state => {
+        if (mounted) setShareCommunitySearches(state.enabled);
+      })
+      .catch(() => undefined);
     return () => {
       mounted = false;
     };
   }, []);
 
-  function changeFastWalletPreference(enabled: boolean) {
-    const next: FastWalletPreference = enabled ? 'enabled' : 'disabled';
-    setFastWalletPreference(next);
-    void saveFastWalletPreference(next).catch(() => undefined);
+  async function updateSearchSharing(enabled: boolean) {
+    setShareCommunitySearches(enabled);
+    try {
+      const saved = await setCommunityQueryContributionEnabled(enabled);
+      setShareCommunitySearches(saved.enabled);
+    } catch {
+      setShareCommunitySearches(!enabled);
+      Alert.alert(
+        t('communityV1.shareSearches'),
+        t('communityV1.shareSearchesSaveFailed'),
+      );
+    }
   }
 
   useEffect(() => {
@@ -326,10 +335,16 @@ export default function SettingsScreen() {
       );
       setAppPassword('');
       setConfirmAppPassword('');
-      Alert.alert(
-        t('settings.appProtection'),
-        t('settings.appProtectionSaved'),
-      );
+      // Biometric configuration deliberately locks the provider immediately
+      // so its single automatic path can present Android's credential sheet.
+      // A native success alert here would sit above that sheet, make the first
+      // attempt fail, and leave the owner looking at an indefinite spinner.
+      if (protectionMode === 'password') {
+        Alert.alert(
+          t('settings.appProtection'),
+          t('settings.appProtectionSaved'),
+        );
+      }
     } catch (error) {
       Alert.alert(t('settings.appProtection'), errorMessage(error));
     } finally {
@@ -345,7 +360,30 @@ export default function SettingsScreen() {
         <View style={s.header}>
           <MoneroLogo size={44} />
           <Text style={s.title}>{t('settings.title')}</Text>
-          <Text style={s.version}>Version 1.0.0 (MVP)</Text>
+          <Text style={s.version}>Version {mobileAppVersion.versionName}</Text>
+        </View>
+
+        <View style={s.section}>
+          <Text style={s.sectionTitle}>{t('communityV1.privacySettings')}</Text>
+          <View style={s.nodePanel}>
+            <View style={s.switchRow}>
+              <View style={s.switchText}>
+                <Text style={s.switchTitle}>
+                  {t('communityV1.shareSearches')}
+                </Text>
+                <Text style={s.switchValue}>
+                  {t('communityV1.shareSearchesSettingsText')}
+                </Text>
+              </View>
+              <Switch
+                accessibilityLabel={t('communityV1.shareSearches')}
+                value={shareCommunitySearches}
+                onValueChange={updateSearchSharing}
+                trackColor={{ false: colors.surface, true: colors.orange }}
+                thumbColor="#FFF"
+              />
+            </View>
+          </View>
         </View>
 
         <View style={s.section}>
@@ -418,6 +456,9 @@ export default function SettingsScreen() {
             </View>
             {protectionMode === 'password' ? (
               <>
+                <Text style={s.passwordDestructiveWarning}>
+                  {t('security.passwordRecoveryHelp')}
+                </Text>
                 <TextInput
                   value={appPassword}
                   onChangeText={setAppPassword}
@@ -447,7 +488,7 @@ export default function SettingsScreen() {
                 (protectionMode === 'password' &&
                   (!appPassword || !confirmAppPassword))
               }
-              onPress={() => void saveAppProtection()}
+              onPress={saveAppProtection}
               style={[
                 s.secondaryButton,
                 (isSavingAppProtection ||
@@ -486,58 +527,6 @@ export default function SettingsScreen() {
               </View>
               <Icon name="chevron-right" size={18} color={colors.textMuted} />
             </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={s.section}>
-          <Text style={s.sectionTitle}>Privacy mode</Text>
-          <View style={s.nodePanel}>
-            <Text style={s.passwordHint}>
-              Choose the default for future normal and Ledger wallets. Existing
-              wallets are unchanged.
-            </Text>
-            <View style={s.segmented}>
-              <TouchableOpacity
-                style={[
-                  s.segment,
-                  fastWalletPreference === 'disabled' && s.segmentActive,
-                ]}
-                activeOpacity={0.75}
-                onPress={() => changeFastWalletPreference(false)}
-              >
-                <Text
-                  style={[
-                    s.segmentText,
-                    fastWalletPreference === 'disabled' && s.segmentTextActive,
-                  ]}
-                >
-                  Privacy only
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  s.segment,
-                  fastWalletPreference === 'enabled' && s.segmentActive,
-                ]}
-                activeOpacity={0.75}
-                onPress={() => changeFastWalletPreference(true)}
-              >
-                <Text
-                  style={[
-                    s.segmentText,
-                    fastWalletPreference === 'enabled' && s.segmentTextActive,
-                  ]}
-                >
-                  Privacy + comfort
-                </Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={s.switchValue}>
-              {fastWalletPreference === 'enabled'
-                ? 'Privacy + comfort adds a separate Fast Wallet for quick incoming-payment alerts. Your normal wallet stays unchanged.'
-                : 'Privacy only creates normal local wallets by default. You can add a Fast Wallet later.'}{' '}
-              Scanner hosting always needs separate approval.
-            </Text>
           </View>
         </View>
 
@@ -1032,6 +1021,17 @@ const s = StyleSheet.create({
   },
   passwordTitle: { color: colors.textPrimary, fontSize: 15, fontWeight: '700' },
   passwordHint: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
+  passwordDestructiveWarning: {
+    backgroundColor: 'rgba(255, 72, 96, 0.08)',
+    borderColor: 'rgba(255, 72, 96, 0.34)',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    color: colors.error,
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
+    padding: 12,
+  },
   languageHelp: { color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
   nodeHintBox: {
     flexDirection: 'row',

@@ -1,9 +1,9 @@
+use ed25519_dalek::VerifyingKey;
 use notify_scanner::{
     dispatch_pending_notifications, parse_storage_key, router_with_runtime, BlockSource,
-    CuprateGrpcBlockSource, CuprateHttpKeyImageStatusSource, CuprateHttpMempoolSource,
-    EncryptedJsonFileStore, HardwareHostedViewKeyMatcher, KeyImageStatusSource,
-    MempoolScannerWorker, Network, NotificationSink, ScanPackBlockSource, ScannedBlock,
-    ScannerWorker, Tex8PushNotificationSink, WatchStore,
+    CuprateGrpcBlockSource, CuprateHttpMempoolSource, EncryptedJsonFileStore,
+    HardwareHostedViewKeyMatcher, MempoolScannerWorker, Network, NotificationSink,
+    ScanPackBlockSource, ScannedBlock, ScannerWorker, Tex8PushNotificationSink, WatchStore,
 };
 use std::{
     env,
@@ -31,11 +31,6 @@ async fn main() -> anyhow::Result<()> {
     let store_result = EncryptedJsonFileStore::open(db_path, key);
     key.zeroize();
     let store = Arc::new(store_result?);
-    let key_image_status_source = env::var("NOTIFY_SCANNER_CUPRATE_RPC_ENDPOINT")
-        .ok()
-        .map(CuprateHttpKeyImageStatusSource::new)
-        .transpose()?
-        .map(|source| Arc::new(source) as Arc<dyn KeyImageStatusSource>);
     let push_sink = push_notification_sink_from_env()?;
     let test_auth_token = optional_runtime_secret("NOTIFY_SCANNER_TEST_AUTH_TOKEN")?;
     if test_auth_token.is_some() && push_sink.is_none() {
@@ -49,13 +44,7 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("notify-scanner listening on {bind}");
     axum::serve(
         listener,
-        router_with_runtime(
-            store,
-            internal_auth_token,
-            key_image_status_source,
-            test_auth_token,
-            push_sink,
-        ),
+        router_with_runtime(store, internal_auth_token, test_auth_token, push_sink),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
@@ -108,13 +97,20 @@ fn spawn_block_scanner_if_configured(
                 )
             })?;
         let refresh_ms = env_u64("NOTIFY_SCANNER_SCANPACK_REFRESH_MS", 10_000)?;
+        let max_lag_blocks = env_u64("NOTIFY_SCANNER_SCANPACK_MAX_LAG_BLOCKS", 3)?;
+        let max_status_age_ms = env_u64("NOTIFY_SCANNER_SCANPACK_MAX_STATUS_AGE_MS", 30_000)?;
+        let public_key = required_hex_32("NOTIFY_SCANNER_SCANPACK_PUBLIC_KEY")?;
         let source = ScanPackBlockSource::open(
             &scanpack_directory,
             network,
             Duration::from_millis(refresh_ms),
+            VerifyingKey::from_bytes(&public_key)
+                .map_err(|_| anyhow::anyhow!("NOTIFY_SCANNER_SCANPACK_PUBLIC_KEY is invalid"))?,
+            max_lag_blocks,
+            Duration::from_millis(max_status_age_ms),
         )?;
         (
-            RuntimeBlockSource::ScanPack(source),
+            RuntimeBlockSource::ScanPack(Box::new(source)),
             format!(
                 "scanpack-read-only directory={} network={network}",
                 scanpack_directory
@@ -223,8 +219,20 @@ fn spawn_block_scanner_if_configured(
     Ok(())
 }
 
+fn required_hex_32(name: &str) -> anyhow::Result<[u8; 32]> {
+    let value = env::var(name).map_err(|_| anyhow::anyhow!("{name} is required"))?;
+    let bytes = hex::decode(value.trim())
+        .map_err(|_| anyhow::anyhow!("{name} must be 32-byte lowercase hex"))?;
+    if value.trim().bytes().any(|byte| byte.is_ascii_uppercase()) {
+        anyhow::bail!("{name} must be lowercase hex");
+    }
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{name} must be 32-byte lowercase hex"))
+}
+
 enum RuntimeBlockSource {
-    ScanPack(ScanPackBlockSource),
+    ScanPack(Box<ScanPackBlockSource>),
     Grpc(CuprateGrpcBlockSource),
 }
 
@@ -240,6 +248,17 @@ impl BlockSource for RuntimeBlockSource {
                 source.next_blocks(network, from_height_exclusive, max_blocks)
             }
             Self::Grpc(source) => source.next_blocks(network, from_height_exclusive, max_blocks),
+        }
+    }
+
+    fn canonical_block_hash(
+        &mut self,
+        network: Network,
+        height: u64,
+    ) -> anyhow::Result<Option<String>> {
+        match self {
+            Self::ScanPack(source) => source.canonical_block_hash(network, height),
+            Self::Grpc(source) => source.canonical_block_hash(network, height),
         }
     }
 }

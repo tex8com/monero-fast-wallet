@@ -93,3 +93,38 @@ capitalize_variant() {
   local value="$1"
   printf "%s%s" "$(printf "%s" "${value:0:1}" | tr '[:lower:]' '[:upper:]')" "${value:1}"
 }
+
+fast_wallet_protocol_artifact_needs_rebuild() {
+  local artifact="$1"
+  local monero_source_dir="$2"
+
+  if [ ! -f "$artifact" ]; then
+    return 0
+  fi
+
+  local source_path
+  for source_path in \
+    "${REPO_ROOT}/native/fast-wallet-protocol/Cargo.toml" \
+    "${REPO_ROOT}/native/fast-wallet-protocol/Cargo.lock" \
+    "${REPO_ROOT}/native/fast-wallet-protocol/build-mobile.sh" \
+    "${REPO_ROOT}/native/fast-wallet-protocol/src" \
+    "${REPO_ROOT}/native/fast-wallet-protocol/include" \
+    "${REPO_ROOT}/native/mfw-recipient-protocol/Cargo.toml" \
+    "${REPO_ROOT}/native/mfw-recipient-protocol/Cargo.lock" \
+    "${REPO_ROOT}/native/mfw-recipient-protocol/src" \
+    "${REPO_ROOT}/native/monero-bridge/scripts/prepare-wallet-crypto-cpu-backend.sh" \
+    "${REPO_ROOT}/third_party/curve25519-dalek-wallet-cpu" \
+    "${monero_source_dir}/external/monero-fast-crypto/src/lib.rs" \
+    "${monero_source_dir}/external/monero-fast-crypto/include/monero_fast_crypto.h"; do
+    if [ -f "$source_path" ] && [ "$source_path" -nt "$artifact" ]; then
+      return 0
+    fi
+    if [ -d "$source_path" ] \
+      && find "$source_path" -type f -newer "$artifact" -print -quit \
+        | grep -q .; then
+      return 0
+    fi
+  done
+
+  return 1
+}

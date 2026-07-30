@@ -5,19 +5,19 @@ describe("FastWalletPushService", () => {
     expect(
       parseFastWalletPushEvent({
         data: {
-          contractVersion: "monero-fast-wallet-push.v2",
-          eventId: "fwpush_0123456789abcdef0123456789abcdef",
+          contractVersion: "monero-fast-wallet-push.v3",
+          eventId: `evt_${"0a".repeat(32)}`,
           type: "monero.fast_wallet.incoming",
         },
       }),
     ).toEqual({
-      contractVersion: "monero-fast-wallet-push.v2",
-      eventId: "fwpush_0123456789abcdef0123456789abcdef",
+      contractVersion: "monero-fast-wallet-push.v3",
+      eventId: `evt_${"0a".repeat(32)}`,
       type: "monero.fast_wallet.incoming",
     });
   });
 
-  it("accepts the opaque scanner event identifier used by deployed scanners", () => {
+  it("rejects the retired scanner event contract", () => {
     expect(
       parseFastWalletPushEvent({
         data: {
@@ -26,18 +26,14 @@ describe("FastWalletPushService", () => {
           type: "monero.fast_wallet.incoming",
         },
       }),
-    ).toEqual({
-      contractVersion: "monero-fast-wallet-push.v2",
-      eventId: `sig_${"a".repeat(64)}`,
-      type: "monero.fast_wallet.incoming",
-    });
+    ).toBeUndefined();
   });
 
   it("rejects malformed or detail-bearing lookalike data", () => {
     expect(
       parseFastWalletPushEvent({
         data: {
-          contractVersion: "monero-fast-wallet-push.v2",
+          contractVersion: "monero-fast-wallet-push.v3",
           eventId: "bad",
           privateViewKey: "secret",
           type: "monero.fast_wallet.incoming",
@@ -49,8 +45,8 @@ describe("FastWalletPushService", () => {
       parseFastWalletPushEvent({
         data: {
           amountAtomic: "25000000000",
-          contractVersion: "monero-fast-wallet-push.v2",
-          eventId: "fwpush_0123456789abcdef0123456789abcdef",
+          contractVersion: "monero-fast-wallet-push.v3",
+          eventId: `evt_${"0a".repeat(32)}`,
           network: "mainnet",
           state: "confirmed",
           txId: "a".repeat(64),

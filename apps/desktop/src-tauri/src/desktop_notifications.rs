@@ -16,7 +16,7 @@ const NOTIFICATION_DIR: &str = "notifications";
 const INSTALLATION_FILE: &str = "desktop-installation.json";
 const BACKGROUND_AGENT_FILE: &str = "background-agent.json";
 const PENDING_OPEN_FILE: &str = "pending-open-event.json";
-const CONTRACT_VERSION: u8 = 4;
+const CONTRACT_VERSION: u8 = 5;
 
 // These symbols are implemented by the AppKit bridge.  Keep the declaration
 // macOS uses APNs. Windows and Linux use the private background agent and
@@ -92,7 +92,7 @@ struct BackgroundAgentConfig {
 }
 
 pub fn status(app: &AppHandle) -> Result<NotificationInstallationStatus, String> {
-    let mut installation = load(app)?.unwrap_or_else(default_installation);
+    let mut installation = load_or_create(app)?;
     let previous_endpoint = installation.endpoint.clone();
     refresh_platform_endpoint(&mut installation);
     if installation.endpoint != previous_endpoint {
@@ -108,7 +108,7 @@ pub fn request_installation(
 ) -> Result<NotificationInstallationStatus, String> {
     validate_permission(&input.permission_status)?;
     let now = now();
-    let mut installation = load(app)?.unwrap_or_else(default_installation);
+    let mut installation = load_or_create(app)?;
     installation.permission_status = input.permission_status;
     installation.locale = input.locale.filter(|value| !value.trim().is_empty());
     installation.app_version = input.app_version.filter(|value| !value.trim().is_empty());
@@ -130,7 +130,7 @@ pub fn request_installation(
 }
 
 pub fn disable_installation(app: &AppHandle) -> Result<NotificationInstallationStatus, String> {
-    let mut installation = load(app)?.unwrap_or_else(default_installation);
+    let mut installation = load_or_create(app)?;
     installation.enabled = false;
     installation.background_mode_enabled = false;
     installation.permission_status = "denied".to_owned();
@@ -183,14 +183,32 @@ fn status_for_installation(
     })
 }
 
-fn default_installation() -> NotificationInstallation {
+fn load_or_create(app: &AppHandle) -> Result<NotificationInstallation, String> {
+    let (mut installation, created) = match load(app)? {
+        Some(installation) => (installation, false),
+        None => (default_installation()?, true),
+    };
+    ensure_installation_auth(&installation.installation_id)?;
+    let migrated = installation.version < CONTRACT_VERSION;
+    if migrated {
+        installation.version = CONTRACT_VERSION;
+        installation.gateway_status = "unregistered".to_owned();
+    }
+    if created || migrated {
+        write_installation(app, &installation)?;
+        write_background_agent_config(app, &installation)?;
+    }
+    Ok(installation)
+}
+
+fn default_installation() -> Result<NotificationInstallation, String> {
     let timestamp = now();
-    NotificationInstallation {
+    Ok(NotificationInstallation {
         version: CONTRACT_VERSION,
         tenant_id: "tex8".to_owned(),
         shop_id: "monero-wallet".to_owned(),
         app_id: "monero-wallet-desktop".to_owned(),
-        installation_id: format!("mwp_desktop_{}", random_hex_16()),
+        installation_id: format!("mwp_desktop_{}", random_hex_16()?),
         platform: platform().to_owned(),
         provider: provider().to_owned(),
         endpoint: default_endpoint(),
@@ -203,7 +221,14 @@ fn default_installation() -> NotificationInstallation {
         gateway_status: "unregistered".to_owned(),
         created_at: timestamp,
         updated_at: timestamp,
+    })
+}
+
+fn ensure_installation_auth(installation_id: &str) -> Result<(), String> {
+    if crate::secure_store::load_notification_installation_auth(installation_id)?.is_some() {
+        return Ok(());
     }
+    crate::secure_store::store_notification_installation_auth(installation_id, random_hex_32()?)
 }
 
 fn load(app: &AppHandle) -> Result<Option<NotificationInstallation>, String> {
@@ -215,7 +240,7 @@ fn load(app: &AppHandle) -> Result<Option<NotificationInstallation>, String> {
     };
     let mut installation = serde_json::from_str::<NotificationInstallation>(&raw)
         .map_err(|_| "Desktop notification installation is invalid.".to_owned())?;
-    if !matches!(installation.version, 1 | 2 | 3 | CONTRACT_VERSION)
+    if !matches!(installation.version, 1 | 2 | 3 | 4 | CONTRACT_VERSION)
         || installation.installation_id.is_empty()
         || installation.installation_id.len() > 80
         || !matches!(
@@ -224,10 +249,6 @@ fn load(app: &AppHandle) -> Result<Option<NotificationInstallation>, String> {
         )
     {
         return Err("Desktop notification installation is invalid.".to_owned());
-    }
-    if installation.version < CONTRACT_VERSION {
-        installation.version = CONTRACT_VERSION;
-        installation.gateway_status = "unregistered".to_owned();
     }
     installation.platform = platform().to_owned();
     installation.provider = provider().to_owned();
@@ -435,21 +456,39 @@ fn is_apns_device_token(value: &str) -> bool {
 }
 
 fn notification_service_url() -> String {
-    std::env::var("TEX8_NOTIFICATION_SERVICE_URL")
-        .unwrap_or_else(|_| "https://xmr.tex8.com/api/v1/notifications".to_owned())
+    let gateway = option_env!("TEX8_FAST_WALLET_GATEWAY_ORIGIN")
+        .unwrap_or("")
+        .trim_end_matches('/');
+    if gateway.starts_with("https://") {
+        format!("{gateway}/api/v1/notifications")
+    } else {
+        // The feature gate prevents enrollment in an unconfigured release.
+        // Keeping a syntactically valid fail-closed value lets the disabled
+        // background-agent config remain parseable during local development.
+        "https://invalid.invalid/api/v1/notifications".to_owned()
+    }
 }
 
-fn random_hex_16() -> String {
+fn random_hex_16() -> Result<String, String> {
     let mut bytes = [0_u8; 16];
-    if getrandom::getrandom(&mut bytes).is_err() {
-        let fallback = now().to_le_bytes();
-        bytes[..8].copy_from_slice(&fallback);
-        bytes[8..].copy_from_slice(&fallback);
-    }
-    bytes
+    getrandom::getrandom(&mut bytes).map_err(|_| {
+        "Secure randomness is unavailable; notification setup was cancelled.".to_owned()
+    })?;
+    Ok(bytes
         .iter()
         .map(|byte| format!("{byte:02x}"))
-        .collect::<String>()
+        .collect::<String>())
+}
+
+fn random_hex_32() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|_| {
+        "Secure randomness is unavailable; notification setup was cancelled.".to_owned()
+    })?;
+    Ok(bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>())
 }
 
 fn now() -> u64 {

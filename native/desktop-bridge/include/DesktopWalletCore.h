@@ -76,6 +76,9 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_stop_refresh(
 extern "C" Tex8DesktopResult tex8_desktop_wallet_get_address(
     Tex8DesktopWalletCore* core, const char* wallet_id,
     unsigned int account_index, unsigned int address_index) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_validate_recipient_address(
+    Tex8DesktopWalletCore* core, const char* address,
+    unsigned char network) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_get_seed(
     Tex8DesktopWalletCore* core, const char* wallet_id,
     const char* seed_offset) noexcept;
@@ -100,6 +103,15 @@ tex8_desktop_wallet_fast_receive_registration_payload(
     Tex8DesktopWalletCore* core, const char* identity_id, const char* path,
     const char* password, unsigned char network,
     unsigned long long restore_height) noexcept;
+// Opens the isolated Fast Wallet inside the native Core and returns only a
+// fixed-size HPKE envelope. The private view key never crosses this C ABI.
+extern "C" Tex8DesktopResult tex8_desktop_wallet_seal_fast_receive_watch(
+    Tex8DesktopWalletCore* core, const char* identity_id, const char* path,
+    const char* password, unsigned char network,
+    unsigned long long restore_height, const char* worker_descriptor_hex,
+    const char* assignment_handle_hex, unsigned long long assignment_epoch,
+    unsigned long long issued_at, unsigned long long expires_at,
+    unsigned long long now) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_get_transactions(
     Tex8DesktopWalletCore* core, const char* wallet_id,
     unsigned int limit) noexcept;
@@ -107,6 +119,22 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_transaction(
     Tex8DesktopWalletCore* core, const char* wallet_id, const char* address,
     const char* amount_atomic, const char* payment_id, const char* priority,
     unsigned int account_index) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_registration(
+    Tex8DesktopWalletCore* core, const char* wallet_id, const char* name,
+    const char* address, unsigned char network, const char* registry_address,
+    const char* priority, unsigned int account_index) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_claim(
+    Tex8DesktopWalletCore* core, const char* wallet_id, const char* name,
+    const char* address, unsigned char network, const char* registry_address,
+    unsigned int years, const char* priority, unsigned int account_index,
+    const char* owner_private_key_hex, const char* commit_salt_hex) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_transition(
+    Tex8DesktopWalletCore* core, const char* wallet_id, const char* operation,
+    const char* name, const char* address, unsigned char network,
+    const char* registry_address, unsigned int years, const char* priority,
+    unsigned int account_index, const char* owner_private_key_hex,
+    const char* predecessor_record_hex,
+    const char* predecessor_signing_owner_public_key_hex) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_commit_transaction(
     Tex8DesktopWalletCore* core, const char* wallet_id,
     const char* pending_id) noexcept;

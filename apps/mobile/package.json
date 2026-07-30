@@ -1,6 +1,7 @@
 {
   "name": "MoneroWallet",
   "version": "0.0.1",
+  "license": "MPL-2.0",
   "private": true,
   "packageManager": "npm@11.16.0",
   "scripts": {
@@ -43,6 +44,7 @@
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native-clipboard/clipboard": "^1.16.3",
     "@react-native-firebase/app": "^24.0.0",
+    "@react-native-firebase/app-check": "24.0.0",
     "@react-native-firebase/messaging": "^24.0.0",
     "@react-native/new-app-screen": "0.85.1",
     "@react-navigation/bottom-tabs": "^7.15.9",

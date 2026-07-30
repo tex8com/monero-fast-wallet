@@ -24,15 +24,12 @@ command -v jq >/dev/null || {
   exit 2
 }
 
-audit_fetch_args=()
+audit_command=(cargo audit --file "${lockfile}" --json)
 if [[ "${CARGO_AUDIT_NO_FETCH:-0}" == "1" ]]; then
-  audit_fetch_args+=(--no-fetch)
+  audit_command+=(--no-fetch)
 fi
 
-if ! cargo audit \
-  "${audit_fetch_args[@]}" \
-  --file "${lockfile}" \
-  --json >"${audit_json}" 2>"${audit_stderr}"; then
+if ! "${audit_command[@]}" >"${audit_json}" 2>"${audit_stderr}"; then
   cat "${audit_stderr}" >&2
   exit 1
 fi

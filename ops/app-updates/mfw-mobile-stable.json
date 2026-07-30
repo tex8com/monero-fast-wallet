@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "appId": "com.tex8.monerowallet",
+  "channel": "stable",
+  "version": "1.0.23",
+  "minimumVersion": "1.0.7",
+  "updateId": "mfw-mobile-1.0.23",
+  "publishedAt": "2026-07-30T16:56:07.000Z",
+  "mandatory": false,
+  "rolloutPercentage": 100,
+  "rolloutSalt": "mfw-stable-2026-07",
+  "notes": "Completes the Welcome-to-protection flow, opens only the saved authentication method on later starts, supports changing protection in Settings, and securely resets local data after three incorrect app-password attempts.",
+  "artifacts": [
+    {
+      "platform": "android",
+      "architecture": "universal",
+      "delivery": "direct-apk",
+      "url": "https://tex8.com/xmr.apk?v=1.0.23-protection-f5771ac4",
+      "sha256": "f5771ac4cecfdbd8432caeabdbd64845b9a79d9206f15cb4d5f2b5c57e88268d",
+      "size": 67936234
+    }
+  ]
+}

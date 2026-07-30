@@ -179,7 +179,7 @@ impl HardwareHostedViewKeyMatcher {
                     .additional
                     .as_ref()
                     .and_then(|keys| keys.get(output_index));
-                let key_indices = prepared_tx.primary.iter().chain(additional.into_iter());
+                let key_indices = prepared_tx.primary.iter().chain(additional);
 
                 for key_index in key_indices {
                     let Some(derivation) = derivations[*key_index] else {
@@ -306,7 +306,7 @@ impl HardwareHostedViewKeyMatcher {
             .map(|point| {
                 point
                     .decompress()
-                    .map(|point| (&cofactored_view * point).compress().to_bytes())
+                    .map(|point| (cofactored_view * point).compress().to_bytes())
             })
             .collect()
     }
@@ -616,9 +616,11 @@ mod tests {
             restore_height: 1,
             push_token: None,
             device_id: None,
+            worker_assignment_epoch: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             last_scanned_height: 0,
+            last_scanned_hash: None,
         };
         (
             watch,
@@ -685,9 +687,11 @@ mod tests {
             restore_height: 1,
             push_token: None,
             device_id: None,
+            worker_assignment_epoch: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             last_scanned_height: 0,
+            last_scanned_hash: None,
         };
         (
             watch,

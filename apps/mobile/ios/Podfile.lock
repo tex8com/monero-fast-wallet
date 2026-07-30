@@ -1,4 +1,10 @@
 PODS:
+  - AppCheckCore (11.3.1):
+    - GoogleUtilities/Environment (~> 8.0)
+    - GoogleUtilities/UserDefaults (~> 8.0)
+    - PromisesObjC (~> 2.4)
+    - PromisesSwift (~> 2.4)
+    - RecaptchaInterop (~> 101.0)
   - AsyncStorage (3.1.1):
     - hermes-engine
     - RCTRequired
@@ -23,11 +29,21 @@ PODS:
   - BVLinearGradient (2.8.3):
     - React-Core
   - FBLazyVector (0.85.1)
+  - Firebase/AppCheck (12.10.0):
+    - Firebase/CoreOnly
+    - FirebaseAppCheck (~> 12.10.0)
   - Firebase/CoreOnly (12.10.0):
     - FirebaseCore (~> 12.10.0)
   - Firebase/Messaging (12.10.0):
     - Firebase/CoreOnly
     - FirebaseMessaging (~> 12.10.0)
+  - FirebaseAppCheck (12.10.0):
+    - AppCheckCore (~> 11.0)
+    - FirebaseAppCheckInterop (~> 12.10.0)
+    - FirebaseCore (~> 12.10.0)
+    - GoogleUtilities/Environment (~> 8.1)
+    - GoogleUtilities/UserDefaults (~> 8.1)
+  - FirebaseAppCheckInterop (12.10.0)
   - FirebaseCore (12.10.0):
     - FirebaseCoreInternal (~> 12.10.0)
     - GoogleUtilities/Environment (~> 8.1)
@@ -80,12 +96,15 @@ PODS:
   - hermes-engine (250829098.0.10):
     - hermes-engine/Pre-built (= 250829098.0.10)
   - hermes-engine/Pre-built (250829098.0.10)
+  - libPhoneNumber-iOS (1.7.5)
   - nanopb (3.30910.0):
     - nanopb/decode (= 3.30910.0)
     - nanopb/encode (= 3.30910.0)
   - nanopb/decode (3.30910.0)
   - nanopb/encode (3.30910.0)
   - PromisesObjC (2.4.0)
+  - PromisesSwift (2.4.0):
+    - PromisesObjC (= 2.4.0)
   - RCTDeprecation (0.85.1)
   - RCTRequired (0.85.1)
   - RCTSwiftUI (0.85.1)
@@ -1809,6 +1828,7 @@ PODS:
     - ReactNativeDependencies
     - Yoga
   - ReactNativeDependencies (0.85.1)
+  - RecaptchaInterop (101.0.0)
   - RNCClipboard (1.16.3):
     - hermes-engine
     - RCTRequired
@@ -1851,6 +1871,29 @@ PODS:
     - ReactCommon/turbomodule/bridging
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
+    - Yoga
+  - RNFBAppCheck (24.0.0):
+    - Firebase/AppCheck (= 12.10.0)
+    - hermes-engine
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - ReactNativeDependencies
+    - RNFBApp
     - Yoga
   - RNFBMessaging (24.0.0):
     - Firebase/Messaging (= 12.10.0)
@@ -2014,6 +2057,7 @@ DEPENDENCIES:
   - BVLinearGradient (from `../node_modules/react-native-linear-gradient`)
   - FBLazyVector (from `../node_modules/react-native/Libraries/FBLazyVector`)
   - hermes-engine (from `../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
+  - libPhoneNumber-iOS (~> 1.7.3)
   - RCTDeprecation (from `../node_modules/react-native/ReactApple/Libraries/RCTFoundation/RCTDeprecation`)
   - RCTRequired (from `../node_modules/react-native/Libraries/Required`)
   - RCTSwiftUI (from `../node_modules/react-native/ReactApple/RCTSwiftUI`)
@@ -2088,6 +2132,7 @@ DEPENDENCIES:
   - ReactNativeDependencies (from `../node_modules/react-native/third-party-podspecs/ReactNativeDependencies.podspec`)
   - "RNCClipboard (from `../node_modules/@react-native-clipboard/clipboard`)"
   - "RNFBApp (from `../node_modules/@react-native-firebase/app`)"
+  - "RNFBAppCheck (from `../node_modules/@react-native-firebase/app-check`)"
   - "RNFBMessaging (from `../node_modules/@react-native-firebase/messaging`)"
   - RNGestureHandler (from `../node_modules/react-native-gesture-handler`)
   - RNPermissions (from `../node_modules/react-native-permissions`)
@@ -2097,7 +2142,10 @@ DEPENDENCIES:
 
 SPEC REPOS:
   trunk:
+    - AppCheckCore
     - Firebase
+    - FirebaseAppCheck
+    - FirebaseAppCheckInterop
     - FirebaseCore
     - FirebaseCoreExtension
     - FirebaseCoreInternal
@@ -2105,8 +2153,11 @@ SPEC REPOS:
     - FirebaseMessaging
     - GoogleDataTransport
     - GoogleUtilities
+    - libPhoneNumber-iOS
     - nanopb
     - PromisesObjC
+    - PromisesSwift
+    - RecaptchaInterop
 
 EXTERNAL SOURCES:
   AsyncStorage:
@@ -2264,6 +2315,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/@react-native-clipboard/clipboard"
   RNFBApp:
     :path: "../node_modules/@react-native-firebase/app"
+  RNFBAppCheck:
+    :path: "../node_modules/@react-native-firebase/app-check"
   RNFBMessaging:
     :path: "../node_modules/@react-native-firebase/messaging"
   RNGestureHandler:
@@ -2278,10 +2331,13 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
 SPEC CHECKSUMS:
+  AppCheckCore: e215d35177a9cf469927863e69c13e220df32a8b
   AsyncStorage: 8b0d0779fff74b67da947599e8fccf79d2e397c7
   BVLinearGradient: 880f91a7854faff2df62518f0281afb1c60d49a3
   FBLazyVector: 5846a8972a2b330add2ff9c49d96dc98d6065d12
   Firebase: 99f203d3a114c6ba591f3b32263a9626e450af65
+  FirebaseAppCheck: 3cd5112c60c3b04e6207e41a864b6c3cb06f73ad
+  FirebaseAppCheckInterop: 2480ab50a070a6bc02e26e62733874361f017a11
   FirebaseCore: f4428e22415ea3b3eca652c2098413dabf2a23a9
   FirebaseCoreExtension: 3473a6ec16a91aee29fb75994a86c0220d2cddf3
   FirebaseCoreInternal: e7bbaeb00ab73011298f35ed223aa7371e212948
@@ -2290,8 +2346,10 @@ SPEC CHECKSUMS:
   GoogleDataTransport: aae35b7ea0c09004c3797d53c8c41f66f219d6a7
   GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
   hermes-engine: e26032a8466805d91cf637e67e38bb4de1405f3e
+  libPhoneNumber-iOS: 0cb19dfbf1882c8d4012f13cd7478d2f8fb994f0
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
+  PromisesSwift: 9d77319bbe72ebf6d872900551f7eeba9bce2851
   RCTDeprecation: 6b79e3924a314d4b9862ed02fba248bce4983c7f
   RCTRequired: 8a37bb367a0d2bb19bb6b3f78aa06fbf2961db51
   RCTSwiftUI: ee5c3d36d4e5fa11d80521a34716113b8f136fe0
@@ -2363,8 +2421,10 @@ SPEC CHECKSUMS:
   ReactCommon: ce3c6336172042036b937beb24456b599909be00
   ReactNativeCameraKit: 5f1a284b85ee8bbba789984149a88945f2e86bd4
   ReactNativeDependencies: 992ca1e80f43997bda46968e3471acf4b0ffd190
+  RecaptchaInterop: 11e0b637842dfb48308d242afc3f448062325aba
   RNCClipboard: 26237d7fcfc6359e674655b02d03d6178d63d085
   RNFBApp: 0b6a22fb66b5eb9309d58a09fe732c4862d77927
+  RNFBAppCheck: 31ea1a4314c8606a9042e8084aa012fcdf823f14
   RNFBMessaging: d45ac79c980ce07de7ebbdaf422f728850a78968
   RNGestureHandler: 2498a0d5f428d4bb3bac23479584a965a1a93096
   RNPermissions: 4edc5e7c7d39fb12e56d5bd8f3b22328274d2bf9
@@ -2372,6 +2432,6 @@ SPEC CHECKSUMS:
   RNSVG: 76acf4b6471079641921f01bdbf6860057ae946a
   Yoga: 41392d69c9cf6874d370cae9eeca71af6c2ee28a
 
-PODFILE CHECKSUM: 08f87cb94ca316f85e6063347c5c1eebf795a6e3
+PODFILE CHECKSUM: 6cd48db20dcd5b625d67490ba77d0357915a8eb4
 
 COCOAPODS: 1.15.2

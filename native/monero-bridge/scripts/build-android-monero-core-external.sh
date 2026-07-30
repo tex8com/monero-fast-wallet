@@ -35,6 +35,7 @@ grpc_tools="${build_root}/host-grpc-tools/v1.80.0"
 deps_root="${build_root}/android-deps"
 wallet_root="${MONERO_ANDROID_WALLET_BUILD_ROOT:-${build_root}/android-monero-wallet-tex8-patched}"
 fast_crypto_root="${MONERO_ANDROID_FAST_CRYPTO_ROOT:-${build_root}/mobile-fast-crypto-tex8-patched}"
+fast_wallet_protocol_root="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${build_root}/mobile-fast-wallet-protocol}"
 manifest_root="${MONERO_ANDROID_LINK_MANIFEST_ROOT:-${build_root}/android-monero-link-manifests-tex8-patched}"
 
 if [[ ! -x "${protobuf_tools}/bin/protoc" ]]; then
@@ -51,6 +52,12 @@ if [[ ! -x "${grpc_tools}/bin/grpc_cpp_plugin" ]]; then
     "${script_dir}/build-host-grpc-cpp-plugin.sh"
 fi
 
+if [[ ! -f "${fast_wallet_protocol_root}/${target}/libfast_wallet_protocol.a" ]]; then
+  TARGETS="${target}" \
+    OUTPUT_DIR="${fast_wallet_protocol_root}" \
+    "${repo_root}/native/fast-wallet-protocol/build-mobile.sh"
+fi
+
 TARGETS="${target}" \
   MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR}" \
   OUTPUT_ROOT="${deps_root}" \
@@ -63,6 +70,7 @@ TARGETS="${target}" \
   OUTPUT_ROOT="${wallet_root}" \
   MONERO_ANDROID_DEPENDENCY_ROOT="${deps_root}" \
   MONERO_FAST_CRYPTO_ROOT="${fast_crypto_root}" \
+  MONERO_FAST_WALLET_PROTOCOL_ROOT="${fast_wallet_protocol_root}" \
   MONERO_ANDROID_HOST_TOOLS_ROOT="${build_root}/host-protobuf-tools" \
   PROTOC_PATH="${protobuf_tools}/bin/protoc" \
   GRPC_CPP_PLUGIN_PATH="${grpc_tools}/bin/grpc_cpp_plugin" \

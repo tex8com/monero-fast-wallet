@@ -67,6 +67,11 @@ const iosLinkManifest = read(
   'scripts',
   'generate-ios-monero-link-manifests.sh',
 );
+const protocolMobileBuild = read(
+  'native',
+  'fast-wallet-protocol',
+  'build-mobile.sh',
+);
 
 assert.match(
   series,
@@ -121,6 +126,15 @@ assert.match(iosCoreBuild, /STRICT_OPTIONAL=1/);
 assert.match(
   iosLinkManifest,
   /elif \[\[ "\$\{strict_optional\}" == "1" \]\]; then[\s\S]*warn_missing "\$\{lib_path\}" \|\| missing_count=\$\(\(missing_count \+ 1\)\)/,
+);
+assert.doesNotMatch(
+  iosLinkManifest,
+  /libraries\+=\("\$\{fast_crypto_lib\}"\)/,
+);
+assert.match(iosProject, /"\$\(MONERO_FAST_WALLET_PROTOCOL_LIBRARY\)"/);
+assert.match(
+  protocolMobileBuild,
+  /cp -R "\$\{repo_root\}\/native\/mfw-recipient-protocol"/,
 );
 assert.match(iosBuildInstall, /monero-v0\.18\.4\.6-tex8-patched/);
 assert.match(iosBuildInstall, /ios-monero-link-manifests-tex8-patched/);

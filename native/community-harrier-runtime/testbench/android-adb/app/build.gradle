@@ -1,0 +1,38 @@
+plugins {
+    id "com.android.application"
+}
+
+def externalBuildDirectory =
+        (System.getenv("TEX8_HARRIER_ANDROID_BUILD_DIRECTORY") ?: "").trim()
+if (!externalBuildDirectory.isEmpty()) {
+    layout.buildDirectory.set(file(externalBuildDirectory))
+}
+
+android {
+    namespace "com.tex8.harrierbenchmark"
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.tex8.harrierbenchmark"
+        minSdk 24
+        targetSdk 36
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        debug {
+            debuggable true
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+}
+
+dependencies {
+    implementation "org.pytorch:executorch-android:1.3.1"
+}

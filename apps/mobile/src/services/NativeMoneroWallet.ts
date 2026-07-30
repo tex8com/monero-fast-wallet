@@ -4,8 +4,19 @@ import type {
   BiometricAuthResult,
   BiometricAuthStatus,
   FastReceiveIdentity,
+  FastWalletAssignment,
+  FastWalletProviderRegistration,
   HardwareWalletStatus,
   LedgerTransportStatus,
+  MfwNamePreparedTransaction,
+  MoneroEnthusiastV1Status,
+  PrivatePhoneAddressRequestResult,
+  PrivatePhoneContactResult,
+  PrivatePhoneDeviceContact,
+  PrivatePhoneIncomingAddressRequest,
+  PrivatePhoneParticipantStatus,
+  PrivatePhoneVerificationChallenge,
+  PrivatePhoneVerificationResult,
   PreparedTransaction,
   WalletTransaction,
   WalletSnapshot,
@@ -103,6 +114,35 @@ export interface CreateFastReceiveIdentityWithStoredSecretInput {
   derivationIndex: number;
 }
 
+export interface SealFastReceiveWatchWithStoredSecretInput {
+  identityId: string;
+  path: string;
+  secretKey: string;
+  network: MoneroNetwork;
+  restoreHeight?: number;
+  workerDescriptorHex: string;
+  assignmentHandleHex: string;
+  assignmentEpoch: number;
+  issuedAt: number;
+  expiresAt: number;
+  now: number;
+}
+
+export interface SponsorFastWalletAssignmentInput {
+  identityId: string;
+  workerDescriptorHex: string;
+  network: MoneroNetwork;
+  assignmentExpiresAt: number;
+  now: number;
+}
+
+export interface SubmitFastWalletWatchInput {
+  workerDescriptorHex: string;
+  network: MoneroNetwork;
+  now: number;
+  envelopeHex: string;
+}
+
 export interface EnableFastReceiveIdentityInput {
   identityId: string;
   path: string;
@@ -143,6 +183,34 @@ export interface PrepareTransactionInput {
   accountIndex?: number;
 }
 
+export interface PrepareMfwNameRegistrationInput {
+  walletId: string;
+  registrationId: string;
+  name: string;
+  address: string;
+  network: MoneroNetwork;
+  registryAddress: string;
+  priority?: TransactionPriority;
+  accountIndex?: number;
+}
+
+export interface PrepareMfwNameClaimInput
+  extends PrepareMfwNameRegistrationInput {
+  years: number;
+}
+
+export interface PrepareMfwNameTransitionInput
+  extends PrepareMfwNameClaimInput {
+  operation: 'update' | 'renew' | 'revoke';
+  predecessorRecordHex: string;
+  predecessorSigningOwnerPublicKeyHex: string;
+}
+
+export interface MfwNameNativePreparation {
+  ownerPublicKeyHex: string;
+  preparedTransaction: PreparedTransaction;
+}
+
 export interface DaemonConfig {
   address: string;
   trusted: boolean;
@@ -158,8 +226,18 @@ export type {
   BiometricAuthResult,
   BiometricAuthStatus,
   FastReceiveIdentity,
+  FastWalletAssignment,
+  FastWalletProviderRegistration,
   HardwareWalletStatus,
   LedgerTransportStatus,
+  MoneroEnthusiastV1Status,
+  PrivatePhoneAddressRequestResult,
+  PrivatePhoneContactResult,
+  PrivatePhoneDeviceContact,
+  PrivatePhoneIncomingAddressRequest,
+  PrivatePhoneParticipantStatus,
+  PrivatePhoneVerificationChallenge,
+  PrivatePhoneVerificationResult,
   PreparedTransaction,
   WalletTransaction,
   WalletSnapshot,
@@ -167,9 +245,20 @@ export type {
 
 export interface NativeMoneroWalletModule {
   linkedWithMonero(): Promise<boolean>;
+  getMoneroEnthusiastV1Status(): Promise<MoneroEnthusiastV1Status>;
+  runMoneroEnthusiastV1Operation(
+    operation: string,
+    inputJson: string,
+  ): Promise<string>;
   logDiagnostics(message: string): Promise<void>;
+  createSecureRandomIdentifier(prefix: string): Promise<string>;
   getLedgerTransportStatus(): Promise<LedgerTransportStatus>;
   requestLedgerTransportAccess(): Promise<LedgerTransportStatus>;
+  beginSystemUiInterruption(
+    reason: string,
+    timeoutMs: number,
+  ): Promise<string>;
+  endSystemUiInterruption(token: string): Promise<void>;
   getBiometricAuthStatus(): Promise<BiometricAuthStatus>;
   authenticateBiometric(reason: string): Promise<BiometricAuthResult>;
   getAppProtectionStatus(): Promise<AppProtectionStatus>;
@@ -177,6 +266,7 @@ export interface NativeMoneroWalletModule {
   unlockApp(password: string, reason: string): Promise<BiometricAuthResult>;
   lockApp(): Promise<void>;
   ensureWalletSecret(key: string): Promise<void>;
+  walletSecretExists(key: string): Promise<boolean>;
   deleteWalletSecret(key: string): Promise<void>;
   storeDaemonPassword(value: string): Promise<void>;
   deleteDaemonPassword(): Promise<void>;
@@ -187,6 +277,8 @@ export interface NativeMoneroWalletModule {
     walletName: string,
     network: MoneroNetwork,
   ): Promise<string>;
+  walletPathOccupied(path: string): Promise<boolean>;
+  listWalletNames(network: MoneroNetwork): Promise<ReadonlyArray<string>>;
   createWallet(input: CreateWalletInput): Promise<{ walletId: string }>;
   createWalletWithStoredSecret(
     input: CreateWalletWithStoredSecretInput,
@@ -207,13 +299,38 @@ export interface NativeMoneroWalletModule {
   createViewOnlyWalletFromHardwareWithStoredSecret(
     input: CreateViewOnlyWalletFromHardwareWithStoredSecretInput,
   ): Promise<{ walletId: string }>;
-  deleteWalletFiles(path: string): Promise<void>;
+  deleteEmptyWalletFiles(walletId: string, path: string): Promise<void>;
   createFastReceiveIdentity(
     input: CreateFastReceiveIdentityInput,
   ): Promise<FastReceiveIdentity>;
   createFastReceiveIdentityWithStoredSecret(
     input: CreateFastReceiveIdentityWithStoredSecretInput,
   ): Promise<FastReceiveIdentity>;
+  sealFastReceiveWatchWithStoredSecret(
+    input: SealFastReceiveWatchWithStoredSecretInput,
+  ): Promise<string>;
+  registerFastWalletProvider(
+    providerToken: string,
+    appCheckToken: string,
+  ): Promise<FastWalletProviderRegistration>;
+  loadOfficialFastWalletWorkerDescriptor(
+    network: MoneroNetwork,
+    now: number,
+  ): Promise<string>;
+  pairPrivateFastWalletWorkerDescriptor(
+    workerDescriptorHex: string,
+    network: MoneroNetwork,
+    now: number,
+  ): Promise<string>;
+  sponsorFastWalletAssignment(
+    input: SponsorFastWalletAssignmentInput,
+  ): Promise<FastWalletAssignment>;
+  submitFastWalletWatch(input: SubmitFastWalletWatchInput): Promise<string>;
+  disableFastWalletDelivery(): Promise<void>;
+  deleteFastWalletAssignment(
+    identityId: string,
+    assignmentHandleHex: string,
+  ): Promise<void>;
   enableFastReceiveIdentity(
     input: EnableFastReceiveIdentityInput,
   ): Promise<FastReceiveIdentity>;
@@ -227,12 +344,6 @@ export interface NativeMoneroWalletModule {
     identityId: string,
     scannerUrl: string,
     scannerAuthSecretKey: string,
-  ): Promise<string>;
-  checkFastReceiveKeyImagesWithStoredSecret(
-    identityId: string,
-    scannerUrl: string,
-    scannerAuthSecretKey: string,
-    keyImagesJson: string,
   ): Promise<string>;
   closeWallet(walletId: string, store?: boolean): Promise<void>;
   setDaemon(walletId: string, config: DaemonConfig): Promise<void>;
@@ -249,6 +360,56 @@ export interface NativeMoneroWalletModule {
     accountIndex?: number,
     addressIndex?: number,
   ): Promise<string>;
+  validateRecipientAddress(
+    address: string,
+    network: MoneroNetwork,
+  ): Promise<string>;
+  verifyMfwNameRecordAddress(
+    recordPayloadHex: string,
+    expectedName: string,
+    network: MoneroNetwork,
+    signingOwnerPublicKeyHex: string,
+  ): Promise<string>;
+  requestPrivatePhoneDiscoveryConsent(): Promise<boolean>;
+  revokePrivatePhoneDiscoveryConsent(): Promise<void>;
+  loadPrivatePhoneDeviceContacts(): Promise<PrivatePhoneDeviceContact[]>;
+  startPrivatePhoneVerification(
+    normalizedE164: string,
+  ): Promise<PrivatePhoneVerificationChallenge>;
+  getPrivatePhoneParticipantStatus(): Promise<PrivatePhoneParticipantStatus>;
+  completePrivatePhoneVerification(
+    verificationHandle: string,
+    code: string,
+  ): Promise<PrivatePhoneVerificationResult>;
+  resolvePrivatePhoneDirectoryContact(
+    phoneNumber: string,
+    expectedNetwork: string,
+  ): Promise<PrivatePhoneContactResult>;
+  publishPrivatePhoneContact(
+    phoneNumber: string,
+    walletId: string,
+    accountIndex: number,
+    policy: 'badge' | 'ask' | 'direct',
+    expectedNetwork: MoneroNetwork,
+  ): Promise<PrivatePhoneContactResult>;
+  revokePublishedPrivatePhoneContact(phoneNumber: string): Promise<void>;
+  requestPrivatePhoneAddress(
+    phoneNumber: string,
+    expectedNetwork: MoneroNetwork,
+  ): Promise<PrivatePhoneAddressRequestResult>;
+  pollPrivatePhoneAddressRequest(
+    requestHandle: string,
+  ): Promise<PrivatePhoneAddressRequestResult>;
+  pollIncomingPrivatePhoneAddressRequests(): Promise<
+    PrivatePhoneIncomingAddressRequest[]
+  >;
+  respondPrivatePhoneAddressRequest(
+    requestHandle: string,
+    walletId: string,
+    accountIndex: number,
+    approved: boolean,
+  ): Promise<void>;
+  removePrivatePhoneParticipant(): Promise<void>;
   createSubaddress(
     walletId: string,
     accountIndex?: number,
@@ -262,16 +423,30 @@ export interface NativeMoneroWalletModule {
     walletId: string,
     limit?: number,
   ): Promise<WalletTransaction[]>;
-  getOwnedOutputKeyImages(walletId: string): Promise<string[]>;
-  reconcileOutputKeyImages(
-    walletId: string,
-    keyImages: string[],
-    spentStates: boolean[],
-    checkedHeight: number,
-  ): Promise<number>;
   prepareTransaction(
     input: PrepareTransactionInput,
   ): Promise<PreparedTransaction>;
+  prepareMfwNameRegistration(
+    input: PrepareMfwNameRegistrationInput,
+  ): Promise<MfwNameNativePreparation>;
+  prepareMfwNameClaim(
+    input: PrepareMfwNameClaimInput,
+  ): Promise<MfwNameNativePreparation>;
+  prepareMfwNameTransition(
+    input: PrepareMfwNameTransitionInput,
+  ): Promise<MfwNameNativePreparation>;
+  exportMfwNameRecovery(
+    registrationId: string,
+    name: string,
+    network: MoneroNetwork,
+  ): Promise<boolean>;
+  importMfwNameRecovery(
+    registrationId: string,
+    name: string,
+    address: string,
+    network: MoneroNetwork,
+    expectedOwnerPublicKeyHex: string,
+  ): Promise<string>;
   commitTransaction(
     walletId: string,
     pendingId: string,
@@ -291,10 +466,20 @@ const turboModule = NativeMoneroWalletTurbo;
 const nativeModule: NativeMoneroWalletModule | undefined = turboModule
   ? {
       linkedWithMonero: () => turboModule.linkedWithMonero(),
+      getMoneroEnthusiastV1Status: () =>
+        turboModule.getMoneroEnthusiastV1Status(),
+      runMoneroEnthusiastV1Operation: (operation, inputJson) =>
+        turboModule.runMoneroEnthusiastV1Operation(operation, inputJson),
       logDiagnostics: message => turboModule.logDiagnostics(message),
+      createSecureRandomIdentifier: prefix =>
+        turboModule.createSecureRandomIdentifier(prefix),
       getLedgerTransportStatus: () => turboModule.getLedgerTransportStatus(),
       requestLedgerTransportAccess: () =>
         turboModule.requestLedgerTransportAccess(),
+      beginSystemUiInterruption: (reason, timeoutMs) =>
+        turboModule.beginSystemUiInterruption(reason, timeoutMs),
+      endSystemUiInterruption: token =>
+        turboModule.endSystemUiInterruption(token),
       getBiometricAuthStatus: () => turboModule.getBiometricAuthStatus(),
       authenticateBiometric: reason =>
         turboModule.authenticateBiometric(reason),
@@ -304,6 +489,7 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       unlockApp: (password, reason) => turboModule.unlockApp(password, reason),
       lockApp: () => turboModule.lockApp(),
       ensureWalletSecret: key => turboModule.ensureWalletSecret(key),
+      walletSecretExists: key => turboModule.walletSecretExists(key),
       deleteWalletSecret: key => turboModule.deleteWalletSecret(key),
       storeDaemonPassword: value => turboModule.storeDaemonPassword(value),
       deleteDaemonPassword: () => turboModule.deleteDaemonPassword(),
@@ -313,6 +499,8 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       deleteProtectedMetadata: key => turboModule.deleteProtectedMetadata(key),
       defaultWalletPath: (walletName, network) =>
         turboModule.defaultWalletPath(walletName, network),
+      walletPathOccupied: path => turboModule.walletPathOccupied(path),
+      listWalletNames: network => turboModule.listWalletNames(network),
       createWallet: async input => ({
         walletId: await turboModule.createWallet(
           input.path,
@@ -385,7 +573,8 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
             input.restoreHeight ?? 0,
           ),
       }),
-      deleteWalletFiles: path => turboModule.deleteWalletFiles(path),
+      deleteEmptyWalletFiles: (walletId, path) =>
+        turboModule.deleteEmptyWalletFiles(walletId, path),
       createFastReceiveIdentity: input =>
         turboModule.createFastReceiveIdentity(
           input.sourceWalletId,
@@ -406,6 +595,52 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.restoreHeight ?? 0,
           input.derivationIndex,
         ),
+      sealFastReceiveWatchWithStoredSecret: input =>
+        turboModule.sealFastReceiveWatchWithStoredSecret(
+          input.identityId,
+          input.path,
+          input.secretKey,
+          input.network,
+          input.restoreHeight ?? 0,
+          input.workerDescriptorHex,
+          input.assignmentHandleHex,
+          input.assignmentEpoch,
+          input.issuedAt,
+          input.expiresAt,
+          input.now,
+        ),
+      registerFastWalletProvider: (providerToken, appCheckToken) =>
+        turboModule.registerFastWalletProvider(providerToken, appCheckToken),
+      loadOfficialFastWalletWorkerDescriptor: (network, now) =>
+        turboModule.loadOfficialFastWalletWorkerDescriptor(network, now),
+      pairPrivateFastWalletWorkerDescriptor: (
+        workerDescriptorHex,
+        network,
+        now,
+      ) =>
+        turboModule.pairPrivateFastWalletWorkerDescriptor(
+          workerDescriptorHex,
+          network,
+          now,
+        ),
+      sponsorFastWalletAssignment: input =>
+        turboModule.sponsorFastWalletAssignment(
+          input.identityId,
+          input.workerDescriptorHex,
+          input.network,
+          input.assignmentExpiresAt,
+          input.now,
+        ),
+      submitFastWalletWatch: input =>
+        turboModule.submitFastWalletWatch(
+          input.workerDescriptorHex,
+          input.network,
+          input.now,
+          input.envelopeHex,
+        ),
+      disableFastWalletDelivery: () => turboModule.disableFastWalletDelivery(),
+      deleteFastWalletAssignment: (identityId, assignmentHandleHex) =>
+        turboModule.deleteFastWalletAssignment(identityId, assignmentHandleHex),
       enableFastReceiveIdentity: input =>
         turboModule.enableFastReceiveIdentity(
           input.identityId,
@@ -444,18 +679,6 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           scannerUrl,
           scannerAuthSecretKey,
         ),
-      checkFastReceiveKeyImagesWithStoredSecret: (
-        identityId,
-        scannerUrl,
-        scannerAuthSecretKey,
-        keyImagesJson,
-      ) =>
-        turboModule.checkFastReceiveKeyImagesWithStoredSecret(
-          identityId,
-          scannerUrl,
-          scannerAuthSecretKey,
-          keyImagesJson,
-        ),
       closeWallet: (walletId, store = true) =>
         turboModule.closeWallet(walletId, store ? 1 : 0),
       setDaemon: (walletId, config) =>
@@ -484,6 +707,73 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       stopRefresh: walletId => turboModule.stopRefresh(walletId),
       getAddress: (walletId, accountIndex = 0, addressIndex = 0) =>
         turboModule.getAddress(walletId, accountIndex, addressIndex),
+      validateRecipientAddress: (address, network) =>
+        turboModule.validateRecipientAddress(address, network),
+      verifyMfwNameRecordAddress: (
+        recordPayloadHex,
+        expectedName,
+        network,
+        signingOwnerPublicKeyHex,
+      ) =>
+        turboModule.verifyMfwNameRecordAddress(
+          recordPayloadHex,
+          expectedName,
+          network,
+          signingOwnerPublicKeyHex,
+        ),
+      requestPrivatePhoneDiscoveryConsent: () =>
+        turboModule.requestPrivatePhoneDiscoveryConsent(),
+      revokePrivatePhoneDiscoveryConsent: () =>
+        turboModule.revokePrivatePhoneDiscoveryConsent(),
+      loadPrivatePhoneDeviceContacts: () =>
+        turboModule.loadPrivatePhoneDeviceContacts(),
+      startPrivatePhoneVerification: normalizedE164 =>
+        turboModule.startPrivatePhoneVerification(normalizedE164),
+      getPrivatePhoneParticipantStatus: () =>
+        turboModule.getPrivatePhoneParticipantStatus(),
+      completePrivatePhoneVerification: (verificationHandle, code) =>
+        turboModule.completePrivatePhoneVerification(verificationHandle, code),
+      resolvePrivatePhoneDirectoryContact: (phoneNumber, expectedNetwork) =>
+        turboModule.resolvePrivatePhoneDirectoryContact(
+          phoneNumber,
+          expectedNetwork,
+        ),
+      publishPrivatePhoneContact: (
+        phoneNumber,
+        walletId,
+        accountIndex,
+        policy,
+        expectedNetwork,
+      ) =>
+        turboModule.publishPrivatePhoneContact(
+          phoneNumber,
+          walletId,
+          accountIndex,
+          policy,
+          expectedNetwork,
+        ),
+      revokePublishedPrivatePhoneContact: phoneNumber =>
+        turboModule.revokePublishedPrivatePhoneContact(phoneNumber),
+      requestPrivatePhoneAddress: (phoneNumber, expectedNetwork) =>
+        turboModule.requestPrivatePhoneAddress(phoneNumber, expectedNetwork),
+      pollPrivatePhoneAddressRequest: requestHandle =>
+        turboModule.pollPrivatePhoneAddressRequest(requestHandle),
+      pollIncomingPrivatePhoneAddressRequests: () =>
+        turboModule.pollIncomingPrivatePhoneAddressRequests(),
+      respondPrivatePhoneAddressRequest: (
+        requestHandle,
+        walletId,
+        accountIndex,
+        approved,
+      ) =>
+        turboModule.respondPrivatePhoneAddressRequest(
+          requestHandle,
+          walletId,
+          accountIndex,
+          approved,
+        ),
+      removePrivatePhoneParticipant: () =>
+        turboModule.removePrivatePhoneParticipant(),
       createSubaddress: (walletId, accountIndex = 0, label = '') =>
         turboModule.createSubaddress(walletId, accountIndex, label),
       presentRecoverySeed: (walletId, reason) =>
@@ -495,20 +785,6 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       snapshot: walletId => turboModule.snapshot(walletId),
       getTransactions: (walletId, limit = 25) =>
         turboModule.getTransactions(walletId, limit),
-      getOwnedOutputKeyImages: walletId =>
-        turboModule.getOwnedOutputKeyImages(walletId),
-      reconcileOutputKeyImages: (
-        walletId,
-        keyImages,
-        spentStates,
-        checkedHeight,
-      ) =>
-        turboModule.reconcileOutputKeyImages(
-          walletId,
-          keyImages,
-          spentStates,
-          checkedHeight,
-        ),
       prepareTransaction: input =>
         turboModule.prepareTransaction(
           input.walletId,
@@ -517,6 +793,66 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.paymentId ?? '',
           input.priority ?? 'low',
           input.accountIndex ?? 0,
+        ),
+      prepareMfwNameRegistration: async input =>
+        toMfwNameNativePreparation(
+          await turboModule.prepareMfwNameRegistration(
+            input.walletId,
+            input.registrationId,
+            input.name,
+            input.address,
+            input.network,
+            input.registryAddress,
+            input.priority ?? 'low',
+            input.accountIndex ?? 0,
+          ),
+        ),
+      prepareMfwNameClaim: async input =>
+        toMfwNameNativePreparation(
+          await turboModule.prepareMfwNameClaim(
+            input.walletId,
+            input.registrationId,
+            input.name,
+            input.address,
+            input.network,
+            input.registryAddress,
+            input.years,
+            input.priority ?? 'low',
+            input.accountIndex ?? 0,
+          ),
+        ),
+      prepareMfwNameTransition: async input =>
+        toMfwNameNativePreparation(
+          await turboModule.prepareMfwNameTransition(
+            input.walletId,
+            input.registrationId,
+            input.operation,
+            input.name,
+            input.address,
+            input.network,
+            input.registryAddress,
+            input.years,
+            input.predecessorRecordHex,
+            input.predecessorSigningOwnerPublicKeyHex,
+            input.priority ?? 'low',
+            input.accountIndex ?? 0,
+          ),
+        ),
+      exportMfwNameRecovery: (registrationId, name, network) =>
+        turboModule.exportMfwNameRecovery(registrationId, name, network),
+      importMfwNameRecovery: (
+        registrationId,
+        name,
+        address,
+        network,
+        expectedOwnerPublicKeyHex,
+      ) =>
+        turboModule.importMfwNameRecovery(
+          registrationId,
+          name,
+          address,
+          network,
+          expectedOwnerPublicKeyHex,
         ),
       commitTransaction: (walletId, pendingId) =>
         turboModule.commitTransaction(walletId, pendingId),
@@ -538,6 +874,16 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
         ),
     }
   : undefined;
+
+function toMfwNameNativePreparation(
+  value: MfwNamePreparedTransaction,
+): MfwNameNativePreparation {
+  const { ownerPublicKeyHex, ...preparedTransaction } = value;
+  return {
+    ownerPublicKeyHex,
+    preparedTransaction,
+  };
+}
 
 export function requireNativeMoneroWallet(): NativeMoneroWalletModule {
   if (!nativeModule) {

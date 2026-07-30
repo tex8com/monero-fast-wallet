@@ -19,7 +19,6 @@ import TransactionRow, {
 import type { WalletOption } from '../components/WalletSelector';
 import { resolveWalletOption } from '../components/WalletSelector';
 import { type TranslationKey, useI18n } from '../i18n';
-import { useNotificationAuthorization } from '../hooks/useNotificationAuthorization';
 import { useWalletState } from '../services/WalletState';
 import {
   isFastWalletRegistration,
@@ -29,16 +28,6 @@ import type {
   HardwareWalletStatus,
   WalletSnapshot,
 } from '../services/NativeMoneroWallet';
-import type { FastReceiveIdentityRecord } from '../services/FastReceiveRegistry';
-import {
-  fastWalletSelectorTone,
-  fastWalletStatusPresentation,
-} from '../services/FastWalletStatus';
-import {
-  getActiveNodeConnectionSettings,
-  loadActiveNodeConnectionSettings,
-} from '../services/NodeConnectionSettings';
-import type { NodeConnectionMode } from '../services/NodeConnectionSettings';
 import { formatAtomicXmr } from '../services/WalletFormat';
 import { walletService } from '../services/WalletService';
 import {
@@ -47,8 +36,6 @@ import {
   upsertWalletAddress,
   type WalletAddressRecord,
 } from '../services/WalletAddressRegistry';
-
-const FAST_WALLET_STATUS_REFRESH_MS = 30_000;
 
 function QrCode({ value, size }: { value: string; size: number }) {
   return (
@@ -109,30 +96,6 @@ function hardwareStatusText(
   return t('receive.hardwareConnectUnlock');
 }
 
-function fastWalletReceiveOption(
-  identity: FastReceiveIdentityRecord,
-  t: Translator,
-  tex8Node: boolean,
-  notificationsAuthorized: boolean,
-): WalletOption {
-  const status = fastWalletStatusPresentation(
-    identity,
-    tex8Node,
-    t,
-    notificationsAuthorized,
-  );
-  return {
-    id: identity.id,
-    address: identity.address,
-    badge: t('walletSelector.fast'),
-    detail: status.label,
-    kind: 'fast',
-    label: identity.label,
-    meta: identity.network,
-    tone: fastWalletSelectorTone(status),
-  };
-}
-
 function balanceDetail(
   snapshot: WalletSnapshot | undefined,
 ): string | undefined {
@@ -156,8 +119,6 @@ export default function ReceiveScreen({ navigation, route }: any) {
   const [copied, setCopied] = useState(false);
   const [hardwareBusy, setHardwareBusy] = useState(false);
   const [hardwareMessage, setHardwareMessage] = useState<string | undefined>();
-  const { authorized: notificationsAuthorized } =
-    useNotificationAuthorization();
   const [walletAddresses, setWalletAddresses] = useState<WalletAddressRecord[]>(
     [],
   );
@@ -170,12 +131,6 @@ export default function ReceiveScreen({ navigation, route }: any) {
   const [selectedReceiveWalletId, setSelectedReceiveWalletId] = useState<
     string | undefined
   >();
-  const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
-    FastReceiveIdentityRecord[]
-  >([]);
-  const [nodeMode, setNodeMode] = useState<NodeConnectionMode>(
-    getActiveNodeConnectionSettings().mode,
-  );
   const { t } = useI18n();
   const routeWalletId =
     typeof route?.params?.walletId === 'string'
@@ -208,45 +163,25 @@ export default function ReceiveScreen({ navigation, route }: any) {
     [registeredWallet, snapshot, walletSnapshots],
   );
   const receiveWalletOptions = useMemo<WalletOption[]>(
-    () => [
-      ...registeredWallets
-        .filter(wallet => !isFastWalletRegistration(wallet))
+    () =>
+      registeredWallets
+        .filter(
+          wallet =>
+            !isFastWalletRegistration(wallet) ||
+            wallet.seedBackupStatus === 'verified',
+        )
         .map(wallet => resolveWalletOption(wallet, walletSnapshotMap, t)),
-      ...fastReceiveIdentities.map(identity =>
-        fastWalletReceiveOption(
-          identity,
-          t,
-          nodeMode === 'optimized-grpc',
-          notificationsAuthorized,
-        ),
-      ),
-    ],
-    [
-      fastReceiveIdentities,
-      nodeMode,
-      notificationsAuthorized,
-      registeredWallets,
-      t,
-      walletSnapshotMap,
-    ],
+    [registeredWallets, t, walletSnapshotMap],
   );
   const activeReceiveWalletId =
-    selectedReceiveWalletId ??
-    registeredWallet?.id ??
-    fastReceiveIdentities[0]?.id;
-  const selectedFastIdentity = fastReceiveIdentities.find(
-    identity => identity.id === activeReceiveWalletId,
-  );
-  const selectedFastStatus = selectedFastIdentity
-    ? fastWalletStatusPresentation(
-        selectedFastIdentity,
-        nodeMode === 'optimized-grpc',
-        t,
-        notificationsAuthorized,
-      )
-    : undefined;
+    selectedReceiveWalletId ?? registeredWallet?.id;
   const selectedRegisteredWallet = registeredWallets.find(
     wallet => wallet.id === activeReceiveWalletId,
+  );
+  const selectedFastBackupPending = Boolean(
+    selectedRegisteredWallet &&
+      isFastWalletRegistration(selectedRegisteredWallet) &&
+      selectedRegisteredWallet.seedBackupStatus !== 'verified',
   );
   const selectedAddress =
     walletAddresses.find(item => item.id === selectedAddressId) ??
@@ -264,25 +199,23 @@ export default function ReceiveScreen({ navigation, route }: any) {
         ? walletSnapshotMap[activeReceiveWalletId]
         : undefined;
   const address =
-    selectedFastIdentity?.address ??
-    (activeReceiveWalletId === registeredWallet?.id
-      ? selectedAddress?.address
-      : undefined) ??
-    selectedSnapshot?.primaryAddress ??
-    '';
+    selectedFastBackupPending
+      ? ''
+      : (activeReceiveWalletId === registeredWallet?.id
+          ? selectedAddress?.address
+          : undefined) ??
+        selectedSnapshot?.primaryAddress ??
+        '';
   const isHardwareWallet = Boolean(
-    !selectedFastIdentity &&
     selectedRegisteredWallet?.kind === 'hardware' &&
     selectedRegisteredWallet.id === registeredWallet?.id &&
     session?.hardwareDevice,
   );
   const hardwareConnected = hardwareStatus?.connected ?? false;
-  const activeWalletDetail = selectedFastIdentity
-    ? selectedFastStatus?.label
-    : selectedRegisteredWallet
-      ? (balanceDetail(selectedSnapshot) ??
-        walletDisplayName(selectedRegisteredWallet))
-      : undefined;
+  const activeWalletDetail = selectedRegisteredWallet
+    ? (balanceDetail(selectedSnapshot) ??
+      walletDisplayName(selectedRegisteredWallet))
+    : undefined;
   const showsActiveWalletHistory = Boolean(
     session && activeReceiveWalletId === registeredWallet?.id,
   );
@@ -298,8 +231,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
     if (
       !session ||
       !registeredWallet ||
-      activeReceiveWalletId !== registeredWallet.id ||
-      selectedFastIdentity
+      activeReceiveWalletId !== registeredWallet.id
     ) {
       setWalletAddresses([]);
       return () => {
@@ -347,62 +279,18 @@ export default function ReceiveScreen({ navigation, route }: any) {
   }, [
     activeReceiveWalletId,
     registeredWallet,
-    selectedFastIdentity,
     session,
     t,
   ]);
 
   useFocusEffect(
     useCallback(() => {
-      let mounted = true;
-      let refreshInFlight = false;
-      const refreshFastWalletStatus = async () => {
-        if (refreshInFlight) {
-          return;
-        }
-
-        refreshInFlight = true;
-        try {
-          // Local identities are authoritative for the receive carousel. A
-          // temporary node/scanner outage must never hide a Fast Wallet that
-          // was just created on this device.
-          const [identities, settings] = await Promise.all([
-            walletService.loadFastReceiveIdentities(),
-            loadActiveNodeConnectionSettings(),
-          ]);
-          if (mounted) {
-            setFastReceiveIdentities(identities);
-            setNodeMode(settings.mode);
-          }
-          try {
-            const refreshed =
-              await walletService.loadFastReceiveIdentitiesForActiveNode();
-            if (mounted) {
-              setFastReceiveIdentities(refreshed);
-            }
-          } catch {
-            // Keep the local identity visible; only its remote status may be stale.
-          }
-        } finally {
-          refreshInFlight = false;
-        }
-      };
-
-      refreshFastWalletStatus().catch(() => undefined);
       // WalletState keeps an active wallet fresh in the background. Refresh
       // once when this screen becomes visible as well, so the recent activity
       // section never depends on a manual refresh action.
       refreshSnapshot().catch(() => undefined);
       refreshTransactions().catch(() => undefined);
-      const interval = setInterval(
-        () => refreshFastWalletStatus().catch(() => undefined),
-        FAST_WALLET_STATUS_REFRESH_MS,
-      );
-
-      return () => {
-        mounted = false;
-        clearInterval(interval);
-      };
+      return undefined;
     }, [refreshSnapshot, refreshTransactions]),
   );
 
@@ -430,10 +318,6 @@ export default function ReceiveScreen({ navigation, route }: any) {
     setHardwareMessage(undefined);
     setShowAddressTools(false);
     setShowHardwareTools(false);
-
-    if (wallet.kind === 'fast') {
-      return;
-    }
 
     const walletId = wallet.id;
     if (isRegisteredWalletOpen(walletId)) {
@@ -481,7 +365,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
   };
 
   const handleCreateAddress = async () => {
-    if (!session || !registeredWallet || addressBusy || selectedFastIdentity) {
+    if (!session || !registeredWallet || addressBusy) {
       return;
     }
 
@@ -553,42 +437,6 @@ export default function ReceiveScreen({ navigation, route }: any) {
 
         {address ? (
           <View style={s.card}>
-            {selectedFastIdentity && selectedFastStatus ? (
-              <View
-                style={[
-                  s.fastStatus,
-                  selectedFastStatus.tone === 'success' && s.fastStatusSuccess,
-                  selectedFastStatus.tone === 'danger' && s.fastStatusDanger,
-                ]}
-              >
-                <View
-                  style={[
-                    s.fastStatusDot,
-                    selectedFastStatus.tone === 'success' &&
-                      s.fastStatusDotSuccess,
-                    selectedFastStatus.tone === 'danger' &&
-                      s.fastStatusDotDanger,
-                    selectedFastStatus.tone === 'muted' && s.fastStatusDotMuted,
-                  ]}
-                />
-                <View style={s.fastStatusCopy}>
-                  <Text
-                    style={[
-                      s.fastStatusTitle,
-                      selectedFastStatus.tone === 'success' &&
-                        s.fastStatusTitleSuccess,
-                      selectedFastStatus.tone === 'danger' &&
-                        s.fastStatusTitleDanger,
-                    ]}
-                  >
-                    {selectedFastStatus.label}
-                  </Text>
-                  <Text style={s.fastStatusText}>
-                    {selectedFastStatus.description}
-                  </Text>
-                </View>
-              </View>
-            ) : null}
             <View style={s.qrBox}>
               <QrCode value={address} size={252} />
             </View>
@@ -610,8 +458,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
                 />
               </TouchableOpacity>
             </View>
-            {!selectedFastIdentity &&
-            activeReceiveWalletId === registeredWallet?.id &&
+            {activeReceiveWalletId === registeredWallet?.id &&
             session ? (
               <View style={s.addressToolsContainer}>
                 <TouchableOpacity
@@ -766,22 +613,32 @@ export default function ReceiveScreen({ navigation, route }: any) {
               <Icon name="lock" size={28} color={colors.orange} />
             </View>
             <Text style={s.emptyTitle}>
-              {status === 'locked'
+              {selectedFastBackupPending
+                ? 'Back up this Fast Wallet first'
+                : status === 'locked'
                 ? t('receive.walletLocked')
                 : t('receive.noWalletOpen')}
             </Text>
-            <Text style={s.emptyText}>{t('receive.emptyText')}</Text>
+            <Text style={s.emptyText}>
+              {selectedFastBackupPending
+                ? 'Its receive address stays hidden until you confirm that the recovery words are safely backed up.'
+                : t('receive.emptyText')}
+            </Text>
             <TouchableOpacity
               style={s.openButton}
               onPress={() =>
-                navigation.navigate('WalletSetup', {
-                  mode: 'open',
-                  openRequestId: Date.now(),
-                })
+                selectedFastBackupPending
+                  ? navigation.navigate('Wallets')
+                  : navigation.navigate('WalletSetup', {
+                      mode: 'open',
+                      openRequestId: Date.now(),
+                    })
               }
             >
               <Text style={s.openButtonText}>
-                {status === 'locked'
+                {selectedFastBackupPending
+                  ? 'Back up now'
+                  : status === 'locked'
                   ? t('action.openWallet')
                   : t('action.createWallet')}
               </Text>
@@ -826,20 +683,14 @@ export default function ReceiveScreen({ navigation, route }: any) {
         ) : (
           <View style={s.transactionsEmpty}>
             <Text style={s.transactionsEmptyTitle}>
-              {selectedFastIdentity
-                ? (selectedFastStatus?.label ??
-                  t('home.fastWalletTransactionsTitle'))
-                : showsActiveWalletHistory
-                  ? t('home.noTransactions')
-                  : t('home.walletNotOpen')}
+              {showsActiveWalletHistory
+                ? t('home.noTransactions')
+                : t('home.walletNotOpen')}
             </Text>
             <Text style={s.transactionsEmptyText}>
-              {selectedFastIdentity
-                ? (selectedFastStatus?.description ??
-                  t('home.fastWalletTransactionsText'))
-                : showsActiveWalletHistory
-                  ? t('home.noTransactionsText')
-                  : t('transactions.openWalletToLoad')}
+              {showsActiveWalletHistory
+                ? t('home.noTransactionsText')
+                : t('transactions.openWalletToLoad')}
             </Text>
           </View>
         )}

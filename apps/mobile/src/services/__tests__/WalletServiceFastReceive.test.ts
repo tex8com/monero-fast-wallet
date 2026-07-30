@@ -81,22 +81,6 @@ const mockNativeWallet = {
         notifications_enabled: true,
       }),
   ),
-  checkFastReceiveKeyImagesWithStoredSecret: jest.fn(
-    async (
-      identityId: string,
-      _scannerUrl: string,
-      _scannerAuthSecretKey: string,
-      keyImagesJson: string,
-    ) =>
-      JSON.stringify({
-        identity_id: identityId,
-        items: (JSON.parse(keyImagesJson) as string[]).map(keyImage => ({
-          key_image: keyImage,
-          status: 'unspent',
-          checked_height: 900,
-        })),
-      }),
-  ),
   openWalletWithStoredSecret: jest.fn(
     async (input: {path: string}) => ({
       walletId: `native-${input.path.split('/').pop()}`,
@@ -106,8 +90,6 @@ const mockNativeWallet = {
   setGrpcEndpoint: jest.fn(async () => undefined),
   startRefresh: jest.fn(async () => undefined),
   getTransactions: jest.fn(async () => []),
-  getOwnedOutputKeyImages: jest.fn(async () => ['a'.repeat(64)]),
-  reconcileOutputKeyImages: jest.fn(async () => 1),
   prepareTransaction: jest.fn(async () => ({
     id: 'pending-1',
     status: 'ok',
@@ -167,7 +149,7 @@ describe('WalletService fast receive scanner flow', () => {
     );
   });
 
-  it('enables scanner hosting without replacing local identity metadata', async () => {
+  it('fails closed instead of enabling legacy plaintext scanner hosting', async () => {
     await upsertFastReceiveIdentity(
       createFastReceiveIdentityRecord(
         {
@@ -186,42 +168,20 @@ describe('WalletService fast receive scanner flow', () => {
     );
 
     const service = new WalletService();
-    const result = await service.enableFastReceiveIdentity({
-      identityId: 'fast-receive-v2-7',
-      password: 'ignored-parent-password',
-      scannerUrl: 'https://xmr.tex8.com',
-      pushSubscriptionId: 'push-subscription-id',
-    });
-
+    await expect(
+      service.enableFastReceiveIdentity({
+        identityId: 'fast-receive-v2-7',
+        password: 'ignored-parent-password',
+        scannerUrl: 'https://xmr.tex8.com',
+        pushSubscriptionId: 'push-subscription-id',
+      }),
+    ).rejects.toThrow('encrypted Worker pairing');
     expect(
       mockNativeWallet.enableFastReceiveIdentityWithStoredSecret,
-    ).toHaveBeenCalledWith({
-      identityId: 'fast-receive-v2-7',
-      path: '/local/fast-receive-v2-7',
-      secretKey: FAST_CREDENTIAL_KEY,
-      network: 'mainnet',
-      restoreHeight: 777,
-      scannerUrl: 'https://xmr.tex8.com',
-      scannerAuthSecretKey: FAST_SCANNER_CREDENTIAL_KEY,
-      pushSubscriptionId: 'push-subscription-id',
-    });
-    expect(mockNativeWallet.ensureWalletSecret).toHaveBeenCalledWith(
+    ).not.toHaveBeenCalled();
+    expect(mockNativeWallet.ensureWalletSecret).not.toHaveBeenCalledWith(
       FAST_SCANNER_CREDENTIAL_KEY,
     );
-    expect(result.identity).toMatchObject({
-      id: 'fast-receive-v2-7',
-      label: 'Shop Notifications',
-      path: '/local/fast-receive-v2-7',
-      address: '54A1storedSecretAddress',
-      network: 'mainnet',
-      restoreHeight: 777,
-      derivationIndex: 7,
-      status: 'enabled',
-      scannerStatus: 'enabled',
-      scannerUrl: 'https://xmr.tex8.com',
-      lastScannedHeight: 900,
-      createdAt: '2026-07-08T00:00:00.000Z',
-    });
   });
 
   it('registers a created Fast Wallet as spendable without exposing its secret', async () => {
@@ -279,7 +239,7 @@ describe('WalletService fast receive scanner flow', () => {
         id: result.identity.id,
         kind: 'fast',
         path: result.identity.path,
-        seedBackupStatus: 'not-required',
+        seedBackupStatus: 'pending',
         credentialKey: independentCredential,
         restoreHeight: 900,
       }),
@@ -480,13 +440,13 @@ describe('WalletService fast receive scanner flow', () => {
         identityId: 'fast-receive-7-legacy',
         scannerUrl: 'https://xmr.tex8.com',
       }),
-    ).rejects.toThrow('legacy Fast Wallet is disabled');
+    ).rejects.toThrow('encrypted Worker pairing');
     expect(
       mockNativeWallet.enableFastReceiveIdentityWithStoredSecret,
     ).not.toHaveBeenCalled();
   });
 
-  it('enables scanner hosting with a stored native secret', async () => {
+  it('does not let a stored native secret bypass the release gate', async () => {
     await upsertFastReceiveIdentity(
       createFastReceiveIdentityRecord(
         {
@@ -505,33 +465,19 @@ describe('WalletService fast receive scanner flow', () => {
     );
 
     const service = new WalletService();
-    const result = await service.enableFastReceiveIdentity({
-      identityId: 'fast-receive-v2-7',
-      secretKey: 'ignored-source-credential',
-      scannerUrl: 'https://xmr.tex8.com',
-    });
-
+    await expect(
+      service.enableFastReceiveIdentity({
+        identityId: 'fast-receive-v2-7',
+        secretKey: 'ignored-source-credential',
+        scannerUrl: 'https://xmr.tex8.com',
+      }),
+    ).rejects.toThrow('encrypted Worker pairing');
     expect(
       mockNativeWallet.enableFastReceiveIdentityWithStoredSecret,
-    ).toHaveBeenCalledWith({
-      identityId: 'fast-receive-v2-7',
-      path: '/local/fast-receive-v2-7',
-      secretKey: FAST_CREDENTIAL_KEY,
-      network: 'mainnet',
-      restoreHeight: 777,
-      scannerUrl: 'https://xmr.tex8.com',
-      scannerAuthSecretKey: FAST_SCANNER_CREDENTIAL_KEY,
-      pushSubscriptionId: undefined,
-    });
-    expect(result.identity).toMatchObject({
-      id: 'fast-receive-v2-7',
-      address: '54A1storedSecretAddress',
-      scannerUrl: 'https://xmr.tex8.com',
-      status: 'enabled',
-    });
+    ).not.toHaveBeenCalled();
   });
 
-  it('marks fast receive identity as server mismatch when active scanner does not know it', async () => {
+  it('does not poll a legacy scanner while plaintext hosting is disabled', async () => {
     await upsertFastReceiveIdentity({
       ...createFastReceiveIdentityRecord(
         {
@@ -569,13 +515,16 @@ describe('WalletService fast receive scanner flow', () => {
     expect(result).toEqual([
       expect.objectContaining({
         id: 'fast-receive-v2-7',
-        scannerStatus: 'missing',
-        status: 'server-mismatch',
+        scannerStatus: 'enabled',
+        status: 'enabled',
       }),
     ]);
+    expect(
+      mockNativeWallet.getFastReceiveScannerStatusWithStoredSecret,
+    ).not.toHaveBeenCalled();
   });
 
-  it('repairs a missing server watch after an iOS wallet path relocation', async () => {
+  it('relocates the local wallet path without recreating a server watch', async () => {
     await upsertFastReceiveIdentity(
       createFastReceiveIdentityRecord(
         {
@@ -625,19 +574,12 @@ describe('WalletService fast receive scanner flow', () => {
 
     expect(
       mockNativeWallet.enableFastReceiveIdentityWithStoredSecret,
-    ).toHaveBeenCalledWith(
-      expect.objectContaining({
-        identityId: 'fast-receive-v2-7',
-        path: '/current-container/fast-receive-v2-7',
-        scannerUrl: 'https://xmr.tex8.com',
-      }),
-    );
+    ).not.toHaveBeenCalled();
     expect(identities).toEqual([
       expect.objectContaining({
         id: 'fast-receive-v2-7',
-        lastScannedHeight: 901,
         path: '/current-container/fast-receive-v2-7',
-        status: 'enabled',
+        status: 'local-only',
       }),
     ]);
   });
@@ -694,7 +636,7 @@ describe('WalletService fast receive scanner flow', () => {
     ]);
   });
 
-  it('reconciles every owned output before preparing a Fast Wallet send', async () => {
+  it('uses only the local native wallet when preparing a Fast Wallet send', async () => {
     const fastWallet = await saveRegisteredWallet(
       createRegisteredWallet({
         id: 'fast-receive-v2-7',
@@ -720,19 +662,6 @@ describe('WalletService fast receive scanner flow', () => {
       scannerStatus: 'enabled',
       status: 'enabled',
     });
-    mockNativeWallet.checkFastReceiveKeyImagesWithStoredSecret.mockResolvedValueOnce(
-      JSON.stringify({
-        identity_id: fastWallet.id,
-        items: [
-          {
-            key_image: 'a'.repeat(64),
-            status: 'spent',
-            checked_height: 901,
-          },
-        ],
-      }),
-    );
-
     const service = new WalletService();
     const session = {
       network: 'mainnet' as const,
@@ -744,17 +673,11 @@ describe('WalletService fast receive scanner flow', () => {
       amountAtomic: '1',
     });
 
-    expect(mockNativeWallet.reconcileOutputKeyImages).toHaveBeenCalledWith(
-      session.walletId,
-      ['a'.repeat(64)],
-      [true],
-      901,
-    );
     expect(mockNativeWallet.prepareTransaction).toHaveBeenCalledTimes(1);
     expect(prepared.status).toBe('ok');
   });
 
-  it('reconciles a background Fast Wallet by its own registration id', async () => {
+  it('does not contact the scanner while reading a background Fast Wallet', async () => {
     const fastWallet = await upsertRegisteredWallet(
       createRegisteredWallet({
         id: 'fast-receive-v2-8-background',
@@ -790,19 +713,6 @@ describe('WalletService fast receive scanner flow', () => {
         kind: 'software',
       }),
     );
-    mockNativeWallet.checkFastReceiveKeyImagesWithStoredSecret.mockResolvedValueOnce(
-      JSON.stringify({
-        identity_id: fastWallet.id,
-        items: [
-          {
-            key_image: 'a'.repeat(64),
-            status: 'spent',
-            checked_height: 902,
-          },
-        ],
-      }),
-    );
-
     const service = new WalletService();
     await service.snapshot({
       network: 'mainnet',
@@ -810,18 +720,9 @@ describe('WalletService fast receive scanner flow', () => {
       walletId: 'native-background-fast',
     });
 
-    expect(mockNativeWallet.getOwnedOutputKeyImages).toHaveBeenCalledWith(
-      'native-background-fast',
-    );
-    expect(mockNativeWallet.reconcileOutputKeyImages).toHaveBeenCalledWith(
-      'native-background-fast',
-      ['a'.repeat(64)],
-      [true],
-      902,
-    );
   });
 
-  it('blocks Fast Wallet sends when an owned output status is unknown', async () => {
+  it('lets the locally synchronized Core prepare a Fast Wallet send without a server spend-status dependency', async () => {
     const fastWallet = await saveRegisteredWallet(
       createRegisteredWallet({
         id: 'fast-receive-v2-7',
@@ -846,19 +747,6 @@ describe('WalletService fast receive scanner flow', () => {
       scannerStatus: 'enabled',
       status: 'enabled',
     });
-    mockNativeWallet.checkFastReceiveKeyImagesWithStoredSecret.mockResolvedValueOnce(
-      JSON.stringify({
-        identity_id: fastWallet.id,
-        items: [
-          {
-            key_image: 'a'.repeat(64),
-            status: 'unknown',
-            checked_height: 901,
-          },
-        ],
-      }),
-    );
-
     const service = new WalletService();
     await expect(
       service.prepareTransaction(
@@ -869,7 +757,7 @@ describe('WalletService fast receive scanner flow', () => {
         },
         {address: '48A1destination', amountAtomic: '1'},
       ),
-    ).rejects.toThrow('spend status is not yet known');
-    expect(mockNativeWallet.prepareTransaction).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({status: 'ok'});
+    expect(mockNativeWallet.prepareTransaction).toHaveBeenCalledTimes(1);
   });
 });

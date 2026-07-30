@@ -86,6 +86,11 @@ unsafe extern "C" {
         account_index: u32,
         address_index: u32,
     ) -> RawResult;
+    fn tex8_desktop_wallet_validate_recipient_address(
+        core: *mut RawCore,
+        address: *const c_char,
+        network: u8,
+    ) -> RawResult;
     fn tex8_desktop_wallet_get_seed(
         core: *mut RawCore,
         wallet_id: *const c_char,
@@ -111,6 +116,44 @@ unsafe extern "C" {
         payment_id: *const c_char,
         priority: *const c_char,
         account_index: u32,
+    ) -> RawResult;
+    fn tex8_desktop_wallet_prepare_mfw_name_registration(
+        core: *mut RawCore,
+        wallet_id: *const c_char,
+        name: *const c_char,
+        address: *const c_char,
+        network: u8,
+        registry_address: *const c_char,
+        priority: *const c_char,
+        account_index: u32,
+    ) -> RawResult;
+    fn tex8_desktop_wallet_prepare_mfw_name_claim(
+        core: *mut RawCore,
+        wallet_id: *const c_char,
+        name: *const c_char,
+        address: *const c_char,
+        network: u8,
+        registry_address: *const c_char,
+        years: u32,
+        priority: *const c_char,
+        account_index: u32,
+        owner_private_key_hex: *const c_char,
+        commit_salt_hex: *const c_char,
+    ) -> RawResult;
+    fn tex8_desktop_wallet_prepare_mfw_name_transition(
+        core: *mut RawCore,
+        wallet_id: *const c_char,
+        operation: *const c_char,
+        name: *const c_char,
+        address: *const c_char,
+        network: u8,
+        registry_address: *const c_char,
+        years: u32,
+        priority: *const c_char,
+        account_index: u32,
+        owner_private_key_hex: *const c_char,
+        predecessor_record_hex: *const c_char,
+        predecessor_signing_owner_public_key_hex: *const c_char,
     ) -> RawResult;
     fn tex8_desktop_wallet_commit_transaction(
         core: *mut RawCore,
@@ -159,6 +202,20 @@ unsafe extern "C" {
         password: *const c_char,
         network: u8,
         restore_height: u64,
+    ) -> RawResult;
+    fn tex8_desktop_wallet_seal_fast_receive_watch(
+        core: *mut RawCore,
+        identity_id: *const c_char,
+        path: *const c_char,
+        password: *const c_char,
+        network: u8,
+        restore_height: u64,
+        worker_descriptor_hex: *const c_char,
+        assignment_handle_hex: *const c_char,
+        assignment_epoch: u64,
+        issued_at: u64,
+        expires_at: u64,
+        now: u64,
     ) -> RawResult;
 }
 
@@ -363,6 +420,16 @@ impl NativeWallet {
             )
         })
     }
+    pub fn validate_recipient_address(&self, address: &str, network: u8) -> Result<String, String> {
+        let address = c(address)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_validate_recipient_address(
+                self.core.as_ptr(),
+                address.as_ptr(),
+                network,
+            )
+        })
+    }
     pub fn recovery_seed(&self, wallet_id: &str) -> Result<String, String> {
         let wallet_id = c(wallet_id)?;
         let seed_offset = c("")?;
@@ -457,6 +524,43 @@ impl NativeWallet {
             )
         })
     }
+    #[allow(clippy::too_many_arguments, dead_code)]
+    pub fn seal_fast_receive_watch(
+        &self,
+        identity_id: &str,
+        path: &str,
+        password: &str,
+        network: u8,
+        restore_height: u64,
+        worker_descriptor_hex: &str,
+        assignment_handle_hex: &str,
+        assignment_epoch: u64,
+        issued_at: u64,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<String, String> {
+        let identity_id = c(identity_id)?;
+        let path = c(path)?;
+        let password = secret_c(password)?;
+        let descriptor = c(worker_descriptor_hex)?;
+        let handle = c(assignment_handle_hex)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_seal_fast_receive_watch(
+                self.core.as_ptr(),
+                identity_id.as_ptr(),
+                path.as_ptr(),
+                password.as_ptr().cast(),
+                network,
+                restore_height,
+                descriptor.as_ptr(),
+                handle.as_ptr(),
+                assignment_epoch,
+                issued_at,
+                expires_at,
+                now,
+            )
+        })
+    }
     pub fn transactions(&self, wallet_id: &str) -> Result<String, String> {
         let wallet_id = c(wallet_id)?;
         self.result(unsafe {
@@ -489,6 +593,115 @@ impl NativeWallet {
                 payment_id.as_ptr(),
                 priority.as_ptr(),
                 account_index,
+            )
+        })
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_mfw_name_registration(
+        &self,
+        wallet_id: &str,
+        name: &str,
+        address: &str,
+        network: u8,
+        registry_address: &str,
+        priority: &str,
+        account_index: u32,
+    ) -> Result<String, String> {
+        let wallet_id = c(wallet_id)?;
+        let name = c(name)?;
+        let address = c(address)?;
+        let registry_address = c(registry_address)?;
+        let priority = c(priority)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_prepare_mfw_name_registration(
+                self.core.as_ptr(),
+                wallet_id.as_ptr(),
+                name.as_ptr(),
+                address.as_ptr(),
+                network,
+                registry_address.as_ptr(),
+                priority.as_ptr(),
+                account_index,
+            )
+        })
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_mfw_name_claim(
+        &self,
+        wallet_id: &str,
+        name: &str,
+        address: &str,
+        network: u8,
+        registry_address: &str,
+        years: u32,
+        priority: &str,
+        account_index: u32,
+        owner_private_key_hex: &str,
+        commit_salt_hex: &str,
+    ) -> Result<String, String> {
+        let wallet_id = c(wallet_id)?;
+        let name = c(name)?;
+        let address = c(address)?;
+        let registry_address = c(registry_address)?;
+        let priority = c(priority)?;
+        let owner_private_key_hex = secret_c(owner_private_key_hex)?;
+        let commit_salt_hex = secret_c(commit_salt_hex)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_prepare_mfw_name_claim(
+                self.core.as_ptr(),
+                wallet_id.as_ptr(),
+                name.as_ptr(),
+                address.as_ptr(),
+                network,
+                registry_address.as_ptr(),
+                years,
+                priority.as_ptr(),
+                account_index,
+                owner_private_key_hex.as_ptr().cast(),
+                commit_salt_hex.as_ptr().cast(),
+            )
+        })
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_mfw_name_transition(
+        &self,
+        wallet_id: &str,
+        operation: &str,
+        name: &str,
+        address: &str,
+        network: u8,
+        registry_address: &str,
+        years: u32,
+        priority: &str,
+        account_index: u32,
+        owner_private_key_hex: &str,
+        predecessor_record_hex: &str,
+        predecessor_signing_owner_public_key_hex: &str,
+    ) -> Result<String, String> {
+        let wallet_id = c(wallet_id)?;
+        let operation = c(operation)?;
+        let name = c(name)?;
+        let address = c(address)?;
+        let registry_address = c(registry_address)?;
+        let priority = c(priority)?;
+        let owner_private_key_hex = secret_c(owner_private_key_hex)?;
+        let predecessor_record_hex = c(predecessor_record_hex)?;
+        let predecessor_signer = c(predecessor_signing_owner_public_key_hex)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_prepare_mfw_name_transition(
+                self.core.as_ptr(),
+                wallet_id.as_ptr(),
+                operation.as_ptr(),
+                name.as_ptr(),
+                address.as_ptr(),
+                network,
+                registry_address.as_ptr(),
+                years,
+                priority.as_ptr(),
+                account_index,
+                owner_private_key_hex.as_ptr().cast(),
+                predecessor_record_hex.as_ptr(),
+                predecessor_signer.as_ptr(),
             )
         })
     }
@@ -593,6 +806,10 @@ fn secret_c(value: &str) -> Result<Zeroizing<Vec<u8>>, String> {
 #[cfg(test)]
 mod tests {
     use super::{FastReceiveIdentityCreate, NativeWallet};
+    use fast_wallet_protocol::{
+        generate_hpke_keypair, Network, SigningKeyMaterial, WorkerDescriptor,
+        WorkerDescriptorInput, WATCH_ENVELOPE_SIZE,
+    };
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -621,6 +838,11 @@ mod tests {
             assert!(
                 address.starts_with('4'),
                 "expected a mainnet primary address"
+            );
+            assert_eq!(wallet.validate_recipient_address(&address, 0)?, address);
+            assert!(
+                wallet.validate_recipient_address(&address, 2).is_err(),
+                "mainnet recipient must fail closed on stagenet"
             );
             assert_eq!(
                 wallet.recovery_seed(&wallet_id)?.split_whitespace().count(),
@@ -652,6 +874,40 @@ mod tests {
             assert!(registration_payload.contains("privateViewKey"));
             assert!(registration_payload.contains(fast_identity_id));
             registration_payload.zeroize();
+            let protocol_now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_secs();
+            let root_key = SigningKeyMaterial::from_bytes([17_u8; 32]);
+            let online_key = SigningKeyMaterial::from_bytes([18_u8; 32]);
+            let (_, hpke_public_key) = generate_hpke_keypair().expect("HPKE key");
+            let descriptor = WorkerDescriptor::sign(
+                WorkerDescriptorInput {
+                    network: Network::Mainnet,
+                    issued_at: protocol_now.saturating_sub(1),
+                    expires_at: protocol_now + 600,
+                    worker_online_public_key: online_key.public_key(),
+                    hpke_public_key,
+                    relay_origin: "https://relay.test.invalid".to_owned(),
+                },
+                &root_key,
+            )
+            .expect("worker descriptor");
+            let envelope = wallet.seal_fast_receive_watch(
+                fast_identity_id,
+                &fast_path,
+                "independent-fast-password",
+                0,
+                0,
+                &hex::encode(descriptor.encode().expect("descriptor encode")),
+                &"11".repeat(32),
+                1,
+                protocol_now,
+                protocol_now + 300,
+                protocol_now,
+            )?;
+            assert_eq!(envelope.len(), WATCH_ENVELOPE_SIZE * 2);
+            assert!(!envelope.contains("privateViewKey"));
             let opened_fast_id = wallet.open(&fast_path, "independent-fast-password", 0, 0)?;
             let fast_address = wallet.address(&opened_fast_id, 0, 0)?;
             assert!(fast_address.starts_with('4'));

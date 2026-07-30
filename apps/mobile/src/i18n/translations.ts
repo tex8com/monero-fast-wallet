@@ -7,6 +7,7 @@ const en = {
   'action.close': 'Close',
   'action.closeWallet': 'Close wallet',
   'action.continue': 'Continue',
+  'action.getStarted': 'Get Started',
   'action.copyAddress': 'Copy address',
   'action.copied': 'Copied',
   'action.create': 'Create',
@@ -43,6 +44,114 @@ const en = {
   'tabs.menu': 'Menu',
   'tabs.receive': 'Receive',
   'tabs.send': 'Send',
+  'communityV1.title': 'Monero Enthusiast',
+  'communityV1.menuDescription': 'Find people, ideas, and services privately',
+  'communityV1.optional': 'Optional community',
+  'communityV1.subtitle':
+    'Discover people and useful ideas without connecting them to your wallet.',
+  'communityV1.walletSeparate': 'Your wallet stays separate',
+  'communityV1.walletSeparateText':
+    'This profile never receives your wallet address, balance, transactions, recovery words, or private keys.',
+  'communityV1.localSearch': 'Search stays on this device',
+  'communityV1.localSearchText':
+    'Public entries are downloaded and searched here. Results and your activity stay on this device.',
+  'communityV1.privacySettings': 'Community privacy',
+  'communityV1.shareSearches': 'Help improve search suggestions',
+  'communityV1.shareSearchesWelcomeText':
+    'On by default. Submitted search terms may be shared without wallet data after private details are filtered. You can turn this off.',
+  'communityV1.shareSearchesSettingsText':
+    'Share submitted search terms without wallet data. Email addresses, wallet addresses, transaction IDs, phone numbers, and seed-like text are filtered first. Typed but unsubmitted text, results, and clicks are never shared.',
+  'communityV1.shareSearchesSaveFailed':
+    'This setting could not be saved. Its previous value remains active.',
+  'communityV1.privateChat': 'Private one-to-one chat',
+  'communityV1.privateChatText':
+    'Messages are end-to-end encrypted. Only you and the other person can read them.',
+  'communityV1.yourChoice': 'You are always in control',
+  'communityV1.yourChoiceText':
+    'Location is optional and approximate. You can hide, block, report, or delete your profile.',
+  'communityV1.status': 'Private Community status',
+  'communityV1.catalog': 'Local discovery',
+  'communityV1.privateMessages': 'Private messages',
+  'communityV1.ready': 'Ready',
+  'communityV1.preparing': 'Not ready',
+  'communityV1.notReady':
+    'This secure Community version is still being prepared for this platform. Your wallet works normally.',
+  'communityV1.safety':
+    'Never share recovery words, private keys, or your wallet password with another person.',
+  'communityV1.openFailed':
+    'The private Community could not be opened. Please try again.',
+  'communityV1.createProfile': 'Start private Community',
+  'communityV1.openPrivateChat': 'Open private Community',
+  'communityV1.publicProfile': 'Your public profile',
+  'communityV1.publicProfileText':
+    'Choose only a public name and a short description. Your wallet is never attached.',
+  'communityV1.publicName': 'Public name',
+  'communityV1.publicAbout': 'About you',
+  'communityV1.reviewStatus': 'Review status',
+  'communityV1.submitReview': 'Send for review',
+  'communityV1.profileSubmitted': 'Your profile was sent for a safety review.',
+  'communityV1.profileFailed': 'Your profile could not be saved.',
+  'communityV1.discover': 'Find people and ideas',
+  'communityV1.searchLabel': 'What are you looking for?',
+  'communityV1.noResults': 'No matching public entries were found.',
+  'communityV1.searchFailed': 'Search could not be completed on this device.',
+  'communityV1.clearSearchHistory': 'Clear recent searches',
+  'communityV1.searchHistoryCleared': 'Recent searches were cleared.',
+  'communityV1.searchHistoryClearFailed':
+    'Recent searches could not be cleared.',
+  'communityV1.requestContact': 'Ask to connect',
+  'communityV1.requestSent': 'Your private contact request was sent.',
+  'communityV1.contactFailed': 'The contact request could not be updated.',
+  'communityV1.contacts': 'Private contacts',
+  'communityV1.contactRequest': 'Someone wants to connect',
+  'communityV1.contactRequestText':
+    'Accept only if you want this person to message you.',
+  'communityV1.decline': 'Decline',
+  'communityV1.accept': 'Accept',
+  'communityV1.noContacts': 'You have no private contacts yet.',
+  'communityV1.privateContact': 'Private contact',
+  'communityV1.openChat': 'Open chat',
+  'communityV1.privateConversation': 'Private conversation',
+  'communityV1.chatSafety':
+    'Messages are encrypted. Never send recovery words, private keys, or wallet passwords.',
+  'communityV1.noMessages': 'No messages yet.',
+  'communityV1.messagePlaceholder': 'Message',
+  'communityV1.send': 'Send',
+  'communityV1.sendFailed': 'The message could not be sent.',
+  'communityV1.chatFailed': 'The private conversation could not be opened.',
+  'communityV1.report': 'Report this message',
+  'communityV1.reviewReport': 'Check the exact message',
+  'communityV1.reviewReportText':
+    'Only the message shown below and your reason will be sent for review.',
+  'communityV1.reportReason': 'Why are you reporting this message?',
+  'communityV1.confirmReport': 'Send report',
+  'communityV1.reportSent': 'The selected message was reported.',
+  'communityV1.reportFailed': 'The report could not be sent.',
+  'communityV1.block': 'Block contact',
+  'communityV1.blockConfirm':
+    'This person will no longer be able to contact you. Continue?',
+  'communityV1.blockFailed': 'This contact could not be blocked.',
+  'communityV1.deleteProfile': 'Delete Community profile',
+  'communityV1.deleteConfirm':
+    'This permanently deletes your optional Community profile and private chats from this device. Your wallet is not changed.',
+  'communityV1.deleteFailed':
+    'The Community profile could not be deleted. Nothing was removed from this device.',
+  'communityV1.suspended': 'Community profile paused',
+  'communityV1.suspendedText':
+    'You can read the moderation decision and appeal it. Your wallet continues to work normally.',
+  'communityV1.reason': 'Reason',
+  'communityV1.moderationDecision': 'Review decision',
+  'communityV1.decisionPending': 'The review is still in progress.',
+  'communityV1.appealReason': 'Why should this decision be reviewed again?',
+  'communityV1.sendAppeal': 'Send free appeal',
+  'communityV1.appealPending': 'Your appeal is waiting for review.',
+  'communityV1.appealSent': 'Your appeal was sent.',
+  'communityV1.appealFailed': 'Your appeal could not be sent.',
+  'communityV1.enableNotifications': 'Enable Community updates',
+  'communityV1.notificationsEnabled':
+    'Community updates are enabled on this device.',
+  'communityV1.notificationsFailed':
+    'Notifications could not be enabled. You can continue without them.',
   'sync.error': 'Sync error',
   'sync.connectingNode': 'Connecting node',
   'sync.checkingBlocks': 'Checking blocks',
@@ -73,7 +182,8 @@ const en = {
   'security.appProtection': 'App protection',
   'security.preparingProtection': 'Preparing secure app protection…',
   'security.biometricPrompt': 'Unlock Monero Fast Wallet',
-  'security.biometricUnavailable': 'Biometric unlock is not available on this device.',
+  'security.biometricUnavailable':
+    'Biometric unlock is not available on this device.',
   'security.enterPassword': 'Enter app password',
   'security.passwordIncorrect': 'The app password is incorrect.',
   'security.setUpAppProtectionHint':
@@ -83,11 +193,18 @@ const en = {
   'security.biometricsFallback': 'If needed, you can use your device code.',
   'security.useAppPassword': 'App password',
   'security.passwordAlternative': 'Use a password you choose',
-  'security.passwordRule': 'Use at least 12 characters. A short sentence is easiest to remember.',
+  'security.passwordRule':
+    'Use at least 12 characters. A short sentence is easiest to remember.',
   'security.showPassword': 'Show password',
   'security.hidePassword': 'Hide password',
   'security.passwordRecoveryHelp':
-    'Important: If you forget this password, you need your recovery words to restore your wallets.',
+    'Important: After three incorrect app-password attempts, all local app and wallet data on this device is permanently erased. You need your 25-word recovery seed to restore your wallets.',
+  'security.passwordAttemptsRemaining':
+    'Incorrect app password. {count} attempts remaining before all local wallet data is erased.',
+  'security.passwordAttemptRemaining':
+    'Incorrect app password. 1 attempt remaining before all local wallet data is erased.',
+  'security.passwordResetInProgress':
+    'Three incorrect passwords. Local wallet data is being securely erased…',
   'security.continueWithBiometrics': 'Continue with biometrics',
   'security.unlockApp': 'Unlock app',
   'security.unlockAppHint': 'Unlock once to access all your saved wallets.',
@@ -153,6 +270,7 @@ const en = {
     "A random local wallet password is generated and stored in this device's secure storage.",
   'setup.biometric.waiting': 'Waiting for device security status.',
   'setup.createDesc': 'Generate a new Monero wallet',
+  'setup.existingWallets': 'Existing wallets',
   'setup.enthusiastsDescription':
     'Use an approximate area to discover people nearby, chat, and privately decide whether to meet.',
   'setup.enthusiastsTitle': 'Find Monero enthusiasts',
@@ -246,6 +364,7 @@ const en = {
   'home.balance': 'My Balance',
   'home.chartLoading': 'Loading market chart…',
   'home.chartUnavailable': 'Market chart is temporarily unavailable.',
+  'home.priceUnavailable': 'XMR market price is temporarily unavailable.',
   'home.updatesTitle': 'Official Monero updates',
   'home.updatesSource': 'MONERO PROJECT · GITHUB',
   'home.updatesSourceLink': 'View source',
@@ -261,6 +380,15 @@ const en = {
   'home.newsNetwork': 'Network',
   'home.newsWallet': 'Wallet',
   'home.newsEcosystem': 'Ecosystem',
+  'advertising.advertisement': 'Advertisement',
+  'advertising.sponsored': 'Sponsored',
+  'advertising.paidBy': 'Paid by {advertiser}',
+  'advertising.learnMore': 'Learn more',
+  'advertising.why': 'Why am I seeing this?',
+  'advertising.reasonContextual':
+    'Selected on this device for this placement. No viewing history or wallet data was sent to the server.',
+  'advertising.reasonLocal':
+    'Ranked on this device using your private local interests. Your interest profile and viewing history never leave this device.',
   'home.createOrImport': 'Create or Import',
   'home.loadingBalance': 'Loading balance',
   'home.lockedBalance': 'Locked: {amount} XMR',
@@ -305,8 +433,13 @@ const en = {
   'send.noRecent': 'No recent transfers',
   'send.noRecentText':
     'Synced wallet activity appears here after the wallet is opened.',
-  'send.noSavedContacts': 'No saved addresses yet. Add one below or paste an address instead.',
+  'send.noSavedContacts':
+    'No saved addresses yet. Add one below or paste an address instead.',
   'send.noRecipient': 'No recipient selected',
+  'send.invalidRecipientForNetwork':
+    'This address is not valid for the selected Monero network.',
+  'send.mfwUnavailable':
+    'This wallet name cannot be checked safely right now. Ask for the Monero address or QR code.',
   'send.openWalletBeforePreparing':
     'Open or create a wallet before preparing a transfer.',
   'send.openWalletBeforeSending': 'Open or create a wallet before sending.',
@@ -337,7 +470,8 @@ const en = {
   'send.sendXmr': 'Send XMR',
   'send.stealthAddress': 'Stealth address',
   'send.subtitle': 'Paste a Monero address and review before sending.',
-  'send.sweepAll': 'The native wallet calculates the exact maximum after the network fee.',
+  'send.sweepAll':
+    'The native wallet calculates the exact maximum after the network fee.',
   'send.title': 'Send XMR',
   'send.total': 'Total',
   'send.transactionBroadcast': 'Transaction broadcast.',
@@ -345,6 +479,29 @@ const en = {
   'send.transactionPreparationFailed': 'Transaction preparation failed',
   'send.waitForSync': 'Wait until this wallet is synced before sending.',
   'send.viewMore': 'View more',
+  'send.checkRecipientTitle': 'Check the recipient',
+  'send.checkRecipientDescription':
+    'Compare the name and full address before entering an amount.',
+  'send.checkRecipientHint':
+    'The address was checked for the selected Monero network. Nothing will be sent yet.',
+  'send.useThisRecipient': 'Use this recipient',
+  'send.confirmChangedAddress': 'I recognize the new address',
+  'send.fullAddress': 'Full address',
+  'send.addressFingerprint': 'Short address check',
+  'send.resolutionSource': 'Found through',
+  'send.sharingFreshness': 'Shared contact status',
+  'send.sharedUntil': 'Current until {date}',
+  'send.addressChangedWarning':
+    'This person now shares a different receive address than the one you accepted before. Check with them before continuing.',
+  'send.privateContactWrongNetwork':
+    'This private contact address is for a different Monero network.',
+  'send.privateContactUnavailable':
+    'This private contact address is no longer available. Check the person again.',
+  'send.sourceManual': 'Address entered manually',
+  'send.sourceQr': 'Scanned QR code',
+  'send.sourceAddressBook': 'Saved address book',
+  'send.sourceMfwName': 'Public .mfw name',
+  'send.sourcePrivateContact': 'Private phone contact',
   'transactions.account': 'Account',
   'transactions.amount': 'Amount',
   'transactions.blockHeight': 'Block height',
@@ -458,8 +615,217 @@ const en = {
   'enthusiasts.report': 'Report',
   'enthusiasts.requested': 'Requested',
   'enthusiasts.safety': 'Safety',
-  'enthusiasts.serverError': 'Community is temporarily unavailable. Check your connection, then try again.',
+  'enthusiasts.serverError':
+    'Community is temporarily unavailable. Check your connection, then try again.',
   'enthusiasts.yourName': 'YOUR PUBLIC ALIAS',
+  'mfwNames.activationPending':
+    'Name registration is not active in this release yet. The signed Registry address and protocol genesis parameters must be frozen first.',
+  'mfwNames.address': 'Receive address',
+  'mfwNames.addressLoadFailed': 'Wallet addresses could not be loaded.',
+  'mfwNames.availabilityAvailable':
+    'Available at the current verified chain tip.',
+  'mfwNames.availabilityAvailableAgain':
+    'Available for a new claim because the previous record is no longer active.',
+  'mfwNames.availabilityChecking':
+    'Checking availability with independent resolvers…',
+  'mfwNames.availabilityPending':
+    'This name currently has a provisional registration.',
+  'mfwNames.availabilityRequired':
+    'A current, verified availability result is required.',
+  'mfwNames.availabilityReserved':
+    'This protocol-reserved name cannot be registered.',
+  'mfwNames.availabilityTaken': 'This name is already registered.',
+  'mfwNames.availabilityUnavailable':
+    'Availability cannot be verified safely right now. Registration remains blocked.',
+  'mfwNames.cancelRenewal': 'Cancel',
+  'mfwNames.chooseAddress': 'Choose a receive address for this name.',
+  'mfwNames.claimYourAddress': 'Claim your address',
+  'mfwNames.claimText':
+    'After the commit matures, review a second prefilled transaction that publishes the signed name and pays the selected term.',
+  'mfwNames.claimTitle': 'Claim and pay',
+  'mfwNames.commitText':
+    'Review a prefilled commitment transaction. It hides the name from mempool observers.',
+  'mfwNames.commitTitle': 'Commit the name',
+  'mfwNames.confirmClaim': 'Confirm claim',
+  'mfwNames.confirmCommit': 'Confirm commit',
+  'mfwNames.confirmRenew': 'Confirm renewal',
+  'mfwNames.confirmRevoke': 'Confirm revocation',
+  'mfwNames.confirmUpdate': 'Confirm address change',
+  'mfwNames.continue': 'Prepare first approval',
+  'mfwNames.createDedicated': 'Create a dedicated address',
+  'mfwNames.createDedicatedHint':
+    'Recommended: avoid permanently linking the public name to your primary address.',
+  'mfwNames.currentAddress': 'Current public address',
+  'mfwNames.dedicated': 'Dedicated',
+  'mfwNames.decryptRecovery': 'Open native recovery prompt',
+  'mfwNames.daysRemaining': 'Days left',
+  'mfwNames.daysValue': '~{count} days',
+  'mfwNames.expiredFreshClaim':
+    'This name is no longer active and must be registered again with a new commit and claim.',
+  'mfwNames.expiresAtBlock': 'Expiry block',
+  'mfwNames.expiryEstimate':
+    'Days are an estimate at the two-minute block target; the expiry block is authoritative.',
+  'mfwNames.invalidName':
+    'Use 1–63 lowercase letters, numbers or internal hyphens.',
+  'mfwNames.myNames': 'Your names',
+  'mfwNames.newAddress': 'New public address',
+  'mfwNames.name': 'Address name',
+  'mfwNames.nameHint':
+    'The .mfw suffix is added automatically. Unicode lookalikes are not allowed.',
+  'mfwNames.namePlaceholder': 'alice',
+  'mfwNames.namesLoadFailed': 'Your locally tracked names could not be loaded.',
+  'mfwNames.nativePreparationRequired':
+    'Native name transaction preparation is not enabled in this build.',
+  'mfwNames.networkFeesExtra': 'Two normal Monero network fees are additional',
+  'mfwNames.noAddress': 'Open this wallet once to load its addresses.',
+  'mfwNames.noNames': 'No locally tracked .mfw names yet.',
+  'mfwNames.noWallet': 'No wallet selected',
+  'mfwNames.oneRenewalApproval': 'One explicit approval is required',
+  'mfwNames.openSelectedWallet':
+    'Open the selected wallet before creating a dedicated address.',
+  'mfwNames.openWalletFirst': 'Open and sync a wallet first.',
+  'mfwNames.ownerKeySecurity':
+    'A separate name-owner key is generated in device-protected native storage. Registration is blocked until its encrypted recovery export is confirmed.',
+  'mfwNames.primaryAddress': 'Primary address',
+  'mfwNames.prepareRenewal': 'Prepare renewal',
+  'mfwNames.prepareUpdate': 'Prepare address change',
+  'mfwNames.operation': 'Protocol action',
+  'mfwNames.publicWarning':
+    'The name and receive address remain publicly visible in Monero blockchain history. The public address cannot spend funds or reveal your wallet balance.',
+  'mfwNames.registryPrice': 'Registry price',
+  'mfwNames.recoveryRequired':
+    'Save the encrypted owner recovery before approving the registration.',
+  'mfwNames.recoveryImported':
+    'Owner recovery restored. This device can now manage the active name.',
+  'mfwNames.recoveryNativePrompt':
+    'The encrypted bundle and password stay inside the protected native screen.',
+  'mfwNames.registerAgain': 'Register again',
+  'mfwNames.registeredTerm': 'Term',
+  'mfwNames.renew': 'Renew',
+  'mfwNames.renewDescription':
+    'Choose the additional term. Renewal retains the existing public address and must be signed by the protected name-owner key.',
+  'mfwNames.renewNetworkFeeExtra':
+    'One normal Monero network fee is additional',
+  'mfwNames.renewTitle': 'Renew name',
+  'mfwNames.renewTransactionText':
+    'Review one prefilled owner-signed transaction that extends this active record.',
+  'mfwNames.reviewSubtitle':
+    'The Registry destination, amount and signed protocol data are locked by the native wallet. Check them, then approve.',
+  'mfwNames.reviewTitle': 'Review name transaction',
+  'mfwNames.restoreRecovery': 'Restore owner recovery',
+  'mfwNames.restoreRecoveryDescription':
+    'Enter the public name first. The wallet verifies its current blockchain record before the native recovery screen decrypts anything.',
+  'mfwNames.revoke': 'Revoke',
+  'mfwNames.revokeTitle': 'Revoke name',
+  'mfwNames.selectedWallet': 'Selected wallet: {wallet}',
+  'mfwNames.subaddressLabel': '{name} public name',
+  'mfwNames.subtitle':
+    'Claim a memorable public .mfw name for one of your Monero receive addresses.',
+  'mfwNames.statusActive': 'Active',
+  'mfwNames.statusClaimPending': 'Claim pending',
+  'mfwNames.statusCommitPending': 'Commit pending',
+  'mfwNames.statusExpired': 'Expired',
+  'mfwNames.statusFailed': 'Failed',
+  'mfwNames.statusRenewPending': 'Renewal pending',
+  'mfwNames.statusRevokePending': 'Revocation pending',
+  'mfwNames.statusUpdatePending': 'Address change pending',
+  'mfwNames.statusRevealReady': 'Ready to claim',
+  'mfwNames.statusRevoked': 'Revoked',
+  'mfwNames.term': 'Registration term',
+  'mfwNames.termValue': '{count} protocol year(s)',
+  'mfwNames.title': 'Your Address Names',
+  'mfwNames.twoApprovals': 'Two explicit approvals are required',
+  'mfwNames.changeAddress': 'Change address',
+  'mfwNames.chooseDifferentAddress':
+    'Choose an address that differs from the current public address.',
+  'mfwNames.chooseNewAddress': 'Choose the new public receive address.',
+  'mfwNames.oneUpdateApproval': 'One explicit approval is required',
+  'mfwNames.updateDescription':
+    'Choose the new public receive address. The protected name-owner key signs the change.',
+  'mfwNames.updateNetworkCost': 'No registry fee for an address change',
+  'mfwNames.updateTitle': 'Change public address',
+  'mfwNames.updateTransactionText':
+    'Review one prefilled owner-signed transaction that replaces the public receive address.',
+  'mfwNames.unknownWallet': 'Unknown wallet',
+  'mfwNames.wallet': 'Wallet for this name',
+  'mfwNames.walletNoLongerAvailable':
+    'This name’s wallet or current canonical status is not available. Open and sync the original wallet before continuing.',
+  'mfwNames.year': 'year',
+  'mfwNames.years': 'years',
+  'privateContacts.title': 'Private contacts',
+  'privateContacts.menuDescription':
+    'Find people or privately share a receive address',
+  'privateContacts.subtitle':
+    'Your contacts stay on this device. You choose who can see what.',
+  'privateContacts.findTitle': 'Find people from my contacts',
+  'privateContacts.findDescription':
+    'The app checks protected anonymous codes on this device. Names and phone numbers are not uploaded.',
+  'privateContacts.findOn': 'Finding people is on',
+  'privateContacts.findOff': 'Turn on finding people',
+  'privateContacts.turnOff': 'Turn off',
+  'privateContacts.verifyTitle': 'Verify your phone number',
+  'privateContacts.verifyDescription':
+    'This only proves that you can receive a code at this number. It does not verify your identity.',
+  'privateContacts.phonePlaceholder': 'International number, for example +507…',
+  'privateContacts.sendCode': 'Send code',
+  'privateContacts.codePlaceholder': 'Verification code',
+  'privateContacts.confirmCode': 'Confirm code',
+  'privateContacts.verifiedUntil': 'Phone verified until {date}',
+  'privateContacts.shareTitle': 'Share with selected contacts',
+  'privateContacts.shareDescription':
+    'Nothing is shared automatically. Pick one person and one simple option.',
+  'privateContacts.manualName': 'Name (only saved on this device)',
+  'privateContacts.noContacts':
+    'Turn on contact access above, or enter one phone number manually.',
+  'privateContacts.badge': 'Show that I use Fast Wallet',
+  'privateContacts.badgeDescription': 'No receive address is shared.',
+  'privateContacts.ask': 'Ask me before sharing',
+  'privateContacts.askDescription':
+    'The other person must request a receive address each time.',
+  'privateContacts.direct': 'Share a receive address',
+  'privateContacts.directDescription':
+    'Creates a separate public receive address in your open wallet. No private key is shared.',
+  'privateContacts.stopSharing': 'Stop sharing',
+  'privateContacts.statusPublishing': 'Saving securely…',
+  'privateContacts.statusActive': 'Shared',
+  'privateContacts.statusRevoking': 'Removing…',
+  'privateContacts.walletRequired':
+    'Open the wallet you want to use before sharing an address.',
+  'privateContacts.removeTitle': 'Remove my phone number',
+  'privateContacts.removeDescription':
+    'Stops all contact sharing and removes this phone from the private directory.',
+  'privateContacts.removeAction': 'Remove my phone',
+  'privateContacts.useTitle': 'Pay this person',
+  'privateContacts.useDescription':
+    'Check privately whether this person shared a current receive address with you.',
+  'privateContacts.checkPerson': 'Check this person',
+  'privateContacts.lookupBadge':
+    'This person uses Fast Wallet, but has not shared a receive address.',
+  'privateContacts.lookupAsk':
+    'This person wants to approve each address request. No address has been shared yet.',
+  'privateContacts.requestAddress': 'Ask for an address',
+  'privateContacts.outgoingTitle': 'Address request',
+  'privateContacts.requestSent':
+    'Your private request was sent. You can leave this page and check again later.',
+  'privateContacts.requestAnswered': 'The person has answered your request.',
+  'privateContacts.checkRequest': 'Check answer',
+  'privateContacts.requestStillWaiting': 'Still waiting for an answer.',
+  'privateContacts.requestDeclined':
+    'The person chose not to share an address.',
+  'privateContacts.requestExpired':
+    'This request expired. You can send a new one.',
+  'privateContacts.incomingTitle': 'Someone is asking for an address',
+  'privateContacts.incomingDescription':
+    'Only share if you know the person. A new receive address is created for every approval.',
+  'privateContacts.requestExpires': 'Answer before {time}',
+  'privateContacts.declineRequest': 'Do not share',
+  'privateContacts.approveRequest': 'Share new address',
+  'privateContacts.approveRequestConfirm':
+    'Share a new receive address with this person? They cannot spend your money.',
+  'privateContacts.lookupUnavailable':
+    'No current receive address is available. This can also mean the person is offline or chose not to share.',
+  'privateContacts.walletRequiredForSending':
+    'Open the wallet you want to send from first.',
   'menu.addressBook': 'Address Book',
   'menu.addressBookDesc': 'Saved addresses',
   'menu.configureWallet': 'Configure wallet',
@@ -513,9 +879,11 @@ const en = {
   'settings.openSourceLicenses': 'Open source licenses',
   'settings.openWalletFirst': 'Open wallet first',
   'settings.password': 'Password',
-  'settings.passwordChangeHint': 'The new password stays only in this device’s secure storage.',
+  'settings.passwordChangeHint':
+    'The new password stays only in this device’s secure storage.',
   'settings.passwordChanged': 'Wallet password changed.',
-  'settings.passwordHardware': 'A Ledger password is managed on the Ledger device.',
+  'settings.passwordHardware':
+    'A Ledger password is managed on the Ledger device.',
   'settings.passwordMinimum': 'Use at least 12 characters.',
   'settings.passwordMismatch': 'The new passwords do not match.',
   'settings.privacyPolicy': 'Privacy policy',
@@ -525,12 +893,16 @@ const en = {
   'settings.secureStored': 'Stored securely',
   'settings.security': 'Security',
   'settings.showBackupSeed': 'Show backup seed',
-  'settings.recoverySeedDescription': 'Reveal only while this software wallet is open.',
-  'settings.recoverySeedError': 'The recovery seed could not be read from this wallet.',
-  'settings.recoverySeedHardware': 'The Ledger recovery seed can only be shown on the Ledger device.',
+  'settings.recoverySeedDescription':
+    'Reveal only while this software wallet is open.',
+  'settings.recoverySeedError':
+    'The recovery seed could not be read from this wallet.',
+  'settings.recoverySeedHardware':
+    'The Ledger recovery seed can only be shown on the Ledger device.',
   'settings.recoverySeedTitle': 'Recovery seed',
   'settings.recoverySeedUnavailable': 'Open a software wallet first.',
-  'settings.recoverySeedWarning': 'Write these words down offline. Never share them with anyone.',
+  'settings.recoverySeedWarning':
+    'Write these words down offline. Never share them with anyone.',
   'settings.softwareWalletRequired': 'Software wallet required',
   'settings.storedSecureStorage': 'Stored in device secure storage',
   'settings.fastWalletServerAddress': 'Fast Wallet server',
@@ -568,6 +940,8 @@ const en = {
   'wallets.manage': 'Manage wallets',
   'wallets.noFastWallets': 'No Fast Wallet yet.',
   'wallets.noWallets': 'No private wallet yet.',
+  'wallets.openFailedTitle': 'Wallet could not be opened',
+  'wallets.openFailed': 'The local wallet could not be opened.',
   'wallets.privateWallets': 'Private Wallets',
   'wallets.removeFastWallet': 'Remove Fast Wallet',
   'wallets.removeFastWalletConfirm':
@@ -591,6 +965,7 @@ const de: Record<keyof typeof en, string> = {
   'action.close': 'Schließen',
   'action.closeWallet': 'Wallet schließen',
   'action.continue': 'Weiter',
+  'action.getStarted': 'Los geht’s',
   'action.copyAddress': 'Adresse kopieren',
   'action.copied': 'Kopiert',
   'action.create': 'Erstellen',
@@ -627,6 +1002,120 @@ const de: Record<keyof typeof en, string> = {
   'tabs.menu': 'Menü',
   'tabs.receive': 'Empfangen',
   'tabs.send': 'Senden',
+  'communityV1.title': 'Monero Enthusiast',
+  'communityV1.menuDescription': 'Menschen, Ideen und Angebote privat finden',
+  'communityV1.optional': 'Optionale Community',
+  'communityV1.subtitle':
+    'Finde Menschen und hilfreiche Ideen, ohne sie mit deiner Wallet zu verbinden.',
+  'communityV1.walletSeparate': 'Deine Wallet bleibt getrennt',
+  'communityV1.walletSeparateText':
+    'Dieses Profil erhält niemals deine Wallet-Adresse, dein Guthaben, Transaktionen, Wiederherstellungswörter oder privaten Schlüssel.',
+  'communityV1.localSearch': 'Die Suche bleibt auf diesem Gerät',
+  'communityV1.localSearchText':
+    'Öffentliche Einträge werden heruntergeladen und hier durchsucht. Ergebnisse und deine Nutzung bleiben auf diesem Gerät.',
+  'communityV1.privacySettings': 'Community-Datenschutz',
+  'communityV1.shareSearches': 'Suchvorschläge gemeinsam verbessern',
+  'communityV1.shareSearchesWelcomeText':
+    'Standardmäßig eingeschaltet. Abgesendete Suchbegriffe können nach einem Schutzfilter ohne Wallet-Daten geteilt werden. Du kannst das ausschalten.',
+  'communityV1.shareSearchesSettingsText':
+    'Abgesendete Suchbegriffe ohne Wallet-Daten teilen. E-Mail-Adressen, Wallet-Adressen, Transaktions-IDs, Telefonnummern und Seed-ähnliche Texte werden vorher gefiltert. Nicht abgesendete Eingaben, Ergebnisse und Klicks werden niemals geteilt.',
+  'communityV1.shareSearchesSaveFailed':
+    'Diese Einstellung konnte nicht gespeichert werden. Der vorherige Wert bleibt aktiv.',
+  'communityV1.privateChat': 'Privater Chat zu zweit',
+  'communityV1.privateChatText':
+    'Nachrichten sind Ende-zu-Ende verschlüsselt. Nur ihr beide könnt sie lesen.',
+  'communityV1.yourChoice': 'Du entscheidest',
+  'communityV1.yourChoiceText':
+    'Der Standort ist freiwillig und nur ungefähr. Du kannst dich verbergen, blockieren, melden oder dein Profil löschen.',
+  'communityV1.status': 'Status der privaten Community',
+  'communityV1.catalog': 'Lokale Suche',
+  'communityV1.privateMessages': 'Private Nachrichten',
+  'communityV1.ready': 'Bereit',
+  'communityV1.preparing': 'Noch nicht bereit',
+  'communityV1.notReady':
+    'Diese sichere Community-Version wird für diese Plattform noch vorbereitet. Deine Wallet funktioniert normal.',
+  'communityV1.safety':
+    'Teile niemals Wiederherstellungswörter, private Schlüssel oder dein Wallet-Passwort mit anderen.',
+  'communityV1.openFailed':
+    'Die private Community konnte nicht geöffnet werden. Bitte versuche es erneut.',
+  'communityV1.createProfile': 'Private Community starten',
+  'communityV1.openPrivateChat': 'Private Community öffnen',
+  'communityV1.publicProfile': 'Dein öffentliches Profil',
+  'communityV1.publicProfileText':
+    'Wähle nur einen öffentlichen Namen und eine kurze Beschreibung. Deine Wallet wird niemals verknüpft.',
+  'communityV1.publicName': 'Öffentlicher Name',
+  'communityV1.publicAbout': 'Über dich',
+  'communityV1.reviewStatus': 'Prüfstatus',
+  'communityV1.submitReview': 'Zur Prüfung senden',
+  'communityV1.profileSubmitted':
+    'Dein Profil wurde zur Sicherheitsprüfung gesendet.',
+  'communityV1.profileFailed': 'Dein Profil konnte nicht gespeichert werden.',
+  'communityV1.discover': 'Menschen und Ideen finden',
+  'communityV1.searchLabel': 'Wonach suchst du?',
+  'communityV1.noResults': 'Keine passenden öffentlichen Einträge gefunden.',
+  'communityV1.searchFailed':
+    'Die Suche konnte auf diesem Gerät nicht abgeschlossen werden.',
+  'communityV1.clearSearchHistory': 'Letzte Suchanfragen löschen',
+  'communityV1.searchHistoryCleared':
+    'Die letzten Suchanfragen wurden gelöscht.',
+  'communityV1.searchHistoryClearFailed':
+    'Die letzten Suchanfragen konnten nicht gelöscht werden.',
+  'communityV1.requestContact': 'Kontakt anfragen',
+  'communityV1.requestSent': 'Deine private Kontaktanfrage wurde gesendet.',
+  'communityV1.contactFailed':
+    'Die Kontaktanfrage konnte nicht aktualisiert werden.',
+  'communityV1.contacts': 'Private Kontakte',
+  'communityV1.contactRequest': 'Jemand möchte Kontakt aufnehmen',
+  'communityV1.contactRequestText':
+    'Nimm nur an, wenn diese Person dir schreiben darf.',
+  'communityV1.decline': 'Ablehnen',
+  'communityV1.accept': 'Annehmen',
+  'communityV1.noContacts': 'Du hast noch keine privaten Kontakte.',
+  'communityV1.privateContact': 'Privater Kontakt',
+  'communityV1.openChat': 'Chat öffnen',
+  'communityV1.privateConversation': 'Privates Gespräch',
+  'communityV1.chatSafety':
+    'Nachrichten sind verschlüsselt. Sende niemals Wiederherstellungswörter, private Schlüssel oder Wallet-Passwörter.',
+  'communityV1.noMessages': 'Noch keine Nachrichten.',
+  'communityV1.messagePlaceholder': 'Nachricht',
+  'communityV1.send': 'Senden',
+  'communityV1.sendFailed': 'Die Nachricht konnte nicht gesendet werden.',
+  'communityV1.chatFailed':
+    'Das private Gespräch konnte nicht geöffnet werden.',
+  'communityV1.report': 'Diese Nachricht melden',
+  'communityV1.reviewReport': 'Genaue Nachricht prüfen',
+  'communityV1.reviewReportText':
+    'Nur die unten angezeigte Nachricht und deine Begründung werden zur Prüfung gesendet.',
+  'communityV1.reportReason': 'Warum meldest du diese Nachricht?',
+  'communityV1.confirmReport': 'Meldung senden',
+  'communityV1.reportSent': 'Die ausgewählte Nachricht wurde gemeldet.',
+  'communityV1.reportFailed': 'Die Meldung konnte nicht gesendet werden.',
+  'communityV1.block': 'Kontakt blockieren',
+  'communityV1.blockConfirm':
+    'Diese Person kann dich danach nicht mehr kontaktieren. Fortfahren?',
+  'communityV1.blockFailed': 'Dieser Kontakt konnte nicht blockiert werden.',
+  'communityV1.deleteProfile': 'Community-Profil löschen',
+  'communityV1.deleteConfirm':
+    'Dadurch werden dein optionales Community-Profil und die privaten Chats auf diesem Gerät dauerhaft gelöscht. Deine Wallet bleibt unverändert.',
+  'communityV1.deleteFailed':
+    'Das Community-Profil konnte nicht gelöscht werden. Auf diesem Gerät wurde nichts entfernt.',
+  'communityV1.suspended': 'Community-Profil pausiert',
+  'communityV1.suspendedText':
+    'Du kannst die Moderationsentscheidung lesen und Einspruch einlegen. Deine Wallet funktioniert normal weiter.',
+  'communityV1.reason': 'Begründung',
+  'communityV1.moderationDecision': 'Prüfentscheidung',
+  'communityV1.decisionPending': 'Die Prüfung läuft noch.',
+  'communityV1.appealReason':
+    'Warum soll diese Entscheidung erneut geprüft werden?',
+  'communityV1.sendAppeal': 'Kostenlosen Einspruch senden',
+  'communityV1.appealPending': 'Dein Einspruch wartet auf Prüfung.',
+  'communityV1.appealSent': 'Dein Einspruch wurde gesendet.',
+  'communityV1.appealFailed': 'Dein Einspruch konnte nicht gesendet werden.',
+  'communityV1.enableNotifications': 'Community-Hinweise aktivieren',
+  'communityV1.notificationsEnabled':
+    'Community-Hinweise sind auf diesem Gerät aktiviert.',
+  'communityV1.notificationsFailed':
+    'Hinweise konnten nicht aktiviert werden. Du kannst die Community trotzdem nutzen.',
   'sync.error': 'Sync-Fehler',
   'sync.connectingNode': 'Node verbinden',
   'sync.checkingBlocks': 'Blöcke prüfen',
@@ -658,14 +1147,16 @@ const de: Record<keyof typeof en, string> = {
   'security.appProtection': 'App-Schutz',
   'security.preparingProtection': 'Sicherer App-Schutz wird vorbereitet…',
   'security.biometricPrompt': 'Monero Fast Wallet entsperren',
-  'security.biometricUnavailable': 'Biometrisches Entsperren ist auf diesem Gerät nicht verfügbar.',
+  'security.biometricUnavailable':
+    'Biometrisches Entsperren ist auf diesem Gerät nicht verfügbar.',
   'security.enterPassword': 'App-Passwort eingeben',
   'security.passwordIncorrect': 'Das App-Passwort ist nicht korrekt.',
   'security.setUpAppProtectionHint':
     'Wähle, wie du die App entsperren möchtest. Du kannst das später in den Einstellungen ändern.',
   'security.useBiometrics': 'Fingerabdruck oder Gesicht',
   'security.biometricsRecommended': 'Empfohlen',
-  'security.biometricsFallback': 'Falls nötig, kannst du den Gerätecode verwenden.',
+  'security.biometricsFallback':
+    'Falls nötig, kannst du den Gerätecode verwenden.',
   'security.useAppPassword': 'App-Passwort',
   'security.passwordAlternative': 'Ein eigenes Passwort verwenden',
   'security.passwordRule':
@@ -673,10 +1164,17 @@ const de: Record<keyof typeof en, string> = {
   'security.showPassword': 'Passwort anzeigen',
   'security.hidePassword': 'Passwort verbergen',
   'security.passwordRecoveryHelp':
-    'Wichtig: Wenn du dieses Passwort vergisst, brauchst du deine Wiederherstellungswörter, um deine Wallets wiederherzustellen.',
+    'Wichtig: Nach drei falschen App-Passwörtern werden alle lokalen App- und Wallet-Daten auf diesem Gerät dauerhaft gelöscht. Du brauchst deinen 25-Wörter-Seed, um deine Wallets wiederherzustellen.',
+  'security.passwordAttemptsRemaining':
+    'Falsches App-Passwort. Noch {count} Versuche, bevor alle lokalen Wallet-Daten gelöscht werden.',
+  'security.passwordAttemptRemaining':
+    'Falsches App-Passwort. Noch 1 Versuch, bevor alle lokalen Wallet-Daten gelöscht werden.',
+  'security.passwordResetInProgress':
+    'Drei falsche Passwörter. Lokale Wallet-Daten werden sicher gelöscht…',
   'security.continueWithBiometrics': 'Mit Biometrie fortfahren',
   'security.unlockApp': 'App entsperren',
-  'security.unlockAppHint': 'Einmal entsperren, um alle gespeicherten Wallets zu verwenden.',
+  'security.unlockAppHint':
+    'Einmal entsperren, um alle gespeicherten Wallets zu verwenden.',
   'security.unlockFailed': 'Die App konnte nicht entsperrt werden.',
   'security.unlockWithBiometrics': 'Mit Biometrie entsperren',
   'notification.incomingTitle': 'Eingehendes XMR',
@@ -740,6 +1238,7 @@ const de: Record<keyof typeof en, string> = {
     'Ein zufälliges lokales Wallet-Passwort wird erstellt und im sicheren Speicher dieses Geräts abgelegt.',
   'setup.biometric.waiting': 'Warte auf den Sicherheitsstatus des Geräts.',
   'setup.createDesc': 'Neue Monero-Wallet generieren',
+  'setup.existingWallets': 'Vorhandene Wallets',
   'setup.enthusiastsDescription':
     'Nutze einen ungefähren Bereich, um Menschen in deiner Nähe zu finden, zu chatten und euch privat zu verabreden.',
   'setup.enthusiastsTitle': 'Monero-Enthusiasten finden',
@@ -803,7 +1302,8 @@ const de: Record<keyof typeof en, string> = {
   'setup.scanAutomatic': 'Automatisch (empfohlen)',
   'setup.scanDateHint':
     'Optional. Die Wallet beginnt etwas vor diesem Datum, damit am gewählten Datum keine Zahlung übersehen wird.',
-  'setup.scanDateError': 'Wähle ein gültiges Datum, das nicht in der Zukunft liegt.',
+  'setup.scanDateError':
+    'Wähle ein gültiges Datum, das nicht in der Zukunft liegt.',
   'setup.seedConfirm': 'Ich habe diese 25 Wörter offline gesichert.',
   'setup.seedFullError': 'Gib den vollständigen 25-Wörter-Monero-Seed ein.',
   'setup.seedPhrase': 'Seed-Phrase',
@@ -836,6 +1336,7 @@ const de: Record<keyof typeof en, string> = {
   'home.balance': 'Mein Guthaben',
   'home.chartLoading': 'Marktchart wird geladen…',
   'home.chartUnavailable': 'Marktchart ist derzeit nicht verfügbar.',
+  'home.priceUnavailable': 'Der XMR-Marktpreis ist derzeit nicht verfügbar.',
   'home.updatesTitle': 'Offizielle Monero-Updates',
   'home.updatesSource': 'MONERO PROJECT · GITHUB',
   'home.updatesSourceLink': 'Quelle öffnen',
@@ -851,6 +1352,15 @@ const de: Record<keyof typeof en, string> = {
   'home.newsNetwork': 'Netzwerk',
   'home.newsWallet': 'Wallet',
   'home.newsEcosystem': 'Ökosystem',
+  'advertising.advertisement': 'Werbeanzeige',
+  'advertising.sponsored': 'Gesponsert',
+  'advertising.paidBy': 'Bezahlt von {advertiser}',
+  'advertising.learnMore': 'Mehr erfahren',
+  'advertising.why': 'Warum sehe ich das?',
+  'advertising.reasonContextual':
+    'Auf diesem Gerät für diesen Bereich ausgewählt. Es wurden weder der Anzeigeverlauf noch Wallet-Daten an den Server gesendet.',
+  'advertising.reasonLocal':
+    'Auf diesem Gerät anhand deiner privaten lokalen Interessen sortiert. Interessenprofil und Anzeigeverlauf verlassen das Gerät nie.',
   'home.createOrImport': 'Erstellen oder importieren',
   'home.loadingBalance': 'Guthaben wird geladen',
   'home.lockedBalance': 'Noch gesperrt: {amount} XMR',
@@ -873,7 +1383,8 @@ const de: Record<keyof typeof en, string> = {
   'home.walletLocked': 'Wallet gesperrt',
   'home.walletNotOpen': 'Wallet nicht geöffnet',
   'send.addressBook': 'Adressbuch',
-  'send.addressBookHint': 'Gespeicherte Adresse wählen oder für später hinzufügen.',
+  'send.addressBookHint':
+    'Gespeicherte Adresse wählen oder für später hinzufügen.',
   'send.addContact': 'Adresse hinzufügen',
   'send.amount': 'Betrag',
   'send.all': 'Alles',
@@ -897,15 +1408,21 @@ const de: Record<keyof typeof en, string> = {
   'send.noRecent': 'Keine letzten Überweisungen',
   'send.noRecentText':
     'Synchronisierte Wallet-Aktivität erscheint hier, nachdem die Wallet geöffnet wurde.',
-  'send.noSavedContacts': 'Noch keine gespeicherten Adressen. Füge unten eine hinzu oder füge eine Adresse ein.',
+  'send.noSavedContacts':
+    'Noch keine gespeicherten Adressen. Füge unten eine hinzu oder füge eine Adresse ein.',
   'send.noRecipient': 'Kein Empfänger ausgewählt',
+  'send.invalidRecipientForNetwork':
+    'Diese Adresse passt nicht zum ausgewählten Monero-Netzwerk.',
+  'send.mfwUnavailable':
+    'Dieser Wallet-Name kann gerade nicht sicher geprüft werden. Bitte um die Monero-Adresse oder den QR-Code.',
   'send.openWalletBeforePreparing':
     'Öffne oder erstelle eine Wallet, bevor du eine Überweisung vorbereitest.',
   'send.openWalletBeforeSending':
     'Öffne oder erstelle eine Wallet, bevor du sendest.',
   'send.pasteAddress': 'Monero-Adresse einfügen',
   'send.manualRecipient': 'Adresse manuell eingeben',
-  'send.manualRecipientHint': 'Adresse einfügen oder gespeicherten Kontakt wählen.',
+  'send.manualRecipientHint':
+    'Adresse einfügen oder gespeicherten Kontakt wählen.',
   'send.or': 'oder',
   'send.scanAddress': 'QR-Code scannen',
   'send.scanAddressHint': 'Halte die Kamera auf den QR-Code des Empfängers.',
@@ -915,7 +1432,8 @@ const de: Record<keyof typeof en, string> = {
     'Auf diesem Gerät ist keine Kamera verfügbar. Füge die Adresse stattdessen ein.',
   'send.scanFailed':
     'Die Kamera konnte nicht gestartet werden. Füge die Adresse stattdessen ein.',
-  'send.scanHint': 'Halte die Kamera auf den QR-Code einer Monero-Empfangsadresse.',
+  'send.scanHint':
+    'Halte die Kamera auf den QR-Code einer Monero-Empfangsadresse.',
   'send.scanInvalid': 'Dieser QR-Code enthält keine Monero-Adresse.',
   'send.saveContact': 'Adresse speichern',
   'send.openSettings': 'Einstellungen öffnen',
@@ -931,8 +1449,10 @@ const de: Record<keyof typeof en, string> = {
   'send.reviewPayment': 'Zahlung prüfen',
   'send.sendXmr': 'XMR senden',
   'send.stealthAddress': 'Stealth-Adresse',
-  'send.subtitle': 'Füge eine Monero-Adresse ein und prüfe vor dem Senden alles.',
-  'send.sweepAll': 'Die native Wallet berechnet den exakten Maximalbetrag nach der Netzwerkgebühr.',
+  'send.subtitle':
+    'Füge eine Monero-Adresse ein und prüfe vor dem Senden alles.',
+  'send.sweepAll':
+    'Die native Wallet berechnet den exakten Maximalbetrag nach der Netzwerkgebühr.',
   'send.title': 'XMR senden',
   'send.total': 'Gesamt',
   'send.transactionBroadcast': 'Transaktion gesendet.',
@@ -942,6 +1462,29 @@ const de: Record<keyof typeof en, string> = {
   'send.waitForSync':
     'Warte vor dem Senden, bis diese Wallet synchronisiert ist.',
   'send.viewMore': 'Mehr anzeigen',
+  'send.checkRecipientTitle': 'Empfänger prüfen',
+  'send.checkRecipientDescription':
+    'Vergleiche Name und vollständige Adresse, bevor du einen Betrag eingibst.',
+  'send.checkRecipientHint':
+    'Die Adresse wurde für das ausgewählte Monero-Netz geprüft. Es wird noch nichts gesendet.',
+  'send.useThisRecipient': 'Diesen Empfänger verwenden',
+  'send.confirmChangedAddress': 'Ich erkenne die neue Adresse',
+  'send.fullAddress': 'Vollständige Adresse',
+  'send.addressFingerprint': 'Kurzer Adresscheck',
+  'send.resolutionSource': 'Gefunden über',
+  'send.sharingFreshness': 'Status der Kontaktfreigabe',
+  'send.sharedUntil': 'Aktuell bis {date}',
+  'send.addressChangedWarning':
+    'Diese Person teilt jetzt eine andere Empfangsadresse als die, die du zuvor bestätigt hast. Frage bei ihr nach, bevor du fortfährst.',
+  'send.privateContactWrongNetwork':
+    'Diese private Kontaktadresse gehört zu einem anderen Monero-Netz.',
+  'send.privateContactUnavailable':
+    'Diese private Kontaktadresse ist nicht mehr verfügbar. Prüfe die Person erneut.',
+  'send.sourceManual': 'Adresse manuell eingegeben',
+  'send.sourceQr': 'QR-Code gescannt',
+  'send.sourceAddressBook': 'Gespeichertes Adressbuch',
+  'send.sourceMfwName': 'Öffentlicher .mfw-Name',
+  'send.sourcePrivateContact': 'Privater Telefonkontakt',
   'transactions.account': 'Konto',
   'transactions.amount': 'Betrag',
   'transactions.blockHeight': 'Blockhöhe',
@@ -1056,8 +1599,223 @@ const de: Record<keyof typeof en, string> = {
   'enthusiasts.report': 'Melden',
   'enthusiasts.requested': 'Angefragt',
   'enthusiasts.safety': 'Sicherheit',
-  'enthusiasts.serverError': 'Die Community ist vorübergehend nicht erreichbar. Prüfe die Verbindung und versuche es erneut.',
+  'enthusiasts.serverError':
+    'Die Community ist vorübergehend nicht erreichbar. Prüfe die Verbindung und versuche es erneut.',
   'enthusiasts.yourName': 'DEIN ÖFFENTLICHER ALIAS',
+  'mfwNames.activationPending':
+    'Die Namensregistrierung ist in dieser Version noch nicht aktiv. Zuerst müssen die signierte Registry-Adresse und alle Genesis-Parameter des Protokolls festgeschrieben werden.',
+  'mfwNames.address': 'Empfangsadresse',
+  'mfwNames.addressLoadFailed':
+    'Die Wallet-Adressen konnten nicht geladen werden.',
+  'mfwNames.availabilityAvailable':
+    'Am aktuell verifizierten Chain-Tip verfügbar.',
+  'mfwNames.availabilityAvailableAgain':
+    'Für eine neue Registrierung verfügbar, weil der vorherige Eintrag nicht mehr aktiv ist.',
+  'mfwNames.availabilityChecking':
+    'Verfügbarkeit wird bei unabhängigen Resolvern geprüft…',
+  'mfwNames.availabilityPending':
+    'Für diesen Namen läuft derzeit eine vorläufige Registrierung.',
+  'mfwNames.availabilityRequired':
+    'Ein aktuelles, verifiziertes Verfügbarkeitsergebnis ist erforderlich.',
+  'mfwNames.availabilityReserved':
+    'Dieser vom Protokoll reservierte Name kann nicht registriert werden.',
+  'mfwNames.availabilityTaken': 'Dieser Name ist bereits registriert.',
+  'mfwNames.availabilityUnavailable':
+    'Die Verfügbarkeit kann derzeit nicht sicher verifiziert werden. Die Registrierung bleibt gesperrt.',
+  'mfwNames.cancelRenewal': 'Abbrechen',
+  'mfwNames.chooseAddress': 'Wähle eine Empfangsadresse für diesen Namen aus.',
+  'mfwNames.claimYourAddress': 'Deinen Adressnamen registrieren',
+  'mfwNames.claimText':
+    'Nach Ablauf der Commit-Reifezeit prüfst du eine zweite vorausgefüllte Transaktion. Sie veröffentlicht den signierten Namen und bezahlt die gewählte Laufzeit.',
+  'mfwNames.claimTitle': 'Namen registrieren und bezahlen',
+  'mfwNames.commitText':
+    'Prüfe eine vorausgefüllte Commit-Transaktion. Sie verbirgt den Namen vor Beobachtern des Mempools.',
+  'mfwNames.commitTitle': 'Namen vormerken',
+  'mfwNames.confirmClaim': 'Registrierung bestätigen',
+  'mfwNames.confirmCommit': 'Commit bestätigen',
+  'mfwNames.confirmRenew': 'Verlängerung bestätigen',
+  'mfwNames.confirmRevoke': 'Widerruf bestätigen',
+  'mfwNames.confirmUpdate': 'Adressänderung bestätigen',
+  'mfwNames.continue': 'Erste Bestätigung vorbereiten',
+  'mfwNames.createDedicated': 'Eigene Adresse erstellen',
+  'mfwNames.createDedicatedHint':
+    'Empfohlen: Verknüpfe den öffentlichen Namen nicht dauerhaft mit deiner Hauptadresse.',
+  'mfwNames.currentAddress': 'Aktuelle öffentliche Adresse',
+  'mfwNames.dedicated': 'Separat',
+  'mfwNames.decryptRecovery': 'Nativen Recovery-Dialog öffnen',
+  'mfwNames.daysRemaining': 'Tage verbleibend',
+  'mfwNames.daysValue': '~{count} Tage',
+  'mfwNames.expiredFreshClaim':
+    'Dieser Name ist nicht mehr aktiv und muss mit einem neuen Commit und Claim erneut registriert werden.',
+  'mfwNames.expiresAtBlock': 'Ablaufblock',
+  'mfwNames.expiryEstimate':
+    'Die Tage sind eine Schätzung mit zwei Minuten je Block; maßgeblich ist der Ablaufblock.',
+  'mfwNames.invalidName':
+    'Verwende 1–63 Kleinbuchstaben, Zahlen oder Bindestriche innerhalb des Namens.',
+  'mfwNames.myNames': 'Deine Namen',
+  'mfwNames.newAddress': 'Neue öffentliche Adresse',
+  'mfwNames.name': 'Adressname',
+  'mfwNames.nameHint':
+    'Die Endung .mfw wird automatisch ergänzt. Unicode-Lookalikes sind nicht zulässig.',
+  'mfwNames.namePlaceholder': 'alice',
+  'mfwNames.namesLoadFailed':
+    'Deine lokal verwalteten Namen konnten nicht geladen werden.',
+  'mfwNames.nativePreparationRequired':
+    'Die native Vorbereitung der Namenstransaktion ist in diesem Build nicht aktiviert.',
+  'mfwNames.networkFeesExtra':
+    'Zwei normale Monero-Netzwerkgebühren kommen hinzu',
+  'mfwNames.noAddress': 'Öffne diese Wallet einmal, um ihre Adressen zu laden.',
+  'mfwNames.noNames': 'Noch keine lokal verwalteten .mfw-Namen.',
+  'mfwNames.noWallet': 'Keine Wallet ausgewählt',
+  'mfwNames.oneRenewalApproval':
+    'Eine ausdrückliche Bestätigung ist erforderlich',
+  'mfwNames.openSelectedWallet':
+    'Öffne die ausgewählte Wallet, bevor du eine eigene Adresse erstellst.',
+  'mfwNames.openWalletFirst': 'Öffne und synchronisiere zuerst eine Wallet.',
+  'mfwNames.ownerKeySecurity':
+    'Ein eigener Schlüssel für den Namensbesitz wird im geschützten nativen Gerätespeicher erzeugt. Die Registrierung bleibt gesperrt, bis der verschlüsselte Recovery-Export bestätigt wurde.',
+  'mfwNames.primaryAddress': 'Hauptadresse',
+  'mfwNames.prepareRenewal': 'Verlängerung vorbereiten',
+  'mfwNames.prepareUpdate': 'Adressänderung vorbereiten',
+  'mfwNames.operation': 'Protokollaktion',
+  'mfwNames.publicWarning':
+    'Name und Empfangsadresse bleiben dauerhaft öffentlich in der Monero-Blockchain sichtbar. Mit der öffentlichen Adresse kann niemand Geld ausgeben oder dein Wallet-Guthaben sehen.',
+  'mfwNames.registryPrice': 'Registry-Preis',
+  'mfwNames.recoveryRequired':
+    'Speichere die verschlüsselte Owner-Wiederherstellung, bevor du die Registrierung bestätigst.',
+  'mfwNames.recoveryImported':
+    'Owner-Recovery wiederhergestellt. Dieses Gerät kann den aktiven Namen jetzt verwalten.',
+  'mfwNames.recoveryNativePrompt':
+    'Das verschlüsselte Paket und das Passwort bleiben im geschützten nativen Dialog.',
+  'mfwNames.registerAgain': 'Erneut registrieren',
+  'mfwNames.registeredTerm': 'Laufzeit',
+  'mfwNames.renew': 'Verlängern',
+  'mfwNames.renewDescription':
+    'Wähle die zusätzliche Laufzeit. Die bestehende öffentliche Adresse bleibt erhalten; der geschützte Namensbesitz-Schlüssel muss die Verlängerung signieren.',
+  'mfwNames.renewNetworkFeeExtra':
+    'Eine normale Monero-Netzwerkgebühr kommt hinzu',
+  'mfwNames.renewTitle': 'Namen verlängern',
+  'mfwNames.renewTransactionText':
+    'Prüfe eine vorausgefüllte, vom Besitzer signierte Transaktion, die den aktiven Eintrag verlängert.',
+  'mfwNames.reviewSubtitle':
+    'Registry-Ziel, Betrag und signierte Protokolldaten sind durch die native Wallet gesperrt. Prüfe sie und bestätige danach.',
+  'mfwNames.reviewTitle': 'Namenstransaktion prüfen',
+  'mfwNames.restoreRecovery': 'Owner-Recovery wiederherstellen',
+  'mfwNames.restoreRecoveryDescription':
+    'Gib zuerst den öffentlichen Namen ein. Die Wallet prüft seinen aktuellen Blockchain-Eintrag, bevor der native Recovery-Dialog etwas entschlüsselt.',
+  'mfwNames.revoke': 'Widerrufen',
+  'mfwNames.revokeTitle': 'Namen widerrufen',
+  'mfwNames.selectedWallet': 'Ausgewählte Wallet: {wallet}',
+  'mfwNames.subaddressLabel': 'Öffentlicher Name {name}',
+  'mfwNames.subtitle':
+    'Registriere einen leicht merkbaren öffentlichen .mfw-Namen für eine deiner Monero-Empfangsadressen.',
+  'mfwNames.statusActive': 'Aktiv',
+  'mfwNames.statusClaimPending': 'Claim ausstehend',
+  'mfwNames.statusCommitPending': 'Commit ausstehend',
+  'mfwNames.statusExpired': 'Abgelaufen',
+  'mfwNames.statusFailed': 'Fehlgeschlagen',
+  'mfwNames.statusRenewPending': 'Verlängerung ausstehend',
+  'mfwNames.statusRevokePending': 'Widerruf ausstehend',
+  'mfwNames.statusUpdatePending': 'Adressänderung ausstehend',
+  'mfwNames.statusRevealReady': 'Bereit zum Claim',
+  'mfwNames.statusRevoked': 'Widerrufen',
+  'mfwNames.term': 'Laufzeit',
+  'mfwNames.termValue': '{count} Protokolljahr(e)',
+  'mfwNames.title': 'Deine Adressnamen',
+  'mfwNames.twoApprovals': 'Zwei ausdrückliche Bestätigungen sind erforderlich',
+  'mfwNames.changeAddress': 'Adresse ändern',
+  'mfwNames.chooseDifferentAddress':
+    'Wähle eine andere als die aktuelle öffentliche Adresse.',
+  'mfwNames.chooseNewAddress': 'Wähle die neue öffentliche Empfangsadresse.',
+  'mfwNames.oneUpdateApproval':
+    'Eine ausdrückliche Bestätigung ist erforderlich',
+  'mfwNames.updateDescription':
+    'Wähle die neue öffentliche Empfangsadresse. Der geschützte Namensbesitz-Schlüssel signiert die Änderung.',
+  'mfwNames.updateNetworkCost': 'Keine Registry-Gebühr für eine Adressänderung',
+  'mfwNames.updateTitle': 'Öffentliche Adresse ändern',
+  'mfwNames.updateTransactionText':
+    'Prüfe eine vorausgefüllte, vom Besitzer signierte Transaktion, die die öffentliche Empfangsadresse ersetzt.',
+  'mfwNames.unknownWallet': 'Unbekannte Wallet',
+  'mfwNames.wallet': 'Wallet für diesen Namen',
+  'mfwNames.walletNoLongerAvailable':
+    'Die Wallet oder der aktuelle kanonische Status dieses Namens ist nicht verfügbar. Öffne und synchronisiere die ursprüngliche Wallet, bevor du fortfährst.',
+  'mfwNames.year': 'Jahr',
+  'mfwNames.years': 'Jahre',
+  'privateContacts.title': 'Private Kontakte',
+  'privateContacts.menuDescription':
+    'Personen finden oder eine Empfangsadresse privat teilen',
+  'privateContacts.subtitle':
+    'Deine Kontakte bleiben auf diesem Gerät. Du bestimmst, wer was sehen darf.',
+  'privateContacts.findTitle': 'Personen aus meinen Kontakten finden',
+  'privateContacts.findDescription':
+    'Die App prüft geschützte anonyme Codes direkt auf diesem Gerät. Namen und Telefonnummern werden nicht hochgeladen.',
+  'privateContacts.findOn': 'Personen finden ist eingeschaltet',
+  'privateContacts.findOff': 'Personen finden einschalten',
+  'privateContacts.turnOff': 'Ausschalten',
+  'privateContacts.verifyTitle': 'Deine Telefonnummer bestätigen',
+  'privateContacts.verifyDescription':
+    'Das zeigt nur, dass du einen Code unter dieser Nummer empfangen kannst. Deine Identität wird nicht geprüft.',
+  'privateContacts.phonePlaceholder':
+    'Internationale Nummer, zum Beispiel +507…',
+  'privateContacts.sendCode': 'Code senden',
+  'privateContacts.codePlaceholder': 'Bestätigungscode',
+  'privateContacts.confirmCode': 'Code bestätigen',
+  'privateContacts.verifiedUntil': 'Telefon bestätigt bis {date}',
+  'privateContacts.shareTitle': 'Mit ausgewählten Kontakten teilen',
+  'privateContacts.shareDescription':
+    'Nichts wird automatisch geteilt. Wähle eine Person und eine einfache Option.',
+  'privateContacts.manualName': 'Name (bleibt nur auf diesem Gerät)',
+  'privateContacts.noContacts':
+    'Erlaube oben den Kontaktzugriff oder gib eine Telefonnummer manuell ein.',
+  'privateContacts.badge': 'Zeigen, dass ich Fast Wallet nutze',
+  'privateContacts.badgeDescription': 'Es wird keine Empfangsadresse geteilt.',
+  'privateContacts.ask': 'Vor dem Teilen fragen',
+  'privateContacts.askDescription':
+    'Die andere Person muss jedes Mal nach einer Empfangsadresse fragen.',
+  'privateContacts.direct': 'Eine Empfangsadresse teilen',
+  'privateContacts.directDescription':
+    'Erstellt eine eigene öffentliche Empfangsadresse in deiner geöffneten Wallet. Kein privater Schlüssel wird geteilt.',
+  'privateContacts.stopSharing': 'Nicht mehr teilen',
+  'privateContacts.statusPublishing': 'Wird sicher gespeichert…',
+  'privateContacts.statusActive': 'Geteilt',
+  'privateContacts.statusRevoking': 'Wird entfernt…',
+  'privateContacts.walletRequired':
+    'Öffne zuerst die Wallet, deren Empfangsadresse du teilen möchtest.',
+  'privateContacts.removeTitle': 'Meine Telefonnummer entfernen',
+  'privateContacts.removeDescription':
+    'Beendet alle Kontaktfreigaben und entfernt dieses Telefon aus dem privaten Verzeichnis.',
+  'privateContacts.removeAction': 'Mein Telefon entfernen',
+  'privateContacts.useTitle': 'An diese Person zahlen',
+  'privateContacts.useDescription':
+    'Prüfe privat, ob diese Person eine aktuelle Empfangsadresse mit dir geteilt hat.',
+  'privateContacts.checkPerson': 'Diese Person prüfen',
+  'privateContacts.lookupBadge':
+    'Diese Person nutzt Fast Wallet, hat aber keine Empfangsadresse geteilt.',
+  'privateContacts.lookupAsk':
+    'Diese Person möchte jede Adressanfrage bestätigen. Noch wurde keine Adresse geteilt.',
+  'privateContacts.requestAddress': 'Nach Adresse fragen',
+  'privateContacts.outgoingTitle': 'Adressanfrage',
+  'privateContacts.requestSent':
+    'Deine private Anfrage wurde gesendet. Du kannst diese Seite verlassen und später nachsehen.',
+  'privateContacts.requestAnswered':
+    'Die Person hat auf deine Anfrage geantwortet.',
+  'privateContacts.checkRequest': 'Antwort prüfen',
+  'privateContacts.requestStillWaiting': 'Es gibt noch keine Antwort.',
+  'privateContacts.requestDeclined': 'Die Person möchte keine Adresse teilen.',
+  'privateContacts.requestExpired':
+    'Diese Anfrage ist abgelaufen. Du kannst eine neue senden.',
+  'privateContacts.incomingTitle': 'Jemand fragt nach einer Adresse',
+  'privateContacts.incomingDescription':
+    'Teile sie nur mit Personen, die du kennst. Für jede Zustimmung wird eine neue Empfangsadresse erstellt.',
+  'privateContacts.requestExpires': 'Bitte bis {time} antworten',
+  'privateContacts.declineRequest': 'Nicht teilen',
+  'privateContacts.approveRequest': 'Neue Adresse teilen',
+  'privateContacts.approveRequestConfirm':
+    'Eine neue Empfangsadresse mit dieser Person teilen? Damit kann niemand dein Geld ausgeben.',
+  'privateContacts.lookupUnavailable':
+    'Keine aktuelle Empfangsadresse ist verfügbar. Die Person kann auch offline sein oder nichts teilen wollen.',
+  'privateContacts.walletRequiredForSending':
+    'Öffne zuerst die Wallet, von der du senden möchtest.',
   'menu.addressBook': 'Adressbuch',
   'menu.addressBookDesc': 'Gespeicherte Adressen',
   'menu.configureWallet': 'Wallet konfigurieren',
@@ -1111,9 +1869,11 @@ const de: Record<keyof typeof en, string> = {
   'settings.openSourceLicenses': 'Open-Source-Lizenzen',
   'settings.openWalletFirst': 'Wallet zuerst öffnen',
   'settings.password': 'Passwort',
-  'settings.passwordChangeHint': 'Das neue Passwort bleibt nur im sicheren Speicher dieses Geräts.',
+  'settings.passwordChangeHint':
+    'Das neue Passwort bleibt nur im sicheren Speicher dieses Geräts.',
   'settings.passwordChanged': 'Wallet-Passwort geändert.',
-  'settings.passwordHardware': 'Ein Ledger-Passwort wird direkt auf dem Ledger verwaltet.',
+  'settings.passwordHardware':
+    'Ein Ledger-Passwort wird direkt auf dem Ledger verwaltet.',
   'settings.passwordMinimum': 'Verwende mindestens 12 Zeichen.',
   'settings.passwordMismatch': 'Die neuen Passwörter stimmen nicht überein.',
   'settings.privacyPolicy': 'Datenschutzrichtlinie',
@@ -1123,12 +1883,16 @@ const de: Record<keyof typeof en, string> = {
   'settings.secureStored': 'Sicher gespeichert',
   'settings.security': 'Sicherheit',
   'settings.showBackupSeed': 'Backup-Seed anzeigen',
-  'settings.recoverySeedDescription': 'Nur anzeigen, während diese Software-Wallet geöffnet ist.',
-  'settings.recoverySeedError': 'Der Wiederherstellungs-Seed konnte nicht gelesen werden.',
-  'settings.recoverySeedHardware': 'Der Ledger-Wiederherstellungs-Seed kann nur auf dem Ledger-Gerät angezeigt werden.',
+  'settings.recoverySeedDescription':
+    'Nur anzeigen, während diese Software-Wallet geöffnet ist.',
+  'settings.recoverySeedError':
+    'Der Wiederherstellungs-Seed konnte nicht gelesen werden.',
+  'settings.recoverySeedHardware':
+    'Der Ledger-Wiederherstellungs-Seed kann nur auf dem Ledger-Gerät angezeigt werden.',
   'settings.recoverySeedTitle': 'Wiederherstellungs-Seed',
   'settings.recoverySeedUnavailable': 'Öffne zuerst eine Software-Wallet.',
-  'settings.recoverySeedWarning': 'Schreibe diese Wörter offline auf. Teile sie niemals mit anderen.',
+  'settings.recoverySeedWarning':
+    'Schreibe diese Wörter offline auf. Teile sie niemals mit anderen.',
   'settings.softwareWalletRequired': 'Software-Wallet erforderlich',
   'settings.storedSecureStorage': 'Im sicheren Gerätespeicher abgelegt',
   'settings.fastWalletServerAddress': 'Fast-Wallet-Server',
@@ -1166,6 +1930,8 @@ const de: Record<keyof typeof en, string> = {
   'wallets.manage': 'Wallets verwalten',
   'wallets.noFastWallets': 'Noch keine Fast Wallet.',
   'wallets.noWallets': 'Noch keine private Wallet.',
+  'wallets.openFailedTitle': 'Wallet konnte nicht geöffnet werden',
+  'wallets.openFailed': 'Die lokale Wallet konnte nicht geöffnet werden.',
   'wallets.privateWallets': 'Private Wallets',
   'wallets.removeFastWallet': 'Fast Wallet entfernen',
   'wallets.removeFastWalletConfirm':
@@ -1175,7 +1941,8 @@ const de: Record<keyof typeof en, string> = {
   'wallets.removeWalletConfirm':
     '{name} aus dieser App entfernen? Dein 25-Wörter-Seed wird dadurch nicht gelöscht.',
   'wallets.removeFailedTitle': 'Wallet konnte nicht entfernt werden',
-  'wallets.removeFailed': 'Die lokalen Wallet-Daten konnten nicht entfernt werden.',
+  'wallets.removeFailed':
+    'Die lokalen Wallet-Daten konnten nicht entfernt werden.',
   'wallets.subtitle':
     'Private Wallets und Fast Wallets hinzufügen, wechseln und entfernen.',
   'wallets.title': 'Wallets',

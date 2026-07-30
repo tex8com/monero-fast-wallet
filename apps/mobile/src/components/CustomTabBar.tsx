@@ -25,7 +25,7 @@ const TABS = [
   { key: "Home",        labelKey: "tabs.home",    Icon: IconHome },
   { key: "Send",        labelKey: "tabs.send",    Icon: IconSend },
   { key: "Receive",     labelKey: "tabs.receive", Icon: IconReceive },
-  { key: "FindEnthusiasts", labelKey: "tabs.community", Icon: IconCommunity },
+  { key: "MoneroEnthusiast", labelKey: "tabs.community", Icon: IconCommunity },
   { key: "Menu",        labelKey: "tabs.menu",    Icon: IconMenu },
 ] as const;
 
@@ -39,6 +39,7 @@ const MENU_CHILD_SCREENS = [
   "Settings",
   "Tex8Assistant",
   "Wallets",
+  "MfwNames",
 ];
 
 export default function CustomTabBar({ state, navigation }: any) {

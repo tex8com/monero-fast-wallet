@@ -4,6 +4,12 @@ Privacy-scoped community service for the mobile wallet. It intentionally has
 no wallet API and accepts no wallet address, seed, private key, balance, or
 exact coordinate.
 
+This README documents the currently implemented V1 service. The planned V2
+architecture for confirmed map selection, rich profiles, local semantic
+search, private on-device personalization, and Matrix E2EE lives in
+[`../../docs/MONERO_ENTHUSIAST_V2_PRIVATE_DISCOVERY.md`](../../docs/MONERO_ENTHUSIAST_V2_PRIVATE_DISCOVERY.md).
+V2 is a design record, not evidence that these features are already available.
+
 The service stores only:
 
 - a random anonymous identity and hashed bearer token,

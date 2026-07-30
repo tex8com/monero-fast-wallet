@@ -62,6 +62,9 @@ class WalletEngine {
       const WalletId& walletId,
       uint32_t accountIndex = 0,
       uint32_t addressIndex = 0) const;
+  std::string validateRecipientAddress(
+      const std::string& address,
+      NetworkType network) const;
   WalletSubaddress createSubaddress(
       const WalletId& walletId,
       uint32_t accountIndex = 0,

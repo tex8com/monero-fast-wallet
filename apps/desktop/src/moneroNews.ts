@@ -95,10 +95,10 @@ async function fetchNews(force = false) {
   }
 }
 
-export function useMoneroNews() {
-  const cached = loadCache();
+export function useMoneroNews(enabled = true) {
+  const cached = enabled ? loadCache() : null;
   const [items, setItems] = useState<MoneroNewsItem[]>(() => cached?.items ?? []);
-  const [loading, setLoading] = useState(!cached);
+  const [loading, setLoading] = useState(enabled && !cached);
   const [unavailable, setUnavailable] = useState(false);
   const retryTimer = useRef<number | null>(null);
   const retryAttempt = useRef(0);
@@ -109,6 +109,13 @@ export function useMoneroNews() {
     }
   }, []);
   const refresh = useCallback(async (force = false, automatic = false) => {
+    if (!enabled) {
+      clearRetry();
+      setItems([]);
+      setLoading(false);
+      setUnavailable(false);
+      return;
+    }
     if (!automatic) {
       clearRetry();
       retryAttempt.current = 0;
@@ -129,10 +136,17 @@ export function useMoneroNews() {
     } finally {
       setLoading(false);
     }
-  }, [clearRetry]);
+  }, [clearRetry, enabled]);
   useEffect(() => {
+    if (!enabled) {
+      clearRetry();
+      setItems([]);
+      setLoading(false);
+      setUnavailable(false);
+      return clearRetry;
+    }
     void refresh();
     return clearRetry;
-  }, [clearRetry, refresh]);
+  }, [clearRetry, enabled, refresh]);
   return { items, loading, unavailable, refresh: () => refresh(true) };
 }

@@ -7,7 +7,7 @@
  */
 export type FastWalletPreference = 'enabled' | 'disabled';
 
-export const defaultFastWalletPreference: FastWalletPreference = 'enabled';
+export const defaultFastWalletPreference: FastWalletPreference = 'disabled';
 
 export function isFastWalletPreference(value: unknown): value is FastWalletPreference {
   return value === 'enabled' || value === 'disabled';

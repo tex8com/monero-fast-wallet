@@ -90,6 +90,7 @@ if [[ "$(uname -s)" == "Darwin" &&
     '-Wl,-framework,Foundation' '-Wl,-framework,ApplicationServices'
     '-Wl,-framework,AppKit' '-Wl,-framework,IOKit'
     '-Wl,-framework,CoreFoundation' '-Wl,-framework,Security'
+    '-Wl,-framework,Metal'
     '-lc++' '-lz' '-lbz2'
   )
   if [[ "${grpc_stream_enabled}" == "ON" ]]; then

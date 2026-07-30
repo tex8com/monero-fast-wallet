@@ -3,10 +3,13 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
+      "@tex8/mobile-admin": [
+        "../../../tex8/products/mobile-platform/packages/mobile-admin/src/types.ts"
+      ],
       "react": ["node_modules/@types/react"],
       "react-native": ["node_modules/react-native"]
     },
-    "types": ["jest"]
+    "types": ["jest", "node"]
   },
   "include": ["**/*.ts", "**/*.tsx"],
   "exclude": ["**/node_modules", "**/Pods"]

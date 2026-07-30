@@ -23,6 +23,10 @@ const moneroMetalPatch = read(
   moneroPatchPackage,
   '0021-wallet-add-native-Metal-derivation-backend.patch',
 );
+const moneroNamePatch = read(
+  moneroPatchPackage,
+  '0022-wallet-expose-purpose-bound-extra-nonce-transactions.patch',
+);
 const prepareBackend = read(
   repoRoot,
   'native',
@@ -87,20 +91,26 @@ test('the optimized Dalek dependency is pinned and every ordered patch exists', 
 test('the Monero patch series carries the CPU batch through Rust and wallet2', () => {
   const patches = listedPatches(moneroSeries);
   assert.equal(
-    patches.at(-2),
+    patches.at(-3),
     '0020-wallet-batch-CPU-key-derivations-through-Rust.patch',
   );
   assert.equal(
-    patches.at(-1),
+    patches.at(-2),
     '0021-wallet-add-native-Metal-derivation-backend.patch',
+  );
+  assert.equal(
+    patches.at(-1),
+    '0022-wallet-expose-purpose-bound-extra-nonce-transactions.patch',
   );
   assert.match(moneroCpuPatch, /fast_generate_key_derivation_batch_same_scalar/);
   assert.match(moneroCpuPatch, /MONERO_RUST_DERIVATION_BATCH/);
   assert.match(moneroCpuPatch, /hw::device::SOFTWARE/);
   assert.match(moneroCpuPatch, /crate-type = \["staticlib", "cdylib"\]/);
+  assert.match(moneroNamePatch, /createTransactionWithExtraNonce/);
+  assert.match(moneroNamePatch, /canonical varint/);
   assert.match(
     moneroLock,
-    /^patched_tree=54263a2dd826208595362926ba9fed7485668317$/m,
+    /^patched_tree=8a34f9def50e00eb97d274a3eac7f8d55e0abe22$/m,
   );
   assert.match(prepareMonero, /rev-parse HEAD\^\{tree\}/);
   assert.match(prepareMonero, /monero_patch_actual_tree.*monero_patch_expected_tree/s);

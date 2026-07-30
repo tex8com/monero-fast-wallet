@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 
 import HomeScreen from "../screens/HomeScreen";
@@ -12,22 +12,69 @@ import Tex8AssistantScreen from "../screens/Tex8AssistantScreen";
 import WelcomeScreen from "../screens/WelcomeScreen";
 import WalletSetupScreen from "../screens/WalletSetupScreen";
 import WalletsScreen from "../screens/WalletsScreen";
+import MfwNamesScreen from "../screens/MfwNamesScreen";
+import MoneroEnthusiastScreen from "../screens/MoneroEnthusiastScreen";
 import TransactionsScreen from "../screens/TransactionsScreen";
 import TransactionDetailScreen from "../screens/TransactionDetailScreen";
 import CustomTabBar from "../components/CustomTabBar";
 import { useWalletState } from "../services/WalletState";
+import { useAppSecurity } from "../services/AppSecurity";
+import { logWalletEvent } from "../services/WalletLogger";
+import { v1ReleaseFeatures } from "../../../../packages/wallet-shared/src/v1ReleaseFeatures";
 
 const Tab = createBottomTabNavigator();
 
 export default function TabNavigator() {
   const { status } = useWalletState();
+  const {
+    consumeInitialProtectionSetup,
+    initialProtectionSetupCompleted,
+    initialProtectionTransitionStartedAtMs,
+    locked: appSecurityLocked,
+  } = useAppSecurity();
+  const walletStateLoadStartedAtMsRef = useRef(Date.now());
+  const walletStateReadyLoggedRef = useRef(false);
+
+  useEffect(() => {
+    if (status !== "loading" && !walletStateReadyLoggedRef.current) {
+      walletStateReadyLoggedRef.current = true;
+      logWalletEvent("AppNavigation", "walletState.ready", {
+        elapsedMs:
+          typeof initialProtectionTransitionStartedAtMs === "number"
+            ? Date.now() - initialProtectionTransitionStartedAtMs
+            : Date.now() - walletStateLoadStartedAtMsRef.current,
+        status,
+      });
+    }
+    if (
+      !appSecurityLocked &&
+      status !== "loading" &&
+      typeof initialProtectionTransitionStartedAtMs === "number"
+    ) {
+      logWalletEvent("AppNavigation", "walletScreen.presented", {
+        elapsedMs:
+          Date.now() - initialProtectionTransitionStartedAtMs,
+        initialSetup: initialProtectionSetupCompleted,
+        status,
+      });
+      consumeInitialProtectionSetup();
+    }
+  }, [
+    appSecurityLocked,
+    consumeInitialProtectionSetup,
+    initialProtectionSetupCompleted,
+    initialProtectionTransitionStartedAtMs,
+    status,
+  ]);
 
   if (status === "loading") {
     return null;
   }
 
   const initialRouteName =
-    status === "locked" || status === "opening" || status === "syncing" || status === "open"
+    status === "empty" || status === "error"
+      ? "WalletSetup"
+      : status === "locked" || status === "opening" || status === "syncing" || status === "open"
       ? "Home"
       : "Welcome";
 
@@ -41,13 +88,19 @@ export default function TabNavigator() {
       <Tab.Screen name="Home" component={HomeScreen} />
       <Tab.Screen name="Send" component={SendScreen} />
       <Tab.Screen name="Receive" component={ReceiveScreen} />
-      <Tab.Screen name="FindEnthusiasts" component={FindEnthusiastsScreen} />
+      {v1ReleaseFeatures.legacyCommunity ? (
+        <Tab.Screen name="FindEnthusiasts" component={FindEnthusiastsScreen} />
+      ) : null}
+      <Tab.Screen name="MoneroEnthusiast" component={MoneroEnthusiastScreen} />
       <Tab.Screen name="Menu" component={MenuScreen} />
       {/* Hidden screens — accessible via Menu */}
-      <Tab.Screen name="EnthusiastChat" component={EnthusiastChatScreen} />
+      {v1ReleaseFeatures.legacyCommunity ? (
+        <Tab.Screen name="EnthusiastChat" component={EnthusiastChatScreen} />
+      ) : null}
       <Tab.Screen name="Settings" component={SettingsScreen} />
       <Tab.Screen name="Tex8Assistant" component={Tex8AssistantScreen} />
       <Tab.Screen name="Wallets" component={WalletsScreen} />
+      <Tab.Screen name="MfwNames" component={MfwNamesScreen} />
       <Tab.Screen name="Transactions" component={TransactionsScreen} />
       <Tab.Screen name="TransactionDetail" component={TransactionDetailScreen} />
       <Tab.Screen name="Welcome" component={WelcomeScreen} />

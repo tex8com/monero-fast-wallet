@@ -27,12 +27,26 @@ pub struct FastWalletRecord {
     pub source_registration_id: String,
     pub restore_height: u64,
     pub derivation_index: u64,
+    #[serde(default = "pending_seed_backup")]
+    pub seed_backup_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_backed_up_at: Option<u64>,
     pub status: String,
     pub scanner_status: String,
     pub scanner_url: String,
     pub scanner_checked_at: Option<u64>,
     pub last_scanned_height: Option<u64>,
     pub notifications_enabled: bool,
+    #[serde(default = "alerts_off")]
+    pub alert_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment_handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment_epoch: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment_expires_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_message_id: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -96,6 +110,14 @@ pub fn update(app: &AppHandle, mut record: FastWalletRecord) -> Result<FastWalle
     Ok(record)
 }
 
+pub fn mark_seed_backed_up(app: &AppHandle, identity_id: &str) -> Result<FastWalletRecord, String> {
+    let mut record = get(app, identity_id)?;
+    require_independent_software(&record)?;
+    record.seed_backup_status = "verified".to_owned();
+    record.seed_backed_up_at = Some(now());
+    update(app, record)
+}
+
 pub fn get(app: &AppHandle, identity_id: &str) -> Result<FastWalletRecord, String> {
     validate_id(identity_id)?;
     load(app)?
@@ -103,6 +125,19 @@ pub fn get(app: &AppHandle, identity_id: &str) -> Result<FastWalletRecord, Strin
         .into_iter()
         .find(|record| record.id == identity_id)
         .ok_or_else(|| "Fast Wallet was not found on this device.".to_owned())
+}
+
+pub fn remove(app: &AppHandle, identity_id: &str) -> Result<FastWalletRecord, String> {
+    validate_id(identity_id)?;
+    let mut registry = load(app)?;
+    let index = registry
+        .wallets
+        .iter()
+        .position(|record| record.id == identity_id)
+        .ok_or_else(|| "Fast Wallet was not found on this device.".to_owned())?;
+    let removed = registry.wallets.remove(index);
+    save(app, registry)?;
+    Ok(removed)
 }
 
 pub fn wallet_path(app: &AppHandle, identity_id: &str) -> Result<String, String> {
@@ -159,15 +194,45 @@ pub fn new_record(
         source_registration_id,
         restore_height,
         derivation_index,
+        seed_backup_status: pending_seed_backup(),
+        seed_backed_up_at: None,
         status: "local-only".to_owned(),
         scanner_status: "local-only".to_owned(),
         scanner_url: String::new(),
         scanner_checked_at: None,
         last_scanned_height: None,
         notifications_enabled: false,
+        alert_status: alerts_off(),
+        assignment_handle: None,
+        assignment_epoch: None,
+        assignment_expires_at: None,
+        watch_message_id: None,
         created_at: timestamp,
         updated_at: timestamp,
     };
+    normalize_record(record)
+}
+
+pub fn new_restored_record(
+    id: String,
+    label: String,
+    address: String,
+    network: String,
+    source_registration_id: String,
+    restore_height: u64,
+    derivation_index: u64,
+) -> Result<FastWalletRecord, String> {
+    let mut record = new_record(
+        id,
+        label,
+        address,
+        network,
+        source_registration_id,
+        restore_height,
+        derivation_index,
+    )?;
+    record.seed_backup_status = "verified".to_owned();
+    record.seed_backed_up_at = Some(now());
     normalize_record(record)
 }
 
@@ -280,6 +345,27 @@ fn validate_record(record: &FastWalletRecord) -> Result<(), String> {
         && !record.scanner_status.chars().any(char::is_control);
     let scanner_url_valid =
         record.scanner_url.is_empty() || scanner_url(&record.scanner_url).is_ok();
+    let seed_backup_valid = matches!(record.seed_backup_status.as_str(), "pending" | "verified")
+        && (record.seed_backup_status != "verified" || record.seed_backed_up_at.is_some());
+    let alert_status_valid = matches!(
+        record.alert_status.as_str(),
+        "off" | "setting-up" | "on" | "needs-attention"
+    );
+    let assignment_valid = match (
+        record.assignment_handle.as_deref(),
+        record.assignment_epoch,
+        record.assignment_expires_at,
+        record.watch_message_id.as_deref(),
+    ) {
+        (None, None, None, None) => true,
+        (Some(handle), Some(epoch), Some(expires_at), Some(message_id)) => {
+            canonical_hex(handle, 32)
+                && epoch > 0
+                && expires_at > 0
+                && canonical_hex(message_id, 32)
+        }
+        _ => false,
+    };
     if !label_valid
         || !address_valid
         || !network_valid
@@ -287,6 +373,9 @@ fn validate_record(record: &FastWalletRecord) -> Result<(), String> {
         || !status_valid
         || !scanner_status_valid
         || !scanner_url_valid
+        || !seed_backup_valid
+        || !alert_status_valid
+        || !assignment_valid
     {
         return Err("The Fast Wallet list contains invalid data.".to_owned());
     }
@@ -298,6 +387,11 @@ fn normalize_record(mut record: FastWalletRecord) -> Result<FastWalletRecord, St
         record.status = "legacy-blocked".to_owned();
         record.scanner_status = "legacy-blocked".to_owned();
         record.notifications_enabled = false;
+        record.alert_status = alerts_off();
+        record.assignment_handle = None;
+        record.assignment_epoch = None;
+        record.assignment_expires_at = None;
+        record.watch_message_id = None;
     }
     validate_record(&record)?;
     Ok(record)
@@ -327,11 +421,26 @@ fn now() -> u64 {
         .as_secs()
 }
 
+fn pending_seed_backup() -> String {
+    "pending".to_owned()
+}
+
+fn alerts_off() -> String {
+    "off".to_owned()
+}
+
+fn canonical_hex(value: &str, bytes: usize) -> bool {
+    value.len() == bytes * 2
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        identity_id, is_independent_software_id, new_record, require_independent_software,
-        scanner_url, validate_id,
+        identity_id, is_independent_software_id, new_record, new_restored_record,
+        require_independent_software, scanner_url, validate_id,
     };
 
     #[test]
@@ -362,6 +471,22 @@ mod tests {
         assert!(scanner_url("http://xmr.tex8.com").is_err());
         assert!(scanner_url("https://token@example.com").is_err());
         assert!(scanner_url("https://xmr.tex8.com/?token=x").is_err());
+    }
+
+    #[test]
+    fn restored_record_is_verified_in_one_registry_write() {
+        let record = new_restored_record(
+            "fast-receive-v2-0-2".to_owned(),
+            "Restored Fast Wallet".to_owned(),
+            "4".repeat(95),
+            "mainnet".to_owned(),
+            "independent-restore".to_owned(),
+            123,
+            0,
+        )
+        .expect("valid restored record");
+        assert_eq!(record.seed_backup_status, "verified");
+        assert!(record.seed_backed_up_at.is_some());
     }
 
     #[test]

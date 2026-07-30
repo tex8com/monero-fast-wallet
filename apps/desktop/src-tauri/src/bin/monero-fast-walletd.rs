@@ -4,6 +4,8 @@
 //! The gateway sends opaque event ids only; no wallet address, balance, amount,
 //! transaction or key material ever reaches this process.
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use keyring::Entry;
 use serde::Deserialize;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::{
@@ -16,6 +18,8 @@ use std::{
 use std::{env, fs};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use tungstenite::{client::IntoClientRequest, connect, http::HeaderValue, Message};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use zeroize::Zeroize;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -80,16 +84,16 @@ fn run() -> Result<(), String> {
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = config;
-        return Err("monero-fast-walletd is supported only on Windows and Linux".to_owned());
+        Err("monero-fast-walletd is supported only on Windows and Linux".to_owned())
     }
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     run_agent(config_path, config)
 }
 
 fn validate_config(config: &AgentConfig) -> Result<(), String> {
-    // Version 4 replaces periodic polling with one authenticated WSS stream.
-    // The desktop host rewrites the config before it starts a migrated agent.
-    if !matches!(config.version, 1 | 2 | 3 | 4)
+    // Version 5 requires a separate CSPRNG authentication credential from the
+    // OS secure store. An installation identifier alone is never sufficient.
+    if config.version != 5
         || !matches!(config.provider.as_str(), "linux-agent" | "windows-agent")
         || !matches!(config.platform.as_str(), "linux" | "windows")
     {
@@ -155,6 +159,13 @@ fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool
     request
         .headers_mut()
         .insert("x-fast-wallet-installation-id", capability);
+    let mut auth = load_installation_auth(&config.installation_id)?;
+    let auth_header = HeaderValue::from_str(&auth)
+        .map_err(|_| "notification installation authentication is invalid".to_owned())?;
+    request
+        .headers_mut()
+        .insert("x-fast-wallet-installation-auth", auth_header);
+    auth.zeroize();
     let (mut socket, _) =
         connect(request).map_err(|_| "notification stream could not be connected".to_owned())?;
     let mut recent_event_ids = VecDeque::with_capacity(64);
@@ -193,6 +204,27 @@ fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool
             Err(_) => return Err("notification stream connection was interrupted".to_owned()),
         }
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn load_installation_auth(installation_id: &str) -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    if let Ok(auth) = env::var("MONERO_FAST_WALLETD_TEST_AUTH") {
+        if auth.len() == 64 && auth.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Ok(auth);
+        }
+        return Err("test notification installation authentication is invalid".to_owned());
+    }
+    let account = format!("notification-installation-auth:{installation_id}");
+    let entry = Entry::new("com.tex8.monerowallet.desktop", &account)
+        .map_err(|_| "notification secure storage is unavailable".to_owned())?;
+    let auth = entry
+        .get_password()
+        .map_err(|_| "notification installation authentication is unavailable".to_owned())?;
+    if auth.len() != 64 || !auth.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("notification installation authentication is invalid".to_owned());
+    }
+    Ok(auth)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -330,7 +362,7 @@ mod tests {
     #[test]
     fn accepts_the_current_private_background_agent_contract() {
         let config = AgentConfig {
-            version: 4,
+            version: 5,
             installation_id: "mwp_desktop_0123456789abcdef".to_owned(),
             platform: "windows".to_owned(),
             provider: "windows-agent".to_owned(),

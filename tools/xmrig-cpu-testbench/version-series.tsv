@@ -1,0 +1,12 @@
+version	binary	change	hypothesis
+Original	build-stock	Official XMRig defaults with 2 MiB Huge Pages and automatic Zen 3 MSR preset	Reproducible upstream reference
+V1	build-stock	Enable 1 GiB pages for the 2080 MiB RandomX dataset	Reduce dataset TLB pressure
+V2	build-stock	V1 plus disable worker yielding	Avoid scheduler yield overhead
+V3	build-stock	V1 plus Huge Pages for generated JIT code	Reduce instruction-side TLB pressure
+V4	build-stock	V1 plus explicit affinity for all 32 logical CPUs	Make the CCD and SMT placement reproducible
+V5	build-stock	V4 with scratchpad prefetch disabled	Test whether Zen 3 hardware and JIT accesses make T0 prefetch redundant
+V6	build-stock	V4 with MOV-based scratchpad prefetch	Test an alternative to the default PREFETCHT0 instruction
+V7	build-stock	V1 with 31 mining threads	Trade one logical CPU for less cache and scheduler pressure
+V8	build-stock	V1 with the Linux performance governor	Prefer sustained high clocks during the hashing loop
+V9	build-znver3-lto	V1 with GCC Zen 3 native code and link-time optimization	Reduce non-JIT worker and orchestration overhead
+V10	build-source-prefetch	V1 with a locally patched and measured AES scratchpad prefetch distance	Reduce stalls in the 2 MiB hash-and-fill scratchpad stream on Zen 3

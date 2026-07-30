@@ -1,8 +1,27 @@
 #include "WalletEngine.h"
+#include "FastWalletProtocolBridge.h"
+
+#ifndef TEX8_COMMUNITY_MATRIX_LINKED
+#define TEX8_COMMUNITY_MATRIX_LINKED 0
+#endif
+
+#ifndef TEX8_COMMUNITY_RUNTIME_LINKED
+#define TEX8_COMMUNITY_RUNTIME_LINKED 0
+#endif
+
+#if TEX8_COMMUNITY_MATRIX_LINKED
+#include "community_matrix_core.h"
+#endif
+
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+#include "community_runtime_core.h"
+#endif
 
 #include <jni.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -38,6 +57,84 @@ WalletEngine& walletEngine() {
   static WalletEngine engine;
   return engine;
 }
+
+#if TEX8_COMMUNITY_MATRIX_LINKED
+std::mutex communityMatrixMutex;
+tex8_community_matrix_handle* communityMatrixHandle = nullptr;
+
+std::string communityMatrixError() {
+  if (communityMatrixHandle == nullptr) {
+    return "The private chat session is unavailable";
+  }
+  std::array<uint8_t, 4096> buffer{};
+  size_t length = buffer.size();
+  if (tex8_community_matrix_last_error_v1(
+          communityMatrixHandle, buffer.data(), &length) !=
+          TEX8_COMMUNITY_MATRIX_OK ||
+      length == 0) {
+    return "The private chat operation failed";
+  }
+  return std::string(
+      reinterpret_cast<const char*>(buffer.data()),
+      strnlen(reinterpret_cast<const char*>(buffer.data()), buffer.size()));
+}
+
+void requireCommunityMatrixStatus(int32_t status) {
+  if (status != TEX8_COMMUNITY_MATRIX_OK) {
+    const auto message = communityMatrixError();
+    throw WalletEngineError(
+        message.empty() ? "The private chat operation failed" : message);
+  }
+}
+
+std::string takeCommunityMatrixOutput(uint8_t* output, size_t length) {
+  if (output == nullptr || length == 0) {
+    throw WalletEngineError("The private chat returned an invalid response");
+  }
+  std::string result(reinterpret_cast<const char*>(output), length);
+  tex8_community_matrix_free_buffer_v1(output, length);
+  return result;
+}
+#endif
+
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+std::mutex communityRuntimeMutex;
+tex8_community_runtime_handle* communityRuntimeHandle = nullptr;
+
+std::string communityRuntimeError() {
+  if (communityRuntimeHandle == nullptr) {
+    return "The local Community catalog is unavailable";
+  }
+  std::array<uint8_t, 4096> buffer{};
+  size_t length = buffer.size();
+  if (tex8_community_runtime_last_error_v1(
+          communityRuntimeHandle, buffer.data(), &length) !=
+          TEX8_COMMUNITY_RUNTIME_OK ||
+      length == 0) {
+    return "The local Community operation failed";
+  }
+  return std::string(
+      reinterpret_cast<const char*>(buffer.data()),
+      strnlen(reinterpret_cast<const char*>(buffer.data()), buffer.size()));
+}
+
+void requireCommunityRuntimeStatus(int32_t status) {
+  if (status != TEX8_COMMUNITY_RUNTIME_OK) {
+    const auto message = communityRuntimeError();
+    throw WalletEngineError(
+        message.empty() ? "The local Community operation failed" : message);
+  }
+}
+
+std::string takeCommunityRuntimeOutput(uint8_t* output, size_t length) {
+  if (output == nullptr || length == 0) {
+    throw WalletEngineError("The local Community search returned an invalid response");
+  }
+  std::string result(reinterpret_cast<const char*>(output), length);
+  tex8_community_runtime_free_buffer_v1(output, length);
+  return result;
+}
+#endif
 
 JavaVM* ledgerJavaVm = nullptr;
 jclass ledgerBridgeClass = nullptr;
@@ -178,8 +275,51 @@ std::string toStdString(JNIEnv* env, jstring value) {
   return result;
 }
 
+std::vector<unsigned char> toByteVector(
+    JNIEnv* env,
+    jbyteArray value,
+    std::size_t minimum,
+    std::size_t maximum) {
+  if (value == nullptr) {
+    throw WalletEngineError("Java byte array is missing");
+  }
+  const jsize length = env->GetArrayLength(value);
+  if (length < 0 || static_cast<std::size_t>(length) < minimum ||
+      static_cast<std::size_t>(length) > maximum) {
+    throw WalletEngineError("Java byte array has an invalid length");
+  }
+  std::vector<unsigned char> result(static_cast<std::size_t>(length));
+  env->GetByteArrayRegion(
+      value, 0, length, reinterpret_cast<jbyte*>(result.data()));
+  if (env->ExceptionCheck()) {
+    throw WalletEngineError("failed to read Java byte array");
+  }
+  return result;
+}
+
 jstring toJavaString(JNIEnv* env, const std::string& value) {
   return env->NewStringUTF(value.c_str());
+}
+
+jbyteArray toJavaByteArray(
+    JNIEnv* env,
+    const std::vector<unsigned char>& value) {
+  if (value.size() >
+      static_cast<std::size_t>(std::numeric_limits<jsize>::max())) {
+    throw WalletEngineError("native byte array is too large");
+  }
+  auto output = env->NewByteArray(static_cast<jsize>(value.size()));
+  if (output == nullptr) {
+    throw WalletEngineError("failed to allocate Java byte array");
+  }
+  env->SetByteArrayRegion(
+      output, 0, static_cast<jsize>(value.size()),
+      reinterpret_cast<const jbyte*>(value.data()));
+  if (env->ExceptionCheck()) {
+    env->DeleteLocalRef(output);
+    throw WalletEngineError("failed to write Java byte array");
+  }
+  return output;
 }
 
 NetworkType parseNetwork(const std::string& value) {
@@ -214,6 +354,21 @@ uint64_t toUInt64(jdouble value, const char* fieldName) {
     throw WalletEngineError(std::string(fieldName) + " is out of range");
   }
   return static_cast<uint64_t>(value);
+}
+
+uint64_t toExactUInt64(jdouble value, const char* fieldName) {
+  if (!std::isfinite(value) || value != std::floor(value)) {
+    throw WalletEngineError(std::string(fieldName) + " is out of range");
+  }
+  return toUInt64(value, fieldName);
+}
+
+unsigned char toUnsignedByte(jdouble value, const char* fieldName) {
+  const auto converted = toExactUInt64(value, fieldName);
+  if (converted > std::numeric_limits<unsigned char>::max()) {
+    throw WalletEngineError(std::string(fieldName) + " is out of range");
+  }
+  return static_cast<unsigned char>(converted);
 }
 
 uint32_t toUInt32(jdouble value, const char* fieldName) {
@@ -331,39 +486,6 @@ jobject toJavaStringList(
     env->DeleteLocalRef(javaValue);
   }
   return list;
-}
-
-std::vector<std::string> toStdStringVector(
-    JNIEnv* env,
-    jobjectArray values) {
-  if (values == nullptr) {
-    return {};
-  }
-  const jsize count = env->GetArrayLength(values);
-  std::vector<std::string> result;
-  result.reserve(static_cast<size_t>(count));
-  for (jsize index = 0; index < count; ++index) {
-    auto* value = static_cast<jstring>(
-        env->GetObjectArrayElement(values, index));
-    result.push_back(toStdString(env, value));
-    env->DeleteLocalRef(value);
-  }
-  return result;
-}
-
-std::vector<bool> toBoolVector(JNIEnv* env, jbooleanArray values) {
-  if (values == nullptr) {
-    return {};
-  }
-  const jsize count = env->GetArrayLength(values);
-  std::vector<jboolean> buffer(static_cast<size_t>(count));
-  env->GetBooleanArrayRegion(values, 0, count, buffer.data());
-  std::vector<bool> result;
-  result.reserve(static_cast<size_t>(count));
-  for (const auto value : buffer) {
-    result.push_back(value == JNI_TRUE);
-  }
-  return result;
 }
 
 jobject toJavaDoubleList(JNIEnv* env, const std::vector<uint32_t>& values) {
@@ -639,6 +761,809 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeLinkedWithMonero(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixLinked(
+    JNIEnv*,
+    jclass) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  return tex8_community_matrix_link_anchor_v1() != 0 ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeLinked(
+    JNIEnv*,
+    jclass) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  return tex8_community_runtime_link_anchor_v1() != 0 ? JNI_TRUE : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixCreate(
+    JNIEnv* env,
+    jclass,
+    jstring homeserverValue,
+    jstring storePathValue,
+    jbyteArray storePassphraseValue,
+    jboolean allowLoopbackHttpForTests) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  try {
+    auto homeserver = toStdString(env, homeserverValue);
+    auto storePath = toStdString(env, storePathValue);
+    auto storePassphrase =
+        toByteVector(env, storePassphraseValue, 32, 256);
+    std::lock_guard<std::mutex> lock(communityMatrixMutex);
+    if (communityMatrixHandle != nullptr) {
+      tex8_community_matrix_destroy_v1(communityMatrixHandle);
+      communityMatrixHandle = nullptr;
+    }
+    std::array<uint8_t, 4096> error{};
+    size_t errorLength = error.size();
+    const auto status = tex8_community_matrix_create_v1(
+        reinterpret_cast<const uint8_t*>(homeserver.data()),
+        homeserver.size(),
+        reinterpret_cast<const uint8_t*>(storePath.data()),
+        storePath.size(),
+        storePassphrase.data(),
+        storePassphrase.size(),
+        allowLoopbackHttpForTests == JNI_TRUE,
+        &communityMatrixHandle,
+        error.data(),
+        &errorLength);
+    std::fill(storePassphrase.begin(), storePassphrase.end(), 0);
+    if (status != TEX8_COMMUNITY_MATRIX_OK ||
+        communityMatrixHandle == nullptr) {
+      const std::string message(
+          reinterpret_cast<const char*>(error.data()),
+          strnlen(reinterpret_cast<const char*>(error.data()), error.size()));
+      throw WalletEngineError(
+          message.empty() ? "The private chat could not be initialized" : message);
+    }
+    return JNI_TRUE;
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return JNI_FALSE;
+  }
+#else
+  (void)env;
+  (void)homeserverValue;
+  (void)storePathValue;
+  (void)storePassphraseValue;
+  (void)allowLoopbackHttpForTests;
+  return JNI_FALSE;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixDestroy(
+    JNIEnv*,
+    jclass) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  std::lock_guard<std::mutex> lock(communityMatrixMutex);
+  if (communityMatrixHandle != nullptr) {
+    tex8_community_matrix_destroy_v1(communityMatrixHandle);
+    communityMatrixHandle = nullptr;
+  }
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixLogin(
+    JNIEnv* env,
+    jclass,
+    jstring userIdValue,
+    jbyteArray passwordValue,
+    jstring deviceNameValue) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  try {
+    auto userId = toStdString(env, userIdValue);
+    auto password = toByteVector(env, passwordValue, 32, 256);
+    auto deviceName = toStdString(env, deviceNameValue);
+    std::lock_guard<std::mutex> lock(communityMatrixMutex);
+    if (communityMatrixHandle == nullptr) {
+      throw WalletEngineError("The private chat session is unavailable");
+    }
+    uint8_t* output = nullptr;
+    size_t outputLength = 0;
+    const auto status = tex8_community_matrix_login_v1(
+        communityMatrixHandle,
+        reinterpret_cast<const uint8_t*>(userId.data()),
+        userId.size(),
+        password.data(),
+        password.size(),
+        reinterpret_cast<const uint8_t*>(deviceName.data()),
+        deviceName.size(),
+        &output,
+        &outputLength);
+    std::fill(password.begin(), password.end(), 0);
+    requireCommunityMatrixStatus(status);
+    auto result = takeCommunityMatrixOutput(output, outputLength);
+    auto javaResult = toJavaString(env, result);
+    std::fill(result.begin(), result.end(), '\0');
+    return javaResult;
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+#else
+  (void)env;
+  (void)userIdValue;
+  (void)passwordValue;
+  (void)deviceNameValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixRestore(
+    JNIEnv* env,
+    jclass,
+    jbyteArray sessionValue) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  try {
+    auto session = toByteVector(env, sessionValue, 2, 64 * 1024);
+    std::lock_guard<std::mutex> lock(communityMatrixMutex);
+    if (communityMatrixHandle == nullptr) {
+      throw WalletEngineError("The private chat session is unavailable");
+    }
+    const auto status = tex8_community_matrix_restore_v1(
+        communityMatrixHandle, session.data(), session.size());
+    std::fill(session.begin(), session.end(), 0);
+    requireCommunityMatrixStatus(status);
+    return JNI_TRUE;
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return JNI_FALSE;
+  }
+#else
+  (void)env;
+  (void)sessionValue;
+  return JNI_FALSE;
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixExportSession(
+    JNIEnv* env,
+    jclass) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  try {
+    std::lock_guard<std::mutex> lock(communityMatrixMutex);
+    if (communityMatrixHandle == nullptr) {
+      throw WalletEngineError("The private chat session is unavailable");
+    }
+    uint8_t* output = nullptr;
+    size_t outputLength = 0;
+    requireCommunityMatrixStatus(tex8_community_matrix_export_session_v1(
+        communityMatrixHandle, &output, &outputLength));
+    auto result = takeCommunityMatrixOutput(output, outputLength);
+    auto javaResult = toJavaString(env, result);
+    std::fill(result.begin(), result.end(), '\0');
+    return javaResult;
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+#else
+  (void)env;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixSync(
+    JNIEnv* env,
+    jclass,
+    jdouble timeoutMsValue) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  try {
+    const auto timeoutMs = toExactUInt64(timeoutMsValue, "timeoutMs");
+    std::lock_guard<std::mutex> lock(communityMatrixMutex);
+    if (communityMatrixHandle == nullptr) {
+      throw WalletEngineError("The private chat session is unavailable");
+    }
+    requireCommunityMatrixStatus(
+        tex8_community_matrix_sync_once_v1(communityMatrixHandle, timeoutMs));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+#else
+  (void)env;
+  (void)timeoutMsValue;
+#endif
+}
+
+#if TEX8_COMMUNITY_MATRIX_LINKED
+template <typename Operation>
+jstring communityMatrixStringOperation(
+    JNIEnv* env,
+    Operation operation) {
+  try {
+    std::lock_guard<std::mutex> lock(communityMatrixMutex);
+    if (communityMatrixHandle == nullptr) {
+      throw WalletEngineError("The private chat session is unavailable");
+    }
+    uint8_t* output = nullptr;
+    size_t outputLength = 0;
+    requireCommunityMatrixStatus(operation(
+        communityMatrixHandle, &output, &outputLength));
+    auto result = takeCommunityMatrixOutput(output, outputLength);
+    auto javaResult = toJavaString(env, result);
+    std::fill(result.begin(), result.end(), '\0');
+    return javaResult;
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+#endif
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixOpenDirect(
+    JNIEnv* env,
+    jclass,
+    jstring peerValue) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  auto peer = toStdString(env, peerValue);
+  return communityMatrixStringOperation(
+      env,
+      [&peer](auto* handle, auto** output, auto* outputLength) {
+        return tex8_community_matrix_create_direct_room_v1(
+            handle,
+            reinterpret_cast<const uint8_t*>(peer.data()),
+            peer.size(),
+            output,
+            outputLength);
+      });
+#else
+  (void)env;
+  (void)peerValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixSendText(
+    JNIEnv* env,
+    jclass,
+    jstring roomValue,
+    jstring bodyValue) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  auto room = toStdString(env, roomValue);
+  auto body = toStdString(env, bodyValue);
+  return communityMatrixStringOperation(
+      env,
+      [&room, &body](auto* handle, auto** output, auto* outputLength) {
+        return tex8_community_matrix_send_text_v1(
+            handle,
+            reinterpret_cast<const uint8_t*>(room.data()),
+            room.size(),
+            reinterpret_cast<const uint8_t*>(body.data()),
+            body.size(),
+            output,
+            outputLength);
+      });
+#else
+  (void)env;
+  (void)roomValue;
+  (void)bodyValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixMessages(
+    JNIEnv* env,
+    jclass,
+    jstring roomValue,
+    jstring fromValue,
+    jdouble limitValue) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  auto room = toStdString(env, roomValue);
+  auto from = toStdString(env, fromValue);
+  const auto limit = static_cast<size_t>(toExactUInt64(limitValue, "limit"));
+  return communityMatrixStringOperation(
+      env,
+      [&room, &from, limit](auto* handle, auto** output, auto* outputLength) {
+        return tex8_community_matrix_messages_v1(
+            handle,
+            reinterpret_cast<const uint8_t*>(room.data()),
+            room.size(),
+            from.empty() ? nullptr : reinterpret_cast<const uint8_t*>(from.data()),
+            from.size(),
+            limit,
+            output,
+            outputLength);
+      });
+#else
+  (void)env;
+  (void)roomValue;
+  (void)fromValue;
+  (void)limitValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixReportPreview(
+    JNIEnv* env,
+    jclass,
+    jstring roomValue,
+    jstring eventValue) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  auto room = toStdString(env, roomValue);
+  auto event = toStdString(env, eventValue);
+  return communityMatrixStringOperation(
+      env,
+      [&room, &event](auto* handle, auto** output, auto* outputLength) {
+        return tex8_community_matrix_selected_report_v1(
+            handle,
+            reinterpret_cast<const uint8_t*>(room.data()),
+            room.size(),
+            reinterpret_cast<const uint8_t*>(event.data()),
+            event.size(),
+            output,
+            outputLength);
+      });
+#else
+  (void)env;
+  (void)roomValue;
+  (void)eventValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixSetBlocked(
+    JNIEnv* env,
+    jclass,
+    jstring peerValue,
+    jboolean blockedValue) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  try {
+    auto peer = toStdString(env, peerValue);
+    std::lock_guard<std::mutex> lock(communityMatrixMutex);
+    if (communityMatrixHandle == nullptr) {
+      throw WalletEngineError("The private chat session is unavailable");
+    }
+    requireCommunityMatrixStatus(tex8_community_matrix_set_blocked_v1(
+        communityMatrixHandle,
+        reinterpret_cast<const uint8_t*>(peer.data()),
+        peer.size(),
+        blockedValue == JNI_TRUE));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+#else
+  (void)env;
+  (void)peerValue;
+  (void)blockedValue;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixLogout(
+    JNIEnv* env,
+    jclass) {
+#if TEX8_COMMUNITY_MATRIX_LINKED
+  try {
+    std::lock_guard<std::mutex> lock(communityMatrixMutex);
+    if (communityMatrixHandle != nullptr) {
+      requireCommunityMatrixStatus(
+          tex8_community_matrix_logout_v1(communityMatrixHandle));
+    }
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+#else
+  (void)env;
+#endif
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeCreate(
+    JNIEnv* env,
+    jclass,
+    jstring storageRootValue,
+    jstring scopeValue,
+    jbyteArray catalogKeyValue,
+    jbyteArray advertisingKeyValue,
+    jbyteArray artifactKeyValue,
+    jbyteArray queryCacheKeyValue,
+    jstring artifactManifestValue,
+    jstring ptePathValue,
+    jstring tokenizerPathValue,
+    jstring conformancePathValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  try {
+    auto storageRoot = toStdString(env, storageRootValue);
+    auto scope = toStdString(env, scopeValue);
+    auto catalogKey = toByteVector(env, catalogKeyValue, 32, 32);
+    auto advertisingKey = toByteVector(env, advertisingKeyValue, 32, 32);
+    auto artifactKey = toByteVector(env, artifactKeyValue, 32, 32);
+    auto queryCacheKey = toByteVector(env, queryCacheKeyValue, 32, 32);
+    auto artifactManifest = toStdString(env, artifactManifestValue);
+    auto ptePath = toStdString(env, ptePathValue);
+    auto tokenizerPath = toStdString(env, tokenizerPathValue);
+    auto conformancePath = toStdString(env, conformancePathValue);
+    std::lock_guard<std::mutex> lock(communityRuntimeMutex);
+    if (communityRuntimeHandle != nullptr) {
+      tex8_community_runtime_destroy_v1(communityRuntimeHandle);
+      communityRuntimeHandle = nullptr;
+    }
+    std::array<uint8_t, 4096> error{};
+    size_t errorLength = error.size();
+    const auto status = tex8_community_runtime_create_v1(
+        reinterpret_cast<const uint8_t*>(storageRoot.data()),
+        storageRoot.size(),
+        reinterpret_cast<const uint8_t*>(scope.data()),
+        scope.size(),
+        catalogKey.data(),
+        catalogKey.size(),
+        advertisingKey.data(),
+        advertisingKey.size(),
+        artifactKey.data(),
+        artifactKey.size(),
+        queryCacheKey.data(),
+        queryCacheKey.size(),
+        reinterpret_cast<const uint8_t*>(artifactManifest.data()),
+        artifactManifest.size(),
+        reinterpret_cast<const uint8_t*>(ptePath.data()),
+        ptePath.size(),
+        reinterpret_cast<const uint8_t*>(tokenizerPath.data()),
+        tokenizerPath.size(),
+        reinterpret_cast<const uint8_t*>(conformancePath.data()),
+        conformancePath.size(),
+        &communityRuntimeHandle,
+        error.data(),
+        &errorLength);
+    std::fill(catalogKey.begin(), catalogKey.end(), 0);
+    std::fill(advertisingKey.begin(), advertisingKey.end(), 0);
+    std::fill(artifactKey.begin(), artifactKey.end(), 0);
+    std::fill(queryCacheKey.begin(), queryCacheKey.end(), 0);
+    if (status != TEX8_COMMUNITY_RUNTIME_OK ||
+        communityRuntimeHandle == nullptr) {
+      const std::string message(
+          reinterpret_cast<const char*>(error.data()),
+          strnlen(reinterpret_cast<const char*>(error.data()), error.size()));
+      throw WalletEngineError(
+          message.empty() ? "The local Community runtime could not be initialized" : message);
+    }
+    return JNI_TRUE;
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return JNI_FALSE;
+  }
+#else
+  (void)env;
+  (void)storageRootValue;
+  (void)scopeValue;
+  (void)catalogKeyValue;
+  (void)advertisingKeyValue;
+  (void)artifactKeyValue;
+  (void)queryCacheKeyValue;
+  (void)artifactManifestValue;
+  (void)ptePathValue;
+  (void)tokenizerPathValue;
+  (void)conformancePathValue;
+  return JNI_FALSE;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeClearQueryCache(
+    JNIEnv* env,
+    jclass) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  try {
+    std::lock_guard<std::mutex> lock(communityRuntimeMutex);
+    if (communityRuntimeHandle == nullptr) {
+      throw WalletEngineError("The local Community catalog is unavailable");
+    }
+    requireCommunityRuntimeStatus(
+        tex8_community_runtime_clear_query_cache_v1(communityRuntimeHandle));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+#else
+  (void)env;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeDestroy(
+    JNIEnv*,
+    jclass) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  std::lock_guard<std::mutex> lock(communityRuntimeMutex);
+  if (communityRuntimeHandle != nullptr) {
+    tex8_community_runtime_destroy_v1(communityRuntimeHandle);
+    communityRuntimeHandle = nullptr;
+  }
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeInstallCatalog(
+    JNIEnv* env,
+    jclass,
+    jbyteArray manifestValue,
+    jbyteArray payloadValue,
+    jdouble nowMsValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  try {
+    auto manifest = toByteVector(env, manifestValue, 2, 1024 * 1024);
+    auto payload = toByteVector(env, payloadValue, 2, 64 * 1024 * 1024);
+    const auto nowMs = toExactUInt64(nowMsValue, "nowMs");
+    std::lock_guard<std::mutex> lock(communityRuntimeMutex);
+    if (communityRuntimeHandle == nullptr) {
+      throw WalletEngineError("The local Community catalog is unavailable");
+    }
+    requireCommunityRuntimeStatus(tex8_community_runtime_install_catalog_v1(
+        communityRuntimeHandle,
+        manifest.data(),
+        manifest.size(),
+        payload.data(),
+        payload.size(),
+        nowMs));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+#else
+  (void)env;
+  (void)manifestValue;
+  (void)payloadValue;
+  (void)nowMsValue;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeInstallQueryCatalog(
+    JNIEnv* env,
+    jclass,
+    jbyteArray manifestValue,
+    jbyteArray payloadValue,
+    jdouble nowMsValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  try {
+    auto manifest = toByteVector(env, manifestValue, 2, 1024 * 1024);
+    auto payload = toByteVector(env, payloadValue, 2, 64 * 1024 * 1024);
+    const auto nowMs = toExactUInt64(nowMsValue, "nowMs");
+    std::lock_guard<std::mutex> lock(communityRuntimeMutex);
+    if (communityRuntimeHandle == nullptr) {
+      throw WalletEngineError("The local Community catalog is unavailable");
+    }
+    requireCommunityRuntimeStatus(
+        tex8_community_runtime_install_query_catalog_v1(
+            communityRuntimeHandle,
+            manifest.data(),
+            manifest.size(),
+            payload.data(),
+            payload.size(),
+            nowMs));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+#else
+  (void)env;
+  (void)manifestValue;
+  (void)payloadValue;
+  (void)nowMsValue;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeInstallAdvertisingCatalog(
+    JNIEnv* env,
+    jclass,
+    jbyteArray responseValue,
+    jstring countryValue,
+    jstring placementValue,
+    jdouble nowMsValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  try {
+    auto response = toByteVector(env, responseValue, 2, 8 * 1024 * 1024);
+    auto country = toStdString(env, countryValue);
+    auto placement = toStdString(env, placementValue);
+    const auto nowMs = toExactUInt64(nowMsValue, "nowMs");
+    std::lock_guard<std::mutex> lock(communityRuntimeMutex);
+    if (communityRuntimeHandle == nullptr) {
+      throw WalletEngineError("The local Community catalog is unavailable");
+    }
+    requireCommunityRuntimeStatus(
+        tex8_community_runtime_install_advertising_catalog_v1(
+            communityRuntimeHandle,
+            response.data(),
+            response.size(),
+            reinterpret_cast<const uint8_t*>(country.data()),
+            country.size(),
+            reinterpret_cast<const uint8_t*>(placement.data()),
+            placement.size(),
+            nowMs));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+#else
+  (void)env;
+  (void)responseValue;
+  (void)countryValue;
+  (void)placementValue;
+  (void)nowMsValue;
+#endif
+}
+
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+template <typename Operation>
+jstring communityRuntimeStringOperation(
+    JNIEnv* env,
+    Operation operation) {
+  try {
+    std::lock_guard<std::mutex> lock(communityRuntimeMutex);
+    if (communityRuntimeHandle == nullptr) {
+      throw WalletEngineError("The local Community catalog is unavailable");
+    }
+    uint8_t* output = nullptr;
+    size_t outputLength = 0;
+    requireCommunityRuntimeStatus(operation(
+        communityRuntimeHandle, &output, &outputLength));
+    return toJavaString(
+        env, takeCommunityRuntimeOutput(output, outputLength));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+#endif
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeStatus(
+    JNIEnv* env,
+    jclass,
+    jdouble nowMsValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  const auto nowMs = toExactUInt64(nowMsValue, "nowMs");
+  return communityRuntimeStringOperation(
+      env,
+      [nowMs](auto* handle, auto** output, auto* outputLength) {
+        return tex8_community_runtime_status_v1(
+            handle, nowMs, output, outputLength);
+      });
+#else
+  (void)env;
+  (void)nowMsValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeSuggestions(
+    JNIEnv* env,
+    jclass,
+    jstring requestValue,
+    jdouble nowMsValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  auto request = toStdString(env, requestValue);
+  const auto nowMs = toExactUInt64(nowMsValue, "nowMs");
+  return communityRuntimeStringOperation(
+      env,
+      [&request, nowMs](auto* handle, auto** output, auto* outputLength) {
+        return tex8_community_runtime_suggestions_v1(
+            handle,
+            reinterpret_cast<const uint8_t*>(request.data()),
+            request.size(),
+            nowMs,
+            output,
+            outputLength);
+      });
+#else
+  (void)env;
+  (void)requestValue;
+  (void)nowMsValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeSearch(
+    JNIEnv* env,
+    jclass,
+    jstring requestValue,
+    jdouble nowMsValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  try {
+    auto request = toStdString(env, requestValue);
+    const auto nowMs = toExactUInt64(nowMsValue, "nowMs");
+    return communityRuntimeStringOperation(
+        env,
+        [&request, nowMs](auto* handle, auto** output, auto* outputLength) {
+          return tex8_community_runtime_search_v1(
+              handle,
+              reinterpret_cast<const uint8_t*>(request.data()),
+              request.size(),
+              nowMs,
+              output,
+              outputLength);
+        });
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+#else
+  (void)env;
+  (void)requestValue;
+  (void)nowMsValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeAdvertisements(
+    JNIEnv* env,
+    jclass,
+    jstring requestValue,
+    jdouble nowMsValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  try {
+    auto request = toStdString(env, requestValue);
+    const auto nowMs = toExactUInt64(nowMsValue, "nowMs");
+    return communityRuntimeStringOperation(
+        env,
+        [&request, nowMs](auto* handle, auto** output, auto* outputLength) {
+          return tex8_community_runtime_advertisements_v1(
+              handle,
+              reinterpret_cast<const uint8_t*>(request.data()),
+              request.size(),
+              nowMs,
+              output,
+              outputLength);
+        });
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+#else
+  (void)env;
+  (void)requestValue;
+  (void)nowMsValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeRecordAdvertisementView(
+    JNIEnv* env,
+    jclass,
+    jstring requestValue,
+    jdouble nowMsValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  try {
+    auto request = toStdString(env, requestValue);
+    const auto nowMs = toExactUInt64(nowMsValue, "nowMs");
+    std::lock_guard<std::mutex> lock(communityRuntimeMutex);
+    if (communityRuntimeHandle == nullptr) {
+      throw WalletEngineError("The local Community catalog is unavailable");
+    }
+    requireCommunityRuntimeStatus(
+        tex8_community_runtime_record_advertising_view_v1(
+            communityRuntimeHandle,
+            reinterpret_cast<const uint8_t*>(request.data()),
+            request.size(),
+            nowMs));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+#else
+  (void)env;
+  (void)requestValue;
+  (void)nowMsValue;
+#endif
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeInstallLedgerBleTransport(
     JNIEnv* env,
     jclass bridgeClass) {
@@ -867,6 +1792,85 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeFastReceiveRegistrationPayload
   }
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSealFastReceiveWatch(
+    JNIEnv* env,
+    jclass,
+    jstring identityId,
+    jstring path,
+    jstring password,
+    jstring network,
+    jdouble restoreHeight,
+    jstring workerDescriptorHex,
+    jstring assignmentHandleHex,
+    jdouble assignmentEpoch,
+    jdouble issuedAt,
+    jdouble expiresAt,
+    jdouble now) {
+  std::string passwordValue = toStdString(env, password);
+  try {
+    const auto result = tex8::wallet::fast_wallet_protocol_bridge::sealWatch(
+        walletEngine(),
+        toStdString(env, identityId),
+        toStdString(env, path),
+        passwordValue,
+        parseNetwork(toStdString(env, network)),
+        toUInt64(restoreHeight, "restoreHeight"),
+        toStdString(env, workerDescriptorHex),
+        toStdString(env, assignmentHandleHex),
+        toUInt64(assignmentEpoch, "assignmentEpoch"),
+        toUInt64(issuedAt, "issuedAt"),
+        toUInt64(expiresAt, "expiresAt"),
+        toUInt64(now, "now"));
+    tex8::wallet::secureClear(passwordValue);
+    return toJavaString(env, result);
+  } catch (const std::exception& error) {
+    tex8::wallet::secureClear(passwordValue);
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeVerifiedFastWalletRelayOrigin(
+    JNIEnv* env,
+    jclass,
+    jstring workerDescriptorHex,
+    jstring network,
+    jdouble now) {
+  try {
+    return toJavaString(
+        env,
+        tex8::wallet::fast_wallet_protocol_bridge::verifiedRelayOrigin(
+            toStdString(env, workerDescriptorHex),
+            parseNetwork(toStdString(env, network)),
+            toUInt64(now, "now")));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeVerifiedFastWalletWorkerRootId(
+    JNIEnv* env,
+    jclass,
+    jstring workerDescriptorHex,
+    jstring network,
+    jdouble now) {
+  try {
+    return toJavaString(
+        env,
+        tex8::wallet::fast_wallet_protocol_bridge::verifiedWorkerRootId(
+            toStdString(env, workerDescriptorHex),
+            parseNetwork(toStdString(env, network)),
+            toUInt64(now, "now")));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeCloseWallet(
     JNIEnv* env,
@@ -980,6 +1984,694 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeGetAddress(
             toStdString(env, walletId),
             toUInt32(accountIndex, "accountIndex"),
             toUInt32(addressIndex, "addressIndex")));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeValidateRecipientAddress(
+    JNIEnv* env,
+    jclass,
+    jstring address,
+    jstring network) {
+  try {
+    return toJavaString(
+        env,
+        walletEngine().validateRecipientAddress(
+            toStdString(env, address),
+            parseNetwork(toStdString(env, network))));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeVerifyMfwNameRecordAddress(
+    JNIEnv* env,
+    jclass,
+    jstring recordPayloadHex,
+    jstring expectedName,
+    jstring network,
+    jstring signingOwnerPublicKeyHex) {
+  try {
+    return toJavaString(
+        env,
+        tex8::wallet::fast_wallet_protocol_bridge::verifiedNameAddress(
+            walletEngine(),
+            toStdString(env, recordPayloadHex),
+            toStdString(env, expectedName),
+            parseNetwork(toStdString(env, network)),
+            toStdString(env, signingOwnerPublicKeyHex)));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeNormalizePrivatePhoneE164(
+    JNIEnv* env,
+    jclass,
+    jstring input) {
+  try {
+    return toJavaString(
+        env,
+        tex8::wallet::fast_wallet_protocol_bridge::normalizePrivatePhoneE164(
+            toStdString(env, input)));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeBlindPrivatePhone(
+    JNIEnv* env,
+    jclass,
+    jstring normalizedE164,
+    jdouble epoch) {
+  try {
+    const auto result =
+        tex8::wallet::fast_wallet_protocol_bridge::blindPrivatePhone(
+            toStdString(env, normalizedE164), toUInt64(epoch, "epoch"));
+    return toJavaString(env, result.stateHandleHex + result.requestHex);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeFinalizePrivatePhone(
+    JNIEnv* env,
+    jclass,
+    jstring stateHandle,
+    jstring evaluationHex,
+    jstring expectedServerPublicKeyHex) {
+  try {
+    return toJavaString(
+        env,
+        tex8::wallet::fast_wallet_protocol_bridge::finalizePrivatePhone(
+            toStdString(env, stateHandle),
+            toStdString(env, evaluationHex),
+            toStdString(env, expectedServerPublicKeyHex)));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeDiscardPrivatePhoneSession(
+    JNIEnv* env,
+    jclass,
+    jstring stateHandle) {
+  try {
+    tex8::wallet::fast_wallet_protocol_bridge::discardPrivatePhoneSession(
+        toStdString(env, stateHandle));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCombinePrivatePhoneToken(
+    JNIEnv* env,
+    jclass,
+    jstring firstServerPublicKeyHex,
+    jstring firstOutputHex,
+    jstring secondServerPublicKeyHex,
+    jstring secondOutputHex) {
+  try {
+    return toJavaString(
+        env,
+        tex8::wallet::fast_wallet_protocol_bridge::combinePrivatePhoneToken(
+            toStdString(env, firstServerPublicKeyHex),
+            toStdString(env, firstOutputHex),
+            toStdString(env, secondServerPublicKeyHex),
+            toStdString(env, secondOutputHex)));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeDerivePrivatePhonePairId(
+    JNIEnv* env,
+    jclass,
+    jstring firstPhoneTokenHex,
+    jstring secondPhoneTokenHex) {
+  try {
+    return toJavaString(
+        env,
+        tex8::wallet::fast_wallet_protocol_bridge::derivePrivatePhonePairId(
+            toStdString(env, firstPhoneTokenHex),
+            toStdString(env, secondPhoneTokenHex)));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeGeneratePrivatePhoneIdentity(
+    JNIEnv* env,
+    jclass) {
+  try {
+    auto result =
+        tex8::wallet::fast_wallet_protocol_bridge::generatePrivatePhoneIdentity();
+    std::string encoded = result.privateKeyHex + result.publicKeyHex;
+    tex8::wallet::secureClear(result.privateKeyHex);
+    jstring javaResult = toJavaString(env, encoded);
+    tex8::wallet::secureClear(encoded);
+    return javaResult;
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeGeneratePrivatePhoneRegistrationIdentity(
+    JNIEnv* env,
+    jclass) {
+  try {
+    auto result = tex8::wallet::fast_wallet_protocol_bridge::
+        generatePrivatePhoneRegistrationIdentity();
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
+        contactPrivateGuard(result.contactPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
+        hpkePrivateGuard(result.hpkePrivateKeyHex);
+    std::string encoded =
+        result.contactPrivateKeyHex + result.contactPublicKeyHex +
+        result.hpkePrivateKeyHex + result.hpkePublicKeyHex;
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard encodedGuard(
+        encoded);
+    return toJavaString(env, encoded);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeVerifyPrivatePhoneParticipant(
+    JNIEnv* env,
+    jclass,
+    jstring participantHex,
+    jstring expectedVerificationPublicKeyHex,
+    jdouble expectedEpoch,
+    jstring expectedContactPublicKeyHex,
+    jstring expectedHpkePublicKeyHex,
+    jdouble now) {
+  try {
+    const auto result =
+        tex8::wallet::fast_wallet_protocol_bridge::verifyPrivatePhoneParticipant(
+            toStdString(env, participantHex),
+            toStdString(env, expectedVerificationPublicKeyHex),
+            toExactUInt64(expectedEpoch, "expectedEpoch"),
+            toStdString(env, expectedContactPublicKeyHex),
+            toStdString(env, expectedHpkePublicKeyHex),
+            toExactUInt64(now, "now"));
+    return toJavaString(
+        env,
+        result.phoneTokenHex + "|" + std::to_string(result.expiresAt) + "|" +
+            std::to_string(result.sequence));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSignPrivatePhonePermitRefresh(
+    JNIEnv* env,
+    jclass,
+    jdouble epoch,
+    jstring phoneTokenHex,
+    jdouble participantSequence,
+    jdouble issuedAt,
+    jdouble expiresAt,
+    jstring contactPrivateKeyHex) {
+  try {
+    std::string contactPrivate = toStdString(env, contactPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard privateGuard(
+        contactPrivate);
+    auto output =
+        tex8::wallet::fast_wallet_protocol_bridge::
+            signPrivatePhonePermitRefresh(
+                toExactUInt64(epoch, "epoch"),
+                toStdString(env, phoneTokenHex),
+                toExactUInt64(participantSequence, "participantSequence"),
+                toExactUInt64(issuedAt, "issuedAt"),
+                toExactUInt64(expiresAt, "expiresAt"), contactPrivate);
+    return toJavaByteArray(env, output);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSealPrivatePhoneContact(
+    JNIEnv* env,
+    jclass,
+    jstring publisherPhoneTokenHex,
+    jstring recipientPhoneTokenHex,
+    jdouble policy,
+    jstring network,
+    jdouble issuedAt,
+    jdouble expiresAt,
+    jdouble sequence,
+    jdouble addressKind,
+    jstring publicSpendKeyHex,
+    jstring publicViewKeyHex,
+    jstring contactPrivateKeyHex,
+    jstring recipientHpkePublicKeyHex) {
+  try {
+    std::string contactPrivate = toStdString(env, contactPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard privateGuard(
+        contactPrivate);
+    auto output =
+        tex8::wallet::fast_wallet_protocol_bridge::sealPrivatePhoneContact(
+            toStdString(env, publisherPhoneTokenHex),
+            toStdString(env, recipientPhoneTokenHex),
+            toUnsignedByte(policy, "policy"),
+            parseNetwork(toStdString(env, network)),
+            toExactUInt64(issuedAt, "issuedAt"),
+            toExactUInt64(expiresAt, "expiresAt"),
+            toExactUInt64(sequence, "sequence"),
+            toUnsignedByte(addressKind, "addressKind"),
+            toStdString(env, publicSpendKeyHex),
+            toStdString(env, publicViewKeyHex), contactPrivate,
+            toStdString(env, recipientHpkePublicKeyHex));
+    return toJavaByteArray(env, output);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSealPrivatePhoneAskRequest(
+    JNIEnv* env,
+    jclass,
+    jstring requesterPhoneTokenHex,
+    jstring targetPhoneTokenHex,
+    jstring network,
+    jdouble issuedAt,
+    jdouble expiresAt,
+    jdouble sequence,
+    jstring contactPrivateKeyHex,
+    jstring targetHpkePublicKeyHex) {
+  try {
+    std::string contactPrivate = toStdString(env, contactPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard privateGuard(
+        contactPrivate);
+    auto result =
+        tex8::wallet::fast_wallet_protocol_bridge::sealPrivatePhoneAskRequest(
+            toStdString(env, requesterPhoneTokenHex),
+            toStdString(env, targetPhoneTokenHex),
+            parseNetwork(toStdString(env, network)),
+            toExactUInt64(issuedAt, "issuedAt"),
+            toExactUInt64(expiresAt, "expiresAt"),
+            toExactUInt64(sequence, "sequence"), contactPrivate,
+            toStdString(env, targetHpkePublicKeyHex));
+    const std::string encoded =
+        result.requestIdHex + "|" +
+        tex8::wallet::fast_wallet_protocol_bridge::encodeHex(
+            result.requestState.data(), result.requestState.size()) +
+        "|" + tex8::wallet::fast_wallet_protocol_bridge::encodeHex(
+                  result.envelope.data(), result.envelope.size());
+    std::fill(result.requestState.begin(), result.requestState.end(), 0);
+    std::fill(result.envelope.begin(), result.envelope.end(), 0);
+    return toJavaString(env, encoded);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeInspectPrivatePhoneAskEnvelope(
+    JNIEnv* env,
+    jclass,
+    jbyteArray envelope) {
+  try {
+    const auto bytes =
+        toByteVector(env, envelope, TEX8_MFW_ASK_ENVELOPE_SIZE,
+                     TEX8_MFW_ASK_ENVELOPE_SIZE);
+    const auto header =
+        tex8::wallet::fast_wallet_protocol_bridge::
+            inspectPrivatePhoneAskEnvelope(bytes.data(), bytes.size());
+    return toJavaString(
+        env,
+        std::to_string(header.kind) + "|" + header.pairIdHex + "|" +
+            header.requestIdHex + "|" + header.senderPhoneTokenHex + "|" +
+            header.recipientPhoneTokenHex + "|" +
+            std::to_string(header.issuedAt) + "|" +
+            std::to_string(header.expiresAt) + "|" +
+            std::to_string(header.sequence));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeOpenPrivatePhoneAskRequest(
+    JNIEnv* env,
+    jclass,
+    jbyteArray envelope,
+    jstring expectedRequesterPublicKeyHex,
+    jstring targetHpkePrivateKeyHex,
+    jstring targetHpkePublicKeyHex,
+    jdouble now) {
+  try {
+    const auto bytes =
+        toByteVector(env, envelope, TEX8_MFW_ASK_ENVELOPE_SIZE,
+                     TEX8_MFW_ASK_ENVELOPE_SIZE);
+    std::string targetPrivate = toStdString(env, targetHpkePrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard privateGuard(
+        targetPrivate);
+    const auto request =
+        tex8::wallet::fast_wallet_protocol_bridge::openPrivatePhoneAskRequest(
+            bytes.data(), bytes.size(),
+            toStdString(env, expectedRequesterPublicKeyHex), targetPrivate,
+            toStdString(env, targetHpkePublicKeyHex),
+            toExactUInt64(now, "now"));
+    return toJavaByteArray(env, request);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSealPrivatePhoneAskResponse(
+    JNIEnv* env,
+    jclass,
+    jbyteArray request,
+    jboolean approved,
+    jdouble issuedAt,
+    jdouble expiresAt,
+    jdouble sequence,
+    jdouble addressKind,
+    jstring publicSpendKeyHex,
+    jstring publicViewKeyHex,
+    jstring responderContactPrivateKeyHex,
+    jstring requesterHpkePublicKeyHex) {
+  try {
+    const auto requestBytes =
+        toByteVector(env, request, TEX8_MFW_ASK_MESSAGE_SIZE,
+                     TEX8_MFW_ASK_MESSAGE_SIZE);
+    std::string contactPrivate =
+        toStdString(env, responderContactPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard privateGuard(
+        contactPrivate);
+    const auto envelope =
+        tex8::wallet::fast_wallet_protocol_bridge::
+            sealPrivatePhoneAskResponse(
+                requestBytes.data(), requestBytes.size(), approved == JNI_TRUE,
+                toExactUInt64(issuedAt, "issuedAt"),
+                toExactUInt64(expiresAt, "expiresAt"),
+                toExactUInt64(sequence, "sequence"),
+                toUnsignedByte(addressKind, "addressKind"),
+                toStdString(env, publicSpendKeyHex),
+                toStdString(env, publicViewKeyHex), contactPrivate,
+                toStdString(env, requesterHpkePublicKeyHex));
+    return toJavaByteArray(env, envelope);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeOpenPrivatePhoneAskResponse(
+    JNIEnv* env,
+    jclass,
+    jbyteArray envelope,
+    jstring expectedResponderPublicKeyHex,
+    jstring requesterHpkePrivateKeyHex,
+    jstring requesterHpkePublicKeyHex,
+    jdouble now,
+    jbyteArray expectedRequest,
+    jstring expectedNetwork) {
+  try {
+    const auto envelopeBytes =
+        toByteVector(env, envelope, TEX8_MFW_ASK_ENVELOPE_SIZE,
+                     TEX8_MFW_ASK_ENVELOPE_SIZE);
+    const auto requestBytes =
+        toByteVector(env, expectedRequest, TEX8_MFW_ASK_MESSAGE_SIZE,
+                     TEX8_MFW_ASK_MESSAGE_SIZE);
+    std::string requesterPrivate =
+        toStdString(env, requesterHpkePrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard privateGuard(
+        requesterPrivate);
+    const auto result =
+        tex8::wallet::fast_wallet_protocol_bridge::
+            openPrivatePhoneAskResponse(
+                walletEngine(), envelopeBytes.data(), envelopeBytes.size(),
+                toStdString(env, expectedResponderPublicKeyHex),
+                requesterPrivate, toStdString(env, requesterHpkePublicKeyHex),
+                toExactUInt64(now, "now"), requestBytes.data(),
+                requestBytes.size(),
+                parseNetwork(toStdString(env, expectedNetwork)));
+    return toJavaString(
+        env,
+        std::string(result.approved ? "approved" : "declined") + "|" +
+            networkName(result.network) + "|" + result.address + "|" +
+            std::to_string(result.issuedAt) + "|" +
+            std::to_string(result.expiresAt) + "|" +
+            std::to_string(result.sequence));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSignPrivatePhoneAskMailboxPoll(
+    JNIEnv* env,
+    jclass,
+    jdouble kind,
+    jstring participantPhoneTokenHex,
+    jdouble participantSequence,
+    jstring participantHpkePublicKeyHex,
+    jdouble afterCursor,
+    jdouble issuedAt,
+    jdouble expiresAt,
+    jstring participantContactPrivateKeyHex) {
+  try {
+    std::string contactPrivate =
+        toStdString(env, participantContactPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard privateGuard(
+        contactPrivate);
+    const auto poll =
+        tex8::wallet::fast_wallet_protocol_bridge::
+            signPrivatePhoneAskMailboxPoll(
+                toUnsignedByte(kind, "kind"),
+                toStdString(env, participantPhoneTokenHex),
+                toExactUInt64(participantSequence, "participantSequence"),
+                toStdString(env, participantHpkePublicKeyHex),
+                toExactUInt64(afterCursor, "afterCursor"),
+                toExactUInt64(issuedAt, "issuedAt"),
+                toExactUInt64(expiresAt, "expiresAt"), contactPrivate);
+    return toJavaByteArray(env, poll);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeRevokePrivatePhoneContact(
+    JNIEnv* env,
+    jclass,
+    jstring publisherPhoneTokenHex,
+    jstring recipientPhoneTokenHex,
+    jdouble issuedAt,
+    jdouble expiresAt,
+    jdouble sequence,
+    jstring contactPrivateKeyHex) {
+  try {
+    std::string contactPrivate = toStdString(env, contactPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard privateGuard(
+        contactPrivate);
+    const auto output =
+        tex8::wallet::fast_wallet_protocol_bridge::revokePrivatePhoneContact(
+            toStdString(env, publisherPhoneTokenHex),
+            toStdString(env, recipientPhoneTokenHex),
+            toExactUInt64(issuedAt, "issuedAt"),
+            toExactUInt64(expiresAt, "expiresAt"),
+            toExactUInt64(sequence, "sequence"), contactPrivate);
+    return toJavaByteArray(env, output);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeRevokePrivatePhoneParticipant(
+    JNIEnv* env,
+    jclass,
+    jstring phoneTokenHex,
+    jdouble issuedAt,
+    jdouble expiresAt,
+    jdouble cooldownUntil,
+    jdouble sequence,
+    jstring contactPrivateKeyHex) {
+  try {
+    std::string contactPrivate = toStdString(env, contactPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard privateGuard(
+        contactPrivate);
+    const auto output =
+        tex8::wallet::fast_wallet_protocol_bridge::
+            revokePrivatePhoneParticipant(
+                toStdString(env, phoneTokenHex),
+                toExactUInt64(issuedAt, "issuedAt"),
+                toExactUInt64(expiresAt, "expiresAt"),
+                toExactUInt64(cooldownUntil, "cooldownUntil"),
+                toExactUInt64(sequence, "sequence"), contactPrivate);
+    return toJavaByteArray(env, output);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeFindPrivatePhoneSnapshotParticipant(
+    JNIEnv* env,
+    jclass,
+    jbyteArray snapshot,
+    jstring expectedDirectoryPublicKeyHex,
+    jstring expectedVerificationPublicKeyHex,
+    jdouble now,
+    jstring phoneTokenHex) {
+  try {
+    const auto snapshotBytes =
+        toByteVector(env, snapshot, 137, 256 * 1024 * 1024);
+    const auto result = tex8::wallet::fast_wallet_protocol_bridge::
+        findPrivatePhoneSnapshotParticipant(
+            snapshotBytes.data(), snapshotBytes.size(),
+            toStdString(env, expectedDirectoryPublicKeyHex),
+            toStdString(env, expectedVerificationPublicKeyHex),
+            toExactUInt64(now, "now"),
+            toStdString(env, phoneTokenHex));
+    return toJavaString(
+        env,
+        result.contactSigningPublicKeyHex + "|" + result.hpkePublicKeyHex +
+            "|" + std::to_string(result.participantExpiresAt) + "|" +
+            std::to_string(result.participantSequence) + "|" +
+            std::to_string(result.snapshotGeneration) + "|" +
+            std::to_string(result.snapshotIssuedAt) + "|" +
+            std::to_string(result.snapshotExpiresAt));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeDecodePrivatePhoneMoneroAddress(
+    JNIEnv* env,
+    jclass,
+    jstring address,
+    jstring network) {
+  try {
+    const auto result =
+        tex8::wallet::fast_wallet_protocol_bridge::
+            verifiedMoneroPublicAddressParts(
+                walletEngine(), toStdString(env, address),
+                parseNetwork(toStdString(env, network)));
+    return toJavaString(
+        env,
+        std::to_string(result.addressKind) + "|" +
+            result.publicSpendKeyHex + "|" + result.publicViewKeyHex);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeOpenPrivatePhoneSnapshotContact(
+    JNIEnv* env,
+    jclass,
+    jstring snapshotHex,
+    jstring expectedDirectoryPublicKeyHex,
+    jstring expectedVerificationPublicKeyHex,
+    jdouble now,
+    jstring pairIdHex,
+    jstring publisherPhoneTokenHex,
+    jstring recipientPrivateKeyHex,
+    jstring recipientPublicKeyHex,
+    jstring expectedNetwork) {
+  try {
+    const auto result =
+        tex8::wallet::fast_wallet_protocol_bridge::openPrivatePhoneSnapshotContact(
+            walletEngine(),
+            toStdString(env, snapshotHex),
+            toStdString(env, expectedDirectoryPublicKeyHex),
+            toStdString(env, expectedVerificationPublicKeyHex),
+            toUInt64(now, "now"),
+            toStdString(env, pairIdHex),
+            toStdString(env, publisherPhoneTokenHex),
+            toStdString(env, recipientPrivateKeyHex),
+            toStdString(env, recipientPublicKeyHex),
+            parseNetwork(toStdString(env, expectedNetwork)));
+    return toJavaString(
+        env,
+        result.policy + "|" + networkName(result.network) + "|" +
+            result.address + "|" + std::to_string(result.issuedAt) + "|" +
+            std::to_string(result.expiresAt) + "|" +
+            std::to_string(result.sequence));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeOpenPrivatePhoneSnapshotContactBytes(
+    JNIEnv* env,
+    jclass,
+    jbyteArray snapshot,
+    jstring expectedDirectoryPublicKeyHex,
+    jstring expectedVerificationPublicKeyHex,
+    jdouble now,
+    jstring pairIdHex,
+    jstring publisherPhoneTokenHex,
+    jstring recipientPrivateKeyHex,
+    jstring recipientPublicKeyHex,
+    jstring expectedNetwork) {
+  try {
+    const auto snapshotBytes =
+        toByteVector(env, snapshot, 137, 256 * 1024 * 1024);
+    const auto result = tex8::wallet::fast_wallet_protocol_bridge::
+        openPrivatePhoneSnapshotContactBytes(
+            walletEngine(), snapshotBytes.data(), snapshotBytes.size(),
+            toStdString(env, expectedDirectoryPublicKeyHex),
+            toStdString(env, expectedVerificationPublicKeyHex),
+            toUInt64(now, "now"),
+            toStdString(env, pairIdHex),
+            toStdString(env, publisherPhoneTokenHex),
+            toStdString(env, recipientPrivateKeyHex),
+            toStdString(env, recipientPublicKeyHex),
+            parseNetwork(toStdString(env, expectedNetwork)));
+    return toJavaString(
+        env,
+        result.policy + "|" + networkName(result.network) + "|" +
+            result.address + "|" + std::to_string(result.issuedAt) + "|" +
+            std::to_string(result.expiresAt) + "|" +
+            std::to_string(result.sequence));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;
@@ -1107,41 +2799,6 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeGetTransactions(
 }
 
 extern "C" JNIEXPORT jobject JNICALL
-Java_com_monerowallet_NativeMoneroWalletJni_nativeGetOwnedOutputKeyImages(
-    JNIEnv* env,
-    jclass,
-    jstring walletId) {
-  try {
-    return toJavaStringList(
-        env,
-        walletEngine().getOwnedOutputKeyImages(toStdString(env, walletId)));
-  } catch (const std::exception& error) {
-    throwJavaError(env, error);
-    return nullptr;
-  }
-}
-
-extern "C" JNIEXPORT jdouble JNICALL
-Java_com_monerowallet_NativeMoneroWalletJni_nativeReconcileOutputKeyImages(
-    JNIEnv* env,
-    jclass,
-    jstring walletId,
-    jobjectArray keyImages,
-    jbooleanArray spentStates,
-    jdouble checkedHeight) {
-  try {
-    return static_cast<jdouble>(walletEngine().reconcileOutputKeyImages(
-        toStdString(env, walletId),
-        toStdStringVector(env, keyImages),
-        toBoolVector(env, spentStates),
-        toUInt64(checkedHeight, "checkedHeight")));
-  } catch (const std::exception& error) {
-    throwJavaError(env, error);
-    return 0;
-  }
-}
-
-extern "C" JNIEXPORT jobject JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareTransaction(
     JNIEnv* env,
     jclass,
@@ -1160,6 +2817,260 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareTransaction(
     request.priority = toStdString(env, priority);
     request.accountIndex = toUInt32(accountIndex, "accountIndex");
     return toJavaMap(env, walletEngine().prepareTransaction(request));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameRegistration(
+    JNIEnv* env,
+    jclass,
+    jstring walletId,
+    jstring name,
+    jstring address,
+    jstring network,
+    jstring registryAddress,
+    jstring priority,
+    jdouble accountIndex) {
+  try {
+    const auto nameValue = toStdString(env, name);
+    const auto addressValue = toStdString(env, address);
+    const auto networkValue = parseNetwork(toStdString(env, network));
+    auto material =
+        tex8::wallet::fast_wallet_protocol_bridge::
+            generateMfwNameRegistrationMaterial(
+                walletEngine(), nameValue, addressValue, networkValue);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
+        ownerPrivateKeyGuard(material.ownerPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
+        commitSaltGuard(material.commitSaltHex);
+
+    PrepareTransactionRequest request;
+    request.walletId = toStdString(env, walletId);
+    request.address = toStdString(env, registryAddress);
+    request.amountAtomic = "1";
+    request.priority = toStdString(env, priority);
+    request.accountIndex = toUInt32(accountIndex, "accountIndex");
+    request.mfwNameExtraNonce = material.commitExtraNonce;
+    const auto prepared = walletEngine().prepareTransaction(request);
+    std::fill(
+        material.commitExtraNonce.begin(),
+        material.commitExtraNonce.end(),
+        0);
+
+    jobject map = toJavaMap(env, prepared);
+    const jmethodID putMethod = hashMapPutMethod(env);
+    putMapString(
+        env,
+        map,
+        putMethod,
+        "ownerPrivateKeyHex",
+        material.ownerPrivateKeyHex);
+    putMapString(
+        env,
+        map,
+        putMethod,
+        "ownerPublicKeyHex",
+        material.ownerPublicKeyHex);
+    putMapString(
+        env,
+        map,
+        putMethod,
+        "commitSaltHex",
+        material.commitSaltHex);
+    return map;
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameClaim(
+    JNIEnv* env,
+    jclass,
+    jstring walletId,
+    jstring name,
+    jstring address,
+    jstring network,
+    jstring registryAddress,
+    jdouble years,
+    jstring priority,
+    jdouble accountIndex,
+    jstring ownerPrivateKeyHex,
+    jstring commitSaltHex) {
+  try {
+    auto ownerPrivateKeyValue = toStdString(env, ownerPrivateKeyHex);
+    auto commitSaltValue = toStdString(env, commitSaltHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
+        ownerPrivateKeyGuard(ownerPrivateKeyValue);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
+        commitSaltGuard(commitSaltValue);
+    const uint32_t termYears = toUInt32(years, "years");
+    if (termYears < 1 || termYears > 10) {
+      throw WalletEngineError("MFW name term must be between 1 and 10 years");
+    }
+    auto record =
+        tex8::wallet::fast_wallet_protocol_bridge::prepareMfwNameClaimRecord(
+            walletEngine(),
+            toStdString(env, name),
+            toStdString(env, address),
+            parseNetwork(toStdString(env, network)),
+            ownerPrivateKeyValue,
+            commitSaltValue);
+
+    PrepareTransactionRequest request;
+    request.walletId = toStdString(env, walletId);
+    request.address = toStdString(env, registryAddress);
+    request.amountAtomic =
+        std::to_string(10000000000ULL * static_cast<uint64_t>(termYears));
+    request.priority = toStdString(env, priority);
+    request.accountIndex = toUInt32(accountIndex, "accountIndex");
+    request.mfwNameExtraNonce = record.extraNonce;
+    const auto prepared = walletEngine().prepareTransaction(request);
+    std::fill(record.extraNonce.begin(), record.extraNonce.end(), 0);
+
+    jobject map = toJavaMap(env, prepared);
+    putMapString(
+        env,
+        map,
+        hashMapPutMethod(env),
+        "ownerPublicKeyHex",
+        record.ownerPublicKeyHex);
+    return map;
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameTransition(
+    JNIEnv* env,
+    jclass,
+    jstring walletId,
+    jstring operation,
+    jstring name,
+    jstring address,
+    jstring network,
+    jstring registryAddress,
+    jdouble years,
+    jstring predecessorRecordHex,
+    jstring predecessorSigningOwnerPublicKeyHex,
+    jstring priority,
+    jdouble accountIndex,
+    jstring ownerPrivateKeyHex) {
+  try {
+    const auto operationValue = toStdString(env, operation);
+    const unsigned char operationCode =
+        operationValue == "update" ? 3
+        : operationValue == "renew" ? 4
+        : operationValue == "revoke" ? 5
+                                     : 0;
+    if (operationCode == 0) {
+      throw WalletEngineError("MFW name transition operation is invalid");
+    }
+    const uint32_t termYears = toUInt32(years, "years");
+    if (termYears < 1 || termYears > 10) {
+      throw WalletEngineError("MFW name term must be between 1 and 10 years");
+    }
+    auto ownerPrivateKeyValue = toStdString(env, ownerPrivateKeyHex);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
+        ownerPrivateKeyGuard(ownerPrivateKeyValue);
+    auto record = tex8::wallet::fast_wallet_protocol_bridge::
+        prepareMfwNameTransitionRecord(
+            walletEngine(),
+            operationCode,
+            toStdString(env, name),
+            toStdString(env, address),
+            parseNetwork(toStdString(env, network)),
+            ownerPrivateKeyValue,
+            toStdString(env, predecessorRecordHex),
+            toStdString(env, predecessorSigningOwnerPublicKeyHex));
+
+    PrepareTransactionRequest request;
+    request.walletId = toStdString(env, walletId);
+    request.address = operationCode == 4
+                          ? toStdString(env, registryAddress)
+                          : toStdString(env, address);
+    request.amountAtomic =
+        operationCode == 4
+            ? std::to_string(
+                  10000000000ULL * static_cast<uint64_t>(termYears))
+            : "1";
+    request.priority = toStdString(env, priority);
+    request.accountIndex = toUInt32(accountIndex, "accountIndex");
+    request.mfwNameExtraNonce = record.extraNonce;
+    const auto prepared = walletEngine().prepareTransaction(request);
+    std::fill(record.extraNonce.begin(), record.extraNonce.end(), 0);
+    return toJavaMap(env, prepared);
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeExportMfwNameRecovery(
+    JNIEnv* env,
+    jclass,
+    jstring name,
+    jstring network,
+    jstring ownerPrivateKeyHex,
+    jstring passphrase) {
+  try {
+    auto ownerPrivateKeyValue = toStdString(env, ownerPrivateKeyHex);
+    auto passphraseValue = toStdString(env, passphrase);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
+        ownerPrivateKeyGuard(ownerPrivateKeyValue);
+    const auto encoded =
+        tex8::wallet::fast_wallet_protocol_bridge::exportMfwNameRecovery(
+            toStdString(env, name),
+            parseNetwork(toStdString(env, network)),
+            ownerPrivateKeyValue,
+            passphraseValue);
+    return env->NewStringUTF(encoded.c_str());
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeImportMfwNameRecovery(
+    JNIEnv* env,
+    jclass,
+    jstring bundleHex,
+    jstring expectedName,
+    jstring expectedNetwork,
+    jstring passphrase) {
+  try {
+    auto passphraseValue = toStdString(env, passphrase);
+    auto recovered =
+        tex8::wallet::fast_wallet_protocol_bridge::importMfwNameRecovery(
+            toStdString(env, bundleHex),
+            toStdString(env, expectedName),
+            parseNetwork(toStdString(env, expectedNetwork)),
+            passphraseValue);
+    tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
+        ownerPrivateKeyGuard(recovered.ownerPrivateKeyHex);
+    jobject map = newHashMap(env);
+    jmethodID putMethod = hashMapPutMethod(env);
+    putMapString(
+        env,
+        map,
+        putMethod,
+        "ownerPrivateKeyHex",
+        recovered.ownerPrivateKeyHex);
+    putMapString(
+        env,
+        map,
+        putMethod,
+        "ownerPublicKeyHex",
+        recovered.ownerPublicKeyHex);
+    return map;
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;

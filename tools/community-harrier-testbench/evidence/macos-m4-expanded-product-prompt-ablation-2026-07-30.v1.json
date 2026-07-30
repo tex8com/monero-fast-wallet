@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-30T11:40:58-05:00",
+  "purpose": "Expanded multi-vector product-search quality and query-prompt bias isolation",
+  "platform": {
+    "device": "MacBook Air",
+    "chip": "Apple M4",
+    "cpuCores": 10,
+    "memoryGiB": 16,
+    "architecture": "arm64",
+    "os": "macOS 26.5.2",
+    "osBuild": "25F84"
+  },
+  "artifact": {
+    "modelId": "microsoft/harrier-oss-v1-270m",
+    "sourceRevision": "31de22b673913c7d658c0f03f792d77c2dcf8ebd",
+    "sourceWeightsSha256": "90933b6826b61afd9331e0ebe3c0598b421a32eda5fb301a114fe36f306cb51a",
+    "tokenizerSha256": "6852f8d561078cc0cebe70ca03c5bfdd0d60a45f9d2e0e1e4cc05b68e9ec329e",
+    "target": "xnnpack-a8w8",
+    "pteSha256": "237b9297d51ec3904042d06de340755365483da0be0054fa05b9d17468274d02",
+    "embeddingDimension": 640
+  },
+  "workload": {
+    "products": 12,
+    "distinctQueries": 60,
+    "labeledPairs": 120,
+    "positivePairs": 60,
+    "hardNegativePairs": 60,
+    "vectorsPerProduct": 7,
+    "installedProductVectors": 84,
+    "titleCharactersPerProduct": 255,
+    "bulletsPerProduct": 5,
+    "charactersPerBullet": 255,
+    "descriptionCharactersPerProduct": 1800,
+    "truncatedChunks": 0,
+    "queryKinds": {
+      "core": 12,
+      "bullet": 12,
+      "descriptionTail": 12,
+      "paraphrase": 12,
+      "crossLanguage": 6,
+      "typo": 6
+    }
+  },
+  "database": {
+    "engine": "community-search-core SQLite + USearch",
+    "metric": "cosine",
+    "scalar": "f32",
+    "deduplication": "best vector hit per product",
+    "installedItems": 12,
+    "installedVectors": 84,
+    "indexBytes": 227248,
+    "sqliteBytes": 1064960
+  },
+  "runs": [
+    {
+      "id": "production-v1",
+      "prompt": "Given a Monero community search query, retrieve relevant public profiles, posts, services, products, news, and clearly labeled advertisements",
+      "isCurrentProductionContract": true,
+      "top1": {
+        "matches": 47,
+        "queries": 60,
+        "rate": 0.7833333333333333
+      },
+      "recallAt5": {
+        "matches": 60,
+        "queries": 60,
+        "rate": 1.0
+      },
+      "meanReciprocalRank": 0.8916666666666667,
+      "meanNdcgAt5": 0.9200347799404819,
+      "rocAucAcrossLabeledPairs": 0.8594444444444445,
+      "positiveMeanSimilarity": 0.6716436,
+      "negativeMeanSimilarity": 0.57273895,
+      "meanSimilarityGap": 0.09890467,
+      "positiveDecisionsCorrect": 47,
+      "negativeDecisionsCorrect": 56,
+      "perQueryKindTop1": {
+        "core": {
+          "matches": 11,
+          "queries": 12
+        },
+        "bullet": {
+          "matches": 10,
+          "queries": 12
+        },
+        "descriptionTail": {
+          "matches": 7,
+          "queries": 12
+        },
+        "paraphrase": {
+          "matches": 9,
+          "queries": 12
+        },
+        "crossLanguage": {
+          "matches": 5,
+          "queries": 6
+        },
+        "typo": {
+          "matches": 5,
+          "queries": 6
+        }
+      },
+      "embeddingPerformance": {
+        "measuredEmbeddings": 204,
+        "embeddingsPerSecond": 17.039199447918687,
+        "measurementMs": 11972.393458010629,
+        "note": "Local macOS ExecuTorch/XNNPACK measurement, not Pixel performance"
+      },
+      "databasePerformance": {
+        "searchCalls": 12000,
+        "meanSearchMs": 5.647762065999999
+      },
+      "inputSha256": "ab90da7bfb4def3dc843c1c4c42643d0b0f7b5908e7ec7c9742cfbd2dd462212",
+      "embeddingOutputSha256": "9044852aa908f20ace9930e3a7084b8c1bc6ecabd9e6bb75f4e8b28698bbbca1",
+      "resultSha256": "2783ee1fd8cbaddf357f023f23f4f08a0a4024470ed9e76eda705b39585ee10f"
+    },
+    {
+      "id": "neutral-community-ablation-v1",
+      "prompt": "Given a community search query, retrieve relevant public profiles, posts, services, products, news, and clearly labeled advertisements",
+      "isCurrentProductionContract": false,
+      "top1": {
+        "matches": 60,
+        "queries": 60,
+        "rate": 1.0
+      },
+      "recallAt5": {
+        "matches": 60,
+        "queries": 60,
+        "rate": 1.0
+      },
+      "meanReciprocalRank": 1.0,
+      "meanNdcgAt5": 1.0,
+      "rocAucAcrossLabeledPairs": 0.9377777777777778,
+      "positiveMeanSimilarity": 0.69759136,
+      "negativeMeanSimilarity": 0.5639335,
+      "meanSimilarityGap": 0.13365787,
+      "positiveDecisionsCorrect": 60,
+      "negativeDecisionsCorrect": 60,
+      "inputSha256": "be55c6340f641e4bbee1b3737b4f6a7d35b3a1a0ceb4b2000095a08c4419564c",
+      "embeddingOutputSha256": "0e4412431fbfc133765d4d21ba36a0e6d175296c1e1f86ee998d9a5de1794806",
+      "resultSha256": "e91a9d29b0db63a981c8b78924efa5400ed90e4af8b15b32662adfdd84b84b76"
+    },
+    {
+      "id": "product-specific-ablation-v1",
+      "prompt": "Given a product search query, retrieve the most relevant product listings",
+      "isCurrentProductionContract": false,
+      "top1": {
+        "matches": 60,
+        "queries": 60,
+        "rate": 1.0
+      },
+      "recallAt5": {
+        "matches": 60,
+        "queries": 60,
+        "rate": 1.0
+      },
+      "meanReciprocalRank": 1.0,
+      "meanNdcgAt5": 1.0,
+      "rocAucAcrossLabeledPairs": 0.9494444444444444,
+      "positiveMeanSimilarity": 0.67888224,
+      "negativeMeanSimilarity": 0.5356752,
+      "meanSimilarityGap": 0.14320701,
+      "positiveDecisionsCorrect": 60,
+      "negativeDecisionsCorrect": 60,
+      "inputSha256": "265d2d36a30cc388a7ab6cbd4ea52ad58fe1dde83c066332faba653da144870d",
+      "embeddingOutputSha256": "b68cd020dbf3c2f6044cefbca38e8c4c554397d80c1eaa528564ad267568c94a",
+      "resultSha256": "7b9a26afabc85b1c7c3970b0a0097fedef2938999ffb3480601817c5e64ee4fa"
+    }
+  ],
+  "productionPromptFailures": [
+    {
+      "queryGroupId": "garden-robot-paraphrase",
+      "expectedProductId": "garden-robot",
+      "expectedSimilarity": 0.5828747,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.6650457
+    },
+    {
+      "queryGroupId": "hardware-security-key-description_tail",
+      "expectedProductId": "hardware-security-key",
+      "expectedSimilarity": 0.63491684,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.6589144
+    },
+    {
+      "queryGroupId": "hardware-security-key-paraphrase",
+      "expectedProductId": "hardware-security-key",
+      "expectedSimilarity": 0.59749174,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.64745617
+    },
+    {
+      "queryGroupId": "laptop-messenger-bag-description_tail",
+      "expectedProductId": "laptop-messenger-bag",
+      "expectedSimilarity": 0.6000432,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.65296626
+    },
+    {
+      "queryGroupId": "laptop-messenger-bag-typo",
+      "expectedProductId": "laptop-messenger-bag",
+      "expectedSimilarity": 0.6638853,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.67071044
+    },
+    {
+      "queryGroupId": "noise-canceling-headphones-description_tail",
+      "expectedProductId": "noise-canceling-headphones",
+      "expectedSimilarity": 0.6195711,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.6242091
+    },
+    {
+      "queryGroupId": "password-manager-bullet",
+      "expectedProductId": "password-manager",
+      "expectedSimilarity": 0.63652265,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.67037094
+    },
+    {
+      "queryGroupId": "password-manager-core",
+      "expectedProductId": "password-manager",
+      "expectedSimilarity": 0.6871409,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.68780625
+    },
+    {
+      "queryGroupId": "password-manager-paraphrase",
+      "expectedProductId": "password-manager",
+      "expectedSimilarity": 0.607779,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.7166274
+    },
+    {
+      "queryGroupId": "robot-vacuum-description_tail",
+      "expectedProductId": "robot-vacuum",
+      "expectedSimilarity": 0.58650625,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.6264325
+    },
+    {
+      "queryGroupId": "secure-messenger-bullet",
+      "expectedProductId": "secure-messenger",
+      "expectedSimilarity": 0.6461059,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.6568352
+    },
+    {
+      "queryGroupId": "travel-backpack-cross_language",
+      "expectedProductId": "travel-backpack",
+      "expectedSimilarity": 0.55801535,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.5642308
+    },
+    {
+      "queryGroupId": "travel-backpack-description_tail",
+      "expectedProductId": "travel-backpack",
+      "expectedSimilarity": 0.6117696,
+      "topProductId": "privacy-wallet",
+      "topSimilarity": 0.6441434
+    }
+  ],
+  "control": {
+    "productVectorSetSha256AcrossAllRuns": "3d0a361d77a8d269a6b0c75704c3f1d95de7c1615d7c980824bf4775b44f17e6",
+    "productVectorsIdenticalAcrossAllRuns": true,
+    "onlyQueryPromptChanged": true,
+    "fullVectorsCommitted": false,
+    "ablationPerformanceComparable": false,
+    "conclusion": "The literal Monero domain term in the production query instruction caused all 13 Top-1 errors to prefer the privacy-wallet listing."
+  }
+}

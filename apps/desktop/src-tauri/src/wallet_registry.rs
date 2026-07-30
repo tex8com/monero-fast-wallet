@@ -161,16 +161,6 @@ pub fn upsert(app: &AppHandle, mut wallet: RegisteredWallet) -> Result<Registere
     Ok(wallet)
 }
 
-pub fn upsert_preserving_active(
-    app: &AppHandle,
-    mut wallet: RegisteredWallet,
-) -> Result<RegisteredWallet, String> {
-    let mut registry = load(app)?;
-    upsert_into_registry(&mut registry, &mut wallet);
-    save(app, registry)?;
-    Ok(wallet)
-}
-
 fn upsert_into_registry(registry: &mut WalletRegistry, wallet: &mut RegisteredWallet) {
     wallet.last_opened_at = now();
     if let Some(index) = registry

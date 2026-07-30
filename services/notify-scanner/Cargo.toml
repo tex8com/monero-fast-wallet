@@ -3,6 +3,7 @@ name = "notify-scanner"
 version = "0.1.0"
 edition = "2021"
 publish = false
+license = "AGPL-3.0-only"
 
 [dependencies]
 anyhow = "1"
@@ -15,6 +16,7 @@ cuprate-fixed-bytes = { path = "../../node/cuprate/types/fixed-bytes", features 
 cuprate-rpc-types = { path = "../../node/cuprate/rpc/types", features = ["epee", "serde"] }
 cuprate-types = { path = "../../node/cuprate/types/types", features = ["epee", "json", "rpc", "serde"] }
 curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+ed25519-dalek = "2"
 hex = "0.4"
 http = "1"
 libc = "0.2"
@@ -23,6 +25,7 @@ monero-oxide = { git = "https://github.com/monero-oxide/monero-oxide.git", rev =
 monero-rpc = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
 monero-wallet = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
 rand_core = "0.6"
+scanpack-format = { path = "../../native/scanpack-format" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

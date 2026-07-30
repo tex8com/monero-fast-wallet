@@ -8,26 +8,34 @@ const SAFE_FIELDS = new Set([
   'available',
   'biometryType',
   'checkedCount',
+  'configured',
   'configuredCount',
   'count',
   'deviceCount',
   'elapsedMs',
   'enrolled',
+  'failureCode',
+  'failedAttempts',
   'hostedCount',
   'httpStatus',
+  'initialSetup',
   'linked',
+  'locked',
   'mode',
   'network',
   'permissionGranted',
   'platform',
   'published',
   'queuedMs',
+  'remainingAttempts',
   'refreshedWalletCount',
   'requiresUserAction',
+  'resetTriggered',
   'status',
   'success',
   'supported',
   'synchronized',
+  'timeoutMs',
   'transport',
   'trusted',
   'txCount',
@@ -44,6 +52,23 @@ const SAFE_STRING_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
     'iris',
     'none',
     'touch-id',
+    'unknown',
+  ]),
+  failureCode: new Set([
+    'app-locked',
+    'authentication-cancelled',
+    'authentication-failed',
+    'credential',
+    'file-exists',
+    'hardware-unavailable',
+    'invalid-data',
+    'missing-data',
+    'native',
+    'network',
+    'permission',
+    'storage',
+    'timeout',
+    'unsupported',
     'unknown',
   ]),
   mode: new Set(['biometric', 'custom', 'optimized-grpc', 'password']),
@@ -74,7 +99,10 @@ const SESSION_CORRELATION_ID = `diag_${Date.now().toString(36)}_${Math.random()
   .slice(2, 10)}`;
 
 function diagnosticsLoggingEnabled() {
-  return __DEV__ && typeof jest === 'undefined';
+  // Native code owns the fail-closed release switch. Keeping the sanitized
+  // bridge call reachable lets a deliberately flagged release APK produce
+  // diagnostics without enabling arbitrary console logging in production.
+  return typeof jest === 'undefined';
 }
 
 export async function emitWalletDiagnosticsLine(line: string) {
@@ -85,7 +113,9 @@ export async function emitWalletDiagnosticsLine(line: string) {
   if (!sanitized) {
     return;
   }
-  console.log(sanitized);
+  if (__DEV__) {
+    console.log(sanitized);
+  }
 
   try {
     await requireNativeMoneroWallet().logDiagnostics(sanitized);
@@ -112,14 +142,48 @@ export function formatWalletLogLine(
   event: string,
   fields: DiagnosticFields = {},
 ) {
+  const failureCode =
+    fields.error === undefined
+      ? {}
+      : { failureCode: classifyDiagnosticFailure(fields.error) };
   const payload = {
     ...sanitizeFields(fields),
+    ...failureCode,
     correlationId: SESSION_CORRELATION_ID,
     event: safeToken(event),
     scope: safeToken(scope),
     timestamp: new Date().toISOString(),
   };
   return `${WALLET_DIAGNOSTIC_LOG_PREFIX} ${JSON.stringify(payload)}`;
+}
+
+export function classifyDiagnosticFailure(error: unknown): string {
+  const message = String(
+    error instanceof Error ? `${error.name} ${error.message}` : error,
+  ).toLowerCase();
+  if (/timed? ?out|timeout|deadline/.test(message)) return 'timeout';
+  if (/already exists|file.*exist|overwrite/.test(message))
+    return 'file-exists';
+  if (/app.*lock|session.*lock|native.*lock/.test(message)) return 'app-locked';
+  if (/cancel|canceled|cancelled|negative button/.test(message))
+    return 'authentication-cancelled';
+  if (/auth|biometric|fingerprint|face.*unlock/.test(message))
+    return 'authentication-failed';
+  if (/password|credential|secret|decrypt/.test(message)) return 'credential';
+  if (/permission|denied|not authorized/.test(message)) return 'permission';
+  if (/ledger|hardware|usb|bluetooth|ble/.test(message))
+    return 'hardware-unavailable';
+  if (/unsupported|not support|unavailable on this device/.test(message))
+    return 'unsupported';
+  if (/network|connect|socket|dns|tls|http|grpc|daemon|offline/.test(message))
+    return 'network';
+  if (/not found|missing|no such/.test(message)) return 'missing-data';
+  if (/invalid|malformed|parse|decode|corrupt/.test(message))
+    return 'invalid-data';
+  if (/storage|keystore|keychain|database|read|write|persist/.test(message))
+    return 'storage';
+  if (/native|jni|monero|walletmanager/.test(message)) return 'native';
+  return 'unknown';
 }
 
 function sanitizePreformattedLine(line: string): string | undefined {

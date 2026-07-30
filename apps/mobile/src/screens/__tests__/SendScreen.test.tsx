@@ -54,6 +54,7 @@ jest.mock('../../services/WalletService', () => ({
     commitTransaction: jest.fn(),
     loadFastReceiveIdentitiesForActiveNode: jest.fn(async () => []),
     prepareTransaction: jest.fn(),
+    validateRecipientAddress: jest.fn(async address => address),
   },
 }));
 
@@ -64,6 +65,7 @@ const mockedWalletService = walletService as jest.Mocked<typeof walletService>;
 
 describe('SendScreen', () => {
   it('prepares MAX as sweep-all and commits with one review tap', async () => {
+    const recipientAddress = `4${'1'.repeat(94)}`;
     const refreshSnapshot = jest.fn(async () => undefined);
     const refreshTransactions = jest.fn(async () => []);
     mockedUseWalletState.mockReturnValue({
@@ -74,9 +76,10 @@ describe('SendScreen', () => {
         id: 'primary',
         kind: 'software',
         walletName: 'primary',
+        network: 'mainnet',
       },
       registeredWallets: [],
-      session: { walletId: 'wallet-1' },
+      session: { walletId: 'wallet-1', network: 'mainnet' },
       setActiveRegisteredWallet: jest.fn(),
       snapshot: {
         balanceAtomic: '1000000000',
@@ -123,16 +126,24 @@ describe('SendScreen', () => {
     const manualRecipientButton = renderer!.root
       .findAllByType(TouchableOpacity)
       .find(node => node.props.accessibilityLabel === 'send.manualRecipient');
-    await ReactTestRenderer.act(async () => manualRecipientButton!.props.onPress());
+    await ReactTestRenderer.act(async () =>
+      manualRecipientButton!.props.onPress(),
+    );
 
     const recipientInput = renderer!.root.findAllByType(TextInput)[0];
     await ReactTestRenderer.act(async () => {
-      recipientInput.props.onChangeText('42ZCrRecipient');
+      recipientInput.props.onChangeText(recipientAddress);
     });
     const continueButton = renderer!.root
       .findAllByType(TouchableOpacity)
       .find(node => node.props.accessibilityLabel === 'action.continue');
     await ReactTestRenderer.act(async () => continueButton!.props.onPress());
+    const useRecipientButton = renderer!.root
+      .findAllByType(TouchableOpacity)
+      .find(node => node.props.accessibilityLabel === 'send.useThisRecipient');
+    await ReactTestRenderer.act(async () =>
+      useRecipientButton!.props.onPress(),
+    );
     const maxButton = renderer!.root
       .findAllByType(TouchableOpacity)
       .find(node => node.props.accessibilityLabel === 'send.all');
@@ -146,7 +157,7 @@ describe('SendScreen', () => {
     expect(mockedWalletService.prepareTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ walletId: 'wallet-1' }),
       {
-        address: '42ZCrRecipient',
+        address: recipientAddress,
         amountAtomic: undefined,
         priority: 'low',
         sweepAll: true,

@@ -24,10 +24,14 @@ function IcoGlobe({ c }: { c: string }) {
 function IcoWallet({ c }: { c: string }) {
   return <Icon name="wallet" size={20} color={c} />;
 }
+function IcoKey({ c }: { c: string }) {
+  return <Icon name="key" size={20} color={c} />;
+}
 
 const MENU_ITEMS = [
   { labelKey: "wallets.manage", descKey: "wallets.subtitle", screen: "Wallets", Icon: IcoWallet },
-  { labelKey: "enthusiasts.title", descKey: "enthusiasts.menuDescription", screen: "FindEnthusiasts", Icon: IcoCommunity },
+  { labelKey: "mfwNames.title", descKey: "mfwNames.subtitle", screen: "MfwNames", Icon: IcoKey },
+  { labelKey: "communityV1.title", descKey: "communityV1.menuDescription", screen: "MoneroEnthusiast", Icon: IcoCommunity },
   { labelKey: "settings.title", descKey: "menu.configureWallet", screen: "Settings", Icon: IcoGear },
   { label: "Tex8 Assistant", descKey: "menu.sharedAiModule", screen: "Tex8Assistant", Icon: IcoSpark },
   { labelKey: "menu.nodeStatus", descKey: "menu.connectionStatus", screen: "Settings", Icon: IcoGlobe },
@@ -82,7 +86,9 @@ export default function MenuScreen({ navigation }: any) {
             </View>
             <View style={s.menuInfo}>
               <Text style={s.menuLabel}>
-                {"labelKey" in item ? t(item.labelKey) : item.label}
+                {"labelKey" in item && item.labelKey
+                  ? t(item.labelKey)
+                  : item.label}
               </Text>
               <Text style={s.menuDesc}>{t(item.descKey)}</Text>
             </View>

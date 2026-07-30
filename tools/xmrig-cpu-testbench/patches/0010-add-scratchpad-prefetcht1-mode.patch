@@ -1,0 +1,28 @@
+diff --git a/src/crypto/randomx/randomx.cpp b/src/crypto/randomx/randomx.cpp
+index 0d560225..0f86ec04 100644
+--- a/src/crypto/randomx/randomx.cpp
++++ b/src/crypto/randomx/randomx.cpp
+@@ -275,6 +275,11 @@ void RandomX_ConfigurationBase::Apply()
+ 			*a = 0x060C8B48UL; // mov rcx, [rsi+rax]
+ 			*b = 0x160C8B48UL; // mov rcx, [rsi+rdx]
+ 			break;
++
++		case 4:
++			*a = 0x0614180FUL; // prefetcht1 [rsi+rax]
++			*b = 0x1614180FUL; // prefetcht1 [rsi+rdx]
++			break;
+ 		}
+ 	}
+ 
+diff --git a/src/crypto/rx/RxConfig.h b/src/crypto/rx/RxConfig.h
+index e8662e4d..078d018a 100644
+--- a/src/crypto/rx/RxConfig.h
++++ b/src/crypto/rx/RxConfig.h
+@@ -49,6 +49,7 @@ public:
+         ScratchpadPrefetchT0,
+         ScratchpadPrefetchNTA,
+         ScratchpadPrefetchMov,
++        ScratchpadPrefetchT1,
+         ScratchpadPrefetchMax,
+     };
+ 

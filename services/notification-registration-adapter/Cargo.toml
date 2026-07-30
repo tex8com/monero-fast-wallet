@@ -1,0 +1,26 @@
+[package]
+name = "notification-registration-adapter"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+
+[dependencies]
+async-trait = "0.1"
+axum = { version = "0.8", features = ["json"] }
+ed25519-dalek = { version = "2.2", features = ["zeroize"] }
+getrandom = "0.4"
+hex = "0.4"
+jsonwebtoken = { version = "10.2", default-features = false, features = ["rust_crypto"] }
+libc = "0.2"
+notification-gateway = { path = "../notification-gateway" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
+zeroize = "1"
+
+[dev-dependencies]
+http-body-util = "0.1"

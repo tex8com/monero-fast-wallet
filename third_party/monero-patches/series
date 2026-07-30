@@ -20,3 +20,4 @@
 0019-add-reproducible-metal-key-derivation-testbench.patch
 0020-wallet-batch-CPU-key-derivations-through-Rust.patch
 0021-wallet-add-native-Metal-derivation-backend.patch
+0022-wallet-expose-purpose-bound-extra-nonce-transactions.patch

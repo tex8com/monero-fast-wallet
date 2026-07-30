@@ -1,0 +1,9 @@
+plugins {
+    id "com.android.application" version "8.12.0" apply false
+}
+
+def externalBuildDirectory =
+        (System.getenv("TEX8_HARRIER_ANDROID_BUILD_DIRECTORY") ?: "").trim()
+if (!externalBuildDirectory.isEmpty()) {
+    layout.buildDirectory.set(file("${externalBuildDirectory}/root"))
+}

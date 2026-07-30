@@ -1,16 +1,3 @@
-export type KeyImageSpendStatus = "unknown" | "unspent" | "spent";
-
-export interface KeyImageStatusItem {
-  keyImage: string;
-  status: KeyImageSpendStatus;
-  checkedHeight: number;
-}
-
-export interface KeyImageStatusResult {
-  identityId: string;
-  items: KeyImageStatusItem[];
-}
-
 export interface FastReceiveWatchStatusResult {
   identityId: string;
   registered: boolean;
@@ -66,37 +53,6 @@ export async function verifyFastReceiveScannerCapability(
   }
 }
 
-export function parseKeyImageStatusResponse(
-  bodyText: string,
-  expectedIdentityId: string,
-  expectedKeyImages: string[],
-): KeyImageStatusResult {
-  const parsed: unknown = JSON.parse(bodyText);
-  if (!isRecord(parsed)) {
-    throw new Error("Fast receive scanner returned an invalid response");
-  }
-
-  const identityId = parseString(parsed.identity_id);
-  if (identityId !== expectedIdentityId) {
-    throw new Error("Fast receive scanner returned a mismatched identity");
-  }
-  if (!Array.isArray(parsed.items)) {
-    throw new Error("Fast receive scanner returned no key-image items");
-  }
-  if (parsed.items.length !== expectedKeyImages.length) {
-    throw new Error("Fast receive scanner returned a mismatched key-image count");
-  }
-
-  const items = parsed.items.map((item, index) =>
-    parseKeyImageStatusItem(item, expectedKeyImages[index]),
-  );
-
-  return {
-    identityId,
-    items,
-  };
-}
-
 export function parseWatchStatusResponse(
   bodyText: string,
   expectedIdentityId: string,
@@ -123,28 +79,6 @@ export function parseWatchStatusResponse(
   };
 }
 
-function parseKeyImageStatusItem(
-  value: unknown,
-  expectedKeyImage: string,
-): KeyImageStatusItem {
-  if (!isRecord(value)) {
-    throw new Error("Fast receive scanner returned an invalid key-image item");
-  }
-
-  const keyImage = parseString(value.key_image)?.toLowerCase();
-  const status = parseSpendStatus(value.status);
-  const checkedHeight = parseNonNegativeNumber(value.checked_height);
-  if (!keyImage || keyImage !== expectedKeyImage || !status || checkedHeight === undefined) {
-    throw new Error("Fast receive scanner returned an invalid key-image status");
-  }
-
-  return {
-    keyImage,
-    status,
-    checkedHeight,
-  };
-}
-
 export function normalizeScannerUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/g, "");
   let parsed: URL;
@@ -167,27 +101,6 @@ export function normalizeScannerUrl(value: string): string {
     );
   }
   return parsed.origin;
-}
-
-export function validateKeyImages(keyImages: string[]): string[] {
-  if (keyImages.length === 0 || keyImages.length > 1024) {
-    throw new Error("keyImages must contain between 1 and 1024 items");
-  }
-
-  return keyImages.map(keyImage => {
-    const normalized = keyImage.trim().toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(normalized)) {
-      throw new Error("keyImages must contain 64-character hex key images");
-    }
-    return normalized;
-  });
-}
-
-function parseSpendStatus(value: unknown): KeyImageSpendStatus | undefined {
-  if (value === "unknown" || value === "unspent" || value === "spent") {
-    return value;
-  }
-  return undefined;
 }
 
 function parseString(value: unknown): string | undefined {

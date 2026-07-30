@@ -12,6 +12,10 @@ REQUIRE_MONERO="${MONERO_WALLET_ANDROID_REQUIRE_MONERO:-1}"
 GRADLE_TASK="${MONERO_WALLET_ANDROID_GRADLE_TASK:-assemble${VARIANT_CAPITALIZED}}"
 EXTERNAL_BUILD_ROOT="${MONERO_WALLET_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
 APP_BUILD_DIR="${ANDROID_DIR}/app/build"
+FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-fast-wallet-protocol}"
+if [ ! -d "${EXTERNAL_BUILD_ROOT}" ]; then
+  FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${REPO_ROOT}/build/mobile-fast-wallet-protocol}"
+fi
 
 if [ -z "${MONERO_SOURCE_DIR:-}" ] \
   && [ -d "${EXTERNAL_BUILD_ROOT}/monero-v0.18.4.6-tex8-patched" ]; then
@@ -38,6 +42,28 @@ GRADLE_ARGS=(
   ":app:${GRADLE_TASK}"
   "-PreactNativeArchitectures=${ARCHITECTURES}"
 )
+
+FAST_WALLET_PROTOCOL_ARTIFACT="${FAST_WALLET_PROTOCOL_ROOT}/${MONERO_TARGET}/libfast_wallet_protocol.a"
+if fast_wallet_protocol_artifact_needs_rebuild \
+  "${FAST_WALLET_PROTOCOL_ARTIFACT}" \
+  "${MONERO_SOURCE_DIR}"; then
+  TARGETS="${MONERO_TARGET}" \
+    OUTPUT_DIR="${FAST_WALLET_PROTOCOL_ROOT}" \
+    MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR}" \
+    "${REPO_ROOT}/native/fast-wallet-protocol/build-mobile.sh"
+fi
+GRADLE_ARGS+=("-PmoneroFastWalletProtocolRoot=${FAST_WALLET_PROTOCOL_ROOT}")
+if [ -n "${FAST_WALLET_GATEWAY_ORIGIN:-}" ]; then
+  GRADLE_ARGS+=("-PfastWalletGatewayOrigin=${FAST_WALLET_GATEWAY_ORIGIN}")
+fi
+if [ -n "${FAST_WALLET_REGISTRATION_ORIGIN:-}" ]; then
+  GRADLE_ARGS+=("-PfastWalletRegistrationOrigin=${FAST_WALLET_REGISTRATION_ORIGIN}")
+fi
+if [ -n "${FAST_WALLET_OFFICIAL_WORKER_ROOT_ID:-}" ]; then
+  GRADLE_ARGS+=(
+    "-PfastWalletOfficialWorkerRootId=${FAST_WALLET_OFFICIAL_WORKER_ROOT_ID}"
+  )
+fi
 
 # Keep Gradle's CMake object tree and caches beside the externally built
 # Monero archives when that development volume is available. The root disk is

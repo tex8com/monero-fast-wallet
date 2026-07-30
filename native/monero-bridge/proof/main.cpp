@@ -1,10 +1,13 @@
 #include "WalletEngine.h"
 
 #include <chrono>
+#include <cstddef>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -57,6 +60,18 @@ void printUsage(const char* binary) {
       << " prepare-sweep <mainnet|testnet|stagenet> <wallet-path>"
          " <password|@file> <daemon-host:port> <grpc-host:port|->"
          " <recipient> [priority]\n"
+      << "  " << binary
+      << " send-sweep <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> <daemon-host:port> <grpc-host:port|->"
+         " <recipient> [priority]\n"
+      << "  " << binary
+      << " prepare-mfw-name <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> <daemon-host:port> <grpc-host:port|->"
+         " <recipient> <amount-atomic> <extra-file> [priority]\n"
+      << "  " << binary
+      << " send-mfw-name <mainnet|testnet|stagenet> <wallet-path>"
+         " <password|@file> <daemon-host:port> <grpc-host:port|->"
+         " <recipient> <amount-atomic> <extra-file> [priority]\n"
       << "  " << binary
       << " wait-tx <mainnet|testnet|stagenet> <wallet-path>"
          " <password|@file> <daemon-host:port> <grpc-host:port|-> <txid>"
@@ -152,6 +167,64 @@ std::string resolveSecretArgument(const std::string& value) {
     return readFileTrimmed(value.substr(1));
   }
   return value;
+}
+
+std::vector<uint8_t> readMfwNameExtraNonce(const std::string& path) {
+  const auto status = std::filesystem::symlink_status(path);
+  if (!std::filesystem::is_regular_file(status) ||
+      std::filesystem::is_symlink(status)) {
+    throw tex8::wallet::WalletEngineError(
+        "MFW name extra must be a regular, non-symlink file");
+  }
+  const auto size = std::filesystem::file_size(path);
+  if (size < 3 || size > 258) {
+    throw tex8::wallet::WalletEngineError(
+        "MFW name tx_extra nonce field has an invalid size");
+  }
+
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    throw tex8::wallet::WalletEngineError(
+        "failed to open MFW name tx_extra file");
+  }
+  std::vector<uint8_t> field{
+      std::istreambuf_iterator<char>(in),
+      std::istreambuf_iterator<char>()};
+  size_t cursor = 1;
+  uint64_t nonceSize = 0;
+  const uint8_t firstLengthByte = field[cursor++];
+  if ((firstLengthByte & 0x80) == 0) {
+    nonceSize = firstLengthByte;
+  } else {
+    if (cursor >= field.size()) {
+      throw tex8::wallet::WalletEngineError(
+          "MFW name tx_extra nonce length is truncated");
+    }
+    const uint8_t secondLengthByte = field[cursor++];
+    nonceSize = static_cast<uint64_t>(firstLengthByte & 0x7f) |
+        (static_cast<uint64_t>(secondLengthByte & 0x7f) << 7);
+    if ((secondLengthByte & 0x80) != 0 || secondLengthByte == 0 ||
+        nonceSize < 128) {
+      throw tex8::wallet::WalletEngineError(
+          "MFW name tx_extra nonce length is not canonical");
+    }
+  }
+  if (in.bad() || field.size() != size || field.front() != 0x02 ||
+      nonceSize > 255 || cursor + nonceSize != field.size()) {
+    throw tex8::wallet::WalletEngineError(
+        "MFW name tx_extra file is not one canonical nonce field");
+  }
+  return {
+      field.begin() + static_cast<std::ptrdiff_t>(cursor),
+      field.end()};
+}
+
+void requireRealSendOptIn() {
+  const char* value = std::getenv("TESTBENCH_ALLOW_REAL_SEND");
+  if (value == nullptr || std::string(value) != "1") {
+    throw tex8::wallet::WalletEngineError(
+        "real broadcast requires TESTBENCH_ALLOW_REAL_SEND=1");
+  }
 }
 
 void requireLinked() {
@@ -843,6 +916,107 @@ int main(int argc, char** argv) {
       engine.closeWallet(walletId, false);
       std::cout << "broadcast=false\n";
       return ok ? 0 : 1;
+    }
+
+    if (command == "send-sweep") {
+      if (argc < 8 || argc > 9) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+      requireRealSendOptIn();
+
+      OpenWalletRequest openRequest;
+      openRequest.network = parseNetwork(argv[2]);
+      openRequest.path = argv[3];
+      openRequest.password = resolveSecretArgument(argv[4]);
+
+      const WalletId walletId = engine.openWallet(openRequest);
+      applyNode(engine, walletId, argv[5], argv[6]);
+
+      PrepareTransactionRequest txRequest;
+      txRequest.walletId = walletId;
+      txRequest.address = argv[7];
+      txRequest.priority = argc >= 9 ? argv[8] : "low";
+
+      auto prepared = engine.prepareTransaction(txRequest);
+      std::cout << "prepare_status=" << prepared.status << "\n";
+      std::cout << "prepare_error=" << prepared.error << "\n";
+      std::cout << "sweep_amount_atomic=" << prepared.amountAtomic << "\n";
+      std::cout << "fee_atomic=" << prepared.feeAtomic << "\n";
+      std::cout << "dust_atomic=" << prepared.dustAtomic << "\n";
+      std::cout << "tx_count=" << prepared.txCount << "\n";
+      if (prepared.status != "ok" || prepared.id.empty()) {
+        engine.closeWallet(walletId);
+        return 1;
+      }
+
+      auto committed = engine.commitTransaction(walletId, prepared.id);
+      std::cout << "commit_status=" << committed.status << "\n";
+      std::cout << "commit_error=" << committed.error << "\n";
+      for (const auto& txid : committed.txIds) {
+        std::cout << "txid=" << txid << "\n";
+      }
+      engine.closeWallet(walletId);
+      return committed.status == "ok" ? 0 : 1;
+    }
+
+    if (command == "prepare-mfw-name" || command == "send-mfw-name") {
+      if (argc < 10 || argc > 11) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+      const bool broadcast = command == "send-mfw-name";
+      if (broadcast) {
+        requireRealSendOptIn();
+      }
+
+      OpenWalletRequest openRequest;
+      openRequest.network = parseNetwork(argv[2]);
+      openRequest.path = argv[3];
+      openRequest.password = resolveSecretArgument(argv[4]);
+
+      const WalletId walletId = engine.openWallet(openRequest);
+      applyNode(engine, walletId, argv[5], argv[6]);
+
+      PrepareTransactionRequest txRequest;
+      txRequest.walletId = walletId;
+      txRequest.address = argv[7];
+      txRequest.amountAtomic = argv[8];
+      txRequest.mfwNameExtraNonce = readMfwNameExtraNonce(argv[9]);
+      txRequest.priority = argc >= 11 ? argv[10] : "low";
+
+      auto prepared = engine.prepareTransaction(txRequest);
+      std::cout << "prepare_status=" << prepared.status << "\n";
+      std::cout << "prepare_error=" << prepared.error << "\n";
+      std::cout << "amount_atomic=" << prepared.amountAtomic << "\n";
+      std::cout << "fee_atomic=" << prepared.feeAtomic << "\n";
+      std::cout << "dust_atomic=" << prepared.dustAtomic << "\n";
+      std::cout << "tx_count=" << prepared.txCount << "\n";
+      std::cout << "mfw_nonce_bytes=" << txRequest.mfwNameExtraNonce.size()
+                << "\n";
+      if (prepared.status != "ok" || prepared.id.empty()) {
+        engine.closeWallet(walletId);
+        return 1;
+      }
+
+      if (!broadcast) {
+        engine.closeWallet(walletId, false);
+        std::cout << "broadcast=false\n";
+        return 0;
+      }
+
+      auto committed = engine.commitTransaction(walletId, prepared.id);
+      std::cout << "commit_status=" << committed.status << "\n";
+      std::cout << "commit_error=" << committed.error << "\n";
+      for (const auto& txid : committed.txIds) {
+        std::cout << "txid=" << txid << "\n";
+      }
+      engine.closeWallet(walletId);
+      return committed.status == "ok" ? 0 : 1;
     }
 
     if (command == "wait-tx") {

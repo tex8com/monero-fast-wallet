@@ -1,0 +1,590 @@
+use fast_wallet_protocol::{Network, WorkerDescriptor, WATCH_ENVELOPE_SIZE};
+use reqwest::{header, redirect::Policy, Client, Response, Url};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::time::Duration;
+use tauri::AppHandle;
+use zeroize::Zeroize;
+
+const PRIVATE_WORKER_QR_PREFIX: &str = "tex8-fast-wallet-worker:v1:";
+const MAX_DESCRIPTOR_BYTES: usize = 512;
+const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
+const ASSIGNMENT_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
+pub const WATCH_LIFETIME_SECONDS: u64 = 10 * 60;
+
+#[derive(Clone, Debug)]
+pub struct TrustedWorker {
+    pub descriptor_hex: String,
+    pub descriptor: WorkerDescriptor,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssignmentState {
+    pub assignment_handle: String,
+    pub assignment_epoch: u64,
+    pub expires_at: u64,
+    pub descriptor_hash: String,
+    pub worker_root_id: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PairedPrivateWorker {
+    descriptor_hex: String,
+    worker_root_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairedWorkerView {
+    pub worker_root_id: String,
+    pub fingerprint: String,
+    pub relay_origin: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OfficialDescriptorResponse {
+    worker_descriptor: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AssignmentResponse {
+    accepted: bool,
+    expires_at: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcceptedResponse {
+    accepted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RelayResponse {
+    message_id: String,
+    already_queued: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssignmentRequest<'a> {
+    worker_descriptor: &'a str,
+    assignment_handle: &'a str,
+    assignment_epoch: u64,
+    expires_at: u64,
+}
+
+#[derive(Serialize)]
+struct RelayRequest<'a> {
+    envelope: &'a str,
+}
+
+pub fn protocol_network(value: &str) -> Result<Network, String> {
+    match value {
+        "mainnet" => Ok(Network::Mainnet),
+        "testnet" => Ok(Network::Testnet),
+        "stagenet" => Ok(Network::Stagenet),
+        _ => Err("Unknown wallet network.".to_owned()),
+    }
+}
+
+pub async fn official_worker(network: &str, now: u64) -> Result<TrustedWorker, String> {
+    crate::release_features::require(
+        "officialWorker",
+        "The recommended payment-alert service is disabled in this signed app.",
+    )?;
+    let origin = gateway_origin()?;
+    let response = client()?
+        .get(route(&origin, "/api/v1/official-worker-descriptor"))
+        .header(header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|_| "The recommended payment-alert service could not be reached.".to_owned())?;
+    let response: OfficialDescriptorResponse = bounded_json(
+        response,
+        "The payment-alert service returned an invalid descriptor.",
+    )
+    .await?;
+    let worker = verify_descriptor(&response.worker_descriptor, network, now)?;
+    let expected = compiled_official_root()?;
+    if !constant_hex_eq(&hex::encode(worker.descriptor.worker_root_id()), &expected) {
+        return Err(
+            "The payment-alert service identity does not match this signed app.".to_owned(),
+        );
+    }
+    Ok(worker)
+}
+
+pub fn verify_private_worker_qr(
+    worker_qr: &str,
+    network: &str,
+    now: u64,
+) -> Result<(TrustedWorker, PairedWorkerView), String> {
+    crate::release_features::require(
+        "privateWorkerPairing",
+        "Private scan-service pairing is disabled in this signed app.",
+    )?;
+    let descriptor_hex = worker_qr
+        .trim()
+        .strip_prefix(PRIVATE_WORKER_QR_PREFIX)
+        .ok_or_else(|| "This is not a Fast Wallet scan-service QR code.".to_owned())?;
+    let worker = verify_descriptor(descriptor_hex, network, now)?;
+    let root = hex::encode(worker.descriptor.worker_root_id());
+    let view = PairedWorkerView {
+        worker_root_id: root.clone(),
+        fingerprint: fingerprint(&root),
+        relay_origin: worker.descriptor.relay_origin.clone(),
+    };
+    Ok((worker, view))
+}
+
+pub fn store_private_worker(network: &str, worker: &TrustedWorker) -> Result<(), String> {
+    protocol_network(network)?;
+    let state = PairedPrivateWorker {
+        descriptor_hex: worker.descriptor_hex.clone(),
+        worker_root_id: hex::encode(worker.descriptor.worker_root_id()),
+    };
+    let encoded = serde_json::to_string(&state)
+        .map_err(|_| "The paired scan service could not be saved.".to_owned())?;
+    crate::secure_store::store_fast_wallet_private_worker(network, encoded)
+}
+
+pub fn load_private_worker(network: &str, now: u64) -> Result<TrustedWorker, String> {
+    crate::release_features::require(
+        "privateWorkerPairing",
+        "Private scan-service pairing is disabled in this signed app.",
+    )?;
+    let encoded = crate::secure_store::load_fast_wallet_private_worker(network)?
+        .ok_or_else(|| "Pair your private scan service first.".to_owned())?;
+    let saved: PairedPrivateWorker = serde_json::from_str(&encoded)
+        .map_err(|_| "The paired scan-service record is invalid.".to_owned())?;
+    if !canonical_hex(&saved.worker_root_id, 32) {
+        return Err("The paired scan-service record is invalid.".to_owned());
+    }
+    let worker = verify_descriptor(&saved.descriptor_hex, network, now)?;
+    if !constant_hex_eq(
+        &hex::encode(worker.descriptor.worker_root_id()),
+        &saved.worker_root_id,
+    ) {
+        return Err("The paired scan-service identity changed.".to_owned());
+    }
+    Ok(worker)
+}
+
+pub fn paired_private_worker_roots() -> Result<Vec<String>, String> {
+    let mut roots: Vec<String> = Vec::new();
+    for network in ["mainnet", "testnet", "stagenet"] {
+        let Some(encoded) = crate::secure_store::load_fast_wallet_private_worker(network)? else {
+            continue;
+        };
+        let saved: PairedPrivateWorker = serde_json::from_str(&encoded)
+            .map_err(|_| "The paired scan-service record is invalid.".to_owned())?;
+        if !canonical_hex(&saved.worker_root_id, 32) {
+            return Err("The paired scan-service record is invalid.".to_owned());
+        }
+        if !roots
+            .iter()
+            .any(|root| constant_hex_eq(root, &saved.worker_root_id))
+        {
+            roots.push(saved.worker_root_id);
+        }
+    }
+    Ok(roots)
+}
+
+pub async fn sponsor_assignment(
+    app: &AppHandle,
+    identity_id: &str,
+    worker: &TrustedWorker,
+    now: u64,
+) -> Result<AssignmentState, String> {
+    crate::fast_wallet::validate_id(identity_id)?;
+    let root = hex::encode(worker.descriptor.worker_root_id());
+    let existing = load_assignment(identity_id)?;
+    if existing
+        .as_ref()
+        .is_some_and(|state| !constant_hex_eq(&state.worker_root_id, &root))
+    {
+        return Err(
+            "Changing the observer for this Fast Wallet is blocked. Delete its hosted scan data and create a new private receiving wallet."
+                .to_owned(),
+        );
+    }
+    let epoch = existing
+        .as_ref()
+        .map_or(1, |state| state.assignment_epoch.saturating_add(1));
+    if epoch == 0 {
+        return Err("The Fast Wallet assignment counter is exhausted.".to_owned());
+    }
+    let handle = match existing {
+        Some(state) => state.assignment_handle,
+        None => random_hex_32()?,
+    };
+    let requested_expiry = now
+        .checked_add(ASSIGNMENT_LIFETIME_SECONDS)
+        .ok_or_else(|| "The Fast Wallet assignment expiry is invalid.".to_owned())?;
+    let descriptor_hash = hex::encode(Sha256::digest(worker.descriptor_hex.as_bytes()));
+    let pending = AssignmentState {
+        assignment_handle: handle,
+        assignment_epoch: epoch,
+        expires_at: requested_expiry,
+        descriptor_hash,
+        worker_root_id: root,
+        status: "pending".to_owned(),
+    };
+    store_assignment(identity_id, &pending)?;
+
+    let (installation_id, mut installation_auth) = installation_credentials(app)?;
+    let origin = gateway_origin()?;
+    let response = client()?
+        .post(route(&origin, "/api/v1/installations/assignments"))
+        .header(header::ACCEPT, "application/json")
+        .header("x-fast-wallet-installation-id", &installation_id)
+        .header("x-fast-wallet-installation-auth", &installation_auth)
+        .json(&AssignmentRequest {
+            worker_descriptor: &worker.descriptor_hex,
+            assignment_handle: &pending.assignment_handle,
+            assignment_epoch: pending.assignment_epoch,
+            expires_at: requested_expiry,
+        })
+        .send()
+        .await
+        .map_err(|_| "The payment-alert assignment could not be created.".to_owned())?;
+    let response: AssignmentResponse = bounded_json(
+        response,
+        "The payment-alert assignment response was invalid.",
+    )
+    .await?;
+    if !response.accepted
+        || response.expires_at <= now
+        || response.expires_at > requested_expiry
+        || response.expires_at > worker.descriptor.expires_at
+    {
+        installation_auth.zeroize();
+        return Err("The payment-alert assignment expiry was invalid.".to_owned());
+    }
+
+    let delivery_response = client()?
+        .post(route(&origin, "/api/v1/installations/provider/delivery"))
+        .header(header::ACCEPT, "application/json")
+        .header("x-fast-wallet-installation-id", &installation_id)
+        .header("x-fast-wallet-installation-auth", &installation_auth)
+        .send()
+        .await
+        .map_err(|_| "Payment-alert delivery could not be enabled.".to_owned())?;
+    installation_auth.zeroize();
+    let delivery: AcceptedResponse = bounded_json(
+        delivery_response,
+        "The payment-alert delivery response was invalid.",
+    )
+    .await?;
+    if !delivery.accepted {
+        return Err("Payment-alert delivery was not enabled.".to_owned());
+    }
+
+    let active = AssignmentState {
+        expires_at: response.expires_at,
+        status: "active".to_owned(),
+        ..pending
+    };
+    store_assignment(identity_id, &active)?;
+    Ok(active)
+}
+
+pub async fn submit_watch(worker: &TrustedWorker, envelope_hex: &str) -> Result<String, String> {
+    if !canonical_hex(envelope_hex, WATCH_ENVELOPE_SIZE) {
+        return Err("The encrypted Fast Wallet watch was invalid.".to_owned());
+    }
+    let response = client()?
+        .post(route(&worker.descriptor.relay_origin, "/v1/envelopes"))
+        .header(header::ACCEPT, "application/json")
+        .json(&RelayRequest {
+            envelope: envelope_hex,
+        })
+        .send()
+        .await
+        .map_err(|_| "The encrypted Fast Wallet watch could not be submitted.".to_owned())?;
+    let response: RelayResponse = bounded_json(
+        response,
+        "The scan-service Relay returned an invalid response.",
+    )
+    .await?;
+    let _ = response.already_queued;
+    if !canonical_hex(&response.message_id, 32) {
+        return Err("The scan-service Relay returned an invalid message ID.".to_owned());
+    }
+    Ok(response.message_id)
+}
+
+pub async fn delete_assignment(
+    app: &AppHandle,
+    identity_id: &str,
+    assignment_handle: &str,
+) -> Result<(), String> {
+    crate::fast_wallet::validate_id(identity_id)?;
+    if !canonical_hex(assignment_handle, 32) {
+        return Err("The Fast Wallet assignment is invalid.".to_owned());
+    }
+    let state = load_assignment(identity_id)?
+        .ok_or_else(|| "This Fast Wallet has no hosted scan data.".to_owned())?;
+    if !constant_hex_eq(&state.assignment_handle, assignment_handle) {
+        return Err("The hosted scan data does not belong to this Fast Wallet.".to_owned());
+    }
+    let (installation_id, mut installation_auth) = installation_credentials(app)?;
+    let response = client()?
+        .delete(route(
+            &gateway_origin()?,
+            &format!("/api/v1/installations/assignments/{assignment_handle}"),
+        ))
+        .header(header::ACCEPT, "application/json")
+        .header("x-fast-wallet-installation-id", &installation_id)
+        .header("x-fast-wallet-installation-auth", &installation_auth)
+        .send()
+        .await
+        .map_err(|_| "Hosted scan data could not be deleted.".to_owned())?;
+    installation_auth.zeroize();
+    ensure_success(response, "Hosted scan data could not be deleted.").await?;
+    crate::secure_store::delete_fast_wallet_assignment_state(identity_id)
+}
+
+pub async fn disable_delivery(app: &AppHandle) -> Result<(), String> {
+    let (installation_id, mut installation_auth) = installation_credentials(app)?;
+    let response = client()?
+        .delete(route(
+            &gateway_origin()?,
+            "/api/v1/installations/provider/delivery",
+        ))
+        .header(header::ACCEPT, "application/json")
+        .header("x-fast-wallet-installation-id", &installation_id)
+        .header("x-fast-wallet-installation-auth", &installation_auth)
+        .send()
+        .await
+        .map_err(|_| "Payment alerts could not be turned off.".to_owned())?;
+    installation_auth.zeroize();
+    ensure_success(response, "Payment alerts could not be turned off.").await
+}
+
+pub fn load_assignment(identity_id: &str) -> Result<Option<AssignmentState>, String> {
+    let Some(encoded) = crate::secure_store::load_fast_wallet_assignment_state(identity_id)? else {
+        return Ok(None);
+    };
+    let state: AssignmentState = serde_json::from_str(&encoded)
+        .map_err(|_| "The Fast Wallet assignment state is invalid.".to_owned())?;
+    validate_assignment(&state)?;
+    Ok(Some(state))
+}
+
+fn store_assignment(identity_id: &str, state: &AssignmentState) -> Result<(), String> {
+    validate_assignment(state)?;
+    let encoded = serde_json::to_string(state)
+        .map_err(|_| "The Fast Wallet assignment state could not be encoded.".to_owned())?;
+    crate::secure_store::store_fast_wallet_assignment_state(identity_id, encoded)
+}
+
+fn validate_assignment(state: &AssignmentState) -> Result<(), String> {
+    if canonical_hex(&state.assignment_handle, 32)
+        && state.assignment_epoch > 0
+        && state.expires_at > 0
+        && canonical_hex(&state.descriptor_hash, 32)
+        && canonical_hex(&state.worker_root_id, 32)
+        && matches!(state.status.as_str(), "pending" | "active")
+    {
+        Ok(())
+    } else {
+        Err("The Fast Wallet assignment state is invalid.".to_owned())
+    }
+}
+
+fn installation_credentials(app: &AppHandle) -> Result<(String, String), String> {
+    let status = crate::desktop_notifications::status(app)?;
+    if !status.installation.enabled {
+        return Err("Allow notifications before turning payment alerts on.".to_owned());
+    }
+    let installation_id = status.installation.installation_id;
+    let auth = crate::secure_store::load_notification_installation_auth(&installation_id)?
+        .ok_or_else(|| "The notification installation credential is missing.".to_owned())?;
+    if !canonical_hex(&auth, 32) {
+        return Err("The notification installation credential is invalid.".to_owned());
+    }
+    Ok((installation_id, auth))
+}
+
+fn verify_descriptor(value: &str, network: &str, now: u64) -> Result<TrustedWorker, String> {
+    let descriptor_hex = checked_descriptor_hex(value)?;
+    let bytes =
+        hex::decode(&descriptor_hex).map_err(|_| "The scan-service descriptor is invalid.")?;
+    let descriptor = WorkerDescriptor::decode(&bytes)
+        .map_err(|_| "The scan-service descriptor is invalid.".to_owned())?;
+    descriptor
+        .verify(protocol_network(network)?, now)
+        .map_err(|_| "The scan-service descriptor is invalid, expired, or for another network.")?;
+    let canonical = descriptor
+        .encode()
+        .map(hex::encode)
+        .map_err(|_| "The scan-service descriptor is invalid.".to_owned())?;
+    if canonical != descriptor_hex {
+        return Err("The scan-service descriptor is not canonical.".to_owned());
+    }
+    Ok(TrustedWorker {
+        descriptor_hex,
+        descriptor,
+    })
+}
+
+fn checked_descriptor_hex(value: &str) -> Result<String, String> {
+    let checked = value.trim();
+    if checked.is_empty()
+        || checked.len() > MAX_DESCRIPTOR_BYTES * 2
+        || checked.len() % 2 != 0
+        || !checked
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return Err("The scan-service descriptor is invalid.".to_owned());
+    }
+    Ok(checked.to_owned())
+}
+
+fn gateway_origin() -> Result<String, String> {
+    fixed_https_origin(option_env!("TEX8_FAST_WALLET_GATEWAY_ORIGIN").unwrap_or(""))
+        .map_err(|_| "This signed app has no payment-alert Gateway configured.".to_owned())
+}
+
+fn compiled_official_root() -> Result<String, String> {
+    let root = option_env!("TEX8_FAST_WALLET_OFFICIAL_WORKER_ROOT_ID")
+        .unwrap_or("")
+        .trim();
+    if canonical_hex(root, 32) {
+        Ok(root.to_owned())
+    } else {
+        Err("This signed app has no valid official scan-service identity.".to_owned())
+    }
+}
+
+fn fixed_https_origin(value: &str) -> Result<String, String> {
+    let checked = value.trim().trim_end_matches('/');
+    let parsed = Url::parse(checked).map_err(|_| "invalid origin".to_owned())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("invalid origin".to_owned());
+    }
+    Ok(checked.to_owned())
+}
+
+fn route(origin: &str, path: &str) -> String {
+    format!("{}{path}", origin.trim_end_matches('/'))
+}
+
+fn client() -> Result<Client, String> {
+    Client::builder()
+        .timeout(Duration::from_secs(12))
+        .redirect(Policy::none())
+        .user_agent("Monero-Fast-Wallet-Desktop/0.1")
+        .build()
+        .map_err(|_| "The payment-alert network client could not be initialized.".to_owned())
+}
+
+async fn bounded_json<T: DeserializeOwned>(response: Response, invalid: &str) -> Result<T, String> {
+    if !response.status().is_success() {
+        return Err(format!("{invalid} HTTP {}.", response.status().as_u16()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES)
+    {
+        return Err(invalid.to_owned());
+    }
+    let bytes = response.bytes().await.map_err(|_| invalid.to_owned())?;
+    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(invalid.to_owned());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| invalid.to_owned())
+}
+
+async fn ensure_success(response: Response, error: &str) -> Result<(), String> {
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("{error} HTTP {}.", response.status().as_u16()))
+    }
+}
+
+fn random_hex_32() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|_| "A secure Fast Wallet assignment ID could not be generated.".to_owned())?;
+    let encoded = hex::encode(bytes);
+    bytes.zeroize();
+    Ok(encoded)
+}
+
+fn canonical_hex(value: &str, bytes: usize) -> bool {
+    value.len() == bytes * 2
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn constant_hex_eq(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.bytes()
+        .zip(right.bytes())
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
+fn fingerprint(root: &str) -> String {
+    if root.len() == 64 {
+        format!("{}…{}", &root[..8], &root[56..])
+    } else {
+        "invalid".to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_hex, constant_hex_eq, fixed_https_origin, protocol_network};
+
+    #[test]
+    fn gateway_origin_is_an_exact_https_origin() {
+        assert_eq!(
+            fixed_https_origin("https://alerts.example/").unwrap(),
+            "https://alerts.example"
+        );
+        assert!(fixed_https_origin("http://alerts.example").is_err());
+        assert!(fixed_https_origin("https://alerts.example/path").is_err());
+        assert!(fixed_https_origin("https://name@alerts.example").is_err());
+    }
+
+    #[test]
+    fn canonical_capabilities_are_lowercase_and_constant_time_compared() {
+        let value = "ab".repeat(32);
+        assert!(canonical_hex(&value, 32));
+        assert!(!canonical_hex(&"AB".repeat(32), 32));
+        assert!(constant_hex_eq(&value, &value));
+        assert!(!constant_hex_eq(&value, &"cd".repeat(32)));
+    }
+
+    #[test]
+    fn every_supported_monero_network_maps_to_the_shared_protocol() {
+        assert!(protocol_network("mainnet").is_ok());
+        assert!(protocol_network("testnet").is_ok());
+        assert!(protocol_network("stagenet").is_ok());
+        assert!(protocol_network("unknown").is_err());
+    }
+}

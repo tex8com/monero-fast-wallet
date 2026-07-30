@@ -5,6 +5,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
 api="${repo_root}/services/notify-scanner/src/api.rs"
 store="${repo_root}/services/notify-scanner/src/store.rs"
+release_manifest="${repo_root}/config/v1-release-features.json"
 location_config="${repo_root}/ops/notify-scanner/notify-scanner-tex8-location.conf"
 rate_config="${repo_root}/ops/notify-scanner/notify-scanner-rate-limit.conf"
 deploy="${repo_root}/ops/notify-scanner/deploy-from-github.sh"
@@ -26,9 +27,7 @@ done
 required_storage_contracts=(
   'MAX_WATCH_RECORDS'
   'MAX_MATCHES_PER_WATCH'
-  'MAX_KEY_IMAGE_STATUSES_PER_WATCH'
   'prune_matches_for_identity'
-  'prune_key_image_statuses_for_identity'
 )
 for contract in "${required_storage_contracts[@]}"; do
   if ! rg -Fq "${contract}" "${store}"; then
@@ -36,6 +35,20 @@ for contract in "${required_storage_contracts[@]}"; do
     exit 1
   fi
 done
+
+if ! rg -q '"scannerKeyImageSpendAuthority":[[:space:]]*false' \
+  "${release_manifest}"; then
+  echo "scanner key-image spend authority must remain disabled" >&2
+  exit 1
+fi
+if rg -iq 'key[-_ ]?image' \
+  "${repo_root}/services/notify-scanner/src/api.rs" \
+  "${repo_root}/services/notify-scanner/src/model.rs" \
+  "${repo_root}/services/notify-scanner/src/lib.rs" \
+  "${repo_root}/services/notify-scanner/src/main.rs"; then
+  echo "scanner public/runtime key-image authority returned unexpectedly" >&2
+  exit 1
+fi
 
 required_proxy_contracts=(
   'location = /v1/fast-receive/matches'
@@ -61,4 +74,4 @@ if ! rg -Fq 'notify-scanner-rate-limit.conf' "${deploy}"; then
   exit 1
 fi
 
-echo "Scanner security contract passed: body, capability, IP, connection, storage, timeout, and internal-route limits are enforced."
+echo "Scanner security contract passed: body, capability, IP, connection, storage, timeout, internal-route, and local spend-authority limits are enforced."

@@ -1,6 +1,6 @@
 use crate::model::{
-    key_image_status_id, privacy_safe_detection_id, DetectionStatus, KeyImageStatusRecord,
-    MatchedOutput, NotificationStatus, WatchRegistration,
+    privacy_safe_detection_id, DetectionStatus, MatchedOutput, NotificationStatus,
+    WatchRegistration,
 };
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -25,7 +25,6 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub const MAX_WATCH_RECORDS: usize = 100_000;
 pub const MAX_MATCHES_PER_WATCH: usize = 4_096;
-pub const MAX_KEY_IMAGE_STATUSES_PER_WATCH: usize = 4_096;
 
 pub trait WatchStore: Send + Sync {
     fn upsert(&self, registration: WatchRegistration) -> Result<WatchRegistration>;
@@ -34,20 +33,12 @@ pub trait WatchStore: Send + Sync {
     fn list(&self) -> Result<Vec<WatchRegistration>>;
     fn upsert_match(&self, output: MatchedOutput) -> Result<MatchedOutput>;
     fn list_matches(&self, identity_id: &str) -> Result<Vec<MatchedOutput>>;
-    fn upsert_key_image_status(&self, status: KeyImageStatusRecord)
-        -> Result<KeyImageStatusRecord>;
-    fn get_key_image_statuses(
-        &self,
-        identity_id: &str,
-        key_images: &[String],
-    ) -> Result<Vec<KeyImageStatusRecord>>;
 }
 
 #[derive(Default)]
 pub struct InMemoryWatchStore {
     records: RwLock<BTreeMap<String, WatchRegistration>>,
     matches: RwLock<BTreeMap<String, MatchedOutput>>,
-    key_image_statuses: RwLock<BTreeMap<String, KeyImageStatusRecord>>,
 }
 
 impl WatchStore for InMemoryWatchStore {
@@ -65,10 +56,6 @@ impl WatchStore for InMemoryWatchStore {
             .write()
             .expect("watch store poisoned")
             .retain(|_, output| output.identity_id != identity_id);
-        self.key_image_statuses
-            .write()
-            .expect("watch store poisoned")
-            .retain(|_, status| status.identity_id != identity_id);
         Ok(removed)
     }
 
@@ -101,42 +88,6 @@ impl WatchStore for InMemoryWatchStore {
             .cloned()
             .collect())
     }
-
-    fn upsert_key_image_status(
-        &self,
-        status: KeyImageStatusRecord,
-    ) -> Result<KeyImageStatusRecord> {
-        let mut statuses = self
-            .key_image_statuses
-            .write()
-            .expect("watch store poisoned");
-        statuses.insert(
-            key_image_status_id(&status.identity_id, &status.key_image),
-            status.clone(),
-        );
-        prune_key_image_statuses_for_identity(
-            &mut statuses,
-            &status.identity_id,
-            MAX_KEY_IMAGE_STATUSES_PER_WATCH,
-        );
-        Ok(status)
-    }
-
-    fn get_key_image_statuses(
-        &self,
-        identity_id: &str,
-        key_images: &[String],
-    ) -> Result<Vec<KeyImageStatusRecord>> {
-        let statuses = self
-            .key_image_statuses
-            .read()
-            .expect("watch store poisoned");
-        Ok(key_images
-            .iter()
-            .filter_map(|key_image| statuses.get(&key_image_status_id(identity_id, key_image)))
-            .cloned()
-            .collect())
-    }
 }
 
 pub struct EncryptedJsonFileStore {
@@ -144,7 +95,6 @@ pub struct EncryptedJsonFileStore {
     cipher: XChaCha20Poly1305,
     records: RwLock<BTreeMap<String, WatchRegistration>>,
     matches: RwLock<BTreeMap<String, MatchedOutput>>,
-    key_image_statuses: RwLock<BTreeMap<String, KeyImageStatusRecord>>,
 }
 
 impl EncryptedJsonFileStore {
@@ -186,28 +136,12 @@ impl EncryptedJsonFileStore {
                     .map(|output| (output.id.clone(), output))
                     .collect(),
             ),
-            key_image_statuses: RwLock::new(
-                stored
-                    .key_image_statuses
-                    .into_iter()
-                    .map(|status| {
-                        (
-                            key_image_status_id(&status.identity_id, &status.key_image),
-                            status,
-                        )
-                    })
-                    .collect(),
-            ),
         };
 
         if rewrite_existing {
             let records = store.records.read().expect("watch store poisoned");
             let matches = store.matches.read().expect("watch store poisoned");
-            let key_image_statuses = store
-                .key_image_statuses
-                .read()
-                .expect("watch store poisoned");
-            store.persist(&records, &matches, &key_image_statuses)?;
+            store.persist(&records, &matches)?;
         }
 
         Ok(store)
@@ -217,7 +151,6 @@ impl EncryptedJsonFileStore {
         &self,
         records: &BTreeMap<String, WatchRegistration>,
         matches: &BTreeMap<String, MatchedOutput>,
-        key_image_statuses: &BTreeMap<String, KeyImageStatusRecord>,
     ) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)
@@ -227,7 +160,6 @@ impl EncryptedJsonFileStore {
         let mut plaintext = serde_json::to_vec(&StoredRecords {
             records: records.values().cloned().collect(),
             matches: matches.values().cloned().collect(),
-            key_image_statuses: key_image_statuses.values().cloned().collect(),
         })?;
         let sealed_result = seal(&self.cipher, &plaintext);
         plaintext.zeroize();
@@ -244,11 +176,7 @@ impl WatchStore for EncryptedJsonFileStore {
         ensure_watch_capacity(&records, &registration.identity_id, MAX_WATCH_RECORDS)?;
         records.insert(registration.identity_id.clone(), registration.clone());
         let matches = self.matches.read().expect("watch store poisoned");
-        let key_image_statuses = self
-            .key_image_statuses
-            .read()
-            .expect("watch store poisoned");
-        self.persist(&records, &matches, &key_image_statuses)?;
+        self.persist(&records, &matches)?;
         Ok(registration)
     }
 
@@ -257,12 +185,7 @@ impl WatchStore for EncryptedJsonFileStore {
         let removed = records.remove(identity_id);
         let mut matches = self.matches.write().expect("watch store poisoned");
         matches.retain(|_, output| output.identity_id != identity_id);
-        let mut key_image_statuses = self
-            .key_image_statuses
-            .write()
-            .expect("watch store poisoned");
-        key_image_statuses.retain(|_, status| status.identity_id != identity_id);
-        self.persist(&records, &matches, &key_image_statuses)?;
+        self.persist(&records, &matches)?;
         Ok(removed)
     }
 
@@ -279,17 +202,13 @@ impl WatchStore for EncryptedJsonFileStore {
     fn upsert_match(&self, output: MatchedOutput) -> Result<MatchedOutput> {
         let records = self.records.read().expect("watch store poisoned");
         let mut matches = self.matches.write().expect("watch store poisoned");
-        let key_image_statuses = self
-            .key_image_statuses
-            .read()
-            .expect("watch store poisoned");
         let mut stored = output.clone();
         if let Some(existing) = matches.get(&output.id) {
             stored = merge_matched_output(existing, output);
         }
         matches.insert(stored.id.clone(), stored.clone());
         prune_matches_for_identity(&mut matches, &stored.identity_id, MAX_MATCHES_PER_WATCH);
-        self.persist(&records, &matches, &key_image_statuses)?;
+        self.persist(&records, &matches)?;
         Ok(stored)
     }
 
@@ -298,45 +217,6 @@ impl WatchStore for EncryptedJsonFileStore {
         Ok(matches
             .values()
             .filter(|output| output.identity_id == identity_id)
-            .cloned()
-            .collect())
-    }
-
-    fn upsert_key_image_status(
-        &self,
-        status: KeyImageStatusRecord,
-    ) -> Result<KeyImageStatusRecord> {
-        let records = self.records.read().expect("watch store poisoned");
-        let matches = self.matches.read().expect("watch store poisoned");
-        let mut key_image_statuses = self
-            .key_image_statuses
-            .write()
-            .expect("watch store poisoned");
-        key_image_statuses.insert(
-            key_image_status_id(&status.identity_id, &status.key_image),
-            status.clone(),
-        );
-        prune_key_image_statuses_for_identity(
-            &mut key_image_statuses,
-            &status.identity_id,
-            MAX_KEY_IMAGE_STATUSES_PER_WATCH,
-        );
-        self.persist(&records, &matches, &key_image_statuses)?;
-        Ok(status)
-    }
-
-    fn get_key_image_statuses(
-        &self,
-        identity_id: &str,
-        key_images: &[String],
-    ) -> Result<Vec<KeyImageStatusRecord>> {
-        let statuses = self
-            .key_image_statuses
-            .read()
-            .expect("watch store poisoned");
-        Ok(key_images
-            .iter()
-            .filter_map(|key_image| statuses.get(&key_image_status_id(identity_id, key_image)))
             .cloned()
             .collect())
     }
@@ -367,23 +247,6 @@ fn prune_matches_for_identity(
     let remove_count = ordered.len().saturating_sub(limit);
     for (_, id) in ordered.into_iter().take(remove_count) {
         matches.remove(&id);
-    }
-}
-
-fn prune_key_image_statuses_for_identity(
-    statuses: &mut BTreeMap<String, KeyImageStatusRecord>,
-    identity_id: &str,
-    limit: usize,
-) {
-    let mut ordered = statuses
-        .iter()
-        .filter(|(_, status)| status.identity_id == identity_id)
-        .map(|(id, status)| (status.updated_at_ms, id.clone()))
-        .collect::<Vec<_>>();
-    ordered.sort();
-    let remove_count = ordered.len().saturating_sub(limit);
-    for (_, id) in ordered.into_iter().take(remove_count) {
-        statuses.remove(&id);
     }
 }
 
@@ -662,8 +525,6 @@ struct StoredRecords {
     records: Vec<WatchRegistration>,
     #[serde(default)]
     matches: Vec<MatchedOutput>,
-    #[serde(default)]
-    key_image_statuses: Vec<KeyImageStatusRecord>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -676,7 +537,7 @@ struct SealedFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{DetectionStatus, Network, NotificationStatus, SpentStatus};
+    use crate::model::{DetectionStatus, Network, NotificationStatus};
 
     fn registration() -> WatchRegistration {
         WatchRegistration {
@@ -688,9 +549,11 @@ mod tests {
             restore_height: 50,
             push_token: Some("push-token".to_owned()),
             device_id: None,
+            worker_assignment_epoch: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             last_scanned_height: 49,
+            last_scanned_hash: None,
         }
     }
 
@@ -770,25 +633,6 @@ mod tests {
         prune_matches_for_identity(&mut matches, &record.identity_id, 2);
         assert_eq!(matches.len(), 2);
         assert!(!matches.contains_key("evt_1"));
-
-        let mut statuses = BTreeMap::new();
-        for timestamp in 1..=3 {
-            let key_image = format!("{timestamp:064x}");
-            let status = KeyImageStatusRecord {
-                identity_id: record.identity_id.clone(),
-                key_image: key_image.clone(),
-                status: SpentStatus::Unknown,
-                checked_height: timestamp,
-                updated_at_ms: timestamp,
-            };
-            statuses.insert(key_image_status_id(&record.identity_id, &key_image), status);
-        }
-        prune_key_image_statuses_for_identity(&mut statuses, &record.identity_id, 2);
-        assert_eq!(statuses.len(), 2);
-        assert!(!statuses.contains_key(&key_image_status_id(
-            &record.identity_id,
-            &format!("{:064x}", 1)
-        )));
     }
 
     #[test]
@@ -802,21 +646,11 @@ mod tests {
 
         store.upsert(record).unwrap();
         store.upsert_match(matched_output()).unwrap();
-        store
-            .upsert_key_image_status(KeyImageStatusRecord {
-                identity_id: "fast-receive-0".to_owned(),
-                key_image: "2".repeat(64),
-                status: SpentStatus::Unspent,
-                checked_height: 99,
-                updated_at_ms: 3,
-            })
-            .unwrap();
 
         let bytes = fs::read(&path).unwrap();
         let raw = String::from_utf8_lossy(&bytes);
         assert!(!raw.contains(&view_key));
         assert!(!raw.contains("push-token"));
-        assert!(!raw.contains(&"2".repeat(64)));
 
         let reopened = EncryptedJsonFileStore::open(&path, key).unwrap();
         let loaded = reopened.get("fast-receive-0").unwrap().unwrap();
@@ -825,13 +659,6 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert!(matches[0].id.starts_with("evt_"));
         assert!(!matches[0].id.contains(&"1".repeat(64)));
-        assert_eq!(
-            reopened
-                .get_key_image_statuses("fast-receive-0", &["2".repeat(64)])
-                .unwrap()[0]
-                .status,
-            SpentStatus::Unspent
-        );
     }
 
     #[test]
@@ -990,28 +817,7 @@ mod tests {
         assert_eq!(stored.created_at_ms, 2);
         assert_eq!(store.list_matches("fast-receive-0").unwrap().len(), 1);
 
-        store
-            .upsert_key_image_status(KeyImageStatusRecord {
-                identity_id: "fast-receive-0".to_owned(),
-                key_image: "2".repeat(64),
-                status: SpentStatus::Spent,
-                checked_height: 100,
-                updated_at_ms: 11,
-            })
-            .unwrap();
-        assert_eq!(
-            store
-                .get_key_image_statuses("fast-receive-0", &["2".repeat(64)])
-                .unwrap()[0]
-                .status,
-            SpentStatus::Spent
-        );
-
         store.remove("fast-receive-0").unwrap();
         assert!(store.list_matches("fast-receive-0").unwrap().is_empty());
-        assert!(store
-            .get_key_image_statuses("fast-receive-0", &["2".repeat(64)])
-            .unwrap()
-            .is_empty());
     }
 }

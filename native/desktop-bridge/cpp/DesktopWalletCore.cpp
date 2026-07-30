@@ -1,4 +1,6 @@
 #include "DesktopWalletCore.h"
+#include "FastWalletProtocolBridge.h"
+#include "fast_wallet_protocol.h"
 
 #if defined(__APPLE__)
 #include "DesktopLedgerBle.h"
@@ -6,11 +8,14 @@
 #include "WalletEngine.h"
 
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <iomanip>
 #include <new>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 extern "C" int tex8_desktop_wallet_core_linked_with_monero() noexcept {
   try {
@@ -38,11 +43,67 @@ Tex8DesktopResult success(const std::string& value) noexcept {
   return Tex8DesktopResult{1, copyString(value), nullptr};
 }
 
+void secureClear(char* value) noexcept {
+  if (value == nullptr) return;
+  const size_t length = std::strlen(value);
+  volatile char* cursor = value;
+  for (size_t index = 0; index < length; ++index) cursor[index] = '\0';
+}
+
+void secureClear(std::string& value) noexcept {
+  volatile char* cursor = value.empty() ? nullptr : value.data();
+  for (size_t index = 0; index < value.size(); ++index) cursor[index] = '\0';
+  value.clear();
+}
+
+Tex8DesktopResult successSecret(std::string value) noexcept {
+  Tex8DesktopResult result{1, copyString(value), nullptr};
+  secureClear(value);
+  return result;
+}
+
 Tex8DesktopResult failure(const char* message) noexcept {
   return Tex8DesktopResult{0, nullptr, copyString(message)};
 }
 
 const char* input(const char* value) { return value == nullptr ? "" : value; }
+
+std::vector<unsigned char> decodeHex(
+    const std::string& value, size_t minimum, size_t maximum) {
+  if (value.size() % 2 != 0 || value.size() / 2 < minimum ||
+      value.size() / 2 > maximum) {
+    throw std::runtime_error("native protocol hexadecimal input has the wrong length");
+  }
+  std::vector<unsigned char> decoded(value.size() / 2);
+  for (size_t index = 0; index < decoded.size(); ++index) {
+    const auto digit = [](char character) -> unsigned char {
+      if (character >= '0' && character <= '9') return character - '0';
+      if (character >= 'a' && character <= 'f') return character - 'a' + 10;
+      throw std::runtime_error("native protocol hexadecimal input is noncanonical");
+    };
+    decoded[index] = static_cast<unsigned char>(
+        (digit(value[index * 2]) << 4) | digit(value[index * 2 + 1]));
+  }
+  return decoded;
+}
+
+std::string encodeHex(const unsigned char* value, size_t length) {
+  static constexpr char alphabet[] = "0123456789abcdef";
+  std::string encoded(length * 2, '0');
+  for (size_t index = 0; index < length; ++index) {
+    encoded[index * 2] = alphabet[value[index] >> 4];
+    encoded[index * 2 + 1] = alphabet[value[index] & 0x0f];
+  }
+  return encoded;
+}
+
+struct SecretStringGuard {
+  std::string& value;
+  ~SecretStringGuard() {
+    std::fill(value.begin(), value.end(), '\0');
+    value.clear();
+  }
+};
 
 const char* networkName(tex8::wallet::NetworkType network) {
   switch (network) {
@@ -148,6 +209,21 @@ std::string preparedTransactionJson(
   return output.str();
 }
 
+std::string mfwPreparedTransactionJson(
+    const tex8::wallet::PreparedTransaction& transaction,
+    const std::string& ownerPublicKeyHex,
+    const std::string& ownerPrivateKeyHex = "",
+    const std::string& commitSaltHex = "") {
+  // These values are canonical lowercase hexadecimal strings produced by the
+  // protocol bridge. Build the one secret-bearing response without a stream
+  // buffer so invokeSecret can wipe the only temporary string after copying.
+  return "{\"ownerPublicKeyHex\":\"" + ownerPublicKeyHex +
+         "\",\"ownerPrivateKeyHex\":\"" + ownerPrivateKeyHex +
+         "\",\"commitSaltHex\":\"" + commitSaltHex +
+         "\",\"preparedTransaction\":" +
+         preparedTransactionJson(transaction) + '}';
+}
+
 std::string hardwareStatusJson(
     const tex8::wallet::HardwareWalletStatus& status) {
   std::ostringstream output;
@@ -237,6 +313,18 @@ Tex8DesktopResult invoke(Tex8DesktopWalletCore* core, Callback callback) noexcep
   }
 }
 
+template <typename Callback>
+Tex8DesktopResult invokeSecret(Tex8DesktopWalletCore* core, Callback callback) noexcept {
+  if (core == nullptr) return failure("Native wallet core is unavailable");
+  try {
+    return successSecret(callback());
+  } catch (const tex8::wallet::WalletEngineError& error) {
+    return failure(error.what());
+  } catch (...) {
+    return failure("Native wallet operation failed");
+  }
+}
+
 }  // namespace
 
 extern "C" Tex8DesktopWalletCore* tex8_desktop_wallet_core_new() noexcept {
@@ -249,6 +337,8 @@ extern "C" void tex8_desktop_wallet_core_free(Tex8DesktopWalletCore* core) noexc
 
 extern "C" void tex8_desktop_result_free(Tex8DesktopResult* result) noexcept {
   if (result == nullptr) return;
+  secureClear(result->value);
+  secureClear(result->error);
   std::free(result->value);
   std::free(result->error);
   result->value = nullptr;
@@ -377,6 +467,15 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_get_address(
   return invoke(core, [&] { return core->engine.getAddress(input(wallet_id), account_index, address_index); });
 }
 
+extern "C" Tex8DesktopResult tex8_desktop_wallet_validate_recipient_address(
+    Tex8DesktopWalletCore* core, const char* address,
+    unsigned char network) noexcept {
+  return invoke(core, [&] {
+    return core->engine.validateRecipientAddress(
+        input(address), networkFrom(network));
+  });
+}
+
 extern "C" Tex8DesktopResult tex8_desktop_wallet_get_seed(
     Tex8DesktopWalletCore* core, const char* wallet_id,
     const char* seed_offset) noexcept {
@@ -443,6 +542,39 @@ tex8_desktop_wallet_fast_receive_registration_payload(
   });
 }
 
+extern "C" Tex8DesktopResult tex8_desktop_wallet_seal_fast_receive_watch(
+    Tex8DesktopWalletCore* core, const char* identity_id, const char* path,
+    const char* password, unsigned char network,
+    unsigned long long restore_height, const char* worker_descriptor_hex,
+    const char* assignment_handle_hex, unsigned long long assignment_epoch,
+    unsigned long long issued_at, unsigned long long expires_at,
+    unsigned long long now) noexcept {
+  return invoke(core, [&] {
+    auto payload = core->engine.fastReceiveRegistrationPayload(
+        input(identity_id), input(path), input(password), networkFrom(network),
+        restore_height);
+    SecretStringGuard privateViewKeyGuard{payload.privateViewKey};
+    auto descriptor = decodeHex(input(worker_descriptor_hex), 1, 4096);
+    auto handle = decodeHex(input(assignment_handle_hex), 32, 32);
+    auto privateViewKey = decodeHex(payload.privateViewKey, 32, 32);
+    std::vector<unsigned char> output(
+        TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE);
+    const auto status = tex8_fast_wallet_protocol_seal_watch_v1(
+        descriptor.data(), descriptor.size(), network, handle.data(),
+        assignment_epoch, issued_at, expires_at, now,
+        reinterpret_cast<const unsigned char*>(payload.identity.address.data()),
+        payload.identity.address.size(), privateViewKey.data(), restore_height,
+        output.data(), output.size());
+    std::fill(privateViewKey.begin(), privateViewKey.end(), 0);
+    if (status != TEX8_FAST_WALLET_PROTOCOL_OK) {
+      throw std::runtime_error("native Fast Wallet watch encryption failed");
+    }
+    const auto encoded = encodeHex(output.data(), output.size());
+    std::fill(output.begin(), output.end(), 0);
+    return encoded;
+  });
+}
+
 extern "C" Tex8DesktopResult tex8_desktop_wallet_get_transactions(
     Tex8DesktopWalletCore* core, const char* wallet_id, unsigned int limit) noexcept {
   return invoke(core, [&] {
@@ -469,6 +601,105 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_transaction(
     request.priority = input(priority); request.accountIndex = account_index;
     const auto prepared = core->engine.prepareTransaction(request);
     return preparedTransactionJson(prepared);
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_registration(
+    Tex8DesktopWalletCore* core, const char* wallet_id, const char* name,
+    const char* address, unsigned char network, const char* registry_address,
+    const char* priority, unsigned int account_index) noexcept {
+  return invokeSecret(core, [&] {
+    auto material = tex8::wallet::fast_wallet_protocol_bridge::
+        generateMfwNameRegistrationMaterial(
+            core->engine, input(name), input(address), networkFrom(network));
+    SecretStringGuard ownerPrivateKeyGuard{material.ownerPrivateKeyHex};
+    SecretStringGuard commitSaltGuard{material.commitSaltHex};
+    tex8::wallet::PrepareTransactionRequest request;
+    request.walletId = input(wallet_id);
+    request.address = input(registry_address);
+    request.amountAtomic = "1";
+    request.priority = input(priority);
+    request.accountIndex = account_index;
+    request.mfwNameExtraNonce = material.commitExtraNonce;
+    const auto prepared = core->engine.prepareTransaction(request);
+    std::fill(
+        material.commitExtraNonce.begin(),
+        material.commitExtraNonce.end(),
+        0);
+    return mfwPreparedTransactionJson(
+        prepared, material.ownerPublicKeyHex, material.ownerPrivateKeyHex,
+        material.commitSaltHex);
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_claim(
+    Tex8DesktopWalletCore* core, const char* wallet_id, const char* name,
+    const char* address, unsigned char network, const char* registry_address,
+    unsigned int years, const char* priority, unsigned int account_index,
+    const char* owner_private_key_hex, const char* commit_salt_hex) noexcept {
+  return invoke(core, [&] {
+    if (years < 1 || years > 10) {
+      throw std::runtime_error("MFW name term must be between 1 and 10 years");
+    }
+    auto record = tex8::wallet::fast_wallet_protocol_bridge::
+        prepareMfwNameClaimRecord(
+            core->engine, input(name), input(address), networkFrom(network),
+            input(owner_private_key_hex), input(commit_salt_hex));
+    tex8::wallet::PrepareTransactionRequest request;
+    request.walletId = input(wallet_id);
+    request.address = input(registry_address);
+    request.amountAtomic =
+        std::to_string(10000000000ULL * static_cast<uint64_t>(years));
+    request.priority = input(priority);
+    request.accountIndex = account_index;
+    request.mfwNameExtraNonce = record.extraNonce;
+    const auto prepared = core->engine.prepareTransaction(request);
+    std::fill(record.extraNonce.begin(), record.extraNonce.end(), 0);
+    return mfwPreparedTransactionJson(prepared, record.ownerPublicKeyHex);
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_transition(
+    Tex8DesktopWalletCore* core, const char* wallet_id, const char* operation,
+    const char* name, const char* address, unsigned char network,
+    const char* registry_address, unsigned int years, const char* priority,
+    unsigned int account_index, const char* owner_private_key_hex,
+    const char* predecessor_record_hex,
+    const char* predecessor_signing_owner_public_key_hex) noexcept {
+  return invoke(core, [&] {
+    if (years < 1 || years > 10) {
+      throw std::runtime_error("MFW name term must be between 1 and 10 years");
+    }
+    const std::string operationValue = input(operation);
+    const unsigned char operationCode =
+        operationValue == "update" ? 3
+        : operationValue == "renew" ? 4
+        : operationValue == "revoke" ? 5
+                                     : 0;
+    if (operationCode == 0) {
+      throw std::runtime_error("MFW name transition operation is invalid");
+    }
+    auto record = tex8::wallet::fast_wallet_protocol_bridge::
+        prepareMfwNameTransitionRecord(
+            core->engine, operationCode, input(name), input(address),
+            networkFrom(network), input(owner_private_key_hex),
+            input(predecessor_record_hex),
+            input(predecessor_signing_owner_public_key_hex));
+    tex8::wallet::PrepareTransactionRequest request;
+    request.walletId = input(wallet_id);
+    request.address =
+        operationCode == 4 ? input(registry_address) : input(address);
+    request.amountAtomic =
+        operationCode == 4
+            ? std::to_string(
+                  10000000000ULL * static_cast<uint64_t>(years))
+            : "1";
+    request.priority = input(priority);
+    request.accountIndex = account_index;
+    request.mfwNameExtraNonce = record.extraNonce;
+    const auto prepared = core->engine.prepareTransaction(request);
+    std::fill(record.extraNonce.begin(), record.extraNonce.end(), 0);
+    return mfwPreparedTransactionJson(prepared, "");
   });
 }
 

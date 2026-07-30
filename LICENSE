@@ -1,0 +1,37 @@
+Monero Fast Wallet is a multi-license repository.
+
+Copyright (c) 2026 TEX8 LLP and contributors.
+
+Project-authored source is licensed by directory as follows:
+
+* `apps/` and `packages/`: Mozilla Public License 2.0 (`MPL-2.0`).
+* `services/`: GNU Affero General Public License version 3 only
+  (`AGPL-3.0-only`).
+* Project-authored protocol, format, bridge, configuration, script, tool, and
+  documentation files outside those directories: your choice of the Apache
+  License 2.0 or the MIT License (`Apache-2.0 OR MIT`), unless a closer notice
+  says otherwise.
+
+The following source keeps its upstream license and is not relicensed by the
+grant above:
+
+* `node/cuprate/`: Cuprate's upstream license map, including
+  `node/cuprate/LICENSE`, `node/cuprate/LICENSE-AGPL`, and
+  `node/cuprate/LICENSE-MIT`.
+* Monero source, generated link artifacts, and patches that are derivative of
+  Monero source: Monero's upstream BSD-3-Clause license and retained notices.
+* `third_party/`, vendored dependencies, generated dependency code, test
+  vectors copied from standards or upstream projects, and files carrying
+  their own copyright/license notice: the license stated by that component.
+
+The full project license texts and the machine-reviewable boundary map are in
+`LICENSES/`. Third-party components are listed in `THIRD_PARTY_NOTICES.md` and
+must also be represented in each release artifact's generated SBOM and license
+report.
+
+No trademark rights are granted. “TEX8” and “Monero Fast Wallet” names and
+logos may be subject to separate trademark rules. This does not limit the
+rights granted to the software source under the licenses above.
+
+If a file-specific SPDX identifier or retained upstream notice conflicts with
+this root map, the more specific file/component notice controls.

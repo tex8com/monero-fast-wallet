@@ -1,5 +1,5 @@
 use crate::{
-    model::{Network, SpentStatus, WatchRegistration},
+    model::{Network, WatchRegistration},
     scanner::{
         BlockSource, MatchedOutputCandidate, MempoolOutputMatcher, MempoolSource, OutputMatcher,
         ScannedBlock, ScannedMempoolTx, ScannedOutput,
@@ -8,10 +8,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use cuprate_rpc_types::bin::GetBlocksResponse;
-use cuprate_types::{
-    rpc::{BlockOutputIndices, KeyImageSpentStatus},
-    BlockCompleteEntry, TransactionBlobs,
-};
+use cuprate_types::{rpc::BlockOutputIndices, BlockCompleteEntry, TransactionBlobs};
 use curve25519_dalek::{constants::ED25519_BASEPOINT_TABLE, edwards::EdwardsPoint, Scalar};
 use monero_address::{MoneroAddress, Network as MoneroAddressNetwork};
 use monero_oxide::{
@@ -21,7 +18,7 @@ use monero_oxide::{
 use monero_rpc::ScannableBlock;
 use monero_wallet::{Scanner, ViewPair};
 use serde::Deserialize;
-use std::{fmt, time::Duration};
+use std::time::Duration;
 use tonic::transport::Endpoint;
 use zeroize::Zeroizing;
 
@@ -34,7 +31,6 @@ use grpc::{block_stream_client::BlockStreamClient, StreamBlocksRequest};
 const DEFAULT_GRPC_CHUNK_BLOCKS: u32 = 200;
 const MAX_GRPC_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_MEMPOOL_TIMEOUT_SECS: u64 = 10;
-const DEFAULT_KEY_IMAGE_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_HTTP_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,6 +137,17 @@ impl BlockSource for CuprateGrpcBlockSource {
             self.chunk_blocks_hint,
         ))
     }
+
+    fn canonical_block_hash(&mut self, network: Network, height: u64) -> Result<Option<String>> {
+        if height == 0 {
+            return Ok(None);
+        }
+        Ok(self
+            .next_blocks(network, height - 1, 1)?
+            .into_iter()
+            .find(|block| block.height == height)
+            .map(|block| block.hash))
+    }
 }
 
 pub struct CuprateHttpMempoolSource {
@@ -171,99 +178,6 @@ impl CuprateHttpMempoolSource {
 impl MempoolSource for CuprateHttpMempoolSource {
     fn current_transactions(&mut self, _network: Network) -> Result<Vec<ScannedMempoolTx>> {
         self.fetch_current_transactions()
-    }
-}
-
-#[derive(Clone, Eq, PartialEq)]
-pub struct CheckedKeyImageStatus {
-    pub key_image: String,
-    pub status: SpentStatus,
-    pub checked_height: u64,
-}
-
-impl fmt::Debug for CheckedKeyImageStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CheckedKeyImageStatus")
-            .field("key_image", &"<redacted>")
-            .field("status", &self.status)
-            .field("checked_height", &self.checked_height)
-            .finish()
-    }
-}
-
-pub trait KeyImageStatusSource: Send + Sync {
-    fn check_key_images(&self, key_images: &[String]) -> Result<Vec<CheckedKeyImageStatus>>;
-}
-
-pub struct CuprateHttpKeyImageStatusSource {
-    endpoint: String,
-    agent: ureq::Agent,
-}
-
-impl CuprateHttpKeyImageStatusSource {
-    pub fn new(endpoint: impl Into<String>) -> Result<Self> {
-        Self::new_with_timeout(
-            endpoint,
-            Duration::from_secs(DEFAULT_KEY_IMAGE_TIMEOUT_SECS),
-        )
-    }
-
-    pub fn new_with_timeout(endpoint: impl Into<String>, timeout: Duration) -> Result<Self> {
-        Ok(Self {
-            endpoint: normalize_http_endpoint(&endpoint.into())?,
-            agent: ureq::AgentBuilder::new().timeout(timeout).build(),
-        })
-    }
-
-    fn fetch_key_image_statuses(
-        &self,
-        key_images: &[String],
-    ) -> Result<Vec<CheckedKeyImageStatus>> {
-        for key_image in key_images {
-            decode_hex_32("key_image", key_image)?;
-        }
-
-        let checked_height = self.fetch_current_height()?;
-        let body = self.post_json(
-            "/is_key_image_spent",
-            &serde_json::json!({ "key_images": key_images }),
-        )?;
-        decode_key_image_spent_response(key_images, &body, checked_height)
-    }
-
-    fn fetch_current_height(&self) -> Result<u64> {
-        match self.post_json("/get_info", &serde_json::json!({})) {
-            Ok(body) => decode_get_info_height(&body),
-            Err(direct_error) => {
-                let body = self
-                    .post_json(
-                        "/json_rpc",
-                        &serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": "0",
-                            "method": "get_info"
-                        }),
-                    )
-                    .with_context(|| {
-                        format!(
-                            "failed to fetch Cuprate height via /get_info ({direct_error:#}) or /json_rpc"
-                        )
-                    })?;
-                decode_get_info_height(&body)
-            }
-        }
-    }
-
-    fn post_json(&self, path: &str, body: &serde_json::Value) -> Result<String> {
-        let url = format!("{}{}", self.endpoint, path);
-        post_json_with_retries(&self.agent, &url, &body.to_string())
-            .with_context(|| format!("failed to call Cuprate endpoint {url}"))
-    }
-}
-
-impl KeyImageStatusSource for CuprateHttpKeyImageStatusSource {
-    fn check_key_images(&self, key_images: &[String]) -> Result<Vec<CheckedKeyImageStatus>> {
-        self.fetch_key_image_statuses(key_images)
     }
 }
 
@@ -440,66 +354,6 @@ fn post_json_with_retries(agent: &ureq::Agent, url: &str, body: &str) -> Result<
     Err(last_error.unwrap_or_else(|| anyhow!("request failed without an error")))
 }
 
-pub fn decode_key_image_spent_response(
-    key_images: &[String],
-    body: &str,
-    checked_height: u64,
-) -> Result<Vec<CheckedKeyImageStatus>> {
-    let response: KeyImageSpentResponse =
-        serde_json::from_str(body).context("failed to parse Cuprate key-image JSON")?;
-    ensure_ok_status("/is_key_image_spent", response.status.as_deref())?;
-    if response.spent_status.len() != key_images.len() {
-        bail!(
-            "Cuprate key-image response length mismatch: expected {} got {}",
-            key_images.len(),
-            response.spent_status.len()
-        );
-    }
-
-    key_images
-        .iter()
-        .zip(response.spent_status)
-        .map(|(key_image, status)| {
-            Ok(CheckedKeyImageStatus {
-                key_image: key_image.trim().to_lowercase(),
-                status: spent_status_from_cuprate(status)?,
-                checked_height,
-            })
-        })
-        .collect()
-}
-
-fn decode_get_info_height(body: &str) -> Result<u64> {
-    let response: GetInfoEnvelope =
-        serde_json::from_str(body).context("failed to parse Cuprate get_info JSON")?;
-    let info = match response {
-        GetInfoEnvelope::Flat(info) => info,
-        GetInfoEnvelope::JsonRpc { result } => result,
-    };
-    ensure_ok_status("/get_info", info.status.as_deref())?;
-    Ok(info.height)
-}
-
-fn spent_status_from_cuprate(status: u8) -> Result<SpentStatus> {
-    match KeyImageSpentStatus::from_u8(status)
-        .ok_or_else(|| anyhow!("unknown Cuprate key-image spent status {status}"))?
-    {
-        KeyImageSpentStatus::Unspent => Ok(SpentStatus::Unspent),
-        KeyImageSpentStatus::SpentInBlockchain | KeyImageSpentStatus::SpentInPool => {
-            Ok(SpentStatus::Spent)
-        }
-    }
-}
-
-fn ensure_ok_status(endpoint: &str, status: Option<&str>) -> Result<()> {
-    if let Some(status) = status {
-        if !status.eq_ignore_ascii_case("OK") {
-            bail!("Cuprate {endpoint} returned status {status}");
-        }
-    }
-    Ok(())
-}
-
 #[derive(Debug, Deserialize)]
 struct TxPoolResponse {
     #[serde(default)]
@@ -511,27 +365,6 @@ struct TxPoolTransaction {
     id_hash: String,
     receive_time: u64,
     tx_blob: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct KeyImageSpentResponse {
-    spent_status: Vec<u8>,
-    #[serde(default)]
-    status: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum GetInfoEnvelope {
-    Flat(GetInfoResponse),
-    JsonRpc { result: GetInfoResponse },
-}
-
-#[derive(Debug, Deserialize)]
-struct GetInfoResponse {
-    height: u64,
-    #[serde(default)]
-    status: Option<String>,
 }
 
 fn decode_block_entry(
@@ -851,9 +684,11 @@ mod tests {
             restore_height: 1,
             push_token: None,
             device_id: None,
+            worker_assignment_epoch: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             last_scanned_height: 0,
+            last_scanned_hash: None,
         }
     }
 
@@ -914,65 +749,6 @@ mod tests {
         .unwrap();
 
         assert!(txs.is_empty());
-    }
-
-    #[test]
-    fn decodes_key_image_spent_response() {
-        let key_images = vec!["11".repeat(32), "22".repeat(32), "33".repeat(32)];
-        let statuses = decode_key_image_spent_response(
-            &key_images,
-            r#"{
-                "spent_status": [0, 1, 2],
-                "status": "OK",
-                "untrusted": false
-            }"#,
-            12345,
-        )
-        .unwrap();
-
-        assert_eq!(statuses.len(), 3);
-        assert_eq!(statuses[0].status, SpentStatus::Unspent);
-        assert_eq!(statuses[1].status, SpentStatus::Spent);
-        assert_eq!(statuses[2].status, SpentStatus::Spent);
-        assert!(statuses.iter().all(|status| status.checked_height == 12345));
-    }
-
-    #[test]
-    fn rejects_key_image_spent_response_length_mismatch() {
-        let key_images = vec!["11".repeat(32), "22".repeat(32)];
-        let error = decode_key_image_spent_response(
-            &key_images,
-            r#"{
-                "spent_status": [0],
-                "status": "OK"
-            }"#,
-            12345,
-        )
-        .unwrap_err();
-
-        assert!(error.to_string().contains("response length mismatch"));
-    }
-
-    #[test]
-    fn decodes_get_info_height_from_direct_and_json_rpc_shapes() {
-        assert_eq!(
-            decode_get_info_height(r#"{"height": 321, "status": "OK"}"#).unwrap(),
-            321
-        );
-        assert_eq!(
-            decode_get_info_height(
-                r#"{
-                    "jsonrpc": "2.0",
-                    "id": "0",
-                    "result": {
-                        "height": 654,
-                        "status": "OK"
-                    }
-                }"#
-            )
-            .unwrap(),
-            654
-        );
     }
 
     #[test]
@@ -1057,21 +833,5 @@ mod tests {
 
         assert!(txs.iter().all(|tx| tx.tx_id.len() == 64));
         assert!(txs.iter().all(|tx| tx.scannable_block.is_some()));
-    }
-
-    #[test]
-    #[ignore = "requires live Cuprate RPC endpoint"]
-    fn live_cuprate_key_image_status_source_checks_unknown_key() {
-        let endpoint = env::var("NOTIFY_SCANNER_TEST_RPC_ENDPOINT")
-            .unwrap_or_else(|_| "xmr.tex8.com:18089".to_owned());
-        let source = CuprateHttpKeyImageStatusSource::new(endpoint).unwrap();
-        let key_images = vec!["11".repeat(32)];
-
-        let statuses = source.check_key_images(&key_images).unwrap();
-
-        assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0].key_image, key_images[0]);
-        assert_eq!(statuses[0].status, SpentStatus::Unspent);
-        assert!(statuses[0].checked_height > 0);
     }
 }

@@ -162,6 +162,11 @@ struct PrepareTransactionRequest {
   std::string address;
   std::string amountAtomic;
   std::string paymentId;
+  // Purpose-bound MFW name nonce. The native bridge validates the MFW marker,
+  // version, operation and canonical size before the patched Monero Core
+  // writes the standard tx_extra nonce tag and length. It is intentionally
+  // not part of the React Native/Tauri public request contract.
+  std::vector<uint8_t> mfwNameExtraNonce;
   std::string priority{"low"};
   uint32_t accountIndex{0};
   uint32_t mixinCount{0};

@@ -1,0 +1,24 @@
+diff --git a/src/crypto/randomx/jit_compiler_x86.cpp b/src/crypto/randomx/jit_compiler_x86.cpp
+--- a/src/crypto/randomx/jit_compiler_x86.cpp
++++ b/src/crypto/randomx/jit_compiler_x86.cpp
+@@ -47,6 +47,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #define XMRIG_FORCE_JIT_32B_BRANCH_ALIGNMENT 0
+ #endif
+ 
++#ifndef XMRIG_JIT_CODE_OFFSET_CACHE_LINES
++#define XMRIG_JIT_CODE_OFFSET_CACHE_LINES 59
++#endif
++
+ #ifdef XMRIG_FIX_RYZEN
+ #   include "crypto/rx/RxFix.h"
+ #endif
+@@ -233,7 +237,7 @@ namespace randomx {
+ 	static FORCE_INLINE uint32_t rotl32(uint32_t a, int shift) { return (a << shift) | (a >> (-shift & 31)); }
+ #	endif
+ 
+ 	static std::atomic<size_t> codeOffset;
+-	constexpr size_t codeOffsetIncrement = 59 * 64;
++	constexpr size_t codeOffsetIncrement = XMRIG_JIT_CODE_OFFSET_CACHE_LINES * 64;
+ 
+ 	JitCompilerX86::JitCompilerX86(bool hugePagesEnable, bool optimizedInitDatasetEnable) {
+ 		BranchesWithin32B = xmrig::Cpu::info()->jccErratum() || XMRIG_FORCE_JIT_32B_BRANCH_ALIGNMENT;

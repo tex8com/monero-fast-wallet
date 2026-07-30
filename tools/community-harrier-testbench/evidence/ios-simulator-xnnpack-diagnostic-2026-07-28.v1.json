@@ -1,0 +1,38 @@
+{
+  "capturedAt": "2026-07-28T14:36:30-05:00",
+  "conformanceThreshold": 0.98,
+  "host": {
+    "architecture": "arm64",
+    "chip": "Apple M4",
+    "macOS": "26.5.2",
+    "xcode": "26.6"
+  },
+  "privacy": {
+    "embeddingsLogged": false,
+    "preparedTextLogged": false
+  },
+  "releaseEvidence": false,
+  "runs": [
+    {
+      "averageInferenceMs": 69.148,
+      "cases": 36,
+      "loadMs": 1024.978,
+      "minimumCosine": 0.9974012177847951,
+      "pteBytes": 270419584,
+      "pteSha256": "237b9297d51ec3904042d06de340755365483da0be0054fa05b9d17468274d02",
+      "status": "accepted",
+      "target": "xnnpack-a8w8",
+      "totalMs": 3550.727
+    }
+  ],
+  "runtime": {
+    "backend": "xnnpack",
+    "executorch": "1.3.1"
+  },
+  "schemaVersion": 1,
+  "simulator": {
+    "device": "iPhone 17 Pro",
+    "iOS": "26.5",
+    "minimumLinkedIOS": "17.0"
+  }
+}

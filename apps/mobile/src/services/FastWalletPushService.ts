@@ -2,28 +2,22 @@ import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import { checkNotifications, RESULTS } from 'react-native-permissions';
 
 import {
+  deleteProtectedMetadata,
   loadProtectedMetadata,
   storeProtectedMetadata,
 } from './ProtectedMetadataStorage';
 import { logWalletEvent } from './WalletLogger';
+import { requireNativeMoneroWallet } from './NativeMoneroWallet';
+import { withSystemUiInterruption } from './SystemUiInterruption';
 
 declare const require: (moduleName: string) => any;
 
-const PUSH_REGISTRATION_URL =
-  'https://api.tex8.com/api/v1/public/mobile/push-tokens/register';
-const TENANT_ID = 'monero-wallet';
-const SHOP_ID = 'monero-wallet';
-const APP_ID = 'monero-wallet';
-const BUNDLE_ID = 'com.tex8.monerowallet';
-const EVENT_CONTRACT = 'monero-fast-wallet-push.v2';
+const EVENT_CONTRACT = 'monero-fast-wallet-push.v3';
 const EVENT_TYPE = 'monero.fast_wallet.incoming';
 const SUBSCRIPTION_ID_KEY = 'monero-fast-wallet.push.subscription-id.v1';
 const LAST_EVENT_KEY = 'monero-fast-wallet.push.last-event.v2';
 const LAST_EVENT_ID_KEY = 'monero-fast-wallet.push.last-event-id.v2';
-// The scanner historically emits a SHA-256 based `sig_` identifier while the
-// gateway emits `fwpush_`. Both are opaque identifiers only, never wallet data.
-const OPAQUE_EVENT_ID =
-  /^(?:fwpush_[0-9a-f]{32}|sig_[0-9a-f]{64}|evt_[0-9a-f]{64})$/;
+const OPAQUE_EVENT_ID = /^evt_[0-9a-f]{64}$/;
 const FORBIDDEN_EVENT_FIELDS = [
   'address',
   'amountAtomic',
@@ -56,7 +50,7 @@ const listeners = new Set<(event: FastWalletPushEvent) => void>();
 
 export interface FastWalletPushEvent {
   type: 'monero.fast_wallet.incoming';
-  contractVersion: 'monero-fast-wallet-push.v2';
+  contractVersion: 'monero-fast-wallet-push.v3';
   eventId: string;
 }
 
@@ -64,6 +58,12 @@ export interface FastWalletPushRegistration {
   permissionStatus: string;
   provider: 'fcm';
   subscriptionId: string;
+}
+
+export interface MobilePushProviderToken {
+  permissionStatus: string;
+  provider: 'fcm';
+  token: string;
 }
 
 export type NotificationAuthorizationStatus =
@@ -106,21 +106,6 @@ function messagingInstance(): any | undefined {
   }
 }
 
-function createSubscriptionId(): string {
-  const random = Math.random().toString(36).slice(2, 14);
-  return `mwp_${Platform.OS}_${Date.now().toString(36)}_${random}`;
-}
-
-async function getOrCreateSubscriptionId(): Promise<string> {
-  const current = await loadProtectedMetadata(SUBSCRIPTION_ID_KEY);
-  if (current?.trim()) {
-    return current.trim();
-  }
-  const subscriptionId = createSubscriptionId();
-  await storeProtectedMetadata(SUBSCRIPTION_ID_KEY, subscriptionId);
-  return subscriptionId;
-}
-
 async function getStoredSubscriptionId(): Promise<string | undefined> {
   const value = await loadProtectedMetadata(SUBSCRIPTION_ID_KEY);
   return value?.trim() || undefined;
@@ -148,8 +133,12 @@ function permissionName(value: unknown): string {
 
 async function requestPermission(instance: any): Promise<string> {
   if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
-    const result = await PermissionsAndroid.request(
-      PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+    const result = await withSystemUiInterruption(
+      'notification-permission',
+      () =>
+        PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
+        ),
     );
     if (result !== PermissionsAndroid.RESULTS.GRANTED) {
       throw new Error('Push permission was not granted');
@@ -161,65 +150,73 @@ async function requestPermission(instance: any): Promise<string> {
   if (typeof instance.requestPermission !== 'function') {
     return Platform.OS === 'android' ? 'authorized' : 'unknown';
   }
-  const status = permissionName(await instance.requestPermission());
+  const status = permissionName(
+    await withSystemUiInterruption(
+      'notification-permission',
+      () => instance.requestPermission(),
+    ),
+  );
   if (status === 'denied' || status === 'not_determined') {
     throw new Error('Push permission was not granted');
   }
   return status;
 }
 
-function currentLocale(): string | undefined {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().locale || undefined;
-  } catch {
-    return undefined;
+let appCheckInstancePromise: Promise<any> | undefined;
+
+async function appIntegrityToken(): Promise<string> {
+  if (!appCheckInstancePromise) {
+    appCheckInstancePromise = (async () => {
+      const module = require('@react-native-firebase/app-check');
+      const Provider = module.ReactNativeFirebaseAppCheckProvider;
+      if (
+        typeof Provider !== 'function' ||
+        typeof module.initializeAppCheck !== 'function'
+      ) {
+        throw new Error('Firebase App Check is not configured');
+      }
+      const provider = new Provider();
+      provider.configure({
+        android: {
+          provider: __DEV__ ? 'debug' : 'playIntegrity',
+        },
+        apple: {
+          provider: __DEV__
+            ? 'debug'
+            : 'appAttestWithDeviceCheckFallback',
+        },
+        isTokenAutoRefreshEnabled: false,
+      });
+      return module.initializeAppCheck(undefined, {
+        provider,
+        isTokenAutoRefreshEnabled: false,
+      });
+    })().catch(error => {
+      appCheckInstancePromise = undefined;
+      throw error;
+    });
   }
+  const module = require('@react-native-firebase/app-check');
+  const instance = await appCheckInstancePromise;
+  const result = await module.getToken(instance, true);
+  if (!result?.token || typeof result.token !== 'string') {
+    throw new Error('App integrity verification returned no token');
+  }
+  return result.token;
 }
 
-async function registerToken(
-  token: string,
-  subscriptionId: string,
-  permissionStatus: string,
-): Promise<void> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
-  const response = await fetch(PUSH_REGISTRATION_URL, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'X-App-Id': APP_ID,
-      'X-Shop-Id': SHOP_ID,
-      'X-Tenant-Id': TENANT_ID,
-    },
-    body: JSON.stringify({
-      anonymousDeviceId: subscriptionId,
-      appId: APP_ID,
-      appVersion: '0.0.1',
-      buildNumber: '1',
-      bundleId: BUNDLE_ID,
-      locale: currentLocale(),
-      permissionStatus,
-      platform: Platform.OS,
-      provider: 'fcm',
-      shopId: SHOP_ID,
-      source: 'monero-fast-wallet',
-      tenantId: TENANT_ID,
+async function registerToken(token: string): Promise<string> {
+  const appCheckToken = await appIntegrityToken();
+  const registration =
+    await requireNativeMoneroWallet().registerFastWalletProvider(
       token,
-    }),
-    signal: controller.signal,
-  }).finally(() => clearTimeout(timeout));
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok || !body.success) {
-    throw new Error(
-      body.message ||
-        body.error ||
-        `Push registration failed with HTTP ${response.status}`,
+      appCheckToken,
     );
-  }
-  if (body.subscriptionId && body.subscriptionId !== subscriptionId) {
-    throw new Error('Push service returned a mismatched subscription id');
-  }
+  await storeProtectedMetadata(
+    SUBSCRIPTION_ID_KEY,
+    registration.installationId,
+  );
+  return registration.installationId;
 }
 
 async function enableFastWalletNotifications(): Promise<FastWalletPushRegistration> {
@@ -232,13 +229,30 @@ async function enableFastWalletNotifications(): Promise<FastWalletPushRegistrati
   if (!token) {
     throw new Error('Firebase returned no push token');
   }
-  const subscriptionId = await getOrCreateSubscriptionId();
-  await registerToken(token, subscriptionId, permissionStatus);
+  const subscriptionId = await registerToken(token);
   logWalletEvent('FastWalletPush', 'registration.success', {
     permissionStatus,
     platform: Platform.OS,
   });
   return { permissionStatus, provider: 'fcm', subscriptionId };
+}
+
+/**
+ * Requests the platform notification permission and returns the current FCM
+ * token to the immediate native caller. The token is never persisted in
+ * React storage and must not be logged.
+ */
+export async function requestMobilePushProviderToken(): Promise<MobilePushProviderToken> {
+  const instance = messagingInstance();
+  if (!instance) {
+    throw new Error('Firebase Messaging is not configured');
+  }
+  const permissionStatus = await requestPermission(instance);
+  const token = await instance.getToken();
+  if (typeof token !== 'string' || token.length < 16) {
+    throw new Error('Firebase returned no push token');
+  }
+  return { permissionStatus, provider: 'fcm', token };
 }
 
 async function refreshRegistrationQuietly(token?: string): Promise<void> {
@@ -255,17 +269,21 @@ async function refreshRegistrationQuietly(token?: string): Promise<void> {
     await instance.registerDeviceForRemoteMessages?.();
     const nextToken = token || (await instance.getToken());
     if (nextToken) {
-      await registerToken(
-        nextToken,
-        subscriptionId,
-        await getNotificationAuthorizationStatus(),
-      );
+      await registerToken(nextToken);
     }
   } catch (error) {
     logWalletEvent('FastWalletPush', 'registration.refreshError', {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+async function disableFastWalletNotifications(): Promise<void> {
+  await requireNativeMoneroWallet().disableFastWalletDelivery();
+  await deleteProtectedMetadata(SUBSCRIPTION_ID_KEY);
+  const instance = messagingInstance();
+  await instance?.setAutoInitEnabled?.(false);
+  await instance?.deleteToken?.();
 }
 
 export function parseFastWalletPushEvent(
@@ -306,16 +324,11 @@ async function showAndroidForegroundNotification(
     return;
   }
 
-  // Never derive notification text from wallet data. The server owns this
-  // generic, privacy-safe wording and the opaque event id only deduplicates.
-  const title =
-    typeof message?.notification?.title === 'string'
-      ? message.notification.title
-      : 'Monero Fast Wallet';
-  const body =
-    typeof message?.notification?.body === 'string'
-      ? message.notification.body
-      : 'A private payment update is available.';
+  // Defense in depth: provider-supplied display text is ignored. Even a
+  // malformed or compromised upstream message cannot inject wallet details,
+  // links, advertising, or frightening copy into the foreground notice.
+  const title = 'Monero Fast Wallet';
+  const body = 'Open the app to check for a new payment.';
 
   try {
     await notifier.show(title, body, event.eventId);
@@ -425,6 +438,7 @@ async function getLastEvent(): Promise<FastWalletPushEvent | undefined> {
 }
 
 export const FastWalletPushService = {
+  disableFastWalletNotifications,
   enableFastWalletNotifications,
   getNotificationAuthorizationStatus,
   getLastEvent,

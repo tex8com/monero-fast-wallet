@@ -1,60 +1,50 @@
 # Monero Fast Wallet Notification Gateway
 
-This is the separate HTTPS/WebSocket gateway for opaque desktop notification delivery.
-It is intentionally independent from Community and the scanner API.
+This service is the separate delivery boundary for opaque Fast Wallet wake
+events. It never receives a wallet address, amount, transaction id, view key,
+spend key, provider-independent wallet id, or Worker watch plaintext.
 
-It accepts only a generic `incoming_transaction` signal from the local scanner
-and stores a short queue by anonymous installation capability. It rejects
-wallet addresses, amounts, transaction ids, key images, seeds, view keys,
-spend keys, arbitrary provider payload fields, and arbitrary registration
-targets.
+## V1 security contract
 
-## API contract
+- An installation has a public CSPRNG identifier and a separate 32-byte
+  authentication secret. Only its SHA-256 verifier is persisted.
+- An assignment pins one installation to one assignment handle, epoch, Worker
+  root key, Worker online signing key, HPKE key and expiry.
+- `POST /api/v1/internal/worker-wake` accepts only a fixed generic
+  `incoming_transaction` event signed by that exact Worker online key.
+- Worker authentication expires within 60 seconds and is replay-protected.
+  Replay storage is capped globally and per assignment.
+- The Worker supplies no installation id or push token. The Gateway resolves
+  the destination from its own active assignment.
+- `GET /api/v1/notifications/stream` requires both
+  `x-fast-wallet-installation-id` and
+  `x-fast-wallet-installation-auth`.
+- The stream retains an opaque event until the authenticated Windows/Linux
+  background agent acknowledges it.
 
-`POST /api/v1/internal/fast-wallet-push-events` is loopback-only in normal
-deployment and requires `x-fast-wallet-push-token`. It accepts only:
+The public router deliberately has no unauthenticated installation-registration
+endpoint. Registration must come from the separate app-integrity/provider
+adapter through `GatewayState::register_installation`; that adapter and real
+FCM/APNs activation remain release gates.
 
-```json
-{
-  "contractVersion": "monero-fast-wallet-push.v2",
-  "eventId": "sig_<64 hex characters>",
-  "tenantId": "monero-wallet",
-  "shopId": "monero-wallet",
-  "appId": "monero-wallet",
-  "subscriptionId": "anonymous-installation-capability",
-  "signal": "incoming_transaction"
-}
-```
-
-`GET /api/v1/notifications/stream` requires the anonymous capability in the
-`x-fast-wallet-installation-id` HTTPS header and is upgraded by Nginx to a
-durable `wss://` connection. Linux and Windows background agents keep this one
-outbound TLS connection open. The gateway sends a generic event, retains it,
-and removes it only after the agent acknowledges that it has shown the desktop
-notification. The agent reconnects after a network change with bounded
-backoff. There is no periodic polling and no capability is placed in a URL.
+The previous shared scanner token, caller-selected subscription id, and
+installation-ID-only WebSocket authentication were removed. A legacy v3 event
+store is migrated fail-closed: old unauthenticated queues are discarded.
 
 ## Platform delivery
 
 | Platform | Delivery path |
 | --- | --- |
-| macOS | APNs is the primary closed-app path. A user-level WebSocket fallback can be enabled separately without replacing APNs. |
-| Windows | Unprivileged user-level `monero-fast-walletd` WebSocket agent → Windows desktop notification. |
-| Linux | Unprivileged user-level `monero-fast-walletd` WebSocket agent → DBus desktop notification. |
+| macOS | APNs after the provider adapter is accepted |
+| Windows | Authenticated outbound WSS agent → Windows notification |
+| Linux | Authenticated outbound WSS agent → DBus notification |
 
-The private delivery path requires no external push-provider or Microsoft credentials.
-The notification is deliberately generic: it conveys only that the Fast Wallet
-has activity; the wallet opens and syncs locally to reveal any details.
+Every visible notification is generic. The local wallet opens and synchronizes
+to determine what actually happened.
 
-## Live deployment
+## Deployment status
 
-From the repository root on the Mac:
-
-```bash
-bash services/notification-gateway/deploy/deploy-live-from-macos.sh
-```
-
-The command asks for the existing server administrator's sudo password in the
-local terminal. It preserves the Community include, backs up the live Nginx,
-scanner and gateway configuration, verifies the public secure-stream route,
-and wires `notify-scanner` to the gateway over `127.0.0.1`.
+Live deployment is intentionally blocked until app-integrity/provider
+registration, exact assignment provisioning, signed-Worker wake integration,
+rate-limit evidence, and physical closed-app delivery pass together. The deploy
+script exits without connecting to or changing a server.

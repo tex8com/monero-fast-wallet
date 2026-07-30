@@ -110,7 +110,7 @@ export default function SyncStatusBar({
           />
           {showPercent ? (
             <Text style={[s.percent, tone === "ready" && s.percentReady]}>
-              {t("sync.percent", { percent: displayPercent })}
+              {t("sync.percent", { percent: displayPercent ?? 0 })}
             </Text>
           ) : (
             <Text style={[s.percent, s.percentMuted]}>

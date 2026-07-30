@@ -106,6 +106,18 @@ add_boost_library_args() {
   )
 }
 
+sha256_file() {
+  local path="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${path}" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${path}" | awk '{print $1}'
+  else
+    echo "Neither shasum nor sha256sum is available" >&2
+    return 1
+  fi
+}
+
 android_ndk_home="${ANDROID_NDK_HOME:-}"
 if [[ -z "${android_ndk_home}" || ! -f "${android_ndk_home}/build/cmake/android.toolchain.cmake" ]]; then
   if ! android_ndk_home="$(find_android_ndk_home)"; then
@@ -226,6 +238,25 @@ for label in "${targets[@]}"; do
   if [[ "${configure_only}" != "1" ]]; then
     echo "==> build wallet_api ${label}"
     cmake --build "${build_dir}" --target wallet_api -j "${jobs}"
+
+    # The Android bridge compiles directly against wallet2_api.h while linking
+    # WalletImpl from libwallet_api.a. A stale archive therefore still links,
+    # but shifts virtual calls to unrelated methods. Record the exact public
+    # API header only after wallet_api has built successfully. The link
+    # manifest generator and the consuming Android CMake build both verify this
+    # fingerprint before producing an APK.
+    wallet_api_header="${monero_source_dir}/src/wallet/api/wallet2_api.h"
+    wallet_api_archive="${build_dir}/lib/libwallet_api.a"
+    wallet_api_stamp="${build_dir}/.tex8-wallet-api-header.sha256"
+    if [[ ! -f "${wallet_api_header}" || ! -f "${wallet_api_archive}" ]]; then
+      echo "wallet_api build did not produce its required header/archive pair" >&2
+      exit 1
+    fi
+    wallet_api_header_sha256="$(sha256_file "${wallet_api_header}")"
+    wallet_api_stamp_tmp="${wallet_api_stamp}.tmp.$$"
+    printf '%s\n' "${wallet_api_header_sha256}" > "${wallet_api_stamp_tmp}"
+    mv "${wallet_api_stamp_tmp}" "${wallet_api_stamp}"
+    echo "Stamped wallet_api ABI ${wallet_api_header_sha256} for ${label}"
   fi
 done
 

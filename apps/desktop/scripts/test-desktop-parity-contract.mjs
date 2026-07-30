@@ -15,6 +15,8 @@ const parityDoc = readFileSync(resolve(repoRoot, 'docs', 'DESKTOP_PARITY_MATRIX.
 const tauriBuild = readFileSync(resolve(desktopRoot, 'src-tauri', 'build.rs'), 'utf8');
 const tauriCapability = readFileSync(resolve(desktopRoot, 'src-tauri', 'capabilities', 'main.json'), 'utf8');
 const secureStoreSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'secure_store.rs'), 'utf8');
+const enrollmentSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'fast_wallet_enrollment.rs'), 'utf8');
+const desktopNotificationsSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'desktop_notifications.rs'), 'utf8');
 const ledgerCorePatch = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'patches', 'monero-ledger-view-key-api.patch'), 'utf8');
 
 function rustFunction(source, name) {
@@ -29,7 +31,7 @@ test('desktop primary navigation matches the mobile bottom menu contract', () =>
   assert.ok(primaryMatch, 'primarySections() must stay explicit and reviewable');
 
   const ids = [...primaryMatch[1].matchAll(/id: '([^']+)'/g)].map((match) => match[1]);
-  assert.deepEqual(ids, ['home', 'send', 'receive', 'community', 'menu']);
+  assert.deepEqual(ids, ['home', 'send', 'receive', 'enthusiast', 'menu']);
 });
 
 test('desktop does not expose removed Modules or standalone Fast navigation', () => {
@@ -55,8 +57,23 @@ test('desktop Send keeps the same simple recipient-first flow as mobile', () => 
   assert.match(sendSource, /saveRecipientContacts/);
   assert.match(sendSource, /recentContacts\.map/);
   assert.match(sendSource, /Donation stays first/);
+  assert.match(sendSource, /validate_recipient_address/);
+  assert.match(sendSource, /validateAndUseRecipient/);
   assert.equal(/priority-choice/.test(sendSource), false, 'fee priority must not be a primary send choice');
   assert.equal(/RecentTransactions/.test(sendSource), false, 'recent activity must not distract from the send journey');
+});
+
+test('desktop MFW address derivation stays native and disabled until Mainnet parameters are frozen', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const verifySource = rustFunction(hostSource, 'verify_mfw_name_record_address');
+  assert.match(tauriBuild, /"verify_mfw_name_record_address"/);
+  assert.match(tauriCapability, /"allow-verify-mfw-name-record-address"/);
+  assert.match(verifySource, /release_features::require\(\s*"mfwNameResolution"/);
+  assert.match(
+    verifySource,
+    /tex8_mfw_verify_and_encode_name_address_v1/,
+  );
+  assert.match(verifySource, /validate_recipient_address\(&address, network\)/);
 });
 
 test('desktop Receive keeps QR and copy primary while address tools stay optional', () => {
@@ -68,11 +85,12 @@ test('desktop Receive keeps QR and copy primary while address tools stay optiona
 });
 
 test('desktop keeps the balance summary but removes the transient sync status after Core confirms completion', () => {
+  const homeSource = appSource.slice(appSource.indexOf('function Home('), appSource.indexOf('function RecentTransactions('));
   assert.match(appSource, /const showPrimaryWalletCard = Boolean\(walletId\);/);
-  assert.match(appSource, /primary-wallet-balance/);
-  assert.match(appSource, /!snapshot\?\.synchronized && <div className="primary-wallet-sync">/);
-  assert.match(appSource, /className="sync-refresh"/);
-  assert.equal(/>\{t\('common\.refresh'\)\}<\/button>/.test(appSource), false);
+  assert.match(homeSource, /primary-wallet-balance/);
+  assert.match(homeSource, /!snapshot\?\.synchronized && <div className="primary-wallet-sync">/);
+  assert.match(homeSource, /className="sync-refresh"/);
+  assert.equal(/>\{t\('common\.refresh'\)\}<\/button>/.test(homeSource), false);
 });
 
 test('desktop dashboard keeps the mobile order: chart, balance, news, then wallet actions', () => {
@@ -112,68 +130,116 @@ test('desktop Community mirrors mobile automatic coarse-location loading without
   assert.match(stylesSource, /\.community-page > header \.secondary \{ display: none; \}/);
 });
 
-test('desktop applies the selected Fast Wallet default to every new wallet type', () => {
+test('desktop keeps Fast Wallet manual, local, and independent in safe V1', () => {
   const setupSource = appSource.slice(appSource.indexOf('function Setup('), appSource.indexOf('function FastWallets('));
-  assert.match(appSource, /function ExperienceModeOnboarding/);
-  assert.match(appSource, /fastWalletPreference/);
-  assert.match(setupSource, /suggestedFastWallet/);
-  assert.match(setupSource, /setCreateFastWallet\(next !== 'open' && suggestedFastWallet\)/);
-  assert.match(setupSource, /createFast: createFastWallet/);
-  assert.match(setupSource, /mode === 'create' \|\| mode === 'restore' \|\| mode === 'ledger'/);
+  const fastSource = appSource.slice(appSource.indexOf('function FastWallets('), appSource.indexOf('function WalletFeature('));
+  assert.doesNotMatch(appSource, /function ExperienceModeOnboarding|fastWalletPreference/);
+  assert.doesNotMatch(setupSource, /suggestedFastWallet|createFastWallet/);
+  assert.match(setupSource, /const fastChoice = null/);
+  assert.match(fastSource, /create_fast_wallet/);
+  assert.match(fastSource, /restore_fast_wallet_with_native_seed/);
+  assert.match(fastSource, /present_fast_wallet_recovery_seed/);
+  assert.match(fastSource, /complete balance and history are rebuilt and verified on this device/);
   assert.match(appSource, /function isFastWalletRegistration/);
   assert.match(appSource, /fast-wallet-badge/);
-  assert.match(appSource, /FAST WALLET · LEDGER/);
+  assert.match(appSource, /wallet\.kind === 'hardware' \? `Fast Wallet ·/);
 });
 
 test('desktop makes Fast Wallet management reachable from saved wallets', () => {
   const walletsSource = appSource.slice(appSource.indexOf('function Wallets('), appSource.indexOf('function LedgerReadOnlySetup('));
   assert.match(walletsSource, /<FastWallets linked=\{linked\} sourceWalletId=\{walletId\} sourceWallet=\{activeWallet\} \/>/);
-  assert.match(walletsSource, /Receive-only Fast Wallet/);
+  assert.match(walletsSource, /Fast Wallet available locally/);
   assert.doesNotMatch(appSource, /Ledger Fast Wallet is not available yet/);
 });
 
 test('Ledger read-only setup is reachable through Tauri command permissions', () => {
-  for (const command of ['enable_ledger_read_only', 'create_ledger_read_only_from_device', 'enable_ledger_fast_wallet', 'registered_wallet_snapshots']) {
+  for (const command of ['enable_ledger_read_only', 'create_ledger_read_only_from_device', 'registered_wallet_snapshots']) {
     assert.match(tauriBuild, new RegExp(`"${command}"`));
     assert.match(tauriCapability, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
   }
 });
 
-test('Ledger Fast Wallet scanner registration uses the open account-zero session exactly once', () => {
+test('unfinished Ledger Fast Wallet fails closed before reading anything from Ledger', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
-  const ledgerFastSource = hostSource.slice(
-    hostSource.indexOf('async fn enable_ledger_fast_wallet'),
-    hostSource.indexOf('#[tauri::command]\nasync fn refresh_fast_wallet_status'),
+  const ledgerFastSource = rustFunction(hostSource, 'enable_ledger_fast_wallet');
+  assert.match(ledgerFastSource, /release_features::require\(\s*"ledgerFastWallet"/);
+  assert.match(ledgerFastSource, /disabled in the safe V1 release/);
+  assert.ok(
+    ledgerFastSource.indexOf('release_features::require') <
+      ledgerFastSource.indexOf('export_hardware_private_view_key'),
   );
-  assert.match(hostSource, /ledger\.fast-wallet-local-ready/);
-  assert.match(ledgerFastSource, /\.address\(&source_session_id, 1, 0\)/);
-  assert.match(ledgerFastSource, /export_hardware_private_view_key\(&source_session_id\)/);
-  assert.match(ledgerFastSource, /begin_ledger_view_key_export\(&app, &exports, &source\.id, "ledger-fast-scanner"\)/);
-  assert.match(hostSource, /ledger\.view-key-export-duplicate-blocked/);
-  assert.match(ledgerFastSource, /ledger\.view-key-export-received/);
-  assert.equal(/create_from_device/.test(ledgerFastSource), false);
 });
 
-test('Ledger Fast Wallet scanner approval has the same single automatic instruction dialog', () => {
+test('renderer exposes no unfinished Ledger Fast Wallet action', () => {
   const fastSource = appSource.slice(appSource.indexOf('function FastWallets('), appSource.indexOf('function WalletFeature('));
-  assert.match(fastSource, /enable_ledger_fast_wallet/);
-  assert.match(fastSource, /setLedgerViewKeyExportPending\(true\)/);
-  assert.match(fastSource, /<LedgerViewKeyExportOverlay \/>/);
-  assert.match(fastSource, /setLedgerViewKeyExportPending\(false\); setBusy\(false\);/);
+  assert.doesNotMatch(fastSource, /enable_ledger_fast_wallet|ledgerFastScanner|setLedgerViewKeyExportPending/);
 });
 
-test('desktop generates a separate scanner capability inside the native boundary', () => {
+test('legacy plaintext scanner registration fails closed before producing credentials', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
-  const registerSource = hostSource.slice(
-    hostSource.indexOf('async fn register_fast_wallet_with_scanner'),
-    hostSource.indexOf('fn notification_subscription_id'),
+  const enableSource = rustFunction(hostSource, 'enable_fast_wallet');
+  assert.match(
+    enableSource,
+    /release_features::require\(\s*"plaintextFastWalletHosting"/,
   );
-  assert.match(secureStoreSource, /fn ensure_fast_scanner_token/);
-  assert.match(secureStoreSource, /let mut entropy = \[0_u8; 32\]/);
-  assert.match(registerSource, /ensure_fast_scanner_token/);
-  assert.match(registerSource, /\.bearer_auth\(&token\)/);
-  assert.doesNotMatch(hostSource, /scanner_auth_token/);
-  assert.doesNotMatch(appSource, /scannerAuthToken|scannerToken|Scanner token/);
+  assert.ok(
+    enableSource.indexOf('release_features::require') <
+      enableSource.indexOf('register_fast_wallet_with_scanner'),
+  );
+  assert.doesNotMatch(appSource, /enable_fast_wallet|scannerAuthToken|scannerToken|Scanner token/);
+});
+
+test('desktop encrypted Worker enrollment stays native, pinned, and separately authorized', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  for (const command of [
+    'pair_private_fast_wallet_worker',
+    'enable_encrypted_fast_wallet_alerts',
+    'turn_off_fast_wallet_alerts',
+    'delete_hosted_fast_wallet_data',
+    'restore_fast_wallet_with_native_seed',
+    'present_fast_wallet_recovery_seed',
+    'wallet_open_requires_password',
+  ]) {
+    assert.match(tauriBuild, new RegExp(`"${command}"`));
+    assert.match(tauriCapability, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
+  }
+  const enableSource = rustFunction(hostSource, 'enable_encrypted_fast_wallet_alerts');
+  const pairSource = rustFunction(hostSource, 'pair_private_fast_wallet_worker');
+  assert.match(enableSource, /seed_backup_status != "verified"/);
+  assert.match(enableSource, /require_fresh_app_authorization/);
+  assert.match(enableSource, /seal_fast_receive_watch/);
+  assert.match(enableSource, /fast_wallet_enrollment::submit_watch/);
+  assert.doesNotMatch(enableSource, /private_view_key|fast_receive_registration_payload/);
+  assert.match(pairSource, /verify_private_worker_qr/);
+  assert.match(pairSource, /require_fresh_app_authorization/);
+  assert.match(enrollmentSource, /WorkerDescriptor::decode/);
+  assert.match(enrollmentSource, /compiled_official_root/);
+  assert.match(enrollmentSource, /redirect\(Policy::none\(\)\)/);
+  assert.match(enrollmentSource, /WATCH_ENVELOPE_SIZE/);
+  assert.match(secureStoreSource, /store_fast_wallet_assignment_state/);
+  assert.match(secureStoreSource, /store_fast_wallet_private_worker/);
+});
+
+test('desktop alerts use simple language and keep opt-out, hosted deletion, and local removal separate', () => {
+  const fastSource = appSource.slice(appSource.indexOf('function FastWallets('), appSource.indexOf('function WalletFeature('));
+  assert.match(fastSource, /Use recommended TEX8 scan service/);
+  assert.match(fastSource, /Use my own scan service/);
+  assert.match(fastSource, /Alerts on/);
+  assert.match(fastSource, /Setting up/);
+  assert.match(fastSource, /Needs attention/);
+  assert.match(fastSource, /Turn all alerts off/);
+  assert.match(fastSource, /Delete hosted scan data/);
+  assert.match(fastSource, /Remove empty Fast Wallet/);
+  assert.match(fastSource, /v1ReleaseFeatures\.officialWorker/);
+  assert.match(fastSource, /v1ReleaseFeatures\.privateWorkerPairing/);
+  assert.doesNotMatch(fastSource, /relayOrigin|workerRootId|assignmentEpoch|watchMessageId/);
+});
+
+test('desktop notification service origin is immutable build configuration', () => {
+  assert.match(tauriBuild, /FAST_WALLET_GATEWAY_ORIGIN/);
+  assert.match(tauriBuild, /officialWorker requires FAST_WALLET_OFFICIAL_WORKER_ROOT_ID/);
+  assert.match(desktopNotificationsSource, /option_env!\("TEX8_FAST_WALLET_GATEWAY_ORIGIN"\)/);
+  assert.doesNotMatch(desktopNotificationsSource, /std::env::var\("TEX8_NOTIFICATION_SERVICE_URL"\)/);
 });
 
 test('Ledger read-only sync consumes the Core-approved view key without reconnecting', () => {
@@ -272,6 +338,7 @@ test('every renderer-accessible wallet and privacy command fails closed behind t
     'list_fast_wallets',
     'open_fast_wallet',
     'close_fast_wallet',
+    'remove_fast_wallet',
     'create_fast_wallet',
     'enable_fast_wallet',
     'enable_ledger_fast_wallet',
@@ -283,6 +350,8 @@ test('every renderer-accessible wallet and privacy command fails closed behind t
     'start_wallet_refresh',
     'stop_wallet_refresh',
     'wallet_address',
+    'validate_recipient_address',
+    'verify_mfw_name_record_address',
     'present_recovery_seed',
     'wallet_snapshot',
     'registered_wallet_snapshots',
@@ -317,6 +386,21 @@ test('every renderer-accessible wallet and privacy command fails closed behind t
     assert.match(source, /protection: State<'_, AppProtectionState>/, `${command} must receive native protection state`);
     assert.match(source, /require_app_unlocked\(&protection\)/, `${command} must fail closed while locked`);
   }
+});
+
+test('desktop removes a Fast Wallet only after native backup, sync, and zero-balance checks', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const removalSource = rustFunction(hostSource, 'remove_fast_wallet');
+  assert.match(removalSource, /seed_backup_status != "verified"/);
+  assert.match(removalSource, /validate_fast_wallet_removal_snapshot\(&raw\)/);
+  assert.ok(
+    removalSource.indexOf('validate_fast_wallet_removal_snapshot') <
+      removalSource.indexOf('fast_wallet::remove'),
+  );
+  assert.match(appSource, /invoke<void>\('remove_fast_wallet'/);
+  assert.match(appSource, /Remove empty Fast Wallet/);
+  assert.match(tauriBuild, /"remove_fast_wallet"/);
+  assert.match(tauriCapability, /"allow-remove-fast-wallet"/);
 });
 
 test('desktop exposes no per-wallet password command or current settings control', () => {

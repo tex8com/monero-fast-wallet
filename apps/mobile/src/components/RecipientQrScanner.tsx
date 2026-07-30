@@ -20,6 +20,7 @@ import {
 } from 'react-native-permissions';
 import {useI18n} from '../i18n';
 import {extractMoneroAddressFromQr} from '../services/RecipientQrCode';
+import {withSystemUiInterruption} from '../services/SystemUiInterruption';
 import {colors, radius, spacing} from '../theme/colors';
 import {Icon} from './Icon';
 
@@ -28,7 +29,11 @@ type ScannerState = 'checking' | 'ready' | 'denied' | 'blocked' | 'unavailable' 
 type RecipientQrScannerProps = {
   visible: boolean;
   onClose: () => void;
-  onScanned: (address: string) => void;
+  onScanned: (value: string) => void;
+  parseCode?: (value: string) => string | undefined;
+  title?: string;
+  hint?: string;
+  invalidMessage?: string;
 };
 
 function deviceCameraPermission() {
@@ -41,6 +46,10 @@ export default function RecipientQrScanner({
   visible,
   onClose,
   onScanned,
+  parseCode = extractMoneroAddressFromQr,
+  title,
+  hint,
+  invalidMessage,
 }: RecipientQrScannerProps) {
   const {t} = useI18n();
   const [state, setState] = useState<ScannerState>('checking');
@@ -69,7 +78,10 @@ export default function RecipientQrScanner({
         return;
       }
 
-      const requested = await request(permission);
+      const requested = await withSystemUiInterruption(
+        'camera-permission',
+        () => request(permission),
+      );
       if (requested === RESULTS.GRANTED) {
         setState('ready');
       } else if (requested === RESULTS.BLOCKED) {
@@ -104,8 +116,8 @@ export default function RecipientQrScanner({
         return;
       }
 
-      const address = extractMoneroAddressFromQr(event.nativeEvent.codeStringValue);
-      if (!address) {
+      const parsed = parseCode(event.nativeEvent.codeStringValue);
+      if (!parsed) {
         setInvalidCode(true);
         return;
       }
@@ -113,9 +125,9 @@ export default function RecipientQrScanner({
       // Camera is unmounted by the parent immediately after this callback. The
       // ref prevents duplicate native barcode events in that small interval.
       didComplete.current = true;
-      onScanned(address);
+      onScanned(parsed);
     },
-    [onScanned],
+    [onScanned, parseCode],
   );
 
   const message =
@@ -138,8 +150,8 @@ export default function RecipientQrScanner({
       <SafeAreaView style={styles.container}>
         <View style={styles.header}>
           <View>
-            <Text style={styles.title}>{t('send.scanAddress')}</Text>
-            <Text style={styles.subtitle}>{t('send.scanHint')}</Text>
+            <Text style={styles.title}>{title ?? t('send.scanAddress')}</Text>
+            <Text style={styles.subtitle}>{hint ?? t('send.scanHint')}</Text>
           </View>
           <TouchableOpacity
             accessibilityLabel={t('action.close')}
@@ -171,7 +183,9 @@ export default function RecipientQrScanner({
             />
           ) : state === 'ready' ? (
             <View style={styles.centerState}>
-              <Text style={styles.stateText}>{t('send.scanHint')}</Text>
+              <Text style={styles.stateText}>
+                {hint ?? t('send.scanHint')}
+              </Text>
             </View>
           ) : (
             <View style={styles.centerState}>
@@ -199,12 +213,14 @@ export default function RecipientQrScanner({
           )}
           {invalidCode && state === 'ready' ? (
             <View style={styles.invalidBanner}>
-              <Text style={styles.invalidText}>{t('send.scanInvalid')}</Text>
+              <Text style={styles.invalidText}>
+                {invalidMessage ?? t('send.scanInvalid')}
+              </Text>
             </View>
           ) : null}
         </View>
 
-        <Text style={styles.footerHint}>{t('send.scanHint')}</Text>
+        <Text style={styles.footerHint}>{hint ?? t('send.scanHint')}</Text>
       </SafeAreaView>
     </Modal>
   );

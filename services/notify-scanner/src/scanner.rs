@@ -19,6 +19,13 @@ pub trait BlockSource {
         from_height_exclusive: u64,
         max_blocks: usize,
     ) -> Result<Vec<ScannedBlock>>;
+
+    /// Returns the canonical hash at an already scanned height. `None` means
+    /// the source cannot currently prove that height, so the cursor must not
+    /// advance during this run.
+    fn canonical_block_hash(&mut self, _network: Network, _height: u64) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 pub trait OutputMatcher {
@@ -115,7 +122,23 @@ where
         };
 
         let mut groups = BTreeMap::<(Network, u64), Vec<WatchRegistration>>::new();
-        for watch in watches {
+        for mut watch in watches {
+            if let Some(expected_hash) = watch.last_scanned_hash.as_deref() {
+                let Some(canonical_hash) = self
+                    .block_source
+                    .canonical_block_hash(watch.network, watch.last_scanned_height)?
+                else {
+                    // The source may be between atomic generations or behind
+                    // this cursor. Failing closed here leaves it unchanged.
+                    continue;
+                };
+                if canonical_hash != expected_hash {
+                    watch.last_scanned_height = watch.restore_height.saturating_sub(1);
+                    watch.last_scanned_hash = None;
+                    watch.updated_at_ms = now_ms;
+                    self.store.upsert(watch.clone())?;
+                }
+            }
             groups
                 .entry((watch.network, watch.last_scanned_height))
                 .or_default()
@@ -166,6 +189,7 @@ where
                     }
 
                     watch.last_scanned_height = block.height;
+                    watch.last_scanned_hash = Some(block.hash.clone());
                     watch.updated_at_ms = now_ms;
                     self.store.upsert(watch.clone())?;
                     run.scanned_blocks += 1;
@@ -370,9 +394,11 @@ mod tests {
             restore_height,
             push_token: Some("push-token".to_owned()),
             device_id: None,
+            worker_assignment_epoch: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             last_scanned_height: restore_height.saturating_sub(1),
+            last_scanned_hash: None,
         }
     }
 
@@ -468,6 +494,17 @@ mod tests {
                 .take(max_blocks)
                 .map(|(_, block)| block.clone())
                 .collect())
+        }
+
+        fn canonical_block_hash(
+            &mut self,
+            network: Network,
+            height: u64,
+        ) -> Result<Option<String>> {
+            Ok(self
+                .blocks
+                .get(&NetworkHeightKey { network, height })
+                .map(|block| block.hash.clone()))
         }
     }
 
@@ -588,6 +625,71 @@ mod tests {
             store.get("fast-a").unwrap().unwrap().last_scanned_height,
             10
         );
+    }
+
+    #[test]
+    fn scanner_rewinds_and_rescans_when_the_stored_cursor_is_reorged() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        store.upsert(watch("fast-a", 10)).unwrap();
+        let mut worker = ScannerWorker::new(
+            store.clone(),
+            MemoryBlockSource::with_blocks(vec![block(10, vec![]), block(11, vec![])]),
+            MarkerMatcher,
+        );
+        worker.scan_once(10, 2000).unwrap();
+        let expected_old_hash = format!("{:064x}", 11);
+        assert_eq!(
+            store
+                .get("fast-a")
+                .unwrap()
+                .unwrap()
+                .last_scanned_hash
+                .as_deref(),
+            Some(expected_old_hash.as_str())
+        );
+
+        let mut replacement_ten = block(10, vec![]);
+        replacement_ten.hash = "aa".repeat(32);
+        let mut replacement_eleven = block(11, vec![]);
+        replacement_eleven.hash = "bb".repeat(32);
+        let mut replacement_twelve = block(12, vec![]);
+        replacement_twelve.hash = "cc".repeat(32);
+        worker.block_source = MemoryBlockSource::with_blocks(vec![
+            replacement_ten,
+            replacement_eleven,
+            replacement_twelve,
+        ]);
+
+        let run = worker.scan_once(10, 3000).unwrap();
+        let stored = store.get("fast-a").unwrap().unwrap();
+        let expected_new_hash = "cc".repeat(32);
+        assert_eq!(run.scanned_blocks, 3);
+        assert_eq!(stored.last_scanned_height, 12);
+        assert_eq!(
+            stored.last_scanned_hash.as_deref(),
+            Some(expected_new_hash.as_str())
+        );
+    }
+
+    #[test]
+    fn scanner_keeps_the_cursor_when_the_source_cannot_prove_it() {
+        let store = Arc::new(InMemoryWatchStore::default());
+        let mut stored = watch("fast-a", 10);
+        stored.last_scanned_height = 11;
+        stored.last_scanned_hash = Some("11".repeat(32));
+        store.upsert(stored.clone()).unwrap();
+        let mut worker = ScannerWorker::new(
+            store.clone(),
+            MemoryBlockSource::with_blocks(vec![]),
+            MarkerMatcher,
+        );
+
+        let run = worker.scan_once(10, 3000).unwrap();
+
+        assert_eq!(run.scanned_blocks, 0);
+        let unchanged = store.get("fast-a").unwrap().unwrap();
+        assert_eq!(unchanged.last_scanned_height, stored.last_scanned_height);
+        assert_eq!(unchanged.last_scanned_hash, stored.last_scanned_hash);
     }
 
     #[test]

@@ -28,7 +28,7 @@ dependency_tree="$(cargo tree \
   --invert rsa \
   --prefix none)"
 
-if ! rg -q '^rsa v0\.9\.8$' <<<"${dependency_tree}"; then
+if ! rg -q '^rsa v0\.9\.10$' <<<"${dependency_tree}"; then
   echo "${exception_id} dependency version changed; reassessment required" >&2
   exit 1
 fi
@@ -53,16 +53,17 @@ command -v jq >/dev/null || {
   exit 2
 }
 
-audit_fetch_args=()
+audit_command=(
+  cargo audit
+  --file "${lockfile}"
+  --ignore "${exception_id}"
+  --json
+)
 if [[ "${CARGO_AUDIT_NO_FETCH:-0}" == "1" ]]; then
-  audit_fetch_args+=(--no-fetch)
+  audit_command+=(--no-fetch)
 fi
 
-if ! cargo audit \
-  "${audit_fetch_args[@]}" \
-  --file "${lockfile}" \
-  --ignore "${exception_id}" \
-  --json >"${audit_json}" 2>"${audit_stderr}"; then
+if ! "${audit_command[@]}" >"${audit_json}" 2>"${audit_stderr}"; then
   cat "${audit_stderr}" >&2
   exit 1
 fi
@@ -81,8 +82,6 @@ expected_warnings="$(
   printf '%s\n' \
     'RUSTSEC-2024-0436:paste@1.0.15' \
     'RUSTSEC-2025-0141:bincode@2.0.1' \
-    'YANKED:spin@0.10.0' \
-    'YANKED:spin@0.9.8' \
     | sort
 )"
 actual_warnings="$(
@@ -98,4 +97,4 @@ if [[ "${actual_warnings}" != "${expected_warnings}" ]]; then
   exit 1
 fi
 
-echo "Cuprate audit passed with one time-boxed vulnerability exception and four tracked informational warnings."
+echo "Cuprate audit passed with one time-boxed vulnerability exception and two tracked informational warnings."

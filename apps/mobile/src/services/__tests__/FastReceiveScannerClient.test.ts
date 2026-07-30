@@ -1,8 +1,6 @@
 import {
   normalizeScannerUrl,
-  parseKeyImageStatusResponse,
   parseWatchStatusResponse,
-  validateKeyImages,
   verifyFastReceiveScannerCapability,
   type ScannerFetch,
 } from '../FastReceiveScannerClient';
@@ -62,42 +60,6 @@ describe('FastReceiveScannerClient', () => {
     );
   });
 
-  it('parses authenticated native key-image responses', () => {
-    const keyImages = validateKeyImages(['A'.repeat(64)]);
-    expect(
-      parseKeyImageStatusResponse(
-        JSON.stringify({
-          identity_id: 'fast-receive-v2-0',
-          items: [
-            {
-              key_image: 'a'.repeat(64),
-              status: 'spent',
-              checked_height: 123,
-            },
-          ],
-        }),
-        'fast-receive-v2-0',
-        keyImages,
-      ),
-    ).toEqual({
-      identityId: 'fast-receive-v2-0',
-      items: [
-        {
-          keyImage: 'a'.repeat(64),
-          status: 'spent',
-          checkedHeight: 123,
-        },
-      ],
-    });
-  });
-
-  it('rejects invalid key images before they reach the native bridge', () => {
-    expect(() => validateKeyImages(['not-a-key-image'])).toThrow(
-      '64-character hex',
-    );
-    expect(() => validateKeyImages([])).toThrow('between 1 and 1024');
-  });
-
   it('parses authenticated native watch responses', () => {
     expect(
       parseWatchStatusResponse(
@@ -124,17 +86,6 @@ describe('FastReceiveScannerClient', () => {
   });
 
   it('rejects mismatched authenticated scanner responses', () => {
-    expect(() =>
-      parseKeyImageStatusResponse(
-        JSON.stringify({
-          identity_id: 'other',
-          items: [],
-        }),
-        'fast-receive-v2-0',
-        [],
-      ),
-    ).toThrow('mismatched identity');
-
     expect(() =>
       parseWatchStatusResponse(
         JSON.stringify({

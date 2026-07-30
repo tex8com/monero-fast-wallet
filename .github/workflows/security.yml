@@ -109,6 +109,12 @@ jobs:
         include:
           - name: enthusiast-discovery
             manifest: services/enthusiast-discovery/Cargo.toml
+          - name: enthusiast-v1
+            manifest: services/enthusiast-v1/Cargo.toml
+          - name: community-search-core
+            manifest: packages/community-search-core/Cargo.toml
+          - name: community-runtime-core
+            manifest: native/community-runtime-core/Cargo.toml
           - name: monero-news
             manifest: services/monero-news/Cargo.toml
           - name: notification-gateway

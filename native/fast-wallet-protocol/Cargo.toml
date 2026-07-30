@@ -1,0 +1,36 @@
+[package]
+name = "fast-wallet-protocol"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+default = []
+# Mobile links one Rust static archive only. This feature compiles the
+# authenticated Monero acceleration C ABI into the protocol archive so Rust's
+# standard library is not duplicated at the final Android/iOS link.
+mobile-fast-crypto = ["dep:rayon"]
+
+[dependencies]
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+curve25519-dalek = { version = "4", features = ["alloc"] }
+ed25519-dalek = { version = "2.2", features = ["zeroize"] }
+getrandom = "0.4"
+hex = "0.4"
+hpke = { version = "0.14", default-features = false, features = ["alloc", "getrandom", "x25519", "hkdfsha2", "chacha"] }
+mfw-recipient-protocol = { path = "../mfw-recipient-protocol" }
+monero-address = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
+rayon = { version = "1.10", optional = true }
+sha2 = "0.10"
+thiserror = "2"
+url = "2"
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

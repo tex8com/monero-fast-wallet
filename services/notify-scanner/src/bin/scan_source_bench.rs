@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use curve25519_dalek::{constants::ED25519_BASEPOINT_TABLE, Scalar};
+use ed25519_dalek::VerifyingKey;
 use monero_address::Network as AddressNetwork;
 use monero_wallet::ViewPair;
 use notify_scanner::{
@@ -23,6 +24,7 @@ const DEFAULT_WORKERS: usize = 12;
 
 fn main() -> Result<()> {
     let scanpack_directory = required_env("NOTIFY_SCANNER_BENCH_SCANPACK_DIRECTORY")?;
+    let scanpack_public_key = required_hex_32("NOTIFY_SCANNER_BENCH_SCANPACK_PUBLIC_KEY")?;
     let grpc_endpoint = required_env("NOTIFY_SCANNER_BENCH_GRPC_ENDPOINT")?;
     let rpc_endpoint = env::var("NOTIFY_SCANNER_BENCH_RPC_ENDPOINT").ok();
     let block_count = parsed_env("NOTIFY_SCANNER_BENCH_BLOCKS", DEFAULT_BLOCKS)?;
@@ -30,6 +32,8 @@ fn main() -> Result<()> {
     let source_rounds = parsed_env("NOTIFY_SCANNER_BENCH_SOURCE_ROUNDS", DEFAULT_SOURCE_ROUNDS)?;
     let scan_rounds = parsed_env("NOTIFY_SCANNER_BENCH_SCAN_ROUNDS", DEFAULT_SCAN_ROUNDS)?;
     let workers = parsed_env("NOTIFY_SCANNER_BENCH_WORKERS", DEFAULT_WORKERS)?;
+    let max_lag_blocks = parsed_env("NOTIFY_SCANNER_BENCH_MAX_LAG_BLOCKS", 3_u64)?;
+    let max_status_age_seconds = parsed_env("NOTIFY_SCANNER_BENCH_MAX_STATUS_AGE_SECONDS", 60_u64)?;
     let compare_individual = parsed_env::<u8>("NOTIFY_SCANNER_BENCH_COMPARE_INDIVIDUAL", 0)? == 1;
     let watch_counts = parsed_watch_counts()?;
     if block_count == 0 || source_rounds == 0 || scan_rounds == 0 || workers == 0 {
@@ -41,6 +45,10 @@ fn main() -> Result<()> {
         &scanpack_directory,
         Network::Mainnet,
         Duration::from_secs(30),
+        VerifyingKey::from_bytes(&scanpack_public_key)
+            .context("NOTIFY_SCANNER_BENCH_SCANPACK_PUBLIC_KEY is invalid")?,
+        max_lag_blocks,
+        Duration::from_secs(max_status_age_seconds),
     )?;
     let scanpack_open = scanpack_open_started.elapsed();
     let (cache_start, cache_end) = scanpack
@@ -295,6 +303,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn required_hex_32(name: &str) -> Result<[u8; 32]> {
+    let value = required_env(name)?;
+    if value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        bail!("{name} must be lowercase hex");
+    }
+    hex::decode(&value)
+        .with_context(|| format!("{name} must be 32-byte lowercase hex"))?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{name} must be 32-byte lowercase hex"))
+}
+
 fn required_env(name: &str) -> Result<String> {
     env::var(name).with_context(|| format!("{name} is required"))
 }
@@ -352,9 +371,11 @@ fn deterministic_watches(count: usize, restore_height: u64) -> Result<Vec<WatchR
                 restore_height,
                 push_token: None,
                 device_id: None,
+                worker_assignment_epoch: None,
                 created_at_ms: 1,
                 updated_at_ms: 1,
                 last_scanned_height: restore_height.saturating_sub(1),
+                last_scanned_hash: None,
             })
         })
         .collect()

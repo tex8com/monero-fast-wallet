@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "profile": "community-v1-production",
+  "algorithm": "Ed25519",
+  "createdAt": "2026-07-30",
+  "keys": {
+    "catalog": {
+      "verifyingKeyHex": "15b9aca4dbea7390793594ba7117dad0c3673cf12c6e1780f2eb7ab09c59c071",
+      "keyId": "e7e0ed6be57eb00ad0ca91daee47dace",
+      "sha256Fingerprint": "e7e0ed6be57eb00ad0ca91daee47dace9bb5b4bc1165dab33dbca10bd75265b9"
+    },
+    "advertising": {
+      "verifyingKeyHex": "70f012dccf3cfae6e8746b3dec2f6a02e394a663157132a087860d0404647987",
+      "keyId": "a2526a18722ba28bc6633a386644432e",
+      "sha256Fingerprint": "a2526a18722ba28bc6633a386644432e144eaa3d93bfa269d47e9c3e34f546fb"
+    },
+    "artifact": {
+      "verifyingKeyHex": "3bf04038083505e086a280bbb3caacbf62c886ad4e113c312d5cf8c0674aea72",
+      "keyId": "e74b5fb98d6616e3907a6bec3bbac885",
+      "sha256Fingerprint": "e74b5fb98d6616e3907a6bec3bbac8859ffefd450c749c72237bd53033b0ea64"
+    }
+  }
+}

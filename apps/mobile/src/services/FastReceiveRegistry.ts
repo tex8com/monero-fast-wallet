@@ -35,6 +35,12 @@ export interface FastReceiveIdentityRecord {
   scannerCheckedAt?: string;
   lastScannedHeight?: number;
   notificationsEnabled?: boolean;
+  /** Public opaque Gateway capability; the native layer owns its authority. */
+  assignmentHandle?: string;
+  assignmentEpoch?: number;
+  assignmentExpiresAt?: number;
+  /** Public opaque Relay receipt identifier, never a transaction identifier. */
+  watchMessageId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -80,6 +86,23 @@ export async function removeFastReceiveIdentity(
   );
 }
 
+/**
+ * Provider delivery is installation-wide. Turning it off therefore disables
+ * every local assignment, while turning it back on re-enables every identity
+ * that still has hosted scan data.
+ */
+export function applyGlobalFastWalletDeliveryState(
+  identities: FastReceiveIdentityRecord[],
+  enabled: boolean,
+  updatedAt: string,
+): FastReceiveIdentityRecord[] {
+  return identities.map(identity => ({
+    ...identity,
+    notificationsEnabled: enabled && Boolean(identity.assignmentHandle),
+    updatedAt,
+  }));
+}
+
 export function createFastReceiveIdentityRecord(
   identity: FastReceiveIdentity,
   now = new Date().toISOString(),
@@ -104,6 +127,10 @@ export function createFastReceiveIdentityRecord(
     scannerCheckedAt: undefined,
     lastScannedHeight: undefined,
     notificationsEnabled: false,
+    assignmentHandle: undefined,
+    assignmentEpoch: undefined,
+    assignmentExpiresAt: undefined,
+    watchMessageId: undefined,
     createdAt: now,
     updatedAt: now,
   });
@@ -175,6 +202,12 @@ function normalizeFastReceiveIdentity(
     scannerCheckedAt: cleanOptional(identity.scannerCheckedAt),
     lastScannedHeight: optionalNonNegativeNumber(identity.lastScannedHeight),
     notificationsEnabled: identity.notificationsEnabled === true,
+    assignmentHandle: cleanOptionalHex(identity.assignmentHandle, 32),
+    assignmentEpoch: optionalPositiveInteger(identity.assignmentEpoch),
+    assignmentExpiresAt: optionalPositiveInteger(
+      identity.assignmentExpiresAt,
+    ),
+    watchMessageId: cleanOptionalHex(identity.watchMessageId, 32),
     createdAt: cleanRequired(identity.createdAt, 'createdAt'),
     updatedAt: cleanRequired(identity.updatedAt, 'updatedAt'),
   };
@@ -223,6 +256,10 @@ function parseFastReceiveIdentity(
   const scannerCheckedAt = parseString(value.scannerCheckedAt);
   const lastScannedHeight = parseNumber(value.lastScannedHeight);
   const notificationsEnabled = value.notificationsEnabled === true;
+  const assignmentHandle = parseString(value.assignmentHandle);
+  const assignmentEpoch = parseNumber(value.assignmentEpoch);
+  const assignmentExpiresAt = parseNumber(value.assignmentExpiresAt);
+  const watchMessageId = parseString(value.watchMessageId);
   const createdAt = parseString(value.createdAt);
   const updatedAt = parseString(value.updatedAt);
 
@@ -256,6 +293,10 @@ function parseFastReceiveIdentity(
     scannerCheckedAt,
     lastScannedHeight,
     notificationsEnabled,
+    assignmentHandle,
+    assignmentEpoch,
+    assignmentExpiresAt,
+    watchMessageId,
     createdAt,
     updatedAt,
   });
@@ -294,6 +335,19 @@ function optionalNonNegativeNumber(
   return nonNegativeNumber(value);
 }
 
+function optionalPositiveInteger(
+  value: number | undefined,
+): number | undefined {
+  if (
+    value === undefined ||
+    !Number.isSafeInteger(value) ||
+    value <= 0
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
 function normalizeStatus(
   status: FastReceiveIdentityStatus,
 ): FastReceiveIdentityStatus {
@@ -303,6 +357,21 @@ function normalizeStatus(
 function cleanOptional(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function cleanOptionalHex(
+  value: string | undefined,
+  bytes: number,
+): string | undefined {
+  const checked = cleanOptional(value);
+  if (
+    !checked ||
+    checked.length !== bytes * 2 ||
+    !/^[0-9a-f]+$/.test(checked)
+  ) {
+    return undefined;
+  }
+  return checked;
 }
 
 function parseString(value: unknown): string | undefined {

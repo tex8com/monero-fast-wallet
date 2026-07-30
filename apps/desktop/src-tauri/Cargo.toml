@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Monero Fast Wallet desktop host"
 authors = ["Tex8"]
 edition = "2021"
+license = "MPL-2.0"
 rust-version = "1.77"
 default-run = "monero-wallet-desktop"
 
@@ -13,11 +14,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 cc = "1.2"
+serde_json = "1"
 tauri-build = { version = "2.4", features = [] }
 
 [dependencies]
 argon2 = "0.5"
+community-matrix-core = { path = "../../../native/community-matrix-core" }
+fast-wallet-protocol = { path = "../../../native/fast-wallet-protocol" }
 getrandom = "0.2"
+hex = "0.4"
 # Explicitly select real platform credential stores. Without these features
 # keyring falls back to an in-memory mock on macOS, which makes a newly
 # created wallet impossible to reopen after the app process exits.
@@ -26,10 +31,14 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tauri = { version = "2.8", features = [] }
 tauri-plugin-notification = "2.3.3"
+tauri-plugin-process = "2.3.1"
+tauri-plugin-updater = "2.10.1"
 tungstenite = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 zeroize = { version = "1.8", features = ["derive"] }
+unicode-normalization = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-timer = "3.0"

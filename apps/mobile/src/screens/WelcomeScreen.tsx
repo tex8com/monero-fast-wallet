@@ -2,10 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   ActivityIndicator,
-  Modal,
   ScrollView,
   StatusBar,
   StyleSheet,
+  Switch,
   Text,
   TouchableOpacity,
   View,
@@ -20,11 +20,11 @@ import {
   isFastWalletRegistration,
   walletDisplayName,
 } from '../services/WalletRegistry';
+import { saveFastWalletPreference } from '../services/FastWalletPreference';
 import {
-  loadFastWalletPreference,
-  saveFastWalletPreference,
-  type FastWalletPreference,
-} from '../services/FastWalletPreference';
+  loadCommunityQueryContributionState,
+  setCommunityQueryContributionEnabled,
+} from '../services/CommunityQueryContribution';
 
 const IS_TEST = typeof jest !== 'undefined';
 
@@ -37,10 +37,7 @@ export default function WelcomeScreen({ navigation }: any) {
     setActiveRegisteredWallet,
   } = useWalletState();
   const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
-  const [fastWalletPreference, setFastWalletPreference] =
-    useState<FastWalletPreference>('disabled');
-  const [preferenceLoaded, setPreferenceLoaded] = useState(false);
-  const [showFastWalletInfo, setShowFastWalletInfo] = useState(false);
+  const [shareCommunitySearches, setShareCommunitySearches] = useState(true);
   const contentOp = useRef(new Animated.Value(IS_TEST ? 1 : 0)).current;
   const contentY = useRef(new Animated.Value(IS_TEST ? 0 : 10)).current;
 
@@ -65,20 +62,29 @@ export default function WelcomeScreen({ navigation }: any) {
 
   useEffect(() => {
     let mounted = true;
-    void loadFastWalletPreference().then(value => {
-      if (!mounted) return;
-      if (value) setFastWalletPreference(value);
-      setPreferenceLoaded(true);
+    loadCommunityQueryContributionState()
+      .then(state => {
+        if (mounted) setShareCommunitySearches(state.enabled);
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const updateSearchSharing = useCallback((enabled: boolean) => {
+    setShareCommunitySearches(enabled);
+    setCommunityQueryContributionEnabled(enabled).catch(() => {
+      setShareCommunitySearches(!enabled);
     });
-    return () => { mounted = false; };
   }, []);
 
   const continueToSetup = useCallback(async () => {
-    await saveFastWalletPreference(fastWalletPreference);
+    await saveFastWalletPreference('disabled');
     navigation.navigate('WalletSetup', {
-      fastWalletEnabled: fastWalletPreference === 'enabled',
+      fastWalletEnabled: false,
     });
-  }, [fastWalletPreference, navigation]);
+  }, [navigation]);
 
   const openSavedWallet = useCallback(
     async (walletId: string) => {
@@ -173,8 +179,8 @@ export default function WelcomeScreen({ navigation }: any) {
                         {isFastWalletRegistration(wallet)
                           ? 'Fast Wallet'
                           : wallet.kind === 'hardware'
-                            ? 'Ledger'
-                            : 'Mainnet'}
+                          ? 'Ledger'
+                          : 'Mainnet'}
                       </Text>
                     </View>
                     {opening ? <ActivityIndicator color="#F26822" /> : null}
@@ -184,24 +190,31 @@ export default function WelcomeScreen({ navigation }: any) {
             </ScrollView>
           </View>
         ) : null}
-        {registeredWallets.length === 0 && preferenceLoaded ? <View style={s.profilePanel}>
-          <Text style={s.profileEyebrow}>FIND THE RIGHT SETTINGS</Text>
-          <Text style={s.profileLead}>Both modes keep your Native Monero Core and normal wallets equally local and private.</Text>
-          <TouchableOpacity style={[s.profileCard, fastWalletPreference === 'disabled' && s.profileCardSelected]} onPress={() => setFastWalletPreference('disabled')} activeOpacity={0.8}>
-            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Privacy only</Text></View>
-            <Text style={s.profileDetail}>Creates only normal local wallets. You can add a Fast Wallet later whenever you want.</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[s.profileCard, fastWalletPreference === 'enabled' && s.profileCardSelected]} onPress={() => setFastWalletPreference('enabled')} activeOpacity={0.8}>
-            <View style={s.profileTitleRow}><Text style={s.profileTitle}>Privacy + comfort</Text></View>
-            <Text style={s.profileDetail}>Adds a separate Fast Wallet to new normal and Ledger wallets for quick incoming-payment alerts. Your normal wallet stays unchanged.</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setShowFastWalletInfo(true)} accessibilityRole="button"><Text style={s.infoLink}>ⓘ How Fast Wallet works</Text></TouchableOpacity>
-          <Text style={s.profileFootnote}>You can change this mode any time in Settings. Scanner hosting still needs separate approval.</Text>
-        </View> : null}
+        <View style={s.searchSharingCard}>
+          <View style={s.searchSharingCopy}>
+            <Text style={s.searchSharingTitle}>
+              {t('communityV1.shareSearches')}
+            </Text>
+            <Text style={s.searchSharingText}>
+              {t('communityV1.shareSearchesWelcomeText')}
+            </Text>
+          </View>
+          <Switch
+            accessibilityLabel={t('communityV1.shareSearches')}
+            onValueChange={updateSearchSharing}
+            value={shareCommunitySearches}
+            trackColor={{ false: 'rgba(255,255,255,0.2)', true: '#F26822' }}
+            thumbColor="#FFF"
+          />
+        </View>
         <TouchableOpacity
           style={s.btn}
           activeOpacity={0.85}
-          onPress={() => registeredWallets.length ? navigation.navigate('WalletSetup') : void continueToSetup()}
+          onPress={() =>
+            registeredWallets.length
+              ? navigation.navigate('WalletSetup')
+              : void continueToSetup()
+          }
         >
           <LinearGradient
             colors={['#F26822', '#D4551A']}
@@ -209,13 +222,10 @@ export default function WelcomeScreen({ navigation }: any) {
             end={{ x: 1, y: 0 }}
             style={s.btnGrad}
           >
-            <Text style={s.btnText}>{t('action.continue')}</Text>
+            <Text style={s.btnText}>{t('action.getStarted')}</Text>
           </LinearGradient>
         </TouchableOpacity>
       </View>
-      <Modal visible={showFastWalletInfo} transparent animationType="fade" onRequestClose={() => setShowFastWalletInfo(false)}>
-        <View style={s.infoBackdrop}><View style={s.infoSheet}><Text style={s.infoTitle}>Fast Wallet explained</Text><Text style={s.infoCopy}>A Fast Wallet is a separate receive wallet. Only after you approve scanner hosting, its public address and private view key are sent to that scanner for incoming-payment alerts.</Text><Text style={s.infoCopy}>The spend key stays on this device or exclusively on your Ledger. Your Native Monero Core still handles wallet data and sync.</Text><Text style={s.infoCopy}>Your own node protects your blockchain connection. Your own scanner means no third party receives this Fast Wallet’s view key.</Text><TouchableOpacity style={s.infoClose} onPress={() => setShowFastWalletInfo(false)}><Text style={s.infoCloseText}>Got it</Text></TouchableOpacity></View></View>
-      </Modal>
     </LinearGradient>
   );
 }
@@ -321,22 +331,94 @@ const s = StyleSheet.create({
     borderRadius: 16,
     overflow: 'hidden',
   },
+  searchSharingCard: {
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.055)',
+    borderColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 14,
+    padding: 13,
+  },
+  searchSharingCopy: { flex: 1 },
+  searchSharingTitle: { color: '#FFF', fontSize: 14, fontWeight: '800' },
+  searchSharingText: {
+    color: 'rgba(255,255,255,0.55)',
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 4,
+  },
   profilePanel: { alignSelf: 'stretch', marginBottom: 18, gap: 8 },
-  profileEyebrow: { color: 'rgba(255,255,255,0.55)', fontWeight: '800', fontSize: 11, letterSpacing: 1 },
-  profileLead: { color: 'rgba(255,255,255,0.78)', fontSize: 14, lineHeight: 20, marginBottom: 3 },
-  profileCard: { borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', borderRadius: 14, padding: 13, backgroundColor: 'rgba(255,255,255,0.045)' },
-  profileCardSelected: { borderColor: '#F26822', backgroundColor: 'rgba(242,104,34,0.13)' },
-  profileTitleRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, alignItems: 'center' },
+  profileEyebrow: {
+    color: 'rgba(255,255,255,0.55)',
+    fontWeight: '800',
+    fontSize: 11,
+    letterSpacing: 1,
+  },
+  profileLead: {
+    color: 'rgba(255,255,255,0.78)',
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 3,
+  },
+  profileCard: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 14,
+    padding: 13,
+    backgroundColor: 'rgba(255,255,255,0.045)',
+  },
+  profileCardSelected: {
+    borderColor: '#F26822',
+    backgroundColor: 'rgba(242,104,34,0.13)',
+  },
+  profileTitleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'center',
+  },
   profileTitle: { color: '#FFF', fontSize: 16, fontWeight: '800' },
   profileMeter: { color: '#F5B744', fontSize: 12, letterSpacing: 1 },
-  profileDetail: { color: 'rgba(255,255,255,0.62)', fontSize: 12, lineHeight: 17, marginTop: 5 },
+  profileDetail: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 5,
+  },
   infoLink: { color: '#F5B744', fontSize: 12, fontWeight: '700', marginTop: 9 },
-  profileFootnote: { color: 'rgba(255,255,255,0.42)', fontSize: 11, lineHeight: 16, marginTop: 2 },
-  infoBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'center', padding: 24 },
-  infoSheet: { borderRadius: 18, borderWidth: 1, borderColor: 'rgba(242,104,34,0.5)', backgroundColor: '#161223', padding: 21, gap: 12 },
+  profileFootnote: {
+    color: 'rgba(255,255,255,0.42)',
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  infoBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  infoSheet: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: 'rgba(242,104,34,0.5)',
+    backgroundColor: '#161223',
+    padding: 21,
+    gap: 12,
+  },
   infoTitle: { color: '#FFF', fontSize: 21, fontWeight: '800' },
   infoCopy: { color: 'rgba(255,255,255,0.75)', fontSize: 14, lineHeight: 20 },
-  infoClose: { backgroundColor: '#F26822', paddingVertical: 13, borderRadius: 12, alignItems: 'center', marginTop: 4 },
+  infoClose: {
+    backgroundColor: '#F26822',
+    paddingVertical: 13,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 4,
+  },
   infoCloseText: { color: '#FFF', fontWeight: '800', fontSize: 15 },
   btnGrad: {
     height: 60,

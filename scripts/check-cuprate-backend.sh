@@ -219,15 +219,20 @@ if [ "$CHECK_GRPC" = "1" ] && [ -d "$REPO_ROOT/node/cuprate/tools/grpc-smoke" ];
   fi
   grpc_smoke_build_dir="${CUPRATE_GRPC_SMOKE_BUILD_DIR:-$REPO_ROOT/build/cuprate-grpc-smoke}"
   grpc_cpp_prefix="${CUPRATE_GRPC_CPP_PREFIX:-}"
-  grpc_cmake_args=()
+  grpc_configure_command=(
+    "$cmake_bin"
+    -S "$REPO_ROOT/node/cuprate/tools/grpc-smoke"
+    -B "$grpc_smoke_build_dir"
+    -G Ninja
+  )
   if [ -n "$grpc_cpp_prefix" ]; then
-    grpc_cmake_args+=(
+    grpc_configure_command+=(
       "-DCMAKE_PREFIX_PATH=$grpc_cpp_prefix"
       "-DGRPC_CPP_PLUGIN_PATH=$grpc_cpp_prefix/bin/grpc_cpp_plugin"
     )
     grpc_openssl_root="$(dirname "$grpc_cpp_prefix")/openssl-sdk"
     if [ -f "$grpc_openssl_root/include/openssl/x509.h" ]; then
-      grpc_cmake_args+=(
+      grpc_configure_command+=(
         "-DOPENSSL_ROOT_DIR=$grpc_openssl_root"
         "-DOPENSSL_INCLUDE_DIR=$grpc_openssl_root/include"
         "-DOPENSSL_SSL_LIBRARY=$grpc_openssl_root/lib/libssl.a"
@@ -236,9 +241,7 @@ if [ "$CHECK_GRPC" = "1" ] && [ -d "$REPO_ROOT/node/cuprate/tools/grpc-smoke" ];
     fi
     export PATH="$grpc_cpp_prefix/bin:$PATH"
   fi
-  "$cmake_bin" -S "$REPO_ROOT/node/cuprate/tools/grpc-smoke" \
-    -B "$grpc_smoke_build_dir" \
-    -G Ninja "${grpc_cmake_args[@]}" >/dev/null
+  "${grpc_configure_command[@]}" >/dev/null
   "$cmake_bin" --build "$grpc_smoke_build_dir" >/dev/null
   start_height="$(echo "$get_info" | jq -r '[(.height // 0) - 64, 0] | max')"
   "$grpc_smoke_build_dir/smoke" \

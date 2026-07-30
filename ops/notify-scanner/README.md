@@ -25,6 +25,19 @@ Cloudflare proxy: DNS only
 The DNS record must stay unproxied because the wallet uses raw Cuprate RPC on
 the same host. Cloudflare's HTTP proxy is not suitable for `18089`.
 
+Public Cuprate port wiring:
+
+```text
+18089/tcp -> restricted Cuprate RPC at private-node-ip:18089
+18091/tcp -> wallet gRPC alias -> local Cuprate 127.0.0.1:48091
+48091/tcp -> direct Cuprate gRPC listener
+```
+
+UFW must allow public TCP `18089`, `18091` and `48091`. Rules that allow
+`18089/18091` only on `wg0` make the node appear healthy internally while all
+normal wallets time out. The `18091` proxy must never point back to
+`private-node-ip:18091` unless a real listener is deliberately configured there.
+
 Expected acceptance check:
 
 ```sh
@@ -129,10 +142,24 @@ to the local service at `127.0.0.1:8087`.
 systemctl status notify-scanner --no-pager
 curl -fsS http://127.0.0.1:8087/healthz
 curl -fsS https://xmr.tex8.com/healthz
+curl -fsS http://xmr.tex8.com:18089/get_info | jq \
+  '{status,height,target_height,synchronized,busy_syncing,restricted,nettype}'
 TESTBENCH_SCANNER_URL=https://xmr.tex8.com \
 TESTBENCH_REQUIRE_DEPLOYED_SCANNER=1 \
 tools/wallet-testbench/run-wallet-core-testbench.sh local
 ```
+
+The complete read-only raw-RPC and gRPC check is:
+
+```sh
+CUPRATE_CHECK_SEND_RAW=0 \
+CUPRATE_E2E_ENABLE_FUNDED_SEND=0 \
+CUPRATE_E2E_BROADCAST=0 \
+scripts/check-cuprate-backend.sh
+```
+
+Incident record:
+[`CUPRATE_PUBLIC_PORT_INCIDENT_2026-07-27.md`](../../docs/CUPRATE_PUBLIC_PORT_INCIDENT_2026-07-27.md).
 
 Rollback is stopping/disabling `notify-scanner.service`, removing the Nginx
 include from the `xmr.tex8.com` server block, reloading Nginx, and restoring the

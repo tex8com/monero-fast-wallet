@@ -1,0 +1,23 @@
+[package]
+name = "enthusiast-moderation-console"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+
+[dependencies]
+argon2 = "0.5"
+axum = { version = "0.8", features = ["form", "http1", "tokio"], default-features = false }
+hex = "0.4"
+rand = "0.8"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"], default-features = false }
+url = "2"
+zeroize = "1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

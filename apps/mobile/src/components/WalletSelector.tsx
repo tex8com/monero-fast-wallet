@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -38,6 +39,7 @@ export type WalletSelectorItem = RegisteredWallet | WalletOption;
 
 type WalletSelectorProps = {
   activeWalletId?: string;
+  openingWalletId?: string;
   showTitle?: boolean;
   snapshots: WalletSnapshotCache;
   titleKey: TranslationKey;
@@ -47,6 +49,7 @@ type WalletSelectorProps = {
 
 export default function WalletSelector({
   activeWalletId,
+  openingWalletId,
   showTitle = true,
   snapshots,
   titleKey,
@@ -73,6 +76,7 @@ export default function WalletSelector({
       >
         {options.map(wallet => {
           const active = wallet.id === activeWalletId;
+          const opening = wallet.id === openingWalletId;
           return (
             <TouchableOpacity
               key={wallet.id}
@@ -82,14 +86,16 @@ export default function WalletSelector({
                 wallet.disabled && s.cardDisabled,
               ]}
               activeOpacity={0.76}
-              disabled={wallet.disabled}
+              disabled={wallet.disabled || Boolean(openingWalletId)}
               onPress={() => onSelect(wallet)}
             >
               <View style={s.cardTop}>
                 <Text style={s.name} numberOfLines={1}>
                   {wallet.label}
                 </Text>
-                {active ? (
+                {opening ? (
+                  <ActivityIndicator color={colors.orange} size="small" />
+                ) : active ? (
                   <Text style={s.activePill}>{t('walletSelector.active')}</Text>
                 ) : wallet.badge ? (
                   <Text

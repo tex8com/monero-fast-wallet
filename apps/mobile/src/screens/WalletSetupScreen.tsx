@@ -1,6 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { isFastWalletEnabled } from '../../../../packages/wallet-shared/src/fastWalletPreference';
-import { loadFastWalletPreference } from '../services/FastWalletPreference';
 import {
   View,
   Text,
@@ -19,25 +17,17 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
+import { useIsFocused } from '@react-navigation/native';
 import Svg, { Path, Rect, Circle, Line } from 'react-native-svg';
 import { colors } from '../theme/colors';
 import MoneroCoinGhost from '../components/MoneroCoinGhost';
 import MoneroCoin from '../components/MoneroCoin';
 import { walletService } from '../services/WalletService';
+import { withSystemUiInterruption } from '../services/SystemUiInterruption';
 import { type TranslationKey, useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
 import { logWalletEvent } from '../services/WalletLogger';
-import { FastWalletPushService } from '../services/FastWalletPushService';
-import { verifyFastReceiveScannerCapability } from '../services/FastReceiveScannerClient';
-import {
-  loadEnthusiastDiscoveryPreference,
-  refreshApproximateEnthusiastLocation,
-  setEnthusiastDiscoveryEnabled,
-} from '../services/EnthusiastDiscoveryService';
-import {
-  fastReceiveScannerUrlForSettings,
-  loadActiveNodeConnectionSettings,
-} from '../services/NodeConnectionSettings';
+import { loadActiveNodeConnectionSettings } from '../services/NodeConnectionSettings';
 import type {
   BiometricAuthStatus,
   LedgerTransportStatus,
@@ -53,6 +43,7 @@ import {
   restoreHeightFromStartDate,
   todayRestoreDate,
 } from '../services/RestoreStart';
+import mobileAppVersion from '../../../../config/mobile-app-version.json';
 
 const { width: SW, height: SH } = Dimensions.get('window');
 const CREATE_STEPS = [
@@ -86,6 +77,8 @@ const DEFAULT_WALLET_NAME = 'wallet';
 const DEFAULT_HARDWARE_WALLET_NAME = 'ledger';
 const CREATE_CARD_HORIZONTAL_MARGIN = 20;
 const CREATE_CARD_MAX_WIDTH = 360;
+const WALLET_OPEN_SLOW_MS = 15_000;
+const WALLET_OPEN_TIMEOUT_MS = 120_000;
 type PasswordPromptMode = 'create' | 'open' | 'restore';
 type CreationKind = 'software' | 'hardware' | 'restore' | 'open';
 
@@ -95,6 +88,26 @@ function errorMessage(error: unknown) {
 
 function setupLog(event: string, fields: Record<string, unknown> = {}) {
   logWalletEvent('WalletSetup', event, fields);
+}
+
+function rejectAfter<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message: string,
+  onTimeout: () => void,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      onTimeout();
+      reject(new Error(message));
+    }, timeoutMs);
+  });
+  return Promise.race([operation, timeoutPromise]).finally(() => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
 }
 
 function ledgerTransportReady(
@@ -121,11 +134,11 @@ function ledgerStatusTitle(
   if (!status.supported) {
     return t('setup.hardware.transportUnavailable');
   }
-  if (!status.available) {
-    return t('setup.hardware.waiting');
-  }
   if (status.requiresUserAction || !status.permissionGranted) {
     return t('setup.hardware.permissionRequired');
+  }
+  if (!status.available) {
+    return t('setup.hardware.waiting');
   }
   if (status.transport === 'ble' && status.deviceCount === 0) {
     return t('setup.hardware.waiting');
@@ -430,6 +443,7 @@ function RestoreStartDateField({
 /* ── Screen ─────────────────────────────────────────────────────────── */
 export default function WalletSetupScreen({ navigation, route }: any) {
   const { dateLocale, t } = useI18n();
+  const isFocused = useIsFocused();
   const { width: windowWidth } = useWindowDimensions();
   const createCardWidth = Math.min(
     CREATE_CARD_MAX_WIDTH,
@@ -458,31 +472,23 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const [biometricError, setBiometricError] = useState<string | undefined>();
   const [restoreStartDate, setRestoreStartDate] = useState('');
   const [ledgerRestoreStartDate, setLedgerRestoreStartDate] = useState('');
-  const [pendingWalletOpenId, setPendingWalletOpenId] = useState<
-    string | undefined
-  >();
+  const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
+  const [openingElapsedSeconds, setOpeningElapsedSeconds] = useState(0);
+  const [creatingElapsedSeconds, setCreatingElapsedSeconds] = useState(0);
+  const [nativeWalletOperationPending, setNativeWalletOperationPending] =
+    useState(false);
+  const [walletOpenError, setWalletOpenError] = useState<string | undefined>();
   const [createStep, setCreateStep] = useState(() => t(CREATE_STEPS[0]));
   const [createError, setCreateError] = useState<string | undefined>();
-  const requestedFastWalletEnabled = route?.params?.fastWalletEnabled as
-    | boolean
-    | undefined;
-  const [createFastReceiveOnSetup, setCreateFastReceiveOnSetup] = useState(
-    () => requestedFastWalletEnabled ?? true,
-  );
   const [persistLedgerViewOnly, setPersistLedgerViewOnly] = useState(false);
-  const [
-    enableEnthusiastDiscoveryOnSetup,
-    setEnableEnthusiastDiscoveryOnSetup,
-  ] = useState(true);
   const {
     registeredWallet,
     registeredWallets,
+    openRegisteredWalletById,
     refreshSnapshot,
     refreshTransactions,
     registerOpenedSession,
     reloadRegisteredWallet,
-    reloadRegisteredWallets,
-    setActiveRegisteredWallet,
   } = useWalletState();
 
   const changePersistLedgerViewOnly = useCallback((enabled: boolean) => {
@@ -490,30 +496,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     setPersistLedgerViewOnly(enabled);
   }, []);
 
-  useEffect(() => {
-    let mounted = true;
-    loadEnthusiastDiscoveryPreference()
-      .then(preference => {
-        if (mounted && preference.updatedAt) {
-          setEnableEnthusiastDiscoveryOnSetup(preference.enabled);
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      mounted = false;
-    };
-  }, []);
-  useEffect(() => {
-    if (typeof requestedFastWalletEnabled === 'boolean') return;
-    let mounted = true;
-    void loadFastWalletPreference().then(preference => {
-      if (!mounted || !preference) return;
-      setCreateFastReceiveOnSetup(isFastWalletEnabled(preference));
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [requestedFastWalletEnabled]);
   const restoreStartDateReady = isRestoreStartDateValid(restoreStartDate);
   const ledgerRestoreStartDateReady = isRestoreStartDateValid(
     ledgerRestoreStartDate,
@@ -630,12 +612,42 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     refreshBiometricStatus().catch(() => undefined);
   }, [refreshBiometricStatus]);
 
+  useEffect(() => {
+    if (!openingWalletId) {
+      setOpeningElapsedSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setOpeningElapsedSeconds(0);
+    const timer = setInterval(() => {
+      setOpeningElapsedSeconds(
+        Math.max(0, Math.floor((Date.now() - startedAt) / 1000)),
+      );
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [openingWalletId]);
+
+  useEffect(() => {
+    if (!creating) {
+      setCreatingElapsedSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    setCreatingElapsedSeconds(0);
+    const timer = setInterval(() => {
+      setCreatingElapsedSeconds(
+        Math.max(0, Math.floor((Date.now() - startedAt) / 1000)),
+      );
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [creating]);
+
   const openPasswordPrompt = useCallback(
     (mode: PasswordPromptMode) => {
-      if (creating) {
+      if (creating || nativeWalletOperationPending) {
         setupLog('openPasswordPrompt.skipped', {
           mode,
-          reason: 'creating',
+          reason: creating ? 'creating' : 'native-wallet-operation',
         });
         return;
       }
@@ -647,7 +659,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
       setCreateError(undefined);
       if (mode === 'restore') {
-        setRestoreSeed('');
         setRestoreStartDate('');
       }
       if (mode === 'create' || mode === 'open') {
@@ -658,6 +669,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     [
       canUseBiometric,
       creating,
+      nativeWalletOperationPending,
       refreshBiometricStatus,
       registeredWallets.length,
     ],
@@ -665,42 +677,115 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
   const chooseSavedWallet = useCallback(
     async (walletId: string) => {
-      if (creating) {
+      if (creating || openingWalletId || nativeWalletOperationPending) {
         return;
       }
+      const diagnosticId = `open-${Date.now().toString(36)}`;
+      const startedAt = Date.now();
+      let timedOut = false;
       setCreateError(undefined);
-      setPendingWalletOpenId(walletId);
-      await setActiveRegisteredWallet(walletId);
-      await reloadRegisteredWallets();
-    },
-    [creating, reloadRegisteredWallets, setActiveRegisteredWallet],
-  );
+      setWalletOpenError(undefined);
+      setOpeningWalletId(walletId);
+      setNativeWalletOperationPending(true);
+      setupLog(`chooseSavedWallet.start.${diagnosticId}`, {
+        timeoutMs: WALLET_OPEN_TIMEOUT_MS,
+      });
+      const openOperation = openRegisteredWalletById(walletId);
+      let settled = false;
+      const slowTimer = setTimeout(() => {
+        if (!settled) {
+          setupLog(`chooseSavedWallet.slow.${diagnosticId}`, {
+            elapsedMs: Date.now() - startedAt,
+          });
+        }
+      }, WALLET_OPEN_SLOW_MS);
+      openOperation.then(
+        opened => {
+          settled = true;
+          clearTimeout(slowTimer);
+          setNativeWalletOperationPending(false);
+          if (timedOut && opened) {
+            setWalletOpenError(
+              `Wallet opening completed after the timeout (${diagnosticId}). Tap the wallet once more to continue.`,
+            );
+            setupLog(`chooseSavedWallet.lateSuccess.${diagnosticId}`, {
+              elapsedMs: Date.now() - startedAt,
+            });
+          }
+        },
+        error => {
+          settled = true;
+          clearTimeout(slowTimer);
+          setNativeWalletOperationPending(false);
+          if (timedOut) {
+            const message = errorMessage(error);
+            setWalletOpenError(
+              `Wallet opening failed after the timeout (${diagnosticId}): ${message}`,
+            );
+            setupLog(`chooseSavedWallet.lateError.${diagnosticId}`, {
+              elapsedMs: Date.now() - startedAt,
+            });
+          }
+        },
+      );
+      try {
+        const opened = await rejectAfter(
+          openOperation,
+          WALLET_OPEN_TIMEOUT_MS,
+          `Wallet opening exceeded 120 seconds (${diagnosticId}). The native operation is still being monitored.`,
+          () => {
+            timedOut = true;
+            setupLog(`chooseSavedWallet.timeout.${diagnosticId}`, {
+              elapsedMs: Date.now() - startedAt,
+              timeoutMs: WALLET_OPEN_TIMEOUT_MS,
+            });
+          },
+        );
+        if (opened) {
+          setupLog(`chooseSavedWallet.success.${diagnosticId}`, {
+            elapsedMs: Date.now() - startedAt,
+          });
+          navigation.navigate('Home');
+          return;
+        }
 
-  useEffect(() => {
-    if (!pendingWalletOpenId || registeredWallet?.id !== pendingWalletOpenId) {
-      return;
-    }
-    setPendingWalletOpenId(undefined);
-    if (
-      registeredWallet.credentialKey &&
-      registeredWallet.kind !== 'hardware'
-    ) {
-      navigation.navigate('Home');
-      return;
-    }
-    if (registeredWallet.kind === 'hardware') {
-      openPasswordPrompt('open');
-      return;
-    }
-    // A legacy registration without its secure credential cannot be unlocked
-    // by guessing a wallet password. Take the owner directly to recovery.
-    setRestoreSeed('');
-    setRestoreStartDate('');
-    setCreateError(
-      'This wallet is missing its protected device credential. Restore it from the recovery seed to create a new local copy.',
-    );
-    setPasswordPromptMode('restore');
-  }, [navigation, openPasswordPrompt, pendingWalletOpenId, registeredWallet]);
+        const selectedWallet = registeredWallets.find(
+          wallet => wallet.id === walletId,
+        );
+        if (selectedWallet?.kind === 'hardware') {
+          openPasswordPrompt('open');
+          return;
+        }
+
+        // A legacy registration without its secure credential cannot be
+        // unlocked by guessing a wallet password. Take the owner directly to
+        // recovery without ever trying a different saved wallet.
+        setRestoreStartDate('');
+        setCreateError(
+          'This wallet is missing its protected device credential. Restore it from the recovery seed to create a new local copy.',
+        );
+        setPasswordPromptMode('restore');
+      } catch (error) {
+        const message = errorMessage(error);
+        setCreateError(message);
+        setWalletOpenError(message);
+        setupLog(`chooseSavedWallet.error.${diagnosticId}`, {
+          elapsedMs: Date.now() - startedAt,
+        });
+      } finally {
+        setOpeningWalletId(undefined);
+      }
+    },
+    [
+      creating,
+      navigation,
+      nativeWalletOperationPending,
+      openPasswordPrompt,
+      openRegisteredWalletById,
+      openingWalletId,
+      registeredWallets,
+    ],
+  );
 
   const closePasswordPrompt = useCallback(() => {
     const shouldReturnHome =
@@ -720,7 +805,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     });
     try {
       const nextStatus = requestAccess
-        ? await walletService.requestLedgerTransportAccess()
+        ? await withSystemUiInterruption(
+            'ledger-transport-permission',
+            () => walletService.requestLedgerTransportAccess(),
+          )
         : await walletService.getLedgerTransportStatus();
       setLedgerStatus(nextStatus);
       setupLog('refreshLedgerTransport.success', {
@@ -756,9 +844,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   }, [openUsesHardwareWallet, refreshLedgerTransport, registeredWallet?.id]);
 
   const openLedgerPrompt = () => {
-    if (creating) {
+    if (creating || nativeWalletOperationPending) {
       setupLog('openLedgerPrompt.skipped', {
-        reason: 'creating',
+        reason: creating ? 'creating' : 'native-wallet-operation',
       });
       return;
     }
@@ -771,6 +859,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   };
 
   useEffect(() => {
+    if (!isFocused) {
+      return;
+    }
     const requestedMode = route?.params?.mode;
     const requestKey = `${requestedMode ?? 'none'}:${
       route?.params?.openRequestId ?? 'once'
@@ -784,14 +875,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         return;
       }
       handledModeRequest.current = requestKey;
-      if (
-        registeredWallet.credentialKey &&
-        registeredWallet.kind !== 'hardware'
-      ) {
-        navigation.navigate('Home');
-        return;
-      }
-      openPasswordPrompt('open');
+      chooseSavedWallet(registeredWallet.id).catch(() => undefined);
       return;
     }
 
@@ -800,7 +884,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       openPasswordPrompt(requestedMode);
     }
   }, [
+    isFocused,
     navigation,
+    chooseSavedWallet,
     openPasswordPrompt,
     registeredWallet,
     route?.params?.mode,
@@ -823,108 +909,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     });
   };
 
-  const enableFastReceiveOnActiveScanner = async (identityId: string) => {
-    const settings = await loadActiveNodeConnectionSettings();
-    const scannerUrl = fastReceiveScannerUrlForSettings(settings);
-    if (!scannerUrl) {
-      setupLog('fastReceiveScannerRegistration.skipped', {
-        identityId,
-        reason: 'noScannerUrl',
-      });
-      return;
-    }
-
-    // A URL inferred from a node is not proof that it exposes the Fast Wallet
-    // service. Verify the public health endpoint before any registration
-    // payload (and therefore any isolated private view key) leaves the device.
-    await verifyFastReceiveScannerCapability(scannerUrl);
-
-    setupLog('fastReceiveScannerRegistration.start', {
-      identityId,
-      scannerUrl,
-    });
-    const pushSubscriptionId =
-      await FastWalletPushService.enableFastWalletNotifications()
-        .then(registration => registration.subscriptionId)
-        .catch(error => {
-          setupLog('fastReceivePushRegistration.skipped', {
-            error: errorMessage(error),
-            identityId,
-          });
-          return undefined;
-        });
-    await walletService.enableFastReceiveIdentity({
-      identityId,
-      scannerUrl,
-      pushSubscriptionId,
-    });
-    setupLog('fastReceiveScannerRegistration.success', {
-      identityId,
-      scannerUrl,
-    });
-  };
-
-  const registerFastReceiveInBackground = (
-    source: string,
-    identityId: string,
-  ) => {
-    const startedAt = Date.now();
-    setupLog(`${source}.fastReceive.registrationQueued`, { identityId });
-
-    reloadRegisteredWallets()
-      .then(() => {
-        setupLog(`${source}.fastReceive.localReady`, { identityId });
-      })
-      .catch(error => {
-        setupLog(`${source}.fastReceive.localRegistryError`, {
-          error: errorMessage(error),
-          identityId,
-        });
-      });
-
-    const register = async () => {
-      try {
-        await enableFastReceiveOnActiveScanner(identityId);
-        await reloadRegisteredWallets();
-        setupLog(`${source}.fastReceive.registrationSuccess`, {
-          elapsedMs: Date.now() - startedAt,
-          identityId,
-        });
-      } catch (error) {
-        await reloadRegisteredWallets().catch(() => undefined);
-        setupLog(`${source}.fastReceive.registrationError`, {
-          elapsedMs: Date.now() - startedAt,
-          error: errorMessage(error),
-          identityId,
-        });
-      }
-    };
-
-    register().catch(error => {
-      setupLog(`${source}.fastReceive.unhandledRegistrationError`, {
-        error: errorMessage(error),
-        identityId,
-      });
-    });
-  };
-
-  const fastReceiveSetupToggle = (
-    <View style={s.fastReceiveRow}>
-      <View style={s.fastReceiveText}>
-        <Text style={s.fastReceiveTitle}>{t('setup.fastWalletTitle')}</Text>
-        <Text style={s.fastReceiveValue}>
-          {t('setup.fastWalletDescription')}
-        </Text>
-      </View>
-      <Switch
-        value={createFastReceiveOnSetup}
-        onValueChange={setCreateFastReceiveOnSetup}
-        trackColor={{ false: 'rgba(255,255,255,0.12)', true: colors.orange }}
-        thumbColor="#FFF"
-      />
-    </View>
-  );
-
   const startCreateWalletWithDeviceSecret = async () => {
     if (creating) {
       setupLog('startCreateWalletWithDeviceSecret.skipped', {
@@ -937,18 +921,12 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     const startedAt = Date.now();
     setupLog('startCreateWalletWithDeviceSecret.start', {
       biometryType: biometricStatus?.biometryType,
-      createFastReceiveOnSetup,
-      enableEnthusiastDiscoveryOnSetup,
       usesBiometric: canUseBiometric,
     });
     setCreating(true);
     setCreatingKind('software');
     setPasswordPromptMode(undefined);
     setCreateError(undefined);
-    setCreatedSeed('');
-    setCreatedSeedWalletId(undefined);
-    clearQueuedSeedBackup();
-    setSeedConfirmed(false);
     beginCreateAnimation(CREATE_STEPS);
 
     try {
@@ -956,23 +934,23 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         walletName: DEFAULT_WALLET_NAME,
         language: 'English',
         authentication: 'if-available',
+        onProgress: phase => {
+          const stepByPhase = {
+            settings: 'setup.step.preparingStorage',
+            storage: 'setup.step.preparingStorage',
+            secret: 'setup.step.generatingEntropy',
+            'native-wallet': 'setup.step.derivingKeys',
+            registry: 'setup.step.preparingBackup',
+          } as const;
+          setCreateStep(t(stepByPhase[phase]));
+          setupLog(`startCreateWalletWithDeviceSecret.phase.${phase}`, {
+            elapsedMs: Date.now() - startedAt,
+          });
+        },
       });
       setupLog('startCreateWalletWithDeviceSecret.primaryCreated', {
         elapsedMs: Date.now() - startedAt,
       });
-      let fastReceiveIdentityId: string | undefined;
-      if (createFastReceiveOnSetup) {
-        setCreateStep(t('setup.createFastReceive'));
-        setupLog('startCreateWalletWithDeviceSecret.fastReceive.start');
-        const fastReceive = await walletService.createFastReceiveIdentity({
-          restoreHeight: 0,
-        });
-        fastReceiveIdentityId = fastReceive.identity.id;
-        setupLog('startCreateWalletWithDeviceSecret.fastReceive.localReady', {
-          elapsedMs: Date.now() - startedAt,
-          identityId: fastReceive.identity.id,
-        });
-      }
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
@@ -996,24 +974,11 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         );
         await reloadRegisteredWallet();
       }
-      if (fastReceiveIdentityId) {
-        registerFastReceiveInBackground(
-          'startCreateWalletWithDeviceSecret',
-          fastReceiveIdentityId,
-        );
-      }
       setupLog('startCreateWalletWithDeviceSecret.success', {
         elapsedMs: Date.now() - startedAt,
         seedBackedUp,
       });
       navigation.navigate('Home');
-      setEnthusiastDiscoveryEnabled(enableEnthusiastDiscoveryOnSetup)
-        .then(preference =>
-          preference.enabled
-            ? refreshApproximateEnthusiastLocation()
-            : preference,
-        )
-        .catch(() => undefined);
     } catch (error) {
       finishCreateAnimation();
       setCreateError(errorMessage(error));
@@ -1046,7 +1011,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         settings.network,
       );
       setupLog('startRestoreWallet.start', {
-        createFastReceiveOnSetup,
         restoreHeight: restoreHeight ?? 0,
         restoreStartDate: restoreStartDate || 'automatic',
         seedBoundary: 'native',
@@ -1055,29 +1019,12 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setCreatingKind('restore');
       setPasswordPromptMode(undefined);
       setCreateError(undefined);
-      setCreatedSeed('');
-      setCreatedSeedWalletId(undefined);
-      clearQueuedSeedBackup();
-      setSeedConfirmed(false);
       beginCreateAnimation(RESTORE_STEPS);
       const result = await walletService.restoreNamedWalletWithNativeSeed({
         walletName: DEFAULT_WALLET_NAME,
         network: settings.network,
         restoreHeight,
       });
-      let fastReceiveIdentityId: string | undefined;
-      if (createFastReceiveOnSetup) {
-        setCreateStep(t('setup.createFastReceive'));
-        setupLog('startRestoreWallet.fastReceive.start');
-        const fastReceive = await walletService.createFastReceiveIdentity({
-          restoreHeight,
-        });
-        fastReceiveIdentityId = fastReceive.identity.id;
-        setupLog('startRestoreWallet.fastReceive.localReady', {
-          elapsedMs: Date.now() - startedAt,
-          identityId: fastReceive.identity.id,
-        });
-      }
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
@@ -1091,14 +1038,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
 
       finishCreateAnimation();
-      setRestoreSeed('');
       setRestoreStartDate('');
-      if (fastReceiveIdentityId) {
-        registerFastReceiveInBackground(
-          'startRestoreWallet',
-          fastReceiveIdentityId,
-        );
-      }
       navigation.navigate('Home');
       setupLog('startRestoreWallet.success', {
         elapsedMs: Date.now() - startedAt,
@@ -1135,7 +1075,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         settings.network,
       );
       setupLog('startCreateHardwareWallet.start', {
-        createFastReceiveOnSetup,
         persistLedgerViewOnly,
         restoreHeight: restoreHeight ?? 0,
         restoreStartDate: ledgerRestoreStartDate || 'automatic',
@@ -1144,10 +1083,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       setCreatingKind('hardware');
       setPasswordPromptMode(undefined);
       setCreateError(undefined);
-      setCreatedSeed('');
-      setCreatedSeedWalletId(undefined);
-      clearQueuedSeedBackup();
-      setSeedConfirmed(false);
       beginCreateAnimation(HARDWARE_STEPS);
       const transportStatus =
         await walletService.requestLedgerTransportAccess();
@@ -1172,21 +1107,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       // This is the sole native request for the private view key. Keep the
       // Ledger approval instruction visible until that request resolves.
       setLedgerViewKeyExportPending(persistLedgerViewOnly);
-      const result = createFastReceiveOnSetup
-        ? await walletService.createNamedLedgerWalletPairFromDevice({
-            walletName: DEFAULT_HARDWARE_WALLET_NAME,
-            network: settings.network,
-            deviceName,
-            restoreHeight,
-            enableLocalViewOnly: persistLedgerViewOnly,
-          })
-        : await walletService.createNamedWalletFromDevice({
-            walletName: DEFAULT_HARDWARE_WALLET_NAME,
-            network: settings.network,
-            deviceName,
-            restoreHeight,
-            enableLocalViewOnly: persistLedgerViewOnly,
-          });
+      const result = await walletService.createNamedWalletFromDevice({
+        walletName: DEFAULT_HARDWARE_WALLET_NAME,
+        network: settings.network,
+        deviceName,
+        restoreHeight,
+        enableLocalViewOnly: persistLedgerViewOnly,
+      });
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
       });
@@ -1194,11 +1121,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         registrationId: result.registration.id,
         walletName: result.registration.walletName,
       });
-      if (createFastReceiveOnSetup) {
-        setupLog('startCreateHardwareWallet.fastWalletRegistered', {
-          sourceRegistrationId: result.registration.id,
-        });
-      }
       setupLog('startCreateHardwareWallet.syncDeferred', {
         reason: 'setupNavigation',
         walletId: result.session.walletId,
@@ -1253,10 +1175,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     );
     setPasswordPromptMode(undefined);
     setCreateError(undefined);
-    setCreatedSeed('');
-    setCreatedSeedWalletId(undefined);
-    clearQueuedSeedBackup();
-    setSeedConfirmed(false);
     beginCreateAnimation(
       registeredWallet?.kind === 'hardware' ? HARDWARE_STEPS : OPEN_STEPS,
     );
@@ -1368,10 +1286,13 @@ export default function WalletSetupScreen({ navigation, route }: any) {
 
         {registeredWallets.length > 0 ? (
           <View style={s.savedWalletSection}>
-            <Text style={s.savedWalletTitle}>{t('home.allWallets')}</Text>
+            <Text style={s.savedWalletTitle}>{t('setup.existingWallets')}</Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
+              snapToInterval={206}
+              decelerationRate="fast"
+              disableIntervalMomentum
               contentContainerStyle={s.savedWalletCarousel}
             >
               {registeredWallets.map(wallet => (
@@ -1383,18 +1304,30 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                       s.savedWalletCardActive,
                   ]}
                   onPress={() => {
-                    void chooseSavedWallet(wallet.id);
+                    chooseSavedWallet(wallet.id).catch(() => undefined);
                   }}
-                  disabled={creating}
+                  disabled={
+                    creating ||
+                    openingWalletId !== undefined ||
+                    nativeWalletOperationPending
+                  }
                   activeOpacity={0.76}
                 >
-                  <MoneroCoin size={30} />
+                  {openingWalletId === wallet.id ? (
+                    <ActivityIndicator color={colors.orange} size="small" />
+                  ) : (
+                    <MoneroCoin size={30} />
+                  )}
                   <View style={s.savedWalletCopy}>
                     <Text style={s.savedWalletName} numberOfLines={1}>
                       {walletDisplayName(wallet)}
                     </Text>
                     <Text style={s.savedWalletMeta} numberOfLines={1}>
-                      {isFastWalletRegistration(wallet)
+                      {openingWalletId === wallet.id
+                        ? `${t(
+                            'setup.step.openingWallet',
+                          )} · ${openingElapsedSeconds}s`
+                        : isFastWalletRegistration(wallet)
                         ? 'Fast Wallet'
                         : wallet.kind === 'hardware'
                         ? 'Ledger'
@@ -1404,6 +1337,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 </TouchableOpacity>
               ))}
             </ScrollView>
+            {walletOpenError ? (
+              <Text
+                accessibilityLiveRegion="assertive"
+                style={s.walletOpenError}
+              >
+                {walletOpenError}
+              </Text>
+            ) : null}
           </View>
         ) : null}
 
@@ -1414,39 +1355,44 @@ export default function WalletSetupScreen({ navigation, route }: any) {
             title={t('action.createWallet')}
             desc={t('setup.createDesc')}
             onPress={() => openPasswordPrompt('create')}
-            disabled={creating}
+            disabled={creating || nativeWalletOperationPending}
           />
           <SetupOption
             icon={<IcoUsb c={colors.orange} />}
             title="Ledger Nano"
             desc={t('setup.hardware.desc')}
             onPress={openLedgerPrompt}
-            disabled={creating}
+            disabled={creating || nativeWalletOperationPending}
           />
           <SetupOption
             icon={<IcoImport c={colors.orange} />}
             title={t('setup.importWallet')}
             desc={t('setup.importDesc')}
             onPress={() => openPasswordPrompt('restore')}
-            disabled={creating}
+            disabled={creating || nativeWalletOperationPending}
           />
         </View>
       </Animated.View>
 
       {/* Footer */}
-      <TouchableOpacity
-        accessibilityRole="link"
-        accessibilityLabel="Made with love by TEX8"
-        onPress={() => void Linking.openURL('https://solutions.tex8.com/en')}
-        activeOpacity={0.72}
-      >
-        <Text style={s.footer}>
-          Made with <Text style={{ color: colors.orange }}>❤️</Text> by{' '}
-          <Text style={{ color: 'rgba(255,255,255,0.62)', fontWeight: '800' }}>
-            TEX8
+      <View style={s.footerBlock}>
+        <TouchableOpacity
+          accessibilityRole="link"
+          accessibilityLabel="Made with love by TEX8"
+          onPress={() => void Linking.openURL('https://solutions.tex8.com/en')}
+          activeOpacity={0.72}
+        >
+          <Text style={s.footer}>
+            Made with <Text style={{ color: colors.orange }}>❤️</Text> by{' '}
+            <Text
+              style={{ color: 'rgba(255,255,255,0.62)', fontWeight: '800' }}
+            >
+              TEX8
+            </Text>
           </Text>
-        </Text>
-      </TouchableOpacity>
+        </TouchableOpacity>
+        <Text style={s.version}>v{mobileAppVersion.versionName}</Text>
+      </View>
 
       <Modal
         visible={passwordPromptMode !== undefined}
@@ -1540,33 +1486,6 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 ) : null}
                 {createError ? (
                   <Text style={s.errorText}>{createError}</Text>
-                ) : null}
-                {passwordPromptMode === 'create' ||
-                passwordPromptMode === 'restore' ? (
-                  <>
-                    {fastReceiveSetupToggle}
-                    {passwordPromptMode === 'create' ? (
-                      <View style={s.fastReceiveRow}>
-                        <View style={s.fastReceiveText}>
-                          <Text style={s.fastReceiveTitle}>
-                            {t('setup.enthusiastsTitle')}
-                          </Text>
-                          <Text style={s.fastReceiveValue}>
-                            {t('setup.enthusiastsDescription')}
-                          </Text>
-                        </View>
-                        <Switch
-                          value={enableEnthusiastDiscoveryOnSetup}
-                          onValueChange={setEnableEnthusiastDiscoveryOnSetup}
-                          trackColor={{
-                            false: 'rgba(255,255,255,0.12)',
-                            true: colors.orange,
-                          }}
-                          thumbColor="#FFF"
-                        />
-                      </View>
-                    ) : null}
-                  </>
                 ) : null}
                 <View style={s.promptActions}>
                   <TouchableOpacity
@@ -1756,7 +1675,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                   <View style={s.createLoader}>
                     <ActivityIndicator color={colors.orange} size="large" />
                   </View>
-                  <Text style={s.createStep}>{createStep}</Text>
+                  <Text style={s.createStep}>
+                    {createStep} · {creatingElapsedSeconds}s
+                  </Text>
                 </View>
               </View>
             </LinearGradient>
@@ -1853,6 +1774,12 @@ const s = StyleSheet.create({
     fontSize: 12,
     marginTop: 3,
   },
+  walletOpenError: {
+    color: colors.error,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 10,
+  },
   option: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1891,12 +1818,22 @@ const s = StyleSheet.create({
     marginLeft: 8,
   },
 
+  footerBlock: {
+    alignItems: 'center',
+    paddingBottom: 44,
+  },
   footer: {
     color: 'rgba(255,255,255,0.25)',
     fontSize: 13,
     textAlign: 'center',
-    paddingBottom: 50,
     fontWeight: '500',
+  },
+  version: {
+    color: 'rgba(255,255,255,0.1)',
+    fontSize: 9,
+    fontWeight: '500',
+    letterSpacing: 0.7,
+    marginTop: 7,
   },
 
   promptKeyboard: { flex: 1 },

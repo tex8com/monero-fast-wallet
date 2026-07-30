@@ -1,0 +1,119 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+
+const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const namesUi = readFileSync(new URL('../src/MfwNames.tsx', import.meta.url), 'utf8');
+const host = readFileSync(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8');
+const registry = readFileSync(new URL('../src-tauri/src/mfw_names.rs', import.meta.url), 'utf8');
+const resolver = readFileSync(new URL('../src-tauri/src/mfw_name_resolver.rs', import.meta.url), 'utf8');
+const native = readFileSync(
+  new URL('../../../native/desktop-bridge/cpp/DesktopWalletCore.cpp', import.meta.url),
+  'utf8',
+);
+const build = readFileSync(new URL('../src-tauri/build.rs', import.meta.url), 'utf8');
+const capabilities = readFileSync(
+  new URL('../src-tauri/capabilities/main.json', import.meta.url),
+  'utf8',
+);
+const releaseManifest = JSON.parse(
+  readFileSync(new URL('../../../config/v1-release-features.json', import.meta.url), 'utf8'),
+);
+
+test('desktop MFW lifecycle is reachable only through pinned release gates', () => {
+  assert.match(app, /v1ReleaseFeatures\.mfwNameRegistration && <MfwNames/);
+  assert.match(host, /release_features::require\(\s*"mfwNameRegistration"/);
+  assert.equal(releaseManifest.features.mfwNameRegistration, false);
+  assert.equal(releaseManifest.parameters.mfwNameGenesis, null);
+  assert.deepEqual(releaseManifest.parameters.mfwNameResolverOrigins, []);
+});
+
+test('every desktop MFW command has generated permission and invoke coverage', () => {
+  for (const command of [
+    'list_mfw_names',
+    'resolve_mfw_name_for_payment',
+    'check_mfw_name_availability',
+    'prepare_mfw_name_registration',
+    'prepare_mfw_name_claim',
+    'prepare_mfw_name_transition',
+    'export_mfw_name_recovery',
+    'import_mfw_name_recovery',
+    'refresh_mfw_name',
+    'remove_mfw_name_local',
+  ]) {
+    assert.match(build, new RegExp(`"${command}"`));
+    assert.match(host, new RegExp(`\\b${command},`));
+    assert.match(capabilities, new RegExp(`"allow-${command.replaceAll('_', '-')}"`));
+  }
+});
+
+test('owner authority stays in secure storage and outside public renderer responses', () => {
+  assert.match(host, /store_mfw_name_owner_state/);
+  assert.match(host, /load_mfw_owner_state/);
+  assert.match(registry, /owner_private_key_hex: String/);
+  assert.match(registry, /commit_salt_hex: String/);
+  assert.doesNotMatch(
+    host.match(/struct MfwPreparedResponse \{[\s\S]*?\n\}/)?.[0] ?? '',
+    /owner_private|commit_salt/,
+  );
+  assert.doesNotMatch(namesUi, /ownerPrivateKeyHex|commitSaltHex/);
+});
+
+test('registration cannot broadcast until encrypted owner recovery was saved', () => {
+  assert.match(host, /record\.recovery_exported_at\.is_none\(\)/);
+  assert.match(host, /Export and safely store the encrypted MFW recovery file/);
+  assert.match(host, /\.create_new\(true\)/);
+  assert.match(registry, /tex8_mfw_export_name_recovery_v1/);
+  assert.match(registry, /tex8_mfw_import_name_recovery_v1/);
+});
+
+test('recovery import derives the public term from verified chain heights', () => {
+  assert.match(host, /estimated_term_years\(resolution\.record_height, resolution\.expiry_height\)/);
+  assert.match(registry, /const PROTOCOL_YEAR_BLOCKS: u64 = 262_800/);
+  assert.match(registry, /term_blocks\.div_ceil\(PROTOCOL_YEAR_BLOCKS\)/);
+  assert.match(registry, /\(1\.\.=10\)\.contains\(years\)/);
+});
+
+test('registration covers local subaddresses and height-bound debounced availability', () => {
+  assert.match(namesUi, /loadDesktopWalletAddresses/);
+  assert.match(namesUi, /create_subaddress/);
+  assert.match(namesUi, /Create & select dedicated subaddress/);
+  assert.match(namesUi, /walletChainHeight/);
+  assert.match(namesUi, /window\.setTimeout\(\(\) =>/);
+  assert.match(namesUi, /}, 450\)/);
+  assert.match(namesUi, /Array\.from\(\{ length: 10 \}/);
+  assert.match(host, /input\.address_index/);
+  assert.match(host, /\.address\(&input\.wallet_id, account_index, address_index\)/);
+  assert.match(
+    host,
+    /wallet_address != input\.address\.trim\(\)/,
+  );
+});
+
+test('resolver requires independent strict HTTPS quorum and native signature verification', () => {
+  assert.match(resolver, /origins\.len\(\) < 2 \|\| origins\.len\(\) > 4/);
+  assert.match(resolver, /Policy::none\(\)/);
+  assert.match(resolver, /deny_unknown_fields/);
+  assert.match(resolver, /Independent MFW resolvers disagree/);
+  assert.match(resolver, /tex8_mfw_verify_and_encode_name_address_v1/);
+  assert.match(resolver, /MIN_CONFIRMATIONS: u64 = 15/);
+});
+
+test('ordinary Send resolves .mfw but reviews the verified Monero address', () => {
+  assert.match(app, /endsWith\('\.mfw'\)/);
+  assert.match(app, /resolve_mfw_name_for_payment/);
+  assert.match(host, /\.validate_recipient_address\(&address, network_code\)/);
+});
+
+test('every native MFW operation prepares exactly one purpose-bound transaction', () => {
+  assert.match(native, /request\.mfwNameExtraNonce = material\.commitExtraNonce/);
+  assert.match(native, /request\.mfwNameExtraNonce = record\.extraNonce/g);
+  assert.match(host, /tx_count != 1/);
+  assert.match(registry, /tx_ids\.len\(\) != 1/);
+});
+
+test('secret-bearing C ABI buffers are wiped before release', () => {
+  assert.match(native, /invokeSecret\(core/);
+  assert.match(native, /secureClear\(result->value\)/);
+  assert.match(native, /volatile char\* cursor/);
+});

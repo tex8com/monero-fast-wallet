@@ -24,6 +24,12 @@ option(
   ON
 )
 
+option(
+  MONERO_WALLET_DIAGNOSTICS
+  "Emit privacy-filtered wallet lifecycle diagnostics"
+  OFF
+)
+
 set(
   MONERO_SOURCE_DIR
   ""
@@ -71,6 +77,47 @@ set(
   ""
   CACHE PATH
   "Root directory containing built forked monero-fast-crypto libraries by Android ABI"
+)
+
+set(
+  MONERO_FAST_WALLET_PROTOCOL_LIBRARY
+  ""
+  CACHE FILEPATH
+  "Path to the Fast Wallet protocol static library for the current Android ABI"
+)
+
+set(
+  MONERO_FAST_WALLET_PROTOCOL_ROOT
+  ""
+  CACHE PATH
+  "Root containing Fast Wallet protocol static libraries by Android ABI"
+)
+
+set(
+  MONERO_COMMUNITY_MATRIX_LIBRARY
+  ""
+  CACHE FILEPATH
+  "Path to the Community Matrix Rust static library for the current Android ABI"
+)
+
+set(
+  MONERO_COMMUNITY_MATRIX_ROOT
+  ""
+  CACHE PATH
+  "Root containing Community Matrix static libraries by Android ABI"
+)
+
+set(
+  MONERO_COMMUNITY_HARRIER_LIBRARY
+  ""
+  CACHE FILEPATH
+  "Path to the verified Community Harrier C++ static library for the current Android ABI"
+)
+
+option(
+  MONERO_ENTHUSIAST_V1_ENABLED
+  "Require the complete verified native Community runtime"
+  OFF
 )
 
 set(
@@ -125,10 +172,50 @@ add_library(monero_wallet_bridge_jni SHARED
 
 target_compile_features(monero_wallet_bridge_jni PRIVATE cxx_std_17)
 
+if(MONERO_WALLET_DIAGNOSTICS)
+  target_compile_definitions(monero_wallet_bridge_jni
+    PRIVATE TEX8_WALLET_DIAGNOSTICS=1
+  )
+else()
+  target_compile_definitions(monero_wallet_bridge_jni
+    PRIVATE TEX8_WALLET_DIAGNOSTICS=0
+  )
+endif()
+
 target_include_directories(monero_wallet_bridge_jni
   PRIVATE
     "${REPO_ROOT}/native/monero-bridge/cpp"
+    "${REPO_ROOT}/native/fast-wallet-protocol/include"
 )
+
+if(NOT MONERO_FAST_WALLET_PROTOCOL_LIBRARY AND MONERO_FAST_WALLET_PROTOCOL_ROOT)
+  foreach(candidate IN ITEMS
+      "${MONERO_FAST_WALLET_PROTOCOL_ROOT}/${TEX8_ANDROID_TARGET_LABEL}/libfast_wallet_protocol.a"
+      "${MONERO_FAST_WALLET_PROTOCOL_ROOT}/${ANDROID_ABI}/libfast_wallet_protocol.a")
+    if(EXISTS "${candidate}")
+      set(MONERO_FAST_WALLET_PROTOCOL_LIBRARY "${candidate}")
+      break()
+    endif()
+  endforeach()
+endif()
+
+if(NOT MONERO_FAST_WALLET_PROTOCOL_LIBRARY OR
+   NOT EXISTS "${MONERO_FAST_WALLET_PROTOCOL_LIBRARY}")
+  message(FATAL_ERROR
+    "Set MONERO_FAST_WALLET_PROTOCOL_LIBRARY or "
+    "MONERO_FAST_WALLET_PROTOCOL_ROOT to a built Fast Wallet protocol archive")
+endif()
+
+if(NOT MONERO_COMMUNITY_MATRIX_LIBRARY AND MONERO_COMMUNITY_MATRIX_ROOT)
+  foreach(candidate IN ITEMS
+      "${MONERO_COMMUNITY_MATRIX_ROOT}/${TEX8_ANDROID_TARGET_LABEL}/libcommunity_matrix_core.a"
+      "${MONERO_COMMUNITY_MATRIX_ROOT}/${ANDROID_ABI}/libcommunity_matrix_core.a")
+    if(EXISTS "${candidate}")
+      set(MONERO_COMMUNITY_MATRIX_LIBRARY "${candidate}")
+      break()
+    endif()
+  endforeach()
+endif()
 
 if(MONERO_WALLET_BRIDGE_WITH_MONERO)
   if(NOT MONERO_SOURCE_DIR)
@@ -168,16 +255,11 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
     endforeach()
   endif()
 
-  if(NOT MONERO_FAST_CRYPTO_LIBRARY AND MONERO_FAST_CRYPTO_ROOT)
-    foreach(candidate IN ITEMS
-        "${MONERO_FAST_CRYPTO_ROOT}/${TEX8_ANDROID_TARGET_LABEL}/libmonero_fast_crypto.a"
-        "${MONERO_FAST_CRYPTO_ROOT}/${ANDROID_ABI}/libmonero_fast_crypto.a")
-      if(EXISTS "${candidate}")
-        set(MONERO_FAST_CRYPTO_LIBRARY "${candidate}")
-        break()
-      endif()
-    endforeach()
-  endif()
+  # The mobile protocol archive intentionally includes the authenticated
+  # monero-fast-crypto C ABI. Linking the historical Rust archive beside it
+  # duplicates Rust's standard library and fails (or becomes toolchain-order
+  # dependent). One archive supplies both ABIs.
+  set(MONERO_FAST_CRYPTO_LIBRARY "${MONERO_FAST_WALLET_PROTOCOL_LIBRARY}")
 
   if(NOT MONERO_WALLET_API_LIBRARY)
     message(FATAL_ERROR "Set MONERO_WALLET_API_LIBRARY or MONERO_WALLET_API_ROOT to built Android libwallet_api archives")
@@ -189,6 +271,32 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
 
   if(NOT EXISTS "${MONERO_WALLET_API_LIBRARY}")
     message(FATAL_ERROR "MONERO_WALLET_API_LIBRARY does not exist: ${MONERO_WALLET_API_LIBRARY}")
+  endif()
+
+  set(MONERO_WALLET_API_HEADER "${MONERO_SOURCE_DIR}/src/wallet/api/wallet2_api.h")
+  if(NOT EXISTS "${MONERO_WALLET_API_HEADER}")
+    message(FATAL_ERROR
+      "Monero wallet API header does not exist: ${MONERO_WALLET_API_HEADER}")
+  endif()
+  if(NOT MONERO_WALLET_API_HEADER_SHA256 OR
+     NOT MONERO_WALLET_API_LIBRARY_SHA256)
+    message(FATAL_ERROR
+      "Monero link manifest has no authenticated wallet API fingerprints. "
+      "Rebuild wallet_api and regenerate link.cmake.")
+  endif()
+  file(SHA256 "${MONERO_WALLET_API_HEADER}" MONERO_CURRENT_WALLET_API_HEADER_SHA256)
+  file(SHA256 "${MONERO_WALLET_API_LIBRARY}" MONERO_CURRENT_WALLET_API_LIBRARY_SHA256)
+  if(NOT MONERO_CURRENT_WALLET_API_HEADER_SHA256 STREQUAL
+     MONERO_WALLET_API_HEADER_SHA256)
+    message(FATAL_ERROR
+      "Monero wallet API ABI mismatch: wallet2_api.h does not match "
+      "libwallet_api.a. Rebuild both from the same source tree.")
+  endif()
+  if(NOT MONERO_CURRENT_WALLET_API_LIBRARY_SHA256 STREQUAL
+     MONERO_WALLET_API_LIBRARY_SHA256)
+    message(FATAL_ERROR
+      "Monero wallet API archive changed after link manifest generation. "
+      "Regenerate the authenticated manifest.")
   endif()
 
   if(NOT EXISTS "${MONERO_FAST_CRYPTO_LIBRARY}")
@@ -270,5 +378,68 @@ else()
       TEX8_WALLET_BRIDGE_WITH_MONERO=0
       TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=0
       TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=0
+  )
+  target_link_libraries(monero_wallet_bridge_jni
+    PRIVATE
+      "${MONERO_FAST_WALLET_PROTOCOL_LIBRARY}"
+  )
+endif()
+
+if(MONERO_ENTHUSIAST_V1_ENABLED AND
+   (NOT MONERO_COMMUNITY_MATRIX_LIBRARY OR NOT MONERO_COMMUNITY_HARRIER_LIBRARY))
+  message(FATAL_ERROR
+    "Monero Enthusiast V1 requires both the aggregate Matrix/runtime Rust archive "
+    "and the verified Harrier C++ archive")
+endif()
+
+if(MONERO_COMMUNITY_MATRIX_LIBRARY AND MONERO_COMMUNITY_HARRIER_LIBRARY)
+  if(NOT EXISTS "${MONERO_COMMUNITY_MATRIX_LIBRARY}")
+    message(FATAL_ERROR
+      "MONERO_COMMUNITY_MATRIX_LIBRARY does not exist: ${MONERO_COMMUNITY_MATRIX_LIBRARY}")
+  endif()
+  set(
+    MONERO_COMMUNITY_MATRIX_HEADER
+    "${REPO_ROOT}/native/community-matrix-core/include/community_matrix_core.h"
+  )
+  if(NOT EXISTS "${MONERO_COMMUNITY_MATRIX_HEADER}")
+    message(FATAL_ERROR
+      "Community Matrix C header does not exist: ${MONERO_COMMUNITY_MATRIX_HEADER}")
+  endif()
+  set(
+    MONERO_COMMUNITY_RUNTIME_HEADER
+    "${REPO_ROOT}/native/community-runtime-core/include/community_runtime_core.h"
+  )
+  if(NOT EXISTS "${MONERO_COMMUNITY_RUNTIME_HEADER}")
+    message(FATAL_ERROR
+      "Community runtime C header does not exist: ${MONERO_COMMUNITY_RUNTIME_HEADER}")
+  endif()
+  if(NOT EXISTS "${MONERO_COMMUNITY_HARRIER_LIBRARY}")
+    message(FATAL_ERROR
+      "MONERO_COMMUNITY_HARRIER_LIBRARY does not exist: ${MONERO_COMMUNITY_HARRIER_LIBRARY}")
+  endif()
+  target_compile_definitions(monero_wallet_bridge_jni
+    PRIVATE
+      TEX8_COMMUNITY_MATRIX_LINKED=1
+      TEX8_COMMUNITY_RUNTIME_LINKED=1
+  )
+  target_include_directories(monero_wallet_bridge_jni
+    PRIVATE
+      "${REPO_ROOT}/native/community-matrix-core/include"
+      "${REPO_ROOT}/native/community-runtime-core/include"
+  )
+  target_link_libraries(monero_wallet_bridge_jni
+    PRIVATE
+      "${MONERO_COMMUNITY_MATRIX_LIBRARY}"
+      "${MONERO_COMMUNITY_HARRIER_LIBRARY}"
+      android
+      dl
+      log
+      m
+  )
+else()
+  target_compile_definitions(monero_wallet_bridge_jni
+    PRIVATE
+      TEX8_COMMUNITY_MATRIX_LINKED=0
+      TEX8_COMMUNITY_RUNTIME_LINKED=0
   )
 endif()

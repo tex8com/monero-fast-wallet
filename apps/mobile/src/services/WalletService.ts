@@ -1,5 +1,6 @@
 import { requireNativeMoneroWallet } from './NativeMoneroWallet';
 import {
+  applyGlobalFastWalletDeliveryState,
   assertIndependentFastReceiveIdentityId,
   createFastReceiveIdentityId,
   createFastReceiveIdentityRecord,
@@ -8,16 +9,15 @@ import {
   loadFastReceiveIdentities,
   nextFastReceiveDerivationIndex,
   removeFastReceiveIdentity,
+  saveFastReceiveIdentities,
   upsertFastReceiveIdentity,
 } from './FastReceiveRegistry';
 import { FastWalletPushService } from './FastWalletPushService';
+import { enrollFastWalletWatch } from './FastWalletEnrollmentService';
 import type { FastReceiveIdentityRecord } from './FastReceiveRegistry';
 import {
-  parseKeyImageStatusResponse,
   parseWatchStatusResponse,
-  validateKeyImages,
   type FastReceiveWatchStatusResult,
-  type KeyImageStatusResult,
 } from './FastReceiveScannerClient';
 import {
   fastReceiveScannerUrlForSettings,
@@ -59,15 +59,20 @@ import type {
   HardwareWalletStatus,
   LedgerTransportStatus,
   MoneroNetwork,
+  MfwNameNativePreparation,
   OpenWalletInput,
   OpenWalletWithStoredSecretInput,
   PreparedTransaction,
+  PrepareMfwNameClaimInput,
+  PrepareMfwNameRegistrationInput,
+  PrepareMfwNameTransitionInput,
   PrepareTransactionInput,
   RestoreWalletWithNativeSeedInput,
   TransactionPriority,
   WalletTransaction,
   WalletSnapshot,
 } from './NativeMoneroWallet';
+import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 
 export interface WalletSession {
   walletId: string;
@@ -96,6 +101,9 @@ export interface CreateNamedWalletWithStoredSecretInput {
   language?: string;
   network?: MoneroNetwork;
   authentication?: DeviceSecretAuthenticationMode;
+  onProgress?: (
+    phase: 'settings' | 'storage' | 'secret' | 'native-wallet' | 'registry',
+  ) => void;
 }
 
 export interface CreateNamedWalletResult {
@@ -139,6 +147,12 @@ export interface CreateFastReceiveIdentityInput {
   restoreHeight?: number;
 }
 
+export interface RestoreFastReceiveIdentityInput {
+  label?: string;
+  network?: MoneroNetwork;
+  restoreHeight?: number;
+}
+
 export interface CreateFastReceiveIdentityResult {
   identity: FastReceiveIdentityRecord;
   identities: FastReceiveIdentityRecord[];
@@ -158,10 +172,18 @@ export interface DisableFastReceiveIdentityInput {
   scannerUrl: string;
 }
 
-export interface CheckFastReceiveKeyImagesInput {
+export interface EnableEncryptedFastWalletAlertsInput {
   identityId: string;
-  scannerUrl: string;
-  keyImages: string[];
+  /**
+   * Omitted for the built-in official Worker. A private descriptor may enter
+   * only after the native private-pairing confirmation path accepts it.
+   */
+  workerDescriptorHex?: string;
+}
+
+export interface PairPrivateFastWalletWorkerInput {
+  workerDescriptorHex: string;
+  network: MoneroNetwork;
 }
 
 export interface PrepareWalletTransactionInput {
@@ -181,8 +203,6 @@ export interface FastWalletSignalRefreshResult {
 
 const NODE_APPLY_TIMEOUT_MS = 30_000;
 const WALLET_READ_TIMEOUT_MS = 12_000;
-const FAST_SPEND_RECONCILE_INTERVAL_MS = 30_000;
-const KEY_IMAGE_STATUS_BATCH_SIZE = 1024;
 export type DeviceSecretAuthenticationMode =
   | 'if-available'
   | 'required'
@@ -190,14 +210,21 @@ export type DeviceSecretAuthenticationMode =
 
 export class WalletService {
   private activeSession: WalletSession | undefined;
+  private walletRecoveryInFlight?: Promise<RegisteredWallet[]>;
   private fastSignalRefreshInFlight?: Promise<FastWalletSignalRefreshResult[]>;
   private fastSignalSessions = new Map<string, WalletSession>();
   private fastReceiveRepairInFlight = new Map<
     string,
     Promise<CreateFastReceiveIdentityResult>
   >();
-  private fastSpendReconcileInFlight = new Map<string, Promise<number>>();
-  private fastSpendReconciledAt = new Map<string, number>();
+
+  private requireSigningSession(session: WalletSession): void {
+    if (session.readOnly) {
+      throw new Error(
+        'Connect and unlock your Ledger to authorize this transaction.',
+      );
+    }
+  }
 
   async linkedWithMonero(): Promise<boolean> {
     return traceWalletOperation('linkedWithMonero', {}, () =>
@@ -283,11 +310,21 @@ export class WalletService {
     );
   }
 
-  async deleteWalletFiles(path: string): Promise<void> {
+  async deleteEmptyWalletFiles(
+    session: WalletSession,
+    path: string,
+  ): Promise<void> {
     return traceWalletOperation(
-      'deleteWalletFiles',
-      { walletFile: walletFileName(path) },
-      () => requireNativeMoneroWallet().deleteWalletFiles(path),
+      'deleteEmptyWalletFiles',
+      {
+        walletFile: walletFileName(path),
+        ...sessionLogFields(session),
+      },
+      () =>
+        requireNativeMoneroWallet().deleteEmptyWalletFiles(
+          session.walletId,
+          path,
+        ),
     );
   }
 
@@ -410,6 +447,7 @@ export class WalletService {
         usesStoredSecret: true,
       },
       async () => {
+        input.onProgress?.('settings');
         const settings = await loadActiveNodeConnectionSettings(input.network);
         logWalletEvent(
           'WalletService',
@@ -426,6 +464,7 @@ export class WalletService {
           settings.network,
           'software',
         );
+        input.onProgress?.('storage');
         const path = await this.defaultWalletPath(walletName, settings.network);
         const credentialKey = walletCredentialKey(
           'software',
@@ -433,13 +472,16 @@ export class WalletService {
           settings.network,
         );
 
+        input.onProgress?.('secret');
         await this.ensureSecret(credentialKey);
+        input.onProgress?.('native-wallet');
         const session = await this.createWalletWithStoredSecret({
           path,
           secretKey: credentialKey,
           language: input.language,
           network: settings.network,
         });
+        input.onProgress?.('registry');
         const registration = await saveRegisteredWallet(
           createRegisteredWallet({
             walletName,
@@ -475,6 +517,141 @@ export class WalletService {
     return loadRegisteredWallets();
   }
 
+  /**
+   * Repairs registry loss without importing arbitrary wallet files. A native
+   * wallet becomes selectable only when its matching, non-exportable device
+   * credential still exists. Missing credentials, ambiguous kinds, Fast
+   * Wallet identities and standalone Ledger-view companions are ignored.
+   */
+  async recoverUnregisteredWallets(): Promise<RegisteredWallet[]> {
+    if (this.walletRecoveryInFlight) {
+      return this.walletRecoveryInFlight;
+    }
+
+    const recovery = this.recoverUnregisteredWalletsInternal();
+    this.walletRecoveryInFlight = recovery;
+    try {
+      return await recovery;
+    } finally {
+      this.walletRecoveryInFlight = undefined;
+    }
+  }
+
+  private async recoverUnregisteredWalletsInternal(): Promise<
+    RegisteredWallet[]
+  > {
+    const nativeWallet = requireNativeMoneroWallet();
+    const registered = await loadRegisteredWallets();
+    const registeredNames = new Set(
+      registered.map(wallet => `${wallet.network}:${wallet.walletName}`),
+    );
+    let recoveredCount = 0;
+
+    for (const network of WALLET_NETWORKS) {
+      const walletNames = await nativeWallet.listWalletNames(network);
+      for (const walletName of walletNames) {
+        const registryKey = `${network}:${walletName}`;
+        if (
+          registeredNames.has(registryKey) ||
+          walletName.endsWith('-ledger-view') ||
+          walletName.startsWith('fast-receive-v2-')
+        ) {
+          continue;
+        }
+
+        const softwareCredentialKey = walletCredentialKey(
+          'software',
+          walletName,
+          network,
+        );
+        const hardwareCredentialKey = walletCredentialKey(
+          'hardware',
+          walletName,
+          network,
+        );
+        const [hasSoftwareCredential, hasHardwareCredential] =
+          await Promise.all([
+            nativeWallet.walletSecretExists(softwareCredentialKey),
+            nativeWallet.walletSecretExists(hardwareCredentialKey),
+          ]);
+
+        // Two matching credentials would make the wallet type ambiguous. Do
+        // not guess which native open path is safe.
+        if (hasSoftwareCredential === hasHardwareCredential) {
+          logWalletEvent('WalletService', 'walletRecovery.skipped', {
+            network,
+            reason: hasSoftwareCredential
+              ? 'ambiguousCredentialKind'
+              : 'missingCredential',
+            walletName,
+          });
+          continue;
+        }
+
+        const kind = hasHardwareCredential ? 'hardware' : 'software';
+        const credentialKey = hasHardwareCredential
+          ? hardwareCredentialKey
+          : softwareCredentialKey;
+        const path = await this.defaultWalletPath(walletName, network);
+        let viewOnlyPath: string | undefined;
+        let viewOnlyCredentialKey: string | undefined;
+        if (kind === 'hardware') {
+          const candidateViewOnlyCredentialKey = ledgerViewOnlyCredentialKey(
+            walletName,
+            network,
+          );
+          const hasViewOnlyCredential = await nativeWallet.walletSecretExists(
+            candidateViewOnlyCredentialKey,
+          );
+          const candidateViewOnlyName = `${walletName}-ledger-view`;
+          if (
+            hasViewOnlyCredential &&
+            walletNames.includes(candidateViewOnlyName)
+          ) {
+            viewOnlyPath = await this.defaultWalletPath(
+              candidateViewOnlyName,
+              network,
+            );
+            viewOnlyCredentialKey = candidateViewOnlyCredentialKey;
+          }
+        }
+
+        await upsertRegisteredWallet(
+          createRegisteredWallet({
+            id: `recovered-${kind}-${network}-${pathSafeWalletName(
+              walletName,
+            )}`,
+            walletName,
+            path,
+            network,
+            kind,
+            credentialKey,
+            seedBackupStatus: kind === 'software' ? 'pending' : 'not-required',
+            viewOnlyPath,
+            viewOnlyCredentialKey,
+            hardwareDeviceName: kind === 'hardware' ? 'Ledger' : undefined,
+            hardwareDeviceType: kind === 'hardware' ? 'ledger' : undefined,
+          }),
+          false,
+        );
+        registeredNames.add(registryKey);
+        recoveredCount += 1;
+        logWalletEvent('WalletService', 'walletRecovery.registered', {
+          kind,
+          network,
+          walletName,
+        });
+      }
+    }
+
+    const wallets = await loadRegisteredWallets();
+    logWalletEvent('WalletService', 'walletRecovery.complete', {
+      recoveredCount,
+      walletCount: wallets.length,
+    });
+    return wallets;
+  }
+
   async setActiveRegisteredWallet(
     walletId: string,
   ): Promise<RegisteredWallet | undefined> {
@@ -501,15 +678,38 @@ export class WalletService {
     const remaining = registrations.filter(
       wallet => !removedIds.has(wallet.id),
     );
+    const fastRemovalSessions = new Map<string, WalletSession>();
 
     for (const wallet of removed) {
-      const backgroundSession = this.fastSignalSessions.get(wallet.id);
-      if (backgroundSession) {
-        this.fastSignalSessions.delete(wallet.id);
-        await this.stopRefresh(backgroundSession).catch(() => undefined);
-        await this.closeWallet(backgroundSession).catch(() => undefined);
+      if (
+        (wallet.kind === 'software' || isFastWalletRegistration(wallet)) &&
+        wallet.seedBackupStatus !== 'verified'
+      ) {
+        throw new Error(
+          'Back up this wallet’s recovery words before removing it from the app.',
+        );
+      }
+      const fastSession = await this.requireFastWalletSafeToRemove(wallet);
+      if (fastSession) {
+        fastRemovalSessions.set(wallet.id, fastSession);
       }
     }
+
+    // The native Core repeats the synchronized/zero-balance checks, closes the
+    // exact wallet session, and only then removes its encrypted files. The
+    // generic renderer-callable file deletion bridge was deliberately removed.
+    for (const [registrationId, session] of fastRemovalSessions) {
+      await this.stopRefresh(session).catch(() => undefined);
+      await this.deleteEmptyWalletFiles(
+        session,
+        registrations.find(wallet => wallet.id === registrationId)!.path,
+      );
+      this.fastSignalSessions.delete(registrationId);
+      if (this.activeSession?.walletId === session.walletId) {
+        this.activeSession = undefined;
+      }
+    }
+
     if (
       this.activeSession?.registrationId &&
       removedIds.has(this.activeSession.registrationId)
@@ -517,27 +717,13 @@ export class WalletService {
       await this.closeWallet(this.activeSession).catch(() => undefined);
     }
 
-    const filePaths = new Set<string>();
     const credentialKeys = new Set<string>();
     for (const wallet of removed) {
-      filePaths.add(wallet.path);
-      if (wallet.viewOnlyPath) {
-        filePaths.add(wallet.viewOnlyPath);
-      }
       if (wallet.credentialKey) {
         credentialKeys.add(wallet.credentialKey);
       }
       if (wallet.viewOnlyCredentialKey) {
         credentialKeys.add(wallet.viewOnlyCredentialKey);
-      }
-    }
-    for (const path of filePaths) {
-      if (
-        !remaining.some(
-          wallet => wallet.path === path || wallet.viewOnlyPath === path,
-        )
-      ) {
-        await this.deleteWalletFiles(path);
       }
     }
     for (const key of credentialKeys) {
@@ -563,6 +749,48 @@ export class WalletService {
       removedCount: removed.length,
     });
     return loadRegisteredWallets();
+  }
+
+  /**
+   * This check deliberately lives below the screen. A caller cannot remove a
+   * Fast Wallet merely by bypassing the confirmation dialog: the local Monero
+   * Core must have the exact wallet open, fully synchronized, and empty.
+   */
+  private async requireFastWalletSafeToRemove(
+    wallet: RegisteredWallet,
+  ): Promise<WalletSession | undefined> {
+    if (!isFastWalletRegistration(wallet)) {
+      return undefined;
+    }
+    const session =
+      this.activeSession?.registrationId === wallet.id
+        ? this.activeSession
+        : this.fastSignalSessions.get(wallet.id);
+    if (!session) {
+      throw new Error(
+        'Open and synchronize this Fast Wallet before removing it.',
+      );
+    }
+    const snapshot = await this.snapshot(session);
+    if (!snapshot.synchronized) {
+      throw new Error(
+        'The Fast Wallet cannot be removed until local synchronization is complete.',
+      );
+    }
+    let balance: bigint;
+    try {
+      balance = BigInt(snapshot.balanceAtomic);
+    } catch {
+      throw new Error(
+        'The Fast Wallet cannot be removed until its local balance is known.',
+      );
+    }
+    if (balance > 0n) {
+      throw new Error(
+        'This Fast Wallet still contains Monero. Send the remaining balance before removing it.',
+      );
+    }
+    return session;
   }
 
   async refreshFastWalletsFromIncomingSignal(): Promise<
@@ -672,6 +900,9 @@ export class WalletService {
   async loadFastReceiveIdentitiesForActiveNode(): Promise<
     FastReceiveIdentityRecord[]
   > {
+    if (!v1ReleaseFeatures.plaintextFastWalletHosting) {
+      return this.loadFastReceiveIdentities();
+    }
     const settings = await loadActiveNodeConnectionSettings();
     return this.refreshFastReceiveRegistrationStatusesForSettings(settings);
   }
@@ -679,12 +910,15 @@ export class WalletService {
   async refreshFastReceiveRegistrationStatusesForSettings(
     settings: NodeConnectionSettings,
   ): Promise<FastReceiveIdentityRecord[]> {
-    const scannerUrl = fastReceiveScannerUrlForSettings(settings);
     const identities = await this.ensureFastWalletRegistrations(
       await this.resolveFastReceiveIdentityContainerPaths(
         await loadFastReceiveIdentities(),
       ),
     );
+    if (!v1ReleaseFeatures.plaintextFastWalletHosting) {
+      return identities;
+    }
+    const scannerUrl = fastReceiveScannerUrlForSettings(settings);
     if (!scannerUrl) {
       return identities;
     }
@@ -776,10 +1010,6 @@ export class WalletService {
         registrationId: maskIdentifier(registration.id),
       },
       async () => {
-        if (isFastWalletRegistration(registration)) {
-          throw new Error('Fast Wallet is synchronized by the scanner service');
-        }
-
         const resolvedRegistration =
           await this.resolveRegisteredWalletContainerPath(registration);
 
@@ -1143,7 +1373,6 @@ export class WalletService {
             );
             this.activeSession = session;
           } catch (error) {
-            await this.deleteWalletFiles(viewOnlyPath).catch(() => undefined);
             await this.deleteSecret(viewOnlyCredentialKey).catch(
               () => undefined,
             );
@@ -1193,6 +1422,11 @@ export class WalletService {
   async createNamedLedgerFastWalletFromDevice(
     input: Omit<CreateNamedHardwareWalletInput, 'accountIndex' | 'role'>,
   ): Promise<CreateNamedWalletResult> {
+    if (!v1ReleaseFeatures.ledgerFastWallet) {
+      throw new Error(
+        'Fast Wallet is available only as a separate software wallet in this release.',
+      );
+    }
     return this.createNamedWalletFromDevice({
       ...input,
       accountIndex: 1,
@@ -1206,6 +1440,11 @@ export class WalletService {
       'accountIndex' | 'role' | 'sourceWalletId'
     >,
   ): Promise<CreateNamedLedgerWalletPairResult> {
+    if (!v1ReleaseFeatures.ledgerFastWallet) {
+      throw new Error(
+        'Ledger Fast Wallet is disabled. Create an independent software Fast Wallet instead.',
+      );
+    }
     return traceWalletOperation(
       'createNamedLedgerWalletPairFromDevice',
       {
@@ -1271,7 +1510,6 @@ export class WalletService {
             );
             this.activeSession = deviceSession;
           } catch (error) {
-            await this.deleteWalletFiles(viewOnlyPath).catch(() => undefined);
             await this.deleteSecret(viewOnlyCredentialKey).catch(
               () => undefined,
             );
@@ -1458,6 +1696,9 @@ export class WalletService {
   async createFastReceiveIdentity(
     input: CreateFastReceiveIdentityInput,
   ): Promise<CreateFastReceiveIdentityResult> {
+    if (!v1ReleaseFeatures.localFastWallet) {
+      throw new Error('Fast Wallet is not available in this release.');
+    }
     return traceWalletOperation(
       'createFastReceiveIdentity',
       {
@@ -1551,7 +1792,7 @@ export class WalletService {
             path: identity.path,
             network: identity.network,
             kind: 'fast',
-            seedBackupStatus: 'not-required',
+            seedBackupStatus: 'pending',
             credentialKey: identity.credentialKey,
             restoreHeight: identity.restoreHeight,
             now: identity.createdAt,
@@ -1565,9 +1806,103 @@ export class WalletService {
     );
   }
 
+  async restoreFastReceiveIdentityWithNativeSeed(
+    input: RestoreFastReceiveIdentityInput,
+  ): Promise<CreateFastReceiveIdentityResult> {
+    if (!v1ReleaseFeatures.localFastWallet) {
+      throw new Error('Fast Wallet is not available in this release.');
+    }
+    return traceWalletOperation(
+      'restoreFastReceiveIdentityWithNativeSeed',
+      {
+        networkHint: input.network ?? 'active',
+        restoreHeight: input.restoreHeight ?? 0,
+        seedBoundary: 'native',
+      },
+      async () => {
+        const settings = await loadActiveNodeConnectionSettings(input.network);
+        const current = await loadFastReceiveIdentities();
+        const derivationIndex = nextFastReceiveDerivationIndex(
+          current.filter(identity => identity.network === settings.network),
+        );
+        const identityId = createFastReceiveIdentityId(derivationIndex);
+        const path = await this.defaultWalletPath(identityId, settings.network);
+        const credentialKey = fastWalletCredentialKey(
+          identityId,
+          settings.network,
+        );
+        const label = input.label?.trim() || 'Restored Fast Wallet';
+        const restoreHeight = input.restoreHeight ?? 0;
+
+        await this.ensureSecret(credentialKey);
+        let session: WalletSession | undefined;
+        let identityMetadataCreated = false;
+        try {
+          session = await this.restoreWalletWithNativeSeed({
+            path,
+            secretKey: credentialKey,
+            network: settings.network,
+            restoreHeight,
+          });
+          const address = await this.getAddress(session, 0, 0);
+          await this.closeWallet(session, true);
+          session = undefined;
+          const now = new Date().toISOString();
+          const identity = createFastReceiveIdentityRecord(
+            {
+              id: identityId,
+              label,
+              path,
+              address,
+              network: settings.network,
+              restoreHeight,
+              derivationIndex,
+              scannerStatus: 'local-only',
+            },
+            now,
+            { credentialKey },
+          );
+          const identities = await upsertFastReceiveIdentity(identity);
+          identityMetadataCreated = true;
+          await upsertRegisteredWallet(
+            createRegisteredWallet({
+              id: identity.id,
+              displayName: label,
+              walletName: identity.id,
+              path,
+              network: settings.network,
+              kind: 'fast',
+              seedBackupStatus: 'verified',
+              seedBackedUpAt: now,
+              credentialKey,
+              restoreHeight,
+              now,
+            }),
+          );
+          return { identity, identities };
+        } catch (error) {
+          if (session) {
+            await this.closeWallet(session, false).catch(() => undefined);
+          }
+          if (identityMetadataCreated) {
+            await removeFastReceiveIdentity(identityId).catch(() => undefined);
+            await removeWalletRegistration(identityId).catch(() => undefined);
+          }
+          await this.deleteSecret(credentialKey).catch(() => undefined);
+          throw error;
+        }
+      },
+    );
+  }
+
   async enableFastReceiveIdentity(
     input: EnableFastReceiveIdentityInput,
   ): Promise<CreateFastReceiveIdentityResult> {
+    if (!v1ReleaseFeatures.plaintextFastWalletHosting) {
+      throw new Error(
+        'Fast Wallet hosting is unavailable until encrypted Worker pairing is ready.',
+      );
+    }
     return traceWalletOperation(
       'enableFastReceiveIdentity',
       {
@@ -1681,21 +2016,178 @@ export class WalletService {
     );
   }
 
-  async checkFastReceiveKeyImages(
-    input: CheckFastReceiveKeyImagesInput,
-  ): Promise<KeyImageStatusResult> {
-    const keyImages = validateKeyImages(input.keyImages);
-    const scannerAuthSecretKey = fastReceiveScannerCredentialKey(
-      input.identityId,
-    );
-    const bodyText =
-      await requireNativeMoneroWallet().checkFastReceiveKeyImagesWithStoredSecret(
-        input.identityId,
-        input.scannerUrl,
-        scannerAuthSecretKey,
-        JSON.stringify(keyImages),
+  async enableEncryptedFastWalletAlerts(
+    input: EnableEncryptedFastWalletAlertsInput,
+  ): Promise<CreateFastReceiveIdentityResult> {
+    const privateWorkerRequested = Boolean(input.workerDescriptorHex?.trim());
+    if (
+      (privateWorkerRequested && !v1ReleaseFeatures.privateWorkerPairing) ||
+      (!privateWorkerRequested && !v1ReleaseFeatures.officialWorker)
+    ) {
+      throw new Error(
+        'Fast Wallet alerts are not configured in this signed release.',
       );
-    return parseKeyImageStatusResponse(bodyText, input.identityId, keyImages);
+    }
+    return traceWalletOperation(
+      'enableEncryptedFastWalletAlerts',
+      { identityId: input.identityId },
+      async () => {
+        const identities = await loadFastReceiveIdentities();
+        const existing = identities.find(item => item.id === input.identityId);
+        if (!existing) {
+          throw new Error('Unknown Fast Wallet');
+        }
+        assertIndependentFastReceiveIdentityId(existing.id);
+        if (!existing.credentialKey) {
+          throw new Error(
+            'The Fast Wallet credential is missing from secure storage.',
+          );
+        }
+        const registration = (await loadRegisteredWallets()).find(
+          item => item.id === existing.id,
+        );
+        if (
+          !registration ||
+          !isFastWalletRegistration(registration) ||
+          registration.seedBackupStatus !== 'verified'
+        ) {
+          throw new Error(
+            'Back up this Fast Wallet before turning on payment alerts.',
+          );
+        }
+
+        await FastWalletPushService.enableFastWalletNotifications();
+        try {
+          const enrolled = await enrollFastWalletWatch(
+            requireNativeMoneroWallet(),
+            {
+              identityId: existing.id,
+              path: existing.path,
+              credentialKey: existing.credentialKey,
+              network: existing.network,
+              restoreHeight: existing.restoreHeight,
+              workerDescriptorHex: input.workerDescriptorHex,
+            },
+          );
+          const checkedAt = new Date().toISOString();
+          const identity: FastReceiveIdentityRecord = {
+            ...existing,
+            status: 'enabled',
+            scannerStatus: 'enabled',
+            scannerUrl: '',
+            scannerCheckedAt: checkedAt,
+            notificationsEnabled: true,
+            assignmentHandle: enrolled.assignment.assignmentHandle,
+            assignmentEpoch: enrolled.assignment.assignmentEpoch,
+            assignmentExpiresAt: enrolled.assignment.expiresAt,
+            watchMessageId: enrolled.messageId,
+            updatedAt: checkedAt,
+          };
+          const next = await saveFastReceiveIdentities(
+            applyGlobalFastWalletDeliveryState(
+              identities.map(item =>
+                item.id === identity.id ? identity : item,
+              ),
+              true,
+              checkedAt,
+            ),
+          );
+          return { identity, identities: next };
+        } catch (error) {
+          const checkedAt = new Date().toISOString();
+          const failed: FastReceiveIdentityRecord = {
+            ...existing,
+            status: 'registration-error',
+            scannerStatus: 'needs-attention',
+            scannerUrl: '',
+            scannerCheckedAt: checkedAt,
+            notificationsEnabled: true,
+            updatedAt: checkedAt,
+          };
+          await saveFastReceiveIdentities(
+            applyGlobalFastWalletDeliveryState(
+              identities.map(item => (item.id === failed.id ? failed : item)),
+              true,
+              checkedAt,
+            ),
+          );
+          throw error;
+        }
+      },
+    );
+  }
+
+  async pairPrivateFastWalletWorker(
+    input: PairPrivateFastWalletWorkerInput,
+  ): Promise<string> {
+    if (!v1ReleaseFeatures.privateWorkerPairing) {
+      throw new Error(
+        'Private scan-service pairing is disabled in this signed release.',
+      );
+    }
+    return traceWalletOperation(
+      'pairPrivateFastWalletWorker',
+      { network: input.network },
+      () =>
+        requireNativeMoneroWallet().pairPrivateFastWalletWorkerDescriptor(
+          input.workerDescriptorHex,
+          input.network,
+          Math.floor(Date.now() / 1_000),
+        ),
+    );
+  }
+
+  async turnOffFastWalletAlerts(
+    identityId: string,
+  ): Promise<CreateFastReceiveIdentityResult> {
+    assertIndependentFastReceiveIdentityId(identityId);
+    await FastWalletPushService.disableFastWalletNotifications();
+    const checkedAt = new Date().toISOString();
+    const identities = applyGlobalFastWalletDeliveryState(
+      await loadFastReceiveIdentities(),
+      false,
+      checkedAt,
+    );
+    const next = await saveFastReceiveIdentities(identities);
+    const identity = next.find(item => item.id === identityId);
+    if (!identity) {
+      throw new Error('Unknown Fast Wallet');
+    }
+    return { identity, identities: next };
+  }
+
+  async deleteHostedFastWalletData(
+    identityId: string,
+  ): Promise<CreateFastReceiveIdentityResult> {
+    assertIndependentFastReceiveIdentityId(identityId);
+    const identities = await loadFastReceiveIdentities();
+    const existing = identities.find(item => item.id === identityId);
+    if (!existing) {
+      throw new Error('Unknown Fast Wallet');
+    }
+    if (!existing.assignmentHandle) {
+      throw new Error('This Fast Wallet has no hosted scan data.');
+    }
+    await requireNativeMoneroWallet().deleteFastWalletAssignment(
+      existing.id,
+      existing.assignmentHandle,
+    );
+    const updatedAt = new Date().toISOString();
+    const identity: FastReceiveIdentityRecord = {
+      ...existing,
+      status: 'local-only',
+      scannerStatus: 'local-only',
+      scannerUrl: '',
+      scannerCheckedAt: updatedAt,
+      notificationsEnabled: false,
+      assignmentHandle: undefined,
+      assignmentEpoch: undefined,
+      assignmentExpiresAt: undefined,
+      watchMessageId: undefined,
+      updatedAt,
+    };
+    const next = await upsertFastReceiveIdentity(identity);
+    return { identity, identities: next };
   }
 
   async checkFastReceiveRegistration(
@@ -1703,108 +2195,6 @@ export class WalletService {
     scannerUrl: string,
   ): Promise<FastReceiveWatchStatusResult> {
     return checkFastReceiveRegistrationWithNative(identityId, scannerUrl);
-  }
-
-  private async reconcileFastWalletSpendState(
-    session: WalletSession,
-    options: { required: boolean; force?: boolean },
-  ): Promise<number> {
-    const registration = session.registrationId
-      ? (await loadRegisteredWallets()).find(
-          item => item.id === session.registrationId,
-        )
-      : await loadRegisteredWallet();
-    if (!registration || !isFastWalletRegistration(registration)) {
-      return 0;
-    }
-
-    const lastChecked = this.fastSpendReconciledAt.get(session.walletId) ?? 0;
-    if (
-      !options.force &&
-      Date.now() - lastChecked < FAST_SPEND_RECONCILE_INTERVAL_MS
-    ) {
-      return 0;
-    }
-
-    const existing = this.fastSpendReconcileInFlight.get(session.walletId);
-    if (existing) {
-      return existing;
-    }
-
-    const work = traceWalletOperation(
-      'fastSpendReconcile',
-      sessionLogFields(session),
-      async () => {
-        const identity = (await loadFastReceiveIdentities()).find(
-          item => item.id === registration.id,
-        );
-        if (
-          !identity ||
-          identity.status !== 'enabled' ||
-          !identity.scannerUrl
-        ) {
-          if (options.required) {
-            throw new Error(
-              'Fast Wallet spend status cannot be verified until its server registration is active',
-            );
-          }
-          return 0;
-        }
-
-        const nativeWallet = requireNativeMoneroWallet();
-        const keyImages = await nativeWallet.getOwnedOutputKeyImages(
-          session.walletId,
-        );
-        if (keyImages.length === 0) {
-          this.fastSpendReconciledAt.set(session.walletId, Date.now());
-          return 0;
-        }
-
-        let changed = 0;
-        for (
-          let offset = 0;
-          offset < keyImages.length;
-          offset += KEY_IMAGE_STATUS_BATCH_SIZE
-        ) {
-          const batch = keyImages.slice(
-            offset,
-            offset + KEY_IMAGE_STATUS_BATCH_SIZE,
-          );
-          const result = await this.checkFastReceiveKeyImages({
-            identityId: identity.id,
-            scannerUrl: identity.scannerUrl,
-            keyImages: batch,
-          });
-          if (result.items.some(item => item.status === 'unknown')) {
-            if (options.required) {
-              throw new Error(
-                'Fast Wallet spend status is not yet known. Please retry in a moment.',
-              );
-            }
-            return changed;
-          }
-
-          const checkedHeight = Math.min(
-            ...result.items.map(item => item.checkedHeight),
-          );
-          changed += await nativeWallet.reconcileOutputKeyImages(
-            session.walletId,
-            result.items.map(item => item.keyImage),
-            result.items.map(item => item.status === 'spent'),
-            checkedHeight,
-          );
-        }
-
-        this.fastSpendReconciledAt.set(session.walletId, Date.now());
-        return changed;
-      },
-    );
-    this.fastSpendReconcileInFlight.set(session.walletId, work);
-    try {
-      return await work;
-    } finally {
-      this.fastSpendReconcileInFlight.delete(session.walletId);
-    }
   }
 
   getActiveSession(): WalletSession | undefined {
@@ -1874,24 +2264,6 @@ export class WalletService {
             unlockedBalanceAtomic,
           };
         }
-        if (result.synchronized) {
-          const changed = await this.reconcileFastWalletSpendState(session, {
-            required: false,
-          }).catch(error => {
-            logWalletEvent(
-              'WalletService',
-              'fastSpendReconcile.backgroundError',
-              {
-                error: errorMessage(error),
-                ...sessionLogFields(session),
-              },
-            );
-            return 0;
-          });
-          if (changed > 0) {
-            result = await readSnapshot();
-          }
-        }
         return result;
       },
     );
@@ -1951,13 +2323,136 @@ export class WalletService {
         priority: input.priority ?? 'default',
         ...sessionLogFields(session),
       },
-      async () => {
-        await this.reconcileFastWalletSpendState(session, {
-          required: true,
-          force: true,
-        });
-        return requireNativeMoneroWallet().prepareTransaction(request);
+      () => requireNativeMoneroWallet().prepareTransaction(request),
+    );
+  }
+
+  async prepareMfwNameRegistration(
+    session: WalletSession,
+    input: Omit<PrepareMfwNameRegistrationInput, 'walletId' | 'accountIndex'>,
+  ): Promise<MfwNameNativePreparation> {
+    this.requireSigningSession(session);
+    return traceWalletOperation(
+      'prepareMfwNameRegistration',
+      {
+        name: input.name,
+        network: input.network,
+        registrationId: maskIdentifier(input.registrationId),
+        ...sessionLogFields(session),
       },
+      () =>
+        requireNativeMoneroWallet().prepareMfwNameRegistration({
+          ...input,
+          walletId: session.walletId,
+          accountIndex: session.accountIndex ?? 0,
+        }),
+    );
+  }
+
+  async prepareMfwNameClaim(
+    session: WalletSession,
+    input: Omit<PrepareMfwNameClaimInput, 'walletId' | 'accountIndex'>,
+  ): Promise<MfwNameNativePreparation> {
+    this.requireSigningSession(session);
+    return traceWalletOperation(
+      'prepareMfwNameClaim',
+      {
+        name: input.name,
+        network: input.network,
+        registrationId: maskIdentifier(input.registrationId),
+        years: input.years,
+        ...sessionLogFields(session),
+      },
+      () =>
+        requireNativeMoneroWallet().prepareMfwNameClaim({
+          ...input,
+          walletId: session.walletId,
+          accountIndex: session.accountIndex ?? 0,
+        }),
+    );
+  }
+
+  async prepareMfwNameTransition(
+    session: WalletSession,
+    input: Omit<PrepareMfwNameTransitionInput, 'walletId' | 'accountIndex'>,
+  ): Promise<MfwNameNativePreparation> {
+    this.requireSigningSession(session);
+    return traceWalletOperation(
+      'prepareMfwNameTransition',
+      {
+        name: input.name,
+        network: input.network,
+        operation: input.operation,
+        registrationId: maskIdentifier(input.registrationId),
+        years: input.years,
+        ...sessionLogFields(session),
+      },
+      () =>
+        requireNativeMoneroWallet().prepareMfwNameTransition({
+          ...input,
+          walletId: session.walletId,
+          accountIndex: session.accountIndex ?? 0,
+        }),
+    );
+  }
+
+  async exportMfwNameRecovery(
+    registrationId: string,
+    name: string,
+    network: MoneroNetwork,
+  ): Promise<boolean> {
+    return traceWalletOperation(
+      'exportMfwNameRecovery',
+      {
+        name,
+        network,
+        registrationId: maskIdentifier(registrationId),
+      },
+      () =>
+        requireNativeMoneroWallet().exportMfwNameRecovery(
+          registrationId,
+          name,
+          network,
+        ),
+    );
+  }
+
+  async importMfwNameRecovery(
+    registrationId: string,
+    name: string,
+    address: string,
+    network: MoneroNetwork,
+    expectedOwnerPublicKeyHex: string,
+  ): Promise<string> {
+    return traceWalletOperation(
+      'importMfwNameRecovery',
+      {
+        name,
+        network,
+        registrationId: maskIdentifier(registrationId),
+      },
+      () =>
+        requireNativeMoneroWallet().importMfwNameRecovery(
+          registrationId,
+          name,
+          address,
+          network,
+          expectedOwnerPublicKeyHex,
+        ),
+    );
+  }
+
+  async validateRecipientAddress(
+    address: string,
+    network: MoneroNetwork,
+  ): Promise<string> {
+    const candidate = address.trim();
+    if (!candidate) {
+      throw new Error('A recipient address is required.');
+    }
+    return requireNativeMoneroWallet().validateRecipientAddress(
+      candidate,
+      network,
     );
   }
 
@@ -2280,7 +2775,10 @@ export class WalletService {
             path: registeredIdentity.path,
             network: registeredIdentity.network,
             kind: 'fast' as const,
-            seedBackupStatus: 'not-required' as const,
+            seedBackupStatus:
+              existing.seedBackupStatus === 'verified'
+                ? ('verified' as const)
+                : ('pending' as const),
             credentialKey,
             restoreHeight: registeredIdentity.restoreHeight,
           }
@@ -2290,7 +2788,7 @@ export class WalletService {
             path: registeredIdentity.path,
             network: registeredIdentity.network,
             kind: 'fast',
-            seedBackupStatus: 'not-required',
+            seedBackupStatus: 'pending',
             credentialKey,
             restoreHeight: registeredIdentity.restoreHeight,
             now: registeredIdentity.createdAt,
@@ -2556,24 +3054,53 @@ export class WalletService {
     kind: 'software' | 'hardware',
   ): Promise<string> {
     const baseName = pathSafeWalletName(requestedName);
+    const nativeWallet = requireNativeMoneroWallet();
     const existingNames = new Set(
       (await loadRegisteredWallets())
-        .filter(wallet => wallet.network === network && wallet.kind === kind)
+        .filter(wallet => wallet.network === network)
         .map(wallet => wallet.walletName),
     );
 
-    if (!existingNames.has(baseName)) {
-      return baseName;
-    }
+    const candidateIsOccupied = async (candidate: string): Promise<boolean> => {
+      if (existingNames.has(candidate)) {
+        return true;
+      }
+      const path = await this.defaultWalletPath(candidate, network);
+      if (await nativeWallet.walletPathOccupied(path)) {
+        return true;
+      }
+      if (kind === 'hardware') {
+        const viewOnlyPath = await this.defaultWalletPath(
+          `${candidate}-ledger-view`,
+          network,
+        );
+        if (await nativeWallet.walletPathOccupied(viewOnlyPath)) {
+          return true;
+        }
+      }
+      return false;
+    };
 
-    for (let index = 2; index < 1000; index += 1) {
-      const candidate = `${baseName}-${index}`;
-      if (!existingNames.has(candidate)) {
+    for (let index = 1; index < 1000; index += 1) {
+      const candidate = index === 1 ? baseName : `${baseName}-${index}`;
+      if (!(await candidateIsOccupied(candidate))) {
         return candidate;
       }
     }
 
-    throw new Error('Too many wallets with this name');
+    // A sequential namespace with 999 occupied names should not make wallet
+    // creation impossible. The native CSPRNG supplies 192 bits for a final,
+    // readable-prefix fallback while Monero's own overwrite guard stays active.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const candidate = await nativeWallet.createSecureRandomIdentifier(
+        baseName.slice(0, 24),
+      );
+      if (!(await candidateIsOccupied(candidate))) {
+        return candidate;
+      }
+    }
+
+    throw new Error('Could not allocate a free wallet file name');
   }
 }
 
@@ -2780,6 +3307,12 @@ function walletCredentialKey(
     walletName,
   )}.v1`;
 }
+
+const WALLET_NETWORKS: ReadonlyArray<MoneroNetwork> = [
+  'mainnet',
+  'testnet',
+  'stagenet',
+];
 
 function fastWalletCredentialKey(
   identityId: string,
