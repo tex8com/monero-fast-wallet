@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {readFileSync} from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {spawnSync} from 'node:child_process';
 import test from 'node:test';
 
 const repo = new URL('../', import.meta.url);
@@ -991,6 +1000,85 @@ test('notification gateway rejects the legacy shared-token trust boundary', () =
   assert.match(gateway, /x-fast-wallet-installation-auth/);
   assert.match(agent, /x-fast-wallet-installation-auth/);
   assert.match(deploy, /Refusing live deployment/);
+});
+
+test('Community V1 deployment keeps its private Synapse token readable only by the service group', () => {
+  const deploy = read(
+    'services/enthusiast-v1/deploy/deploy-live-from-macos.sh',
+  );
+  const unit = read(
+    'services/enthusiast-v1/deploy/enthusiast-v1.service',
+  );
+
+  assert.match(
+    deploy,
+    /install -d -o root -g "\$service_user" -m 0750 \/etc\/monero-fast-wallet/,
+  );
+  assert.match(
+    deploy,
+    /chown root:"\$service_user" "\$admin_token_file"/,
+  );
+  assert.match(deploy, /chmod 0640 "\$admin_token_file"/);
+  assert.match(deploy, /install-nginx-include\.py/);
+  assert.match(
+    unit,
+    /ENTHUSIAST_SYNAPSE_ADMIN_TOKEN_FILE=\/etc\/monero-fast-wallet\/enthusiast-synapse-admin-token/,
+  );
+});
+
+test('Community V1 Nginx installer inserts exactly one validated HTTPS include', () => {
+  const root = mkdtempSync(join(tmpdir(), 'enthusiast-nginx-'));
+  try {
+    const site = join(root, 'xmr.tex8.com');
+    const snippetSource = join(root, 'candidate.conf');
+    const snippetDestination = join(root, 'snippets', 'enthusiast-v1.conf');
+    writeFileSync(
+      site,
+      [
+        'server {',
+        '    include /etc/nginx/snippets/enthusiast-v1.conf;',
+        '    listen 443 ssl; # managed',
+        '    server_name xmr.tex8.com;',
+        '}',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(snippetSource, 'location = /v2 { return 404; }\n');
+
+    const result = spawnSync(
+      'python3',
+      [
+        new URL(
+          'services/enthusiast-v1/deploy/install-nginx-include.py',
+          repo,
+        ).pathname,
+        '--site',
+        site,
+        '--snippet-source',
+        snippetSource,
+        '--snippet-destination',
+        snippetDestination,
+        '--include-path',
+        '/etc/nginx/snippets/enthusiast-v1.conf',
+      ],
+      {encoding: 'utf8'},
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const installed = readFileSync(site, 'utf8');
+    assert.equal(
+      installed.match(
+        /include \/etc\/nginx\/snippets\/enthusiast-v1\.conf;/g,
+      )?.length,
+      1,
+    );
+    assert.match(
+      installed,
+      /listen 443 ssl; # managed\n    include \/etc\/nginx\/snippets\/enthusiast-v1\.conf;/,
+    );
+    assert.equal(statSync(snippetDestination).mode & 0o777, 0o644);
+  } finally {
+    rmSync(root, {recursive: true, force: true});
+  }
 });
 
 test('mobile installation identifiers come only from native secure randomness', () => {

@@ -97,7 +97,7 @@ done
 id "$service_user" >/dev/null 2>&1 ||
   sudo useradd --system --user-group --home-dir /var/lib/monero-enthusiast \
     --shell /usr/sbin/nologin "$service_user"
-sudo install -d -m 0750 /etc/monero-fast-wallet
+sudo install -d -o root -g "$service_user" -m 0750 /etc/monero-fast-wallet
 sudo install -d -o "$service_user" -g "$service_user" -m 0700 /var/lib/monero-enthusiast
 sudo install -d -o 991 -g 991 -m 0700 "$synapse_root"
 sudo install -d -o root -g root -m 0755 "$public_root"
@@ -133,9 +133,10 @@ if ! sudo test -s "$synapse_root/homeserver.yaml"; then
     -v "$synapse_root:/data" \
     "$synapse_image" generate >/dev/null
 fi
-sudo docker run --rm -v "$synapse_root:/data" "$synapse_image" \
-  python -c '
+sudo docker run --rm --entrypoint python \
+  -v "$synapse_root:/data" "$synapse_image" -c '
 from pathlib import Path
+import secrets
 import yaml
 p = Path("/data/homeserver.yaml")
 c = yaml.safe_load(p.read_text())
@@ -147,6 +148,11 @@ c["trusted_key_servers"] = []
 c["allow_public_rooms_without_auth"] = False
 c["allow_public_rooms_over_federation"] = False
 c["serve_server_wellknown"] = True
+# Use a canonical one-time bootstrap secret even when an older Synapse
+# generator left a punctuation-heavy value in the file. Registration stays
+# disabled and the secret is removed immediately after the service account is
+# created.
+c["registration_shared_secret"] = secrets.token_hex(32)
 c["listeners"] = [{
     "port": 8008,
     "bind_addresses": ["127.0.0.1"],
@@ -168,7 +174,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now monero-enthusiast-synapse.service
 sudo systemctl restart monero-enthusiast-synapse.service
 for _ in {1..60}; do
-  if curl --fail --silent --show-error --max-time 2 \
+  if curl --fail --silent --max-time 2 \
     http://127.0.0.1:8008/_matrix/client/versions >/dev/null; then
     break
   fi
@@ -181,8 +187,8 @@ sudo python3 "$service_source/deploy/bootstrap-synapse-admin.py" \
   "$synapse_root/homeserver.yaml" "$admin_token_file"
 sudo chown root:"$service_user" "$admin_token_file"
 sudo chmod 0640 "$admin_token_file"
-sudo docker run --rm -v "$synapse_root:/data" "$synapse_image" \
-  python -c '
+sudo docker run --rm --entrypoint python \
+  -v "$synapse_root:/data" "$synapse_image" -c '
 from pathlib import Path
 import yaml
 p = Path("/data/homeserver.yaml")
@@ -202,7 +208,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now enthusiast-v1.service
 sudo systemctl restart enthusiast-v1.service
 for _ in {1..30}; do
-  curl --fail --silent --show-error --max-time 2 \
+  curl --fail --silent --max-time 2 \
     http://127.0.0.1:8092/healthz >/dev/null && break
   sleep 1
 done
@@ -246,12 +252,11 @@ sudo ln -sfn "00000000000000000001" \
   "$public_root/v1/queries/global-v1/current"
 
 sudo install -d -m 0755 /etc/nginx/snippets
-sudo install -o root -g root -m 0644 \
-  "$service_source/deploy/nginx-enthusiast-v1.conf" "$snippet_file"
-sudo sed -i "\\|^[[:space:]]*include ${snippet_file};[[:space:]]*$|d" "$site_file"
-sudo sed -i \
-  "/^[[:space:]]*listen[[:space:]].*443[[:space:]].*ssl.*;/a\\    include $snippet_file;" \
-  "$site_file"
+sudo python3 "$service_source/deploy/install-nginx-include.py" \
+  --site "$site_file" \
+  --snippet-source "$service_source/deploy/nginx-enthusiast-v1.conf" \
+  --snippet-destination "$snippet_file" \
+  --include-path "$snippet_file"
 sudo nginx -t
 sudo systemctl reload nginx
 

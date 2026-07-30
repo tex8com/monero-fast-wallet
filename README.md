@@ -206,14 +206,16 @@ V1** surface:
 - no marketplace checkout, price matching, trading, escrow, custody, exchange,
   or payment intermediation.
 
-The replacement implementation exists substantially in source, but remains
-disabled until its signed production catalogs and model packages, services,
-Matrix recovery and E2EE evidence, moderation operations, physical
-two-client/platform runs, legal approval, and independent review pass. The
-older `enthusiast-discovery` route and its server-readable chat are retained
-only as disabled historical code. Its earlier 11/11 live contract result does
-not count as acceptance of Monero Enthusiast V1, and the application must never
-fall back to it.
+The replacement implementation and its live V1/Matrix service stack are enabled
+for integration testing. Signed catalog and Common-Query sequence 1 are live
+and a product-listing create/read/delete smoke test passes. This is not public
+release approval: model packaging on every platform, Matrix recovery and E2EE
+evidence, moderation operations, physical two-client/platform runs, legal
+approval, and independent review remain required. The older
+`enthusiast-discovery` route and its server-readable chat are retained only as
+disabled historical code. Its earlier 11/11 live contract result does not count
+as acceptance of Monero Enthusiast V1, and the application must never fall back
+to it.
 
 News and Assistant remain separate, disabled capabilities rather than required
 V1 features. A future News or sponsored-content decision must never use wallet
@@ -452,7 +454,7 @@ automatically mean that an end-user artifact has been released.
 | macOS | Tauri 2 app with locally linked core; create/open/seed/subaddress tested; Metal backend packaged | Sign, notarize, staple, and repeat wallet, Ledger, and push validation for the exact app |
 | Windows | UI, Rust host, protection contracts, and notification-agent contracts are present | Build and load the native core as a DLL, then complete wallet, Ledger, push, and installer validation |
 | Linux | ARM64 AppImage assembled locally with the core; DBus agent contract is present | Clean-user, real-node, Ledger, notification, and package validation |
-| Services | Scanner, Gateway, Cuprate, and the replacement Monero Enthusiast V1 service stack exist as separate components; the old Community health route was live during an earlier audit but is not the V1 product | Deploy and validate the exact V1 services, signed catalogs, backups, rotation, restore, load, abuse operations, reorganization handling, and monitoring |
+| Services | Scanner, Gateway, Cuprate, and the replacement Monero Enthusiast V1 service stack exist as separate components; V1 API, private Synapse and signed sequence-1 catalogs are live and smoke-tested | Validate backups, rotation, restore, load, abuse operations, reorganization handling, provider delivery, and monitoring |
 
 The precise, auditable status is documented in
 [Platform Integration Status](docs/PLATFORM_INTEGRATION_STATUS.md) and the

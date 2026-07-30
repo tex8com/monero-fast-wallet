@@ -45,12 +45,17 @@ def main() -> None:
 
     config = config_path.read_text(encoding="utf-8")
     match = re.search(
-        r'(?m)^registration_shared_secret:\s*["\']([^"\']{32,})["\']\s*$',
+        r"""(?m)^registration_shared_secret:\s*(?:
+            ["']([A-Za-z0-9_-]{32,})["']
+            |
+            ([A-Za-z0-9_-]{32,})
+        )\s*$""",
         config,
+        re.VERBOSE,
     )
     if not match:
         raise RuntimeError("Synapse registration bootstrap secret is unavailable")
-    shared_secret = match.group(1)
+    shared_secret = match.group(1) or match.group(2)
     nonce = request("GET", "http://127.0.0.1:8008/_synapse/admin/v1/register")[
         "nonce"
     ]
