@@ -99,6 +99,15 @@ impl HpkePrivateKey {
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
+
+    /// Derive the descriptor-visible public key without exposing the private
+    /// key bytes. This is used by the offline Worker provisioning tool and
+    /// keeps production services from needing a secret-export API.
+    pub fn public_key(&self) -> Result<[u8; 32], ProtocolError> {
+        let private = <Kem as KemTrait>::PrivateKey::from_bytes(&self.0)
+            .map_err(|_| ProtocolError::InvalidPrivateKey)?;
+        fixed_32(Kem::sk_to_pk(&private).to_bytes().as_slice())
+    }
 }
 
 pub fn generate_hpke_keypair() -> Result<(HpkePrivateKey, [u8; 32]), ProtocolError> {

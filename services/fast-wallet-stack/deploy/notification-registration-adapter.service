@@ -1,0 +1,35 @@
+[Unit]
+Description=Monero Fast Wallet app-integrity registration adapter
+Documentation=https://github.com/tex8com/monero-fast-wallet
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=monero-notification-registration
+Group=monero-notification-registration
+EnvironmentFile=/etc/monero-fast-wallet/notification-registration-adapter.env
+ExecStart=/opt/monero-fast-wallet/bin/notification-registration-adapter
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+LimitCORE=0
+LimitMEMLOCK=infinity
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

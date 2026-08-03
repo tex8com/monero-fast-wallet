@@ -1,0 +1,35 @@
+[Unit]
+Description=Monero Fast Wallet ciphertext relay
+Documentation=https://github.com/tex8com/monero-fast-wallet
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=monero-fast-wallet-relay
+Group=monero-fast-wallet-relay
+EnvironmentFile=/etc/monero-fast-wallet/fast-wallet-relay.env
+ExecStart=/opt/monero-fast-wallet/bin/fast-wallet-relay
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+LimitCORE=0
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/monero-fast-wallet-relay
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

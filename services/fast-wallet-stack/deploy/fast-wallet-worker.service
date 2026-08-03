@@ -1,0 +1,40 @@
+[Unit]
+Description=Monero Fast Wallet outbound-only scan Worker
+Documentation=https://github.com/tex8com/monero-fast-wallet
+Wants=network-online.target cuprate.service fast-wallet-relay.service notification-gateway.service
+After=network-online.target cuprate.service fast-wallet-relay.service notification-gateway.service
+
+[Service]
+Type=simple
+# Co-located deployment intentionally uses the cuprate account because signed
+# ScanPacks are private (0700) producer-consumer material. Split-host deployment
+# transfers the signed packs to a dedicated Worker account instead.
+User=cuprate
+Group=cuprate
+EnvironmentFile=/etc/monero-fast-wallet/fast-wallet-worker.env
+ExecStart=/opt/monero-fast-wallet/bin/fast-wallet-worker
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=30s
+LimitCORE=0
+LimitMEMLOCK=infinity
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/monero-fast-wallet /var/lib/cuprate/fast-wallet-scanpacks
+ReadWritePaths=/var/lib/monero-fast-wallet-worker
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
