@@ -195,6 +195,22 @@ fn main() -> Result<()> {
     while running.load(Ordering::Acquire) {
         match worker.poll_relay_once(&relay, relay_limit, unix_seconds()) {
             Ok(result) => {
+                if result.leased > 0
+                    || result.accepted > 0
+                    || result.already_accepted > 0
+                    || result.rejected > 0
+                    || result.acknowledged > 0
+                {
+                    eprintln!(
+                        "fast-wallet-worker relay cycle leased={} deletions={} accepted={} already_accepted={} rejected={} acknowledged={}",
+                        result.leased,
+                        result.deletions,
+                        result.accepted,
+                        result.already_accepted,
+                        result.rejected,
+                        result.acknowledged
+                    );
+                }
                 if result.accepted > 0 {
                     let _ = mempool_trigger.try_send(());
                 }
