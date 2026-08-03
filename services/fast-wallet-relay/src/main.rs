@@ -1,3 +1,4 @@
+use fast_wallet_protocol::WorkerDescriptor;
 use fast_wallet_relay::{router, RelayApiState, RelayMailbox};
 use std::{env, fs::OpenOptions, io::Read, net::SocketAddr, path::Path};
 use tokio::net::TcpListener;
@@ -17,9 +18,16 @@ async fn main() -> Result<(), String> {
         .unwrap_or_else(|_| "./fast-wallet-relay-state.json".to_owned());
     let credential_path = env::var("FAST_WALLET_RELAY_INTERNAL_AUTH_FILE")
         .map_err(|_| "FAST_WALLET_RELAY_INTERNAL_AUTH_FILE is required".to_owned())?;
+    let descriptor_path = env::var("FAST_WALLET_RELAY_TRUSTED_WORKER_DESCRIPTOR_FILE")
+        .map_err(|_| "FAST_WALLET_RELAY_TRUSTED_WORKER_DESCRIPTOR_FILE is required".to_owned())?;
     let internal_auth = load_secret_file(Path::new(&credential_path))?;
-    let mailbox = RelayMailbox::open(state_path)
+    let descriptor = load_descriptor_file(Path::new(&descriptor_path))?;
+    descriptor
+        .verify(descriptor.network, unix_seconds())
+        .map_err(|_| "Trusted Worker descriptor is invalid or expired".to_owned())?;
+    let mut mailbox = RelayMailbox::open(state_path)
         .map_err(|error| format!("Fast Wallet Relay state could not be opened: {error}"))?;
+    mailbox.trust_worker(&descriptor);
     let listener = TcpListener::bind(bind)
         .await
         .map_err(|_| "Fast Wallet Relay could not bind".to_owned())?;
@@ -28,6 +36,42 @@ async fn main() -> Result<(), String> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|_| "Fast Wallet Relay stopped unexpectedly".to_owned())
+}
+
+fn load_descriptor_file(path: &Path) -> Result<WorkerDescriptor, String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = options
+        .open(path)
+        .map_err(|_| "Trusted Worker descriptor file could not be opened securely".to_owned())?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "Trusted Worker descriptor metadata is unavailable".to_owned())?;
+    if !metadata.is_file() || metadata.len() > 1_024 {
+        return Err("Trusted Worker descriptor file is invalid".to_owned());
+    }
+    let mut material = Vec::new();
+    file.read_to_end(&mut material)
+        .map_err(|_| "Trusted Worker descriptor could not be read".to_owned())?;
+    let value = std::str::from_utf8(&material)
+        .map_err(|_| "Trusted Worker descriptor must be lowercase hex".to_owned())?
+        .trim();
+    if value.is_empty() || value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err("Trusted Worker descriptor must be lowercase hex".to_owned());
+    }
+    let encoded =
+        hex::decode(value).map_err(|_| "Trusted Worker descriptor is not valid hex".to_owned())?;
+    WorkerDescriptor::decode(&encoded)
+        .map_err(|_| "Trusted Worker descriptor is not valid".to_owned())
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn load_secret_file(path: &Path) -> Result<[u8; 32], String> {

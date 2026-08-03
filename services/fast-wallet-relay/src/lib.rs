@@ -99,6 +99,24 @@ pub struct RelayMailbox {
     state: Mutex<PersistedState>,
     path: Option<PathBuf>,
     _lease: Option<File>,
+    trusted_workers: Vec<TrustedWorkerIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TrustedWorkerIdentity {
+    worker_root_id: [u8; 32],
+    worker_online_key_id: [u8; 32],
+    hpke_key_id: [u8; 32],
+}
+
+impl From<&WorkerDescriptor> for TrustedWorkerIdentity {
+    fn from(descriptor: &WorkerDescriptor) -> Self {
+        Self {
+            worker_root_id: descriptor.worker_root_id(),
+            worker_online_key_id: descriptor.worker_online_key_id(),
+            hpke_key_id: descriptor.hpke_key_id(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -451,6 +469,7 @@ impl RelayMailbox {
             state: Mutex::new(PersistedState::default()),
             path: None,
             _lease: None,
+            trusted_workers: Vec::new(),
         }
     }
 
@@ -486,7 +505,23 @@ impl RelayMailbox {
             state: Mutex::new(state),
             path: Some(path),
             _lease: Some(lease),
+            trusted_workers: Vec::new(),
         })
+    }
+
+    /// Trust one operator-configured Worker even while its mailbox is empty.
+    /// The request still needs a fresh signature from the descriptor's online
+    /// key; this only avoids a first-assignment bootstrap dependency.
+    pub fn trust_worker(&mut self, descriptor: &WorkerDescriptor) {
+        let identity = TrustedWorkerIdentity::from(descriptor);
+        if !self.trusted_workers.contains(&identity) {
+            self.trusted_workers.push(identity);
+        }
+    }
+
+    fn trusts_configured_worker(&self, descriptor: &WorkerDescriptor) -> bool {
+        let identity = TrustedWorkerIdentity::from(descriptor);
+        self.trusted_workers.contains(&identity)
     }
 
     /// Called only by the separately authenticated assignment/Gateway layer.
@@ -608,7 +643,7 @@ impl RelayMailbox {
         let worker_root_id = hex::encode(descriptor.worker_root_id());
         let mut state = self.lock()?;
         state.prune(now);
-        if !state.trusts_worker(descriptor) {
+        if !self.trusts_configured_worker(descriptor) && !state.trusts_worker(descriptor) {
             return Err(RelayError::Unauthorized);
         }
         state.consume_auth(replay_id, auth.expires_at)?;
@@ -686,7 +721,7 @@ impl RelayMailbox {
         let worker_root_id = hex::encode(descriptor.worker_root_id());
         let mut state = self.lock()?;
         state.prune(now);
-        if !state.trusts_worker(descriptor) {
+        if !self.trusts_configured_worker(descriptor) && !state.trusts_worker(descriptor) {
             return Err(RelayError::Unauthorized);
         }
         let requested: BTreeSet<String> = message_ids.iter().map(hex::encode).collect();
@@ -1266,6 +1301,29 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn configured_worker_can_poll_an_empty_mailbox() {
+        let fixture = fixture();
+        let mut relay = RelayMailbox::in_memory();
+        relay.trust_worker(&fixture.descriptor);
+        let body = pull_auth_body(&fixture.descriptor.worker_root_id(), 10, true);
+        let auth = WorkerRequestAuth::sign(
+            &fixture.descriptor,
+            &fixture.online,
+            WorkerAuthPurpose::Pull,
+            &body,
+            fixture.now,
+            fixture.now + 30,
+        )
+        .unwrap();
+
+        let batch = relay
+            .pull(&fixture.descriptor, &auth, 10, true, fixture.now)
+            .unwrap();
+        assert!(batch.deliveries.is_empty());
+        assert!(batch.deletions.is_empty());
     }
 
     #[test]

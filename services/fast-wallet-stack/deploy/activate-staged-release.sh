@@ -168,6 +168,7 @@ printf '%s\n' \
   'FAST_WALLET_RELAY_BIND=127.0.0.1:8094' \
   'FAST_WALLET_RELAY_STATE=/var/lib/monero-fast-wallet-relay/state.json' \
   'FAST_WALLET_RELAY_INTERNAL_AUTH_FILE=/etc/monero-fast-wallet/relay-internal-auth-relay.key' \
+  'FAST_WALLET_RELAY_TRUSTED_WORKER_DESCRIPTOR_FILE=/etc/monero-fast-wallet/worker-descriptor.hex' \
   > /etc/monero-fast-wallet/fast-wallet-relay.env
 
 install -o root -g root -m 0600 /dev/null /etc/monero-fast-wallet/notification-gateway.env

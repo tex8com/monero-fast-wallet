@@ -12,6 +12,8 @@ grep -q '^legacy_scanpack_cache=true$' "$source_lock"
 grep -q '^mfw_name_index=true$' "$source_lock"
 grep -q '^signed_worker_scanpacks=true$' "$source_lock"
 grep -q 'Cuprate release source mismatch' "$deploy/activate-staged-release.sh"
+grep -q 'FAST_WALLET_RELAY_TRUSTED_WORKER_DESCRIPTOR_FILE=/etc/monero-fast-wallet/worker-descriptor.hex' \
+  "$deploy/activate-staged-release.sh"
 
 for unit in \
   fast-wallet-relay.service \
