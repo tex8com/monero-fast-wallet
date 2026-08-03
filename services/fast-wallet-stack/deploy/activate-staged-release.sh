@@ -13,6 +13,7 @@ fi
 release_dir="$(cd "$1" && pwd -P)"
 material_dir="$(cd "$2" && pwd -P)"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+source_lock="$(cd "$script_dir/.." && pwd -P)/cuprate-source.lock"
 backup_dir="/root/monero-fast-wallet-stack-backups/$(date -u +%Y%m%dT%H%M%SZ)"
 
 required_binaries=(
@@ -42,6 +43,22 @@ for name in "${required_binaries[@]}"; do
     exit 1
   }
 done
+[[ -f "$source_lock" ]] || {
+  echo "Missing pinned Cuprate source lock: $source_lock" >&2
+  exit 1
+}
+expected_cuprate_commit="$(awk -F= '$1 == "commit" { print $2; exit }' "$source_lock")"
+[[ "$expected_cuprate_commit" =~ ^[0-9a-f]{40}$ ]] || {
+  echo 'Pinned Cuprate commit is invalid.' >&2
+  exit 1
+}
+actual_cuprate_commit="$("$release_dir/tex8-fastwallet-cuprate" --version \
+  | sed -n 's/.*"commit": "\([0-9a-f]\{40\}\)".*/\1/p' \
+  | head -n 1)"
+[[ "$actual_cuprate_commit" == "$expected_cuprate_commit" ]] || {
+  echo "Cuprate release source mismatch: expected $expected_cuprate_commit, got ${actual_cuprate_commit:-unknown}." >&2
+  exit 1
+}
 for name in "${required_material[@]}"; do
   [[ -f "$material_dir/$name" ]] || {
     echo "Missing provisioned material: $name" >&2

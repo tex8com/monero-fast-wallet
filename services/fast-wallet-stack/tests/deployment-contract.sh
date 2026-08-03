@@ -3,6 +3,15 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 deploy="$repo_root/services/fast-wallet-stack/deploy"
+source_lock="$repo_root/services/fast-wallet-stack/cuprate-source.lock"
+
+grep -Eq '^repository=https://github.com/tex8com/cuprate\.git$' "$source_lock"
+grep -Eq '^branch=agent/secure-fast-wallet-scanpacks$' "$source_lock"
+grep -Eq '^commit=[0-9a-f]{40}$' "$source_lock"
+grep -q '^legacy_scanpack_cache=true$' "$source_lock"
+grep -q '^mfw_name_index=true$' "$source_lock"
+grep -q '^signed_worker_scanpacks=true$' "$source_lock"
+grep -q 'Cuprate release source mismatch' "$deploy/activate-staged-release.sh"
 
 for unit in \
   fast-wallet-relay.service \

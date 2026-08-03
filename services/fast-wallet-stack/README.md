@@ -30,6 +30,14 @@ rotation.
 Port 8091 remains reserved for Monero News. The Relay's internal assignment
 routes and the Gateway's Worker-wake route are never exposed by Nginx.
 
+## Cuprate source gate
+
+The node binary must be built from the exact commit in `cuprate-source.lock`.
+That combined source contains all three required capabilities: the existing
+optimized wallet ScanPack cache, the canonical MFW name index, and the signed
+read-only ScanPack writer used by the hosted Worker. Activation rejects a
+binary whose embedded commit does not match the lock.
+
 ## Release gate
 
 `config/v1-release-features.json` must keep `officialWorker` disabled until:
