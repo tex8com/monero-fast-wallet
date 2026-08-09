@@ -1,0 +1,557 @@
+From 6be5f85bf211afc075e6bfa50db560754a25c022 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 2 Aug 2026 13:31:26 -0500
+Subject: [PATCH] wallet: share bounded gRPC block ranges across local wallets
+
+---
+ .../grpc_stream/grpc_block_range_pool.cpp     | 463 +++++++++++++++---
+ 1 file changed, 406 insertions(+), 57 deletions(-)
+
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.cpp b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+index 4c62e19..caa3999 100644
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.cpp
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+@@ -2,9 +2,15 @@
+ #include "grpc_block_stream_client.h"
+ 
+ #include <algorithm>
++#include <chrono>
++#include <condition_variable>
+ #include <cstdio>
++#include <cstring>
++#include <limits>
+ #include <memory>
++#include <mutex>
+ #include <string>
++#include <unordered_map>
+ #include <utility>
+ #include <vector>
+ 
+@@ -13,11 +19,305 @@ namespace {
+ constexpr size_t kMaxChannels = 8;
+ constexpr uint32_t kMinRangeBlocks = 16;
+ constexpr uint32_t kMaxRangeBlocks = 512;
++constexpr size_t kSharedCacheMaxEntries = 128;
++constexpr size_t kSharedCacheMaxBytes = 96 * 1024 * 1024;
++constexpr uint64_t kStableDepth = 64;
++constexpr auto kSharedCacheTtl = std::chrono::minutes(2);
++
++struct cached_chunk {
++    std::string payload;
++    uint64_t start_height = 0;
++    uint64_t chunk_seq = 0;
++    uint64_t chain_tip = 0;
++    uint32_t n_blocks = 0;
++    uint32_t payload_bytes = 0;
++    std::string server_request_id;
++};
++
++class shared_range {
++public:
++    shared_range(std::string target, uint64_t start, uint64_t stop,
++        uint32_t chunk_hint, std::string request_id,
++        std::vector<std::string> locator)
++      : target_(std::move(target)), start_(start), stop_(stop),
++        chunk_hint_(chunk_hint), request_id_(std::move(request_id)),
++        locator_(std::move(locator)), expected_(start),
++        last_access_(std::chrono::steady_clock::now()) {}
++
++    ~shared_range() {
++        client_.close();
++    }
++
++    bool open(int& error_code, std::string& error) {
++        if (!client_.connect(target_) || !client_.open_stream(
++                start_, stop_, true, chunk_hint_, request_id_, locator_, 1)) {
++            error_code = client_.last_error_code();
++            error = client_.last_error_message();
++            return false;
++        }
++        return true;
++    }
++
++    bool next(size_t& cursor, cached_chunk& out, uint32_t timeout_ms,
++        int& error_code, std::string& error) {
++        const auto deadline = std::chrono::steady_clock::now()
++            + std::chrono::milliseconds(timeout_ms);
++
++        for (;;) {
++            {
++                std::unique_lock<std::mutex> lock(mu_);
++                last_access_ = std::chrono::steady_clock::now();
++                if (cursor < chunks_.size()) {
++                    out = chunks_[cursor++];
++                    return true;
++                }
++                if (complete_) {
++                    error_code = error_code_;
++                    error = error_;
++                    return false;
++                }
++                if (fetching_) {
++                    if (!cv_.wait_until(lock, deadline, [&] {
++                            return cursor < chunks_.size() || complete_ || !fetching_;
++                        })) {
++                        error_code = -2;
++                        error = "timed out waiting for a shared block range";
++                        return false;
++                    }
++                    continue;
++                }
++                fetching_ = true;
++            }
++
++            std::string payload;
++            const bool received = client_.next_chunk_payload(payload, timeout_ms);
++            cached_chunk chunk;
++            if (received) {
++                chunk.payload = std::move(payload);
++                chunk.start_height = client_.last_chunk_start_height();
++                chunk.chunk_seq = client_.last_chunk_seq();
++                chunk.chain_tip = client_.last_chunk_chain_tip();
++                chunk.n_blocks = client_.last_chunk_n_blocks();
++                chunk.payload_bytes = client_.last_chunk_payload_bytes();
++                chunk.server_request_id = client_.last_chunk_server_request_id();
++            }
++
++            bool close_client = false;
++            {
++                std::lock_guard<std::mutex> lock(mu_);
++                fetching_ = false;
++                last_access_ = std::chrono::steady_clock::now();
++                if (received) {
++                    const uint64_t end = chunk.start_height
++                        + static_cast<uint64_t>(chunk.n_blocks);
++                    if (chunk.start_height != expected_ || chunk.n_blocks == 0
++                        || end > stop_ + 1 || end < chunk.start_height) {
++                        error_code_ = -1;
++                        error_ = "shared range gap, overlap, or invalid chunk";
++                        complete_ = true;
++                        close_client = true;
++                    } else {
++                        expected_ = end;
++                        chain_tip_ = chunk.chain_tip;
++                        payload_bytes_ += chunk.payload.size();
++                        chunks_.push_back(std::move(chunk));
++                        if (expected_ == stop_ + 1) {
++                            complete_ = true;
++                            close_client = true;
++                        }
++                    }
++                } else if (client_.stream_ended_ok()) {
++                    complete_ = true;
++                    if (expected_ != stop_ + 1) {
++                        error_code_ = -1;
++                        error_ = "shared block range ended before its requested stop height";
++                    }
++                } else if (client_.last_error_code() != 0) {
++                    error_code_ = client_.last_error_code();
++                    error_ = client_.last_error_message();
++                    complete_ = true;
++                }
++                cv_.notify_all();
++            }
++            if (close_client) {
++                client_.close();
++            }
++            if (!received && !complete()) {
++                error_code = -2;
++                error = "timed out receiving a shared block range";
++                return false;
++            }
++        }
++    }
++
++    bool complete() const {
++        std::lock_guard<std::mutex> lock(mu_);
++        return complete_;
++    }
++
++    bool retainable() const {
++        std::lock_guard<std::mutex> lock(mu_);
++        return complete_ && error_.empty()
++            && chain_tip_ > stop_ && chain_tip_ - stop_ > kStableDepth;
++    }
++
++    size_t payload_bytes() const {
++        std::lock_guard<std::mutex> lock(mu_);
++        return payload_bytes_;
++    }
++
++    std::chrono::steady_clock::time_point last_access() const {
++        std::lock_guard<std::mutex> lock(mu_);
++        return last_access_;
++    }
++
++private:
++    std::string target_;
++    uint64_t start_ = 0;
++    uint64_t stop_ = 0;
++    uint32_t chunk_hint_ = 0;
++    std::string request_id_;
++    std::vector<std::string> locator_;
++    cuprate_grpc_stream_client client_;
++
++    mutable std::mutex mu_;
++    std::condition_variable cv_;
++    std::vector<cached_chunk> chunks_;
++    size_t payload_bytes_ = 0;
++    uint64_t expected_ = 0;
++    uint64_t chain_tip_ = 0;
++    bool fetching_ = false;
++    bool complete_ = false;
++    int error_code_ = 0;
++    std::string error_;
++    std::chrono::steady_clock::time_point last_access_;
++};
++
++void append_u64(std::string& key, uint64_t value) {
++    for (unsigned shift = 0; shift < 64; shift += 8)
++        key.push_back(static_cast<char>((value >> shift) & 0xff));
++}
++
++std::string range_key(const std::string& target, uint64_t start, uint64_t stop,
++    uint32_t chunk_hint, const std::vector<std::string>& locator) {
++    std::string key;
++    key.reserve(target.size() + locator.size() * 40 + 40);
++    append_u64(key, target.size());
++    key.append(target);
++    append_u64(key, start);
++    append_u64(key, stop);
++    append_u64(key, chunk_hint);
++    append_u64(key, locator.size());
++    for (const auto& hash : locator) {
++        append_u64(key, hash.size());
++        key.append(hash);
++    }
++    return key;
+ }
+ 
++class shared_range_cache {
++public:
++    std::shared_ptr<shared_range> acquire(const std::string& target,
++        uint64_t start, uint64_t stop, uint32_t chunk_hint,
++        const std::string& request_id, const std::vector<std::string>& locator,
++        bool& reused, int& error_code, std::string& error) {
++        const std::string key = range_key(target, start, stop, chunk_hint, locator);
++        std::lock_guard<std::mutex> lock(mu_);
++        prune_locked();
++        const auto existing = entries_.find(key);
++        if (existing != entries_.end()) {
++            reused = true;
++            ++hits_;
++            std::fprintf(stderr,
++                "[GRPC shared] HIT range=[%llu..%llu] hits=%llu misses=%llu bytes=%zu\n",
++                (unsigned long long)start, (unsigned long long)stop,
++                (unsigned long long)hits_, (unsigned long long)misses_,
++                cache_bytes_locked());
++            return existing->second;
++        }
++
++        auto range = std::make_shared<shared_range>(target, start, stop,
++            chunk_hint, request_id, locator);
++        if (!range->open(error_code, error))
++            return nullptr;
++        entries_.emplace(key, range);
++        reused = false;
++        ++misses_;
++        std::fprintf(stderr,
++            "[GRPC shared] MISS range=[%llu..%llu] hits=%llu misses=%llu\n",
++            (unsigned long long)start, (unsigned long long)stop,
++            (unsigned long long)hits_, (unsigned long long)misses_);
++        return range;
++    }
++
++    void prune() {
++        std::lock_guard<std::mutex> lock(mu_);
++        prune_locked();
++    }
++
++private:
++    size_t cache_bytes_locked() const {
++        size_t bytes = 0;
++        for (const auto& entry : entries_)
++            bytes += entry.second->payload_bytes();
++        return bytes;
++    }
++
++    void prune_locked() {
++        const auto now = std::chrono::steady_clock::now();
++        for (auto it = entries_.begin(); it != entries_.end();) {
++            const auto& range = it->second;
++            const bool map_only = range.use_count() == 1;
++            const bool expired = now - range->last_access() > kSharedCacheTtl;
++            if (map_only && (!range->retainable() || expired))
++                it = entries_.erase(it);
++            else
++                ++it;
++        }
++
++        size_t bytes = cache_bytes_locked();
++        while ((entries_.size() > kSharedCacheMaxEntries
++                || bytes > kSharedCacheMaxBytes) && !entries_.empty()) {
++            auto oldest = entries_.end();
++            for (auto it = entries_.begin(); it != entries_.end(); ++it) {
++                if (it->second.use_count() != 1 || !it->second->complete())
++                    continue;
++                if (oldest == entries_.end()
++                    || it->second->last_access() < oldest->second->last_access())
++                    oldest = it;
++            }
++            if (oldest == entries_.end())
++                break;
++            bytes -= std::min(bytes, oldest->second->payload_bytes());
++            entries_.erase(oldest);
++        }
++    }
++
++    std::mutex mu_;
++    std::unordered_map<std::string, std::shared_ptr<shared_range>> entries_;
++    uint64_t hits_ = 0;
++    uint64_t misses_ = 0;
++};
++
++shared_range_cache& process_range_cache() {
++    static shared_range_cache cache;
++    return cache;
++}
++
++uint64_t canonical_first_stop(uint64_t start, uint64_t requested_stop,
++    uint32_t range_blocks) {
++    const uint64_t remainder = start % range_blocks;
++    const uint64_t length = remainder == 0 ? range_blocks : range_blocks - remainder;
++    if (start > std::numeric_limits<uint64_t>::max() - (length - 1))
++        return requested_stop;
++    return std::min(requested_stop, start + length - 1);
++}
++} // namespace
++
+ struct cuprate_grpc_block_range_pool::impl {
+     struct slot {
+-        std::unique_ptr<cuprate_grpc_stream_client> client;
++        std::shared_ptr<shared_range> range;
++        size_t cursor = 0;
+         uint64_t start = 0;
+         uint64_t stop = 0;
+         bool active = false;
+@@ -28,115 +328,164 @@ struct cuprate_grpc_block_range_pool::impl {
+     uint64_t next_expected = 0, next_assign = 0, stop_height = 0;
+     uint32_t range_blocks = 0;
+     size_t target_channels = 1;
+-    bool opened = false, warmup_complete = false, ended_ok = false;
++    bool opened = false, have_expected = false;
++    bool warmup_complete = false, ended_ok = false;
+     int error_code = 0;
+     uint64_t last_start = 0, last_seq = 0, last_tip = 0;
+     uint32_t last_blocks = 0, last_payload_bytes = 0;
+     std::string last_server_id;
+ };
+ 
+-cuprate_grpc_block_range_pool::cuprate_grpc_block_range_pool() : p_(std::make_unique<impl>()) {}
++cuprate_grpc_block_range_pool::cuprate_grpc_block_range_pool()
++  : p_(std::make_unique<impl>()) {}
+ cuprate_grpc_block_range_pool::~cuprate_grpc_block_range_pool() { close(); }
+ 
+ namespace {
+-bool open_slot(cuprate_grpc_block_range_pool::impl& p, size_t index, bool use_locator)
+-{
+-    if (p.next_assign > p.stop_height) return true;
+-    if (index >= p.slots.size()) p.slots.resize(index + 1);
++bool open_slot(cuprate_grpc_block_range_pool::impl& p, size_t index,
++    bool use_locator) {
++    if (p.next_assign > p.stop_height)
++        return true;
++    if (index >= p.slots.size())
++        p.slots.resize(index + 1);
+     auto& slot = p.slots[index];
+-    slot.client = std::make_unique<cuprate_grpc_stream_client>();
+     slot.start = p.next_assign;
+-    slot.stop = std::min(p.stop_height, slot.start + static_cast<uint64_t>(p.range_blocks) - 1);
++    slot.stop = use_locator
++        ? canonical_first_stop(slot.start, p.stop_height, p.range_blocks)
++        : std::min(p.stop_height,
++            slot.start + static_cast<uint64_t>(p.range_blocks) - 1);
+     p.next_assign = slot.stop + 1;
+-    if (!slot.client->connect(p.target) || !slot.client->open_stream(
+-            slot.start, slot.stop, true, p.range_blocks,
+-            p.request_id + "-c" + std::to_string(index),
+-            use_locator ? p.locator : std::vector<std::string>{}, 1)) {
+-        p.error_code = slot.client->last_error_code();
+-        p.error = slot.client->last_error_message();
++    const std::vector<std::string> slot_locator = use_locator
++        ? p.locator : std::vector<std::string>{};
++    bool reused = false;
++    slot.range = process_range_cache().acquire(p.target, slot.start, slot.stop,
++        p.range_blocks,
++        p.request_id + "-r" + std::to_string(slot.start), slot_locator,
++        reused, p.error_code, p.error);
++    if (!slot.range)
+         return false;
+-    }
++    slot.cursor = 0;
+     slot.active = true;
+-    std::fprintf(stderr, "[GRPC pool] OPEN slot=%zu range=[%llu..%llu] locator=%d\n", index,
+-        (unsigned long long)slot.start, (unsigned long long)slot.stop, use_locator ? 1 : 0);
++    std::fprintf(stderr,
++        "[GRPC pool] OPEN slot=%zu range=[%llu..%llu] locator=%d shared=%d\n",
++        index, (unsigned long long)slot.start, (unsigned long long)slot.stop,
++        use_locator ? 1 : 0, reused ? 1 : 0);
+     return true;
+ }
+ 
+-bool fill_slots(cuprate_grpc_block_range_pool::impl& p)
+-{
+-    for (size_t i = 0; i < p.target_channels && p.next_assign <= p.stop_height; ++i) {
++bool fill_slots(cuprate_grpc_block_range_pool::impl& p) {
++    for (size_t i = 0;
++         i < p.target_channels && p.next_assign <= p.stop_height; ++i) {
+         if (i >= p.slots.size() || !p.slots[i].active) {
+-            if (!open_slot(p, i, false)) return false;
++            if (!open_slot(p, i, false))
++                return false;
+         }
+     }
+     return true;
+ }
+-}
++} // namespace
+ 
+-bool cuprate_grpc_block_range_pool::open(const std::string& target, uint64_t start_height,
+-    uint64_t stop_height, uint32_t range_blocks, size_t max_channels,
+-    const std::string& client_request_id, const std::vector<std::string>& chain_locator)
+-{
++bool cuprate_grpc_block_range_pool::open(const std::string& target,
++    uint64_t start_height, uint64_t stop_height, uint32_t range_blocks,
++    size_t max_channels, const std::string& client_request_id,
++    const std::vector<std::string>& chain_locator) {
+     close();
+     if (target.empty() || stop_height < start_height) {
+-        p_->error_code = -1; p_->error = "invalid finite range pool request"; return false;
++        p_->error_code = -1;
++        p_->error = "invalid finite range pool request";
++        return false;
+     }
+-    p_->target = target; p_->request_id = client_request_id; p_->locator = chain_locator;
++    p_->target = target;
++    p_->request_id = client_request_id;
++    p_->locator = chain_locator;
+     p_->stop_height = stop_height;
+-    p_->range_blocks = std::max(kMinRangeBlocks, std::min(kMaxRangeBlocks, range_blocks));
+-    p_->target_channels = std::max<size_t>(1, std::min(kMaxChannels, max_channels));
++    p_->range_blocks = std::max(kMinRangeBlocks,
++        std::min(kMaxRangeBlocks, range_blocks));
++    p_->target_channels = std::max<size_t>(1,
++        std::min(kMaxChannels, max_channels));
+     p_->next_assign = start_height;
+     p_->next_expected = 0;
+-    p_->error.clear(); p_->error_code = 0; p_->ended_ok = false;
++    p_->have_expected = false;
++    p_->error.clear();
++    p_->error_code = 0;
++    p_->ended_ok = false;
+     p_->last_start = p_->last_seq = p_->last_tip = 0;
+     p_->last_blocks = p_->last_payload_bytes = 0;
+     p_->last_server_id.clear();
+     p_->opened = true;
+-    // The locator is used only by this warm-up range. Once its range ends, all
+-    // later requests are explicit, non-overlapping height ranges.
+-    if (!open_slot(*p_, 0, true)) { close(); return false; }
++    if (!open_slot(*p_, 0, true)) {
++        close();
++        return false;
++    }
+     return true;
+ }
+ 
+-bool cuprate_grpc_block_range_pool::next_chunk_payload(std::string& out, uint32_t timeout_ms)
+-{
+-    if (!p_->opened) { p_->error_code = -1; p_->error = "pool not open"; return false; }
+-    if (p_->warmup_complete && !fill_slots(*p_)) { close(); return false; }
++bool cuprate_grpc_block_range_pool::next_chunk_payload(std::string& out,
++    uint32_t timeout_ms) {
++    if (!p_->opened) {
++        p_->error_code = -1;
++        p_->error = "pool not open";
++        return false;
++    }
++    if (p_->warmup_complete && !fill_slots(*p_)) {
++        close();
++        return false;
++    }
+     impl::slot* wanted = nullptr;
+     for (auto& slot : p_->slots) {
+-        if (slot.active && (p_->next_expected == 0 || (slot.start <= p_->next_expected && p_->next_expected <= slot.stop))) {
+-            wanted = &slot; break;
++        if (slot.active && (!p_->have_expected
++                || (slot.start <= p_->next_expected
++                    && p_->next_expected <= slot.stop))) {
++            wanted = &slot;
++            break;
+         }
+     }
+-    if (!wanted) { p_->ended_ok = p_->next_assign > p_->stop_height; return false; }
+-    if (!wanted->client->next_chunk_payload(out, timeout_ms)) {
+-        p_->error_code = wanted->client->last_error_code();
+-        p_->error = wanted->client->last_error_message();
++    if (!wanted) {
++        p_->ended_ok = p_->next_assign > p_->stop_height;
+         return false;
+     }
+-    p_->last_start = wanted->client->last_chunk_start_height();
+-    p_->last_seq = wanted->client->last_chunk_seq();
+-    p_->last_tip = wanted->client->last_chunk_chain_tip();
+-    p_->last_blocks = wanted->client->last_chunk_n_blocks();
+-    p_->last_payload_bytes = wanted->client->last_chunk_payload_bytes();
+-    p_->last_server_id = wanted->client->last_chunk_server_request_id();
+-    if (p_->next_expected == 0) p_->next_expected = p_->last_start;
++
++    cached_chunk chunk;
++    if (!wanted->range->next(wanted->cursor, chunk, timeout_ms,
++            p_->error_code, p_->error))
++        return false;
++
++    p_->last_start = chunk.start_height;
++    p_->last_seq = chunk.chunk_seq;
++    p_->last_tip = chunk.chain_tip;
++    p_->last_blocks = chunk.n_blocks;
++    p_->last_payload_bytes = chunk.payload_bytes;
++    p_->last_server_id = chunk.server_request_id;
++    out = std::move(chunk.payload);
++    if (!p_->have_expected) {
++        p_->next_expected = p_->last_start;
++        p_->have_expected = true;
++    }
+     const uint64_t end = p_->last_start + p_->last_blocks;
+-    if (p_->last_start != p_->next_expected || p_->last_blocks == 0 || end > wanted->stop + 1) {
+-        p_->error_code = -1; p_->error = "range gap, overlap, or invalid chunk"; return false;
++    if (p_->last_start != p_->next_expected || p_->last_blocks == 0
++        || end > wanted->stop + 1 || end < p_->last_start) {
++        p_->error_code = -1;
++        p_->error = "range gap, overlap, or invalid shared chunk";
++        return false;
+     }
+     p_->next_expected = end;
+     if (end == wanted->stop + 1) {
+-        wanted->client->close(); wanted->active = false;
++        wanted->range.reset();
++        wanted->active = false;
+         p_->warmup_complete = true;
++        process_range_cache().prune();
+     }
+-    std::fprintf(stderr, "[GRPC pool] CHUNK start=%llu blocks=%u expected_next=%llu slots=%zu\n",
++    std::fprintf(stderr,
++        "[GRPC pool] CHUNK start=%llu blocks=%u expected_next=%llu slots=%zu\n",
+         (unsigned long long)p_->last_start, p_->last_blocks,
+         (unsigned long long)p_->next_expected, p_->target_channels);
+     return true;
+ }
+ 
+-void cuprate_grpc_block_range_pool::close() { for (auto& s : p_->slots) if (s.client) s.client->close(); p_->slots.clear(); p_->opened = false; }
++void cuprate_grpc_block_range_pool::close() {
++    p_->slots.clear();
++    p_->opened = false;
++    process_range_cache().prune();
++}
+ bool cuprate_grpc_block_range_pool::stream_ended_ok() const { return p_->ended_ok; }
+ int cuprate_grpc_block_range_pool::last_error_code() const { return p_->error_code; }
+ std::string cuprate_grpc_block_range_pool::last_error_message() const { return p_->error; }

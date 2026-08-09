@@ -35,7 +35,11 @@ import type {
   NodeConnectionDraft,
   NodeConnectionMode,
 } from '../services/NodeConnectionSettings';
-import { runWalletDiagnostics } from '../services/WalletDiagnostics';
+import {
+  runWalletDiagnosticTestbench,
+  type DiagnosticProgress,
+} from '../services/WalletDiagnosticTestbench';
+import type { DiagnosticTestbenchReport } from '../../../../packages/wallet-shared/src/diagnosticTestbench';
 import { walletService } from '../services/WalletService';
 import { useWalletState } from '../services/WalletState';
 import {
@@ -47,14 +51,11 @@ import {
   loadCommunityQueryContributionState,
   setCommunityQueryContributionEnabled,
 } from '../services/CommunityQueryContribution';
-
-type DiagnosticRow = {
-  label: string;
-  value: string;
-  warning?: boolean;
-};
-
-type WalletDiagnosticsResult = Awaited<ReturnType<typeof runWalletDiagnostics>>;
+import {
+  loadDerivationPerformance,
+  type DerivationPerformance,
+} from '../services/DerivationPerformance';
+import { FastWalletPushService } from '../services/FastWalletPushService';
 
 const NODE_MODES: { value: NodeConnectionMode; labelKey: TranslationKey }[] = [
   { value: 'optimized-grpc', labelKey: 'settings.nodeModeTex8' },
@@ -70,9 +71,13 @@ const NETWORKS: { value: MoneroNetwork; label: string }[] = [
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { language, setLanguage, t } = useI18n();
-  const { registeredWallet, session } = useWalletState();
-  const { mode: savedProtectionMode, setMode: setAppProtectionMode } =
-    useAppSecurity();
+  const { registeredWallet, reconcileLedgerBalance, session } = useWalletState();
+  const {
+    mode: savedProtectionMode,
+    setMode: setAppProtectionMode,
+    autoLockSeconds,
+    setAutoLockSeconds,
+  } = useAppSecurity();
   const bottomPadding = Math.max(180, insets.bottom + 150);
   const [draft, setDraft] = useState<NodeConnectionDraft>(() =>
     nodeConnectionSettingsToDraft(getActiveNodeConnectionSettings()),
@@ -84,8 +89,13 @@ export default function SettingsScreen() {
   const [isSavingNodeSettings, setIsSavingNodeSettings] = useState(false);
   const [nodeStatusText, setNodeStatusText] = useState('Loading');
   const [diagnosticsStatusText, setDiagnosticsStatusText] = useState('Ready');
-  const [diagnosticRows, setDiagnosticRows] = useState<DiagnosticRow[]>([]);
+  const [diagnosticReport, setDiagnosticReport] =
+    useState<DiagnosticTestbenchReport | null>(null);
+  const [diagnosticProgress, setDiagnosticProgress] =
+    useState<DiagnosticProgress | null>(null);
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
+  const [isSendingTestPush, setIsSendingTestPush] = useState(false);
+  const [isReconcilingLedger, setIsReconcilingLedger] = useState(false);
   const [isRevealingSeed, setIsRevealingSeed] = useState(false);
   const [protectionMode, setProtectionMode] =
     useState<AppProtectionMode>(savedProtectionMode);
@@ -93,6 +103,9 @@ export default function SettingsScreen() {
   const [confirmAppPassword, setConfirmAppPassword] = useState('');
   const [isSavingAppProtection, setIsSavingAppProtection] = useState(false);
   const [shareCommunitySearches, setShareCommunitySearches] = useState(true);
+  const [derivationPerformance, setDerivationPerformance] =
+    useState<DerivationPerformance | null>(null);
+  const [isMeasuringPerformance, setIsMeasuringPerformance] = useState(true);
 
   useEffect(() => {
     setProtectionMode(savedProtectionMode);
@@ -105,6 +118,21 @@ export default function SettingsScreen() {
         if (mounted) setShareCommunitySearches(state.enabled);
       })
       .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    loadDerivationPerformance()
+      .then(result => {
+        if (mounted) setDerivationPerformance(result);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (mounted) setIsMeasuringPerformance(false);
+      });
     return () => {
       mounted = false;
     };
@@ -261,22 +289,60 @@ export default function SettingsScreen() {
     setDiagnosticsStatusText('Running');
 
     try {
-      const diagnostics = await runWalletDiagnostics('settings');
-      setDiagnosticRows(createDiagnosticRows(diagnostics));
+      const diagnostics = await runWalletDiagnosticTestbench(progress => {
+        setDiagnosticProgress(progress);
+      });
+      setDiagnosticReport(diagnostics);
       setDiagnosticsStatusText(
-        diagnostics.errors.length > 0 ? 'Warnings' : 'Ready',
+        diagnostics.failed > 0
+          ? 'Error'
+          : diagnostics.warnings > 0
+            ? 'Warnings'
+            : 'Ready',
       );
     } catch (error) {
-      setDiagnosticRows([
-        {
-          label: 'Error',
-          value: errorMessage(error),
-          warning: true,
-        },
-      ]);
+      setDiagnosticReport(null);
       setDiagnosticsStatusText('Error');
+      Alert.alert(t('settings.diagnostics'), errorMessage(error));
     } finally {
+      setDiagnosticProgress(null);
       setIsRunningDiagnostics(false);
+    }
+  }
+
+  async function sendTestPush() {
+    if (isSendingTestPush) return;
+    setIsSendingTestPush(true);
+    try {
+      await FastWalletPushService.sendTestNotification();
+      Alert.alert(
+        'Test notification sent',
+        'Firebase accepted a generic test notification for this phone. It contains no wallet or transaction details.',
+      );
+    } catch (error) {
+      Alert.alert('Test notification', errorMessage(error));
+    } finally {
+      setIsSendingTestPush(false);
+    }
+  }
+
+  async function verifyLedgerBalance() {
+    if (isReconcilingLedger) return;
+    setIsReconcilingLedger(true);
+    try {
+      await reconcileLedgerBalance();
+      Alert.alert(
+        t('settings.ledgerBalanceVerification'),
+        t('settings.ledgerBalanceVerified'),
+      );
+      await runSettingsDiagnostics();
+    } catch (error) {
+      Alert.alert(
+        t('settings.ledgerBalanceVerification'),
+        errorMessage(error),
+      );
+    } finally {
+      setIsReconcilingLedger(false);
     }
   }
 
@@ -313,25 +379,23 @@ export default function SettingsScreen() {
   }
 
   async function saveAppProtection() {
-    if (protectionMode === 'password') {
-      if (appPassword.length < 12) {
-        Alert.alert(t('settings.appProtection'), t('settings.passwordMinimum'));
-        return;
-      }
-      if (appPassword !== confirmAppPassword) {
-        Alert.alert(
-          t('settings.appProtection'),
-          t('settings.passwordMismatch'),
-        );
-        return;
-      }
+    if (appPassword.length < 12) {
+      Alert.alert(t('settings.appProtection'), t('settings.passwordMinimum'));
+      return;
+    }
+    if (appPassword !== confirmAppPassword) {
+      Alert.alert(
+        t('settings.appProtection'),
+        t('settings.passwordMismatch'),
+      );
+      return;
     }
 
     setIsSavingAppProtection(true);
     try {
       await setAppProtectionMode(
         protectionMode,
-        protectionMode === 'password' ? appPassword : undefined,
+        appPassword,
       );
       setAppPassword('');
       setConfirmAppPassword('');
@@ -420,6 +484,48 @@ export default function SettingsScreen() {
         </View>
 
         <View style={s.section}>
+          <View style={s.sectionHeaderRow}>
+            <Text style={s.sectionTitle}>{t('settings.scanPerformance')}</Text>
+            <Text style={s.nodeStatus}>
+              {isMeasuringPerformance
+                ? t('settings.performanceMeasuring')
+                : derivationPerformance
+                  ? t('settings.performanceMeasured')
+                  : t('settings.performanceUnavailable')}
+            </Text>
+          </View>
+          <View style={s.nodePanel}>
+            <Text style={s.languageHelp}>
+              {t('settings.scanPerformanceHint')}
+            </Text>
+            <View style={s.diagnosticList}>
+              {(
+                [
+                  ['CPU', derivationPerformance?.cpu],
+                  ['Metal', derivationPerformance?.metal],
+                  ['CUDA', derivationPerformance?.cuda],
+                ] as const
+              ).map(([label, measured]) => (
+                <View key={label} style={s.diagnosticRow}>
+                  <Text style={s.diagnosticLabel}>{label}</Text>
+                  <Text style={s.diagnosticValue}>
+                    {isMeasuringPerformance
+                      ? t('settings.performanceMeasuringShort')
+                      : measured?.verified
+                        ? t('settings.derivationsPerSecond', {
+                            rate: new Intl.NumberFormat(
+                              language === 'de' ? 'de-DE' : 'en-US',
+                            ).format(measured.derivationsPerSecond),
+                          })
+                        : t('settings.performanceUnavailable')}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        </View>
+
+        <View style={s.section}>
           <Text style={s.sectionTitle}>{t('settings.appProtection')}</Text>
           <View style={s.nodePanel}>
             <Text style={s.passwordHint}>
@@ -454,10 +560,11 @@ export default function SettingsScreen() {
                 </TouchableOpacity>
               ))}
             </View>
-            {protectionMode === 'password' ? (
-              <>
+            <>
                 <Text style={s.passwordDestructiveWarning}>
-                  {t('security.passwordRecoveryHelp')}
+                  {protectionMode === 'biometric'
+                    ? t('security.biometricsFallback')
+                    : t('security.passwordRecoveryHelp')}
                 </Text>
                 <TextInput
                   value={appPassword}
@@ -479,21 +586,18 @@ export default function SettingsScreen() {
                   autoCorrect={false}
                   style={s.input}
                 />
-              </>
-            ) : null}
+            </>
             <TouchableOpacity
               activeOpacity={0.8}
               disabled={
                 isSavingAppProtection ||
-                (protectionMode === 'password' &&
-                  (!appPassword || !confirmAppPassword))
+                !appPassword || !confirmAppPassword
               }
               onPress={saveAppProtection}
               style={[
                 s.secondaryButton,
                 (isSavingAppProtection ||
-                  (protectionMode === 'password' &&
-                    (!appPassword || !confirmAppPassword))) &&
+                  !appPassword || !confirmAppPassword) &&
                   s.primaryButtonDisabled,
               ]}
             >
@@ -503,6 +607,36 @@ export default function SettingsScreen() {
                   : t('settings.saveAppProtection')}
               </Text>
             </TouchableOpacity>
+            <Text style={s.passwordHint}>Lock after inactivity</Text>
+            <View style={[s.segmented, { flexWrap: 'wrap' }]}>
+              {[
+                [60, '1 min'],
+                [300, '5 min'],
+                [900, '15 min'],
+                [1800, '30 min'],
+                [3600, '1 hour'],
+                [0, 'Never'],
+              ].map(([seconds, label]) => (
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  key={seconds}
+                  onPress={() => {
+                    setAutoLockSeconds(Number(seconds)).catch(error =>
+                      Alert.alert(t('settings.appProtection'), errorMessage(error)),
+                    );
+                  }}
+                  style={[
+                    s.segment,
+                    autoLockSeconds === seconds && s.segmentActive,
+                  ]}
+                >
+                  <Text style={[
+                    s.segmentText,
+                    autoLockSeconds === seconds && s.segmentTextActive,
+                  ]}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
         </View>
 
@@ -527,6 +661,24 @@ export default function SettingsScreen() {
               </View>
               <Icon name="chevron-right" size={18} color={colors.textMuted} />
             </TouchableOpacity>
+            {registeredWallet?.kind === 'hardware' &&
+            registeredWallet.viewOnlyPath ? (
+              <TouchableOpacity
+                style={[
+                  s.secondaryButton,
+                  isReconcilingLedger && s.primaryButtonDisabled,
+                ]}
+                activeOpacity={0.8}
+                disabled={isReconcilingLedger}
+                onPress={verifyLedgerBalance}
+              >
+                <Text style={s.secondaryButtonText}>
+                  {isReconcilingLedger
+                    ? t('settings.ledgerBalanceVerifying')
+                    : t('settings.ledgerBalanceVerification')}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
 
@@ -697,23 +849,74 @@ export default function SettingsScreen() {
             </Text>
           </View>
           <View style={s.nodePanel}>
-            {diagnosticRows.length > 0 ? (
+            {isRunningDiagnostics && diagnosticProgress ? (
+              <View style={s.diagnosticProgress}>
+                <Text style={s.diagnosticProgressTitle}>
+                  {diagnosticProgress.label}
+                </Text>
+                <Text style={s.diagnosticProgressValue}>
+                  {diagnosticProgress.completed}/{diagnosticProgress.total}
+                </Text>
+                <View style={s.diagnosticProgressTrack}>
+                  <View
+                    style={[
+                      s.diagnosticProgressFill,
+                      {
+                        width: `${Math.round(
+                          (diagnosticProgress.completed /
+                            Math.max(1, diagnosticProgress.total)) *
+                            100,
+                        )}%`,
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            ) : null}
+
+            {diagnosticReport ? (
               <View style={s.diagnosticList}>
-                {diagnosticRows.map(row => (
-                  <View key={row.label} style={s.diagnosticRow}>
-                    <Text style={s.diagnosticLabel}>{row.label}</Text>
-                    <Text
-                      style={[
-                        s.diagnosticValue,
-                        row.warning && s.diagnosticValueWarning,
-                      ]}
-                      numberOfLines={1}
-                      ellipsizeMode="middle"
-                    >
-                      {row.value}
-                    </Text>
+                <View style={s.diagnosticSummary}>
+                  <DiagnosticCount label="Passed" value={diagnosticReport.passed} tone="pass" />
+                  <DiagnosticCount label="Warnings" value={diagnosticReport.warnings} tone="warning" />
+                  <DiagnosticCount label="Failed" value={diagnosticReport.failed} tone="fail" />
+                  <DiagnosticCount label="Skipped" value={diagnosticReport.skipped} tone="skipped" />
+                </View>
+                {diagnosticReport.tests.map(test => (
+                  <View key={test.id} style={s.diagnosticTest}>
+                    <View style={s.diagnosticTestHeader}>
+                      <View style={s.diagnosticTestHeading}>
+                        <Text style={s.diagnosticCategory}>{test.category}</Text>
+                        <Text style={s.diagnosticTestTitle}>{test.label}</Text>
+                      </View>
+                      <Text
+                        style={[
+                          s.diagnosticBadge,
+                          diagnosticStatusStyle(test.status),
+                        ]}
+                      >
+                        {test.status.toUpperCase()}
+                      </Text>
+                    </View>
+                    <Text style={s.diagnosticSummaryText}>{test.summary}</Text>
+                    {test.metrics.length > 0 ? (
+                      <View style={s.diagnosticMetrics}>
+                        {test.metrics.map(metric => (
+                          <View key={`${test.id}-${metric.label}`} style={s.diagnosticMetric}>
+                            <Text style={s.diagnosticMetricLabel}>{metric.label}</Text>
+                            <Text style={s.diagnosticMetricValue}>
+                              {metric.value}{metric.unit ? ` ${metric.unit}` : ''}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    ) : null}
+                    <Text style={s.diagnosticDuration}>{test.durationMs} ms</Text>
                   </View>
                 ))}
+                <Text style={s.diagnosticRunDuration}>
+                  Total test time: {diagnosticReport.durationMs} ms
+                </Text>
               </View>
             ) : null}
 
@@ -733,9 +936,25 @@ export default function SettingsScreen() {
                   : t('action.runDiagnostics')}
               </Text>
             </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                s.secondaryButton,
+                isSendingTestPush && s.primaryButtonDisabled,
+              ]}
+              activeOpacity={0.8}
+              disabled={isSendingTestPush}
+              onPress={sendTestPush}
+            >
+              <Text style={s.secondaryButtonText}>
+                {isSendingTestPush ? 'Sending test…' : 'Send test notification'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
 
+        <Text
+          style={s.bottomVersion}
+        >{`Monero Fast Wallet · v${mobileAppVersion.versionName}`}</Text>
         <View style={s.bottomSpacer} />
       </ScrollView>
     </View>
@@ -811,150 +1030,38 @@ function NodeInput({
   );
 }
 
-function createDiagnosticRows(
-  diagnostics: WalletDiagnosticsResult,
-): DiagnosticRow[] {
-  const rows: DiagnosticRow[] = [
-    {
-      label: 'Mode',
-      value: diagnostics.settings?.mode ?? 'Default',
-    },
-    {
-      label: 'Daemon',
-      value: formatDaemonDiagnostic(diagnostics.daemon.getInfo),
-      warning: isDaemonWarning(diagnostics.daemon.getInfo),
-    },
-    {
-      label: 'JSON RPC',
-      value: formatDaemonDiagnostic(diagnostics.daemon.jsonRpcGetInfo),
-      warning: isDaemonWarning(diagnostics.daemon.jsonRpcGetInfo),
-    },
-    {
-      label: 'gRPC',
-      value: diagnostics.settings?.grpcConfigured ? 'Configured' : 'Disabled',
-    },
-    {
-      label: 'Native',
-      value: diagnostics.native.linkedWithMonero ? 'Linked' : 'Missing',
-      warning: !diagnostics.native.linkedWithMonero,
-    },
-    {
-      label: 'Wallet',
-      value: formatWalletDiagnostic(diagnostics),
-    },
-    {
-      label: 'Fast Wallet view key',
-      value: formatFastWalletDiagnostic(diagnostics.fastWallet),
-      warning: isFastWalletDiagnosticWarning(diagnostics.fastWallet),
-    },
-    {
-      label: 'Ledger',
-      value: formatLedgerDiagnostic(diagnostics.ledgerTransport),
-      warning: diagnostics.ledgerTransport
-        ? diagnostics.ledgerTransport.requiresUserAction
-        : false,
-    },
-  ];
-
-  if (diagnostics.errors.length > 0) {
-    rows.push({
-      label: 'Errors',
-      value: String(diagnostics.errors.length),
-      warning: true,
-    });
-  }
-
-  return rows;
-}
-
-function formatDaemonDiagnostic(
-  result: WalletDiagnosticsResult['daemon']['getInfo'],
-): string {
-  if (!result) {
-    return 'Not configured';
-  }
-  if (result.error) {
-    return 'Error';
-  }
-  if (!result.ok) {
-    return result.httpStatus ? `HTTP ${result.httpStatus}` : 'Unavailable';
-  }
-
-  const status = toDisplayValue(result.status, 'OK');
-  const height = toDisplayValue(result.height, '?');
-  const sync = result.synchronized === true ? 'synced' : 'syncing';
-  return `${status} ${sync} ${height}`;
-}
-
-function isDaemonWarning(
-  result: WalletDiagnosticsResult['daemon']['getInfo'],
-): boolean {
-  return !result || Boolean(result.error) || !result.ok;
-}
-
-function formatWalletDiagnostic(diagnostics: WalletDiagnosticsResult): string {
-  if (diagnostics.snapshot) {
-    const walletHeight = toDisplayValue(diagnostics.snapshot.walletHeight, '?');
-    const daemonHeight = toDisplayValue(diagnostics.snapshot.daemonHeight, '?');
-    return diagnostics.snapshot.synchronized
-      ? `Synced ${walletHeight}`
-      : `${walletHeight}/${daemonHeight}`;
-  }
-
-  return diagnostics.registeredWallet ? 'Registered' : 'None';
-}
-
-function formatFastWalletDiagnostic(
-  fastWallet: WalletDiagnosticsResult['fastWallet'],
-): string {
-  if (fastWallet.configuredCount === 0) {
-    return 'Not configured';
-  }
-  if (fastWallet.checkedCount === 0) {
-    return 'Check failed';
-  }
-  if (fastWallet.hostedCount === 0) {
-    return `Not hosted 0/${fastWallet.configuredCount}`;
-  }
-  return `Hosted ${fastWallet.hostedCount}/${fastWallet.configuredCount}`;
-}
-
-function isFastWalletDiagnosticWarning(
-  fastWallet: WalletDiagnosticsResult['fastWallet'],
-): boolean {
+function DiagnosticCount({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'pass' | 'warning' | 'fail' | 'skipped';
+}) {
   return (
-    fastWallet.configuredCount > 0 &&
-    (fastWallet.checkedCount < fastWallet.configuredCount ||
-      fastWallet.hostedCount < fastWallet.configuredCount)
+    <View style={s.diagnosticCount}>
+      <Text style={[s.diagnosticCountValue, diagnosticStatusStyle(tone)]}>
+        {value}
+      </Text>
+      <Text style={s.diagnosticCountLabel}>{label}</Text>
+    </View>
   );
 }
 
-function formatLedgerDiagnostic(
-  status: WalletDiagnosticsResult['ledgerTransport'],
-): string {
-  if (!status) {
-    return 'Unknown';
+function diagnosticStatusStyle(
+  status: 'pass' | 'warning' | 'fail' | 'skipped',
+) {
+  switch (status) {
+    case 'pass':
+      return { color: colors.success };
+    case 'warning':
+      return { color: colors.warning };
+    case 'fail':
+      return { color: colors.error };
+    default:
+      return { color: colors.textMuted };
   }
-  if (!status.supported) {
-    return 'Unsupported';
-  }
-  if (!status.available) {
-    return 'Not connected';
-  }
-  if (status.permissionGranted) {
-    return status.deviceName || 'Ready';
-  }
-  return status.message || 'Permission';
-}
-
-function toDisplayValue(value: unknown, fallback: string): string {
-  if (typeof value === 'string' && value.length > 0) {
-    return value;
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
-  }
-  return fallback;
 }
 
 function errorMessage(error: unknown): string {
@@ -1212,7 +1319,116 @@ const s = StyleSheet.create({
     fontWeight: '700',
     textAlign: 'right',
   },
-  diagnosticValueWarning: { color: colors.warning },
+  diagnosticProgress: {
+    gap: 8,
+    borderRadius: radius.md,
+    backgroundColor: colors.bgInput,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 12,
+  },
+  diagnosticProgressTitle: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  diagnosticProgressValue: {
+    position: 'absolute',
+    right: 12,
+    top: 12,
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  diagnosticProgressTrack: {
+    height: 5,
+    overflow: 'hidden',
+    borderRadius: radius.full,
+    backgroundColor: colors.surface,
+  },
+  diagnosticProgressFill: {
+    height: '100%',
+    borderRadius: radius.full,
+    backgroundColor: colors.orange,
+  },
+  diagnosticSummary: {
+    flexDirection: 'row',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+    paddingVertical: 12,
+  },
+  diagnosticCount: { flex: 1, alignItems: 'center', gap: 3 },
+  diagnosticCountValue: { fontSize: 18, fontWeight: '900' },
+  diagnosticCountLabel: { color: colors.textSecondary, fontSize: 10 },
+  diagnosticTest: {
+    gap: 8,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+    padding: 12,
+  },
+  diagnosticTestHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  diagnosticTestHeading: { flex: 1, gap: 2 },
+  diagnosticCategory: {
+    color: colors.textSecondary,
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  diagnosticTestTitle: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  diagnosticBadge: {
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  diagnosticSummaryText: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  diagnosticMetrics: { gap: 4 },
+  diagnosticMetric: {
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: 6,
+  },
+  diagnosticMetricLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+  diagnosticMetricValue: {
+    color: colors.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  diagnosticDuration: {
+    color: colors.textSecondary,
+    fontSize: 10,
+    textAlign: 'right',
+  },
+  diagnosticRunDuration: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    textAlign: 'center',
+    paddingVertical: 4,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1239,5 +1455,13 @@ const s = StyleSheet.create({
   },
   logoutBtnDisabled: { opacity: 0.45 },
   logoutText: { color: colors.error, fontSize: 16, fontWeight: '600' },
+  bottomVersion: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.25,
+    opacity: 0.5,
+    textAlign: 'center',
+  },
   bottomSpacer: { height: 24 },
 });

@@ -1,0 +1,79 @@
+#!/usr/bin/expect -f
+# Run one command in a selected Monero account while keeping the complete
+# transcript in a permission-restricted caller-owned temporary file.
+
+if {$argc != 6} {
+  puts stderr "Usage: $argv0 <wallet-cli> <wallet-file> <daemon-address> <account-index> <command> <transcript-file>"
+  exit 2
+}
+
+lassign $argv wallet_cli wallet_file daemon_address account_index command transcript_file
+set timeout 60
+log_user 1
+log_file -noappend $transcript_file
+
+spawn $wallet_cli \
+  --wallet-file $wallet_file \
+  --password {} \
+  --daemon-address $daemon_address \
+  --trusted-daemon \
+  --allow-mismatched-daemon-version \
+  --log-file /dev/null
+
+expect {
+  -re {Wallet password:} {
+    send -- "\r"
+    exp_continue
+  }
+  -re {eligible for receiving new monero} {
+    send -- "No\r"
+    exp_continue
+  }
+  -re {\]: $} {
+    send -- "account switch $account_index\r"
+  }
+  timeout {
+    puts stderr "FAIL: wallet prompt timed out before account selection"
+    exit 124
+  }
+  eof {
+    puts stderr "FAIL: wallet exited before account selection"
+    exit 1
+  }
+}
+
+expect {
+  -re {\]: $} {
+    send -- "$command\r"
+  }
+  timeout {
+    puts stderr "FAIL: account selection timed out"
+    exit 124
+  }
+  eof {
+    puts stderr "FAIL: wallet exited during account selection"
+    exit 1
+  }
+}
+
+expect {
+  -re {\]: $} {
+    send -- "exit\r"
+  }
+  timeout {
+    puts stderr "FAIL: selected-account command timed out"
+    exit 124
+  }
+  eof {
+    puts stderr "FAIL: wallet exited during selected-account command"
+    exit 1
+  }
+}
+
+expect eof
+set wait_result [wait]
+set exit_code [lindex $wait_result 3]
+if {$exit_code != 0} {
+  puts stderr "FAIL: selected-account command exited with $exit_code"
+  exit 1
+}

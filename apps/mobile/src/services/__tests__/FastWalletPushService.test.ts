@@ -17,6 +17,22 @@ describe("FastWalletPushService", () => {
     });
   });
 
+  it("parses a generic user-requested delivery test", () => {
+    expect(
+      parseFastWalletPushEvent({
+        data: {
+          contractVersion: "monero-fast-wallet-push.v3",
+          eventId: `evt_${"0b".repeat(32)}`,
+          type: "monero.fast_wallet.test",
+        },
+      }),
+    ).toEqual({
+      contractVersion: "monero-fast-wallet-push.v3",
+      eventId: `evt_${"0b".repeat(32)}`,
+      type: "monero.fast_wallet.test",
+    });
+  });
+
   it("rejects the retired scanner event contract", () => {
     expect(
       parseFastWalletPushEvent({

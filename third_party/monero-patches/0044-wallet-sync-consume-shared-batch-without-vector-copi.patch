@@ -1,0 +1,79 @@
+From 122f07852e57352cd8ecdd4f7a819baf005fae56 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 7 Aug 2026 00:33:57 -0500
+Subject: [PATCH] wallet sync: consume shared batch without vector copies
+
+---
+ src/wallet/wallet2.cpp | 29 ++++++++++++++++++++++-------
+ src/wallet/wallet2.h   |  2 +-
+ 2 files changed, 23 insertions(+), 8 deletions(-)
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 2e2e17e..aa808b1 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3873,13 +3873,31 @@ void wallet2::pull_hashes(uint64_t start_height, uint64_t &blocks_start_height,
+   hashes = std::move(res.m_block_ids);
+ }
+ //----------------------------------------------------------------------------------------------------
+-void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cryptonote::block_complete_entry> &blocks, const std::vector<parsed_block> &parsed_blocks, uint64_t& blocks_added, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache)
++template <typename T>
++class immutable_vector_slice
++{
++public:
++  immutable_vector_slice(const std::vector<T> &values, size_t offset)
++    : values_(values), offset_(offset) {}
++
++  size_t size() const noexcept { return values_.size() - offset_; }
++  const T &operator[](size_t index) const { return values_[offset_ + index]; }
++
++private:
++  const std::vector<T> &values_;
++  size_t offset_;
++};
++
++void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cryptonote::block_complete_entry> &all_blocks, const std::vector<parsed_block> &all_parsed_blocks, uint64_t& blocks_added, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache, size_t block_offset)
+ {
+   auto t_proc0 = std::chrono::steady_clock::now();
+   size_t current_index = start_height;
+   blocks_added = 0;
+ 
+-  THROW_WALLET_EXCEPTION_IF(blocks.size() != parsed_blocks.size(), error::wallet_internal_error, "size mismatch");
++  THROW_WALLET_EXCEPTION_IF(all_blocks.size() != all_parsed_blocks.size(), error::wallet_internal_error, "size mismatch");
++  THROW_WALLET_EXCEPTION_IF(block_offset > all_blocks.size(), error::wallet_internal_error, "shared batch offset exceeds block count");
++  const immutable_vector_slice<cryptonote::block_complete_entry> blocks(all_blocks, block_offset);
++  const immutable_vector_slice<parsed_block> parsed_blocks(all_parsed_blocks, block_offset);
+   const bool appending_at_tip = current_index == m_blockchain.size();
+   if (!appending_at_tip && !m_blockchain.is_in_bounds(current_index))
+   {
+@@ -4394,12 +4412,9 @@ uint64_t wallet2::consume_shared_block_batch(const shared_block_batch &batch)
+   THROW_WALLET_EXCEPTION_IF(effective_start > m_blockchain.size(),
+     error::wallet_internal_error, "gap before shared block batch");
+ 
+-  std::vector<cryptonote::block_complete_entry> blocks(
+-    batch.blocks.begin() + offset, batch.blocks.end());
+-  std::vector<parsed_block> parsed(
+-    batch.parsed_blocks.begin() + offset, batch.parsed_blocks.end());
+   uint64_t blocks_added = 0;
+-  process_parsed_blocks(effective_start, blocks, parsed, blocks_added, nullptr);
++  process_parsed_blocks(effective_start, batch.blocks, batch.parsed_blocks,
++    blocks_added, nullptr, offset);
+   m_node_rpc_proxy.set_height(m_blockchain.size());
+   m_has_ever_refreshed_from_node = true;
+   m_first_refresh_done = true;
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 05fab0c..c3b6b54 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1938,7 +1938,7 @@ private:
+     bool pull_hashes_extra(epee::net_utils::http::abstract_http_client &client, uint64_t start_height, std::vector<crypto::hash> &hashes, uint64_t &resp_start_height);
+     void fast_refresh(uint64_t stop_height, uint64_t &blocks_start_height, std::list<crypto::hash> &short_chain_history, bool force = false);
+     void pull_and_parse_next_blocks(bool first, bool try_incremental, uint64_t start_height, uint64_t &blocks_start_height, uint64_t prev_blocks_start_height, std::list<crypto::hash> &short_chain_history, const std::vector<cryptonote::block_complete_entry> &prev_blocks, const std::vector<parsed_block> &prev_parsed_blocks, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<parsed_block> &parsed_blocks, bool &last, bool &error, std::exception_ptr &exception);
+-    void process_parsed_blocks(uint64_t start_height, const std::vector<cryptonote::block_complete_entry> &blocks, const std::vector<parsed_block> &parsed_blocks, uint64_t& blocks_added, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
++    void process_parsed_blocks(uint64_t start_height, const std::vector<cryptonote::block_complete_entry> &blocks, const std::vector<parsed_block> &parsed_blocks, uint64_t& blocks_added, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL, size_t block_offset = 0);
+     bool accept_pool_tx_for_processing(const crypto::hash &txid);
+     void process_unconfirmed_transfer(bool incremental, const crypto::hash &txid, wallet2::unconfirmed_transfer_details &tx_details, bool seen_in_pool, std::chrono::system_clock::time_point now, bool refreshed);
+     void process_pool_info_extent(const cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::response &res, std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> &process_txs, bool refreshed);
+-- 
+2.50.1 (Apple Git-155)
+

@@ -17,6 +17,7 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 });
 
 const mockNativeWallet = {
+  getAppProtectionStatus: jest.fn(async () => ({locked: false})),
   ensureWalletSecret: jest.fn(async () => undefined),
   deleteWalletSecret: jest.fn(async () => undefined),
   createFastReceiveIdentityWithStoredSecret: jest.fn(
@@ -90,6 +91,16 @@ const mockNativeWallet = {
   setGrpcEndpoint: jest.fn(async () => undefined),
   startRefresh: jest.fn(async () => undefined),
   getTransactions: jest.fn(async () => []),
+  loadOfficialFastWalletWorkerDescriptor: jest.fn(async () => 'aa'),
+  sponsorFastWalletAssignment: jest.fn(async () => ({
+    assignmentHandle: '22'.repeat(32),
+    assignmentEpoch: 2,
+    expiresAt: Math.floor(Date.now() / 1_000) + 30 * 24 * 60 * 60,
+  })),
+  sealFastReceiveWatchWithStoredSecret: jest.fn(async () =>
+    '33'.repeat(484),
+  ),
+  submitFastWalletWatch: jest.fn(async () => '44'.repeat(32)),
   prepareTransaction: jest.fn(async () => ({
     id: 'pending-1',
     status: 'ok',
@@ -182,6 +193,49 @@ describe('WalletService fast receive scanner flow', () => {
     expect(mockNativeWallet.ensureWalletSecret).not.toHaveBeenCalledWith(
       FAST_SCANNER_CREDENTIAL_KEY,
     );
+  });
+
+  it('renews an expiring assignment once without blocking duplicate callers', async () => {
+    const now = Math.floor(Date.now() / 1_000);
+    await upsertFastReceiveIdentity({
+      ...createFastReceiveIdentityRecord(
+        {
+          id: 'fast-receive-v2-7',
+          label: 'Fast Wallet',
+          path: '/local/fast-receive-v2-7',
+          address: '54A1renewAddress',
+          network: 'mainnet',
+          restoreHeight: 777,
+          derivationIndex: 7,
+          scannerStatus: 'enabled',
+        },
+        new Date().toISOString(),
+        {credentialKey: FAST_CREDENTIAL_KEY},
+      ),
+      status: 'enabled',
+      notificationsEnabled: true,
+      assignmentHandle: '11'.repeat(32),
+      assignmentEpoch: 1,
+      assignmentExpiresAt: now + 60,
+      workerKind: 'official',
+      watchMessageId: '55'.repeat(32),
+    });
+
+    const service = new WalletService();
+    await Promise.all([
+      service.renewExpiringFastWalletAssignmentsQuietly(),
+      service.renewExpiringFastWalletAssignmentsQuietly(),
+    ]);
+
+    expect(mockNativeWallet.sponsorFastWalletAssignment).toHaveBeenCalledTimes(1);
+    await expect(loadFastReceiveIdentities()).resolves.toEqual([
+      expect.objectContaining({
+        assignmentHandle: '22'.repeat(32),
+        assignmentEpoch: 2,
+        notificationsEnabled: true,
+        scannerStatus: 'enabled',
+      }),
+    ]);
   });
 
   it('registers a created Fast Wallet as spendable without exposing its secret', async () => {

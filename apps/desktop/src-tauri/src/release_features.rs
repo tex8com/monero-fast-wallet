@@ -232,9 +232,9 @@ mod tests {
     };
 
     #[test]
-    fn safe_v1_disables_legacy_paths_and_enables_valid_community_v1() {
+    fn safe_v1_enables_verified_ledger_fast_wallet_and_disables_legacy_paths() {
         assert!(!enabled("plaintextFastWalletHosting"));
-        assert!(!enabled("ledgerFastWallet"));
+        assert!(enabled("ledgerFastWallet"));
         assert!(!enabled("scannerKeyImageSpendAuthority"));
         assert!(!enabled("legacyCommunity"));
         assert!(!enabled("mfwNameResolution"));

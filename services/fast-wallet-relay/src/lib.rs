@@ -169,6 +169,7 @@ async fn sponsor_assignment(
         expires_at: input.expires_at,
     };
     state.mailbox.sponsor_assignment(permit, unix_seconds())?;
+    eprintln!("FAST_WALLET_DIAGNOSTICS service=fast-wallet-relay event=assignment.success status=201");
     Ok((
         StatusCode::CREATED,
         Json(AcceptedResponse { accepted: true }),
@@ -196,6 +197,10 @@ async fn submit_envelope(
         SubmitDisposition::Queued(id) => (id, false),
         SubmitDisposition::AlreadyQueued(id) => (id, true),
     };
+    eprintln!(
+        "FAST_WALLET_DIAGNOSTICS service=fast-wallet-relay event=envelope.accepted alreadyQueued={}",
+        already_queued
+    );
     Ok((
         if already_queued {
             StatusCode::OK
@@ -213,15 +218,46 @@ async fn pull_messages(
     State(state): State<RelayApiState>,
     Json(input): Json<WorkerPullInput>,
 ) -> Result<Json<PullResponse>, RelayApiError> {
-    let descriptor = decode_descriptor(&input.worker_descriptor)?;
-    let auth = decode_auth(&input.worker_auth)?;
+    let descriptor = decode_descriptor(&input.worker_descriptor).map_err(|error| {
+        log_worker_pull_rejection("invalid-descriptor", &error);
+        error
+    })?;
+    let auth = decode_auth(&input.worker_auth).map_err(|error| {
+        log_worker_pull_rejection("invalid-auth-payload", &error);
+        error
+    })?;
     let batch = state.mailbox.pull(
         &descriptor,
         &auth,
         input.limit,
         input.include_envelopes,
         unix_seconds(),
-    )?;
+    ).map_err(|error| {
+        // Do not log descriptor, signature, replay nonce, or envelope data.
+        // The reason is enough to distinguish the worker's 401 boundary.
+        let reason = match error {
+            RelayError::Unauthorized => "signature-clock-or-trust",
+            RelayError::Replay => "replayed-auth",
+            RelayError::UnknownAssignment => "unknown-assignment",
+            RelayError::WrongWorker => "wrong-worker",
+            RelayError::Expired => "expired-assignment",
+            RelayError::StaleAssignment => "stale-assignment",
+            RelayError::AssignmentConflict => "assignment-conflict",
+            RelayError::InvalidEnvelope => "invalid-envelope",
+            RelayError::InvalidAssignment => "invalid-assignment",
+            RelayError::InvalidAck => "invalid-ack",
+            RelayError::ReplayCacheFull => "replay-cache-full",
+            RelayError::MailboxFull => "mailbox-full",
+            RelayError::AssignmentFull => "assignment-full",
+            RelayError::InvalidState => "invalid-state",
+            RelayError::Storage => "storage",
+        };
+        let api_error = RelayApiError::from(error);
+        log_worker_pull_rejection(reason, &api_error);
+        api_error
+    })?;
+    let delivery_count = batch.deliveries.len();
+    let deletion_count = batch.deletions.len();
     let deliveries = batch
         .deliveries
         .into_iter()
@@ -241,10 +277,32 @@ async fn pull_messages(
             delivery_attempt: deletion.delivery_attempt,
         })
         .collect();
+    if delivery_count > 0 || deletion_count > 0 {
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=fast-wallet-relay event=worker-pull.complete deliveries={} deletions={}",
+            delivery_count,
+            deletion_count
+        );
+    }
     Ok(Json(PullResponse {
         deliveries,
         deletions,
     }))
+}
+
+fn log_worker_pull_rejection(reason: &str, error: &RelayApiError) {
+    let status = match error {
+        RelayApiError::BadRequest => StatusCode::BAD_REQUEST,
+        RelayApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+        RelayApiError::NotFound => StatusCode::NOT_FOUND,
+        RelayApiError::Conflict => StatusCode::CONFLICT,
+        RelayApiError::Capacity => StatusCode::TOO_MANY_REQUESTS,
+        RelayApiError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    eprintln!(
+        "FAST_WALLET_DIAGNOSTICS service=fast-wallet-relay event=worker-pull.rejected status={} reason={reason}",
+        status.as_u16()
+    );
 }
 
 async fn ack_messages(

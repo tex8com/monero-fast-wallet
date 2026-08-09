@@ -14,7 +14,6 @@ import { AppSecurityProvider } from './src/services/AppSecurity';
 import { WalletStateProvider } from './src/services/WalletState';
 import { useWalletState } from './src/services/WalletState';
 import IncomingPaymentNotice from './src/components/IncomingPaymentNotice';
-import { AppUpdateService } from './src/services/AppUpdateService';
 
 const navigationRef = createNavigationContainerRef<any>();
 
@@ -57,7 +56,6 @@ function WalletUnlockRedirect({ ready }: { ready: boolean }) {
 
 function App() {
   useEffect(() => FastWalletPushService.startLifecycle(), []);
-  useEffect(() => AppUpdateService.initialize(), []);
   const [navigationReady, setNavigationReady] = useState(false);
 
   return (

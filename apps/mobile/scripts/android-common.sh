@@ -94,6 +94,16 @@ capitalize_variant() {
   printf "%s%s" "$(printf "%s" "${value:0:1}" | tr '[:lower:]' '[:upper:]')" "${value:1}"
 }
 
+reset_react_native_autolinking() {
+  # React Native's generated autolinking JSON reflects environment-dependent
+  # configuration (notably the Firebase-native exclusion used only by an
+  # isolated simulator app), while its cache key does not include that
+  # environment state. Reusing it could produce a product graph without the
+  # pinned Firebase/App Check/FCM modules. This directory contains generated
+  # Gradle output only and is recreated by the next Gradle invocation.
+  rm -rf "${ANDROID_DIR}/build/generated/autolinking"
+}
+
 fast_wallet_protocol_artifact_needs_rebuild() {
   local artifact="$1"
   local monero_source_dir="$2"

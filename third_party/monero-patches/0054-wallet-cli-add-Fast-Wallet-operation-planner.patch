@@ -1,0 +1,174 @@
+From c270c67db42b27e7931091f5f4e430e5fd0828e6 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Fast Wallet <dev@tex8.com>
+Date: Sat, 8 Aug 2026 23:22:55 -0500
+Subject: [PATCH] wallet cli: add Fast Wallet operation planner
+
+---
+ src/simplewallet/product_cli_debug.cpp | 138 +++++++++++++++++++++++++
+ 1 file changed, 138 insertions(+)
+
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index c07cd4c..b20dfb8 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -187,12 +187,148 @@ namespace
+       << "FAST-WALLET-CLI BY TEX8 - FAST WALLET RULES\n\n"
+       << "fast-wallet contract --json\n"
+       << "  Print the shared Fast Wallet lifecycle contract identity.\n\n"
++      << "fast-wallet plan <operation> <state> [flags] --json\n"
++      << "  Explain one shared Fast Wallet decision without opening a wallet,\n"
++      << "  touching a worker, network, seed, wallet file or funds.\n"
++      << "  Operations: create, restore, backup, select, receive, send,\n"
++      << "  enroll, renew, revoke, remove. States: empty, awaiting-backup,\n"
++      << "  ready, removal-pending, removed.\n"
++      << "  Flags: --backup-confirmed --worker-enrolled\n"
++      << "         --notifications-enabled --balance=<unknown|zero|positive>\n\n"
+       << "fast-wallet self-test --json\n"
+       << "  Exercise the shared Fast Wallet coordinator without a worker, network,\n"
+       << "  wallet file, seed or funds: independent seed, mandatory backup, and\n"
+       << "  explicit worker detach and notification disable before removal.\n";
+   }
+ 
++  bool fast_wallet_operation(const std::string& name, std::uint32_t& operation)
++  {
++    if (name == "create") operation = MFW_FAST_WALLET_OPERATION_CREATE;
++    else if (name == "restore") operation = MFW_FAST_WALLET_OPERATION_RESTORE;
++    else if (name == "backup") operation = MFW_FAST_WALLET_OPERATION_CONFIRM_SEED_BACKUP;
++    else if (name == "select") operation = MFW_FAST_WALLET_OPERATION_SELECT;
++    else if (name == "receive") operation = MFW_FAST_WALLET_OPERATION_RECEIVE;
++    else if (name == "send") operation = MFW_FAST_WALLET_OPERATION_SEND;
++    else if (name == "enroll") operation = MFW_FAST_WALLET_OPERATION_ENROLL_WORKER;
++    else if (name == "renew") operation = MFW_FAST_WALLET_OPERATION_RENEW_WORKER;
++    else if (name == "revoke") operation = MFW_FAST_WALLET_OPERATION_REVOKE_WORKER;
++    else if (name == "remove") operation = MFW_FAST_WALLET_OPERATION_REMOVE;
++    else return false;
++    return true;
++  }
++
++  bool fast_wallet_state(const std::string& name, std::uint32_t& state)
++  {
++    if (name == "empty") state = MFW_WALLET_LIFECYCLE_EMPTY;
++    else if (name == "awaiting-backup") state = MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP;
++    else if (name == "ready") state = MFW_WALLET_LIFECYCLE_READY;
++    else if (name == "removal-pending") state = MFW_WALLET_LIFECYCLE_REMOVAL_PENDING;
++    else if (name == "removed") state = MFW_WALLET_LIFECYCLE_REMOVED;
++    else return false;
++    return true;
++  }
++
++  bool fast_wallet_balance(const std::string& name, std::uint32_t& balance)
++  {
++    if (name == "unknown") balance = MFW_WALLET_BALANCE_UNKNOWN;
++    else if (name == "zero") balance = MFW_WALLET_BALANCE_KNOWN_ZERO;
++    else if (name == "positive") balance = MFW_WALLET_BALANCE_KNOWN_POSITIVE;
++    else return false;
++    return true;
++  }
++
++  const char* fast_wallet_state_name(const std::uint32_t state)
++  {
++    switch (state)
++    {
++      case MFW_WALLET_LIFECYCLE_EMPTY: return "empty";
++      case MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP: return "awaiting-backup";
++      case MFW_WALLET_LIFECYCLE_READY: return "ready";
++      case MFW_WALLET_LIFECYCLE_REMOVAL_PENDING: return "removal-pending";
++      case MFW_WALLET_LIFECYCLE_REMOVED: return "removed";
++      default: return "invalid";
++    }
++  }
++
++  bool fast_wallet_plan_command(int argc, char* argv[], int& exit_code)
++  {
++    if (argc < 6)
++    {
++      std::cerr << "Usage: fast-wallet plan <operation> <state> [flags] --json\n";
++      exit_code = 64;
++      return true;
++    }
++
++    const std::string operation_name(argv[3]);
++    const std::string state_name(argv[4]);
++    mfw_fast_wallet_coordinator_input_v1 input{};
++    input.struct_size = sizeof(input);
++    input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
++    input.balance_state = MFW_WALLET_BALANCE_UNKNOWN;
++    if (!fast_wallet_operation(operation_name, input.operation) ||
++        !fast_wallet_state(state_name, input.lifecycle_state))
++    {
++      std::cerr << "Unknown Fast Wallet operation or state. Run: fast-wallet help\n";
++      exit_code = 64;
++      return true;
++    }
++
++    bool json = false;
++    for (int index = 5; index < argc; ++index)
++    {
++      const std::string flag(argv[index]);
++      if (flag == "--json") json = true;
++      else if (flag == "--backup-confirmed") input.seed_backup_confirmed = 1;
++      else if (flag == "--worker-enrolled") input.worker_enrolled = 1;
++      else if (flag == "--notifications-enabled") input.notifications_enabled = 1;
++      else if (flag.compare(0, 10, "--balance=") == 0 &&
++               fast_wallet_balance(flag.substr(10), input.balance_state)) {}
++      else
++      {
++        std::cerr << "Unknown Fast Wallet plan flag. Run: fast-wallet help\n";
++        exit_code = 64;
++        return true;
++      }
++    }
++    if (!json)
++    {
++      std::cerr << "Fast Wallet plan output is JSON only. Add: --json\n";
++      exit_code = 64;
++      return true;
++    }
++
++    mfw_fast_wallet_coordinator_plan_v1 plan{};
++    const std::uint32_t result = mfw_fast_wallet_operation_plan_v1(&input, &plan);
++    if (result != MFW_ERROR_OK)
++    {
++      std::cerr << "This Fast Wallet operation is invalid in the requested state.\n";
++      exit_code = 64;
++      return true;
++    }
++
++    const std::uint32_t requirements = plan.requirement_flags;
++    std::cout << "{"
++              << "\"operation\":\"" << operation_name << "\","
++              << "\"state\":\"" << state_name << "\","
++              << "\"operation_allowed\":" << (plan.operation_allowed ? "true" : "false") << ","
++              << "\"execution_allowed\":" << (plan.execution_allowed ? "true" : "false") << ","
++              << "\"requirements\":{"
++              << "\"independent_seed\":"
++              << ((requirements & MFW_FAST_WALLET_REQUIREMENT_INDEPENDENT_SEED) ? "true" : "false") << ","
++              << "\"confirm_seed_backup\":"
++              << ((requirements & MFW_FAST_WALLET_REQUIREMENT_CONFIRM_SEED_BACKUP) ? "true" : "false") << ","
++              << "\"detach_worker\":"
++              << ((requirements & MFW_WALLET_REMOVAL_REQUIREMENT_DETACH_FAST_WORKER) ? "true" : "false") << ","
++              << "\"disable_notifications\":"
++              << ((requirements & MFW_WALLET_REMOVAL_REQUIREMENT_DISABLE_NOTIFICATIONS) ? "true" : "false")
++              << "},"
++              << "\"result_state\":\"" << fast_wallet_state_name(plan.result_lifecycle_state) << "\","
++              << "\"network_calls\":0,\"funds_touched\":false,\"wallet_files_created\":0"
++              << "}\n";
++    exit_code = 0;
++    return true;
++  }
++
+   bool wallet_policy_command(int argc, char* argv[], int& exit_code)
+   {
+     if (argc < 5 || argc > 6 || std::string(argv[argc - 1]) != "--json")
+@@ -533,6 +669,8 @@ namespace mfw_cli
+         exit_code = 0;
+         return true;
+       }
++      if (command == "plan")
++        return fast_wallet_plan_command(argc, argv, exit_code);
+       if (command == "self-test" && argc == 4 && std::string(argv[3]) == "--json")
+         return fast_wallet_self_test(exit_code);
+ 
+-- 
+2.50.1 (Apple Git-155)
+

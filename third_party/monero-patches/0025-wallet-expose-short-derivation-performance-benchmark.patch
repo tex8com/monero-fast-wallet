@@ -1,0 +1,237 @@
+From 6cdcd89c80220e5653d3fa7b791b79ecac6dc5ea Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 2 Aug 2026 18:00:00 -0500
+Subject: [PATCH] wallet: expose short derivation performance benchmark
+
+---
+ src/crypto/crypto.cpp | 196 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 196 insertions(+)
+
+diff --git a/src/crypto/crypto.cpp b/src/crypto/crypto.cpp
+index 08dff97..cfb952a 100644
+--- a/src/crypto/crypto.cpp
++++ b/src/crypto/crypto.cpp
+@@ -33,6 +33,7 @@
+ #include <array>
+ #include <cassert>
+ #include <cerrno>
++#include <chrono>
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstdlib>
+@@ -41,6 +42,7 @@
+ #include <mutex>
+ #include <sstream>
+ #include <string>
++#include <thread>
+ #include <vector>
+ #if defined(_WIN32)
+ #include <windows.h>
+@@ -402,6 +404,140 @@ namespace {
+     return minimum;
+   }
+ #endif
++
++  struct derivation_benchmark_result
++  {
++    bool available = false;
++    bool verified = false;
++    uint64_t derivations_per_second = 0;
++    size_t sample_count = 0;
++    uint64_t elapsed_ms = 0;
++    std::string error;
++  };
++
++  void benchmark_secure_zero(void *memory, size_t bytes)
++  {
++    volatile uint8_t *cursor = static_cast<volatile uint8_t*>(memory);
++    while (bytes-- != 0)
++      *cursor++ = 0;
++  }
++
++  size_t benchmark_cpu_workers()
++  {
++    const unsigned detected = (std::max)(1u, std::thread::hardware_concurrency());
++    const char *configured = std::getenv("MONERO_RUST_DERIVATION_WORKERS");
++    if (configured == nullptr || *configured == '\0')
++      return detected;
++    errno = 0;
++    char *end = nullptr;
++    const unsigned long parsed = std::strtoul(configured, &end, 10);
++    if (errno != 0 || end == nullptr || *end != '\0' || parsed == 0)
++      return detected;
++    return static_cast<size_t>((std::min)(parsed, static_cast<unsigned long>(detected)));
++  }
++
++  template<typename Derive>
++  derivation_benchmark_result run_short_derivation_benchmark(
++      size_t batch_size,
++      std::chrono::milliseconds target_duration,
++      size_t maximum_rounds,
++      Derive derive)
++  {
++    derivation_benchmark_result benchmark;
++    benchmark.available = true;
++    std::array<uint8_t, 32> scalar = {
++      0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++    const std::array<uint8_t, 32> basepoint = {
++      0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++      0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++      0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++      0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66};
++    const std::array<uint8_t, 32> expected = {
++      0x54, 0x42, 0x54, 0xf1, 0xab, 0xca, 0x26, 0xae,
++      0x4c, 0xe3, 0xe2, 0xb0, 0x81, 0xbc, 0x96, 0xe7,
++      0x94, 0x1d, 0xd7, 0x96, 0xee, 0x29, 0x61, 0x68,
++      0xc7, 0xfb, 0x3c, 0xea, 0xe1, 0x3e, 0xe2, 0xf3};
++    std::vector<uint8_t> points(batch_size * 32);
++    std::vector<uint8_t> results(batch_size * 32);
++    std::vector<uint8_t> valid(batch_size);
++    for (size_t index = 0; index < batch_size; ++index)
++      std::copy(basepoint.begin(), basepoint.end(), points.begin() + index * 32);
++
++    auto verify_output = [&]() {
++      if (!std::all_of(valid.begin(), valid.end(), [](uint8_t value) { return value == 1; }))
++        return false;
++      for (size_t index = 0; index < batch_size; ++index)
++      {
++        if (!std::equal(expected.begin(), expected.end(), results.begin() + index * 32))
++          return false;
++      }
++      return true;
++    };
++
++    const int64_t warmup = derive(
++      results.data(), scalar.data(), points.data(), valid.data(), batch_size);
++    if (warmup != static_cast<int64_t>(batch_size) || !verify_output())
++    {
++      benchmark.error = "Derivation benchmark correctness check failed";
++    }
++    else
++    {
++      const auto started = std::chrono::steady_clock::now();
++      size_t rounds = 0;
++      int64_t outcome = 0;
++      do
++      {
++        outcome = derive(
++          results.data(), scalar.data(), points.data(), valid.data(), batch_size);
++        ++rounds;
++      }
++      while (outcome == static_cast<int64_t>(batch_size)
++        && rounds < maximum_rounds
++        && std::chrono::steady_clock::now() - started < target_duration);
++      const auto elapsed = std::chrono::steady_clock::now() - started;
++      const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
++      if (outcome != static_cast<int64_t>(batch_size) || !verify_output() || elapsed_ns <= 0)
++      {
++        benchmark.error = "Derivation benchmark execution failed";
++      }
++      else
++      {
++        const uint64_t total = static_cast<uint64_t>(rounds) * batch_size;
++        benchmark.verified = true;
++        benchmark.sample_count = static_cast<size_t>(total);
++        benchmark.elapsed_ms = static_cast<uint64_t>((elapsed_ns + 999999) / 1000000);
++        benchmark.derivations_per_second = static_cast<uint64_t>(
++          (static_cast<long double>(total) * 1000000000.0L) / elapsed_ns);
++      }
++    }
++
++    benchmark_secure_zero(scalar.data(), scalar.size());
++    benchmark_secure_zero(points.data(), points.size());
++    benchmark_secure_zero(results.data(), results.size());
++    benchmark_secure_zero(valid.data(), valid.size());
++    return benchmark;
++  }
++
++  derivation_benchmark_result unavailable_benchmark(const std::string &error)
++  {
++    derivation_benchmark_result result;
++    result.error = error;
++    return result;
++  }
++
++  std::string benchmark_json(const derivation_benchmark_result &benchmark)
++  {
++    std::string result = "{\"available\":";
++    result += benchmark.available ? "true" : "false";
++    result += ",\"verified\":" + std::string(benchmark.verified ? "true" : "false");
++    result += ",\"derivationsPerSecond\":"
++      + std::to_string(benchmark.derivations_per_second);
++    result += ",\"sampleCount\":" + std::to_string(benchmark.sample_count);
++    result += ",\"elapsedMs\":" + std::to_string(benchmark.elapsed_ms);
++    result += ",\"error\":\"" + json_escape(benchmark.error) + "\"}";
++    return result;
++  }
+ }
+ 
+ extern "C" int monero_fast_set_derivation_backend_preference(const char *preference)
+@@ -470,6 +606,66 @@ extern "C" const char *monero_fast_derivation_backend_status_json(void)
+   return result.c_str();
+ }
+ 
++extern "C" const char *monero_fast_derivation_benchmark_json(void)
++{
++  static std::mutex benchmark_mutex;
++  std::lock_guard<std::mutex> lock(benchmark_mutex);
++  thread_local std::string result;
++
++  const size_t cpu_workers = benchmark_cpu_workers();
++  const auto cpu = run_short_derivation_benchmark(
++    4096, std::chrono::milliseconds(100), 8,
++    [cpu_workers](uint8_t *results, const uint8_t *scalar,
++      const uint8_t *points, uint8_t *valid, size_t count) {
++      return static_cast<int64_t>(fast_generate_key_derivation_batch_same_scalar(
++        results, scalar, points, valid, count, cpu_workers));
++    });
++
++  derivation_benchmark_result metal = unavailable_benchmark(
++    "Metal derivation backend is not available on this platform");
++#ifdef MONERO_FAST_METAL
++  if (verified_metal_available())
++  {
++    metal = run_short_derivation_benchmark(
++      16384, std::chrono::milliseconds(60), 32,
++      [](uint8_t *results, const uint8_t *scalar,
++        const uint8_t *points, uint8_t *valid, size_t count) {
++        return fast_metal_generate_key_derivation_batch_same_scalar(
++          results, scalar, points, valid, count);
++      });
++  }
++  else
++  {
++    metal.error = metal_verification_error();
++  }
++#endif
++
++  derivation_benchmark_result cuda = unavailable_benchmark(
++    "CUDA derivation backend is not available on this platform");
++#if defined(_WIN32) || defined(__linux__)
++  if (cuda_backend().available())
++  {
++    cuda = run_short_derivation_benchmark(
++      16384, std::chrono::milliseconds(60), 32,
++      [](uint8_t *results, const uint8_t *scalar,
++        const uint8_t *points, uint8_t *valid, size_t count) {
++        return cuda_backend().derive(results, scalar, points, valid, count);
++      });
++  }
++  else
++  {
++    cuda.error = cuda_backend().last_error();
++  }
++#endif
++
++  result = "{\"schemaVersion\":1,\"cpuWorkers\":"
++    + std::to_string(cpu_workers)
++    + ",\"cpu\":" + benchmark_json(cpu)
++    + ",\"metal\":" + benchmark_json(metal)
++    + ",\"cuda\":" + benchmark_json(cuda) + "}";
++  return result.c_str();
++}
++
+ namespace crypto {
+ 
+   using std::abort;

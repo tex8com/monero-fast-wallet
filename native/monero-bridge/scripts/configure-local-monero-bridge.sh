@@ -9,6 +9,7 @@ monero_build_dir="${MONERO_BUILD_DIR:-${monero_source_dir}/build/tex8-wallet-api
 bridge_build_dir="${BRIDGE_BUILD_DIR:-${repo_root}/build/native-bridge-monero}"
 grpc_stream_enabled="${MONERO_WALLET_BRIDGE_WITH_GRPC_STREAM:-ON}"
 tex8_extensions_enabled="${MONERO_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS:-ON}"
+test_hooks_enabled="${MONERO_WALLET_BRIDGE_ENABLE_TEST_HOOKS:-OFF}"
 cmake_bin="${CMAKE_BIN:-$(command -v cmake 2>/dev/null || true)}"
 
 if [[ -z "${cmake_bin}" || ! -x "${cmake_bin}" ]]; then
@@ -73,12 +74,25 @@ if [[ "$(uname -s)" == "Darwin" &&
     "${depends_prefix}/lib/libcrypto.a" "${depends_prefix}/lib/libexpat.a"
     "${depends_prefix}/lib/libiconv.a"
   )
-  if [[ "${grpc_stream_enabled}" == "ON" ]]; then
+  # The patched wallet core calls the Rust acceleration backend independently
+  # of the optional Cuprate gRPC stream. Keep that backend in every TEX8 Core
+  # link, including the deliberately offline address-generation benchmark.
+  if [[ "${tex8_extensions_enabled}" == "ON" ]]; then
     fast_crypto_archive="${MONERO_FAST_CRYPTO_LIBRARY:-${monero_source_dir}/external/monero-fast-crypto/target/release/libmonero_fast_crypto.a}"
+    archives+=("${fast_crypto_archive}")
+  fi
+  if [[ "${grpc_stream_enabled}" == "ON" ]]; then
+    # The SDK builds its own pinned static zlib. macOS' zlib.pc reports
+    # /usr/lib, where Apple ships only the dynamic system library, so derive
+    # the archive directory from the authenticated gRPC package itself.
+    grpc_static_libdir="$(pkg-config --variable=libdir grpc++)"
+    if [[ ! -f "${grpc_static_libdir}/libz.a" ]]; then
+      echo "Pinned gRPC SDK is missing static zlib: ${grpc_static_libdir}/libz.a" >&2
+      exit 1
+    fi
     archives+=(
       "${monero_build_dir}/lib/libcuprate_grpc_stream.a"
-      "${depends_prefix}/lib/libprotobuf.a"
-      "${fast_crypto_archive}"
+      "${grpc_static_libdir}/libz.a"
     )
   fi
   link_args=()
@@ -91,20 +105,23 @@ if [[ "$(uname -s)" == "Darwin" &&
     '-Wl,-framework,AppKit' '-Wl,-framework,IOKit'
     '-Wl,-framework,CoreFoundation' '-Wl,-framework,Security'
     '-Wl,-framework,Metal'
-    '-lc++' '-lz' '-lbz2'
+    '-lc++' '-lbz2'
   )
   if [[ "${grpc_stream_enabled}" == "ON" ]]; then
-    # libcuprate_grpc_stream is static; link the matching Homebrew gRPC,
-    # protobuf and Abseil dependency closure after the force-loaded archives.
+    # The standalone test consumes the pinned static SDK. Ask pkg-config for
+    # the private closure (RE2, c-ares, upb and Abseil), while keeping zlib on
+    # the explicit static archive above so no unbundled @rpath is introduced.
     while IFS= read -r grpc_link_flag; do
+      [[ "${grpc_link_flag}" == "-lz" ]] && continue
       [[ -n "${grpc_link_flag}" ]] && link_args+=("${grpc_link_flag}")
-    done < <(pkg-config --libs grpc++ grpc protobuf | tr ' ' '\n')
+    done < <(pkg-config --static --libs grpc++ grpc protobuf | tr ' ' '\n')
   fi
 
   "${cmake_bin}" -S "${repo_root}/native/monero-bridge" -B "${bridge_build_dir}" \
     -DMONERO_WALLET_BRIDGE_WITH_MONERO=ON \
     -DMONERO_WALLET_BRIDGE_WITH_GRPC_STREAM="${grpc_stream_enabled}" \
     -DMONERO_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS="${tex8_extensions_enabled}" \
+    -DMONERO_WALLET_BRIDGE_ENABLE_TEST_HOOKS="${test_hooks_enabled}" \
     -DMONERO_SOURCE_DIR="${monero_source_dir}" \
     -DMONERO_WALLET_API_LIBRARY="${monero_build_dir}/lib/libwallet_api.a" \
     -DMONERO_WALLET_EXTRA_LINK_OPTIONS="$(join_by_semicolon "${link_args[@]}")"
@@ -172,6 +189,7 @@ link_options="$(append_semicolon_list "${pkg_opts}" "$(join_by_semicolon "-frame
 
 "${cmake_bin}" -S "${repo_root}/native/monero-bridge" -B "${bridge_build_dir}" \
   -DMONERO_WALLET_BRIDGE_WITH_MONERO=ON \
+  -DMONERO_WALLET_BRIDGE_ENABLE_TEST_HOOKS="${test_hooks_enabled}" \
   -DMONERO_SOURCE_DIR="${monero_source_dir}" \
   -DMONERO_WALLET_API_LIBRARY="${monero_build_dir}/lib/libwallet_api.a" \
   -DMONERO_WALLET_EXTRA_LIBRARIES="${extra_libs}" \

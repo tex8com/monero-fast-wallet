@@ -1,0 +1,95 @@
+From 0e33006750a143c2a84d6be6cccefd9c854ea47e Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 00:05:38 -0500
+Subject: [PATCH] wallet: expose shared batch transport measurements
+
+---
+ src/wallet/api/wallet.cpp    | 2 ++
+ src/wallet/api/wallet2_api.h | 2 ++
+ src/wallet/wallet2.cpp       | 7 +++++++
+ src/wallet/wallet2.h         | 3 +++
+ 4 files changed, 14 insertions(+)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index b0caa6440..fed25a053 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -106,6 +106,8 @@ public:
+     uint64_t endHeight() const override { return value_->start_height + value_->blocks.size(); }
+     uint64_t currentHeight() const override { return value_->current_height; }
+     size_t blockCount() const override { return value_->blocks.size(); }
++    uint64_t networkBytes() const override { return value_->network_bytes; }
++    uint64_t payloadBytes() const override { return value_->payload_bytes; }
+ 
+     const tools::wallet2::shared_block_batch& value() const { return *value_; }
+ 
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 741d57fae..1d84b18ca 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -452,6 +452,8 @@ struct Wallet
+         virtual uint64_t endHeight() const = 0;
+         virtual uint64_t currentHeight() const = 0;
+         virtual size_t blockCount() const = 0;
++        virtual uint64_t networkBytes() const = 0;
++        virtual uint64_t payloadBytes() const = 0;
+     };
+ 
+     struct SharedPoolSnapshot
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index c8c93432d..2e2e17eab 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3631,12 +3631,14 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       << " consumer_wait_ms=" << pop_wait_ms
+       << " chain_tip=" << current_height
+       << " session=" << m_grpc_stream_session_id);
++  m_last_pull_payload_bytes = payload.size();
+   return true;
+ }
+ #endif
+ //----------------------------------------------------------------------------------------------------
+ void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_height, uint64_t &blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices, uint64_t &current_height, uint64_t shared_start_cursor)
+ {
++  m_last_pull_payload_bytes = 0;
+ #ifdef MONERO_GRPC_STREAM
+   // Fast path: cuprate gRPC streaming sync. Falls through to bin RPC below
+   // if the endpoint is unset, the stream errored, or end-of-stream is hit
+@@ -4287,8 +4289,13 @@ std::shared_ptr<const wallet2::shared_block_batch> wallet2::fetch_shared_block_b
+   auto batch = std::make_shared<shared_block_batch>();
+   batch->network = m_nettype;
+   std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> o_indices;
++  const uint64_t network_bytes_before = get_bytes_received();
+   pull_blocks(false, true, requested_cursor, batch->start_height, short_chain_history,
+     batch->blocks, o_indices, batch->current_height, requested_cursor);
++  const uint64_t network_bytes_after = get_bytes_received();
++  batch->network_bytes = network_bytes_after >= network_bytes_before
++    ? network_bytes_after - network_bytes_before : 0;
++  batch->payload_bytes = m_last_pull_payload_bytes;
+   THROW_WALLET_EXCEPTION_IF(batch->blocks.size() != o_indices.size(),
+     error::wallet_internal_error, "shared block/output-index size mismatch");
+ 
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 88a8804a9..05fab0c10 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -894,6 +894,8 @@ private:
+       cryptonote::network_type network;
+       uint64_t start_height;
+       uint64_t current_height;
++      uint64_t network_bytes{0};
++      uint64_t payload_bytes{0};
+       std::vector<cryptonote::block_complete_entry> blocks;
+       std::vector<parsed_block> parsed_blocks;
+     };
+@@ -2042,6 +2044,7 @@ private:
+     std::unique_ptr<epee::net_utils::http::http_client_factory> m_http_client_factory;
+     const std::unique_ptr<epee::net_utils::http::abstract_http_client> m_http_client;
+     std::vector<std::unique_ptr<epee::net_utils::http::abstract_http_client>> m_pull_clients;
++    uint64_t m_last_pull_payload_bytes = 0;
+ #ifdef MONERO_GRPC_STREAM
+     std::unique_ptr<cuprate_grpc_stream::cuprate_grpc_block_range_pool> m_grpc_stream_client;
+     std::string  m_grpc_stream_endpoint;
+-- 
+2.50.1 (Apple Git-155)
+

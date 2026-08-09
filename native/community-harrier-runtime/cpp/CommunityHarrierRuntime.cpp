@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 #include "CommunityHarrierRuntime.h"
+#include "CommunityHarrierAndroidJni.h"
 
 #include <algorithm>
 #include <cmath>
@@ -80,6 +81,9 @@ class CommunityHarrierRuntime::Impl final {
 #if defined(TEX8_HARRIER_WITH_EXECUTORCH)
   std::unique_ptr<executorch::extension::Module> module;
 #endif
+#if defined(TEX8_HARRIER_WITH_ANDROID_JNI_EXECUTORCH)
+  bool android_module_ready{false};
+#endif
   bool tokenizer_ready{false};
   mutable std::mutex execution_mutex;
 };
@@ -126,6 +130,15 @@ bool CommunityHarrierRuntime::load(
     return false;
   }
   impl_->module = std::move(module);
+#elif defined(TEX8_HARRIER_WITH_ANDROID_JNI_EXECUTORCH)
+  if (verified_pte_path.empty()) {
+    error = "verified PTE path is empty";
+    return false;
+  }
+  if (!android_executorch_load(verified_pte_path, error)) {
+    return false;
+  }
+  impl_->android_module_ready = true;
 #else
   (void)verified_pte_path;
 #endif
@@ -233,6 +246,35 @@ bool CommunityHarrierRuntime::embed_prepared(
   }
   error.clear();
   return true;
+#elif defined(TEX8_HARRIER_WITH_ANDROID_JNI_EXECUTORCH)
+  if (!impl_->android_module_ready) {
+    error = "Harrier Android ExecuTorch module is not loaded";
+    return false;
+  }
+  std::lock_guard lock(impl_->execution_mutex);
+  if (!android_executorch_forward(
+          tokens.input_ids, tokens.attention_mask, output, error)) {
+    return false;
+  }
+  if (output.size() != kHarrierEmbeddingDimension) {
+    error = "Harrier Android ExecuTorch output contract is invalid";
+    return false;
+  }
+  double squared_norm = 0.0;
+  for (const float value : output) {
+    if (!std::isfinite(value)) {
+      error = "Harrier Android ExecuTorch output is non-finite";
+      return false;
+    }
+    squared_norm += static_cast<double>(value) * value;
+  }
+  const double norm = std::sqrt(squared_norm);
+  if (norm < kMinimumOutputNorm || norm > kMaximumOutputNorm) {
+    error = "Harrier Android ExecuTorch output is not L2-normalized";
+    return false;
+  }
+  error.clear();
+  return true;
 #else
   (void)output;
   error = "Harrier runtime was built without ExecuTorch";
@@ -243,6 +285,8 @@ bool CommunityHarrierRuntime::embed_prepared(
 bool CommunityHarrierRuntime::ready() const noexcept {
 #if defined(TEX8_HARRIER_WITH_EXECUTORCH)
   return impl_->tokenizer_ready && impl_->module != nullptr;
+#elif defined(TEX8_HARRIER_WITH_ANDROID_JNI_EXECUTORCH)
+  return impl_->tokenizer_ready && impl_->android_module_ready;
 #else
   return false;
 #endif

@@ -22,8 +22,12 @@ endif()
 set(MONERO_DEPENDS_PREFIX "${MONERO_DEPENDS_PREFIX}" CACHE PATH "Monero contrib/depends prefix")
 # CMake reloads the toolchain inside compiler try-compiles. Preserve this
 # project-specific value there as well, otherwise compiler detection loses it.
-set(CMAKE_TRY_COMPILE_PLATFORM_VARIABLES MONERO_DEPENDS_PREFIX CACHE STRING
-  "Variables forwarded to CMake try-compiles")
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
+  MONERO_DEPENDS_PREFIX MONERO_GRPC_PKG_CONFIG_PATH)
+list(REMOVE_DUPLICATES CMAKE_TRY_COMPILE_PLATFORM_VARIABLES)
+set(CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
+  "${CMAKE_TRY_COMPILE_PLATFORM_VARIABLES}" CACHE STRING
+  "Variables forwarded to CMake try-compiles" FORCE)
 
 set(CMAKE_SYSTEM_NAME Darwin)
 set(CMAKE_SYSTEM_PROCESSOR arm64)
@@ -60,7 +64,20 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY BOTH)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH)
 
-set(ENV{PKG_CONFIG_PATH} "${MONERO_DEPENDS_PREFIX}/lib/pkgconfig")
+if(DEFINED ENV{MONERO_GRPC_PKG_CONFIG_PATH} AND
+   NOT "$ENV{MONERO_GRPC_PKG_CONFIG_PATH}" STREQUAL "")
+  # Generated Protobuf 31.1 sources must compile and link against the exact
+  # matching pinned SDK. Exclude the older Monero depends Protobuf and any
+  # developer Homebrew packages from this gRPC-enabled configuration.
+  set(ENV{PKG_CONFIG_PATH} "")
+  set(ENV{PKG_CONFIG_LIBDIR} "$ENV{MONERO_GRPC_PKG_CONFIG_PATH}")
+elseif(DEFINED MONERO_GRPC_PKG_CONFIG_PATH AND
+       NOT MONERO_GRPC_PKG_CONFIG_PATH STREQUAL "")
+  set(ENV{PKG_CONFIG_PATH} "")
+  set(ENV{PKG_CONFIG_LIBDIR} "${MONERO_GRPC_PKG_CONFIG_PATH}")
+else()
+  set(ENV{PKG_CONFIG_PATH} "${MONERO_DEPENDS_PREFIX}/lib/pkgconfig")
+endif()
 set(Boost_IGNORE_SYSTEM_PATH ON)
 set(BOOST_ROOT "${MONERO_DEPENDS_PREFIX}")
 set(BOOST_INCLUDEDIR "${MONERO_DEPENDS_PREFIX}/include")

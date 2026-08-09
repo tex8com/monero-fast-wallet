@@ -21,8 +21,13 @@ if [[ -z "${target_dir}" || "${target_dir}" == "/" || "${target_dir}" == "${HOME
 fi
 
 stamp="${target_dir}/.tex8-source-commit"
+checkout_materialized=0
 if [[ -d "${target_dir}/.git" ]]; then
-  actual="$(git -C "${target_dir}" rev-parse HEAD)"
+  if ! actual="$(git -C "${target_dir}" rev-parse --verify HEAD 2>/dev/null)"; then
+    echo "existing dependency checkout is incomplete and has no verified HEAD: ${target_dir}" >&2
+    echo "move it aside and rerun the build; completed checkouts are now materialized atomically" >&2
+    exit 65
+  fi
   if [[ "${actual}" != "${commit}" ]]; then
     echo "existing dependency checkout has unexpected commit: ${actual}" >&2
     exit 65
@@ -37,14 +42,38 @@ elif [[ -e "${target_dir}" ]]; then
   echo "verified dependency source stamp ${target_dir}"
   exit 0
 else
-  mkdir -p "${target_dir}"
-  git -C "${target_dir}" init
-  git -C "${target_dir}" remote add origin "${repository}"
-  git -C "${target_dir}" fetch --depth 1 origin "${commit}"
-  git -C "${target_dir}" checkout --detach "${commit}"
+  target_parent="$(dirname "${target_dir}")"
+  target_name="$(basename "${target_dir}")"
+  mkdir -p "${target_parent}"
+  checkout_tmp="$(mktemp -d "${target_parent}/.${target_name}.checkout.XXXXXX")"
+  cleanup_checkout_tmp() {
+    if [[ -n "${checkout_tmp:-}" && -d "${checkout_tmp}" ]]; then
+      rm -rf -- "${checkout_tmp}"
+    fi
+  }
+  trap cleanup_checkout_tmp EXIT
+
+  git -C "${checkout_tmp}" init
+  git -C "${checkout_tmp}" remote add origin "${repository}"
+  git -C "${checkout_tmp}" fetch --depth 1 origin "${commit}"
+  git -C "${checkout_tmp}" checkout --detach "${commit}"
+
+  if [[ "$#" -gt 0 ]]; then
+    git -C "${checkout_tmp}" submodule update --init --depth 1 -- "$@"
+  fi
+  actual="$(git -C "${checkout_tmp}" rev-parse --verify HEAD)"
+  if [[ "${actual}" != "${commit}" ]]; then
+    echo "dependency checkout verification failed before installation" >&2
+    exit 65
+  fi
+  printf '%s\n' "${commit}" > "${checkout_tmp}/.tex8-source-commit"
+  mv -- "${checkout_tmp}" "${target_dir}"
+  checkout_materialized=1
+  checkout_tmp=""
+  trap - EXIT
 fi
 
-if [[ "$#" -gt 0 ]]; then
+if [[ "$#" -gt 0 && "${checkout_materialized}" == "0" ]]; then
   git -C "${target_dir}" submodule update --init --depth 1 -- "$@"
 fi
 

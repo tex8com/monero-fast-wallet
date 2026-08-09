@@ -2,6 +2,11 @@
   "schemaVersion": 1,
   "profile": "safe-wallet-v1",
   "parameters": {
+    "fastWalletOfficialWorker": {
+      "gatewayOrigin": "https://xmr.tex8.com",
+      "registrationOrigin": "https://xmr.tex8.com",
+      "rootIdHex": "9fad63392b696d49bb5975024e1395ccddc4a2cae7a78f7eeb2c0fc94cb9f014"
+    },
     "mfwNameResolverOrigins": [],
     "mfwNameGenesis": null,
     "privatePhoneDirectory": null,
@@ -25,9 +30,9 @@
     "localFastWallet": true,
     "automaticFastWalletCreation": false,
     "plaintextFastWalletHosting": false,
-    "ledgerFastWallet": false,
+    "ledgerFastWallet": true,
     "scannerKeyImageSpendAuthority": false,
-    "officialWorker": false,
+    "officialWorker": true,
     "privateWorkerPairing": false,
     "moneroEnthusiastV1": true,
     "legacyCommunity": false,

@@ -1,0 +1,29 @@
+From aad20a708fbdb92aee87232517db3a3d1bd45a9f Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 22:50:41 -0500
+Subject: [PATCH] wallet cli: make short balance show every account
+
+---
+ src/simplewallet/simplewallet.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/simplewallet/simplewallet.cpp b/src/simplewallet/simplewallet.cpp
+index 3cbc871f5..437efc6c3 100644
+--- a/src/simplewallet/simplewallet.cpp
++++ b/src/simplewallet/simplewallet.cpp
+@@ -3922,9 +3922,9 @@ simple_wallet::simple_wallet()
+                            tr("Show the help section or the documentation about a <command>."));
+ #ifdef MONERO_FAST_WALLET_PRODUCT_CLI
+   m_cmd_binder.set_handler("b",
+-                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::show_balance, _1),
+-                           tr("b [detail]"),
+-                           tr("Shortcut for balance."));
++                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::account, _1),
++                           tr("b"),
++                           tr("Show every account and the total wallet balance. Use balance [detail] for the selected account."));
+   m_cmd_binder.set_handler("a",
+                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::print_address, _1),
+                            tr("a [all|new <label>|<index>]"),
+-- 
+2.50.1 (Apple Git-155)
+

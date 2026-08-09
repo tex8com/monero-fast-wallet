@@ -9,6 +9,9 @@ Type=simple
 User=monero-notification-gateway
 Group=monero-notification-gateway
 EnvironmentFile=/etc/monero-fast-wallet/notification-gateway.env
+# Provider credentials are deliberately outside the staged release. This file
+# survives activation and is readable only by this service account.
+EnvironmentFile=-/etc/monero-fast-wallet/notification-gateway-provider.env
 ExecStart=/opt/monero-fast-wallet/bin/notification-gateway
 Restart=on-failure
 RestartSec=3s

@@ -8,6 +8,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $desktopDirectory = Split-Path -Parent $PSScriptRoot
+$RepoRoot = (Resolve-Path (Join-Path $desktopDirectory '..\..')).Path
 $vcvars = 'C:\BuildTools\VC\Auxiliary\Build\vcvarsall.bat'
 
 if (-not (Test-Path -LiteralPath $vcvars)) {
@@ -28,6 +29,16 @@ $core = Join-Path $desktopDirectory 'native-libs\tex8_wallet_core.dll'
 if (-not (Test-Path -LiteralPath $core)) {
   throw "Native Monero core DLL is missing: $core"
 }
+$coreTreeStamp = Join-Path $desktopDirectory 'native-libs\tex8_wallet_core.tree'
+if (-not (Test-Path -LiteralPath $coreTreeStamp)) {
+  throw "Native Monero core identity is missing: $coreTreeStamp. Rebuild the common Core; old DLLs are not accepted."
+}
+$coreLock = Join-Path $RepoRoot 'third_party\monero-patches\upstream.lock'
+$expectedCoreTree = (Select-String -LiteralPath $coreLock -Pattern '^patched_tree=([0-9a-f]{40})$').Matches.Groups[1].Value
+$actualCoreTree = (Get-Content -LiteralPath $coreTreeStamp -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($expectedCoreTree) -or $actualCoreTree -ne $expectedCoreTree) {
+  throw "Native Monero core DLL is stale or unauthenticated. Expected $expectedCoreTree, got $actualCoreTree."
+}
 $runtimeDirectory = Join-Path $env:CARGO_TARGET_DIR 'debug'
 New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
 Copy-Item -LiteralPath $core -Destination (Join-Path $runtimeDirectory 'tex8_wallet_core.dll') -Force
@@ -42,6 +53,7 @@ foreach ($runtimeDll in @('libc++.dll', 'libunwind.dll', 'libwinpthread-1.dll'))
 }
 
 $env:DESKTOP_WINDOWS_MONERO_CORE_DLL = $core
+$env:DESKTOP_WINDOWS_MONERO_CORE_TREE = $actualCoreTree
 
 $command = 'call "{0}" arm64 >nul && cd /d "{1}" && npm run tauri dev' -f $vcvars, $desktopDirectory
 cmd.exe /d /s /c $command

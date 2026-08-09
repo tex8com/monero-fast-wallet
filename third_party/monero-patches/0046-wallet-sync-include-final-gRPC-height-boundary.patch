@@ -1,0 +1,46 @@
+From b9e2bc84d9099650794eff6cfda70ef47e39fe00 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 7 Aug 2026 01:57:05 -0500
+Subject: [PATCH] wallet sync: include final gRPC height boundary
+
+---
+ src/wallet/wallet2.cpp | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index c76e650..a623fc9 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3428,7 +3428,7 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+         daemon_height, 0, 0);
+       return false;
+     }
+-    else if (effective_start >= daemon_height)
++    else if (effective_start > daemon_height)
+     {
+       MWARNING("grpc_stream: effective start=" << effective_start
+         << " is at or above daemon height=" << daemon_height
+@@ -3449,13 +3449,18 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+         std::min<uint32_t>(m_grpc_stream_chunk_hint, 512));
+       const uint64_t blocks_to_tip = daemon_height - effective_start;
+       const char* plan = "pool-1";
+-      stream_stop_height = daemon_height - 1;
++      // Cuprate clamps an inclusive stop to its canonical chain height. Ask
++      // for that boundary as well: get_height implementations differ on
++      // whether they expose a block count or the top block index, and using
++      // daemon_height - 1 can otherwise strand exactly one final block until
++      // the height cache refreshes.
++      stream_stop_height = daemon_height;
+ 
+       if (blocks_to_tip <= configured_chunk_hint)
+       {
+         stream_chunk_hint = static_cast<uint32_t>(std::max<uint64_t>(
+           minimum_chunk_hint, blocks_to_tip));
+-        stream_stop_height = daemon_height - 1;
++        stream_stop_height = daemon_height;
+         plan = "one-chunk";
+       }
+       else
+-- 
+2.50.1 (Apple Git-155)
+

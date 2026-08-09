@@ -5,7 +5,11 @@ executorch_commit = "e2f18eb23c45bd22ca332b0b8b49a81de304b472"
 apple_swiftpm_branch = "swiftpm-1.3.1"
 tokenizers_repository = "https://github.com/meta-pytorch/tokenizers.git"
 tokenizers_commit = "0b10f027bc66e9d372e3321c9fa0142d1c52891b"
-tokenizers_patches = ["patches/0001-tokenizers-re2-large-special-token-dfa.patch"]
+tokenizers_patches = [
+  "patches/0001-tokenizers-re2-large-special-token-dfa.patch",
+  "patches/0002-tokenizers-external-absl-re2.patch",
+  "patches/0003-sentencepiece-package-absl-no-source-mutation.patch",
+]
 optimum_executorch_commit = "d1140eca622900404c1c5af3f74425034c239f37"
 apple_package_base_url = "https://ossci-ios.s3.amazonaws.com/executorch"
 apple_prebuilt_minimum_macos = "12.0"

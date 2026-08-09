@@ -1,0 +1,107 @@
+From 5620de4758f4911c3a41350658a2e32b979fe922 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 20:40:27 -0500
+Subject: [PATCH] wallet: avoid implicit certificates for TLS clients
+
+---
+ contrib/epee/include/net/net_helper.h        | 7 +++++--
+ contrib/epee/include/net/net_ssl.h           | 4 +++-
+ contrib/epee/src/net_ssl.cpp                 | 7 +++----
+ tests/unit_tests/epee_boosted_tcp_server.cpp | 8 ++++++++
+ 4 files changed, 19 insertions(+), 7 deletions(-)
+
+diff --git a/contrib/epee/include/net/net_helper.h b/contrib/epee/include/net/net_helper.h
+index 6728daa0e..0a3fcc504 100644
+--- a/contrib/epee/include/net/net_helper.h
++++ b/contrib/epee/include/net/net_helper.h
+@@ -143,7 +143,11 @@ namespace net_utils
+ 		inline void set_ssl(ssl_options_t ssl_options)
+ 		{
+ 			if (ssl_options)
+-				m_ctx = ssl_options.create_context();
++				// A TLS client does not need an implicit local certificate. Generating
++				// one here is especially expensive for wallets with parallel fetch
++				// clients and is unnecessary unless explicit client authentication was
++				// configured in ssl_options.auth.
++				m_ctx = ssl_options.create_context(false);
+ 			else
+ 				m_ctx = boost::asio::ssl::context(boost::asio::ssl::context::tlsv12);
+ 			m_ssl_options = std::move(ssl_options);
+@@ -690,4 +694,3 @@ namespace net_utils
+ 	};
+ }
+ }
+-
+diff --git a/contrib/epee/include/net/net_ssl.h b/contrib/epee/include/net/net_ssl.h
+index f6376c72c..0ebd89e9c 100644
+--- a/contrib/epee/include/net/net_ssl.h
++++ b/contrib/epee/include/net/net_ssl.h
+@@ -116,7 +116,9 @@ namespace net_utils
+       boost::asio::ssl::stream<boost::asio::ip::tcp::socket> &socket,
+       boost::asio::ssl::stream_base::handshake_type type,
+       const std::string& host = {}) const;
+-    boost::asio::ssl::context create_context() const;
++    // Servers need a local certificate. Clients only need one when the caller
++    // explicitly configured client authentication through `auth`.
++    boost::asio::ssl::context create_context(bool require_local_certificate = true) const;
+ 
+     /*! \note If `this->support == autodetect && this->verification != none`,
+           then the handshake will not fail when peer verification fails. The
+diff --git a/contrib/epee/src/net_ssl.cpp b/contrib/epee/src/net_ssl.cpp
+index aef37844e..4654620f2 100644
+--- a/contrib/epee/src/net_ssl.cpp
++++ b/contrib/epee/src/net_ssl.cpp
+@@ -301,7 +301,7 @@ ssl_options_t::ssl_options_t(std::vector<std::vector<std::uint8_t>> fingerprints
+   std::sort(fingerprints_.begin(), fingerprints_.end());
+ }
+ 
+-boost::asio::ssl::context ssl_options_t::create_context() const
++boost::asio::ssl::context ssl_options_t::create_context(bool require_local_certificate) const
+ {
+   // note: this enables a lot of old and insecure protocols, which we
+   // promptly disable below - if the result is actually used
+@@ -376,7 +376,7 @@ boost::asio::ssl::context ssl_options_t::create_context() const
+     ASSERT_MES_AND_THROW("certificate is present, but private key file '" << auth.private_key_path << "' is missing");
+   }
+ 
+-  if (auth.private_key_path.empty())
++  if (auth.private_key_path.empty() && require_local_certificate)
+   {
+     EVP_PKEY *pkey;
+     X509 *cert;
+@@ -404,7 +404,7 @@ boost::asio::ssl::context ssl_options_t::create_context() const
+ 
+     CHECK_AND_ASSERT_THROW_MES(ok, "Failed to use any generated certificate");
+   }
+-  else
++  else if (!auth.private_key_path.empty())
+     auth.use_ssl_certificate(ssl_context);
+ 
+   return ssl_context;
+@@ -753,4 +753,3 @@ static void add_windows_root_certs(SSL_CTX *ctx) noexcept
+     SSL_CTX_set_cert_store(ctx, store);
+ }
+ #endif
+-
+diff --git a/tests/unit_tests/epee_boosted_tcp_server.cpp b/tests/unit_tests/epee_boosted_tcp_server.cpp
+index c56174109..b9dc5ec21 100644
+--- a/tests/unit_tests/epee_boosted_tcp_server.cpp
++++ b/tests/unit_tests/epee_boosted_tcp_server.cpp
+@@ -581,6 +581,14 @@ TEST(test_epee_connection, ssl_handshake)
+     workers.back().join();
+ }
+ 
++TEST(test_epee_connection, ssl_client_context_has_no_implicit_certificate)
++{
++  epee::net_utils::ssl_options_t ssl_options{
++    epee::net_utils::ssl_support_t::e_ssl_support_enabled};
++  auto ssl_context = ssl_options.create_context(false);
++  EXPECT_EQ(nullptr, SSL_CTX_get0_certificate(ssl_context.native_handle()));
++}
++
+ 
+ TEST(boosted_tcp_server, strand_deadlock)
+ {
+-- 
+2.50.1 (Apple Git-155)
+

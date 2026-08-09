@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Monero Fast Wallet Diagnostic",
+  "identifier": "com.tex8.monerowallet.desktop.diagnostic",
+  "app": {
+    "windows": [
+      {
+        "title": "Monero Fast Wallet Diagnostic"
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "resources": [],
+    "macOS": {
+      "entitlements": "./Entitlements.plist"
+    }
+  }
+}

@@ -1,0 +1,500 @@
+From f8cf5f03c351b632fbda045246306cbc88f13a10 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 2 Aug 2026 10:42:08 -0500
+Subject: [PATCH] wallet: add verified automatic GPU derivation dispatcher
+
+---
+ src/crypto/crypto.cpp | 429 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 425 insertions(+), 4 deletions(-)
+
+diff --git a/src/crypto/crypto.cpp b/src/crypto/crypto.cpp
+index cc3405e..08dff97 100644
+--- a/src/crypto/crypto.cpp
++++ b/src/crypto/crypto.cpp
+@@ -29,6 +29,8 @@
+ // Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
+ 
+ #include <unistd.h>
++#include <atomic>
++#include <array>
+ #include <cassert>
+ #include <cerrno>
+ #include <cstddef>
+@@ -36,6 +38,15 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <limits>
++#include <mutex>
++#include <sstream>
++#include <string>
++#include <vector>
++#if defined(_WIN32)
++#include <windows.h>
++#elif defined(__linux__)
++#include <dlfcn.h>
++#endif
+ #include <boost/thread/mutex.hpp>
+ #include <boost/thread/lock_guard.hpp>
+ #include <boost/shared_ptr.hpp>
+@@ -63,7 +74,7 @@ namespace {
+   }
+ 
+ #ifdef MONERO_FAST_METAL
+-  bool metal_derivation_batch_enabled(size_t count)
++  bool metal_derivation_batch_enabled(size_t count, bool prefer_gpu)
+   {
+     const char *enabled = std::getenv("MONERO_METAL_DERIVATION_BATCH");
+     if (enabled != nullptr && std::strcmp(enabled, "0") == 0)
+@@ -72,8 +83,9 @@ namespace {
+     // The precompiled product backend was measured against the exact packaged
+     // Rust C ABI on Apple M4. Metal is slower at 1,024 records, but already
+     // 1.38x faster at 2,048 and scales further from there.
+-    constexpr size_t DEFAULT_MINIMUM = 2048;
+-    size_t minimum = DEFAULT_MINIMUM;
++    constexpr size_t AUTOMATIC_MINIMUM = 2048;
++    constexpr size_t GPU_PREFERRED_MINIMUM = 512;
++    size_t minimum = prefer_gpu ? GPU_PREFERRED_MINIMUM : AUTOMATIC_MINIMUM;
+     const char *configured = std::getenv("MONERO_METAL_DERIVATION_MIN_POINTS");
+     if (configured != nullptr && *configured != '\0')
+     {
+@@ -86,7 +98,376 @@ namespace {
+     }
+     return count >= minimum;
+   }
++
++  struct metal_verification_state
++  {
++    std::mutex mutex;
++    bool attempted = false;
++    bool verified = false;
++    std::string error;
++  };
++
++  metal_verification_state &metal_verification()
++  {
++    static metal_verification_state state;
++    return state;
++  }
++
++  bool verified_metal_available()
++  {
++    auto &state = metal_verification();
++    std::lock_guard<std::mutex> lock(state.mutex);
++    if (state.attempted)
++      return state.verified;
++    state.attempted = true;
++    if (fast_metal_derivation_available() != 1)
++    {
++      state.error = fast_metal_derivation_last_error();
++      return false;
++    }
++
++    const std::array<uint8_t, 32> scalar = {
++      0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++    const std::array<uint8_t, 64> points = {
++      0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++      0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++      0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++      0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
++      0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
++    const std::array<uint8_t, 32> expected = {
++      0x54, 0x42, 0x54, 0xf1, 0xab, 0xca, 0x26, 0xae,
++      0x4c, 0xe3, 0xe2, 0xb0, 0x81, 0xbc, 0x96, 0xe7,
++      0x94, 0x1d, 0xd7, 0x96, 0xee, 0x29, 0x61, 0x68,
++      0xc7, 0xfb, 0x3c, 0xea, 0xe1, 0x3e, 0xe2, 0xf3};
++    std::array<uint8_t, 64> actual{};
++    std::array<uint8_t, 2> valid{};
++    const int64_t successes =
++      fast_metal_generate_key_derivation_batch_same_scalar(
++        actual.data(), scalar.data(), points.data(), valid.data(), 2);
++    state.verified = successes == 1 && valid[0] == 1 && valid[1] == 0
++      && std::equal(expected.begin(), expected.end(), actual.begin())
++      && std::all_of(actual.begin() + 32, actual.end(),
++        [](uint8_t byte) { return byte == 0; });
++    volatile uint8_t *cursor = actual.data();
++    for (size_t index = 0; index < actual.size(); ++index)
++      cursor[index] = 0;
++    if (!state.verified)
++      state.error = "Metal derivation known-answer self-test failed";
++    return state.verified;
++  }
++
++  std::string metal_verification_error()
++  {
++    auto &state = metal_verification();
++    std::lock_guard<std::mutex> lock(state.mutex);
++    return state.error;
++  }
++#endif
++
++  enum class derivation_backend_preference
++  {
++    automatic = 0,
++    cpu = 1,
++    gpu = 2
++  };
++
++  std::atomic<derivation_backend_preference> backend_preference{
++    derivation_backend_preference::automatic};
++  std::mutex backend_status_mutex;
++  std::string active_derivation_backend = "cpu";
++  std::string backend_last_error;
++
++  const char *backend_preference_name(derivation_backend_preference preference)
++  {
++    switch (preference)
++    {
++      case derivation_backend_preference::cpu: return "cpu";
++      case derivation_backend_preference::gpu: return "gpu";
++      default: return "auto";
++    }
++  }
++
++  void set_active_backend(const char *backend, const char *error = nullptr)
++  {
++    std::lock_guard<std::mutex> lock(backend_status_mutex);
++    active_derivation_backend = backend == nullptr ? "cpu" : backend;
++    backend_last_error = error == nullptr ? "" : error;
++  }
++
++  std::string json_escape(const std::string &value)
++  {
++    std::ostringstream output;
++    for (const unsigned char character : value)
++    {
++      switch (character)
++      {
++        case '"': output << "\\\""; break;
++        case '\\': output << "\\\\"; break;
++        case '\n': output << "\\n"; break;
++        case '\r': output << "\\r"; break;
++        case '\t': output << "\\t"; break;
++        default:
++          if (character < 0x20)
++            output << "?";
++          else
++            output << character;
++      }
++    }
++    return output.str();
++  }
++
++#if defined(_WIN32) || defined(__linux__)
++  class cuda_derivation_backend
++  {
++  public:
++    using available_function = int (*)();
++    using count_function = int (*)();
++    using text_function = const char *(*)();
++    using derive_function = int64_t (*)(
++      uint8_t *, const uint8_t *, const uint8_t *, uint8_t *, size_t);
++
++    bool available()
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      initialize_locked();
++      return available_;
++    }
++
++    int64_t derive(uint8_t *results, const uint8_t *scalar,
++      const uint8_t *points, uint8_t *valid, size_t count)
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      initialize_locked();
++      if (!available_ || derive_fn_ == nullptr)
++        return -1;
++      const int64_t result = derive_fn_(results, scalar, points, valid, count);
++      if (result < 0 && error_fn_ != nullptr)
++      {
++        const char *message = error_fn_();
++        last_error_ = message == nullptr ? "CUDA derivation failed" : message;
++      }
++      return result;
++    }
++
++    std::string device_name()
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      initialize_locked();
++      if (device_name_fn_ == nullptr)
++        return "";
++      const char *value = device_name_fn_();
++      return value == nullptr ? "" : value;
++    }
++
++    int device_count()
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      initialize_locked();
++      return device_count_fn_ == nullptr ? 0 : device_count_fn_();
++    }
++
++    std::string last_error()
++    {
++      std::lock_guard<std::mutex> lock(mutex_);
++      initialize_locked();
++      if (!last_error_.empty())
++        return last_error_;
++      if (error_fn_ == nullptr)
++        return "";
++      const char *value = error_fn_();
++      return value == nullptr ? "" : value;
++    }
++
++  private:
++    void initialize_locked()
++    {
++      if (attempted_)
++        return;
++      attempted_ = true;
++      for (const auto &candidate : library_candidates())
++      {
++        handle_ = open_library(candidate);
++        if (handle_ != nullptr)
++          break;
++      }
++      if (handle_ == nullptr)
++      {
++        last_error_ = "CUDA backend library is not installed";
++        return;
++      }
++
++      available_ = resolve(available_fn_, "fast_cuda_derivation_available")
++        && resolve(device_count_fn_, "fast_cuda_derivation_device_count")
++        && resolve(device_name_fn_, "fast_cuda_derivation_device_name")
++        && resolve(error_fn_, "fast_cuda_derivation_last_error")
++        && resolve(derive_fn_, "fast_cuda_generate_key_derivation_batch_same_scalar")
++        && available_fn_() == 1;
++      if (!available_)
++      {
++        const char *message = error_fn_ == nullptr ? nullptr : error_fn_();
++        last_error_ = message == nullptr || *message == '\0'
++          ? "CUDA backend self-test did not pass"
++          : message;
++      }
++    }
++
++    template<typename Function>
++    bool resolve(Function &target, const char *name)
++    {
++#if defined(_WIN32)
++      target = reinterpret_cast<Function>(GetProcAddress(handle_, name));
++#else
++      target = reinterpret_cast<Function>(dlsym(handle_, name));
++#endif
++      return target != nullptr;
++    }
++
++    static std::vector<std::string> library_candidates()
++    {
++      std::vector<std::string> candidates;
++      const char *configured = std::getenv("MONERO_CUDA_DERIVATION_LIBRARY");
++      if (configured != nullptr && *configured != '\0')
++        candidates.emplace_back(configured);
++#if defined(_WIN32)
++      candidates.emplace_back("tex8_wallet_cuda.dll");
++      candidates.emplace_back("resources\\_up_\\native-libs\\tex8_wallet_cuda.dll");
++      candidates.emplace_back("_up_\\native-libs\\tex8_wallet_cuda.dll");
++#else
++      char executable[4096]{};
++      const ssize_t length = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
++      if (length > 0)
++      {
++        std::string directory(executable, static_cast<size_t>(length));
++        const size_t slash = directory.find_last_of('/');
++        if (slash != std::string::npos)
++        {
++          directory.resize(slash + 1);
++          candidates.push_back(directory + "libtex8_wallet_cuda.so");
++          candidates.push_back(directory
++            + "../lib/Monero Fast Wallet/_up_/native-libs/libtex8_wallet_cuda.so");
++          candidates.push_back(directory
++            + "resources/_up_/native-libs/libtex8_wallet_cuda.so");
++        }
++      }
++      candidates.emplace_back("libtex8_wallet_cuda.so");
++#endif
++      return candidates;
++    }
++
++#if defined(_WIN32)
++    static HMODULE open_library(const std::string &path)
++    {
++      return LoadLibraryA(path.c_str());
++    }
++    HMODULE handle_ = nullptr;
++#else
++    static void *open_library(const std::string &path)
++    {
++      return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
++    }
++    void *handle_ = nullptr;
++#endif
++    std::mutex mutex_;
++    bool attempted_ = false;
++    bool available_ = false;
++    available_function available_fn_ = nullptr;
++    count_function device_count_fn_ = nullptr;
++    text_function device_name_fn_ = nullptr;
++    text_function error_fn_ = nullptr;
++    derive_function derive_fn_ = nullptr;
++    std::string last_error_;
++  };
++
++  cuda_derivation_backend &cuda_backend()
++  {
++    static cuda_derivation_backend backend;
++    return backend;
++  }
++
++  size_t cuda_minimum_points(derivation_backend_preference preference)
++  {
++    size_t minimum = preference == derivation_backend_preference::gpu ? 512 : 4096;
++    const char *configured = std::getenv("MONERO_CUDA_DERIVATION_MIN_POINTS");
++    if (configured != nullptr && *configured != '\0')
++    {
++      errno = 0;
++      char *end = nullptr;
++      const unsigned long long parsed = std::strtoull(configured, &end, 10);
++      if (errno == 0 && end != nullptr && *end == '\0'
++          && parsed <= std::numeric_limits<size_t>::max())
++        minimum = static_cast<size_t>(parsed);
++    }
++    return minimum;
++  }
++#endif
++}
++
++extern "C" int monero_fast_set_derivation_backend_preference(const char *preference)
++{
++  if (preference == nullptr)
++    return 0;
++  derivation_backend_preference selected;
++  if (std::strcmp(preference, "auto") == 0)
++    selected = derivation_backend_preference::automatic;
++  else if (std::strcmp(preference, "cpu") == 0)
++    selected = derivation_backend_preference::cpu;
++  else if (std::strcmp(preference, "gpu") == 0)
++    selected = derivation_backend_preference::gpu;
++  else
++    return 0;
++  backend_preference.store(selected, std::memory_order_release);
++  set_active_backend("cpu");
++  return 1;
++}
++
++extern "C" const char *monero_fast_derivation_backend_status_json(void)
++{
++  thread_local std::string result;
++  const auto preference = backend_preference.load(std::memory_order_acquire);
++  std::string active;
++  std::string error;
++  {
++    std::lock_guard<std::mutex> lock(backend_status_mutex);
++    active = active_derivation_backend;
++    error = backend_last_error;
++  }
++
++  bool gpu_available = false;
++  std::string gpu_kind;
++  std::string device;
++  int device_count = 0;
++#ifdef MONERO_FAST_METAL
++  if (preference != derivation_backend_preference::cpu)
++  {
++    gpu_available = verified_metal_available();
++    gpu_kind = "metal";
++    device = gpu_available ? "Apple Metal default GPU" : "";
++    if (!gpu_available && error.empty())
++      error = metal_verification_error();
++  }
++#elif defined(_WIN32) || defined(__linux__)
++  if (preference != derivation_backend_preference::cpu)
++  {
++    gpu_available = cuda_backend().available();
++    gpu_kind = "cuda";
++    device = cuda_backend().device_name();
++    device_count = cuda_backend().device_count();
++    if (!gpu_available && error.empty())
++      error = cuda_backend().last_error();
++  }
+ #endif
++  result = "{\"preference\":\"";
++  result += backend_preference_name(preference);
++  result += "\",\"activeBackend\":\"" + json_escape(active);
++  result += "\",\"gpuAvailable\":" + std::string(gpu_available ? "true" : "false");
++  result += ",\"gpuKind\":\"" + json_escape(gpu_kind);
++  result += "\",\"deviceName\":\"" + json_escape(device);
++  result += "\",\"deviceCount\":" + std::to_string(device_count);
++  result += ",\"selfTestPassed\":" + std::string(gpu_available ? "true" : "false");
++  result += ",\"cpuFallback\":true,\"lastError\":\"" + json_escape(error) + "\"}";
++  return result.c_str();
+ }
+ 
+ namespace crypto {
+@@ -233,8 +614,20 @@ namespace crypto {
+       size_t count, size_t workers) {
+     if (count == 0)
+       return 0;
++    const auto preference = backend_preference.load(std::memory_order_acquire);
++    if (preference == derivation_backend_preference::cpu)
++    {
++      set_active_backend("cpu");
++      return fast_generate_key_derivation_batch_same_scalar(
++          reinterpret_cast<uint8_t*>(derivations),
++          reinterpret_cast<const uint8_t*>(&unwrap(key2)),
++          reinterpret_cast<const uint8_t*>(points), valid, count, workers);
++    }
+ #ifdef MONERO_FAST_METAL
+-    if (metal_derivation_batch_enabled(count))
++    bool gpu_failed = false;
++    if (metal_derivation_batch_enabled(
++          count, preference == derivation_backend_preference::gpu)
++        && verified_metal_available())
+     {
+       const int64_t metal_successes =
+         fast_metal_generate_key_derivation_batch_same_scalar(
+@@ -244,9 +637,37 @@ namespace crypto {
+           valid,
+           count);
+       if (metal_successes >= 0)
++      {
++        set_active_backend("metal");
+         return static_cast<size_t>(metal_successes);
++      }
++      gpu_failed = true;
++      set_active_backend("cpu-fallback", fast_metal_derivation_last_error());
++    }
++#elif defined(_WIN32) || defined(__linux__)
++    bool gpu_failed = false;
++    if (count >= cuda_minimum_points(preference) && cuda_backend().available())
++    {
++      const int64_t cuda_successes = cuda_backend().derive(
++          reinterpret_cast<uint8_t*>(derivations),
++          reinterpret_cast<const uint8_t*>(&unwrap(key2)),
++          reinterpret_cast<const uint8_t*>(points),
++          valid,
++          count);
++      if (cuda_successes >= 0)
++      {
++        set_active_backend("cuda");
++        return static_cast<size_t>(cuda_successes);
++      }
++      gpu_failed = true;
++      const std::string error = cuda_backend().last_error();
++      set_active_backend("cpu-fallback", error.c_str());
+     }
++#else
++    const bool gpu_failed = false;
+ #endif
++    if (!gpu_failed)
++      set_active_backend("cpu");
+     return fast_generate_key_derivation_batch_same_scalar(
+         reinterpret_cast<uint8_t*>(derivations),
+         reinterpret_cast<const uint8_t*>(&unwrap(key2)),
+-- 
+2.50.1 (Apple Git-155)
+
+

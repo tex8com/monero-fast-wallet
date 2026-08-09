@@ -2,6 +2,21 @@ cmake_minimum_required(VERSION 3.22)
 
 project(tex8_monero_wallet_bridge LANGUAGES CXX)
 
+# The standalone proof runner is also the physical Ledger acceptance harness.
+# On macOS it must use the same CoreBluetooth adapter as the desktop product;
+# otherwise a BLE-only Nano is invisible even though the wallet core itself is
+# correctly linked.  Keep this host-only transport out of non-macOS builds.
+set(TEX8_DEFAULT_MACOS_LEDGER_BLE OFF)
+if(APPLE)
+  set(TEX8_DEFAULT_MACOS_LEDGER_BLE ON)
+endif()
+
+option(
+  MONERO_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE
+  "Link the macOS CoreBluetooth Ledger transport into the standalone proof runner"
+  ${TEX8_DEFAULT_MACOS_LEDGER_BLE}
+)
+
 option(
   MONERO_WALLET_BRIDGE_WITH_MONERO
   "Build WalletEngine against the forked Monero libwallet_api"
@@ -23,6 +38,12 @@ option(
 option(
   MONERO_WALLET_BRIDGE_ENABLE_SANITIZERS
   "Build bridge verification targets with AddressSanitizer and UndefinedBehaviorSanitizer"
+  OFF
+)
+
+option(
+  MONERO_WALLET_BRIDGE_ENABLE_TEST_HOOKS
+  "Compile explicit fault-injection hooks used only by local acceptance binaries"
   OFF
 )
 
@@ -64,6 +85,16 @@ set(
 add_library(monero_wallet_bridge STATIC
   cpp/WalletEngine.cpp
 )
+
+if(MONERO_WALLET_BRIDGE_ENABLE_TEST_HOOKS)
+  target_compile_definitions(monero_wallet_bridge
+    PRIVATE TEX8_WALLET_BRIDGE_ENABLE_TEST_HOOKS=1
+  )
+else()
+  target_compile_definitions(monero_wallet_bridge
+    PRIVATE TEX8_WALLET_BRIDGE_ENABLE_TEST_HOOKS=0
+  )
+endif()
 
 target_compile_features(monero_wallet_bridge PUBLIC cxx_std_17)
 
@@ -151,22 +182,81 @@ target_link_libraries(monero_wallet_bridge_smoke
   PRIVATE monero_wallet_bridge
 )
 
-add_executable(monero_wallet_bridge_security_boundary
-  proof/security_boundary.cpp
-)
+set(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE_VALUE 0)
+if(APPLE AND MONERO_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE)
+  enable_language(OBJCXX)
 
-target_link_libraries(monero_wallet_bridge_security_boundary
-  PRIVATE monero_wallet_bridge
+  add_library(monero_wallet_bridge_macos_ledger_ble STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../desktop-bridge/cpp/DesktopLedgerBleMac.mm
+  )
+  target_compile_features(monero_wallet_bridge_macos_ledger_ble PRIVATE cxx_std_17)
+  target_compile_options(monero_wallet_bridge_macos_ledger_ble PRIVATE -fobjc-arc)
+  target_include_directories(monero_wallet_bridge_macos_ledger_ble
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+      ${CMAKE_CURRENT_SOURCE_DIR}/../desktop-bridge/include
+  )
+  find_library(TEX8_CORE_BLUETOOTH_FRAMEWORK CoreBluetooth REQUIRED)
+  find_library(TEX8_FOUNDATION_FRAMEWORK Foundation REQUIRED)
+  target_link_libraries(monero_wallet_bridge_macos_ledger_ble
+    PRIVATE
+      ${TEX8_CORE_BLUETOOTH_FRAMEWORK}
+      ${TEX8_FOUNDATION_FRAMEWORK}
+  )
+  target_link_libraries(monero_wallet_bridge_smoke
+    PRIVATE monero_wallet_bridge_macos_ledger_ble
+  )
+  set(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE_VALUE 1)
+endif()
+
+target_compile_definitions(monero_wallet_bridge_smoke
+  PRIVATE
+    TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE=${TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE_VALUE}
 )
+if(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE_VALUE)
+  target_include_directories(monero_wallet_bridge_smoke
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../desktop-bridge/include
+  )
+endif()
+
+if(NOT MONERO_WALLET_BRIDGE_WITH_MONERO)
+  add_executable(monero_wallet_bridge_security_boundary
+    proof/security_boundary.cpp
+  )
+
+  target_link_libraries(monero_wallet_bridge_security_boundary
+    PRIVATE monero_wallet_bridge
+  )
+endif()
+
+add_executable(monero_wallet_network_fanout
+  proof/network_fanout.cpp
+)
+target_include_directories(monero_wallet_network_fanout
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+)
+target_compile_features(monero_wallet_network_fanout PRIVATE cxx_std_17)
+
+if(MONERO_WALLET_BRIDGE_WITH_MONERO)
+  add_executable(monero_wallet_multiwallet_acceptance
+    proof/multiwallet_acceptance.cpp
+  )
+  target_link_libraries(monero_wallet_multiwallet_acceptance
+    PRIVATE monero_wallet_bridge
+  )
+endif()
 
 if(MONERO_WALLET_BRIDGE_ENABLE_SANITIZERS)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    foreach(
-      sanitizer_target
+    set(sanitizer_targets
       monero_wallet_bridge
       monero_wallet_bridge_smoke
-      monero_wallet_bridge_security_boundary
+      monero_wallet_network_fanout
     )
+    if(NOT MONERO_WALLET_BRIDGE_WITH_MONERO)
+      list(APPEND sanitizer_targets monero_wallet_bridge_security_boundary)
+    endif()
+    foreach(sanitizer_target IN LISTS sanitizer_targets)
       target_compile_options(
         ${sanitizer_target}
         PRIVATE -fno-omit-frame-pointer -fsanitize=address,undefined
@@ -183,7 +273,10 @@ endif()
 
 enable_testing()
 add_test(NAME monero_wallet_bridge_smoke COMMAND monero_wallet_bridge_smoke)
-add_test(
-  NAME monero_wallet_bridge_security_boundary
-  COMMAND monero_wallet_bridge_security_boundary
-)
+if(NOT MONERO_WALLET_BRIDGE_WITH_MONERO)
+  add_test(
+    NAME monero_wallet_bridge_security_boundary
+    COMMAND monero_wallet_bridge_security_boundary
+  )
+endif()
+add_test(NAME monero_wallet_network_fanout COMMAND monero_wallet_network_fanout)

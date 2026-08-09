@@ -12,6 +12,7 @@ import { useI18n, type TranslationKey } from '../i18n';
 import type { WalletSnapshot } from '../services/NativeMoneroWallet';
 import {
   isFastWalletRegistration,
+  ledgerBalanceNeedsVerification,
   walletDisplayName,
   type RegisteredWallet,
 } from '../services/WalletRegistry';
@@ -45,6 +46,8 @@ type WalletSelectorProps = {
   titleKey: TranslationKey;
   wallets: WalletSelectorItem[];
   onSelect: (wallet: WalletOption) => void | Promise<void>;
+  onAdd?: () => void;
+  onManage?: () => void;
 };
 
 export default function WalletSelector({
@@ -55,6 +58,8 @@ export default function WalletSelector({
   titleKey,
   wallets,
   onSelect,
+  onAdd,
+  onManage,
 }: WalletSelectorProps) {
   const { t } = useI18n();
 
@@ -68,7 +73,21 @@ export default function WalletSelector({
 
   return (
     <View style={s.wrap}>
-      {showTitle ? <Text style={s.title}>{t(titleKey)}</Text> : null}
+      {showTitle ? (
+        <View style={s.titleRow}>
+          <Text style={s.title}>{t(titleKey)}</Text>
+          {onManage ? (
+            <TouchableOpacity
+              accessibilityLabel={t('wallets.manage')}
+              accessibilityRole="link"
+              activeOpacity={0.7}
+              onPress={onManage}
+            >
+              <Text style={s.manageLink}>{t('wallets.manage')}</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -126,6 +145,19 @@ export default function WalletSelector({
             </TouchableOpacity>
           );
         })}
+        {onAdd ? (
+          <TouchableOpacity
+            accessibilityLabel={t('action.addWallet')}
+            accessibilityRole="button"
+            activeOpacity={0.76}
+            disabled={Boolean(openingWalletId)}
+            onPress={onAdd}
+            style={[s.card, s.addCard]}
+          >
+            <Text style={s.addIcon}>＋</Text>
+            <Text style={s.addLabel}>{t('action.addWallet')}</Text>
+          </TouchableOpacity>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -140,27 +172,33 @@ export function resolveWalletOption(
     return wallet;
   }
 
-  const snapshot = snapshots[wallet.id];
-  const fastWallet = isFastWalletRegistration(wallet);
+  const registration = wallet as RegisteredWallet;
+  const snapshot = snapshots[registration.id];
+  const fastWallet = isFastWalletRegistration(registration);
   return {
-    id: wallet.id,
+    id: registration.id,
     address: snapshot?.primaryAddress,
     badge: fastWallet
       ? t('walletSelector.fast')
-      : wallet.kind === 'hardware'
-        ? (wallet.hardwareDeviceName ?? 'Ledger')
+      : registration.kind === 'hardware'
+        ? (registration.hardwareDeviceName ?? 'Ledger')
         : undefined,
+    // The node transport belongs to the app/network, not to this card. Wallet
+    // cards report only private scan readiness and never inherit the global
+    // connection state.
     detail: snapshot
       ? walletSnapshotStatusLabel(snapshot, t)
-      : t('walletSelector.openToCheckNode'),
-    kind: fastWallet ? 'fast' : wallet.kind,
-    label: walletDisplayName(wallet),
+      : ledgerBalanceNeedsVerification(registration, snapshot?.pendingOutputKeyImageCount)
+        ? t('walletSelector.ledgerBalanceNeedsVerification')
+        : t('walletSelector.waitingSharedBlocks'),
+    kind: fastWallet ? 'fast' : registration.kind,
+    label: walletDisplayName(registration),
     meta: fastWallet
-      ? wallet.network
-      : wallet.kind === 'hardware'
-        ? (wallet.hardwareDeviceName ?? 'Ledger')
-        : wallet.network,
-    tone: snapshot ? 'balance' : 'muted',
+      ? registration.network
+      : registration.kind === 'hardware'
+        ? (registration.hardwareDeviceName ?? 'Ledger')
+        : registration.network,
+    tone: snapshot ? 'balance' : 'warning',
   };
 }
 
@@ -175,15 +213,17 @@ export function walletSnapshotStatusLabel(
   const balance = balanceLabel(snapshot);
   const sync = presentWalletSync(snapshot);
   if (sync.coreConfirmed) {
-    return `${t('walletSelector.synced')} · ${balance}`;
+    return `${t('walletSelector.ready')} · ${balance}`;
   }
   if (sync.phase === 'finalizing') {
     return `${t('sync.verifyingRecent')} · ${balance}`;
   }
   if (sync.phase === 'waiting-for-node') {
-    return `${t('sync.connectingNode')} · ${balance}`;
+    // Connection state is app-wide and appears once in the page header. This
+    // card describes only the wallet-private consumer of the shared feed.
+    return `${t('walletSelector.waitingSharedBlocks')} · ${balance}`;
   }
-  return `${t('sync.scanningBlocks')} · ${balance}`;
+  return `${t('walletSelector.scanningWallet')} · ${balance}`;
 }
 
 function balanceLabel(snapshot: WalletSnapshot): string {
@@ -195,13 +235,23 @@ function balanceLabel(snapshot: WalletSnapshot): string {
 
 const s = StyleSheet.create({
   wrap: { marginBottom: 18 },
+  titleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
   title: {
     color: colors.textSecondary,
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 0.5,
-    marginBottom: 10,
     textTransform: 'uppercase',
+  },
+  manageLink: {
+    color: colors.orange,
+    fontSize: 13,
+    fontWeight: '700',
   },
   row: { gap: 10, paddingRight: 20 },
   card: {
@@ -216,6 +266,23 @@ const s = StyleSheet.create({
   cardActive: {
     borderColor: colors.orange,
     backgroundColor: 'rgba(242,104,34,0.1)',
+  },
+  addCard: {
+    alignItems: 'center',
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+  },
+  addIcon: {
+    color: colors.orange,
+    fontSize: 28,
+    fontWeight: '500',
+    lineHeight: 30,
+  },
+  addLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '800',
+    marginTop: 6,
   },
   cardTop: {
     minHeight: 22,

@@ -1,0 +1,76 @@
+From 2c55fd910409ad588183376ac52126eb77fc6713 Mon Sep 17 00:00:00 2001
+From: TEX8 <opensource@tex8.com>
+Date: Sun, 2 Aug 2026 23:50:00 -0500
+Subject: [PATCH] tokenizers: allow one process-wide Abseil and RE2 runtime
+
+The desktop wallet embeds tokenizers beside the pinned gRPC transport. Allow
+the parent product to supply the exact Abseil and RE2 packages already used by
+gRPC instead of statically embedding second copies with overlapping symbols.
+---
+ CMakeLists.txt | 26 ++++++++++++++++++++++----
+ 1 file changed, 22 insertions(+), 4 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index af59d4b..061f8db 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -22,6 +22,9 @@ option(TOKENIZERS_BUILD_PYTHON "Build Python bindings" OFF)
+ option(SUPPORT_REGEX_LOOKAHEAD
+        "Support regex lookahead patterns (requires PCRE2)" OFF
+ )
++option(TOKENIZERS_USE_EXTERNAL_ABSL_RE2
++       "Use parent-provided Abseil and RE2 packages" OFF
++)
+ 
+ if(CMAKE_BUILD_TYPE STREQUAL "Release")
+   set(_is_build_type_release ON)
+@@ -56,8 +59,14 @@ set(ABSL_PROPAGATE_CXX_STD ON)
+ set(_pic_flag ${CMAKE_POSITION_INDEPENDENT_CODE})
+ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+ 
+-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third-party/abseil-cpp)
+-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third-party/re2)
++if(TOKENIZERS_USE_EXTERNAL_ABSL_RE2)
++  find_package(absl CONFIG REQUIRED)
++  find_package(re2 CONFIG REQUIRED)
++  set(SPM_ABSL_PROVIDER "package" CACHE STRING "" FORCE)
++else()
++  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third-party/abseil-cpp)
++  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third-party/re2)
++endif()
+ 
+ if(NOT DEFINED SPM_BUILD_TEST)
+   set(SPM_BUILD_TEST OFF CACHE BOOL "")
+@@ -107,10 +116,15 @@ target_include_directories(
+     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/pytorch/tokenizers>
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third-party/sentencepiece>
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third-party/sentencepiece/src>
+-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third-party/re2>
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third-party/json/single_include>
+     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third-party/llama.cpp-unicode/include>
+ )
++if(NOT TOKENIZERS_USE_EXTERNAL_ABSL_RE2)
++  target_include_directories(
++    tokenizers
++    PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third-party/re2>
++  )
++endif()
+ target_link_libraries(tokenizers PUBLIC sentencepiece-static re2::re2)
+ 
+ # Enable logging
+@@ -202,8 +216,12 @@ include(GNUInstallDirs)
+ 
+ if(NOT TOKENIZERS_BUILD_PYTHON)
+   # Install the library and its dependencies
++  set(_tokenizers_install_targets tokenizers sentencepiece-static)
++  if(NOT TOKENIZERS_USE_EXTERNAL_ABSL_RE2)
++    list(APPEND _tokenizers_install_targets re2)
++  endif()
+   install(
+-    TARGETS tokenizers re2 sentencepiece-static
++    TARGETS ${_tokenizers_install_targets}
+     EXPORT tokenizers-targets
+     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+-- 
+2.50.1

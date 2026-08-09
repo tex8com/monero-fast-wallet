@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "stateVersion": 1,
+  "defaultAutoLockSeconds": 1800,
+  "autoLockSeconds": [0, 60, 300, 900, 1800, 3600],
+  "password": {
+    "minimumCharacters": 12,
+    "maximumCharacters": 1024,
+    "requiredAsRecoveryForSystemAuth": true,
+    "kdf": {
+      "algorithm": "argon2id",
+      "version": 19,
+      "memoryKiB": 65536,
+      "iterations": 3,
+      "parallelism": 1,
+      "saltBytes": 16,
+      "digestBytes": 32
+    }
+  },
+  "warmup": {
+    "maximumConcurrentWallets": 4,
+    "networkAllowed": false,
+    "promptAllowed": false
+  },
+  "unlockBackoffSeconds": [0, 2, 5, 30, 60, 120, 240, 300],
+  "protectionModes": [
+    {"name": "UNCONFIGURED", "value": 0},
+    {"name": "PASSWORD", "value": 1},
+    {"name": "SYSTEM", "value": 2}
+  ],
+  "presentations": [
+    {"name": "PREPARING", "value": 0},
+    {"name": "WELCOME", "value": 1},
+    {"name": "PROTECTION_SETUP", "value": 2},
+    {"name": "UNLOCK_PASSWORD", "value": 3},
+    {"name": "UNLOCK_SYSTEM", "value": 4},
+    {"name": "CONTENT", "value": 5},
+    {"name": "BACKOFF", "value": 6}
+  ],
+  "migrationStates": [
+    {"name": "LEGACY_AUTHORITATIVE", "value": 0},
+    {"name": "STAGED", "value": 1},
+    {"name": "ACTIVATED", "value": 2},
+    {"name": "VERIFIED", "value": 3},
+    {"name": "COMMITTED", "value": 4},
+    {"name": "CLEANUP_COMPLETE", "value": 5}
+  ],
+  "events": [
+    {"name": "WELCOME_CONTINUE", "value": 1},
+    {"name": "CONFIGURE_PASSWORD_SUCCESS", "value": 2},
+    {"name": "CONFIGURE_SYSTEM_SUCCESS", "value": 3},
+    {"name": "UNLOCK_SUCCESS", "value": 4},
+    {"name": "UNLOCK_FAILURE", "value": 5},
+    {"name": "USER_ACTIVITY", "value": 6},
+    {"name": "TIMEOUT", "value": 7},
+    {"name": "MANUAL_LOCK", "value": 8},
+    {"name": "CHANGE_TO_PASSWORD", "value": 9},
+    {"name": "CHANGE_TO_SYSTEM", "value": 10},
+    {"name": "MIGRATION_ADVANCE", "value": 11}
+  ],
+  "stepUpActions": [
+    {"name": "SEED_EXPORT", "value": 1},
+    {"name": "PRIVATE_KEY_EXPORT", "value": 2},
+    {"name": "SEND_COMMIT", "value": 3},
+    {"name": "PROTECTION_CHANGE", "value": 4},
+    {"name": "LOCAL_RESET", "value": 5},
+    {"name": "HOSTED_DATA_DELETE", "value": 6}
+  ],
+  "invariants": [
+    "one_global_unlock_for_all_wallets",
+    "wallet_switch_is_registry_snapshot_only",
+    "no_wallet_specific_user_lock",
+    "no_network_during_warmup_or_switch",
+    "no_failed_attempt_deletes_data",
+    "persistent_backoff_uses_wall_clock_deadline",
+    "auto_lock_uses_monotonic_elapsed_time",
+    "migration_advances_one_durable_boundary_at_a_time",
+    "system_auth_always_has_password_recovery_envelope"
+  ]
+}

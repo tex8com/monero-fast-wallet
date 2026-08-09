@@ -1,0 +1,28 @@
+From fb629fd7d21f6f6223c27fbe449cde25b8cc305c Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.com>
+Date: Thu, 6 Aug 2026 11:19:45 -0500
+Subject: [PATCH] wallet: compile Metal dispatch in crypto object target
+
+---
+ src/crypto/CMakeLists.txt | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/crypto/CMakeLists.txt b/src/crypto/CMakeLists.txt
+index 06a7281..2c3c766 100644
+--- a/src/crypto/CMakeLists.txt
++++ b/src/crypto/CMakeLists.txt
+@@ -111,7 +111,10 @@ target_link_libraries(cncrypto
+     ${EXTRA_LIBRARIES})
+ 
+ if(APPLE AND NOT IOS)
+-  target_compile_definitions(cncrypto PRIVATE MONERO_FAST_METAL=1)
++  # monero_add_library compiles crypto.cpp in the obj_cncrypto object target.
++  # The definition must be attached there or the runtime dispatcher is built
++  # as the platform-unavailable fallback even though the Metal object is linked.
++  target_compile_definitions(obj_cncrypto PRIVATE MONERO_FAST_METAL=1)
+   target_link_libraries(cncrypto PRIVATE "-framework Foundation" "-framework Metal")
+ endif()
+ 
+-- 
+2.50.1 (Apple Git-155)
+

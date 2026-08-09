@@ -211,6 +211,47 @@ inline std::string sealWatch(WalletEngine& engine,
   return encoded;
 }
 
+inline std::string sealAccountWatch(
+    WalletEngine& engine,
+    const std::string& walletId,
+    const std::string& identityId,
+    uint32_t accountIndex,
+    uint64_t restoreHeight,
+    NetworkType network,
+    const std::string& workerDescriptorHex,
+    const std::string& assignmentHandleHex,
+    uint64_t assignmentEpoch,
+    uint64_t issuedAt,
+    uint64_t expiresAt,
+    uint64_t now) {
+  auto payload = engine.accountRegistrationPayload(
+      walletId, identityId, accountIndex, restoreHeight);
+  SecretStringGuard privateViewKeyGuard(payload.privateViewKey);
+  if (payload.identity.network != network) {
+    throw WalletEngineError("Ledger Fast Wallet network does not match");
+  }
+  auto descriptor = decodeHex(workerDescriptorHex, 1, 4096);
+  auto handle = decodeHex(assignmentHandleHex, 32, 32);
+  auto privateViewKey = decodeHex(payload.privateViewKey, 32, 32);
+  std::vector<unsigned char> output(
+      TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE);
+  const auto status = tex8_fast_wallet_protocol_seal_watch_v1(
+      descriptor.data(), descriptor.size(), networkCode(network), handle.data(),
+      assignmentEpoch, issuedAt, expiresAt, now,
+      reinterpret_cast<const unsigned char*>(payload.identity.address.data()),
+      payload.identity.address.size(), privateViewKey.data(),
+      payload.identity.restoreHeight, output.data(), output.size());
+  std::fill(privateViewKey.begin(), privateViewKey.end(), 0);
+  if (status != TEX8_FAST_WALLET_PROTOCOL_OK) {
+    std::fill(output.begin(), output.end(), 0);
+    throw WalletEngineError(
+        "native Ledger Fast Wallet watch encryption failed");
+  }
+  const auto encoded = encodeHex(output.data(), output.size());
+  std::fill(output.begin(), output.end(), 0);
+  return encoded;
+}
+
 inline std::string verifiedRelayOrigin(const std::string& workerDescriptorHex,
                                        NetworkType network,
                                        uint64_t now) {

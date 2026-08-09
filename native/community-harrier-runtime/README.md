@@ -19,9 +19,12 @@ only by `tools/community-harrier-testbench/compare_embeddings.py`.
 
 Large PTE/runtime packages and third-party source trees stay outside Git.
 Build scripts must verify every version/hash before passing those paths to
-CMake. The recorded tokenizer patch raises RE2's bounded DFA ceiling for
-Gemma's unusually large added-token expression; it does not alter tokenization,
-and native token IDs remain part of the 36-case conformance gate.
+CMake. Three recorded patches are applied. The first raises RE2's bounded DFA
+ceiling for Gemma's unusually large added-token expression; it does not alter
+tokenization. The second lets the tokenizer use a product-owned external
+RE2/Abseil graph. The third adapts SentencePiece to packaged Abseil through a
+build-owned include shim without mutating authenticated source. Native token
+IDs remain part of the 36-case conformance gate.
 
 ## Reproduce the Apple ARM64 host gate
 
@@ -34,8 +37,19 @@ native vectors plus cosine gate:
 TEX8_HARRIER_CACHE_DIRECTORY=/external/cache/harrier \
 TEX8_HARRIER_PTE_PATH=/external/artifacts/harrier-v1.pte \
 TEX8_HARRIER_TOKENIZER_PATH=/external/model/tokenizer.json \
+TEX8_HARRIER_PROTOBUF_PREFIX=/external/pinned-grpc-sdk/v1.80.0 \
 ./scripts/build-apple-native.sh
 ```
+
+For the Desktop product, `TEX8_HARRIER_PROTOBUF_PREFIX` is mandatory and must
+contain the same pinned Protobuf 31.1 package used by gRPC 1.80.0. The build
+fails if `protoc` differs, if SentencePiece still embeds legacy Protobuf
+runtime objects, or if the recorded patch set changes unexpected source
+files. It emits `tex8-harrier-build-contract.txt`; Desktop refuses to link a
+runtime without the external-Protobuf 31.1 contract. A standalone vendored
+build overwrites that file with a deliberately incompatible `vendored` mode,
+so a prior external contract cannot remain stale. The host gRPC SDK emits a
+separate contract and is rebuilt if its macOS deployment target is not 12.0.
 
 The accepted macOS ARM64 V2 run matched all 36 frozen native token sequences
 and passed with minimum cosine `0.997210`. It uses the neutral

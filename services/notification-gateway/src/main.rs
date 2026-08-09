@@ -1,7 +1,7 @@
 use ed25519_dalek::VerifyingKey;
 use fast_wallet_protocol::WorkerDescriptor;
 use notification_gateway::{
-    provider::{ApnsDeliveryConfig, DirectProviderDelivery, FcmDeliveryConfig},
+    provider::{ApnsDeliveryConfig, DirectProviderDelivery, FcmCredentials, FcmDeliveryConfig},
     router, GatewayState, HttpRelayControl,
 };
 use std::{
@@ -42,14 +42,21 @@ async fn run() -> Result<(), String> {
         "NOTIFICATION_GATEWAY_REGISTRATION_PUBLIC_KEY_FILE",
     )?)?)
     .map_err(|_| "Gateway registration public key is invalid".to_owned())?;
-    let fcm = optional_pair(
-        "NOTIFICATION_GATEWAY_FCM_PROJECT_ID",
-        "NOTIFICATION_GATEWAY_FCM_ACCESS_TOKEN_FILE",
-    )?
-    .map(|(project_id, token_file)| FcmDeliveryConfig {
-        project_id,
-        access_token_file: PathBuf::from(token_file),
-    });
+    let fcm_project_id = optional_env("NOTIFICATION_GATEWAY_FCM_PROJECT_ID");
+    let fcm_access_token_file = optional_env("NOTIFICATION_GATEWAY_FCM_ACCESS_TOKEN_FILE");
+    let fcm_service_account_file = optional_env("NOTIFICATION_GATEWAY_FCM_SERVICE_ACCOUNT_FILE");
+    let fcm = match (fcm_project_id, fcm_access_token_file, fcm_service_account_file) {
+        (None, None, None) => None,
+        (Some(project_id), Some(token_file), None) => Some(FcmDeliveryConfig {
+            project_id,
+            credentials: FcmCredentials::AccessTokenFile(PathBuf::from(token_file)),
+        }),
+        (Some(project_id), None, Some(service_account_file)) => Some(FcmDeliveryConfig {
+            project_id,
+            credentials: FcmCredentials::ServiceAccountFile(PathBuf::from(service_account_file)),
+        }),
+        _ => return Err("NOTIFICATION_GATEWAY_FCM_PROJECT_ID and exactly one FCM credential source must be configured together".to_owned()),
+    };
     let apns = optional_pair(
         "NOTIFICATION_GATEWAY_APNS_TOPIC",
         "NOTIFICATION_GATEWAY_APNS_PROVIDER_JWT_FILE",
@@ -104,11 +111,19 @@ async fn run() -> Result<(), String> {
         let mut timer = tokio::time::interval(dispatch_interval);
         loop {
             timer.tick().await;
-            if let Err(error) = dispatch_state
-                .dispatch_provider_once(unix_seconds(), 100)
-                .await
-            {
-                eprintln!("notification Gateway provider dispatch deferred: {error}");
+            match dispatch_state.dispatch_provider_once(unix_seconds(), 100).await {
+                Ok(result) if result.attempted > 0 => eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-dispatch.complete attempted={} delivered={} deferred={} invalidTokens={}",
+                    result.attempted,
+                    result.delivered,
+                    result.deferred,
+                    result.invalid_tokens
+                ),
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("notification Gateway provider dispatch deferred: {error}");
+                    eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-dispatch.error");
+                }
             }
         }
     });
@@ -254,6 +269,13 @@ fn optional_pair(first: &str, second: &str) -> Result<Option<(String, String)>, 
         (Some(first_value), Some(second_value)) => Ok(Some((first_value, second_value))),
         _ => Err(format!("{first} and {second} must be configured together")),
     }
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn env_u64(name: &str, default: u64) -> Result<u64, String> {

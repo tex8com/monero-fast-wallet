@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -129,7 +130,105 @@ struct WalletSnapshot {
   uint64_t refreshFromHeight{0};
   uint64_t daemonBytesReceived{0};
   uint64_t daemonBytesSent{0};
+  // Metadata-only queue depth for a Ledger view-only wallet. A positive
+  // value means a later, background hardware reconciliation has useful work.
+  uint64_t pendingOutputKeyImageCount{0};
   bool synchronized{false};
+};
+
+struct LedgerKeyImageSyncResult {
+  uint64_t importHeight{0};
+  uint64_t spentAtomic{0};
+  uint64_t unspentAtomic{0};
+  uint64_t verifiedOutputCount{0};
+  uint64_t pendingOutputCount{0};
+  uint64_t importedOutputCount{0};
+  uint64_t derivedOutputCount{0};
+  uint64_t derivationDurationMs{0};
+  uint64_t spentStatusRpcDurationMs{0};
+  uint64_t outgoingRpcDurationMs{0};
+  uint64_t stateUpdateDurationMs{0};
+  uint64_t verificationDurationMs{0};
+  uint64_t storeDurationMs{0};
+  uint64_t totalDurationMs{0};
+};
+
+struct NetworkSyncStatus {
+  NetworkType network{NetworkType::Mainnet};
+  std::string state{"idle"};
+  std::string phase{"idle"};
+  // Diagnostics only: never contains key material, balances, addresses, or
+  // transaction data.  It makes transport failures observable in the product
+  // testbench instead of leaving a stalled 0% progress display unexplained.
+  std::string lastError;
+  uint64_t consecutiveFailures{0};
+  uint64_t phaseSequence{0};
+  uint64_t phaseElapsedMs{0};
+  uint64_t lastProviderSelectionMs{0};
+  uint64_t lastTransportInitializationMs{0};
+  uint64_t lastBlockFetchMs{0};
+  uint64_t totalBlockFetchMs{0};
+  uint64_t lastPrefetchMs{0};
+  uint64_t totalPrefetchMs{0};
+  uint64_t lastPrefetchWaitMs{0};
+  uint64_t totalPrefetchWaitMs{0};
+  uint64_t prefetchedPayloadBytes{0};
+  uint64_t peakPrefetchedPayloadBytes{0};
+  uint64_t lastNonEmptyBlockFetchMs{0};
+  uint64_t lastNonEmptyBlockCount{0};
+  uint64_t lastNonEmptyNetworkBytes{0};
+  uint64_t lastNonEmptyPayloadBytes{0};
+  uint64_t networkBytesReceived{0};
+  uint64_t payloadBytesReceived{0};
+  // gRPC protobuf plus the fixed 5-byte message frame, not TCP/TLS wire bytes.
+  uint64_t grpcFramedBytesReceived{0};
+  uint64_t lastWalletScanMs{0};
+  uint64_t totalWalletScanMs{0};
+  uint64_t lastMempoolMs{0};
+  uint64_t totalMempoolMs{0};
+  uint64_t lastCheckpointMs{0};
+  uint64_t totalCheckpointMs{0};
+  uint64_t lastIterationMs{0};
+  uint64_t totalIterationMs{0};
+  uint64_t downloadStartHeight{0};
+  uint64_t downloadedHeight{0};
+  uint64_t chainHeight{0};
+  uint64_t targetHeight{0};
+  uint64_t transportStarts{0};
+  uint64_t fetchedBatches{0};
+  uint64_t fetchedBlocks{0};
+  uint64_t decodedBatches{0};
+  uint64_t prefetchedBatches{0};
+  uint64_t prefetchHits{0};
+  uint64_t fanoutDeliveries{0};
+  uint64_t poolSnapshots{0};
+  uint64_t cacheHits{0};
+  uint64_t cacheMisses{0};
+  uint64_t replayCachePayloadBytes{0};
+  uint64_t replayCachePeakPayloadBytes{0};
+  uint64_t replayCachePayloadLimitBytes{96ULL * 1024ULL * 1024ULL};
+  uint64_t stalledWallets{0};
+  size_t scanWorkers{0};
+  size_t joinedWallets{0};
+  size_t queueDepth{0};
+  size_t prefetchQueueDepth{0};
+  size_t prefetchQueueCapacity{1};
+  size_t replayCacheEntries{0};
+  size_t replayCacheCapacity{128};
+};
+
+struct SharedBlockBatchHandle {
+  std::shared_ptr<const void> native;
+  uint64_t startHeight{0};
+  uint64_t endHeight{0};
+  uint64_t currentHeight{0};
+  size_t blockCount{0};
+};
+
+struct SharedPoolSnapshotHandle {
+  std::shared_ptr<const void> native;
+  uint64_t capturedUnixMillis{0};
+  size_t transactionCount{0};
 };
 
 struct WalletTransactionTransfer {

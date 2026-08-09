@@ -1,0 +1,25 @@
+--- a/src/tcp_address.cpp
++++ b/src/tcp_address.cpp
+@@ -129,6 +129,8 @@ static std::string make_address_string (const char *hbuf_,
+     memcpy (pos, ipv6_suffix_, sizeof ipv6_suffix_ - 1);
+     pos += sizeof ipv6_suffix_ - 1;
+-    pos += sprintf (pos, "%d", ntohs (port_));
++    int res = snprintf (pos, max_port_str_length + 1, "%d", ntohs (port_));
++    zmq_assert (res > 0 && res < (int) (max_port_str_length + 1));
++    pos += res;
+     return std::string (buf, pos - buf);
+ }
+ 
+--- a/src/udp_engine.cpp
++++ b/src/udp_engine.cpp
+@@ -367,8 +367,8 @@ void zmq::udp_engine_t::sockaddr_to_msg (zmq::msg_t *msg_,
+ 
+     char port[6];
+     const int port_len =
+-      sprintf (port, "%d", static_cast<int> (ntohs (addr_->sin_port)));
+-    zmq_assert (port_len > 0);
++      snprintf (port, 6, "%d", static_cast<int> (ntohs (addr_->sin_port)));
++    zmq_assert (port_len > 0 && port_len < 6);
+ 
+     const size_t name_len = strlen (name);
+     const int size = static_cast<int> (name_len) + 1 /* colon */

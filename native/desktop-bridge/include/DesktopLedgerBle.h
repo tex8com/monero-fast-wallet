@@ -9,4 +9,8 @@ namespace tex8::desktop {
 // APDUs and Bluetooth identifiers never cross into the Tauri renderer.
 std::string ledgerBleTransportStatus();
 
+// Returns the current, sanitized connection state after a transport attempt.
+// It contains no peripheral identifier, name, APDU, address, or wallet data.
+std::string ledgerBleConnectionStatus();
+
 }  // namespace tex8::desktop

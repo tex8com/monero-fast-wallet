@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  isFastWalletEnabled,
   isFastWalletPreference,
   migrateLegacyExperienceProfile,
   type FastWalletPreference,
@@ -8,7 +9,7 @@ import {
 const FAST_WALLET_PREFERENCE_KEY = 'monero-fast-wallet.fast-wallet-preference.v1';
 const LEGACY_EXPERIENCE_PROFILE_KEY = 'monero-fast-wallet.experience-profile.v1';
 
-export { type FastWalletPreference };
+export { isFastWalletEnabled, type FastWalletPreference };
 
 export async function loadFastWalletPreference(): Promise<FastWalletPreference | null> {
   try {

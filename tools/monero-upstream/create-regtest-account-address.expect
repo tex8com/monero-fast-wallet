@@ -1,0 +1,88 @@
+#!/usr/bin/expect -f
+# Add one Monero account and write only its primary subaddress to a private
+# caller-provided file. Nothing sensitive is printed to stdout or stderr.
+
+if {$argc != 3} {
+  puts stderr "Usage: $argv0 <product-cli> <wallet-file> <address-file>"
+  exit 2
+}
+
+lassign $argv product_cli wallet_file address_file
+set timeout 30
+log_user 0
+
+spawn $product_cli \
+  --wallet-file $wallet_file \
+  --password {} \
+  --offline \
+  --log-file /dev/null
+
+expect {
+  -re {Wallet password:} {
+    send -- "\r"
+    exp_continue
+  }
+  -re {eligible for receiving new monero} {
+    send -- "No\r"
+    exp_continue
+  }
+  -re {\]: $} {
+    send -- "account new Savings\r"
+  }
+  timeout {
+    puts stderr "FAIL: wallet prompt timed out before account creation"
+    exit 124
+  }
+  eof {
+    puts stderr "FAIL: wallet exited before account creation"
+    exit 1
+  }
+}
+
+expect {
+  -re {\]: $} {
+    send -- "address\r"
+  }
+  -re {Error:.*} {
+    puts stderr "FAIL: account creation returned an error"
+    exit 1
+  }
+  timeout {
+    puts stderr "FAIL: account creation timed out"
+    exit 124
+  }
+  eof {
+    puts stderr "FAIL: wallet exited after account creation"
+    exit 1
+  }
+}
+
+expect {
+  -re {([48][1-9A-HJ-NP-Za-km-z]{94})} {
+    set address $expect_out(1,string)
+    set output [open $address_file w]
+    puts $output $address
+    close $output
+    send -- "exit\r"
+  }
+  -re {Error:.*} {
+    puts stderr "FAIL: account address command returned an error"
+    exit 1
+  }
+  timeout {
+    puts stderr "FAIL: account address was not returned"
+    exit 124
+  }
+  eof {
+    puts stderr "FAIL: wallet exited before returning the account address"
+    exit 1
+  }
+}
+
+expect eof
+set wait_result [wait]
+set exit_code [lindex $wait_result 3]
+if {$exit_code != 0} {
+  puts stderr "FAIL: wallet account helper exited with $exit_code"
+  exit 1
+}

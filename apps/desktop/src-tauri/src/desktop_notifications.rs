@@ -1,4 +1,6 @@
+use reqwest::{header, redirect::Policy, Client};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use std::{
     ffi::CStr,
@@ -47,6 +49,14 @@ pub struct NotificationInstallation {
     pub provider_status: String,
     #[serde(default)]
     pub gateway_status: String,
+    #[serde(default)]
+    pub gateway_generation: Option<u64>,
+    #[serde(default)]
+    pub provider_token_hash: Option<String>,
+    #[serde(default)]
+    pub gateway_lease_expires_at: Option<u64>,
+    #[serde(default)]
+    pub gateway_checked_at: Option<u64>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -77,6 +87,37 @@ pub struct NotificationInstallationStatus {
     pub delivery: String,
     pub background_mode_supported: bool,
     pub background_agent_config_path: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopProviderRegistrationRequest<'a> {
+    provider: &'a str,
+    token: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderRegistrationResponse {
+    accepted: bool,
+    provider: String,
+    provider_token_hash: String,
+    generation: u64,
+    accepted_at: u64,
+    lease_expires_at: u64,
+    delivery_state: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderStatusResponse {
+    registered: bool,
+    provider: Option<String>,
+    provider_token_hash: Option<String>,
+    generation: Option<u64>,
+    accepted_at: Option<u64>,
+    lease_expires_at: Option<u64>,
+    delivery_state: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -126,6 +167,155 @@ pub fn request_installation(
     write_background_agent_config(app, &installation)?;
     crate::linux_notification_agent::reconcile(app, installation.background_mode_enabled)?;
     crate::windows_notification_agent::reconcile(app, installation.background_mode_enabled)?;
+    status_for_installation(app, installation)
+}
+
+pub async fn reconcile_gateway(app: &AppHandle) -> Result<NotificationInstallationStatus, String> {
+    let mut installation = load_or_create(app)?;
+    refresh_platform_endpoint(&mut installation);
+    if !installation.enabled {
+        return status_for_installation(app, installation);
+    }
+    let (provider, token) = match installation.provider.as_str() {
+        "apns" if is_apns_device_token(&installation.endpoint) => {
+            ("apns", installation.endpoint.trim())
+        }
+        "apns" => {
+            installation.gateway_status = "provider-pending".to_owned();
+            installation.gateway_checked_at = Some(now());
+            write_installation(app, &installation)?;
+            return status_for_installation(app, installation);
+        }
+        "windows-agent" | "linux-agent" if installation.background_mode_enabled => {
+            ("desktop_wss", "")
+        }
+        _ => return status_for_installation(app, installation),
+    };
+    let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
+    let current_time = now();
+    let locally_current = installation.gateway_status == "active"
+        && installation.provider_token_hash.as_deref() == Some(token_hash.as_str())
+        && installation
+            .gateway_lease_expires_at
+            .is_some_and(|expires_at| expires_at > current_time.saturating_add(7 * 24 * 60 * 60));
+    if locally_current
+        && installation
+            .gateway_checked_at
+            .is_some_and(|checked_at| checked_at.saturating_add(24 * 60 * 60) > current_time)
+    {
+        return status_for_installation(app, installation);
+    }
+    let mut auth =
+        crate::secure_store::load_notification_installation_auth(&installation.installation_id)?
+            .ok_or_else(|| "The notification installation credential is missing.".to_owned())?;
+
+    if locally_current {
+        let status_response = desktop_http_client()?
+            .get(format!(
+                "{}/api/v1/installations/provider",
+                gateway_origin()?
+            ))
+            .header(header::ACCEPT, "application/json")
+            .header(
+                "x-fast-wallet-installation-id",
+                &installation.installation_id,
+            )
+            .header("x-fast-wallet-installation-auth", &auth)
+            .send()
+            .await;
+        if let Ok(response) = status_response {
+            if response.status().is_success() {
+                if let Ok(bytes) = response.bytes().await {
+                    if bytes.len() <= 16 * 1024 {
+                        if let Ok(status) = serde_json::from_slice::<ProviderStatusResponse>(&bytes)
+                        {
+                            let confirmed = status.registered
+                                && status.provider.as_deref() == Some(provider)
+                                && status.provider_token_hash.as_deref()
+                                    == Some(token_hash.as_str())
+                                && status.generation == installation.gateway_generation
+                                && status
+                                    .accepted_at
+                                    .is_some_and(|accepted_at| accepted_at > 0)
+                                && status.lease_expires_at.is_some_and(|expires_at| {
+                                    expires_at > current_time.saturating_add(7 * 24 * 60 * 60)
+                                })
+                                && status.delivery_state == "active";
+                            if confirmed {
+                                installation.gateway_lease_expires_at = status.lease_expires_at;
+                                installation.gateway_checked_at = Some(current_time);
+                                write_installation(app, &installation)?;
+                                zeroize::Zeroize::zeroize(&mut auth);
+                                return status_for_installation(app, installation);
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // The last confirmed lease remains usable during a temporary
+            // outage. Do not force a re-registration or show a false failure.
+            zeroize::Zeroize::zeroize(&mut auth);
+            return status_for_installation(app, installation);
+        }
+    }
+
+    let response = desktop_http_client()?
+        .post(format!(
+            "{}/api/v1/installations/desktop-provider",
+            gateway_origin()?
+        ))
+        .header(header::ACCEPT, "application/json")
+        .header(
+            "x-fast-wallet-installation-id",
+            &installation.installation_id,
+        )
+        .header("x-fast-wallet-installation-auth", &auth)
+        .json(&DesktopProviderRegistrationRequest { provider, token })
+        .send()
+        .await;
+    zeroize::Zeroize::zeroize(&mut auth);
+    let response = match response {
+        Ok(response) if response.status().is_success() => response,
+        Ok(_) => {
+            installation.gateway_status = "needs-refresh".to_owned();
+            installation.gateway_checked_at = Some(current_time);
+            write_installation(app, &installation)?;
+            return Err("The desktop notification service rejected this installation.".to_owned());
+        }
+        Err(_) => {
+            installation.gateway_status = "needs-refresh".to_owned();
+            installation.gateway_checked_at = Some(current_time);
+            write_installation(app, &installation)?;
+            return Err("The desktop notification service is unavailable.".to_owned());
+        }
+    };
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "The desktop notification response could not be read.".to_owned())?;
+    if bytes.len() > 16 * 1024 {
+        return Err("The desktop notification response was too large.".to_owned());
+    }
+    let accepted: ProviderRegistrationResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| "The desktop notification response was invalid.".to_owned())?;
+    if !accepted.accepted
+        || accepted.provider != provider
+        || accepted.provider_token_hash != token_hash
+        || accepted.generation == 0
+        || accepted.accepted_at == 0
+        || accepted.lease_expires_at <= current_time
+        || accepted.delivery_state != "active"
+    {
+        return Err("The desktop notification registration was not confirmed.".to_owned());
+    }
+    installation.gateway_status = "active".to_owned();
+    installation.gateway_generation = Some(accepted.generation);
+    installation.provider_token_hash = Some(accepted.provider_token_hash);
+    installation.gateway_lease_expires_at = Some(accepted.lease_expires_at);
+    installation.gateway_checked_at = Some(current_time);
+    installation.updated_at = current_time;
+    write_installation(app, &installation)?;
     status_for_installation(app, installation)
 }
 
@@ -219,6 +409,10 @@ fn default_installation() -> Result<NotificationInstallation, String> {
         background_mode_enabled: false,
         provider_status: "not-configured".to_owned(),
         gateway_status: "unregistered".to_owned(),
+        gateway_generation: None,
+        provider_token_hash: None,
+        gateway_lease_expires_at: None,
+        gateway_checked_at: None,
         created_at: timestamp,
         updated_at: timestamp,
     })
@@ -356,6 +550,9 @@ fn delivery(installation: &NotificationInstallation) -> String {
     if !installation.enabled {
         return "disabled".to_owned();
     }
+    if installation.gateway_status != "active" {
+        return "local-while-open".to_owned();
+    }
     match installation.provider_status.as_str() {
         "ready" => match installation.provider.as_str() {
             "apns" => "closed-app-apns",
@@ -469,6 +666,26 @@ fn notification_service_url() -> String {
     }
 }
 
+fn gateway_origin() -> Result<String, String> {
+    let gateway = option_env!("TEX8_FAST_WALLET_GATEWAY_ORIGIN")
+        .unwrap_or("")
+        .trim_end_matches('/');
+    if gateway.starts_with("https://") {
+        Ok(gateway.to_owned())
+    } else {
+        Err("The desktop notification service is not configured in this build.".to_owned())
+    }
+}
+
+fn desktop_http_client() -> Result<Client, String> {
+    Client::builder()
+        .redirect(Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|_| "The desktop notification client could not be created.".to_owned())
+}
+
 fn random_hex_16() -> Result<String, String> {
     let mut bytes = [0_u8; 16];
     getrandom::getrandom(&mut bytes).map_err(|_| {
@@ -519,6 +736,10 @@ mod tests {
             background_mode_enabled: background,
             provider_status: "disabled".to_owned(),
             gateway_status: "unregistered".to_owned(),
+            gateway_generation: None,
+            provider_token_hash: None,
+            gateway_lease_expires_at: None,
+            gateway_checked_at: None,
             created_at: 1,
             updated_at: 1,
         }
@@ -534,12 +755,15 @@ mod tests {
         let mut background = installation("linux-agent", "", true);
         background.provider_status = provider_status(&background);
         assert_eq!(background.provider_status, "ready");
+        assert_eq!(delivery(&background), "local-while-open");
+        background.gateway_status = "active".to_owned();
         assert_eq!(delivery(&background), "background-linux-agent");
 
         let mut windows = installation("windows-agent", "", true);
         windows.platform = "windows".to_owned();
         windows.provider_status = provider_status(&windows);
         assert_eq!(windows.provider_status, "ready");
+        windows.gateway_status = "active".to_owned();
         assert_eq!(delivery(&windows), "background-windows-agent");
     }
 

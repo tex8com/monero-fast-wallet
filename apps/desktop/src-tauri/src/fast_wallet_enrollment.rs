@@ -197,6 +197,32 @@ pub fn paired_private_worker_roots() -> Result<Vec<String>, String> {
     Ok(roots)
 }
 
+/// Resolves the already-pinned Worker for an assignment renewal. The stored
+/// assignment root is authoritative, so a renewal can never silently move a
+/// wallet between the official service and a paired private service.
+pub async fn worker_for_assignment(
+    network: &str,
+    assignment: &AssignmentState,
+    now: u64,
+) -> Result<TrustedWorker, String> {
+    let private_roots = paired_private_worker_roots()?;
+    let worker = if private_roots
+        .iter()
+        .any(|root| constant_hex_eq(root, &assignment.worker_root_id))
+    {
+        load_private_worker(network, now)?
+    } else {
+        official_worker(network, now).await?
+    };
+    if !constant_hex_eq(
+        &hex::encode(worker.descriptor.worker_root_id()),
+        &assignment.worker_root_id,
+    ) {
+        return Err("The pinned payment-alert service identity changed.".to_owned());
+    }
+    Ok(worker)
+}
+
 pub async fn sponsor_assignment(
     app: &AppHandle,
     identity_id: &str,

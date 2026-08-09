@@ -50,13 +50,28 @@ rollback() {
 }
 trap rollback ERR
 
+# systemd reports the service started once it has spawned the binary.  The
+# Axum listener and its first provider-backed quote can become ready a moment
+# later, so do not turn a healthy release into a rollback just because the
+# immediate probe races that startup boundary.
+wait_for_local_market_quote() {
+  local attempts=40
+  until curl --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:8091/v1/market/quote | grep -q '"price"'; do
+    attempts=$((attempts - 1))
+    if [[ "$attempts" -le 0 ]]; then
+      return 1
+    fi
+    sleep 0.5
+  done
+}
+
 sudo install -o root -g root -m 0755 "$binary" "$installed_binary"
 sudo install -o root -g root -m 0644 "$snippet" "$installed_snippet"
 sudo nginx -t
 sudo systemctl restart monero-news
 sudo systemctl is-active --quiet monero-news
-curl --fail --silent --show-error --max-time 20 \
-  http://127.0.0.1:8091/v1/market/quote | grep -q '"price"'
+wait_for_local_market_quote
 sudo systemctl reload nginx
 curl --fail --silent --show-error --max-time 25 \
   https://xmr.tex8.com/api/v1/market/quote | grep -q '"price"'

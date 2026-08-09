@@ -56,12 +56,22 @@ jest.mock('../WalletService', () => ({
       supported: true,
     })),
     lockApp: jest.fn(async () => undefined),
+    recordAppUserActivity: jest.fn(async () => undefined),
+    setAppAutoLockSeconds: jest.fn(async () => undefined),
     unlockApp: jest.fn(async () => ({
       biometryType: 'fingerprint',
       message: '',
       success: true,
     })),
   },
+}));
+
+jest.mock('../SystemUiInterruption', () => ({
+  activeSystemUiInterruptionDeadlineMs: jest.fn(() => undefined),
+  recentlyCompletedSystemUiInterruption: jest.fn(() => false),
+  withSystemUiInterruption: jest.fn(
+    (_reason: string, operation: () => Promise<unknown>) => operation(),
+  ),
 }));
 
 const mockedWalletService = walletService as jest.Mocked<typeof walletService>;
@@ -131,17 +141,18 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
 
     await ReactTestRenderer.act(async () => {
       buttonWithText(renderer!, 'Get Started').props.onPress();
+      await new Promise(resolve => setTimeout(resolve, 0));
     });
 
-    expect(visibleText(renderer!)).toContain('App protection');
-    expect(visibleText(renderer!)).toContain('Fingerprint or face unlock');
-    expect(visibleText(renderer!)).toContain('App password');
+    expect(visibleText(renderer!)).toContain('Protect your wallet');
+    expect(visibleText(renderer!)).toContain('Use password instead');
+    expect(renderer!.root.findAllByType(TextInput)).toHaveLength(0);
     expect(
       renderer!.root.findAllByProps({ testID: 'protected-wallet-content' }),
     ).toHaveLength(0);
 
     await ReactTestRenderer.act(async () => {
-      buttonWithText(renderer!, 'App password').props.onPress();
+      buttonWithText(renderer!, 'Use password instead').props.onPress();
     });
     const passwordInputs = renderer!.root.findAllByType(TextInput);
     expect(passwordInputs).toHaveLength(2);
@@ -183,8 +194,8 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
 
     const text = visibleText(renderer!);
     expect(text).toContain('Unlock app');
-    expect(text).not.toContain('Fingerprint or face unlock');
-    expect(text).not.toContain('Choose how you would like to unlock the app');
+    expect(text).not.toContain('Use fingerprint instead');
+    expect(text).not.toContain('Use one simple check to open all your wallets');
     expect(renderer!.root.findAllByType(TextInput)).toHaveLength(1);
   });
 
@@ -207,15 +218,14 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
     });
     await ReactTestRenderer.act(async () => {
       buttonWithText(renderer!, 'Get Started').props.onPress();
+      await new Promise(resolve => setTimeout(resolve, 0));
     });
+    expect(visibleText(renderer!)).toContain('Use password instead');
+    expect(renderer!.root.findAllByType(TextInput)).toHaveLength(0);
     await ReactTestRenderer.act(async () => {
-      buttonWithText(renderer!, 'Fingerprint or face unlock').props.onPress();
-    });
-    await ReactTestRenderer.act(async () => {
-      await buttonWithText(
-        renderer!,
-        'Continue with biometrics',
-      ).props.onPress();
+      await renderer!.root
+        .findByProps({ testID: 'app-security-primary' })
+        .props.onPress();
     });
 
     expect(mockedWalletService.configureAppProtection).toHaveBeenCalledWith(
@@ -247,15 +257,15 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
     expect(mockedWalletService.unlockApp).toHaveBeenCalledTimes(1);
     expect(mockedWalletService.configureAppProtection).not.toHaveBeenCalled();
     expect(visibleText(renderer!)).not.toContain(
-      'Choose how you would like to unlock the app',
+      'Use one simple check to open all your wallets',
     );
-    expect(visibleText(renderer!)).not.toContain('App password');
+    expect(visibleText(renderer!)).not.toContain('Use password instead');
     expect(
       renderer!.root.findAllByProps({ testID: 'protected-wallet-content' }),
     ).not.toHaveLength(0);
   });
 
-  it('shows the native remaining-attempt count after a wrong app password', async () => {
+  it('shows the native security delay after a wrong app password', async () => {
     mockedWalletService.getAppProtectionStatus.mockResolvedValue({
       configured: true,
       locked: true,
@@ -264,8 +274,7 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
     mockedWalletService.unlockApp.mockResolvedValueOnce({
       biometryType: 'none',
       failedPasswordAttempts: 1,
-      message: 'Incorrect app password',
-      remainingPasswordAttempts: 2,
+      message: 'Incorrect app password. Try again in 2 seconds.',
       resetTriggered: false,
       success: false,
     });
@@ -289,50 +298,11 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
     });
 
     expect(visibleText(renderer!)).toContain(
-      '2 attempts remaining before all local wallet data is erased.',
+      'Try again in 2 seconds.',
     );
   });
 
-  it('uses singular wording for the final password attempt', async () => {
-    mockedWalletService.getAppProtectionStatus.mockResolvedValue({
-      configured: true,
-      locked: true,
-      mode: 'password',
-    });
-    mockedWalletService.unlockApp.mockResolvedValueOnce({
-      biometryType: 'none',
-      failedPasswordAttempts: 2,
-      message: 'Incorrect app password',
-      remainingPasswordAttempts: 1,
-      resetTriggered: false,
-      success: false,
-    });
-    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
-
-    await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(
-        <LanguageProvider>
-          <AppSecurityProvider>
-            <View testID="protected-wallet-content" />
-          </AppSecurityProvider>
-        </LanguageProvider>,
-      );
-    });
-    const passwordInput = renderer!.root.findByType(TextInput);
-    await ReactTestRenderer.act(async () => {
-      passwordInput.props.onChangeText('wrong password');
-    });
-    await ReactTestRenderer.act(async () => {
-      await buttonWithText(renderer!, 'Unlock app').props.onPress();
-    });
-
-    expect(visibleText(renderer!)).toContain(
-      '1 attempt remaining before all local wallet data is erased.',
-    );
-    expect(visibleText(renderer!)).not.toContain('1 attempts remaining');
-  });
-
-  it('hides protected content while a native three-attempt reset runs', async () => {
+  it('continues rate limiting without a destructive final attempt', async () => {
     mockedWalletService.getAppProtectionStatus.mockResolvedValue({
       configured: true,
       locked: true,
@@ -341,9 +311,8 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
     mockedWalletService.unlockApp.mockResolvedValueOnce({
       biometryType: 'none',
       failedPasswordAttempts: 3,
-      message: 'Local wallet data is being erased',
-      remainingPasswordAttempts: 0,
-      resetTriggered: true,
+      message: 'Incorrect app password. Try again in 30 seconds.',
+      resetTriggered: false,
       success: false,
     });
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
@@ -366,8 +335,47 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
     });
 
     expect(visibleText(renderer!)).toContain(
-      'Local wallet data is being securely erased',
+      'Try again in 30 seconds.',
     );
+    expect(visibleText(renderer!)).not.toContain('erased');
+  });
+
+  it('never enters a destructive reset state after three failures', async () => {
+    mockedWalletService.getAppProtectionStatus.mockResolvedValue({
+      configured: true,
+      locked: true,
+      mode: 'password',
+    });
+    mockedWalletService.unlockApp.mockResolvedValueOnce({
+      biometryType: 'none',
+      failedPasswordAttempts: 3,
+      message: 'Incorrect app password. Try again in 30 seconds.',
+      resetTriggered: false,
+      success: false,
+    });
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <LanguageProvider>
+          <AppSecurityProvider>
+            <View testID="protected-wallet-content" />
+          </AppSecurityProvider>
+        </LanguageProvider>,
+      );
+    });
+    const passwordInput = renderer!.root.findByType(TextInput);
+    await ReactTestRenderer.act(async () => {
+      passwordInput.props.onChangeText('wrong password');
+    });
+    await ReactTestRenderer.act(async () => {
+      await buttonWithText(renderer!, 'Unlock app').props.onPress();
+    });
+
+    expect(visibleText(renderer!)).toContain(
+      'Try again in 30 seconds.',
+    );
+    expect(visibleText(renderer!)).not.toContain('erased');
     expect(
       renderer!.root.findAllByProps({ testID: 'protected-wallet-content' }),
     ).toHaveLength(0);

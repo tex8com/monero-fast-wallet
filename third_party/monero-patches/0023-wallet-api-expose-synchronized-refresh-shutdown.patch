@@ -1,0 +1,50 @@
+From 4e895cb5f17bbf1c1ef504b32c0c5f510d1336b6 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 31 Jul 2026 20:46:29 -0500
+Subject: [PATCH] wallet api: expose synchronized refresh shutdown
+
+---
+ src/wallet/api/wallet.h      | 2 +-
+ src/wallet/api/wallet2_api.h | 9 +++++++++
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index f1ca5e4..a045cb1 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -227,6 +227,7 @@ public:
+     virtual bool verifyMessageWithPublicKey(const std::string &message, const std::string &publicKey, const std::string &signature) const override;
+     virtual void startRefresh() override;
+     virtual void pauseRefresh() override;
++    virtual void stopRefresh() override;
+     virtual bool parse_uri(const std::string &uri, std::string &address, std::string &payment_id, uint64_t &amount, std::string &tx_description, std::string &recipient_name, std::vector<std::string> &unknown_parameters, std::string &error) override;
+     virtual std::string make_uri(const std::string &address, const std::string &payment_id, uint64_t amount, const std::string &tx_description, const std::string &recipient_name, std::string &error) const override;
+     virtual std::string getDefaultDataDir() const override;
+@@ -258,7 +259,6 @@ private:
+     void refreshThreadFunc();
+     void doRefresh();
+     bool daemonSynced() const;
+-    void stopRefresh();
+     bool isNewWallet() const;
+     void pendingTxPostProcess(PendingTransactionImpl * pending);
+     bool doInit(const std::string &daemon_address, const std::string &proxy_address, uint64_t upper_transaction_size_limit = 0, bool ssl = false);
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index a27aebd..2cce51d 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -750,6 +750,15 @@ struct Wallet
+     */
+     virtual void pauseRefresh() = 0;
+ 
++    /**
++     * @brief stopRefresh stops and joins the wallet refresh worker.
++     *
++     * Unlike pauseRefresh(), this is a synchronization barrier. Callers that
++     * need to serialize or destroy a wallet must use it before touching the
++     * cache from another thread.
++     */
++    virtual void stopRefresh() = 0;
++
+     /**
+      * @brief refresh - refreshes the wallet, updating transactions from daemon
+      * @return - true if refreshed successfully;

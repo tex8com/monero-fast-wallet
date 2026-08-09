@@ -1,5 +1,6 @@
 package com.monerowallet
 
+import android.app.KeyguardManager
 import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
@@ -13,7 +14,7 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 
 class MainActivity : ReactActivity() {
   private val lifecycleHandler = Handler(Looper.getMainLooper())
-  private var nativePauseLockCommitted = false
+  private var nativeDeviceLockCommitted = false
   private var systemUiPauseDeferred = false
   private val systemUiTimeoutRunnable = Runnable {
     handleSystemUiInterruptionChanged()
@@ -32,7 +33,11 @@ class MainActivity : ReactActivity() {
       logLifecycleDiagnostic("activityPause.systemUiResumed")
     }
     systemUiPauseDeferred = false
-    nativePauseLockCommitted = false
+    nativeDeviceLockCommitted = false
+    // A normal app switch keeps the already-authorized AppVault and native
+    // wallet sessions warm until the configured inactivity deadline. Enforce
+    // that monotonic deadline before React can submit any new wallet work.
+    NativeMoneroWalletModule.notifyAppForegrounded()
     // Re-apply after the complete Android/React lifecycle in case a framework
     // or restored window state changed the flag while the app was backgrounded.
     applyScreenCapturePolicy()
@@ -83,8 +88,19 @@ class MainActivity : ReactActivity() {
       return
     }
 
-    commitNativePauseLock("app-background")
+    NativeMoneroWalletModule.notifyAppBackgrounded()
     super.onPause()
+  }
+
+  override fun onStop() {
+    val interruptionActive = NativeSystemUiInterruption.remainingMs() != null
+    val keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
+    if (!interruptionActive &&
+      (keyguardManager.isDeviceLocked || keyguardManager.isKeyguardLocked)
+    ) {
+      commitNativeDeviceLock("device-lock")
+    }
+    super.onStop()
   }
 
   override fun onDestroy() {
@@ -106,8 +122,9 @@ class MainActivity : ReactActivity() {
     }
 
     // Permission callbacks can settle just before onPostResume. Give Android a
-    // short lifecycle grace period; onPostResume cancels this runnable. If the
-    // app truly stayed backgrounded, the native lock is committed afterwards.
+    // short lifecycle grace period; onPostResume cancels this runnable. A real
+    // background transition retains the session only until its configured
+    // monotonic inactivity deadline.
     lifecycleHandler.removeCallbacks(systemUiTimeoutRunnable)
     lifecycleHandler.postDelayed(
       {
@@ -115,7 +132,7 @@ class MainActivity : ReactActivity() {
           NativeSystemUiInterruption.remainingMs() == null
         ) {
           systemUiPauseDeferred = false
-          commitNativePauseLock("system-ui-ended-while-backgrounded")
+          NativeMoneroWalletModule.notifyAppBackgrounded()
         }
       },
       SYSTEM_UI_RESUME_GRACE_MS,
@@ -130,25 +147,13 @@ class MainActivity : ReactActivity() {
     )
   }
 
-  private fun commitNativePauseLock(reason: String) {
-    if (nativePauseLockCommitted) {
+  private fun commitNativeDeviceLock(reason: String) {
+    if (nativeDeviceLockCommitted) {
       return
     }
-    nativePauseLockCommitted = true
-    logLifecycleDiagnostic("activityPause.nativeLock", "reason=$reason")
-    // Do this on the native lifecycle boundary. Android can freeze the React
-    // bridge before its AppState callback has finished, which otherwise leaves
-    // the Monero Core cache at the old scan height for the next app launch.
-    NativeAppAuthorization.lock()
-    NativeSensitiveApprovalState.clear()
-    runCatching {
-      NativeMoneroWalletJni.persistOpenWallets()
-      NativeMoneroWalletJni.closeAllWallets()
-    }.onFailure {
-      if (BuildConfig.DEBUG) {
-        Log.w(TAG, "Could not close native wallet sessions")
-      }
-    }
+    nativeDeviceLockCommitted = true
+    logLifecycleDiagnostic("activityStop.nativeLock", "reason=$reason")
+    NativeMoneroWalletModule.notifyDeviceLocked(reason)
   }
 
   private fun logLifecycleDiagnostic(event: String, fields: String = "") {

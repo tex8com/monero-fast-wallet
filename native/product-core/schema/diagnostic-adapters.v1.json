@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "adapters": [
+    {"id":"node.product-core-abi","kind":"node","entry":"tools/wallet-testbench/test-product-core-abi-contract.mjs","arguments":[]},
+    {"id":"node.diagnostic-registry","kind":"node","entry":"tools/wallet-testbench/test-diagnostic-registry-contract.mjs","arguments":[]},
+    {"id":"node.v1-release-contract","kind":"node","entry":"scripts/test-v1-release-contract.mjs","arguments":[]},
+    {"id":"shell.product-core-testbench","kind":"shell","entry":"native/product-core/scripts/run-testbench.sh","arguments":[]},
+    {"id":"shell.raw-grpc-payload","kind":"shell","entry":"tools/wallet-testbench/run-raw-grpc-payload-mainnet.sh","arguments":[]},
+    {"id":"shell.sync-benchmark","kind":"shell","entry":"tools/wallet-testbench/run-sync-benchmark.sh","arguments":[]},
+    {"id":"shell.multiwallet-reorg-failover","kind":"shell","entry":"tools/wallet-testbench/run-multiwallet-reorg-failover-acceptance.sh","arguments":[]},
+    {"id":"shell.ledger-key-image","kind":"shell","entry":"tools/wallet-testbench/run-ledger-key-image-benchmark.sh","arguments":[]},
+    {"id":"shell.fast-receive","kind":"shell","entry":"tools/wallet-testbench/run-fast-receive-e2e.sh","arguments":[]},
+    {"id":"shell.mfw-recipient","kind":"shell","entry":"tools/wallet-testbench/run-mfw-recipient-security-testbench.sh","arguments":[]},
+    {"id":"platform.wallet-diagnostics","kind":"platform","entry":"packages/wallet-shared/src/diagnosticTestbench.ts","arguments":[]},
+    {"id":"platform.release-package","kind":"platform","entry":"docs/RELEASE_GATE_MATRIX.md","arguments":[]}
+  ]
+}

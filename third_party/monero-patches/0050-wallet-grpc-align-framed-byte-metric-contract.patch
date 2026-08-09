@@ -1,0 +1,291 @@
+From fd5cc29ac6801d912751ad1ab420e87c9358e3e9 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Fast Wallet <devnull@tex8.invalid>
+Date: Sat, 8 Aug 2026 21:41:15 -0500
+Subject: [PATCH] wallet grpc: align framed-byte metric contract
+
+---
+ src/wallet/api/wallet.cpp                     |  1 -
+ src/wallet/api/wallet2_api.h                  |  2 --
+ .../grpc_stream/grpc_block_range_pool.cpp     |  6 -----
+ .../grpc_stream/grpc_block_range_pool.h       |  1 -
+ .../grpc_stream/grpc_block_stream_client.cpp  | 23 ++-----------------
+ .../grpc_stream/grpc_block_stream_client.h    |  3 ---
+ src/wallet/wallet2.cpp                        |  4 ----
+ src/wallet/wallet2.h                          |  2 --
+ 8 files changed, 2 insertions(+), 40 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index bb5f982..b139fe5 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -108,7 +108,6 @@ public:
+     size_t blockCount() const override { return value_->blocks.size(); }
+     uint64_t networkBytes() const override { return value_->network_bytes; }
+     uint64_t payloadBytes() const override { return value_->payload_bytes; }
+-    uint64_t grpcFramedBytes() const override { return value_->grpc_framed_bytes; }
+ 
+     const tools::wallet2::shared_block_batch& value() const { return *value_; }
+ 
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index cafaeb3..18864ab 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -465,8 +465,6 @@ struct Wallet
+         virtual size_t blockCount() const = 0;
+         virtual uint64_t networkBytes() const = 0;
+         virtual uint64_t payloadBytes() const = 0;
+-        // gRPC protobuf plus 5-byte message framing; not TCP/TLS wire bytes.
+-        virtual uint64_t grpcFramedBytes() const = 0;
+     };
+ 
+     struct SharedPoolSnapshot
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.cpp b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+index 491a495..caa3999 100644
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.cpp
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+@@ -31,7 +31,6 @@ struct cached_chunk {
+     uint64_t chain_tip = 0;
+     uint32_t n_blocks = 0;
+     uint32_t payload_bytes = 0;
+-    uint64_t grpc_framed_bytes = 0;
+     std::string server_request_id;
+ };
+ 
+@@ -100,7 +99,6 @@ public:
+                 chunk.chain_tip = client_.last_chunk_chain_tip();
+                 chunk.n_blocks = client_.last_chunk_n_blocks();
+                 chunk.payload_bytes = client_.last_chunk_payload_bytes();
+-                chunk.grpc_framed_bytes = client_.last_chunk_grpc_framed_bytes();
+                 chunk.server_request_id = client_.last_chunk_server_request_id();
+             }
+ 
+@@ -335,7 +333,6 @@ struct cuprate_grpc_block_range_pool::impl {
+     int error_code = 0;
+     uint64_t last_start = 0, last_seq = 0, last_tip = 0;
+     uint32_t last_blocks = 0, last_payload_bytes = 0;
+-    uint64_t last_grpc_framed_bytes = 0;
+     std::string last_server_id;
+ };
+ 
+@@ -413,7 +410,6 @@ bool cuprate_grpc_block_range_pool::open(const std::string& target,
+     p_->ended_ok = false;
+     p_->last_start = p_->last_seq = p_->last_tip = 0;
+     p_->last_blocks = p_->last_payload_bytes = 0;
+-    p_->last_grpc_framed_bytes = 0;
+     p_->last_server_id.clear();
+     p_->opened = true;
+     if (!open_slot(*p_, 0, true)) {
+@@ -458,7 +454,6 @@ bool cuprate_grpc_block_range_pool::next_chunk_payload(std::string& out,
+     p_->last_tip = chunk.chain_tip;
+     p_->last_blocks = chunk.n_blocks;
+     p_->last_payload_bytes = chunk.payload_bytes;
+-    p_->last_grpc_framed_bytes = chunk.grpc_framed_bytes;
+     p_->last_server_id = chunk.server_request_id;
+     out = std::move(chunk.payload);
+     if (!p_->have_expected) {
+@@ -499,6 +494,5 @@ uint64_t cuprate_grpc_block_range_pool::last_chunk_seq() const { return p_->last
+ uint64_t cuprate_grpc_block_range_pool::last_chunk_chain_tip() const { return p_->last_tip; }
+ uint32_t cuprate_grpc_block_range_pool::last_chunk_n_blocks() const { return p_->last_blocks; }
+ uint32_t cuprate_grpc_block_range_pool::last_chunk_payload_bytes() const { return p_->last_payload_bytes; }
+-uint64_t cuprate_grpc_block_range_pool::last_chunk_grpc_framed_bytes() const { return p_->last_grpc_framed_bytes; }
+ std::string cuprate_grpc_block_range_pool::last_chunk_server_request_id() const { return p_->last_server_id; }
+ } // namespace cuprate_grpc_stream
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.h b/src/wallet/grpc_stream/grpc_block_range_pool.h
+index 3b288c7..3581a7f 100644
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.h
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.h
+@@ -34,7 +34,6 @@ public:
+     uint64_t last_chunk_chain_tip() const;
+     uint32_t last_chunk_n_blocks() const;
+     uint32_t last_chunk_payload_bytes() const;
+-    uint64_t last_chunk_grpc_framed_bytes() const;
+     std::string last_chunk_server_request_id() const;
+ 
+ private:
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+index 98142dc..1db9993 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.cpp
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -101,7 +101,6 @@ struct chunk_record {
+     uint64_t     chain_tip = 0;
+     uint32_t     n_blocks = 0;
+     uint32_t     payload_bytes = 0;
+-    uint64_t     grpc_framed_bytes = 0;
+     std::string  server_request_id;
+ };
+ 
+@@ -129,7 +128,6 @@ struct cuprate_grpc_stream_client::impl {
+     uint64_t    last_chunk_chain_tip = 0;
+     uint32_t    last_chunk_n_blocks = 0;
+     uint32_t    last_chunk_payload_bytes = 0;
+-    uint64_t    last_chunk_grpc_framed_bytes = 0;
+     std::string last_chunk_server_request_id;
+ 
+     std::string client_request_id;
+@@ -141,7 +139,6 @@ struct cuprate_grpc_stream_client::impl {
+     uint64_t    total_chunks = 0;
+     uint64_t    total_blocks = 0;
+     uint64_t    total_bytes = 0;
+-    uint64_t    total_grpc_framed_bytes = 0;
+     uint64_t    backpressure_waits = 0;
+     size_t      queue_capacity = DEFAULT_QUEUE_CAPACITY;
+ };
+@@ -214,7 +211,6 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+     p_->total_chunks = 0;
+     p_->total_blocks = 0;
+     p_->total_bytes = 0;
+-    p_->total_grpc_framed_bytes = 0;
+     p_->backpressure_waits = 0;
+     const size_t requested_queue_capacity = queue_capacity_hint > 0
+         ? queue_capacity_hint
+@@ -268,10 +264,6 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             }
+ 
+             chunk_record rec;
+-            // Capture protobuf size before the payload move.  The fixed five
+-            // bytes are gRPC's compressed-flag and message-length prefix;
+-            // HTTP/2, TCP and TLS bytes deliberately remain unreported.
+-            rec.grpc_framed_bytes = static_cast<uint64_t>(chunk.ByteSizeLong()) + 5;
+             rec.payload           = std::move(*chunk.mutable_payload());
+             rec.start_height      = chunk.start_height();
+             rec.chunk_seq         = chunk.chunk_seq();
+@@ -300,8 +292,6 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             const uint64_t total_chunks_now = p_->total_chunks + 1;
+             const uint64_t total_blocks_now = p_->total_blocks + rec.n_blocks;
+             const uint64_t total_bytes_now  = p_->total_bytes  + rec.payload_bytes;
+-            const uint64_t total_grpc_framed_bytes_now =
+-                p_->total_grpc_framed_bytes + rec.grpc_framed_bytes;
+             const double cum_ms = std::chrono::duration<double, std::milli>(
+                 t_recv - p_->t_open).count();
+             const double cum_mbs = (cum_ms > 0.0)
+@@ -310,9 +300,6 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             const double interval_mbs = (interval_ms > 0.0)
+                 ? (static_cast<double>(rec.payload_bytes) / 1024.0 / 1024.0) / (interval_ms / 1000.0)
+                 : 0.0;
+-            const double interval_grpc_framed_mbs = (interval_ms > 0.0)
+-                ? (static_cast<double>(rec.grpc_framed_bytes) / 1024.0 / 1024.0) / (interval_ms / 1000.0)
+-                : 0.0;
+             const double interval_blocks_per_s = (interval_ms > 0.0)
+                 ? static_cast<double>(rec.n_blocks) / (interval_ms / 1000.0)
+                 : 0.0;
+@@ -335,15 +322,13 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+                 p_->client_request_id.c_str(),
+                 rec.server_request_id.c_str());
+             std::fprintf(stderr,
+-                "[SYNC_METRIC] stage=network transport=grpc event=chunk seq=%llu start_height=%llu blocks=%u payload_bytes=%u grpc_framed_bytes=%llu interval_ms=%.1f payload_mib_per_s=%.3f grpc_framed_mib_per_s=%.3f blocks_per_s=%.3f cumulative_ms=%.1f cumulative_payload_mib_per_s=%.3f cumulative_blocks_per_s=%.3f queue_wait_ms=%.1f queue_depth_after=%zu queue_capacity=%zu chain_tip=%llu client_req_id=%s server_req_id=%s\n",
++                "[SYNC_METRIC] stage=network transport=grpc event=chunk seq=%llu start_height=%llu blocks=%u payload_bytes=%u interval_ms=%.1f payload_mib_per_s=%.3f blocks_per_s=%.3f cumulative_ms=%.1f cumulative_payload_mib_per_s=%.3f cumulative_blocks_per_s=%.3f queue_wait_ms=%.1f queue_depth_after=%zu queue_capacity=%zu chain_tip=%llu client_req_id=%s server_req_id=%s\n",
+                 (unsigned long long)rec.chunk_seq,
+                 (unsigned long long)rec.start_height,
+                 rec.n_blocks,
+                 rec.payload_bytes,
+-                (unsigned long long)rec.grpc_framed_bytes,
+                 interval_ms,
+                 interval_mbs,
+-                interval_grpc_framed_mbs,
+                 interval_blocks_per_s,
+                 cum_ms,
+                 cum_mbs,
+@@ -358,7 +343,6 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             p_->total_chunks = total_chunks_now;
+             p_->total_blocks = total_blocks_now;
+             p_->total_bytes  = total_bytes_now;
+-            p_->total_grpc_framed_bytes = total_grpc_framed_bytes_now;
+ 
+             p_->queue.push_back(std::move(rec));
+             lk.unlock();
+@@ -402,12 +386,11 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             p_->last_error_code,
+             p_->last_error_message.c_str());
+         std::fprintf(stderr,
+-            "[SYNC_METRIC] stage=network transport=grpc event=stream_close result=%s chunks=%llu blocks=%llu payload_bytes=%llu grpc_framed_bytes=%llu duration_ms=%.1f payload_mib_per_s=%.3f blocks_per_s=%.3f backpressure_waits=%llu grpc_code=%d client_req_id=%s\n",
++            "[SYNC_METRIC] stage=network transport=grpc event=stream_close result=%s chunks=%llu blocks=%llu payload_bytes=%llu duration_ms=%.1f payload_mib_per_s=%.3f blocks_per_s=%.3f backpressure_waits=%llu grpc_code=%d client_req_id=%s\n",
+             p_->stream_ended_ok ? "ok" : (p_->cancelled ? "cancelled" : "error"),
+             (unsigned long long)p_->total_chunks,
+             (unsigned long long)p_->total_blocks,
+             (unsigned long long)p_->total_bytes,
+-            (unsigned long long)p_->total_grpc_framed_bytes,
+             total_ms,
+             avg_mbs,
+             avg_blocks_per_s,
+@@ -441,7 +424,6 @@ bool cuprate_grpc_stream_client::next_chunk_payload(std::string& out_epee_bytes,
+     p_->last_chunk_chain_tip          = rec.chain_tip;
+     p_->last_chunk_n_blocks           = rec.n_blocks;
+     p_->last_chunk_payload_bytes      = rec.payload_bytes;
+-    p_->last_chunk_grpc_framed_bytes  = rec.grpc_framed_bytes;
+     p_->last_chunk_server_request_id  = rec.server_request_id;
+     out_epee_bytes = std::move(rec.payload);
+     lk.unlock();
+@@ -479,7 +461,6 @@ uint64_t    cuprate_grpc_stream_client::last_chunk_seq()               const { r
+ uint64_t    cuprate_grpc_stream_client::last_chunk_chain_tip()         const { return p_->last_chunk_chain_tip; }
+ uint32_t    cuprate_grpc_stream_client::last_chunk_n_blocks()          const { return p_->last_chunk_n_blocks; }
+ uint32_t    cuprate_grpc_stream_client::last_chunk_payload_bytes()     const { return p_->last_chunk_payload_bytes; }
+-uint64_t    cuprate_grpc_stream_client::last_chunk_grpc_framed_bytes() const { return p_->last_chunk_grpc_framed_bytes; }
+ std::string cuprate_grpc_stream_client::last_chunk_server_request_id() const { return p_->last_chunk_server_request_id; }
+ 
+ int         cuprate_grpc_stream_client::last_error_code()    const { return p_->last_error_code; }
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.h b/src/wallet/grpc_stream/grpc_block_stream_client.h
+index 4f9cd1b..dd33bd4 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.h
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.h
+@@ -93,9 +93,6 @@ public:
+     uint64_t    last_chunk_chain_tip()   const;
+     uint32_t    last_chunk_n_blocks()    const;
+     uint32_t    last_chunk_payload_bytes() const;
+-    // Serialized protobuf message plus the fixed 5-byte gRPC message prefix.
+-    // This intentionally excludes HTTP/2, TCP and TLS wire overhead.
+-    uint64_t    last_chunk_grpc_framed_bytes() const;
+     std::string last_chunk_server_request_id() const;
+ 
+     // Last-error info (set on any failure).
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 22edb98..5b11f4e 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3646,8 +3646,6 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       << " chain_tip=" << current_height
+       << " session=" << m_grpc_stream_session_id);
+   m_last_pull_payload_bytes = payload.size();
+-  m_last_pull_grpc_framed_bytes =
+-    m_grpc_stream_client->last_chunk_grpc_framed_bytes();
+   return true;
+ }
+ #endif
+@@ -3655,7 +3653,6 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+ void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_height, uint64_t &blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices, uint64_t &current_height, uint64_t shared_start_cursor)
+ {
+   m_last_pull_payload_bytes = 0;
+-  m_last_pull_grpc_framed_bytes = 0;
+ #ifdef MONERO_GRPC_STREAM
+   // Fast path: cuprate gRPC streaming sync. Falls through to bin RPC below
+   // if the endpoint is unset, the stream errored, or end-of-stream is hit
+@@ -4337,7 +4334,6 @@ std::shared_ptr<const wallet2::shared_block_batch> wallet2::fetch_shared_block_b
+   batch->network_bytes = network_bytes_after >= network_bytes_before
+     ? network_bytes_after - network_bytes_before : 0;
+   batch->payload_bytes = m_last_pull_payload_bytes;
+-  batch->grpc_framed_bytes = m_last_pull_grpc_framed_bytes;
+   THROW_WALLET_EXCEPTION_IF(batch->blocks.size() != o_indices.size(),
+     error::wallet_internal_error, "shared block/output-index size mismatch");
+ 
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 96a7e4f..1ddd687 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -908,7 +908,6 @@ private:
+       uint64_t current_height;
+       uint64_t network_bytes{0};
+       uint64_t payload_bytes{0};
+-      uint64_t grpc_framed_bytes{0};
+       std::vector<cryptonote::block_complete_entry> blocks;
+       std::vector<parsed_block> parsed_blocks;
+     };
+@@ -2059,7 +2058,6 @@ private:
+     const std::unique_ptr<epee::net_utils::http::abstract_http_client> m_http_client;
+     std::vector<std::unique_ptr<epee::net_utils::http::abstract_http_client>> m_pull_clients;
+     uint64_t m_last_pull_payload_bytes = 0;
+-    uint64_t m_last_pull_grpc_framed_bytes = 0;
+ #ifdef MONERO_GRPC_STREAM
+     std::unique_ptr<cuprate_grpc_stream::cuprate_grpc_block_range_pool> m_grpc_stream_client;
+     std::string  m_grpc_stream_endpoint;
+-- 
+2.50.1 (Apple Git-155)
+

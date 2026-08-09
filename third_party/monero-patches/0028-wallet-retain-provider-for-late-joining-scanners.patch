@@ -1,0 +1,280 @@
+From 153ede05042d8c227bd9ad2b3867f79dcec9c2ca Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Tue, 4 Aug 2026 11:38:06 -0500
+Subject: [PATCH] wallet: retain provider for late joining scanners
+
+---
+ src/wallet/api/wallet.cpp    | 16 +++++++++
+ src/wallet/api/wallet.h      |  1 +
+ src/wallet/api/wallet2_api.h |  1 +
+ src/wallet/wallet2.cpp       | 69 +++++++++++++++++++++++++++---------
+ src/wallet/wallet2.h         |  8 +++--
+ 5 files changed, 77 insertions(+), 18 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 675f6f4..4bd3352 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1127,6 +1127,22 @@ std::shared_ptr<const Wallet::SharedBlockBatch> WalletImpl::fetchSharedBlockBatc
+     }
+ }
+ 
++std::shared_ptr<const Wallet::SharedBlockBatch> WalletImpl::fetchSharedBlockBatchFrom(uint64_t requestedCursor)
++{
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    clearStatus();
++    try
++    {
++        return std::make_shared<SharedBlockBatchImpl>(
++            m_wallet->fetch_shared_block_batch_from(requestedCursor));
++    }
++    catch (const std::exception &error)
++    {
++        setStatusError(error.what());
++        return {};
++    }
++}
++
+ uint64_t WalletImpl::consumeSharedBlockBatch(const SharedBlockBatch &batch)
+ {
+     const auto *native = dynamic_cast<const SharedBlockBatchImpl*>(&batch);
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 2d952b8..1504d88 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -111,6 +111,7 @@ public:
+     uint64_t walletSyncCursor() const override;
+     uint64_t walletSyncTargetCursor() const override;
+     std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatch() override;
++    std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatchFrom(uint64_t requestedCursor) override;
+     uint64_t consumeSharedBlockBatch(const SharedBlockBatch &batch) override;
+     std::shared_ptr<const SharedPoolSnapshot> fetchSharedPoolSnapshot() override;
+     void consumeSharedPoolSnapshot(const SharedPoolSnapshot &snapshot) override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index eb3cd52..f69005c 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -612,6 +612,7 @@ struct Wallet
+     virtual uint64_t walletSyncCursor() const = 0;
+     virtual uint64_t walletSyncTargetCursor() const = 0;
+     virtual std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatch() = 0;
++    virtual std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatchFrom(uint64_t requestedCursor) = 0;
+     virtual uint64_t consumeSharedBlockBatch(const SharedBlockBatch &batch) = 0;
+     virtual std::shared_ptr<const SharedPoolSnapshot> fetchSharedPoolSnapshot() = 0;
+     virtual void consumeSharedPoolSnapshot(const SharedPoolSnapshot &snapshot) = 0;
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index e9a729a..17281ca 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3208,9 +3208,22 @@ void wallet2::process_new_blockchain_entry(const cryptonote::block& b, const cry
+ //----------------------------------------------------------------------------------------------------
+ void wallet2::get_short_chain_history(std::list<crypto::hash>& ids, uint64_t granularity) const
+ {
++  get_short_chain_history_at_cursor(ids, m_blockchain.size(), granularity);
++}
++//----------------------------------------------------------------------------------------------------
++void wallet2::get_short_chain_history_at_cursor(std::list<crypto::hash>& ids, uint64_t cursor, uint64_t granularity) const
++{
++  THROW_WALLET_EXCEPTION_IF(granularity == 0, error::wallet_internal_error,
++    "short-chain history granularity must be positive");
+   size_t i = 0;
+   size_t current_multiplier = 1;
+-  size_t blockchain_size = std::max((size_t)(m_blockchain.size() / granularity * granularity), m_blockchain.offset());
++  const uint64_t bounded_cursor = std::min<uint64_t>(cursor, m_blockchain.size());
++  if (bounded_cursor <= m_blockchain.offset())
++  {
++    ids.push_back(m_blockchain.genesis());
++    return;
++  }
++  size_t blockchain_size = std::max((size_t)(bounded_cursor / granularity * granularity), m_blockchain.offset());
+   size_t sz = blockchain_size - m_blockchain.offset();
+   if(!sz)
+   {
+@@ -3327,11 +3340,24 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     const std::list<crypto::hash> &short_chain_history, uint64_t &blocks_start_height,
+     std::vector<cryptonote::block_complete_entry> &blocks,
+     std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices,
+-    uint64_t &current_height)
++    uint64_t &current_height, uint64_t shared_start_cursor)
+ {
+   if (m_grpc_stream_endpoint.empty() || m_grpc_stream_fallback_to_bin)
+     return false;
+ 
++  const bool shared_range =
++    shared_start_cursor != std::numeric_limits<uint64_t>::max();
++  if (m_grpc_stream_active &&
++      (m_grpc_stream_shared_range != shared_range ||
++       (shared_range && m_grpc_stream_next_height != shared_start_cursor)))
++  {
++    MWARNING("grpc_stream: shared range changed from next="
++      << m_grpc_stream_next_height << " to requested=" << shared_start_cursor
++      << " -- reopening the existing provider stream");
++    m_grpc_stream_client->close();
++    m_grpc_stream_active = false;
++  }
++
+   // Stream is linear and self-synchronising: once open, just keep popping
+   // chunks in order. We do NOT compare to m_blockchain.size() here —
+   // pull_blocks runs CONCURRENTLY with process_parsed_blocks on the main
+@@ -3351,9 +3377,11 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     // short_chain_history. That preserves split/reorg detection while still
+     // starting the block transport through gRPC immediately.
+     const uint64_t wallet_height = static_cast<uint64_t>(m_blockchain.size());
+-    const uint64_t effective_start = first && wallet_height > 0
+-      ? wallet_height - 1
+-      : std::max(start_height, wallet_height);
++    const uint64_t effective_start = shared_range
++      ? shared_start_cursor
++      : (first && wallet_height > 0
++          ? wallet_height - 1
++          : std::max(start_height, wallet_height));
+     uint64_t stream_stop_height = 0;
+     uint32_t stream_chunk_hint = m_grpc_stream_chunk_hint;
+     size_t stream_channels = 1;
+@@ -3371,7 +3399,7 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+         << " -- using bin RPC because a bounded parallel range plan requires a tip");
+       return false;
+     }
+-    else if (daemon_height <= wallet_height)
++    else if (!shared_range && daemon_height <= wallet_height)
+     {
+       MWARNING("grpc_stream: daemon height=" << daemon_height
+         << " is not ahead of wallet height=" << wallet_height
+@@ -3453,6 +3481,8 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       return false;
+     }
+     m_grpc_stream_active = true;
++    m_grpc_stream_shared_range = shared_range;
++    m_grpc_stream_next_height = effective_start;
+   }
+ 
+   std::string payload;
+@@ -3518,7 +3548,7 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+   // which happens only on genuine state drift (e.g. wallet advanced via a
+   // separate bin-RPC path while the stream was stuck).
+   constexpr uint64_t DRIFT_TOLERANCE = 5000;
+-  if (chunk_end_exclusive + DRIFT_TOLERANCE <= wallet_tip)
++  if (!shared_range && chunk_end_exclusive + DRIFT_TOLERANCE <= wallet_tip)
+   {
+     MWARNING("grpc_stream: popped chunk [" << res.start_height << ".."
+       << chunk_end_exclusive << ") is >" << DRIFT_TOLERANCE
+@@ -3533,6 +3563,7 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+   blocks = std::move(res.blocks);
+   o_indices = std::move(res.output_indices);
+   current_height = res.current_height;
++  m_grpc_stream_next_height = chunk_end_exclusive;
+ 
+   // Two-sided bottleneck signal:
+   //   pop_wait_ms high  -> we blocked waiting for the next chunk => stream is
+@@ -3549,7 +3580,7 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+ }
+ #endif
+ //----------------------------------------------------------------------------------------------------
+-void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_height, uint64_t &blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices, uint64_t &current_height)
++void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_height, uint64_t &blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices, uint64_t &current_height, uint64_t shared_start_cursor)
+ {
+ #ifdef MONERO_GRPC_STREAM
+   // Fast path: cuprate gRPC streaming sync. Falls through to bin RPC below
+@@ -3566,7 +3597,8 @@ void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_heigh
+       && !m_grpc_stream_fallback_to_bin)
+   {
+     if (try_pull_blocks_grpc(first, start_height, short_chain_history,
+-        blocks_start_height, blocks, o_indices, current_height))
++        blocks_start_height, blocks, o_indices, current_height,
++        shared_start_cursor))
+     {
+       if (first && !m_background_syncing)
+       {
+@@ -4100,30 +4132,35 @@ uint64_t wallet2::wallet_sync_target_cursor() const
+ }
+ //----------------------------------------------------------------------------------------------------
+ std::shared_ptr<const wallet2::shared_block_batch> wallet2::fetch_shared_block_batch()
++{
++  return fetch_shared_block_batch_from(wallet_sync_target_cursor());
++}
++//----------------------------------------------------------------------------------------------------
++std::shared_ptr<const wallet2::shared_block_batch> wallet2::fetch_shared_block_batch_from(uint64_t requested_cursor)
+ {
+   THROW_WALLET_EXCEPTION_IF(m_offline, error::wallet_internal_error,
+     "cannot fetch a shared block batch while offline");
+ 
+   m_run.store(true, std::memory_order_relaxed);
+   std::list<crypto::hash> short_chain_history;
+-  get_short_chain_history(short_chain_history,
++  const uint64_t target_cursor = std::min<uint64_t>(requested_cursor, m_blockchain.size());
++  get_short_chain_history_at_cursor(short_chain_history, target_cursor,
+     (m_first_refresh_done || is_trusted_daemon()) ? 1 : FIRST_REFRESH_GRANULARITY);
+ 
+-  const uint64_t target_cursor = wallet_sync_target_cursor();
+   uint64_t blocks_start_height = 0;
+-  if (target_cursor > m_blockchain.size())
++  if (requested_cursor > m_blockchain.size())
+   {
+-    fast_refresh(target_cursor, blocks_start_height, short_chain_history);
++    fast_refresh(requested_cursor, blocks_start_height, short_chain_history);
+     short_chain_history.clear();
+-    get_short_chain_history(short_chain_history,
++    get_short_chain_history_at_cursor(short_chain_history, requested_cursor,
+       (m_first_refresh_done || is_trusted_daemon()) ? 1 : FIRST_REFRESH_GRANULARITY);
+   }
+ 
+   auto batch = std::make_shared<shared_block_batch>();
+   batch->network = m_nettype;
+   std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> o_indices;
+-  pull_blocks(false, true, 0, batch->start_height, short_chain_history,
+-    batch->blocks, o_indices, batch->current_height);
++  pull_blocks(false, true, requested_cursor, batch->start_height, short_chain_history,
++    batch->blocks, o_indices, batch->current_height, requested_cursor);
+   THROW_WALLET_EXCEPTION_IF(batch->blocks.size() != o_indices.size(),
+     error::wallet_internal_error, "shared block/output-index size mismatch");
+ 
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 9a5f28b..e343d0d 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1190,6 +1190,7 @@ private:
+     uint64_t wallet_sync_cursor() const;
+     uint64_t wallet_sync_target_cursor() const;
+     std::shared_ptr<const shared_block_batch> fetch_shared_block_batch();
++    std::shared_ptr<const shared_block_batch> fetch_shared_block_batch_from(uint64_t requested_cursor);
+     uint64_t consume_shared_block_batch(const shared_block_batch &batch);
+     std::shared_ptr<const shared_pool_snapshot> fetch_shared_pool_snapshot();
+     void consume_shared_pool_snapshot(const shared_pool_snapshot &snapshot);
+@@ -1906,6 +1907,7 @@ private:
+     detached_blockchain_data detach_blockchain(uint64_t height, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
+     void handle_reorg(uint64_t height, std::map<std::pair<uint64_t, uint64_t>, size_t> *output_tracker_cache = NULL);
+     void get_short_chain_history(std::list<crypto::hash>& ids, uint64_t granularity = 1) const;
++    void get_short_chain_history_at_cursor(std::list<crypto::hash>& ids, uint64_t cursor, uint64_t granularity = 1) const;
+     bool clear();
+     void clear_soft(bool keep_key_images=false);
+     /*
+@@ -1917,7 +1919,7 @@ private:
+      * that this function deletes data that is not useful for background syncing
+      */
+     void clear_user_data();
+-    void pull_blocks(bool first, bool try_incremental, uint64_t start_height, uint64_t& blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices, uint64_t &current_height);
++    void pull_blocks(bool first, bool try_incremental, uint64_t start_height, uint64_t& blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices, uint64_t &current_height, uint64_t shared_start_cursor = std::numeric_limits<uint64_t>::max());
+ #ifdef MONERO_GRPC_STREAM
+     // Try to satisfy a pull_blocks call via the cuprate gRPC stream instead
+     // of bin RPC. Returns true on success (out params populated), false on
+@@ -1926,7 +1928,7 @@ private:
+         const std::list<crypto::hash> &short_chain_history, uint64_t &blocks_start_height,
+         std::vector<cryptonote::block_complete_entry> &blocks,
+         std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices,
+-        uint64_t &current_height);
++        uint64_t &current_height, uint64_t shared_start_cursor);
+ #endif
+     bool pull_blocks_extra(epee::net_utils::http::abstract_http_client &client, uint64_t start_height, uint64_t max_block_count, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> &o_indices);
+     void pull_hashes(uint64_t start_height, uint64_t& blocks_start_height, const std::list<crypto::hash> &short_chain_history, std::vector<crypto::hash> &hashes);
+@@ -2044,6 +2046,8 @@ private:
+     std::string  m_grpc_stream_endpoint;
+     std::string  m_grpc_stream_session_id;
+     bool         m_grpc_stream_active = false;
++    bool         m_grpc_stream_shared_range = false;
++    uint64_t     m_grpc_stream_next_height = 0;
+     bool         m_grpc_stream_fallback_to_bin = false;
+     bool         m_grpc_stream_endpoint_explicitly_set = false;
+     uint32_t     m_grpc_stream_chunk_hint = 1000;
+-- 
+2.50.1 (Apple Git-155)
+

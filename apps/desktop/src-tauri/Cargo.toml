@@ -19,10 +19,13 @@ tauri-build = { version = "2.4", features = [] }
 
 [dependencies]
 argon2 = "0.5"
+base64 = "0.22"
+chacha20poly1305 = { version = "0.10", features = ["std"] }
 community-matrix-core = { path = "../../../native/community-matrix-core" }
 community-runtime-core = { path = "../../../native/community-runtime-core", features = ["native-harrier"] }
 ed25519-dalek = "2"
 fast-wallet-protocol = { path = "../../../native/fast-wallet-protocol" }
+mfw-product-core = { path = "../../../native/product-core" }
 getrandom = "0.2"
 hex = "0.4"
 # Explicitly select real platform credential stores. Without these features
@@ -37,10 +40,18 @@ sha2 = "0.10"
 tauri = { version = "2.8", features = [] }
 tauri-plugin-notification = "2.3.3"
 tauri-plugin-process = "2.3.1"
+tauri-plugin-single-instance = "2.4.3"
 tauri-plugin-updater = "2.10.1"
 tungstenite = { version = "0.24", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 zeroize = { version = "1.8", features = ["derive"] }
 unicode-normalization = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Apple recommends SecItem + the Data Protection Keychain for current macOS
+# apps. The generic keyring macOS provider still targets the legacy
+# file-based Keychain, whose per-binary ACL cannot recognize rebuilt ad-hoc
+# Tauri development executables.
+security-framework = { version = "3.7", features = ["OSX_10_15"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-timer = "3.0"

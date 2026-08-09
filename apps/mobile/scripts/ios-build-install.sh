@@ -14,10 +14,19 @@ MONERO_IOS_BUILD_ROOT="${MONERO_IOS_BUILD_ROOT:-}"
 MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-}"
 WITH_GRPC_STREAM="${MONERO_WALLET_IOS_WITH_GRPC_STREAM:-1}"
 WITH_TEX8_EXTENSIONS="${MONERO_WALLET_IOS_WITH_TEX8_EXTENSIONS:-1}"
-FAST_WALLET_GATEWAY_ORIGIN="${FAST_WALLET_GATEWAY_ORIGIN:-}"
-FAST_WALLET_REGISTRATION_ORIGIN="${FAST_WALLET_REGISTRATION_ORIGIN:-}"
-FAST_WALLET_OFFICIAL_WORKER_ROOT_ID="${FAST_WALLET_OFFICIAL_WORKER_ROOT_ID:-}"
+XCODEBUILD_QUIET="${MONERO_WALLET_IOS_XCODEBUILD_QUIET:-1}"
 FEATURE_MANIFEST="$REPO_ROOT/config/v1-release-features.json"
+MOBILE_VERSION_MANIFEST="$REPO_ROOT/config/mobile-app-version.json"
+IOS_VERSION_NAME="$(node -e '
+  const manifest = require(process.argv[1]);
+  if (manifest.schemaVersion !== 1 || typeof manifest.versionName !== "string") process.exit(2);
+  process.stdout.write(manifest.versionName);
+' "$MOBILE_VERSION_MANIFEST")"
+IOS_BUILD_NUMBER="$(node -e '
+  const manifest = require(process.argv[1]);
+  if (manifest.schemaVersion !== 1 || !Number.isInteger(manifest.androidVersionCode)) process.exit(2);
+  process.stdout.write(String(manifest.androidVersionCode));
+' "$MOBILE_VERSION_MANIFEST")"
 read_v1_feature() {
   node -e '
     const manifest = require(process.argv[1]);
@@ -51,6 +60,17 @@ read_private_phone_parameter() {
     process.stdout.write(String(value));
   ' "$FEATURE_MANIFEST" "$1"
 }
+read_official_worker_parameter() {
+  node -e '
+    const manifest = require(process.argv[1]);
+    const value = manifest.parameters?.fastWalletOfficialWorker?.[process.argv[2]];
+    if (typeof value !== "string" || value.length === 0) process.exit(3);
+    process.stdout.write(value);
+  ' "$FEATURE_MANIFEST" "$1"
+}
+FAST_WALLET_GATEWAY_ORIGIN="${FAST_WALLET_GATEWAY_ORIGIN:-$(read_official_worker_parameter gatewayOrigin)}"
+FAST_WALLET_REGISTRATION_ORIGIN="${FAST_WALLET_REGISTRATION_ORIGIN:-$(read_official_worker_parameter registrationOrigin)}"
+FAST_WALLET_OFFICIAL_WORKER_ROOT_ID="${FAST_WALLET_OFFICIAL_WORKER_ROOT_ID:-$(read_official_worker_parameter rootIdHex)}"
 FAST_WALLET_OFFICIAL_WORKER_ENABLED="$(read_v1_feature officialWorker)"
 FAST_WALLET_PRIVATE_WORKER_PAIRING_ENABLED="$(read_v1_feature privateWorkerPairing)"
 PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED="$(read_v1_feature deviceContactDiscovery)"
@@ -80,16 +100,12 @@ fi
 if [ -z "$MONERO_IOS_BUILD_ROOT" ]; then
   MONERO_IOS_BUILD_ROOT="$REPO_ROOT/build"
 fi
-if [ -z "$MONERO_SOURCE_DIR" ]; then
-  MONERO_SOURCE_DIR="$MONERO_IOS_BUILD_ROOT/monero-v0.18.4.6-tex8-patched"
-fi
-
 if [ "$SHELL_MODE" != "1" ]; then
   # The external build root may have been cleaned after producing the static
   # archive. Re-materialize and authenticate the exact patched Monero tree so
   # WalletEngine.cpp always compiles against the matching wallet2_api.h.
-  export MONERO_SOURCE_DIR
-  source "$REPO_ROOT/native/monero-bridge/scripts/prepare-patched-monero-core.sh"
+  MONERO_COMMON_CORE_BUILD_ROOT="$MONERO_IOS_BUILD_ROOT" \
+    source "$REPO_ROOT/native/monero-bridge/scripts/prepare-common-monero-core.sh"
 fi
 
 # The iOS manifest generator uses the stable build-target label `ios-sim-arm64`.
@@ -98,14 +114,39 @@ fi
 # link. Prefer the real label so a simulator build finds the validated core
 # without an environment override; retain the legacy location as a fallback.
 if [ -z "${MONERO_WALLET_CORE_LIBRARY:-}" ]; then
-  MONERO_WALLET_CORE_LIBRARY="$MONERO_IOS_BUILD_ROOT/ios-monero-link-manifests-tex8-patched/ios-sim-arm64/libtex8_monero_wallet_core.a"
-  if [ ! -f "$MONERO_WALLET_CORE_LIBRARY" ]; then
-    MONERO_WALLET_CORE_LIBRARY="$MONERO_IOS_BUILD_ROOT/ios-monero-link-manifests-tex8-patched/iphonesimulator/libtex8_monero_wallet_core.a"
+  if [ "$SHELL_MODE" != "1" ]; then
+    MONERO_WALLET_CORE_LIBRARY="$MONERO_IOS_BUILD_ROOT/ios-monero-link-manifests-$MONERO_COMMON_CORE_TREE/ios-sim-arm64/libtex8_monero_wallet_core.a"
+    if [ ! -f "$MONERO_WALLET_CORE_LIBRARY" ]; then
+      MONERO_WALLET_CORE_LIBRARY="$MONERO_IOS_BUILD_ROOT/ios-monero-link-manifests-$MONERO_COMMON_CORE_TREE/iphonesimulator/libtex8_monero_wallet_core.a"
+    fi
+  else
+    MONERO_WALLET_CORE_LIBRARY="$MONERO_IOS_BUILD_ROOT/ios-monero-link-manifests/ios-sim-arm64/libtex8_monero_wallet_core.a"
+  fi
+fi
+if [ "$SHELL_MODE" != "1" ]; then
+  MONERO_WALLET_CORE_XCCONFIG="${MONERO_WALLET_CORE_XCCONFIG:-$(dirname "$MONERO_WALLET_CORE_LIBRARY")/MoneroWalletCore.xcconfig}"
+  if [ ! -f "$MONERO_WALLET_CORE_XCCONFIG" ]; then
+    echo "Missing iOS common-Core identity manifest: $MONERO_WALLET_CORE_XCCONFIG" >&2
+    exit 1
+  fi
+  BUILT_MONERO_CORE_TREE="$(sed -n 's/^MONERO_PATCHED_SOURCE_TREE = //p' "$MONERO_WALLET_CORE_XCCONFIG")"
+  if [ "$BUILT_MONERO_CORE_TREE" != "$MONERO_COMMON_CORE_TREE" ]; then
+    echo "The iOS Monero Core archive is stale or unauthenticated." >&2
+    echo "Expected $MONERO_COMMON_CORE_TREE, got ${BUILT_MONERO_CORE_TREE:-missing}." >&2
+    echo "Run scripts/ios-build-simulator-core.sh first." >&2
+    exit 1
   fi
 fi
 MONERO_SODIUM_INCLUDE_DIR="${MONERO_SODIUM_INCLUDE_DIR:-$MONERO_IOS_BUILD_ROOT/ios-deps/ios-sim-arm64/include}"
-MONERO_FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-$MONERO_IOS_BUILD_ROOT/mobile-fast-wallet-protocol}"
+if [ "$SHELL_MODE" != "1" ]; then
+  MONERO_FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-$MONERO_IOS_BUILD_ROOT/mobile-fast-wallet-protocol-$MONERO_COMMON_CORE_TREE}"
+  MONERO_FAST_CRYPTO_ROOT="${MONERO_FAST_CRYPTO_ROOT:-$MONERO_IOS_BUILD_ROOT/mobile-fast-crypto-$MONERO_COMMON_CORE_TREE}"
+else
+  MONERO_FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-$MONERO_IOS_BUILD_ROOT/mobile-fast-wallet-protocol}"
+  MONERO_FAST_CRYPTO_ROOT="${MONERO_FAST_CRYPTO_ROOT:-$MONERO_IOS_BUILD_ROOT/mobile-fast-crypto}"
+fi
 MONERO_FAST_WALLET_PROTOCOL_LIBRARY="${MONERO_FAST_WALLET_PROTOCOL_LIBRARY:-$MONERO_FAST_WALLET_PROTOCOL_ROOT/ios-sim-arm64/libfast_wallet_protocol.a}"
+MONERO_FAST_CRYPTO_LIBRARY="${MONERO_FAST_CRYPTO_LIBRARY:-$MONERO_FAST_CRYPTO_ROOT/ios-sim-arm64/libmonero_fast_crypto.a}"
 
 if [ ! -f "$MONERO_FAST_WALLET_PROTOCOL_LIBRARY" ]; then
   TARGETS=ios-sim-arm64 OUTPUT_DIR="$MONERO_FAST_WALLET_PROTOCOL_ROOT" \
@@ -119,6 +160,11 @@ fi
 if [ "$SHELL_MODE" != "1" ] && [ ! -f "$MONERO_WALLET_CORE_LIBRARY" ]; then
   echo "Missing iOS Simulator Monero core archive: $MONERO_WALLET_CORE_LIBRARY" >&2
   echo "Run scripts/ios-build-simulator-core.sh first, or set MONERO_IOS_BUILD_ROOT." >&2
+  exit 1
+fi
+if [ "$SHELL_MODE" != "1" ] && [ ! -f "$MONERO_FAST_CRYPTO_LIBRARY" ]; then
+  echo "Missing iOS Simulator fast crypto archive: $MONERO_FAST_CRYPTO_LIBRARY" >&2
+  echo "Run scripts/ios-build-simulator-core.sh first, or set MONERO_FAST_CRYPTO_LIBRARY." >&2
   exit 1
 fi
 
@@ -162,6 +208,8 @@ xcodebuild_args=(
   -sdk iphonesimulator \
   -destination "id=$DEVICE" \
   PRODUCT_BUNDLE_IDENTIFIER="$APP_ID" \
+  MARKETING_VERSION="$IOS_VERSION_NAME" \
+  CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" \
   MONERO_WALLET_URL_SCHEME="$URL_SCHEME" \
   FAST_WALLET_GATEWAY_ORIGIN="$FAST_WALLET_GATEWAY_ORIGIN" \
   FAST_WALLET_REGISTRATION_ORIGIN="$FAST_WALLET_REGISTRATION_ORIGIN" \
@@ -183,8 +231,10 @@ xcodebuild_args=(
   TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM="$WITH_GRPC_STREAM" \
   TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS="$WITH_TEX8_EXTENSIONS" \
   MONERO_SOURCE_DIR="$MONERO_SOURCE_DIR" \
+  MONERO_PATCHED_SOURCE_TREE="$MONERO_COMMON_CORE_TREE" \
   MONERO_WALLET_CORE_LIBRARY="$MONERO_WALLET_CORE_LIBRARY" \
   MONERO_FAST_WALLET_PROTOCOL_LIBRARY="$MONERO_FAST_WALLET_PROTOCOL_LIBRARY" \
+  MONERO_FAST_CRYPTO_LIBRARY="$MONERO_FAST_CRYPTO_LIBRARY" \
   MONERO_SODIUM_INCLUDE_DIR="$MONERO_SODIUM_INCLUDE_DIR" \
   FORCE_BUNDLING=1 \
   ONLY_ACTIVE_ARCH=YES \
@@ -195,6 +245,13 @@ if [ -n "$DERIVED_DATA_PATH" ]; then
   xcodebuild_args+=(
     -derivedDataPath "$DERIVED_DATA_PATH"
   )
+fi
+
+# A clean React Native build can emit several gigabytes of compiler command
+# lines. Keep routine local/testbench builds quiet while preserving warnings
+# and errors; set MONERO_WALLET_IOS_XCODEBUILD_QUIET=0 for the raw transcript.
+if [ "$XCODEBUILD_QUIET" = "1" ]; then
+  xcodebuild_args+=( -quiet )
 fi
 
 if [ "$SHELL_MODE" = "1" ]; then

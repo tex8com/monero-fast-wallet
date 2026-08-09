@@ -9,6 +9,16 @@
 #include <cstdint>
 #include <string>
 
+dispatch_queue_t ledgerBleQueue() {
+  static dispatch_queue_t queue;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    queue = dispatch_queue_create("com.tex8.monerowallet.desktop.ledger-ble",
+                                  DISPATCH_QUEUE_SERIAL);
+  });
+  return queue;
+}
+
 NSArray<CBUUID *> *ledgerServiceUUIDs() {
   static NSArray<CBUUID *> *uuids;
   static dispatch_once_t once;
@@ -22,6 +32,31 @@ NSArray<CBUUID *> *ledgerServiceUUIDs() {
     ];
   });
   return uuids;
+}
+
+// A Ledger device normally advertises one of these services.  Some firmware
+// revisions, however, only expose the common local name while advertising.
+// Discovery must therefore accept either signal, but the transport still
+// verifies the exact service and characteristics *after connecting* before an
+// APDU can be exchanged.  We deliberately never log a peripheral name or ID.
+BOOL isLedgerAdvertisement(CBPeripheral *peripheral,
+                           NSDictionary<NSString *, id> *advertisementData) {
+  NSArray<CBUUID *> *advertisedServices = advertisementData[CBAdvertisementDataServiceUUIDsKey];
+  for (CBUUID *service in advertisedServices ?: @[]) {
+    if ([ledgerServiceUUIDs() containsObject:service]) return YES;
+  }
+  NSString *name = advertisementData[CBAdvertisementDataLocalNameKey];
+  if (name.length == 0) name = peripheral.name;
+  return [name rangeOfString:@"ledger" options:NSCaseInsensitiveSearch].location != NSNotFound;
+}
+
+BOOL hasKnownLedgerServiceAdvertisement(
+    NSDictionary<NSString *, id> *advertisementData) {
+  NSArray<CBUUID *> *advertisedServices = advertisementData[CBAdvertisementDataServiceUUIDsKey];
+  for (CBUUID *service in advertisedServices ?: @[]) {
+    if ([ledgerServiceUUIDs() containsObject:service]) return YES;
+  }
+  return NO;
 }
 
 NSArray<NSData *> *framesForCommand(NSData *command) {
@@ -56,11 +91,13 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
 
 @interface DesktopLedgerBleTransport : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate>
 + (instancetype)shared;
-- (void)selectCentral:(CBCentralManager *)central peripheral:(CBPeripheral *)peripheral;
+- (void)selectCentral:(CBCentralManager *)central
+            candidates:(NSArray<CBPeripheral *> *)candidates;
 - (BOOL)connect;
 - (void)disconnect;
 - (BOOL)isConnected;
 - (NSData *)exchange:(NSData *)command userInput:(BOOL)userInput;
+- (std::string)connectionStatus;
 @end
 
 @implementation DesktopLedgerBleTransport {
@@ -68,6 +105,8 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   NSLock *_exchangeLock;
   CBCentralManager *_central;
   CBPeripheral *_peripheral;
+  NSArray<CBPeripheral *> *_candidates;
+  NSUInteger _candidateIndex;
   CBCharacteristic *_write;
   CBCharacteristic *_notify;
   BOOL _ready;
@@ -97,15 +136,61 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   return self;
 }
 
-- (void)selectCentral:(CBCentralManager *)central peripheral:(CBPeripheral *)peripheral {
+- (void)selectCentral:(CBCentralManager *)central
+            candidates:(NSArray<CBPeripheral *> *)candidates {
+  if (candidates.count == 0) return;
   [_condition lock];
-  const BOOL changed = _peripheral != nil && ![_peripheral.identifier isEqual:peripheral.identifier];
-  [_condition unlock];
-  if (changed) [self disconnect];
-  [_condition lock];
+  CBCentralManager *previousCentral = _central;
+  CBPeripheral *previousPeripheral = _peripheral;
+  CBPeripheral *peripheral = candidates.firstObject;
+  const BOOL changed = previousPeripheral != nil &&
+      ![previousPeripheral.identifier isEqual:peripheral.identifier];
   _central = central;
+  _candidates = [candidates copy];
+  _candidateIndex = 0;
   _peripheral = peripheral;
+  _ready = NO;
+  _write = nil;
+  _notify = nil;
+  _connectionError = nil;
   [_condition unlock];
+  if (changed && previousCentral != nil && previousPeripheral != nil) {
+    dispatch_async(ledgerBleQueue(), ^{
+      [previousCentral cancelPeripheralConnection:previousPeripheral];
+    });
+  }
+}
+
+- (BOOL)isSelectedPeripheral:(CBPeripheral *)peripheral {
+  [_condition lock];
+  const BOOL selected = _peripheral != nil &&
+      [_peripheral.identifier isEqual:peripheral.identifier];
+  [_condition unlock];
+  return selected;
+}
+
+- (BOOL)advanceToNextCandidate {
+  [_condition lock];
+  if (_ready || _central == nil || _candidateIndex + 1 >= _candidates.count) {
+    [_condition unlock];
+    return NO;
+  }
+  CBCentralManager *central = _central;
+  CBPeripheral *previous = _peripheral;
+  _peripheral = _candidates[++_candidateIndex];
+  CBPeripheral *next = _peripheral;
+  _write = nil;
+  _notify = nil;
+  _connectionError = nil;
+  [_condition unlock];
+  dispatch_async(ledgerBleQueue(), ^{
+    if (previous != nil && previous.state != CBPeripheralStateDisconnected) {
+      [central cancelPeripheralConnection:previous];
+    }
+    next.delegate = self;
+    [central connectPeripheral:next options:nil];
+  });
+  return YES;
 }
 
 - (BOOL)connect {
@@ -116,11 +201,18 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   }
   CBCentralManager *central = _central;
   CBPeripheral *peripheral = _peripheral;
+  // A fully exhausted attempt can be retried by a later user operation, but
+  // each individual operation tries every scan candidate at most once.
+  if (_connectionError != nil && _candidates.count > 0) {
+    _candidateIndex = 0;
+    _peripheral = _candidates.firstObject;
+    peripheral = _peripheral;
+  }
   _ready = NO;
   _connectionError = nil;
   [_condition unlock];
   if (central == nil || peripheral == nil) return NO;
-  dispatch_async(dispatch_get_main_queue(), ^{
+  dispatch_async(ledgerBleQueue(), ^{
     central.delegate = self;
     peripheral.delegate = self;
     if (peripheral.state == CBPeripheralStateConnected) {
@@ -129,17 +221,28 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
       [central connectPeripheral:peripheral options:nil];
     }
   });
-  NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:20.0];
-  [_condition lock];
-  while (!_ready && _connectionError == nil) {
-    if (![_condition waitUntilDate:deadline]) {
+  // One non-Ledger name match must not consume the whole connection window.
+  // Candidates remain serial (never two BLE connections at once), but a
+  // candidate that emits no CoreBluetooth callback gets one bounded attempt
+  // before the next discovery candidate is tried.
+  for (;;) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:20.0];
+    [_condition lock];
+    while (!_ready && _connectionError == nil &&
+           [_condition waitUntilDate:deadline]) {
+    }
+    const BOOL connected = _ready && _connectionError == nil;
+    const BOOL timedOut = !_ready && _connectionError == nil;
+    [_condition unlock];
+    if (connected) return YES;
+    if (!timedOut) return NO;
+    if (![self advanceToNextCandidate]) {
+      [_condition lock];
       _connectionError = @"Ledger Bluetooth connection timed out.";
-      break;
+      [_condition unlock];
+      return NO;
     }
   }
-  const BOOL result = _ready && _connectionError == nil;
-  [_condition unlock];
-  return result;
 }
 
 - (void)disconnect {
@@ -152,7 +255,7 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   [_condition broadcast];
   [_condition unlock];
   if (central != nil && peripheral != nil) {
-    dispatch_async(dispatch_get_main_queue(), ^{ [central cancelPeripheralConnection:peripheral]; });
+    dispatch_async(ledgerBleQueue(), ^{ [central cancelPeripheralConnection:peripheral]; });
   }
 }
 
@@ -161,6 +264,28 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   const BOOL connected = _ready && _peripheral.state == CBPeripheralStateConnected;
   [_condition unlock];
   return connected;
+}
+
+- (std::string)connectionStatus {
+  [_condition lock];
+  const BOOL selected = _peripheral != nil;
+  const BOOL connected = _ready && _peripheral.state == CBPeripheralStateConnected;
+  NSString *message = _connectionError ?: (connected
+      ? @"Ledger Bluetooth transport is connected."
+      : selected
+          ? @"Ledger Bluetooth transport has a selected device."
+          : @"No Ledger Bluetooth device is selected.");
+  [_condition unlock];
+  NSDictionary *payload = @{
+    @"platform": @"macos",
+    @"transport": @"ble",
+    @"selected": @(selected),
+    @"connected": @(connected),
+    @"message": message,
+  };
+  NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+  if (data == nil) return "{\"platform\":\"macos\",\"transport\":\"ble\",\"selected\":false,\"connected\":false,\"message\":\"Ledger Bluetooth connection status unavailable.\"}";
+  return std::string(static_cast<const char *>(data.bytes), data.length);
 }
 
 - (NSData *)exchange:(NSData *)command userInput:(BOOL)userInput {
@@ -190,7 +315,7 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
     _writeFinished = NO;
     _writeError = nil;
     [_condition unlock];
-    dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_async(ledgerBleQueue(), ^{
       [peripheral writeValue:frame forCharacteristic:write type:CBCharacteristicWriteWithResponse];
     });
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:30.0];
@@ -227,15 +352,23 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
 }
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
   (void)central;
+  if (![self isSelectedPeripheral:peripheral]) return;
   peripheral.delegate = self;
   [peripheral discoverServices:ledgerServiceUUIDs()];
 }
 - (void)centralManager:(CBCentralManager *)central didFailToConnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
-  (void)central; (void)peripheral;
+  (void)central;
+  if (![self isSelectedPeripheral:peripheral]) return;
+  if ([self advanceToNextCandidate]) return;
   [self fail:error.localizedDescription ?: @"Ledger Bluetooth connection failed."];
 }
 - (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
-  (void)central; (void)peripheral;
+  (void)central;
+  if (![self isSelectedPeripheral:peripheral]) return;
+  [_condition lock];
+  const BOOL wasReady = _ready;
+  [_condition unlock];
+  if (!wasReady && [self advanceToNextCandidate]) return;
   [_condition lock];
   _ready = NO;
   _connectionError = error.localizedDescription ?: @"Ledger Bluetooth device disconnected.";
@@ -244,18 +377,23 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   [_condition unlock];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error {
+  if (![self isSelectedPeripheral:peripheral]) return;
   if (error != nil) { [self fail:error.localizedDescription]; return; }
   CBService *service = nil;
   for (CBService *candidate in peripheral.services) {
     if ([ledgerServiceUUIDs() containsObject:candidate.UUID]) { service = candidate; break; }
   }
-  if (service == nil) { [self fail:@"Ledger Bluetooth service was not found."]; return; }
+  if (service == nil) {
+    if (![self advanceToNextCandidate]) [self fail:@"Ledger Bluetooth service was not found."];
+    return;
+  }
   NSString *serviceUuid = service.UUID.UUIDString.lowercaseString;
   NSString *notifyUuid = [serviceUuid stringByReplacingOccurrencesOfString:@"-0000-" withString:@"-0001-"];
   NSString *writeUuid = [serviceUuid stringByReplacingOccurrencesOfString:@"-0000-" withString:@"-0002-"];
   [peripheral discoverCharacteristics:@[[CBUUID UUIDWithString:notifyUuid], [CBUUID UUIDWithString:writeUuid]] forService:service];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error {
+  if (![self isSelectedPeripheral:peripheral]) return;
   if (error != nil) { [self fail:error.localizedDescription]; return; }
   NSString *serviceUuid = service.UUID.UUIDString.lowercaseString;
   CBUUID *notifyUuid = [CBUUID UUIDWithString:[serviceUuid stringByReplacingOccurrencesOfString:@"-0000-" withString:@"-0001-"]];
@@ -264,20 +402,26 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
     if ([characteristic.UUID isEqual:notifyUuid]) _notify = characteristic;
     if ([characteristic.UUID isEqual:writeUuid]) _write = characteristic;
   }
-  if (_notify == nil || _write == nil) { [self fail:@"Ledger Bluetooth characteristics were not found."]; return; }
+  if (_notify == nil || _write == nil) {
+    if (![self advanceToNextCandidate]) [self fail:@"Ledger Bluetooth characteristics were not found."];
+    return;
+  }
   [peripheral setNotifyValue:YES forCharacteristic:_notify];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
-  (void)peripheral; (void)characteristic;
+  (void)characteristic;
+  if (![self isSelectedPeripheral:peripheral]) return;
   if (error != nil || !characteristic.isNotifying) { [self fail:error.localizedDescription ?: @"Ledger Bluetooth notifications could not be enabled."]; return; }
   [_condition lock]; _ready = YES; _connectionError = nil; [_condition broadcast]; [_condition unlock];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didWriteValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
-  (void)peripheral; (void)characteristic;
+  (void)characteristic;
+  if (![self isSelectedPeripheral:peripheral]) return;
   [_condition lock]; _writeFinished = error == nil; _writeError = error.localizedDescription; [_condition broadcast]; [_condition unlock];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
-  (void)peripheral; (void)characteristic;
+  (void)characteristic;
+  if (![self isSelectedPeripheral:peripheral]) return;
   [_condition lock];
   if (error != nil) { _responseError = error.localizedDescription; [_condition broadcast]; [_condition unlock]; return; }
   NSData *frame = characteristic.value;
@@ -325,11 +469,33 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   BOOL _available;
   BOOL _requiresAction;
   NSInteger _count;
+  NSInteger _serviceCandidateCount;
+  NSInteger _nameCandidateCount;
+  NSMutableSet<NSUUID *> *_candidateIdentifiers;
+  NSMutableSet<NSUUID *> *_serviceCandidateIdentifiers;
+  // A name-only advertisement is intentionally a fallback: a nearby device
+  // could use "Ledger" in its local name, while an advertised Ledger service
+  // is cryptographically unambiguous for the transport we support.
+  NSMutableArray<CBPeripheral *> *_serviceCandidates;
+  NSMutableArray<CBPeripheral *> *_nameCandidates;
   NSString *_message;
 }
-- (instancetype)init { self = [super init]; if (self) _condition = [[NSCondition alloc] init]; return self; }
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _condition = [[NSCondition alloc] init];
+    _candidateIdentifiers = [[NSMutableSet alloc] init];
+    _serviceCandidateIdentifiers = [[NSMutableSet alloc] init];
+    _serviceCandidates = [[NSMutableArray alloc] init];
+    _nameCandidates = [[NSMutableArray alloc] init];
+  }
+  return self;
+}
 - (std::string)scan {
-  dispatch_sync(dispatch_get_main_queue(), ^{ self->_central = [[CBCentralManager alloc] initWithDelegate:self queue:dispatch_get_main_queue()]; });
+  // CoreBluetooth owns this dedicated serial queue. The Tauri command waits
+  // on a worker thread, so neither the AppKit main queue nor the Bluetooth
+  // delegate queue can be synchronously re-entered by the scan.
+  _central = [[CBCentralManager alloc] initWithDelegate:self queue:ledgerBleQueue()];
   NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:6.0];
   [_condition lock];
   while (!_finished && ![_condition waitUntilDate:deadline]) { _message = @"Ledger Bluetooth scan timed out."; _finished = YES; }
@@ -347,6 +513,8 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
     @"permissionGranted": @(supported),
     @"requiresUserAction": @(requiresAction),
     @"deviceCount": @(count),
+    @"serviceCandidateCount": @(_serviceCandidateCount),
+    @"nameCandidateCount": @(_nameCandidateCount),
     @"message": message,
   };
   NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
@@ -359,19 +527,67 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
     case CBManagerStateUnauthorized: [self finish:YES available:NO action:YES message:@"Allow Bluetooth access for Monero Fast Wallet in macOS Settings."]; return;
     case CBManagerStatePoweredOff: [self finish:YES available:NO action:YES message:@"Turn on Bluetooth to search for Ledger Nano X."]; return;
     case CBManagerStatePoweredOn: {
-      [_central scanForPeripheralsWithServices:ledgerServiceUUIDs() options:@{ CBCentralManagerScanOptionAllowDuplicatesKey: @NO }];
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ if (!self->_finished) [self finish:YES available:self->_count > 0 action:self->_count == 0 message:self->_count > 0 ? @"Ledger Nano found. Keep it unlocked with the Monero app open." : @"No Ledger Nano X found. Unlock it, enable Bluetooth, and open the Monero app."]; });
+      // Do not filter the scan itself: several Ledger firmware versions omit
+      // their 128-bit service UUID from BLE advertisements.  didDiscover only
+      // selects a known Ledger service or the generic Ledger local name.
+      // A Ledger can first advertise only its local name and expose its
+      // transport UUID in a later packet. Keep duplicate callbacks during
+      // this short setup scan so that didDiscover can promote that candidate.
+      [_central scanForPeripheralsWithServices:nil options:@{ CBCentralManagerScanOptionAllowDuplicatesKey: @YES }];
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC), ledgerBleQueue(), ^{ if (!self->_finished) [self finish:YES available:self->_count > 0 action:self->_count == 0 message:self->_count > 0 ? @"Ledger found. Keep it unlocked with the Monero app open." : @"No compatible Ledger Bluetooth advertisement found. Unlock the Ledger, enable Bluetooth, and open the Monero app."]; });
       return;
     }
     default: return;
   }
 }
 - (void)centralManager:(CBCentralManager *)central didDiscoverPeripheral:(CBPeripheral *)peripheral advertisementData:(NSDictionary<NSString *,id> *)advertisementData RSSI:(NSNumber *)RSSI {
-  (void)advertisementData; (void)RSSI;
-  ++_count;
-  [[DesktopLedgerBleTransport shared] selectCentral:central peripheral:peripheral];
+  (void)RSSI;
+  if (!isLedgerAdvertisement(peripheral, advertisementData)) return;
+  if (peripheral.identifier == nil) return;
+  const BOOL knownService = hasKnownLedgerServiceAdvertisement(advertisementData);
+  // CoreBluetooth can report the same peripheral repeatedly while its
+  // advertisements change. Count it once, but promote an earlier name-only
+  // match as soon as a later packet proves a known Ledger service. Without
+  // promotion, the first generic advertisement can hide the actual transport
+  // service for the rest of the scan.
+  if (![_candidateIdentifiers containsObject:peripheral.identifier]) {
+    [_candidateIdentifiers addObject:peripheral.identifier];
+    _count = static_cast<NSInteger>(_candidateIdentifiers.count);
+  }
+  if (knownService && ![_serviceCandidateIdentifiers containsObject:peripheral.identifier]) {
+    [_serviceCandidateIdentifiers addObject:peripheral.identifier];
+    NSIndexSet *nameIndexes = [_nameCandidates indexesOfObjectsPassingTest:^BOOL(CBPeripheral *candidate, NSUInteger index, BOOL *stop) {
+      (void)index;
+      (void)stop;
+      return [candidate.identifier isEqual:peripheral.identifier];
+    }];
+    if (nameIndexes.count != 0) {
+      [_nameCandidates removeObjectsAtIndexes:nameIndexes];
+      --_nameCandidateCount;
+    }
+    ++_serviceCandidateCount;
+    [_serviceCandidates addObject:peripheral];
+  } else if (!knownService && ![_serviceCandidateIdentifiers containsObject:peripheral.identifier]) {
+    const BOOL alreadyNameCandidate = [_nameCandidates indexOfObjectPassingTest:^BOOL(CBPeripheral *candidate, NSUInteger index, BOOL *stop) {
+      (void)index;
+      (void)stop;
+      return [candidate.identifier isEqual:peripheral.identifier];
+    }] != NSNotFound;
+    if (alreadyNameCandidate) return;
+    ++_nameCandidateCount;
+    [_nameCandidates addObject:peripheral];
+  }
 }
 - (void)finish:(BOOL)supported available:(BOOL)available action:(BOOL)action message:(NSString *)message {
+  // Prefer the exact Ledger BLE service.  Only when the firmware does not
+  // advertise it do we use a local-name discovery fallback.  The subsequent
+  // connection still verifies the exact service and characteristics before
+  // any APDU can be exchanged.
+  NSMutableArray<CBPeripheral *> *candidates = [NSMutableArray arrayWithArray:_serviceCandidates];
+  [candidates addObjectsFromArray:_nameCandidates];
+  if (candidates.count != 0) {
+    [[DesktopLedgerBleTransport shared] selectCentral:_central candidates:candidates];
+  }
   [_condition lock];
   if (_finished) { [_condition unlock]; return; }
   _finished = YES; _supported = supported; _available = available; _requiresAction = action; _message = message;
@@ -404,6 +620,10 @@ std::string ledgerBleTransportStatus() {
   });
   DesktopLedgerBleProbe *probe = [[DesktopLedgerBleProbe alloc] init];
   return [probe scan];
+}
+
+std::string ledgerBleConnectionStatus() {
+  return [[DesktopLedgerBleTransport shared] connectionStatus];
 }
 
 }  // namespace tex8::desktop

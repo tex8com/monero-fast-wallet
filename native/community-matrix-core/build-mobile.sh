@@ -68,6 +68,10 @@ build_target() {
     }
     export "CARGO_TARGET_${target_env}_LINKER=${linker}"
     export "CC_${rust_target//-/_}=${linker}"
+    # Matrix's FFI graph includes link-cplusplus; setting only the C linker
+    # lets its build script search PATH for a non-existent Android C++ driver.
+    local cxx_linker="${linker%clang}clang++"
+    export "CXX_${rust_target//-/_}=${cxx_linker}"
     if [[ -n "${ar}" ]]; then
       export "CARGO_TARGET_${target_env}_AR=${ar}"
       export "AR_${rust_target//-/_}=${ar}"
@@ -92,13 +96,14 @@ build_target() {
   cp "${script_dir}/include/community_matrix_core.h" \
     "${destination}/community_matrix_core.h"
   if [[ "${with_community_runtime}" == "1" ]]; then
-    local harrier_library="${harrier_library_root}/${label}/libtex8_community_harrier_runtime.a"
+    local harrier_library_suffix="${HARRIER_LIBRARY_SUFFIX:-.a}"
+    local harrier_library="${harrier_library_root}/${label}/libtex8_community_harrier_runtime${harrier_library_suffix}"
     [[ -f "${harrier_library}" ]] || {
       echo "verified Harrier runtime not found: ${harrier_library}" >&2
       exit 1
     }
     cp "${harrier_library}" \
-      "${destination}/libtex8_community_harrier_runtime.a"
+      "${destination}/libtex8_community_harrier_runtime${harrier_library_suffix}"
     cp "${repo_root}/native/community-runtime-core/include/community_runtime_core.h" \
       "${destination}/community_runtime_core.h"
   fi
@@ -106,7 +111,7 @@ build_target() {
     echo "$(echo "${label}" | tr '[:lower:]-' '[:upper:]_')_RUST_TARGET=${rust_target}"
     echo "$(echo "${label}" | tr '[:lower:]-' '[:upper:]_')_LIB=${destination}/libcommunity_matrix_core.a"
     if [[ "${with_community_runtime}" == "1" ]]; then
-      echo "$(echo "${label}" | tr '[:lower:]-' '[:upper:]_')_HARRIER_LIB=${destination}/libtex8_community_harrier_runtime.a"
+      echo "$(echo "${label}" | tr '[:lower:]-' '[:upper:]_')_HARRIER_LIB=${destination}/libtex8_community_harrier_runtime${harrier_library_suffix}"
     fi
   } >> "${manifest}"
 }

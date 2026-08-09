@@ -111,6 +111,27 @@ describe('presentWalletSync', () => {
       8_000,
       35_000,
     );
-    expect(reliableMeasurement.etaSeconds).toBe(240);
+    expect(reliableMeasurement.etaSeconds).toBe(104);
+  });
+
+  it('excludes checkpoint time and preserves the stable ETA across phases', () => {
+    const initial = updateWalletSyncEta(undefined, 10_000, 0);
+    const one = updateWalletSyncEta(initial.state, 9_500, 10_000);
+    const two = updateWalletSyncEta(one.state, 9_000, 20_000);
+    const three = updateWalletSyncEta(two.state, 8_500, 30_000);
+    expect(three.etaSeconds).toBe(170);
+
+    const checkpoint = updateWalletSyncEta(
+      three.state,
+      8_500,
+      50_000,
+      { active: false },
+    );
+    expect(checkpoint.etaSeconds).toBe(170);
+    expect(checkpoint.state?.activeElapsedMs).toBe(30_000);
+
+    const resumed = updateWalletSyncEta(checkpoint.state, 8_000, 60_000);
+    expect(resumed.state?.activeElapsedMs).toBe(40_000);
+    expect(resumed.etaSeconds).toBeLessThanOrEqual(170);
   });
 });

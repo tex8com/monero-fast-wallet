@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Animated,
   ActivityIndicator,
+  Modal,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -12,6 +13,7 @@ import {
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { colors } from '../theme/colors';
 import MoneroCoinGhost from '../components/MoneroCoinGhost';
 import MoneroCoin from '../components/MoneroCoin';
 import { useI18n } from '../i18n';
@@ -38,6 +40,7 @@ export default function WelcomeScreen({ navigation }: any) {
   } = useWalletState();
   const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
   const [shareCommunitySearches, setShareCommunitySearches] = useState(true);
+  const [experienceChoiceVisible, setExperienceChoiceVisible] = useState(false);
   const contentOp = useRef(new Animated.Value(IS_TEST ? 1 : 0)).current;
   const contentY = useRef(new Animated.Value(IS_TEST ? 0 : 10)).current;
 
@@ -79,10 +82,11 @@ export default function WelcomeScreen({ navigation }: any) {
     });
   }, []);
 
-  const continueToSetup = useCallback(async () => {
-    await saveFastWalletPreference('disabled');
+  const continueToSetup = useCallback(async (fastWalletEnabled: boolean) => {
+    await saveFastWalletPreference(fastWalletEnabled ? 'enabled' : 'disabled');
+    setExperienceChoiceVisible(false);
     navigation.navigate('WalletSetup', {
-      fastWalletEnabled: false,
+      fastWalletEnabled,
     });
   }, [navigation]);
 
@@ -213,7 +217,7 @@ export default function WelcomeScreen({ navigation }: any) {
           onPress={() =>
             registeredWallets.length
               ? navigation.navigate('WalletSetup')
-              : void continueToSetup()
+              : setExperienceChoiceVisible(true)
           }
         >
           <LinearGradient
@@ -226,6 +230,42 @@ export default function WelcomeScreen({ navigation }: any) {
           </LinearGradient>
         </TouchableOpacity>
       </View>
+      <Modal
+        visible={experienceChoiceVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setExperienceChoiceVisible(false)}
+      >
+        <View style={s.choiceBackdrop}>
+          <View style={s.choiceCard}>
+            <Text style={s.choiceEyebrow}>{t('welcome.walletMode')}</Text>
+            <Text style={s.choiceTitle}>{t('welcome.chooseExperience')}</Text>
+            <Text style={s.choiceSubtitle}>{t('welcome.chooseExperienceDescription')}</Text>
+            <TouchableOpacity
+              style={s.choiceOption}
+              activeOpacity={0.8}
+              onPress={() => void continueToSetup(false)}
+            >
+              <Text style={s.choiceOptionTitle}>{t('welcome.privacyOnly')}</Text>
+              <Text style={s.choiceOptionText}>{t('welcome.privacyOnlyDescription')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.choiceOption, s.choiceOptionRecommended]}
+              activeOpacity={0.8}
+              onPress={() => void continueToSetup(true)}
+            >
+              <Text style={s.choiceOptionTitle}>{t('welcome.privacyComfort')}</Text>
+              <Text style={s.choiceOptionText}>{t('welcome.privacyComfortDescription')}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={s.choiceCancel}
+              onPress={() => setExperienceChoiceVisible(false)}
+            >
+              <Text style={s.choiceCancelText}>{t('action.cancel')}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
@@ -342,6 +382,73 @@ const s = StyleSheet.create({
     gap: 12,
     marginBottom: 14,
     padding: 13,
+  },
+  choiceBackdrop: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: 24,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+  },
+  choiceCard: {
+    borderRadius: 24,
+    padding: 22,
+    backgroundColor: '#17152B',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  choiceEyebrow: {
+    color: colors.orange,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  choiceTitle: {
+    color: '#FFF',
+    fontSize: 25,
+    fontWeight: '800',
+    marginTop: 8,
+  },
+  choiceSubtitle: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 8,
+    marginBottom: 18,
+  },
+  choiceOption: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.13)',
+    backgroundColor: 'rgba(255,255,255,0.045)',
+    padding: 16,
+    marginBottom: 10,
+  },
+  choiceOptionRecommended: {
+    borderColor: colors.orange,
+    backgroundColor: 'rgba(242,104,34,0.12)',
+  },
+  choiceOptionTitle: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  choiceOptionText: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 5,
+  },
+  choiceCancel: {
+    alignItems: 'center',
+    minHeight: 44,
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  choiceCancelText: {
+    color: 'rgba(255,255,255,0.68)',
+    fontSize: 14,
+    fontWeight: '700',
   },
   searchSharingCopy: { flex: 1 },
   searchSharingTitle: { color: '#FFF', fontSize: 14, fontWeight: '800' },

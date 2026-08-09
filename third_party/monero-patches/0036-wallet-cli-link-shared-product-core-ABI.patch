@@ -1,0 +1,253 @@
+From 61835808072cf8c0d67a078ce56a01d0beb0628d Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 16:28:18 -0500
+Subject: [PATCH] wallet cli: link shared product core ABI
+
+---
+ src/simplewallet/CMakeLists.txt        |  17 +++-
+ src/simplewallet/product_cli_debug.cpp | 134 ++++++++++---------------
+ src/simplewallet/product_cli_debug.h   |   9 +-
+ 3 files changed, 66 insertions(+), 94 deletions(-)
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index 74c25382b..aa1088421 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -92,6 +92,19 @@ target_link_libraries(fastwallet
+     ${CMAKE_THREAD_LIBS_INIT}
+     ${GNU_READLINE_LIBRARY}
+     ${EXTRA_LIBRARIES})
++set(MFW_PRODUCT_CORE_ROOT "" CACHE PATH "Monero Fast Wallet Product Core source root")
++set(MFW_PRODUCT_CORE_LIBRARY "" CACHE FILEPATH "Monero Fast Wallet Product Core shared runtime library")
++if(NOT EXISTS "${MFW_PRODUCT_CORE_ROOT}/include/mfw_product_core.h" OR
++   NOT EXISTS "${MFW_PRODUCT_CORE_ROOT}/generated/c/mfw_product_core_contract.h")
++  message(FATAL_ERROR "MFW_PRODUCT_CORE_ROOT must contain the generated ABI 1 headers")
++endif()
++if(NOT EXISTS "${MFW_PRODUCT_CORE_LIBRARY}")
++  message(FATAL_ERROR "MFW_PRODUCT_CORE_LIBRARY must name the ABI 1 shared runtime library")
++endif()
++target_include_directories(fastwallet PRIVATE
++  "${MFW_PRODUCT_CORE_ROOT}/include"
++  "${MFW_PRODUCT_CORE_ROOT}/generated/c")
++target_link_libraries(fastwallet PRIVATE "${MFW_PRODUCT_CORE_LIBRARY}")
+ 
+ find_package(Git REQUIRED)
+ execute_process(
+@@ -104,12 +117,12 @@ execute_process(
+   OUTPUT_STRIP_TRAILING_WHITESPACE)
+ set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
+ set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
+-set(MFW_MONERO_PATCH_COUNT "35" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_MONERO_PATCH_COUNT "36" CACHE STRING "Applied TEX8 Monero patch count")
+ set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
+ set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
+ set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
+ set(MFW_SCANPACK_SCHEMA "1" CACHE STRING "ScanPack manifest schema")
+-set(MFW_PRODUCT_CORE_ABI "bootstrap-0" CACHE STRING "Product core ABI identifier")
++set(MFW_PRODUCT_CORE_ABI "1" CACHE STRING "Product core ABI identifier")
+ set(MFW_FEATURE_MANIFEST_HASH "unknown" CACHE STRING "SHA-256 of the release feature manifest")
+ set(MFW_BUILD_TARGET "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" CACHE STRING "Product build target")
+ set(MFW_COMPILER "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}" CACHE STRING "Product compiler identity")
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index 810a97023..5db437793 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -5,6 +5,7 @@
+ 
+ #include <boost/filesystem.hpp>
+ #include <chrono>
++#include <cstring>
+ #include <ctime>
+ #include <iomanip>
+ #include <iostream>
+@@ -114,7 +115,9 @@ namespace
+            << "\"patch_count\":" << MFW_MONERO_PATCH_COUNT << ","
+            << "\"cuprate_commit\":\"" << MFW_CUPRATE_COMMIT << "\","
+            << "\"scanpack_schema\":\"" << MFW_SCANPACK_SCHEMA << "\","
+-           << "\"product_core_abi\":\"" << MFW_PRODUCT_CORE_ABI << "\","
++           << "\"product_core_abi\":" << mfw_product_core_abi_version() << ","
++           << "\"product_core_schema_sha256\":\"" << mfw_product_core_schema_sha256() << "\","
++           << "\"diagnostic_registry_sha256\":\"" << mfw_product_core_diagnostic_registry_sha256() << "\","
+            << "\"feature_manifest_hash\":\"" << MFW_FEATURE_MANIFEST_HASH << "\","
+            << "\"build_target\":\"" << json_escape(MFW_BUILD_TARGET) << "\","
+            << "\"compiler\":\"" << json_escape(MFW_COMPILER) << "\","
+@@ -180,36 +183,24 @@ namespace mfw_cli
+       ? boost::filesystem::path("mfw-debug") /
+           (utc_timestamp(true) + "-" + std::to_string(monotonic_nanoseconds()))
+       : boost::filesystem::path(config.output_directory);
+-    boost::filesystem::create_directories(output);
+     m_output_directory = output.string();
+-
+-    if (config.format == "jsonl" || config.format == "both")
+-    {
+-      m_jsonl.open((output / "debug-events.jsonl").string(), std::ios::out | std::ios::app);
+-      if (!m_jsonl)
+-        throw std::runtime_error("could not open debug-events.jsonl");
+-    }
+-    if (config.format == "text" || config.format == "both")
+-    {
+-      m_text.open((output / "debug-text.log").string(), std::ios::out | std::ios::app);
+-      if (!m_text)
+-        throw std::runtime_error("could not open debug-text.log");
+-    }
+-
+-    {
+-      std::ofstream environment((output / "debug-environment.json").string());
+-      environment << "{\"schema_version\":1,\"build\":" << build_json()
+-                  << ",\"started_at_utc\":\"" << utc_timestamp(false) << "\"}\n";
+-    }
+-    {
+-      std::ofstream manifest((output / "debug-manifest.json").string());
+-      manifest << "{\"schema_version\":1,\"status\":\"running\","
+-               << "\"debug_level\":\"" << json_escape(config.level) << "\","
+-               << "\"debug_format\":\"" << json_escape(config.format) << "\","
+-               << "\"metrics_interval_ms\":" << config.metrics_interval_ms << ","
+-               << "\"max_size_mib\":" << config.max_size_mib << ","
+-               << "\"retention\":" << config.retention << "}\n";
+-    }
++    mfw_product_core_config_v1 core_config{};
++    core_config.struct_size = sizeof(core_config);
++    core_config.abi_version = MFW_PRODUCT_CORE_ABI_VERSION;
++    core_config.normal_queue_capacity = 4096;
++    core_config.critical_queue_capacity = 256;
++    core_config.max_file_size_bytes = config.max_size_mib * 1024 * 1024;
++    core_config.retention_files = static_cast<std::uint32_t>(config.retention);
++    core_config.flush_interval_ms = static_cast<std::uint32_t>(config.metrics_interval_ms);
++    core_config.output_format = config.format == "jsonl" ? MFW_OUTPUT_FORMAT_JSONL
++      : config.format == "text" ? MFW_OUTPUT_FORMAT_TEXT
++      : MFW_OUTPUT_FORMAT_BOTH;
++    if (m_output_directory.size() >= sizeof(core_config.output_directory))
++      throw std::runtime_error("debug output directory is too long");
++    std::memcpy(core_config.output_directory, m_output_directory.data(), m_output_directory.size());
++    const std::uint32_t result = mfw_product_core_create(&core_config, &m_product_core);
++    if (result != MFW_ERROR_OK || m_product_core == nullptr)
++      throw std::runtime_error("could not start the shared Product Core diagnostics");
+     event("product_cli", "debug_session_start", "ok");
+   }
+ 
+@@ -217,34 +205,12 @@ namespace mfw_cli
+   {
+     if (!m_enabled)
+       return;
+-    try
+-    {
+-      const std::uint64_t total_ns = static_cast<std::uint64_t>(
+-        std::chrono::duration_cast<std::chrono::nanoseconds>(
+-          std::chrono::steady_clock::now() - m_process_started).count());
+-      const char* final_event_status = m_failed ? "failed" : "ok";
+-      const char* final_artifact_status = m_failed ? "failed" : "complete";
+-      event("product_cli", "process_end", final_event_status, total_ns);
+-      const boost::filesystem::path output(m_output_directory);
+-      std::ofstream summary((output / "debug-summary.json").string());
+-      summary << "{\"schema_version\":1,\"status\":\"" << final_artifact_status << "\","
+-              << "\"debug_level\":\"" << json_escape(m_config.level) << "\","
+-              << "\"events\":" << m_event_count << ","
+-              << "\"duration_ns_raw\":" << total_ns << ","
+-              << "\"duration_ms\":" << std::fixed << std::setprecision(3)
+-              << static_cast<double>(total_ns) / 1000000.0 << "}\n";
+-      std::ofstream manifest((output / "debug-manifest.json").string());
+-      manifest << "{\"schema_version\":1,\"status\":\"" << final_artifact_status << "\","
+-               << "\"debug_level\":\"" << json_escape(m_config.level) << "\","
+-               << "\"debug_format\":\"" << json_escape(m_config.format) << "\","
+-               << "\"metrics_interval_ms\":" << m_config.metrics_interval_ms << ","
+-               << "\"max_size_mib\":" << m_config.max_size_mib << ","
+-               << "\"retention\":" << m_config.retention << "}\n";
+-    }
+-    catch (...)
+-    {
+-      // A diagnostic writer must never terminate the wallet during teardown.
+-    }
++    const std::uint64_t total_ns = static_cast<std::uint64_t>(
++      std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now() - m_process_started).count());
++    event("product_cli", "process_end", "ok", total_ns);
++    mfw_product_core_destroy(m_product_core);
++    m_product_core = nullptr;
+   }
+ 
+   void debug_session::event(const std::string& component,
+@@ -255,33 +221,26 @@ namespace mfw_cli
+   {
+     if (!m_enabled)
+       return;
+-    if (status == "failed" || !error_code.empty())
+-      m_failed = true;
+-    ++m_sequence;
+-    ++m_event_count;
+-    const std::uint64_t timestamp_ns = monotonic_nanoseconds();
+-    const double duration_ms = static_cast<double>(duration_ns) / 1000000.0;
+-    if (m_jsonl)
+-    {
+-      m_jsonl << "{\"schema_version\":1,\"event_sequence\":" << m_sequence
+-              << ",\"monotonic_timestamp_ns_raw\":" << timestamp_ns
+-              << ",\"wall_timestamp_utc\":\"" << utc_timestamp(false) << "\""
+-              << ",\"component\":\"" << json_escape(component) << "\""
+-              << ",\"phase\":\"" << json_escape(phase) << "\""
+-              << ",\"status\":\"" << json_escape(status) << "\""
+-              << ",\"duration_ns_raw\":" << duration_ns
+-              << ",\"duration_ms\":" << std::fixed << std::setprecision(3) << duration_ms
+-              << ",\"error_code\":\"" << json_escape(error_code) << "\"}\n";
+-      m_jsonl.flush();
+-    }
+-    if (m_text)
+-    {
+-      m_text << m_sequence << ' ' << component << ' ' << phase << ' ' << status
+-             << " duration_ms=" << std::fixed << std::setprecision(3) << duration_ms;
+-      if (!error_code.empty())
+-        m_text << " error_code=" << error_code;
+-      m_text << '\n';
+-      m_text.flush();
+-    }
++    if (m_product_core == nullptr)
++      return;
++    mfw_telemetry_event_v1 telemetry{};
++    telemetry.struct_size = sizeof(telemetry);
++    telemetry.schema_version = MFW_PRODUCT_CORE_EVENT_SCHEMA_VERSION;
++    telemetry.duration_ns_raw = duration_ns;
++    telemetry.priority = (status == "failed" || !error_code.empty())
++      ? MFW_PRIORITY_CRITICAL : MFW_PRIORITY_NORMAL;
++    telemetry.network = MFW_NETWORK_UNSPECIFIED;
++    telemetry.component = component == "wallet" ? MFW_COMPONENT_WALLET_REGISTRY
++      : MFW_COMPONENT_PROCESS;
++    if (phase == "initialize") telemetry.phase = MFW_PHASE_CORE_LOAD;
++    else if (phase == "process_end") telemetry.phase = MFW_PHASE_PROCESS_END;
++    else if (phase == "debug_session_start") telemetry.phase = MFW_PHASE_PROCESS_START;
++    else if (phase == "options_parsed") telemetry.phase = MFW_PHASE_SELECT_SOURCE;
++    else if (phase == "command") telemetry.phase = MFW_PHASE_DIAGNOSTIC_END;
++    else telemetry.phase = MFW_PHASE_DIAGNOSTIC_START;
++    telemetry.status = status == "failed" ? MFW_STATUS_FAILED
++      : status == "start" ? MFW_STATUS_STARTED : MFW_STATUS_OK;
++    telemetry.error_code = error_code.empty() ? MFW_ERROR_OK : MFW_ERROR_INTERNAL;
++    (void)mfw_product_core_emit(m_product_core, &telemetry);
+   }
+ }
+diff --git a/src/simplewallet/product_cli_debug.h b/src/simplewallet/product_cli_debug.h
+index 775bc42d7..38217f601 100644
+--- a/src/simplewallet/product_cli_debug.h
++++ b/src/simplewallet/product_cli_debug.h
+@@ -6,9 +6,10 @@
+ #include <chrono>
+ #include <cstddef>
+ #include <cstdint>
+-#include <fstream>
+ #include <string>
+ 
++#include "mfw_product_core.h"
++
+ namespace mfw_cli
+ {
+   struct debug_config
+@@ -50,10 +51,6 @@ namespace mfw_cli
+     debug_config m_config;
+     std::chrono::steady_clock::time_point m_process_started;
+     std::string m_output_directory;
+-    std::ofstream m_jsonl;
+-    std::ofstream m_text;
+-    std::uint64_t m_sequence = 0;
+-    std::uint64_t m_event_count = 0;
+-    bool m_failed = false;
++    mfw_product_core_context* m_product_core = nullptr;
+   };
+ }
+-- 
+2.50.1 (Apple Git-155)

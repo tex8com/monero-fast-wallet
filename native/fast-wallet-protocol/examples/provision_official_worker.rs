@@ -1,7 +1,6 @@
 use ed25519_dalek::SigningKey;
 use fast_wallet_protocol::{
-    key_id, HpkePrivateKey, Network, SigningKeyMaterial, WorkerDescriptor,
-    WorkerDescriptorInput,
+    key_id, HpkePrivateKey, Network, SigningKeyMaterial, WorkerDescriptor, WorkerDescriptorInput,
 };
 use std::{
     env,

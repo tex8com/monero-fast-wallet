@@ -1,8 +1,8 @@
 package com.monerowallet
 
 import android.Manifest
-import android.app.ActivityManager
 import android.app.AlertDialog
+import android.app.Dialog
 import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -15,7 +15,11 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.ColorStateList
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.hardware.biometrics.BiometricManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
@@ -32,8 +36,15 @@ import android.util.Base64
 import android.util.Log
 import android.text.InputType
 import android.view.View
+import android.view.Gravity
+import android.view.Window
+import android.view.WindowManager
+import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -44,10 +55,12 @@ import androidx.biometric.BiometricPrompt as AndroidXBiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
+import com.tex8.monero.productcore.MfwAppVaultContract
 import com.lambdapioneer.argon2kt.Argon2Kt
 import com.lambdapioneer.argon2kt.Argon2Mode
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
@@ -84,8 +97,10 @@ class NativeMoneroWalletModule(
   private var pendingBiometricCompletion: ((Boolean, String) -> Unit)? = null
   private var pendingPrivatePhoneContactsPromise: Promise? = null
   private var pendingPrivatePhoneConsentPromise: Promise? = null
-  private val applicationResetScheduled = AtomicBoolean(false)
   private val mainHandler = Handler(Looper.getMainLooper())
+  private var autoLockSeconds = DEFAULT_APP_AUTO_LOCK_SECONDS
+  private var lastUserActivityElapsedMs = SystemClock.elapsedRealtime()
+  private val nativeAutoLockRunnable = Runnable { enforceNativeAutoLock() }
   private val diagnosticLogLock = Any()
   private val privatePhonePermitRefreshLock = Any()
   private val privatePhoneAskLock = Any()
@@ -100,8 +115,12 @@ class NativeMoneroWalletModule(
       deleteSecret = ::deleteSecretValue,
     )
   }
+  private val walletAppVault by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    MobileWalletAppVault(reactApplicationContext)
+  }
 
   init {
+    activeInstance = WeakReference(this)
     LedgerBleTransport.initialize(reactContext)
     NativeMoneroWalletJni.initializeLedgerBleTransport()
   }
@@ -109,12 +128,38 @@ class NativeMoneroWalletModule(
   override fun getName(): String = NAME
 
   override fun invalidate() {
+    mainHandler.removeCallbacks(nativeAutoLockRunnable)
+    walletAppVault.lock()
     nativeWalletExecutor.shutdown()
+    if (activeInstance?.get() === this) {
+      activeInstance = null
+    }
     super.invalidate()
   }
 
   override fun linkedWithMonero(promise: Promise) {
     promise.resolve(NativeMoneroWalletJni.linkedWithMonero())
+  }
+
+  override fun benchmarkDerivationPerformance(promise: Promise) {
+    if (!NativeAppAuthorization.isAuthorized()) {
+      promise.reject(
+        "monero_wallet_android_app_locked",
+        "The native app session is locked",
+      )
+      return
+    }
+    nativeWalletExecutor.execute {
+      runCatching { NativeMoneroWalletJni.benchmarkDerivationPerformance() }
+        .onSuccess(promise::resolve)
+        .onFailure { error ->
+          promise.reject(
+            "monero_wallet_derivation_benchmark_failed",
+            error.message ?: "The short device benchmark failed",
+            error,
+          )
+        }
+    }
   }
 
   override fun getMoneroEnthusiastV1Status(promise: Promise) {
@@ -478,27 +523,50 @@ class NativeMoneroWalletModule(
 
   override fun getAppProtectionStatus(promise: Promise) {
     runCatching {
-      val mode = readSecretValue(APP_PROTECTION_MODE_KEY).orEmpty()
+      // Android can start the activity while the device itself is still on
+      // its lock screen. In that state the encrypted vault correctly refuses
+      // access, but the mode is non-secret UI state. Keep a private
+      // SharedPreferences hint so the React layer stays fail-closed (locked),
+      // instead of incorrectly presenting first-run protection setup.
+      val protectedMode = runCatching { readSecretValue(APP_PROTECTION_MODE_KEY) }
+      val inaccessibleExistingMode =
+        protectedMode.getOrNull() == null &&
+          secretPreferences().contains(APP_PROTECTION_MODE_KEY)
+      val mode = (
+        protectedMode.getOrNull()
+        ?: if (protectedMode.isFailure) {
+          appSecurityPreferences().getString(APP_PROTECTION_MODE_HINT_KEY, null)
+        } else if (inaccessibleExistingMode) {
+          appSecurityPreferences().getString(APP_PROTECTION_MODE_HINT_KEY, null)
+            // An old build may predate the non-secret hint. This placeholder
+            // is never used to authorize: `locked` remains true until the
+            // device is unlocked and this method can read the real mode.
+            ?: "password"
+        } else {
+          null
+        }
+      ).orEmpty()
+      if (
+        protectedMode.isSuccess &&
+          (mode == "password" || mode == "biometric")
+      ) {
+        // Upgrade existing installations after their next valid device
+        // unlock, so later launches can remain fail-closed on the Android
+        // lock screen without reading the encrypted vault first.
+        appSecurityPreferences().edit()
+          .putString(APP_PROTECTION_MODE_HINT_KEY, mode)
+          .apply()
+      }
       val throttle = nativeUnlockThrottle()
-      val resetRequired = securityResetRequired()
       Arguments.createMap().apply {
         putBoolean("configured", mode == "password" || mode == "biometric")
         putBoolean("locked", !NativeAppAuthorization.isAuthorized())
         putString("mode", if (mode == "biometric") "biometric" else "password")
         putInt("failedPasswordAttempts", throttle.failures)
-        putInt(
-          "remainingPasswordAttempts",
-          (MAX_APP_PASSWORD_ATTEMPTS - throttle.failures).coerceAtLeast(0),
-        )
-        putBoolean("resetRequired", resetRequired)
+        putBoolean("resetRequired", false)
       }
     }
-      .onSuccess { status ->
-        promise.resolve(status)
-        if (securityResetRequired()) {
-          scheduleApplicationDataReset()
-        }
-      }
+      .onSuccess(promise::resolve)
       .onFailure { error ->
         promise.reject(
           "monero_wallet_android_app_protection_error",
@@ -513,9 +581,19 @@ class NativeMoneroWalletModule(
     password: String,
     promise: Promise,
   ) {
+    val currentMode = runCatching { readSecretValue(APP_PROTECTION_MODE_KEY) }
+      .getOrElse { error ->
+        promise.reject(
+          "monero_wallet_android_app_protection_error",
+          error.message ?: "Failed to read app protection",
+          error,
+        )
+        return
+      }
     val applyProtectionChange = {
       when (mode) {
         "password" -> {
+          configureWalletAppVault(password)
           storeSecretValue(APP_PASSWORD_VERIFIER_KEY, createPasswordVerifier(password))
         }
         "biometric" -> {
@@ -526,19 +604,30 @@ class NativeMoneroWalletModule(
           require(status.supported && status.available && status.enrolled) {
             status.message
           }
+          // Android's biometric prompt includes the device PIN/password as
+          // its operating-system recovery path. A separate app password is
+          // therefore optional and must never be required for biometric
+          // protection. Create (or unlock) the one system-wrapped AppVault and
+          // remove the obsolete app-password verifier from the active policy.
+          unlockWalletAppVaultWithSystem()
           deleteSecretValue(APP_PASSWORD_VERIFIER_KEY)
         }
         else -> error("Unsupported app protection mode")
       }
       storeSecretValue(APP_PROTECTION_MODE_KEY, mode)
+      appSecurityPreferences().edit()
+        .putString(APP_PROTECTION_MODE_HINT_KEY, mode)
+        .commit()
       clearNativeUnlockThrottle()
       // A biometric choice is not active until the user completes the
       // operating-system prompt. Do not leave a newly configured wallet app
       // unlocked in the interval between choosing biometrics and confirming it.
       if (mode == "biometric") {
+        walletAppVault.lock()
         NativeAppAuthorization.lock()
       } else {
         NativeAppAuthorization.authorize()
+        resetNativeAutoLockDeadline()
       }
     }
     val completeChange = {
@@ -553,27 +642,20 @@ class NativeMoneroWalletModule(
         }
     }
 
-    val currentMode = runCatching { readSecretValue(APP_PROTECTION_MODE_KEY) }
-      .getOrElse { error ->
-        promise.reject(
-          "monero_wallet_android_app_protection_error",
-          error.message ?: "Failed to read app protection",
-          error,
-        )
-        return
+    // Older diagnostic builds could leave an unrecognised protection marker
+    // behind. getAppProtectionStatus deliberately reports such a marker as
+    // unconfigured, so configuration must make the same decision here.
+    // Treat it as a migration, rather than asking an as-yet-unconfigured app
+    // session to authenticate itself.
+    if (currentMode != "password" && currentMode != "biometric") {
+      if (currentMode != null) {
+        deleteSecretValue(APP_PROTECTION_MODE_KEY)
+        appSecurityPreferences().edit()
+          .remove(APP_PROTECTION_MODE_HINT_KEY)
+          .commit()
+        clearNativeUnlockThrottle()
       }
-    if (currentMode == null) {
       completeChange()
-      return
-    }
-    if (currentMode == mode && mode == "biometric") {
-      // A first biometric prompt can be interrupted after the mode was
-      // durably stored but before JavaScript observed the configured state.
-      // Re-selecting the same mode changes no secret or policy, so make that
-      // recovery path idempotent and let unlockApp present the credential
-      // prompt. Password mode is intentionally excluded because it would
-      // replace a verifier and must remain freshly authorized.
-      promise.resolve(null)
       return
     }
     if (!NativeAppAuthorization.isAuthorized()) {
@@ -598,20 +680,6 @@ class NativeMoneroWalletModule(
   }
 
   override fun unlockApp(password: String, reason: String, promise: Promise) {
-    if (securityResetRequired()) {
-      promise.resolve(
-        biometricAuthResultToWritableMap(
-          success = false,
-          biometryType = "none",
-          message = SECURITY_RESET_TRIGGERED_MESSAGE,
-          failedPasswordAttempts = nativeUnlockThrottle().failures,
-          remainingPasswordAttempts = 0,
-          resetTriggered = true,
-        ),
-      )
-      scheduleApplicationDataReset()
-      return
-    }
     val mode = runCatching {
       readSecretValue(APP_PROTECTION_MODE_KEY)
     }.getOrElse { error ->
@@ -632,21 +700,20 @@ class NativeMoneroWalletModule(
       )
       return
     }
-    if (mode == "biometric") {
-      // App startup must use the normal, visibly cancellable biometric sheet.
-      // Combining DEVICE_CREDENTIAL with BIOMETRIC_STRONG can route Android
-      // through a full-screen credential/IME window which owns every touch
-      // even when the sensitive system surface is omitted from screenshots.
-      // A cancelled prompt returns to the explicit retry card instead.
+    if (mode == "biometric" && password.isEmpty()) {
+      // Android 11+ owns the complete biometric/device-credential fallback.
+      // The app presents this system surface exactly once per locked session;
+      // cancelling it returns to the explicit retry card and never triggers a
+      // focus-driven prompt loop.
       beginBiometricAuthentication(
         reason,
         promise,
         authorizeAppOnSuccess = true,
-        allowDeviceCredential = false,
+        allowDeviceCredential = true,
       )
       return
     }
-    if (mode != "password") {
+    if (mode != "password" && mode != "biometric") {
       promise.resolve(
         biometricAuthResultToWritableMap(
           success = false,
@@ -675,8 +742,10 @@ class NativeMoneroWalletModule(
         )
       }
       upgradePasswordVerifierIfNeeded(password, verifier)
+      unlockWalletAppVaultWithPassword(password)
       clearNativeUnlockThrottle()
       NativeAppAuthorization.authorize()
+      resetNativeAutoLockDeadline()
       biometricAuthResultToWritableMap(
         success = true,
         biometryType = "none",
@@ -694,8 +763,10 @@ class NativeMoneroWalletModule(
   }
 
   override fun lockApp(promise: Promise) {
+    mainHandler.removeCallbacks(nativeAutoLockRunnable)
     NativeAppAuthorization.lock()
     NativeSensitiveApprovalState.clear()
+    walletAppVault.lock()
     runCatching { NativeMoneroWalletJni.closeAllWallets() }
       .onSuccess { promise.resolve(null) }
       .onFailure { error ->
@@ -705,6 +776,76 @@ class NativeMoneroWalletModule(
           error,
         )
       }
+  }
+
+  override fun setAppAutoLockSeconds(seconds: Double, promise: Promise) {
+    runCatching {
+      require(seconds.isFinite() && seconds % 1.0 == 0.0) {
+        "Choose a supported inactivity timeout or Never."
+      }
+      val value = seconds.toLong()
+      require(value in APP_AUTO_LOCK_OPTIONS) {
+        "Choose a supported inactivity timeout or Never."
+      }
+      autoLockSeconds = value
+      resetNativeAutoLockDeadline()
+    }
+      .onSuccess { promise.resolve(null) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_auto_lock_error",
+          error.message ?: "The inactivity timeout could not be changed",
+          error,
+        )
+      }
+  }
+
+  override fun recordAppUserActivity(promise: Promise) {
+    if (NativeAppAuthorization.isAuthorized()) {
+      resetNativeAutoLockDeadline()
+    }
+    promise.resolve(null)
+  }
+
+  private fun resetNativeAutoLockDeadline() {
+    lastUserActivityElapsedMs = SystemClock.elapsedRealtime()
+    mainHandler.removeCallbacks(nativeAutoLockRunnable)
+    if (autoLockSeconds > 0L && NativeAppAuthorization.isAuthorized()) {
+      mainHandler.postDelayed(nativeAutoLockRunnable, autoLockSeconds * 1_000L)
+    }
+  }
+
+  private fun enforceNativeAutoLock() {
+    if (!NativeAppAuthorization.isAuthorized() || autoLockSeconds == 0L) {
+      return
+    }
+    val timeoutMs = autoLockSeconds * 1_000L
+    val elapsedMs = SystemClock.elapsedRealtime() - lastUserActivityElapsedMs
+    if (elapsedMs < timeoutMs) {
+      mainHandler.postDelayed(nativeAutoLockRunnable, timeoutMs - elapsedMs)
+      return
+    }
+    commitNativeLifecycleLock("inactivity")
+  }
+
+  private fun commitNativeLifecycleLock(reason: String) {
+    mainHandler.removeCallbacks(nativeAutoLockRunnable)
+    NativeAppAuthorization.lock()
+    NativeSensitiveApprovalState.clear()
+    walletAppVault.lock()
+    if (BuildConfig.DEBUG) {
+      Log.i(NAME, "MONERO_WALLET_APP_VAULT locked reason=$reason")
+    }
+    nativeWalletExecutor.execute {
+      runCatching {
+        NativeMoneroWalletJni.persistOpenWallets()
+        NativeMoneroWalletJni.closeAllWallets()
+      }.onFailure { error ->
+        if (BuildConfig.DEBUG) {
+          Log.w(NAME, "Native $reason lock could not close wallet sessions", error)
+        }
+      }
+    }
   }
 
   private fun beginBiometricAuthentication(
@@ -880,19 +1021,9 @@ class NativeMoneroWalletModule(
           input.text?.clear()
           if (!verified) {
             val failedAttempts = currentThrottle.failures + 1
-            if (failedAttempts >= MAX_APP_PASSWORD_ATTEMPTS) {
-              markSecurityResetRequired(failedAttempts)
-              input.error = "Local wallet data is being erased"
-              dialog.dismiss()
-              completion(false, SECURITY_RESET_TRIGGERED_MESSAGE)
-              scheduleApplicationDataReset()
-              return@setOnClickListener
-            }
             recordNativeUnlockFailure(failedAttempts)
-            val remainingAttempts =
-              (MAX_APP_PASSWORD_ATTEMPTS - failedAttempts).coerceAtLeast(0)
             input.error =
-              "Incorrect app password. $remainingAttempts attempts remaining."
+              "Incorrect app password. Try again in ${unlockDelaySeconds(failedAttempts)} seconds."
             return@setOnClickListener
           }
           upgradePasswordVerifierIfNeeded(password, verifier)
@@ -1664,6 +1795,53 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun sealLedgerFastWalletWatch(
+    walletId: String,
+    identityId: String,
+    accountIndex: Double,
+    network: String,
+    restoreHeight: Double,
+    workerDescriptorHex: String,
+    assignmentHandleHex: String,
+    assignmentEpoch: Double,
+    issuedAt: Double,
+    expiresAt: Double,
+    now: Double,
+    promise: Promise,
+  ) {
+    resolveNativeString(
+      promise,
+      "sealLedgerFastWalletWatch",
+      mapOf(
+        "accountIndex" to accountIndex,
+        "assignmentEpoch" to assignmentEpoch,
+        "identityId" to maskIdentifier(identityId),
+        "network" to network,
+        "restoreHeight" to restoreHeight,
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
+      requireTrustedFastWalletDescriptor(
+        workerDescriptorHex,
+        network,
+        checkedJsUnsignedInteger(now, "now"),
+      )
+      NativeMoneroWalletJni.sealLedgerFastWalletWatch(
+        walletId,
+        identityId,
+        accountIndex,
+        network,
+        restoreHeight,
+        workerDescriptorHex,
+        assignmentHandleHex,
+        assignmentEpoch,
+        issuedAt,
+        expiresAt,
+        now,
+      )
+    }
+  }
+
   override fun registerFastWalletProvider(
     providerToken: String,
     appCheckToken: String,
@@ -1682,7 +1860,7 @@ class NativeMoneroWalletModule(
         "App integrity verification is unavailable"
       }
       withFastWalletInstallationCredentials { installation ->
-        val grantResponse = fixedOriginJsonRequest(
+        val grantResponse = timedNativeOperation("registerFastWalletProvider.grant") { fixedOriginJsonRequest(
           method = "POST",
           origin = BuildConfig.FAST_WALLET_REGISTRATION_ORIGIN,
           route = "/api/v1/provider-grants",
@@ -1699,9 +1877,9 @@ class NativeMoneroWalletModule(
               sha256Hex(installation.auth),
             )
           },
-        )
+        ) }
         val grant = grantResponse.getJSONObject("grant")
-        fixedOriginJsonRequest(
+        val registrationResponse = timedNativeOperation("registerFastWalletProvider.gateway") { fixedOriginJsonRequest(
           method = "POST",
           origin = BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
           route = "/api/v1/installations/provider",
@@ -1711,10 +1889,50 @@ class NativeMoneroWalletModule(
             put("token", checkedProviderToken)
             put("grant", grant)
           },
-        )
+        ) }
+        val expectedTokenHash = sha256Hex(checkedProviderToken.toByteArray(Charsets.UTF_8))
+        require(registrationResponse.optBoolean("accepted", false)) {
+          "Push registration was not accepted"
+        }
+        require(registrationResponse.optString("providerTokenHash") == expectedTokenHash) {
+          "Push registration confirmation is invalid"
+        }
+        val generation = registrationResponse.optLong("generation", 0)
+        val acceptedAt = registrationResponse.optLong("acceptedAt", 0)
+        val leaseExpiresAt = registrationResponse.optLong("leaseExpiresAt", 0)
+        require(generation > 0 && acceptedAt > 0 && leaseExpiresAt > acceptedAt) {
+          "Push registration confirmation is invalid"
+        }
         Arguments.createMap().apply {
           putString("installationId", installation.id)
           putString("provider", "fcm")
+          putString("providerTokenHash", expectedTokenHash)
+          putDouble("generation", generation.toDouble())
+          putDouble("acceptedAt", acceptedAt.toDouble())
+          putDouble("leaseExpiresAt", leaseExpiresAt.toDouble())
+          putString("deliveryState", registrationResponse.optString("deliveryState"))
+        }
+      }
+    }
+  }
+
+  override fun sendFastWalletTestPush(promise: Promise) {
+    if (!requireFastWalletAlertFeature(promise)) {
+      return
+    }
+    resolveNativeVoid(promise, "sendFastWalletTestPush") {
+      withFastWalletInstallationCredentials { installation ->
+        val response = timedNativeOperation("sendFastWalletTestPush.gateway") {
+          fixedOriginJsonRequest(
+            method = "POST",
+            origin = BuildConfig.FAST_WALLET_GATEWAY_ORIGIN,
+            route = "/api/v1/installations/test-push",
+            headers = installation.headers(),
+            body = JSONObject(),
+          )
+        }
+        require(response.optBoolean("accepted", false)) {
+          "Test notification was not accepted"
         }
       }
     }
@@ -2173,6 +2391,26 @@ class NativeMoneroWalletModule(
       mapOf("endpoint" to endpoint, "walletId" to maskIdentifier(walletId)),
     ) {
       NativeMoneroWalletJni.setGrpcEndpoint(walletId, endpoint)
+    }
+  }
+
+  override fun networkSyncStatus(network: String, promise: Promise) {
+    resolveNativeMap(
+      promise,
+      "networkSyncStatus",
+      mapOf("network" to network),
+    ) {
+      networkSyncStatusToWritableMap(NativeMoneroWalletJni.networkSyncStatus(network))
+    }
+  }
+
+  override fun prioritizeNetworkWallet(walletId: String, promise: Promise) {
+    resolveNativeVoid(
+      promise,
+      "prioritizeNetworkWallet",
+      mapOf("walletId" to maskIdentifier(walletId)),
+    ) {
+      NativeMoneroWalletJni.prioritizeNetworkWallet(walletId)
     }
   }
 
@@ -3463,6 +3701,27 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun listSubaddresses(
+    walletId: String,
+    accountIndex: Double,
+    promise: Promise,
+  ) {
+    resolveNativeArray(
+      promise,
+      "listSubaddresses",
+      mapOf(
+        "accountIndex" to accountIndex,
+        "walletId" to maskIdentifier(walletId),
+      ),
+    ) {
+      Arguments.createArray().apply {
+        NativeMoneroWalletJni.listSubaddresses(walletId, accountIndex).forEach {
+          pushMap(walletSubaddressToWritableMap(it))
+        }
+      }
+    }
+  }
+
   override fun presentRecoverySeed(walletId: String, reason: String, promise: Promise) {
     if (!requireAppAuthorized(promise) || !requireLinked(promise)) {
       return
@@ -3497,19 +3756,7 @@ class NativeMoneroWalletModule(
                 )
                 return@post
               }
-              AlertDialog.Builder(activity)
-                .setTitle("Recovery seed")
-                .setMessage(
-                  "${reason.ifBlank { "Write these words down offline." }}\n\n$seed",
-                )
-                .setPositiveButton("I wrote it down") { _, _ ->
-                  promise.resolve(true)
-                }
-                .setNegativeButton("Close") { _, _ ->
-                  promise.resolve(false)
-                }
-                .setCancelable(false)
-                .show()
+              showRecoverySeedBackupScreen(activity, seed, reason, promise)
             }
           }
           .onFailure { error ->
@@ -3518,6 +3765,173 @@ class NativeMoneroWalletModule(
             }
           }
       }.start()
+    }
+  }
+
+  /**
+   * Shows the recovery words in a native, full-screen secure window.  The
+   * words deliberately never cross into React Native: a JS modal would make
+   * them available to the bridge, dev tooling, and the renderer heap.
+   */
+  private fun showRecoverySeedBackupScreen(
+    activity: FragmentActivity,
+    seed: String,
+    reason: String,
+    promise: Promise,
+  ) {
+    val dialog = Dialog(activity)
+    dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+    dialog.setCancelable(false)
+    dialog.setCanceledOnTouchOutside(false)
+
+    val resolved = AtomicBoolean(false)
+    val dark = Color.rgb(10, 10, 24)
+    val card = Color.rgb(23, 21, 48)
+    val cardSecondary = Color.rgb(31, 29, 57)
+    val white = Color.rgb(248, 247, 252)
+    val orange = Color.rgb(242, 104, 34)
+    val warning = Color.rgb(255, 188, 72)
+    val root = LinearLayout(activity).apply {
+      orientation = LinearLayout.VERTICAL
+      gravity = Gravity.CENTER_HORIZONTAL
+      setBackgroundColor(dark)
+      setPadding(nativeDp(24), nativeDp(36), nativeDp(24), nativeDp(28))
+    }
+    val content = LinearLayout(activity).apply {
+      orientation = LinearLayout.VERTICAL
+      background = roundedBackground(card, nativeDp(26), Color.rgb(65, 55, 100), nativeDp(1))
+      setPadding(nativeDp(24), nativeDp(26), nativeDp(24), nativeDp(22))
+    }
+    root.addView(
+      content,
+      LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        LinearLayout.LayoutParams.WRAP_CONTENT,
+      ).apply { gravity = Gravity.CENTER_VERTICAL },
+    )
+
+    content.addView(TextView(activity).apply {
+      text = "RECOVERY WORDS"
+      setTextColor(orange)
+      textSize = 12f
+      letterSpacing = 0.12f
+    })
+    content.addView(TextView(activity).apply {
+      text = "Back up your wallet"
+      setTextColor(white)
+      textSize = 28f
+      setPadding(0, nativeDp(8), 0, nativeDp(8))
+    })
+    content.addView(TextView(activity).apply {
+      text = reason.ifBlank {
+        "Write all 25 words down offline. Never share, screenshot, or store them online."
+      }
+      setTextColor(warning)
+      textSize = 15f
+      setLineSpacing(nativeDp(3).toFloat(), 1f)
+      setPadding(0, 0, 0, nativeDp(18))
+    })
+
+    val numberedSeed = seed.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+      .mapIndexed { index, word -> "${index + 1}.  $word" }
+      .joinToString("\n")
+    val seedText = TextView(activity).apply {
+      text = numberedSeed
+      setTextColor(white)
+      textSize = 17f
+      typeface = android.graphics.Typeface.MONOSPACE
+      setTextIsSelectable(false)
+      setLineSpacing(nativeDp(7).toFloat(), 1f)
+      setPadding(nativeDp(18), nativeDp(16), nativeDp(18), nativeDp(16))
+    }
+    content.addView(ScrollView(activity).apply {
+      background = roundedBackground(cardSecondary, nativeDp(16), Color.rgb(56, 51, 83), nativeDp(1))
+      isFillViewport = true
+      addView(seedText)
+    }, LinearLayout.LayoutParams(
+      LinearLayout.LayoutParams.MATCH_PARENT,
+      nativeDp(360),
+    ))
+
+    val confirmed = CheckBox(activity).apply {
+      text = "I have written down all recovery words."
+      setTextColor(white)
+      textSize = 14f
+      buttonTintList = ColorStateList.valueOf(orange)
+      setPadding(0, nativeDp(14), 0, nativeDp(8))
+    }
+    content.addView(confirmed)
+
+    val actions = LinearLayout(activity).apply {
+      orientation = LinearLayout.HORIZONTAL
+      gravity = Gravity.CENTER_VERTICAL
+    }
+    val close = Button(activity).apply {
+      text = "Close"
+      isAllCaps = false
+      setTextColor(white)
+      textSize = 15f
+      background = roundedBackground(card, nativeDp(14), Color.rgb(76, 67, 111), nativeDp(1))
+    }
+    val complete = Button(activity).apply {
+      text = "I wrote it down"
+      isAllCaps = false
+      setTextColor(Color.WHITE)
+      textSize = 15f
+      isEnabled = false
+      alpha = 0.48f
+      background = roundedBackground(orange, nativeDp(14), orange, 0)
+    }
+    actions.addView(close, LinearLayout.LayoutParams(0, nativeDp(54), 1f).apply {
+      marginEnd = nativeDp(12)
+    })
+    actions.addView(complete, LinearLayout.LayoutParams(0, nativeDp(54), 1f))
+    content.addView(actions)
+
+    fun finish(backedUp: Boolean) {
+      if (resolved.compareAndSet(false, true)) {
+        seedText.text = ""
+        promise.resolve(backedUp)
+      }
+      dialog.dismiss()
+    }
+    confirmed.setOnCheckedChangeListener { _, checked ->
+      complete.isEnabled = checked
+      complete.alpha = if (checked) 1f else 0.48f
+    }
+    close.setOnClickListener { finish(false) }
+    complete.setOnClickListener { finish(true) }
+    dialog.setOnDismissListener {
+      if (resolved.compareAndSet(false, true)) {
+        seedText.text = ""
+        promise.resolve(false)
+      }
+    }
+    dialog.setContentView(root)
+    dialog.window?.apply {
+      setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+      addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+    dialog.show()
+    dialog.window?.setLayout(
+      WindowManager.LayoutParams.MATCH_PARENT,
+      WindowManager.LayoutParams.MATCH_PARENT,
+    )
+  }
+
+  private fun nativeDp(value: Int): Int =
+    (value * reactApplicationContext.resources.displayMetrics.density).toInt()
+
+  private fun roundedBackground(
+    fillColor: Int,
+    radiusPx: Int,
+    strokeColor: Int,
+    strokeWidthPx: Int,
+  ): GradientDrawable = GradientDrawable().apply {
+    setColor(fillColor)
+    cornerRadius = radiusPx.toFloat()
+    if (strokeWidthPx > 0) {
+      setStroke(strokeWidthPx, strokeColor)
     }
   }
 
@@ -3563,6 +3977,28 @@ class NativeMoneroWalletModule(
     ) {
       transactionsToWritableArray(
         NativeMoneroWalletJni.getTransactions(walletId, limit),
+      )
+    }
+  }
+
+  override fun syncLedgerKeyImagesToViewWallet(
+    hardwareWalletId: String,
+    viewOnlyWalletId: String,
+    promise: Promise,
+  ) {
+    resolveNativeMap(
+      promise,
+      "syncLedgerKeyImagesToViewWallet",
+      mapOf(
+        "hardwareWalletId" to maskIdentifier(hardwareWalletId),
+        "viewOnlyWalletId" to maskIdentifier(viewOnlyWalletId),
+      ),
+    ) {
+      ledgerKeyImageSyncResultToWritableMap(
+        NativeMoneroWalletJni.syncLedgerKeyImagesToViewWallet(
+          hardwareWalletId,
+          viewOnlyWalletId,
+        ),
       )
     }
   }
@@ -5280,16 +5716,25 @@ class NativeMoneroWalletModule(
       )
       value
     } catch (error: Throwable) {
-      logNativeEvent(
-        "$operation.error",
-        fields + mapOf(
-          "elapsedMs" to (SystemClock.elapsedRealtime() - startedAt),
-          "error" to (error.message ?: error::class.java.simpleName),
-        ),
+      val failureFields = fields + mapOf(
+        "elapsedMs" to (SystemClock.elapsedRealtime() - startedAt),
+        // A status code identifies the failed boundary without retaining an
+        // endpoint response, request body, App Check token, or installation
+        // credential. It is available only in a deliberately enabled
+        // diagnostics build.
+        "httpStatus" to fastWalletHttpStatus(error),
       )
+      logNativeEvent("$operation.error", failureFields)
       throw error
     }
   }
+
+  private fun fastWalletHttpStatus(error: Throwable): Int? =
+    FAST_WALLET_HTTP_STATUS_PATTERN
+      .find(error.message ?: "")
+      ?.groupValues
+      ?.getOrNull(1)
+      ?.toIntOrNull()
 
   private fun logNativeEvent(event: String, fields: Map<String, Any?> = emptyMap()) {
     if (!BuildConfig.WALLET_DIAGNOSTICS_ENABLED) {
@@ -6259,16 +6704,91 @@ class NativeMoneroWalletModule(
     return checked
   }
 
-  private fun storeSecretValue(key: String, value: String) {
-    val checkedKey = checkedSecretKey(key)
-    val cipher = Cipher.getInstance(SECRET_CIPHER_TRANSFORMATION)
-    cipher.init(Cipher.ENCRYPT_MODE, secretEncryptionKey())
-    val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
-    val encoded = "${encodeSecretBytes(cipher.iv)}:${encodeSecretBytes(encrypted)}"
-    secretPreferences().edit().putString(checkedKey, encoded).apply()
+  private fun isManagedWalletSecretKey(key: String): Boolean =
+    key.startsWith("monero.wallet.") &&
+      !key.startsWith("monero.wallet.app.") &&
+      runCatching { checkedWalletSecretKey(key) }.isSuccess
+
+  private fun legacyWalletSecrets(): Map<String, String> =
+    secretPreferences().all.keys
+      .asSequence()
+      .filter(::isManagedWalletSecretKey)
+      .mapNotNull { key -> readLegacySecretValue(key)?.let { key to it } }
+      .toMap(LinkedHashMap())
+
+  private fun deleteCommittedLegacyWalletSecrets(keys: Collection<String>) {
+    if (keys.isEmpty()) {
+      return
+    }
+    val editor = secretPreferences().edit()
+    keys.forEach { key -> editor.remove(checkedWalletSecretKey(key)) }
+    require(editor.commit()) { "Legacy wallet credentials could not be removed" }
   }
 
-  private fun storeDurableSecretValue(key: String, value: String) {
+  private fun configureWalletAppVault(password: String) {
+    val legacy = legacyWalletSecrets()
+    val imported = if (!walletAppVault.exists()) {
+      walletAppVault.createOrUpdatePassword(password, legacy)
+    } else {
+      if (!walletAppVault.isUnlocked()) {
+        if (walletAppVault.passwordRecoveryConfigured()) {
+          walletAppVault.unlockWithPassword(password)
+        } else {
+          walletAppVault.unlockWithSystem()
+        }
+      }
+      walletAppVault.createOrUpdatePassword(password, emptyMap())
+      walletAppVault.mergeLegacy(legacy)
+    }
+    deleteCommittedLegacyWalletSecrets(imported)
+    if (BuildConfig.DEBUG) {
+      Log.i(NAME, "MONERO_WALLET_APP_VAULT configured imported=${imported.size}")
+    }
+  }
+
+  private fun unlockWalletAppVaultWithPassword(password: String) {
+    val legacy = legacyWalletSecrets()
+    val imported = if (!walletAppVault.exists()) {
+      walletAppVault.createOrUpdatePassword(password, legacy)
+    } else {
+      if (walletAppVault.passwordRecoveryConfigured()) {
+        walletAppVault.unlockWithPassword(password)
+      } else {
+        walletAppVault.unlockWithSystem()
+        walletAppVault.createOrUpdatePassword(password, emptyMap())
+      }
+      walletAppVault.mergeLegacy(legacy)
+    }
+    deleteCommittedLegacyWalletSecrets(imported)
+    if (BuildConfig.DEBUG) {
+      Log.i(NAME, "MONERO_WALLET_APP_VAULT unlocked method=password imported=${imported.size}")
+    }
+  }
+
+  private fun unlockWalletAppVaultWithSystem() {
+    val legacy = legacyWalletSecrets()
+    val imported = if (!walletAppVault.exists()) {
+      walletAppVault.createSystemOnly(legacy)
+    } else {
+      walletAppVault.unlockWithSystem()
+      walletAppVault.mergeLegacy(legacy)
+    }
+    deleteCommittedLegacyWalletSecrets(imported)
+    if (BuildConfig.DEBUG) {
+      Log.i(NAME, "MONERO_WALLET_APP_VAULT unlocked method=system imported=${imported.size}")
+    }
+  }
+
+  private fun storeSecretValue(key: String, value: String) {
+    val checkedKey = checkedSecretKey(key)
+    if (isManagedWalletSecretKey(checkedKey) && walletAppVault.exists()) {
+      walletAppVault.put(checkedKey, value)
+      return
+    }
+    storeLegacySecretValue(checkedKey, value, durable = false)
+  }
+
+  private fun storeLegacySecretValue(key: String, value: String, durable: Boolean) {
     val checkedKey = checkedSecretKey(key)
     val cipher = Cipher.getInstance(SECRET_CIPHER_TRANSFORMATION)
     cipher.init(Cipher.ENCRYPT_MODE, secretEncryptionKey())
@@ -6280,12 +6800,32 @@ class NativeMoneroWalletModule(
     }
     val encoded = "${encodeSecretBytes(cipher.iv)}:${encodeSecretBytes(encrypted)}"
     encrypted.fill(0)
-    require(secretPreferences().edit().putString(checkedKey, encoded).commit()) {
-      "Secure Fast Wallet state could not be saved"
+    val editor = secretPreferences().edit().putString(checkedKey, encoded)
+    if (durable) {
+      require(editor.commit()) { "Secure state could not be saved" }
+    } else {
+      editor.apply()
     }
   }
 
+  private fun storeDurableSecretValue(key: String, value: String) {
+    val checkedKey = checkedSecretKey(key)
+    if (isManagedWalletSecretKey(checkedKey) && walletAppVault.exists()) {
+      walletAppVault.put(checkedKey, value)
+      return
+    }
+    storeLegacySecretValue(checkedKey, value, durable = true)
+  }
+
   private fun readSecretValue(key: String): String? {
+    val checkedKey = checkedSecretKey(key)
+    if (isManagedWalletSecretKey(checkedKey) && walletAppVault.exists()) {
+      return walletAppVault.get(checkedKey)
+    }
+    return readLegacySecretValue(checkedKey)
+  }
+
+  private fun readLegacySecretValue(key: String): String? {
     val checkedKey = checkedSecretKey(key)
     val encoded = secretPreferences().getString(checkedKey, null) ?: return null
     val parts = encoded.split(":", limit = 2)
@@ -6308,11 +6848,19 @@ class NativeMoneroWalletModule(
     readSecretValue(key) ?: error("stored native secret is missing")
 
   private fun deleteSecretValue(key: String) {
-    secretPreferences().edit().remove(checkedSecretKey(key)).apply()
+    val checkedKey = checkedSecretKey(key)
+    if (isManagedWalletSecretKey(checkedKey) && walletAppVault.exists()) {
+      walletAppVault.delete(checkedKey)
+    }
+    secretPreferences().edit().remove(checkedKey).apply()
   }
 
   private fun createPasswordVerifier(password: String): String {
-    require(password.length in 12..1024) {
+    require(
+      password.length in
+        MfwAppVaultContract.PASSWORD_MINIMUM_CHARACTERS..
+          MfwAppVaultContract.PASSWORD_MAXIMUM_CHARACTERS,
+    ) {
       "App password must contain between 12 and 1024 characters"
     }
     val passwordBytes = password.toByteArray(Charsets.UTF_8)
@@ -6424,8 +6972,7 @@ class NativeMoneroWalletModule(
 
   private fun recordNativeUnlockFailure(failures: Int) {
     val checkedFailures = failures.coerceIn(1, 1_000_000)
-    val exponent = (checkedFailures - 1).coerceIn(0, 8)
-    val delaySeconds = (1L shl exponent).coerceAtMost(300L)
+    val delaySeconds = unlockDelaySeconds(checkedFailures)
     appSecurityPreferences().edit()
       .putInt(APP_UNLOCK_FAILURES_KEY, checkedFailures)
       .putLong(
@@ -6439,92 +6986,24 @@ class NativeMoneroWalletModule(
     failures: Int,
   ): WritableMap {
     val checkedFailures = failures.coerceAtLeast(1)
-    if (checkedFailures >= MAX_APP_PASSWORD_ATTEMPTS) {
-      markSecurityResetRequired(checkedFailures)
-      scheduleApplicationDataReset()
-      return biometricAuthResultToWritableMap(
-        success = false,
-        biometryType = "none",
-        message = SECURITY_RESET_TRIGGERED_MESSAGE,
-        failedPasswordAttempts = checkedFailures,
-        remainingPasswordAttempts = 0,
-        resetTriggered = true,
-      )
-    }
-
     recordNativeUnlockFailure(checkedFailures)
-    val remainingAttempts =
-      (MAX_APP_PASSWORD_ATTEMPTS - checkedFailures).coerceAtLeast(0)
     return biometricAuthResultToWritableMap(
       success = false,
       biometryType = "none",
       message =
-        "Incorrect app password. $remainingAttempts attempts remaining.",
+        "Incorrect app password. Try again in ${unlockDelaySeconds(checkedFailures)} seconds.",
       failedPasswordAttempts = checkedFailures,
-      remainingPasswordAttempts = remainingAttempts,
     )
   }
 
-  private fun securityResetRequired(): Boolean =
-    appSecurityPreferences().getBoolean(APP_SECURITY_RESET_REQUIRED_KEY, false)
-
-  private fun markSecurityResetRequired(failures: Int) {
-    NativeAppAuthorization.lock()
-    NativeSensitiveApprovalState.clear()
-    appSecurityPreferences().edit()
-      .putBoolean(APP_SECURITY_RESET_REQUIRED_KEY, true)
-      .putInt(APP_UNLOCK_FAILURES_KEY, failures.coerceAtLeast(MAX_APP_PASSWORD_ATTEMPTS))
-      .remove(APP_UNLOCK_BLOCKED_UNTIL_KEY)
-      .commit()
-    logNativeEvent(
-      "appSecurity.resetRequired",
-      mapOf(
-        "failedAttempts" to failures,
-        "remainingAttempts" to 0,
-        "resetTriggered" to true,
-      ),
-    )
-  }
-
-  private fun scheduleApplicationDataReset() {
-    if (!applicationResetScheduled.compareAndSet(false, true)) {
-      return
-    }
-    NativeAppAuthorization.lock()
-    NativeSensitiveApprovalState.clear()
-    logNativeEvent(
-      "appSecurity.resetScheduled",
-      mapOf(
-        "failedAttempts" to nativeUnlockThrottle().failures,
-        "remainingAttempts" to 0,
-        "resetTriggered" to true,
-      ),
-    )
-    runCatching {
-      nativeWalletExecutor.execute {
-        runCatching { NativeMoneroWalletJni.closeAllWallets() }
-      }
-    }
-    // Resolve the bridge call and emit diagnostics before Android removes the
-    // complete application sandbox and terminates this process.
-    mainHandler.postDelayed({
-      val activityManager =
-        reactApplicationContext.getSystemService(Context.ACTIVITY_SERVICE)
-          as ActivityManager
-      if (!activityManager.clearApplicationUserData()) {
-        applicationResetScheduled.set(false)
-        logNativeEvent(
-          "appSecurity.resetError",
-          mapOf("resetTriggered" to true),
-        )
-      }
-    }, APPLICATION_DATA_RESET_DELAY_MS)
-  }
+  private fun unlockDelaySeconds(failures: Int): Long =
+    MfwAppVaultContract.unlockDelaySeconds(failures)
 
   private fun clearNativeUnlockThrottle() {
     appSecurityPreferences().edit()
       .remove(APP_UNLOCK_FAILURES_KEY)
       .remove(APP_UNLOCK_BLOCKED_UNTIL_KEY)
+      .remove(LEGACY_APP_SECURITY_RESET_REQUIRED_KEY)
       .commit()
   }
 
@@ -6593,6 +7072,65 @@ class NativeMoneroWalletModule(
       putDouble("daemonHeight", snapshot.numberValue("daemonHeight"))
       putDouble("daemonTargetHeight", snapshot.numberValue("daemonTargetHeight"))
       putBoolean("synchronized", snapshot.booleanValue("synchronized"))
+    }
+
+  private fun ledgerKeyImageSyncResultToWritableMap(
+    result: Map<String, Any>,
+  ): WritableMap = Arguments.createMap().apply {
+    putDouble("importHeight", result.numberValue("importHeight"))
+    putString("spentAtomic", result.stringValue("spentAtomic"))
+    putString("unspentAtomic", result.stringValue("unspentAtomic"))
+  }
+
+  private fun networkSyncStatusToWritableMap(status: Map<String, Any>): WritableMap =
+    Arguments.createMap().apply {
+      putString("network", status.stringValue("network"))
+      putString("state", status.stringValue("state"))
+      putString("phase", status.stringValue("phase"))
+      putDouble("phaseSequence", status.numberValue("phaseSequence"))
+      putDouble("phaseElapsedMs", status.numberValue("phaseElapsedMs"))
+      putDouble("lastProviderSelectionMs", status.numberValue("lastProviderSelectionMs"))
+      putDouble("lastTransportInitializationMs", status.numberValue("lastTransportInitializationMs"))
+      putDouble("lastBlockFetchMs", status.numberValue("lastBlockFetchMs"))
+      putDouble("lastPrefetchMs", status.numberValue("lastPrefetchMs"))
+      putDouble("lastPrefetchWaitMs", status.numberValue("lastPrefetchWaitMs"))
+      putDouble("prefetchedPayloadBytes", status.numberValue("prefetchedPayloadBytes"))
+      putDouble("peakPrefetchedPayloadBytes", status.numberValue("peakPrefetchedPayloadBytes"))
+      putDouble("lastNonEmptyBlockFetchMs", status.numberValue("lastNonEmptyBlockFetchMs"))
+      putDouble("lastNonEmptyBlockCount", status.numberValue("lastNonEmptyBlockCount"))
+      putDouble("lastNonEmptyNetworkBytes", status.numberValue("lastNonEmptyNetworkBytes"))
+      putDouble("lastNonEmptyPayloadBytes", status.numberValue("lastNonEmptyPayloadBytes"))
+      putDouble("networkBytesReceived", status.numberValue("networkBytesReceived"))
+      putDouble("payloadBytesReceived", status.numberValue("payloadBytesReceived"))
+      putDouble("lastWalletScanMs", status.numberValue("lastWalletScanMs"))
+      putDouble("lastMempoolMs", status.numberValue("lastMempoolMs"))
+      putDouble("lastCheckpointMs", status.numberValue("lastCheckpointMs"))
+      putDouble("lastIterationMs", status.numberValue("lastIterationMs"))
+      putDouble("downloadStartHeight", status.numberValue("downloadStartHeight"))
+      putDouble("downloadedHeight", status.numberValue("downloadedHeight"))
+      putDouble("chainHeight", status.numberValue("chainHeight"))
+      putDouble("targetHeight", status.numberValue("targetHeight"))
+      putDouble("transportStarts", status.numberValue("transportStarts"))
+      putDouble("fetchedBatches", status.numberValue("fetchedBatches"))
+      putDouble("fetchedBlocks", status.numberValue("fetchedBlocks"))
+      putDouble("decodedBatches", status.numberValue("decodedBatches"))
+      putDouble("prefetchedBatches", status.numberValue("prefetchedBatches"))
+      putDouble("prefetchHits", status.numberValue("prefetchHits"))
+      putDouble("fanoutDeliveries", status.numberValue("fanoutDeliveries"))
+      putDouble("poolSnapshots", status.numberValue("poolSnapshots"))
+      putDouble("cacheHits", status.numberValue("cacheHits"))
+      putDouble("cacheMisses", status.numberValue("cacheMisses"))
+      putDouble("replayCachePayloadBytes", status.numberValue("replayCachePayloadBytes"))
+      putDouble("replayCachePeakPayloadBytes", status.numberValue("replayCachePeakPayloadBytes"))
+      putDouble("replayCachePayloadLimitBytes", status.numberValue("replayCachePayloadLimitBytes"))
+      putDouble("stalledWallets", status.numberValue("stalledWallets"))
+      putDouble("scanWorkers", status.numberValue("scanWorkers"))
+      putDouble("joinedWallets", status.numberValue("joinedWallets"))
+      putDouble("queueDepth", status.numberValue("queueDepth"))
+      putDouble("prefetchQueueDepth", status.numberValue("prefetchQueueDepth"))
+      putDouble("prefetchQueueCapacity", status.numberValue("prefetchQueueCapacity"))
+      putDouble("replayCacheEntries", status.numberValue("replayCacheEntries"))
+      putDouble("replayCacheCapacity", status.numberValue("replayCacheCapacity"))
     }
 
   private fun hardwareWalletStatusToWritableMap(status: Map<String, Any>): WritableMap =
@@ -6771,27 +7309,43 @@ class NativeMoneroWalletModule(
     }
     val authorizesApp = pendingBiometricAuthorizesApp
     clearPendingBiometricRequest()
-    if (success && authorizesApp) {
-      clearNativeUnlockThrottle()
-      NativeAppAuthorization.authorize()
+    var resolvedSuccess = success
+    var resolvedMessage = message
+    if (resolvedSuccess && authorizesApp) {
+      runCatching { unlockWalletAppVaultWithSystem() }
+        .onSuccess {
+          clearNativeUnlockThrottle()
+          NativeAppAuthorization.authorize()
+          resetNativeAutoLockDeadline()
+        }
+        .onFailure { error ->
+          resolvedSuccess = false
+          resolvedMessage = error.message
+            ?: "The shared wallet vault could not be opened"
+          walletAppVault.lock()
+          NativeAppAuthorization.lock()
+        }
     }
     if (completion != null) {
-      completion(success, message)
+      completion(resolvedSuccess, resolvedMessage)
     } else {
       pending?.resolve(
         biometricAuthResultToWritableMap(
-          success = success,
+          success = resolvedSuccess,
           biometryType = biometryType,
-          message = message,
+          message = resolvedMessage,
         ),
       )
     }
   }
 
   /**
-   * React can request unlock during a foreground transition. Waiting until the
-   * FragmentActivity is resumed and focused prevents an otherwise invisible
-   * platform prompt that leaves the JavaScript UI on "Working…".
+   * React can request unlock during a foreground transition. A React Native
+   * Modal is an app-owned Dialog window, so it legitimately takes focus away
+   * from the Activity while the Activity remains resumed and visible. Requiring
+   * `activity.hasWindowFocus()` here deadlocks biometric unlock behind that
+   * security modal. Lifecycle plus visible decor is the correct readiness
+   * boundary; a background Activity is not RESUMED.
    */
   private fun presentBiometricWhenReady(
     activity: FragmentActivity,
@@ -6816,11 +7370,12 @@ class NativeMoneroWalletModule(
     }
 
     val isReady =
-      activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) && activity.hasWindowFocus()
+      activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+        activity.window.decorView.isShown
     if (!isReady) {
       if (SystemClock.elapsedRealtime() >= deadlineMs) {
         if (BuildConfig.DEBUG) {
-          Log.w(NAME, "MONERO_WALLET_BIOMETRIC cancelled; activity never became focused")
+          Log.w(NAME, "MONERO_WALLET_BIOMETRIC cancelled; activity never became visible")
         }
         resolvePendingBiometric(
           success = false,
@@ -7322,6 +7877,42 @@ class NativeMoneroWalletModule(
     this[key] as? List<*> ?: emptyList<Any>()
 
   companion object {
+    @Volatile
+    private var activeInstance: WeakReference<NativeMoneroWalletModule>? = null
+
+    internal fun notifyAppForegrounded() {
+      val module = activeInstance?.get() ?: return
+      // MainActivity invokes this on Android's main thread. Enforce the
+      // monotonic timeout synchronously so no wallet command can slip through
+      // between resume and a queued handler callback.
+      module.enforceNativeAutoLock()
+    }
+
+    internal fun notifyAppBackgrounded() {
+      if (BuildConfig.WALLET_DIAGNOSTICS_ENABLED) {
+        Log.i(
+          NAME,
+          "MONERO_WALLET_DIAGNOSTICS native=android event=appBackground.sessionRetainedUntilTimeout",
+        )
+      }
+    }
+
+    internal fun notifyDeviceLocked(reason: String) {
+      val module = activeInstance?.get()
+      if (module == null) {
+        // Defense in depth if Android tears down the React module before the
+        // Activity receives the keyguard transition.
+        NativeAppAuthorization.lock()
+        MobileWalletAppVault.lockProcessSession()
+        NativeSensitiveApprovalState.clear()
+        return
+      }
+      module.commitNativeLifecycleLock(reason)
+    }
+
+    private const val DEFAULT_APP_AUTO_LOCK_SECONDS =
+      MfwAppVaultContract.DEFAULT_AUTO_LOCK_SECONDS
+    private val APP_AUTO_LOCK_OPTIONS = MfwAppVaultContract.AUTO_LOCK_SECONDS
     const val NAME = "NativeMoneroWallet"
     private const val ANDROID_KEYSTORE_PROVIDER = "AndroidKeyStore"
     private const val SECRET_KEY_ALIAS = "monero_wallet_native_secrets_v1"
@@ -7330,25 +7921,33 @@ class NativeMoneroWalletModule(
       "monero_wallet_native_app_security"
     private const val APP_PROTECTION_MODE_KEY =
       "monero.wallet.app.protection.mode.v2"
+    // Deliberately contains only the selected UI mode, never a key, password,
+    // seed, address, balance, transaction data, or vault secret.
+    private const val APP_PROTECTION_MODE_HINT_KEY =
+      "monero.wallet.app.protection.mode.hint.v1"
     private const val APP_PASSWORD_VERIFIER_KEY =
       "monero.wallet.app.password.verifier.v2"
     private const val APP_UNLOCK_FAILURES_KEY = "unlock_failures"
     private const val APP_UNLOCK_BLOCKED_UNTIL_KEY = "unlock_blocked_until"
-    private const val APP_SECURITY_RESET_REQUIRED_KEY = "reset_required"
-    private const val MAX_APP_PASSWORD_ATTEMPTS = 3
-    private const val APPLICATION_DATA_RESET_DELAY_MS = 750L
-    private const val SECURITY_RESET_TRIGGERED_MESSAGE =
-      "Three incorrect app passwords. Local wallet data is being erased."
+    private const val LEGACY_APP_SECURITY_RESET_REQUIRED_KEY = "reset_required"
     private const val APP_PASSWORD_LEGACY_VERIFIER_VERSION = "pbkdf2-sha256-v1"
-    private const val APP_PASSWORD_ARGON2_PREFIX =
-      "\$argon2id\$v=19\$m=65536,t=3,p=1\$"
-    private const val APP_PASSWORD_ARGON2_ITERATIONS = 3
-    private const val APP_PASSWORD_ARGON2_MEMORY_KIB = 65_536
-    private const val APP_PASSWORD_ARGON2_PARALLELISM = 1
+    private val APP_PASSWORD_ARGON2_PREFIX =
+      "\$argon2id\$v=${MfwAppVaultContract.PASSWORD_KDF_VERSION}" +
+        "\$m=${MfwAppVaultContract.PASSWORD_KDF_MEMORY_KIB}," +
+        "t=${MfwAppVaultContract.PASSWORD_KDF_ITERATIONS}," +
+        "p=${MfwAppVaultContract.PASSWORD_KDF_PARALLELISM}\$"
+    private const val APP_PASSWORD_ARGON2_ITERATIONS =
+      MfwAppVaultContract.PASSWORD_KDF_ITERATIONS
+    private const val APP_PASSWORD_ARGON2_MEMORY_KIB =
+      MfwAppVaultContract.PASSWORD_KDF_MEMORY_KIB
+    private const val APP_PASSWORD_ARGON2_PARALLELISM =
+      MfwAppVaultContract.PASSWORD_KDF_PARALLELISM
     private const val APP_PASSWORD_KDF = "PBKDF2WithHmacSHA256"
     private const val APP_PASSWORD_PBKDF2_ITERATIONS = 310_000
-    private const val APP_PASSWORD_HASH_BITS = 256
-    private const val APP_PASSWORD_SALT_BYTES = 16
+    private const val APP_PASSWORD_HASH_BITS =
+      MfwAppVaultContract.PASSWORD_KDF_DIGEST_BYTES * 8
+    private const val APP_PASSWORD_SALT_BYTES =
+      MfwAppVaultContract.PASSWORD_KDF_SALT_BYTES
     private const val MONERO_RECOVERY_SEED_WORDS = 25
     private const val NODE_DAEMON_PASSWORD_SECRET_KEY =
       "monero-fast-wallet.node-connection.daemon-password.v1"
@@ -7482,6 +8081,7 @@ class NativeMoneroWalletModule(
     private const val FAST_WALLET_MAX_REQUEST_BYTES = 24 * 1024
     private const val FAST_WALLET_MAX_RESPONSE_BYTES = 24 * 1024
     private const val FAST_WALLET_MAX_HEADER_BYTES = 12 * 1024
+    private val FAST_WALLET_HTTP_STATUS_PATTERN = Regex("\\bHTTP ([1-5][0-9]{2})\\b")
     private const val FAST_WALLET_WATCH_ENVELOPE_BYTES = 484
     private const val JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991.0
     private val FAST_WALLET_ALLOWED_HEADERS = setOf(
@@ -7516,6 +8116,7 @@ class NativeMoneroWalletModule(
         "count",
         "elapsedMs",
         "failedAttempts",
+        "httpStatus",
         "queuedMs",
         "remainingAttempts",
         "resetTriggered",

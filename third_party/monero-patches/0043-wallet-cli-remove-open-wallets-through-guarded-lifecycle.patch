@@ -1,0 +1,280 @@
+From 17a5eb44edbe864e5d521af5525d43dd9aee27ac Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 23:38:49 -0500
+Subject: [PATCH] wallet cli: remove open wallets through guarded lifecycle
+
+---
+ src/simplewallet/simplewallet.cpp | 235 ++++++++++++++++++++++++++++++
+ src/simplewallet/simplewallet.h   |   3 +
+ 2 files changed, 238 insertions(+)
+
+diff --git a/src/simplewallet/simplewallet.cpp b/src/simplewallet/simplewallet.cpp
+index 437efc6c3..d64029943 100644
+--- a/src/simplewallet/simplewallet.cpp
++++ b/src/simplewallet/simplewallet.cpp
+@@ -3495,6 +3495,13 @@ simple_wallet::simple_wallet()
+   m_cmd_binder.set_handler("save",
+                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::save, _1),
+                            tr("Save the wallet data."));
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++  m_cmd_binder.set_handler("remove_wallet",
++                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::remove_wallet, _1),
++                           tr("Remove the currently open wallet from this device after explicit safety checks. "
++                              "Use 'remove_wallet fast fast-worker-detached notifications-disabled' only after "
++                              "the independent Fast Wallet services were detached."));
++#endif
+   m_cmd_binder.set_handler("save_watch_only",
+                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::save_watch_only, _1),
+                            tr("Save a watch-only keys file."));
+@@ -5461,6 +5468,234 @@ bool simple_wallet::close_wallet()
+   return true;
+ }
+ //----------------------------------------------------------------------------------------------------
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++bool simple_wallet::remove_wallet(const std::vector<std::string> &args)
++{
++  const auto started = std::chrono::steady_clock::now();
++  bool fast_wallet = false;
++  bool fast_worker_detached = false;
++  bool notifications_disabled = false;
++  for (const std::string &arg : args)
++  {
++    if (arg == "fast")
++      fast_wallet = true;
++    else if (arg == "fast-worker-detached")
++      fast_worker_detached = true;
++    else if (arg == "notifications-disabled")
++      notifications_disabled = true;
++    else
++    {
++      fail_msg_writer() << tr("Usage: remove_wallet [fast fast-worker-detached notifications-disabled]");
++      return true;
++    }
++  }
++  if ((fast_worker_detached || notifications_disabled) && !fast_wallet)
++  {
++    fail_msg_writer() << tr("Fast Wallet cleanup confirmations require the 'fast' argument.");
++    return true;
++  }
++  if (fast_wallet && (!fast_worker_detached || !notifications_disabled))
++  {
++    fail_msg_writer()
++      << tr("Fast Wallet removal is blocked until its worker is detached and notifications are disabled. ")
++      << tr("Complete both operations, then run: remove_wallet fast fast-worker-detached notifications-disabled");
++    return true;
++  }
++
++  const std::uint32_t wallet_kind = m_wallet->key_on_device()
++    ? MFW_WALLET_KIND_LEDGER_VIEW
++    : m_wallet->watch_only()
++      ? MFW_WALLET_KIND_VIEW_ONLY
++      : fast_wallet ? MFW_WALLET_KIND_FAST : MFW_WALLET_KIND_SOFTWARE;
++  const std::uint64_t cached_total = m_wallet->balance_all(false);
++  const std::uint32_t balance_state = cached_total > 0
++    ? MFW_WALLET_BALANCE_KNOWN_POSITIVE
++    : MFW_WALLET_BALANCE_UNKNOWN;
++
++  std::uint32_t seed_backup_confirmed = 0;
++  if (wallet_kind == MFW_WALLET_KIND_SOFTWARE || wallet_kind == MFW_WALLET_KIND_FAST)
++  {
++    message_writer(console_color_yellow, true)
++      << tr("This wallet's recovery words are the only way to restore its funds after removal.");
++    if (!command_line::is_yes(input_line(tr("Have you written down and verified the recovery words?"), true)))
++    {
++      fail_msg_writer() << tr("Wallet removal cancelled. Back up the recovery words first.");
++      return true;
++    }
++    seed_backup_confirmed = 1;
++  }
++
++  mfw_wallet_removal_input_v1 removal_input{};
++  removal_input.struct_size = sizeof(removal_input);
++  removal_input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
++  removal_input.wallet_kind = wallet_kind;
++  removal_input.balance_state = balance_state;
++  removal_input.seed_backup_confirmed = seed_backup_confirmed;
++  removal_input.fast_worker_enrolled = fast_wallet && !fast_worker_detached ? 1 : 0;
++  removal_input.notifications_enabled = fast_wallet && !notifications_disabled ? 1 : 0;
++  mfw_wallet_removal_plan_v1 removal_plan{};
++  if (mfw_wallet_removal_plan_compute_v1(&removal_input, &removal_plan) != MFW_ERROR_OK)
++  {
++    fail_msg_writer() << tr("The shared Product Core rejected the wallet-removal state.");
++    return true;
++  }
++  const std::uint32_t service_requirements =
++    MFW_WALLET_REMOVAL_REQUIREMENT_DETACH_FAST_WORKER |
++    MFW_WALLET_REMOVAL_REQUIREMENT_DISABLE_NOTIFICATIONS;
++  if ((removal_plan.requirement_flags & service_requirements) != 0)
++  {
++    fail_msg_writer()
++      << tr("Fast Wallet removal is blocked until its worker is detached and notifications are disabled. ")
++      << tr("Complete both operations, then run: remove_wallet fast fast-worker-detached notifications-disabled");
++    return true;
++  }
++
++  if (balance_state == MFW_WALLET_BALANCE_KNOWN_POSITIVE)
++  {
++    message_writer(console_color_yellow, true)
++      << tr("Cached total balance: ") << print_money(cached_total) << " XMR";
++    if (!command_line::is_yes(input_line(
++          tr("Funds remain on the blockchain and will only be recoverable with the seed or hardware device. Remove this local wallet?"), true)))
++    {
++      fail_msg_writer() << tr("Wallet removal cancelled.");
++      return true;
++    }
++  }
++  else
++  {
++    message_writer(console_color_yellow, true)
++      << tr("The cached total balance is zero, but an offline or stale wallet cannot prove the current on-chain balance.");
++    if (!command_line::is_yes(input_line(tr("Acknowledge the unknown current balance and continue?"), true)))
++    {
++      fail_msg_writer() << tr("Wallet removal cancelled.");
++      return true;
++    }
++  }
++
++  const boost::filesystem::path wallet_path(m_wallet_file);
++  const std::string confirmation = wallet_path.filename().string();
++  if (confirmation.empty())
++  {
++    fail_msg_writer() << tr("Wallet removal refused because the wallet file name is empty.");
++    return true;
++  }
++  if (input_line((boost::format(tr("Type the exact wallet file name '%s' to remove it from this device")) % confirmation).str()) != confirmation)
++  {
++    fail_msg_writer() << tr("Wallet removal cancelled: the file name did not match.");
++    return true;
++  }
++
++  const std::string base = wallet_path.string();
++  const std::array<std::string, 10> candidates{{
++    base,
++    base + ".keys",
++    base + ".address.txt",
++    base + ".mms",
++    base + ".new",
++    base + ".unportable",
++    base + ".background",
++    base + ".background.keys",
++    base + ".background.address.txt",
++    base + ".background.mms"}};
++  std::vector<std::pair<boost::filesystem::path, boost::filesystem::path>> artifacts;
++  for (const std::string &candidate : candidates)
++  {
++    const boost::filesystem::path original(candidate);
++    boost::filesystem::file_status status;
++    try
++    {
++      if (!boost::filesystem::exists(original))
++        continue;
++      status = boost::filesystem::symlink_status(original);
++    }
++    catch (const boost::filesystem::filesystem_error &error)
++    {
++      fail_msg_writer() << tr("Wallet removal could not inspect an owned artifact: ") << error.what();
++      return true;
++    }
++    if (boost::filesystem::is_directory(status))
++    {
++      fail_msg_writer() << tr("Wallet removal refused an unexpected directory artifact.");
++      return true;
++    }
++    const boost::filesystem::path staged(candidate + ".mfw-remove-staging");
++    try
++    {
++      if (!boost::filesystem::exists(staged))
++      {
++        artifacts.emplace_back(original, staged);
++        continue;
++      }
++    }
++    catch (const boost::filesystem::filesystem_error &error)
++    {
++      fail_msg_writer() << tr("Wallet removal could not inspect a staging artifact: ") << error.what();
++      return true;
++    }
++    {
++      fail_msg_writer() << tr("Wallet removal found a pre-existing staging artifact and stopped safely.");
++      return true;
++    }
++  }
++  if (artifacts.empty())
++  {
++    fail_msg_writer() << tr("No owned wallet artifacts were found.");
++    return true;
++  }
++
++  if (!close_wallet())
++  {
++    fail_msg_writer() << tr("Wallet removal stopped because the wallet could not be stored and closed safely.");
++    return true;
++  }
++  m_wallet.reset();
++
++  std::size_t staged_count = 0;
++  for (; staged_count < artifacts.size(); ++staged_count)
++  {
++    boost::system::error_code ec;
++    boost::filesystem::rename(artifacts[staged_count].first, artifacts[staged_count].second, ec);
++    if (ec)
++    {
++      for (std::size_t rollback = staged_count; rollback > 0; --rollback)
++      {
++        boost::system::error_code ignored;
++        boost::filesystem::rename(artifacts[rollback - 1].second, artifacts[rollback - 1].first, ignored);
++      }
++      fail_msg_writer() << tr("Wallet removal could not stage every artifact; existing files were restored where possible.");
++      MERROR("mfw_wallet_remove status=stage_failed artifacts=" << artifacts.size()
++        << " staged=" << staged_count << " error=" << ec.message());
++      stop();
++      return true;
++    }
++  }
++
++  std::size_t removed_count = 0;
++  for (const auto &artifact : artifacts)
++  {
++    boost::system::error_code ec;
++    if (boost::filesystem::remove(artifact.second, ec) && !ec)
++      ++removed_count;
++    else
++      MERROR("mfw_wallet_remove status=unlink_failed artifact_index=" << removed_count
++        << " error=" << ec.message());
++  }
++  m_wallet_file.clear();
++  const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++    std::chrono::steady_clock::now() - started).count();
++  MINFO("mfw_wallet_remove status=" << (removed_count == artifacts.size() ? "ok" : "partial")
++    << " wallet_kind=" << wallet_kind << " balance_state=" << balance_state
++    << " artifacts=" << artifacts.size() << " removed=" << removed_count
++    << " duration_ms=" << duration_ms);
++  if (removed_count == artifacts.size())
++    success_msg_writer() << tr("Wallet removed from this device. Recovery words and hardware-device secrets were not displayed or logged.");
++  else
++    fail_msg_writer() << tr("Wallet removal was incomplete. One or more staging artifacts remain and must be handled before reuse.");
++  stop();
++  return true;
++}
++#endif
++//----------------------------------------------------------------------------------------------------
+ bool simple_wallet::save(const std::vector<std::string> &args)
+ {
+   try
+diff --git a/src/simplewallet/simplewallet.h b/src/simplewallet/simplewallet.h
+index 159da2c45..67d086d57 100644
+--- a/src/simplewallet/simplewallet.h
++++ b/src/simplewallet/simplewallet.h
+@@ -105,6 +105,9 @@ namespace cryptonote
+     boost::optional<epee::wipeable_string> new_wallet(const boost::program_options::variables_map& vm);
+     boost::optional<epee::wipeable_string> open_wallet(const boost::program_options::variables_map& vm);
+     bool close_wallet();
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++    bool remove_wallet(const std::vector<std::string> &args = std::vector<std::string>());
++#endif
+ 
+     bool viewkey(const std::vector<std::string> &args = std::vector<std::string>());
+     bool spendkey(const std::vector<std::string> &args = std::vector<std::string>());
+-- 
+2.50.1 (Apple Git-155)
+

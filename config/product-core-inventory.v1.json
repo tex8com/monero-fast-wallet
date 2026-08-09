@@ -1,0 +1,322 @@
+{
+  "schemaVersion": 1,
+  "planPhaseCount": 14,
+  "sourceOfTruth": "docs/MONERO_FAST_WALLET_CLI_AND_SHARED_PRODUCT_CORE_MASTER_PLAN_2026-08-06.md",
+  "surfaces": [
+    {
+      "id": "mobile-screens",
+      "root": "apps/mobile/src/screens",
+      "kind": "file",
+      "match": "Screen\\.tsx$",
+      "entries": [
+        "EnthusiastChatScreen.tsx",
+        "FindEnthusiastsScreen.tsx",
+        "HomeScreen.tsx",
+        "LocalMoneroScreen.tsx",
+        "MarketplaceScreen.tsx",
+        "MenuScreen.tsx",
+        "MfwNamesScreen.tsx",
+        "MoneroEnthusiastScreen.tsx",
+        "PrivateContactsScreen.tsx",
+        "ReceiveScreen.tsx",
+        "SendScreen.tsx",
+        "SettingsScreen.tsx",
+        "Tex8AssistantScreen.tsx",
+        "TransactionDetailScreen.tsx",
+        "TransactionsScreen.tsx",
+        "WalletSetupScreen.tsx",
+        "WalletsScreen.tsx",
+        "WelcomeScreen.tsx"
+      ]
+    },
+    {
+      "id": "desktop-renderer",
+      "root": "apps/desktop/src",
+      "kind": "file",
+      "match": "\\.(ts|tsx)$",
+      "entries": [
+        "App.tsx",
+        "DesktopIcon.tsx",
+        "DesktopRecipientQrScanner.tsx",
+        "MfwNames.tsx",
+        "appUpdate.ts",
+        "fastWalletNotifications.ts",
+        "fastWalletPreference.ts",
+        "i18n.tsx",
+        "main.tsx",
+        "marketData.ts",
+        "moneroNews.ts",
+        "recipientAddressBook.ts",
+        "restoreStart.ts",
+        "vite-env.d.ts",
+        "walletAddressRegistry.ts",
+        "walletDiagnosticTestbench.ts"
+      ]
+    },
+    {
+      "id": "native-modules",
+      "root": "native",
+      "kind": "directory",
+      "match": ".+",
+      "entries": [
+        "community-harrier-runtime",
+        "community-matrix-core",
+        "community-runtime-core",
+        "cuda-derivation",
+        "desktop-bridge",
+        "fast-wallet-protocol",
+        "mfw-recipient-protocol",
+        "monero-bridge",
+        "product-core",
+        "scanpack-format"
+      ]
+    },
+    {
+      "id": "shared-packages",
+      "root": "packages",
+      "kind": "directory",
+      "match": ".+",
+      "entries": [
+        "app-update-core",
+        "community-chat-report-core",
+        "community-contact-core",
+        "community-notification-core",
+        "community-publication-core",
+        "community-query-contribution-core",
+        "community-search-core",
+        "wallet-shared"
+      ]
+    },
+    {
+      "id": "services",
+      "root": "services",
+      "kind": "directory",
+      "match": ".+",
+      "entries": [
+        "enthusiast-discovery",
+        "enthusiast-moderation-console",
+        "enthusiast-operations",
+        "enthusiast-v1",
+        "fast-wallet-relay",
+        "fast-wallet-stack",
+        "fast-wallet-worker",
+        "mfw-private-directory",
+        "monero-news",
+        "notification-gateway",
+        "notification-registration-adapter",
+        "notify-scanner"
+      ]
+    },
+    {
+      "id": "wallet-testbench",
+      "root": "tools/wallet-testbench",
+      "kind": "file",
+      "match": "\\.(sh|mjs)$",
+      "entries": [
+        "run-address-generation-benchmark.sh",
+        "run-fast-receive-e2e.sh",
+        "run-funded-wallet-terminal-harness.sh",
+    "run-ledger-key-image-benchmark.sh",
+    "run-mfw-recipient-security-testbench.sh",
+    "run-multiwallet-checkpoint-restart-acceptance.sh",
+    "run-multiwallet-reorg-failover-acceptance.sh",
+        "run-r3-network-mainnet.sh",
+        "run-raw-grpc-payload-mainnet.sh",
+    "run-scanpack-security-testbench.sh",
+    "run-strict-mainnet-sync-matrix.sh",
+        "run-sync-benchmark.sh",
+        "run-v1-tcp-rcvbuf-mainnet.sh",
+        "run-wallet-core-testbench.sh",
+    "diagnostic-sanitizer.mjs",
+    "summarize-strict-mainnet-sync-matrix.mjs",
+    "summarize-sync-telemetry.mjs",
+    "test-app-vault-state-machine-contract.mjs",
+        "test-common-wallet-core-contract.mjs",
+        "test-ledger-key-image-benchmark-contract.mjs",
+        "test-ledger-key-image-pipeline-model.mjs",
+        "test-ledger-key-image-source-audit.mjs",
+        "test-ledger-owned-output-sync-contract.mjs",
+        "test-network-sync-coordinator-contract.mjs",
+        "test-network-sync-coordinator-model.mjs",
+        "test-diagnostic-registry-contract.mjs",
+        "test-product-cli-bootstrap-contract.mjs",
+        "test-product-core-abi-contract.mjs",
+        "test-product-core-inventory-contract.mjs",
+        "test-shared-block-range-contract.mjs",
+        "test-sync-observability-contract.mjs"
+      ]
+    }
+  ],
+  "featureAreas": [
+    {
+      "id": "app-protection-and-vault",
+      "targetV1": true,
+      "sources": ["packages/wallet-shared", "apps/mobile/src/services/AppSecurity.tsx", "apps/desktop/src/App.tsx"]
+    },
+    {
+      "id": "wallet-lifecycle-and-payments",
+      "targetV1": true,
+      "sources": ["native/monero-bridge", "third_party/monero-patches", "apps/mobile/src/services/WalletService.ts"]
+    },
+    {
+      "id": "accounts-subaddresses-receive",
+      "targetV1": true,
+      "sources": ["native/monero-bridge", "apps/mobile/src/screens/ReceiveScreen.tsx", "apps/mobile/src/screens/WalletsScreen.tsx"]
+    },
+    {
+      "id": "global-sync-and-scanpack",
+      "targetV1": true,
+      "sources": ["native/monero-bridge", "native/scanpack-format", "tools/wallet-testbench/test-network-sync-coordinator-contract.mjs"]
+    },
+    {
+      "id": "ledger-view-wallet-and-key-images",
+      "targetV1": true,
+      "sources": ["native/monero-bridge", "tools/wallet-testbench/test-ledger-owned-output-sync-contract.mjs"]
+    },
+    {
+      "id": "fast-wallet-and-private-wake",
+      "targetV1": true,
+      "sources": ["native/fast-wallet-protocol", "services/fast-wallet-worker", "services/fast-wallet-relay", "services/notification-gateway"]
+    },
+    {
+      "id": "mfw-names",
+      "targetV1": true,
+      "sources": ["native/mfw-recipient-protocol", "apps/mobile/src/screens/MfwNamesScreen.tsx"]
+    },
+    {
+      "id": "community-profiles-and-publication",
+      "targetV1": true,
+      "sources": ["native/community-runtime-core", "packages/community-publication-core", "services/enthusiast-v1"]
+    },
+    {
+      "id": "listings-moderation-and-expiry",
+      "targetV1": true,
+      "sources": ["packages/community-publication-core", "services/enthusiast-operations", "services/enthusiast-moderation-console"]
+    },
+    {
+      "id": "offline-semantic-search-and-interest",
+      "targetV1": true,
+      "sources": ["native/community-harrier-runtime", "packages/community-search-core", "packages/community-query-contribution-core"]
+    },
+    {
+      "id": "matrix-chat-and-consented-contacts",
+      "targetV1": true,
+      "sources": ["native/community-matrix-core", "packages/community-contact-core", "packages/community-chat-report-core"]
+    },
+    {
+      "id": "media-news-and-market-data",
+      "targetV1": true,
+      "sources": ["services/monero-news", "apps/mobile/src/screens/HomeScreen.tsx", "apps/desktop/src/marketData.ts"]
+    },
+    {
+      "id": "advertising",
+      "targetV1": true,
+      "sources": ["packages/community-search-core", "config/v1-release-features.json"]
+    },
+    {
+      "id": "signed-updates",
+      "targetV1": true,
+      "sources": ["packages/app-update-core", "apps/mobile/src/services/AppUpdateService.ts", "apps/desktop/src/appUpdate.ts"]
+    },
+    {
+      "id": "hardware-acceleration",
+      "targetV1": true,
+      "sources": ["native/cuda-derivation", "native/monero-bridge"]
+    },
+    {
+      "id": "diagnostics-testbench-and-observability",
+      "targetV1": true,
+      "sources": ["tools/wallet-testbench", "packages/wallet-shared/src/diagnosticTestbench.ts", "apps/mobile/src/services/WalletDiagnostics.ts"]
+    },
+    {
+      "id": "platform-packaging",
+      "targetV1": true,
+      "sources": ["apps/mobile/android", "apps/mobile/ios", "apps/desktop/src-tauri", "native/desktop-bridge"]
+    }
+  ],
+  "apiContracts": [
+    {"id": "mobile-codegen", "source": "apps/mobile/specs/NativeMoneroWallet.ts"},
+    {"id": "android-native-adapter", "source": "apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt"},
+    {"id": "ios-native-adapter", "source": "apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm"},
+    {"id": "desktop-tauri-adapter", "source": "apps/desktop/src-tauri/src/lib.rs"},
+    {"id": "desktop-native-wallet", "source": "apps/desktop/src-tauri/src/native_wallet.rs"},
+    {"id": "shared-wallet-contracts", "source": "packages/wallet-shared/src"},
+    {"id": "shared-product-core-abi", "source": "native/product-core/include/mfw_product_core.h"},
+    {"id": "monero-wallet-engine", "source": "native/monero-bridge/cpp/WalletEngine.h"}
+  ],
+  "storageAuthorities": [
+    {"id": "mobile-wallet-registry", "source": "apps/mobile/src/services/WalletRegistry.ts"},
+    {"id": "mobile-fast-receive-registry", "source": "apps/mobile/src/services/FastReceiveRegistry.ts"},
+    {"id": "desktop-wallet-registry", "source": "apps/desktop/src-tauri/src/wallet_registry.rs"},
+    {"id": "desktop-secure-store", "source": "apps/desktop/src-tauri/src/secure_store.rs"},
+    {"id": "community-catalog-store", "source": "native/community-runtime-core"},
+    {"id": "community-search-index", "source": "packages/community-search-core"}
+  ],
+  "goldenContractFamilies": [
+    {"id": "product-cli-bootstrap", "runner": "tools/wallet-testbench/test-product-cli-bootstrap-contract.mjs"},
+    {"id": "wallet-core", "runner": "tools/wallet-testbench/test-common-wallet-core-contract.mjs"},
+    {"id": "global-multiwallet-sync", "runner": "tools/wallet-testbench/test-network-sync-coordinator-model.mjs"},
+    {"id": "ledger-key-images", "runner": "tools/wallet-testbench/test-ledger-key-image-pipeline-model.mjs"},
+    {"id": "scanpack", "runner": "tools/wallet-testbench/run-scanpack-security-testbench.sh"},
+    {"id": "fast-wallet", "runner": "native/fast-wallet-protocol/test-vectors/worker-descriptor-v1.json"},
+    {"id": "mfw", "runner": "tools/wallet-testbench/run-mfw-recipient-security-testbench.sh"},
+    {"id": "community-publication", "runner": "packages/community-publication-core/tests/lifecycle.rs"},
+    {"id": "offline-search", "runner": "packages/community-search-core/tests/catalog.rs"},
+    {"id": "matrix", "runner": "native/community-matrix-core/src/lib.rs"},
+    {"id": "updates", "runner": "packages/app-update-core/tests/update-core.test.ts"}
+  ],
+  "releaseFeatureSnapshot": {
+    "source": "config/v1-release-features.json",
+    "expectedFeatures": {
+      "localFastWallet": true,
+      "automaticFastWalletCreation": false,
+      "plaintextFastWalletHosting": false,
+      "ledgerFastWallet": true,
+      "scannerKeyImageSpendAuthority": false,
+      "officialWorker": true,
+      "privateWorkerPairing": false,
+      "moneroEnthusiastV1": true,
+      "legacyCommunity": false,
+      "news": false,
+      "assistant": false,
+      "marketplace": false,
+      "mfwNameResolution": false,
+      "mfwNameRegistration": false,
+      "deviceContactDiscovery": false,
+      "publicLedger": false
+    },
+    "requiredDisabled": [
+      "plaintextFastWalletHosting",
+      "scannerKeyImageSpendAuthority",
+      "legacyCommunity",
+      "marketplace",
+      "deviceContactDiscovery",
+      "publicLedger"
+    ]
+  },
+  "baselineVariants": [
+    {"id": "original-monero-wallet", "evidence": "docs/WALLET_SYNC_BENCHMARK_RESULTS.md"},
+    {"id": "monero-fast-wallet", "evidence": "docs/WALLET_SYNC_BENCHMARK_RESULTS.md"},
+    {"id": "fast-wallet-scanpack", "evidence": "docs/WALLET_SYNC_NETWORK_MEASUREMENT.md"}
+  ],
+  "requiredComparisonMetrics": [
+    "sync_duration",
+    "blocks_per_second",
+    "payload_mib_per_second",
+    "network_throughput",
+    "client_scan_time",
+    "server_db_time",
+    "client_cpu",
+    "server_cpu",
+    "client_ram",
+    "server_ram",
+    "persistent_storage",
+    "temporary_storage",
+    "owned_outputs",
+    "key_image_derivations",
+    "derivations_per_second",
+    "spent_rpc_time",
+    "commit_time",
+    "fallbacks_and_errors"
+  ]
+}

@@ -33,7 +33,8 @@ read_lock() {
 upstream_url="$(read_lock upstream_url)"
 upstream_ref="$(read_lock upstream_ref)"
 upstream_commit="$(read_lock upstream_commit)"
-[[ -n "${upstream_url}" && -n "${upstream_ref}" && -n "${upstream_commit}" ]] || {
+patched_tree="$(read_lock patched_tree)"
+[[ -n "${upstream_url}" && -n "${upstream_ref}" && -n "${upstream_commit}" && -n "${patched_tree}" ]] || {
   echo "upstream.lock is incomplete" >&2
   exit 2
 }
@@ -60,9 +61,16 @@ while IFS= read -r patch_name; do
   git -C "${destination}" am --3way "${patch_path}"
 done < "${series_file}"
 
+actual_patched_tree="$(git -C "${destination}" rev-parse HEAD^{tree})"
+[[ "${actual_patched_tree}" == "${patched_tree}" ]] || {
+  echo "Patched tree mismatch: expected ${patched_tree}, got ${actual_patched_tree}" >&2
+  exit 1
+}
+
 git -C "${destination}" submodule sync --recursive
 git -C "${destination}" submodule update --init --recursive
 git -C "${destination}" diff --check
 echo "official_base=${actual_base}"
 echo "patched_head=$(git -C "${destination}" rev-parse HEAD)"
+echo "patched_tree=${actual_patched_tree}"
 echo "source_dir=${destination}"

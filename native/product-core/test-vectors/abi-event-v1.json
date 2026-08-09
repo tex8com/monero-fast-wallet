@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "abiVersion": 1,
+  "schemaSha256": "8d0aa094c9ef98e94c6df928d91301288fde0f05067dd35ab57198c0d443d538",
+  "diagnosticRegistrySha256": "5a9d9f1053ef8ada13ea5c08b76368034e1d200131502775fba15ec9bee0b4ac",
+  "diagnosticResultSchemaSha256": "21d8919c60fc55a06f65698b304dfe0c2fd738e2d9b241da87f468a8fba94fdf",
+  "diagnosticAdaptersSha256": "30a09c9b331289175014ccb1e5a4b6882115ab931b28cfcd4a2e6525c7d30d53",
+  "appVaultStateSchemaSha256": "e642865f8b9eaf3b2c53544289a27b338adf58157b83ae8927a241574ba0abad",
+  "walletLifecycleSchemaSha256": "e170a28d8fb4b9607f34eab74e7542743b2ac50a29d96c6d8140102252271c00",
+  "encoding": "mfw-event-v1-little-endian",
+  "event": {
+    "eventSequence": 42,
+    "monotonicTimestampNsRaw": "1234567890123",
+    "durationNsRaw": "987654321",
+    "priority": 1,
+    "network": 1,
+    "status": 2,
+    "component": 7,
+    "phase": 16,
+    "errorCode": 0,
+    "processSessionIdHex": "01010101010101010101010101010101",
+    "runIdHex": "02020202020202020202020202020202",
+    "operationIdHex": "03030303030303030303030303030303",
+    "parentOperationIdHex": "04040404040404040404040404040404",
+    "walletPseudonymHex": "05050505050505050505050505050505",
+    "metrics": [
+      {
+        "metricId": 8,
+        "value": "2048"
+      }
+    ]
+  },
+  "encodedHex": "4d465731010001002a00000000000000cb04fb711f010000b168de3a000000000101020007001000000001000101010101010101010101010101010102020202020202020202020202020202030303030303030303030303030303030404040404040404040404040404040405050505050505050505050505050505080000000008000000000000"
+}

@@ -1,0 +1,92 @@
+From 53bd46dbfaa6ca327212ca64770254b023c12bb1 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 21:20:15 -0500
+Subject: [PATCH] wallet cli: exercise removal lifecycle in self-test
+
+---
+ src/simplewallet/product_cli_debug.cpp | 56 +++++++++++++++++++++++++-
+ 1 file changed, 55 insertions(+), 1 deletion(-)
+
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index 39ed892fc..787018deb 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -258,20 +258,74 @@ namespace
+     event.event = MFW_WALLET_EVENT_CONFIRM_SEED_BACKUP;
+     event.value = 1;
+     expect(mfw_wallet_lifecycle_apply_event_v1(&next, &event, &state) == MFW_ERROR_OK &&
+-      state.lifecycle_state == MFW_WALLET_LIFECYCLE_READY);
++      state.lifecycle_state == MFW_WALLET_LIFECYCLE_READY &&
++      state.seed_backup_confirmed == 1);
++
++    event.event = MFW_WALLET_EVENT_SELECT;
++    event.value = 0;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&state, &event, &next) == MFW_ERROR_OK &&
++      next.selected == 1);
++    event.event = MFW_WALLET_EVENT_REQUEST_REMOVE;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&next, &event, &state) == MFW_ERROR_OK &&
++      state.lifecycle_state == MFW_WALLET_LIFECYCLE_REMOVAL_PENDING &&
++      state.selected == 0);
++    event.event = MFW_WALLET_EVENT_CANCEL_REMOVE;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&state, &event, &next) == MFW_ERROR_OK &&
++      next.lifecycle_state == MFW_WALLET_LIFECYCLE_READY);
++    event.event = MFW_WALLET_EVENT_REQUEST_REMOVE;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&next, &event, &state) == MFW_ERROR_OK &&
++      state.lifecycle_state == MFW_WALLET_LIFECYCLE_REMOVAL_PENDING);
++    event.event = MFW_WALLET_EVENT_CONFIRM_REMOVE;
++    event.value = 1;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&state, &event, &next) == MFW_ERROR_OK &&
++      next.lifecycle_state == MFW_WALLET_LIFECYCLE_REMOVED &&
++      next.selected == 0);
++
++    mfw_wallet_removal_input_v1 removal_input{};
++    removal_input.struct_size = sizeof(removal_input);
++    removal_input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
++    removal_input.wallet_kind = MFW_WALLET_KIND_FAST;
++    removal_input.balance_state = MFW_WALLET_BALANCE_KNOWN_POSITIVE;
++    removal_input.fast_worker_enrolled = 1;
++    removal_input.notifications_enabled = 1;
++    mfw_wallet_removal_plan_v1 removal_plan{};
++    const std::uint32_t expected_removal_flags =
++      MFW_WALLET_REMOVAL_REQUIREMENT_BACKUP_SEED |
++      MFW_WALLET_REMOVAL_REQUIREMENT_ACKNOWLEDGE_POSITIVE_BALANCE |
++      MFW_WALLET_REMOVAL_REQUIREMENT_DETACH_FAST_WORKER |
++      MFW_WALLET_REMOVAL_REQUIREMENT_DISABLE_NOTIFICATIONS;
++    expect(mfw_wallet_removal_plan_compute_v1(&removal_input, &removal_plan) == MFW_ERROR_OK &&
++      removal_plan.requirement_flags == expected_removal_flags &&
++      removal_plan.immediate_removal_allowed == 0);
++    removal_input.wallet_kind = MFW_WALLET_KIND_LEDGER_VIEW;
++    removal_input.balance_state = MFW_WALLET_BALANCE_KNOWN_ZERO;
++    removal_input.fast_worker_enrolled = 0;
++    removal_input.notifications_enabled = 0;
++    expect(mfw_wallet_removal_plan_compute_v1(&removal_input, &removal_plan) == MFW_ERROR_OK &&
++      removal_plan.requirement_flags == 0 &&
++      removal_plan.immediate_removal_allowed == 1);
+ 
+     const std::array<std::uint64_t, 3> account_balances{{100, 200, 300}};
+     std::uint64_t total_balance = 0;
+     expect(mfw_wallet_checked_total_balance_v1(
+       account_balances.data(), account_balances.size(), &total_balance) == MFW_ERROR_OK &&
+       total_balance == 600);
++    const std::array<std::uint64_t, 2> overflowing_balances{{
++      std::numeric_limits<std::uint64_t>::max(), 1}};
++    expect(mfw_wallet_checked_total_balance_v1(
++      overflowing_balances.data(), overflowing_balances.size(), &total_balance) != MFW_ERROR_OK);
+     std::uint64_t restore_height = std::numeric_limits<std::uint64_t>::max();
+     expect(mfw_wallet_restore_floor_v1(
+       50, MFW_WALLET_RESTORE_DEFAULT_SAFETY_BLOCKS, &restore_height) == MFW_ERROR_OK &&
+       restore_height == 0);
++    expect(mfw_wallet_restore_floor_v1(
++      50, MFW_WALLET_RESTORE_MAXIMUM_SAFETY_BLOCKS + 1, &restore_height) != MFW_ERROR_OK);
+ 
+     mfw_send_state_v1 send_state{};
+     expect(mfw_send_state_default_v1(&send_state) == MFW_ERROR_OK);
++    mfw_send_state_v1 invalid_send{};
++    expect(mfw_send_apply_event_v1(
++      &send_state, MFW_SEND_EVENT_SUBMIT, &invalid_send) != MFW_ERROR_OK);
+     const std::array<std::uint32_t, 5> send_events{{
+       MFW_SEND_EVENT_VALIDATE_RECIPIENT,
+       MFW_SEND_EVENT_PREPARE,
+-- 
+2.50.1 (Apple Git-155)
+

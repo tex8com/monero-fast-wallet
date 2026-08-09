@@ -89,11 +89,11 @@ assert.match(
 assert.match(cpuPatch, /\.num_threads\(workers\.max\(1\)\)/);
 assert.doesNotMatch(cpuPatch, /rust_batch_workers\s*=\s*(?:9|10)\s*;/);
 
-assert.match(externalBuild, /source "\$\{script_dir\}\/prepare-patched-monero-core\.sh"/);
+assert.match(externalBuild, /prepare-common-monero-core\.sh/);
 assert.match(externalBuild, /MONERO_SOURCE_DIR="\$\{MONERO_SOURCE_DIR\}"/);
-assert.match(externalBuild, /android-monero-wallet-tex8-patched/);
-assert.match(externalBuild, /mobile-fast-crypto-tex8-patched/);
-assert.match(externalBuild, /android-monero-link-manifests-tex8-patched/);
+assert.match(externalBuild, /android-monero-wallet-\$\{MONERO_COMMON_CORE_TREE\}/);
+assert.match(externalBuild, /mobile-fast-crypto-\$\{MONERO_COMMON_CORE_TREE\}/);
+assert.match(externalBuild, /android-monero-link-manifests-\$\{MONERO_COMMON_CORE_TREE\}/);
 assert.match(
   mobileFastCryptoBuild,
   /source "\$\{script_dir\}\/prepare-wallet-crypto-cpu-backend\.sh"/,
@@ -102,7 +102,8 @@ assert.match(mobileFastCryptoBuild, /cargo --config "\$\(wallet_cpu_cargo_config
 assert.match(mobileFastCryptoBuild, /--locked/);
 assert.match(mobileFastCryptoBuild, /MONERO_WALLET_DALEK_TREE/);
 for (const script of [androidBuild, androidInstall]) {
-  assert.match(script, /monero-v0\.18\.4\.6-tex8-patched/);
+  assert.match(script, /prepare-common-monero-core\.sh/);
+  assert.match(script, /android-monero-link-manifests-\$\{MONERO_COMMON_CORE_TREE\}/);
   assert.match(script, /android-monero-link-manifests-tex8-patched/);
 }
 assert.match(
@@ -117,10 +118,10 @@ assert.match(
   androidCmake,
   /PRIVATE TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=1/,
 );
-assert.match(iosCoreBuild, /prepare-patched-monero-core\.sh/);
-assert.match(iosCoreBuild, /mobile-fast-crypto-tex8-patched/);
-assert.match(iosCoreBuild, /ios-monero-wallet-tex8-patched/);
-assert.match(iosCoreBuild, /ios-monero-link-manifests-tex8-patched/);
+assert.match(iosCoreBuild, /prepare-common-monero-core\.sh/);
+assert.match(iosCoreBuild, /mobile-fast-crypto-\$MONERO_COMMON_CORE_TREE/);
+assert.match(iosCoreBuild, /ios-monero-wallet-\$MONERO_COMMON_CORE_TREE/);
+assert.match(iosCoreBuild, /ios-monero-link-manifests-\$MONERO_COMMON_CORE_TREE/);
 assert.match(iosCoreBuild, /MONERO_ENABLE_GRPC_STREAM=ON/);
 assert.match(iosCoreBuild, /STRICT_OPTIONAL=1/);
 assert.match(
@@ -134,11 +135,10 @@ assert.doesNotMatch(
 assert.match(iosProject, /"\$\(MONERO_FAST_WALLET_PROTOCOL_LIBRARY\)"/);
 assert.match(
   protocolMobileBuild,
-  /cp -R "\$\{repo_root\}\/native\/mfw-recipient-protocol"/,
+  /cp -R "\$\{repo_root\}\/native\/mfw-recipient-protocol\/src"/,
 );
-assert.match(iosBuildInstall, /monero-v0\.18\.4\.6-tex8-patched/);
-assert.match(iosBuildInstall, /ios-monero-link-manifests-tex8-patched/);
-assert.match(iosBuildInstall, /prepare-patched-monero-core\.sh/);
+assert.match(iosBuildInstall, /ios-monero-link-manifests-\$MONERO_COMMON_CORE_TREE/);
+assert.match(iosBuildInstall, /prepare-common-monero-core\.sh/);
 assert.match(iosBuildInstall, /generate-codegen-artifacts\.js/);
 assert.match(iosBuildInstall, /AsyncStorageSpec\/AsyncStorageSpec\.h/);
 assert.match(

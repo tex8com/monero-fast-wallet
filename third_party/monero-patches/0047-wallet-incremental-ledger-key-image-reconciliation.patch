@@ -1,0 +1,379 @@
+From 741bc877a3c8d54012723e87f9bb13330185e2b7 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sat, 8 Aug 2026 16:28:02 -0500
+Subject: [PATCH] wallet: make Ledger key-image reconciliation incremental
+
+---
+ src/wallet/api/wallet.cpp    |  18 ++++
+ src/wallet/api/wallet.h      |   1 +
+ src/wallet/api/wallet2_api.h |  14 +++
+ src/wallet/wallet2.cpp       | 169 +++++++++++++++++++++++++++++------
+ src/wallet/wallet2.h         |  15 +++-
+ 5 files changed, 190 insertions(+), 27 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index fed25a0..b139fe5 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -3183,6 +3183,24 @@ uint64_t WalletImpl::coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, ui
+     return m_wallet->cold_key_image_sync_to(*destination_impl->m_wallet, spent, unspent);
+ }
+ 
++uint64_t WalletImpl::coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats)
++{
++    auto *destination_impl = dynamic_cast<WalletImpl *>(&destination);
++    if (destination_impl == nullptr)
++        throw runtime_error("Cold key-image destination is not a compatible wallet");
++    tools::ledger_key_image_sync_stats core_stats;
++    const uint64_t height = m_wallet->cold_key_image_sync_to(*destination_impl->m_wallet, spent, unspent, core_stats);
++    stats.pendingOutputCount = core_stats.pending_output_count;
++    stats.importedOutputCount = core_stats.imported_output_count;
++    stats.derivedOutputCount = core_stats.derived_output_count;
++    stats.derivationDurationMs = core_stats.derivation_duration_ms;
++    stats.spentStatusRpcDurationMs = core_stats.spent_status_rpc_duration_ms;
++    stats.outgoingRpcDurationMs = core_stats.outgoing_rpc_duration_ms;
++    stats.stateUpdateDurationMs = core_stats.state_update_duration_ms;
++    stats.storeDurationMs = core_stats.store_duration_ms;
++    return height;
++}
++
+ void WalletImpl::deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId)
+ {
+     boost::optional<crypto::hash8> payment_id_param = boost::none;
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 753997c..bf0a41c 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -256,6 +256,7 @@ public:
+     virtual bool isKeysFileLocked() override;
+     virtual uint64_t coldKeyImageSync(uint64_t &spent, uint64_t &unspent) override;
+     virtual uint64_t coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, uint64_t &unspent) override;
++    virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats) override;
+     virtual void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) override;
+     virtual bool reconnectDevice() override;
+     virtual uint64_t getBytesReceived() override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 9ecfc68..18864ab 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -67,6 +67,17 @@ void setLedgerBleTransportCallbacks(const LedgerBleTransportCallbacks &callbacks
+ void clearLedgerBleTransportCallbacks();
+ bool ledgerBleTransportAvailable();
+ 
++struct LedgerKeyImageSyncStats {
++    uint64_t pendingOutputCount = 0;
++    uint64_t importedOutputCount = 0;
++    uint64_t derivedOutputCount = 0;
++    uint64_t derivationDurationMs = 0;
++    uint64_t spentStatusRpcDurationMs = 0;
++    uint64_t outgoingRpcDurationMs = 0;
++    uint64_t stateUpdateDurationMs = 0;
++    uint64_t storeDurationMs = 0;
++};
++
+     namespace Utils {
+         bool isAddressLocal(const std::string &hostaddr);
+         void onStartup();
+@@ -1253,6 +1264,9 @@ struct Wallet
+     //! cold-device protocol key image sync into an equivalent view-only wallet
+     virtual uint64_t coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, uint64_t &unspent) = 0;
+ 
++    //! incremental Ledger key-image sync with isolated performance telemetry
++    virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats) = 0;
++
+     //! shows address on device display
+     virtual void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) = 0;
+ 
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index a623fc9..586d003 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -13658,6 +13658,12 @@ uint64_t wallet2::cold_key_image_sync(uint64_t &spent, uint64_t &unspent) {
+ }
+ //----------------------------------------------------------------------------------------------------
+ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent) {
++  ledger_key_image_sync_stats stats;
++  return cold_key_image_sync_to(destination, spent, unspent, stats);
++}
++//----------------------------------------------------------------------------------------------------
++uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent, ledger_key_image_sync_stats &stats) {
++  stats = {};
+   // Keep this API name for wallet-api ABI compatibility. Ledger does not
+   // implement device_cold::ki_sync. The view-only destination has already
+   // found the small set of wallet-owned outputs while scanning locally. Ask
+@@ -13677,19 +13683,62 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+   CHECK_AND_ASSERT_THROW_MES(
+       destination.watch_only(),
+       "Key-image cache destination is not view-only");
++
++  auto &hwdev = get_account().get_device();
++  size_t import_offset = destination.m_transfers.size();
++  for (size_t index = 0; index < destination.m_transfers.size(); ++index)
++  {
++    const transfer_details &transfer = destination.m_transfers[index];
++    if (!transfer.m_key_image_known || transfer.m_key_image_partial)
++    {
++      import_offset = std::min(import_offset, index);
++      ++stats.pending_output_count;
++    }
++  }
++
++  // A second run is intentionally a no-op: no Ledger prompts, no daemon RPC,
++  // and no wallet-cache rewrite. This is the common fast path after the view
++  // wallet has already reconciled every owned output.
++  if (stats.pending_output_count == 0)
++  {
++    spent = 0;
++    unspent = 0;
++    for (const transfer_details &transfer : destination.m_transfers)
++    {
++      if (transfer.m_frozen)
++        continue;
++      if (transfer.m_spent)
++        spent += transfer.amount();
++      else
++        unspent += transfer.amount();
++    }
++    return destination.m_transfers.empty()
++        ? 0
++        : destination.m_transfers.back().m_block_height;
++  }
++
+   CHECK_AND_ASSERT_THROW_MES(
+       destination.is_trusted_daemon(),
+       "Ledger spent-state verification requires a trusted daemon");
+ 
+-  auto &hwdev = get_account().get_device();
+   std::vector<std::pair<crypto::key_image, crypto::signature>> derived_key_images;
+-  derived_key_images.reserve(destination.m_transfers.size());
++  derived_key_images.reserve(destination.m_transfers.size() - import_offset);
++  std::vector<std::pair<size_t, crypto::key_image>> pending_key_images;
++  pending_key_images.reserve(stats.pending_output_count);
+   std::set<std::pair<uint32_t, uint32_t>> prepared_subaddresses;
+-  destination.m_key_images.clear();
+-  for (size_t index = 0; index < destination.m_transfers.size(); ++index)
++  const auto derivation_started_at = std::chrono::steady_clock::now();
++  for (size_t index = import_offset; index < destination.m_transfers.size(); ++index)
+   {
+     transfer_details &destination_transfer = destination.m_transfers[index];
+ 
++    if (destination_transfer.m_key_image_known && !destination_transfer.m_key_image_partial)
++    {
++      derived_key_images.emplace_back(
++          destination_transfer.m_key_image,
++          crypto::signature{});
++      continue;
++    }
++
+     const auto subaddress = std::make_pair(
+         destination_transfer.m_subaddr_index.major,
+         destination_transfer.m_subaddr_index.minor);
+@@ -13735,29 +13784,85 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+         "Ledger-derived ephemeral public key does not match owned output " +
+             std::to_string(index));
+ 
+-    destination_transfer.m_key_image = key_image;
+-    destination_transfer.m_key_image_known = true;
+-    destination_transfer.m_key_image_request = false;
+-    destination_transfer.m_key_image_partial = false;
+-    destination.m_key_images[destination_transfer.m_key_image] = index;
+-    destination.m_pub_keys[destination_transfer.get_public_key()] = index;
++    pending_key_images.emplace_back(index, key_image);
+     derived_key_images.emplace_back(key_image, crypto::signature{});
++    ++stats.derived_output_count;
+   }
++  stats.derivation_duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++      std::chrono::steady_clock::now() - derivation_started_at).count();
++  stats.imported_output_count = derived_key_images.size();
+ 
+-  // The key image came directly from the authenticated hardware operation and
+-  // was bound above to the locally discovered output public key. Pre-seeding
+-  // the destination lets the existing import path skip file-signature checks,
+-  // query the trusted daemon once, and retain Monero's normal outgoing/spent
+-  // bookkeeping without exporting any key material from this process.
+-  const uint64_t import_height = destination.import_key_images(
+-      derived_key_images,
+-      0,
+-      spent,
+-      unspent,
+-      true);
+-  m_device_last_key_image_sync = time(NULL);
+-  destination.m_device_last_key_image_sync = m_device_last_key_image_sync;
+-  return import_height;
++  CHECK_AND_ASSERT_THROW_MES(
++      stats.derived_output_count == stats.pending_output_count,
++      "Ledger key-image staging did not cover every pending owned output");
++
++  // Snapshot before the first live mutation. The destination is held behind a
++  // session mutation lock by every product caller, so a failed RPC, rejected
++  // device action, invalid response, or failed durable store cannot expose a
++  // partially reconciled wallet state.
++  std::string destination_snapshot;
++  CHECK_AND_ASSERT_THROW_MES(
++      ::serialization::dump_binary(destination, destination_snapshot),
++      "Failed to stage the view-only wallet before key-image reconciliation");
++  i_wallet2_callback *destination_callback = destination.m_callback;
++  destination.m_callback = nullptr;
++
++  try
++  {
++    for (const auto &pending : pending_key_images)
++    {
++      transfer_details &destination_transfer = destination.m_transfers[pending.first];
++      destination_transfer.m_key_image = pending.second;
++      destination_transfer.m_key_image_known = true;
++      destination_transfer.m_key_image_request = false;
++      destination_transfer.m_key_image_partial = false;
++      destination.m_key_images[pending.second] = pending.first;
++      destination.m_pub_keys[destination_transfer.get_public_key()] = pending.first;
++    }
++
++    // The key images came directly from authenticated hardware operations and
++    // were each bound above to the locally discovered output public key.
++    // Existing complete entries in the contiguous tail are reused without a
++    // second Ledger derivation; only pending owned outputs touch the device.
++    const auto update_started_at = std::chrono::steady_clock::now();
++    const uint64_t import_height = destination.import_key_images(
++        derived_key_images,
++        import_offset,
++        spent,
++        unspent,
++        true,
++        &stats.spent_status_rpc_duration_ms,
++        &stats.outgoing_rpc_duration_ms);
++    const uint64_t update_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - update_started_at).count();
++    const uint64_t rpc_total_ms =
++        stats.spent_status_rpc_duration_ms + stats.outgoing_rpc_duration_ms;
++    stats.state_update_duration_ms =
++        update_total_ms > rpc_total_ms ? update_total_ms - rpc_total_ms : 0;
++
++    const time_t completed_at = time(NULL);
++    destination.m_device_last_key_image_sync = completed_at;
++    const auto store_started_at = std::chrono::steady_clock::now();
++    destination.store();
++    stats.store_duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - store_started_at).count();
++
++    m_device_last_key_image_sync = completed_at;
++    destination.m_callback = destination_callback;
++    return import_height;
++  }
++  catch (...)
++  {
++    const std::exception_ptr failure = std::current_exception();
++    const bool restored = ::serialization::parse_binary(
++        destination_snapshot,
++        destination);
++    destination.m_callback = destination_callback;
++    CHECK_AND_ASSERT_THROW_MES(
++        restored,
++        "Ledger reconciliation failed and the staged view-wallet state could not be restored");
++    std::rethrow_exception(failure);
++  }
+ }
+ //----------------------------------------------------------------------------------------------------
+ void wallet2::device_show_address(uint32_t account_index, uint32_t address_index, const boost::optional<crypto::hash8> &payment_id)
+@@ -15697,9 +15802,13 @@ uint64_t wallet2::import_key_images(const std::string &filename, uint64_t &spent
+ }
+ 
+ //----------------------------------------------------------------------------------------------------
+-uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, size_t offset, uint64_t &spent, uint64_t &unspent, bool check_spent)
++uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, size_t offset, uint64_t &spent, uint64_t &unspent, bool check_spent, uint64_t *spent_status_rpc_duration_ms, uint64_t *outgoing_rpc_duration_ms)
+ {
+   PERF_TIMER(import_key_images_lots);
++  if (spent_status_rpc_duration_ms)
++    *spent_status_rpc_duration_ms = 0;
++  if (outgoing_rpc_duration_ms)
++    *outgoing_rpc_duration_ms = 0;
+   COMMAND_RPC_IS_KEY_IMAGE_SPENT::request req = AUTO_VAL_INIT(req);
+   COMMAND_RPC_IS_KEY_IMAGE_SPENT::response daemon_resp = AUTO_VAL_INIT(daemon_resp);
+ 
+@@ -15757,6 +15866,7 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+   if(check_spent)
+   {
+     PERF_TIMER(import_key_images_RPC);
++    const auto spent_status_rpc_started_at = std::chrono::steady_clock::now();
+     {
+       const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+       uint64_t pre_call_credits = m_rpc_payment_state.credits;
+@@ -15768,6 +15878,9 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+         std::to_string(daemon_resp.spent_status.size()) + ", expected " +  std::to_string(signed_key_images.size()));
+       check_rpc_cost("/is_key_image_spent", daemon_resp.credits, pre_call_credits, daemon_resp.spent_status.size() * COST_PER_KEY_IMAGE);
+     }
++    if (spent_status_rpc_duration_ms)
++      *spent_status_rpc_duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now() - spent_status_rpc_started_at).count();
+ 
+     for (size_t n = 0; n < daemon_resp.spent_status.size(); ++n)
+     {
+@@ -15824,7 +15937,7 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+     {
+       const std::unordered_map<crypto::key_image, crypto::hash>::const_iterator skii = spent_key_images.find(td.m_key_image);
+       if (skii == spent_key_images.end())
+-        swept_transfers.push_back(i);
++        swept_transfers.push_back(i + offset);
+       else
+         spent_txids.insert(skii->second);
+     }
+@@ -15846,6 +15959,7 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+ 
+ 
+     PERF_TIMER_START(import_key_images_E);
++    const auto outgoing_rpc_started_at = std::chrono::steady_clock::now();
+     {
+       const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+       gettxs_req.client = get_client_signature();
+@@ -15856,6 +15970,9 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+         "daemon returned wrong response for gettransactions, wrong count = " + std::to_string(gettxs_res.txs.size()) + ", expected " + std::to_string(spent_txids.size()));
+       check_rpc_cost("/gettransactions", gettxs_res.credits, pre_call_credits, spent_txids.size() * COST_PER_TX);
+     }
++    if (outgoing_rpc_duration_ms)
++      *outgoing_rpc_duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++          std::chrono::steady_clock::now() - outgoing_rpc_started_at).count();
+     PERF_TIMER_STOP(import_key_images_E);
+ 
+     // process each outgoing tx
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index c3b6b54..1ddd687 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -99,6 +99,18 @@ namespace tools
+   class wallet2;
+   class Notify;
+ 
++  struct ledger_key_image_sync_stats
++  {
++    uint64_t pending_output_count{0};
++    uint64_t imported_output_count{0};
++    uint64_t derived_output_count{0};
++    uint64_t derivation_duration_ms{0};
++    uint64_t spent_status_rpc_duration_ms{0};
++    uint64_t outgoing_rpc_duration_ms{0};
++    uint64_t state_update_duration_ms{0};
++    uint64_t store_duration_ms{0};
++  };
++
+   class gamma_picker
+   {
+   public:
+@@ -1259,6 +1271,7 @@ private:
+     void cold_sign_tx(const std::vector<pending_tx>& ptx_vector, signed_tx_set &exported_txs, std::vector<cryptonote::address_parse_info> &dsts_info, std::vector<std::string> & tx_device_aux);
+     uint64_t cold_key_image_sync(uint64_t &spent, uint64_t &unspent);
+     uint64_t cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent);
++    uint64_t cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent, ledger_key_image_sync_stats &stats);
+     void device_show_address(uint32_t account_index, uint32_t address_index, const boost::optional<crypto::hash8> &payment_id);
+     bool parse_multisig_tx_from_str(std::string multisig_tx_st, multisig_tx_set &exported_txs) const;
+     bool load_multisig_tx(cryptonote::blobdata blob, multisig_tx_set &exported_txs, std::function<bool(const multisig_tx_set&)> accept_func = NULL);
+@@ -1697,7 +1710,7 @@ private:
+     size_t reconcile_output_key_images(
+         const std::vector<std::pair<crypto::key_image, bool>> &spent_states,
+         uint64_t checked_height);
+-    uint64_t import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, size_t offset, uint64_t &spent, uint64_t &unspent, bool check_spent = true);
++    uint64_t import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, size_t offset, uint64_t &spent, uint64_t &unspent, bool check_spent = true, uint64_t *spent_status_rpc_duration_ms = nullptr, uint64_t *outgoing_rpc_duration_ms = nullptr);
+     uint64_t import_key_images(const std::string &filename, uint64_t &spent, uint64_t &unspent);
+     bool import_key_images(std::vector<crypto::key_image> key_images, size_t offset=0, boost::optional<std::unordered_set<size_t>> selected_transfers=boost::none);
+     bool import_key_images(signed_tx_set & signed_tx, size_t offset=0, bool only_selected_transfers=false);
+-- 
+2.50.1 (Apple Git-155)
+

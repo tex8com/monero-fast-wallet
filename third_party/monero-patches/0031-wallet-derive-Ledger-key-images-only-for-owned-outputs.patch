@@ -1,0 +1,151 @@
+From 215d672d69371e59915c3cfe46841ddc998c9478 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Wed, 5 Aug 2026 21:52:09 -0500
+Subject: [PATCH] wallet: derive Ledger key images only for owned outputs
+
+The local view wallet already identifies the small set of owned outputs while
+scanning public blockchain data. Ask Ledger only for those outputs' key images
+instead of requiring the hardware wallet to repeat the historical scan.
+
+Bind each hardware result to the locally discovered output public key, then
+reuse Monero's trusted-daemon import path for authoritative spent-state and
+outgoing-transaction bookkeeping.
+
+---
+ src/wallet/wallet2.cpp | 99 ++++++++++++++++++++++++++++--------------
+ 1 file changed, 66 insertions(+), 33 deletions(-)
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index de093ff..3deacc6 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -13482,10 +13482,10 @@ uint64_t wallet2::cold_key_image_sync(uint64_t &spent, uint64_t &unspent) {
+ //----------------------------------------------------------------------------------------------------
+ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent) {
+   // Keep this API name for wallet-api ABI compatibility. Ledger does not
+-  // implement device_cold::ki_sync. Its normal wallet scan has already asked
+-  // the hardware for each owned output key image and persisted the result in
+-  // this source wallet. Copy only those authenticated cache entries after
+-  // proving that source and destination describe the same scanned outputs.
++  // implement device_cold::ki_sync. The view-only destination has already
++  // found the small set of wallet-owned outputs while scanning locally. Ask
++  // the hardware only for those outputs' key images instead of forcing a
++  // second historical blockchain scan through the Ledger device.
+   const auto &source_address = get_account().get_keys().m_account_address;
+   const auto &destination_address = destination.get_account().get_keys().m_account_address;
+   CHECK_AND_ASSERT_THROW_MES(
+@@ -13501,50 +13501,83 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+       destination.watch_only(),
+       "Key-image cache destination is not view-only");
+   CHECK_AND_ASSERT_THROW_MES(
+-      get_blockchain_current_height() == destination.get_blockchain_current_height(),
+-      "Ledger source and view-only destination are at different chain heights");
+-  CHECK_AND_ASSERT_THROW_MES(
+-      m_transfers.size() == destination.m_transfers.size(),
+-      "Ledger source and view-only destination have different output counts");
++      destination.is_trusted_daemon(),
++      "Ledger spent-state verification requires a trusted daemon");
+ 
++  auto &hwdev = get_account().get_device();
++  std::vector<std::pair<crypto::key_image, crypto::signature>> derived_key_images;
++  derived_key_images.reserve(destination.m_transfers.size());
++  std::set<std::pair<uint32_t, uint32_t>> prepared_subaddresses;
+   destination.m_key_images.clear();
+-  spent = 0;
+-  unspent = 0;
+-  uint64_t import_height = 0;
+-  for (size_t index = 0; index < m_transfers.size(); ++index)
++  for (size_t index = 0; index < destination.m_transfers.size(); ++index)
+   {
+-    const transfer_details &source_transfer = m_transfers[index];
+     transfer_details &destination_transfer = destination.m_transfers[index];
++
++    const auto subaddress = std::make_pair(
++        destination_transfer.m_subaddr_index.major,
++        destination_transfer.m_subaddr_index.minor);
++    if (prepared_subaddresses.insert(subaddress).second)
++      create_one_off_subaddress(destination_transfer.m_subaddr_index);
++
++    THROW_WALLET_EXCEPTION_IF(
++        destination_transfer.m_tx.vout.empty(),
++        error::wallet_internal_error,
++        "View-only output has no source transaction at index " +
++            std::to_string(index));
++    THROW_WALLET_EXCEPTION_IF(
++        destination_transfer.m_internal_output_index >=
++            destination_transfer.m_tx.vout.size(),
++        error::wallet_internal_error,
++        "View-only output index is out of range at transfer " +
++            std::to_string(index));
++
++    const crypto::public_key output_public_key =
++        destination_transfer.get_public_key();
++    const crypto::public_key tx_public_key =
++        destination.get_tx_pub_key_from_received_outs(destination_transfer);
++    const std::vector<crypto::public_key> additional_tx_public_keys =
++        get_additional_tx_pub_keys_from_extra(destination_transfer.m_tx);
++    cryptonote::keypair ephemeral;
++    crypto::key_image key_image;
++    const bool generated = cryptonote::generate_key_image_helper(
++        m_account.get_keys(),
++        m_subaddresses,
++        output_public_key,
++        tx_public_key,
++        additional_tx_public_keys,
++        destination_transfer.m_internal_output_index,
++        ephemeral,
++        key_image,
++        hwdev);
+     CHECK_AND_ASSERT_THROW_MES(
+-        source_transfer.m_txid == destination_transfer.m_txid &&
+-            source_transfer.m_internal_output_index == destination_transfer.m_internal_output_index &&
+-            source_transfer.m_global_output_index == destination_transfer.m_global_output_index &&
+-            source_transfer.m_amount == destination_transfer.m_amount &&
+-            source_transfer.m_subaddr_index == destination_transfer.m_subaddr_index &&
+-            source_transfer.get_public_key() == destination_transfer.get_public_key(),
+-        "Ledger source and view-only destination output identities differ at index " +
++        generated,
++        "Ledger failed to derive the key image for owned output " +
+             std::to_string(index));
+     CHECK_AND_ASSERT_THROW_MES(
+-        source_transfer.m_key_image_known && !source_transfer.m_key_image_partial,
+-        "Ledger cache has no complete key image for output " + std::to_string(index));
++        ephemeral.pub == output_public_key,
++        "Ledger-derived ephemeral public key does not match owned output " +
++            std::to_string(index));
+ 
+-    destination_transfer.m_key_image = source_transfer.m_key_image;
++    destination_transfer.m_key_image = key_image;
+     destination_transfer.m_key_image_known = true;
+     destination_transfer.m_key_image_request = false;
+     destination_transfer.m_key_image_partial = false;
+-    destination_transfer.m_spent = source_transfer.m_spent;
+-    destination_transfer.m_spent_height = source_transfer.m_spent_height;
+     destination.m_key_images[destination_transfer.m_key_image] = index;
+     destination.m_pub_keys[destination_transfer.get_public_key()] = index;
+-    import_height = std::max(import_height, source_transfer.m_block_height);
+-    if (source_transfer.m_frozen)
+-      continue;
+-    if (source_transfer.m_spent)
+-      spent += source_transfer.amount();
+-    else
+-      unspent += source_transfer.amount();
++    derived_key_images.emplace_back(key_image, crypto::signature{});
+   }
+ 
++  // The key image came directly from the authenticated hardware operation and
++  // was bound above to the locally discovered output public key. Pre-seeding
++  // the destination lets the existing import path skip file-signature checks,
++  // query the trusted daemon once, and retain Monero's normal outgoing/spent
++  // bookkeeping without exporting any key material from this process.
++  const uint64_t import_height = destination.import_key_images(
++      derived_key_images,
++      0,
++      spent,
++      unspent,
++      true);
+   m_device_last_key_image_sync = time(NULL);
+   destination.m_device_last_key_image_sync = m_device_last_key_image_sync;
+   return import_height;
+-- 
+2.50.1 (Apple Git-155)

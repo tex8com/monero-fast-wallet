@@ -1,0 +1,53 @@
+#!/usr/bin/expect -f
+# Feed a recovery seed through a pseudo-terminal so it never appears in the
+# process argument list. All child output remains disabled because it may echo
+# sensitive recovery material on unexpected failures.
+
+if {$argc != 3} {
+  puts stderr "Usage: restore-wallet-from-seed.expect <cli> <seed-file> <wallet-file>"
+  exit 2
+}
+
+set timeout 60
+set cli [lindex $argv 0]
+set seed_file [lindex $argv 1]
+set wallet_file [lindex $argv 2]
+
+set handle [open $seed_file r]
+set seed [string trim [read $handle]]
+close $handle
+
+if {[llength [split $seed]] != 25} {
+  puts stderr "Recovery seed file does not contain exactly 25 words"
+  exit 65
+}
+
+log_user 0
+spawn -noecho $cli \
+  --restore-deterministic-wallet \
+  --generate-new-wallet $wallet_file \
+  --password "" \
+  --restore-height 0 \
+  --offline \
+  --log-file /dev/null \
+  --command exit
+
+expect {
+  -re {Specify Electrum seed[^:]*:} {
+    send -- "$seed\r"
+    set seed ""
+    exp_continue
+  }
+  -re {Enter seed offset passphrase[^:]*:} {
+    send -- "\r"
+    exp_continue
+  }
+  eof {
+    set result [wait]
+    exit [lindex $result 3]
+  }
+  timeout {
+    puts stderr "Timed out while restoring wallet through secure prompt"
+    exit 124
+  }
+}

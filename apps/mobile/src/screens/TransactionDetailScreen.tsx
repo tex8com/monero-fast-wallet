@@ -56,10 +56,6 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
     maxFractionDigits: 12,
     minFractionDigits: 2,
   });
-  const fee = formatAtomicXmr(transaction.feeAtomic, {
-    maxFractionDigits: 12,
-    minFractionDigits: 2,
-  });
   const status = transaction.failed
     ? t('status.failed')
     : transaction.pending
@@ -175,8 +171,16 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
             label={t('transactions.direction')}
             value={incoming ? t('home.received') : t('home.sent')}
           />
-          <DetailRow label={t('transactions.amount')} value={`${amount} XMR`} />
-          <DetailRow label={t('transactions.fee')} value={`${fee} XMR`} />
+          <AtomicXmrDetailRow
+            atomicValue={transaction.amountAtomic}
+            label={t('transactions.amount')}
+            testID="transaction-amount"
+          />
+          <AtomicXmrDetailRow
+            atomicValue={transaction.feeAtomic}
+            label={t('transactions.fee')}
+            testID="transaction-network-fee"
+          />
           <DetailRow
             label={t('transactions.confirmations')}
             value={String(transaction.confirmations)}
@@ -296,6 +300,47 @@ function DetailRow({
         style={[s.detailValue, mono && s.mono]}
       >
         {value}
+      </Text>
+    </View>
+  );
+}
+
+function AtomicXmrDetailRow({
+  atomicValue,
+  label,
+  testID,
+}: {
+  atomicValue: string;
+  label: string;
+  testID: string;
+}) {
+  const fullValue = formatAtomicXmr(atomicValue, {
+    maxFractionDigits: 12,
+    minFractionDigits: 12,
+    trimTrailingZeros: false,
+  });
+  const trailingZeroCount = fullValue.match(/0+$/)?.[0].length ?? 0;
+  const significantValue = trailingZeroCount
+    ? fullValue.slice(0, -trailingZeroCount)
+    : fullValue;
+  const trailingZeros = trailingZeroCount ? '0'.repeat(trailingZeroCount) : '';
+
+  return (
+    <View style={s.detailRow}>
+      <Text style={s.detailLabel}>{label}</Text>
+      <Text
+        accessibilityLabel={`${fullValue} XMR`}
+        selectable
+        style={[s.detailValue, s.atomicXmrValue]}
+        testID={testID}
+      >
+        <Text testID={`${testID}-significant`}>{significantValue}</Text>
+        {trailingZeros ? (
+          <Text style={s.trailingZeros} testID={`${testID}-trailing-zeros`}>
+            {trailingZeros}
+          </Text>
+        ) : null}
+        {' XMR'}
       </Text>
     </View>
   );
@@ -421,6 +466,12 @@ const s = StyleSheet.create({
     lineHeight: 19,
     textAlign: 'right',
   },
+  atomicXmrValue: {
+    fontFamily: 'monospace',
+    fontVariant: ['tabular-nums'],
+    fontSize: 12,
+  },
+  trailingZeros: { color: colors.textSecondary },
   mono: { fontFamily: 'monospace', fontSize: 11 },
   transferSection: { marginTop: 2 },
   transferCard: {

@@ -26,9 +26,17 @@ monero_patch_lock_value() {
 monero_patch_repository="$(monero_patch_lock_value upstream_url)"
 monero_patch_base_commit="$(monero_patch_lock_value upstream_commit)"
 monero_patch_base_tree="$(monero_patch_lock_value upstream_tree)"
+monero_patch_previous_tree="$(monero_patch_lock_value previous_patched_tree)"
+monero_patch_previous_count="$(monero_patch_lock_value previous_patch_count)"
 monero_patch_expected_tree="$(monero_patch_lock_value patched_tree)"
 
-if [[ ! -d "${monero_patch_source_dir}/.git" ]]; then
+if [[ ! "${monero_patch_previous_count}" =~ ^[0-9]+$ ]]; then
+  echo "Invalid previous_patch_count in ${monero_patch_lock}" >&2
+  return 65 2>/dev/null || exit 65
+fi
+
+if [[ ! -d "${monero_patch_source_dir}/.git" ]] \
+    || ! git -C "${monero_patch_source_dir}" rev-parse --verify HEAD >/dev/null 2>&1; then
   "${monero_patch_checkout_script}" \
     "${monero_patch_repository}" \
     "${monero_patch_base_commit}" \
@@ -55,16 +63,29 @@ fi
 monero_patch_actual_tree="$(git -C "${monero_patch_source_dir}" rev-parse HEAD^{tree})"
 if [[ "${monero_patch_actual_tree}" != "${monero_patch_expected_tree}" ]]; then
   monero_patch_head="$(git -C "${monero_patch_source_dir}" rev-parse HEAD)"
-  if [[ "${monero_patch_head}" != "${monero_patch_base_commit}" \
-      || "${monero_patch_actual_tree}" != "${monero_patch_base_tree}" ]]; then
+  monero_patch_skip_count=0
+  if [[ "${monero_patch_head}" == "${monero_patch_base_commit}" \
+      && "${monero_patch_actual_tree}" == "${monero_patch_base_tree}" ]]; then
+    monero_patch_skip_count=0
+  elif [[ "${monero_patch_actual_tree}" == "${monero_patch_previous_tree}" ]]; then
+    # A local build cache can safely advance from the explicitly authenticated
+    # previous patch prefix. Unknown intermediate or modified trees remain
+    # rejected, and the final exact-tree check below is still mandatory.
+    monero_patch_skip_count="${monero_patch_previous_count}"
+  else
     echo "Pinned Monero source has an unexpected commit/tree." >&2
-    echo "Expected official base ${monero_patch_base_commit} or patched tree ${monero_patch_expected_tree}." >&2
+    echo "Expected official base ${monero_patch_base_commit}, authenticated previous tree ${monero_patch_previous_tree}, or patched tree ${monero_patch_expected_tree}." >&2
     return 65 2>/dev/null || exit 65
   fi
 
   monero_patch_files=()
+  monero_patch_index=0
   while IFS= read -r monero_patch_name; do
     [[ -z "${monero_patch_name}" || "${monero_patch_name}" == \#* ]] && continue
+    monero_patch_index=$((monero_patch_index + 1))
+    if (( monero_patch_index <= monero_patch_skip_count )); then
+      continue
+    fi
     monero_patch_path="${monero_patch_package_dir}/${monero_patch_name}"
     [[ -f "${monero_patch_path}" ]] || {
       echo "Missing Monero patch: ${monero_patch_path}" >&2
@@ -72,6 +93,11 @@ if [[ "${monero_patch_actual_tree}" != "${monero_patch_expected_tree}" ]]; then
     }
     monero_patch_files+=("${monero_patch_path}")
   done < "${monero_patch_series}"
+
+  if [[ "${#monero_patch_files[@]}" == "0" ]]; then
+    echo "Monero patch upgrade selected no remaining patches." >&2
+    return 65 2>/dev/null || exit 65
+  fi
 
   if ! git \
     -c user.name="TEX8 Monero Patch Integrator" \

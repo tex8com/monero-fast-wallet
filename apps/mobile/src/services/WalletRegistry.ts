@@ -10,6 +10,11 @@ export const WALLET_REGISTRY_STORAGE_KEY =
 export type RegisteredWalletKind = 'software' | 'hardware' | 'fast';
 export type RegisteredWalletRole = 'standard' | 'fast';
 export type SeedBackupStatus = 'pending' | 'verified' | 'not-required';
+export type FastWalletHostingStatus =
+  | 'local-only'
+  | 'transferring'
+  | 'enabled'
+  | 'needs-attention';
 
 export interface RegisteredWallet {
   id: string;
@@ -27,6 +32,9 @@ export interface RegisteredWallet {
   /** Secure-store key for the paired read wallet's random file password. */
   viewOnlyCredentialKey?: string;
   viewOnlyEnabledAt?: string;
+  /** Last successful Ledger-signed key-image import into the local companion. */
+  ledgerKeyImagesVerifiedAt?: string;
+  ledgerKeyImagesVerifiedHeight?: number;
   restoreHeight?: number;
   /**
    * A wallet can intentionally operate from another Monero account. Ledger
@@ -36,6 +44,13 @@ export interface RegisteredWallet {
   addressIndex?: number;
   role?: RegisteredWalletRole;
   sourceWalletId?: string;
+  /** Durable result of the encrypted Fast Wallet Worker enrollment. */
+  fastWalletHostingStatus?: FastWalletHostingStatus;
+  fastWalletHostedAt?: string;
+  fastWalletAssignmentHandle?: string;
+  fastWalletAssignmentEpoch?: number;
+  fastWalletAssignmentExpiresAt?: number;
+  fastWalletWatchMessageId?: string;
   hardwareDeviceName?: string;
   hardwareDeviceType?: string;
   createdAt: string;
@@ -57,6 +72,69 @@ export function isFastWalletRegistration(
   wallet: Pick<RegisteredWallet, 'kind' | 'role'> | null | undefined,
 ): boolean {
   return wallet?.kind === 'fast' || wallet?.role === 'fast';
+}
+
+/**
+ * Only wallets backed by local software entropy have recovery words that this
+ * app can present and confirm. A Ledger Fast Wallet is account 1 of the same
+ * hardware wallet (`kind: hardware`, `role: fast`); its recovery words remain
+ * on the Ledger and must never enter the software-wallet backup flow.
+ */
+export function walletRequiresRecoverySeedBackup(
+  wallet: Pick<RegisteredWallet, 'kind'> | null | undefined,
+): boolean {
+  return wallet?.kind === 'software' || wallet?.kind === 'fast';
+}
+
+/**
+ * Returns whether removing `target` also removes `candidate` from the local
+ * registry. Ledger account 1 is a logical child of the same hardware wallet,
+ * so deleting the Ledger root removes both registrations. Independent Fast
+ * Wallets own their own file and seed and are never cascaded from another
+ * wallet merely because older metadata contains a `sourceWalletId`.
+ */
+export function walletRegistrationIsRemovedWithTarget(
+  candidate: Pick<RegisteredWallet, 'id' | 'kind' | 'sourceWalletId'>,
+  target: Pick<RegisteredWallet, 'id' | 'kind'>,
+): boolean {
+  return (
+    candidate.id === target.id ||
+    (target.kind === 'hardware' &&
+      candidate.kind === 'hardware' &&
+      candidate.sourceWalletId === target.id)
+  );
+}
+
+export function ledgerBalanceNeedsVerification(
+  wallet: Pick<
+    RegisteredWallet,
+    | 'kind'
+    | 'viewOnlyPath'
+    | 'ledgerKeyImagesVerifiedAt'
+    | 'ledgerKeyImagesVerifiedHeight'
+  >,
+  pendingOutputKeyImageCount?: number,
+): boolean {
+  if (wallet.kind !== 'hardware') {
+    return false;
+  }
+  // A directly opened Ledger cache can discover incoming outputs, but the
+  // durable, device-independent balance is authoritative only after the owner
+  // has explicitly exported the private view key into an encrypted local
+  // companion and Ledger-signed key images have supplied spent status.
+  if (!wallet.viewOnlyPath) {
+    return true;
+  }
+  if (
+    !wallet.ledgerKeyImagesVerifiedAt ||
+    wallet.ledgerKeyImagesVerifiedHeight === undefined
+  ) {
+    return true;
+  }
+  // The Core publishes only a queue length, not any output/key-image data.
+  // This is the only condition that makes a later Ledger pass useful. Chain
+  // height alone must never wake the hardware device.
+  return (pendingOutputKeyImageCount ?? 0) > 0;
 }
 
 export async function loadRegisteredWallet(): Promise<
@@ -140,11 +218,19 @@ export function createRegisteredWallet(input: {
   viewOnlyPath?: string;
   viewOnlyCredentialKey?: string;
   viewOnlyEnabledAt?: string;
+  ledgerKeyImagesVerifiedAt?: string;
+  ledgerKeyImagesVerifiedHeight?: number;
   restoreHeight?: number;
   accountIndex?: number;
   addressIndex?: number;
   role?: RegisteredWalletRole;
   sourceWalletId?: string;
+  fastWalletHostingStatus?: FastWalletHostingStatus;
+  fastWalletHostedAt?: string;
+  fastWalletAssignmentHandle?: string;
+  fastWalletAssignmentEpoch?: number;
+  fastWalletAssignmentExpiresAt?: number;
+  fastWalletWatchMessageId?: string;
   hardwareDeviceName?: string;
   hardwareDeviceType?: string;
   now?: string;
@@ -168,11 +254,19 @@ export function createRegisteredWallet(input: {
     viewOnlyPath: input.viewOnlyPath,
     viewOnlyCredentialKey: input.viewOnlyCredentialKey,
     viewOnlyEnabledAt: input.viewOnlyEnabledAt,
+    ledgerKeyImagesVerifiedAt: input.ledgerKeyImagesVerifiedAt,
+    ledgerKeyImagesVerifiedHeight: input.ledgerKeyImagesVerifiedHeight,
     restoreHeight: input.restoreHeight,
     accountIndex: input.accountIndex,
     addressIndex: input.addressIndex,
     role: input.role,
     sourceWalletId: input.sourceWalletId,
+    fastWalletHostingStatus: input.fastWalletHostingStatus,
+    fastWalletHostedAt: input.fastWalletHostedAt,
+    fastWalletAssignmentHandle: input.fastWalletAssignmentHandle,
+    fastWalletAssignmentEpoch: input.fastWalletAssignmentEpoch,
+    fastWalletAssignmentExpiresAt: input.fastWalletAssignmentExpiresAt,
+    fastWalletWatchMessageId: input.fastWalletWatchMessageId,
     hardwareDeviceName: input.hardwareDeviceName,
     hardwareDeviceType: input.hardwareDeviceType,
     createdAt: now,
@@ -377,6 +471,13 @@ function normalizeRegisteredWallet(wallet: RegisteredWallet): RegisteredWallet {
     normalized.viewOnlyCredentialKey = wallet.viewOnlyCredentialKey.trim();
     normalized.viewOnlyEnabledAt =
       wallet.viewOnlyEnabledAt?.trim() || wallet.createdAt;
+    if (wallet.ledgerKeyImagesVerifiedAt?.trim()) {
+      normalized.ledgerKeyImagesVerifiedAt =
+        wallet.ledgerKeyImagesVerifiedAt.trim();
+      normalized.ledgerKeyImagesVerifiedHeight = normalizeRestoreHeight(
+        wallet.ledgerKeyImagesVerifiedHeight,
+      );
+    }
   }
 
   if (kind === 'fast' || wallet.restoreHeight !== undefined) {
@@ -396,6 +497,34 @@ function normalizeRegisteredWallet(wallet: RegisteredWallet): RegisteredWallet {
   }
   if (wallet.sourceWalletId?.trim()) {
     normalized.sourceWalletId = wallet.sourceWalletId.trim();
+  }
+  if (wallet.role === 'fast') {
+    normalized.fastWalletHostingStatus = normalizeFastWalletHostingStatus(
+      wallet.fastWalletHostingStatus,
+    );
+    if (wallet.fastWalletHostedAt?.trim()) {
+      normalized.fastWalletHostedAt = wallet.fastWalletHostedAt.trim();
+    }
+    if (wallet.fastWalletAssignmentHandle?.trim()) {
+      normalized.fastWalletAssignmentHandle =
+        wallet.fastWalletAssignmentHandle.trim();
+    }
+    const assignmentEpoch = normalizeOptionalUnsignedInteger(
+      wallet.fastWalletAssignmentEpoch,
+    );
+    if (assignmentEpoch !== undefined) {
+      normalized.fastWalletAssignmentEpoch = assignmentEpoch;
+    }
+    const assignmentExpiresAt = normalizeOptionalUnsignedInteger(
+      wallet.fastWalletAssignmentExpiresAt,
+    );
+    if (assignmentExpiresAt !== undefined) {
+      normalized.fastWalletAssignmentExpiresAt = assignmentExpiresAt;
+    }
+    if (wallet.fastWalletWatchMessageId?.trim()) {
+      normalized.fastWalletWatchMessageId =
+        wallet.fastWalletWatchMessageId.trim();
+    }
   }
 
   if (kind === 'hardware') {
@@ -464,11 +593,33 @@ function parseRegisteredWalletRecord(
   const viewOnlyPath = parseString(value.viewOnlyPath);
   const viewOnlyCredentialKey = parseString(value.viewOnlyCredentialKey);
   const viewOnlyEnabledAt = parseString(value.viewOnlyEnabledAt);
+  const ledgerKeyImagesVerifiedAt = parseString(
+    value.ledgerKeyImagesVerifiedAt,
+  );
+  const ledgerKeyImagesVerifiedHeight = parseNumber(
+    value.ledgerKeyImagesVerifiedHeight,
+  );
   const restoreHeight = parseNumber(value.restoreHeight);
   const accountIndex = parseNumber(value.accountIndex);
   const addressIndex = parseNumber(value.addressIndex);
   const role = parseWalletRole(value.role);
   const sourceWalletId = parseString(value.sourceWalletId);
+  const fastWalletHostingStatus = parseFastWalletHostingStatus(
+    value.fastWalletHostingStatus,
+  );
+  const fastWalletHostedAt = parseString(value.fastWalletHostedAt);
+  const fastWalletAssignmentHandle = parseString(
+    value.fastWalletAssignmentHandle,
+  );
+  const fastWalletAssignmentEpoch = parseNumber(
+    value.fastWalletAssignmentEpoch,
+  );
+  const fastWalletAssignmentExpiresAt = parseNumber(
+    value.fastWalletAssignmentExpiresAt,
+  );
+  const fastWalletWatchMessageId = parseString(
+    value.fastWalletWatchMessageId,
+  );
   const hardwareDeviceName = parseString(value.hardwareDeviceName);
   const hardwareDeviceType = parseString(value.hardwareDeviceType);
   const createdAt = parseString(value.createdAt);
@@ -493,11 +644,19 @@ function parseRegisteredWalletRecord(
     viewOnlyPath,
     viewOnlyCredentialKey,
     viewOnlyEnabledAt,
+    ledgerKeyImagesVerifiedAt,
+    ledgerKeyImagesVerifiedHeight,
     restoreHeight,
     accountIndex,
     addressIndex,
     role,
     sourceWalletId,
+    fastWalletHostingStatus,
+    fastWalletHostedAt,
+    fastWalletAssignmentHandle,
+    fastWalletAssignmentEpoch,
+    fastWalletAssignmentExpiresAt,
+    fastWalletWatchMessageId,
     hardwareDeviceName,
     hardwareDeviceType,
     createdAt,
@@ -514,6 +673,29 @@ function emptyRegistry(): WalletRegistryState {
 
 function parseString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function parseFastWalletHostingStatus(
+  value: unknown,
+): FastWalletHostingStatus | undefined {
+  return value === 'local-only' ||
+    value === 'transferring' ||
+    value === 'enabled' ||
+    value === 'needs-attention'
+    ? value
+    : undefined;
+}
+
+function normalizeFastWalletHostingStatus(
+  value: FastWalletHostingStatus | undefined,
+): FastWalletHostingStatus {
+  return parseFastWalletHostingStatus(value) ?? 'local-only';
+}
+
+function normalizeOptionalUnsignedInteger(
+  value: number | undefined,
+): number | undefined {
+  return Number.isSafeInteger(value) && (value ?? -1) >= 0 ? value : undefined;
 }
 
 function normalizeDisplayName(value: string | undefined): string | undefined {

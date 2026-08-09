@@ -11,10 +11,10 @@ abs_path() {
   esac
 }
 
-monero_source_dir="${MONERO_SOURCE_DIR:-${repo_root}/../monero-gui/monero}"
 output_root="$(abs_path "${OUTPUT_ROOT:-${repo_root}/build/android-monero-wallet}")"
 dependency_root="$(abs_path "${MONERO_ANDROID_DEPENDENCY_ROOT:-${repo_root}/build/android-deps}")"
 fast_crypto_root="$(abs_path "${MONERO_FAST_CRYPTO_ROOT:-${repo_root}/build/mobile-fast-crypto}")"
+fast_wallet_protocol_root="$(abs_path "${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${repo_root}/build/mobile-fast-wallet-protocol}")"
 android_api="${ANDROID_API:-24}"
 targets_csv="${TARGETS:-android-arm64}"
 jobs="${JOBS:-8}"
@@ -26,6 +26,11 @@ randomx_enable_jit="${RANDOMX_ENABLE_JIT:-OFF}"
 host_tools_root="$(abs_path "${MONERO_ANDROID_HOST_TOOLS_ROOT:-${MONERO_HOST_TOOLS_ROOT:-${repo_root}/build/host-protobuf-tools}}")"
 protoc_path="${PROTOC_PATH:-${host_tools_root}/protobuf-v31.1/bin/protoc}"
 grpc_cpp_plugin_path="${GRPC_CPP_PLUGIN_PATH:-}"
+mfw_product_core_root="$(abs_path "${MFW_PRODUCT_CORE_ROOT:-${repo_root}/native/product-core}")"
+mfw_product_core_library="${MFW_PRODUCT_CORE_LIBRARY:-}"
+
+source "${script_dir}/prepare-common-monero-core.sh"
+monero_source_dir="${MONERO_SOURCE_DIR}"
 
 if [[ ! -x "${protoc_path}" && -x "${repo_root}/build/android-host-tools/protobuf-v31.1/bin/protoc" ]]; then
   protoc_path="${repo_root}/build/android-host-tools/protobuf-v31.1/bin/protoc"
@@ -170,6 +175,21 @@ for label in "${targets[@]}"; do
     "-DMONERO_FAST_CRYPTO_LIBRARY=${fast_crypto_lib}"
     -DMANUAL_SUBMODULES=1
   )
+  if grep -Fq "MFW_PRODUCT_CORE_ROOT" "${monero_source_dir}/src/simplewallet/CMakeLists.txt"; then
+    if [[ ! -f "${mfw_product_core_root}/include/mfw_product_core.h" ||
+          ! -f "${mfw_product_core_root}/generated/c/mfw_product_core_contract.h" ]]; then
+      echo "Missing Monero Fast Wallet Product Core headers: ${mfw_product_core_root}" >&2
+      exit 1
+    fi
+    if [[ ! -f "${mfw_product_core_library}" ]]; then
+      echo "MFW_PRODUCT_CORE_LIBRARY must name an Android Product Core library." >&2
+      exit 1
+    fi
+    cmake_args+=(
+      "-DMFW_PRODUCT_CORE_ROOT=${mfw_product_core_root}"
+      "-DMFW_PRODUCT_CORE_LIBRARY=${mfw_product_core_library}"
+    )
+  fi
   if [[ -x "${protoc_path}" ]]; then
     cmake_args+=("-DPROTOC_PATH=${protoc_path}")
   fi
@@ -233,7 +253,11 @@ for label in "${targets[@]}"; do
       "PKG_CONFIG_PATH=${pkg_config_dir}"
     )
   fi
-  env "${cmake_env[@]}" cmake "${cmake_args[@]}"
+  if (( ${#cmake_env[@]} > 0 )); then
+    env "${cmake_env[@]}" cmake "${cmake_args[@]}"
+  else
+    cmake "${cmake_args[@]}"
+  fi
 
   if [[ "${configure_only}" != "1" ]]; then
     echo "==> build wallet_api ${label}"
@@ -256,7 +280,9 @@ for label in "${targets[@]}"; do
     wallet_api_stamp_tmp="${wallet_api_stamp}.tmp.$$"
     printf '%s\n' "${wallet_api_header_sha256}" > "${wallet_api_stamp_tmp}"
     mv "${wallet_api_stamp_tmp}" "${wallet_api_stamp}"
+    tex8_write_common_core_stamp "${build_dir}/.tex8-monero-core-tree"
     echo "Stamped wallet_api ABI ${wallet_api_header_sha256} for ${label}"
+    echo "Stamped common Monero Core ${MONERO_COMMON_CORE_TREE} for ${label}"
   fi
 done
 
@@ -264,6 +290,7 @@ if [[ "${generate_link_manifests}" == "1" && "${configure_only}" != "1" ]]; then
     TARGETS="${targets_csv}" \
     MONERO_ANDROID_BUILD_ROOT="${output_root}" \
     MONERO_FAST_CRYPTO_ROOT="${fast_crypto_root}" \
+    MONERO_FAST_WALLET_PROTOCOL_ROOT="${fast_wallet_protocol_root}" \
     MONERO_ANDROID_DEPENDENCY_ROOT="${dependency_root}" \
     OUTPUT_DIR="${OUTPUT_DIR:-${repo_root}/build/android-monero-link-manifests}" \
     "${script_dir}/generate-android-monero-link-manifests.sh"

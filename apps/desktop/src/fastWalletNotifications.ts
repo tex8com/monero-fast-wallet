@@ -10,11 +10,10 @@ import { invoke } from '@tauri-apps/api/core';
  * deliberately insufficient to reveal a payment: the wallet refreshes its
  * own local core before displaying any wallet data.
  */
-export const FAST_WALLET_PUSH_CONTRACT = 'monero-fast-wallet-push.v2' as const;
+export const FAST_WALLET_PUSH_CONTRACT = 'monero-fast-wallet-push.v3' as const;
 export const FAST_WALLET_PUSH_TYPE = 'monero.fast_wallet.incoming' as const;
 
 const PREFERENCES_KEY = 'monero-fast-wallet.desktop.notifications.v1';
-const INSTALLATION_ID_KEY = 'monero-fast-wallet.desktop.notification-installation.v1';
 const LAST_EVENT_ID_KEY = 'monero-fast-wallet.desktop.notification-last-event.v1';
 const FORBIDDEN_EVENT_FIELDS = new Set([
   'address', 'amountAtomic', 'amount_atomic', 'blockHeight', 'block_height',
@@ -40,6 +39,9 @@ export type DesktopNotificationStatus = DesktopNotificationPreferences & {
   platform: 'macos' | 'windows' | 'linux' | 'unknown';
   provider: 'apns' | 'windows-agent' | 'linux-agent' | 'tauri-local';
   providerStatus: 'ready' | 'not-configured' | 'local-fallback' | 'disabled' | string;
+  gatewayStatus: 'unregistered' | 'provider-pending' | 'active' | 'needs-refresh' | 'disabled' | string;
+  gatewayGeneration?: number;
+  gatewayLeaseExpiresAt?: number;
   backgroundModeSupported: boolean;
   backgroundModeEnabled: boolean;
   backgroundAgentConfigPath?: string;
@@ -63,6 +65,9 @@ type NativeNotificationInstallationStatus = {
     enabled: boolean;
     backgroundModeEnabled: boolean;
     providerStatus: DesktopNotificationStatus['providerStatus'];
+    gatewayStatus: DesktopNotificationStatus['gatewayStatus'];
+    gatewayGeneration?: number | null;
+    gatewayLeaseExpiresAt?: number | null;
   };
   delivery: DesktopNotificationStatus['delivery'];
   backgroundModeSupported: boolean;
@@ -99,21 +104,6 @@ export function setDesktopNotificationPreferences(next: DesktopNotificationPrefe
   storageSet(PREFERENCES_KEY, JSON.stringify({ fastWalletSignalsEnabled: next.fastWalletSignalsEnabled === true }));
 }
 
-function randomHex(bytes: number): string {
-  const values = new Uint8Array(bytes);
-  window.crypto.getRandomValues(values);
-  return Array.from(values, value => value.toString(16).padStart(2, '0')).join('');
-}
-
-/** An anonymous installation id; never a wallet, address, or device push token. */
-export function getOrCreateDesktopInstallationId(): string {
-  const existing = storageGet(INSTALLATION_ID_KEY)?.trim();
-  if (existing && /^mwp_desktop_[0-9a-f]{32}$/.test(existing)) return existing;
-  const installationId = `mwp_desktop_${randomHex(16)}`;
-  storageSet(INSTALLATION_ID_KEY, installationId);
-  return installationId;
-}
-
 function permissionStatus(granted: boolean): DesktopNotificationStatus['permission'] {
   return granted ? 'granted' : 'denied';
 }
@@ -138,10 +128,15 @@ function normalizeStatus(
     platform: installation?.platform ?? 'unknown',
     provider: installation?.provider ?? 'tauri-local',
     providerStatus: installation?.providerStatus ?? 'not-configured',
+    gatewayStatus: installation?.gatewayStatus ?? 'unregistered',
+    gatewayGeneration: installation?.gatewayGeneration ?? undefined,
+    gatewayLeaseExpiresAt: installation?.gatewayLeaseExpiresAt ?? undefined,
     backgroundModeSupported: native?.backgroundModeSupported === true,
     backgroundModeEnabled: installation?.backgroundModeEnabled === true,
     backgroundAgentConfigPath: native?.backgroundAgentConfigPath ?? undefined,
-    installationId: installation?.installationId ?? getOrCreateDesktopInstallationId(),
+    // The native OS-secured installation is the sole authority. Never invent
+    // a renderer/localStorage identity that the Gateway cannot authenticate.
+    installationId: installation?.installationId ?? '',
   };
 }
 
@@ -170,7 +165,6 @@ export async function enableDesktopFastWalletSignals(): Promise<DesktopNotificat
     });
     return normalizeStatus(native, getDesktopNotificationPreferences());
   }
-  getOrCreateDesktopInstallationId();
   setDesktopNotificationPreferences({ fastWalletSignalsEnabled: true });
   const existing = await invoke<NativeNotificationInstallationStatus>('notification_installation_status').catch(() => undefined);
   const native = await invoke<NativeNotificationInstallationStatus>('request_notification_installation', {

@@ -14,7 +14,10 @@ if [[ ! -d "${build_root}" ]]; then
 fi
 
 export MONERO_DESKTOP_DEPENDS_PREFIX="${MONERO_DESKTOP_DEPENDS_PREFIX:-${build_root}/desktop-monero-deps/aarch64-apple-darwin-macos12}"
-export MONERO_DESKTOP_BUILD_DIR="${MONERO_DESKTOP_BUILD_DIR:-${build_root}/desktop-monero-wallet-api-macos12}"
+# Keep the authenticated TEX8 patch series separate from older Monero GUI
+# builds. Reusing a CMake directory generated from another source checkout
+# causes CMake to abort before the desktop wallet can start.
+export MONERO_DESKTOP_BUILD_DIR="${MONERO_DESKTOP_BUILD_DIR:-${build_root}/desktop-monero-wallet-api-macos12-tex8-patched}"
 export MONERO_DESKTOP_FAST_CRYPTO_TARGET_DIR="${MONERO_DESKTOP_FAST_CRYPTO_TARGET_DIR:-${build_root}/desktop-fast-crypto-target}"
 
 # Sourcing creates or validates the native core, stages the dylib, and exports

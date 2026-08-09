@@ -20,9 +20,11 @@ The command refuses to overwrite an existing directory and stops on the first
 patch conflict. This makes upstream changes explicit and reviewable rather
 than silently carrying a modified Core worktree forward.
 
-The current Monero product series contains 21 patches. Its resulting tree is
-the tree of fork commit `cdcfa8151322a3fdd9306af97ab0c54092ac1e37` on
-`agent/desktop-metal-product-20260725`.
+The current Monero product series contains 48 patches. Its authenticated
+resulting tree is `1af6c7bde44da68846834e551e8f5b4e314e9839`. The tree pin,
+rather than a locally generated `git am` commit, is authoritative because a
+fresh application can create a different integration commit with identical
+contents.
 
 Additional benchmark-only instrumentation and the staged CUDA/full worktree
 diff live in `monero-experimental-patches/`. They are preserved for review but

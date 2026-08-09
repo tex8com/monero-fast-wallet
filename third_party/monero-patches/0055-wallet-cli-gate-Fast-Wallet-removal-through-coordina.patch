@@ -1,0 +1,122 @@
+From c40f3400e1347c8903c6ac5dbc6a27b952b944eb Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Fast Wallet <dev@tex8.com>
+Date: Sat, 8 Aug 2026 23:35:27 -0500
+Subject: [PATCH] wallet cli: gate Fast Wallet removal through coordinator
+
+---
+ src/simplewallet/simplewallet.cpp | 82 ++++++++++++++++++++-----------
+ 1 file changed, 54 insertions(+), 28 deletions(-)
+
+diff --git a/src/simplewallet/simplewallet.cpp b/src/simplewallet/simplewallet.cpp
+index d640299..00c4c6b 100644
+--- a/src/simplewallet/simplewallet.cpp
++++ b/src/simplewallet/simplewallet.cpp
+@@ -5494,14 +5494,6 @@ bool simple_wallet::remove_wallet(const std::vector<std::string> &args)
+     fail_msg_writer() << tr("Fast Wallet cleanup confirmations require the 'fast' argument.");
+     return true;
+   }
+-  if (fast_wallet && (!fast_worker_detached || !notifications_disabled))
+-  {
+-    fail_msg_writer()
+-      << tr("Fast Wallet removal is blocked until its worker is detached and notifications are disabled. ")
+-      << tr("Complete both operations, then run: remove_wallet fast fast-worker-detached notifications-disabled");
+-    return true;
+-  }
+-
+   const std::uint32_t wallet_kind = m_wallet->key_on_device()
+     ? MFW_WALLET_KIND_LEDGER_VIEW
+     : m_wallet->watch_only()
+@@ -5512,6 +5504,39 @@ bool simple_wallet::remove_wallet(const std::vector<std::string> &args)
+     ? MFW_WALLET_BALANCE_KNOWN_POSITIVE
+     : MFW_WALLET_BALANCE_UNKNOWN;
+ 
++  // Fast Wallet removal policy lives exclusively in Product Core.  Check the
++  // service prerequisites before asking the user to disclose/confirm a seed;
++  // this preserves the prior UX while ensuring CLI and app adapters apply the
++  // identical worker/notification gate.
++  mfw_fast_wallet_coordinator_input_v1 fast_input{};
++  mfw_fast_wallet_coordinator_plan_v1 fast_plan{};
++  if (fast_wallet)
++  {
++    fast_input.struct_size = sizeof(fast_input);
++    fast_input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
++    fast_input.operation = MFW_FAST_WALLET_OPERATION_REMOVE;
++    fast_input.lifecycle_state = MFW_WALLET_LIFECYCLE_READY;
++    fast_input.worker_enrolled = fast_worker_detached ? 0 : 1;
++    fast_input.notifications_enabled = notifications_disabled ? 0 : 1;
++    fast_input.balance_state = balance_state;
++    if (mfw_fast_wallet_operation_plan_v1(&fast_input, &fast_plan) != MFW_ERROR_OK ||
++        fast_plan.operation_allowed != 1)
++    {
++      fail_msg_writer() << tr("The shared Product Core rejected the Fast Wallet removal state.");
++      return true;
++    }
++    const std::uint32_t service_requirements =
++      MFW_WALLET_REMOVAL_REQUIREMENT_DETACH_FAST_WORKER |
++      MFW_WALLET_REMOVAL_REQUIREMENT_DISABLE_NOTIFICATIONS;
++    if ((fast_plan.requirement_flags & service_requirements) != 0)
++    {
++      fail_msg_writer()
++        << tr("Fast Wallet removal is blocked until its worker is detached and notifications are disabled. ")
++        << tr("Complete both operations, then run: remove_wallet fast fast-worker-detached notifications-disabled");
++      return true;
++    }
++  }
++
+   std::uint32_t seed_backup_confirmed = 0;
+   if (wallet_kind == MFW_WALLET_KIND_SOFTWARE || wallet_kind == MFW_WALLET_KIND_FAST)
+   {
+@@ -5525,29 +5550,30 @@ bool simple_wallet::remove_wallet(const std::vector<std::string> &args)
+     seed_backup_confirmed = 1;
+   }
+ 
+-  mfw_wallet_removal_input_v1 removal_input{};
+-  removal_input.struct_size = sizeof(removal_input);
+-  removal_input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
+-  removal_input.wallet_kind = wallet_kind;
+-  removal_input.balance_state = balance_state;
+-  removal_input.seed_backup_confirmed = seed_backup_confirmed;
+-  removal_input.fast_worker_enrolled = fast_wallet && !fast_worker_detached ? 1 : 0;
+-  removal_input.notifications_enabled = fast_wallet && !notifications_disabled ? 1 : 0;
+-  mfw_wallet_removal_plan_v1 removal_plan{};
+-  if (mfw_wallet_removal_plan_compute_v1(&removal_input, &removal_plan) != MFW_ERROR_OK)
++  if (fast_wallet)
+   {
+-    fail_msg_writer() << tr("The shared Product Core rejected the wallet-removal state.");
+-    return true;
++    fast_input.seed_backup_confirmed = seed_backup_confirmed;
++    if (mfw_fast_wallet_operation_plan_v1(&fast_input, &fast_plan) != MFW_ERROR_OK ||
++        fast_plan.operation_allowed != 1)
++    {
++      fail_msg_writer() << tr("The shared Product Core rejected the Fast Wallet removal state.");
++      return true;
++    }
+   }
+-  const std::uint32_t service_requirements =
+-    MFW_WALLET_REMOVAL_REQUIREMENT_DETACH_FAST_WORKER |
+-    MFW_WALLET_REMOVAL_REQUIREMENT_DISABLE_NOTIFICATIONS;
+-  if ((removal_plan.requirement_flags & service_requirements) != 0)
++  else
+   {
+-    fail_msg_writer()
+-      << tr("Fast Wallet removal is blocked until its worker is detached and notifications are disabled. ")
+-      << tr("Complete both operations, then run: remove_wallet fast fast-worker-detached notifications-disabled");
+-    return true;
++    mfw_wallet_removal_input_v1 removal_input{};
++    removal_input.struct_size = sizeof(removal_input);
++    removal_input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
++    removal_input.wallet_kind = wallet_kind;
++    removal_input.balance_state = balance_state;
++    removal_input.seed_backup_confirmed = seed_backup_confirmed;
++    mfw_wallet_removal_plan_v1 removal_plan{};
++    if (mfw_wallet_removal_plan_compute_v1(&removal_input, &removal_plan) != MFW_ERROR_OK)
++    {
++      fail_msg_writer() << tr("The shared Product Core rejected the wallet-removal state.");
++      return true;
++    }
+   }
+ 
+   if (balance_state == MFW_WALLET_BALANCE_KNOWN_POSITIVE)
+-- 
+2.50.1 (Apple Git-155)
+

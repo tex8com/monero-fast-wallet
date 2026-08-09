@@ -1,9 +1,12 @@
-import {
-  fastReceiveScannerUrlForSettings,
-  loadActiveNodeConnectionSettings,
-} from './NodeConnectionSettings';
+import { loadActiveNodeConnectionSettings } from './NodeConnectionSettings';
 import { walletService } from './WalletService';
 import { emitWalletDiagnosticsLine, logWalletEvent } from './WalletLogger';
+import {
+  MFW_DIAGNOSTIC_REGISTRY_SHA256,
+  MFW_PRODUCT_CORE_ABI_VERSION,
+  MFW_PRODUCT_CORE_SCHEMA_SHA256,
+} from '../generated/mfwProductCoreContract';
+import { MFW_APP_VAULT_STATE_SCHEMA_SHA256 } from '../generated/mfwAppVaultContract';
 
 export { emitWalletDiagnosticsLine };
 
@@ -42,26 +45,27 @@ export async function runWalletDiagnostics(trigger = 'manual') {
   const activeFastWallets = settings
     ? fastWallets.filter(wallet => wallet.network === settings.network)
     : fastWallets;
-  const scannerUrl = settings
-    ? fastReceiveScannerUrlForSettings(settings)
-    : undefined;
-  const fastWalletChecks = await Promise.all(
-    activeFastWallets.map(async wallet => {
-      if (!scannerUrl) {
-        return { checked: false, hosted: false };
-      }
-      try {
-        const result = await walletService.checkFastReceiveRegistration(
-          wallet.id,
-          scannerUrl,
-        );
-        return { checked: true, hosted: result.registered };
-      } catch {
-        errors.push('fast-wallet-check-failed');
-        return { checked: false, hosted: false };
-      }
-    }),
+  const hostedFastWallets = activeFastWallets.filter(
+    wallet => Boolean(wallet.assignmentHandle),
   );
+  // The V3 product path uses opaque Gateway assignments and an encrypted
+  // Relay/Worker watch. The legacy plaintext scanner status endpoint must not
+  // be queried for those identities: doing so produces a false "view key
+  // check failed" warning. The lightweight boot check validates only public
+  // assignment metadata; Settings runs the deeper signed-descriptor testbench.
+  const now = Math.floor(Date.now() / 1_000);
+  const fastWalletChecks = hostedFastWallets.map(wallet => {
+    const valid =
+      /^[0-9a-f]{64}$/.test(wallet.assignmentHandle ?? '') &&
+      Number.isSafeInteger(wallet.assignmentEpoch) &&
+      (wallet.assignmentEpoch ?? 0) > 0 &&
+      Number.isSafeInteger(wallet.assignmentExpiresAt) &&
+      (wallet.assignmentExpiresAt ?? 0) > now &&
+      Boolean(wallet.workerKind) &&
+      Boolean(wallet.watchMessageId);
+    if (!valid) errors.push('fast-wallet-assignment-invalid');
+    return { checked: true, hosted: valid };
+  });
 
   const activeSession = walletService.getActiveSession();
   const rawSnapshot = activeSession
@@ -81,13 +85,25 @@ export async function runWalletDiagnostics(trigger = 'manual') {
       return undefined;
     });
 
+  const networkSync = settings
+    ? await walletService.networkSyncStatus(settings.network).catch(() => {
+        errors.push('network-sync-status-unavailable');
+        return undefined;
+      })
+    : undefined;
+
   const daemonBaseUrl = settings
     ? createDaemonBaseUrl(settings.daemon.address, settings.daemon.useSsl)
     : undefined;
-  const daemonGetInfo = daemonBaseUrl
+  // Android production deliberately blocks clear-text fetch() traffic. The
+  // Monero Core still reaches the configured RPC endpoint through its native
+  // transport, whose process-wide coordinator status is authoritative. Do
+  // not turn that security policy into two false red diagnostics rows.
+  const allowDirectJsProbe = daemonBaseUrl?.startsWith('https://') ?? false;
+  const daemonGetInfo = daemonBaseUrl && allowDirectJsProbe
     ? await fetchJsonWithTimeout(`${daemonBaseUrl}/get_info`)
     : undefined;
-  const daemonJsonRpcGetInfo = daemonBaseUrl
+  const daemonJsonRpcGetInfo = daemonBaseUrl && allowDirectJsProbe
     ? await fetchJsonWithTimeout(`${daemonBaseUrl}/json_rpc`, {
         body: JSON.stringify({
           id: 'diagnostics',
@@ -101,6 +117,12 @@ export async function runWalletDiagnostics(trigger = 'manual') {
     : undefined;
 
   const diagnostics = {
+    productCore: {
+      abiVersion: MFW_PRODUCT_CORE_ABI_VERSION,
+      schemaSha256: MFW_PRODUCT_CORE_SCHEMA_SHA256,
+      diagnosticRegistrySha256: MFW_DIAGNOSTIC_REGISTRY_SHA256,
+      appVaultStateSchemaSha256: MFW_APP_VAULT_STATE_SCHEMA_SHA256,
+    },
     daemon: {
       getInfo: summarizeGetInfo(daemonGetInfo),
       jsonRpcGetInfo: summarizeGetInfo(daemonJsonRpcGetInfo),
@@ -109,9 +131,11 @@ export async function runWalletDiagnostics(trigger = 'manual') {
     fastWallet: {
       checkedCount: fastWalletChecks.filter(wallet => wallet.checked).length,
       configuredCount: activeFastWallets.length,
+      failedCount: fastWalletChecks.filter(wallet => !wallet.checked).length,
       hostedCount: fastWalletChecks.filter(
         wallet => wallet.checked && wallet.hosted,
       ).length,
+      localOnlyCount: activeFastWallets.length - hostedFastWallets.length,
     },
     ledgerTransport: rawLedgerTransport
       ? {
@@ -129,6 +153,7 @@ export async function runWalletDiagnostics(trigger = 'manual') {
         }
       : undefined,
     native: { linkedWithMonero },
+    networkSync,
     registeredWallet: registeredWallet ? { present: true } : undefined,
     settings: settings
       ? {
@@ -152,6 +177,7 @@ export async function runWalletDiagnostics(trigger = 'manual') {
     checkedCount: diagnostics.fastWallet.checkedCount,
     configuredCount: diagnostics.fastWallet.configuredCount,
     hostedCount: diagnostics.fastWallet.hostedCount,
+    localOnlyCount: diagnostics.fastWallet.localOnlyCount,
     linked: diagnostics.native.linkedWithMonero,
     status: diagnostics.errors.length === 0 ? 'ready' : 'warning',
     trigger: normalizeTrigger(trigger),

@@ -1,0 +1,89 @@
+#!/usr/bin/expect -f
+# Execute exactly one interactive product-CLI payment. The transcript stays
+# inside the caller's permission-restricted temporary directory.
+
+if {$argc != 6 && $argc != 7} {
+  puts stderr "Usage: $argv0 <product-cli> <wallet-file> <recipient> <daemon-address> <timing-file> <transcript-file> <optional-amount>"
+  exit 2
+}
+
+lassign $argv product_cli wallet_file recipient daemon_address timing_file transcript_file amount
+if {$amount eq ""} {
+  set amount 1
+}
+set timeout 120
+set started_ms [clock milliseconds]
+set review_ms 0
+set submitted_ms 0
+set saw_success 0
+set password_prompt_ms 0
+
+log_user 1
+log_file -noappend $transcript_file
+spawn /usr/bin/time -lp -o $timing_file -- \
+  $product_cli \
+  --wallet-file $wallet_file \
+  --password {} \
+  --daemon-address $daemon_address \
+  --trusted-daemon \
+  --allow-mismatched-daemon-version \
+  --debug \
+  --log-file /dev/null \
+  --command send $recipient $amount
+
+expect {
+  -re {Wallet password:} {
+    set password_prompt_ms [clock milliseconds]
+    send -- "\r"
+    exp_continue
+  }
+  -re {Is this okay\?.*\(Y/Yes/N/No\):} {
+    set review_ms [clock milliseconds]
+    send -- "Yes\r"
+  }
+  -re {Error:.*} {
+    puts stderr "FAIL: payment preparation returned an error before review"
+    exit 1
+  }
+  timeout {
+    puts stderr "FAIL: payment review prompt timed out"
+    exit 124
+  }
+  eof {
+    puts stderr "FAIL: payment process exited before review"
+    exit 1
+  }
+}
+
+expect {
+  -re {Transaction successfully submitted} {
+    set submitted_ms [clock milliseconds]
+    set saw_success 1
+    exp_continue
+  }
+  -re {Error:.*} {
+    puts stderr "FAIL: payment submission returned an error"
+    exit 1
+  }
+  timeout {
+    puts stderr "FAIL: payment submission timed out"
+    exit 124
+  }
+  eof {}
+}
+
+set wait_result [wait]
+set exit_code [lindex $wait_result 3]
+if {$exit_code != 0 || !$saw_success} {
+  puts stderr "FAIL: payment CLI did not finish with a successful submission (exit=$exit_code, success_marker=$saw_success)"
+  exit 1
+}
+
+puts "payment_review_ready_ms=[expr {$review_ms - $started_ms}]"
+puts "payment_authorize_to_submit_ms=[expr {$submitted_ms - $review_ms}]"
+puts "payment_total_interactive_ms=[expr {$submitted_ms - $started_ms}]"
+if {$password_prompt_ms > 0} {
+  puts "payment_password_prompt_ms=[expr {$password_prompt_ms - $started_ms}]"
+} else {
+  puts "payment_password_prompt_ms=not_requested"
+}

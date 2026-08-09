@@ -11,6 +11,7 @@ import {
   type AppUpdateDelivery,
   type AppUpdateOffer,
 } from '../../../../packages/app-update-core/src/index';
+import {logWalletEvent} from './WalletLogger';
 
 // Manifest validation and endpoint/artifact host pinning are owned by the
 // shared fail-closed core; this adapter only supplies the mobile platform
@@ -80,38 +81,89 @@ async function context(): Promise<AppUpdateContext> {
 }
 
 async function check(): Promise<AppUpdateOffer | null> {
+  const startedAt = Date.now();
   if (!updateConfig.mobile.enabled) {
+    logWalletEvent('AppUpdate', 'check.skipped', {
+      elapsedMs: Date.now() - startedAt,
+      status: 'unavailable',
+    });
     return null;
   }
-  const updateContext = await context();
-  const requestUrl = buildAppUpdateManifestUrl(
-    updateConfig.mobile.manifestUrl,
-    updateContext,
-  );
-  const response = await fetch(requestUrl, {
-    headers: {
-      Accept: 'application/json',
-      'Cache-Control': 'no-cache',
-    },
+  logWalletEvent('AppUpdate', 'check.start', {
+    platform: Platform.OS,
   });
-  if (response.status === 204 || response.status === 404) {
-    return null;
+  try {
+    const updateContext = await context();
+    const requestUrl = buildAppUpdateManifestUrl(
+      updateConfig.mobile.manifestUrl,
+      updateContext,
+    );
+    const response = await fetch(requestUrl, {
+      headers: {
+        Accept: 'application/json',
+        'Cache-Control': 'no-cache',
+      },
+    });
+    if (response.status === 204 || response.status === 404) {
+      logWalletEvent('AppUpdate', 'check.success', {
+        available: false,
+        elapsedMs: Date.now() - startedAt,
+        httpStatus: response.status,
+        status: 'ready',
+      });
+      return null;
+    }
+    if (!response.ok) {
+      throw new Error(`Update check failed (${response.status})`);
+    }
+    const offer = selectAppUpdate(await response.json(), updateContext);
+    logWalletEvent('AppUpdate', 'check.success', {
+      available: Boolean(offer),
+      elapsedMs: Date.now() - startedAt,
+      httpStatus: response.status,
+      status: 'ready',
+    });
+    return offer;
+  } catch (error) {
+    logWalletEvent('AppUpdate', 'check.error', {
+      elapsedMs: Date.now() - startedAt,
+      error,
+      platform: Platform.OS,
+      status: 'error',
+    });
+    throw error;
   }
-  if (!response.ok) {
-    throw new Error(`Update check failed (${response.status})`);
-  }
-  return selectAppUpdate(await response.json(), updateContext);
 }
 
 async function install(offer: AppUpdateOffer): Promise<void> {
-  const supported = await Linking.canOpenURL(offer.artifact.url);
-  if (!supported) {
-    throw new Error('The operating system cannot open the update location');
+  const startedAt = Date.now();
+  logWalletEvent('AppUpdate', 'install.start', {
+    platform: Platform.OS,
+  });
+  try {
+    const supported = await Linking.canOpenURL(offer.artifact.url);
+    if (!supported) {
+      throw new Error('The operating system cannot open the update location');
+    }
+    // Android/iOS remains the installation trust boundary. A direct Android
+    // APK must have the same package signing identity; store builds are
+    // verified and installed by their store. JavaScript never replaces the
+    // running binary.
+    await Linking.openURL(offer.artifact.url);
+    logWalletEvent('AppUpdate', 'install.handedOff', {
+      elapsedMs: Date.now() - startedAt,
+      platform: Platform.OS,
+      success: true,
+    });
+  } catch (error) {
+    logWalletEvent('AppUpdate', 'install.error', {
+      elapsedMs: Date.now() - startedAt,
+      error,
+      platform: Platform.OS,
+      success: false,
+    });
+    throw error;
   }
-  // Android/iOS remains the installation trust boundary. A direct Android APK
-  // must have the same package signing identity; store builds are verified and
-  // installed by their store. JavaScript never replaces the running binary.
-  await Linking.openURL(offer.artifact.url);
 }
 
 const coordinator = createAppUpdateCoordinator({check, install});
@@ -166,10 +218,17 @@ export const AppUpdateService = {
       return;
     }
     initialized = true;
+    logWalletEvent('AppUpdate', 'initialize.scheduled', {
+      timeoutMs: Math.max(5_000, updateConfig.checkDelayMs),
+    });
     setTimeout(() => {
-      this.checkAndPresent().catch(() => {
-        // Update availability is never allowed to block wallet startup.
-        // A manual check can surface network errors in a future settings view.
+      this.checkAndPresent().catch(error => {
+        // Update availability is never allowed to block wallet startup, but
+        // diagnostics must retain a sanitized reason for later support.
+        logWalletEvent('AppUpdate', 'initialize.error', {
+          error,
+          status: 'error',
+        });
       });
     }, Math.max(5_000, updateConfig.checkDelayMs));
   },

@@ -101,7 +101,10 @@ describe('sensitive native boundary contract', () => {
     expect(settingsScreen).toContain('walletService.presentRecoverySeed(');
     expect(walletSetupScreen).toContain('walletService.presentRecoverySeed(');
     expect(walletSetupScreen).not.toContain('seedModal');
-    expect(androidWalletModule).toContain('AlertDialog.Builder(activity)');
+    expect(androidWalletModule).toContain('showRecoverySeedBackupScreen(');
+    expect(androidWalletModule).toContain('WindowManager.LayoutParams.FLAG_SECURE');
+    expect(androidWalletModule).toContain('words deliberately never cross into React Native');
+    expect(androidWalletModule).not.toContain('.setTitle("Recovery seed")');
     expect(iosWalletModule).toContain(
       'alertControllerWithTitle:@"Recovery seed"',
     );
@@ -202,6 +205,25 @@ describe('sensitive native boundary contract', () => {
     expect(androidWalletModule).toContain('"queuedMs" to');
     expect(androidWalletModule).toContain(
       'if (!requireAppAuthorized(promise))',
+    );
+  });
+
+  it('migrates an invalid legacy app-protection marker before first setup', () => {
+    expect(androidWalletModule).toContain(
+      'currentMode != "password" && currentMode != "biometric"',
+    );
+    expect(androidWalletModule).toContain(
+      'deleteSecretValue(APP_PROTECTION_MODE_KEY)',
+    );
+  });
+
+  it('keeps a device-locked launch fail-closed without exposing a secret', () => {
+    expect(androidWalletModule).toContain('APP_PROTECTION_MODE_HINT_KEY');
+    expect(androidWalletModule).toContain(
+      'appSecurityPreferences().getString(APP_PROTECTION_MODE_HINT_KEY, null)',
+    );
+    expect(androidWalletModule).toContain(
+      'Deliberately contains only the selected UI mode',
     );
   });
 });

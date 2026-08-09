@@ -10,7 +10,71 @@ export type WalletSnapshot = {
   walletHeight: number;
   daemonHeight: number;
   daemonTargetHeight: number;
+  // Optional during a staged native-core upgrade. Missing means the app uses
+  // the one-time compatibility enrolment path rather than guessing from block
+  // height.
+  pendingOutputKeyImageCount?: number;
   synchronized: boolean;
+};
+
+export type LedgerKeyImageSyncResult = {
+  importHeight: number;
+  spentAtomic: string;
+  unspentAtomic: string;
+  verifiedOutputCount: number;
+  verificationDurationMs: number;
+};
+
+export type NetworkSyncStatus = {
+  network: string;
+  state: string;
+  phase: string;
+  lastError: string;
+  consecutiveFailures: number;
+  phaseSequence: number;
+  phaseElapsedMs: number;
+  lastProviderSelectionMs: number;
+  lastTransportInitializationMs: number;
+  lastBlockFetchMs: number;
+  lastPrefetchMs: number;
+  lastPrefetchWaitMs: number;
+  prefetchedPayloadBytes: number;
+  peakPrefetchedPayloadBytes: number;
+  lastNonEmptyBlockFetchMs: number;
+  lastNonEmptyBlockCount: number;
+  lastNonEmptyNetworkBytes: number;
+  lastNonEmptyPayloadBytes: number;
+  networkBytesReceived: number;
+  payloadBytesReceived: number;
+  lastWalletScanMs: number;
+  lastMempoolMs: number;
+  lastCheckpointMs: number;
+  lastIterationMs: number;
+  downloadStartHeight: number;
+  downloadedHeight: number;
+  chainHeight: number;
+  targetHeight: number;
+  transportStarts: number;
+  fetchedBatches: number;
+  fetchedBlocks: number;
+  decodedBatches: number;
+  prefetchedBatches: number;
+  prefetchHits: number;
+  fanoutDeliveries: number;
+  poolSnapshots: number;
+  cacheHits: number;
+  cacheMisses: number;
+  replayCachePayloadBytes: number;
+  replayCachePeakPayloadBytes: number;
+  replayCachePayloadLimitBytes: number;
+  stalledWallets: number;
+  scanWorkers: number;
+  joinedWallets: number;
+  queueDepth: number;
+  prefetchQueueDepth: number;
+  prefetchQueueCapacity: number;
+  replayCacheEntries: number;
+  replayCacheCapacity: number;
 };
 
 export type WalletTransactionTransfer = {
@@ -145,6 +209,11 @@ export type FastReceiveIdentity = {
 export type FastWalletProviderRegistration = {
   installationId: string;
   provider: string;
+  providerTokenHash: string;
+  generation: number;
+  acceptedAt: number;
+  leaseExpiresAt: number;
+  deliveryState: string;
 };
 
 export type FastWalletAssignment = {
@@ -211,6 +280,7 @@ export type PrivatePhoneDeviceContact = {
 };
 
 export interface Spec extends TurboModule {
+  benchmarkDerivationPerformance(): Promise<string>;
   linkedWithMonero(): Promise<boolean>;
 
   /**
@@ -262,6 +332,12 @@ export interface Spec extends TurboModule {
   unlockApp(password: string, reason: string): Promise<BiometricAuthResult>;
 
   lockApp(): Promise<void>;
+
+  /** Native monotonic backstop for the renderer inactivity timer. */
+  setAppAutoLockSeconds(seconds: number): Promise<void>;
+
+  /** Records an actual user gesture, never a sync or background timer. */
+  recordAppUserActivity(): Promise<void>;
 
   ensureWalletSecret(key: string): Promise<void>;
 
@@ -411,10 +487,34 @@ export interface Spec extends TurboModule {
     now: number,
   ): Promise<string>;
 
+  /**
+   * Seals account 1 of an already-open Ledger/read-only wallet for the
+   * official Worker. No view key crosses the React Native boundary.
+   */
+  sealLedgerFastWalletWatch(
+    walletId: string,
+    identityId: string,
+    accountIndex: number,
+    network: string,
+    restoreHeight: number,
+    workerDescriptorHex: string,
+    assignmentHandleHex: string,
+    assignmentEpoch: number,
+    issuedAt: number,
+    expiresAt: number,
+    now: number,
+  ): Promise<string>;
+
   registerFastWalletProvider(
     providerToken: string,
     appCheckToken: string,
   ): Promise<FastWalletProviderRegistration>;
+
+  /**
+   * Requests a generic notification only for this authenticated installation.
+   * It accepts no wallet, transaction, key, or notification text input.
+   */
+  sendFastWalletTestPush(): Promise<void>;
 
   loadOfficialFastWalletWorkerDescriptor(
     network: string,
@@ -510,6 +610,10 @@ export interface Spec extends TurboModule {
   ): Promise<void>;
 
   setGrpcEndpoint(walletId: string, endpoint: string): Promise<void>;
+
+  networkSyncStatus(network: string): Promise<NetworkSyncStatus>;
+
+  prioritizeNetworkWallet(walletId: string): Promise<void>;
 
   startRefresh(walletId: string): Promise<void>;
 
@@ -609,6 +713,11 @@ export interface Spec extends TurboModule {
     label: string,
   ): Promise<WalletSubaddress>;
 
+  listSubaddresses(
+    walletId: string,
+    accountIndex: number,
+  ): Promise<ReadonlyArray<WalletSubaddress>>;
+
   presentRecoverySeed(walletId: string, reason: string): Promise<boolean>;
 
   getBalance(walletId: string, accountIndex: number): Promise<string>;
@@ -621,6 +730,11 @@ export interface Spec extends TurboModule {
     walletId: string,
     limit: number,
   ): Promise<WalletTransaction[]>;
+
+  syncLedgerKeyImagesToViewWallet(
+    hardwareWalletId: string,
+    viewOnlyWalletId: string,
+  ): Promise<LedgerKeyImageSyncResult>;
 
   prepareTransaction(
     walletId: string,

@@ -202,7 +202,7 @@ fn main() -> Result<()> {
                     || result.acknowledged > 0
                 {
                     eprintln!(
-                        "fast-wallet-worker relay cycle leased={} deletions={} accepted={} already_accepted={} rejected={} acknowledged={}",
+                        "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=relay-cycle.complete leased={} deletions={} accepted={} alreadyAccepted={} rejected={} acknowledged={}",
                         result.leased,
                         result.deletions,
                         result.accepted,

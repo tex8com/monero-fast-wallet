@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "resultVersion": 1,
+  "requiredFields": ["schema_version", "diagnostic_id", "test_version", "run_id", "profile", "status", "started_monotonic_ns", "ended_monotonic_ns", "duration_ns", "measurements", "evidence", "error_code"],
+  "allowedFields": ["schema_version", "diagnostic_id", "test_version", "run_id", "profile", "status", "started_monotonic_ns", "ended_monotonic_ns", "duration_ns", "measurements", "evidence", "error_code", "prerequisites", "skipped_reason", "sanitized_summary", "metric_id", "value", "unit", "window_start_monotonic_ns", "window_end_monotonic_ns", "sample_count", "artifact_id", "sha256", "relative_name", "available", "reason_code"],
+  "statusValues": ["passed", "failed", "skipped", "cancelled", "blocked"],
+  "profileValues": ["quick", "comprehensive", "guided", "full", "release"],
+  "limits": {"measurementsMax": 256, "evidenceMax": 64, "summaryBytesMax": 512, "artifactNameBytesMax": 128},
+  "evidenceArtifactNames": ["report.json", "environment.json", "commands.txt", "stdout.sanitized.log", "events.sanitized.jsonl", "metrics.csv", "network-accounting.json", "server-metrics.json", "artifact-hashes.txt", "manifest.sha256"],
+  "forbiddenFields": ["seed", "mnemonic", "password", "private_key", "private_view_key", "private_spend_key", "key_image", "wallet_address", "transaction_id", "txid", "ledger_apdu", "matrix_token", "push_token", "exact_location", "wallet_path"]
+}

@@ -213,12 +213,32 @@ impl HttpRelayClient {
         path: &str,
         request: &T,
     ) -> anyhow::Result<R> {
+        let operation = match path {
+            "/v1/workers/pull" => "pull",
+            "/v1/workers/ack" => "ack",
+            _ => "unknown",
+        };
         let response = self
             .agent
             .post(&format!("{}{}", self.endpoint, path))
             .set("content-type", "application/json")
             .send_json(request)
-            .map_err(|error| anyhow::anyhow!("Relay request failed: {error}"))?;
+            .map_err(|error| match error {
+                ureq::Error::Status(status, _) => {
+                    // The Relay logs the precise safe reason.  Keep the
+                    // Worker-side event bounded to operation and HTTP status.
+                    eprintln!(
+                        "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=relay-http.rejected operation={operation} status={status}"
+                    );
+                    anyhow::anyhow!("Relay request rejected with HTTP {status}")
+                }
+                ureq::Error::Transport(_) => {
+                    eprintln!(
+                        "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=relay-http.transport-error operation={operation}"
+                    );
+                    anyhow::anyhow!("Relay transport request failed")
+                }
+            })?;
         const MAX_RESPONSE_BYTES: u64 = 512 * 1024;
         let mut body = Vec::new();
         response

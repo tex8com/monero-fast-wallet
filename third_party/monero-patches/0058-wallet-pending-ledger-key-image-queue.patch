@@ -1,0 +1,107 @@
+From 3a955191fcaecb402e4295f494f5b7c1aa347caa Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 9 Aug 2026 11:40:00 -0500
+Subject: [PATCH] wallet: expose pending Ledger key-image queue count
+
+Expose a metadata-only count for the local View-Wallet scheduler. The count
+is deliberately not a Key Image API: it does not derive or return any key
+image, and does not use a daemon or hardware device.
+
+---
+ src/wallet/api/wallet.cpp    | 14 ++++++++++++++
+ src/wallet/api/wallet.h      |  1 +
+ src/wallet/api/wallet2_api.h |  9 +++++++++
+ src/wallet/wallet2.cpp       | 11 +++++++++++
+ src/wallet/wallet2.h         |  4 ++++
+ 5 files changed, 39 insertions(+)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1535,6 +1535,20 @@ std::vector<std::string> WalletImpl::ownedOutputKeyImages() const
+   return result;
+ }
+ 
++size_t WalletImpl::pendingOutputKeyImageCount() const
++{
++  try
++  {
++    return m_wallet->pending_output_key_image_count();
++  }
++  catch (const std::exception &e)
++  {
++    LOG_ERROR("Error counting pending output key images: " << e.what());
++    setStatusError(e.what());
++  }
++  return 0;
++}
++
+ size_t WalletImpl::reconcileOutputKeyImages(
+     const std::vector<std::string> &keyImages,
+     const std::vector<bool> &spentStates,
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -188,6 +188,7 @@ public:
+     bool exportKeyImages(const std::string &filename, bool all = false) override;
+     bool importKeyImages(const std::string &filename) override;
+     std::vector<std::string> ownedOutputKeyImages() const override;
++    size_t pendingOutputKeyImageCount() const override;
+     size_t reconcileOutputKeyImages(
+         const std::vector<std::string> &keyImages,
+         const std::vector<bool> &spentStates,
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -1040,6 +1040,14 @@ struct Wallet
+      */
+     virtual std::vector<std::string> ownedOutputKeyImages() const = 0;
+ 
++    /**
++     * \brief pendingOutputKeyImageCount returns how many locally owned
++     * outputs still need a hardware-derived key image. It returns only a
++     * count: no key image, output, address, daemon request or device request
++     * is exposed or performed.
++     */
++    virtual size_t pendingOutputKeyImageCount() const = 0;
++
+     /**
+      * \brief reconcileOutputKeyImages applies authoritative spent/unspent
+      * states for locally owned outputs.
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -15715,6 +15715,17 @@ std::vector<crypto::key_image> wallet2::owned_output_key_images() const
+   return key_images;
+ }
+ 
++size_t wallet2::pending_output_key_image_count() const
++{
++  size_t pending = 0;
++  for (const transfer_details &td : m_transfers)
++  {
++    if (!td.m_key_image_known || td.m_key_image_partial)
++      ++pending;
++  }
++  return pending;
++}
++
+ size_t wallet2::reconcile_output_key_images(
+     const std::vector<std::pair<crypto::key_image, bool>> &spent_states,
+     uint64_t checked_height)
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1707,6 +1707,10 @@ private:
+     bool export_key_images(const std::string &filename, bool all = false) const;
+     std::pair<uint64_t, std::vector<std::pair<crypto::key_image, crypto::signature>>> export_key_images(bool all = false) const;
+     std::vector<crypto::key_image> owned_output_key_images() const;
++    // Counts only outputs whose key image is not yet durable in this local
++    // wallet. This is intentionally metadata-only: it never derives or
++    // returns a key image and never contacts a daemon or hardware device.
++    size_t pending_output_key_image_count() const;
+     size_t reconcile_output_key_images(
+         const std::vector<std::pair<crypto::key_image, bool>> &spent_states,
+         uint64_t checked_height);
+-- 
+2.47.0

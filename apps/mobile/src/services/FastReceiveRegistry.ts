@@ -39,6 +39,10 @@ export interface FastReceiveIdentityRecord {
   assignmentHandle?: string;
   assignmentEpoch?: number;
   assignmentExpiresAt?: number;
+  /** Public routing choice required to renew the opaque assignment. */
+  workerKind?: 'official' | 'private';
+  /** Public signed Worker descriptor. It contains no wallet secret or key. */
+  workerDescriptorHex?: string;
   /** Public opaque Relay receipt identifier, never a transaction identifier. */
   watchMessageId?: string;
   createdAt: string;
@@ -130,6 +134,8 @@ export function createFastReceiveIdentityRecord(
     assignmentHandle: undefined,
     assignmentEpoch: undefined,
     assignmentExpiresAt: undefined,
+    workerKind: undefined,
+    workerDescriptorHex: undefined,
     watchMessageId: undefined,
     createdAt: now,
     updatedAt: now,
@@ -207,6 +213,11 @@ function normalizeFastReceiveIdentity(
     assignmentExpiresAt: optionalPositiveInteger(
       identity.assignmentExpiresAt,
     ),
+    workerKind: normalizeWorkerKind(identity.workerKind),
+    workerDescriptorHex: cleanOptionalCanonicalHex(
+      identity.workerDescriptorHex,
+      512,
+    ),
     watchMessageId: cleanOptionalHex(identity.watchMessageId, 32),
     createdAt: cleanRequired(identity.createdAt, 'createdAt'),
     updatedAt: cleanRequired(identity.updatedAt, 'updatedAt'),
@@ -259,6 +270,8 @@ function parseFastReceiveIdentity(
   const assignmentHandle = parseString(value.assignmentHandle);
   const assignmentEpoch = parseNumber(value.assignmentEpoch);
   const assignmentExpiresAt = parseNumber(value.assignmentExpiresAt);
+  const workerKind = parseWorkerKind(value.workerKind);
+  const workerDescriptorHex = parseString(value.workerDescriptorHex);
   const watchMessageId = parseString(value.watchMessageId);
   const createdAt = parseString(value.createdAt);
   const updatedAt = parseString(value.updatedAt);
@@ -296,6 +309,8 @@ function parseFastReceiveIdentity(
     assignmentHandle,
     assignmentEpoch,
     assignmentExpiresAt,
+    workerKind,
+    workerDescriptorHex,
     watchMessageId,
     createdAt,
     updatedAt,
@@ -372,6 +387,33 @@ function cleanOptionalHex(
     return undefined;
   }
   return checked;
+}
+
+function cleanOptionalCanonicalHex(
+  value: string | undefined,
+  maxBytes: number,
+): string | undefined {
+  const checked = cleanOptional(value);
+  if (
+    !checked ||
+    checked.length < 2 ||
+    checked.length > maxBytes * 2 ||
+    checked.length % 2 !== 0 ||
+    !/^[0-9a-f]+$/.test(checked)
+  ) {
+    return undefined;
+  }
+  return checked;
+}
+
+function normalizeWorkerKind(
+  value: 'official' | 'private' | undefined,
+): 'official' | 'private' | undefined {
+  return value === 'official' || value === 'private' ? value : undefined;
+}
+
+function parseWorkerKind(value: unknown): 'official' | 'private' | undefined {
+  return value === 'official' || value === 'private' ? value : undefined;
 }
 
 function parseString(value: unknown): string | undefined {

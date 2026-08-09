@@ -9,6 +9,7 @@ Type=simple
 User=monero-notification-gateway
 Group=monero-notification-gateway
 EnvironmentFile=/etc/monero-fast-wallet/notification-gateway.env
+EnvironmentFile=-/etc/monero-fast-wallet/notification-gateway-provider.env
 ExecStart=/usr/local/bin/notification-gateway
 Restart=on-failure
 RestartSec=3s

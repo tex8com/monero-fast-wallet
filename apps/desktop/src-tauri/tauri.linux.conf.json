@@ -3,6 +3,7 @@
   "bundle": {
     "resources": {
       "../native-libs/libmonero_fast_crypto.so": "_up_/native-libs/libmonero_fast_crypto.so",
+      "../native-libs/libtex8_wallet_cuda.so": "_up_/native-libs/libtex8_wallet_cuda.so",
       "target/release/monero-fast-walletd": "target/release/monero-fast-walletd",
       "../../../build/community-v1-release-assets/artifact-manifest.json": "artifact-manifest.json",
       "../../../build/community-v1-release-assets/harrier-v1.pte": "harrier-v1.pte",

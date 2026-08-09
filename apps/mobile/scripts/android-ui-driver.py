@@ -9,12 +9,15 @@ privacy-filtered logcat output emitted by a deliberate diagnostics build.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 
@@ -29,6 +32,47 @@ BOUNDS = re.compile(r"^\[(\d+),(\d+)]\[(\d+),(\d+)]$")
 
 class DriverError(RuntimeError):
     pass
+
+
+@contextmanager
+def exclusive_ui_automator(serial: str):
+    """Serialize hierarchy dumps for one device across driver processes.
+
+    `adb` only terminates its local client on timeout. Without this lock, a
+    timed-out remote UI-Automator process can overlap the next invocation and
+    make later diagnostics unreliable.
+    """
+
+    safe_serial = re.sub(r"[^0-9A-Za-z_.-]+", "-", serial)
+    lock_path = Path(tempfile.gettempdir()) / (
+        f"monero-fast-wallet-ui-automator-{safe_serial}.lock"
+    )
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def terminate_stale_ui_automator(serial: str) -> None:
+    """Best-effort cleanup after a dump timeout without masking its error."""
+
+    command = ["adb", "-s", serial, "shell", "sh", "-c"]
+    command.append(
+        "pkill -f '[c]om.android.commands.uiautomator' "
+        ">/dev/null 2>&1 || true"
+    )
+    try:
+        subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+        )
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def adb(
@@ -88,39 +132,44 @@ def connected_serial(requested: str | None) -> str:
 
 
 def dump_ui(serial: str) -> str:
-    remote = f"/sdcard/mfw-ui-driver-{os.getpid()}.xml"
-    last_error = "UI-Automator returned no accessibility hierarchy"
-    for attempt in range(3):
-        adb(serial, "shell", "rm", "-f", remote)
-        try:
-            dump_output = str(
-                adb(
-                    serial,
-                    "shell",
-                    "uiautomator",
-                    "dump",
-                    "--compressed",
-                    remote,
-                    timeout_seconds=5.0,
-                )
-            ).strip()
-            xml = str(adb(serial, "shell", "cat", remote))
-            if "<hierarchy" in xml and "</hierarchy>" in xml:
-                return xml
-            last_error = dump_output or last_error
-        except DriverError as error:
-            last_error = str(error)
-        finally:
-            # Accessibility dumps may contain sensitive on-screen data. Never
-            # leave the temporary hierarchy behind on the device, and never
-            # accept a stale dump from a previous command.
+    # `/data/local/tmp` avoids depending on emulated-storage/FUSE health while
+    # the simulator is under load.
+    remote = f"/data/local/tmp/mfw-ui-driver-{os.getpid()}.xml"
+    with exclusive_ui_automator(serial):
+        terminate_stale_ui_automator(serial)
+        last_error = "UI-Automator returned no accessibility hierarchy"
+        for attempt in range(3):
+            adb(serial, "shell", "rm", "-f", remote)
             try:
-                adb(serial, "shell", "rm", "-f", remote)
-            except DriverError:
-                pass
-        if attempt < 2:
-            time.sleep(0.2)
-    raise DriverError(last_error)
+                dump_output = str(
+                    adb(
+                        serial,
+                        "shell",
+                        "uiautomator",
+                        "dump",
+                        "--compressed",
+                        remote,
+                        timeout_seconds=5.0,
+                    )
+                ).strip()
+                xml = str(adb(serial, "shell", "cat", remote))
+                if "<hierarchy" in xml and "</hierarchy>" in xml:
+                    return xml
+                last_error = dump_output or last_error
+            except DriverError as error:
+                last_error = str(error)
+                terminate_stale_ui_automator(serial)
+            finally:
+                # Accessibility dumps may contain sensitive on-screen data.
+                # Never leave the hierarchy on the device and never accept a
+                # stale dump from a previous command.
+                try:
+                    adb(serial, "shell", "rm", "-f", remote)
+                except DriverError:
+                    pass
+            if attempt < 2:
+                time.sleep(0.2)
+        raise DriverError(last_error)
 
 
 def matching_node(

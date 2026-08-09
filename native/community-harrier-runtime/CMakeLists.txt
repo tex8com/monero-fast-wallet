@@ -18,6 +18,17 @@ set(
   CACHE PATH
   "Directory containing the verified ExecuTorch 1.3.1 Apple xcframeworks"
 )
+set(
+  TEX8_HARRIER_PROTOBUF_PREFIX
+  ""
+  CACHE PATH
+  "Optional pinned Protobuf package shared with the desktop gRPC transport"
+)
+option(
+  TEX8_HARRIER_WITH_ANDROID_JNI_EXECUTORCH
+  "Use the pinned ExecuTorch Android Java runtime through a JNI adapter"
+  OFF
+)
 option(
   TEX8_HARRIER_WITH_EXECUTORCH
   "Build the real ExecuTorch embedding adapter"
@@ -119,6 +130,30 @@ set(TOKENIZERS_ENABLE_LOGGING OFF CACHE BOOL "" FORCE)
 set(TOKENIZERS_LOG_LEVEL 0 CACHE STRING "" FORCE)
 set(SUPPORT_REGEX_LOOKAHEAD OFF CACHE BOOL "" FORCE)
 
+# The macOS product combines this tokenizer with the Cuprate gRPC transport in
+# one process. SentencePiece otherwise embeds its legacy Protobuf 3.14 runtime,
+# which cannot coexist with the transport's pinned Protobuf runtime: both
+# register the same global symbols and descriptor database. When a product
+# prefix is supplied, generate SentencePiece's messages with and link them to
+# that exact external package instead of compiling the vendored runtime.
+if(TEX8_HARRIER_PROTOBUF_PREFIX)
+  if(NOT EXISTS "${TEX8_HARRIER_PROTOBUF_PREFIX}/lib/cmake/protobuf/protobuf-config.cmake")
+    message(FATAL_ERROR
+      "TEX8_HARRIER_PROTOBUF_PREFIX does not contain protobuf-config.cmake")
+  endif()
+  list(PREPEND CMAKE_PREFIX_PATH "${TEX8_HARRIER_PROTOBUF_PREFIX}")
+  set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
+  set(protobuf_MODULE_COMPATIBLE ON)
+  find_package(Protobuf 31.1.0 CONFIG EXACT REQUIRED)
+  find_package(absl CONFIG REQUIRED)
+  find_package(re2 CONFIG REQUIRED)
+  set(TOKENIZERS_USE_EXTERNAL_ABSL_RE2 ON CACHE BOOL "" FORCE)
+  set(SPM_PROTOBUF_PROVIDER "package" CACHE STRING "" FORCE)
+  # SentencePiece 0.2's package-provider branch expects this legacy variable.
+  # Point it at the imported target so its static interface remains complete.
+  set(PROTOBUF_LITE_LIBRARY protobuf::libprotobuf-lite CACHE STRING "" FORCE)
+endif()
+
 # SentencePiece assumes this helper comes from its legacy iOS toolchain when
 # CMAKE_SYSTEM_NAME is iOS. Modern CMake's native iOS configuration does not
 # include that toolchain, so provide the equivalent narrow Xcode attribute
@@ -142,9 +177,19 @@ add_subdirectory(
   EXCLUDE_FROM_ALL
 )
 
-add_library(tex8_community_harrier_runtime STATIC
+# Android packages Harrier as a distinct shared object.  Monero/gRPC and the
+# tokenizer each carry a different pinned RE2 build; combining both static
+# object graphs into libmonero_wallet_bridge_jni causes duplicate C++ symbols.
+# A dynamic Android boundary keeps the independently verified tokenizer graph
+# isolated while the C ABI below remains unchanged for Rust and JNI.
+set(_tex8_harrier_library_type STATIC)
+if(ANDROID AND TEX8_HARRIER_WITH_ANDROID_JNI_EXECUTORCH)
+  set(_tex8_harrier_library_type SHARED)
+endif()
+add_library(tex8_community_harrier_runtime ${_tex8_harrier_library_type}
   cpp/CommunityHarrierRuntime.cpp
   cpp/CommunityHarrierRuntimeC.cpp
+  cpp/CommunityHarrierAndroidJni.cpp
 )
 add_library(
   tex8::community_harrier_runtime
@@ -159,6 +204,16 @@ target_link_libraries(
   tex8_community_harrier_runtime
   PRIVATE tokenizers::tokenizers
 )
+# Android 15+ devices may use 16-KB memory pages.  The Harrier runtime is
+# packaged as its own shared object, so it must request a 16-KB maximum ELF
+# page size at its final link step; static archives linked into the Monero JNI
+# boundary inherit that boundary's linker setting instead.
+if(ANDROID)
+  target_link_options(
+    tex8_community_harrier_runtime
+    PRIVATE "-Wl,-z,max-page-size=16384"
+  )
+endif()
 target_compile_options(
   tex8_community_harrier_runtime
   PRIVATE
@@ -273,6 +328,50 @@ if(TEX8_HARRIER_WITH_EXECUTORCH)
   target_link_directories(
     tex8_community_harrier_runtime
     INTERFACE "${_swift_usr}/lib/swift/${_swift_platform}"
+  )
+endif()
+
+# ExecuTorch's Android package is distributed as a verified Maven runtime, not
+# as the Apple-style C++ archive.  The adapter retains native tokenization and
+# invokes precisely that packaged runtime below the renderer boundary.
+if(TEX8_HARRIER_WITH_ANDROID_JNI_EXECUTORCH)
+  if(NOT ANDROID OR TEX8_HARRIER_WITH_EXECUTORCH)
+    message(FATAL_ERROR "Select one valid platform ExecuTorch adapter")
+  endif()
+  if(NOT CMAKE_ANDROID_NDK)
+    message(FATAL_ERROR "CMAKE_ANDROID_NDK is required for the Android adapter")
+  endif()
+  if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    set(_tex8_android_jni_triple "aarch64-linux-android")
+  elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+    set(_tex8_android_jni_triple "arm-linux-androideabi")
+  elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
+    set(_tex8_android_jni_triple "x86_64-linux-android")
+  elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "x86")
+    set(_tex8_android_jni_triple "i686-linux-android")
+  else()
+    message(FATAL_ERROR "Unsupported Android ABI: ${CMAKE_ANDROID_ARCH_ABI}")
+  endif()
+  file(GLOB _tex8_android_ndk_hosts
+    "${CMAKE_ANDROID_NDK}/toolchains/llvm/prebuilt/*")
+  list(LENGTH _tex8_android_ndk_hosts _tex8_android_ndk_host_count)
+  if(_tex8_android_ndk_host_count EQUAL 0)
+    message(FATAL_ERROR "Android NDK LLVM sysroot was not found")
+  endif()
+  list(GET _tex8_android_ndk_hosts 0 _tex8_android_ndk_host)
+  set(_tex8_android_sysroot
+    "${_tex8_android_ndk_host}/sysroot/usr/include")
+  if(NOT EXISTS "${_tex8_android_sysroot}/jni.h")
+    message(FATAL_ERROR "Android NDK JNI headers were not found")
+  endif()
+  target_include_directories(
+    tex8_community_harrier_runtime
+    PRIVATE
+      "${_tex8_android_sysroot}"
+  )
+  target_compile_definitions(
+    tex8_community_harrier_runtime
+    PRIVATE TEX8_HARRIER_WITH_ANDROID_JNI_EXECUTORCH=1
   )
 endif()
 

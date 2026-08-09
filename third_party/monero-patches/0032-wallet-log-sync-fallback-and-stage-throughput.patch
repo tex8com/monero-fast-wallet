@@ -1,0 +1,424 @@
+From d830efdfdb448cebf52c7365bcb851fb94dc725f Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Wed, 5 Aug 2026 22:19:26 -0500
+Subject: [PATCH] wallet: log sync fallback and stage throughput
+
+
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+index 9475b78..1db9993 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.cpp
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -133,7 +133,9 @@ struct cuprate_grpc_stream_client::impl {
+     std::string client_request_id;
+     std::chrono::steady_clock::time_point t_open;
+     std::chrono::steady_clock::time_point t_first_chunk;
++    std::chrono::steady_clock::time_point t_last_chunk;
+     bool        first_chunk_seen = false;
++    bool        last_chunk_seen = false;
+     uint64_t    total_chunks = 0;
+     uint64_t    total_blocks = 0;
+     uint64_t    total_bytes = 0;
+@@ -205,6 +207,7 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+     p_->client_request_id = client_request_id;
+     p_->t_open = std::chrono::steady_clock::now();
+     p_->first_chunk_seen = false;
++    p_->last_chunk_seen = false;
+     p_->total_chunks = 0;
+     p_->total_blocks = 0;
+     p_->total_bytes = 0;
+@@ -242,6 +245,12 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+         cuprate::stream::v1::BlockChunk chunk;
+         while (p_->reader->Read(&chunk)) {
+             const auto t_recv = std::chrono::steady_clock::now();
++            const auto t_interval_start = p_->last_chunk_seen
++                ? p_->t_last_chunk : p_->t_open;
++            const double interval_ms = std::chrono::duration<double, std::milli>(
++                t_recv - t_interval_start).count();
++            p_->t_last_chunk = t_recv;
++            p_->last_chunk_seen = true;
+             if (!p_->first_chunk_seen) {
+                 p_->t_first_chunk = t_recv;
+                 p_->first_chunk_seen = true;
+@@ -265,6 +274,7 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+ 
+             std::unique_lock<std::mutex> lk(p_->mu);
+             const auto t_enq0 = std::chrono::steady_clock::now();
++            const size_t queue_depth_before = p_->queue.size();
+             p_->cv_not_full.wait(lk, [this]() {
+                 return p_->queue.size() < p_->queue_capacity || p_->cancelled;
+             });
+@@ -274,8 +284,9 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             if (enq_wait_ms > 5.0) {
+                 ++p_->backpressure_waits;
+                 std::fprintf(stderr,
+-                    "[GRPC client] BACKPRESSURE seq=%llu enq_wait_ms=%.1f queue_full -- wallet slower than server\n",
+-                    (unsigned long long)rec.chunk_seq, enq_wait_ms);
++                    "[SYNC_METRIC] stage=queue transport=grpc event=backpressure seq=%llu enq_wait_ms=%.1f queue_depth=%zu queue_capacity=%zu bottleneck=client_scan\n",
++                    (unsigned long long)rec.chunk_seq, enq_wait_ms,
++                    queue_depth_before, p_->queue_capacity);
+             }
+ 
+             const uint64_t total_chunks_now = p_->total_chunks + 1;
+@@ -286,6 +297,15 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             const double cum_mbs = (cum_ms > 0.0)
+                 ? (static_cast<double>(total_bytes_now) / 1024.0 / 1024.0) / (cum_ms / 1000.0)
+                 : 0.0;
++            const double interval_mbs = (interval_ms > 0.0)
++                ? (static_cast<double>(rec.payload_bytes) / 1024.0 / 1024.0) / (interval_ms / 1000.0)
++                : 0.0;
++            const double interval_blocks_per_s = (interval_ms > 0.0)
++                ? static_cast<double>(rec.n_blocks) / (interval_ms / 1000.0)
++                : 0.0;
++            const double cumulative_blocks_per_s = (cum_ms > 0.0)
++                ? static_cast<double>(total_blocks_now) / (cum_ms / 1000.0)
++                : 0.0;
+             std::fprintf(stderr,
+                 "[GRPC client] CHUNK seq=%llu start=%llu n_blocks=%u payload_bytes=%u cum_chunks=%llu cum_blocks=%llu cum_bytes=%llu cum_ms=%.1f cum_mbs=%.2f tip=%llu enq_wait_ms=%.1f client_req_id=%s server_req_id=%s\n",
+                 (unsigned long long)rec.chunk_seq,
+@@ -301,6 +321,24 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+                 enq_wait_ms,
+                 p_->client_request_id.c_str(),
+                 rec.server_request_id.c_str());
++            std::fprintf(stderr,
++                "[SYNC_METRIC] stage=network transport=grpc event=chunk seq=%llu start_height=%llu blocks=%u payload_bytes=%u interval_ms=%.1f payload_mib_per_s=%.3f blocks_per_s=%.3f cumulative_ms=%.1f cumulative_payload_mib_per_s=%.3f cumulative_blocks_per_s=%.3f queue_wait_ms=%.1f queue_depth_after=%zu queue_capacity=%zu chain_tip=%llu client_req_id=%s server_req_id=%s\n",
++                (unsigned long long)rec.chunk_seq,
++                (unsigned long long)rec.start_height,
++                rec.n_blocks,
++                rec.payload_bytes,
++                interval_ms,
++                interval_mbs,
++                interval_blocks_per_s,
++                cum_ms,
++                cum_mbs,
++                cumulative_blocks_per_s,
++                enq_wait_ms,
++                p_->queue.size() + 1,
++                p_->queue_capacity,
++                (unsigned long long)rec.chain_tip,
++                p_->client_request_id.c_str(),
++                rec.server_request_id.c_str());
+ 
+             p_->total_chunks = total_chunks_now;
+             p_->total_blocks = total_blocks_now;
+@@ -331,6 +369,9 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+         const double avg_mbs = (total_ms > 0.0)
+             ? (static_cast<double>(p_->total_bytes) / 1024.0 / 1024.0) / (total_ms / 1000.0)
+             : 0.0;
++        const double avg_blocks_per_s = (total_ms > 0.0)
++            ? static_cast<double>(p_->total_blocks) / (total_ms / 1000.0)
++            : 0.0;
+         std::fprintf(stderr,
+             "[GRPC client] CLOSE client_req_id=%s reason=%s chunks=%llu blocks=%llu bytes=%llu total_ms=%.1f avg_mbs=%.2f bp_waits=%llu grpc_code=%d msg='%s'\n",
+             p_->client_request_id.c_str(),
+@@ -344,6 +385,18 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             (unsigned long long)p_->backpressure_waits,
+             p_->last_error_code,
+             p_->last_error_message.c_str());
++        std::fprintf(stderr,
++            "[SYNC_METRIC] stage=network transport=grpc event=stream_close result=%s chunks=%llu blocks=%llu payload_bytes=%llu duration_ms=%.1f payload_mib_per_s=%.3f blocks_per_s=%.3f backpressure_waits=%llu grpc_code=%d client_req_id=%s\n",
++            p_->stream_ended_ok ? "ok" : (p_->cancelled ? "cancelled" : "error"),
++            (unsigned long long)p_->total_chunks,
++            (unsigned long long)p_->total_blocks,
++            (unsigned long long)p_->total_bytes,
++            total_ms,
++            avg_mbs,
++            avg_blocks_per_s,
++            (unsigned long long)p_->backpressure_waits,
++            p_->last_error_code,
++            p_->client_request_id.c_str());
+         p_->cv_not_empty.notify_all();
+     });
+ 
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 3deacc6..c8c9343 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3347,6 +3347,23 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+ 
+   const bool shared_range =
+     shared_start_cursor != std::numeric_limits<uint64_t>::max();
++  const auto log_grpc_fallback = [&](const char *scope, const char *reason,
++      const char *error_class, int error_code, uint64_t requested_height,
++      uint64_t wallet_height, uint64_t daemon_height, uint64_t chunk_start,
++      uint64_t chunk_blocks)
++  {
++    MWARNING("[SYNC_FALLBACK] from=grpc to=bin_rpc scope=" << scope
++      << " reason=" << reason
++      << " error_class=" << error_class
++      << " error_code=" << error_code
++      << " requested_height=" << requested_height
++      << " wallet_height=" << wallet_height
++      << " daemon_height=" << daemon_height
++      << " chunk_start=" << chunk_start
++      << " chunk_blocks=" << chunk_blocks
++      << " session=" << (m_grpc_stream_session_id.empty()
++          ? "none" : m_grpc_stream_session_id));
++  };
+   if (m_grpc_stream_active &&
+       (m_grpc_stream_shared_range != shared_range ||
+        (shared_range && m_grpc_stream_next_height != shared_start_cursor)))
+@@ -3397,6 +3414,8 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     {
+       MWARNING("grpc_stream: daemon height preflight failed: " << *height_error
+         << " -- using bin RPC because a bounded parallel range plan requires a tip");
++      log_grpc_fallback("iteration", "daemon_height_preflight_failed",
++        "rpc_preflight", -1, effective_start, wallet_height, 0, 0, 0);
+       return false;
+     }
+     else if (!shared_range && daemon_height <= wallet_height)
+@@ -3404,6 +3423,9 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       MWARNING("grpc_stream: daemon height=" << daemon_height
+         << " is not ahead of wallet height=" << wallet_height
+         << " -- using bin RPC recovery instead of an invalid gRPC forward stream");
++      log_grpc_fallback("iteration", "daemon_not_ahead",
++        "range_precondition", 0, effective_start, wallet_height,
++        daemon_height, 0, 0);
+       return false;
+     }
+     else if (effective_start >= daemon_height)
+@@ -3411,6 +3433,9 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       MWARNING("grpc_stream: effective start=" << effective_start
+         << " is at or above daemon height=" << daemon_height
+         << " -- using bin RPC recovery instead of an invalid gRPC forward stream");
++      log_grpc_fallback("iteration", "start_at_or_above_tip",
++        "range_precondition", 0, effective_start, wallet_height,
++        daemon_height, 0, 0);
+       return false;
+     }
+     else
+@@ -3478,6 +3503,9 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       MWARNING("grpc_stream: open_stream failed at start=" << effective_start
+         << " err=" << m_grpc_stream_client->last_error_message()
+         << " -- falling back to bin RPC for this iteration");
++      log_grpc_fallback("iteration", "stream_open_failed", "grpc_open",
++        m_grpc_stream_client->last_error_code(), effective_start,
++        wallet_height, daemon_height, 0, 0);
+       return false;
+     }
+     m_grpc_stream_active = true;
+@@ -3501,6 +3529,14 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       << " err_code=" << m_grpc_stream_client->last_error_code()
+       << " err='" << m_grpc_stream_client->last_error_message() << "')"
+       << " -- closing stream, falling back to bin RPC for this iteration");
++    const int fallback_error_code = m_grpc_stream_client->last_error_code();
++    log_grpc_fallback("iteration",
++      ended_ok ? "stream_end" : (fallback_error_code == 0
++        ? "chunk_timeout" : "stream_receive_failed"),
++      ended_ok ? "clean_end" : (fallback_error_code == 0
++        ? "timeout" : "grpc_receive"),
++      fallback_error_code, m_grpc_stream_next_height,
++      static_cast<uint64_t>(m_blockchain.size()), 0, 0, 0);
+     m_grpc_stream_client->close();
+     m_grpc_stream_active = false;
+     return false;
+@@ -3515,6 +3551,11 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     MWARNING("grpc_stream: payload deserialization failed ("
+       << payload.size() << " bytes, seq=" << m_grpc_stream_client->last_chunk_seq()
+       << ") -- closing stream, falling back to bin RPC for this session");
++    log_grpc_fallback("session", "payload_deserialization_failed",
++      "protocol_payload", -1, m_grpc_stream_next_height,
++      static_cast<uint64_t>(m_blockchain.size()), 0,
++      m_grpc_stream_client->last_chunk_start_height(),
++      m_grpc_stream_client->last_chunk_n_blocks());
+     m_grpc_stream_client->close();
+     m_grpc_stream_active = false;
+     m_grpc_stream_fallback_to_bin = true;
+@@ -3525,6 +3566,10 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     MWARNING("grpc_stream: mismatched blocks (" << res.blocks.size()
+       << ") and output_indices (" << res.output_indices.size()
+       << ") -- falling back to bin RPC for this session");
++    log_grpc_fallback("session", "block_output_index_count_mismatch",
++      "protocol_payload", -1, m_grpc_stream_next_height,
++      static_cast<uint64_t>(m_blockchain.size()), res.current_height,
++      res.start_height, res.blocks.size());
+     m_grpc_stream_client->close();
+     m_grpc_stream_active = false;
+     m_grpc_stream_fallback_to_bin = true;
+@@ -3554,6 +3599,9 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       << chunk_end_exclusive << ") is >" << DRIFT_TOLERANCE
+       << " blocks behind wallet tip=" << wallet_tip
+       << " -- genuine stream drift; closing for reopen at current tip");
++    log_grpc_fallback("iteration", "stream_drift", "range_order", -1,
++      m_grpc_stream_next_height, wallet_tip, res.current_height,
++      res.start_height, res.blocks.size());
+     m_grpc_stream_client->close();
+     m_grpc_stream_active = false;
+     return false;
+@@ -3576,6 +3624,13 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       << " pop_wait_ms=" << pop_wait_ms
+       << " tip=" << current_height
+       << " session=" << m_grpc_stream_session_id);
++  MWARNING("[SYNC_METRIC] stage=delivery transport=grpc event=consumer_pop"
++      << " start_height=" << blocks_start_height
++      << " blocks=" << blocks.size()
++      << " payload_bytes=" << payload.size()
++      << " consumer_wait_ms=" << pop_wait_ms
++      << " chain_tip=" << current_height
++      << " session=" << m_grpc_stream_session_id);
+   return true;
+ }
+ #endif
+@@ -3641,7 +3696,32 @@ void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_heigh
+     const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+     uint64_t pre_call_credits = m_rpc_payment_state.credits;
+     req.client = get_client_signature();
++    const uint64_t rx_bytes_before = m_http_client->get_bytes_received();
++    const auto request_started = std::chrono::steady_clock::now();
+     bool r = net_utils::invoke_http_bin("/getblocks.bin", req, res, *m_http_client, rpc_timeout);
++    const auto request_finished = std::chrono::steady_clock::now();
++    const uint64_t rx_bytes_after = m_http_client->get_bytes_received();
++    const uint64_t rx_wire_bytes = rx_bytes_after >= rx_bytes_before
++      ? rx_bytes_after - rx_bytes_before : 0;
++    const double request_ms = std::chrono::duration<double, std::milli>(
++      request_finished - request_started).count();
++    const double rx_mib_per_s = request_ms > 0.0
++      ? (static_cast<double>(rx_wire_bytes) / 1024.0 / 1024.0)
++          / (request_ms / 1000.0)
++      : 0.0;
++    const double blocks_per_s = request_ms > 0.0
++      ? static_cast<double>(res.blocks.size()) / (request_ms / 1000.0)
++      : 0.0;
++    MWARNING("[SYNC_METRIC] stage=network transport=bin_rpc event=response"
++      << " requested_height=" << start_height
++      << " response_start_height=" << res.start_height
++      << " blocks=" << res.blocks.size()
++      << " rx_wire_bytes=" << rx_wire_bytes
++      << " duration_ms=" << request_ms
++      << " wire_mib_per_s=" << rx_mib_per_s
++      << " blocks_per_s=" << blocks_per_s
++      << " rpc_ok=" << r
++      << " status=" << get_rpc_status(res.status));
+     THROW_ON_RPC_RESPONSE_ERROR(r, {}, res, "getblocks.bin", error::get_blocks_error, get_rpc_status(res.status));
+     THROW_WALLET_EXCEPTION_IF(res.blocks.size() != res.output_indices.size(), error::wallet_internal_error,
+         "mismatched blocks (" + boost::lexical_cast<std::string>(res.blocks.size()) + ") and output_indices (" +
+@@ -3848,8 +3928,16 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+   THROW_WALLET_EXCEPTION_IF(txidx != num_txes, error::wallet_internal_error, "txidx does not match tx_cache_data size");
+   THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
+   auto t_hash1 = std::chrono::steady_clock::now();
++  const double cache_tx_ms = std::chrono::duration<double, std::milli>(
++    t_hash1 - t_hash0).count();
+   MWARNING("PERF process_parsed_blocks: cache_tx_data(hash) " << num_txes << " txs in "
+     << std::chrono::duration_cast<std::chrono::milliseconds>(t_hash1 - t_hash0).count() << "ms");
++  MWARNING("[SYNC_METRIC] stage=client_scan substage=cache_transactions"
++    << " start_height=" << start_height
++    << " transactions=" << num_txes
++    << " duration_ms=" << cache_tx_ms
++    << " transactions_per_s=" << (cache_tx_ms > 0.0
++      ? static_cast<double>(num_txes) / (cache_tx_ms / 1000.0) : 0.0));
+ 
+   hw::device &hwdev =  m_account.get_device();
+   hw::reset_mode rst(hwdev);
+@@ -3876,12 +3964,11 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+   };
+ 
+   constexpr size_t DERIVATION_BATCH_SIZE = 100;
++  size_t derivation_count = 0;
++  for (const auto &slot : tx_cache_data)
++    derivation_count += slot.primary.size() + slot.additional.size();
+   if (use_rust_derivation_batch)
+   {
+-    size_t derivation_count = 0;
+-    for (const auto &slot : tx_cache_data)
+-      derivation_count += slot.primary.size() + slot.additional.size();
+-
+     std::vector<wallet2::is_out_data*> derivation_items;
+     std::vector<crypto::public_key> derivation_points;
+     derivation_items.reserve(derivation_count);
+@@ -3946,8 +4033,19 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+     THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
+   }
+   auto t_gender1 = std::chrono::steady_clock::now();
++  const double derivation_ms = std::chrono::duration<double, std::milli>(
++    t_gender1 - t_gender0).count();
+   MWARNING("PERF process_parsed_blocks: generate_key_derivation phase in "
+     << std::chrono::duration_cast<std::chrono::milliseconds>(t_gender1 - t_gender0).count() << "ms");
++  MWARNING("[SYNC_METRIC] stage=client_scan substage=key_derivation"
++    << " start_height=" << start_height
++    << " derivations=" << derivation_count
++    << " duration_ms=" << derivation_ms
++    << " derivations_per_s=" << (derivation_ms > 0.0
++      ? static_cast<double>(derivation_count) / (derivation_ms / 1000.0) : 0.0)
++    << " engine=" << (use_rust_derivation_batch ? "rust_batch" : "device_cpu")
++    << " workers=" << (use_rust_derivation_batch ? rust_batch_workers
++      : tpool.get_max_concurrency()));
+   auto t_geniod0 = std::chrono::steady_clock::now();
+ 
+   auto geniod = [&](const cryptonote::transaction &tx, size_t n_vouts, size_t txidx) {
+@@ -4040,8 +4138,16 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+   }
+   THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error, "Exception in thread pool");
+   auto t_geniod1 = std::chrono::steady_clock::now();
++  const double output_scan_ms = std::chrono::duration<double, std::milli>(
++    t_geniod1 - t_geniod0).count();
+   MWARNING("PERF process_parsed_blocks: geniod(scan outputs) " << num_outputs << " outputs in "
+     << std::chrono::duration_cast<std::chrono::milliseconds>(t_geniod1 - t_geniod0).count() << "ms");
++  MWARNING("[SYNC_METRIC] stage=client_scan substage=scan_outputs"
++    << " start_height=" << start_height
++    << " outputs=" << num_outputs
++    << " duration_ms=" << output_scan_ms
++    << " outputs_per_s=" << (output_scan_ms > 0.0
++      ? static_cast<double>(num_outputs) / (output_scan_ms / 1000.0) : 0.0));
+ 
+   hwdev.set_mode(hw::device::NONE);
+ 
+@@ -4109,11 +4215,33 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+       MWARNING("  HOT_BLOCK h=" << hb.height << " ms=" << hb.ms << " txs=" << hb.txs << " outputs=" << hb.outputs);
+   }
+   auto t_chain1 = std::chrono::steady_clock::now();
++  const double chain_commit_ms = std::chrono::duration<double, std::milli>(
++    t_chain1 - t_chain0).count();
++  const double client_scan_ms = std::chrono::duration<double, std::milli>(
++    t_chain1 - t_proc0).count();
+   MWARNING("PERF process_parsed_blocks: chain-integration " << blocks.size() << " blocks in "
+     << std::chrono::duration_cast<std::chrono::milliseconds>(t_chain1 - t_chain0).count() << "ms"
+     << " blocks_added=" << blocks_added);
+   MWARNING("PERF process_parsed_blocks TOTAL " << blocks.size() << " blocks, " << num_outputs << " outputs in "
+     << std::chrono::duration_cast<std::chrono::milliseconds>(t_chain1 - t_proc0).count() << "ms");
++  MWARNING("[SYNC_METRIC] stage=client_scan substage=chain_commit"
++    << " start_height=" << start_height
++    << " blocks=" << blocks.size()
++    << " blocks_added=" << blocks_added
++    << " duration_ms=" << chain_commit_ms
++    << " blocks_per_s=" << (chain_commit_ms > 0.0
++      ? static_cast<double>(blocks.size()) / (chain_commit_ms / 1000.0) : 0.0));
++  MWARNING("[SYNC_METRIC] stage=client_scan substage=total"
++    << " start_height=" << start_height
++    << " blocks=" << blocks.size()
++    << " blocks_added=" << blocks_added
++    << " transactions=" << num_txes
++    << " outputs=" << num_outputs
++    << " duration_ms=" << client_scan_ms
++    << " blocks_per_s=" << (client_scan_ms > 0.0
++      ? static_cast<double>(blocks.size()) / (client_scan_ms / 1000.0) : 0.0)
++    << " outputs_per_s=" << (client_scan_ms > 0.0
++      ? static_cast<double>(num_outputs) / (client_scan_ms / 1000.0) : 0.0));
+ }
+ //----------------------------------------------------------------------------------------------------
+ void check_block_hard_fork_version(
+@@ -5522,6 +5650,22 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
+         << " waiter_wait_ms=" << waiter_wait_ms
+         << " bound=" << (waiter_wait_ms > proc_ms_for_log ? "NETWORK" : "SCAN")
+         << " overlap_ratio=" << (proc_ms_for_log == 0 ? 0.0 : static_cast<double>(proc_ms_for_log) / (proc_ms_for_log + waiter_wait_ms)));
++      const int64_t pipeline_wall_ms = proc_ms_for_log + waiter_wait_ms;
++      MWARNING("[SYNC_METRIC] stage=pipeline event=iteration"
++        << " iteration=" << iter_count
++        << " processed_blocks=" << (!first ? blocks.size() : 0)
++        << " process_ms=" << proc_ms_for_log
++        << " residual_fetch_wait_ms=" << waiter_wait_ms
++        << " wall_ms=" << pipeline_wall_ms
++        << " blocks_per_s=" << (pipeline_wall_ms > 0 && !first
++          ? static_cast<double>(blocks.size()) /
++              (static_cast<double>(pipeline_wall_ms) / 1000.0)
++          : 0.0)
++        << " bottleneck=" << (waiter_wait_ms > proc_ms_for_log
++          ? "network_or_server" : "client_scan")
++        << " overlap_ratio=" << (proc_ms_for_log == 0 ? 0.0
++          : static_cast<double>(proc_ms_for_log) /
++              (proc_ms_for_log + waiter_wait_ms)));
+ 
+       // handle error from async fetching thread
+       if (error)
+-- 
+2.50.1 (Apple Git-155)
+
+

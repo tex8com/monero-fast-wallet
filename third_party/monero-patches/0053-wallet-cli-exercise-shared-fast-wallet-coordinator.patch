@@ -1,0 +1,80 @@
+From 5540608aba27f161afd7f853c04dce4faec58d5c Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Fast Wallet <dev@tex8.com>
+Date: Sat, 8 Aug 2026 22:24:52 -0500
+Subject: [PATCH] wallet cli: exercise shared Fast Wallet coordinator
+
+---
+ src/simplewallet/product_cli_debug.cpp | 43 ++++++++++++++++++++++++--
+ 1 file changed, 40 insertions(+), 3 deletions(-)
+
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index a354877..c07cd4c 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -188,9 +188,9 @@ namespace
+       << "fast-wallet contract --json\n"
+       << "  Print the shared Fast Wallet lifecycle contract identity.\n\n"
+       << "fast-wallet self-test --json\n"
+-      << "  Test the local Fast Wallet lifecycle without a worker, network, wallet\n"
+-      << "  file, seed or funds: independent Fast Wallet kind, mandatory backup,\n"
+-      << "  explicit detach and notification disable before removal.\n";
++      << "  Exercise the shared Fast Wallet coordinator without a worker, network,\n"
++      << "  wallet file, seed or funds: independent seed, mandatory backup, and\n"
++      << "  explicit worker detach and notification disable before removal.\n";
+   }
+ 
+   bool wallet_policy_command(int argc, char* argv[], int& exit_code)
+@@ -385,6 +385,34 @@ namespace
+       policy.fast_wallet_kind == MFW_WALLET_KIND_FAST &&
+       policy.fast_wallet_independent_seed == 1);
+ 
++    mfw_fast_wallet_coordinator_input_v1 coordinator_input{};
++    coordinator_input.struct_size = sizeof(coordinator_input);
++    coordinator_input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
++    coordinator_input.operation = MFW_FAST_WALLET_OPERATION_CREATE;
++    coordinator_input.lifecycle_state = MFW_WALLET_LIFECYCLE_EMPTY;
++    coordinator_input.balance_state = MFW_WALLET_BALANCE_KNOWN_ZERO;
++    mfw_fast_wallet_coordinator_plan_v1 coordinator_plan{};
++    expect(mfw_fast_wallet_operation_plan_v1(&coordinator_input, &coordinator_plan) == MFW_ERROR_OK &&
++      coordinator_plan.operation_allowed == 1 &&
++      coordinator_plan.execution_allowed == 1 &&
++      coordinator_plan.requirement_flags ==
++        (MFW_FAST_WALLET_REQUIREMENT_INDEPENDENT_SEED |
++         MFW_FAST_WALLET_REQUIREMENT_CONFIRM_SEED_BACKUP) &&
++      coordinator_plan.result_lifecycle_state == MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP);
++
++    coordinator_input.operation = MFW_FAST_WALLET_OPERATION_SELECT;
++    coordinator_input.lifecycle_state = MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP;
++    expect(mfw_fast_wallet_operation_plan_v1(&coordinator_input, &coordinator_plan) == MFW_ERROR_OK &&
++      coordinator_plan.operation_allowed == 1 && coordinator_plan.execution_allowed == 0 &&
++      coordinator_plan.requirement_flags == MFW_FAST_WALLET_REQUIREMENT_CONFIRM_SEED_BACKUP);
++
++    coordinator_input.operation = MFW_FAST_WALLET_OPERATION_ENROLL_WORKER;
++    coordinator_input.lifecycle_state = MFW_WALLET_LIFECYCLE_READY;
++    coordinator_input.seed_backup_confirmed = 1;
++    expect(mfw_fast_wallet_operation_plan_v1(&coordinator_input, &coordinator_plan) == MFW_ERROR_OK &&
++      coordinator_plan.operation_allowed == 1 && coordinator_plan.execution_allowed == 1 &&
++      coordinator_plan.requirement_flags == 0);
++
+     mfw_wallet_lifecycle_state_v1 state{};
+     mfw_wallet_lifecycle_state_v1 next{};
+     mfw_wallet_lifecycle_event_v1 event{};
+@@ -419,6 +447,15 @@ namespace
+     expect(mfw_wallet_removal_plan_compute_v1(&removal_input, &removal_plan) == MFW_ERROR_OK &&
+       removal_plan.requirement_flags == detach_requirements &&
+       removal_plan.immediate_removal_allowed == 0);
++    coordinator_input.operation = MFW_FAST_WALLET_OPERATION_REMOVE;
++    coordinator_input.lifecycle_state = MFW_WALLET_LIFECYCLE_READY;
++    coordinator_input.seed_backup_confirmed = 1;
++    coordinator_input.worker_enrolled = 1;
++    coordinator_input.notifications_enabled = 1;
++    expect(mfw_fast_wallet_operation_plan_v1(&coordinator_input, &coordinator_plan) == MFW_ERROR_OK &&
++      coordinator_plan.operation_allowed == 1 && coordinator_plan.execution_allowed == 0 &&
++      coordinator_plan.requirement_flags == detach_requirements &&
++      coordinator_plan.result_lifecycle_state == MFW_WALLET_LIFECYCLE_REMOVAL_PENDING);
+     removal_input.fast_worker_enrolled = 0;
+     removal_input.notifications_enabled = 0;
+     expect(mfw_wallet_removal_plan_compute_v1(&removal_input, &removal_plan) == MFW_ERROR_OK &&
+-- 
+2.50.1 (Apple Git-155)
+

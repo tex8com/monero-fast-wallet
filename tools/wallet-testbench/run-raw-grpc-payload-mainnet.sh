@@ -17,7 +17,7 @@ binary="${RAW_GRPC_BINARY:-/Volumes/4TB/monero-fast-wallet-build/monero-v0.18.4.
 # start here so the diagnostic drains the same real range.
 start_height="${RAW_GRPC_START_HEIGHT:-3577875}"
 stop_height="${RAW_GRPC_STOP_HEIGHT:-0}"
-grpc="${RAW_GRPC_ENDPOINT:-152.53.133.188:48091}"
+grpc="${RAW_GRPC_ENDPOINT:-152.53.133.188:18091}"
 chunk_hint="${RAW_GRPC_CHUNK_HINT:-256}"
 connections="${RAW_GRPC_RANGE_CONNECTIONS:-4}"
 range_blocks="${RAW_GRPC_RANGE_BLOCKS:-40000}"

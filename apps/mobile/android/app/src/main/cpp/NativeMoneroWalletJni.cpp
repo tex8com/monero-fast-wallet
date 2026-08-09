@@ -1,5 +1,9 @@
 #include "WalletEngine.h"
 #include "FastWalletProtocolBridge.h"
+#include "mfw_product_core_contract.h"
+
+static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
+              "Mobile JNI was built against an unsupported Product Core ABI");
 
 #ifndef TEX8_COMMUNITY_MATRIX_LINKED
 #define TEX8_COMMUNITY_MATRIX_LINKED 0
@@ -15,6 +19,7 @@
 
 #if TEX8_COMMUNITY_RUNTIME_LINKED
 #include "community_runtime_core.h"
+#include "CommunityHarrierRuntimeC.h"
 #endif
 
 #include <jni.h>
@@ -41,7 +46,9 @@ using tex8::wallet::FastReceiveIdentity;
 using tex8::wallet::FastReceiveRegistrationPayload;
 using tex8::wallet::HardwareWalletStatus;
 using tex8::wallet::LedgerBleTransportCallbacks;
+using tex8::wallet::LedgerKeyImageSyncResult;
 using tex8::wallet::NetworkType;
+using tex8::wallet::NetworkSyncStatus;
 using tex8::wallet::OpenWalletRequest;
 using tex8::wallet::PreparedTransaction;
 using tex8::wallet::PrepareTransactionRequest;
@@ -532,8 +539,110 @@ jobject toJavaMap(JNIEnv* env, const WalletSnapshot& snapshot) {
       putMethod,
       "daemonTargetHeight",
       snapshot.daemonTargetHeight);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "pendingOutputKeyImageCount",
+      snapshot.pendingOutputKeyImageCount);
   putMapBoolean(env, map, putMethod, "synchronized", snapshot.synchronized);
 
+  return map;
+}
+
+jobject toJavaMap(JNIEnv* env, const LedgerKeyImageSyncResult& result) {
+  jclass hashMapClass = env->FindClass("java/util/HashMap");
+  jmethodID constructor = env->GetMethodID(hashMapClass, "<init>", "()V");
+  jmethodID putMethod = env->GetMethodID(
+      hashMapClass,
+      "put",
+      "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+  jobject map = env->NewObject(hashMapClass, constructor);
+  putMapDouble(env, map, putMethod, "importHeight", result.importHeight);
+  putMapString(
+      env,
+      map,
+      putMethod,
+      "spentAtomic",
+      std::to_string(result.spentAtomic));
+  putMapString(
+      env,
+      map,
+      putMethod,
+      "unspentAtomic",
+      std::to_string(result.unspentAtomic));
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "verifiedOutputCount",
+      result.verifiedOutputCount);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "verificationDurationMs",
+      result.verificationDurationMs);
+  return map;
+}
+
+jobject toJavaMap(JNIEnv* env, const NetworkSyncStatus& status) {
+  jclass hashMapClass = env->FindClass("java/util/HashMap");
+  jmethodID constructor = env->GetMethodID(hashMapClass, "<init>", "()V");
+  jmethodID putMethod = env->GetMethodID(
+      hashMapClass,
+      "put",
+      "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+  jobject map = env->NewObject(hashMapClass, constructor);
+  putMapString(env, map, putMethod, "network", networkName(status.network));
+  putMapString(env, map, putMethod, "state", status.state);
+  putMapString(env, map, putMethod, "phase", status.phase);
+  putMapString(env, map, putMethod, "lastError", status.lastError);
+  putMapDouble(env, map, putMethod, "consecutiveFailures", status.consecutiveFailures);
+  putMapDouble(env, map, putMethod, "phaseSequence", status.phaseSequence);
+  putMapDouble(env, map, putMethod, "phaseElapsedMs", status.phaseElapsedMs);
+  putMapDouble(env, map, putMethod, "lastProviderSelectionMs", status.lastProviderSelectionMs);
+  putMapDouble(env, map, putMethod, "lastTransportInitializationMs", status.lastTransportInitializationMs);
+  putMapDouble(env, map, putMethod, "lastBlockFetchMs", status.lastBlockFetchMs);
+  putMapDouble(env, map, putMethod, "lastPrefetchMs", status.lastPrefetchMs);
+  putMapDouble(env, map, putMethod, "lastPrefetchWaitMs", status.lastPrefetchWaitMs);
+  putMapDouble(env, map, putMethod, "prefetchedPayloadBytes", status.prefetchedPayloadBytes);
+  putMapDouble(env, map, putMethod, "peakPrefetchedPayloadBytes", status.peakPrefetchedPayloadBytes);
+  putMapDouble(env, map, putMethod, "lastNonEmptyBlockFetchMs", status.lastNonEmptyBlockFetchMs);
+  putMapDouble(env, map, putMethod, "lastNonEmptyBlockCount", status.lastNonEmptyBlockCount);
+  putMapDouble(env, map, putMethod, "lastNonEmptyNetworkBytes", status.lastNonEmptyNetworkBytes);
+  putMapDouble(env, map, putMethod, "lastNonEmptyPayloadBytes", status.lastNonEmptyPayloadBytes);
+  putMapDouble(env, map, putMethod, "networkBytesReceived", status.networkBytesReceived);
+  putMapDouble(env, map, putMethod, "payloadBytesReceived", status.payloadBytesReceived);
+  putMapDouble(env, map, putMethod, "lastWalletScanMs", status.lastWalletScanMs);
+  putMapDouble(env, map, putMethod, "lastMempoolMs", status.lastMempoolMs);
+  putMapDouble(env, map, putMethod, "lastCheckpointMs", status.lastCheckpointMs);
+  putMapDouble(env, map, putMethod, "lastIterationMs", status.lastIterationMs);
+  putMapDouble(env, map, putMethod, "downloadStartHeight", status.downloadStartHeight);
+  putMapDouble(env, map, putMethod, "downloadedHeight", status.downloadedHeight);
+  putMapDouble(env, map, putMethod, "chainHeight", status.chainHeight);
+  putMapDouble(env, map, putMethod, "targetHeight", status.targetHeight);
+  putMapDouble(env, map, putMethod, "transportStarts", status.transportStarts);
+  putMapDouble(env, map, putMethod, "fetchedBatches", status.fetchedBatches);
+  putMapDouble(env, map, putMethod, "fetchedBlocks", status.fetchedBlocks);
+  putMapDouble(env, map, putMethod, "decodedBatches", status.decodedBatches);
+  putMapDouble(env, map, putMethod, "prefetchedBatches", status.prefetchedBatches);
+  putMapDouble(env, map, putMethod, "prefetchHits", status.prefetchHits);
+  putMapDouble(env, map, putMethod, "fanoutDeliveries", status.fanoutDeliveries);
+  putMapDouble(env, map, putMethod, "poolSnapshots", status.poolSnapshots);
+  putMapDouble(env, map, putMethod, "cacheHits", status.cacheHits);
+  putMapDouble(env, map, putMethod, "cacheMisses", status.cacheMisses);
+  putMapDouble(env, map, putMethod, "replayCachePayloadBytes", status.replayCachePayloadBytes);
+  putMapDouble(env, map, putMethod, "replayCachePeakPayloadBytes", status.replayCachePeakPayloadBytes);
+  putMapDouble(env, map, putMethod, "replayCachePayloadLimitBytes", status.replayCachePayloadLimitBytes);
+  putMapDouble(env, map, putMethod, "stalledWallets", status.stalledWallets);
+  putMapDouble(env, map, putMethod, "scanWorkers", status.scanWorkers);
+  putMapDouble(env, map, putMethod, "joinedWallets", status.joinedWallets);
+  putMapDouble(env, map, putMethod, "queueDepth", status.queueDepth);
+  putMapDouble(env, map, putMethod, "prefetchQueueDepth", status.prefetchQueueDepth);
+  putMapDouble(env, map, putMethod, "prefetchQueueCapacity", status.prefetchQueueCapacity);
+  putMapDouble(env, map, putMethod, "replayCacheEntries", status.replayCacheEntries);
+  putMapDouble(env, map, putMethod, "replayCacheCapacity", status.replayCacheCapacity);
   return map;
 }
 
@@ -737,6 +846,19 @@ jobject toJavaMap(JNIEnv* env, const WalletSubaddress& subaddress) {
   return map;
 }
 
+jobject toJavaSubaddressList(
+    JNIEnv* env,
+    const std::vector<WalletSubaddress>& addresses) {
+  jobject list = newArrayList(env);
+  jmethodID addMethod = arrayListAddMethod(env);
+  for (const auto& address : addresses) {
+    jobject value = toJavaMap(env, address);
+    env->CallBooleanMethod(list, addMethod, value);
+    env->DeleteLocalRef(value);
+  }
+  return list;
+}
+
 jobject toJavaMap(
     JNIEnv* env,
     const FastReceiveRegistrationPayload& payload) {
@@ -753,11 +875,32 @@ jobject toJavaMap(
 
 } // namespace
 
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  tex8_community_harrier_android_install_java_vm_v1(vm);
+#else
+  (void)vm;
+#endif
+  return JNI_VERSION_1_6;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeLinkedWithMonero(
     JNIEnv*,
     jclass) {
   return WalletEngine::linkedWithMonero();
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeBenchmarkDerivationPerformance(
+    JNIEnv* env,
+    jclass) {
+  try {
+    return toJavaString(env, WalletEngine::benchmarkDerivationPerformance());
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -1832,6 +1975,43 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeSealFastReceiveWatch(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSealLedgerFastWalletWatch(
+    JNIEnv* env,
+    jclass,
+    jstring walletId,
+    jstring identityId,
+    jdouble accountIndex,
+    jstring network,
+    jdouble restoreHeight,
+    jstring workerDescriptorHex,
+    jstring assignmentHandleHex,
+    jdouble assignmentEpoch,
+    jdouble issuedAt,
+    jdouble expiresAt,
+    jdouble now) {
+  try {
+    return toJavaString(
+        env,
+        tex8::wallet::fast_wallet_protocol_bridge::sealAccountWatch(
+            walletEngine(),
+            toStdString(env, walletId),
+            toStdString(env, identityId),
+            toUInt32(accountIndex, "accountIndex"),
+            toUInt64(restoreHeight, "restoreHeight"),
+            parseNetwork(toStdString(env, network)),
+            toStdString(env, workerDescriptorHex),
+            toStdString(env, assignmentHandleHex),
+            toUInt64(assignmentEpoch, "assignmentEpoch"),
+            toUInt64(issuedAt, "issuedAt"),
+            toUInt64(expiresAt, "expiresAt"),
+            toUInt64(now, "now")));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeVerifiedFastWalletRelayOrigin(
     JNIEnv* env,
     jclass,
@@ -1919,6 +2099,34 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeSetGrpcEndpoint(
     walletEngine().setGrpcEndpoint(
         toStdString(env, walletId),
         toStdString(env, endpoint));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeNetworkSyncStatus(
+    JNIEnv* env,
+    jclass,
+    jstring network) {
+  try {
+    return toJavaMap(
+        env,
+        walletEngine().networkSyncStatus(
+            parseNetwork(toStdString(env, network))));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativePrioritizeNetworkWallet(
+    JNIEnv* env,
+    jclass,
+    jstring walletId) {
+  try {
+    walletEngine().prioritizeNetworkWallet(toStdString(env, walletId));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
   }
@@ -2698,6 +2906,24 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCreateSubaddress(
   }
 }
 
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeListSubaddresses(
+    JNIEnv* env,
+    jclass,
+    jstring walletId,
+    jdouble accountIndex) {
+  try {
+    return toJavaSubaddressList(
+        env,
+        walletEngine().listSubaddresses(
+            toStdString(env, walletId),
+            toUInt32(accountIndex, "accountIndex")));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeGetSeed(
     JNIEnv* env,
@@ -2792,6 +3018,24 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeGetTransactions(
         walletEngine().getTransactions(
             toStdString(env, walletId),
             toUInt32(limit, "limit")));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSyncLedgerKeyImagesToViewWallet(
+    JNIEnv* env,
+    jclass,
+    jstring hardwareWalletId,
+    jstring viewOnlyWalletId) {
+  try {
+    return toJavaMap(
+        env,
+        walletEngine().syncLedgerKeyImagesToViewWallet(
+            toStdString(env, hardwareWalletId),
+            toStdString(env, viewOnlyWalletId)));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;

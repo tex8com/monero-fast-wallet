@@ -12,7 +12,7 @@ const valid = {
   eventId: 'fwpush_0123456789abcdef0123456789abcdef',
 };
 
-test('accepts only the opaque Fast Wallet v2 signal', () => {
+test('accepts only the opaque Fast Wallet v3 signal', () => {
   assert.deepEqual(parseFastWalletPushEvent(valid), valid);
   assert.deepEqual(parseFastWalletPushEvent({ data: valid }), valid);
   assert.deepEqual(parseFastWalletPushEvent({ ...valid, eventId: `evt_${'a'.repeat(64)}` }), { ...valid, eventId: `evt_${'a'.repeat(64)}` });

@@ -111,7 +111,7 @@ set(
   MONERO_COMMUNITY_HARRIER_LIBRARY
   ""
   CACHE FILEPATH
-  "Path to the verified Community Harrier C++ static library for the current Android ABI"
+  "Path to the verified Community Harrier C++ library for the current Android ABI"
 )
 
 option(
@@ -186,6 +186,7 @@ target_include_directories(monero_wallet_bridge_jni
   PRIVATE
     "${REPO_ROOT}/native/monero-bridge/cpp"
     "${REPO_ROOT}/native/fast-wallet-protocol/include"
+    "${REPO_ROOT}/native/product-core/generated/c"
 )
 
 if(NOT MONERO_FAST_WALLET_PROTOCOL_LIBRARY AND MONERO_FAST_WALLET_PROTOCOL_ROOT)
@@ -284,6 +285,28 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
       "Monero link manifest has no authenticated wallet API fingerprints. "
       "Rebuild wallet_api and regenerate link.cmake.")
   endif()
+  set(MONERO_CORE_LOCK "${REPO_ROOT}/third_party/monero-patches/upstream.lock")
+  file(STRINGS "${MONERO_CORE_LOCK}" MONERO_EXPECTED_TREE_LINE
+       REGEX "^patched_tree=[0-9a-f]+$" LIMIT_COUNT 1)
+  string(REPLACE "patched_tree=" "" MONERO_EXPECTED_PATCHED_SOURCE_TREE
+         "${MONERO_EXPECTED_TREE_LINE}")
+  # CMake's regular-expression dialect does not support the `{40}` interval
+  # used by JavaScript, Rust, and shell validators elsewhere in the repo.
+  # Validate the hexadecimal alphabet and the exact Git tree-id length as two
+  # portable checks so a valid common-Core pin is not rejected on Android.
+  string(LENGTH "${MONERO_EXPECTED_PATCHED_SOURCE_TREE}"
+         MONERO_EXPECTED_PATCHED_SOURCE_TREE_LENGTH)
+  if(NOT MONERO_EXPECTED_PATCHED_SOURCE_TREE MATCHES "^[0-9a-f]+$" OR
+     NOT MONERO_EXPECTED_PATCHED_SOURCE_TREE_LENGTH EQUAL 40)
+    message(FATAL_ERROR "Invalid patched_tree in ${MONERO_CORE_LOCK}")
+  endif()
+  if(NOT MONERO_PATCHED_SOURCE_TREE STREQUAL
+     MONERO_EXPECTED_PATCHED_SOURCE_TREE)
+    message(FATAL_ERROR
+      "Android Monero Core is stale or unauthenticated. Expected source tree "
+      "${MONERO_EXPECTED_PATCHED_SOURCE_TREE}, manifest has "
+      "${MONERO_PATCHED_SOURCE_TREE}. Rebuild the common Core first.")
+  endif()
   file(SHA256 "${MONERO_WALLET_API_HEADER}" MONERO_CURRENT_WALLET_API_HEADER_SHA256)
   file(SHA256 "${MONERO_WALLET_API_LIBRARY}" MONERO_CURRENT_WALLET_API_LIBRARY_SHA256)
   if(NOT MONERO_CURRENT_WALLET_API_HEADER_SHA256 STREQUAL
@@ -307,7 +330,9 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
   message(STATUS "Using monero-fast-crypto for ${ANDROID_ABI}: ${MONERO_FAST_CRYPTO_LIBRARY}")
 
   target_compile_definitions(monero_wallet_bridge_jni
-    PRIVATE TEX8_WALLET_BRIDGE_WITH_MONERO=1
+    PRIVATE
+      TEX8_WALLET_BRIDGE_WITH_MONERO=1
+      "TEX8_MONERO_CORE_TREE=\"${MONERO_PATCHED_SOURCE_TREE}\""
   )
 
   if(MONERO_WALLET_BRIDGE_WITH_GRPC_STREAM)
@@ -426,6 +451,7 @@ if(MONERO_COMMUNITY_MATRIX_LIBRARY AND MONERO_COMMUNITY_HARRIER_LIBRARY)
     PRIVATE
       "${REPO_ROOT}/native/community-matrix-core/include"
       "${REPO_ROOT}/native/community-runtime-core/include"
+      "${REPO_ROOT}/native/community-harrier-runtime/include"
   )
   target_link_libraries(monero_wallet_bridge_jni
     PRIVATE

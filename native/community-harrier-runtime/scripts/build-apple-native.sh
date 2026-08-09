@@ -34,11 +34,14 @@ CACHE_DIRECTORY="${TEX8_HARRIER_CACHE_DIRECTORY:-${TMPDIR%/}/tex8-harrier-runtim
 PTE_PATH="${TEX8_HARRIER_PTE_PATH:-}"
 TOKENIZER_PATH="${TEX8_HARRIER_TOKENIZER_PATH:-}"
 BUILD_DIRECTORY="${TEX8_HARRIER_BUILD_DIRECTORY:-${CACHE_DIRECTORY}/native-apple-build}"
+PROTOBUF_PREFIX="${TEX8_HARRIER_PROTOBUF_PREFIX:-}"
 OUTPUT_PATH="${TEX8_HARRIER_OUTPUT_PATH:-${CACHE_DIRECTORY}/native-apple-vectors.json}"
 TOKENIZERS_DIRECTORY="${CACHE_DIRECTORY}/tokenizers-${TOKENIZERS_REVISION:0:12}"
 APPLE_ROOT="${CACHE_DIRECTORY}/executorch-apple-${EXECUTORCH_VERSION}"
 DOWNLOAD_DIRECTORY="${CACHE_DIRECTORY}/downloads"
 PATCH_PATH="${RUNTIME_DIRECTORY}/patches/0001-tokenizers-re2-large-special-token-dfa.patch"
+EXTERNAL_DEPS_PATCH_PATH="${RUNTIME_DIRECTORY}/patches/0002-tokenizers-external-absl-re2.patch"
+SENTENCEPIECE_PATCH_PATH="${RUNTIME_DIRECTORY}/patches/0003-sentencepiece-package-absl-no-source-mutation.patch"
 PREPARED_INPUTS="${REPOSITORY_DIRECTORY}/tools/community-harrier-testbench/prepared_inputs.v2.json"
 REFERENCE_VECTORS="${REPOSITORY_DIRECTORY}/tools/community-harrier-testbench/reference_vectors.v2.json"
 CONFORMANCE_OUTPUT="${TEX8_HARRIER_CONFORMANCE_OUTPUT:-${CACHE_DIRECTORY}/native-apple-conformance.json}"
@@ -46,6 +49,17 @@ CONFORMANCE_OUTPUT="${TEX8_HARRIER_CONFORMANCE_OUTPUT:-${CACHE_DIRECTORY}/native
 if [[ -z "${PTE_PATH}" || -z "${TOKENIZER_PATH}" ]]; then
   echo "Set TEX8_HARRIER_PTE_PATH and TEX8_HARRIER_TOKENIZER_PATH." >&2
   exit 2
+fi
+if [[ -n "${PROTOBUF_PREFIX}" ]]; then
+  if [[ ! -x "${PROTOBUF_PREFIX}/bin/protoc" ||
+        ! -f "${PROTOBUF_PREFIX}/lib/cmake/protobuf/protobuf-config.cmake" ]]; then
+    echo "TEX8_HARRIER_PROTOBUF_PREFIX is not a complete Protobuf SDK." >&2
+    exit 2
+  fi
+  if [[ "$("${PROTOBUF_PREFIX}/bin/protoc" --version)" != "libprotoc 31.1" ]]; then
+    echo "The shared desktop runtime requires pinned Protobuf 31.1." >&2
+    exit 2
+  fi
 fi
 if [[ ! -f "${PTE_PATH}" || ! -e "${TOKENIZER_PATH}" ]]; then
   echo "The requested PTE or tokenizer asset does not exist." >&2
@@ -80,20 +94,39 @@ if [[ "$(git -C "${TOKENIZERS_DIRECTORY}" rev-parse HEAD)" != "${TOKENIZERS_REVI
   echo "Tokenizer revision verification failed." >&2
   exit 1
 fi
-if git -C "${TOKENIZERS_DIRECTORY}" apply --reverse --check "${PATCH_PATH}" 2>/dev/null; then
-  :
-elif git -C "${TOKENIZERS_DIRECTORY}" apply --check "${PATCH_PATH}"; then
-  git -C "${TOKENIZERS_DIRECTORY}" apply "${PATCH_PATH}"
-else
-  echo "The recorded tokenizer patch does not apply cleanly." >&2
+apply_recorded_patch() {
+  local checkout="$1"
+  local patch_path="$2"
+  if git -C "${checkout}" apply --reverse --check "${patch_path}" 2>/dev/null; then
+    return
+  fi
+  if git -C "${checkout}" apply --check "${patch_path}"; then
+    git -C "${checkout}" apply "${patch_path}"
+    return
+  fi
+  echo "The recorded patch does not apply cleanly: ${patch_path}" >&2
   exit 1
-fi
+}
+
+apply_recorded_patch "${TOKENIZERS_DIRECTORY}" "${PATCH_PATH}"
+apply_recorded_patch "${TOKENIZERS_DIRECTORY}" "${EXTERNAL_DEPS_PATCH_PATH}"
+apply_recorded_patch \
+  "${TOKENIZERS_DIRECTORY}/third-party/sentencepiece" \
+  "${SENTENCEPIECE_PATCH_PATH}"
 TOKENIZER_TRACKED_CHANGES="$(
   git -C "${TOKENIZERS_DIRECTORY}" diff --name-only
 )"
-if [[ "${TOKENIZER_TRACKED_CHANGES}" != "src/re2_regex.cpp" ]]; then
+if [[ "${TOKENIZER_TRACKED_CHANGES}" != $'CMakeLists.txt\nsrc/re2_regex.cpp\nthird-party/sentencepiece' ]]; then
   echo "Tokenizer checkout contains unexpected tracked changes:" >&2
   printf '%s\n' "${TOKENIZER_TRACKED_CHANGES}" >&2
+  exit 1
+fi
+SENTENCEPIECE_TRACKED_CHANGES="$(
+  git -C "${TOKENIZERS_DIRECTORY}/third-party/sentencepiece" diff --name-only
+)"
+if [[ "${SENTENCEPIECE_TRACKED_CHANGES}" != "CMakeLists.txt" ]]; then
+  echo "SentencePiece checkout contains unexpected tracked changes:" >&2
+  printf '%s\n' "${SENTENCEPIECE_TRACKED_CHANGES}" >&2
   exit 1
 fi
 
@@ -135,9 +168,19 @@ cmake -S "${RUNTIME_DIRECTORY}" -B "${BUILD_DIRECTORY}" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="${TEX8_HARRIER_MACOS_DEPLOYMENT_TARGET:-12.0}" \
   -DTEX8_HARRIER_TOKENIZERS_SOURCE="${TOKENIZERS_DIRECTORY}" \
   -DTEX8_HARRIER_EXECUTORCH_APPLE_ROOT="${APPLE_ROOT}" \
+  -DTEX8_HARRIER_PROTOBUF_PREFIX="${PROTOBUF_PREFIX}" \
   -DTEX8_HARRIER_WITH_EXECUTORCH=ON \
   -DTEX8_HARRIER_BUILD_TESTBENCH=ON
 cmake --build "${BUILD_DIRECTORY}" --config Release --parallel
+
+if [[ -n "${PROTOBUF_PREFIX}" ]]; then
+  sentencepiece_archive="${BUILD_DIRECTORY}/tokenizers/sp-build/src/libsentencepiece.a"
+  if ar -t "${sentencepiece_archive}" | grep -Eq \
+    '(^|/)(common|message_lite|coded_stream|wire_format_lite)\.cc\.o$'; then
+    echo "SentencePiece still embeds its legacy Protobuf runtime." >&2
+    exit 1
+  fi
+fi
 
 # CMake carries these dependencies transitively while linking the conformance
 # executable, but Cargo only receives archive paths. Flatten the exact native
@@ -147,14 +190,18 @@ DEPENDENCY_BUNDLE="${BUILD_DIRECTORY}/libtex8_community_harrier_dependencies.a"
 DEPENDENCY_BUNDLE_TEMP="${DEPENDENCY_BUNDLE}.tmp"
 DEPENDENCY_ARCHIVES=(
   "${BUILD_DIRECTORY}/tokenizers/sp-build/src/libsentencepiece.a"
-  "${BUILD_DIRECTORY}/tokenizers/third-party/re2/libre2.a"
 )
-while IFS= read -r archive; do
-  DEPENDENCY_ARCHIVES+=("${archive}")
-done < <(
-  find "${BUILD_DIRECTORY}/tokenizers/third-party/abseil-cpp" \
-    -type f -name 'libabsl*.a' -print | LC_ALL=C sort
-)
+if [[ -z "${PROTOBUF_PREFIX}" ]]; then
+  DEPENDENCY_ARCHIVES+=(
+    "${BUILD_DIRECTORY}/tokenizers/third-party/re2/libre2.a"
+  )
+  while IFS= read -r archive; do
+    DEPENDENCY_ARCHIVES+=("${archive}")
+  done < <(
+    find "${BUILD_DIRECTORY}/tokenizers/third-party/abseil-cpp" \
+      -type f -name 'libabsl*.a' -print | LC_ALL=C sort
+  )
+fi
 for archive in "${DEPENDENCY_ARCHIVES[@]}"; do
   if [[ ! -f "${archive}" ]]; then
     echo "Missing tokenizer dependency archive: ${archive}" >&2
@@ -176,6 +223,24 @@ python3 "${REPOSITORY_DIRECTORY}/tools/community-harrier-testbench/compare_embed
   --candidate "${OUTPUT_PATH}" \
   --backend xnnpack-a8w8 \
   --output "${CONFORMANCE_OUTPUT}"
+
+if [[ -n "${PROTOBUF_PREFIX}" ]]; then
+  cat > "${BUILD_DIRECTORY}/tex8-harrier-build-contract.txt" <<EOF
+schema=1
+protobuf_provider=external
+protobuf_version=31.1
+protobuf_prefix=${PROTOBUF_PREFIX}
+tokenizers_revision=${TOKENIZERS_REVISION}
+EOF
+else
+  cat > "${BUILD_DIRECTORY}/tex8-harrier-build-contract.txt" <<EOF
+schema=1
+protobuf_provider=vendored
+protobuf_version=legacy
+protobuf_prefix=
+tokenizers_revision=${TOKENIZERS_REVISION}
+EOF
+fi
 
 echo "Native vectors: ${OUTPUT_PATH}"
 echo "Conformance report: ${CONFORMANCE_OUTPUT}"

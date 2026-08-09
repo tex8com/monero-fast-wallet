@@ -14,8 +14,24 @@ const appSecuritySource = readFileSync(
   resolve(mobileRoot, 'src', 'services', 'AppSecurity.tsx'),
   'utf8',
 );
+const appVaultStateMachineSource = readFileSync(
+  resolve(
+    mobileRoot,
+    '..',
+    '..',
+    'packages',
+    'wallet-shared',
+    'src',
+    'appVaultStateMachine.ts',
+  ),
+  'utf8',
+);
 const walletStateSource = readFileSync(
   resolve(mobileRoot, 'src', 'services', 'WalletState.tsx'),
+  'utf8',
+);
+const walletServiceSource = readFileSync(
+  resolve(mobileRoot, 'src', 'services', 'WalletService.ts'),
   'utf8',
 );
 const appSource = readFileSync(resolve(mobileRoot, 'App.tsx'), 'utf8');
@@ -99,10 +115,11 @@ describe('app-wide protection UI contract', () => {
     expect(setupSource).toContain("setPasswordPromptMode('restore')");
   });
 
-  it('requires the stored device credential for Fast Wallet management', () => {
-    expect(walletsSource).toContain('hasSecureWalletCredential');
+  it('uses the one app-wide vault instead of per-wallet credentials', () => {
+    expect(walletsSource).toContain('backupRegisteredWalletSeed');
     expect(walletsSource).not.toContain("t('settings.walletPassword')");
     expect(walletsSource).not.toContain('password: needsPassword');
+    expect(walletsSource).not.toContain('hasSecureWalletCredential');
   });
 
   it('makes app protection mandatory and enforces it in native code', () => {
@@ -112,10 +129,32 @@ describe('app-wide protection UI contract', () => {
     expect(appSecuritySource).not.toContain(
       "export type AppProtectionMode = 'none'",
     );
-    expect(appSecuritySource).toContain('password.length < 12');
+    expect(appSecuritySource).toMatch(
+      /validateRecoveryPassword\(password(?:\s*\?\?\s*['"]{2})?\)/,
+    );
+    expect(appVaultStateMachineSource).toContain(
+      'MFW_APP_VAULT_PASSWORD_MINIMUM_CHARACTERS',
+    );
     expect(appSecuritySource).toContain('getAppProtectionStatus');
     expect(appSecuritySource).toContain('walletService.unlockApp');
-    expect(appSecuritySource).toContain(
+    expect(walletServiceSource).toContain(
+      "logWalletEvent('WalletService', 'unlockApp.complete'",
+    );
+    expect(walletServiceSource).toContain(
+      'private appUnlockInFlight?: Promise<BiometricAuthResult>',
+    );
+    expect(walletServiceSource).toContain(
+      "logWalletEvent('WalletService', 'unlockApp.coalesced'",
+    );
+    expect(walletServiceSource).toContain(
+      'if (this.appUnlockInFlight === pending)',
+    );
+    expect(walletServiceSource).toContain('authorized: result.success');
+    expect(walletServiceSource).not.toContain(
+      "traceWalletOperation(\n      'unlockApp'",
+    );
+    expect(appSecuritySource).toContain('queueMicrotask');
+    expect(appSecuritySource).not.toContain(
       'InteractionManager.runAfterInteractions',
     );
     expect(appSecuritySource).toContain(
@@ -126,12 +165,14 @@ describe('app-wide protection UI contract', () => {
     expect(appSecuritySource).toContain('setAutomaticBiometricPending(true)');
     expect(appSecuritySource).toContain('await walletService.lockApp()');
     expect(appSecuritySource).toContain(
-      "onboardingStage === 'welcome'",
+      "onboardingComplete: onboardingStage === 'protection'",
     );
+    expect(appSecuritySource).toContain("presentation === 'welcome'");
     expect(appSecuritySource).toContain('<InitialProtectionWelcome');
     expect(appSecuritySource).toContain(
-      'const canMountProtectedContent = ready && configured',
+      'ready && configured && !locked',
     );
+    expect(appSecuritySource).not.toContain('securityResetInProgress');
     expect(appSecuritySource).toContain(
       '{canMountProtectedContent ? (',
     );
@@ -142,7 +183,13 @@ describe('app-wide protection UI contract', () => {
     expect(tabNavigatorSource).toContain('"walletScreen.presented"');
     expect(tabNavigatorSource).toContain('!appSecurityLocked');
     expect(walletStateSource).toContain(
-      "logWalletEvent('WalletState', 'appSecurity.persistWallets.start'",
+      "'appBackground.sessionRetainedUntilTimeout'",
+    );
+    expect(walletStateSource).toContain(
+      "'unmount.nativeLockOwnsPersistence'",
+    );
+    expect(walletStateSource).toContain(
+      'getAppProtectionStatus()',
     );
     expect(walletStateSource).toContain(
       'if (!appSecurityReady || appSecurityLocked)',
@@ -173,30 +220,42 @@ describe('app-wide protection UI contract', () => {
     expect(androidNativeSource).toContain('requireAppAuthorized');
     expect(androidNativeSource).toContain('recordNativeUnlockFailure');
     expect(androidNativeSource).toContain(
-      'private const val MAX_APP_PASSWORD_ATTEMPTS = 3',
+      'private fun unlockDelaySeconds(failures: Int)',
     );
     expect(androidNativeSource).toContain(
-      'activityManager.clearApplicationUserData()',
+      'activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)',
     );
-    expect(androidNativeSource).toContain('APP_SECURITY_RESET_REQUIRED_KEY');
+    expect(androidNativeSource).toContain(
+      'activity.window.decorView.isShown',
+    );
+    expect(androidNativeSource).not.toContain(
+      'Lifecycle.State.RESUMED) && activity.hasWindowFocus()',
+    );
+    expect(androidNativeSource).not.toContain('clearApplicationUserData()');
+    expect(androidNativeSource).not.toContain('scheduleApplicationDataReset');
+    expect(androidNativeSource).not.toContain('markSecurityResetRequired');
     expect(androidNativeSource).toContain('Argon2Mode.ARGON2_ID');
     expect(androidNativeSource).toContain('PBKDF2WithHmacSHA256');
     expect(androidNativeSource).toContain(
-      'if (currentMode == mode && mode == "biometric")',
+      'storeSecretValue(APP_PASSWORD_VERIFIER_KEY, createPasswordVerifier(password))',
+    );
+    expect(androidNativeSource).toContain(
+      'if (mode == "biometric" && password.isEmpty())',
     );
     expect(androidNativeSource).toMatch(
-      /if \(mode == "biometric"\)[\s\S]+?authorizeAppOnSuccess = true,[\s\S]+?allowDeviceCredential = false/,
+      /if \(mode == "biometric" && password\.isEmpty\(\)\)[\s\S]+?authorizeAppOnSuccess = true,[\s\S]+?allowDeviceCredential = true/,
+    );
+    expect(androidNativeSource).toContain(
+      'BIOMETRIC_STRONG or\n            BiometricManager.Authenticators.DEVICE_CREDENTIAL',
     );
     expect(iosNativeSource).toContain('requireAppAuthorized');
     expect(iosNativeSource).toContain('recordNativeUnlockFailure');
     expect(iosNativeSource).toContain(
-      'constexpr NSInteger kMaxAppPasswordAttempts = 3',
+      'uint64_t nativeUnlockDelaySeconds(NSInteger failures)',
     );
-    expect(iosNativeSource).toContain('scheduleApplicationDataReset');
-    expect(iosNativeSource).toContain('kAppSecurityResetRequiredKey');
-    expect(iosNativeSource).toContain(
-      'deleteKeychainSecretsWithPrefixes(@[@""])',
-    );
+    expect(iosNativeSource).not.toContain('scheduleApplicationDataReset');
+    expect(iosNativeSource).not.toContain('markAppSecurityResetRequired');
+    expect(iosNativeSource).not.toContain('deleteKeychainSecretsWithPrefixes(@[@""])');
     expect(iosNativeSource).toContain('crypto_pwhash_argon2id_str');
     expect(iosNativeSource).toContain('CCKeyDerivationPBKDF');
   });
@@ -216,6 +275,8 @@ describe('app-wide protection UI contract', () => {
       'activeSystemUiInterruptionDeadlineMs',
     );
     expect(appSecuritySource).toContain('appState.lockDeferred');
+    expect(appSecuritySource).toContain('appState.alreadyLocked');
+    expect(appSecuritySource).toContain('if (locked)');
     expect(appSecuritySource).toContain('system-ui-timeout');
     expect(appSecuritySource).toContain(
       'recentlyCompletedSystemUiInterruption',
@@ -229,15 +290,19 @@ describe('app-wide protection UI contract', () => {
     expect(walletStateSource).toContain(
       'activeSystemUiInterruptionDeadlineMs()',
     );
-    expect(setupSource).toContain(
-      "withSystemUiInterruption(\n            'ledger-transport-permission'",
+    expect(setupSource).toMatch(
+      /withSystemUiInterruption\(\s*['"]ledger-transport-permission['"]/,
     );
     expect(scannerSource).toContain("'camera-permission'");
     expect(discoverySource).toContain("'location-permission'");
     expect(pushSource).toContain("'notification-permission'");
-    expect(pushSource).toMatch(
-      /try \{\s+\/\/ Protected metadata[\s\S]+?await getStoredSubscriptionId\(\)/,
+    const protectionGuard = pushSource.indexOf('.getAppProtectionStatus()');
+    const protectedMetadataRead = pushSource.indexOf(
+      'await getStoredSubscriptionId()',
+      protectionGuard,
     );
+    expect(protectionGuard).toBeGreaterThanOrEqual(0);
+    expect(protectedMetadataRead).toBeGreaterThan(protectionGuard);
     expect(contactsSource).toContain("'contacts-permission'");
     expect(androidNativeSource).toContain(
       'override fun beginSystemUiInterruption',
@@ -252,13 +317,28 @@ describe('app-wide protection UI contract', () => {
       'activityPause.systemUiDeferred',
     );
     expect(androidActivitySource).toContain(
-      'commitNativePauseLock("app-background")',
+      'NativeMoneroWalletModule.notifyAppBackgrounded()',
+    );
+    expect(androidActivitySource).toContain(
+      'commitNativeDeviceLock("device-lock")',
+    );
+    expect(walletStateSource).toContain(
+      'appBackground.sessionRetainedUntilTimeout',
     );
     expect(androidSystemUiSource).toContain(
       'private const val MAX_TIMEOUT_MS = 45_000L',
     );
     expect(androidSystemUiSource).toContain(
       'val token = "sui_${nextToken++}"',
+    );
+    expect(iosNativeSource).toContain(
+      '- (void)beginSystemUiInterruption:(NSString *)reason',
+    );
+    expect(iosNativeSource).toContain(
+      '- (void)endSystemUiInterruption:(NSString *)token',
+    );
+    expect(iosNativeSource).toContain(
+      'MIN(45000.0, MAX(1.0, timeoutMs))',
     );
   });
 });

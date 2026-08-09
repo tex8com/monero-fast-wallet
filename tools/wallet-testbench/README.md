@@ -23,6 +23,131 @@ Strict full acceptance:
 tools/wallet-testbench/run-wallet-core-testbench.sh full
 ```
 
+Run the serial strict Mainnet comparison only when exclusive control over the
+TEX8 Cuprate service is available. The harness freezes the P2P tip, executes
+ScanPack, Fast-without-cache and Original in sequence, enforces the exact same
+restore height and postflight tip, and restores production in its exit trap:
+
+```sh
+tools/wallet-testbench/run-strict-mainnet-sync-matrix.sh <matrix-id>
+node tools/wallet-testbench/summarize-strict-mainnet-sync-matrix.mjs <matrix-id>
+```
+
+The generated `strict-summary.json` is derived exclusively from immutable raw
+client logs, process/TCP samples, exact server journals and the archived
+one-second server telemetry. Missing stages remain `null`/`n/a`; no historical
+value is substituted. Invalid setup attempts remain archived with
+`INVALID.md`. This workflow does not use GitHub Actions or CI.
+
+Build and verify the untouched official CLI beside the product CLI:
+
+```sh
+tools/monero-upstream/build-cli-pair.sh \
+  <official-source> <patched-source> \
+  <official-build> <product-build> <output-dir>
+
+MFW_PRODUCT_CLI_BINARY=<output-dir>/monero-fast-wallet-cli \
+MFW_ORIGINAL_CLI_BINARY=<output-dir>/monero-wallet-cli-original \
+MFW_CLI_TESTBENCH_OUTPUT=<new-artifact-directory> \
+node tools/wallet-testbench/test-product-cli-bootstrap-contract.mjs
+```
+
+Without the two binary variables the contract audits source identity and
+build/debug wiring only. With them it also validates provenance JSON, confirms
+that the original binary has no product debug flags, rejects invalid debug
+levels and exercises a controlled failed wallet-open. The latter must write
+`debug-environment.json`, `debug-manifest.json`, `debug-summary.json`,
+`debug-events.jsonl` and `debug-text.log` without wallet secrets. The command
+is included in the integrated wallet-Core testbench. The first measured macOS
+bootstrap result is documented in
+`docs/MONERO_FAST_WALLET_CLI_BOOTSTRAP_TEST_RESULTS_2026-08-06.md`.
+
+Exercise guarded wallet-file removal without any network or real funds:
+
+```sh
+tools/monero-upstream/test-wallet-removal.sh \
+  <output-dir>/fast-wallet-cli
+```
+
+With `MFW_CLI_PAIR_DIR=<output-dir>`, the integrated testbench runs this as a
+separate gate. With both `MFW_CLI_PAIR_DIR` and
+`MFW_REGTEST_MONEROD_BINARY`, it also creates a private 82-block Regtest
+chain, pays 1 XMR and 2 XMR into two accounts, proves aggregate/history
+parity, and removes only a copied positive-balance wallet fixture. The
+complete evidence is documented in
+`docs/FAST_WALLET_CLI_WALLET_REMOVAL_TEST_RESULTS_2026-08-06.md`.
+
+Address-generation profiling can be run on its own. The defaults create five
+fresh software wallets and 64 subaddresses, which is long enough for useful
+median/p95 values but intentionally not a stress test:
+
+```sh
+tools/wallet-testbench/run-address-generation-benchmark.sh stagenet 5 64
+```
+
+Every product-Core call in that scenario is written separately in
+milliseconds, followed by count/min/median/p95/max/mean/total summaries for:
+
+- `WalletEngine.createWallet` (primary-address path, including entropy, keys,
+  KDF, and the initial wallet-file write);
+- primary `getAddress` and native address validation;
+- `WalletEngine.createSubaddress`;
+- subaddress `getAddress` and native address validation;
+- `WalletEngine.closeWallet`; and
+- construction of the shared `WalletEngine`.
+
+The runner also reports the slowest p95 call for the whole flow and for the
+steady-state subaddress flow. It never prints addresses, seeds, wallet
+passwords, or private keys. Raw per-call evidence and a compact summary are
+stored under `build/wallet-testbench/address-generation-results`.
+
+The benchmark first prepares the same exact common Core tree used by Desktop,
+iOS, and Android. It cannot fall back to a neighbouring Monero checkout or an
+older unversioned archive. The current Apple-Silicon reference is about 179 ms
+median / 194 ms p95 for a new wallet including its primary address; address
+reads, validation, and subaddress operations are all below 1 ms. Product
+diagnostics must keep Core time separate from AppVault, registry, UI, and
+network time so a regression cannot be hidden behind one generic spinner.
+
+Verify the cross-platform Core identity contract without building an app:
+
+```sh
+node --test tools/wallet-testbench/test-common-wallet-core-contract.mjs
+```
+
+Audit the complete shared multi-wallet synchronization boundary separately:
+
+```sh
+node --test tools/wallet-testbench/test-network-sync-coordinator-contract.mjs
+```
+
+Verify the Ledger speed boundary separately:
+
+```sh
+node tools/wallet-testbench/test-ledger-owned-output-sync-contract.mjs
+```
+
+The checked-in official-GUI Ledger reference is also a mandatory local
+testbench gate. It compares the hashed official CSV exports with every
+screenshot-visible transaction, the account balances and the CSV integrity
+manifest. It is local-only and opens neither a wallet nor a Ledger device:
+
+```sh
+node --test tools/wallet-testbench/test-official-ledger-reference-contract.mjs
+```
+
+This rejects any regression that starts a second historical blockchain scan
+through Ledger. The local private-view wallet owns the full scan; hardware work
+must scale only with the locally discovered owned outputs.
+
+This distinguishes the already implemented app-wide unlock/UI lifecycle and
+bounded exact-range cache from the still stricter V1 requirement: one native
+node handshake, block transport, parser and mempool feed per active network.
+The final test remains an explicit TODO until the WalletEngine exposes the
+cursor, immutable-batch consumption, detach and checkpoint operations listed
+in `docs/V1_EXECUTION_PLAN.md`. The main `full` runner treats that TODO as a
+failing release gate.
+
 Funded wallet terminal control:
 
 ```sh
@@ -234,6 +359,123 @@ per-process accounting rather than guessed from log lines. A clean restore compa
 only fair way to compare one-wallet speed. Concurrent wallets are a separate
 aggregate-throughput stress scenario, never mixed into the baseline table.
 
+Every patched-core run also emits machine-readable `[SYNC_METRIC]` records.
+They deliberately separate gRPC network receipt, Bin-RPC wire receipt,
+bounded-queue backpressure, consumer wait, wallet key derivation, output scan,
+chain commit and the overlapped pipeline iteration. An actual gRPC-to-Bin-RPC
+route change emits `[SYNC_FALLBACK]` with its scope, stable reason token,
+error class/code and affected block coordinates. This makes a silent Fast
+Wallet fallback a test failure that can be counted from the preserved log.
+
+Verify that the required events cannot disappear during a patch update:
+
+```sh
+node tools/wallet-testbench/test-sync-observability-contract.mjs
+```
+
+## Ledger key-image sync benchmark
+
+`run-ledger-key-image-benchmark.sh` uses the same linked
+`monero_wallet_bridge_smoke` and authenticated common Core as the applications.
+It first measures the encrypted local view-wallet sync, then measures Ledger
+key-image reconciliation and durable store separately. An optional observer
+wallet keeps the shared network coordinator busy while Ledger work runs.
+
+The command mutates and stores the supplied encrypted view-wallet. Use only an
+isolated copy and never a user's only wallet cache. Passwords are supplied via
+regular, non-symlink files and are never written to the retained summary.
+
+```sh
+export TESTBENCH_LEDGER_RUNNER=/path/to/monero_wallet_bridge_smoke
+export TESTBENCH_LEDGER_NETWORK=mainnet
+export TESTBENCH_LEDGER_HARDWARE_WALLET=/isolated/ledger-cache
+export TESTBENCH_LEDGER_HARDWARE_PASSWORD_FILE=/secure/ledger-password
+export TESTBENCH_LEDGER_VIEW_WALLET=/isolated/ledger-view-cache
+export TESTBENCH_LEDGER_VIEW_PASSWORD_FILE=/secure/view-password
+export TESTBENCH_LEDGER_DAEMON=xmr.example:443
+export TESTBENCH_LEDGER_GRPC=xmr.example:48091
+export TESTBENCH_LEDGER_DAEMON_TLS=1
+
+# Optional concurrent scanner, already behind the current tip:
+export TESTBENCH_LEDGER_OBSERVER_WALLET=/isolated/observer-cache
+export TESTBENCH_LEDGER_OBSERVER_PASSWORD_FILE=/secure/observer-password
+
+tools/wallet-testbench/run-ledger-key-image-benchmark.sh <unique-run-id>
+```
+
+The aggregate wallet-core testbench exposes this as a separate physical gate.
+Set `TESTBENCH_LEDGER_KEY_IMAGE=1` together with the variables above. Merely
+setting `TESTBENCH_LEDGER=1` runs only device discovery and cannot satisfy the
+key-image correctness/performance gate.
+
+The paired view wallet must contain at least one locally discovered owned
+output whose Key Image is still pending. The runner rejects a zero-output run:
+only a run with `pending_outputs > 0` and exactly matching Ledger derivations
+can be accepted.
+
+To create a fresh, isolated hardware-cache/view-wallet pair, use the linked
+proof runner while the Ledger is connected, unlocked and has the Monero app
+open. Both target paths must be new. The Ledger explicitly asks for view-key
+export; the command prints neither the address nor the private view key.
+
+```sh
+monero_wallet_bridge_smoke ledger-create-view-wallet \
+  mainnet /isolated/ledger-hardware @/secure/hardware-password \
+  /isolated/ledger-view @/secure/view-password 3720000 Ledger
+```
+
+An unencrypted trusted-daemon control run is refused unless the operator sets
+`TESTBENCH_ALLOW_INSECURE_TRUSTED_DAEMON=1` explicitly. Such a control is not a
+production security acceptance.
+
+Run the deterministic pipeline, rollback and CLI contracts without hardware:
+
+```sh
+node --test \
+  tools/wallet-testbench/test-ledger-key-image-source-audit.mjs \
+  tools/wallet-testbench/test-ledger-key-image-pipeline-model.mjs \
+  tools/wallet-testbench/test-ledger-key-image-benchmark-contract.mjs
+```
+
+The source audit proves the incremental Core path, ordered session locking,
+transactional rollback, zero-work second run and secret-free phase telemetry.
+A passing source audit still does not mean the physical production gate has
+passed; only the real runner plus the Ledger failure/reorg/concurrency matrix
+can establish that.
+
+## Official Ledger-history reference comparison
+
+The checked-in official GUI exports under
+`docs/reference-evidence/ledger-nano-x-official-gui-2026-08-09/` are an
+integrity-pinned private reference fixture.  Validate the fixture itself
+without a device:
+
+```sh
+node --test tools/wallet-testbench/test-official-ledger-reference-contract.mjs
+```
+
+For a physical comparison, create an isolated view wallet via
+`ledger-create-view-wallet`, refresh it with `list-txs`, then run:
+
+```sh
+node tools/wallet-testbench/verify-official-ledger-cli-history.mjs \
+  <official-account-index> <private-bridge-output> <private-sanitized-report>
+```
+
+The verifier accepts only a fully synchronized refresh and requires exact
+TxID, direction, atomic amount, fee and block-height equality. It stores no
+address, key, seed or transaction identifier in its report. A view-only scan
+can recognize incoming history but cannot classify every outgoing transaction
+until the separate Ledger key-image reconciliation has completed.
+
+Summarize a preserved native log without mixing per-channel gRPC rates with
+end-to-end throughput. Pass the measured process duration only when the latter
+is required:
+
+```sh
+node tools/wallet-testbench/summarize-sync-telemetry.mjs sync.log <elapsed-ms>
+```
+
 ## Raw ScanPack transport diagnostics
 
 `run-raw-grpc-payload-mainnet.sh` is deliberately not a wallet benchmark. It
@@ -261,3 +503,12 @@ without an order, spool, parser or scanner; it is a transport ceiling test
 only. Neither mode belongs in the Original/Fast/ScanPack Wallet comparison
 table. The full D6 results and their artifact hashes are in
 `docs/WALLET_SYNC_BENCHMARK_RESULTS.md`.
+
+## Shared Product-Core gate
+
+`native/product-core/scripts/run-testbench.sh` is the mandatory ABI and
+telemetry gate used by the broader wallet-core testbench. It verifies generated
+C/Rust/TypeScript/Kotlin/Swift contracts, byte-exact event vectors, strict
+diagnostic result sanitization, existing runner adapters, queue-pressure
+behavior and paired synthetic logger overhead. The synthetic overhead result
+must never be placed in the Original/Fast/ScanPack wallet-sync table.

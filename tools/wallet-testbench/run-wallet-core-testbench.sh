@@ -35,16 +35,12 @@ fi
 work_root="${TESTBENCH_WORK_ROOT:-${repo_root}/build/wallet-testbench}"
 shell_build_dir="${TESTBENCH_SHELL_BUILD_DIR:-${work_root}/native-bridge-shell}"
 default_funded_wallet_dir="${FUNDED_WALLET_DIR:-}"
-default_monero_source_dir="${repo_root}/../monero-gui/monero"
-default_monero_build_dir="${default_monero_source_dir}/build/tex8-wallet-api"
-if [[ -d "/Volumes/4TB/monero-gui-build/tex8-wallet-api" ]]; then
-  default_monero_build_dir="/Volumes/4TB/monero-gui-build/tex8-wallet-api"
+source "${repo_root}/native/monero-bridge/scripts/prepare-common-monero-core.sh"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  default_monero_build_dir="${MONERO_COMMON_CORE_BUILD_ROOT}/desktop-monero-wallet-api-macos12-${MONERO_COMMON_CORE_TREE}"
+else
+  default_monero_build_dir="${MONERO_COMMON_CORE_BUILD_ROOT}/desktop-monero-wallet-api-linux-${MONERO_COMMON_CORE_TREE}"
 fi
-if [[ -d "${default_monero_source_dir}/build/tex8-desktop-wallet-api-macos12" ]]; then
-  default_monero_build_dir="${default_monero_source_dir}/build/tex8-desktop-wallet-api-macos12"
-fi
-
-export MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${default_monero_source_dir}}"
 export MONERO_BUILD_DIR="${MONERO_BUILD_DIR:-${default_monero_build_dir}}"
 
 linked_build_dir="${BRIDGE_BUILD_DIR:-${work_root}/native-bridge-monero}"
@@ -109,9 +105,29 @@ build_linked_runner_if_possible() {
 }
 
 gate_pin_files() {
-  grep -q "e7fe4ff6f0a0fef58ca031d2a75c168a42242b42" "${repo_root}/third_party/README.md" &&
-    grep -q "ba354fde486d721502aeebf265b6005342b08128" "${repo_root}/third_party/README.md" &&
-    grep -q "e7fe4ff6f0a0fef58ca031d2a75c168a42242b42" "${repo_root}/docs/SOURCES.md"
+  local lock="${repo_root}/third_party/monero-patches/upstream.lock"
+  local series="${repo_root}/third_party/monero-patches/series"
+  local upstream_commit
+  local patched_tree
+  local patch_count
+
+  upstream_commit="$(awk -F= '$1 == "upstream_commit" { print $2; exit }' "${lock}")"
+  patched_tree="$(awk -F= '$1 == "patched_tree" { print $2; exit }' "${lock}")"
+  patch_count="$(awk 'NF && $1 !~ /^#/ { count++ } END { print count + 0 }' "${series}")"
+
+  [[ "${upstream_commit}" =~ ^[0-9a-f]{40}$ ]] &&
+    [[ "${patched_tree}" =~ ^[0-9a-f]{40}$ ]] &&
+    [[ "${patch_count}" -gt 0 ]] &&
+    grep -q "${upstream_commit}" "${repo_root}/third_party/README.md" &&
+    grep -q "${patched_tree}" "${repo_root}/third_party/README.md" &&
+    grep -q "contains ${patch_count} patches" "${repo_root}/third_party/README.md" &&
+    grep -q "${upstream_commit}" "${repo_root}/docs/SOURCES.md" &&
+    grep -q "${patched_tree}" "${repo_root}/docs/SOURCES.md" &&
+    grep -q "ordered ${patch_count}-patch series" "${repo_root}/docs/SOURCES.md"
+}
+
+gate_product_core_abi() {
+  bash "${repo_root}/native/product-core/scripts/run-testbench.sh"
 }
 
 gate_shell_bridge_build() {
@@ -220,6 +236,70 @@ gate_mobile_unit_tests() {
   (cd "${repo_root}/apps/mobile" && npm test -- --runInBand)
 }
 
+gate_product_cli_bootstrap_contract() {
+  MFW_PRODUCT_CLI_BINARY="${MFW_PRODUCT_CLI_BINARY:-}" \
+    MFW_ORIGINAL_CLI_BINARY="${MFW_ORIGINAL_CLI_BINARY:-}" \
+    MFW_CLI_TESTBENCH_OUTPUT="${MFW_CLI_TESTBENCH_OUTPUT:-}" \
+    node "${repo_root}/tools/wallet-testbench/test-product-cli-bootstrap-contract.mjs"
+}
+
+gate_product_cli_regtest_payment() {
+  local pair_dir="${MFW_CLI_PAIR_DIR:-}"
+  local daemon_binary="${MFW_REGTEST_MONEROD_BINARY:-}"
+  if [[ -z "${pair_dir}" || -z "${daemon_binary}" ]]; then
+    return 2
+  fi
+  bash "${repo_root}/tools/monero-upstream/test-wallet-core-regtest-payment.sh" \
+    "${pair_dir}" \
+    "${daemon_binary}"
+}
+
+gate_product_cli_wallet_removal() {
+  local pair_dir="${MFW_CLI_PAIR_DIR:-}"
+  if [[ -z "${pair_dir}" || ! -x "${pair_dir}/fast-wallet-cli" ]]; then
+    return 2
+  fi
+  bash "${repo_root}/tools/monero-upstream/test-wallet-removal.sh" \
+    "${pair_dir}/fast-wallet-cli"
+}
+
+gate_shared_multiwallet_sync_contract() {
+  SHARED_SYNC_STRICT="${strict}" \
+    node --test "${repo_root}/tools/wallet-testbench/test-network-sync-coordinator-contract.mjs" ||
+    return 1
+
+  # The source-level test deliberately reports the still-missing native
+  # coordinator as TODO so developers can inspect all already-valid host and
+  # cache guarantees. Promote that TODO to a local/full testbench gate here:
+  # local records it as open, while strict/full treats it as a failure.
+  rg -q "walletSyncCursor" \
+    "${repo_root}/native/monero-bridge/cpp/WalletEngine.h" || return 2
+  rg -q "consumeSharedBlockBatch" \
+    "${repo_root}/native/monero-bridge/cpp/WalletEngine.h" || return 2
+  rg -q "consumeSharedPoolSnapshot" \
+    "${repo_root}/native/monero-bridge/cpp/WalletEngine.h" || return 2
+  rg -q "detachWalletToHeight" \
+    "${repo_root}/native/monero-bridge/cpp/WalletEngine.h" || return 2
+  rg -q "checkpointWalletScan" \
+    "${repo_root}/native/monero-bridge/cpp/WalletEngine.h" || return 2
+}
+
+gate_sync_observability_contract() {
+  node "${repo_root}/tools/wallet-testbench/test-sync-observability-contract.mjs"
+}
+
+gate_ledger_key_image_contracts() {
+  node --test \
+    "${repo_root}/tools/wallet-testbench/test-ledger-key-image-source-audit.mjs" \
+    "${repo_root}/tools/wallet-testbench/test-ledger-key-image-pipeline-model.mjs" \
+    "${repo_root}/tools/wallet-testbench/test-ledger-key-image-benchmark-contract.mjs"
+}
+
+gate_official_ledger_reference_contract() {
+  node --test \
+    "${repo_root}/tools/wallet-testbench/test-official-ledger-reference-contract.mjs"
+}
+
 gate_native_offline_roundtrip() {
   build_linked_runner_if_possible || return 2
   local workdir="${work_root}/offline-roundtrip"
@@ -227,6 +307,18 @@ gate_native_offline_roundtrip() {
   mkdir -p "${workdir}"
   "${linked_runner}" self-test-offline stagenet "${workdir}" "${password}" |
     grep -q "proof_result=pass"
+}
+
+gate_address_generation_benchmark() {
+  TESTBENCH_WORK_ROOT="${work_root}" \
+    BRIDGE_BUILD_DIR="${linked_build_dir}" \
+    MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR}" \
+    MONERO_BUILD_DIR="${MONERO_BUILD_DIR}" \
+    TESTBENCH_WALLET_PASSWORD="${password}" \
+    bash "${repo_root}/tools/wallet-testbench/run-address-generation-benchmark.sh" \
+      stagenet \
+      "${TESTBENCH_ADDRESS_WALLET_ROUNDS:-5}" \
+      "${TESTBENCH_ADDRESS_SUBADDRESS_ROUNDS:-64}"
 }
 
 gate_cuprate_refresh() {
@@ -241,10 +333,11 @@ gate_cuprate_refresh() {
     grep -q "daemon_height="
 }
 
-gate_fast_wallet_restore_height_refresh() {
+gate_fast_wallet_persisted_cache_reopen() {
   build_linked_runner_if_possible || return 2
   local rpc="${CUPRATE_RPC:-xmr.tex8.com:18089}"
   local grpc="${CUPRATE_GRPC:-xmr.tex8.com:18091}"
+  local fast_wallet_password="independent-fast-wallet-password"
   local workdir="${work_root}/fast-wallet-restore-height"
   rm -rf "${workdir}"
   mkdir -p "${workdir}"
@@ -282,16 +375,26 @@ gate_fast_wallet_restore_height_refresh() {
   local refresh_output
   refresh_output="$(
     "${linked_runner}" refresh mainnet \
-      "${workdir}/fast-receive-0" \
-      "${password}" \
+      "${workdir}/fast-receive-v2-0-proof" \
+      "${fast_wallet_password}" \
       "${rpc}" \
       "${grpc}" \
       1 \
       "${test_restore_height}"
   )"
-  printf '%s\n' "${refresh_output}" | grep -q "synchronized=true" || return 1
   printf '%s\n' "${refresh_output}" |
-    grep -q "requested_restore_height=${test_restore_height}"
+    grep -q "requested_restore_height=${test_restore_height}" || return 1
+
+  # A restore height belongs to creation/import. Existing wallet caches must
+  # not be rewound merely because stale registration metadata is supplied on
+  # open; that caused full historical rescans after normal app restarts.
+  local reopened_height
+  reopened_height="$(
+    printf '%s\n' "${refresh_output}" |
+      awk -F= '$1 == "wallet_height" { print $2; exit }'
+  )"
+  [[ "${reopened_height}" =~ ^[0-9]+$ ]] &&
+    [[ "${reopened_height}" -lt "${test_restore_height}" ]]
 }
 
 gate_official_node_refresh() {
@@ -484,6 +587,17 @@ gate_ledger_probe() {
     grep -q "connected=true"
 }
 
+gate_ledger_key_image_acceptance() {
+  build_linked_runner_if_possible || return 2
+  if [[ "${TESTBENCH_LEDGER_KEY_IMAGE:-0}" != "1" ]]; then
+    return 2
+  fi
+
+  TESTBENCH_LEDGER_RUNNER="${linked_runner}" \
+    bash "${repo_root}/tools/wallet-testbench/run-ledger-key-image-benchmark.sh" \
+      "wallet-core-${suite}-$(date -u +%Y%m%dT%H%M%SZ)"
+}
+
 gate_android_runtime() {
   if [[ "${TESTBENCH_ANDROID_DEVICE:-0}" != "1" ]]; then
     return 2
@@ -531,6 +645,7 @@ mkdir -p "${work_root}"
 log "wallet-core-testbench suite=${suite} strict=${strict}"
 
 handle_gate_result "fork pins recorded" gate_pin_files
+handle_gate_result "shared Product-Core ABI, diagnostics, sanitizer and telemetry" gate_product_core_abi
 handle_gate_result "native bridge shell build" gate_shell_bridge_build
 handle_gate_result "notify-scanner unit/store tests" gate_notify_scanner_tests
 handle_gate_result "enthusiast discovery privacy/API tests" gate_enthusiast_discovery_tests
@@ -543,12 +658,21 @@ handle_gate_result "notify-scanner live Cuprate source tests" gate_notify_scanne
 handle_gate_result "Cuprate backend RPC compatibility" gate_cuprate_backend_compatibility
 handle_gate_result "deployed Fast Receive scanner API" gate_deployed_scanner_api
 handle_gate_result "mobile TypeScript/unit tests" gate_mobile_unit_tests
+handle_gate_result "official/product CLI bootstrap and debug artifacts" gate_product_cli_bootstrap_contract
+handle_gate_result "product CLI guarded local wallet-file removal" gate_product_cli_wallet_removal
+handle_gate_result "product CLI local Regtest multi-account payments, total balance, and history parity" gate_product_cli_regtest_payment
+handle_gate_result "one-transport multi-wallet sync contract" gate_shared_multiwallet_sync_contract
+handle_gate_result "sync fallback and throughput observability contract" gate_sync_observability_contract
+handle_gate_result "incremental Ledger key-image contracts" gate_ledger_key_image_contracts
+handle_gate_result "official Ledger GUI history reference" gate_official_ledger_reference_contract
 handle_gate_result "native linked offline create/seed/restore/fast-receive" gate_native_offline_roundtrip
+handle_gate_result "native address-generation function timings" gate_address_generation_benchmark
 handle_gate_result "Cuprate RPC+gRPC refresh smoke" gate_cuprate_refresh
-handle_gate_result "Fast Wallet restore-height cache reset" gate_fast_wallet_restore_height_refresh
+handle_gate_result "Fast Wallet reopen preserves persisted cache" gate_fast_wallet_persisted_cache_reopen
 handle_gate_result "official Monero RPC compatibility refresh smoke" gate_official_node_refresh
 handle_gate_result "real send over Cuprate RPC+gRPC" gate_real_send
 handle_gate_result "Ledger Nano native probe" gate_ledger_probe
+handle_gate_result "physical Ledger incremental key-image benchmark" gate_ledger_key_image_acceptance
 handle_gate_result "Android runtime bridge smoke" gate_android_runtime
 handle_gate_result "iOS runtime bridge diagnostics" gate_ios_runtime
 

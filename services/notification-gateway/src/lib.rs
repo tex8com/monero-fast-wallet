@@ -49,6 +49,10 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub const CONTRACT_VERSION: &str = "monero-fast-wallet-push.v3";
 pub const EVENT_CATEGORY: &str = "monero.fast_wallet.incoming";
+/// A user-triggered, installation-bound delivery check. This is deliberately
+/// distinct from an incoming-payment wake so a test can never be mistaken for
+/// a payment by the app or by the user.
+pub const TEST_EVENT_CATEGORY: &str = "monero.fast_wallet.test";
 const STORE_VERSION: u8 = 5;
 const MAX_EVENTS_PER_INSTALLATION: usize = 32;
 const MAX_INSTALLATIONS: usize = 20_000;
@@ -270,6 +274,7 @@ impl GatewayState {
             assignment_handle,
             assignment_epoch,
             expires_at,
+            now,
         )?;
         let Some(relay) = &self.relay_control else {
             return Ok(());
@@ -318,8 +323,19 @@ impl GatewayState {
                 )
             })
             .await
-            .map_err(|_| "provider delivery task failed".to_owned())?
-            .unwrap_or_else(|_| ProviderDeliveryResult::RetryAfter(Duration::from_secs(5)));
+            .map_err(|_| "provider delivery task failed".to_owned())?;
+            let delivery = match delivery {
+                Ok(delivery) => delivery,
+                Err(_) => {
+                    // Provider messages can include tokens or provider details.
+                    // The event tells operations this is a retryable transport/
+                    // configuration failure without exposing either.
+                    eprintln!(
+                        "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-delivery.error action=retry"
+                    );
+                    ProviderDeliveryResult::RetryAfter(Duration::from_secs(5))
+                }
+            };
             let delivered = matches!(delivery, ProviderDeliveryResult::Delivered);
             let invalid = matches!(delivery, ProviderDeliveryResult::InvalidToken);
             adapter
@@ -369,11 +385,18 @@ pub fn router(state: GatewayState) -> Router {
         )
         .route(
             "/api/v1/installations/provider",
-            post(register_provider).delete(delete_installation),
+            get(provider_status)
+                .post(register_provider)
+                .delete(delete_installation),
         )
         .route(
             "/api/v1/installations/provider/delivery",
             post(enable_provider_delivery).delete(disable_provider_delivery),
+        )
+        .route("/api/v1/installations/test-push", post(send_test_push))
+        .route(
+            "/api/v1/installations/desktop-provider",
+            post(register_desktop_provider),
         )
         .route("/api/v1/internal/worker-wake", post(accept_worker_wake))
         .route("/api/v1/notifications/stream", get(stream_events))
@@ -399,12 +422,23 @@ async fn register_provider(
     State(state): State<GatewayState>,
     headers: HeaderMap,
     Json(input): Json<ProviderRegistrationInput>,
-) -> Result<(StatusCode, Json<AcceptedResponse>), ApiError> {
-    let adapter = state
-        .provider_adapter
-        .as_ref()
-        .ok_or(ApiError::Unavailable)?;
-    let (installation_id, installation_auth) = installation_auth(&headers)?;
+) -> Result<(StatusCode, Json<ProviderRegistrationResponse>), ApiError> {
+    eprintln!(
+        "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.start"
+    );
+    let adapter = state.provider_adapter.as_ref().ok_or_else(|| {
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.rejected status=503 reason=adapter-unavailable"
+        );
+        ApiError::Unavailable
+    })?;
+    let (installation_id, installation_auth) = installation_auth(&headers).map_err(|error| {
+        // Installation credentials and their identifiers are not safe to log.
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.rejected status=401 reason=installation-auth"
+        );
+        error
+    })?;
     let nonce = input
         .grant
         .verify(
@@ -415,26 +449,109 @@ async fn register_provider(
             &installation_auth,
             unix_seconds(),
         )
-        .map_err(|_| ApiError::Unauthorized)?;
+        .map_err(|_| {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.rejected status=401 reason=grant-invalid-or-expired"
+            );
+            ApiError::Unauthorized
+        })?;
     state
         .register_installation(&installation_id, &installation_auth)
-        .await?;
-    adapter
+        .await
+        .map_err(|error| {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.rejected status={} reason=installation-store",
+                api_error_status(&error).as_u16(),
+            );
+            error
+        })?;
+    let status = {
+        let mut store = adapter.store.lock().await;
+        store
+            .register(
+                &installation_id,
+                input.provider,
+                &input.token,
+                nonce,
+                input.grant.expires_at,
+                unix_seconds(),
+            )
+            .map_err(|_| {
+                eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.rejected status=409 reason=provider-store"
+                );
+                ApiError::Conflict
+            })?;
+        store.status(&installation_id).ok_or_else(|| {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.rejected status=503 reason=provider-status"
+            );
+            ApiError::Storage
+        })?
+    };
+    eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.success status=201");
+    Ok((
+        StatusCode::CREATED,
+        Json(ProviderRegistrationResponse::active(status)),
+    ))
+}
+
+async fn provider_status(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+) -> Result<Json<ProviderStatusResponse>, ApiError> {
+    let (installation_id, installation_auth) = installation_auth(&headers)?;
+    state
         .store
         .lock()
         .await
-        .register(
+        .authenticate_installation(&installation_id, &installation_auth)?;
+    let registration = if let Some(adapter) = &state.provider_adapter {
+        adapter.store.lock().await.status(&installation_id)
+    } else {
+        None
+    };
+    Ok(Json(ProviderStatusResponse::from_registration(
+        registration,
+        unix_seconds(),
+    )))
+}
+
+async fn register_desktop_provider(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(input): Json<DesktopProviderRegistrationInput>,
+) -> Result<(StatusCode, Json<ProviderRegistrationResponse>), ApiError> {
+    let (installation_id, installation_auth) = installation_auth(&headers)?;
+    if !installation_id.starts_with("mwp_desktop_")
+        || !matches!(
+            input.provider,
+            ProviderKind::Apns | ProviderKind::DesktopWss
+        )
+    {
+        return Err(ApiError::BadRequest);
+    }
+    state
+        .register_installation(&installation_id, &installation_auth)
+        .await?;
+    let adapter = state
+        .provider_adapter
+        .as_ref()
+        .ok_or(ApiError::Unavailable)?;
+    let status = adapter
+        .store
+        .lock()
+        .await
+        .register_desktop(
             &installation_id,
             input.provider,
             &input.token,
-            nonce,
-            input.grant.expires_at,
             unix_seconds(),
         )
         .map_err(|_| ApiError::Conflict)?;
     Ok((
         StatusCode::CREATED,
-        Json(AcceptedResponse { accepted: true }),
+        Json(ProviderRegistrationResponse::active(status)),
     ))
 }
 
@@ -518,6 +635,98 @@ async fn enable_provider_delivery(
     Ok(Json(AcceptedResponse { accepted: true }))
 }
 
+/// Queues one generic push notification for the authenticated installation.
+///
+/// The caller proves possession of the per-installation secret. There is no
+/// wallet identifier, address, transaction, amount, key, or provider token in
+/// this request or in the resulting notification.
+async fn send_test_push(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+) -> Result<(StatusCode, Json<AcceptedResponse>), ApiError> {
+    let (installation_id, installation_auth) = installation_auth(&headers)?;
+    let adapter = state
+        .provider_adapter
+        .as_ref()
+        .cloned()
+        .ok_or(ApiError::Unavailable)?;
+    {
+        let providers = adapter.store.lock().await;
+        let status = providers
+            .status(&installation_id)
+            .ok_or(ApiError::Conflict)?;
+        if status.provider != provider::ProviderKind::Fcm || status.disabled {
+            return Err(ApiError::Conflict);
+        }
+    }
+    let now = unix_seconds();
+    let event = OpaqueNotificationEvent {
+        id: test_event_id(&installation_id, &installation_auth, now),
+        category: TEST_EVENT_CATEGORY.to_owned(),
+        deep_link: "tex8://notification/test".to_owned(),
+        received_at: now.to_string(),
+        opened: false,
+    };
+    let accepted = {
+        let mut store = state.store.lock().await;
+        store.enqueue_installation_event(&installation_id, &installation_auth, event.clone())?
+    };
+    if !accepted {
+        return Err(ApiError::Unauthorized);
+    }
+    // A visible user-triggered test is intentionally delivered immediately:
+    // returning 202 only after FCM accepted it makes this screen a real
+    // end-to-end check rather than merely a queue-health indication.  Routine
+    // worker events remain queued and retried by the central dispatcher.
+    let target = adapter
+        .store
+        .lock()
+        .await
+        .direct_target(&installation_id, event.clone(), now)
+        .map_err(|_| ApiError::Storage)?
+        .ok_or(ApiError::Conflict)?;
+    let delivery_adapter = adapter.delivery.clone();
+    let delivery_target = target.clone();
+    let delivery = tokio::task::spawn_blocking(move || {
+        delivery_adapter.deliver(
+            delivery_target.provider,
+            &delivery_target.token,
+            &delivery_target.event,
+        )
+    })
+    .await
+    .map_err(|_| ApiError::Unavailable)?
+    .unwrap_or_else(|_| ProviderDeliveryResult::RetryAfter(Duration::from_secs(5)));
+    adapter
+        .store
+        .lock()
+        .await
+        .complete_direct(&target, delivery.clone())
+        .map_err(|_| ApiError::Storage)?;
+    // This event exists only for this one immediate delivery attempt.  Do not
+    // leave a stale event in the installation stream if FCM rejects or times
+    // out: it would otherwise look like a received payment in a later app
+    // session even though this is strictly a generic delivery check.
+    state.store.lock().await.ack(&installation_id, &event.id)?;
+    match delivery {
+        ProviderDeliveryResult::Delivered => {
+            let _ = state.signals.send(DeliverySignal {
+                installation_id: installation_id.clone(),
+                event: event.clone(),
+            });
+        }
+        ProviderDeliveryResult::InvalidToken => return Err(ApiError::Conflict),
+        ProviderDeliveryResult::RetryAfter(_) => return Err(ApiError::Unavailable),
+    }
+    eprintln!(
+        "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=test-push.delivered status=202"
+    );
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(AcceptedResponse { accepted: true }),
+    ))
+}
+
 async fn delete_assignment(
     State(state): State<GatewayState>,
     AxumPath(assignment_handle): AxumPath<String>,
@@ -568,6 +777,7 @@ async fn sponsor_assignment(
     headers: HeaderMap,
     Json(input): Json<AssignmentInput>,
 ) -> Result<(StatusCode, Json<AssignmentAcceptedResponse>), ApiError> {
+    eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=assignment.start");
     let (installation_id, auth_secret) = installation_auth(&headers)?;
     let descriptor_bytes = decode_bounded(&input.worker_descriptor, 512)?;
     let descriptor =
@@ -586,6 +796,9 @@ async fn sponsor_assignment(
             now,
         )
         .await?;
+    eprintln!(
+        "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=assignment.success status=201"
+    );
     Ok((
         StatusCode::CREATED,
         Json(AssignmentAcceptedResponse {
@@ -599,6 +812,7 @@ async fn accept_worker_wake(
     State(state): State<GatewayState>,
     Json(input): Json<WorkerWakeInput>,
 ) -> Result<(StatusCode, Json<AcceptedResponse>), ApiError> {
+    eprintln!("FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-wake.start");
     input.validate()?;
     let descriptor_bytes = decode_bounded(&input.worker_descriptor, 512)?;
     let descriptor =
@@ -640,6 +854,10 @@ async fn accept_worker_wake(
                 .map_err(|_| ApiError::Storage)?;
         }
     }
+    eprintln!(
+        "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-wake.accepted status=202 newEvent={}",
+        outcome.new_event
+    );
     Ok((
         StatusCode::ACCEPTED,
         Json(AcceptedResponse { accepted: true }),
@@ -784,6 +1002,84 @@ struct ProviderRegistrationInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DesktopProviderRegistrationInput {
+    provider: ProviderKind,
+    token: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderRegistrationResponse {
+    accepted: bool,
+    provider: ProviderKind,
+    provider_token_hash: String,
+    generation: u64,
+    accepted_at: u64,
+    lease_expires_at: u64,
+    delivery_state: &'static str,
+}
+
+impl ProviderRegistrationResponse {
+    fn active(status: provider::ProviderRegistrationStatus) -> Self {
+        Self {
+            accepted: true,
+            provider: status.provider,
+            provider_token_hash: status.token_hash,
+            generation: status.generation,
+            accepted_at: status.updated_at,
+            lease_expires_at: status.lease_expires_at,
+            delivery_state: if status.disabled {
+                "needs_refresh"
+            } else {
+                "active"
+            },
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderStatusResponse {
+    registered: bool,
+    provider: Option<ProviderKind>,
+    provider_token_hash: Option<String>,
+    generation: Option<u64>,
+    accepted_at: Option<u64>,
+    lease_expires_at: Option<u64>,
+    delivery_state: &'static str,
+}
+
+impl ProviderStatusResponse {
+    fn from_registration(status: Option<provider::ProviderRegistrationStatus>, now: u64) -> Self {
+        match status {
+            Some(status) => Self {
+                registered: true,
+                provider: Some(status.provider),
+                provider_token_hash: Some(status.token_hash),
+                generation: Some(status.generation),
+                accepted_at: Some(status.updated_at),
+                lease_expires_at: Some(status.lease_expires_at),
+                delivery_state: if status.disabled || status.lease_expires_at <= now {
+                    "needs_refresh"
+                } else {
+                    "active"
+                },
+            },
+            None => Self {
+                registered: false,
+                provider: None,
+                provider_token_hash: None,
+                generation: None,
+                accepted_at: None,
+                lease_expires_at: None,
+                delivery_state: "unregistered",
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkerWakeInput {
     contract_version: String,
     event_id: String,
@@ -847,16 +1143,23 @@ pub enum ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        let status = match self {
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Conflict => StatusCode::CONFLICT,
-            Self::BadRequest => StatusCode::BAD_REQUEST,
-            Self::Capacity => StatusCode::TOO_MANY_REQUESTS,
-            Self::Replay => StatusCode::CONFLICT,
-            Self::Storage => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-        };
+        let status = api_error_status(&self);
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=request.error status={}",
+            status.as_u16()
+        );
         status.into_response()
+    }
+}
+
+fn api_error_status(error: &ApiError) -> StatusCode {
+    match error {
+        ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+        ApiError::Conflict => StatusCode::CONFLICT,
+        ApiError::BadRequest => StatusCode::BAD_REQUEST,
+        ApiError::Capacity => StatusCode::TOO_MANY_REQUESTS,
+        ApiError::Replay => StatusCode::CONFLICT,
+        ApiError::Storage | ApiError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
@@ -1071,6 +1374,32 @@ impl EventStore {
         self.persist().map_err(|_| ApiError::Storage)
     }
 
+    fn enqueue_installation_event(
+        &mut self,
+        installation_id: &str,
+        auth_secret: &[u8; 32],
+        event: OpaqueNotificationEvent,
+    ) -> Result<bool, ApiError> {
+        self.authenticate_installation(installation_id, auth_secret)?;
+        if !self.delivery_enabled(installation_id)? {
+            return Ok(false);
+        }
+        let queue = self
+            .disk
+            .events
+            .entry(installation_id.to_owned())
+            .or_default();
+        if queue.iter().any(|existing| existing.id == event.id) {
+            return Ok(false);
+        }
+        queue.push_back(event);
+        while queue.len() > MAX_EVENTS_PER_INSTALLATION {
+            queue.pop_front();
+        }
+        self.persist().map_err(|_| ApiError::Storage)?;
+        Ok(true)
+    }
+
     fn sponsor_assignment(
         &mut self,
         installation_id: &str,
@@ -1079,7 +1408,9 @@ impl EventStore {
         assignment_handle: [u8; 32],
         assignment_epoch: u64,
         expires_at: u64,
+        now: u64,
     ) -> Result<bool, ApiError> {
+        self.prune_expired(now);
         self.authenticate_installation(installation_id, auth_secret)?;
         let handle = hex::encode(assignment_handle);
         let next = StoredAssignment {
@@ -1147,9 +1478,9 @@ impl EventStore {
         event: OpaqueNotificationEvent,
         now: u64,
     ) -> Result<WakeOutcome, ApiError> {
-        self.disk
-            .replay_expiry
-            .retain(|_, replay| replay.expires_at > now);
+        if self.prune_expired(now) {
+            self.persist().map_err(|_| ApiError::Storage)?;
+        }
         let handle = hex::encode(assignment_handle);
         let assignment = self
             .disk
@@ -1208,6 +1539,19 @@ impl EventStore {
             installation_id,
             new_event: enqueued,
         })
+    }
+
+    fn prune_expired(&mut self, now: u64) -> bool {
+        let assignments_before = self.disk.assignments.len();
+        let replays_before = self.disk.replay_expiry.len();
+        self.disk
+            .assignments
+            .retain(|_, assignment| assignment.expires_at > now);
+        self.disk
+            .replay_expiry
+            .retain(|_, replay| replay.expires_at > now);
+        assignments_before != self.disk.assignments.len()
+            || replays_before != self.disk.replay_expiry.len()
     }
 
     fn pending(&self, installation_id: &str) -> Vec<OpaqueNotificationEvent> {
@@ -1293,6 +1637,17 @@ impl EventStore {
         set_private_file(&self.path)?;
         sync_directory(parent)
     }
+}
+
+fn test_event_id(installation_id: &str, auth_secret: &[u8; 32], now: u64) -> String {
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut hash = Sha256::new();
+    hash.update(b"monero-fast-wallet-test-push-v1");
+    hash.update(installation_id.as_bytes());
+    hash.update(auth_secret);
+    hash.update(now.to_be_bytes());
+    hash.update(counter.to_be_bytes());
+    format!("evt_{}", hex::encode(hash.finalize()))
 }
 
 fn storage_parent(path: &Path) -> &Path {
@@ -1518,7 +1873,7 @@ fn unix_seconds() -> u64 {
 mod tests {
     use super::*;
     use axum::{
-        body::Body,
+        body::{to_bytes, Body},
         http::{Method, Request},
     };
     use fast_wallet_protocol::{
@@ -2013,6 +2368,25 @@ mod tests {
             .unwrap();
         let response = router(state.clone()).oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v1/installations/provider")
+            .header("x-fast-wallet-installation-id", INSTALLATION)
+            .header("x-fast-wallet-installation-auth", hex::encode(AUTH))
+            .body(Body::empty())
+            .unwrap();
+        let response = router(state.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let status: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 16 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(status["registered"], true);
+        assert_eq!(status["deliveryState"], "active");
+        assert_eq!(status["generation"], 1);
+        assert_eq!(
+            status["providerTokenHash"],
+            hex::encode(sha2::Sha256::digest(token.as_bytes()))
+        );
         let provider_raw = fs::read(&provider_path).unwrap();
         assert!(!provider_raw
             .windows(token.len())
@@ -2197,6 +2571,48 @@ mod tests {
             .await
             .authenticate_installation(INSTALLATION, &AUTH)
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn desktop_provider_bootstrap_is_bound_to_its_installation_secret() {
+        let directory = storage().parent().unwrap().to_path_buf();
+        let event_path = directory.join("events.json");
+        let provider_path = directory.join("providers.enc");
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[71_u8; 32]);
+        let state = GatewayState::open_with_provider_adapter(
+            event_path,
+            provider_path,
+            [72_u8; 32],
+            signing.verifying_key(),
+            Arc::new(RecordingProvider::default()),
+        )
+        .unwrap();
+        let body = serde_json::json!({
+            "provider": "desktop_wss",
+            "token": "",
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v1/installations/desktop-provider")
+            .header("content-type", "application/json")
+            .header("x-fast-wallet-installation-id", INSTALLATION)
+            .header("x-fast-wallet-installation-auth", hex::encode(AUTH))
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = router(state.clone()).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let wrong = Request::builder()
+            .method(Method::GET)
+            .uri("/api/v1/installations/provider")
+            .header("x-fast-wallet-installation-id", INSTALLATION)
+            .header("x-fast-wallet-installation-auth", hex::encode([0_u8; 32]))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            router(state).oneshot(wrong).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[test]

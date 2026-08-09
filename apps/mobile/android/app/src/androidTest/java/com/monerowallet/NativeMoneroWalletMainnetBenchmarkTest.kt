@@ -275,7 +275,7 @@ class NativeMoneroWalletMainnetBenchmarkTest {
     const val ARG_RUN = "runMainnetBenchmark"
     const val ARG_TIMEOUT_SECONDS = "timeoutSeconds"
     const val DEFAULT_DAEMON = "152.53.133.188:18089"
-    const val DEFAULT_GRPC = "152.53.133.188:48091"
+    const val DEFAULT_GRPC = "152.53.133.188:18091"
     const val DEFAULT_RESTORE_HEIGHT = 3_577_876L
     const val DEFAULT_TIMEOUT_SECONDS = 1_800L
     const val DERIVATION_THREAD_PREFIX = "monero-deriv"

@@ -1,0 +1,175 @@
+From 4f4177f0365190c0d9f23fbbddac59a38571143e Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 19:28:00 -0500
+Subject: [PATCH] wallet cli: add product start and shortcuts
+
+---
+ src/simplewallet/CMakeLists.txt        |  2 +-
+ src/simplewallet/product_cli_debug.cpp | 38 ++++++++++++++++++++
+ src/simplewallet/simplewallet.cpp      | 63 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 102 insertions(+), 1 deletion(-)
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index 21f0675..05b4749 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -118,7 +118,7 @@ execute_process(
+   OUTPUT_STRIP_TRAILING_WHITESPACE)
+ set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
+ set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
+-set(MFW_MONERO_PATCH_COUNT "37" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_MONERO_PATCH_COUNT "38" CACHE STRING "Applied TEX8 Monero patch count")
+ set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
+ set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
+ set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index 7865dfd..cd3c4f3 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -130,6 +130,34 @@ namespace
+            << "}";
+     return output.str();
+   }
++
++  void print_quickstart()
++  {
++    std::cout
++      << "FAST-WALLET-CLI BY TEX8 - QUICK START\n\n"
++      << "1. Start the wallet\n"
++      << "   ./fast-wallet-cli\n\n"
++      << "2. Open or create\n"
++      << "   Enter an existing wallet file to open it.\n"
++      << "   Enter a new file name to create a self-custodial wallet.\n"
++      << "   Write the recovery seed down offline before receiving funds.\n\n"
++      << "3. Everyday commands after opening\n"
++      << "   b                     show total balance\n"
++      << "   a                     show receive address\n"
++      << "   a new Savings         create a labeled subaddress\n"
++      << "   r                     synchronize\n"
++      << "   txs                   show transaction history\n"
++      << "   send <address> <xmr>  prepare and review a payment\n"
++      << "   h or ?                show help\n"
++      << "   q                     save and quit\n\n"
++      << "Restore an existing seed\n"
++      << "   ./fast-wallet-cli --restore-deterministic-wallet\n\n"
++      << "Use a Ledger\n"
++      << "   ./fast-wallet-cli --generate-from-device <wallet-file>\n\n"
++      << "Diagnostics\n"
++      << "   ./fast-wallet-cli --debug\n\n"
++      << "Safety: never paste a seed into a command argument and never share it.\n";
++  }
+ }
+ 
+ namespace mfw_cli
+@@ -163,6 +191,16 @@ namespace mfw_cli
+ 
+   bool handle_early_product_command(int argc, char* argv[], int& exit_code)
+   {
++    if (argc == 2)
++    {
++      const std::string command(argv[1]);
++      if (command == "quickstart" || command == "start" || command == "tutorial")
++      {
++        print_quickstart();
++        exit_code = 0;
++        return true;
++      }
++    }
+     if (handle_app_command(argc, argv, exit_code))
+       return true;
+     if (argc == 3 && std::string(argv[1]) == "version" && std::string(argv[2]) == "--json")
+diff --git a/src/simplewallet/simplewallet.cpp b/src/simplewallet/simplewallet.cpp
+index 3110032..2d7566b 100644
+--- a/src/simplewallet/simplewallet.cpp
++++ b/src/simplewallet/simplewallet.cpp
+@@ -3920,6 +3920,36 @@ simple_wallet::simple_wallet()
+                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::help, _1),
+                            tr(USAGE_HELP),
+                            tr("Show the help section or the documentation about a <command>."));
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++  m_cmd_binder.set_handler("b",
++                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::show_balance, _1),
++                           tr("b [detail]"),
++                           tr("Shortcut for balance."));
++  m_cmd_binder.set_handler("a",
++                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::print_address, _1),
++                           tr("a [all|new <label>|<index>]"),
++                           tr("Shortcut for address."));
++  m_cmd_binder.set_handler("r",
++                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::refresh, _1),
++                           tr("r"),
++                           tr("Shortcut for refresh."));
++  m_cmd_binder.set_handler("txs",
++                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::show_transfers, _1),
++                           tr("txs [in|out|all|pending|failed|pool]"),
++                           tr("Shortcut for show_transfers."));
++  m_cmd_binder.set_handler("send",
++                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::transfer, _1),
++                           tr("send <address> <amount>"),
++                           tr("Shortcut for transfer. The normal transaction review and confirmation remain mandatory."));
++  m_cmd_binder.set_handler("h",
++                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::help, _1),
++                           tr("h [command]"),
++                           tr("Shortcut for help."));
++  m_cmd_binder.set_handler("?",
++                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::help, _1),
++                           tr("? [command]"),
++                           tr("Shortcut for help."));
++#endif
+  m_cmd_binder.set_handler("apropos",
+                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::apropos, _1),
+                            tr(USAGE_APROPOS),
+@@ -4117,10 +4147,20 @@ bool simple_wallet::ask_wallet_create_if_needed()
+   do{
+       LOG_PRINT_L3("User asked to specify wallet file name.");
+       wallet_path = input_line(
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++        tr(m_restoring ? "RESTORE WALLET\n"
++        "Enter the new local file name for the restored wallet.\n"
++        "Wallet file (or Ctrl-C to quit)" :
++        "OPEN OR CREATE A WALLET\n"
++        "Enter an existing wallet file to open it.\n"
++        "Enter a new file name to create a self-custodial wallet.\n"
++        "Wallet file (or Ctrl-C to quit)")
++#else
+         tr(m_restoring ? "Specify a new wallet file name for your restored wallet (e.g., MyWallet).\n"
+         "Wallet file name (or Ctrl-C to quit)" :
+         "Specify wallet file name (e.g., MyWallet). If the wallet doesn't exist, it will be created.\n"
+         "Wallet file name (or Ctrl-C to quit)")
++#endif
+       );
+       if(std::cin.eof())
+       {
+@@ -10841,7 +10881,30 @@ int main(int argc, char* argv[])
+ #else
+    "monero-wallet-cli [--wallet-file=<filename>|--generate-new-wallet=<filename>] [<COMMAND>]",
+ #endif
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++    sw::tr("FAST-WALLET-CLI BY TEX8\n"
++    "Self-custodial Monero wallet with accelerated node-to-wallet sync.\n"
++    "Your seed and spend key stay on this device. Keep the recovery seed offline.\n\n"
++    "QUICK START\n"
++    "  Enter an existing wallet file to open it.\n"
++    "  Enter a new file name to create a wallet.\n"
++    "  Restore:  ./fast-wallet-cli --restore-deterministic-wallet\n"
++    "  Ledger:   ./fast-wallet-cli --generate-from-device <wallet-file>\n\n"
++    "SHORT COMMANDS AFTER OPENING\n"
++    "  b                 balance\n"
++    "  a                 receive address\n"
++    "  a new <label>     create subaddress\n"
++    "  r                 synchronize\n"
++    "  txs               transaction history\n"
++    "  send <addr> <xmr> prepare and review a payment\n"
++    "  h or ?            help\n"
++    "  q                 save and quit\n\n"
++    "Tutorial: ./fast-wallet-cli quickstart\n"
++    "Diagnostics: add --debug. App protection commands: app help.\n"
++    "A Monero daemon is required; the configured fast Cuprate/ScanPack path is preferred."),
++#else
+     sw::tr("This is the command line monero wallet. It needs to connect to a monero\ndaemon to work correctly.\nWARNING: Do not reuse your Monero keys on another fork, UNLESS this fork has key reuse mitigations built in. Doing so will harm your privacy."),
++#endif
+     desc_params,
+     positional_options,
+     [](const std::string &s, bool emphasis){ tools::scoped_message_writer(emphasis ? epee::console_color_white : epee::console_color_default, true) << s; },
+-- 
+2.50.1 (Apple Git-155)

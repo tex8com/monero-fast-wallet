@@ -1,0 +1,39 @@
+From e0068d0cedd2459b7793384fd2cce54a5bad59db Mon Sep 17 00:00:00 2001
+From: TEX8 <opensource@tex8.com>
+Date: Sun, 2 Aug 2026 23:52:00 -0500
+Subject: [PATCH] sentencepiece: isolate package Abseil without source mutation
+
+An external package is exposed below a build-owned include shim. This keeps
+SentencePiece's historical third_party/absl include spelling working without
+renaming authenticated source directories or mixing two Abseil generations.
+---
+ CMakeLists.txt | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 21607e9..fa8ad3c 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -172,11 +172,15 @@ elseif (SPM_ABSL_PROVIDER STREQUAL "module")
+ elseif (SPM_ABSL_PROVIDER STREQUAL "package")
+   find_package(absl REQUIRED)
+   get_target_property(ABSL_INCLUDE_DIRS absl::base INTERFACE_INCLUDE_DIRECTORIES)
+-  if (NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/absl.org)
+-    file(RENAME ${CMAKE_CURRENT_SOURCE_DIR}/third_party/absl ${CMAKE_CURRENT_SOURCE_DIR}/third_party/absl.org)
+-    execute_process(COMMAND ${CMAKE_COMMAND} -E create_symlink
+-        ${ABSL_INCLUDE_DIRS}/absl ${CMAKE_CURRENT_SOURCE_DIR}/third_party/absl)
+-  endif()
++  set(SPM_EXTERNAL_ABSL_INCLUDE_ROOT
++      "${CMAKE_CURRENT_BINARY_DIR}/external_absl_include")
++  file(MAKE_DIRECTORY "${SPM_EXTERNAL_ABSL_INCLUDE_ROOT}/third_party")
++  file(REMOVE_RECURSE "${SPM_EXTERNAL_ABSL_INCLUDE_ROOT}/third_party/absl")
++  file(CREATE_LINK
++      "${ABSL_INCLUDE_DIRS}/absl"
++      "${SPM_EXTERNAL_ABSL_INCLUDE_ROOT}/third_party/absl"
++      SYMBOLIC)
++  include_directories(BEFORE ${SPM_EXTERNAL_ABSL_INCLUDE_ROOT})
+   include_directories(${ABSL_INCLUDE_DIRS})
+ endif()
+ 
+-- 
+2.50.1

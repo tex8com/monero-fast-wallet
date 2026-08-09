@@ -15,12 +15,15 @@ monero_android_build_root="$(abs_path "${MONERO_ANDROID_BUILD_ROOT:-${repo_root}
 mobile_runtime_root="$(abs_path "${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${repo_root}/build/mobile-fast-wallet-protocol}")"
 dependency_root="$(abs_path "${MONERO_ANDROID_DEPENDENCY_ROOT:-${repo_root}/build/android-deps}")"
 output_dir="$(abs_path "${OUTPUT_DIR:-${repo_root}/build/android-monero-link-manifests}")"
-monero_source_dir="${MONERO_SOURCE_DIR:-}"
 targets_csv="${TARGETS:-android-arm64,android-armv7,android-x86,android-x86_64}"
 strict="${STRICT:-0}"
 extra_library_dirs_csv="${ANDROID_EXTRA_LIBRARY_DIRS:-}"
 extra_libraries_csv="${ANDROID_EXTRA_LIBRARIES:-}"
 extra_link_options_csv="${ANDROID_EXTRA_LINK_OPTIONS:-}"
+
+MONERO_COMMON_CORE_BUILD_ROOT="${MONERO_COMMON_CORE_BUILD_ROOT:-${repo_root}/build}" \
+  source "${script_dir}/prepare-common-monero-core.sh"
+monero_source_dir="${MONERO_SOURCE_DIR}"
 
 monero_library_rel_paths=(
   lib/libwallet.a
@@ -210,6 +213,7 @@ for label in "${targets[@]}"; do
   manifest_path="${manifest_dir}/link.cmake"
   wallet_api_lib="${monero_build_dir}/lib/libwallet_api.a"
   wallet_api_stamp="${monero_build_dir}/.tex8-wallet-api-header.sha256"
+  common_core_stamp="${monero_build_dir}/.tex8-monero-core-tree"
   target_monero_source_dir="${monero_source_dir}"
 
   if [[ -z "${target_monero_source_dir}" && -f "${monero_build_dir}/CMakeCache.txt" ]]; then
@@ -233,6 +237,7 @@ for label in "${targets[@]}"; do
     echo "Rebuild wallet_api before generating a link manifest." >&2
     exit 1
   fi
+  tex8_require_common_core_stamp "${common_core_stamp}"
 
   wallet_api_header_sha256="$(sha256_file "${wallet_api_header}")"
   wallet_api_built_header_sha256="$(tr -d '[:space:]' < "${wallet_api_stamp}")"
@@ -285,6 +290,7 @@ for label in "${targets[@]}"; do
     echo "set(MONERO_WALLET_API_LIBRARY \"${wallet_api_lib}\")"
     echo "set(MONERO_WALLET_API_HEADER_SHA256 \"${wallet_api_header_sha256}\")"
     echo "set(MONERO_WALLET_API_LIBRARY_SHA256 \"${wallet_api_library_sha256}\")"
+    echo "set(MONERO_PATCHED_SOURCE_TREE \"${MONERO_COMMON_CORE_TREE}\")"
     echo "set(MONERO_FAST_CRYPTO_LIBRARY \"${fast_crypto_lib}\")"
     echo "set(MONERO_WALLET_DEPENDENCY_INCLUDE_DIR \"${dependency_prefix}/include\")"
     write_cmake_list_from_csv MONERO_WALLET_EXTRA_LIBRARY_DIRS "${extra_library_dirs_csv}"

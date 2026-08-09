@@ -121,6 +121,7 @@ for path in \
 done
 for path in \
   /etc/nginx/snippets/notification-gateway.conf \
+  /etc/nginx/conf.d/monero-fast-wallet-rate-limits.conf \
   /etc/systemd/system/fast-wallet-relay.service \
   /etc/systemd/system/fast-wallet-worker.service \
   /etc/systemd/system/notification-gateway.service \
@@ -162,6 +163,22 @@ install -d -o cuprate -g cuprate -m 0700 /var/lib/monero-fast-wallet-worker
 install -d -o monero-notification-gateway -g monero-notification-gateway -m 0700 /var/lib/monero-notification-gateway
 install -d -o cuprate -g cuprate -m 0700 /var/lib/cuprate/fast-wallet-scanpacks
 
+# Earlier gateway releases created these encrypted local provider files with
+# permissive modes.  The current gateway correctly refuses to read them.  Keep
+# the encrypted contents intact while repairing only ownership and Unix mode;
+# reject links and non-regular files rather than following a replacement.
+for name in providers-v1.json.enc providers-v1.json.lock; do
+  path="/var/lib/monero-notification-gateway/$name"
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -f "$path" && ! -L "$path" ]] || {
+      echo "Refusing unsafe notification gateway state path: $path" >&2
+      exit 1
+    }
+    chown monero-notification-gateway:monero-notification-gateway "$path"
+    chmod 0600 "$path"
+  fi
+done
+
 umask 077
 install -o root -g root -m 0600 /dev/null /etc/monero-fast-wallet/fast-wallet-relay.env
 printf '%s\n' \
@@ -182,6 +199,9 @@ printf '%s\n' \
   'NOTIFICATION_GATEWAY_RELAY_ORIGIN=http://127.0.0.1:8094' \
   'NOTIFICATION_GATEWAY_OFFICIAL_WORKER_DESCRIPTOR_FILE=/etc/monero-fast-wallet/worker-descriptor.hex' \
   > /etc/monero-fast-wallet/notification-gateway.env
+
+# Do not create or overwrite notification-gateway-provider.env here. It holds
+# deployment-local Firebase credentials and must survive a staged release.
 
 install -o root -g root -m 0600 /dev/null /etc/monero-fast-wallet/notification-registration-adapter.env
 printf '%s\n' \
@@ -211,6 +231,7 @@ install -o root -g root -m 0644 "$script_dir/notification-gateway.service" /etc/
 install -o root -g root -m 0644 "$script_dir/notification-registration-adapter.service" /etc/systemd/system/notification-registration-adapter.service
 install -o root -g root -m 0644 "$script_dir/cuprate-fast-wallet-scanpack.conf" /etc/systemd/system/cuprate.service.d/fast-wallet-scanpack.conf
 install -o root -g root -m 0644 "$script_dir/nginx-fast-wallet-stack.conf" /etc/nginx/snippets/notification-gateway.conf
+install -o root -g root -m 0644 "$script_dir/nginx-fast-wallet-rate-limits.conf" /etc/nginx/conf.d/monero-fast-wallet-rate-limits.conf
 
 systemctl daemon-reload
 systemctl enable fast-wallet-relay.service notification-gateway.service notification-registration-adapter.service fast-wallet-worker.service

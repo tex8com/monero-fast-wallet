@@ -22,6 +22,9 @@ enum {
 
 typedef struct tex8_community_harrier_handle tex8_community_harrier_handle;
 
+/* Android only: called by the owning JNI library during JNI_OnLoad. */
+void tex8_community_harrier_android_install_java_vm_v1(void *java_vm);
+
 tex8_community_harrier_handle *tex8_community_harrier_create_v1(void);
 
 void tex8_community_harrier_destroy_v1(

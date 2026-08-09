@@ -22,8 +22,22 @@ buildscript {
 apply plugin: "com.facebook.react.rootproject"
 
 project(":app") {
+    def developmentDependencyLockingLenient = (
+            findProperty("moneroDevelopmentDependencyLockingLenient") ?: "false"
+    ).toString().toBoolean()
+    def configuredApplicationId = (
+            findProperty("moneroWalletApplicationId") ?: "com.tex8.monerowallet"
+    ).toString()
+    if (developmentDependencyLockingLenient &&
+            configuredApplicationId == "com.tex8.monerowallet") {
+        throw new GradleException(
+                "Lenient dependency locking is allowed only for a separate development application ID"
+        )
+    }
     dependencyLocking {
         lockAllConfigurations()
-        lockMode = LockMode.STRICT
+        lockMode = developmentDependencyLockingLenient
+                ? LockMode.LENIENT
+                : LockMode.STRICT
     }
 }

@@ -1,0 +1,560 @@
+From 69f4a7904f5ffa33ffb88db2fcb73aaa5117f43c Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Fast Wallet <dev@tex8.com>
+Date: Sun, 9 Aug 2026 00:07:10 -0500
+Subject: [PATCH] wallet cli: add independent fast wallet lifecycle adapter
+
+---
+ src/simplewallet/CMakeLists.txt              |   4 +-
+ src/simplewallet/product_cli_debug.cpp       |  19 +-
+ src/simplewallet/product_cli_fast_wallet.cpp | 447 +++++++++++++++++++
+ src/simplewallet/product_cli_fast_wallet.h   |  11 +
+ 4 files changed, 479 insertions(+), 2 deletions(-)
+ create mode 100644 src/simplewallet/product_cli_fast_wallet.cpp
+ create mode 100644 src/simplewallet/product_cli_fast_wallet.h
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index 0bd7cda16de6dfebc9b043fbb6037fd9ec15634a..c7d6e5444ec733d24f7c8923ab4767f2f7db5179 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -32,7 +32,8 @@ set(simplewallet_sources
+ set(product_cli_sources
+   simplewallet.cpp
+   product_cli_debug.cpp
+-  product_cli_app.cpp)
++  product_cli_app.cpp
++  product_cli_fast_wallet.cpp)
+ 
+ set(simplewallet_headers)
+ 
+@@ -76,6 +77,7 @@ monero_add_executable(fastwallet
+ target_link_libraries(fastwallet
+   PRIVATE
+     wallet
++    wallet_api
+     rpc_base
+     cryptonote_core
+     cncrypto
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index b20dfb89b452b0dcbdbdb7ee7e3ae90cb853a89f..c8d8669513f6c6dc4099523cf999afae835e8954 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "product_cli_debug.h"
+ #include "product_cli_app.h"
++#include "product_cli_fast_wallet.h"
+ 
+ #include <array>
+ #include <boost/filesystem.hpp>
+@@ -198,7 +199,10 @@ namespace
+       << "fast-wallet self-test --json\n"
+       << "  Exercise the shared Fast Wallet coordinator without a worker, network,\n"
+       << "  wallet file, seed or funds: independent seed, mandatory backup, and\n"
+-      << "  explicit worker detach and notification disable before removal.\n";
++      << "  explicit worker detach and notification disable before removal.\n\n"
++      << "fast-wallet create|restore|confirm-backup|status\n"
++      << "  Create or restore an independent Fast Wallet through the shared\n"
++      << "  lifecycle coordinator. Run: fast-wallet operation-help\n";
+   }
+ 
+   bool fast_wallet_operation(const std::string& name, std::uint32_t& operation)
+@@ -642,6 +646,8 @@ namespace mfw_cli
+ 
+   bool handle_early_product_command(int argc, char* argv[], int& exit_code)
+   {
++    if (handle_fast_wallet_operation(argc, argv, exit_code))
++      return true;
+     if (argc >= 2 && std::string(argv[1]) == "fast-wallet")
+     {
+       if (argc == 2)
+@@ -657,6 +663,17 @@ namespace mfw_cli
+         exit_code = 0;
+         return true;
+       }
++      if (command == "operation-help" && argc == 3)
++      {
++        std::cout
++          << "Operational Fast Wallet commands:\n"
++          << "  fast-wallet create --wallet-file <path> --password-file <0600-file> [--network mainnet|testnet|stagenet]\n"
++          << "  fast-wallet restore --wallet-file <path> --password-file <0600-file> --seed-file <0600-file> [--network mainnet|testnet|stagenet] [--restore-height <height>]\n"
++          << "  fast-wallet confirm-backup --wallet-file <path> [--json]\n"
++          << "  fast-wallet status --wallet-file <path> [--json]\n";
++        exit_code = 0;
++        return true;
++      }
+       if (command == "contract" && argc == 4 && std::string(argv[3]) == "--json")
+       {
+         std::cout << "{"
+diff --git a/src/simplewallet/product_cli_fast_wallet.cpp b/src/simplewallet/product_cli_fast_wallet.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..1fcea587858153c365c8ca515113149977fc42ca
+--- /dev/null
++++ b/src/simplewallet/product_cli_fast_wallet.cpp
+@@ -0,0 +1,447 @@
++// Copyright (c) 2026 TEX8
++// SPDX-License-Identifier: BSD-3-Clause
++
++#include "product_cli_fast_wallet.h"
++
++#include <algorithm>
++#include <chrono>
++#include <cstdint>
++#include <cstring>
++#include <fstream>
++#include <iostream>
++#include <limits>
++#include <stdexcept>
++#include <string>
++
++#include <boost/filesystem.hpp>
++
++#include "wallet/api/wallet2_api.h"
++
++#include "mfw_product_core.h"
++
++#ifdef _WIN32
++#include <windows.h>
++#else
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
++namespace
++{
++  constexpr char fast_wallet_magic[8] = {'M', 'F', 'W', 'F', 'W', '1', '\0', '\0'};
++  constexpr std::uint32_t fast_wallet_disk_version = 1;
++
++  // This deliberately contains no seed, password, key, address, worker token
++  // or node endpoint. It is only the durable Product-Core lifecycle state for
++  // the adjacent, independently encrypted Monero wallet file.
++  struct persisted_fast_wallet
++  {
++    char magic[8];
++    std::uint32_t disk_version;
++    std::uint32_t lifecycle_state;
++    std::uint32_t seed_backup_confirmed;
++    std::uint32_t network;
++    std::uint64_t generation;
++    std::uint64_t created_at;
++    std::uint64_t updated_at;
++    std::uint32_t reserved;
++  };
++
++  struct options
++  {
++    std::string operation;
++    boost::filesystem::path wallet_path;
++    boost::filesystem::path password_file;
++    boost::filesystem::path seed_file;
++    Monero::NetworkType network = Monero::MAINNET;
++    std::uint64_t restore_height = 0;
++    bool json = false;
++  };
++
++  std::uint64_t unix_seconds()
++  {
++    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
++      std::chrono::system_clock::now().time_since_epoch()).count());
++  }
++
++  void wipe(std::string& value)
++  {
++    volatile char* bytes = value.empty() ? nullptr : &value[0];
++    for (std::size_t index = 0; index < value.size(); ++index) bytes[index] = 0;
++    value.clear();
++  }
++
++  bool parse_unsigned(const std::string& text, std::uint64_t& value)
++  {
++    if (text.empty() || !std::all_of(text.begin(), text.end(),
++        [](char character) { return character >= '0' && character <= '9'; }))
++      return false;
++    try
++    {
++      std::size_t end = 0;
++      const unsigned long long parsed = std::stoull(text, &end, 10);
++      if (end != text.size()) return false;
++      value = static_cast<std::uint64_t>(parsed);
++      return true;
++    }
++    catch (...) { return false; }
++  }
++
++  Monero::NetworkType parse_network(const std::string& value)
++  {
++    if (value == "mainnet") return Monero::MAINNET;
++    if (value == "testnet") return Monero::TESTNET;
++    if (value == "stagenet") return Monero::STAGENET;
++    throw std::runtime_error("--network must be mainnet, testnet, or stagenet");
++  }
++
++  const char* network_name(const Monero::NetworkType network)
++  {
++    switch (network)
++    {
++      case Monero::MAINNET: return "mainnet";
++      case Monero::TESTNET: return "testnet";
++      case Monero::STAGENET: return "stagenet";
++      default: return "invalid";
++    }
++  }
++
++  const char* state_name(const std::uint32_t state)
++  {
++    switch (state)
++    {
++      case MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP: return "awaiting-backup";
++      case MFW_WALLET_LIFECYCLE_READY: return "ready";
++      case MFW_WALLET_LIFECYCLE_REMOVAL_PENDING: return "removal-pending";
++      case MFW_WALLET_LIFECYCLE_REMOVED: return "removed";
++      default: return "invalid";
++    }
++  }
++
++  boost::filesystem::path metadata_path(const options& input)
++  {
++    return boost::filesystem::path(input.wallet_path.string() + ".mfw-fast-v1");
++  }
++
++  void require_private_regular_file(const boost::filesystem::path& path,
++                                    const char* description)
++  {
++    if (path.empty() || !boost::filesystem::exists(path) ||
++        boost::filesystem::is_symlink(path) || !boost::filesystem::is_regular_file(path))
++      throw std::runtime_error(std::string(description) + " is missing or unsafe");
++#ifndef _WIN32
++    const auto permissions = boost::filesystem::status(path).permissions();
++    if ((permissions & (boost::filesystem::group_read | boost::filesystem::group_write |
++                        boost::filesystem::others_read | boost::filesystem::others_write)) != 0)
++      throw std::runtime_error(std::string(description) + " permissions must be 0600 or stricter");
++#endif
++  }
++
++  std::string read_private_text_file(const boost::filesystem::path& path,
++                                     const char* description)
++  {
++    require_private_regular_file(path, description);
++    std::ifstream input(path.string(), std::ios::binary);
++    std::string value((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
++    if (!input && !input.eof()) throw std::runtime_error(std::string(description) + " could not be read");
++    while (!value.empty() && (value.back() == '\n' || value.back() == '\r')) value.pop_back();
++    if (value.empty()) throw std::runtime_error(std::string(description) + " is empty");
++    return value;
++  }
++
++  void require_safe_new_wallet_path(const options& input)
++  {
++    if (input.wallet_path.empty()) throw std::runtime_error("--wallet-file is required");
++    const auto parent = input.wallet_path.parent_path().empty()
++      ? boost::filesystem::current_path() : input.wallet_path.parent_path();
++    if (!boost::filesystem::exists(parent) || boost::filesystem::is_symlink(parent) ||
++        !boost::filesystem::is_directory(parent))
++      throw std::runtime_error("wallet parent directory is missing or unsafe");
++    const auto metadata = metadata_path(input);
++    if (boost::filesystem::exists(metadata) || boost::filesystem::is_symlink(metadata))
++      throw std::runtime_error("Fast Wallet lifecycle metadata already exists for this wallet path");
++    Monero::WalletManager* manager = Monero::WalletManagerFactory::getWalletManager();
++    if (manager == nullptr || manager->walletExists(input.wallet_path.string()))
++      throw std::runtime_error("wallet already exists at the requested path");
++  }
++
++  void validate_metadata(const persisted_fast_wallet& state)
++  {
++    if (std::memcmp(state.magic, fast_wallet_magic, sizeof(fast_wallet_magic)) != 0 ||
++        state.disk_version != fast_wallet_disk_version || state.reserved != 0 ||
++        state.generation == 0 ||
++        state.seed_backup_confirmed > 1 ||
++        (state.lifecycle_state != MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP &&
++         state.lifecycle_state != MFW_WALLET_LIFECYCLE_READY &&
++         state.lifecycle_state != MFW_WALLET_LIFECYCLE_REMOVAL_PENDING &&
++         state.lifecycle_state != MFW_WALLET_LIFECYCLE_REMOVED) ||
++        state.network > static_cast<std::uint32_t>(Monero::STAGENET))
++      throw std::runtime_error("Fast Wallet lifecycle metadata is corrupt or unsupported");
++  }
++
++  persisted_fast_wallet read_metadata(const options& input)
++  {
++    const auto path = metadata_path(input);
++    require_private_regular_file(path, "Fast Wallet lifecycle metadata");
++    std::ifstream stream(path.string(), std::ios::binary);
++    persisted_fast_wallet state{};
++    stream.read(reinterpret_cast<char*>(&state), sizeof(state));
++    if (!stream || stream.peek() != std::ifstream::traits_type::eof())
++      throw std::runtime_error("Fast Wallet lifecycle metadata has an invalid size");
++    validate_metadata(state);
++    return state;
++  }
++
++  void sync_path(const boost::filesystem::path& path)
++  {
++#ifndef _WIN32
++    const int descriptor = ::open(path.string().c_str(), O_RDONLY);
++    if (descriptor < 0 || ::fsync(descriptor) != 0)
++    {
++      if (descriptor >= 0) ::close(descriptor);
++      throw std::runtime_error("Fast Wallet lifecycle metadata could not be synchronized");
++    }
++    ::close(descriptor);
++#else
++    (void)path;
++#endif
++  }
++
++  void write_metadata(const options& input, persisted_fast_wallet state)
++  {
++    validate_metadata(state);
++    const auto path = metadata_path(input);
++    const auto parent = path.parent_path().empty() ? boost::filesystem::current_path() : path.parent_path();
++    const auto temporary = boost::filesystem::path(path.string() + ".tmp");
++    if (boost::filesystem::is_symlink(parent) || boost::filesystem::is_symlink(path))
++      throw std::runtime_error("Fast Wallet lifecycle metadata path is unsafe");
++    if (boost::filesystem::exists(temporary)) boost::filesystem::remove(temporary);
++    ++state.generation;
++    state.updated_at = unix_seconds();
++    {
++      std::ofstream output(temporary.string(), std::ios::binary | std::ios::trunc);
++      output.write(reinterpret_cast<const char*>(&state), sizeof(state));
++      output.flush();
++      if (!output) throw std::runtime_error("Fast Wallet lifecycle metadata could not be written");
++    }
++#ifndef _WIN32
++    ::chmod(temporary.string().c_str(), S_IRUSR | S_IWUSR);
++#endif
++    sync_path(temporary);
++#ifdef _WIN32
++    if (!MoveFileExW(temporary.wstring().c_str(), path.wstring().c_str(),
++                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
++      throw std::runtime_error("Fast Wallet lifecycle metadata could not be committed");
++#else
++    if (::rename(temporary.string().c_str(), path.string().c_str()) != 0)
++      throw std::runtime_error("Fast Wallet lifecycle metadata could not be committed");
++    sync_path(parent);
++#endif
++    const persisted_fast_wallet verified = read_metadata(input);
++    if (verified.generation != state.generation)
++      throw std::runtime_error("Fast Wallet lifecycle metadata commit could not be verified");
++  }
++
++  mfw_fast_wallet_coordinator_plan_v1 plan(const std::uint32_t operation,
++                                           const persisted_fast_wallet* state = nullptr)
++  {
++    mfw_fast_wallet_coordinator_input_v1 input{};
++    input.struct_size = sizeof(input);
++    input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
++    input.operation = operation;
++    input.lifecycle_state = state == nullptr ? MFW_WALLET_LIFECYCLE_EMPTY : state->lifecycle_state;
++    input.seed_backup_confirmed = state == nullptr ? 0 : state->seed_backup_confirmed;
++    input.balance_state = MFW_WALLET_BALANCE_UNKNOWN;
++    mfw_fast_wallet_coordinator_plan_v1 output{};
++    if (mfw_fast_wallet_operation_plan_v1(&input, &output) != MFW_ERROR_OK ||
++        output.operation_allowed != 1 || output.execution_allowed != 1)
++      throw std::runtime_error("the shared Product Core rejected this Fast Wallet lifecycle operation");
++    return output;
++  }
++
++  options parse_options(const int argc, char* argv[])
++  {
++    if (argc < 3) throw std::runtime_error("Fast Wallet command requires an operation");
++    options output;
++    output.operation = argv[2];
++    for (int index = 3; index < argc; ++index)
++    {
++      const std::string token(argv[index]);
++      if (token == "--wallet-file" && index + 1 < argc) output.wallet_path = argv[++index];
++      else if (token == "--password-file" && index + 1 < argc) output.password_file = argv[++index];
++      else if (token == "--seed-file" && index + 1 < argc) output.seed_file = argv[++index];
++      else if (token == "--network" && index + 1 < argc) output.network = parse_network(argv[++index]);
++      else if (token == "--restore-height" && index + 1 < argc)
++      {
++        if (!parse_unsigned(argv[++index], output.restore_height))
++          throw std::runtime_error("--restore-height must be an unsigned integer");
++      }
++      else if (token == "--json") output.json = true;
++      else throw std::runtime_error("unknown Fast Wallet option: " + token);
++    }
++    return output;
++  }
++
++  void print_help()
++  {
++    std::cout
++      << "monero-fast-wallet-cli fast-wallet <operation> [options]\n\n"
++      << "Operational, independent Fast Wallet commands:\n"
++      << "  create --wallet-file <path> --password-file <0600-file> [--network mainnet|testnet|stagenet]\n"
++      << "  restore --wallet-file <path> --password-file <0600-file> --seed-file <0600-file>\n"
++      << "          [--network mainnet|testnet|stagenet] [--restore-height <height>]\n"
++      << "  confirm-backup --wallet-file <path> [--json]\n"
++      << "  status --wallet-file <path> [--json]\n\n"
++      << "create and restore make a separate Monero wallet with its own seed and password.\n"
++      << "The lifecycle sidecar contains no seed, password, private key, address, worker token or node endpoint.\n"
++      << "Never pass a seed or password directly as a command argument.\n";
++  }
++
++  void print_status(const options& input, const persisted_fast_wallet& state)
++  {
++    if (input.json)
++      std::cout << "{\"schema_version\":1,\"wallet_kind\":\"fast\",\"network\":\""
++                << network_name(static_cast<Monero::NetworkType>(state.network)) << "\",\"state\":\""
++                << state_name(state.lifecycle_state) << "\",\"seed_backup_confirmed\":"
++                << (state.seed_backup_confirmed ? "true" : "false")
++                << ",\"independent_seed\":true,\"worker_enrolled\":false,\"notifications_enabled\":false}\n";
++    else
++      std::cout << "Fast Wallet: " << state_name(state.lifecycle_state)
++                << "; independent seed: yes; backup confirmed: "
++                << (state.seed_backup_confirmed ? "yes" : "no") << ".\n";
++  }
++
++  persisted_fast_wallet new_metadata(const options& input,
++                                     const mfw_fast_wallet_coordinator_plan_v1& decision)
++  {
++    persisted_fast_wallet state{};
++    std::memcpy(state.magic, fast_wallet_magic, sizeof(fast_wallet_magic));
++    state.disk_version = fast_wallet_disk_version;
++    state.lifecycle_state = decision.result_lifecycle_state;
++    state.seed_backup_confirmed = 0;
++    state.network = static_cast<std::uint32_t>(input.network);
++    state.generation = 1;
++    state.created_at = unix_seconds();
++    state.updated_at = state.created_at;
++    return state;
++  }
++
++  void require_created_wallet(Monero::Wallet* wallet, Monero::WalletManager* manager)
++  {
++    if (wallet == nullptr || wallet->status() != Monero::Wallet::Status_Ok)
++      throw std::runtime_error("native Monero wallet creation failed: " +
++        (wallet == nullptr ? manager->errorString() : wallet->errorString()));
++  }
++
++  void create(const options& input)
++  {
++    if (input.json) throw std::runtime_error("create never emits a seed in JSON; omit --json");
++    require_safe_new_wallet_path(input);
++    std::string password = read_private_text_file(input.password_file, "password file");
++    const auto decision = plan(MFW_FAST_WALLET_OPERATION_CREATE);
++    Monero::WalletManager* manager = Monero::WalletManagerFactory::getWalletManager();
++    Monero::Wallet* wallet = nullptr;
++    try
++    {
++      wallet = manager->createWallet(input.wallet_path.string(), password, "English", input.network);
++      wipe(password);
++      require_created_wallet(wallet, manager);
++      std::string seed = wallet->seed();
++      if (seed.empty()) throw std::runtime_error("new Fast Wallet did not return a recovery seed");
++      if (!manager->closeWallet(wallet, true))
++      {
++        wallet = nullptr;
++        throw std::runtime_error("new Fast Wallet could not be saved: " + manager->errorString());
++      }
++      wallet = nullptr;
++      persisted_fast_wallet state = new_metadata(input, decision);
++      write_metadata(input, state);
++      std::cout << "Independent Fast Wallet created. Write this 25-word recovery seed down offline now:\n\n"
++                << seed << "\n\n"
++                << "It cannot receive or spend until you confirm the backup:\n"
++                << "  ./fast-wallet-cli fast-wallet confirm-backup --wallet-file '"
++                << input.wallet_path.string() << "'\n";
++      wipe(seed);
++    }
++    catch (...)
++    {
++      wipe(password);
++      if (wallet != nullptr) manager->closeWallet(wallet, false);
++      throw;
++    }
++  }
++
++  void restore(const options& input)
++  {
++    if (input.json) throw std::runtime_error("restore does not emit JSON because it processes a seed");
++    require_safe_new_wallet_path(input);
++    std::string password = read_private_text_file(input.password_file, "password file");
++    std::string seed = read_private_text_file(input.seed_file, "seed file");
++    const auto decision = plan(MFW_FAST_WALLET_OPERATION_RESTORE);
++    Monero::WalletManager* manager = Monero::WalletManagerFactory::getWalletManager();
++    Monero::Wallet* wallet = nullptr;
++    try
++    {
++      wallet = manager->recoveryWallet(input.wallet_path.string(), password, seed, input.network, input.restore_height);
++      wipe(password);
++      wipe(seed);
++      require_created_wallet(wallet, manager);
++      if (!manager->closeWallet(wallet, true))
++      {
++        wallet = nullptr;
++        throw std::runtime_error("restored Fast Wallet could not be saved: " + manager->errorString());
++      }
++      wallet = nullptr;
++      write_metadata(input, new_metadata(input, decision));
++      std::cout << "Independent Fast Wallet restored. Confirm that the recovery seed is backed up before use:\n"
++                << "  ./fast-wallet-cli fast-wallet confirm-backup --wallet-file '"
++                << input.wallet_path.string() << "'\n";
++    }
++    catch (...)
++    {
++      wipe(password);
++      wipe(seed);
++      if (wallet != nullptr) manager->closeWallet(wallet, false);
++      throw;
++    }
++  }
++
++  void confirm_backup(const options& input)
++  {
++    const persisted_fast_wallet current = read_metadata(input);
++    const auto decision = plan(MFW_FAST_WALLET_OPERATION_CONFIRM_SEED_BACKUP, &current);
++    persisted_fast_wallet next = current;
++    next.lifecycle_state = decision.result_lifecycle_state;
++    next.seed_backup_confirmed = 1;
++    write_metadata(input, next);
++    print_status(input, read_metadata(input));
++  }
++}
++
++namespace mfw_cli
++{
++  bool handle_fast_wallet_operation(int argc, char* argv[], int& exit_code)
++  {
++    if (argc < 3 || std::string(argv[1]) != "fast-wallet") return false;
++    const std::string operation(argv[2]);
++    if (operation != "create" && operation != "restore" && operation != "confirm-backup" && operation != "status")
++      return false;
++    try
++    {
++      const options input = parse_options(argc, argv);
++      if (input.wallet_path.empty()) throw std::runtime_error("--wallet-file is required");
++      if (operation == "create") create(input);
++      else if (operation == "restore") restore(input);
++      else if (operation == "confirm-backup") confirm_backup(input);
++      else print_status(input, read_metadata(input));
++      exit_code = 0;
++    }
++    catch (const std::exception& error)
++    {
++      std::cerr << "monero-fast-wallet-cli fast-wallet: " << error.what() << std::endl;
++      exit_code = 64;
++    }
++    return true;
++  }
++}
+diff --git a/src/simplewallet/product_cli_fast_wallet.h b/src/simplewallet/product_cli_fast_wallet.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7835ff83df4856a232c3ecd532a1ee73aaac50c0
+--- /dev/null
++++ b/src/simplewallet/product_cli_fast_wallet.h
+@@ -0,0 +1,11 @@
++// Copyright (c) 2026 TEX8
++// SPDX-License-Identifier: BSD-3-Clause
++
++#pragma once
++
++namespace mfw_cli
++{
++  // Handles the operational Fast Wallet commands that must run before the
++  // regular interactive wallet CLI. Returns true if a command was handled.
++  bool handle_fast_wallet_operation(int argc, char* argv[], int& exit_code);
++}
+-- 
+2.50.1 (Apple Git-155)
+

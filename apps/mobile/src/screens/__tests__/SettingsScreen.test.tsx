@@ -6,6 +6,7 @@ import { LanguageProvider } from '../../i18n';
 import { AppSecurityProvider } from '../../services/AppSecurity';
 import { walletService } from '../../services/WalletService';
 import SettingsScreen from '../SettingsScreen';
+import mobileAppVersion from '../../../../../config/mobile-app-version.json';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
   const storage = new Map<string, string>();
@@ -48,6 +49,37 @@ jest.mock('../../services/WalletDiagnostics', () => ({
   })),
 }));
 
+jest.mock('../../services/DerivationPerformance', () => ({
+  loadDerivationPerformance: jest.fn(async () => ({
+    schemaVersion: 1,
+    cpuWorkers: 9,
+    cpu: {
+      available: true,
+      verified: true,
+      derivationsPerSecond: 77962,
+      sampleCount: 12288,
+      elapsedMs: 158,
+      error: '',
+    },
+    metal: {
+      available: false,
+      verified: false,
+      derivationsPerSecond: 0,
+      sampleCount: 0,
+      elapsedMs: 0,
+      error: 'unavailable',
+    },
+    cuda: {
+      available: false,
+      verified: false,
+      derivationsPerSecond: 0,
+      sampleCount: 0,
+      elapsedMs: 0,
+      error: 'unavailable',
+    },
+  })),
+}));
+
 jest.mock('../../services/WalletService', () => ({
   walletService: {
     applyNodeConnectionToActive: jest.fn(async () => true),
@@ -65,9 +97,11 @@ jest.mock('../../services/WalletService', () => ({
       supported: true,
     })),
     lockApp: jest.fn(async () => undefined),
+    recordAppUserActivity: jest.fn(async () => undefined),
     refreshFastReceiveRegistrationStatusesForSettings: jest.fn(
       async () => undefined,
     ),
+    setAppAutoLockSeconds: jest.fn(async () => undefined),
   },
 }));
 
@@ -127,6 +161,26 @@ describe('SettingsScreen', () => {
     expect(placeholders).toContain('xmr.tex8.com:18091');
   });
 
+  it('shows the shared app version in the settings footer', async () => {
+    const renderer = await renderSettings();
+    const labels = renderer.root
+      .findAllByType(Text)
+      .map(node => node.props.children?.toString());
+    expect(labels).toContain(
+      `Monero Fast Wallet · v${mobileAppVersion.versionName}`,
+    );
+  });
+
+  it('shows the measured CPU rate and separate unavailable GPU backends', async () => {
+    const renderer = await renderSettings();
+    const labels = renderer.root
+      .findAllByType(Text)
+      .map(node => node.props.children?.toString());
+    expect(labels).toContain('77,962 derivations/s');
+    expect(labels).toContain('Metal');
+    expect(labels).toContain('CUDA');
+  });
+
   it('changes an existing app password from Settings', async () => {
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     const renderer = await renderSettings();
@@ -149,7 +203,7 @@ describe('SettingsScreen', () => {
     });
 
     expect(alert).toHaveBeenLastCalledWith(
-      'App protection',
+      'Protect your wallet',
       'App protection saved.',
     );
     expect(mockedWalletService.configureAppProtection).toHaveBeenCalledWith(
@@ -165,6 +219,13 @@ describe('SettingsScreen', () => {
     await ReactTestRenderer.act(async () => {
       buttonWithText(renderer, 'Biometrics').props.onPress();
     });
+    const inputs = renderer.root.findAllByType(TextInput);
+    const password = inputs.find(input => input.props.placeholder === 'Set app password');
+    const confirmation = inputs.find(input => input.props.placeholder === 'Confirm app password');
+    await ReactTestRenderer.act(async () => {
+      password!.props.onChangeText('biometric recovery password');
+      confirmation!.props.onChangeText('biometric recovery password');
+    });
     await ReactTestRenderer.act(async () => {
       await buttonWithText(renderer, 'Save protection').props.onPress();
     });
@@ -176,7 +237,7 @@ describe('SettingsScreen', () => {
     expect(mockedWalletService.getBiometricAuthStatus).toHaveBeenCalledTimes(1);
     expect(mockedWalletService.configureAppProtection).toHaveBeenCalledWith(
       'biometric',
-      '',
+      'biometric recovery password',
     );
     expect(mockedWalletService.lockApp).toHaveBeenCalledTimes(1);
   });

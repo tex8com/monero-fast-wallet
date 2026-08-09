@@ -1,0 +1,621 @@
+From f5ad85ad8ed2214960a40acf283f387cbf328f95 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 2 Aug 2026 21:58:54 -0500
+Subject: [PATCH] wallet: add shared multi-wallet sync provider
+
+---
+ src/wallet/api/wallet.cpp                     | 162 ++++++++++++++
+ src/wallet/api/wallet.h                       |  10 +-
+ src/wallet/api/wallet2_api.h                  |  29 +++
+ .../grpc_stream/grpc_block_stream_client.cpp  |  32 ++-
+ src/wallet/wallet2.cpp                        | 207 ++++++++++++++++++
+ src/wallet/wallet2.h                          |  39 ++++
+ 6 files changed, 476 insertions(+), 3 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 8e3c705..675f6f4 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -93,6 +93,44 @@ using namespace cryptonote;
+ 
+ namespace Monero {
+ 
++namespace {
++
++class SharedBlockBatchImpl final : public Wallet::SharedBlockBatch
++{
++public:
++    explicit SharedBlockBatchImpl(
++        std::shared_ptr<const tools::wallet2::shared_block_batch> value)
++      : value_(std::move(value)) {}
++
++    uint64_t startHeight() const override { return value_->start_height; }
++    uint64_t endHeight() const override { return value_->start_height + value_->blocks.size(); }
++    uint64_t currentHeight() const override { return value_->current_height; }
++    size_t blockCount() const override { return value_->blocks.size(); }
++
++    const tools::wallet2::shared_block_batch& value() const { return *value_; }
++
++private:
++    std::shared_ptr<const tools::wallet2::shared_block_batch> value_;
++};
++
++class SharedPoolSnapshotImpl final : public Wallet::SharedPoolSnapshot
++{
++public:
++    explicit SharedPoolSnapshotImpl(
++        std::shared_ptr<const tools::wallet2::shared_pool_snapshot> value)
++      : value_(std::move(value)) {}
++
++    uint64_t capturedUnixMillis() const override { return value_->captured_unix_ms; }
++    size_t transactionCount() const override { return value_->txs.size(); }
++
++    const tools::wallet2::shared_pool_snapshot& value() const { return *value_; }
++
++private:
++    std::shared_ptr<const tools::wallet2::shared_pool_snapshot> value_;
++};
++
++} // anonymous namespace
++
+     void setLedgerBleTransportCallbacks(const LedgerBleTransportCallbacks &callbacks) {
+     #ifdef WITH_DEVICE_LEDGER
+         hw::ledger::ble_transport_callbacks native_callbacks;
+@@ -1061,6 +1099,130 @@ std::string WalletImpl::grpcStreamEndpoint() const
+ #endif
+ }
+ 
++uint64_t WalletImpl::walletSyncCursor() const
++{
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    return m_wallet->wallet_sync_cursor();
++}
++
++uint64_t WalletImpl::walletSyncTargetCursor() const
++{
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    return m_wallet->wallet_sync_target_cursor();
++}
++
++std::shared_ptr<const Wallet::SharedBlockBatch> WalletImpl::fetchSharedBlockBatch()
++{
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    clearStatus();
++    try
++    {
++        return std::make_shared<SharedBlockBatchImpl>(
++            m_wallet->fetch_shared_block_batch());
++    }
++    catch (const std::exception &error)
++    {
++        setStatusError(error.what());
++        return {};
++    }
++}
++
++uint64_t WalletImpl::consumeSharedBlockBatch(const SharedBlockBatch &batch)
++{
++    const auto *native = dynamic_cast<const SharedBlockBatchImpl*>(&batch);
++    if (native == nullptr)
++    {
++        setStatusError("shared block batch was created by a different Core");
++        return 0;
++    }
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    clearStatus();
++    try
++    {
++        return m_wallet->consume_shared_block_batch(native->value());
++    }
++    catch (const std::exception &error)
++    {
++        setStatusError(error.what());
++        return 0;
++    }
++}
++
++std::shared_ptr<const Wallet::SharedPoolSnapshot> WalletImpl::fetchSharedPoolSnapshot()
++{
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    clearStatus();
++    try
++    {
++        return std::make_shared<SharedPoolSnapshotImpl>(
++            m_wallet->fetch_shared_pool_snapshot());
++    }
++    catch (const std::exception &error)
++    {
++        setStatusError(error.what());
++        return {};
++    }
++}
++
++void WalletImpl::consumeSharedPoolSnapshot(const SharedPoolSnapshot &snapshot)
++{
++    const auto *native = dynamic_cast<const SharedPoolSnapshotImpl*>(&snapshot);
++    if (native == nullptr)
++    {
++        setStatusError("shared pool snapshot was created by a different Core");
++        return;
++    }
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    clearStatus();
++    try
++    {
++        m_wallet->consume_shared_pool_snapshot(native->value());
++    }
++    catch (const std::exception &error)
++    {
++        setStatusError(error.what());
++    }
++}
++
++bool WalletImpl::detachWalletToHeight(
++    uint64_t height, const std::string &expectedPreviousHash)
++{
++    crypto::hash expected;
++    if (!epee::string_tools::hex_to_pod(expectedPreviousHash, expected))
++    {
++        setStatusError("invalid shared detach checkpoint hash");
++        return false;
++    }
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    clearStatus();
++    try
++    {
++        m_wallet->detach_wallet_to_height(height, expected);
++        return true;
++    }
++    catch (const std::exception &error)
++    {
++        setStatusError(error.what());
++        return false;
++    }
++}
++
++bool WalletImpl::checkpointWalletScan()
++{
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    clearStatus();
++    try
++    {
++        m_wallet->checkpoint_wallet_scan();
++        return true;
++    }
++    catch (const std::exception &error)
++    {
++        setStatusError(error.what());
++        return false;
++    }
++}
++
+ bool WalletImpl::lightWalletLogin(bool &isNewWallet) const
+ {
+   return m_wallet->light_wallet_login(isNewWallet);
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index a045cb1..2d952b8 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -108,6 +108,14 @@ public:
+     bool init(const std::string &daemon_address, uint64_t upper_transaction_size_limit = 0, const std::string &daemon_username = "", const std::string &daemon_password = "", bool use_ssl = false, bool lightWallet = false, const std::string &proxy_address = "") override;
+     void setGrpcStreamEndpoint(const std::string &endpoint) override;
+     std::string grpcStreamEndpoint() const override;
++    uint64_t walletSyncCursor() const override;
++    uint64_t walletSyncTargetCursor() const override;
++    std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatch() override;
++    uint64_t consumeSharedBlockBatch(const SharedBlockBatch &batch) override;
++    std::shared_ptr<const SharedPoolSnapshot> fetchSharedPoolSnapshot() override;
++    void consumeSharedPoolSnapshot(const SharedPoolSnapshot &snapshot) override;
++    bool detachWalletToHeight(uint64_t height, const std::string &expectedPreviousHash) override;
++    bool checkpointWalletScan() override;
+     bool connectToDaemon() override;
+     ConnectionStatus connected() const override;
+     void setTrustedDaemon(bool arg) override;
+@@ -306,7 +314,7 @@ private:
+     boost::mutex        m_refreshMutex;
+ 
+     // synchronizing  sync and async refresh
+-    boost::mutex        m_refreshMutex2;
++    mutable boost::mutex m_refreshMutex2;
+     boost::condition_variable m_refreshCV;
+     boost::thread       m_refreshThread;
+     // flag indicating wallet is recovering from seed
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 2cce51d..eb3cd52 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -37,6 +37,7 @@
+ #include <set>
+ #include <ctime>
+ #include <iostream>
++#include <memory>
+ #include <stdexcept>
+ #include <cstdint>
+ 
+@@ -444,6 +445,22 @@ struct WalletListener
+  */
+ struct Wallet
+ {
++    struct SharedBlockBatch
++    {
++        virtual ~SharedBlockBatch() = default;
++        virtual uint64_t startHeight() const = 0;
++        virtual uint64_t endHeight() const = 0;
++        virtual uint64_t currentHeight() const = 0;
++        virtual size_t blockCount() const = 0;
++    };
++
++    struct SharedPoolSnapshot
++    {
++        virtual ~SharedPoolSnapshot() = default;
++        virtual uint64_t capturedUnixMillis() const = 0;
++        virtual size_t transactionCount() const = 0;
++    };
++
+     enum Device {
+         Device_Software = 0,
+         Device_Ledger = 1,
+@@ -589,6 +606,18 @@ struct Wallet
+      */
+     virtual std::string grpcStreamEndpoint() const = 0;
+ 
++    // Shared synchronization provider boundary. The objects contain public
++    // blockchain or mempool data only; wallet-specific ownership scanning and
++    // accounting remain inside the receiving Wallet instance.
++    virtual uint64_t walletSyncCursor() const = 0;
++    virtual uint64_t walletSyncTargetCursor() const = 0;
++    virtual std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatch() = 0;
++    virtual uint64_t consumeSharedBlockBatch(const SharedBlockBatch &batch) = 0;
++    virtual std::shared_ptr<const SharedPoolSnapshot> fetchSharedPoolSnapshot() = 0;
++    virtual void consumeSharedPoolSnapshot(const SharedPoolSnapshot &snapshot) = 0;
++    virtual bool detachWalletToHeight(uint64_t height, const std::string &expectedPreviousHash) = 0;
++    virtual bool checkpointWalletScan() = 0;
++
+    /*!
+     * \brief createWatchOnly - Creates a watch only wallet
+     * \param path - where to store the wallet
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+index 8161712..9475b78 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.cpp
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -28,6 +28,7 @@
+ #include <mutex>
+ #include <string>
+ #include <thread>
++#include <unordered_map>
+ #include <utility>
+ 
+ #include <grpc/impl/channel_arg_names.h>
+@@ -49,6 +50,31 @@ namespace {
+     constexpr int GRPC_HTTP2_BUFFER_BYTES = 64 * 1024 * 1024;
+     constexpr int GRPC_HTTP2_MAX_FRAME_BYTES = 16 * 1024 * 1024 - 1;
+ 
++    std::shared_ptr<grpc::Channel> acquire_process_channel(
++        const std::string& target,
++        const grpc::ChannelArguments& arguments,
++        bool& reused)
++    {
++        static std::mutex channels_mutex;
++        static std::unordered_map<std::string, std::weak_ptr<grpc::Channel>> channels;
++        std::lock_guard<std::mutex> lock(channels_mutex);
++        const auto found = channels.find(target);
++        if (found != channels.end())
++        {
++            if (auto channel = found->second.lock())
++            {
++                reused = true;
++                return channel;
++            }
++            channels.erase(found);
++        }
++        auto channel = grpc::CreateCustomChannel(
++            target, grpc::InsecureChannelCredentials(), arguments);
++        channels.emplace(target, channel);
++        reused = false;
++        return channel;
++    }
++
+     size_t default_queue_capacity()
+     {
+         static const size_t cap = []() -> size_t {
+@@ -138,11 +164,13 @@ bool cuprate_grpc_stream_client::connect(const std::string& target)
+     ch_args.SetInt(GRPC_ARG_HTTP2_WRITE_BUFFER_SIZE, GRPC_HTTP2_BUFFER_BYTES);
+     ch_args.SetInt(GRPC_ARG_HTTP2_MAX_FRAME_SIZE, GRPC_HTTP2_MAX_FRAME_BYTES);
+     ch_args.SetInt(GRPC_ARG_HTTP2_BDP_PROBE, 1);
+-    p_->channel = grpc::CreateCustomChannel(target, grpc::InsecureChannelCredentials(), ch_args);
++    bool reused = false;
++    p_->channel = acquire_process_channel(target, ch_args, reused);
+     p_->stub = cuprate::stream::v1::BlockStream::NewStub(p_->channel);
+     std::fprintf(stderr,
+-        "[GRPC client] CONNECT target=%s queue_capacity=%zu max_msg=%d http2_buffer=%d max_frame=%d (channel created -- gRPC connect is lazy, first RPC opens TCP)\n",
++        "[GRPC client] CONNECT target=%s shared_channel=%s queue_capacity=%zu max_msg=%d http2_buffer=%d max_frame=%d (gRPC connect is lazy, first RPC opens TCP)\n",
+         target.c_str(),
++        reused ? "reused" : "created",
+         default_queue_capacity(),
+         MAX_GRPC_MESSAGE_BYTES,
+         GRPC_HTTP2_BUFFER_BYTES,
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 3f93c39..e9a729a 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -4084,6 +4084,213 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+     << std::chrono::duration_cast<std::chrono::milliseconds>(t_chain1 - t_proc0).count() << "ms");
+ }
+ //----------------------------------------------------------------------------------------------------
++void check_block_hard_fork_version(
++  cryptonote::network_type nettype, uint8_t hf_version, uint64_t height,
++  bool &wallet_is_outdated, bool &daemon_is_outdated);
++
++uint64_t wallet2::wallet_sync_cursor() const
++{
++  return m_blockchain.size();
++}
++//----------------------------------------------------------------------------------------------------
++uint64_t wallet2::wallet_sync_target_cursor() const
++{
++  return std::max<uint64_t>(m_blockchain.size(),
++    std::max(m_refresh_from_block_height, m_skip_to_height));
++}
++//----------------------------------------------------------------------------------------------------
++std::shared_ptr<const wallet2::shared_block_batch> wallet2::fetch_shared_block_batch()
++{
++  THROW_WALLET_EXCEPTION_IF(m_offline, error::wallet_internal_error,
++    "cannot fetch a shared block batch while offline");
++
++  m_run.store(true, std::memory_order_relaxed);
++  std::list<crypto::hash> short_chain_history;
++  get_short_chain_history(short_chain_history,
++    (m_first_refresh_done || is_trusted_daemon()) ? 1 : FIRST_REFRESH_GRANULARITY);
++
++  const uint64_t target_cursor = wallet_sync_target_cursor();
++  uint64_t blocks_start_height = 0;
++  if (target_cursor > m_blockchain.size())
++  {
++    fast_refresh(target_cursor, blocks_start_height, short_chain_history);
++    short_chain_history.clear();
++    get_short_chain_history(short_chain_history,
++      (m_first_refresh_done || is_trusted_daemon()) ? 1 : FIRST_REFRESH_GRANULARITY);
++  }
++
++  auto batch = std::make_shared<shared_block_batch>();
++  batch->network = m_nettype;
++  std::vector<cryptonote::COMMAND_RPC_GET_BLOCKS_FAST::block_output_indices> o_indices;
++  pull_blocks(false, true, 0, batch->start_height, short_chain_history,
++    batch->blocks, o_indices, batch->current_height);
++  THROW_WALLET_EXCEPTION_IF(batch->blocks.size() != o_indices.size(),
++    error::wallet_internal_error, "shared block/output-index size mismatch");
++
++  batch->parsed_blocks.resize(batch->blocks.size());
++  tools::threadpool& tpool = tools::threadpool::getInstanceForCompute();
++  tools::threadpool::waiter waiter(tpool);
++  for (size_t i = 0; i < batch->blocks.size(); ++i)
++  {
++    tpool.submit(&waiter, boost::bind(&wallet2::parse_block_round, this,
++      std::cref(batch->blocks[i].block),
++      std::ref(batch->parsed_blocks[i].block),
++      std::ref(batch->parsed_blocks[i].hash),
++      std::ref(batch->parsed_blocks[i].error)), true);
++  }
++  THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error,
++    "shared block parser failed");
++
++  boost::mutex parse_error_lock;
++  bool parse_error = false;
++  for (size_t i = 0; i < batch->blocks.size(); ++i)
++  {
++    THROW_WALLET_EXCEPTION_IF(batch->parsed_blocks[i].error,
++      error::wallet_internal_error, "invalid block in shared batch");
++    const uint8_t hf_version = batch->parsed_blocks[i].block.major_version;
++    bool wallet_is_outdated = false;
++    bool daemon_is_outdated = false;
++    check_block_hard_fork_version(m_nettype, hf_version,
++      batch->start_height + i, wallet_is_outdated, daemon_is_outdated);
++    THROW_WALLET_EXCEPTION_IF(
++      !m_allow_mismatched_daemon_version &&
++        (wallet_is_outdated || daemon_is_outdated),
++      error::incorrect_fork_version,
++      "unexpected hard-fork version in shared batch");
++    batch->parsed_blocks[i].o_indices = std::move(o_indices[i]);
++    batch->parsed_blocks[i].txes.resize(batch->blocks[i].txs.size());
++    for (size_t j = 0; j < batch->blocks[i].txs.size(); ++j)
++    {
++      tpool.submit(&waiter, [&, i, j]() {
++        if (!parse_and_validate_tx_base_from_blob(
++              batch->blocks[i].txs[j].blob,
++              batch->parsed_blocks[i].txes[j]))
++        {
++          boost::unique_lock<boost::mutex> lock(parse_error_lock);
++          parse_error = true;
++        }
++      }, true);
++    }
++  }
++  THROW_WALLET_EXCEPTION_IF(!waiter.wait(), error::wallet_internal_error,
++    "shared transaction parser failed");
++  THROW_WALLET_EXCEPTION_IF(parse_error, error::wallet_internal_error,
++    "invalid transaction in shared batch");
++
++  return batch;
++}
++//----------------------------------------------------------------------------------------------------
++uint64_t wallet2::consume_shared_block_batch(const shared_block_batch &batch)
++{
++  THROW_WALLET_EXCEPTION_IF(batch.network != m_nettype,
++    error::wallet_internal_error, "shared batch network mismatch");
++  THROW_WALLET_EXCEPTION_IF(batch.blocks.size() != batch.parsed_blocks.size(),
++    error::wallet_internal_error, "shared batch size mismatch");
++  if (batch.blocks.empty())
++    return 0;
++  THROW_WALLET_EXCEPTION_IF(
++    batch.start_height > std::numeric_limits<uint64_t>::max() - batch.blocks.size(),
++    error::wallet_internal_error, "shared batch height overflow");
++
++  size_t offset = 0;
++  // A newly restored wallet does not need a private copy of every historical
++  // block hash. The provider may return a public overlap before this wallet's
++  // restore height, so select the exact target block and anchor to its parent.
++  // This keeps wallets with different restore heights on the same fetched
++  // batch without silently skipping a gap.
++  const uint64_t target = wallet_sync_target_cursor();
++  const uint64_t batch_end = batch.start_height + batch.blocks.size();
++  if (m_blockchain.size() < target)
++  {
++    THROW_WALLET_EXCEPTION_IF(batch.start_height > target,
++      error::wallet_internal_error, "gap before wallet restore target");
++    if (target >= batch_end)
++      return 0;
++    offset = static_cast<size_t>(target - batch.start_height);
++    m_blockchain.reset_from_checkpoint(
++      target, batch.parsed_blocks[offset].block.prev_id);
++  }
++
++  if (batch.start_height < m_blockchain.offset())
++  {
++    offset = std::max(offset,
++      static_cast<size_t>(m_blockchain.offset() - batch.start_height));
++    if (offset >= batch.blocks.size())
++      return 0;
++  }
++  const uint64_t effective_start = batch.start_height + offset;
++  THROW_WALLET_EXCEPTION_IF(effective_start > m_blockchain.size(),
++    error::wallet_internal_error, "gap before shared block batch");
++
++  std::vector<cryptonote::block_complete_entry> blocks(
++    batch.blocks.begin() + offset, batch.blocks.end());
++  std::vector<parsed_block> parsed(
++    batch.parsed_blocks.begin() + offset, batch.parsed_blocks.end());
++  uint64_t blocks_added = 0;
++  process_parsed_blocks(effective_start, blocks, parsed, blocks_added, nullptr);
++  m_node_rpc_proxy.set_height(m_blockchain.size());
++  m_has_ever_refreshed_from_node = true;
++  m_first_refresh_done = true;
++  return blocks_added;
++}
++//----------------------------------------------------------------------------------------------------
++std::shared_ptr<const wallet2::shared_pool_snapshot> wallet2::fetch_shared_pool_snapshot()
++{
++  auto snapshot = std::make_shared<shared_pool_snapshot>();
++  snapshot->network = m_nettype;
++  snapshot->captured_unix_ms = static_cast<uint64_t>(
++    std::chrono::duration_cast<std::chrono::milliseconds>(
++      std::chrono::system_clock::now().time_since_epoch()).count());
++
++  cryptonote::COMMAND_RPC_GET_TRANSACTION_POOL_HASHES_BIN::request req;
++  cryptonote::COMMAND_RPC_GET_TRANSACTION_POOL_HASHES_BIN::response res;
++  {
++    const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
++    req.client = get_client_signature();
++    const bool ok = epee::net_utils::invoke_http_json(
++      "/get_transaction_pool_hashes.bin", req, res, *m_http_client, rpc_timeout);
++    THROW_ON_RPC_RESPONSE_ERROR(ok, {}, res,
++      "get_transaction_pool_hashes.bin", error::get_tx_pool_error);
++  }
++
++  m_node_rpc_proxy.get_transactions(res.tx_hashes,
++    [&res, &snapshot](
++      const cryptonote::COMMAND_RPC_GET_TRANSACTIONS::request &tx_req,
++      const cryptonote::COMMAND_RPC_GET_TRANSACTIONS::response &tx_res,
++      bool ok)
++    {
++      read_pool_txs(tx_req, tx_res, ok, res.tx_hashes, snapshot->txs);
++    });
++  return snapshot;
++}
++//----------------------------------------------------------------------------------------------------
++void wallet2::consume_shared_pool_snapshot(const shared_pool_snapshot &snapshot)
++{
++  THROW_WALLET_EXCEPTION_IF(snapshot.network != m_nettype,
++    error::wallet_internal_error, "shared pool network mismatch");
++  std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> process_txs;
++  update_pool_state_from_pool_data(false, {}, snapshot.txs, process_txs, true);
++  process_pool_state(process_txs);
++}
++//----------------------------------------------------------------------------------------------------
++void wallet2::detach_wallet_to_height(
++    uint64_t height, const crypto::hash &expected_previous_hash)
++{
++  THROW_WALLET_EXCEPTION_IF(height == 0 || height > m_blockchain.size(),
++    error::wallet_internal_error, "invalid shared detach height");
++  THROW_WALLET_EXCEPTION_IF(!m_blockchain.is_in_bounds(height - 1),
++    error::wallet_internal_error, "shared detach checkpoint is unavailable");
++  THROW_WALLET_EXCEPTION_IF(m_blockchain[height - 1] != expected_previous_hash,
++    error::wallet_internal_error, "shared detach checkpoint hash mismatch");
++  if (height < m_blockchain.size())
++    handle_reorg(height, nullptr);
++}
++//----------------------------------------------------------------------------------------------------
++void wallet2::checkpoint_wallet_scan()
++{
++  store();
++}
++//----------------------------------------------------------------------------------------------------
+ void wallet2::refresh(bool trusted_daemon)
+ {
+   uint64_t blocks_fetched = 0;
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 62964ca..9a5f28b 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -209,6 +209,17 @@ private:
+     bool empty() const { return m_blockchain.empty() && m_offset == 0; }
+     void trim(size_t height) { while (height > m_offset && m_blockchain.size() > 1) { m_blockchain.pop_front(); ++m_offset; } m_blockchain.shrink_to_fit(); }
+     void refill(const crypto::hash &hash) { m_blockchain.push_back(hash); --m_offset; }
++    void reset_from_checkpoint(size_t next_height, const crypto::hash &previous_hash)
++    {
++      m_blockchain.clear();
++      if (next_height == 0)
++      {
++        m_offset = 0;
++        return;
++      }
++      m_offset = next_height - 1;
++      m_blockchain.push_back(previous_hash);
++    }
+ 
+     template <class t_archive>
+     inline void serialize(t_archive &a, const unsigned int ver)
+@@ -874,6 +885,26 @@ private:
+       bool error;
+     };
+ 
++    // Public chain material fetched once by the process-wide network sync
++    // coordinator and consumed independently by each wallet. No account key,
++    // ownership result, key image, or wallet-specific cache data is stored in
++    // either object.
++    struct shared_block_batch
++    {
++      cryptonote::network_type network;
++      uint64_t start_height;
++      uint64_t current_height;
++      std::vector<cryptonote::block_complete_entry> blocks;
++      std::vector<parsed_block> parsed_blocks;
++    };
++
++    struct shared_pool_snapshot
++    {
++      cryptonote::network_type network;
++      uint64_t captured_unix_ms;
++      std::vector<std::tuple<cryptonote::transaction, crypto::hash, bool>> txs;
++    };
++
+     struct is_out_data
+     {
+       crypto::public_key pkey;
+@@ -1156,6 +1187,14 @@ private:
+     void refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blocks_fetched);
+     void refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blocks_fetched, bool& received_money, bool check_pool = true, bool try_incremental = true, uint64_t max_blocks = std::numeric_limits<uint64_t>::max());
+     bool refresh(bool trusted_daemon, uint64_t & blocks_fetched, bool& received_money, bool& ok);
++    uint64_t wallet_sync_cursor() const;
++    uint64_t wallet_sync_target_cursor() const;
++    std::shared_ptr<const shared_block_batch> fetch_shared_block_batch();
++    uint64_t consume_shared_block_batch(const shared_block_batch &batch);
++    std::shared_ptr<const shared_pool_snapshot> fetch_shared_pool_snapshot();
++    void consume_shared_pool_snapshot(const shared_pool_snapshot &snapshot);
++    void detach_wallet_to_height(uint64_t height, const crypto::hash &expected_previous_hash);
++    void checkpoint_wallet_scan();
+ 
+     void set_refresh_type(RefreshType refresh_type) { m_refresh_type = refresh_type; }
+     RefreshType get_refresh_type() const { return m_refresh_type; }
+-- 
+2.50.1 (Apple Git-155)
+

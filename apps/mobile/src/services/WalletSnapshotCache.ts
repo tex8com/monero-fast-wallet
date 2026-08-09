@@ -88,6 +88,9 @@ function parseWalletSnapshot(value: unknown): WalletSnapshot | undefined {
   const walletHeight = parseNumber(record.walletHeight);
   const daemonHeight = parseNumber(record.daemonHeight);
   const daemonTargetHeight = parseNumber(record.daemonTargetHeight);
+  const pendingOutputKeyImageCount = parseNumber(
+    record.pendingOutputKeyImageCount,
+  );
   const synchronized = record.synchronized === true;
 
   if (
@@ -112,6 +115,7 @@ function parseWalletSnapshot(value: unknown): WalletSnapshot | undefined {
     walletHeight,
     daemonHeight,
     daemonTargetHeight,
+    pendingOutputKeyImageCount,
     synchronized,
   };
 }

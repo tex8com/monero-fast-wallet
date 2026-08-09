@@ -1,0 +1,115 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Patch Integrator <patches@tex8.local>
+Date: Wed, 5 Aug 2026 14:30:00 -0500
+Subject: [PATCH] wallet: import Ledger key images into view wallet
+
+Keep the hardware source and local view-only companion in one trusted native
+process. The Ledger signs every key image; the destination verifies every
+signature against the corresponding owned output before querying its trusted
+daemon for the spent state. No private key or raw key image crosses the app
+bridge.
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 4bd3352..b0caa64 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -3173,6 +3173,14 @@ uint64_t WalletImpl::coldKeyImageSync(uint64_t &spent, uint64_t &unspent)
+     return m_wallet->cold_key_image_sync(spent, unspent);
+ }
+ 
++uint64_t WalletImpl::coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, uint64_t &unspent)
++{
++    auto *destination_impl = dynamic_cast<WalletImpl *>(&destination);
++    if (destination_impl == nullptr)
++        throw runtime_error("Cold key-image destination is not a compatible wallet");
++    return m_wallet->cold_key_image_sync_to(*destination_impl->m_wallet, spent, unspent);
++}
++
+ void WalletImpl::deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId)
+ {
+     boost::optional<crypto::hash8> payment_id_param = boost::none;
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 1504d88..753997c 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -255,6 +255,7 @@ public:
+     virtual bool unlockKeysFile() override;
+     virtual bool isKeysFileLocked() override;
+     virtual uint64_t coldKeyImageSync(uint64_t &spent, uint64_t &unspent) override;
++    virtual uint64_t coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, uint64_t &unspent) override;
+     virtual void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) override;
+     virtual bool reconnectDevice() override;
+     virtual uint64_t getBytesReceived() override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index f69005c..741d57f 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -1248,6 +1248,9 @@ struct Wallet
+     //! cold-device protocol key image sync
+     virtual uint64_t coldKeyImageSync(uint64_t &spent, uint64_t &unspent) = 0;
+ 
++    //! cold-device protocol key image sync into an equivalent view-only wallet
++    virtual uint64_t coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, uint64_t &unspent) = 0;
++
+     //! shows address on device display
+     virtual void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) = 0;
+ 
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 17281ca..c963273 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -13480,6 +13480,40 @@ uint64_t wallet2::cold_key_image_sync(uint64_t &spent, uint64_t &unspent) {
+   return import_res;
+ }
+ //----------------------------------------------------------------------------------------------------
++uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent) {
++  const auto &source_address = get_account().get_keys().m_account_address;
++  const auto &destination_address = destination.get_account().get_keys().m_account_address;
++  CHECK_AND_ASSERT_THROW_MES(
++      m_nettype == destination.m_nettype &&
++          source_address.m_spend_public_key == destination_address.m_spend_public_key &&
++          source_address.m_view_public_key == destination_address.m_view_public_key,
++      "Ledger source and view-only destination do not describe the same wallet");
++
++  auto &hwdev = get_account().get_device();
++  CHECK_AND_ASSERT_THROW_MES(hwdev.has_ki_cold_sync(), "Device does not support cold ki sync protocol");
++
++  auto dev_cold = dynamic_cast<::hw::device_cold*>(&hwdev);
++  CHECK_AND_ASSERT_THROW_MES(dev_cold, "Device does not implement cold signing interface");
++
++  std::vector<std::pair<crypto::key_image, crypto::signature>> signed_key_images;
++  hw::wallet_shim wallet_shim;
++  setup_shim(&wallet_shim, this);
++  dev_cold->ki_sync(&wallet_shim, m_transfers, signed_key_images);
++
++  // The destination verifies every Ledger signature against its corresponding
++  // output before accepting the key image, then asks only its trusted daemon
++  // for the authoritative spent state.
++  const uint64_t import_height = destination.import_key_images(
++      signed_key_images,
++      0,
++      spent,
++      unspent,
++      destination.is_trusted_daemon());
++  m_device_last_key_image_sync = time(NULL);
++  destination.m_device_last_key_image_sync = m_device_last_key_image_sync;
++  return import_height;
++}
++//----------------------------------------------------------------------------------------------------
+ void wallet2::device_show_address(uint32_t account_index, uint32_t address_index, const boost::optional<crypto::hash8> &payment_id)
+ {
+   if (!key_on_device())
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index e343d0d..88a8804 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1256,6 +1256,7 @@ private:
+     void cold_tx_aux_import(const std::vector<pending_tx>& ptx, const std::vector<std::string>& tx_device_aux);
+     void cold_sign_tx(const std::vector<pending_tx>& ptx_vector, signed_tx_set &exported_txs, std::vector<cryptonote::address_parse_info> &dsts_info, std::vector<std::string> & tx_device_aux);
+     uint64_t cold_key_image_sync(uint64_t &spent, uint64_t &unspent);
++    uint64_t cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent);
+     void device_show_address(uint32_t account_index, uint32_t address_index, const boost::optional<crypto::hash8> &payment_id);
+     bool parse_multisig_tx_from_str(std::string multisig_tx_st, multisig_tx_set &exported_txs) const;
+     bool load_multisig_tx(cryptonote::blobdata blob, multisig_tx_set &exported_txs, std::function<bool(const multisig_tx_set&)> accept_func = NULL);
+-- 
+2.50.1 (Apple Git-155)

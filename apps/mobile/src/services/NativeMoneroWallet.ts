@@ -7,9 +7,11 @@ import type {
   FastWalletAssignment,
   FastWalletProviderRegistration,
   HardwareWalletStatus,
+  LedgerKeyImageSyncResult,
   LedgerTransportStatus,
   MfwNamePreparedTransaction,
   MoneroEnthusiastV1Status,
+  NetworkSyncStatus,
   PrivatePhoneAddressRequestResult,
   PrivatePhoneContactResult,
   PrivatePhoneDeviceContact,
@@ -128,6 +130,20 @@ export interface SealFastReceiveWatchWithStoredSecretInput {
   now: number;
 }
 
+export interface SealLedgerFastWalletWatchInput {
+  walletId: string;
+  identityId: string;
+  accountIndex: number;
+  network: MoneroNetwork;
+  restoreHeight?: number;
+  workerDescriptorHex: string;
+  assignmentHandleHex: string;
+  assignmentEpoch: number;
+  issuedAt: number;
+  expiresAt: number;
+  now: number;
+}
+
 export interface SponsorFastWalletAssignmentInput {
   identityId: string;
   workerDescriptorHex: string;
@@ -231,6 +247,7 @@ export type {
   HardwareWalletStatus,
   LedgerTransportStatus,
   MoneroEnthusiastV1Status,
+  NetworkSyncStatus,
   PrivatePhoneAddressRequestResult,
   PrivatePhoneContactResult,
   PrivatePhoneDeviceContact,
@@ -244,6 +261,7 @@ export type {
 };
 
 export interface NativeMoneroWalletModule {
+  benchmarkDerivationPerformance(): Promise<string>;
   linkedWithMonero(): Promise<boolean>;
   getMoneroEnthusiastV1Status(): Promise<MoneroEnthusiastV1Status>;
   runMoneroEnthusiastV1Operation(
@@ -265,6 +283,8 @@ export interface NativeMoneroWalletModule {
   configureAppProtection(mode: string, password: string): Promise<void>;
   unlockApp(password: string, reason: string): Promise<BiometricAuthResult>;
   lockApp(): Promise<void>;
+  setAppAutoLockSeconds(seconds: number): Promise<void>;
+  recordAppUserActivity(): Promise<void>;
   ensureWalletSecret(key: string): Promise<void>;
   walletSecretExists(key: string): Promise<boolean>;
   deleteWalletSecret(key: string): Promise<void>;
@@ -309,10 +329,14 @@ export interface NativeMoneroWalletModule {
   sealFastReceiveWatchWithStoredSecret(
     input: SealFastReceiveWatchWithStoredSecretInput,
   ): Promise<string>;
+  sealLedgerFastWalletWatch(
+    input: SealLedgerFastWalletWatchInput,
+  ): Promise<string>;
   registerFastWalletProvider(
     providerToken: string,
     appCheckToken: string,
   ): Promise<FastWalletProviderRegistration>;
+  sendFastWalletTestPush(): Promise<void>;
   loadOfficialFastWalletWorkerDescriptor(
     network: MoneroNetwork,
     now: number,
@@ -353,6 +377,8 @@ export interface NativeMoneroWalletModule {
     passwordSecretKey: string,
   ): Promise<void>;
   setGrpcEndpoint(walletId: string, endpoint: string): Promise<void>;
+  networkSyncStatus(network: MoneroNetwork): Promise<NetworkSyncStatus>;
+  prioritizeNetworkWallet(walletId: string): Promise<void>;
   startRefresh(walletId: string): Promise<void>;
   stopRefresh(walletId: string): Promise<void>;
   getAddress(
@@ -415,6 +441,10 @@ export interface NativeMoneroWalletModule {
     accountIndex?: number,
     label?: string,
   ): Promise<WalletSubaddress>;
+  listSubaddresses(
+    walletId: string,
+    accountIndex?: number,
+  ): Promise<WalletSubaddress[]>;
   presentRecoverySeed(walletId: string, reason: string): Promise<boolean>;
   getBalance(walletId: string, accountIndex?: number): Promise<string>;
   getUnlockedBalance(walletId: string, accountIndex?: number): Promise<string>;
@@ -423,6 +453,10 @@ export interface NativeMoneroWalletModule {
     walletId: string,
     limit?: number,
   ): Promise<WalletTransaction[]>;
+  syncLedgerKeyImagesToViewWallet(
+    hardwareWalletId: string,
+    viewOnlyWalletId: string,
+  ): Promise<LedgerKeyImageSyncResult>;
   prepareTransaction(
     input: PrepareTransactionInput,
   ): Promise<PreparedTransaction>;
@@ -465,6 +499,8 @@ const turboModule = NativeMoneroWalletTurbo;
 
 const nativeModule: NativeMoneroWalletModule | undefined = turboModule
   ? {
+      benchmarkDerivationPerformance: () =>
+        turboModule.benchmarkDerivationPerformance(),
       linkedWithMonero: () => turboModule.linkedWithMonero(),
       getMoneroEnthusiastV1Status: () =>
         turboModule.getMoneroEnthusiastV1Status(),
@@ -488,6 +524,9 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
         turboModule.configureAppProtection(mode, password),
       unlockApp: (password, reason) => turboModule.unlockApp(password, reason),
       lockApp: () => turboModule.lockApp(),
+      setAppAutoLockSeconds: seconds =>
+        turboModule.setAppAutoLockSeconds(seconds),
+      recordAppUserActivity: () => turboModule.recordAppUserActivity(),
       ensureWalletSecret: key => turboModule.ensureWalletSecret(key),
       walletSecretExists: key => turboModule.walletSecretExists(key),
       deleteWalletSecret: key => turboModule.deleteWalletSecret(key),
@@ -609,8 +648,23 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.expiresAt,
           input.now,
         ),
+      sealLedgerFastWalletWatch: input =>
+        turboModule.sealLedgerFastWalletWatch(
+          input.walletId,
+          input.identityId,
+          input.accountIndex,
+          input.network,
+          input.restoreHeight ?? 0,
+          input.workerDescriptorHex,
+          input.assignmentHandleHex,
+          input.assignmentEpoch,
+          input.issuedAt,
+          input.expiresAt,
+          input.now,
+        ),
       registerFastWalletProvider: (providerToken, appCheckToken) =>
         turboModule.registerFastWalletProvider(providerToken, appCheckToken),
+      sendFastWalletTestPush: () => turboModule.sendFastWalletTestPush(),
       loadOfficialFastWalletWorkerDescriptor: (network, now) =>
         turboModule.loadOfficialFastWalletWorkerDescriptor(network, now),
       pairPrivateFastWalletWorkerDescriptor: (
@@ -703,6 +757,9 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
         ),
       setGrpcEndpoint: (walletId, endpoint) =>
         turboModule.setGrpcEndpoint(walletId, endpoint),
+      networkSyncStatus: network => turboModule.networkSyncStatus(network),
+      prioritizeNetworkWallet: walletId =>
+        turboModule.prioritizeNetworkWallet(walletId),
       startRefresh: walletId => turboModule.startRefresh(walletId),
       stopRefresh: walletId => turboModule.stopRefresh(walletId),
       getAddress: (walletId, accountIndex = 0, addressIndex = 0) =>
@@ -776,6 +833,8 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
         turboModule.removePrivatePhoneParticipant(),
       createSubaddress: (walletId, accountIndex = 0, label = '') =>
         turboModule.createSubaddress(walletId, accountIndex, label),
+      listSubaddresses: (walletId, accountIndex = 0) =>
+        turboModule.listSubaddresses(walletId, accountIndex) as Promise<WalletSubaddress[]>,
       presentRecoverySeed: (walletId, reason) =>
         turboModule.presentRecoverySeed(walletId, reason),
       getBalance: (walletId, accountIndex = 0) =>
@@ -785,6 +844,11 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       snapshot: walletId => turboModule.snapshot(walletId),
       getTransactions: (walletId, limit = 25) =>
         turboModule.getTransactions(walletId, limit),
+      syncLedgerKeyImagesToViewWallet: (hardwareWalletId, viewOnlyWalletId) =>
+        turboModule.syncLedgerKeyImagesToViewWallet(
+          hardwareWalletId,
+          viewOnlyWalletId,
+        ),
       prepareTransaction: input =>
         turboModule.prepareTransaction(
           input.walletId,

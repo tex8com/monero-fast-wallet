@@ -1,0 +1,10 @@
+prefix=${pcfiledir}/../..
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: re2
+Description: RE2 bundled by the pinned TEX8 host gRPC SDK
+Version: 11.0.0
+Libs: -L${libdir} -lre2
+Cflags: -pthread -I${includedir}

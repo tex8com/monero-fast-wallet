@@ -138,3 +138,27 @@ test('ETA with a few seconds of apparent work remains indeterminate', () => {
 
   assert.equal(three.etaSeconds, undefined);
 });
+
+test('ETA excludes native checkpoint time and cannot jump on one slow batch', () => {
+  const initial = updateWalletSyncEta(undefined, 10_000, 0);
+  const one = updateWalletSyncEta(initial.state, 9_500, 10_000);
+  const two = updateWalletSyncEta(one.state, 9_000, 20_000);
+  const three = updateWalletSyncEta(two.state, 8_500, 30_000);
+  const checkpoint = updateWalletSyncEta(three.state, 8_500, 50_000, { active: false });
+  const resumed = updateWalletSyncEta(checkpoint.state, 8_000, 60_000);
+
+  assert.equal(three.etaSeconds, 170);
+  assert.equal(checkpoint.etaSeconds, 170);
+  assert.equal(checkpoint.state.activeElapsedMs, 30_000);
+  assert.equal(resumed.state.activeElapsedMs, 40_000);
+  assert.ok(resumed.etaSeconds <= 170);
+});
+
+test('background Ledger reconciliation remains global and does not restart block sync', async () => {
+  const desktopApp = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  assert.match(desktopApp, /ledgerBackgroundVerificationInFlightRef/);
+  assert.match(desktopApp, /MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_START/);
+  assert.match(desktopApp, /reconcile_ledger_balance/);
+  assert.match(desktopApp, /The companion is already open and fully scanned/);
+  assert.doesNotMatch(desktopApp.slice(desktopApp.indexOf('MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_START')), /queue_registered_wallet_sync/);
+});

@@ -39,14 +39,16 @@ import { useLocalAdvertisement } from '../data/advertisements';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 import { useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
-import { walletDisplayName } from '../services/WalletRegistry';
+import { presentNetworkSync } from '../../../../packages/wallet-shared/src/networkSync';
+import {
+  ledgerBalanceNeedsVerification,
+  walletDisplayName,
+} from '../services/WalletRegistry';
 import {
   atomicXmrToNumber,
   formatAtomicXmr,
-  subtractAtomic,
   toAtomicBigInt,
 } from '../services/WalletFormat';
-import { presentWalletSync } from '../../../../packages/wallet-shared/src/walletSync';
 import {
   type CommunityV1Advertisement,
   MoneroEnthusiastV1Service,
@@ -267,6 +269,7 @@ function AdvertisementCard({
 /* ── Home Screen ─────────────────────────────────────────────────────── */
 export default function HomeScreen({ navigation }: any) {
   const [tf, setTf] = useState('24H');
+  const [syncStatusExpanded, setSyncStatusExpanded] = useState(true);
   const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
   const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>(
     'all',
@@ -299,6 +302,8 @@ export default function HomeScreen({ navigation }: any) {
     registeredWallet,
     registeredWallets,
     isRegisteredWalletOpen,
+    networkSyncStatus,
+    nodeConnectionStatus,
     openRegisteredWalletById,
     session,
     setActiveRegisteredWallet,
@@ -310,40 +315,38 @@ export default function HomeScreen({ navigation }: any) {
     walletSnapshots,
   } = useWalletState();
   const hasOpenWallet = Boolean(session);
-  const lockedAtomic = snapshot
-    ? subtractAtomic(snapshot.balanceAtomic, snapshot.unlockedBalanceAtomic)
-    : 0n;
-  const lockedXmr = formatAtomicXmr(lockedAtomic, {
-    maxFractionDigits: 12,
-    minFractionDigits: 4,
-  });
-  const showLocked = lockedAtomic > 0n;
-  const hasSyncError = status === 'error' || Boolean(error);
-  const syncPresentation = presentWalletSync(snapshot, {
-    startHeight: syncStartHeight,
-  });
-  const syncColor = hasSyncError
-    ? colors.error
-    : status === 'open'
-    ? colors.success
-    : status === 'syncing' || status === 'opening'
-    ? colors.warning
-    : colors.orange;
-  const syncText = hasSyncError
-    ? t('sync.error')
-    : status === 'open'
-    ? t('status.live')
-    : status === 'syncing'
-    ? syncPresentation.phase === 'finalizing'
-      ? t('sync.verifyingRecent')
-      : syncPresentation.phase === 'waiting-for-node'
+  const networkSync = presentNetworkSync(networkSyncStatus);
+  // The header reports the app-wide node transport. It must never change just
+  // because the owner selected another local wallet. Per-wallet scan progress
+  // remains in SyncStatusBar below.
+  const nodeColor =
+    networkSync.ready || networkSync.connected
+      ? colors.success
+      : (!networkSync.failed && networkSync.busy) ||
+        nodeConnectionStatus === 'connecting'
+      ? colors.warning
+      : colors.textSecondary;
+  const nodeText = networkSync.failed
+      ? t('sync.retryingNode')
+      : networkSync.phase === 'fetching-blocks' || networkSync.phase === 'waiting-next-batch'
+      ? t('sync.downloadingBlocks')
+      : networkSync.phase === 'scanning-wallets'
+      ? t('sync.scanningWallets')
+      : networkSync.phase === 'checking-mempool'
+      ? t('sync.checkingMempool')
+      : networkSync.phase === 'checkpointing-wallets'
+      ? t('sync.savingWallets')
+      : networkSync.phase === 'selecting-provider'
+      ? t('sync.selectingSource')
+      : networkSync.phase === 'initializing-transport'
+      ? t('sync.startingConnection')
+      : networkSync.ready || nodeConnectionStatus === 'connected'
+      ? t('status.live')
+      : nodeConnectionStatus === 'error'
+      ? t('sync.error')
+      : nodeConnectionStatus === 'connecting'
       ? t('sync.connectingNode')
-      : t('sync.scanningBlocks')
-    : status === 'opening'
-    ? t('action.open')
-    : status === 'locked'
-    ? t('status.locked')
-    : t('status.setup');
+      : t('status.setup');
 
   const positive =
     tf === '24H'
@@ -371,11 +374,31 @@ export default function HomeScreen({ navigation }: any) {
     }),
     [registeredWallet, snapshot, walletSnapshots],
   );
-  const totalBalanceAtomic = registeredWallets.reduce(
-    (sum, wallet) =>
-      sum + toAtomicBigInt(walletSnapshotMap[wallet.id]?.balanceAtomic),
-    0n,
+  // The dashboard represents the selected wallet, never a sum of every local
+  // registration. A Ledger Fast Wallet can share a source wallet with its
+  // parent, and old local registrations may refer to the same account; adding
+  // those snapshots would display the same funds more than once.
+  const activeWalletSnapshot = registeredWallet
+    ? walletSnapshotMap[registeredWallet.id]
+    : snapshot;
+  const activeLedgerNeedsVerification = Boolean(
+    registeredWallet &&
+      ledgerBalanceNeedsVerification(
+        registeredWallet,
+        activeWalletSnapshot?.pendingOutputKeyImageCount,
+      ),
   );
+  const totalBalanceAtomic = toAtomicBigInt(activeWalletSnapshot?.balanceAtomic);
+  const totalUnlockedAtomic = activeLedgerNeedsVerification
+    ? 0n
+    : toAtomicBigInt(activeWalletSnapshot?.unlockedBalanceAtomic);
+  const lockedAtomic = totalBalanceAtomic - totalUnlockedAtomic;
+  const lockedXmr = formatAtomicXmr(lockedAtomic, {
+    maxFractionDigits: 12,
+    minFractionDigits: 4,
+  });
+  const showLocked = lockedAtomic > 0n;
+  const hasUnverifiedLedgerBalance = activeLedgerNeedsVerification;
   const totalBalanceXmr = formatAtomicXmr(totalBalanceAtomic, {
     maxFractionDigits: 4,
     minFractionDigits: 2,
@@ -411,33 +434,47 @@ export default function HomeScreen({ navigation }: any) {
       openRequestId: Date.now(),
     });
   };
-  const selectWallet = async (wallet: WalletOption) => {
+  const selectWallet = (wallet: WalletOption) => {
     const walletId = wallet.id;
-    if (openingWalletId) {
+    if (isRegisteredWalletOpen(walletId)) {
+      if (walletId !== registeredWallet?.id) {
+        // The state provider commits the active cached snapshot before its
+        // background registry write. Do not manufacture a loading phase.
+        void setActiveRegisteredWallet(walletId).catch(() => undefined);
+      }
       return;
     }
 
-    setOpeningWalletId(walletId);
-    try {
-      if (isRegisteredWalletOpen(walletId)) {
-        if (walletId !== registeredWallet?.id) {
-          await setActiveRegisteredWallet(walletId);
-        }
-        return;
-      }
-
-      const opened = await openRegisteredWalletById(walletId);
-      if (!opened) {
-        navigation.navigate('WalletSetup', {
-          mode: 'open',
-          openRequestId: Date.now(),
-        });
-      }
-    } catch {
-      // WalletState exposes the exact opening error on the active wallet card.
-    } finally {
-      setOpeningWalletId(undefined);
+    if (wallet.kind !== 'hardware') {
+      // Software and Fast Wallet selection is optimistic: the cached snapshot
+      // changes in this JavaScript turn while an uncommon cold local-file open
+      // completes in the native worker. Sync is always deferred.
+      void openRegisteredWalletById(walletId)
+        .then(opened => {
+          if (!opened) {
+            navigation.navigate('WalletSetup', {
+              mode: 'open',
+              openRequestId: Date.now(),
+            });
+          }
+        })
+        .catch(() => undefined);
+      return;
     }
+
+    if (openingWalletId) return;
+    setOpeningWalletId(walletId);
+    void openRegisteredWalletById(walletId)
+      .then(opened => {
+        if (!opened) {
+          navigation.navigate('WalletSetup', {
+            mode: 'open',
+            openRequestId: Date.now(),
+          });
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setOpeningWalletId(undefined));
   };
 
   return (
@@ -452,17 +489,37 @@ export default function HomeScreen({ navigation }: any) {
               Monero <Text style={s.headerTOrange}>Fast Wallet</Text>
             </Text>
           </View>
-          <View style={[s.syncBadge, { backgroundColor: `${syncColor}1A` }]}>
-            <View style={[s.syncDot, { backgroundColor: syncColor }]} />
-            <Text style={[s.syncTxt, { color: syncColor }]}>{syncText}</Text>
-          </View>
+          <TouchableOpacity
+            accessibilityLabel={`${nodeText}. ${
+              syncStatusExpanded ? t('sync.hideDetails') : t('sync.showDetails')
+            }`}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: syncStatusExpanded }}
+            activeOpacity={0.7}
+            disabled={!registeredWallet}
+            onPress={() => setSyncStatusExpanded(current => !current)}
+            style={[
+              s.syncBadge,
+              s.syncBadgeLedOnly,
+              syncStatusExpanded && registeredWallet && s.syncBadgeExpanded,
+              {
+                backgroundColor: `${nodeColor}1A`,
+                borderColor: `${nodeColor}80`,
+              },
+            ]}
+            testID="header-sync-status-toggle"
+          >
+            <View style={[s.syncDot, { backgroundColor: nodeColor }]} />
+          </TouchableOpacity>
         </View>
 
         {registeredWallet ? (
           <View style={s.syncStatusWrap}>
             <SyncStatusBar
-              error={error}
+              expanded={syncStatusExpanded}
+              onExpandedChange={setSyncStatusExpanded}
               progress={syncProgress}
+              networkStatus={networkSyncStatus}
               snapshot={snapshot}
               syncStartHeight={syncStartHeight}
               status={status}
@@ -739,7 +796,7 @@ export default function HomeScreen({ navigation }: any) {
               {registeredWallets.length > 0 ? `$${totalBalanceUsd}` : ''}
             </Text>
           </View>
-          {showLocked && (
+          {showLocked && !hasUnverifiedLedgerBalance && (
             <View style={s.pendRow}>
               <View style={s.pendDot} />
               <Text style={s.pendTxt}>
@@ -772,6 +829,8 @@ export default function HomeScreen({ navigation }: any) {
               titleKey="home.allWallets"
               wallets={homeWalletOptions}
               onSelect={selectWallet}
+              onAdd={() => navigation.navigate('WalletSetup')}
+              onManage={() => navigation.navigate('Wallets')}
             />
           </View>
         ) : null}
@@ -848,13 +907,22 @@ const s = StyleSheet.create({
     borderRadius: 50,
     gap: 6,
   },
+  syncBadgeLedOnly: {
+    width: 26,
+    height: 26,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    justifyContent: 'center',
+  },
+  syncBadgeExpanded: {
+    borderWidth: 1,
+  },
   syncDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
     backgroundColor: colors.success,
   },
-  syncTxt: { color: colors.success, fontSize: 12, fontWeight: '600' },
   syncStatusWrap: { paddingHorizontal: 20 },
   fastWalletStatusCard: {
     borderColor: colors.border,
@@ -1220,6 +1288,42 @@ const s = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     marginTop: 10,
+  },
+  ledgerVerificationPanel: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: `${colors.warning}66`,
+    backgroundColor: `${colors.warning}12`,
+    gap: 6,
+  },
+  ledgerVerificationTitle: {
+    color: colors.warning,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  ledgerVerificationHint: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  ledgerVerificationButton: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: colors.orange,
+  },
+  ledgerVerificationButtonBusy: { opacity: 0.65 },
+  ledgerVerificationButtonText: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '800',
   },
   walletSelectorWrap: { paddingHorizontal: 20 },
 

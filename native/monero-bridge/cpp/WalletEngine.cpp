@@ -1,19 +1,26 @@
 #include "WalletEngine.h"
+#include "NetworkFanout.h"
 
 #include <atomic>
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
+#include <cstdlib>
 #include <exception>
+#include <future>
 #include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <shared_mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -27,6 +34,25 @@
 
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
 #include "wallet2_api.h"
+#if defined(__APPLE__)
+// A weak local fallback lets development builds link against an authenticated
+// older core archive. When patch 0025 is present its strong definition wins;
+// otherwise the diagnostics API reports that it is unavailable.
+extern "C" __attribute__((weak))
+const char* monero_fast_derivation_backend_status_json(void) {
+  return nullptr;
+}
+extern "C" __attribute__((weak))
+const char* monero_fast_derivation_benchmark_json(void) {
+  return nullptr;
+}
+#else
+#define TEX8_OPTIONAL_MONERO_SYMBOL __attribute__((weak))
+extern "C" const char* monero_fast_derivation_backend_status_json(void)
+    TEX8_OPTIONAL_MONERO_SYMBOL;
+extern "C" const char* monero_fast_derivation_benchmark_json(void)
+    TEX8_OPTIONAL_MONERO_SYMBOL;
+#endif
 #endif
 
 namespace tex8::wallet {
@@ -75,6 +101,8 @@ void logEngineDiagnostic(
       "cacheResetHeight",
       "changed",
       "checkedHeight",
+      "configurationChanged",
+      "configurationGeneration",
       "confirmedIncomingCount",
       "confirmedOutgoingCount",
       "count",
@@ -83,25 +111,69 @@ void logEngineDiagnostic(
       "daemonBytesSent",
       "daemonHeight",
       "daemonTargetHeight",
+      "downloadedHeight",
+      "downloadStartHeight",
       "duplicates",
+      "deliveries",
       "elapsedMs",
+      "endHeight",
+      "referenceP95Ms",
+      "warningBudgetMs",
+      "warningBudgetExceeded",
       "heightAfterStop",
       "heightBeforeStop",
+      "highestCursor",
+      "importHeight",
       "initialized",
+      "lastNonEmptyBlockCount",
+      "lastNonEmptyBlockFetchMs",
+      "lastNonEmptyNetworkBytes",
+      "lastNonEmptyPayloadBytes",
+      "blockCount",
+      "grpcEnabled",
       "network",
+      "networkBytesReceived",
+      "payloadBytesReceived",
+      "grpcFramedBytesReceived",
+      "pendingOutputCount",
       "pendingIncomingCount",
       "pendingOutgoingCount",
+      "prefetched",
+      "prefetchQueueCapacity",
+      "prefetchQueueDepth",
+      "prefetchedPayloadBytes",
+      "queueDepth",
+      "reason",
+      "replayCacheCapacity",
+      "replayCacheEntries",
+      "replayCachePayloadBytes",
+      "replayCachePayloadLimitBytes",
       "refreshFromHeight",
       "requestedRestoreHeight",
       "restoreHeight",
+      "scanWorkers",
       "status",
+      "startHeight",
       "store",
       "synchronized",
       "transactionCount",
       "transport",
+      "targetHeight",
+      "totalDurationMs",
+      "derivedOutputCount",
+      "importedOutputCount",
+      "derivationDurationMs",
+      "spentStatusRpcDurationMs",
+      "outgoingRpcDurationMs",
+      "stateUpdateDurationMs",
+      "waitMs",
       "trusted",
       "useSsl",
+      "verificationDurationMs",
+      "verifiedOutputCount",
       "walletHeight",
+      "walletCount",
+      "storeDurationMs",
   };
   std::ostringstream message;
   message << "MONERO_WALLET_DIAGNOSTICS native=cpp event=" << event
@@ -221,13 +293,28 @@ std::string legacyFastReceiveDisabledMessage() {
 }
 
 void setEstimatedRefreshHeightForNewWallet(Monero::Wallet* wallet) {
-  if (wallet == nullptr || wallet->getRefreshFromBlockHeight() > 1) {
+  if (wallet == nullptr) {
     return;
   }
 
-  const uint64_t estimatedHeight = wallet->estimateBlockChainHeight();
-  if (estimatedHeight > 1) {
-    wallet->setRefreshFromBlockHeight(estimatedHeight);
+  uint64_t refreshHeight = wallet->getRefreshFromBlockHeight();
+  if (refreshHeight <= 1) {
+    refreshHeight = wallet->estimateBlockChainHeight();
+    if (refreshHeight > 1) {
+      wallet->setRefreshFromBlockHeight(refreshHeight);
+    }
+  }
+
+  if (refreshHeight > 1) {
+    // Monero's WalletImpl::doInit treats a wallet whose local chain still has
+    // height 1 as "new" even when wallet2::generate already stored a safe
+    // refresh height.  That path synchronously calls connected() with the
+    // upstream 20-second timeout and then queries the daemon height multiple
+    // times.  Marking this one initialization as recovery preserves the
+    // already selected, one-month-safety-margin height and makes init a local
+    // configuration operation.  The real node connection and refresh still
+    // start immediately afterwards on the background sync path.
+    wallet->setRecoveringFromSeed(true);
   }
 }
 
@@ -470,6 +557,7 @@ class WalletEngine::Impl {
   struct WalletSession {
     WalletId id;
     Monero::Wallet* wallet{nullptr};
+    mutable std::mutex mutationMutex;
     NetworkType network{NetworkType::Stagenet};
     uint64_t cacheResetHeight{0};
     // A Ledger wallet created without an explicit restore height is a new
@@ -480,9 +568,299 @@ class WalletEngine::Impl {
     HardwareWalletStatus hardwareStatus;
     std::unique_ptr<HardwareWalletListener> hardwareListener;
     bool recoverySeedAllowed{false};
+    bool networkInitialized{false};
+    // The shared coordinator owns the only public block transport.  A Ledger
+    // spent-status check is a separate, tiny Core control-plane request made
+    // by the encrypted view wallet.  Remember its configuration
+    // generation so the client is connected once per real node change, never
+    // once per scanned block or UI wallet switch.
+    bool ledgerPostScanControlPlaneInitialized{false};
+    uint64_t ledgerPostScanControlPlaneGeneration{0};
+    WalletSnapshot cachedSnapshot;
+    bool cachedSnapshotReady{false};
     std::unordered_map<std::string, Monero::PendingTransaction*>
         pendingTransactions;
   };
+
+  struct NetworkSyncCoordinator {
+    explicit NetworkSyncCoordinator(NetworkType value)
+        : network(value),
+          scanExecutor(std::make_unique<network_fanout::BoundedExecutor>(
+              network_fanout::workerCount(
+                  100,
+                  std::max<unsigned>(
+                      1, std::thread::hardware_concurrency())))) {}
+
+    struct ReplayBatch {
+      std::shared_ptr<const Monero::Wallet::SharedBlockBatch> batch;
+      uint64_t configurationGeneration{0};
+      uint64_t lastUseSequence{0};
+    };
+
+    struct AsyncScanResult {
+      WalletId id;
+      uint64_t resultingCursor{0};
+      uint64_t currentHeight{0};
+      uint64_t durationMs{0};
+      bool delivered{false};
+      std::string error;
+    };
+
+    struct InflightScan {
+      uint64_t cursor{0};
+      uint64_t target{0};
+    };
+
+    NetworkType network;
+    DaemonConfig config;
+    std::string grpcEndpoint;
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::unordered_set<WalletId> wallets;
+    std::thread worker;
+    bool configured{false};
+    bool stop{false};
+    bool wake{false};
+    NetworkSyncStatus status;
+    Monero::Wallet* publicTransport{nullptr};
+    bool publicTransportInitialized{false};
+    // `Wallet::setGrpcStreamEndpoint()` intentionally clears Core's per-session
+    // gRPC->bin-RPC fallback.  The public transport is retained across a
+    // recoverable daemon reinitialisation, so remember whether the endpoint
+    // was already applied to this *same* transport.  Reapplying an unchanged
+    // endpoint after an iteration failure would otherwise resurrect a refused
+    // gRPC stream every five seconds instead of retaining the safe bin-RPC
+    // fallback selected by the common wallet core.
+    std::string publicTransportGrpcEndpoint;
+    bool publicTransportGrpcEndpointApplied{false};
+    std::string providerWalletId;
+    std::string priorityWalletId;
+    std::unordered_map<WalletId, std::chrono::steady_clock::time_point>
+        providerRetryAfter;
+    std::unordered_map<WalletId, std::chrono::steady_clock::time_point>
+        scannerRetryAfter;
+    bool transportStarted{false};
+    bool downloadRangeInitialized{false};
+    uint64_t configurationGeneration{0};
+    uint64_t batchesSinceCheckpoint{0};
+    uint64_t replayCachePayloadBytes{0};
+    uint64_t replayCacheUseSequence{0};
+    std::vector<ReplayBatch> replayCache;
+    std::unique_ptr<network_fanout::BoundedExecutor> scanExecutor;
+    std::unordered_map<WalletId, InflightScan> inflightScans;
+    std::chrono::steady_clock::time_point phaseStarted{
+        std::chrono::steady_clock::now()};
+  };
+
+  static uint64_t elapsedMilliseconds(
+      std::chrono::steady_clock::time_point started) {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started)
+            .count());
+  }
+
+  static void setNetworkPhaseLocked(
+      NetworkSyncCoordinator& coordinator,
+      const char* phase) {
+    if (coordinator.status.phase == phase) {
+      return;
+    }
+    coordinator.status.phase = phase;
+    ++coordinator.status.phaseSequence;
+    coordinator.status.phaseElapsedMs = 0;
+    coordinator.phaseStarted = std::chrono::steady_clock::now();
+  }
+
+  static void resetReplayCacheLocked(NetworkSyncCoordinator& coordinator) {
+    coordinator.replayCache.clear();
+    coordinator.replayCachePayloadBytes = 0;
+    coordinator.status.replayCacheEntries = 0;
+    coordinator.status.replayCachePayloadBytes = 0;
+  }
+
+  static std::shared_ptr<const Monero::Wallet::SharedBlockBatch>
+  findReplayBatchLocked(
+      NetworkSyncCoordinator& coordinator,
+      uint64_t target,
+      uint64_t configurationGeneration) {
+    for (auto it = coordinator.replayCache.rbegin();
+         it != coordinator.replayCache.rend(); ++it) {
+      if (it->configurationGeneration != configurationGeneration ||
+          !it->batch || it->batch->blockCount() == 0 ||
+          it->batch->startHeight() > target ||
+          it->batch->endHeight() <= target) {
+        continue;
+      }
+      it->lastUseSequence = ++coordinator.replayCacheUseSequence;
+      ++coordinator.status.cacheHits;
+      return it->batch;
+    }
+    ++coordinator.status.cacheMisses;
+    return nullptr;
+  }
+
+  static void storeReplayBatchLocked(
+      NetworkSyncCoordinator& coordinator,
+      const std::shared_ptr<const Monero::Wallet::SharedBlockBatch>& batch,
+      uint64_t configurationGeneration,
+      uint64_t minimumRetainedTarget) {
+    constexpr uint64_t kReorgSafetyBlocks = 64;
+    constexpr size_t kEntryLimit = 128;
+    constexpr uint64_t kPayloadLimit = 96ULL * 1024ULL * 1024ULL;
+    if (!batch || batch->blockCount() == 0 ||
+        batch->payloadBytes() > kPayloadLimit) {
+      return;
+    }
+
+    for (auto it = coordinator.replayCache.begin();
+         it != coordinator.replayCache.end();) {
+      const bool wrongGeneration =
+          it->configurationGeneration != configurationGeneration;
+      const bool safelyConsumed = minimumRetainedTarget > kReorgSafetyBlocks &&
+          it->batch && it->batch->endHeight() < minimumRetainedTarget &&
+          minimumRetainedTarget - it->batch->endHeight() > kReorgSafetyBlocks;
+      const bool duplicate = it->batch &&
+          it->batch->startHeight() == batch->startHeight() &&
+          it->batch->endHeight() == batch->endHeight();
+      if (!wrongGeneration && !safelyConsumed && !duplicate) {
+        ++it;
+        continue;
+      }
+      coordinator.replayCachePayloadBytes -= std::min<uint64_t>(
+          coordinator.replayCachePayloadBytes,
+          it->batch ? it->batch->payloadBytes() : 0);
+      it = coordinator.replayCache.erase(it);
+    }
+
+    NetworkSyncCoordinator::ReplayBatch entry;
+    entry.batch = batch;
+    entry.configurationGeneration = configurationGeneration;
+    entry.lastUseSequence = ++coordinator.replayCacheUseSequence;
+    coordinator.replayCachePayloadBytes += batch->payloadBytes();
+    coordinator.replayCache.push_back(std::move(entry));
+
+    while (coordinator.replayCache.size() > kEntryLimit ||
+           coordinator.replayCachePayloadBytes > kPayloadLimit) {
+      const auto oldest = std::min_element(
+          coordinator.replayCache.begin(),
+          coordinator.replayCache.end(),
+          [](const auto& left, const auto& right) {
+            return left.lastUseSequence < right.lastUseSequence;
+          });
+      if (oldest == coordinator.replayCache.end()) {
+        break;
+      }
+      coordinator.replayCachePayloadBytes -= std::min<uint64_t>(
+          coordinator.replayCachePayloadBytes,
+          oldest->batch ? oldest->batch->payloadBytes() : 0);
+      coordinator.replayCache.erase(oldest);
+    }
+    coordinator.status.replayCacheEntries = coordinator.replayCache.size();
+    coordinator.status.replayCachePayloadBytes =
+        coordinator.replayCachePayloadBytes;
+    coordinator.status.replayCachePeakPayloadBytes = std::max(
+        coordinator.status.replayCachePeakPayloadBytes,
+        coordinator.replayCachePayloadBytes);
+  }
+
+  void executeAsyncWalletScan(
+      NetworkSyncCoordinator& coordinator,
+      const WalletId& walletId,
+      const std::shared_ptr<const Monero::Wallet::SharedBlockBatch>& batch,
+      const std::shared_ptr<NetworkSyncCoordinator::AsyncScanResult>& result) {
+    const auto started = std::chrono::steady_clock::now();
+    result->id = walletId;
+    result->currentHeight = batch ? batch->currentHeight() : 0;
+    try {
+#if TEX8_WALLET_BRIDGE_ENABLE_TEST_HOOKS
+      const char* delayedWallet = std::getenv("MFW_TEST_SLOW_SCAN_WALLET_ID");
+      const char* delayText = std::getenv("MFW_TEST_SLOW_SCAN_MS");
+      if (delayedWallet != nullptr && delayText != nullptr &&
+          walletId == delayedWallet) {
+        try {
+          const uint64_t requestedDelay = std::stoull(delayText);
+          const uint64_t delayMs = std::min<uint64_t>(requestedDelay, 60000);
+          if (delayMs > 0) {
+            logEngineDiagnostic(
+                "networkSync.testScanDelay",
+                {{"delayMs", std::to_string(delayMs)}});
+            std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+          }
+        } catch (...) {
+          throw WalletEngineError("invalid MFW_TEST_SLOW_SCAN_MS test hook");
+        }
+      }
+#endif
+      std::shared_lock<std::shared_timed_mutex> executionLock(
+          coordinatorExecutionMutex_);
+      WalletSession* session = nullptr;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto it = wallets_.find(walletId);
+        if (it != wallets_.end() && it->second->wallet != nullptr &&
+            it->second->network == coordinator.network) {
+          session = it->second.get();
+        }
+      }
+      if (session != nullptr && batch) {
+        std::unique_lock<std::mutex> sessionLock(session->mutationMutex);
+        Monero::Wallet* wallet = session->wallet;
+        const uint64_t cursor = wallet->walletSyncCursor();
+        const uint64_t target = wallet->walletSyncTargetCursor();
+        result->resultingCursor = cursor;
+        if (batch->blockCount() > 0 && cursor < batch->endHeight() &&
+            target <= batch->endHeight()) {
+          (void)wallet->consumeSharedBlockBatch(*batch);
+          throwIfWalletFailed(wallet, "consumeSharedBlockBatch.async");
+          result->resultingCursor = wallet->walletSyncCursor();
+          result->delivered = true;
+          updateCachedSnapshot(*session, batch->currentHeight());
+        }
+      }
+    } catch (const std::exception& error) {
+      result->error = error.what();
+    }
+    result->durationMs = elapsedMilliseconds(started);
+  }
+
+  void completeAsyncWalletScan(
+      NetworkSyncCoordinator& coordinator,
+      const std::shared_ptr<NetworkSyncCoordinator::AsyncScanResult>& result) {
+    size_t queueDepth = 0;
+    {
+      std::lock_guard<std::mutex> lock(coordinator.mutex);
+      coordinator.status.lastWalletScanMs = result->durationMs;
+      coordinator.status.totalWalletScanMs += result->durationMs;
+      if (!result->error.empty()) {
+        coordinator.scannerRetryAfter[result->id] =
+            std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      } else if (result->delivered) {
+        coordinator.scannerRetryAfter.erase(result->id);
+        ++coordinator.status.fanoutDeliveries;
+      }
+      coordinator.inflightScans.erase(result->id);
+      coordinator.status.stalledWallets =
+          coordinator.scannerRetryAfter.size();
+      queueDepth = coordinator.scanExecutor
+          ? coordinator.scanExecutor->pending()
+          : 0;
+      coordinator.status.queueDepth =
+          queueDepth + coordinator.status.stalledWallets;
+      coordinator.wake = true;
+    }
+    logEngineDiagnostic(
+        result->error.empty()
+            ? "networkSync.walletScanCompleted"
+            : "networkSync.walletStalled",
+        {
+            {"elapsedMs", std::to_string(result->durationMs)},
+            {"currentHeight", std::to_string(result->resultingCursor)},
+            {"queueDepth", std::to_string(queueDepth)},
+            {"status", result->error.empty() ? "ok" : result->error},
+        });
+    coordinator.condition.notify_one();
+  }
 
   Impl() : manager_(Monero::WalletManagerFactory::getWalletManager()) {
     if (manager_ == nullptr) {
@@ -491,6 +869,7 @@ class WalletEngine::Impl {
   }
 
   ~Impl() {
+    stopAllNetworkCoordinators();
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& item : wallets_) {
       if (item.second->wallet != nullptr) {
@@ -512,6 +891,8 @@ class WalletEngine::Impl {
   }
 
   WalletId createWallet(const CreateWalletRequest& request) {
+    constexpr int64_t kReferenceP95Ms = 194;
+    constexpr int64_t kWarningBudgetMs = 500;
     const auto managerStartedAt = std::chrono::steady_clock::now();
     logEngineDiagnostic("createWallet.manager.start", {});
     auto* wallet = manager_->createWallet(
@@ -520,11 +901,18 @@ class WalletEngine::Impl {
         request.language,
         toMoneroNetwork(request.network),
         request.kdfRounds);
+    const auto managerElapsedMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - managerStartedAt).count();
     logEngineDiagnostic(
         "createWallet.manager.success",
-        {{"elapsedMs",
-          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now() - managerStartedAt).count())}});
+        {
+            {"elapsedMs", std::to_string(managerElapsedMs)},
+            {"referenceP95Ms", std::to_string(kReferenceP95Ms)},
+            {"warningBudgetMs", std::to_string(kWarningBudgetMs)},
+            {"warningBudgetExceeded",
+             managerElapsedMs > kWarningBudgetMs ? "true" : "false"},
+        });
     throwIfWalletFailed(wallet, "createWallet");
     if (request.restoreHeight > 1) {
       wallet->setRefreshFromBlockHeight(request.restoreHeight);
@@ -537,7 +925,21 @@ class WalletEngine::Impl {
     } else {
       setEstimatedRefreshHeightForNewWallet(wallet);
     }
-    return addWallet("createWallet", request.path, request.network, wallet);
+    const auto walletId =
+        addWallet("createWallet", request.path, request.network, wallet);
+    const auto totalElapsedMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - managerStartedAt).count();
+    logEngineDiagnostic(
+        "createWallet.complete",
+        {
+            {"elapsedMs", std::to_string(totalElapsedMs)},
+            {"referenceP95Ms", std::to_string(kReferenceP95Ms)},
+            {"warningBudgetMs", std::to_string(kWarningBudgetMs)},
+            {"warningBudgetExceeded",
+             totalElapsedMs > kWarningBudgetMs ? "true" : "false"},
+        });
+    return walletId;
   }
 
   WalletId restoreWallet(const RestoreWalletRequest& request) {
@@ -585,15 +987,33 @@ class WalletEngine::Impl {
     try {
       logEngineDiagnostic("openWallet.validation.start", {});
       throwIfWalletFailed(wallet, "openWallet");
-      if (request.restoreHeight > 1) {
-        // Scan-start height applies only when creating or importing a wallet.
-        // An existing wallet owns its persisted Core cache; resetting it on
-        // every open causes repeated historic scans after a normal restart.
+      const uint64_t openedWalletHeight = wallet->blockChainHeight();
+      if (request.restoreHeight > 1 && openedWalletHeight <= 1) {
+        // A process may stop after WalletManager created the encrypted files
+        // but before the first shared-sync checkpoint.  In that state the
+        // Core cache still contains only genesis and WalletImpl::doInit would
+        // replace the product registry's explicit restore height with its
+        // automatic date estimate.  Reapply the durable registry value only
+        // while no scanned chain state exists; never rewind a progressed
+        // wallet on ordinary opens.
+        wallet->setRefreshFromBlockHeight(request.restoreHeight);
+        wallet->setRecoveringFromSeed(true);
+        throwIfWalletFailed(wallet, "openWallet.restoreBaselineRecovered");
+        logEngineDiagnostic(
+            "openWallet.restoreBaselineRecovered",
+            {
+                {"requestedRestoreHeight", std::to_string(request.restoreHeight)},
+                {"walletHeight", std::to_string(openedWalletHeight)},
+            });
+      } else if (request.restoreHeight > 1) {
+        // Once the Core cache has progressed it is authoritative.  The
+        // registry value is only a crash-recovery baseline, not a command to
+        // rescan historical blocks on every open.
         logEngineDiagnostic(
             "openWallet.restoreHeightIgnored",
             {
                 {"requestedRestoreHeight", std::to_string(request.restoreHeight)},
-                {"walletHeight", std::to_string(wallet->blockChainHeight())},
+                {"walletHeight", std::to_string(openedWalletHeight)},
             });
       }
       logEngineDiagnostic("openWallet.validation.success", {});
@@ -701,30 +1121,29 @@ class WalletEngine::Impl {
         "createViewOnlyWallet",
         request.path,
         request.network,
-        wallet,
-        request.restoreHeight > 1 ? request.restoreHeight : 0);
+        wallet);
   }
 
   HardwareViewKeyExport exportHardwarePrivateViewKey(const WalletId& walletId) {
 #if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = getLocked(walletId);
-    if (session.wallet->getDeviceType() == Monero::Wallet::Device_Software) {
-      throw WalletEngineError("wallet is not backed by a hardware device");
-    }
+    return withSession(walletId, [](WalletSession& session) {
+      if (session.wallet->getDeviceType() == Monero::Wallet::Device_Software) {
+        throw WalletEngineError("wallet is not backed by a hardware device");
+      }
 
-    // The Monero Ledger app asks the user to approve this operation. Do not
-    // prefetch it and do not retain it in the engine after returning.
-    // Ledger wallets store a deliberately fake key in the general Wallet API
-    // account object. The pinned Core extension exposes the real key only
-    // after the user has approved its export on the connected Ledger.
-    const auto privateViewKey = session.wallet->hardwarePrivateViewKey();
-    if (privateViewKey.empty()) {
-      throw WalletEngineError(
-          "Ledger did not export the private view key. Approve Export view key on the Ledger and try again.");
-    }
-    return HardwareViewKeyExport{
-        session.wallet->address(0, 0), privateViewKey, session.network};
+      // The Monero Ledger app asks the user to approve this operation. Do not
+      // prefetch it and do not retain it in the engine after returning.
+      // Ledger wallets store a deliberately fake key in the general Wallet API
+      // account object. The pinned Core extension exposes the real key only
+      // after the user has approved its export on the connected Ledger.
+      const auto privateViewKey = session.wallet->hardwarePrivateViewKey();
+      if (privateViewKey.empty()) {
+        throw WalletEngineError(
+            "Ledger did not export the private view key. Approve Export view key on the Ledger and try again.");
+      }
+      return HardwareViewKeyExport{
+          session.wallet->address(0, 0), privateViewKey, session.network};
+    });
 #else
     (void)walletId;
     throw WalletEngineError("hardware view-key export requires the TEX8 Core extension");
@@ -752,17 +1171,15 @@ class WalletEngine::Impl {
           "fast receive wallet path does not match its identity");
     }
 
-    NetworkType network;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      auto& source = getLocked(request.sourceWalletId);
+    const NetworkType network = withSession(
+        request.sourceWalletId,
+        [](WalletSession& source) {
       if (source.wallet->getDeviceType() != Monero::Wallet::Device_Software) {
         throw WalletEngineError(
             "fast receive identity derivation is only implemented for software wallets");
       }
-
-      network = source.network;
-    }
+      return source.network;
+    });
 
     // Fast Wallet v2 is a fresh Monero wallet with independent random entropy.
     // The source wallet is consulted only to bind the network and prove that
@@ -901,7 +1318,65 @@ class WalletEngine::Impl {
     }
   }
 
+  FastReceiveRegistrationPayload accountRegistrationPayload(
+      const WalletId& walletId,
+      const std::string& identityId,
+      uint32_t accountIndex,
+      uint64_t restoreHeightHint) {
+    if (identityId.empty()) {
+      throw WalletEngineError("Fast Wallet identity must not be empty");
+    }
+    if (accountIndex == 0) {
+      throw WalletEngineError(
+          "Ledger Fast Wallet hosting requires a separate wallet account");
+    }
+
+    return withSession(walletId, [&](WalletSession& session) {
+      while (session.wallet->numSubaddressAccounts() <= accountIndex) {
+        session.wallet->addSubaddressAccount("");
+        throwIfWalletFailed(
+            session.wallet,
+            "accountRegistrationPayload.addSubaddressAccount");
+      }
+
+      FastReceiveRegistrationPayload payload;
+      payload.identity.id = identityId;
+      payload.identity.label = "Fast Wallet";
+      payload.identity.path = session.wallet->path();
+      payload.identity.address = session.wallet->address(accountIndex, 0);
+      payload.identity.network = session.network;
+      payload.identity.restoreHeight =
+          restoreHeightHint > 1
+              ? restoreHeightHint
+              : session.wallet->getRefreshFromBlockHeight();
+      if (payload.identity.restoreHeight <= 1) {
+        payload.identity.restoreHeight = session.wallet->estimateBlockChainHeight();
+      }
+      payload.identity.derivationIndex = accountIndex;
+      payload.identity.scannerStatus = "registration-pending";
+
+      if (session.wallet->getDeviceType() == Monero::Wallet::Device_Software) {
+        payload.privateViewKey = session.wallet->secretViewKey();
+      } else {
+#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
+        payload.privateViewKey = session.wallet->hardwarePrivateViewKey();
+#else
+        throw WalletEngineError(
+            "hardware view-key export requires the TEX8 Core extension");
+#endif
+      }
+      if (payload.privateViewKey.empty()) {
+        throw WalletEngineError(
+            "Ledger Fast Wallet has no usable private view key");
+      }
+      return payload;
+    });
+  }
+
   void closeWallet(const WalletId& walletId, bool store) {
+    std::unique_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    leaveNetworkSync(walletId);
     std::unique_ptr<WalletSession> session;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -921,6 +1396,22 @@ class WalletEngine::Impl {
   }
 
   void closeAllWallets(bool store) {
+    // The coordinator worker always takes the execution barrier before its
+    // per-network mutex. Keep the same order here so shutdown cannot deadlock
+    // with a batch that is just completing.
+    std::unique_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    {
+      std::lock_guard<std::mutex> coordinatorLock(coordinatorsMutex_);
+      for (auto& item : coordinators_) {
+        std::lock_guard<std::mutex> lock(item.second->mutex);
+        item.second->wallets.clear();
+        item.second->providerWalletId.clear();
+        resetReplayCacheLocked(*item.second);
+        item.second->status.joinedWallets = 0;
+        item.second->status.queueDepth = 0;
+      }
+    }
     std::vector<std::unique_ptr<WalletSession>> sessions;
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -951,6 +1442,339 @@ class WalletEngine::Impl {
     }
   }
 
+  void configureNetworkSync(
+      NetworkType network,
+      const DaemonConfig& config,
+      const std::string& grpcEndpoint) {
+    if (config.address.empty()) {
+      throw WalletEngineError("network sync daemon address must not be empty");
+    }
+    const int key = static_cast<int>(network);
+    NetworkSyncCoordinator* coordinator = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(coordinatorsMutex_);
+      const auto existing = coordinators_.find(key);
+      if (existing != coordinators_.end()) {
+        coordinator = existing->second.get();
+      }
+    }
+
+    // The normal multi-wallet path repeats the same node settings once per
+    // local wallet. Do not wait behind an in-flight DNS/TCP/RPC provider
+    // initialization for that no-op: it delayed the second wallet by the full
+    // network timeout even though no transport setting changed.
+    if (coordinator != nullptr) {
+      std::lock_guard<std::mutex> lock(coordinator->mutex);
+      const bool unchanged = coordinator->configured &&
+          coordinator->config.address == config.address &&
+          coordinator->config.trusted == config.trusted &&
+          coordinator->config.useSsl == config.useSsl &&
+          coordinator->config.username == config.username &&
+          coordinator->config.password == config.password &&
+          coordinator->config.proxyAddress == config.proxyAddress &&
+          coordinator->grpcEndpoint == grpcEndpoint;
+      if (unchanged) {
+        logEngineDiagnostic(
+            "networkSync.configured",
+            {
+                {"network", std::to_string(key)},
+                {"configurationChanged", "false"},
+                {"grpcEnabled", grpcEndpoint.empty() ? "false" : "true"},
+            });
+        return;
+      }
+    }
+
+    // Actual configuration changes and provider fetches are serialized. A
+    // second check under the barrier closes the race with another caller that
+    // may have installed the requested configuration in the meantime.
+    std::unique_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    {
+      std::lock_guard<std::mutex> lock(coordinatorsMutex_);
+      auto& slot = coordinators_[key];
+      if (!slot) {
+        slot = std::make_unique<NetworkSyncCoordinator>(network);
+        slot->status.network = network;
+      }
+      coordinator = slot.get();
+    }
+    bool configurationChanged = false;
+    Monero::Wallet* stalePublicTransport = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(coordinator->mutex);
+      configurationChanged = !coordinator->configured ||
+          coordinator->config.address != config.address ||
+          coordinator->config.trusted != config.trusted ||
+          coordinator->config.useSsl != config.useSsl ||
+          coordinator->config.username != config.username ||
+          coordinator->config.password != config.password ||
+          coordinator->config.proxyAddress != config.proxyAddress ||
+          coordinator->grpcEndpoint != grpcEndpoint;
+      coordinator->config = config;
+      coordinator->grpcEndpoint = grpcEndpoint;
+      coordinator->configured = true;
+      coordinator->wake = true;
+      coordinator->status.state = "ready";
+      if (configurationChanged) {
+        stalePublicTransport = coordinator->publicTransport;
+        coordinator->publicTransport = nullptr;
+        coordinator->publicTransportInitialized = false;
+        coordinator->publicTransportGrpcEndpoint.clear();
+        coordinator->publicTransportGrpcEndpointApplied = false;
+        ++coordinator->configurationGeneration;
+        resetReplayCacheLocked(*coordinator);
+        coordinator->providerWalletId.clear();
+        coordinator->providerRetryAfter.clear();
+        coordinator->scannerRetryAfter.clear();
+        coordinator->transportStarted = false;
+        coordinator->downloadRangeInitialized = false;
+        coordinator->status.downloadStartHeight = 0;
+        coordinator->status.downloadedHeight = 0;
+      }
+      if (!coordinator->worker.joinable()) {
+        coordinator->worker = std::thread(
+            [this, coordinator]() { runNetworkCoordinator(*coordinator); });
+      }
+    }
+    if (stalePublicTransport != nullptr) {
+      if (!manager_->closeWallet(stalePublicTransport, false)) {
+        throw WalletEngineError(
+            "failed to close obsolete public sync transport");
+      }
+    }
+    if (configurationChanged) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      for (auto& item : wallets_) {
+        if (item.second->network == network) {
+          item.second->networkInitialized = false;
+          item.second->ledgerPostScanControlPlaneInitialized = false;
+          item.second->ledgerPostScanControlPlaneGeneration = 0;
+        }
+      }
+    }
+    logEngineDiagnostic(
+        "networkSync.configured",
+        {
+            {"network", std::to_string(key)},
+            {"configurationChanged", configurationChanged ? "true" : "false"},
+            {"grpcEnabled", grpcEndpoint.empty() ? "false" : "true"},
+        });
+    coordinator->condition.notify_one();
+  }
+
+  void joinNetworkSync(const WalletId& walletId) {
+    const NetworkType network = withSession(
+        walletId,
+        [&](WalletSession& session) {
+      if (session.cacheResetHeight > 1 &&
+          session.wallet->blockChainHeight() < session.cacheResetHeight) {
+        const uint64_t resetHeight = session.cacheResetHeight;
+        logEngineDiagnostic(
+            "joinNetworkSync.cacheReset.start",
+            {
+                {"walletId", maskDiagnosticId(walletId)},
+                {"currentHeight",
+                 std::to_string(session.wallet->blockChainHeight())},
+                {"restoreHeight", std::to_string(resetHeight)},
+            });
+        session.wallet->setRefreshFromBlockHeight(resetHeight);
+        throwIfWalletFailed(
+            session.wallet, "joinNetworkSync.setRefreshFromBlockHeight");
+
+        // setRefreshFromBlockHeight() changes the restore policy, but it does
+        // not rewind an already persisted wallet cache. The shared provider
+        // must start only after the local cache has been reset, otherwise it
+        // continues from the old cached height and silently ignores the
+        // caller's requested restore height.
+        if (!session.wallet->rescanBlockchain()) {
+          throwIfWalletFailed(
+              session.wallet, "joinNetworkSync.rescanBlockchain");
+          throw WalletEngineError(
+              "failed to reset shared-sync wallet cache to restore height");
+        }
+        throwIfWalletFailed(
+            session.wallet, "joinNetworkSync.rescanBlockchain");
+
+        const uint64_t refreshedHeight =
+            session.wallet->blockChainHeight();
+        if (refreshedHeight < resetHeight &&
+            resetHeight - refreshedHeight > 1) {
+          throw WalletEngineError(
+              "shared-sync wallet cache reset did not reach restore height");
+        }
+        session.cacheResetHeight = 0;
+        logEngineDiagnostic(
+            "joinNetworkSync.cacheReset.success",
+            {
+                {"walletId", maskDiagnosticId(walletId)},
+                {"restoreHeight", std::to_string(resetHeight)},
+                {"walletHeight", std::to_string(refreshedHeight)},
+            });
+      }
+      return session.network;
+    });
+    auto* coordinator = findCoordinator(network);
+    if (coordinator == nullptr) {
+      throw WalletEngineError("network sync is not configured");
+    }
+    {
+      std::lock_guard<std::mutex> lock(coordinator->mutex);
+      coordinator->wallets.insert(walletId);
+      if (coordinator->priorityWalletId.empty()) {
+        coordinator->priorityWalletId = walletId;
+      }
+      coordinator->wake = true;
+      coordinator->status.joinedWallets = coordinator->wallets.size();
+      coordinator->status.queueDepth = coordinator->wallets.size();
+    }
+    logEngineDiagnostic(
+        "networkSync.walletJoined",
+        {
+            {"walletId", maskDiagnosticId(walletId)},
+            {"network", std::to_string(static_cast<int>(network))},
+        });
+    coordinator->condition.notify_one();
+  }
+
+  void leaveNetworkSync(const WalletId& walletId) {
+    std::vector<NetworkSyncCoordinator*> coordinators;
+    {
+      std::lock_guard<std::mutex> lock(coordinatorsMutex_);
+      for (auto& item : coordinators_) {
+        coordinators.push_back(item.second.get());
+      }
+    }
+    for (auto* coordinator : coordinators) {
+      std::lock_guard<std::mutex> lock(coordinator->mutex);
+      coordinator->wallets.erase(walletId);
+      if (coordinator->providerWalletId == walletId) {
+        coordinator->providerWalletId.clear();
+      }
+      if (coordinator->priorityWalletId == walletId) {
+        coordinator->priorityWalletId.clear();
+      }
+      coordinator->providerRetryAfter.erase(walletId);
+      coordinator->scannerRetryAfter.erase(walletId);
+      coordinator->status.joinedWallets = coordinator->wallets.size();
+      coordinator->status.queueDepth = coordinator->wallets.size();
+      if (coordinator->wallets.empty()) {
+        resetReplayCacheLocked(*coordinator);
+        coordinator->downloadRangeInitialized = false;
+        coordinator->status.downloadStartHeight = 0;
+        coordinator->status.downloadedHeight = 0;
+      }
+    }
+  }
+
+  void prioritizeNetworkWallet(const WalletId& walletId) {
+    NetworkType network;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      network = getLocked(walletId).network;
+    }
+    auto* coordinator = findCoordinator(network);
+    if (coordinator == nullptr) {
+      // Local wallet selection is allowed before node configuration. The
+      // later join will still make the wallet eligible for synchronization.
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(coordinator->mutex);
+      coordinator->priorityWalletId = walletId;
+      coordinator->wake = true;
+    }
+    logEngineDiagnostic(
+        "networkSync.walletPrioritized",
+        {{"network", std::to_string(static_cast<int>(network))}});
+    coordinator->condition.notify_one();
+  }
+
+  NetworkSyncStatus networkSyncStatus(NetworkType network) const {
+    auto* coordinator = findCoordinator(network);
+    if (coordinator == nullptr) {
+      NetworkSyncStatus status;
+      status.network = network;
+      return status;
+    }
+    std::lock_guard<std::mutex> lock(coordinator->mutex);
+    auto status = coordinator->status;
+    status.phaseElapsedMs = elapsedMilliseconds(coordinator->phaseStarted);
+    return status;
+  }
+
+  uint64_t walletSyncCursor(const WalletId& walletId) const {
+    return withSession(walletId, [](WalletSession& session) {
+      return session.wallet->walletSyncCursor();
+    });
+  }
+
+  uint64_t consumeSharedBlockBatch(
+      const WalletId& walletId,
+      const SharedBlockBatchHandle& batch) {
+    auto native = std::static_pointer_cast<const Monero::Wallet::SharedBlockBatch>(
+        batch.native);
+    if (!native) {
+      throw WalletEngineError("shared block batch is empty");
+    }
+    return withSession(walletId, [&](WalletSession& session) {
+      const uint64_t consumed =
+          session.wallet->consumeSharedBlockBatch(*native);
+      throwIfWalletFailed(session.wallet, "consumeSharedBlockBatch");
+      return consumed;
+    });
+  }
+
+  void consumeSharedPoolSnapshot(
+      const WalletId& walletId,
+      const SharedPoolSnapshotHandle& snapshot) {
+    auto native = std::static_pointer_cast<const Monero::Wallet::SharedPoolSnapshot>(
+        snapshot.native);
+    if (!native) {
+      throw WalletEngineError("shared pool snapshot is empty");
+    }
+    withSession(walletId, [&](WalletSession& session) {
+      session.wallet->consumeSharedPoolSnapshot(*native);
+      throwIfWalletFailed(session.wallet, "consumeSharedPoolSnapshot");
+    });
+  }
+
+  void detachWalletToHeight(
+      const WalletId& walletId,
+      uint64_t height,
+      const std::string& expectedPreviousHash) {
+    NetworkType network = NetworkType::Mainnet;
+    withSession(walletId, [&](WalletSession& session) {
+      network = session.network;
+      if (!session.wallet->detachWalletToHeight(height, expectedPreviousHash)) {
+        throwIfWalletFailed(session.wallet, "detachWalletToHeight");
+        throw WalletEngineError("detachWalletToHeight failed");
+      }
+    });
+    auto* coordinator = findCoordinator(network);
+    if (coordinator != nullptr) {
+      {
+        std::lock_guard<std::mutex> lock(coordinator->mutex);
+        // A detached wallet may be reacting to a reorg. Invalidate every
+        // locally retained batch and the worker-local prefetch generation;
+        // continuity is verified again when the provider supplies the range.
+        ++coordinator->configurationGeneration;
+        resetReplayCacheLocked(*coordinator);
+        coordinator->wake = true;
+      }
+      coordinator->condition.notify_one();
+    }
+  }
+
+  void checkpointWalletScan(const WalletId& walletId) {
+    withSession(walletId, [](WalletSession& session) {
+      if (!session.wallet->checkpointWalletScan()) {
+        throwIfWalletFailed(session.wallet, "checkpointWalletScan");
+        throw WalletEngineError("checkpointWalletScan failed");
+      }
+    });
+  }
+
   void setWalletPassword(
       const WalletId& walletId,
       const std::string& newPassword) {
@@ -958,18 +1782,45 @@ class WalletEngine::Impl {
       throw WalletEngineError("wallet password must not be empty");
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto* wallet = getLocked(walletId).wallet;
-    if (!wallet->setPassword(newPassword)) {
-      throwIfWalletFailed(wallet, "setWalletPassword");
-      throw WalletEngineError("setWalletPassword failed");
-    }
-    throwIfWalletFailed(wallet, "setWalletPassword");
+    withSession(walletId, [&](WalletSession& session) {
+      if (!session.wallet->setPassword(newPassword)) {
+        throwIfWalletFailed(session.wallet, "setWalletPassword");
+        throw WalletEngineError("setWalletPassword failed");
+      }
+      throwIfWalletFailed(session.wallet, "setWalletPassword");
+    });
   }
 
   void setDaemon(const WalletId& walletId, const DaemonConfig& config) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = getLocked(walletId);
+    NetworkType network;
+    std::string grpcEndpoint;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      network = getLocked(walletId).network;
+    }
+    if (auto* coordinator = findCoordinator(network)) {
+      std::lock_guard<std::mutex> lock(coordinator->mutex);
+      grpcEndpoint = coordinator->grpcEndpoint;
+    }
+    configureNetworkSync(network, config, grpcEndpoint);
+  }
+
+  void initializeWalletDaemon(
+      const WalletId& walletId,
+      const DaemonConfig& config) {
+    // The coordinator execution barrier keeps the Wallet object alive. Do not
+    // hold the global registry lock while init() performs DNS/TCP/TLS/RPC:
+    // snapshots and wallet switching must remain immediate during a slow node
+    // connection.
+    Monero::Wallet* wallet = nullptr;
+    bool useDaemonHeightForAutomaticRestore = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto& session = getLocked(walletId);
+      wallet = session.wallet;
+      useDaemonHeightForAutomaticRestore =
+          session.useDaemonHeightForAutomaticRestore;
+    }
     const std::string maskedWalletId = maskDiagnosticId(walletId);
     logEngineDiagnostic(
         "setDaemon.enter",
@@ -986,7 +1837,7 @@ class WalletEngine::Impl {
             {"walletId", maskedWalletId},
             {"address", config.address},
         });
-    const uint64_t refreshFromHeight = session.wallet->getRefreshFromBlockHeight();
+    const uint64_t refreshFromHeight = wallet->getRefreshFromBlockHeight();
     logEngineDiagnostic(
         "setDaemon.refreshHeight.success",
         {
@@ -1002,7 +1853,7 @@ class WalletEngine::Impl {
               {"walletId", maskedWalletId},
               {"address", config.address},
           });
-      session.wallet->setRecoveringFromSeed(true);
+      wallet->setRecoveringFromSeed(true);
       logEngineDiagnostic(
           "setDaemon.recoveringFlag.success",
           {
@@ -1017,7 +1868,7 @@ class WalletEngine::Impl {
             {"walletId", maskedWalletId},
             {"address", config.address},
         });
-    session.wallet->setTrustedDaemon(config.trusted);
+    wallet->setTrustedDaemon(config.trusted);
     logEngineDiagnostic(
         "setDaemon.trustedFlag.success",
         {
@@ -1032,7 +1883,7 @@ class WalletEngine::Impl {
             {"address", config.address},
             {"useSsl", config.useSsl ? "true" : "false"},
         });
-    const bool initialized = session.wallet->init(
+    const bool initialized = wallet->init(
             config.address,
             0,
             config.username,
@@ -1049,18 +1900,24 @@ class WalletEngine::Impl {
         });
 
     if (!initialized) {
-      throwIfWalletFailed(session.wallet, "setDaemon");
+      throwIfWalletFailed(wallet, "setDaemon");
       throw WalletEngineError("setDaemon failed");
     }
 
-    if (session.useDaemonHeightForAutomaticRestore) {
-      const uint64_t daemonHeight = session.wallet->daemonBlockChainHeight();
-      const uint64_t walletHeight = session.wallet->blockChainHeight();
+    if (useDaemonHeightForAutomaticRestore) {
+      const uint64_t daemonHeight = wallet->daemonBlockChainHeight();
+      const uint64_t walletHeight = wallet->blockChainHeight();
       if (daemonHeight > 1 && walletHeight < daemonHeight) {
-        session.wallet->setRefreshFromBlockHeight(daemonHeight);
+        wallet->setRefreshFromBlockHeight(daemonHeight);
         throwIfWalletFailed(
-            session.wallet, "setDaemon.setAutomaticRestoreHeight");
-        session.cacheResetHeight = daemonHeight;
+            wallet, "setDaemon.setAutomaticRestoreHeight");
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          const auto current = wallets_.find(walletId);
+          if (current != wallets_.end() && current->second->wallet == wallet) {
+            current->second->cacheResetHeight = daemonHeight;
+          }
+        }
         logEngineDiagnostic(
             "setDaemon.automaticRestoreHeight.ready",
             {
@@ -1069,7 +1926,11 @@ class WalletEngine::Impl {
                 {"restoreHeight", std::to_string(daemonHeight)},
             });
       }
-      session.useDaemonHeightForAutomaticRestore = false;
+      std::lock_guard<std::mutex> lock(mutex_);
+      const auto current = wallets_.find(walletId);
+      if (current != wallets_.end() && current->second->wallet == wallet) {
+        current->second->useDaemonHeightForAutomaticRestore = false;
+      }
     }
 
     logEngineDiagnostic(
@@ -1081,11 +1942,32 @@ class WalletEngine::Impl {
   }
 
   void setGrpcEndpoint(const WalletId& walletId, const std::string& endpoint) {
+    NetworkType network;
+    DaemonConfig config;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      network = getLocked(walletId).network;
+    }
+    auto* coordinator = findCoordinator(network);
+    if (coordinator == nullptr) {
+      throw WalletEngineError(
+          "configure the network daemon before its gRPC endpoint");
+    }
+    {
+      std::lock_guard<std::mutex> lock(coordinator->mutex);
+      config = coordinator->config;
+    }
+    configureNetworkSync(network, config, endpoint);
+  }
+
+  void setGrpcEndpointDirect(
+      const WalletId& walletId,
+      const std::string& endpoint) {
 #if TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = getLocked(walletId);
-    session.grpcEndpoint = endpoint;
-    session.wallet->setGrpcStreamEndpoint(endpoint);
+    withSession(walletId, [&](WalletSession& session) {
+      session.grpcEndpoint = endpoint;
+      session.wallet->setGrpcStreamEndpoint(endpoint);
+    });
 #else
     (void)walletId;
     (void)endpoint;
@@ -1095,9 +1977,21 @@ class WalletEngine::Impl {
   }
 
   void startRefresh(const WalletId& walletId) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = getLocked(walletId);
-    auto* wallet = session.wallet;
+    NetworkType network;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      network = getLocked(walletId).network;
+    }
+    if (findCoordinator(network) != nullptr) {
+      joinNetworkSync(walletId);
+      return;
+    }
+    startRefreshDirect(walletId);
+  }
+
+  void startRefreshDirect(const WalletId& walletId) {
+    withSession(walletId, [&](WalletSession& session) {
+      auto* wallet = session.wallet;
 
     logEngineDiagnostic(
         "startRefresh.start",
@@ -1148,30 +2042,42 @@ class WalletEngine::Impl {
     logEngineDiagnostic(
         "startRefresh.scheduled",
         {{"walletId", maskDiagnosticId(walletId)}});
+    });
   }
 
   void stopRefresh(const WalletId& walletId) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto* wallet = getLocked(walletId).wallet;
-    wallet->pauseRefresh();
-    wallet->stop();
-    throwIfWalletFailed(wallet, "refresh");
+    leaveNetworkSync(walletId);
+    withSession(walletId, [](WalletSession& session) {
+      session.wallet->pauseRefresh();
+      session.wallet->stop();
+      throwIfWalletFailed(session.wallet, "refresh");
+    });
   }
 
   void rescanBlockchain(const WalletId& walletId) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto* wallet = getLocked(walletId).wallet;
-    if (!wallet->rescanBlockchain()) {
-      throwIfWalletFailed(wallet, "rescanBlockchain");
-      throw WalletEngineError("rescanBlockchain failed");
-    }
-    throwIfWalletFailed(wallet, "rescanBlockchain");
+    withSession(walletId, [](WalletSession& session) {
+      if (!session.wallet->rescanBlockchain()) {
+        throwIfWalletFailed(session.wallet, "rescanBlockchain");
+        throw WalletEngineError("rescanBlockchain failed");
+      }
+      throwIfWalletFailed(session.wallet, "rescanBlockchain");
+    });
   }
 
   void persistOpenWallets() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& item : wallets_) {
-      auto& session = *item.second;
+    std::unique_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    std::vector<WalletSession*> sessions;
+    {
+      std::lock_guard<std::mutex> registryLock(mutex_);
+      sessions.reserve(wallets_.size());
+      for (auto& item : wallets_) {
+        sessions.push_back(item.second.get());
+      }
+    }
+    for (auto* sessionPointer : sessions) {
+      auto& session = *sessionPointer;
+      std::unique_lock<std::mutex> sessionLock(session.mutationMutex);
       auto* wallet = session.wallet;
       if (wallet == nullptr) {
         continue;
@@ -1204,78 +2110,106 @@ class WalletEngine::Impl {
       const WalletId& walletId,
       uint32_t accountIndex,
       uint32_t addressIndex) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return getLocked(walletId).wallet->address(accountIndex, addressIndex);
+    return withSession(walletId, [&](WalletSession& session) {
+      return session.wallet->address(accountIndex, addressIndex);
+    });
   }
 
   WalletSubaddress createSubaddress(
       const WalletId& walletId,
       uint32_t accountIndex,
       const std::string& label) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto* wallet = getLocked(walletId).wallet;
-    if (accountIndex >= wallet->numSubaddressAccounts()) {
-      throw WalletEngineError("subaddress account does not exist");
-    }
+    return withSession(walletId, [&](WalletSession& session) {
+      auto* wallet = session.wallet;
+      if (accountIndex >= wallet->numSubaddressAccounts()) {
+        throw WalletEngineError("subaddress account does not exist");
+      }
 
-    const auto addressIndex =
-        static_cast<uint32_t>(wallet->numSubaddresses(accountIndex));
-    wallet->addSubaddress(accountIndex, label);
-    throwIfWalletFailed(wallet, "createSubaddress");
+      const auto addressIndex =
+          static_cast<uint32_t>(wallet->numSubaddresses(accountIndex));
+      wallet->addSubaddress(accountIndex, label);
+      throwIfWalletFailed(wallet, "createSubaddress");
 
-    WalletSubaddress result;
-    result.accountIndex = accountIndex;
-    result.addressIndex = addressIndex;
-    result.address = wallet->address(accountIndex, addressIndex);
-    result.label = label;
-    return result;
+      WalletSubaddress result;
+      result.accountIndex = accountIndex;
+      result.addressIndex = addressIndex;
+      result.address = wallet->address(accountIndex, addressIndex);
+      result.label = label;
+      return result;
+    });
+  }
+
+  std::vector<WalletSubaddress> listSubaddresses(
+      const WalletId& walletId,
+      uint32_t accountIndex) const {
+    return withSession(walletId, [&](WalletSession& session) {
+      auto* wallet = session.wallet;
+      if (accountIndex >= wallet->numSubaddressAccounts()) {
+        throw WalletEngineError("subaddress account does not exist");
+      }
+
+      const auto count = wallet->numSubaddresses(accountIndex);
+      std::vector<WalletSubaddress> result;
+      result.reserve(count);
+      for (size_t addressIndex = 0; addressIndex < count; ++addressIndex) {
+        WalletSubaddress address;
+        address.accountIndex = accountIndex;
+        address.addressIndex = static_cast<uint32_t>(addressIndex);
+        address.address = wallet->address(accountIndex, address.addressIndex);
+        address.label = wallet->getSubaddressLabel(accountIndex, address.addressIndex);
+        result.push_back(std::move(address));
+      }
+      return result;
+    });
   }
 
   std::string getSeed(
       const WalletId& walletId,
       const std::string& seedOffset) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto& session = getLocked(walletId);
-    if (!session.recoverySeedAllowed) {
-      throw WalletEngineError(
-          "recovery-seed reveal is unavailable for hardware and watch-only wallets");
-    }
-    return session.wallet->seed(seedOffset);
+    return withSession(walletId, [&](WalletSession& session) {
+      if (!session.recoverySeedAllowed) {
+        throw WalletEngineError(
+            "recovery-seed reveal is unavailable for hardware and watch-only wallets");
+      }
+      return session.wallet->seed(seedOffset);
+    });
   }
 
   uint64_t getBalance(const WalletId& walletId, uint32_t accountIndex) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return getLocked(walletId).wallet->balance(accountIndex);
+    std::shared_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession* session = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      session = &getLocked(walletId);
+    }
+    std::lock_guard<std::mutex> sessionLock(session->mutationMutex);
+    return session->wallet->balance(accountIndex);
   }
 
   uint64_t getUnlockedBalance(
       const WalletId& walletId,
       uint32_t accountIndex) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return getLocked(walletId).wallet->unlockedBalance(accountIndex);
+    std::shared_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession* session = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      session = &getLocked(walletId);
+    }
+    std::lock_guard<std::mutex> sessionLock(session->mutationMutex);
+    return session->wallet->unlockedBalance(accountIndex);
   }
 
   WalletSnapshot snapshot(const WalletId& walletId) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto& session = getLocked(walletId);
-    auto* wallet = session.wallet;
-
-    WalletSnapshot result;
-    result.id = session.id;
-    result.path = wallet->path();
-    result.primaryAddress = wallet->address(0, 0);
-    result.balanceAtomic = wallet->balance(0);
-    result.unlockedBalanceAtomic = wallet->unlockedBalance(0);
-    result.walletHeight = wallet->blockChainHeight();
-    result.daemonHeight = wallet->daemonBlockChainHeight();
-    result.daemonTargetHeight = wallet->daemonBlockChainTargetHeight();
-    result.refreshFromHeight = wallet->getRefreshFromBlockHeight();
-    result.daemonBytesReceived = wallet->getBytesReceived();
-    result.daemonBytesSent = wallet->getBytesSent();
-    result.synchronized = wallet->synchronized();
-    int status = Monero::Wallet::Status_Ok;
-    std::string statusError;
-    wallet->statusWithErrorString(status, statusError);
+    const WalletSnapshot result = withSession(
+        walletId,
+        [&](WalletSession& session) {
+          if (!session.cachedSnapshotReady) {
+            updateCachedSnapshot(session, 0);
+          }
+          return session.cachedSnapshot;
+        });
     logEngineDiagnostic(
         "snapshot.state",
         {{"walletId", maskDiagnosticId(walletId)},
@@ -1285,7 +2219,7 @@ class WalletEngine::Impl {
          {"refreshFromHeight", std::to_string(result.refreshFromHeight)},
          {"daemonBytesReceived", std::to_string(result.daemonBytesReceived)},
          {"daemonBytesSent", std::to_string(result.daemonBytesSent)},
-         {"status", std::to_string(status)},
+         {"source", "sanitized-cache"},
          {"synchronized", result.synchronized ? "true" : "false"}});
     return result;
   }
@@ -1293,8 +2227,15 @@ class WalletEngine::Impl {
   std::vector<WalletTransaction> getTransactions(
       const WalletId& walletId,
       uint32_t limit) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto* wallet = getLocked(walletId).wallet;
+    std::shared_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession* session = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      session = &getLocked(walletId);
+    }
+    std::lock_guard<std::mutex> sessionLock(session->mutationMutex);
+    auto* wallet = session->wallet;
     auto* history = wallet->history();
     if (history == nullptr) {
       throw WalletEngineError("wallet transaction history is unavailable");
@@ -1387,8 +2328,15 @@ class WalletEngine::Impl {
   std::vector<std::string> getOwnedOutputKeyImages(
       const WalletId& walletId) const {
 #if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto* wallet = getLocked(walletId).wallet;
+    std::shared_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession* session = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      session = &getLocked(walletId);
+    }
+    std::lock_guard<std::mutex> sessionLock(session->mutationMutex);
+    auto* wallet = session->wallet;
     const auto keyImages = wallet->ownedOutputKeyImages();
     throwIfWalletFailed(wallet, "getOwnedOutputKeyImages");
     logEngineDiagnostic(
@@ -1413,8 +2361,15 @@ class WalletEngine::Impl {
           "key image and spent-state counts do not match");
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto* wallet = getLocked(walletId).wallet;
+    std::shared_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession* session = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      session = &getLocked(walletId);
+    }
+    std::lock_guard<std::mutex> sessionLock(session->mutationMutex);
+    auto* wallet = session->wallet;
     const size_t changed = wallet->reconcileOutputKeyImages(
         keyImages,
         spentStates,
@@ -1436,6 +2391,201 @@ class WalletEngine::Impl {
 #endif
   }
 
+  void initializeLedgerPostScanControlPlane(
+      WalletSession& destinationSession,
+      const DaemonConfig& config,
+      uint64_t configurationGeneration) {
+    // This method is intentionally called with destinationSession.mutationMutex
+    // held and without the registry mutex.  It configures only the small
+    // authenticated Core RPC client used by `is_key_image_spent` and optional
+    // `gettransactions`; it never starts a refresh or owns public block
+    // transport.
+    if (destinationSession.ledgerPostScanControlPlaneInitialized &&
+        destinationSession.ledgerPostScanControlPlaneGeneration ==
+            configurationGeneration) {
+      logEngineDiagnostic(
+          "ledgerPostScanControlPlane.reused",
+          {{"network", std::to_string(static_cast<int>(destinationSession.network))},
+           {"configurationGeneration", std::to_string(configurationGeneration)}});
+      return;
+    }
+    if (!config.trusted) {
+      throw WalletEngineError(
+          "Ledger spent-status verification requires an explicitly trusted node");
+    }
+    if (destinationSession.wallet == nullptr) {
+      throw WalletEngineError("encrypted view wallet is not open");
+    }
+
+    const auto startedAt = std::chrono::steady_clock::now();
+    const bool initialized = destinationSession.wallet->init(
+        config.address,
+        0,
+        config.username,
+        config.password,
+        config.useSsl,
+        false,
+        config.proxyAddress);
+    if (!initialized) {
+      throwIfWalletFailed(
+          destinationSession.wallet, "ledgerPostScanControlPlane.init");
+      throw WalletEngineError("Ledger spent-status RPC initialization failed");
+    }
+    // Wallet::init() deliberately clears trust for a remote daemon. Reapply
+    // this explicit user-controlled choice only after init, otherwise Core
+    // correctly refuses the privacy-sensitive spent-status request below.
+    destinationSession.wallet->setTrustedDaemon(true);
+    if (!destinationSession.wallet->connectToDaemon()) {
+      throwIfWalletFailed(
+          destinationSession.wallet, "ledgerPostScanControlPlane.connectToDaemon");
+      throw WalletEngineError("Ledger spent-status RPC connection failed");
+    }
+    throwIfWalletFailed(
+        destinationSession.wallet, "ledgerPostScanControlPlane.connectToDaemon");
+
+    destinationSession.ledgerPostScanControlPlaneInitialized = true;
+    destinationSession.ledgerPostScanControlPlaneGeneration = configurationGeneration;
+    logEngineDiagnostic(
+        "ledgerPostScanControlPlane.ready",
+        {{"network", std::to_string(static_cast<int>(destinationSession.network))},
+         {"configurationGeneration", std::to_string(configurationGeneration)},
+         {"elapsedMs", std::to_string(elapsedMilliseconds(startedAt))},
+         {"trusted", "true"},
+         {"useSsl", config.useSsl ? "true" : "false"}});
+  }
+
+  LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet(
+      const WalletId& hardwareWalletId,
+      const WalletId& viewOnlyWalletId) {
+#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
+    if (hardwareWalletId == viewOnlyWalletId) {
+      throw WalletEngineError(
+          "Ledger source and view-only destination must be different sessions");
+    }
+
+    // Shared execution ownership keeps both session objects alive while still
+    // allowing the public transport and unrelated wallet scanners to advance.
+    std::shared_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession* sourceSession = nullptr;
+    WalletSession* destinationSession = nullptr;
+    {
+      std::lock_guard<std::mutex> registryLock(mutex_);
+      sourceSession = &getLocked(hardwareWalletId);
+      destinationSession = &getLocked(viewOnlyWalletId);
+      if (sourceSession->network != destinationSession->network) {
+        throw WalletEngineError(
+            "Ledger source and view-only destination use different networks");
+      }
+    }
+
+    auto* coordinator = findCoordinator(sourceSession->network);
+    if (coordinator == nullptr) {
+      throw WalletEngineError(
+          "Ledger spent-status verification requires configured network sync");
+    }
+    DaemonConfig controlPlaneConfig;
+    uint64_t configurationGeneration = 0;
+    {
+      std::lock_guard<std::mutex> coordinatorLock(coordinator->mutex);
+      if (!coordinator->configured) {
+        throw WalletEngineError(
+            "Ledger spent-status verification requires configured network sync");
+      }
+      controlPlaneConfig = coordinator->config;
+      configurationGeneration = coordinator->configurationGeneration;
+    }
+
+    // Always lock two sessions in stable wallet-id order. This prevents a
+    // concurrent shared-batch scan from mutating either wallet without holding
+    // the process-wide registry lock over Ledger I/O or trusted-node RPC.
+    WalletSession* firstSession = sourceSession;
+    WalletSession* secondSession = destinationSession;
+    if (secondSession->id < firstSession->id) {
+      std::swap(firstSession, secondSession);
+    }
+    std::unique_lock<std::mutex> firstSessionLock(firstSession->mutationMutex);
+    std::unique_lock<std::mutex> secondSessionLock(secondSession->mutationMutex);
+
+    auto* source = sourceSession->wallet;
+    auto* destination = destinationSession->wallet;
+    if (source->getDeviceType() == Monero::Wallet::Device_Software) {
+      throw WalletEngineError("key-image source is not a hardware wallet");
+    }
+    if (destination->getDeviceType() != Monero::Wallet::Device_Software) {
+      throw WalletEngineError("key-image destination is not a local view-only wallet");
+    }
+
+    // `cold_key_image_sync_to()` calls destination.import_key_images(), so
+    // Core deliberately owns the post-scan RPC client on the encrypted view
+    // wallet. Make that one control connection ready before reconciliation;
+    // it is not part of the shared gRPC ScanPack downloader and cannot trigger
+    // a second block scan.
+    initializeLedgerPostScanControlPlane(
+        *destinationSession, controlPlaneConfig, configurationGeneration);
+
+    LedgerKeyImageSyncResult result;
+    const auto operationStartedAt = std::chrono::steady_clock::now();
+    const auto verificationStartedAt = std::chrono::steady_clock::now();
+    Monero::LedgerKeyImageSyncStats coreStats;
+    result.importHeight = source->coldKeyImageSyncToWithStats(
+        *destination,
+        result.spentAtomic,
+        result.unspentAtomic,
+        coreStats);
+    throwIfWalletFailed(source, "syncLedgerKeyImagesToViewWallet.source");
+    throwIfWalletFailed(
+        destination,
+        "syncLedgerKeyImagesToViewWallet.destination");
+    result.verifiedOutputCount =
+        destination->ownedOutputKeyImages().size();
+    throwIfWalletFailed(
+        destination,
+        "syncLedgerKeyImagesToViewWallet.outputCount");
+    result.pendingOutputCount = coreStats.pendingOutputCount;
+    result.importedOutputCount = coreStats.importedOutputCount;
+    result.derivedOutputCount = coreStats.derivedOutputCount;
+    result.derivationDurationMs = coreStats.derivationDurationMs;
+    result.spentStatusRpcDurationMs = coreStats.spentStatusRpcDurationMs;
+    result.outgoingRpcDurationMs = coreStats.outgoingRpcDurationMs;
+    result.stateUpdateDurationMs = coreStats.stateUpdateDurationMs;
+    result.storeDurationMs = coreStats.storeDurationMs;
+    const uint64_t verificationWallMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - verificationStartedAt)
+            .count();
+    result.verificationDurationMs = verificationWallMs > result.storeDurationMs
+        ? verificationWallMs - result.storeDurationMs
+        : 0;
+    result.totalDurationMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - operationStartedAt)
+            .count();
+    logEngineDiagnostic(
+        "syncLedgerKeyImagesToViewWallet.success",
+        {{"hardwareWalletId", maskDiagnosticId(hardwareWalletId)},
+         {"viewOnlyWalletId", maskDiagnosticId(viewOnlyWalletId)},
+         {"importHeight", std::to_string(result.importHeight)},
+         {"verifiedOutputCount", std::to_string(result.verifiedOutputCount)},
+         {"pendingOutputCount", std::to_string(result.pendingOutputCount)},
+         {"importedOutputCount", std::to_string(result.importedOutputCount)},
+         {"derivedOutputCount", std::to_string(result.derivedOutputCount)},
+         {"derivationDurationMs", std::to_string(result.derivationDurationMs)},
+         {"spentStatusRpcDurationMs", std::to_string(result.spentStatusRpcDurationMs)},
+         {"outgoingRpcDurationMs", std::to_string(result.outgoingRpcDurationMs)},
+         {"stateUpdateDurationMs", std::to_string(result.stateUpdateDurationMs)},
+         {"verificationDurationMs", std::to_string(result.verificationDurationMs)},
+         {"storeDurationMs", std::to_string(result.storeDurationMs)},
+         {"totalDurationMs", std::to_string(result.totalDurationMs)}});
+    return result;
+#else
+    (void)hardwareWalletId;
+    (void)viewOnlyWalletId;
+    throw WalletEngineError(
+        "Ledger key-image import requires the TEX8 Core extension");
+#endif
+  }
+
   PreparedTransaction prepareTransaction(
       const PrepareTransactionRequest& request) {
     if (request.walletId.empty()) {
@@ -1445,69 +2595,69 @@ class WalletEngine::Impl {
       throw WalletEngineError("recipient address must not be empty");
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = getLocked(request.walletId);
-    Monero::optional<uint64_t> optionalAmount;
-    if (!request.amountAtomic.empty()) {
-      optionalAmount = parseAtomicAmount(request.amountAtomic);
-    }
-    Monero::PendingTransaction* pending = nullptr;
-    if (request.mfwNameExtraNonce.empty()) {
-      pending = session.wallet->createTransaction(
-          request.address,
-          request.paymentId,
-          optionalAmount,
-          request.mixinCount,
-          parseTransactionPriority(request.priority),
-          request.accountIndex,
-          std::set<uint32_t>{});
-    } else {
+    return withSession(request.walletId, [&](WalletSession& session) {
+      Monero::optional<uint64_t> optionalAmount;
+      if (!request.amountAtomic.empty()) {
+        optionalAmount = parseAtomicAmount(request.amountAtomic);
+      }
+      Monero::PendingTransaction* pending = nullptr;
+      if (request.mfwNameExtraNonce.empty()) {
+        pending = session.wallet->createTransaction(
+            request.address,
+            request.paymentId,
+            optionalAmount,
+            request.mixinCount,
+            parseTransactionPriority(request.priority),
+            request.accountIndex,
+            std::set<uint32_t>{});
+      } else {
 #if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
-      if (!request.paymentId.empty() ||
-          !isCanonicalMfwNameExtraNonce(request.mfwNameExtraNonce)) {
-        throw WalletEngineError("MFW name transaction nonce is invalid");
-      }
-      const std::string nonce(
-          reinterpret_cast<const char*>(request.mfwNameExtraNonce.data()),
-          request.mfwNameExtraNonce.size());
-      pending = session.wallet->createTransactionWithExtraNonce(
-          request.address,
-          optionalAmount,
-          nonce,
-          request.mixinCount,
-          parseTransactionPriority(request.priority),
-          request.accountIndex,
-          std::set<uint32_t>{});
+        if (!request.paymentId.empty() ||
+            !isCanonicalMfwNameExtraNonce(request.mfwNameExtraNonce)) {
+          throw WalletEngineError("MFW name transaction nonce is invalid");
+        }
+        const std::string nonce(
+            reinterpret_cast<const char*>(request.mfwNameExtraNonce.data()),
+            request.mfwNameExtraNonce.size());
+        pending = session.wallet->createTransactionWithExtraNonce(
+            request.address,
+            optionalAmount,
+            nonce,
+            request.mixinCount,
+            parseTransactionPriority(request.priority),
+            request.accountIndex,
+            std::set<uint32_t>{});
 #else
-      throw WalletEngineError(
-          "MFW name transactions require the TEX8 Monero Core extension");
+        throw WalletEngineError(
+            "MFW name transactions require the TEX8 Monero Core extension");
 #endif
-    }
-    if (pending == nullptr) {
-      throw WalletEngineError("Monero returned a null pending transaction");
-    }
-
-    const auto pendingId = nextPendingTransactionId();
-    auto result = toPreparedTransaction(pendingId, *pending);
-    if (pending->status() != Monero::PendingTransaction::Status_Ok ||
-        pending->txCount() == 0) {
-      if (result.error.empty()) {
-        result.error = "transaction preparation failed";
       }
-      result.id.clear();
-      session.wallet->disposeTransaction(pending);
-      return result;
-    }
-    if (!request.mfwNameExtraNonce.empty() && pending->txCount() != 1) {
-      result.error =
-          "MFW name operation must fit in exactly one transaction";
-      result.id.clear();
-      session.wallet->disposeTransaction(pending);
-      return result;
-    }
+      if (pending == nullptr) {
+        throw WalletEngineError("Monero returned a null pending transaction");
+      }
 
-    session.pendingTransactions.emplace(pendingId, pending);
-    return result;
+      const auto pendingId = nextPendingTransactionId();
+      auto result = toPreparedTransaction(pendingId, *pending);
+      if (pending->status() != Monero::PendingTransaction::Status_Ok ||
+          pending->txCount() == 0) {
+        if (result.error.empty()) {
+          result.error = "transaction preparation failed";
+        }
+        result.id.clear();
+        session.wallet->disposeTransaction(pending);
+        return result;
+      }
+      if (!request.mfwNameExtraNonce.empty() && pending->txCount() != 1) {
+        result.error =
+            "MFW name operation must fit in exactly one transaction";
+        result.id.clear();
+        session.wallet->disposeTransaction(pending);
+        return result;
+      }
+
+      session.pendingTransactions.emplace(pendingId, pending);
+      return result;
+    });
   }
 
   PreparedTransaction commitTransaction(
@@ -1517,49 +2667,51 @@ class WalletEngine::Impl {
       throw WalletEngineError("pending transaction id must not be empty");
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = getLocked(walletId);
-    auto it = session.pendingTransactions.find(pendingId);
-    if (it == session.pendingTransactions.end()) {
-      throw WalletEngineError("unknown pending transaction id: " + pendingId);
-    }
+    return withSession(walletId, [&](WalletSession& session) {
+      auto it = session.pendingTransactions.find(pendingId);
+      if (it == session.pendingTransactions.end()) {
+        throw WalletEngineError("unknown pending transaction id: " + pendingId);
+      }
 
-    auto* pending = it->second;
-    auto result = toPreparedTransaction(pendingId, *pending);
-    const bool committed = pending->commit();
-    result.status = pendingTransactionStatusName(pending->status());
-    result.error = pending->errorString();
-    if (!committed && result.error.empty()) {
-      result.error = "transaction commit failed";
-    }
+      auto* pending = it->second;
+      auto result = toPreparedTransaction(pendingId, *pending);
+      const bool committed = pending->commit();
+      result.status = pendingTransactionStatusName(pending->status());
+      result.error = pending->errorString();
+      if (!committed && result.error.empty()) {
+        result.error = "transaction commit failed";
+      }
 
-    session.wallet->disposeTransaction(pending);
-    session.pendingTransactions.erase(it);
-    return result;
+      session.wallet->disposeTransaction(pending);
+      session.pendingTransactions.erase(it);
+      updateCachedSnapshot(
+          session, session.cachedSnapshot.daemonTargetHeight);
+      return result;
+    });
   }
 
   HardwareWalletStatus getHardwareWalletStatus(
       const WalletId& walletId) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = getLocked(walletId);
-    updateHardwareStatusFromWallet(session);
-    return session.hardwareStatus;
+    return withSession(walletId, [&](WalletSession& session) {
+      updateHardwareStatusFromWallet(session);
+      return session.hardwareStatus;
+    });
   }
 
   HardwareWalletStatus reconnectHardwareWallet(const WalletId& walletId) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = getLocked(walletId);
-    if (session.wallet->getDeviceType() == Monero::Wallet::Device_Software) {
-      throw WalletEngineError("wallet is not backed by a hardware device");
-    }
+    return withSession(walletId, [&](WalletSession& session) {
+      if (session.wallet->getDeviceType() == Monero::Wallet::Device_Software) {
+        throw WalletEngineError("wallet is not backed by a hardware device");
+      }
 
-    const bool connected = session.wallet->reconnectDevice();
-    updateHardwareStatusFromWallet(session);
-    session.hardwareStatus.connected = connected;
-    session.hardwareStatus.promptKind =
-        connected ? "reconnected" : "reconnect-failed";
-    session.hardwareStatus.requiresUserAction = !connected;
-    return session.hardwareStatus;
+      const bool connected = session.wallet->reconnectDevice();
+      updateHardwareStatusFromWallet(session);
+      session.hardwareStatus.connected = connected;
+      session.hardwareStatus.promptKind =
+          connected ? "reconnected" : "reconnect-failed";
+      session.hardwareStatus.requiresUserAction = !connected;
+      return session.hardwareStatus;
+    });
   }
 
   HardwareWalletStatus showHardwareWalletAddress(
@@ -1567,19 +2719,19 @@ class WalletEngine::Impl {
       uint32_t accountIndex,
       uint32_t addressIndex,
       const std::string& paymentId) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& session = getLocked(walletId);
-    if (session.wallet->getDeviceType() == Monero::Wallet::Device_Software) {
-      throw WalletEngineError("wallet is not backed by a hardware device");
-    }
+    return withSession(walletId, [&](WalletSession& session) {
+      if (session.wallet->getDeviceType() == Monero::Wallet::Device_Software) {
+        throw WalletEngineError("wallet is not backed by a hardware device");
+      }
 
-    session.hardwareStatus.requiresUserAction = true;
-    session.hardwareStatus.promptKind = "address";
-    session.wallet->deviceShowAddress(accountIndex, addressIndex, paymentId);
-    updateHardwareStatusFromWallet(session);
-    session.hardwareStatus.requiresUserAction = false;
-    session.hardwareStatus.promptKind = "address-confirmed";
-    return session.hardwareStatus;
+      session.hardwareStatus.requiresUserAction = true;
+      session.hardwareStatus.promptKind = "address";
+      session.wallet->deviceShowAddress(accountIndex, addressIndex, paymentId);
+      updateHardwareStatusFromWallet(session);
+      session.hardwareStatus.requiresUserAction = false;
+      session.hardwareStatus.promptKind = "address-confirmed";
+      return session.hardwareStatus;
+    });
   }
 
  private:
@@ -1594,9 +2746,18 @@ class WalletEngine::Impl {
 
     const std::string maskedWalletId = maskDiagnosticId(session.id);
     const uint64_t heightBeforeStop = wallet->blockChainHeight();
-    // WalletManager::closeWallet(true) stores before it stops the refresh
-    // thread. That can persist an older cache checkpoint while a scan is still
-    // completing. Stop first, then store the settled Core cache explicitly.
+    // Request that the public Wallet API pauses the background refresh and
+    // interrupts an in-flight refresh before serializing the local cache.
+    // `WalletImpl::stopRefresh()` is intentionally not public API, so the
+    // bridge must not call it through `Monero::Wallet`.
+    logEngineDiagnostic(
+        "closeWallet.refreshStopStarted",
+        {
+            {"context", context},
+            {"walletId", maskedWalletId},
+            {"heightBeforeStop", std::to_string(heightBeforeStop)},
+            {"store", store ? "true" : "false"},
+        });
     wallet->pauseRefresh();
     wallet->stop();
     const uint64_t heightAfterStop = wallet->blockChainHeight();
@@ -1655,6 +2816,7 @@ class WalletEngine::Impl {
         !wallet->watchOnly();
     session->hardwareStatus.walletId = session->id;
     updateHardwareStatusFromWallet(*session);
+    updateCachedSnapshot(*session, 0);
 
     logEngineDiagnostic(
         "wallet.added",
@@ -1692,6 +2854,24 @@ class WalletEngine::Impl {
     return *it->second;
   }
 
+  template <typename Function>
+  auto withSession(const WalletId& walletId, Function&& function) const
+      -> decltype(function(std::declval<WalletSession&>())) {
+    // Closing/removing a wallet takes the unique side of this barrier. The
+    // registry lock is therefore needed only long enough to resolve a stable
+    // session pointer; slow Core, daemon, and hardware work is serialized by
+    // the per-wallet mutex and never blocks lookup or unrelated wallets.
+    std::shared_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession* session = nullptr;
+    {
+      std::lock_guard<std::mutex> registryLock(mutex_);
+      session = &getLocked(walletId);
+    }
+    std::unique_lock<std::mutex> sessionLock(session->mutationMutex);
+    return function(*session);
+  }
+
   void disposePendingTransactions(WalletSession& session) const {
     if (session.wallet == nullptr) {
       session.pendingTransactions.clear();
@@ -1723,8 +2903,953 @@ class WalletEngine::Impl {
     }
   }
 
+  void updateCachedSnapshot(
+      WalletSession& session,
+      uint64_t sharedTargetHeight) const {
+    auto* wallet = session.wallet;
+    if (wallet == nullptr) {
+      session.cachedSnapshotReady = false;
+      return;
+    }
+    WalletSnapshot next;
+    next.id = session.id;
+    next.path = wallet->path();
+    next.primaryAddress = wallet->address(0, 0);
+    // Monero's Wallet API balance(accountIndex) is account-scoped. A snapshot
+    // represents the complete wallet, so summing only account 0 silently
+    // hides funds held by additional accounts (and all their subaddresses).
+    const auto accountCount = wallet->numSubaddressAccounts();
+    for (std::size_t accountIndex = 0; accountIndex < accountCount; ++accountIndex) {
+      const auto balance = wallet->balance(static_cast<uint32_t>(accountIndex));
+      const auto unlocked =
+          wallet->unlockedBalance(static_cast<uint32_t>(accountIndex));
+      if (balance > std::numeric_limits<uint64_t>::max() - next.balanceAtomic ||
+          unlocked > std::numeric_limits<uint64_t>::max() -
+              next.unlockedBalanceAtomic) {
+        throw WalletEngineError("wallet balance exceeds the supported atomic range");
+      }
+      next.balanceAtomic += balance;
+      next.unlockedBalanceAtomic += unlocked;
+    }
+    next.walletHeight = wallet->blockChainHeight();
+    next.refreshFromHeight = wallet->getRefreshFromBlockHeight();
+    next.daemonBytesReceived = wallet->getBytesReceived();
+    next.daemonBytesSent = wallet->getBytesSent();
+    next.pendingOutputKeyImageCount = wallet->pendingOutputKeyImageCount();
+    throwIfWalletFailed(wallet, "snapshot.pendingOutputKeyImageCount");
+    if (sharedTargetHeight > 0) {
+      next.daemonHeight = sharedTargetHeight;
+      next.daemonTargetHeight = sharedTargetHeight;
+      next.synchronized = next.walletHeight >= sharedTargetHeight;
+    } else {
+      // Local open remains network-free. The coordinator replaces these local
+      // values as soon as it publishes an authenticated chain target.
+      next.daemonHeight = next.walletHeight;
+      next.daemonTargetHeight = next.walletHeight;
+      next.synchronized = wallet->synchronized();
+    }
+    session.cachedSnapshot = std::move(next);
+    session.cachedSnapshotReady = true;
+  }
+
+  NetworkSyncCoordinator* findCoordinator(NetworkType network) const {
+    std::lock_guard<std::mutex> lock(coordinatorsMutex_);
+    const auto it = coordinators_.find(static_cast<int>(network));
+    return it == coordinators_.end() ? nullptr : it->second.get();
+  }
+
+  void runNetworkCoordinator(NetworkSyncCoordinator& coordinator) {
+    constexpr const char* kPublicTransportId = "public-transport";
+    std::shared_ptr<const Monero::Wallet::SharedBlockBatch> prefetchedBatch;
+    WalletId prefetchedProviderId;
+    uint64_t prefetchedConfigurationGeneration = 0;
+    uint64_t prefetchedFetchMs = 0;
+    for (;;) {
+      const auto iterationStarted = std::chrono::steady_clock::now();
+      std::vector<WalletId> walletIds;
+      DaemonConfig config;
+      std::string grpcEndpoint;
+      WalletId priorityWalletId;
+      uint64_t configurationGeneration = 0;
+      bool routineTipCheck = false;
+      {
+        std::unique_lock<std::mutex> lock(coordinator.mutex);
+        coordinator.condition.wait_for(
+            lock,
+            std::chrono::seconds(10),
+            [&coordinator]() {
+              return coordinator.stop || coordinator.wake;
+            });
+        if (coordinator.stop) {
+          coordinator.status.state = "stopped";
+          setNetworkPhaseLocked(coordinator, "stopped");
+          return;
+        }
+        coordinator.wake = false;
+        // App unlock opens every registered wallet concurrently. Coalesce that
+        // short burst so the first fetched immutable batch is fanned out to
+        // all wallets, rather than selecting a provider from a one-wallet
+        // snapshot a few milliseconds too early.
+        coordinator.condition.wait_for(
+            lock,
+            std::chrono::milliseconds(150),
+            [&coordinator]() { return coordinator.stop; });
+        if (coordinator.stop) {
+          coordinator.status.state = "stopped";
+          setNetworkPhaseLocked(coordinator, "stopped");
+          return;
+        }
+        if (!coordinator.configured || coordinator.wallets.empty()) {
+          coordinator.status.state = "idle";
+          setNetworkPhaseLocked(coordinator, "idle");
+          continue;
+        }
+        walletIds.assign(
+            coordinator.wallets.begin(), coordinator.wallets.end());
+        config = coordinator.config;
+        grpcEndpoint = coordinator.grpcEndpoint;
+        priorityWalletId = coordinator.priorityWalletId;
+        configurationGeneration = coordinator.configurationGeneration;
+        network_fanout::prioritize(walletIds, priorityWalletId);
+        // A synchronized coordinator wakes periodically to check for one new
+        // block and the mempool. That maintenance is not a new connection or
+        // a new synchronization. Keep the last truthful synced state until
+        // the provider actually returns new public block data.
+        routineTipCheck = coordinator.status.state == "synced" &&
+            coordinator.transportStarted;
+        if (!routineTipCheck) {
+          coordinator.status.state = "selecting-provider";
+          setNetworkPhaseLocked(coordinator, "selecting-provider");
+        }
+        coordinator.status.queueDepth = walletIds.size();
+      }
+
+      const auto providerSelectionStarted = std::chrono::steady_clock::now();
+
+      // Closing a wallet takes the same barrier. UI snapshots do not, so
+      // balance and progress rendering remain responsive while scanners work.
+      std::shared_lock<std::shared_timed_mutex> executionLock(
+          coordinatorExecutionMutex_);
+      WalletId providerId{kPublicTransportId};
+      Monero::Wallet* provider = nullptr;
+      uint64_t minimumTarget = std::numeric_limits<uint64_t>::max();
+      uint64_t minimumRetainedTarget = std::numeric_limits<uint64_t>::max();
+      std::unordered_set<WalletId> coolingProviders;
+      std::unordered_set<WalletId> coolingScanners;
+      std::unordered_map<WalletId, NetworkSyncCoordinator::InflightScan>
+          inflightScans;
+      {
+        std::lock_guard<std::mutex> lock(coordinator.mutex);
+        inflightScans = coordinator.inflightScans;
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = coordinator.providerRetryAfter.begin();
+             it != coordinator.providerRetryAfter.end();) {
+          if (it->second <= now) {
+            it = coordinator.providerRetryAfter.erase(it);
+          } else {
+            coolingProviders.insert(it->first);
+            ++it;
+          }
+        }
+        for (auto it = coordinator.scannerRetryAfter.begin();
+             it != coordinator.scannerRetryAfter.end();) {
+          if (it->second <= now) {
+            it = coordinator.scannerRetryAfter.erase(it);
+          } else {
+            coolingScanners.insert(it->first);
+            ++it;
+          }
+        }
+      }
+      std::vector<std::pair<WalletId, WalletSession*>> availableSessions;
+      {
+        std::lock_guard<std::mutex> registryLock(mutex_);
+        availableSessions.reserve(walletIds.size());
+        for (const auto& id : walletIds) {
+          const auto it = wallets_.find(id);
+          if (it != wallets_.end() && it->second->wallet != nullptr &&
+              it->second->network == coordinator.network) {
+            availableSessions.emplace_back(id, it->second.get());
+          }
+        }
+      }
+      for (const auto& item : availableSessions) {
+        const auto& id = item.first;
+        const auto inflight = inflightScans.find(id);
+        if (inflight != inflightScans.end()) {
+          minimumRetainedTarget = std::min(
+              minimumRetainedTarget, inflight->second.target);
+          continue;
+        }
+        std::unique_lock<std::mutex> sessionLock(
+            item.second->mutationMutex);
+        const uint64_t target =
+            item.second->wallet->walletSyncTargetCursor();
+        minimumRetainedTarget = std::min(minimumRetainedTarget, target);
+        if (coolingScanners.count(id) == 0) {
+          minimumTarget = std::min(minimumTarget, target);
+        }
+      }
+      {
+        std::lock_guard<std::mutex> lock(coordinator.mutex);
+        if (coolingProviders.count(kPublicTransportId) == 0) {
+          if (coordinator.publicTransport == nullptr) {
+            coordinator.publicTransport = manager_->createSharedSyncProvider(
+                toMoneroNetwork(coordinator.network));
+            if (coordinator.publicTransport == nullptr) {
+              throw WalletEngineError(
+                  "Monero Core did not create a public sync transport");
+            }
+          }
+          provider = coordinator.publicTransport;
+        }
+      }
+
+      if (provider == nullptr) {
+        std::lock_guard<std::mutex> lock(coordinator.mutex);
+        coordinator.status.lastProviderSelectionMs =
+            elapsedMilliseconds(providerSelectionStarted);
+        const bool scansPending = !coordinator.inflightScans.empty();
+        coordinator.status.state = scansPending
+            ? "scanning"
+            : (coolingProviders.empty() ? "idle" : "provider-backoff");
+        setNetworkPhaseLocked(coordinator, scansPending
+            ? "scanning-wallets"
+            : (coolingProviders.empty() ? "idle" : "provider-backoff"));
+        coordinator.status.queueDepth = coordinator.inflightScans.size() +
+            coordinator.scannerRetryAfter.size();
+        continue;
+      }
+      if (minimumTarget == std::numeric_limits<uint64_t>::max()) {
+        std::lock_guard<std::mutex> lock(coordinator.mutex);
+        coordinator.status.lastProviderSelectionMs =
+            elapsedMilliseconds(providerSelectionStarted);
+        const bool scansPending = !coordinator.inflightScans.empty();
+        coordinator.status.state = scansPending
+            ? "scanning"
+            : "scanner-backoff";
+        setNetworkPhaseLocked(
+            coordinator,
+            scansPending ? "scanning-wallets" : "scanner-backoff");
+        coordinator.status.queueDepth = coordinator.inflightScans.size() +
+            coolingScanners.size();
+        continue;
+      }
+      {
+        std::lock_guard<std::mutex> lock(coordinator.mutex);
+        coordinator.status.lastProviderSelectionMs =
+            elapsedMilliseconds(providerSelectionStarted);
+        // Record the public block-download range independently of wallet scan
+        // cursors. A newly joined older wallet starts a new shared range; all
+        // wallets still consume the same downloaded batches.
+        network_fanout::updateDownloadRange(
+            coordinator.downloadRangeInitialized,
+            minimumTarget,
+            coordinator.status.downloadStartHeight,
+            coordinator.status.downloadedHeight);
+      }
+
+      try {
+        bool initializeProvider = false;
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          initializeProvider = !coordinator.publicTransportInitialized;
+        }
+        if (initializeProvider) {
+          const auto initStarted = std::chrono::steady_clock::now();
+          {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            setNetworkPhaseLocked(coordinator, "initializing-transport");
+          }
+          provider->setTrustedDaemon(config.trusted);
+          const bool initialized = provider->init(
+              config.address,
+              0,
+              config.username,
+              config.password,
+              config.useSsl,
+              false,
+              config.proxyAddress);
+          if (!initialized) {
+            throwIfWalletFailed(provider, "publicSyncTransport.init");
+            throw WalletEngineError("public sync transport init failed");
+          }
+          // Wallet::init configures RPC but does not guarantee that a
+          // keyless provider has performed its first daemon connection. A
+          // normal wallet reaches it through refresh(), whereas this public
+          // transport fetches a shared batch directly. Establish
+          // that one shared connection here so no individual wallet opens its
+          // own transport and no fetch fails with "no connection to daemon".
+          const auto daemonConnectStarted = std::chrono::steady_clock::now();
+          if (!provider->connectToDaemon()) {
+            throwIfWalletFailed(provider, "publicSyncTransport.connectToDaemon");
+            throw WalletEngineError("public sync transport daemon connection failed");
+          }
+          throwIfWalletFailed(provider, "publicSyncTransport.connectToDaemon");
+          logEngineDiagnostic(
+              "networkSync.providerDaemonConnected",
+              {{"elapsedMs", std::to_string(
+                  std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - daemonConnectStarted)
+                      .count())}});
+          bool applyGrpcEndpoint = false;
+          {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            applyGrpcEndpoint = !grpcEndpoint.empty()
+                && (!coordinator.publicTransportGrpcEndpointApplied
+                    || coordinator.publicTransportGrpcEndpoint != grpcEndpoint);
+          }
+          if (applyGrpcEndpoint) {
+            provider->setGrpcStreamEndpoint(grpcEndpoint);
+          }
+          {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            coordinator.publicTransportInitialized = true;
+            if (applyGrpcEndpoint) {
+              coordinator.publicTransportGrpcEndpoint = grpcEndpoint;
+              coordinator.publicTransportGrpcEndpointApplied = true;
+            }
+          }
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          ++coordinator.status.transportStarts;
+          coordinator.status.lastTransportInitializationMs =
+              elapsedMilliseconds(initStarted);
+          coordinator.transportStarted = true;
+          coordinator.providerWalletId = providerId;
+          logEngineDiagnostic(
+              "networkSync.providerReady",
+              {
+                  {"walletId", maskDiagnosticId(providerId)},
+                  {"network", std::to_string(
+                      static_cast<int>(coordinator.network))},
+                  {"elapsedMs", std::to_string(
+                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - initStarted)
+                          .count())},
+                  {"grpcEndpointAction", applyGrpcEndpoint
+                      ? "configured"
+                      : "preserved-core-session-state"},
+              });
+        }
+
+        if (!routineTipCheck) {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          coordinator.status.state = "fetching-blocks";
+          setNetworkPhaseLocked(coordinator, "fetching-blocks");
+        }
+        const auto blockFetchStarted = std::chrono::steady_clock::now();
+        bool usedPrefetch = false;
+        bool usedReplayCache = false;
+        std::shared_ptr<const Monero::Wallet::SharedBlockBatch> nativeBatch;
+        const bool prefetchMatchesStream = prefetchedBatch &&
+            prefetchedProviderId == providerId &&
+            prefetchedConfigurationGeneration == configurationGeneration;
+        if (prefetchMatchesStream &&
+            prefetchedBatch->startHeight() == minimumTarget) {
+          nativeBatch = std::move(prefetchedBatch);
+          usedPrefetch = true;
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          coordinator.status.prefetchQueueDepth = 0;
+          coordinator.status.prefetchedPayloadBytes = 0;
+        } else {
+          if (!prefetchMatchesStream ||
+              (prefetchedBatch &&
+               prefetchedBatch->startHeight() < minimumTarget)) {
+            prefetchedBatch.reset();
+          }
+          {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            coordinator.status.prefetchQueueDepth = prefetchedBatch ? 1 : 0;
+            coordinator.status.prefetchedPayloadBytes =
+                prefetchedBatch ? prefetchedBatch->payloadBytes() : 0;
+            nativeBatch = findReplayBatchLocked(
+                coordinator, minimumTarget, configurationGeneration);
+          }
+          usedReplayCache = nativeBatch != nullptr;
+          if (!usedReplayCache) {
+            nativeBatch = provider->fetchSharedBlockBatchFrom(minimumTarget);
+            throwIfWalletFailed(provider, "fetchSharedBlockBatchFrom");
+          }
+        }
+        if (!nativeBatch) {
+          throw WalletEngineError("Core returned no shared block batch");
+        }
+
+        const auto batchValidationError =
+            network_fanout::publicBatchValidationError(
+                minimumTarget,
+                nativeBatch->startHeight(),
+                nativeBatch->endHeight(),
+                nativeBatch->currentHeight(),
+                nativeBatch->blockCount());
+        if (batchValidationError) {
+          logEngineDiagnostic(
+              "networkSync.batchRejected",
+              {
+                  {"reason", *batchValidationError},
+                  {"requestedCursor", std::to_string(minimumTarget)},
+                  {"startHeight", std::to_string(nativeBatch->startHeight())},
+                  {"endHeight", std::to_string(nativeBatch->endHeight())},
+                  {"currentHeight", std::to_string(nativeBatch->currentHeight())},
+                  {"blockCount", std::to_string(nativeBatch->blockCount())},
+              });
+          throw WalletEngineError(
+              "rejected invalid public block batch: " +
+              *batchValidationError);
+        }
+
+        SharedBlockBatchHandle batch;
+        batch.native = nativeBatch;
+        batch.startHeight = nativeBatch->startHeight();
+        batch.endHeight = nativeBatch->endHeight();
+        batch.currentHeight = nativeBatch->currentHeight();
+        batch.blockCount = nativeBatch->blockCount();
+        const uint64_t networkBytesDelta =
+            usedReplayCache ? 0 : nativeBatch->networkBytes();
+        const uint64_t payloadBytesDelta =
+            usedReplayCache ? 0 : nativeBatch->payloadBytes();
+        // SharedBlockBatch deliberately exposes decoded payload and Core
+        // network accounting, but not HTTP/2 framing bytes.  Do not invent a
+        // wire-byte value by reusing either counter: the benchmark must fail
+        // closed until the Core exports per-stream framing instrumentation.
+        const uint64_t grpcFramedBytesDelta = 0;
+        uint64_t downloadStartHeight = 0;
+        uint64_t downloadedHeight = 0;
+        uint64_t authenticatedTargetHeight = 0;
+        size_t replayCacheEntries = 0;
+        uint64_t replayCachePayloadBytes = 0;
+        const uint64_t blockFetchMs = usedPrefetch
+            ? prefetchedFetchMs
+            : elapsedMilliseconds(blockFetchStarted);
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          coordinator.status.lastError.clear();
+          coordinator.status.consecutiveFailures = 0;
+          if (!usedReplayCache) {
+            if (batch.blockCount > 0) {
+              ++coordinator.status.fetchedBatches;
+              ++coordinator.status.decodedBatches;
+            }
+            if (usedPrefetch) {
+              ++coordinator.status.prefetchHits;
+            }
+            coordinator.status.lastBlockFetchMs = blockFetchMs;
+            coordinator.status.totalBlockFetchMs += blockFetchMs;
+          }
+          coordinator.status.networkBytesReceived += networkBytesDelta;
+          coordinator.status.payloadBytesReceived += payloadBytesDelta;
+          coordinator.status.grpcFramedBytesReceived += grpcFramedBytesDelta;
+          if (batch.blockCount > 0 && !usedReplayCache) {
+            coordinator.status.lastNonEmptyBlockFetchMs =
+                coordinator.status.lastBlockFetchMs;
+            coordinator.status.lastNonEmptyBlockCount = batch.blockCount;
+            coordinator.status.lastNonEmptyNetworkBytes = networkBytesDelta;
+            coordinator.status.lastNonEmptyPayloadBytes = payloadBytesDelta;
+          }
+          if (!usedReplayCache) {
+            coordinator.status.fetchedBlocks += batch.blockCount;
+            storeReplayBatchLocked(
+                coordinator,
+                nativeBatch,
+                configurationGeneration,
+                minimumRetainedTarget == std::numeric_limits<uint64_t>::max()
+                    ? minimumTarget
+                    : minimumRetainedTarget);
+          }
+          if (coordinator.status.downloadStartHeight == 0) {
+            coordinator.status.downloadStartHeight = batch.startHeight;
+          }
+          coordinator.status.downloadedHeight = std::max(
+              coordinator.status.downloadedHeight,
+              batch.endHeight);
+          // An empty tip batch has no start/end range. Its authenticated
+          // current height nevertheless proves that public blockchain data is
+          // current. Never publish the contradictory "100%, block 0 of tip".
+          if (batch.blockCount == 0 && batch.currentHeight > 0) {
+            if (coordinator.status.downloadStartHeight == 0) {
+              coordinator.status.downloadStartHeight = batch.currentHeight;
+            }
+            coordinator.status.downloadedHeight = std::max(
+                coordinator.status.downloadedHeight,
+                batch.currentHeight);
+          }
+          // A bounded range may transiently produce an empty prefetched batch
+          // without a populated current-height field. The last authenticated
+          // daemon tip remains valid and must never collapse to zero.
+          if (batch.currentHeight > 0) {
+            coordinator.status.targetHeight = std::max(
+                coordinator.status.targetHeight, batch.currentHeight);
+          }
+          authenticatedTargetHeight = coordinator.status.targetHeight;
+          downloadStartHeight = coordinator.status.downloadStartHeight;
+          downloadedHeight = coordinator.status.downloadedHeight;
+          replayCacheEntries = coordinator.status.replayCacheEntries;
+          replayCachePayloadBytes =
+              coordinator.status.replayCachePayloadBytes;
+          if (!routineTipCheck || batch.blockCount > 0) {
+            coordinator.status.state = "fanout";
+            setNetworkPhaseLocked(coordinator, "scanning-wallets");
+          }
+        }
+        logEngineDiagnostic(
+            "networkSync.batchFetched",
+            {
+                {"network", std::to_string(
+                    static_cast<int>(coordinator.network))},
+                {"startHeight", std::to_string(batch.startHeight)},
+                {"endHeight", std::to_string(batch.endHeight)},
+                {"downloadStartHeight", std::to_string(downloadStartHeight)},
+                {"downloadedHeight", std::to_string(downloadedHeight)},
+                {"targetHeight", std::to_string(batch.currentHeight)},
+                {"blockCount", std::to_string(batch.blockCount)},
+                {"elapsedMs", std::to_string(blockFetchMs)},
+                {"networkBytesReceived", std::to_string(networkBytesDelta)},
+                {"payloadBytesReceived", std::to_string(payloadBytesDelta)},
+                {"grpcFramedBytesReceived", std::to_string(grpcFramedBytesDelta)},
+                {"prefetched", usedPrefetch ? "true" : "false"},
+                {"transport", usedReplayCache ? "replay-cache" : "network"},
+                {"replayCacheEntries", std::to_string(
+                    replayCacheEntries)},
+                {"replayCachePayloadBytes", std::to_string(
+                    replayCachePayloadBytes)},
+            });
+
+        struct ScanWork {
+          WalletId id;
+          WalletSession* session{nullptr};
+          Monero::Wallet* wallet{nullptr};
+          uint64_t cursor{0};
+          uint64_t target{0};
+          uint64_t resultingCursor{0};
+          bool delivered{false};
+          bool deferred{false};
+          std::string error;
+        };
+        std::vector<ScanWork> scanWork;
+        scanWork.reserve(walletIds.size());
+        for (const auto& item : availableSessions) {
+          const auto& id = item.first;
+          if (inflightScans.count(id) != 0 ||
+              coolingScanners.count(id) != 0) {
+            continue;
+          }
+          std::unique_lock<std::mutex> sessionLock(
+              item.second->mutationMutex);
+          ScanWork work;
+          work.id = id;
+          work.session = item.second;
+          work.wallet = item.second->wallet;
+          work.cursor = work.wallet->walletSyncCursor();
+          work.target = work.wallet->walletSyncTargetCursor();
+          work.resultingCursor = work.cursor;
+          scanWork.push_back(std::move(work));
+        }
+
+        const auto walletScanStarted = std::chrono::steady_clock::now();
+
+        // The keyless provider owns the only public daemon transport and never
+        // scans wallet ownership. Every real wallet is therefore an equal,
+        // bounded asynchronous consumer while the next public batch is
+        // downloaded and parsed independently.
+        const bool publicAtTip = batch.blockCount == 0 ||
+            (batch.currentHeight > 0 && batch.endHeight >= batch.currentHeight);
+        std::future<std::shared_ptr<const Monero::Wallet::SharedBlockBatch>>
+            prefetchFuture;
+        std::chrono::steady_clock::time_point prefetchStarted;
+        const bool canPrefetch = !usedReplayCache && !publicAtTip;
+        if (canPrefetch) {
+          const uint64_t nextCursor = batch.endHeight;
+          prefetchStarted = std::chrono::steady_clock::now();
+          prefetchFuture = std::async(
+              std::launch::async,
+              [provider, nextCursor]() {
+                return provider->fetchSharedBlockBatchFrom(nextCursor);
+              });
+        }
+
+        for (size_t workIndex = 0; workIndex < scanWork.size(); ++workIndex) {
+          auto& work = scanWork[workIndex];
+          if (batch.blockCount == 0 || work.cursor >= batch.endHeight ||
+              work.target > batch.endHeight) {
+            continue;
+          }
+          auto result = std::make_shared<
+              NetworkSyncCoordinator::AsyncScanResult>();
+          result->id = work.id;
+          result->resultingCursor = work.cursor;
+          {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            coordinator.inflightScans[work.id] =
+                NetworkSyncCoordinator::InflightScan{
+                    work.cursor, work.target};
+          }
+          const bool submitted = coordinator.scanExecutor &&
+              coordinator.scanExecutor->submit(
+                  work.id,
+                  [this, &coordinator, walletId = work.id, nativeBatch,
+                   result]() {
+                    executeAsyncWalletScan(
+                        coordinator, walletId, nativeBatch, result);
+                  },
+                  [this, &coordinator, result]() {
+                    completeAsyncWalletScan(coordinator, result);
+                  });
+          if (submitted) {
+            work.deferred = true;
+          } else {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            coordinator.inflightScans.erase(work.id);
+            work.error = "Wallet scan executor rejected the task";
+          }
+        }
+        size_t pendingScans = coordinator.scanExecutor
+            ? coordinator.scanExecutor->pending()
+            : 0;
+        {
+          // BoundedExecutor removes an active key immediately before its
+          // completion callback removes the matching coordinator entry. Keep
+          // that tiny hand-off window visible so the coordinator can never
+          // announce a completed fan-out while a scan completion is pending.
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          pendingScans = std::max(
+              pendingScans, coordinator.inflightScans.size());
+        }
+        const size_t asynchronousWorkers = coordinator.scanExecutor
+            ? std::min(
+                coordinator.scanExecutor->workerCount(), pendingScans)
+            : 0;
+        const size_t workerLimit = asynchronousWorkers;
+
+        if (prefetchFuture.valid()) {
+          const auto prefetchWaitStarted = std::chrono::steady_clock::now();
+          auto nextBatch = prefetchFuture.get();
+          const uint64_t prefetchWaitMs =
+              elapsedMilliseconds(prefetchWaitStarted);
+          throwIfWalletFailed(provider, "fetchSharedBlockBatchFrom.prefetch");
+          if (!nextBatch) {
+            throw WalletEngineError("Core returned no prefetched block batch");
+          }
+          prefetchedFetchMs = elapsedMilliseconds(prefetchStarted);
+          prefetchedProviderId = providerId;
+          prefetchedConfigurationGeneration = configurationGeneration;
+          prefetchedBatch = std::move(nextBatch);
+          {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            ++coordinator.status.prefetchedBatches;
+            coordinator.status.lastPrefetchMs = prefetchedFetchMs;
+            coordinator.status.totalPrefetchMs += prefetchedFetchMs;
+            coordinator.status.lastPrefetchWaitMs = prefetchWaitMs;
+            coordinator.status.totalPrefetchWaitMs += prefetchWaitMs;
+            coordinator.status.prefetchQueueDepth = 1;
+            coordinator.status.prefetchedPayloadBytes =
+                prefetchedBatch->payloadBytes();
+            coordinator.status.peakPrefetchedPayloadBytes = std::max(
+                coordinator.status.peakPrefetchedPayloadBytes,
+                coordinator.status.prefetchedPayloadBytes);
+          }
+          logEngineDiagnostic(
+              "networkSync.batchPrefetched",
+              {
+                  {"network", std::to_string(
+                      static_cast<int>(coordinator.network))},
+                  {"startHeight", std::to_string(
+                      prefetchedBatch->startHeight())},
+                  {"endHeight", std::to_string(
+                      prefetchedBatch->endHeight())},
+                  {"blockCount", std::to_string(
+                      prefetchedBatch->blockCount())},
+                  {"elapsedMs", std::to_string(prefetchedFetchMs)},
+                  {"waitMs", std::to_string(prefetchWaitMs)},
+                  {"prefetchQueueDepth", "1"},
+                  {"prefetchQueueCapacity", "1"},
+                  {"prefetchedPayloadBytes", std::to_string(
+                      prefetchedBatch->payloadBytes())},
+              });
+        } else if (!prefetchedBatch) {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          coordinator.status.prefetchQueueDepth = 0;
+          coordinator.status.prefetchedPayloadBytes = 0;
+        }
+
+        uint64_t deliveries = 0;
+        uint64_t lowestCursor = std::numeric_limits<uint64_t>::max();
+        uint64_t highestCursor = 0;
+        uint64_t stalledWallets = coolingScanners.size();
+        for (const auto& work : scanWork) {
+          if (!work.error.empty()) {
+            ++stalledWallets;
+            logEngineDiagnostic(
+                "networkSync.walletStalled",
+                {{"status", work.error}});
+            {
+              std::lock_guard<std::mutex> lock(coordinator.mutex);
+              coordinator.scannerRetryAfter[work.id] =
+                  std::chrono::steady_clock::now() + std::chrono::seconds(30);
+            }
+            if (work.id == providerId) {
+              std::lock_guard<std::mutex> lock(coordinator.mutex);
+              coordinator.providerWalletId.clear();
+              coordinator.providerRetryAfter[work.id] =
+                  std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            }
+            continue;
+          }
+          if (work.id == providerId && work.delivered) {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            coordinator.providerRetryAfter.erase(work.id);
+          }
+          if (work.delivered) {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            coordinator.scannerRetryAfter.erase(work.id);
+          }
+          highestCursor = std::max(highestCursor, work.resultingCursor);
+          lowestCursor = std::min(lowestCursor, work.resultingCursor);
+          if (work.deferred) {
+            continue;
+          }
+          if (work.delivered) {
+            ++deliveries;
+          }
+          if (work.session != nullptr) {
+            std::unique_lock<std::mutex> sessionLock(
+                work.session->mutationMutex);
+            updateCachedSnapshot(*work.session, batch.currentHeight);
+          }
+        }
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          for (const auto& inflight : coordinator.inflightScans) {
+            lowestCursor = std::min(lowestCursor, inflight.second.cursor);
+            highestCursor = std::max(highestCursor, inflight.second.cursor);
+          }
+        }
+        if (lowestCursor == std::numeric_limits<uint64_t>::max()) {
+          lowestCursor = 0;
+        } else if (downloadStartHeight > 0) {
+          // A freshly opened Core wallet can briefly report cursor 1 before
+          // its restore baseline is applied by the first immutable batch.
+          // Never make the product-wide progress jump backwards below the
+          // authenticated range that the coordinator actually requested.
+          lowestCursor = std::max(lowestCursor, downloadStartHeight);
+        }
+
+        if (pendingScans == 0) {
+          // Deferred work may finish between submit() and the status sample.
+          // Re-read every cursor only after no scan is active; this publishes
+          // the committed wallet state without blocking the public prefetch.
+          uint64_t committedLowest = std::numeric_limits<uint64_t>::max();
+          uint64_t committedHighest = 0;
+          for (const auto& item : availableSessions) {
+            std::unique_lock<std::mutex> sessionLock(
+                item.second->mutationMutex);
+            const uint64_t cursor =
+                item.second->wallet->walletSyncCursor();
+            committedLowest = std::min(committedLowest, cursor);
+            committedHighest = std::max(committedHighest, cursor);
+          }
+          if (committedLowest != std::numeric_limits<uint64_t>::max()) {
+            lowestCursor = committedLowest;
+            highestCursor = committedHighest;
+          }
+        }
+
+        const bool allWalletsAtTarget = authenticatedTargetHeight > 0 &&
+            lowestCursor >= authenticatedTargetHeight;
+        const bool atTip = publicAtTip && pendingScans == 0 &&
+            allWalletsAtTarget;
+
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          coordinator.status.fanoutDeliveries += deliveries;
+          coordinator.status.lastWalletScanMs =
+              elapsedMilliseconds(walletScanStarted);
+          coordinator.status.totalWalletScanMs +=
+              coordinator.status.lastWalletScanMs;
+          coordinator.status.chainHeight = lowestCursor;
+          coordinator.status.stalledWallets = stalledWallets;
+          coordinator.status.scanWorkers = workerLimit;
+          coordinator.status.queueDepth = pendingScans + stalledWallets;
+          ++coordinator.batchesSinceCheckpoint;
+        }
+        logEngineDiagnostic(
+            "networkSync.batchDelivered",
+            {
+                {"network", std::to_string(
+                    static_cast<int>(coordinator.network))},
+                {"blockCount", std::to_string(batch.blockCount)},
+                {"walletCount", std::to_string(walletIds.size())},
+                {"deliveries", std::to_string(deliveries)},
+                {"scanWorkers", std::to_string(workerLimit)},
+                {"highestCursor", std::to_string(highestCursor)},
+            });
+
+        if (atTip) {
+          const auto mempoolStarted = std::chrono::steady_clock::now();
+          if (!routineTipCheck || batch.blockCount > 0) {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            setNetworkPhaseLocked(coordinator, "checking-mempool");
+          }
+          const auto nativePool = provider->fetchSharedPoolSnapshot();
+          throwIfWalletFailed(provider, "fetchSharedPoolSnapshot");
+          if (nativePool) {
+            for (const auto& item : availableSessions) {
+              try {
+                std::unique_lock<std::mutex> sessionLock(
+                    item.second->mutationMutex);
+                item.second->wallet->consumeSharedPoolSnapshot(*nativePool);
+                throwIfWalletFailed(
+                    item.second->wallet, "consumeSharedPoolSnapshot");
+                updateCachedSnapshot(
+                    *item.second, authenticatedTargetHeight);
+              } catch (const std::exception& error) {
+                logEngineDiagnostic(
+                    "networkSync.poolWalletStalled",
+                    {{"status", error.what()}});
+              }
+            }
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            ++coordinator.status.poolSnapshots;
+          }
+          {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            coordinator.status.lastMempoolMs =
+                elapsedMilliseconds(mempoolStarted);
+            coordinator.status.totalMempoolMs +=
+                coordinator.status.lastMempoolMs;
+          }
+        }
+
+        bool checkpoint = atTip;
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          checkpoint = checkpoint || coordinator.batchesSinceCheckpoint >= 16;
+          coordinator.status.state = atTip
+              ? (stalledWallets == 0 ? "synced" : "degraded")
+              : "scanning";
+        }
+        if (checkpoint) {
+          const auto checkpointStarted = std::chrono::steady_clock::now();
+          if (!routineTipCheck || batch.blockCount > 0) {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            setNetworkPhaseLocked(coordinator, "checkpointing-wallets");
+          }
+          for (const auto& item : availableSessions) {
+            try {
+              std::unique_lock<std::mutex> sessionLock(
+                  item.second->mutationMutex);
+              item.second->wallet->checkpointWalletScan();
+              throwIfWalletFailed(
+                  item.second->wallet, "checkpointWalletScan");
+            } catch (const std::exception& error) {
+              logEngineDiagnostic(
+                  "networkSync.checkpointFailed",
+                  {{"status", error.what()}});
+            }
+          }
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          coordinator.status.lastCheckpointMs =
+              elapsedMilliseconds(checkpointStarted);
+          coordinator.status.totalCheckpointMs +=
+              coordinator.status.lastCheckpointMs;
+          coordinator.batchesSinceCheckpoint = 0;
+        }
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          coordinator.status.lastIterationMs =
+              elapsedMilliseconds(iterationStarted);
+          coordinator.status.totalIterationMs +=
+              coordinator.status.lastIterationMs;
+          setNetworkPhaseLocked(
+              coordinator,
+              atTip ? (stalledWallets == 0 ? "synced" : "degraded")
+                    : "waiting-next-batch");
+        }
+        const bool waitingOnlyForPrivateScans =
+            publicAtTip && pendingScans > 0;
+        if (!atTip && !waitingOnlyForPrivateScans) {
+          {
+            std::lock_guard<std::mutex> lock(coordinator.mutex);
+            coordinator.wake = true;
+          }
+          // Historical catch-up is a continuous pipeline. This also covers
+          // the asynchronous hand-off where the local deliveries counter is
+          // still zero although a scanner has just committed. The ten-second
+          // condition wait is only the fully synchronized idle-tip poll.
+          coordinator.condition.notify_one();
+        }
+      } catch (const std::exception& error) {
+        prefetchedBatch.reset();
+        prefetchedProviderId.clear();
+        prefetchedFetchMs = 0;
+        logEngineDiagnostic(
+            "networkSync.iterationFailed",
+            {{"status", error.what()}});
+        std::lock_guard<std::mutex> lock(coordinator.mutex);
+        coordinator.status.prefetchQueueDepth = 0;
+        coordinator.status.prefetchedPayloadBytes = 0;
+        coordinator.status.state = "retrying";
+        coordinator.status.lastError = error.what();
+        ++coordinator.status.consecutiveFailures;
+        coordinator.status.lastIterationMs =
+            elapsedMilliseconds(iterationStarted);
+        coordinator.status.totalIterationMs +=
+            coordinator.status.lastIterationMs;
+        setNetworkPhaseLocked(coordinator, "retrying");
+        if (!providerId.empty()) {
+          coordinator.providerWalletId.clear();
+          coordinator.providerRetryAfter[providerId] =
+              std::chrono::steady_clock::now() + std::chrono::seconds(5);
+          coordinator.publicTransportInitialized = false;
+        }
+      }
+    }
+  }
+
+  void stopAllNetworkCoordinators() {
+    std::vector<NetworkSyncCoordinator*> coordinators;
+    {
+      std::lock_guard<std::mutex> lock(coordinatorsMutex_);
+      for (auto& item : coordinators_) {
+        coordinators.push_back(item.second.get());
+      }
+    }
+    for (auto* coordinator : coordinators) {
+      {
+        std::lock_guard<std::mutex> lock(coordinator->mutex);
+        coordinator->stop = true;
+        coordinator->wake = true;
+      }
+      coordinator->condition.notify_all();
+    }
+    for (auto* coordinator : coordinators) {
+      if (coordinator->worker.joinable()) {
+        coordinator->worker.join();
+      }
+    }
+    for (auto* coordinator : coordinators) {
+      if (coordinator->scanExecutor) {
+        coordinator->scanExecutor->shutdown();
+      }
+    }
+    for (auto* coordinator : coordinators) {
+      Monero::Wallet* transport = nullptr;
+      {
+        std::lock_guard<std::mutex> lock(coordinator->mutex);
+        transport = coordinator->publicTransport;
+        coordinator->publicTransport = nullptr;
+        coordinator->publicTransportInitialized = false;
+      }
+      if (transport != nullptr) {
+        (void)manager_->closeWallet(transport, false);
+      }
+    }
+  }
+
   Monero::WalletManager* manager_{nullptr};
   mutable std::mutex mutex_;
+  mutable std::mutex coordinatorsMutex_;
+  mutable std::shared_timed_mutex coordinatorExecutionMutex_;
+  std::unordered_map<int, std::unique_ptr<NetworkSyncCoordinator>> coordinators_;
   mutable std::unordered_map<WalletId, std::unique_ptr<WalletSession>> wallets_;
   std::atomic<uint64_t> nextId_{1};
   std::atomic<uint64_t> nextPendingId_{1};
@@ -1746,6 +3871,70 @@ bool WalletEngine::linkedWithMonero() {
   return true;
 #else
   return false;
+#endif
+}
+
+std::string WalletEngine::derivationBackendStatus() {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  const char* status = nullptr;
+#if defined(__APPLE__)
+  status = monero_fast_derivation_backend_status_json();
+#else
+  if (monero_fast_derivation_backend_status_json != nullptr)
+    status = monero_fast_derivation_backend_status_json();
+#endif
+  if (status == nullptr) {
+    return
+        "{\"preference\":\"auto\",\"activeBackend\":\"cpu\","
+        "\"gpuAvailable\":false,\"gpuKind\":\"\",\"deviceName\":\"\","
+        "\"deviceCount\":0,\"selfTestPassed\":false,\"cpuFallback\":true,"
+        "\"lastError\":\"Derivation diagnostics are unavailable in the linked Monero core\"}";
+  }
+  return status;
+#else
+  return
+      "{\"preference\":\"auto\",\"activeBackend\":\"cpu\","
+      "\"gpuAvailable\":false,\"gpuKind\":\"\",\"deviceName\":\"\","
+      "\"deviceCount\":0,\"selfTestPassed\":false,\"cpuFallback\":true,"
+      "\"lastError\":\"Native Monero core is not linked\"}";
+#endif
+}
+
+std::string WalletEngine::benchmarkDerivationPerformance() {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  const char* benchmark = nullptr;
+#if defined(__APPLE__)
+  benchmark = monero_fast_derivation_benchmark_json();
+#else
+  if (monero_fast_derivation_benchmark_json != nullptr)
+    benchmark = monero_fast_derivation_benchmark_json();
+#endif
+  if (benchmark == nullptr) {
+    return
+        "{\"schemaVersion\":1,\"cpuWorkers\":0,"
+        "\"cpu\":{\"available\":false,\"verified\":false,"
+        "\"derivationsPerSecond\":0,\"sampleCount\":0,\"elapsedMs\":0,"
+        "\"error\":\"Derivation diagnostics are unavailable in the linked Monero core\"},"
+        "\"metal\":{\"available\":false,\"verified\":false,"
+        "\"derivationsPerSecond\":0,\"sampleCount\":0,\"elapsedMs\":0,"
+        "\"error\":\"Derivation diagnostics are unavailable in the linked Monero core\"},"
+        "\"cuda\":{\"available\":false,\"verified\":false,"
+        "\"derivationsPerSecond\":0,\"sampleCount\":0,\"elapsedMs\":0,"
+        "\"error\":\"Derivation diagnostics are unavailable in the linked Monero core\"}}";
+  }
+  return benchmark;
+#else
+  return
+      "{\"schemaVersion\":1,\"cpuWorkers\":0,"
+      "\"cpu\":{\"available\":false,\"verified\":false,"
+      "\"derivationsPerSecond\":0,\"sampleCount\":0,\"elapsedMs\":0,"
+      "\"error\":\"Native Monero core is not linked\"},"
+      "\"metal\":{\"available\":false,\"verified\":false,"
+      "\"derivationsPerSecond\":0,\"sampleCount\":0,\"elapsedMs\":0,"
+      "\"error\":\"Native Monero core is not linked\"},"
+      "\"cuda\":{\"available\":false,\"verified\":false,"
+      "\"derivationsPerSecond\":0,\"sampleCount\":0,\"elapsedMs\":0,"
+      "\"error\":\"Native Monero core is not linked\"}}";
 #endif
 }
 
@@ -1868,6 +4057,23 @@ FastReceiveRegistrationPayload WalletEngine::fastReceiveRegistrationPayload(
 #endif
 }
 
+FastReceiveRegistrationPayload WalletEngine::accountRegistrationPayload(
+    const WalletId& walletId,
+    const std::string& identityId,
+    uint32_t accountIndex,
+    uint64_t restoreHeightHint) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->accountRegistrationPayload(
+      walletId, identityId, accountIndex, restoreHeightHint);
+#else
+  (void)walletId;
+  (void)identityId;
+  (void)accountIndex;
+  (void)restoreHeightHint;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
 void WalletEngine::closeWallet(const WalletId& walletId, bool store) {
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
   impl_->closeWallet(walletId, store);
@@ -1918,6 +4124,111 @@ void WalletEngine::setGrpcEndpoint(
 #else
   (void)walletId;
   (void)endpoint;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::configureNetworkSync(
+    NetworkType network,
+    const DaemonConfig& config,
+    const std::string& grpcEndpoint) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->configureNetworkSync(network, config, grpcEndpoint);
+#else
+  (void)network;
+  (void)config;
+  (void)grpcEndpoint;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::joinNetworkSync(const WalletId& walletId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->joinNetworkSync(walletId);
+#else
+  (void)walletId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::leaveNetworkSync(const WalletId& walletId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->leaveNetworkSync(walletId);
+#else
+  (void)walletId;
+#endif
+}
+
+void WalletEngine::prioritizeNetworkWallet(const WalletId& walletId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->prioritizeNetworkWallet(walletId);
+#else
+  (void)walletId;
+#endif
+}
+
+NetworkSyncStatus WalletEngine::networkSyncStatus(NetworkType network) const {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->networkSyncStatus(network);
+#else
+  NetworkSyncStatus status;
+  status.network = network;
+  return status;
+#endif
+}
+
+uint64_t WalletEngine::walletSyncCursor(const WalletId& walletId) const {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->walletSyncCursor(walletId);
+#else
+  (void)walletId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+uint64_t WalletEngine::consumeSharedBlockBatch(
+    const WalletId& walletId,
+    const SharedBlockBatchHandle& batch) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->consumeSharedBlockBatch(walletId, batch);
+#else
+  (void)walletId;
+  (void)batch;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::consumeSharedPoolSnapshot(
+    const WalletId& walletId,
+    const SharedPoolSnapshotHandle& snapshot) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->consumeSharedPoolSnapshot(walletId, snapshot);
+#else
+  (void)walletId;
+  (void)snapshot;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::detachWalletToHeight(
+    const WalletId& walletId,
+    uint64_t height,
+    const std::string& expectedPreviousHash) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->detachWalletToHeight(walletId, height, expectedPreviousHash);
+#else
+  (void)walletId;
+  (void)height;
+  (void)expectedPreviousHash;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::checkpointWalletScan(const WalletId& walletId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->checkpointWalletScan(walletId);
+#else
+  (void)walletId;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }
@@ -1996,6 +4307,18 @@ WalletSubaddress WalletEngine::createSubaddress(
   (void)walletId;
   (void)accountIndex;
   (void)label;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+std::vector<WalletSubaddress> WalletEngine::listSubaddresses(
+    const WalletId& walletId,
+    uint32_t accountIndex) const {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->listSubaddresses(walletId, accountIndex);
+#else
+  (void)walletId;
+  (void)accountIndex;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }
@@ -2083,6 +4406,20 @@ size_t WalletEngine::reconcileOutputKeyImages(
   (void)keyImages;
   (void)spentStates;
   (void)checkedHeight;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+LedgerKeyImageSyncResult WalletEngine::syncLedgerKeyImagesToViewWallet(
+    const WalletId& hardwareWalletId,
+    const WalletId& viewOnlyWalletId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->syncLedgerKeyImagesToViewWallet(
+      hardwareWalletId,
+      viewOnlyWalletId);
+#else
+  (void)hardwareWalletId;
+  (void)viewOnlyWalletId;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }

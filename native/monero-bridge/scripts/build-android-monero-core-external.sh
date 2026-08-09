@@ -10,7 +10,8 @@ repo_root="$(cd "${script_dir}/../../.." && pwd)"
 build_root="${MONERO_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
 target="${MONERO_WALLET_ANDROID_TARGET:-android-arm64}"
 cmake_bin="${ANDROID_HOME:-${HOME}/Library/Android/sdk}/cmake/3.22.1/bin"
-patched_source_dir="${MONERO_ANDROID_SOURCE_DIR:-${build_root}/monero-v0.18.4.6-tex8-patched}"
+patched_source_dir="${MONERO_ANDROID_SOURCE_DIR:-}"
+external_tmp_root="${MONERO_ANDROID_EXTERNAL_TMP_ROOT:-${build_root}/tmp}"
 
 if [[ ! -d "${build_root}" ]]; then
   echo "External Android build volume is unavailable: ${build_root}" >&2
@@ -21,22 +22,34 @@ if [[ ! -x "${cmake_bin}/cmake" || ! -x "${cmake_bin}/ninja" ]]; then
   exit 1
 fi
 
+# Autoconf, CMake, Cargo and compiler subprocesses otherwise inherit macOS'
+# small system TMPDIR even though every persistent build artifact lives on the
+# external volume. Large Android dependency builds can then fail midway with
+# "No space left on device". Keep their temporary files beside the external
+# build tree as well.
+mkdir -p "${external_tmp_root}"
+export TMPDIR="${external_tmp_root}"
+
 export PATH="${cmake_bin}:${PATH}"
-export MONERO_SOURCE_DIR="${patched_source_dir}"
+if [[ -n "${patched_source_dir}" ]]; then
+  export MONERO_SOURCE_DIR="${patched_source_dir}"
+fi
 
 # Android must consume the same authenticated Monero patch series as the
 # desktop packages. In particular, patch 0020 owns the runtime-selected Rust
 # CPU worker budget; building an arbitrary neighbouring checkout could silently
 # fall back to the old scalar wallet path.
-source "${script_dir}/prepare-patched-monero-core.sh"
+MONERO_COMMON_CORE_BUILD_ROOT="${build_root}" \
+  source "${script_dir}/prepare-common-monero-core.sh"
 
 protobuf_tools="${build_root}/host-protobuf-tools/protobuf-v31.1"
 grpc_tools="${build_root}/host-grpc-tools/v1.80.0"
 deps_root="${build_root}/android-deps"
-wallet_root="${MONERO_ANDROID_WALLET_BUILD_ROOT:-${build_root}/android-monero-wallet-tex8-patched}"
-fast_crypto_root="${MONERO_ANDROID_FAST_CRYPTO_ROOT:-${build_root}/mobile-fast-crypto-tex8-patched}"
+wallet_root="${MONERO_ANDROID_WALLET_BUILD_ROOT:-${build_root}/android-monero-wallet-${MONERO_COMMON_CORE_TREE}}"
+fast_crypto_root="${MONERO_ANDROID_FAST_CRYPTO_ROOT:-${build_root}/mobile-fast-crypto-${MONERO_COMMON_CORE_TREE}}"
 fast_wallet_protocol_root="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${build_root}/mobile-fast-wallet-protocol}"
-manifest_root="${MONERO_ANDROID_LINK_MANIFEST_ROOT:-${build_root}/android-monero-link-manifests-tex8-patched}"
+product_core_root="${MFW_PRODUCT_CORE_MOBILE_ROOT:-${build_root}/mobile-product-core-${MONERO_COMMON_CORE_TREE}}"
+manifest_root="${MONERO_ANDROID_LINK_MANIFEST_ROOT:-${build_root}/android-monero-link-manifests-${MONERO_COMMON_CORE_TREE}}"
 
 if [[ ! -x "${protobuf_tools}/bin/protoc" ]]; then
   OUTPUT_ROOT="${build_root}/host-protobuf-tools" \
@@ -58,6 +71,12 @@ if [[ ! -f "${fast_wallet_protocol_root}/${target}/libfast_wallet_protocol.a" ]]
     "${repo_root}/native/fast-wallet-protocol/build-mobile.sh"
 fi
 
+if [[ ! -f "${product_core_root}/${target}/libmfw_product_core.a" ]]; then
+  TARGETS="${target}" \
+    OUTPUT_DIR="${product_core_root}" \
+    "${repo_root}/native/product-core/build-mobile.sh"
+fi
+
 TARGETS="${target}" \
   MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR}" \
   OUTPUT_ROOT="${deps_root}" \
@@ -71,6 +90,8 @@ TARGETS="${target}" \
   MONERO_ANDROID_DEPENDENCY_ROOT="${deps_root}" \
   MONERO_FAST_CRYPTO_ROOT="${fast_crypto_root}" \
   MONERO_FAST_WALLET_PROTOCOL_ROOT="${fast_wallet_protocol_root}" \
+  MFW_PRODUCT_CORE_ROOT="${repo_root}/native/product-core" \
+  MFW_PRODUCT_CORE_LIBRARY="${product_core_root}/${target}/libmfw_product_core.a" \
   MONERO_ANDROID_HOST_TOOLS_ROOT="${build_root}/host-protobuf-tools" \
   PROTOC_PATH="${protobuf_tools}/bin/protoc" \
   GRPC_CPP_PLUGIN_PATH="${grpc_tools}/bin/grpc_cpp_plugin" \

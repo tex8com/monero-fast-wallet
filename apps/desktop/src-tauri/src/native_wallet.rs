@@ -20,6 +20,12 @@ unsafe extern "C" {
     fn tex8_desktop_wallet_core_free(core: *mut RawCore);
     fn tex8_desktop_result_free(result: *mut RawResult);
     fn tex8_desktop_wallet_ledger_transport_status(core: *mut RawCore) -> RawResult;
+    fn tex8_desktop_wallet_compute_backend_status(core: *mut RawCore) -> RawResult;
+    fn tex8_desktop_wallet_set_compute_backend(
+        core: *mut RawCore,
+        preference: *const c_char,
+    ) -> RawResult;
+    fn tex8_desktop_wallet_benchmark_derivation_performance(core: *mut RawCore) -> RawResult;
     fn tex8_desktop_wallet_create(
         core: *mut RawCore,
         path: *const c_char,
@@ -77,6 +83,16 @@ unsafe extern "C" {
         password: *const c_char,
         proxy_address: *const c_char,
     ) -> RawResult;
+    fn tex8_desktop_wallet_set_grpc_endpoint(
+        core: *mut RawCore,
+        wallet_id: *const c_char,
+        endpoint: *const c_char,
+    ) -> RawResult;
+    fn tex8_desktop_wallet_network_sync_status(core: *mut RawCore, network: u8) -> RawResult;
+    fn tex8_desktop_wallet_prioritize_network_wallet(
+        core: *mut RawCore,
+        wallet_id: *const c_char,
+    ) -> RawResult;
     fn tex8_desktop_wallet_start_refresh(core: *mut RawCore, wallet_id: *const c_char)
         -> RawResult;
     fn tex8_desktop_wallet_stop_refresh(core: *mut RawCore, wallet_id: *const c_char) -> RawResult;
@@ -97,6 +113,11 @@ unsafe extern "C" {
         seed_offset: *const c_char,
     ) -> RawResult;
     fn tex8_desktop_wallet_snapshot(core: *mut RawCore, wallet_id: *const c_char) -> RawResult;
+    fn tex8_desktop_wallet_sync_ledger_key_images(
+        core: *mut RawCore,
+        hardware_wallet_id: *const c_char,
+        view_only_wallet_id: *const c_char,
+    ) -> RawResult;
     fn tex8_desktop_wallet_get_balance(
         core: *mut RawCore,
         wallet_id: *const c_char,
@@ -184,6 +205,11 @@ unsafe extern "C" {
         wallet_id: *const c_char,
         account_index: u32,
         label: *const c_char,
+    ) -> RawResult;
+    fn tex8_desktop_wallet_list_subaddresses(
+        core: *mut RawCore,
+        wallet_id: *const c_char,
+        account_index: u32,
     ) -> RawResult;
     fn tex8_desktop_wallet_create_fast_receive_identity(
         core: *mut RawCore,
@@ -288,6 +314,20 @@ impl NativeWallet {
     pub fn ledger_transport_status(&self) -> Result<String, String> {
         self.result(unsafe { tex8_desktop_wallet_ledger_transport_status(self.core.as_ptr()) })
     }
+    pub fn compute_backend_status(&self) -> Result<String, String> {
+        self.result(unsafe { tex8_desktop_wallet_compute_backend_status(self.core.as_ptr()) })
+    }
+    pub fn set_compute_backend(&self, preference: &str) -> Result<String, String> {
+        let preference = c(preference)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_set_compute_backend(self.core.as_ptr(), preference.as_ptr())
+        })
+    }
+    pub fn benchmark_derivation_performance(&self) -> Result<String, String> {
+        self.result(unsafe {
+            tex8_desktop_wallet_benchmark_derivation_performance(self.core.as_ptr())
+        })
+    }
     pub fn restore(
         &self,
         path: &str,
@@ -390,6 +430,28 @@ impl NativeWallet {
         })
         .map(|_| ())
     }
+    pub fn set_grpc_endpoint(&self, wallet_id: &str, endpoint: &str) -> Result<(), String> {
+        let wallet_id = c(wallet_id)?;
+        let endpoint = c(endpoint)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_set_grpc_endpoint(
+                self.core.as_ptr(),
+                wallet_id.as_ptr(),
+                endpoint.as_ptr(),
+            )
+        })
+        .map(|_| ())
+    }
+    pub fn network_sync_status(&self, network: u8) -> Result<String, String> {
+        self.result(unsafe { tex8_desktop_wallet_network_sync_status(self.core.as_ptr(), network) })
+    }
+    pub fn prioritize_network_wallet(&self, wallet_id: &str) -> Result<(), String> {
+        let wallet_id = c(wallet_id)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_prioritize_network_wallet(self.core.as_ptr(), wallet_id.as_ptr())
+        })
+        .map(|_| ())
+    }
     pub fn start_refresh(&self, wallet_id: &str) -> Result<(), String> {
         let wallet_id = c(wallet_id)?;
         self.result(unsafe {
@@ -445,6 +507,21 @@ impl NativeWallet {
         let wallet_id = c(wallet_id)?;
         self.result(unsafe { tex8_desktop_wallet_snapshot(self.core.as_ptr(), wallet_id.as_ptr()) })
     }
+    pub fn sync_ledger_key_images(
+        &self,
+        hardware_wallet_id: &str,
+        view_only_wallet_id: &str,
+    ) -> Result<String, String> {
+        let hardware_wallet_id = c(hardware_wallet_id)?;
+        let view_only_wallet_id = c(view_only_wallet_id)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_sync_ledger_key_images(
+                self.core.as_ptr(),
+                hardware_wallet_id.as_ptr(),
+                view_only_wallet_id.as_ptr(),
+            )
+        })
+    }
     pub fn balance(
         &self,
         wallet_id: &str,
@@ -475,6 +552,16 @@ impl NativeWallet {
                 wallet_id.as_ptr(),
                 account_index,
                 label.as_ptr(),
+            )
+        })
+    }
+    pub fn list_subaddresses(&self, wallet_id: &str, account_index: u32) -> Result<String, String> {
+        let wallet_id = c(wallet_id)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_list_subaddresses(
+                self.core.as_ptr(),
+                wallet_id.as_ptr(),
+                account_index,
             )
         })
     }
@@ -811,10 +898,52 @@ mod tests {
         WorkerDescriptorInput, WATCH_ENVELOPE_SIZE,
     };
     use std::{
-        fs,
-        time::{SystemTime, UNIX_EPOCH},
+        fs, thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
     use zeroize::Zeroize;
+
+    #[test]
+    fn compute_backend_policy_round_trips_through_the_native_c_abi() {
+        let wallet = NativeWallet::new().expect("native wallet shell");
+        for preference in ["auto", "cpu", "gpu"] {
+            let encoded = wallet
+                .set_compute_backend(preference)
+                .expect("accepted compute policy");
+            let status: serde_json::Value =
+                serde_json::from_str(&encoded).expect("compute status JSON");
+            assert_eq!(status["preference"], preference);
+            assert_eq!(status["cpuFallback"], true);
+        }
+        assert!(wallet.set_compute_backend("cuda").is_err());
+    }
+
+    #[test]
+    fn derivation_benchmark_crosses_the_native_c_abi_as_bounded_json() {
+        let wallet = NativeWallet::new().expect("native wallet shell");
+        let encoded = wallet
+            .benchmark_derivation_performance()
+            .expect("public derivation benchmark JSON");
+        eprintln!("native derivation benchmark: {encoded}");
+        let benchmark: serde_json::Value =
+            serde_json::from_str(&encoded).expect("derivation benchmark JSON");
+        assert_eq!(benchmark["schemaVersion"], 1);
+        for backend in ["cpu", "metal", "cuda"] {
+            assert!(benchmark[backend]["derivationsPerSecond"].is_number());
+            assert!(benchmark[backend]["verified"].is_boolean());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(benchmark["metal"]["available"], true);
+            assert_eq!(benchmark["metal"]["verified"], true);
+            assert!(
+                benchmark["metal"]["derivationsPerSecond"]
+                    .as_u64()
+                    .expect("Metal derivation rate")
+                    > 0
+            );
+        }
+    }
 
     #[test]
     fn linked_core_creates_opens_and_exposes_a_software_wallet() {
@@ -913,6 +1042,13 @@ mod tests {
             assert!(fast_address.starts_with('4'));
             assert!(wallet.snapshot(&opened_fast_id)?.contains("primaryAddress"));
             wallet.close(&opened_fast_id, true)?;
+
+            // Exercise the production close ordering against a live API
+            // refresh worker. Closing must join that worker before wallet2
+            // serializes its hash chain; otherwise this path can crash inside
+            // get_cache_file_data() instead of returning a Rust error.
+            wallet.start_refresh(&wallet_id)?;
+            thread::sleep(Duration::from_millis(25));
             wallet.close(&wallet_id, true)?;
 
             let reopened_id = wallet.open(&wallet_path, "test-password", 0, 0)?;

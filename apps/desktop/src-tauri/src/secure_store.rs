@@ -1,13 +1,20 @@
+use crate::app_vault;
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Algorithm, Argon2, Params, Version,
 };
 use keyring::Entry;
+#[cfg(target_os = "macos")]
+use security_framework::passwords::{
+    delete_generic_password_options, generic_password, set_generic_password_options,
+    PasswordOptions,
+};
 use std::{
     collections::HashMap,
+    path::Path,
     sync::{Mutex, OnceLock},
 };
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const SERVICE_NAME: &str = "com.tex8.monerowallet.desktop";
 const COMMUNITY_ACCOUNT_IDENTIFIER: &str = "primary";
@@ -18,6 +25,9 @@ const COMMUNITY_V1_SEARCH_STORE_KEY_IDENTIFIER: &str = "v1-search-store-key";
 const APP_PROTECTION_IDENTIFIER: &str = "app-protection";
 const APP_PROTECTION_MODE_IDENTIFIER: &str = "app-protection-mode";
 const APP_UNLOCK_THROTTLE_IDENTIFIER: &str = "app-unlock-throttle";
+const APP_VAULT_SYSTEM_KEK_PREFIX: &str = "app-vault-system-kek";
+const APP_VAULT_SYSTEM_KEK_IDENTIFIER: &str = "v1";
+const APP_VAULT_KEK_BYTES: usize = 32;
 const NOTIFICATION_AUTH_PREFIX: &str = "notification-installation-auth";
 const FAST_WALLET_ASSIGNMENT_PREFIX: &str = "fast-wallet-assignment";
 const APP_PASSWORD_ARGON2_MEMORY_KIB: u32 = 65_536;
@@ -67,7 +77,8 @@ impl SessionSecretCache {
         }
     }
 
-    fn clear_unlocked_secrets(&mut self) {
+    fn clear_unlocked_secrets(&mut self) -> usize {
+        let before = self.entries.len();
         self.entries.retain(|key, entry| {
             let keep = key.starts_with("app-protection-password:")
                 || key.starts_with("app-protection-mode:")
@@ -77,6 +88,7 @@ impl SessionSecretCache {
             }
             keep
         });
+        before.saturating_sub(self.entries.len())
     }
 
     fn clear_failures(&mut self) {
@@ -89,6 +101,107 @@ impl SessionSecretCache {
 /// process. In particular, a denied macOS Keychain read must not immediately
 /// open the same system password dialog again.
 static SESSION_SECRET_CACHE: OnceLock<Mutex<SessionSecretCache>> = OnceLock::new();
+
+/// The separately identified diagnostic bundle must never touch the user's
+/// production Keychain. It uses a process-local store when either its exact
+/// `.app` bundle name is detected or an explicit test flag is present. Normal
+/// development and production bundles retain the real platform credential
+/// store. Release builds can never enable this backend.
+#[cfg(debug_assertions)]
+static DIAGNOSTIC_SECRET_STORE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+
+#[cfg(debug_assertions)]
+static DIAGNOSTIC_SECRET_STORE_ENABLED: OnceLock<bool> = OnceLock::new();
+
+#[cfg(debug_assertions)]
+fn path_is_diagnostic_app_bundle(executable: &Path) -> bool {
+    executable.ancestors().any(|ancestor| {
+        ancestor.file_name().and_then(|name| name.to_str())
+            == Some("Monero Fast Wallet Diagnostic.app")
+    })
+}
+
+fn diagnostic_secret_store_enabled() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        return *DIAGNOSTIC_SECRET_STORE_ENABLED.get_or_init(|| {
+            let explicit = std::env::var("MONERO_DESKTOP_DIAGNOSTIC_IN_MEMORY_SECURE_STORE")
+                .map(|value| value == "1")
+                .unwrap_or(false);
+            let diagnostic_bundle = std::env::current_exe()
+                .ok()
+                .as_deref()
+                .map(path_is_diagnostic_app_bundle)
+                .unwrap_or(false);
+            let enabled = explicit || diagnostic_bundle;
+            eprintln!(
+                "MONERO_DESKTOP_SECURE_STORE backend={} explicit={} diagnostic_bundle={}",
+                if enabled {
+                    "diagnostic-memory"
+                } else {
+                    "platform"
+                },
+                explicit,
+                diagnostic_bundle
+            );
+            enabled
+        });
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
+/// Allows UI automation to pass the startup lock without entering an
+/// authentication credential. This is deliberately narrower than the
+/// diagnostic memory store and exists only in debug binaries.
+pub fn diagnostic_automation_unlock_enabled() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        diagnostic_secret_store_enabled()
+            && std::env::var("MONERO_DESKTOP_DIAGNOSTIC_AUTOMATION_UNLOCK")
+                .map(|value| value == "1")
+                .unwrap_or(false)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
+#[cfg(debug_assertions)]
+fn diagnostic_store_secret(account: &str, value: &str) -> Result<(), String> {
+    DIAGNOSTIC_SECRET_STORE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "Diagnostic secure store is busy.".to_owned())?
+        .insert(account.to_owned(), value.to_owned());
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn diagnostic_load_secret(account: &str) -> Result<Option<String>, String> {
+    Ok(DIAGNOSTIC_SECRET_STORE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "Diagnostic secure store is busy.".to_owned())?
+        .get(account)
+        .cloned())
+}
+
+#[cfg(debug_assertions)]
+fn diagnostic_delete_secret(account: &str) -> Result<(), String> {
+    if let Some(mut value) = DIAGNOSTIC_SECRET_STORE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "Diagnostic secure store is busy.".to_owned())?
+        .remove(account)
+    {
+        value.zeroize();
+    }
+    Ok(())
+}
 
 fn session_secret_cache() -> &'static Mutex<SessionSecretCache> {
     SESSION_SECRET_CACHE.get_or_init(|| Mutex::new(SessionSecretCache::default()))
@@ -109,15 +222,177 @@ fn cache_secret(prefix: &str, identifier: &str, value: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// Locking clears wallet, node, Community, and scanner credentials. The
-/// app-protection mode, Argon2 verifier, and throttle remain process-local so
-/// the lock screen itself never starts a second OS credential prompt.
-pub fn clear_session_secret_cache() -> Result<(), String> {
-    let mut cache = session_secret_cache()
-        .lock()
-        .map_err(|_| "Secure session cache is busy.".to_owned())?;
-    cache.clear_unlocked_secrets();
+/// Locking closes wallet sessions and zeroizes cached wallet, node, Community,
+/// notification, and scanner credentials. Only the app-protection mode,
+/// Argon2 verifier, and throttle stay process-local so the lock screen itself
+/// never starts a second platform credential read.
+pub fn clear_session_secret_cache() -> Result<usize, String> {
+    let cleared = {
+        let mut cache = session_secret_cache()
+            .lock()
+            .map_err(|_| "Secure session cache is busy.".to_owned())?;
+        cache.clear_unlocked_secrets()
+    };
+    app_vault::lock()?;
+    Ok(cleared)
+}
+
+fn decode_app_vault_system_kek(
+    mut encoded: String,
+) -> Result<Zeroizing<[u8; APP_VAULT_KEK_BYTES]>, String> {
+    let decoded = hex::decode(&encoded);
+    encoded.zeroize();
+    let mut decoded = decoded.map_err(|_| "The AppVault system key is invalid.".to_owned())?;
+    if decoded.len() != APP_VAULT_KEK_BYTES {
+        decoded.zeroize();
+        return Err("The AppVault system key is invalid.".to_owned());
+    }
+    let mut key = Zeroizing::new([0_u8; APP_VAULT_KEK_BYTES]);
+    key.copy_from_slice(&decoded);
+    decoded.zeroize();
+    Ok(key)
+}
+
+fn load_app_vault_system_kek() -> Result<Option<Zeroizing<[u8; APP_VAULT_KEK_BYTES]>>, String> {
+    let account =
+        account_name_with_prefix(APP_VAULT_SYSTEM_KEK_PREFIX, APP_VAULT_SYSTEM_KEK_IDENTIFIER)?;
+    platform_load_current_secret(&account)?
+        .map(decode_app_vault_system_kek)
+        .transpose()
+}
+
+fn load_or_create_app_vault_system_kek(
+) -> Result<(Zeroizing<[u8; APP_VAULT_KEK_BYTES]>, bool), String> {
+    if let Some(key) = load_app_vault_system_kek()? {
+        return Ok((key, false));
+    }
+
+    let mut key = Zeroizing::new([0_u8; APP_VAULT_KEK_BYTES]);
+    getrandom::getrandom(&mut *key)
+        .map_err(|_| "The AppVault system key could not be generated.".to_owned())?;
+    let mut encoded = hex::encode(&*key);
+    let account =
+        account_name_with_prefix(APP_VAULT_SYSTEM_KEK_PREFIX, APP_VAULT_SYSTEM_KEK_IDENTIFIER)?;
+    let stored = platform_store_secret(&account, &encoded);
+    encoded.zeroize();
+    stored.map_err(|platform_error| {
+        eprintln!(
+            "MONERO_DESKTOP_APP_VAULT system-key-write-failed platform_error={platform_error}"
+        );
+        "The AppVault system key could not be saved in secure storage.".to_owned()
+    })?;
+    let verified = load_app_vault_system_kek()?.ok_or_else(|| {
+        "The AppVault system key could not be verified in secure storage.".to_owned()
+    })?;
+    if key.as_ref() != verified.as_ref() {
+        let _ = platform_delete_secret(&account);
+        return Err("The AppVault system key verification failed.".to_owned());
+    }
+    Ok((verified, true))
+}
+
+/// Open (or upgrade) the process-wide AppVault after the one app-password
+/// check. The password envelope is the recovery route; the OS envelope is the
+/// biometric/device-credential route. Neither is scoped per wallet.
+pub fn unlock_app_vault_with_password(password: &str) -> Result<(), String> {
+    if !app_vault::exists()? {
+        let (system_kek, _) = load_or_create_app_vault_system_kek()?;
+        app_vault::create(Some(password), &system_kek)?;
+        eprintln!("MONERO_DESKTOP_APP_VAULT created unlock=password");
+        return Ok(());
+    }
+
+    if app_vault::password_recovery_configured()? {
+        app_vault::unlock_with_password(password)?;
+        let (system_kek, created) = load_or_create_app_vault_system_kek()?;
+        if created {
+            app_vault::set_system_envelope(&system_kek)?;
+        }
+    } else {
+        let (system_kek, _) = load_or_create_app_vault_system_kek()?;
+        app_vault::unlock_with_system(&system_kek)?;
+        app_vault::set_password_envelope(password)?;
+    }
+    eprintln!("MONERO_DESKTOP_APP_VAULT unlocked method=password");
     Ok(())
+}
+
+pub fn set_app_vault_recovery_password(password: &str) -> Result<(), String> {
+    if !app_vault::exists()? {
+        return unlock_app_vault_with_password(password);
+    }
+    if !app_vault::is_unlocked() {
+        return Err("Unlock Monero Fast Wallet before changing its recovery password.".to_owned());
+    }
+    app_vault::set_password_envelope(password)?;
+    let (system_kek, created) = load_or_create_app_vault_system_kek()?;
+    if created {
+        app_vault::set_system_envelope(&system_kek)?;
+    }
+    eprintln!("MONERO_DESKTOP_APP_VAULT recovery-password-updated");
+    Ok(())
+}
+
+pub fn unlock_app_vault_with_system() -> Result<(), String> {
+    let existed = app_vault::exists()?;
+    let (system_kek, created) = load_or_create_app_vault_system_kek()?;
+    if existed {
+        if created {
+            return Err(
+                "The system AppVault key is unavailable. Use the recovery app password once."
+                    .to_owned(),
+            );
+        }
+        app_vault::unlock_with_system(&system_kek)?;
+    } else {
+        app_vault::create(None, &system_kek)?;
+    }
+    eprintln!("MONERO_DESKTOP_APP_VAULT unlocked method=system");
+    Ok(())
+}
+
+pub fn app_vault_migration_committed() -> Result<bool, String> {
+    app_vault::legacy_migration_committed()
+}
+
+pub fn commit_legacy_wallet_credentials(entries: &[(String, String)]) -> Result<(), String> {
+    app_vault::commit_legacy_migration(entries)
+}
+
+pub fn merge_legacy_wallet_credentials(entries: &[(String, String)]) -> Result<(), String> {
+    app_vault::merge_legacy_secrets(entries)
+}
+
+pub fn wallet_app_vault_key(wallet_id: &str) -> Result<String, String> {
+    account_name(wallet_id)
+}
+
+pub fn fast_wallet_app_vault_key(identity_id: &str) -> Result<String, String> {
+    account_name_with_prefix("fast-wallet-password", identity_id)
+}
+
+pub fn load_legacy_wallet_password_current(wallet_id: &str) -> Result<Option<String>, String> {
+    platform_load_current_secret(&account_name(wallet_id)?)
+}
+
+pub fn load_legacy_fast_wallet_password_current(
+    identity_id: &str,
+) -> Result<Option<String>, String> {
+    platform_load_current_secret(&account_name_with_prefix(
+        "fast-wallet-password",
+        identity_id,
+    )?)
+}
+
+pub fn delete_legacy_wallet_password(wallet_id: &str) -> Result<(), String> {
+    platform_delete_secret(&account_name(wallet_id)?)
+}
+
+pub fn delete_legacy_fast_wallet_password(identity_id: &str) -> Result<(), String> {
+    platform_delete_secret(&account_name_with_prefix(
+        "fast-wallet-password",
+        identity_id,
+    )?)
 }
 
 /// Failed reads are retried only after an explicit user action. This is kept
@@ -375,43 +650,34 @@ fn constant_time_match(left: &str, right: &str) -> bool {
 }
 
 pub fn store_wallet_password(wallet_id: &str, mut password: String) -> Result<(), String> {
-    let result = (|| {
-        let account = account_name(wallet_id)?;
+    let result = account_name(wallet_id).and_then(|key| {
         if password.is_empty() {
             return Err("A wallet password cannot be empty.".to_owned());
         }
-        let entry = Entry::new(SERVICE_NAME, &account)
-            .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
-        entry
-            .set_password(&password)
-            .map_err(|_| "The wallet password could not be saved in secure storage.".to_owned())?;
-
-        // A successful write call alone is not a sufficient safety boundary.
-        // In particular, a credential backend can accept a write and then be
-        // unavailable to the app that has to reopen the encrypted wallet.
-        // Verify the exact record before returning success so we never create
-        // a wallet that only appears passwordless during its first session.
-        let mut stored = entry.get_password().map_err(|_| {
-            "The wallet password could not be verified in secure storage.".to_owned()
-        })?;
-        let matches = stored == password;
-        stored.zeroize();
-        if !matches {
-            return Err("The wallet password verification failed in secure storage.".to_owned());
-        }
-        cache_secret("wallet-password", wallet_id, &password)?;
-        Ok(())
-    })();
+        app_vault::put_secret(&key, &password)
+            .map_err(|_| "The wallet password could not be saved in AppVault.".to_owned())
+    });
     password.zeroize();
     result
 }
 
 pub fn delete_wallet_password(wallet_id: &str) -> Result<(), String> {
-    delete_secret("wallet-password", wallet_id, "wallet password")
+    let key = account_name(wallet_id)?;
+    app_vault::delete_secret(&key)?;
+    session_secret_cache()
+        .lock()
+        .map_err(|_| "Secure session cache is busy.".to_owned())?
+        .remove(&key);
+    platform_delete_secret(&key).map_err(|_| {
+        "The legacy wallet password could not be removed from secure storage.".to_owned()
+    })
 }
 
-pub fn load_wallet_password(wallet_id: &str) -> Result<Option<String>, String> {
-    load_secret("wallet-password", wallet_id, "wallet password")
+/// Read only the current credential backend. This is used by automatic
+/// session restoration and passive availability checks, which must never
+/// trigger authorization for an older file-Keychain record.
+pub fn load_wallet_password_current(wallet_id: &str) -> Result<Option<String>, String> {
+    app_vault::get_secret(&account_name(wallet_id)?)
 }
 
 /// A Ledger private view key is optional and is exported only after the owner
@@ -464,21 +730,42 @@ pub fn delete_mfw_name_owner_state(name_id: &str) -> Result<(), String> {
 /// A Fast Wallet is a separately-derived local wallet. Its password is kept
 /// only in the OS credential store so a scanner registration can reopen the
 /// identity without revealing the password to the renderer.
-pub fn store_fast_wallet_password(identity_id: &str, password: String) -> Result<(), String> {
-    store_secret(
-        "fast-wallet-password",
-        identity_id,
-        password,
-        "Fast Wallet password",
-    )
+pub fn store_fast_wallet_password(identity_id: &str, mut password: String) -> Result<(), String> {
+    let result = account_name_with_prefix("fast-wallet-password", identity_id).and_then(|key| {
+        if password.is_empty() {
+            return Err("A Fast Wallet password cannot be empty.".to_owned());
+        }
+        app_vault::put_secret(&key, &password)
+            .map_err(|_| "The Fast Wallet password could not be saved in AppVault.".to_owned())
+    });
+    password.zeroize();
+    result
 }
 
 pub fn load_fast_wallet_password(identity_id: &str) -> Result<Option<String>, String> {
-    load_secret("fast-wallet-password", identity_id, "Fast Wallet password")
+    load_fast_wallet_password_current(identity_id)
+}
+
+/// Passive session restoration must use only the current application-owned
+/// credential backend. In particular it must never touch a legacy macOS
+/// file-Keychain ACL, because that can present one password dialog per item.
+pub fn load_fast_wallet_password_current(identity_id: &str) -> Result<Option<String>, String> {
+    app_vault::get_secret(&account_name_with_prefix(
+        "fast-wallet-password",
+        identity_id,
+    )?)
 }
 
 pub fn delete_fast_wallet_password(identity_id: &str) -> Result<(), String> {
-    delete_secret("fast-wallet-password", identity_id, "Fast Wallet password")
+    let key = account_name_with_prefix("fast-wallet-password", identity_id)?;
+    app_vault::delete_secret(&key)?;
+    session_secret_cache()
+        .lock()
+        .map_err(|_| "Secure session cache is busy.".to_owned())?
+        .remove(&key);
+    platform_delete_secret(&key).map_err(|_| {
+        "The legacy Fast Wallet password could not be removed from secure storage.".to_owned()
+    })
 }
 
 /// Each scanner watch gets an independent 256-bit management capability. The
@@ -709,6 +996,180 @@ fn account_name_with_prefix(prefix: &str, identifier: &str) -> Result<String, St
     Ok(format!("{prefix}:{identifier}"))
 }
 
+#[cfg(target_os = "macos")]
+const MACOS_ERR_SEC_ITEM_NOT_FOUND: i32 = -25_300;
+
+#[cfg(target_os = "macos")]
+fn macos_password_options(account: &str) -> PasswordOptions {
+    let mut options = PasswordOptions::new_generic_password(SERVICE_NAME, account);
+    // Apple recommends the SecItem-backed Data Protection Keychain for
+    // current macOS applications. It uses the signed application identity
+    // and does not inherit the legacy file-Keychain per-executable ACL that
+    // caused every rebuilt Tauri binary to request authorization again.
+    options.use_protected_keychain();
+    options
+}
+
+#[cfg(target_os = "macos")]
+fn decode_macos_secret(bytes: Vec<u8>) -> Result<String, String> {
+    match String::from_utf8(bytes) {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            let mut bytes = error.into_bytes();
+            bytes.zeroize();
+            Err("data-protection-keychain:bad-encoding".to_owned())
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn should_migrate_legacy_macos_secret(prefix: &str) -> bool {
+    // Pre-release ad-hoc development builds created app-lock records whose
+    // ACL identifies one exact binary. Do not let those records block a new
+    // signed diagnostic build. Production still migrates a legacy lock from
+    // an earlier properly distributed version. Wallet and service secrets are
+    // always migrated because losing them would make a wallet inaccessible.
+    !cfg!(debug_assertions)
+        || !matches!(
+            prefix,
+            "app-protection-password" | "app-protection-mode" | "app-unlock-throttle"
+        )
+}
+
+#[cfg(target_os = "macos")]
+fn migrate_legacy_macos_secret(prefix: &str, account: &str) -> Result<Option<String>, String> {
+    if !should_migrate_legacy_macos_secret(prefix) {
+        return Ok(None);
+    }
+    let entry = Entry::new(SERVICE_NAME, account)
+        .map_err(|_| "legacy-keychain:entry-unavailable".to_owned())?;
+    let value = match entry.get_password() {
+        Ok(value) => value,
+        Err(keyring::Error::NoEntry) => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "legacy-keychain:{}",
+                keyring_error_diagnostic(&error)
+            ))
+        }
+    };
+    set_generic_password_options(value.as_bytes(), macos_password_options(account))
+        .map_err(|error| format!("data-protection-keychain:{}", error.code()))?;
+    let legacy_removed = matches!(
+        entry.delete_credential(),
+        Ok(()) | Err(keyring::Error::NoEntry)
+    );
+    eprintln!(
+        "MONERO_DESKTOP_SECURE_STORE legacy-migrated kind={prefix} legacy_removed={legacy_removed}"
+    );
+    Ok(Some(value))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_store_secret(account: &str, value: &str) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if diagnostic_secret_store_enabled() {
+        eprintln!("MONERO_DESKTOP_SECURE_STORE diagnostic-memory-write");
+        return diagnostic_store_secret(account, value);
+    }
+    set_generic_password_options(value.as_bytes(), macos_password_options(account))
+        .map_err(|error| format!("data-protection-keychain:{}", error.code()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_store_secret(account: &str, value: &str) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if diagnostic_secret_store_enabled() {
+        eprintln!("MONERO_DESKTOP_SECURE_STORE diagnostic-memory-write");
+        return diagnostic_store_secret(account, value);
+    }
+    let entry = Entry::new(SERVICE_NAME, account)
+        .map_err(|_| "platform-keyring:entry-unavailable".to_owned())?;
+    entry
+        .set_password(value)
+        .map_err(|error| keyring_error_diagnostic(&error))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_load_current_secret(account: &str) -> Result<Option<String>, String> {
+    #[cfg(debug_assertions)]
+    if diagnostic_secret_store_enabled() {
+        let value = diagnostic_load_secret(account)?;
+        eprintln!(
+            "MONERO_DESKTOP_SECURE_STORE diagnostic-memory-read present={}",
+            value.is_some()
+        );
+        return Ok(value);
+    }
+    match generic_password(macos_password_options(account)) {
+        Ok(bytes) => decode_macos_secret(bytes).map(Some),
+        Err(error) if error.code() == MACOS_ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+        Err(error) => Err(format!("data-protection-keychain:{}", error.code())),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_load_current_secret(account: &str) -> Result<Option<String>, String> {
+    #[cfg(debug_assertions)]
+    if diagnostic_secret_store_enabled() {
+        let value = diagnostic_load_secret(account)?;
+        eprintln!(
+            "MONERO_DESKTOP_SECURE_STORE diagnostic-memory-read present={}",
+            value.is_some()
+        );
+        return Ok(value);
+    }
+    let entry = Entry::new(SERVICE_NAME, account)
+        .map_err(|_| "platform-keyring:entry-unavailable".to_owned())?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(keyring_error_diagnostic(&error)),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn platform_load_secret(prefix: &str, account: &str) -> Result<Option<String>, String> {
+    match platform_load_current_secret(account)? {
+        Some(value) => Ok(Some(value)),
+        None => migrate_legacy_macos_secret(prefix, account),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_load_secret(_prefix: &str, account: &str) -> Result<Option<String>, String> {
+    platform_load_current_secret(account)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_delete_secret(account: &str) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if diagnostic_secret_store_enabled() {
+        eprintln!("MONERO_DESKTOP_SECURE_STORE diagnostic-memory-delete");
+        return diagnostic_delete_secret(account);
+    }
+    match delete_generic_password_options(macos_password_options(account)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == MACOS_ERR_SEC_ITEM_NOT_FOUND => Ok(()),
+        Err(error) => Err(format!("data-protection-keychain:{}", error.code())),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_delete_secret(account: &str) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if diagnostic_secret_store_enabled() {
+        eprintln!("MONERO_DESKTOP_SECURE_STORE diagnostic-memory-delete");
+        return diagnostic_delete_secret(account);
+    }
+    let entry = Entry::new(SERVICE_NAME, account)
+        .map_err(|_| "platform-keyring:entry-unavailable".to_owned())?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(keyring_error_diagnostic(&error)),
+    }
+}
+
 fn store_secret(
     prefix: &str,
     identifier: &str,
@@ -720,11 +1181,12 @@ fn store_secret(
         if value.is_empty() {
             return Err(format!("A {label} cannot be empty."));
         }
-        let entry = Entry::new(SERVICE_NAME, &account)
-            .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
-        entry
-            .set_password(&value)
-            .map_err(|_| format!("The {label} could not be saved in secure storage."))?;
+        if let Err(platform_error) = platform_store_secret(&account, &value) {
+            eprintln!(
+                "MONERO_DESKTOP_SECURE_STORE platform-write-failed kind={prefix} platform_error={platform_error}"
+            );
+            return Err(format!("The {label} could not be saved in secure storage."));
+        }
         cache_secret(prefix, identifier, &value)
     })();
     value.zeroize();
@@ -747,15 +1209,13 @@ fn load_secret(prefix: &str, identifier: &str, label: &str) -> Result<Option<Str
         return cached;
     }
     let account = account_name_with_prefix(prefix, identifier)?;
-    let entry = Entry::new(SERVICE_NAME, &account)
-        .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
-    match entry.get_password() {
-        Ok(value) => {
+    match platform_load_secret(prefix, &account) {
+        Ok(Some(value)) => {
             cache.replace(key, SessionSecretCacheEntry::Secret(value.clone()));
             eprintln!("MONERO_DESKTOP_SECURE_STORE platform-read kind={prefix}");
             Ok(Some(value))
         }
-        Err(keyring::Error::NoEntry) => {
+        Ok(None) => {
             cache.replace(key, SessionSecretCacheEntry::Missing);
             Ok(None)
         }
@@ -768,7 +1228,41 @@ fn load_secret(prefix: &str, identifier: &str, label: &str) -> Result<Option<Str
             cache.replace(key, SessionSecretCacheEntry::Failure(error.clone()));
             eprintln!(
                 "MONERO_DESKTOP_SECURE_STORE platform-read-failed kind={prefix} retry=explicit platform_error={}",
-                keyring_error_diagnostic(&platform_error)
+                platform_error
+            );
+            Err(error)
+        }
+    }
+}
+
+fn load_secret_current(
+    prefix: &str,
+    identifier: &str,
+    label: &str,
+) -> Result<Option<String>, String> {
+    let key = cache_key(prefix, identifier);
+    let mut cache = session_secret_cache()
+        .lock()
+        .map_err(|_| "Secure session cache is busy.".to_owned())?;
+    if let Some(cached) = cache.lookup(&key) {
+        return cached;
+    }
+    let account = account_name_with_prefix(prefix, identifier)?;
+    match platform_load_current_secret(&account) {
+        Ok(Some(value)) => {
+            cache.replace(key, SessionSecretCacheEntry::Secret(value.clone()));
+            eprintln!("MONERO_DESKTOP_SECURE_STORE platform-read-current kind={prefix}");
+            Ok(Some(value))
+        }
+        Ok(None) => {
+            cache.replace(key, SessionSecretCacheEntry::Missing);
+            Ok(None)
+        }
+        Err(platform_error) => {
+            let error = format!("The {label} could not be read from secure storage.");
+            cache.replace(key, SessionSecretCacheEntry::Failure(error.clone()));
+            eprintln!(
+                "MONERO_DESKTOP_SECURE_STORE platform-read-current-failed kind={prefix} retry=explicit platform_error={platform_error}"
             );
             Err(error)
         }
@@ -799,13 +1293,16 @@ fn delete_secret(prefix: &str, identifier: &str, label: &str) -> Result<(), Stri
         .map_err(|_| "Secure session cache is busy.".to_owned())?
         .remove(&key);
     let account = account_name_with_prefix(prefix, identifier)?;
-    let entry = Entry::new(SERVICE_NAME, &account)
-        .map_err(|_| "Secure storage is unavailable on this device.".to_owned())?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(_) => Err(format!(
-            "The {label} could not be removed from secure storage."
-        )),
+    match platform_delete_secret(&account) {
+        Ok(()) => Ok(()),
+        Err(platform_error) => {
+            eprintln!(
+                "MONERO_DESKTOP_SECURE_STORE platform-delete-failed kind={prefix} platform_error={platform_error}"
+            );
+            Err(format!(
+                "The {label} could not be removed from secure storage."
+            ))
+        }
     }
 }
 
@@ -813,10 +1310,26 @@ fn delete_secret(prefix: &str, identifier: &str, label: &str) -> Result<(), Stri
 mod tests {
     use super::{
         account_name, account_name_with_prefix, constant_time_match, delete_wallet_password,
-        hash_app_protection_password, load_wallet_password, store_wallet_password,
+        hash_app_protection_password, load_wallet_password_current, store_wallet_password,
         verify_app_protection_hash, SessionSecretCache, SessionSecretCacheEntry,
         APP_PASSWORD_ARGON2_PREFIX,
     };
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn diagnostic_store_is_limited_to_the_exact_diagnostic_app_bundle() {
+        use std::path::Path;
+
+        assert!(super::path_is_diagnostic_app_bundle(Path::new(
+            "/tmp/Monero Fast Wallet Diagnostic.app/Contents/MacOS/monero-wallet-desktop"
+        )));
+        assert!(!super::path_is_diagnostic_app_bundle(Path::new(
+            "/tmp/Monero Fast Wallet.app/Contents/MacOS/monero-wallet-desktop"
+        )));
+        assert!(!super::path_is_diagnostic_app_bundle(Path::new(
+            "/tmp/Monero Fast Wallet Diagnostic.app.backup/Contents/MacOS/monero-wallet-desktop"
+        )));
+    }
 
     #[test]
     fn accepts_safe_wallet_identifiers() {
@@ -869,7 +1382,6 @@ mod tests {
             SessionSecretCacheEntry::Failure("keychain denied".to_owned()),
         );
 
-        cache.clear_unlocked_secrets();
         assert_eq!(
             cache
                 .lookup("app-protection-password:test")
@@ -877,6 +1389,7 @@ mod tests {
                 .expect("cached verifier read"),
             Some("argon2-verifier".to_owned())
         );
+        assert_eq!(cache.clear_unlocked_secrets(), 1);
         assert!(cache.lookup("wallet-password:test").is_none());
         assert_eq!(
             cache
@@ -890,13 +1403,28 @@ mod tests {
         assert!(cache.lookup("app-protection-mode:test").is_none());
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn diagnostic_migration_keeps_wallets_but_resets_ad_hoc_app_lock_records() {
+        assert!(super::should_migrate_legacy_macos_secret("wallet-password"));
+        assert!(super::should_migrate_legacy_macos_secret(
+            "fast-wallet-password"
+        ));
+        assert!(!super::should_migrate_legacy_macos_secret(
+            "app-protection-password"
+        ));
+        assert!(!super::should_migrate_legacy_macos_secret(
+            "app-protection-mode"
+        ));
+    }
+
     #[test]
     #[ignore = "requires the current platform's real secure credential store"]
     fn wallet_credential_round_trip_uses_the_platform_secure_store() {
         let identifier = format!("secure-store-test-{}", std::process::id());
         let password = "test-device-held-credential".to_owned();
         store_wallet_password(&identifier, password).expect("store and verification must succeed");
-        assert!(load_wallet_password(&identifier)
+        assert!(load_wallet_password_current(&identifier)
             .expect("secure store must be readable")
             .is_some());
         delete_wallet_password(&identifier).expect("test credential cleanup must succeed");

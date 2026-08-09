@@ -49,11 +49,29 @@ export type WalletSyncEtaState = {
   progressSamples: number;
   /** Rate based exclusively on the measured Core block flow. */
   blocksPerSecond?: number;
+  /** Monotonic wall timestamp of the last UI observation. */
+  lastObservedAt: number;
+  /** Time spent in download/scan work; finalization and retry waits are excluded. */
+  activeElapsedMs: number;
+  /** Active elapsed time at the most recent height change. */
+  lastProgressActiveElapsedMs: number;
+  /** Smoothed measured rate used for the visible estimate. */
+  smoothedBlocksPerSecond?: number;
+  /** Last stable estimate, retained while a non-scan phase is running. */
+  etaSeconds?: number;
 };
 
 export type WalletSyncEtaEstimate = {
   state: WalletSyncEtaState | undefined;
   etaSeconds: number | undefined;
+};
+
+export type WalletSyncEtaOptions = {
+  /**
+   * False while the native pipeline selects a provider, checks the mempool,
+   * checkpoints wallets, retries, or is otherwise outside block flow.
+   */
+  active?: boolean;
 };
 
 function nonNegativeNumber(value: number | string): number {
@@ -193,6 +211,7 @@ export function updateWalletSyncEta(
   previous: WalletSyncEtaState | undefined,
   remainingBlocks: number | undefined,
   observedAt: number,
+  options: WalletSyncEtaOptions = {},
 ): WalletSyncEtaEstimate {
   if (
     remainingBlocks === undefined ||
@@ -211,15 +230,34 @@ export function updateWalletSyncEta(
         lastProgressAt: observedAt,
         lastRemainingBlocks: remainingBlocks,
         progressSamples: 0,
+        lastObservedAt: observedAt,
+        activeElapsedMs: 0,
+        lastProgressActiveElapsedMs: 0,
       },
       etaSeconds: undefined,
     };
   }
 
-  let state = previous;
+  const active = options.active !== false;
+  const observationDeltaMs = Math.max(0, observedAt - previous.lastObservedAt);
+  let state: WalletSyncEtaState = {
+    ...previous,
+    lastObservedAt: observedAt,
+    activeElapsedMs:
+      previous.activeElapsedMs + (active ? observationDeltaMs : 0),
+  };
+
+  // A checkpoint or mempool pass is real work but not evidence that block
+  // scanning slowed down. Keep the last stable value and do not pollute the
+  // throughput sample with that phase's elapsed time.
+  if (!active) {
+    return { state, etaSeconds: state.etaSeconds };
+  }
+
   if (remainingBlocks < previous.lastRemainingBlocks) {
-    const elapsedSinceStart = (observedAt - previous.startedAt) / 1_000;
-    const elapsedSinceProgress = (observedAt - previous.lastProgressAt) / 1_000;
+    const elapsedSinceStart = state.activeElapsedMs / 1_000;
+    const elapsedSinceProgress =
+      (state.activeElapsedMs - previous.lastProgressActiveElapsedMs) / 1_000;
     const completedSinceStart = previous.startRemainingBlocks - remainingBlocks;
     const completedSinceProgress = previous.lastRemainingBlocks - remainingBlocks;
     const initialRate =
@@ -233,33 +271,62 @@ export function updateWalletSyncEta(
     // The short last interval can briefly be much faster than sustainable
     // scanning. Choosing the lower measured rate makes the displayed “about”
     // estimate conservative without inventing a server-side speed.
-    const blocksPerSecond =
+    const measuredBlocksPerSecond =
       initialRate && instantRate
         ? Math.min(initialRate, instantRate)
         : initialRate ?? instantRate;
+    const priorRate = previous.smoothedBlocksPerSecond;
+    const boundedMeasurement =
+      measuredBlocksPerSecond && priorRate
+        ? Math.max(
+            priorRate * 0.6,
+            Math.min(priorRate * 1.5, measuredBlocksPerSecond),
+          )
+        : measuredBlocksPerSecond;
+    const blocksPerSecond =
+      boundedMeasurement && priorRate
+        ? priorRate * 0.75 + boundedMeasurement * 0.25
+        : boundedMeasurement;
 
     state = {
-      ...previous,
+      ...state,
       lastProgressAt: observedAt,
       lastRemainingBlocks: remainingBlocks,
+      lastProgressActiveElapsedMs: state.activeElapsedMs,
       progressSamples: previous.progressSamples + 1,
       blocksPerSecond,
+      smoothedBlocksPerSecond: blocksPerSecond,
     };
   }
 
-  const observedForMs = observedAt - state.startedAt;
   const hasReliableObservation =
-    state.progressSamples >= 3 && observedForMs >= 30_000;
+    state.progressSamples >= 3 && state.activeElapsedMs >= 30_000;
   const projectedSeconds =
-    hasReliableObservation && state.blocksPerSecond && state.blocksPerSecond > 0
-      ? Math.ceil(remainingBlocks / state.blocksPerSecond)
+    hasReliableObservation &&
+    state.smoothedBlocksPerSecond &&
+    state.smoothedBlocksPerSecond > 0
+      ? Math.ceil(remainingBlocks / state.smoothedBlocksPerSecond)
       : undefined;
   // Below one minute, a native wallet can still spend most of the apparent
   // time in the final Core checks. Showing a number there is less truthful
   // than continuing to say that the remaining time is being calculated.
-  const etaSeconds = projectedSeconds && projectedSeconds >= 60
+  let etaSeconds = projectedSeconds && projectedSeconds >= 60
     ? projectedSeconds
     : undefined;
+  if (etaSeconds && previous.etaSeconds) {
+    // One irregular batch must not make the visible estimate jump from, for
+    // example, 5 to 24 minutes. Converge over several genuine progress
+    // samples while still allowing a sustained slowdown to become visible.
+    const priorAfterElapsed = Math.max(
+      60,
+      previous.etaSeconds - Math.floor(observationDeltaMs / 1_000),
+    );
+    etaSeconds = Math.max(
+      Math.floor(priorAfterElapsed * 0.7),
+      Math.min(Math.ceil(priorAfterElapsed * 1.25), etaSeconds),
+    );
+  }
+  state = { ...state, etaSeconds };
   return { state, etaSeconds };
 }
 

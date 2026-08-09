@@ -7,8 +7,17 @@ const source = (...parts: string[]) =>
 
 describe('Wallet creation and existing-wallet UI contract', () => {
   const setup = source('src', 'screens', 'WalletSetupScreen.tsx');
+  const welcome = source('src', 'screens', 'WelcomeScreen.tsx');
   const service = source('src', 'services', 'WalletService.ts');
   const walletState = source('src', 'services', 'WalletState.tsx');
+  const walletCore = source(
+    '..',
+    '..',
+    'native',
+    'monero-bridge',
+    'cpp',
+    'WalletEngine.cpp',
+  );
   const android = source(
     'android',
     'app',
@@ -34,6 +43,81 @@ describe('Wallet creation and existing-wallet UI contract', () => {
     expect(createAction).toBeGreaterThan(carousel);
     expect(setup.slice(carousel, createAction)).toContain('</ScrollView>');
     expect(setup).toContain("t('setup.existingWallets')");
+  });
+
+  it('restores the privacy choice and per-wallet Fast Wallet switch', () => {
+    expect(welcome).toContain("t('welcome.privacyOnly')");
+    expect(welcome).toContain("t('welcome.privacyComfort')");
+    expect(welcome).toContain('continueToSetup(false)');
+    expect(welcome).toContain('continueToSetup(true)');
+    expect(welcome).toContain('fastWalletEnabled');
+    expect(setup).toContain("t('setup.fastWalletToggle')");
+    expect(setup).toContain('<Switch');
+    expect(setup).toContain('value={fastWalletEnabled}');
+    expect(setup).toContain('onValueChange={changeFastWalletEnabled}');
+    expect(setup).toContain("createSelectedFastWallet('software')");
+    expect(setup).toContain("createSelectedFastWallet('restore')");
+    expect(setup).not.toContain('createSelectedFastWallet(\'hardware\')');
+  });
+
+  it('never lets daemon startup block the primary recovery-seed backup', () => {
+    const createStart = setup.indexOf(
+      'const startCreateWalletWithDeviceSecret = async () =>',
+    );
+    const createEnd = setup.indexOf(
+      'const startRestoreWallet = async () =>',
+      createStart,
+    );
+    const createFlow = setup.slice(createStart, createEnd);
+    const initialRegistration = createFlow.indexOf('startNetwork: false');
+    const seedPresentation = createFlow.indexOf(
+      'walletService.presentRecoverySeed',
+    );
+    const deferredNetworkStart = createFlow.indexOf('startNetwork: true');
+
+    expect(createStart).toBeGreaterThan(0);
+    expect(createEnd).toBeGreaterThan(createStart);
+    expect(initialRegistration).toBeGreaterThan(0);
+    expect(seedPresentation).toBeGreaterThan(initialRegistration);
+    expect(deferredNetworkStart).toBeGreaterThan(seedPresentation);
+  });
+
+  it('shows transfer and confirmed acceptance while enrolling a Fast Wallet', () => {
+    const enrollmentStart = setup.indexOf(
+      "setFastWalletTransferStatus('transferring')",
+    );
+    const enrollment = setup.indexOf(
+      'walletService.enableEncryptedFastWalletAlerts',
+      enrollmentStart,
+    );
+    const accepted = setup.indexOf(
+      "setFastWalletTransferStatus('accepted')",
+      enrollment,
+    );
+
+    expect(enrollmentStart).toBeGreaterThan(0);
+    expect(enrollment).toBeGreaterThan(enrollmentStart);
+    expect(accepted).toBeGreaterThan(enrollment);
+    expect(setup).toContain('s.fastWalletTransferLedTransferring');
+    expect(setup).toContain('s.fastWalletTransferLedAccepted');
+    expect(setup).toContain("t('setup.fastWalletTransferSending')");
+    expect(setup).toContain("t('setup.fastWalletTransferAccepted')");
+  });
+
+  it('keeps fresh-wallet daemon initialization local and non-blocking', () => {
+    const helperStart = walletCore.indexOf(
+      'void setEstimatedRefreshHeightForNewWallet',
+    );
+    const helperEnd = walletCore.indexOf(
+      'uint64_t fastReceiveDerivationIndexFromId',
+      helperStart,
+    );
+    const helper = walletCore.slice(helperStart, helperEnd);
+
+    expect(helperStart).toBeGreaterThan(0);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    expect(helper).toContain('wallet->getRefreshFromBlockHeight()');
+    expect(helper).toContain('wallet->setRecoveringFromSeed(true)');
   });
 
   it('renders saved wallets as a snapping horizontal slider', () => {

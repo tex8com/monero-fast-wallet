@@ -9,6 +9,7 @@
     "android:build": "bash scripts/android-build.sh",
     "android:build-install": "bash scripts/android-build-install.sh",
     "android:diagnostics": "bash scripts/android-diagnostics.sh",
+    "android:fast-wallet-trace": "bash scripts/android-fast-wallet-trace.sh",
     "android:logs": "bash scripts/android-logs.sh",
     "check:node": "bash scripts/check-node.sh",
     "ios": "react-native run-ios",

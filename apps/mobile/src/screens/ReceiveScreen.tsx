@@ -5,6 +5,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  TextInput,
   TouchableOpacity,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
@@ -31,9 +32,7 @@ import type {
 import { formatAtomicXmr } from '../services/WalletFormat';
 import { walletService } from '../services/WalletService';
 import {
-  createWalletAddressRecord,
   loadWalletAddresses,
-  upsertWalletAddress,
   type WalletAddressRecord,
 } from '../services/WalletAddressRegistry';
 
@@ -127,8 +126,15 @@ export default function ReceiveScreen({ navigation, route }: any) {
   >();
   const [addressBusy, setAddressBusy] = useState(false);
   const [showAddressTools, setShowAddressTools] = useState(false);
+  const [newAddressLabel, setNewAddressLabel] = useState('');
   const [showHardwareTools, setShowHardwareTools] = useState(false);
   const [selectedReceiveWalletId, setSelectedReceiveWalletId] = useState<
+    string | undefined
+  >();
+  const [openingReceiveWalletId, setOpeningReceiveWalletId] = useState<
+    string | undefined
+  >();
+  const [receiveWalletError, setReceiveWalletError] = useState<
     string | undefined
   >();
   const { t } = useI18n();
@@ -136,9 +142,11 @@ export default function ReceiveScreen({ navigation, route }: any) {
     typeof route?.params?.walletId === 'string'
       ? route.params.walletId
       : undefined;
+  const routeManageAddresses = route?.params?.manageAddresses === true;
   const {
     hardwareStatus,
     isRegisteredWalletOpen,
+    openRegisteredWalletById,
     refreshHardwareWalletStatus,
     reconnectHardwareWallet,
     registeredWallet,
@@ -146,7 +154,6 @@ export default function ReceiveScreen({ navigation, route }: any) {
     refreshSnapshot,
     refreshTransactions,
     session,
-    setActiveRegisteredWallet,
     showHardwareWalletAddress,
     snapshot,
     status,
@@ -227,6 +234,12 @@ export default function ReceiveScreen({ navigation, route }: any) {
   }, [routeWalletId]);
 
   useEffect(() => {
+    if (routeManageAddresses) {
+      setShowAddressTools(true);
+    }
+  }, [routeManageAddresses, routeWalletId]);
+
+  useEffect(() => {
     let mounted = true;
     if (
       !session ||
@@ -240,18 +253,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
     }
 
     const load = async () => {
-      const primaryAddress = await walletService.getAddress(session);
-      const primary = createWalletAddressRecord({
-        walletId: registeredWallet.id,
-        accountIndex: session.accountIndex ?? 0,
-        addressIndex: session.addressIndex ?? 0,
-        address: primaryAddress,
-        label:
-          registeredWallet.role === 'fast'
-            ? t('receive.ledgerFastWallet')
-            : t('receive.primaryAddress'),
-      });
-      const addresses = await upsertWalletAddress(primary);
+      const addresses = await walletService.listSubaddresses(session);
       if (!mounted) {
         return;
       }
@@ -259,7 +261,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
       setSelectedAddressId(current =>
         current && addresses.some(item => item.id === current)
           ? current
-          : primary.id,
+          : addresses[0]?.id,
       );
     };
 
@@ -313,27 +315,36 @@ export default function ReceiveScreen({ navigation, route }: any) {
   };
 
   const handleSelectWallet = async (wallet: WalletOption) => {
-    setSelectedReceiveWalletId(wallet.id);
+    if (openingReceiveWalletId) {
+      return;
+    }
+
+    setReceiveWalletError(undefined);
     setSelectedAddressId(undefined);
     setHardwareMessage(undefined);
     setShowAddressTools(false);
     setShowHardwareTools(false);
 
     const walletId = wallet.id;
-    if (isRegisteredWalletOpen(walletId)) {
-      if (walletId !== registeredWallet?.id) {
-        await setActiveRegisteredWallet(walletId);
-      }
+    if (walletId === registeredWallet?.id && isRegisteredWalletOpen(walletId)) {
+      setSelectedReceiveWalletId(walletId);
       return;
     }
 
-    if (walletId !== registeredWallet?.id) {
-      await setActiveRegisteredWallet(walletId);
+    setOpeningReceiveWalletId(walletId);
+    try {
+      const opened = await openRegisteredWalletById(walletId);
+      if (!opened) {
+        throw new Error(t('wallets.openFailed'));
+      }
+      setSelectedReceiveWalletId(walletId);
+    } catch (error) {
+      setReceiveWalletError(
+        error instanceof Error ? error.message : t('wallets.openFailed'),
+      );
+    } finally {
+      setOpeningReceiveWalletId(undefined);
     }
-    navigation.navigate('WalletSetup', {
-      mode: 'open',
-      openRequestId: Date.now(),
-    });
   };
 
   const handleReconnectHardwareWallet = async () => {
@@ -373,11 +384,13 @@ export default function ReceiveScreen({ navigation, route }: any) {
     try {
       const newAddress = await walletService.createSubaddress(
         session,
-        t('receive.newAddressLabel', { count: walletAddresses.length + 1 }),
+        newAddressLabel.trim() ||
+          t('receive.newAddressLabel', { count: walletAddresses.length + 1 }),
       );
-      const addresses = await loadWalletAddresses(registeredWallet.id);
+      const addresses = await walletService.listSubaddresses(session);
       setWalletAddresses(addresses);
       setSelectedAddressId(newAddress.id);
+      setNewAddressLabel('');
     } finally {
       setAddressBusy(false);
     }
@@ -405,7 +418,11 @@ export default function ReceiveScreen({ navigation, route }: any) {
               <TouchableOpacity
                 key={wallet.id}
                 accessibilityRole="button"
-                accessibilityState={{ selected: active }}
+                accessibilityState={{
+                  busy: openingReceiveWalletId === wallet.id,
+                  selected: active,
+                }}
+                disabled={Boolean(openingReceiveWalletId)}
                 onPress={() => handleSelectWallet(wallet)}
                 style={[s.walletCard, active && s.walletCardActive]}
               >
@@ -413,6 +430,9 @@ export default function ReceiveScreen({ navigation, route }: any) {
                   <Text style={s.walletCardTitle} numberOfLines={1}>
                     {wallet.label}
                   </Text>
+                  {openingReceiveWalletId === wallet.id ? (
+                    <ActivityIndicator color={colors.orange} size="small" />
+                  ) : null}
                   {wallet.badge ? (
                     <Text style={s.fastBadge}>{wallet.badge}</Text>
                   ) : null}
@@ -434,6 +454,11 @@ export default function ReceiveScreen({ navigation, route }: any) {
             </Text>
           </TouchableOpacity>
         </ScrollView>
+        {receiveWalletError ? (
+          <Text accessibilityRole="alert" style={s.walletSelectionError}>
+            {receiveWalletError}
+          </Text>
+        ) : null}
 
         {address ? (
           <View style={s.card}>
@@ -498,6 +523,19 @@ export default function ReceiveScreen({ navigation, route }: any) {
                         )}
                       </TouchableOpacity>
                     </View>
+                    <TextInput
+                      accessibilityLabel={t('receive.newAddressName')}
+                      autoCapitalize="words"
+                      maxLength={80}
+                      onChangeText={setNewAddressLabel}
+                      placeholder={t('receive.newAddressPlaceholder')}
+                      placeholderTextColor={colors.textMuted}
+                      style={s.addressLabelInput}
+                      value={newAddressLabel}
+                    />
+                    <Text style={s.addressPrivacyHint}>
+                      {t('receive.subaddressPrivacyHint')}
+                    </Text>
                     {otherWalletAddresses.map(item => (
                       <TouchableOpacity
                         activeOpacity={0.75}
@@ -765,6 +803,12 @@ const s = StyleSheet.create({
     fontWeight: '900',
   },
   walletCardDetail: { color: colors.textSecondary, fontSize: 12, marginTop: 6 },
+  walletSelectionError: {
+    color: colors.error,
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 16,
+  },
   manageWalletsCard: {
     minWidth: 112,
     minHeight: 76,
@@ -918,6 +962,23 @@ const s = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: 15,
     fontWeight: '800',
+  },
+  addressLabelInput: {
+    minHeight: 44,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bg,
+    color: colors.textPrimary,
+    fontSize: 14,
+    marginBottom: 7,
+    paddingHorizontal: 12,
+  },
+  addressPrivacyHint: {
+    color: colors.textMuted,
+    fontSize: 11,
+    lineHeight: 16,
+    marginBottom: 10,
   },
   newAddressButton: {
     minHeight: 34,

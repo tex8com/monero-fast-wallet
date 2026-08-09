@@ -5,6 +5,9 @@ EXPORTS
   tex8_desktop_wallet_core_new
   tex8_desktop_wallet_core_free
   tex8_desktop_wallet_ledger_transport_status
+  tex8_desktop_wallet_compute_backend_status
+  tex8_desktop_wallet_set_compute_backend
+  tex8_desktop_wallet_benchmark_derivation_performance
   tex8_desktop_wallet_create
   tex8_desktop_wallet_restore
   tex8_desktop_wallet_create_from_device
@@ -12,13 +15,18 @@ EXPORTS
   tex8_desktop_wallet_close
   tex8_desktop_wallet_set_password
   tex8_desktop_wallet_set_daemon
+  tex8_desktop_wallet_set_grpc_endpoint
+  tex8_desktop_wallet_network_sync_status
+  tex8_desktop_wallet_prioritize_network_wallet
   tex8_desktop_wallet_start_refresh
   tex8_desktop_wallet_stop_refresh
   tex8_desktop_wallet_get_address
   tex8_desktop_wallet_get_seed
   tex8_desktop_wallet_snapshot
+  tex8_desktop_wallet_sync_ledger_key_images
   tex8_desktop_wallet_get_balance
   tex8_desktop_wallet_create_subaddress
+  tex8_desktop_wallet_list_subaddresses
   tex8_desktop_wallet_create_fast_receive_identity
   tex8_desktop_wallet_fast_receive_registration_payload
   tex8_desktop_wallet_get_transactions

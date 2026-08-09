@@ -1,0 +1,152 @@
+From 573e8fe568975b980a3ed0e1658243ed1ea58529 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Fast Wallet <devnull@tex8.invalid>
+Date: Sat, 8 Aug 2026 21:41:43 -0500
+Subject: [PATCH] wallet cli: add Fast Wallet lifecycle contract test
+
+---
+ src/simplewallet/product_cli_debug.cpp | 108 ++++++++++++++++++++++++-
+ 1 file changed, 107 insertions(+), 1 deletion(-)
+
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index 787018d..a7bf844 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -161,7 +161,8 @@ namespace
+       << "   ./fast-wallet-cli --debug\n\n"
+       << "Shared wallet rules\n"
+       << "   ./fast-wallet-cli wallet help\n"
+-      << "   ./fast-wallet-cli wallet self-test --json\n\n"
++      << "   ./fast-wallet-cli wallet self-test --json\n"
++      << "   ./fast-wallet-cli fast-wallet self-test --json\n\n"
+       << "Safety: never paste a seed into a command argument and never share it.\n";
+   }
+ 
+@@ -180,6 +181,18 @@ namespace
+       << "  and the mandatory payment review sequence without network or funds.\n";
+   }
+ 
++  void print_fast_wallet_help()
++  {
++    std::cout
++      << "FAST-WALLET-CLI BY TEX8 - FAST WALLET RULES\n\n"
++      << "fast-wallet contract --json\n"
++      << "  Print the shared Fast Wallet lifecycle contract identity.\n\n"
++      << "fast-wallet self-test --json\n"
++      << "  Test the local Fast Wallet lifecycle without a worker, network, wallet\n"
++      << "  file, seed or funds: independent Fast Wallet kind, mandatory backup,\n"
++      << "  explicit detach and notification disable before removal.\n";
++  }
++
+   bool wallet_policy_command(int argc, char* argv[], int& exit_code)
+   {
+     if (argc < 5 || argc > 6 || std::string(argv[argc - 1]) != "--json")
+@@ -354,6 +367,75 @@ namespace
+     exit_code = ok ? 0 : 70;
+     return true;
+   }
++
++  bool fast_wallet_self_test(int& exit_code)
++  {
++    bool ok = true;
++    std::size_t assertions = 0;
++    const auto expect = [&](bool condition) {
++      ++assertions;
++      ok = ok && condition;
++    };
++
++    mfw_wallet_creation_policy_v1 policy{};
++    expect(mfw_wallet_creation_policy_resolve_v1(
++      MFW_WALLET_PREFERENCE_PRIVACY_CONVENIENCE,
++      MFW_FAST_WALLET_OVERRIDE_DEFAULT,
++      &policy) == MFW_ERROR_OK && policy.fast_wallet_enabled == 1 &&
++      policy.fast_wallet_kind == MFW_WALLET_KIND_FAST &&
++      policy.fast_wallet_independent_seed == 1);
++
++    mfw_wallet_lifecycle_state_v1 state{};
++    mfw_wallet_lifecycle_state_v1 next{};
++    mfw_wallet_lifecycle_event_v1 event{};
++    event.struct_size = sizeof(event);
++    expect(mfw_wallet_lifecycle_default_v1(&state) == MFW_ERROR_OK);
++    event.event = MFW_WALLET_EVENT_BEGIN_CREATE;
++    event.value = MFW_WALLET_KIND_FAST;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&state, &event, &next) == MFW_ERROR_OK &&
++      next.lifecycle_state == MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP &&
++      next.seed_backup_confirmed == 0);
++    event.event = MFW_WALLET_EVENT_SELECT;
++    event.value = 0;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&next, &event, &state) != MFW_ERROR_OK);
++    event.event = MFW_WALLET_EVENT_CONFIRM_SEED_BACKUP;
++    event.value = 1;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&next, &event, &state) == MFW_ERROR_OK &&
++      state.lifecycle_state == MFW_WALLET_LIFECYCLE_READY &&
++      state.seed_backup_confirmed == 1);
++
++    mfw_wallet_removal_input_v1 removal_input{};
++    removal_input.struct_size = sizeof(removal_input);
++    removal_input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
++    removal_input.wallet_kind = MFW_WALLET_KIND_FAST;
++    removal_input.balance_state = MFW_WALLET_BALANCE_KNOWN_ZERO;
++    removal_input.seed_backup_confirmed = 1;
++    removal_input.fast_worker_enrolled = 1;
++    removal_input.notifications_enabled = 1;
++    mfw_wallet_removal_plan_v1 removal_plan{};
++    const std::uint32_t detach_requirements =
++      MFW_WALLET_REMOVAL_REQUIREMENT_DETACH_FAST_WORKER |
++      MFW_WALLET_REMOVAL_REQUIREMENT_DISABLE_NOTIFICATIONS;
++    expect(mfw_wallet_removal_plan_compute_v1(&removal_input, &removal_plan) == MFW_ERROR_OK &&
++      removal_plan.requirement_flags == detach_requirements &&
++      removal_plan.immediate_removal_allowed == 0);
++    removal_input.fast_worker_enrolled = 0;
++    removal_input.notifications_enabled = 0;
++    expect(mfw_wallet_removal_plan_compute_v1(&removal_input, &removal_plan) == MFW_ERROR_OK &&
++      removal_plan.requirement_flags == 0 && removal_plan.immediate_removal_allowed == 1);
++
++    std::cout << "{"
++              << "\"ok\":" << (ok ? "true" : "false") << ","
++              << "\"schema_version\":" << MFW_WALLET_LIFECYCLE_STATE_VERSION << ","
++              << "\"schema_sha256\":\"" << mfw_wallet_lifecycle_schema_sha256() << "\","
++              << "\"assertions\":" << assertions << ","
++              << "\"network_calls\":0,"
++              << "\"funds_touched\":false,"
++              << "\"wallet_files_created\":0"
++              << "}\n";
++    exit_code = ok ? 0 : 70;
++    return true;
++  }
+ }
+ 
+ namespace mfw_cli
+@@ -387,6 +469,30 @@ namespace mfw_cli
+ 
+   bool handle_early_product_command(int argc, char* argv[], int& exit_code)
+   {
++    if (argc >= 3 && std::string(argv[1]) == "fast-wallet")
++    {
++      const std::string command(argv[2]);
++      if (command == "help" && argc == 3)
++      {
++        print_fast_wallet_help();
++        exit_code = 0;
++        return true;
++      }
++      if (command == "contract" && argc == 4 && std::string(argv[3]) == "--json")
++      {
++        std::cout << "{"
++                  << "\"state_version\":" << MFW_WALLET_LIFECYCLE_STATE_VERSION << ","
++                  << "\"schema_sha256\":\"" << mfw_wallet_lifecycle_schema_sha256() << "\","
++                  << "\"independent_seed_required\":true,"
++                  << "\"backup_required_before_ready\":true,"
++                  << "\"detach_required_before_removal\":true"
++                  << "}\n";
++        exit_code = 0;
++        return true;
++      }
++      if (command == "self-test" && argc == 4 && std::string(argv[3]) == "--json")
++        return fast_wallet_self_test(exit_code);
++    }
+     if (argc >= 3 && std::string(argv[1]) == "wallet")
+     {
+       const std::string command(argv[2]);
+-- 
+2.50.1 (Apple Git-155)
+

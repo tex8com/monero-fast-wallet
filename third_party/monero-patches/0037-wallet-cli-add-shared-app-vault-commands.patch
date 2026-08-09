@@ -1,0 +1,591 @@
+From d9f5e592917428783ae2f54811578d73b9dfd35d Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 17:46:19 -0500
+Subject: [PATCH] wallet cli: add shared app vault commands
+
+---
+ src/simplewallet/CMakeLists.txt        |   5 +-
+ src/simplewallet/product_cli_app.cpp   | 501 +++++++++++++++++++++++++
+ src/simplewallet/product_cli_app.h     |   9 +
+ src/simplewallet/product_cli_debug.cpp |   4 +
+ 4 files changed, 517 insertions(+), 2 deletions(-)
+ create mode 100644 src/simplewallet/product_cli_app.cpp
+ create mode 100644 src/simplewallet/product_cli_app.h
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index 1c87059ef..21f06753e 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -31,7 +31,8 @@ set(simplewallet_sources
+ 
+ set(product_cli_sources
+   simplewallet.cpp
+-  product_cli_debug.cpp)
++  product_cli_debug.cpp
++  product_cli_app.cpp)
+ 
+ set(simplewallet_headers)
+ 
+@@ -117,7 +118,7 @@ execute_process(
+   OUTPUT_STRIP_TRAILING_WHITESPACE)
+ set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
+ set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
+-set(MFW_MONERO_PATCH_COUNT "36" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_MONERO_PATCH_COUNT "37" CACHE STRING "Applied TEX8 Monero patch count")
+ set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
+ set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
+ set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
+diff --git a/src/simplewallet/product_cli_app.cpp b/src/simplewallet/product_cli_app.cpp
+new file mode 100644
+index 000000000..302e2b900
+--- /dev/null
++++ b/src/simplewallet/product_cli_app.cpp
+@@ -0,0 +1,501 @@
++// Copyright (c) 2026 TEX8
++// SPDX-License-Identifier: BSD-3-Clause
++
++#include "product_cli_app.h"
++
++#include <boost/filesystem.hpp>
++#include <algorithm>
++#include <chrono>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <iostream>
++#include <limits>
++#include <stdexcept>
++#include <string>
++
++#include "mfw_product_core.h"
++
++#ifdef _WIN32
++#include <windows.h>
++#else
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
++namespace
++{
++  constexpr char app_vault_magic[8] = {'M', 'F', 'W', 'A', 'V', '1', '\0', '\0'};
++
++  struct persisted_app_vault
++  {
++    char magic[8];
++    std::uint32_t disk_version;
++    std::uint32_t reserved;
++    std::uint64_t generation;
++    mfw_app_vault_state_v1 state;
++    mfw_app_vault_password_verifier_v1 verifier;
++  };
++
++  struct app_options
++  {
++    std::string operation;
++    boost::filesystem::path data_directory;
++    boost::filesystem::path password_file;
++    bool json = false;
++    bool confirm_reset = false;
++    std::uint64_t timeout_seconds = std::numeric_limits<std::uint64_t>::max();
++  };
++
++  std::uint64_t unix_seconds()
++  {
++    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
++      std::chrono::system_clock::now().time_since_epoch()).count());
++  }
++
++  std::uint64_t monotonic_milliseconds()
++  {
++    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
++      std::chrono::steady_clock::now().time_since_epoch()).count());
++  }
++
++  boost::filesystem::path default_data_directory()
++  {
++    if (const char* override_path = std::getenv("MFW_APP_DATA_DIR"))
++      if (*override_path != '\0') return boost::filesystem::path(override_path);
++#ifdef _WIN32
++    if (const char* local_app_data = std::getenv("LOCALAPPDATA"))
++      if (*local_app_data != '\0')
++        return boost::filesystem::path(local_app_data) / "TEX8" / "MoneroFastWallet";
++#endif
++    if (const char* home = std::getenv("HOME"))
++      if (*home != '\0') return boost::filesystem::path(home) / ".monero-fast-wallet";
++    throw std::runtime_error("no private application data directory is available");
++  }
++
++  bool parse_unsigned(const std::string& encoded, std::uint64_t& value)
++  {
++    if (encoded.empty() || !std::all_of(encoded.begin(), encoded.end(),
++        [](char character) { return character >= '0' && character <= '9'; }))
++      return false;
++    try
++    {
++      std::size_t end = 0;
++      const unsigned long long parsed = std::stoull(encoded, &end, 10);
++      if (end != encoded.size()) return false;
++      value = static_cast<std::uint64_t>(parsed);
++      return true;
++    }
++    catch (...) { return false; }
++  }
++
++  bool timeout_allowed(std::uint64_t seconds)
++  {
++    return seconds == 0 || seconds == 60 || seconds == 300 ||
++      seconds == 900 || seconds == 1800 || seconds == 3600;
++  }
++
++  app_options parse_options(int argc, char* argv[])
++  {
++    if (argc < 3) throw std::runtime_error("app command requires an operation");
++    app_options options;
++    options.operation = argv[2];
++    options.data_directory = default_data_directory();
++    for (int index = 3; index < argc; ++index)
++    {
++      const std::string token(argv[index]);
++      if (token == "--json") options.json = true;
++      else if (token == "--confirm-reset") options.confirm_reset = true;
++      else if (token == "--app-data-dir" && index + 1 < argc)
++        options.data_directory = argv[++index];
++      else if (token == "--password-file" && index + 1 < argc)
++        options.password_file = argv[++index];
++      else if (token == "--seconds" && index + 1 < argc)
++      {
++        if (!parse_unsigned(argv[++index], options.timeout_seconds))
++          throw std::runtime_error("--seconds must be a non-negative integer");
++      }
++      else throw std::runtime_error("unknown app option: " + token);
++    }
++    return options;
++  }
++
++  boost::filesystem::path state_path(const app_options& options)
++  {
++    return options.data_directory / "app-vault-state-v1.bin";
++  }
++
++  void validate_disk(const persisted_app_vault& disk)
++  {
++    if (std::memcmp(disk.magic, app_vault_magic, sizeof(app_vault_magic)) != 0 ||
++        disk.disk_version != 1 || disk.reserved != 0 || disk.generation == 0)
++      throw std::runtime_error("AppVault state file is corrupt or unsupported");
++    std::uint32_t presentation = 0;
++    if (mfw_app_vault_presentation_v1(&disk.state, unix_seconds(), &presentation) != MFW_ERROR_OK)
++      throw std::runtime_error("AppVault state violates the shared state contract");
++    if (mfw_app_vault_password_verifier_validate_v1(&disk.verifier) != MFW_ERROR_OK)
++      throw std::runtime_error("AppVault password verifier is unsupported");
++  }
++
++  persisted_app_vault read_state(const app_options& options)
++  {
++    const boost::filesystem::path path = state_path(options);
++    if (!boost::filesystem::exists(path)) throw std::runtime_error("AppVault is not configured");
++    if (boost::filesystem::is_symlink(path)) throw std::runtime_error("AppVault state path is unsafe");
++    std::ifstream input(path.string(), std::ios::binary);
++    persisted_app_vault disk{};
++    input.read(reinterpret_cast<char*>(&disk), sizeof(disk));
++    if (!input || input.peek() != std::ifstream::traits_type::eof())
++      throw std::runtime_error("AppVault state file has an invalid size");
++    validate_disk(disk);
++    // Authorization is deliberately process-local and never restored from disk.
++    disk.state.session_authorized = 0;
++    disk.state.last_activity_monotonic_ms = 0;
++    return disk;
++  }
++
++  void sync_path(const boost::filesystem::path& path)
++  {
++#ifndef _WIN32
++    const int descriptor = ::open(path.string().c_str(), O_RDONLY);
++    if (descriptor < 0 || ::fsync(descriptor) != 0)
++    {
++      if (descriptor >= 0) ::close(descriptor);
++      throw std::runtime_error("AppVault update could not be synchronized");
++    }
++    ::close(descriptor);
++#else
++    (void)path;
++#endif
++  }
++
++  void write_state(const app_options& options, persisted_app_vault& disk)
++  {
++    const boost::filesystem::path directory = options.data_directory;
++    const boost::filesystem::path path = state_path(options);
++    const boost::filesystem::path temporary(path.string() + ".tmp");
++    if (boost::filesystem::exists(directory) && boost::filesystem::is_symlink(directory))
++      throw std::runtime_error("AppVault directory is unsafe");
++    boost::filesystem::create_directories(directory);
++#ifndef _WIN32
++    ::chmod(directory.string().c_str(), S_IRWXU);
++#endif
++    if (boost::filesystem::exists(path) && boost::filesystem::is_symlink(path))
++      throw std::runtime_error("AppVault state path is unsafe");
++    if (boost::filesystem::exists(temporary)) boost::filesystem::remove(temporary);
++    ++disk.generation;
++    {
++      std::ofstream output(temporary.string(), std::ios::binary | std::ios::trunc);
++      output.write(reinterpret_cast<const char*>(&disk), sizeof(disk));
++      output.flush();
++      if (!output) throw std::runtime_error("AppVault update could not be written");
++    }
++#ifndef _WIN32
++    ::chmod(temporary.string().c_str(), S_IRUSR | S_IWUSR);
++#endif
++    sync_path(temporary);
++#ifdef _WIN32
++    if (!MoveFileExW(temporary.wstring().c_str(), path.wstring().c_str(),
++                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
++      throw std::runtime_error("AppVault update could not be committed");
++#else
++    if (::rename(temporary.string().c_str(), path.string().c_str()) != 0)
++      throw std::runtime_error("AppVault update could not be committed");
++    sync_path(directory);
++#endif
++    const persisted_app_vault verified = read_state(options);
++    if (verified.generation != disk.generation)
++      throw std::runtime_error("AppVault committed generation could not be verified");
++  }
++
++  std::string read_password(const app_options& options)
++  {
++    if (options.password_file.empty())
++      throw std::runtime_error("use --password-file with a private UTF-8 file");
++    if (!boost::filesystem::exists(options.password_file) ||
++        boost::filesystem::is_symlink(options.password_file))
++      throw std::runtime_error("password file is missing or unsafe");
++#ifndef _WIN32
++    const auto permissions = boost::filesystem::status(options.password_file).permissions();
++    if ((permissions & (boost::filesystem::group_read | boost::filesystem::group_write |
++                        boost::filesystem::others_read | boost::filesystem::others_write)) != 0)
++      throw std::runtime_error("password file permissions must be 0600 or stricter");
++#endif
++    std::ifstream input(options.password_file.string(), std::ios::binary);
++    std::string password;
++    std::getline(input, password);
++    if (!input && !input.eof()) throw std::runtime_error("password file could not be read");
++    if (!password.empty() && password.back() == '\r') password.pop_back();
++    return password;
++  }
++
++  void wipe(std::string& value)
++  {
++    volatile char* bytes = value.empty() ? nullptr : &value[0];
++    for (std::size_t index = 0; index < value.size(); ++index) bytes[index] = 0;
++    value.clear();
++  }
++
++  mfw_app_vault_state_v1 apply(const mfw_app_vault_state_v1& state,
++                               std::uint32_t kind,
++                               std::uint32_t value = 0)
++  {
++    mfw_app_vault_event_v1 event{};
++    event.struct_size = sizeof(event);
++    event.event = kind;
++    event.value = value;
++    event.now_unix_seconds = unix_seconds();
++    event.now_monotonic_ms = monotonic_milliseconds();
++    mfw_app_vault_state_v1 next{};
++    if (mfw_app_vault_apply_event_v1(&state, &event, &next) != MFW_ERROR_OK)
++      throw std::runtime_error("AppVault event was rejected by the shared state machine");
++    return next;
++  }
++
++  bool verify_password(const app_options& options,
++                       persisted_app_vault& disk,
++                       std::string& password)
++  {
++    std::uint32_t matches = 0;
++    const std::uint32_t result = mfw_app_vault_password_verifier_verify_v1(
++      reinterpret_cast<const std::uint8_t*>(password.data()), password.size(),
++      &disk.verifier, &matches);
++    wipe(password);
++    if (result != MFW_ERROR_OK) throw std::runtime_error("password encoding was rejected");
++    if (matches == 1)
++    {
++      mfw_app_vault_state_v1 unlocked = apply(disk.state, MFW_APP_VAULT_EVENT_UNLOCK_SUCCESS);
++      unlocked.session_authorized = 0;
++      unlocked.last_activity_monotonic_ms = 0;
++      disk.state = unlocked;
++      write_state(options, disk);
++      return true;
++    }
++    disk.state = apply(disk.state, MFW_APP_VAULT_EVENT_UNLOCK_FAILURE);
++    write_state(options, disk);
++    return false;
++  }
++
++  const char* presentation_name(std::uint32_t presentation)
++  {
++    switch (presentation)
++    {
++      case MFW_APP_VAULT_PRESENTATION_PREPARING: return "preparing";
++      case MFW_APP_VAULT_PRESENTATION_WELCOME: return "welcome";
++      case MFW_APP_VAULT_PRESENTATION_PROTECTION_SETUP: return "protection-setup";
++      case MFW_APP_VAULT_PRESENTATION_UNLOCK_PASSWORD: return "unlock-password";
++      case MFW_APP_VAULT_PRESENTATION_UNLOCK_SYSTEM: return "unlock-system";
++      case MFW_APP_VAULT_PRESENTATION_CONTENT: return "content";
++      case MFW_APP_VAULT_PRESENTATION_BACKOFF: return "backoff";
++      default: return "invalid";
++    }
++  }
++
++  void print_status(const persisted_app_vault& disk, bool json)
++  {
++    std::uint32_t presentation = 0;
++    if (mfw_app_vault_presentation_v1(&disk.state, unix_seconds(), &presentation) != MFW_ERROR_OK)
++      throw std::runtime_error("AppVault presentation failed");
++    if (json)
++      std::cout << "{\"schema_version\":1,\"configured\":"
++                << (disk.state.configured ? "true" : "false")
++                << ",\"session_authorized\":false,\"protection_mode\":\"password\",\"presentation\":\""
++                << presentation_name(presentation) << "\",\"auto_lock_seconds\":"
++                << disk.state.auto_lock_seconds << ",\"failed_attempts\":"
++                << disk.state.failed_attempts << ",\"blocked_until_unix_seconds\":"
++                << disk.state.blocked_until_unix_seconds << ",\"migration_state\":"
++                << disk.state.migration_state << ",\"generation\":" << disk.generation
++                << ",\"app_vault_state_schema_sha256\":\""
++                << mfw_app_vault_state_schema_sha256() << "\"}" << std::endl;
++    else
++      std::cout << "App protection: " << presentation_name(presentation)
++                << "; timeout: " << disk.state.auto_lock_seconds
++                << " seconds; failures: " << disk.state.failed_attempts << std::endl;
++  }
++
++  void print_help()
++  {
++    std::cout
++      << "monero-fast-wallet-cli app <operation> [options]\n"
++      << "  status [--json]\n"
++      << "  setup --password-file <0600-file>\n"
++      << "  unlock --password-file <0600-file>\n"
++      << "  lock\n"
++      << "  timeout --seconds 0|60|300|900|1800|3600 --password-file <0600-file>\n"
++      << "  reset-local --confirm-reset --password-file <0600-file>\n"
++      << "  testbench [--json]\n"
++      << "Options: --app-data-dir <private-directory>\n";
++  }
++
++  int run_testbench(bool json)
++  {
++    const auto started = std::chrono::steady_clock::now();
++    mfw_app_vault_state_v1 state{};
++    if (mfw_app_vault_state_default_v1(&state) != MFW_ERROR_OK) return 70;
++    state.ready = 1;
++    state = apply(state, MFW_APP_VAULT_EVENT_WELCOME_CONTINUE);
++    state = apply(state, MFW_APP_VAULT_EVENT_CONFIGURE_PASSWORD_SUCCESS, 1);
++    std::uint32_t allowed = 0;
++    for (std::size_t index = 0; index < 100; ++index)
++      if (mfw_app_vault_wallet_switch_allowed_v1(&state, 1, 1, &allowed) != MFW_ERROR_OK || allowed != 1)
++        return 70;
++    mfw_app_vault_state_v1 failure_state = apply(state, MFW_APP_VAULT_EVENT_MANUAL_LOCK);
++    for (std::size_t index = 0; index < 10; ++index)
++      failure_state = apply(failure_state, MFW_APP_VAULT_EVENT_UNLOCK_FAILURE);
++    if (failure_state.configured != 1 || failure_state.failed_attempts != 10)
++      return 70;
++    for (std::uint32_t boundary = MFW_APP_VAULT_MIGRATION_STAGED;
++         boundary <= MFW_APP_VAULT_MIGRATION_CLEANUP_COMPLETE; ++boundary)
++      failure_state = apply(failure_state, MFW_APP_VAULT_EVENT_MIGRATION_ADVANCE, boundary);
++    if (failure_state.migration_state != MFW_APP_VAULT_MIGRATION_CLEANUP_COMPLETE)
++      return 70;
++    std::uint8_t wallet_pseudonym[16] = {1};
++    mfw_app_vault_step_up_grant_v1 grant{};
++    if (mfw_app_vault_step_up_issue_v1(&state, MFW_APP_VAULT_STEP_UP_SEND_COMMIT,
++          wallet_pseudonym, monotonic_milliseconds(), 30000, &grant) != MFW_ERROR_OK ||
++        mfw_app_vault_step_up_consume_v1(&grant, MFW_APP_VAULT_STEP_UP_SEND_COMMIT,
++          wallet_pseudonym, monotonic_milliseconds()) != MFW_ERROR_OK ||
++        mfw_app_vault_step_up_consume_v1(&grant, MFW_APP_VAULT_STEP_UP_SEND_COMMIT,
++          wallet_pseudonym, monotonic_milliseconds()) == MFW_ERROR_OK)
++      return 70;
++    std::size_t warmed = 0;
++    std::size_t batches = 0;
++    while (warmed < 100)
++    {
++      std::size_t start = 0;
++      std::size_t count = 0;
++      if (mfw_app_vault_warmup_batch_v1(100, warmed, &start, &count) != MFW_ERROR_OK ||
++          start != warmed || count == 0 || count > MFW_APP_VAULT_WARMUP_MAXIMUM_CONCURRENT_WALLETS)
++        return 70;
++      warmed += count;
++      ++batches;
++    }
++    const std::uint64_t elapsed_ns = static_cast<std::uint64_t>(
++      std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now() - started).count());
++    if (json)
++      std::cout << "{\"schema_version\":1,\"wallet_switches\":100,\"prompts\":0,\"network_calls\":0,\"non_destructive_failures\":10,\"migration_boundaries\":5,\"step_up_single_use\":true,\"warmup_wallets\":100,\"warmup_batches\":"
++                << batches << ",\"maximum_warmup_concurrency\":"
++                << MFW_APP_VAULT_WARMUP_MAXIMUM_CONCURRENT_WALLETS
++                << ",\"elapsed_ns\":" << elapsed_ns << ",\"elapsed_ms\":"
++                << (static_cast<double>(elapsed_ns) / 1000000.0) << "}" << std::endl;
++    else
++      std::cout << "100 local switches passed in "
++                << (static_cast<double>(elapsed_ns) / 1000000.0) << " ms" << std::endl;
++    return 0;
++  }
++}
++
++namespace mfw_cli
++{
++  bool handle_app_command(int argc, char* argv[], int& exit_code)
++  {
++    if (argc < 2 || std::string(argv[1]) != "app") return false;
++    try
++    {
++      if (argc == 2 || std::string(argv[2]) == "help" || std::string(argv[2]) == "--help")
++      {
++        print_help();
++        exit_code = 0;
++        return true;
++      }
++      const app_options options = parse_options(argc, argv);
++      if (options.operation == "testbench")
++      {
++        exit_code = run_testbench(options.json);
++        return true;
++      }
++      if (options.operation == "setup")
++      {
++        if (boost::filesystem::exists(state_path(options)))
++          throw std::runtime_error("AppVault is already configured");
++        std::string password = read_password(options);
++        persisted_app_vault disk{};
++        std::memcpy(disk.magic, app_vault_magic, sizeof(app_vault_magic));
++        disk.disk_version = 1;
++        if (mfw_app_vault_state_default_v1(&disk.state) != MFW_ERROR_OK)
++          throw std::runtime_error("AppVault default state failed");
++        disk.state.ready = 1;
++        disk.state = apply(disk.state, MFW_APP_VAULT_EVENT_WELCOME_CONTINUE);
++        const std::uint32_t result = mfw_app_vault_password_verifier_create_v1(
++          reinterpret_cast<const std::uint8_t*>(password.data()), password.size(), &disk.verifier);
++        wipe(password);
++        if (result != MFW_ERROR_OK) throw std::runtime_error("password does not satisfy the AppVault contract");
++        disk.state = apply(disk.state, MFW_APP_VAULT_EVENT_CONFIGURE_PASSWORD_SUCCESS, 1);
++        disk.state.session_authorized = 0;
++        disk.state.last_activity_monotonic_ms = 0;
++        write_state(options, disk);
++        print_status(disk, options.json);
++        exit_code = 0;
++        return true;
++      }
++      persisted_app_vault disk = read_state(options);
++      if (options.operation == "status")
++      {
++        print_status(disk, options.json);
++        exit_code = 0;
++      }
++      else if (options.operation == "unlock")
++      {
++        if (disk.state.blocked_until_unix_seconds > unix_seconds())
++          throw std::runtime_error("AppVault unlock is temporarily backed off");
++        std::string password = read_password(options);
++        if (!verify_password(options, disk, password))
++        {
++          std::cerr << "AppVault password is incorrect; no wallet data was changed" << std::endl;
++          exit_code = 77;
++        }
++        else
++        {
++          if (options.json)
++            std::cout << "{\"schema_version\":1,\"unlocked\":true,\"scope\":\"all-wallets\"}" << std::endl;
++          else std::cout << "App unlocked for all wallets in this process." << std::endl;
++          exit_code = 0;
++        }
++      }
++      else if (options.operation == "lock")
++      {
++        disk.state.session_authorized = 0;
++        disk.state.last_activity_monotonic_ms = 0;
++        write_state(options, disk);
++        if (options.json)
++          std::cout << "{\"schema_version\":1,\"locked\":true,\"scope\":\"all-wallets\"}" << std::endl;
++        else std::cout << "App locked for all wallets." << std::endl;
++        exit_code = 0;
++      }
++      else if (options.operation == "timeout")
++      {
++        if (!timeout_allowed(options.timeout_seconds))
++          throw std::runtime_error("timeout must be 0, 60, 300, 900, 1800, or 3600 seconds");
++        std::string password = read_password(options);
++        if (!verify_password(options, disk, password))
++          throw std::runtime_error("AppVault password is incorrect; timeout was not changed");
++        disk = read_state(options);
++        disk.state.auto_lock_seconds = options.timeout_seconds;
++        write_state(options, disk);
++        print_status(disk, options.json);
++        exit_code = 0;
++      }
++      else if (options.operation == "reset-local")
++      {
++        if (!options.confirm_reset) throw std::runtime_error("reset-local requires --confirm-reset");
++        std::string password = read_password(options);
++        if (!verify_password(options, disk, password))
++          throw std::runtime_error("AppVault password is incorrect; local data was not reset");
++        boost::filesystem::remove(state_path(options));
++        if (options.json) std::cout << "{\"schema_version\":1,\"reset\":true}" << std::endl;
++        else std::cout << "Local AppVault state was reset after explicit authorization." << std::endl;
++        exit_code = 0;
++      }
++      else throw std::runtime_error("unknown app operation: " + options.operation);
++    }
++    catch (const std::exception& error)
++    {
++      std::cerr << "monero-fast-wallet-cli app: " << error.what() << std::endl;
++      exit_code = 64;
++    }
++    return true;
++  }
++}
+diff --git a/src/simplewallet/product_cli_app.h b/src/simplewallet/product_cli_app.h
+new file mode 100644
+index 000000000..711450bcf
+--- /dev/null
++++ b/src/simplewallet/product_cli_app.h
+@@ -0,0 +1,9 @@
++// Copyright (c) 2026 TEX8
++// SPDX-License-Identifier: BSD-3-Clause
++
++#pragma once
++
++namespace mfw_cli
++{
++  bool handle_app_command(int argc, char* argv[], int& exit_code);
++}
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index a0a0b71d7..7865dfd22 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+ 
+ #include "product_cli_debug.h"
++#include "product_cli_app.h"
+ 
+ #include <boost/filesystem.hpp>
+ #include <chrono>
+@@ -118,6 +119,7 @@ namespace
+            << "\"product_core_abi\":" << mfw_product_core_abi_version() << ","
+            << "\"product_core_schema_sha256\":\"" << mfw_product_core_schema_sha256() << "\","
+            << "\"diagnostic_registry_sha256\":\"" << mfw_product_core_diagnostic_registry_sha256() << "\","
++           << "\"app_vault_state_schema_sha256\":\"" << mfw_app_vault_state_schema_sha256() << "\","
+            << "\"feature_manifest_hash\":\"" << MFW_FEATURE_MANIFEST_HASH << "\","
+            << "\"build_target\":\"" << json_escape(MFW_BUILD_TARGET) << "\","
+            << "\"compiler\":\"" << json_escape(MFW_COMPILER) << "\","
+@@ -161,6 +163,8 @@ namespace mfw_cli
+ 
+   bool handle_early_product_command(int argc, char* argv[], int& exit_code)
+   {
++    if (handle_app_command(argc, argv, exit_code))
++      return true;
+     if (argc == 3 && std::string(argv[1]) == "version" && std::string(argv[2]) == "--json")
+     {
+       std::cout << build_json() << std::endl;
+-- 
+2.50.1 (Apple Git-155)
+

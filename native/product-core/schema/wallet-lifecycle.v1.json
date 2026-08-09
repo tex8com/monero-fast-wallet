@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "stateVersion": 1,
+  "preferences": [
+    {"name": "PRIVACY_ONLY", "value": 1},
+    {"name": "PRIVACY_CONVENIENCE", "value": 2}
+  ],
+  "fastWalletOverrides": [
+    {"name": "DEFAULT", "value": 0},
+    {"name": "DISABLED", "value": 1},
+    {"name": "ENABLED", "value": 2}
+  ],
+  "walletKinds": [
+    {"name": "UNSPECIFIED", "value": 0},
+    {"name": "SOFTWARE", "value": 1},
+    {"name": "LEDGER_VIEW", "value": 2},
+    {"name": "VIEW_ONLY", "value": 3},
+    {"name": "FAST", "value": 4}
+  ],
+  "lifecycleStates": [
+    {"name": "EMPTY", "value": 0},
+    {"name": "AWAITING_SEED_BACKUP", "value": 1},
+    {"name": "READY", "value": 2},
+    {"name": "REMOVAL_PENDING", "value": 3},
+    {"name": "REMOVED", "value": 4}
+  ],
+  "lifecycleEvents": [
+    {"name": "BEGIN_CREATE", "value": 1},
+    {"name": "BEGIN_RESTORE", "value": 2},
+    {"name": "REGISTER_NON_SEED_WALLET", "value": 3},
+    {"name": "CONFIRM_SEED_BACKUP", "value": 4},
+    {"name": "SELECT", "value": 5},
+    {"name": "DESELECT", "value": 6},
+    {"name": "REQUEST_REMOVE", "value": 7},
+    {"name": "CANCEL_REMOVE", "value": 8},
+    {"name": "CONFIRM_REMOVE", "value": 9}
+  ],
+  "balanceStates": [
+    {"name": "UNKNOWN", "value": 0},
+    {"name": "KNOWN_ZERO", "value": 1},
+    {"name": "KNOWN_POSITIVE", "value": 2}
+  ],
+  "removalRequirements": [
+    {"name": "BACKUP_SEED", "value": 1},
+    {"name": "ACKNOWLEDGE_POSITIVE_BALANCE", "value": 2},
+    {"name": "ACKNOWLEDGE_UNKNOWN_BALANCE", "value": 4},
+    {"name": "DETACH_FAST_WORKER", "value": 8},
+    {"name": "DISABLE_NOTIFICATIONS", "value": 16}
+  ],
+  "sendStates": [
+    {"name": "EMPTY", "value": 0},
+    {"name": "RECIPIENT_VALIDATED", "value": 1},
+    {"name": "PREPARED", "value": 2},
+    {"name": "REVIEWED", "value": 3},
+    {"name": "AUTHORIZED", "value": 4},
+    {"name": "SUBMITTED", "value": 5},
+    {"name": "CANCELLED", "value": 6}
+  ],
+  "sendEvents": [
+    {"name": "VALIDATE_RECIPIENT", "value": 1},
+    {"name": "PREPARE", "value": 2},
+    {"name": "REVIEW", "value": 3},
+    {"name": "AUTHORIZE", "value": 4},
+    {"name": "SUBMIT", "value": 5},
+    {"name": "CANCEL", "value": 6}
+  ],
+  "restore": {
+    "defaultSafetyBlocks": 100,
+    "maximumSafetyBlocks": 100000
+  },
+  "invariants": [
+    "fast_wallet_is_an_independent_wallet",
+    "privacy_only_defaults_fast_wallet_off",
+    "privacy_convenience_defaults_fast_wallet_on",
+    "seed_wallet_is_not_ready_before_backup_confirmation",
+    "ledger_and_view_only_wallets_do_not_claim_a_local_seed",
+    "removal_risks_are_explicit_and_never_a_permanent_ui_dead_end",
+    "balance_is_the_checked_sum_of_all_accounts",
+    "send_requires_validate_prepare_review_authorize_submit_order",
+    "monero_core_remains_authoritative_for_addresses_balances_and_transactions"
+  ]
+}

@@ -13,6 +13,7 @@ fast-wallet-protocol = { path = "../../native/fast-wallet-protocol" }
 fs2 = "0.4"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 hex = "0.4"
+jsonwebtoken = { version = "10.2", default-features = false, features = ["rust_crypto", "use_pem"] }
 libc = "0.2"
 reqwest = { version = "0.12", features = ["blocking", "http2", "json", "rustls-tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }

@@ -29,7 +29,9 @@ for metal_tool in metal metallib; do
   }
 done
 
-metal_temp_dir="$(mktemp -d /tmp/monero-wallet-metal.XXXXXX)"
+metal_temp_root="${TMPDIR:-/tmp}"
+mkdir -p "${metal_temp_root}"
+metal_temp_dir="$(mktemp -d "${metal_temp_root%/}/monero-wallet-metal.XXXXXX")"
 trap 'rm -rf "${metal_temp_dir}"' EXIT
 mkdir -p "${metal_output_dir}"
 

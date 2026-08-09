@@ -13,15 +13,31 @@ GRADLE_TASK="${MONERO_WALLET_ANDROID_GRADLE_TASK:-assemble${VARIANT_CAPITALIZED}
 EXTERNAL_BUILD_ROOT="${MONERO_WALLET_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
 APP_BUILD_DIR="${ANDROID_DIR}/app/build"
 FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-fast-wallet-protocol}"
+COMMUNITY_HARRIER_ROOT="${MONERO_COMMUNITY_HARRIER_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-community-harrier}"
+COMMUNITY_MATRIX_ROOT="${MONERO_COMMUNITY_MATRIX_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-community-matrix}"
 if [ ! -d "${EXTERNAL_BUILD_ROOT}" ]; then
   FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${REPO_ROOT}/build/mobile-fast-wallet-protocol}"
+  COMMUNITY_HARRIER_ROOT="${MONERO_COMMUNITY_HARRIER_ROOT:-${REPO_ROOT}/build/mobile-community-harrier}"
+  COMMUNITY_MATRIX_ROOT="${MONERO_COMMUNITY_MATRIX_ROOT:-${REPO_ROOT}/build/mobile-community-matrix}"
+else
+  # The Fast Wallet protocol build runs before Gradle's own cache setup.
+  # Point its mktemp/Cargo intermediates at the external build volume too.
+  export TMPDIR="${MONERO_WALLET_ANDROID_TMPDIR:-${EXTERNAL_BUILD_ROOT}/mobile-android-tmp}"
+  mkdir -p "${TMPDIR}"
 fi
 
-if [ -z "${MONERO_SOURCE_DIR:-}" ] \
-  && [ -d "${EXTERNAL_BUILD_ROOT}/monero-v0.18.4.6-tex8-patched" ]; then
-  MONERO_SOURCE_DIR="${EXTERNAL_BUILD_ROOT}/monero-v0.18.4.6-tex8-patched"
+if [ "$REQUIRE_MONERO" = "1" ]; then
+  MONERO_COMMON_CORE_BUILD_ROOT="$EXTERNAL_BUILD_ROOT" \
+    source "$REPO_ROOT/native/monero-bridge/scripts/prepare-common-monero-core.sh"
+else
+  MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
 fi
-MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
+
+link_manifest_matches_common_core() {
+  local manifest="$1"
+  [ -f "$manifest" ] &&
+    grep -Fq "set(MONERO_PATCHED_SOURCE_TREE \"${MONERO_COMMON_CORE_TREE}\")" "$manifest"
+}
 
 # Native Android artifacts are intentionally kept off the small system volume.
 # A local override remains authoritative; this fallback only makes the standard
@@ -29,9 +45,11 @@ MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
 if [ -z "${MONERO_WALLET_LINK_ROOT:-}" ] \
   && [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ]; then
   for external_manifest_root in \
+    "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-${MONERO_COMMON_CORE_TREE}" \
     "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-tex8-patched" \
     "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests"; do
-    if [ -f "${external_manifest_root}/${MONERO_TARGET}/link.cmake" ]; then
+    if link_manifest_matches_common_core \
+      "${external_manifest_root}/${MONERO_TARGET}/link.cmake"; then
       MONERO_LINK_ROOT="${external_manifest_root}"
       break
     fi
@@ -43,6 +61,8 @@ GRADLE_ARGS=(
   "-PreactNativeArchitectures=${ARCHITECTURES}"
 )
 
+reset_react_native_autolinking
+
 FAST_WALLET_PROTOCOL_ARTIFACT="${FAST_WALLET_PROTOCOL_ROOT}/${MONERO_TARGET}/libfast_wallet_protocol.a"
 if fast_wallet_protocol_artifact_needs_rebuild \
   "${FAST_WALLET_PROTOCOL_ARTIFACT}" \
@@ -53,6 +73,34 @@ if fast_wallet_protocol_artifact_needs_rebuild \
     "${REPO_ROOT}/native/fast-wallet-protocol/build-mobile.sh"
 fi
 GRADLE_ARGS+=("-PmoneroFastWalletProtocolRoot=${FAST_WALLET_PROTOCOL_ROOT}")
+
+# A product build must package the same complete local Community runtime as
+# the build-and-install path. Keeping this preparation here prevents a plain
+# release build from failing during Gradle configuration or, worse, producing
+# a reduced app whose local discovery engine is unavailable.
+COMMUNITY_HARRIER_LIBRARY="${COMMUNITY_HARRIER_ROOT}/android-arm64/libtex8_community_harrier_runtime.so"
+COMMUNITY_HARRIER_JNI_LIBS="${COMMUNITY_HARRIER_ROOT}/jni"
+COMMUNITY_MATRIX_LIBRARY="${COMMUNITY_MATRIX_ROOT}/android-arm64/libcommunity_matrix_core.a"
+if [ ! -f "${COMMUNITY_HARRIER_LIBRARY}" ] || \
+   find "${REPO_ROOT}/native/community-harrier-runtime" -type f -newer "${COMMUNITY_HARRIER_LIBRARY}" -print -quit | grep -q .; then
+  TEX8_COMMUNITY_HARRIER_OUTPUT_ROOT="${COMMUNITY_HARRIER_ROOT}" \
+    "${REPO_ROOT}/native/community-harrier-runtime/scripts/build-android-native.sh"
+fi
+if [ ! -f "${COMMUNITY_MATRIX_LIBRARY}" ] || \
+   find "${REPO_ROOT}/native/community-matrix-core" -type f -newer "${COMMUNITY_MATRIX_LIBRARY}" -print -quit | grep -q . || \
+   [ "${COMMUNITY_HARRIER_LIBRARY}" -nt "${COMMUNITY_MATRIX_LIBRARY}" ]; then
+  TARGETS=android-arm64 \
+    WITH_COMMUNITY_RUNTIME=1 \
+    HARRIER_LIBRARY_SUFFIX=.so \
+    TEX8_COMMUNITY_HARRIER_LIBRARY_ROOT="${COMMUNITY_HARRIER_ROOT}" \
+    OUTPUT_DIR="${COMMUNITY_MATRIX_ROOT}" \
+    "${REPO_ROOT}/native/community-matrix-core/build-mobile.sh"
+fi
+GRADLE_ARGS+=(
+  "-PmoneroCommunityMatrixLibrary=${COMMUNITY_MATRIX_LIBRARY}"
+  "-PmoneroCommunityHarrierLibrary=${COMMUNITY_HARRIER_LIBRARY}"
+  "-PmoneroCommunityHarrierJniLibs=${COMMUNITY_HARRIER_JNI_LIBS}"
+)
 if [ -n "${FAST_WALLET_GATEWAY_ORIGIN:-}" ]; then
   GRADLE_ARGS+=("-PfastWalletGatewayOrigin=${FAST_WALLET_GATEWAY_ORIGIN}")
 fi
@@ -64,7 +112,6 @@ if [ -n "${FAST_WALLET_OFFICIAL_WORKER_ROOT_ID:-}" ]; then
     "-PfastWalletOfficialWorkerRootId=${FAST_WALLET_OFFICIAL_WORKER_ROOT_ID}"
   )
 fi
-
 # Keep Gradle's CMake object tree and caches beside the externally built
 # Monero archives when that development volume is available. The root disk is
 # intentionally not used for multi-gigabyte native intermediates.

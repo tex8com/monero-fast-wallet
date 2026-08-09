@@ -136,6 +136,7 @@ run_profile() {
   elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
 
   local initial final daemon blocks bytes chunks sync scan_outputs scan_ms hash_count hash_ms
+  local fallback_count fallback_reasons bin_rpc_rx_wire_bytes
   local net_bytes_in net_bytes_out user_seconds system_seconds max_rss_bytes
   local blocks_per_second payload_mib_per_second scan_outputs_per_second scan_hash_txs_per_second hash_chain_per_second
   initial="$(awk -F= '$1 == "benchmark_initial_wallet_height" {print $2; exit}' "${log}")"
@@ -147,10 +148,26 @@ run_profile() {
   # A gRPC CHUNK appears in several diagnostic lines. The one CLOSE line is
   # authoritative and avoids double-counting. HTTP has no envelope byte field,
   # so its wire totals come from the per-process nettop samples below.
-  bytes="$(grep '\[GRPC client\] CLOSE ' "${log}" | tail -n 1 | sed -nE 's/.* bytes=([0-9]+).*/\1/p')"
-  chunks="$(grep '\[GRPC client\] CLOSE ' "${log}" | tail -n 1 | sed -nE 's/.* chunks=([0-9]+).*/\1/p')"
+  bytes="$({ grep '\[SYNC_METRIC\] stage=network transport=grpc event=chunk ' "${log}" || true; } \
+    | sed -nE 's/.* payload_bytes=([0-9]+).*/\1/p' \
+    | awk '{sum += $1} END {print sum + 0}')"
+  chunks="$({ grep -c '\[SYNC_METRIC\] stage=network transport=grpc event=chunk ' "${log}" || true; })"
+  # Compatibility for an older instrumented core: its one-channel CLOSE line
+  # is preferable to inventing bytes, but new parallel builds always use the
+  # per-chunk sum above so all channels are counted exactly once.
+  if [[ "${bytes:-0}" == 0 ]]; then
+    bytes="$(grep '\[GRPC client\] CLOSE ' "${log}" | tail -n 1 | sed -nE 's/.* bytes=([0-9]+).*/\1/p')"
+    chunks="$(grep '\[GRPC client\] CLOSE ' "${log}" | tail -n 1 | sed -nE 's/.* chunks=([0-9]+).*/\1/p')"
+  fi
   bytes="${bytes:-0}"
   chunks="${chunks:-0}"
+  bin_rpc_rx_wire_bytes="$({ grep '\[SYNC_METRIC\] stage=network transport=bin_rpc event=response ' "${log}" || true; } \
+    | sed -nE 's/.* rx_wire_bytes=([0-9]+).*/\1/p' \
+    | awk '{sum += $1} END {print sum + 0}')"
+  fallback_count="$({ grep -c '\[SYNC_FALLBACK\] from=grpc to=bin_rpc ' "${log}" || true; })"
+  fallback_reasons="$({ grep '\[SYNC_FALLBACK\] from=grpc to=bin_rpc ' "${log}" || true; } \
+    | sed -nE 's/.* reason=([^ ]+).*/\1/p' | sort -u | paste -sd, -)"
+  fallback_reasons="${fallback_reasons:-none}"
   scan_outputs="$({ grep '^SYNC_TRACE stage=scan_outputs ' "${log}" || true; } | sed -nE 's/.* outputs=([0-9]+) ms=([0-9]+).*/\1/p' | awk '{sum += $1} END {print sum + 0}')"
   scan_ms="$({ grep '^SYNC_TRACE stage=scan_outputs ' "${log}" || true; } | sed -nE 's/.* outputs=([0-9]+) ms=([0-9]+).*/\2/p' | awk '{sum += $1} END {print sum + 0}')"
   local scan_hash_txs scan_hash_ms
@@ -168,15 +185,16 @@ run_profile() {
   scan_outputs_per_second="$(awk -v count="${scan_outputs}" -v ms="${scan_ms}" 'BEGIN { printf "%.2f", ms > 0 ? count * 1000 / ms : 0 }')"
   scan_hash_txs_per_second="$(awk -v count="${scan_hash_txs}" -v ms="${scan_hash_ms}" 'BEGIN { printf "%.2f", ms > 0 ? count * 1000 / ms : 0 }')"
   hash_chain_per_second="$(awk -v count="${hash_count}" -v ms="${hash_ms}" 'BEGIN { printf "%.2f", ms > 0 ? count * 1000 / ms : 0 }')"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "${p}" "$(implementation_for "${p}")" "${status}" "${elapsed_ms}" "${blocks}" \
     "${blocks_per_second}" "${bytes}" "${payload_mib_per_second}" "${chunks}" \
     "${scan_outputs_per_second}" "${scan_hash_txs_per_second}" "${hash_chain_per_second}" \
     "${net_bytes_in}" "${net_bytes_out}" "${user_seconds}" "${system_seconds}" "${max_rss_bytes}" \
-    "${initial:-unknown}" "${daemon:-unknown}" "${sync:-unknown}" >>"${result_dir}/summary.tsv"
+    "${initial:-unknown}" "${daemon:-unknown}" "${sync:-unknown}" \
+    "${bin_rpc_rx_wire_bytes:-0}" "${fallback_count:-0}" "${fallback_reasons}" >>"${result_dir}/summary.tsv"
 }
 
-printf 'profile\timplementation\tstatus\telapsed_ms\tblocks\tblocks_per_second\tgrpc_payload_bytes\tgrpc_payload_mib_per_second\tgrpc_chunks\tscan_outputs_per_second\tscan_hash_txs_per_second\tchain_hashes_per_second\ttcp_bytes_in\ttcp_bytes_out\tcpu_user_seconds\tcpu_system_seconds\tmax_rss_bytes\tinitial_height\tdaemon_height\tsynchronized\n' >"${result_dir}/summary.tsv"
+printf 'profile\timplementation\tstatus\telapsed_ms\tblocks\tblocks_per_second\tgrpc_payload_bytes\tgrpc_payload_mib_per_second\tgrpc_chunks\tscan_outputs_per_second\tscan_hash_txs_per_second\tchain_hashes_per_second\ttcp_bytes_in\ttcp_bytes_out\tcpu_user_seconds\tcpu_system_seconds\tmax_rss_bytes\tinitial_height\tdaemon_height\tsynchronized\tbin_rpc_rx_wire_bytes\tgrpc_to_bin_fallback_count\tgrpc_to_bin_fallback_reasons\n' >"${result_dir}/summary.tsv"
 profiles=(A B C D E)
 for current in "${profiles[@]}"; do
   [[ "${profile}" == all || "${profile}" == "${current}" ]] || continue

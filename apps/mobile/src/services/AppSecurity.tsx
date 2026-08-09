@@ -7,12 +7,10 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ActivityIndicator,
   AppState,
   type AppStateStatus,
-  InteractionManager,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -34,8 +32,19 @@ import { logWalletEvent } from './WalletLogger';
 import {
   activeSystemUiInterruptionDeadlineMs,
   recentlyCompletedSystemUiInterruption,
+  withSystemUiInterruption,
 } from './SystemUiInterruption';
 import { walletService } from './WalletService';
+import {
+  DEFAULT_AUTO_LOCK_SECONDS,
+  loadAutoLockSeconds,
+  saveAutoLockSeconds,
+} from './AppSecurityPreferences';
+import { FastWalletPushService } from './FastWalletPushService';
+import {
+  deriveAppVaultPresentation,
+  validateRecoveryPassword,
+} from '../../../../packages/wallet-shared/src/appVaultStateMachine';
 
 export type AppProtectionMode = 'biometric' | 'password';
 
@@ -46,9 +55,11 @@ type AppSecurityContextValue = {
   ready: boolean;
   locked: boolean;
   mode: AppProtectionMode;
+  autoLockSeconds: number;
   consumeInitialProtectionSetup: () => void;
   lock: () => void;
   setMode: (mode: AppProtectionMode, password?: string) => Promise<void>;
+  setAutoLockSeconds: (seconds: number) => Promise<void>;
 };
 
 const AppSecurityContext = createContext<AppSecurityContextValue | undefined>(
@@ -65,13 +76,15 @@ export function AppSecurityProvider({
   const [configured, setConfigured] = useState(false);
   const [mode, setModeState] = useState<AppProtectionMode>('password');
   const [locked, setLocked] = useState(true);
+  const [autoLockSeconds, setAutoLockSecondsState] = useState<number>(
+    DEFAULT_AUTO_LOCK_SECONDS,
+  );
   const [initialProtectionSetupCompleted, setInitialProtectionSetupCompleted] =
     useState(false);
   const [
     initialProtectionTransitionStartedAtMs,
     setInitialProtectionTransitionStartedAtMs,
   ] = useState<number | undefined>();
-  const [securityResetInProgress, setSecurityResetInProgress] = useState(false);
   const [onboardingStage, setOnboardingStage] = useState<
     'welcome' | 'protection'
   >('welcome');
@@ -84,94 +97,111 @@ export function AppSecurityProvider({
   const backgroundLockCommittedRef = useRef(false);
   const systemUiInterruptionDeferredRef = useRef(false);
   const statusLoadStartedAtMsRef = useRef(Date.now());
-
-  const beginSecurityReset = useCallback(() => {
-    const startedAt = Date.now();
-    setSecurityResetInProgress(true);
-    setConfigured(false);
-    setLocked(true);
-    logWalletEvent('AppSecurity', 'reset.start', {
-      elapsedMs: 0,
-      resetTriggered: true,
-    });
-    AsyncStorage.clear().catch(error => {
-      logWalletEvent('AppSecurity', 'reset.javascriptStorageError', {
-        elapsedMs: Date.now() - startedAt,
-        error,
-        resetTriggered: true,
-      });
-    });
-
-    if (Platform.OS !== 'ios') {
-      return;
-    }
-    const pollForResetCompletion = async (attempt: number) => {
-      try {
-        const status = await walletService.getAppProtectionStatus();
-        if (!status.configured && !status.resetRequired) {
-          setOnboardingStage('welcome');
-          setScreenTransitionStartedAtMs(Date.now());
-          setSecurityResetInProgress(false);
-          logWalletEvent('AppSecurity', 'reset.complete', {
-            elapsedMs: Date.now() - startedAt,
-            resetTriggered: true,
-          });
-          return;
-        }
-      } catch {
-        // The native storage is intentionally changing underneath this poll.
-      }
-      if (attempt < 40) {
-        setTimeout(() => {
-          pollForResetCompletion(attempt + 1).catch(() => undefined);
-        }, 250);
-      }
-    };
-    setTimeout(() => {
-      pollForResetCompletion(0).catch(() => undefined);
-    }, 250);
-  }, []);
+  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const lastUserActivityAtMsRef = useRef(Date.now());
+  const lastNativeActivityReportAtMsRef = useRef(0);
 
   useEffect(() => {
-    let active = true;
-    walletService
-      .getAppProtectionStatus()
-      .then(status => {
-        if (!active) {
-          return;
-        }
+    loadAutoLockSeconds()
+      .then(async seconds => {
+        await walletService.setAppAutoLockSeconds(seconds);
+        setAutoLockSecondsState(seconds);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const commitInactivityLock = useCallback(() => {
+    setLocked(true);
+    logWalletEvent('AppSecurity', 'inactivity.locked', { autoLockSeconds });
+    walletService.lockApp().catch(() => undefined);
+  }, [autoLockSeconds]);
+
+  const recordUserActivity = useCallback(() => {
+    if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+    if (!configured || locked) return;
+    lastUserActivityAtMsRef.current = Date.now();
+    if (
+      lastUserActivityAtMsRef.current -
+        lastNativeActivityReportAtMsRef.current >=
+      1_000
+    ) {
+      lastNativeActivityReportAtMsRef.current =
+        lastUserActivityAtMsRef.current;
+      walletService.recordAppUserActivity().catch(() => undefined);
+    }
+    if (autoLockSeconds === 0) return;
+    inactivityTimerRef.current = setTimeout(
+      commitInactivityLock,
+      autoLockSeconds * 1000,
+    );
+    // Node-based contract tests expose `unref`; React Native timers do not.
+    // Avoid keeping the test process alive without changing device behavior.
+    (inactivityTimerRef.current as unknown as { unref?: () => void }).unref?.();
+  }, [autoLockSeconds, commitInactivityLock, configured, locked]);
+
+  useEffect(() => {
+    recordUserActivity();
+    return () => {
+      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+    };
+  }, [recordUserActivity]);
+
+  const loadProtectionStatus = useCallback(async (): Promise<boolean> => {
+    statusLoadStartedAtMsRef.current = Date.now();
+    try {
+      const status = await walletService.getAppProtectionStatus();
         logWalletEvent('AppSecurity', 'protectionStatus.loaded', {
           configured: status.configured,
           elapsedMs: Date.now() - statusLoadStartedAtMsRef.current,
           failedAttempts: status.failedPasswordAttempts ?? 0,
           locked: status.locked,
           mode: status.mode,
-          remainingAttempts: status.remainingPasswordAttempts ?? 3,
-          resetTriggered: status.resetRequired === true,
+          resetRequired: false,
         });
-        if (status.resetRequired) {
-          beginSecurityReset();
-          return;
-        }
         setModeState(status.mode === 'biometric' ? 'biometric' : 'password');
         setConfigured(status.configured);
         setLocked(status.locked || !status.configured);
         setScreenTransitionStartedAtMs(Date.now());
-      })
-      .catch(error => {
-        logWalletEvent('AppSecurity', 'protectionStatus.error', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      })
-      .finally(() => {
-        if (active) {
-          setReady(true);
-        }
+      return true;
+    } catch (error) {
+      // A just-launched activity can be behind Android's device keyguard,
+      // where the encrypted protection marker is intentionally unavailable.
+      // Remain on the fail-closed preparation surface and retry once Android
+      // returns the app to the active state. Never fall back to onboarding.
+      logWalletEvent('AppSecurity', 'protectionStatus.deferred', {
+        error: error instanceof Error ? error.message : String(error),
       });
+      return false;
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void loadProtectionStatus().then(loaded => {
+      if (active && loaded) {
+        setReady(true);
+      }
+    });
     return () => {
       active = false;
     };
-  }, [beginSecurityReset]);
+  }, [loadProtectionStatus]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      if (nextState !== 'active' || (ready && !locked)) {
+        return;
+      }
+      void loadProtectionStatus().then(loaded => {
+        if (loaded) {
+          setReady(true);
+        }
+      });
+    });
+    return () => subscription.remove();
+  }, [loadProtectionStatus, locked, ready]);
 
   useEffect(() => {
     const clearBackgroundLockTimer = () => {
@@ -207,6 +237,22 @@ export function AppSecurityProvider({
     };
     const subscription = AppState.addEventListener('change', nextState => {
       if (/inactive|background/.test(nextState)) {
+        // The security surface deliberately keeps `locked` true while a
+        // biometric unlock is in flight. iOS reports its Face ID sheet as an
+        // inactive app state. Calling lockApp() again from that transition
+        // invalidates the very authorization request that is meant to unlock
+        // the app and produces an endless prompt/retry loop. There is nothing
+        // else to secure while the protected tree is already unmounted, so do
+        // not mutate native authorization until the current unlock settles.
+        if (locked) {
+          systemUiInterruptionDeferredRef.current = false;
+          clearBackgroundLockTimer();
+          logWalletEvent('AppSecurity', 'appState.alreadyLocked', {
+            nextState,
+          });
+          previousAppState.current = nextState;
+          return;
+        }
         const deadlineMs = activeSystemUiInterruptionDeadlineMs();
         if (deadlineMs) {
           systemUiInterruptionDeferredRef.current = true;
@@ -219,7 +265,10 @@ export function AppSecurityProvider({
         } else {
           systemUiInterruptionDeferredRef.current = false;
           clearBackgroundLockTimer();
-          commitBackgroundLock('app-background');
+          logWalletEvent('AppSecurity', 'appState.inactive', {
+            nextState,
+            timeoutSeconds: autoLockSeconds,
+          });
         }
       } else if (
         /inactive|background/.test(previousAppState.current) &&
@@ -233,11 +282,18 @@ export function AppSecurityProvider({
             recentlyCompletedSystemUiInterruption()
           ) {
             logWalletEvent('AppSecurity', 'appState.systemUiResumed');
+            recordUserActivity();
           } else {
             commitBackgroundLock('system-ui-expired-on-resume');
           }
         } else {
-          setLocked(true);
+          const inactiveSeconds =
+            (Date.now() - lastUserActivityAtMsRef.current) / 1000;
+          if (autoLockSeconds > 0 && inactiveSeconds >= autoLockSeconds) {
+            commitBackgroundLock('inactivity-expired-on-resume');
+          } else {
+            recordUserActivity();
+          }
         }
         backgroundLockCommittedRef.current = false;
       }
@@ -247,7 +303,7 @@ export function AppSecurityProvider({
       clearBackgroundLockTimer();
       subscription.remove();
     };
-  }, []);
+  }, [autoLockSeconds, locked, recordUserActivity]);
 
   const setMode = useCallback(
     async (nextMode: AppProtectionMode, password?: string) => {
@@ -257,11 +313,14 @@ export function AppSecurityProvider({
         initialSetup: isInitialSetup,
         mode: nextMode,
       });
-      if (nextMode === 'password') {
-        if (!password || password.length < 12) {
+      if (nextMode === 'password' || (password?.length ?? 0) > 0) {
+        try {
+          validateRecoveryPassword(password ?? '');
+        } catch {
           throw new Error(t('settings.passwordMinimum'));
         }
-      } else {
+      }
+      if (nextMode === 'biometric') {
         const status = await walletService.getBiometricAuthStatus();
         if (!status.supported || !status.available || !status.enrolled) {
           throw new Error(status.message || t('security.biometricUnavailable'));
@@ -305,6 +364,7 @@ export function AppSecurityProvider({
       ready,
       locked,
       mode,
+      autoLockSeconds,
       consumeInitialProtectionSetup: () => {
         setInitialProtectionSetupCompleted(false);
         setInitialProtectionTransitionStartedAtMs(undefined);
@@ -314,9 +374,15 @@ export function AppSecurityProvider({
         walletService.lockApp().catch(() => undefined);
       },
       setMode,
+      setAutoLockSeconds: async (seconds: number) => {
+        await walletService.setAppAutoLockSeconds(seconds);
+        const saved = await saveAutoLockSeconds(seconds);
+        setAutoLockSecondsState(saved);
+      },
     }),
     [
       configured,
+      autoLockSeconds,
       initialProtectionSetupCompleted,
       initialProtectionTransitionStartedAtMs,
       locked,
@@ -325,24 +391,47 @@ export function AppSecurityProvider({
       setMode,
     ],
   );
-  const protectedContentHidden = !ready || locked || !configured;
-  const canMountProtectedContent = ready && configured;
-  const securityModalVisible =
-    protectedContentHidden || securityResetInProgress;
+  const presentation = deriveAppVaultPresentation(
+    {
+      stateVersion: 1,
+      ready,
+      onboardingComplete: onboardingStage === 'protection',
+      configured,
+      protectionMode: configured
+        ? mode === 'biometric'
+          ? 'system'
+          : 'password'
+        : null,
+      sessionAuthorized: configured && !locked,
+      migrationState: 0,
+      failedAttempts: 0,
+      autoLockSeconds,
+      blockedUntilUnixSeconds: 0,
+      lastActivityMonotonicMs: 0,
+    },
+    Math.floor(Date.now() / 1000),
+  );
+  const protectedContentHidden = presentation !== 'content';
+  // React Native presents <Modal> children in independent native windows.
+  // Hiding the protected root view is therefore insufficient: an already
+  // presented scanner or wallet dialog can remain above the lock screen.
+  // Unmount the entire protected tree whenever authorization is absent so
+  // every native modal is dismissed before the security surface is shown.
+  const canMountProtectedContent =
+    ready && configured && !locked;
+  const securityModalVisible = protectedContentHidden;
   const securitySurface =
-    !ready || securityResetInProgress ? (
+    presentation === 'preparing' ? (
       <View
         accessibilityViewIsModal
         importantForAccessibility="yes"
         style={styles.preparingOverlay}
       >
         <Text accessibilityRole="header" style={styles.preparingText}>
-          {securityResetInProgress
-            ? t('security.passwordResetInProgress')
-            : t('security.preparingProtection')}
+          {t('security.preparingProtection')}
         </Text>
       </View>
-    ) : !configured && onboardingStage === 'welcome' ? (
+    ) : presentation === 'welcome' ? (
       <InitialProtectionWelcome
         screenTransitionStartedAtMs={screenTransitionStartedAtMs}
         onContinue={startedAtMs => {
@@ -362,9 +451,16 @@ export function AppSecurityProvider({
           setInitialProtectionTransitionStartedAtMs(startedAtMs);
           setScreenTransitionStartedAtMs(startedAtMs);
         }}
-        onUnlock={() => setLocked(false)}
+        onUnlock={() => {
+          setLocked(false);
+          // The startup token refresh is intentionally deferred while this
+          // app-wide lock is closed. Resume it once after the one valid
+          // unlock instead of accessing protected Fast-Wallet metadata at
+          // launch.
+          void FastWalletPushService.refreshRegistrationQuietly();
+          void walletService.renewExpiringFastWalletAssignmentsQuietly();
+        }}
         screenTransitionStartedAtMs={screenTransitionStartedAtMs}
-        onSecurityReset={beginSecurityReset}
       />
     );
 
@@ -381,6 +477,8 @@ export function AppSecurityProvider({
             styles.protectedContent,
             protectedContentHidden && styles.protectedContentHidden,
           ]}
+          onTouchStart={recordUserActivity}
+          onTouchMove={recordUserActivity}
         >
           {children}
         </View>
@@ -476,7 +574,6 @@ function AppSecurityLockScreen({
   mode,
   onConfigure,
   onProtectionSubmit,
-  onSecurityReset,
   onUnlock,
   screenTransitionStartedAtMs,
 }: {
@@ -484,7 +581,6 @@ function AppSecurityLockScreen({
   mode: AppProtectionMode;
   onConfigure: (mode: AppProtectionMode, password?: string) => Promise<void>;
   onProtectionSubmit: (startedAtMs: number) => void;
-  onSecurityReset: () => void;
   onUnlock: () => void;
   screenTransitionStartedAtMs: number;
 }) {
@@ -494,7 +590,8 @@ function AppSecurityLockScreen({
   const [error, setError] = useState<string | undefined>();
   const [working, setWorking] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [setupMode, setSetupMode] = useState<AppProtectionMode>('password');
+  const [setupMode, setSetupMode] = useState<AppProtectionMode>('biometric');
+  const [usePasswordFallback, setUsePasswordFallback] = useState(false);
   const [biometricsAvailable, setBiometricsAvailable] = useState(false);
   const [biometricsReady, setBiometricsReady] = useState(false);
   const [automaticBiometricPending, setAutomaticBiometricPending] = useState(
@@ -514,10 +611,10 @@ function AppSecurityLockScreen({
       configured ? 'unlockScreen.presented' : 'protectionSetup.presented',
       {
         elapsedMs: Date.now() - screenTransitionStartedAtMs,
-        mode: configured ? mode : 'password',
+        mode: configured ? mode : setupMode,
       },
     );
-  }, [configured, mode, screenTransitionStartedAtMs]);
+  }, [configured, mode, screenTransitionStartedAtMs, setupMode]);
 
   useEffect(() => {
     let active = true;
@@ -534,12 +631,19 @@ function AppSecurityLockScreen({
         }
         const available =
           status.supported && status.available && status.enrolled;
+        logWalletEvent('AppSecurity', 'biometricStatus.resolved', {
+          available,
+          biometryType: status.biometryType,
+          enrolled: status.enrolled,
+          supported: status.supported,
+        });
         setBiometricsAvailable(available);
-        if (available) {
-          setSetupMode('biometric');
-        }
+        setSetupMode(available ? 'biometric' : 'password');
       })
-      .catch(() => undefined)
+      .catch(error => {
+        logWalletEvent('AppSecurity', 'biometricStatus.error', { error });
+        setSetupMode('password');
+      })
       .finally(() => {
         if (active) {
           setBiometricsReady(true);
@@ -551,7 +655,8 @@ function AppSecurityLockScreen({
   }, [configured]);
 
   const selectedMode = configured ? mode : setupMode;
-  const usesPassword = selectedMode === 'password';
+  const usesPassword =
+    selectedMode === 'password' || (configured && usePasswordFallback);
 
   const unlock = useCallback(async (): Promise<boolean> => {
     const startedAt = Date.now();
@@ -591,30 +696,20 @@ function AppSecurityLockScreen({
         return true;
       }
 
-      const result = await walletService.unlockApp(
-        password,
-        t('security.biometricPrompt'),
+      // Android/iOS can report the native biometric sheet as an inactive app
+      // state.  It is an app-initiated, bounded system surface, not an
+      // application backgrounding event.  Keep the native authorization alive
+      // until the unlock promise has settled so there is no spurious
+      // "tap unlock again" recovery path.
+      const result = await withSystemUiInterruption(
+        'app-unlock',
+        () =>
+          walletService.unlockApp(
+            password,
+            t('security.biometricPrompt'),
+          ),
       );
       if (!result.success) {
-        if (result.resetTriggered) {
-          logWalletEvent('AppSecurity', 'unlock.resetTriggered', {
-            elapsedMs: Date.now() - startedAt,
-            failedAttempts: result.failedPasswordAttempts ?? 3,
-            remainingAttempts: 0,
-            resetTriggered: true,
-          });
-          onSecurityReset();
-          return false;
-        }
-        if (typeof result.remainingPasswordAttempts === 'number') {
-          throw new Error(
-            result.remainingPasswordAttempts === 1
-              ? t('security.passwordAttemptRemaining')
-              : t('security.passwordAttemptsRemaining', {
-                  count: result.remainingPasswordAttempts,
-                }),
-          );
-        }
         throw new Error(result.message || t('security.unlockFailed'));
       }
       setPassword('');
@@ -659,7 +754,6 @@ function AppSecurityLockScreen({
     mode,
     onConfigure,
     onProtectionSubmit,
-    onSecurityReset,
     onUnlock,
     password,
     selectedMode,
@@ -677,9 +771,6 @@ function AppSecurityLockScreen({
     }
 
     let active = true;
-    let interaction:
-      | ReturnType<typeof InteractionManager.runAfterInteractions>
-      | undefined;
     let appStateSubscription:
       | ReturnType<typeof AppState.addEventListener>
       | undefined;
@@ -690,7 +781,12 @@ function AppSecurityLockScreen({
       }
       automaticBiometricAttemptedRef.current = true;
       setAutomaticBiometricPending(true);
-      interaction = InteractionManager.runAfterInteractions(() => {
+      // Defer the bridge call until React has committed this state update. The
+      // native bridge performs the authoritative wait for a resumed, visible
+      // Activity before presenting AndroidX BiometricPrompt. A microtask keeps
+      // this path deterministic in tests and avoids deprecated
+      // InteractionManager scheduling.
+      queueMicrotask(() => {
         if (!active) {
           return;
         }
@@ -721,7 +817,6 @@ function AppSecurityLockScreen({
 
     return () => {
       active = false;
-      interaction?.cancel();
       appStateSubscription?.remove();
     };
   }, [configured, mode, unlock]);
@@ -759,58 +854,36 @@ function AppSecurityLockScreen({
               ? t('security.unlockAppHint')
               : t('security.setUpAppProtectionHint')}
           </Text>
-          {!configured ? (
-            <View style={styles.choiceGroup}>
-              <TouchableOpacity
-                accessibilityRole="button"
-                accessibilityState={{
-                  selected: setupMode === 'biometric',
-                  disabled: !biometricsAvailable,
-                }}
-                disabled={!biometricsAvailable}
-                onPress={() => setSetupMode('biometric')}
-                style={[
-                  styles.choiceButton,
-                  setupMode === 'biometric' && styles.choiceButtonSelected,
-                  !biometricsAvailable && styles.choiceButtonDisabled,
-                ]}
-              >
-                <Text style={styles.choiceTitle}>
-                  {t('security.useBiometrics')}
-                </Text>
-                <Text style={styles.choiceHint}>
-                  {t('security.biometricsRecommended')}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                accessibilityRole="button"
-                accessibilityState={{ selected: setupMode === 'password' }}
-                onPress={() => setSetupMode('password')}
-                style={[
-                  styles.choiceButton,
-                  setupMode === 'password' && styles.choiceButtonSelected,
-                ]}
-              >
-                <Text style={styles.choiceTitle}>
-                  {t('security.useAppPassword')}
-                </Text>
-                <Text style={styles.choiceHint}>
-                  {t('security.passwordAlternative')}
-                </Text>
-              </TouchableOpacity>
-            </View>
+          {!configured && !biometricsReady ? (
+            <ActivityIndicator color={colors.orange} size="small" />
           ) : null}
           {!configured && biometricsReady && !biometricsAvailable ? (
             <Text style={styles.choiceUnavailable}>
               {t('security.biometricUnavailable')}
             </Text>
           ) : null}
-          {!configured &&
-          selectedMode === 'biometric' &&
-          biometricsAvailable ? (
+          {!configured && selectedMode === 'biometric' && biometricsAvailable ? (
             <Text style={styles.choiceFallback}>
               {t('security.biometricsFallback')}
             </Text>
+          ) : null}
+          {configured && mode === 'biometric' ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              disabled={working}
+              onPress={() => {
+                setUsePasswordFallback(value => !value);
+                setPassword('');
+                setError(undefined);
+              }}
+              style={styles.showPassword}
+            >
+              <Text style={styles.showPasswordText}>
+                {usePasswordFallback
+                  ? t('security.unlockWithBiometrics')
+                  : t('security.useAppPassword')}
+              </Text>
+            </TouchableOpacity>
           ) : null}
           {usesPassword ? (
             <>
@@ -827,6 +900,27 @@ function AppSecurityLockScreen({
                 style={styles.input}
               />
             </>
+          ) : null}
+          {!configured && biometricsReady && biometricsAvailable ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              disabled={working}
+              onPress={() => {
+                setSetupMode(value =>
+                  value === 'biometric' ? 'password' : 'biometric',
+                );
+                setPassword('');
+                setConfirmation('');
+                setError(undefined);
+              }}
+              style={styles.alternativeButton}
+            >
+              <Text style={styles.alternativeButtonText}>
+                {selectedMode === 'biometric'
+                  ? t('security.useAppPassword')
+                  : t('security.useBiometrics')}
+              </Text>
+            </TouchableOpacity>
           ) : null}
           {!configured && usesPassword ? (
             <>
@@ -872,9 +966,8 @@ function AppSecurityLockScreen({
           {error ? <Text style={styles.error}>{error}</Text> : null}
           <TouchableOpacity
             accessibilityRole="button"
-            onPress={() => {
-              unlock().catch(() => undefined);
-            }}
+            testID="app-security-primary"
+            onPress={() => unlock().catch(() => false)}
             disabled={
               working ||
               (usesPassword && !password) ||
@@ -897,7 +990,7 @@ function AppSecurityLockScreen({
             <Text style={styles.primaryText}>
               {working
                 ? t('action.working')
-                : configured && mode === 'biometric'
+                : configured && mode === 'biometric' && !usePasswordFallback
                 ? t('security.unlockWithBiometrics')
                 : configured
                 ? t('security.unlockApp')
@@ -1089,6 +1182,16 @@ const styles = StyleSheet.create({
   choiceHint: { color: colors.textSecondary, fontSize: 12, lineHeight: 17 },
   choiceUnavailable: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
   choiceFallback: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
+  alternativeButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  alternativeButtonText: {
+    color: colors.orangeLight,
+    fontSize: 15,
+    fontWeight: '700',
+  },
   primaryButton: {
     alignItems: 'center',
     backgroundColor: colors.orange,

@@ -33,6 +33,12 @@ pub struct RegisteredWallet {
     pub role: Option<String>,
     #[serde(default)]
     pub source_wallet_id: Option<String>,
+    /// Set only after Monero Core has verified Ledger-signed key images and
+    /// refreshed the local read-only wallet's spent/unspent state.
+    #[serde(default)]
+    pub ledger_key_images_verified_at: Option<u64>,
+    #[serde(default)]
+    pub ledger_key_images_verified_height: Option<u64>,
     pub created_at: u64,
     pub last_opened_at: u64,
 }
@@ -74,6 +80,8 @@ pub fn software_wallet(
         address_index: None,
         role: None,
         source_wallet_id: None,
+        ledger_key_images_verified_at: None,
+        ledger_key_images_verified_height: None,
         created_at: timestamp,
         last_opened_at: timestamp,
     }
@@ -100,6 +108,8 @@ pub fn hardware_wallet(
         address_index: None,
         role: role.map(str::to_owned),
         source_wallet_id: source_wallet_id.map(str::to_owned),
+        ledger_key_images_verified_at: None,
+        ledger_key_images_verified_height: None,
         created_at: timestamp,
         last_opened_at: timestamp,
     }
@@ -128,6 +138,8 @@ pub fn ledger_read_only_wallet(
         address_index: None,
         role: None,
         source_wallet_id: Some(source_wallet_id.to_owned()),
+        ledger_key_images_verified_at: None,
+        ledger_key_images_verified_height: None,
         created_at: timestamp,
         last_opened_at: timestamp,
     }
@@ -157,6 +169,16 @@ pub fn upsert(app: &AppHandle, mut wallet: RegisteredWallet) -> Result<Registere
     let mut registry = load(app)?;
     upsert_into_registry(&mut registry, &mut wallet);
     registry.active_wallet_id = Some(wallet.id.clone());
+    save(app, registry)?;
+    Ok(wallet)
+}
+
+pub fn upsert_inactive(
+    app: &AppHandle,
+    mut wallet: RegisteredWallet,
+) -> Result<RegisteredWallet, String> {
+    let mut registry = load(app)?;
+    upsert_into_registry(&mut registry, &mut wallet);
     save(app, registry)?;
     Ok(wallet)
 }

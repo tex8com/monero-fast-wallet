@@ -17,6 +17,12 @@
 #include <string>
 #include <vector>
 
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+extern "C" int monero_fast_set_derivation_backend_preference(
+    const char* preference);
+extern "C" const char* monero_fast_derivation_backend_status_json(void);
+#endif
+
 extern "C" int tex8_desktop_wallet_core_linked_with_monero() noexcept {
   try {
     return tex8::wallet::WalletEngine::linkedWithMonero() ? 1 : 0;
@@ -262,7 +268,75 @@ std::string walletSnapshotJson(const tex8::wallet::WalletSnapshot& snapshot) {
          << ",\"daemonHeight\":" << jsonString(std::to_string(snapshot.daemonHeight))
          << ",\"daemonTargetHeight\":"
          << jsonString(std::to_string(snapshot.daemonTargetHeight))
+         << ",\"pendingOutputKeyImageCount\":"
+         << jsonString(std::to_string(snapshot.pendingOutputKeyImageCount))
          << ",\"synchronized\":" << (snapshot.synchronized ? "true" : "false")
+         << '}';
+  return output.str();
+}
+
+std::string networkSyncStatusJson(
+    const tex8::wallet::NetworkSyncStatus& status) {
+  std::ostringstream output;
+  output << "{\"network\":" << jsonString(networkName(status.network))
+         << ",\"state\":" << jsonString(status.state)
+         << ",\"phase\":" << jsonString(status.phase)
+         << ",\"lastError\":" << jsonString(status.lastError)
+         << ",\"consecutiveFailures\":" << status.consecutiveFailures
+         << ",\"phaseSequence\":" << status.phaseSequence
+         << ",\"phaseElapsedMs\":" << status.phaseElapsedMs
+         << ",\"lastProviderSelectionMs\":"
+         << status.lastProviderSelectionMs
+         << ",\"lastTransportInitializationMs\":"
+         << status.lastTransportInitializationMs
+         << ",\"lastBlockFetchMs\":" << status.lastBlockFetchMs
+         << ",\"lastPrefetchMs\":" << status.lastPrefetchMs
+         << ",\"lastPrefetchWaitMs\":" << status.lastPrefetchWaitMs
+         << ",\"prefetchedPayloadBytes\":"
+         << status.prefetchedPayloadBytes
+         << ",\"peakPrefetchedPayloadBytes\":"
+         << status.peakPrefetchedPayloadBytes
+         << ",\"lastNonEmptyBlockFetchMs\":"
+         << status.lastNonEmptyBlockFetchMs
+         << ",\"lastNonEmptyBlockCount\":"
+         << status.lastNonEmptyBlockCount
+         << ",\"lastNonEmptyNetworkBytes\":"
+         << status.lastNonEmptyNetworkBytes
+         << ",\"lastNonEmptyPayloadBytes\":"
+         << status.lastNonEmptyPayloadBytes
+         << ",\"networkBytesReceived\":"
+         << status.networkBytesReceived
+         << ",\"payloadBytesReceived\":"
+         << status.payloadBytesReceived
+         << ",\"lastWalletScanMs\":" << status.lastWalletScanMs
+         << ",\"lastMempoolMs\":" << status.lastMempoolMs
+         << ",\"lastCheckpointMs\":" << status.lastCheckpointMs
+         << ",\"lastIterationMs\":" << status.lastIterationMs
+         << ",\"downloadStartHeight\":" << status.downloadStartHeight
+         << ",\"downloadedHeight\":" << status.downloadedHeight
+         << ",\"chainHeight\":" << status.chainHeight
+         << ",\"targetHeight\":" << status.targetHeight
+         << ",\"transportStarts\":" << status.transportStarts
+         << ",\"fetchedBatches\":" << status.fetchedBatches
+         << ",\"fetchedBlocks\":" << status.fetchedBlocks
+         << ",\"decodedBatches\":" << status.decodedBatches
+         << ",\"prefetchedBatches\":" << status.prefetchedBatches
+         << ",\"prefetchHits\":" << status.prefetchHits
+         << ",\"fanoutDeliveries\":" << status.fanoutDeliveries
+         << ",\"poolSnapshots\":" << status.poolSnapshots
+         << ",\"cacheHits\":" << status.cacheHits
+         << ",\"cacheMisses\":" << status.cacheMisses
+         << ",\"replayCachePayloadBytes\":" << status.replayCachePayloadBytes
+         << ",\"replayCachePeakPayloadBytes\":" << status.replayCachePeakPayloadBytes
+         << ",\"replayCachePayloadLimitBytes\":" << status.replayCachePayloadLimitBytes
+         << ",\"stalledWallets\":" << status.stalledWallets
+         << ",\"scanWorkers\":" << status.scanWorkers
+         << ",\"joinedWallets\":" << status.joinedWallets
+         << ",\"queueDepth\":" << status.queueDepth
+         << ",\"prefetchQueueDepth\":" << status.prefetchQueueDepth
+         << ",\"prefetchQueueCapacity\":" << status.prefetchQueueCapacity
+         << ",\"replayCacheEntries\":" << status.replayCacheEntries
+         << ",\"replayCacheCapacity\":" << status.replayCacheCapacity
          << '}';
   return output.str();
 }
@@ -360,6 +434,52 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_ledger_transport_status(
   });
 }
 
+extern "C" Tex8DesktopResult tex8_desktop_wallet_compute_backend_status(
+    Tex8DesktopWalletCore* core) noexcept {
+  return invoke(core, [] {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+    return tex8::wallet::WalletEngine::derivationBackendStatus();
+#else
+    return std::string(
+        "{\"preference\":\"auto\",\"activeBackend\":\"cpu\","
+        "\"gpuAvailable\":false,\"gpuKind\":\"\",\"deviceName\":\"\","
+        "\"deviceCount\":0,\"selfTestPassed\":false,\"cpuFallback\":true,"
+        "\"lastError\":\"Native Monero core is not linked\"}");
+#endif
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_set_compute_backend(
+    Tex8DesktopWalletCore* core, const char* preference) noexcept {
+  return invoke(core, [&] {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+    if (monero_fast_set_derivation_backend_preference(input(preference)) != 1) {
+      throw std::runtime_error("compute backend preference is invalid");
+    }
+    const char* status = monero_fast_derivation_backend_status_json();
+    return std::string(status == nullptr ? "{}" : status);
+#else
+    const std::string selected = input(preference);
+    if (selected != "auto" && selected != "cpu" && selected != "gpu") {
+      throw std::runtime_error("compute backend preference is invalid");
+    }
+    return std::string(
+        "{\"preference\":\"") + selected
+        + "\",\"activeBackend\":\"cpu\",\"gpuAvailable\":false,"
+          "\"gpuKind\":\"\",\"deviceName\":\"\",\"deviceCount\":0,"
+          "\"selfTestPassed\":false,\"cpuFallback\":true,"
+          "\"lastError\":\"Native Monero core is not linked\"}";
+#endif
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_benchmark_derivation_performance(
+    Tex8DesktopWalletCore* core) noexcept {
+  return invoke(core, [] {
+    return tex8::wallet::WalletEngine::benchmarkDerivationPerformance();
+  });
+}
+
 extern "C" Tex8DesktopResult tex8_desktop_wallet_create(
     Tex8DesktopWalletCore* core, const char* path, const char* password,
     const char* language, unsigned char network) noexcept {
@@ -451,6 +571,31 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_set_daemon(
   });
 }
 
+extern "C" Tex8DesktopResult tex8_desktop_wallet_set_grpc_endpoint(
+    Tex8DesktopWalletCore* core, const char* wallet_id,
+    const char* endpoint) noexcept {
+  return invoke(core, [&] {
+    core->engine.setGrpcEndpoint(input(wallet_id), input(endpoint));
+    return std::string{};
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_network_sync_status(
+    Tex8DesktopWalletCore* core, unsigned char network) noexcept {
+  return invoke(core, [&] {
+    return networkSyncStatusJson(
+        core->engine.networkSyncStatus(networkFrom(network)));
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prioritize_network_wallet(
+    Tex8DesktopWalletCore* core, const char* wallet_id) noexcept {
+  return invoke(core, [&] {
+    core->engine.prioritizeNetworkWallet(input(wallet_id));
+    return std::string{};
+  });
+}
+
 extern "C" Tex8DesktopResult tex8_desktop_wallet_start_refresh(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept {
   return invoke(core, [&] { core->engine.startRefresh(input(wallet_id)); return std::string{}; });
@@ -491,6 +636,23 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_snapshot(
   });
 }
 
+extern "C" Tex8DesktopResult tex8_desktop_wallet_sync_ledger_key_images(
+    Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
+    const char* view_only_wallet_id) noexcept {
+  return invoke(core, [&] {
+    const auto result = core->engine.syncLedgerKeyImagesToViewWallet(
+        input(hardware_wallet_id), input(view_only_wallet_id));
+    std::ostringstream json;
+    json << "{\"importHeight\":" << result.importHeight
+         << ",\"spentAtomic\":" << jsonString(std::to_string(result.spentAtomic))
+         << ",\"unspentAtomic\":" << jsonString(std::to_string(result.unspentAtomic))
+         << ",\"verifiedOutputCount\":" << result.verifiedOutputCount
+         << ",\"verificationDurationMs\":" << result.verificationDurationMs
+         << '}';
+    return json.str();
+  });
+}
+
 extern "C" Tex8DesktopResult tex8_desktop_wallet_get_balance(
     Tex8DesktopWalletCore* core, const char* wallet_id, unsigned int account_index,
     int unlocked_only) noexcept {
@@ -507,6 +669,26 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_create_subaddress(
            << ",\"addressIndex\":" << address.addressIndex
            << ",\"address\":" << jsonString(address.address)
            << ",\"label\":" << jsonString(address.label) << '}';
+    return result.str();
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_list_subaddresses(
+    Tex8DesktopWalletCore* core, const char* wallet_id,
+    unsigned int account_index) noexcept {
+  return invoke(core, [&] {
+    const auto addresses = core->engine.listSubaddresses(input(wallet_id), account_index);
+    std::ostringstream result;
+    result << '[';
+    for (size_t index = 0; index < addresses.size(); ++index) {
+      if (index != 0) result << ',';
+      const auto& address = addresses[index];
+      result << "{\"accountIndex\":" << address.accountIndex
+             << ",\"addressIndex\":" << address.addressIndex
+             << ",\"address\":" << jsonString(address.address)
+             << ",\"label\":" << jsonString(address.label) << '}';
+    }
+    result << ']';
     return result.str();
   });
 }

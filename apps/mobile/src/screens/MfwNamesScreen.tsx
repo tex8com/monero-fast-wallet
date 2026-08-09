@@ -75,6 +75,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
   const { t } = useI18n();
   const {
     isRegisteredWalletOpen,
+    openRegisteredWalletById,
     registeredWallet,
     registeredWallets,
     session,
@@ -420,10 +421,15 @@ export default function MfwNamesScreen({ navigation, route }: any) {
 
   const selectWallet = async (wallet: WalletOption) => {
     setMessage(undefined);
-    if (wallet.id !== registeredWallet?.id) {
-      await setActiveRegisteredWallet(wallet.id);
+    if (isRegisteredWalletOpen(wallet.id)) {
+      if (wallet.id !== registeredWallet?.id) {
+        await setActiveRegisteredWallet(wallet.id);
+      }
+      return;
     }
-    if (!isRegisteredWalletOpen(wallet.id)) {
+
+    const opened = await openRegisteredWalletById(wallet.id);
+    if (!opened) {
       navigation.navigate('WalletSetup', {
         mode: 'open',
         openRequestId: Date.now(),

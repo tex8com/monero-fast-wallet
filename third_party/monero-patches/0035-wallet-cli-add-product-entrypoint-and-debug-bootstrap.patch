@@ -1,0 +1,657 @@
+From 5cf70dac4ca962562b46d59acea90ac2210f3472 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 15:41:48 -0500
+Subject: [PATCH] wallet cli: add product entrypoint and debug bootstrap
+
+---
+ src/simplewallet/CMakeLists.txt        |  69 ++++++
+ src/simplewallet/product_cli_debug.cpp | 287 +++++++++++++++++++++++++
+ src/simplewallet/product_cli_debug.h   |  59 +++++
+ src/simplewallet/simplewallet.cpp      |  82 +++++++
+ src/wallet/grpc_stream/CMakeLists.txt  |  33 +--
+ 5 files changed, 518 insertions(+), 12 deletions(-)
+ create mode 100644 src/simplewallet/product_cli_debug.cpp
+ create mode 100644 src/simplewallet/product_cli_debug.h
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index b659d9f..74c2538 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -29,6 +29,10 @@
+ set(simplewallet_sources
+   simplewallet.cpp)
+ 
++set(product_cli_sources
++  simplewallet.cpp
++  product_cli_debug.cpp)
++
+ set(simplewallet_headers)
+ 
+ monero_find_all_headers(simplewallet_private_headers "${CMAKE_CURRENT_SOURCE_DIR}")
+@@ -63,3 +67,68 @@ set_property(TARGET simplewallet
+   PROPERTY
+     OUTPUT_NAME "monero-wallet-cli")
+ install(TARGETS simplewallet DESTINATION bin)
++
++monero_add_executable(fastwallet
++  ${product_cli_sources}
++  ${simplewallet_headers}
++  ${simplewallet_private_headers})
++target_link_libraries(fastwallet
++  PRIVATE
++    wallet
++    rpc_base
++    cryptonote_core
++    cncrypto
++    common
++    mnemonics
++    ${EPEE_READLINE}
++    qrcodegen
++    version
++    ${Boost_CHRONO_LIBRARY}
++    ${Boost_PROGRAM_OPTIONS_LIBRARY}
++    ${Boost_FILESYSTEM_LIBRARY}
++    ${Boost_LOCALE_LIBRARY}
++    ${ICU_LIBRARIES}
++    ${Boost_THREAD_LIBRARY}
++    ${CMAKE_THREAD_LIBS_INIT}
++    ${GNU_READLINE_LIBRARY}
++    ${EXTRA_LIBRARIES})
++
++find_package(Git REQUIRED)
++execute_process(
++  COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" rev-parse HEAD
++  OUTPUT_VARIABLE MFW_MONERO_SOURCE_COMMIT
++  OUTPUT_STRIP_TRAILING_WHITESPACE)
++execute_process(
++  COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" rev-parse "HEAD^{tree}"
++  OUTPUT_VARIABLE MFW_MONERO_PATCHED_TREE
++  OUTPUT_STRIP_TRAILING_WHITESPACE)
++set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
++set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
++set(MFW_MONERO_PATCH_COUNT "35" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
++set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
++set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
++set(MFW_SCANPACK_SCHEMA "1" CACHE STRING "ScanPack manifest schema")
++set(MFW_PRODUCT_CORE_ABI "bootstrap-0" CACHE STRING "Product core ABI identifier")
++set(MFW_FEATURE_MANIFEST_HASH "unknown" CACHE STRING "SHA-256 of the release feature manifest")
++set(MFW_BUILD_TARGET "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}" CACHE STRING "Product build target")
++set(MFW_COMPILER "${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}" CACHE STRING "Product compiler identity")
++set(MFW_COMPILER_FLAGS "${CMAKE_CXX_FLAGS}" CACHE STRING "Product compiler flags")
++target_compile_definitions(fastwallet PRIVATE
++  MONERO_FAST_WALLET_PRODUCT_CLI=1
++  MFW_MONERO_UPSTREAM_COMMIT="${MFW_MONERO_UPSTREAM_COMMIT}"
++  MFW_MONERO_UPSTREAM_TREE="${MFW_MONERO_UPSTREAM_TREE}"
++  MFW_MONERO_SOURCE_COMMIT="${MFW_MONERO_SOURCE_COMMIT}"
++  MFW_MONERO_PATCHED_TREE="${MFW_MONERO_PATCHED_TREE}"
++  MFW_MONERO_PATCH_COUNT="${MFW_MONERO_PATCH_COUNT}"
++  MFW_PRODUCT_COMMIT="${MFW_PRODUCT_COMMIT}"
++  MFW_PRODUCT_DIRTY="${MFW_PRODUCT_DIRTY}"
++  MFW_CUPRATE_COMMIT="${MFW_CUPRATE_COMMIT}"
++  MFW_SCANPACK_SCHEMA="${MFW_SCANPACK_SCHEMA}"
++  MFW_PRODUCT_CORE_ABI="${MFW_PRODUCT_CORE_ABI}"
++  MFW_FEATURE_MANIFEST_HASH="${MFW_FEATURE_MANIFEST_HASH}"
++  MFW_BUILD_TARGET="${MFW_BUILD_TARGET}"
++  MFW_COMPILER="${MFW_COMPILER}"
++  MFW_COMPILER_FLAGS="${MFW_COMPILER_FLAGS}")
++set_property(TARGET fastwallet PROPERTY OUTPUT_NAME "monero-fast-wallet-cli")
++install(TARGETS fastwallet DESTINATION bin)
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+new file mode 100644
+index 0000000..810a970
+--- /dev/null
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -0,0 +1,287 @@
++// Copyright (c) 2026 TEX8
++// SPDX-License-Identifier: BSD-3-Clause
++
++#include "product_cli_debug.h"
++
++#include <boost/filesystem.hpp>
++#include <chrono>
++#include <ctime>
++#include <iomanip>
++#include <iostream>
++#include <sstream>
++#include <stdexcept>
++
++#include "version.h"
++
++#ifndef MFW_MONERO_UPSTREAM_COMMIT
++#define MFW_MONERO_UPSTREAM_COMMIT "unknown"
++#endif
++#ifndef MFW_MONERO_UPSTREAM_TREE
++#define MFW_MONERO_UPSTREAM_TREE "unknown"
++#endif
++#ifndef MFW_MONERO_SOURCE_COMMIT
++#define MFW_MONERO_SOURCE_COMMIT "unknown"
++#endif
++#ifndef MFW_MONERO_PATCHED_TREE
++#define MFW_MONERO_PATCHED_TREE "unknown"
++#endif
++#ifndef MFW_MONERO_PATCH_COUNT
++#define MFW_MONERO_PATCH_COUNT "unknown"
++#endif
++#ifndef MFW_PRODUCT_COMMIT
++#define MFW_PRODUCT_COMMIT "unknown"
++#endif
++#ifndef MFW_PRODUCT_DIRTY
++#define MFW_PRODUCT_DIRTY "unknown"
++#endif
++#ifndef MFW_CUPRATE_COMMIT
++#define MFW_CUPRATE_COMMIT "unknown"
++#endif
++#ifndef MFW_SCANPACK_SCHEMA
++#define MFW_SCANPACK_SCHEMA "unknown"
++#endif
++#ifndef MFW_PRODUCT_CORE_ABI
++#define MFW_PRODUCT_CORE_ABI "unknown"
++#endif
++#ifndef MFW_FEATURE_MANIFEST_HASH
++#define MFW_FEATURE_MANIFEST_HASH "unknown"
++#endif
++#ifndef MFW_BUILD_TARGET
++#define MFW_BUILD_TARGET "unknown"
++#endif
++#ifndef MFW_COMPILER
++#define MFW_COMPILER "unknown"
++#endif
++#ifndef MFW_COMPILER_FLAGS
++#define MFW_COMPILER_FLAGS "unknown"
++#endif
++
++namespace
++{
++  std::string json_escape(const std::string& value)
++  {
++    std::ostringstream output;
++    for (const unsigned char character : value)
++    {
++      switch (character)
++      {
++        case '\\': output << "\\\\"; break;
++        case '"': output << "\\\""; break;
++        case '\b': output << "\\b"; break;
++        case '\f': output << "\\f"; break;
++        case '\n': output << "\\n"; break;
++        case '\r': output << "\\r"; break;
++        case '\t': output << "\\t"; break;
++        default:
++          if (character < 0x20)
++          {
++            output << "\\u" << std::hex << std::setw(4) << std::setfill('0')
++                   << static_cast<unsigned int>(character) << std::dec;
++          }
++          else
++          {
++            output << static_cast<char>(character);
++          }
++      }
++    }
++    return output.str();
++  }
++
++  std::string utc_timestamp(bool compact)
++  {
++    const std::time_t now = std::time(nullptr);
++    std::tm utc{};
++#ifdef _WIN32
++    gmtime_s(&utc, &now);
++#else
++    gmtime_r(&now, &utc);
++#endif
++    std::ostringstream output;
++    output << std::put_time(&utc, compact ? "%Y%m%dT%H%M%SZ" : "%Y-%m-%dT%H:%M:%SZ");
++    return output.str();
++  }
++
++  std::string build_json()
++  {
++    std::ostringstream output;
++    output << "{"
++           << "\"product\":\"monero-fast-wallet-cli\","
++           << "\"monero_version\":\"" << json_escape(MONERO_VERSION_FULL) << "\","
++           << "\"official_monero_upstream_commit\":\"" << MFW_MONERO_UPSTREAM_COMMIT << "\","
++           << "\"official_monero_upstream_tree\":\"" << MFW_MONERO_UPSTREAM_TREE << "\","
++           << "\"patched_monero_source_commit\":\"" << MFW_MONERO_SOURCE_COMMIT << "\","
++           << "\"patched_monero_tree\":\"" << MFW_MONERO_PATCHED_TREE << "\","
++           << "\"patch_count\":" << MFW_MONERO_PATCH_COUNT << ","
++           << "\"cuprate_commit\":\"" << MFW_CUPRATE_COMMIT << "\","
++           << "\"scanpack_schema\":\"" << MFW_SCANPACK_SCHEMA << "\","
++           << "\"product_core_abi\":\"" << MFW_PRODUCT_CORE_ABI << "\","
++           << "\"feature_manifest_hash\":\"" << MFW_FEATURE_MANIFEST_HASH << "\","
++           << "\"build_target\":\"" << json_escape(MFW_BUILD_TARGET) << "\","
++           << "\"compiler\":\"" << json_escape(MFW_COMPILER) << "\","
++           << "\"compiler_flags\":\"" << json_escape(MFW_COMPILER_FLAGS) << "\","
++           << "\"wallet_core_linkage\":\"monero-wallet-static\","
++           << "\"product_commit\":\"" << MFW_PRODUCT_COMMIT << "\","
++           << "\"product_dirty\":" << (std::string(MFW_PRODUCT_DIRTY) == "true" ? "true" : "false")
++           << "}";
++    return output.str();
++  }
++}
++
++namespace mfw_cli
++{
++  bool debug_config::validate(std::string& error) const
++  {
++    if (level != "summary" && level != "detailed" && level != "trace")
++    {
++      error = "--debug-level must be summary, detailed, or trace";
++      return false;
++    }
++    if (format != "text" && format != "jsonl" && format != "both")
++    {
++      error = "--debug-format must be text, jsonl, or both";
++      return false;
++    }
++    if (metrics_interval_ms == 0 || max_size_mib == 0 || retention == 0)
++    {
++      error = "debug interval, size, and retention must be greater than zero";
++      return false;
++    }
++    return true;
++  }
++
++  std::uint64_t monotonic_nanoseconds()
++  {
++    return static_cast<std::uint64_t>(
++      std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count());
++  }
++
++  bool handle_early_product_command(int argc, char* argv[], int& exit_code)
++  {
++    if (argc == 3 && std::string(argv[1]) == "version" && std::string(argv[2]) == "--json")
++    {
++      std::cout << build_json() << std::endl;
++      exit_code = 0;
++      return true;
++    }
++    return false;
++  }
++
++  debug_session::debug_session(const debug_config& config,
++                               std::chrono::steady_clock::time_point process_started)
++    : m_enabled(config.enabled),
++      m_config(config),
++      m_process_started(process_started)
++  {
++    if (!m_enabled)
++      return;
++
++    boost::filesystem::path output = config.output_directory.empty()
++      ? boost::filesystem::path("mfw-debug") /
++          (utc_timestamp(true) + "-" + std::to_string(monotonic_nanoseconds()))
++      : boost::filesystem::path(config.output_directory);
++    boost::filesystem::create_directories(output);
++    m_output_directory = output.string();
++
++    if (config.format == "jsonl" || config.format == "both")
++    {
++      m_jsonl.open((output / "debug-events.jsonl").string(), std::ios::out | std::ios::app);
++      if (!m_jsonl)
++        throw std::runtime_error("could not open debug-events.jsonl");
++    }
++    if (config.format == "text" || config.format == "both")
++    {
++      m_text.open((output / "debug-text.log").string(), std::ios::out | std::ios::app);
++      if (!m_text)
++        throw std::runtime_error("could not open debug-text.log");
++    }
++
++    {
++      std::ofstream environment((output / "debug-environment.json").string());
++      environment << "{\"schema_version\":1,\"build\":" << build_json()
++                  << ",\"started_at_utc\":\"" << utc_timestamp(false) << "\"}\n";
++    }
++    {
++      std::ofstream manifest((output / "debug-manifest.json").string());
++      manifest << "{\"schema_version\":1,\"status\":\"running\","
++               << "\"debug_level\":\"" << json_escape(config.level) << "\","
++               << "\"debug_format\":\"" << json_escape(config.format) << "\","
++               << "\"metrics_interval_ms\":" << config.metrics_interval_ms << ","
++               << "\"max_size_mib\":" << config.max_size_mib << ","
++               << "\"retention\":" << config.retention << "}\n";
++    }
++    event("product_cli", "debug_session_start", "ok");
++  }
++
++  debug_session::~debug_session()
++  {
++    if (!m_enabled)
++      return;
++    try
++    {
++      const std::uint64_t total_ns = static_cast<std::uint64_t>(
++        std::chrono::duration_cast<std::chrono::nanoseconds>(
++          std::chrono::steady_clock::now() - m_process_started).count());
++      const char* final_event_status = m_failed ? "failed" : "ok";
++      const char* final_artifact_status = m_failed ? "failed" : "complete";
++      event("product_cli", "process_end", final_event_status, total_ns);
++      const boost::filesystem::path output(m_output_directory);
++      std::ofstream summary((output / "debug-summary.json").string());
++      summary << "{\"schema_version\":1,\"status\":\"" << final_artifact_status << "\","
++              << "\"debug_level\":\"" << json_escape(m_config.level) << "\","
++              << "\"events\":" << m_event_count << ","
++              << "\"duration_ns_raw\":" << total_ns << ","
++              << "\"duration_ms\":" << std::fixed << std::setprecision(3)
++              << static_cast<double>(total_ns) / 1000000.0 << "}\n";
++      std::ofstream manifest((output / "debug-manifest.json").string());
++      manifest << "{\"schema_version\":1,\"status\":\"" << final_artifact_status << "\","
++               << "\"debug_level\":\"" << json_escape(m_config.level) << "\","
++               << "\"debug_format\":\"" << json_escape(m_config.format) << "\","
++               << "\"metrics_interval_ms\":" << m_config.metrics_interval_ms << ","
++               << "\"max_size_mib\":" << m_config.max_size_mib << ","
++               << "\"retention\":" << m_config.retention << "}\n";
++    }
++    catch (...)
++    {
++      // A diagnostic writer must never terminate the wallet during teardown.
++    }
++  }
++
++  void debug_session::event(const std::string& component,
++                            const std::string& phase,
++                            const std::string& status,
++                            std::uint64_t duration_ns,
++                            const std::string& error_code)
++  {
++    if (!m_enabled)
++      return;
++    if (status == "failed" || !error_code.empty())
++      m_failed = true;
++    ++m_sequence;
++    ++m_event_count;
++    const std::uint64_t timestamp_ns = monotonic_nanoseconds();
++    const double duration_ms = static_cast<double>(duration_ns) / 1000000.0;
++    if (m_jsonl)
++    {
++      m_jsonl << "{\"schema_version\":1,\"event_sequence\":" << m_sequence
++              << ",\"monotonic_timestamp_ns_raw\":" << timestamp_ns
++              << ",\"wall_timestamp_utc\":\"" << utc_timestamp(false) << "\""
++              << ",\"component\":\"" << json_escape(component) << "\""
++              << ",\"phase\":\"" << json_escape(phase) << "\""
++              << ",\"status\":\"" << json_escape(status) << "\""
++              << ",\"duration_ns_raw\":" << duration_ns
++              << ",\"duration_ms\":" << std::fixed << std::setprecision(3) << duration_ms
++              << ",\"error_code\":\"" << json_escape(error_code) << "\"}\n";
++      m_jsonl.flush();
++    }
++    if (m_text)
++    {
++      m_text << m_sequence << ' ' << component << ' ' << phase << ' ' << status
++             << " duration_ms=" << std::fixed << std::setprecision(3) << duration_ms;
++      if (!error_code.empty())
++        m_text << " error_code=" << error_code;
++      m_text << '\n';
++      m_text.flush();
++    }
++  }
++}
+diff --git a/src/simplewallet/product_cli_debug.h b/src/simplewallet/product_cli_debug.h
+new file mode 100644
+index 0000000..775bc42
+--- /dev/null
++++ b/src/simplewallet/product_cli_debug.h
+@@ -0,0 +1,59 @@
++// Copyright (c) 2026 TEX8
++// SPDX-License-Identifier: BSD-3-Clause
++
++#pragma once
++
++#include <chrono>
++#include <cstddef>
++#include <cstdint>
++#include <fstream>
++#include <string>
++
++namespace mfw_cli
++{
++  struct debug_config
++  {
++    bool enabled = false;
++    std::string level = "detailed";
++    std::string output_directory;
++    std::string format = "both";
++    std::uint64_t metrics_interval_ms = 1000;
++    std::uint64_t max_size_mib = 128;
++    std::uint64_t retention = 10;
++
++    bool validate(std::string& error) const;
++  };
++
++  std::uint64_t monotonic_nanoseconds();
++  bool handle_early_product_command(int argc, char* argv[], int& exit_code);
++
++  class debug_session
++  {
++  public:
++    debug_session(const debug_config& config,
++                  std::chrono::steady_clock::time_point process_started);
++    ~debug_session();
++
++    debug_session(const debug_session&) = delete;
++    debug_session& operator=(const debug_session&) = delete;
++
++    void event(const std::string& component,
++               const std::string& phase,
++               const std::string& status,
++               std::uint64_t duration_ns = 0,
++               const std::string& error_code = "");
++    bool enabled() const noexcept { return m_enabled; }
++    const std::string& output_directory() const noexcept { return m_output_directory; }
++
++  private:
++    bool m_enabled = false;
++    debug_config m_config;
++    std::chrono::steady_clock::time_point m_process_started;
++    std::string m_output_directory;
++    std::ofstream m_jsonl;
++    std::ofstream m_text;
++    std::uint64_t m_sequence = 0;
++    std::uint64_t m_event_count = 0;
++    bool m_failed = false;
++  };
++}
+diff --git a/src/simplewallet/simplewallet.cpp b/src/simplewallet/simplewallet.cpp
+index 39bf169..3110032 100644
+--- a/src/simplewallet/simplewallet.cpp
++++ b/src/simplewallet/simplewallet.cpp
+@@ -73,6 +73,9 @@
+ #include "multisig/multisig.h"
+ #include "wallet/wallet_args.h"
+ #include "version.h"
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++#include "product_cli_debug.h"
++#endif
+ #include <stdexcept>
+ #include "wallet/message_store.h"
+ #include "QrCode.hpp"
+@@ -195,6 +198,15 @@ namespace
+   const command_line::arg_descriptor<bool> arg_use_english_language_names = {"use-english-language-names", sw::tr("Display English language names"), false};
+ 
+   const command_line::arg_descriptor< std::vector<std::string> > arg_command = {"command", ""};
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++  const command_line::arg_descriptor<bool> arg_product_debug = {"debug", sw::tr("Enable local structured performance diagnostics"), false};
++  const command_line::arg_descriptor<std::string> arg_product_debug_level = {"debug-level", sw::tr("Debug detail: summary, detailed, or trace"), "detailed"};
++  const command_line::arg_descriptor<std::string> arg_product_debug_output = {"debug-output", sw::tr("Directory for local debug artifacts"), ""};
++  const command_line::arg_descriptor<std::string> arg_product_debug_format = {"debug-format", sw::tr("Debug format: text, jsonl, or both"), "both"};
++  const command_line::arg_descriptor<std::uint64_t> arg_product_debug_metrics_interval = {"debug-metrics-interval-ms", sw::tr("Resource sampling interval in milliseconds"), 1000};
++  const command_line::arg_descriptor<std::uint64_t> arg_product_debug_max_size = {"debug-max-size-mib", sw::tr("Maximum local debug artifact size in MiB"), 128};
++  const command_line::arg_descriptor<std::uint64_t> arg_product_debug_retention = {"debug-retention", sw::tr("Maximum number of retained debug runs"), 10};
++#endif
+ 
+   const char* USAGE_START_MINING("start_mining [<number_of_threads>] [bg_mining] [ignore_battery]");
+   const char* USAGE_SET_DAEMON("set_daemon <host>[:<port>] [trusted|untrusted|this-is-probably-a-spy-node]");
+@@ -10768,6 +10780,13 @@ int main(int argc, char* argv[])
+ {
+   TRY_ENTRY();
+ 
++  const auto product_process_started = std::chrono::steady_clock::now();
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++  int early_exit_code = 0;
++  if (mfw_cli::handle_early_product_command(argc, argv, early_exit_code))
++    return early_exit_code;
++#endif
++
+ #ifdef WIN32
+   // Activate UTF-8 support for Boost filesystem classes on Windows
+   std::locale::global(boost::locale::generator().generate(""));
+@@ -10800,6 +10819,15 @@ int main(int argc, char* argv[])
+   command_line::add_arg(desc_params, arg_subaddress_lookahead);
+   command_line::add_arg(desc_params, arg_use_english_language_names);
+   command_line::add_arg(desc_params, arg_rpc_client_secret_key);
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++  command_line::add_arg(desc_params, arg_product_debug);
++  command_line::add_arg(desc_params, arg_product_debug_level);
++  command_line::add_arg(desc_params, arg_product_debug_output);
++  command_line::add_arg(desc_params, arg_product_debug_format);
++  command_line::add_arg(desc_params, arg_product_debug_metrics_interval);
++  command_line::add_arg(desc_params, arg_product_debug_max_size);
++  command_line::add_arg(desc_params, arg_product_debug_retention);
++#endif
+ 
+   po::positional_options_description positional_options;
+   positional_options.add(arg_command.name, -1);
+@@ -10808,12 +10836,20 @@ int main(int argc, char* argv[])
+   bool should_terminate = false;
+   std::tie(vm, should_terminate) = wallet_args::main(
+    argc, argv,
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++   "monero-fast-wallet-cli [--debug] [--wallet-file=<filename>|--generate-new-wallet=<filename>] [<COMMAND>]",
++#else
+    "monero-wallet-cli [--wallet-file=<filename>|--generate-new-wallet=<filename>] [<COMMAND>]",
++#endif
+     sw::tr("This is the command line monero wallet. It needs to connect to a monero\ndaemon to work correctly.\nWARNING: Do not reuse your Monero keys on another fork, UNLESS this fork has key reuse mitigations built in. Doing so will harm your privacy."),
+     desc_params,
+     positional_options,
+     [](const std::string &s, bool emphasis){ tools::scoped_message_writer(emphasis ? epee::console_color_white : epee::console_color_default, true) << s; },
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++    "monero-fast-wallet-cli.log"
++#else
+     "monero-wallet-cli.log"
++#endif
+   );
+ 
+   if (!vm)
+@@ -10826,20 +10862,63 @@ int main(int argc, char* argv[])
+     return 0;
+   }
+ 
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++  mfw_cli::debug_config product_debug_config;
++  product_debug_config.enabled = command_line::get_arg(*vm, arg_product_debug)
++    || !command_line::is_arg_defaulted(*vm, arg_product_debug_level)
++    || !command_line::is_arg_defaulted(*vm, arg_product_debug_output)
++    || !command_line::is_arg_defaulted(*vm, arg_product_debug_format)
++    || !command_line::is_arg_defaulted(*vm, arg_product_debug_metrics_interval)
++    || !command_line::is_arg_defaulted(*vm, arg_product_debug_max_size)
++    || !command_line::is_arg_defaulted(*vm, arg_product_debug_retention);
++  product_debug_config.level = command_line::get_arg(*vm, arg_product_debug_level);
++  product_debug_config.output_directory = command_line::get_arg(*vm, arg_product_debug_output);
++  product_debug_config.format = command_line::get_arg(*vm, arg_product_debug_format);
++  product_debug_config.metrics_interval_ms = command_line::get_arg(*vm, arg_product_debug_metrics_interval);
++  product_debug_config.max_size_mib = command_line::get_arg(*vm, arg_product_debug_max_size);
++  product_debug_config.retention = command_line::get_arg(*vm, arg_product_debug_retention);
++  std::string product_debug_error;
++  if (!product_debug_config.validate(product_debug_error))
++  {
++    fail_msg_writer() << product_debug_error;
++    return 1;
++  }
++  mfw_cli::debug_session product_debug(product_debug_config, product_process_started);
++  product_debug.event("product_cli", "options_parsed", "ok",
++    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++      std::chrono::steady_clock::now() - product_process_started).count()));
++#endif
++
+   cryptonote::simple_wallet w;
++  const auto wallet_init_started = std::chrono::steady_clock::now();
+   const bool r = w.init(*vm);
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++  product_debug.event("wallet", "initialize", r ? "ok" : "failed",
++    static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++      std::chrono::steady_clock::now() - wallet_init_started).count()),
++    r ? "" : "MFW_CLI_WALLET_INIT_FAILED");
++#endif
+   CHECK_AND_ASSERT_MES(r, 1, sw::tr("Failed to initialize wallet"));
+ 
+   std::vector<std::string> command = command_line::get_arg(*vm, arg_command);
+   if (!command.empty())
+   {
++    const auto command_started = std::chrono::steady_clock::now();
+     if (!w.process_command(command))
+       fail_msg_writer() << sw::tr("Unknown command: ") << command.front();
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++    product_debug.event("product_cli", "command", "complete",
++      static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now() - command_started).count()));
++#endif
+     w.stop();
+     w.deinit();
+   }
+   else
+   {
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++    product_debug.event("product_cli", "interactive_session", "start");
++#endif
+     tools::signal_handler::install([&w](int type) {
+       if (tools::password_container::is_prompting.load())
+       {
+@@ -10863,6 +10942,9 @@ int main(int argc, char* argv[])
+     w.run();
+ 
+     w.deinit();
++#ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++    product_debug.event("product_cli", "interactive_session", "complete");
++#endif
+   }
+   return 0;
+   CATCH_ENTRY_L0("main", 1);
+diff --git a/src/wallet/grpc_stream/CMakeLists.txt b/src/wallet/grpc_stream/CMakeLists.txt
+index e850e02..0734db4 100644
+--- a/src/wallet/grpc_stream/CMakeLists.txt
++++ b/src/wallet/grpc_stream/CMakeLists.txt
+@@ -79,19 +79,28 @@ target_include_directories(cuprate_grpc_stream
+ )
+ 
+ # INTERFACE so downstream targets (wallet, test exe) inherit the -L dirs too.
+-target_link_directories(cuprate_grpc_stream
+-    PUBLIC
+-            ${GRPCPP_LIBRARY_DIRS}
+-            ${GRPC_LIBRARY_DIRS}
+-            ${PROTOBUF_LIBRARY_DIRS}
+-)
+-
+-target_link_libraries(cuprate_grpc_stream
+-    PUBLIC
++if(STATIC)
++    # pkg-config deliberately keeps transitive dependencies such as re2, upb,
++    # c-ares, OpenSSL and zlib in the *_STATIC_* variables.  Linking only the
++    # regular grpc++ list works with shared libraries but leaves unresolved
++    # symbols in Monero's default static build.
++    set(MFW_GRPC_LIBRARY_DIRS
++        ${GRPCPP_STATIC_LIBRARY_DIRS}
++        ${PROTOBUF_STATIC_LIBRARY_DIRS})
++    set(MFW_GRPC_LIBRARIES
++        ${GRPCPP_STATIC_LIBRARIES}
++        ${PROTOBUF_STATIC_LIBRARIES})
++else()
++    set(MFW_GRPC_LIBRARY_DIRS
++        ${GRPCPP_LIBRARY_DIRS}
++        ${PROTOBUF_LIBRARY_DIRS})
++    set(MFW_GRPC_LIBRARIES
+         ${GRPCPP_LIBRARIES}
+-        ${GRPC_LIBRARIES}
+-        ${PROTOBUF_LIBRARIES}
+-)
++        ${PROTOBUF_LIBRARIES})
++endif()
++
++target_link_directories(cuprate_grpc_stream PUBLIC ${MFW_GRPC_LIBRARY_DIRS})
++target_link_libraries(cuprate_grpc_stream PUBLIC ${MFW_GRPC_LIBRARIES})
+ 
+ # Suppress noisy warnings in protobuf-generated code under our strict flags.
+ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

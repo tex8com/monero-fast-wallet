@@ -1,19 +1,103 @@
 #include "WalletEngine.h"
 
+#if defined(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE) && \
+    TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE
+#include "DesktopLedgerBle.h"
+#endif
+
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <limits>
+#include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace {
+
+void initializeLedgerTransportForProof() {
+#if defined(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE) && \
+    TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE
+  // This both scans and installs the callback bridge before the Monero core
+  // opens a Ledger wallet.  The JSON contains availability/count/status only;
+  // CoreBluetooth identifiers and APDUs never leave the native transport.
+  std::cout << "ledger_ble_transport_status="
+            << tex8::desktop::ledgerBleTransportStatus() << "\n";
+#else
+  std::cout << "ledger_ble_transport_status=not-compiled\n";
+#endif
+}
+
+const char* defaultLedgerDeviceName() {
+#if defined(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE) && \
+    TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE
+  // The upstream Ledger device selects the callback transport only for the
+  // descriptor suffix `:ble`.  USB remains explicitly selectable by passing
+  // `Ledger`; macOS proof commands default to the local BLE transport.
+  return "Ledger:ble";
+#else
+  return "Ledger";
+#endif
+}
+
+// Keep benchmark evidence actionable without ever retaining an exception
+// string: core and platform errors may contain local paths or device details.
+std::string classifyLedgerKeyImageFailure(const std::exception& error) {
+  const std::string message(error.what());
+  if (message.find("Unable to connect to Ledger") != std::string::npos ||
+      message.find("Ledger Bluetooth") != std::string::npos) {
+    return "ledger-connection";
+  }
+  if (message.find("cold ki sync protocol") != std::string::npos ||
+      message.find("cold key image") != std::string::npos) {
+    return "ledger-key-image-protocol";
+  }
+  if (message.find("no connection to daemon") != std::string::npos ||
+      message.find("daemon") != std::string::npos) {
+    return "daemon-rpc";
+  }
+  if (message.find("view-only destination") != std::string::npos ||
+      message.find("hardware wallet") != std::string::npos) {
+    return "wallet-role";
+  }
+  return "unclassified";
+}
+
+// This is deliberately narrower than the public failure class. It identifies
+// the failing control-flow boundary without retaining error.what(), which may
+// contain a filesystem path or Bluetooth device detail.
+std::string classifyLedgerKeyImageFailureStage(const std::exception& error) {
+  const std::string message(error.what());
+  if (message.find("ledgerPostScanControlPlane.init") != std::string::npos) {
+    return "view-control-plane-init";
+  }
+  if (message.find("ledgerPostScanControlPlane.connectToDaemon") !=
+      std::string::npos) {
+    return "view-control-plane-connect";
+  }
+  if (message.find("syncLedgerKeyImagesToViewWallet.source") !=
+      std::string::npos) {
+    return "hardware-key-image-core";
+  }
+  if (message.find("syncLedgerKeyImagesToViewWallet.destination") !=
+      std::string::npos) {
+    return "view-key-image-import";
+  }
+  return "unclassified";
+}
 
 void printUsage(const char* binary) {
   std::cout
@@ -31,6 +115,9 @@ void printUsage(const char* binary) {
       << "  " << binary
       << " address <mainnet|testnet|stagenet> <wallet-path>"
          " <password|@file>\n"
+      << "  " << binary
+      << " benchmark-address-generation <mainnet|testnet|stagenet> <workdir>"
+         " <password|@file> [wallet-rounds] [subaddress-rounds]\n"
       << "  " << binary
       << " create-stagenet-offline <wallet-path> <password>\n"
       << "  " << binary
@@ -82,7 +169,28 @@ void printUsage(const char* binary) {
          " [refresh-seconds]\n"
       << "  " << binary
       << " ledger-probe <mainnet|testnet|stagenet> <wallet-path>"
-         " <password|@file> [device-name]\n";
+         " <password|@file> [device-name; macOS default Ledger:ble]\n";
+  std::cout
+      << "  " << binary
+      << " ledger-create-view-wallet <mainnet|testnet|stagenet>"
+         " <hardware-wallet-path> <hardware-password|@file>"
+         " <view-wallet-path> <view-password|@file> <restore-height>"
+         " [device-name; macOS default Ledger:ble] [account-index; default 0]\n";
+  std::cout
+      << "  " << binary
+      << " ledger-key-image-benchmark <mainnet|testnet|stagenet>"
+         " <hardware-wallet-path> <hardware-password|@file>"
+         " <view-wallet-path> <view-password|@file>"
+         " <daemon-host:port> <grpc-host:port|-> [max-sync-seconds]"
+         " [observer-wallet-path observer-password|@file]\n";
+  std::cout
+      << "  " << binary
+      << " inspect-view-key-images <mainnet|testnet|stagenet>"
+         " <view-wallet-path> <view-password|@file>\n";
+  std::cout
+      << "  " << binary
+      << " ledger-view-wallet-reopen-check <mainnet|testnet|stagenet>"
+         " <view-wallet-path> <view-password|@file>\n";
 }
 
 tex8::wallet::NetworkType parseNetwork(const std::string& value) {
@@ -129,6 +237,34 @@ uint64_t parseSeconds(const std::string& value) {
           "seconds must be an integer value");
     }
     result = result * 10 + static_cast<uint64_t>(ch - '0');
+  }
+  return result;
+}
+
+size_t parseBenchmarkCount(
+    const std::string& value,
+    const std::string& label,
+    size_t maximum) {
+  if (value.empty()) {
+    throw tex8::wallet::WalletEngineError(label + " must not be empty");
+  }
+
+  size_t result = 0;
+  for (const char ch : value) {
+    if (ch < '0' || ch > '9') {
+      throw tex8::wallet::WalletEngineError(
+          label + " must be a positive integer");
+    }
+    const size_t digit = static_cast<size_t>(ch - '0');
+    if (result > (maximum - digit) / 10) {
+      throw tex8::wallet::WalletEngineError(
+          label + " exceeds the safe testbench limit");
+    }
+    result = result * 10 + digit;
+  }
+  if (result == 0 || result > maximum) {
+    throw tex8::wallet::WalletEngineError(
+        label + " must be between 1 and " + std::to_string(maximum));
   }
   return result;
 }
@@ -227,6 +363,19 @@ void requireRealSendOptIn() {
   }
 }
 
+bool environmentEnabled(const char* name) {
+  const char* value = std::getenv(name);
+  return value != nullptr && std::string(value) == "1";
+}
+
+void requireLedgerKeyImageBenchmarkOptIn() {
+  if (!environmentEnabled("TESTBENCH_ALLOW_LEDGER_KEY_IMAGE_MUTATION")) {
+    throw tex8::wallet::WalletEngineError(
+        "Ledger key-image benchmark mutates its encrypted view-wallet copy; "
+        "set TESTBENCH_ALLOW_LEDGER_KEY_IMAGE_MUTATION=1 only for isolated test data");
+  }
+}
+
 void requireLinked() {
   if (!tex8::wallet::WalletEngine::linkedWithMonero()) {
     throw tex8::wallet::WalletEngineError(
@@ -266,13 +415,273 @@ void applyNode(
   }
 }
 
+uint64_t nonnegativeDelta(uint64_t after, uint64_t before) {
+  return after >= before ? after - before : 0;
+}
+
+// This state is intentionally compared only in memory.  A persisted Ledger
+// view-wallet can contain transaction history and key images; neither must be
+// written to benchmark output merely to prove that a close/reopen retained it.
+struct ViewWalletDurableState {
+  uint64_t balanceAtomic{0};
+  uint64_t unlockedBalanceAtomic{0};
+  uint64_t walletHeight{0};
+  uint64_t daemonHeight{0};
+  uint64_t daemonTargetHeight{0};
+  uint64_t refreshFromHeight{0};
+  bool synchronized{false};
+  std::vector<std::string> keyImages;
+  std::vector<tex8::wallet::WalletTransaction> transactions;
+};
+
+bool sameTransfer(
+    const tex8::wallet::WalletTransactionTransfer& left,
+    const tex8::wallet::WalletTransactionTransfer& right) {
+  return left.amountAtomic == right.amountAtomic && left.address == right.address;
+}
+
+bool sameTransaction(
+    const tex8::wallet::WalletTransaction& left,
+    const tex8::wallet::WalletTransaction& right) {
+  if (left.hash != right.hash || left.paymentId != right.paymentId ||
+      left.description != right.description || left.label != right.label ||
+      left.direction != right.direction || left.pending != right.pending ||
+      left.failed != right.failed || left.coinbase != right.coinbase ||
+      left.amountAtomic != right.amountAtomic || left.feeAtomic != right.feeAtomic ||
+      left.blockHeight != right.blockHeight ||
+      left.confirmations != right.confirmations ||
+      left.unlockTime != right.unlockTime || left.timestamp != right.timestamp ||
+      left.subaddrAccount != right.subaddrAccount ||
+      left.subaddrIndices != right.subaddrIndices ||
+      left.transfers.size() != right.transfers.size()) {
+    return false;
+  }
+  for (size_t index = 0; index < left.transfers.size(); ++index) {
+    if (!sameTransfer(left.transfers[index], right.transfers[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool sameDurableState(
+    const ViewWalletDurableState& left,
+    const ViewWalletDurableState& right) {
+  if (left.balanceAtomic != right.balanceAtomic ||
+      left.unlockedBalanceAtomic != right.unlockedBalanceAtomic ||
+      left.walletHeight != right.walletHeight ||
+      left.daemonHeight != right.daemonHeight ||
+      left.daemonTargetHeight != right.daemonTargetHeight ||
+      left.refreshFromHeight != right.refreshFromHeight ||
+      left.synchronized != right.synchronized ||
+      left.keyImages != right.keyImages ||
+      left.transactions.size() != right.transactions.size()) {
+    return false;
+  }
+  for (size_t index = 0; index < left.transactions.size(); ++index) {
+    if (!sameTransaction(left.transactions[index], right.transactions[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string ratePerSecond(uint64_t count, uint64_t elapsedMilliseconds) {
+  std::ostringstream value;
+  value << std::fixed << std::setprecision(6);
+  if (elapsedMilliseconds == 0) {
+    value << 0.0;
+  } else {
+    value << static_cast<long double>(count) * 1000.0L /
+        static_cast<long double>(elapsedMilliseconds);
+  }
+  return value.str();
+}
+
+std::string mebibytesPerSecond(
+    uint64_t bytes,
+    uint64_t elapsedMilliseconds) {
+  std::ostringstream value;
+  value << std::fixed << std::setprecision(6);
+  if (elapsedMilliseconds == 0) {
+    value << 0.0;
+  } else {
+    value << static_cast<long double>(bytes) * 1000.0L /
+        (1024.0L * 1024.0L * static_cast<long double>(elapsedMilliseconds));
+  }
+  return value.str();
+}
+
+struct TimedLedgerKeyImageResult {
+  tex8::wallet::LedgerKeyImageSyncResult result;
+  uint64_t callWallMs{0};
+};
+
+struct FunctionCallTiming {
+  size_t sequence{0};
+  std::string function;
+  size_t invocation{0};
+  uint64_t elapsedNanoseconds{0};
+};
+
+std::string milliseconds(uint64_t nanoseconds) {
+  std::ostringstream value;
+  value << std::fixed << std::setprecision(6)
+        << static_cast<long double>(nanoseconds) / 1000000.0L;
+  return value.str();
+}
+
+class FunctionCallTimings {
+ public:
+  void record(
+      const std::string& function,
+      size_t invocation,
+      uint64_t elapsedNanoseconds) {
+    samples_.push_back(FunctionCallTiming{
+        samples_.size() + 1,
+        function,
+        invocation,
+        elapsedNanoseconds});
+  }
+
+  template<typename Function>
+  decltype(auto) measure(
+      const std::string& function,
+      size_t invocation,
+      Function&& operation) {
+    const auto started = std::chrono::steady_clock::now();
+    if constexpr (std::is_void_v<std::invoke_result_t<Function>>) {
+      std::forward<Function>(operation)();
+      record(function, invocation, elapsedSince(started));
+      return;
+    } else {
+      auto result = std::forward<Function>(operation)();
+      record(function, invocation, elapsedSince(started));
+      return result;
+    }
+  }
+
+  void print() const {
+    std::map<std::string, std::vector<uint64_t>> grouped;
+    for (const auto& sample : samples_) {
+      std::cout << "function_call_ms"
+                << " sequence=" << sample.sequence
+                << " function=" << sample.function
+                << " invocation=" << sample.invocation
+                << " elapsed_ms=" << milliseconds(sample.elapsedNanoseconds)
+                << "\n";
+      grouped[sample.function].push_back(sample.elapsedNanoseconds);
+    }
+
+    for (auto& [function, durations] : grouped) {
+      std::sort(durations.begin(), durations.end());
+      uint64_t total = 0;
+      for (const auto duration : durations) {
+        total += duration;
+      }
+      const long double median = durations.size() % 2 == 0
+          ? (static_cast<long double>(durations[durations.size() / 2 - 1]) +
+             static_cast<long double>(durations[durations.size() / 2])) /
+              2.0L
+          : static_cast<long double>(durations[durations.size() / 2]);
+      const size_t p95Index =
+          (durations.size() * 95 + 99) / 100 - 1;
+      std::cout << "function_summary_ms"
+                << " function=" << function
+                << " count=" << durations.size()
+                << " min_ms=" << milliseconds(durations.front())
+                << " median_ms="
+                << milliseconds(static_cast<uint64_t>(median))
+                << " p95_ms=" << milliseconds(durations[p95Index])
+                << " max_ms=" << milliseconds(durations.back())
+                << " mean_ms="
+                << milliseconds(total / durations.size())
+                << " total_ms=" << milliseconds(total)
+                << "\n";
+    }
+  }
+
+  std::string p95Bottleneck(
+      const std::vector<std::string>& functions) const {
+    std::string bottleneck;
+    uint64_t slowest = 0;
+    for (const auto& function : functions) {
+      auto durations = durationsFor(function);
+      if (durations.empty()) {
+        continue;
+      }
+      std::sort(durations.begin(), durations.end());
+      const size_t p95Index = (durations.size() * 95 + 99) / 100 - 1;
+      if (bottleneck.empty() || durations[p95Index] > slowest) {
+        bottleneck = function;
+        slowest = durations[p95Index];
+      }
+    }
+    return bottleneck;
+  }
+
+  uint64_t totalNanoseconds(const std::string& function) const {
+    uint64_t total = 0;
+    for (const auto& sample : samples_) {
+      if (sample.function == function) {
+        total += sample.elapsedNanoseconds;
+      }
+    }
+    return total;
+  }
+
+ private:
+  static uint64_t elapsedSince(
+      const std::chrono::steady_clock::time_point& started) {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started).count());
+  }
+
+  std::vector<uint64_t> durationsFor(const std::string& function) const {
+    std::vector<uint64_t> durations;
+    for (const auto& sample : samples_) {
+      if (sample.function == function) {
+        durations.push_back(sample.elapsedNanoseconds);
+      }
+    }
+    return durations;
+  }
+
+  std::vector<FunctionCallTiming> samples_;
+};
+
+void requireBenchmarkWalletPathAvailable(const std::string& path) {
+  for (const auto* suffix : {"", ".keys", ".address.txt"}) {
+    if (std::filesystem::exists(path + suffix)) {
+      throw tex8::wallet::WalletEngineError(
+          "address benchmark wallet path already exists");
+    }
+  }
+}
+
+void removeBenchmarkWalletFiles(const std::string& path) {
+  for (const auto* suffix : {"", ".keys", ".address.txt"}) {
+    std::error_code error;
+    std::filesystem::remove(path + suffix, error);
+    if (error) {
+      throw tex8::wallet::WalletEngineError(
+          "address benchmark could not remove a generated wallet file");
+    }
+  }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
   using namespace tex8::wallet;
 
   try {
+    const auto engineStarted = std::chrono::steady_clock::now();
     WalletEngine engine;
+    const auto engineConstructionNanoseconds = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - engineStarted).count());
 
     std::cout << "tex8 monero wallet bridge\n";
     std::cout << "linked_with_monero="
@@ -284,6 +693,163 @@ int main(int argc, char** argv) {
     }
 
     const std::string command = argv[1];
+    if (command == "benchmark-address-generation") {
+      if (argc < 5 || argc > 7) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+      const auto network = parseNetwork(argv[2]);
+      const std::string workdir = argv[3];
+      std::string password = resolveSecretArgument(argv[4]);
+      const size_t walletRounds = argc >= 6
+          ? parseBenchmarkCount(argv[5], "wallet-rounds", 20)
+          : 5;
+      const size_t subaddressRounds = argc >= 7
+          ? parseBenchmarkCount(argv[6], "subaddress-rounds", 10000)
+          : 64;
+      std::filesystem::create_directories(workdir);
+      const auto workdirStatus = std::filesystem::symlink_status(workdir);
+      if (!std::filesystem::is_directory(workdirStatus) ||
+          std::filesystem::is_symlink(workdirStatus)) {
+        throw WalletEngineError(
+            "address benchmark workdir must be a non-symlink directory");
+      }
+
+      FunctionCallTimings timings;
+      timings.record(
+          "WalletEngine.constructor",
+          1,
+          engineConstructionNanoseconds);
+      std::set<std::string> uniqueAddresses;
+      WalletId activeWalletId;
+      std::string activeWalletPath;
+
+      std::cout << "benchmark_mode=address-generation\n";
+      std::cout << "benchmark_network=" << networkName(network) << "\n";
+      std::cout << "benchmark_wallet_rounds=" << walletRounds << "\n";
+      std::cout << "benchmark_subaddress_rounds=" << subaddressRounds << "\n";
+      std::cout << "benchmark_time_unit=milliseconds\n";
+      std::cout << "benchmark_primary_path="
+                   "createWallet_includes_entropy_keys_kdf_and_initial_disk_write\n";
+      std::cout << "benchmark_private_values_logged=false\n";
+
+      for (size_t round = 1; round <= walletRounds; ++round) {
+        const std::string walletPath =
+            childPath(workdir, "primary-" + std::to_string(round));
+        requireBenchmarkWalletPathAvailable(walletPath);
+        CreateWalletRequest request;
+        request.path = walletPath;
+        request.password = password;
+        request.network = network;
+        const WalletId walletId = timings.measure(
+            "WalletEngine.createWallet",
+            round,
+            [&]() { return engine.createWallet(request); });
+        const std::string address = timings.measure(
+            "WalletEngine.getAddress.primary",
+            round,
+            [&]() { return engine.getAddress(walletId, 0, 0); });
+        const std::string validated = timings.measure(
+            "WalletEngine.validateRecipientAddress.primary",
+            round,
+            [&]() { return engine.validateRecipientAddress(address, network); });
+        if (address.empty() || validated != address ||
+            !uniqueAddresses.insert(address).second) {
+          throw WalletEngineError(
+              "primary address benchmark correctness check failed");
+        }
+
+        if (round == walletRounds) {
+          activeWalletId = walletId;
+          activeWalletPath = walletPath;
+        } else {
+          timings.measure(
+              "WalletEngine.closeWallet.noStore",
+              round,
+              [&]() { engine.closeWallet(walletId, false); });
+          removeBenchmarkWalletFiles(walletPath);
+        }
+      }
+
+      for (size_t round = 1; round <= subaddressRounds; ++round) {
+        const auto generated = timings.measure(
+            "WalletEngine.createSubaddress",
+            round,
+            [&]() {
+              return engine.createSubaddress(
+                  activeWalletId,
+                  0,
+                  "Address benchmark " + std::to_string(round));
+            });
+        if (generated.accountIndex != 0 || generated.addressIndex != round ||
+            generated.address.empty() ||
+            !uniqueAddresses.insert(generated.address).second) {
+          throw WalletEngineError(
+              "subaddress benchmark correctness check failed");
+        }
+        const std::string loaded = timings.measure(
+            "WalletEngine.getAddress.subaddress",
+            round,
+            [&]() {
+              return engine.getAddress(
+                  activeWalletId,
+                  generated.accountIndex,
+                  generated.addressIndex);
+            });
+        const std::string validated = timings.measure(
+            "WalletEngine.validateRecipientAddress.subaddress",
+            round,
+            [&]() { return engine.validateRecipientAddress(loaded, network); });
+        if (loaded != generated.address || validated != generated.address) {
+          throw WalletEngineError(
+              "subaddress lookup benchmark correctness check failed");
+        }
+      }
+
+      timings.measure(
+          "WalletEngine.closeWallet.noStore",
+          walletRounds,
+          [&]() { engine.closeWallet(activeWalletId, false); });
+      removeBenchmarkWalletFiles(activeWalletPath);
+      secureClear(password);
+
+      timings.print();
+      const auto allBottleneck = timings.p95Bottleneck({
+          "WalletEngine.constructor",
+          "WalletEngine.createWallet",
+          "WalletEngine.getAddress.primary",
+          "WalletEngine.validateRecipientAddress.primary",
+          "WalletEngine.createSubaddress",
+          "WalletEngine.getAddress.subaddress",
+          "WalletEngine.validateRecipientAddress.subaddress",
+          "WalletEngine.closeWallet.noStore"});
+      const auto steadyBottleneck = timings.p95Bottleneck({
+          "WalletEngine.createSubaddress",
+          "WalletEngine.getAddress.subaddress",
+          "WalletEngine.validateRecipientAddress.subaddress"});
+      const uint64_t subaddressNanoseconds =
+          timings.totalNanoseconds("WalletEngine.createSubaddress");
+      const long double subaddressesPerSecond =
+          subaddressNanoseconds == 0
+          ? 0.0L
+          : static_cast<long double>(subaddressRounds) * 1000000000.0L /
+              static_cast<long double>(subaddressNanoseconds);
+      std::cout << "benchmark_bottleneck_p95_all=" << allBottleneck << "\n";
+      std::cout << "benchmark_bottleneck_p95_steady_state="
+                << steadyBottleneck << "\n";
+      std::cout << "benchmark_subaddress_generation_total_ms="
+                << milliseconds(subaddressNanoseconds) << "\n";
+      std::cout << "benchmark_subaddresses_per_second="
+                << std::fixed << std::setprecision(2)
+                << subaddressesPerSecond << "\n";
+      std::cout << "benchmark_unique_address_count="
+                << uniqueAddresses.size() << "\n";
+      std::cout << "benchmark_result=pass\n";
+      return 0;
+    }
+
     if (command == "create-stagenet-offline") {
       if (argc != 4) {
         printUsage(argv[0]);
@@ -450,6 +1016,7 @@ int main(int argc, char** argv) {
       }
       engine.stopRefresh(walletId);
       finalSnapshot = engine.snapshot(walletId);
+      const auto networkStatus = engine.networkSyncStatus(request.network);
       const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started).count();
 
@@ -472,6 +1039,17 @@ int main(int argc, char** argv) {
       std::cout << "benchmark_synchronized=" << (synchronized ? "true" : "false")
                 << "\n";
       std::cout << "benchmark_timeout_seconds=" << maxSeconds << "\n";
+      std::cout << "benchmark_network_state=" << networkStatus.state << "\n";
+      std::cout << "benchmark_network_phase=" << networkStatus.phase << "\n";
+      std::cout << "benchmark_network_failures="
+                << networkStatus.consecutiveFailures << "\n";
+      std::cout << "benchmark_network_error=" << networkStatus.lastError << "\n";
+      std::cout << "benchmark_network_fetched_batches="
+                << networkStatus.fetchedBatches << "\n";
+      std::cout << "benchmark_network_fetched_blocks="
+                << networkStatus.fetchedBlocks << "\n";
+      std::cout << "benchmark_network_payload_bytes="
+                << networkStatus.payloadBytesReceived << "\n";
 
       engine.closeWallet(walletId);
       return synchronized ? 0 : 1;
@@ -523,6 +1101,21 @@ int main(int argc, char** argv) {
         throw WalletEngineError(
             "expected 25-word Monero seed, got " +
             std::to_string(seedWords));
+      }
+
+      const auto savingsAddress =
+          engine.createSubaddress(walletA, 0, "Savings");
+      const auto invoicesAddress =
+          engine.createSubaddress(walletA, 0, "Invoices");
+      const auto initialSubaddresses = engine.listSubaddresses(walletA, 0);
+      if (initialSubaddresses.size() != 3 ||
+          initialSubaddresses[0].address != addressA ||
+          initialSubaddresses[1].address != savingsAddress.address ||
+          initialSubaddresses[1].label != "Savings" ||
+          initialSubaddresses[2].address != invoicesAddress.address ||
+          initialSubaddresses[2].label != "Invoices") {
+        throw WalletEngineError(
+            "native subaddress enumeration did not match created addresses");
       }
 
       CreateFastReceiveIdentityRequest identityRequest;
@@ -618,6 +1211,10 @@ int main(int argc, char** argv) {
         throw WalletEngineError(
             "new offline wallet unexpectedly contains owned outputs");
       }
+      if (engine.snapshot(walletA).pendingOutputKeyImageCount != 0) {
+        throw WalletEngineError(
+            "new offline wallet unexpectedly has pending Ledger key-image work");
+      }
       if (engine.reconcileOutputKeyImages(walletA, {}, {}, 0) != 0) {
         throw WalletEngineError(
             "empty key-image reconciliation unexpectedly changed wallet state");
@@ -634,6 +1231,32 @@ int main(int argc, char** argv) {
       }
 
       engine.closeWallet(walletA);
+
+      OpenWalletRequest reopenRequest;
+      reopenRequest.path = createRequest.path;
+      reopenRequest.password = password;
+      reopenRequest.network = network;
+      const WalletId reopenedWalletA = engine.openWallet(reopenRequest);
+      const auto persistedSubaddresses =
+          engine.listSubaddresses(reopenedWalletA, 0);
+      if (persistedSubaddresses.size() != initialSubaddresses.size()) {
+        throw WalletEngineError(
+            "native subaddress count changed after wallet reopen");
+      }
+      for (size_t index = 0; index < initialSubaddresses.size(); ++index) {
+        if (persistedSubaddresses[index].accountIndex !=
+                initialSubaddresses[index].accountIndex ||
+            persistedSubaddresses[index].addressIndex !=
+                initialSubaddresses[index].addressIndex ||
+            persistedSubaddresses[index].address !=
+                initialSubaddresses[index].address ||
+            persistedSubaddresses[index].label !=
+                initialSubaddresses[index].label) {
+          throw WalletEngineError(
+              "native subaddress metadata changed after wallet reopen");
+        }
+      }
+      engine.closeWallet(reopenedWalletA);
 
       RestoreWalletRequest restoreRequest;
       restoreRequest.path = childPath(workdir, "software-b-restore");
@@ -652,6 +1275,8 @@ int main(int argc, char** argv) {
       std::cout << "seed_word_count=" << seedWords << "\n";
       std::cout << "main_address=" << addressA << "\n";
       std::cout << "restored_address_matches=true\n";
+      std::cout << "subaddress_count=" << persistedSubaddresses.size() << "\n";
+      std::cout << "subaddresses_persist_after_reopen=true\n";
       std::cout << "fast_receive_identity_id=" << identity.id << "\n";
       std::cout << "fast_receive_address=" << identity.address << "\n";
       std::cout << "fast_receive_scanner_status=" << identity.scannerStatus
@@ -1105,9 +1730,34 @@ int main(int argc, char** argv) {
       applyNode(engine, walletId, daemon, grpc);
 
       if (refreshSeconds > 0) {
+        const auto initialSnapshot = engine.snapshot(walletId);
+        const auto started = std::chrono::steady_clock::now();
+        const auto deadline = started + std::chrono::seconds(refreshSeconds);
+        bool synchronized = false;
         engine.startRefresh(walletId);
-        std::this_thread::sleep_for(std::chrono::seconds(refreshSeconds));
+        while (std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          const auto snapshot = engine.snapshot(walletId);
+          if (snapshot.synchronized &&
+              snapshot.walletHeight >= snapshot.daemonHeight) {
+            synchronized = true;
+            break;
+          }
+        }
         engine.stopRefresh(walletId);
+        const auto finalSnapshot = engine.snapshot(walletId);
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        // These counters describe the exact core refresh that produced the
+        // listed transactions.  They remain local to the private test run.
+        std::cout << "refresh_synchronized=" << (synchronized ? "true" : "false") << "\n";
+        std::cout << "refresh_elapsed_ms=" << elapsedMs << "\n";
+        std::cout << "refresh_initial_wallet_height=" << initialSnapshot.walletHeight << "\n";
+        std::cout << "refresh_final_wallet_height=" << finalSnapshot.walletHeight << "\n";
+        std::cout << "refresh_daemon_height=" << finalSnapshot.daemonHeight << "\n";
+        std::cout << "refresh_http_bytes_received="
+                  << (finalSnapshot.daemonBytesReceived - initialSnapshot.daemonBytesReceived)
+                  << "\n";
       }
 
       const auto transactions =
@@ -1124,11 +1774,488 @@ int main(int argc, char** argv) {
                   << "\n";
         std::cout << "confirmations=" << transaction.confirmations << "\n";
         std::cout << "block_height=" << transaction.blockHeight << "\n";
+        std::cout << "account_index=" << transaction.subaddrAccount << "\n";
         std::cout << "---\n";
       }
 
       engine.closeWallet(walletId);
       return 0;
+    }
+
+    if (command == "inspect-view-key-images") {
+      if (argc != 5) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+      OpenWalletRequest request;
+      request.network = parseNetwork(argv[2]);
+      request.path = argv[3];
+      request.password = resolveSecretArgument(argv[4]);
+      const WalletId walletId = engine.openWallet(request);
+      const auto snapshot = engine.snapshot(walletId);
+      const size_t keyImageCount = engine.getOwnedOutputKeyImages(walletId).size();
+      engine.closeWallet(walletId);
+
+      // This is deliberately a local, privacy-safe inspection command: it
+      // does not connect to a daemon or Ledger and does not print an address,
+      // balance, output, transaction, key image, or key material.
+      std::cout << "view_key_image_count=" << keyImageCount << "\n";
+      std::cout << "view_wallet_height=" << snapshot.walletHeight << "\n";
+      std::cout << "view_wallet_synchronized="
+                << (snapshot.synchronized ? "true" : "false") << "\n";
+      return 0;
+    }
+
+    if (command == "ledger-view-wallet-reopen-check") {
+      if (argc != 5) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+      const auto network = parseNetwork(argv[2]);
+      const std::string path = argv[3];
+      const std::string password = resolveSecretArgument(argv[4]);
+
+      const auto captureDurableState = [&engine](const WalletId& walletId) {
+        ViewWalletDurableState state;
+        const auto snapshot = engine.snapshot(walletId);
+        state.balanceAtomic = snapshot.balanceAtomic;
+        state.unlockedBalanceAtomic = snapshot.unlockedBalanceAtomic;
+        state.walletHeight = snapshot.walletHeight;
+        state.daemonHeight = snapshot.daemonHeight;
+        state.daemonTargetHeight = snapshot.daemonTargetHeight;
+        state.refreshFromHeight = snapshot.refreshFromHeight;
+        state.synchronized = snapshot.synchronized;
+        state.keyImages = engine.getOwnedOutputKeyImages(walletId);
+        std::sort(state.keyImages.begin(), state.keyImages.end());
+        state.transactions = engine.getTransactions(walletId, 0);
+        return state;
+      };
+
+      // This deliberately has no daemon or Ledger setup.  The check proves
+      // that a close/open of the encrypted companion rehydrates the locally
+      // committed state rather than triggering a block rescan or hardware I/O.
+      OpenWalletRequest firstRequest;
+      firstRequest.network = network;
+      firstRequest.path = path;
+      firstRequest.password = password;
+      const auto firstStartedAt = std::chrono::steady_clock::now();
+      const WalletId firstWalletId = engine.openWallet(firstRequest);
+      const auto before = captureDurableState(firstWalletId);
+      engine.closeWallet(firstWalletId, false);
+      const uint64_t firstOpenMs = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - firstStartedAt)
+              .count());
+
+      OpenWalletRequest secondRequest;
+      secondRequest.network = network;
+      secondRequest.path = path;
+      secondRequest.password = password;
+      const auto secondStartedAt = std::chrono::steady_clock::now();
+      const WalletId secondWalletId = engine.openWallet(secondRequest);
+      const auto after = captureDurableState(secondWalletId);
+      engine.closeWallet(secondWalletId, false);
+      const uint64_t secondOpenMs = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - secondStartedAt)
+              .count());
+
+      const bool durable = sameDurableState(before, after);
+      // Counters and a boolean only: no address, balance, transaction, key
+      // image, seed, private key or filesystem path appears in evidence.
+      std::cout << "ledger_view_reopen_schema=v1\n";
+      std::cout << "ledger_view_reopen_daemon_connected=false\n";
+      std::cout << "ledger_view_reopen_ledger_connected=false\n";
+      std::cout << "ledger_view_reopen_first_open_ms=" << firstOpenMs << "\n";
+      std::cout << "ledger_view_reopen_second_open_ms=" << secondOpenMs << "\n";
+      std::cout << "ledger_view_reopen_key_image_count="
+                << after.keyImages.size() << "\n";
+      std::cout << "ledger_view_reopen_transaction_count="
+                << after.transactions.size() << "\n";
+      std::cout << "ledger_view_reopen_state_preserved="
+                << (durable ? "true" : "false") << "\n";
+      std::cout << "ledger_view_reopen_result="
+                << (durable ? "pass" : "fail") << "\n";
+      return durable ? 0 : 1;
+    }
+
+    if (command == "ledger-key-image-benchmark") {
+      if (argc != 9 && argc != 10 && argc != 12) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+      requireLedgerKeyImageBenchmarkOptIn();
+      initializeLedgerTransportForProof();
+
+      const auto network = parseNetwork(argv[2]);
+      const std::string daemonEndpoint = argv[7];
+      const std::string grpcEndpoint = argv[8];
+      const uint64_t maxSyncSeconds = argc >= 10
+          ? parseSeconds(argv[9])
+          : 900;
+      const bool observerConfigured = argc == 12;
+      if (maxSyncSeconds == 0) {
+        throw WalletEngineError("max-sync-seconds must be greater than zero");
+      }
+      if (daemonEndpoint.empty() || daemonEndpoint == "-") {
+        throw WalletEngineError(
+            "Ledger key-image benchmark requires a trusted daemon endpoint");
+      }
+
+      const bool daemonTls =
+          environmentEnabled("TESTBENCH_LEDGER_DAEMON_TLS");
+      if (!daemonTls &&
+          !environmentEnabled("TESTBENCH_ALLOW_INSECURE_TRUSTED_DAEMON")) {
+        throw WalletEngineError(
+            "refusing unencrypted spent-status RPC; set "
+            "TESTBENCH_LEDGER_DAEMON_TLS=1 or explicitly opt in to an isolated "
+            "insecure control run");
+      }
+
+      OpenWalletRequest hardwareRequest;
+      hardwareRequest.network = network;
+      hardwareRequest.path = argv[3];
+      hardwareRequest.password = resolveSecretArgument(argv[4]);
+      const WalletId hardwareWalletId = engine.openWallet(hardwareRequest);
+
+      OpenWalletRequest viewRequest;
+      viewRequest.network = network;
+      viewRequest.path = argv[5];
+      viewRequest.password = resolveSecretArgument(argv[6]);
+      const WalletId viewWalletId = engine.openWallet(viewRequest);
+
+      WalletId observerWalletId;
+      if (observerConfigured) {
+        OpenWalletRequest observerRequest;
+        observerRequest.network = network;
+        observerRequest.path = argv[10];
+        observerRequest.password = resolveSecretArgument(argv[11]);
+        observerWalletId = engine.openWallet(observerRequest);
+      }
+
+      DaemonConfig daemonConfig;
+      daemonConfig.address = daemonEndpoint;
+      daemonConfig.trusted = true;
+      daemonConfig.useSsl = daemonTls;
+      engine.configureNetworkSync(
+          network,
+          daemonConfig,
+          grpcEndpoint == "-" ? std::string() : grpcEndpoint);
+
+      const auto initialSnapshot = engine.snapshot(viewWalletId);
+      const auto initialNetwork = engine.networkSyncStatus(network);
+      const size_t keyImagesBefore =
+          engine.getOwnedOutputKeyImages(viewWalletId).size();
+      const uint64_t observerCursorInitial = observerConfigured
+          ? engine.walletSyncCursor(observerWalletId)
+          : 0;
+
+      engine.startRefresh(viewWalletId);
+      if (observerConfigured) {
+        engine.startRefresh(observerWalletId);
+      }
+
+      const auto syncStartedAt = std::chrono::steady_clock::now();
+      const auto syncDeadline =
+          syncStartedAt + std::chrono::seconds(maxSyncSeconds);
+      bool synchronized = false;
+      auto synchronizedSnapshot = initialSnapshot;
+      while (std::chrono::steady_clock::now() < syncDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        synchronizedSnapshot = engine.snapshot(viewWalletId);
+        if (synchronizedSnapshot.synchronized &&
+            synchronizedSnapshot.daemonHeight > 0 &&
+            synchronizedSnapshot.walletHeight >=
+                synchronizedSnapshot.daemonHeight) {
+          synchronized = true;
+          break;
+        }
+      }
+      const uint64_t syncElapsedMs = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - syncStartedAt)
+              .count());
+      const auto networkAfterSync = engine.networkSyncStatus(network);
+
+      std::cout << "benchmark_schema=ledger-key-image-v1\n";
+      std::cout << "benchmark_mode=ledger-key-image\n";
+      std::cout << "benchmark_network=" << networkName(network) << "\n";
+      std::cout << "benchmark_daemon_tls="
+                << (daemonTls ? "true" : "false") << "\n";
+      std::cout << "benchmark_grpc_enabled="
+                << (grpcEndpoint.empty() || grpcEndpoint == "-" ? "false" : "true")
+                << "\n";
+      std::cout << "benchmark_observer_configured="
+                << (observerConfigured ? "true" : "false") << "\n";
+      std::cout << "benchmark_sync_initial_height="
+                << initialSnapshot.walletHeight << "\n";
+      std::cout << "benchmark_sync_final_height="
+                << synchronizedSnapshot.walletHeight << "\n";
+      std::cout << "benchmark_sync_daemon_height="
+                << synchronizedSnapshot.daemonHeight << "\n";
+      std::cout << "benchmark_sync_elapsed_ms=" << syncElapsedMs << "\n";
+      // A persisted wallet can reopen with a conservative local height and
+      // then restore its checkpoint without fetching that whole historical
+      // interval again.  The snapshot-height delta would therefore turn a
+      // short cache/checkpoint recovery into millions of fictitious scanned
+      // blocks.  Network coordinator counters are the authoritative source
+      // for transport/scan throughput measurements.
+      const uint64_t synchronizedBlocks = nonnegativeDelta(
+          networkAfterSync.fetchedBlocks, initialNetwork.fetchedBlocks);
+      const uint64_t syncPayloadBytes = nonnegativeDelta(
+          networkAfterSync.payloadBytesReceived,
+          initialNetwork.payloadBytesReceived);
+      const uint64_t syncNetworkBytes = nonnegativeDelta(
+          networkAfterSync.networkBytesReceived,
+          initialNetwork.networkBytesReceived);
+      const uint64_t syncGrpcFramedBytes = nonnegativeDelta(
+          networkAfterSync.grpcFramedBytesReceived,
+          initialNetwork.grpcFramedBytesReceived);
+      const uint64_t syncFetchMs = nonnegativeDelta(
+          networkAfterSync.totalBlockFetchMs,
+          initialNetwork.totalBlockFetchMs);
+      const uint64_t syncClientScanMs = nonnegativeDelta(
+          networkAfterSync.totalWalletScanMs,
+          initialNetwork.totalWalletScanMs);
+      const uint64_t syncMempoolMs = nonnegativeDelta(
+          networkAfterSync.totalMempoolMs,
+          initialNetwork.totalMempoolMs);
+      const uint64_t syncCheckpointMs = nonnegativeDelta(
+          networkAfterSync.totalCheckpointMs,
+          initialNetwork.totalCheckpointMs);
+      // The Core's historical getBytesReceived counter belongs to legacy
+      // daemon HTTP.  It does not include StreamBlocks' gRPC/HTTP2 reads, so
+      // reporting it as gRPC network throughput would create a false, tiny
+      // value beside a multi-GiB payload.  Keep the raw diagnostic counter
+      // for source investigation, but fail closed until per-stream wire-byte
+      // instrumentation is available.
+      const bool syncNetworkWireBytesAvailable =
+          grpcEndpoint.empty() || grpcEndpoint == "-";
+      std::cout << "benchmark_sync_blocks=" << synchronizedBlocks << "\n";
+      std::cout << "benchmark_sync_blocks_per_second="
+                << ratePerSecond(synchronizedBlocks, syncElapsedMs) << "\n";
+      std::cout << "benchmark_sync_payload_bytes=" << syncPayloadBytes << "\n";
+      std::cout << "benchmark_sync_payload_mib_per_second="
+                << mebibytesPerSecond(syncPayloadBytes, syncElapsedMs) << "\n";
+      std::cout << "benchmark_sync_grpc_framed_bytes=" << syncGrpcFramedBytes << "\n";
+      std::cout << "benchmark_sync_grpc_framed_mib_per_second="
+                << mebibytesPerSecond(syncGrpcFramedBytes, syncElapsedMs) << "\n";
+      std::cout << "benchmark_sync_network_wire_bytes_available="
+                << (syncNetworkWireBytesAvailable ? "true" : "false") << "\n";
+      std::cout << "benchmark_sync_network_raw_bytes=" << syncNetworkBytes << "\n";
+      std::cout << "benchmark_sync_network_mib_per_second="
+                << (syncNetworkWireBytesAvailable
+                        ? mebibytesPerSecond(syncNetworkBytes, syncElapsedMs)
+                        : std::string("unavailable"))
+                << "\n";
+      std::cout << "benchmark_sync_block_fetch_ms=" << syncFetchMs << "\n";
+      std::cout << "benchmark_sync_client_scan_ms=" << syncClientScanMs << "\n";
+      std::cout << "benchmark_sync_mempool_ms=" << syncMempoolMs << "\n";
+      std::cout << "benchmark_sync_wallet_checkpoint_ms="
+                << syncCheckpointMs << "\n";
+      std::cout << "benchmark_server_db_time_available=false\n";
+      std::cout << "benchmark_server_db_time_source=correlated-cuprate-journal-required\n";
+      std::cout << "benchmark_sync_completed="
+                << (synchronized ? "true" : "false") << "\n";
+
+      if (!synchronized) {
+        engine.stopRefresh(viewWalletId);
+        if (observerConfigured) {
+          engine.stopRefresh(observerWalletId);
+        }
+        engine.closeWallet(viewWalletId);
+        engine.closeWallet(hardwareWalletId);
+        if (observerConfigured) {
+          engine.closeWallet(observerWalletId);
+        }
+        std::cout << "benchmark_key_image_completed=false\n";
+        std::cout << "benchmark_failure_reason=sync-timeout\n";
+        std::cout << "benchmark_result=fail\n";
+        return 1;
+      }
+
+      const auto networkBeforeKeyImages = engine.networkSyncStatus(network);
+      const uint64_t observerCursorBefore = observerConfigured
+          ? engine.walletSyncCursor(observerWalletId)
+          : 0;
+      auto keyImageFuture = std::async(
+          std::launch::async,
+          [&engine, &hardwareWalletId, &viewWalletId]() {
+            const auto startedAt = std::chrono::steady_clock::now();
+            TimedLedgerKeyImageResult timed;
+            timed.result = engine.syncLedgerKeyImagesToViewWallet(
+                hardwareWalletId,
+                viewWalletId);
+            timed.callWallMs = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - startedAt)
+                    .count());
+            return timed;
+          });
+
+      uint64_t coordinatorSamples = 0;
+      uint64_t maxDownloadedHeight = networkBeforeKeyImages.downloadedHeight;
+      uint64_t maxFetchedBlocks = networkBeforeKeyImages.fetchedBlocks;
+      while (keyImageFuture.wait_for(std::chrono::milliseconds(25)) !=
+             std::future_status::ready) {
+        const auto status = engine.networkSyncStatus(network);
+        ++coordinatorSamples;
+        maxDownloadedHeight = std::max(
+            maxDownloadedHeight,
+            status.downloadedHeight);
+        maxFetchedBlocks = std::max(maxFetchedBlocks, status.fetchedBlocks);
+      }
+
+      bool keyImageCompleted = false;
+      std::string keyImageFailureClass = "none";
+      std::string keyImageFailureStage = "none";
+      TimedLedgerKeyImageResult timedKeyImages;
+      TimedLedgerKeyImageResult timedSecondRun;
+      bool secondRunCompleted = false;
+      bool secondRunNoOp = false;
+      try {
+        timedKeyImages = keyImageFuture.get();
+        keyImageCompleted = true;
+        const auto secondRunStartedAt = std::chrono::steady_clock::now();
+        timedSecondRun.result = engine.syncLedgerKeyImagesToViewWallet(
+            hardwareWalletId,
+            viewWalletId);
+        timedSecondRun.callWallMs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - secondRunStartedAt)
+                .count());
+        secondRunCompleted = true;
+        secondRunNoOp =
+            timedSecondRun.result.pendingOutputCount == 0 &&
+            timedSecondRun.result.importedOutputCount == 0 &&
+            timedSecondRun.result.derivedOutputCount == 0 &&
+            timedSecondRun.result.spentStatusRpcDurationMs == 0 &&
+            timedSecondRun.result.outgoingRpcDurationMs == 0 &&
+            timedSecondRun.result.storeDurationMs == 0;
+      } catch (const std::exception& error) {
+        // Keep a stable, non-sensitive category rather than retaining a raw
+        // error that could carry a device label or local path.
+        keyImageFailureClass = classifyLedgerKeyImageFailure(error);
+        keyImageFailureStage = classifyLedgerKeyImageFailureStage(error);
+      }
+      const auto networkAfterKeyImages = engine.networkSyncStatus(network);
+      maxDownloadedHeight = std::max(
+          maxDownloadedHeight,
+          networkAfterKeyImages.downloadedHeight);
+      maxFetchedBlocks = std::max(
+          maxFetchedBlocks,
+          networkAfterKeyImages.fetchedBlocks);
+      const uint64_t observerCursorAfter = observerConfigured
+          ? engine.walletSyncCursor(observerWalletId)
+          : 0;
+      const size_t keyImagesAfter = keyImageCompleted
+          ? engine.getOwnedOutputKeyImages(viewWalletId).size()
+          : keyImagesBefore;
+
+      engine.stopRefresh(viewWalletId);
+      if (observerConfigured) {
+        engine.stopRefresh(observerWalletId);
+      }
+      engine.closeWallet(viewWalletId);
+      engine.closeWallet(hardwareWalletId);
+      if (observerConfigured) {
+        engine.closeWallet(observerWalletId);
+      }
+
+      std::cout << "benchmark_key_images_before=" << keyImagesBefore << "\n";
+      std::cout << "benchmark_key_images_after=" << keyImagesAfter << "\n";
+      std::cout << "benchmark_key_images_added="
+                << nonnegativeDelta(keyImagesAfter, keyImagesBefore) << "\n";
+      std::cout << "benchmark_key_image_completed="
+                << (keyImageCompleted ? "true" : "false") << "\n";
+      std::cout << "benchmark_coordinator_samples_during_key_images="
+                << coordinatorSamples << "\n";
+      std::cout << "benchmark_download_height_before_key_images="
+                << networkBeforeKeyImages.downloadedHeight << "\n";
+      std::cout << "benchmark_download_height_during_key_images_max="
+                << maxDownloadedHeight << "\n";
+      std::cout << "benchmark_download_blocks_during_key_images="
+                << nonnegativeDelta(
+                       maxDownloadedHeight,
+                       networkBeforeKeyImages.downloadedHeight)
+                << "\n";
+      std::cout << "benchmark_fetched_blocks_during_key_images="
+                << nonnegativeDelta(
+                       maxFetchedBlocks,
+                       networkBeforeKeyImages.fetchedBlocks)
+                << "\n";
+      std::cout << "benchmark_observer_initial_cursor="
+                << observerCursorInitial << "\n";
+      std::cout << "benchmark_observer_cursor_before_key_images="
+                << observerCursorBefore << "\n";
+      std::cout << "benchmark_observer_cursor_after_key_images="
+                << observerCursorAfter << "\n";
+      std::cout << "benchmark_observer_blocks_during_key_images="
+                << nonnegativeDelta(observerCursorAfter, observerCursorBefore)
+                << "\n";
+
+      if (keyImageCompleted) {
+        std::cout << "benchmark_key_image_outputs_processed="
+                  << timedKeyImages.result.verifiedOutputCount << "\n";
+        std::cout << "benchmark_key_image_pending_outputs="
+                  << timedKeyImages.result.pendingOutputCount << "\n";
+        std::cout << "benchmark_key_image_imported_outputs="
+                  << timedKeyImages.result.importedOutputCount << "\n";
+        std::cout << "benchmark_key_image_derived_outputs="
+                  << timedKeyImages.result.derivedOutputCount << "\n";
+        std::cout << "benchmark_key_image_derivation_ms="
+                  << timedKeyImages.result.derivationDurationMs << "\n";
+        std::cout << "benchmark_key_image_spent_status_rpc_ms="
+                  << timedKeyImages.result.spentStatusRpcDurationMs << "\n";
+        std::cout << "benchmark_key_image_outgoing_rpc_ms="
+                  << timedKeyImages.result.outgoingRpcDurationMs << "\n";
+        std::cout << "benchmark_key_image_state_update_ms="
+                  << timedKeyImages.result.stateUpdateDurationMs << "\n";
+        std::cout << "benchmark_key_image_verification_ms="
+                  << timedKeyImages.result.verificationDurationMs << "\n";
+        std::cout << "benchmark_key_image_store_ms="
+                  << timedKeyImages.result.storeDurationMs << "\n";
+        std::cout << "benchmark_key_image_total_ms="
+                  << timedKeyImages.result.totalDurationMs << "\n";
+        std::cout << "benchmark_key_image_call_wall_ms="
+                  << timedKeyImages.callWallMs << "\n";
+        std::cout << "benchmark_key_image_phase_outputs_per_second="
+                  << ratePerSecond(
+                         timedKeyImages.result.derivedOutputCount,
+                         timedKeyImages.result.derivationDurationMs)
+                  << "\n";
+        std::cout << "benchmark_key_image_spent_status_rpc_time_available=true\n";
+        std::cout << "benchmark_key_image_atomic_commit_available=true\n";
+        std::cout << "benchmark_key_image_incremental_pending_count_available=true\n";
+        std::cout << "benchmark_key_image_second_run_completed="
+                  << (secondRunCompleted ? "true" : "false") << "\n";
+        std::cout << "benchmark_key_image_second_run_noop="
+                  << (secondRunNoOp ? "true" : "false") << "\n";
+        std::cout << "benchmark_key_image_second_run_pending_outputs="
+                  << timedSecondRun.result.pendingOutputCount << "\n";
+        std::cout << "benchmark_key_image_second_run_derived_outputs="
+                  << timedSecondRun.result.derivedOutputCount << "\n";
+        std::cout << "benchmark_key_image_second_run_spent_status_rpc_ms="
+                  << timedSecondRun.result.spentStatusRpcDurationMs << "\n";
+        std::cout << "benchmark_key_image_second_run_total_ms="
+                  << timedSecondRun.result.totalDurationMs << "\n";
+      } else {
+        std::cout << "benchmark_failure_reason=key-image-operation-failed\n";
+        std::cout << "benchmark_key_image_failure_class="
+                  << keyImageFailureClass << "\n";
+        std::cout << "benchmark_key_image_failure_stage="
+                  << keyImageFailureStage << "\n";
+      }
+
+      std::cout << "benchmark_result="
+                << (keyImageCompleted && secondRunNoOp ? "pass" : "fail") << "\n";
+      return keyImageCompleted && secondRunNoOp ? 0 : 1;
     }
 
     if (command == "ledger-probe") {
@@ -1138,14 +2265,25 @@ int main(int argc, char** argv) {
       }
 
       requireLinked();
+      initializeLedgerTransportForProof();
 
       CreateWalletFromDeviceRequest request;
       request.network = parseNetwork(argv[2]);
       request.path = argv[3];
       request.password = resolveSecretArgument(argv[4]);
-      request.deviceName = argc >= 6 ? argv[5] : "Ledger";
+      request.deviceName = argc >= 6 ? argv[5] : defaultLedgerDeviceName();
 
-      const WalletId walletId = engine.createWalletFromDevice(request);
+      WalletId walletId;
+      try {
+        walletId = engine.createWalletFromDevice(request);
+      } catch (...) {
+#if defined(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE) && \
+    TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE
+        std::cerr << "ledger_ble_connection_status="
+                  << tex8::desktop::ledgerBleConnectionStatus() << "\n";
+#endif
+        throw;
+      }
       const auto status = engine.getHardwareWalletStatus(walletId);
       std::cout << "wallet_id=" << walletId << "\n";
       std::cout << "device_name=" << status.deviceName << "\n";
@@ -1158,6 +2296,85 @@ int main(int argc, char** argv) {
 
       engine.closeWallet(walletId);
       return status.connected ? 0 : 1;
+    }
+
+    if (command == "ledger-create-view-wallet") {
+      // Required arguments are command, network, hardware path/password,
+      // view path/password and restore height: eight argv entries including
+      // the executable. The BLE device descriptor and logical Ledger account
+      // index are optional as argv[8] and argv[9].  Each Monero account has
+      // its own primary address, so a full history comparison creates one
+      // isolated view wallet per official account.
+      if (argc < 8 || argc > 10) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+      initializeLedgerTransportForProof();
+      const auto network = parseNetwork(argv[2]);
+      const std::string hardwarePath = argv[3];
+      const std::string viewPath = argv[5];
+      const uint64_t restoreHeight = parseSeconds(argv[7]);
+      const uint64_t accountIndex = argc == 10 ? parseSeconds(argv[9]) : 0;
+      if (restoreHeight == 0) {
+        throw WalletEngineError("restore height must be greater than zero");
+      }
+      if (accountIndex > std::numeric_limits<uint32_t>::max()) {
+        throw WalletEngineError("account index is out of range");
+      }
+      requireBenchmarkWalletPathAvailable(hardwarePath);
+      requireBenchmarkWalletPathAvailable(viewPath);
+
+      WalletId hardwareWalletId;
+      WalletId viewWalletId;
+      try {
+        CreateWalletFromDeviceRequest hardwareRequest;
+        hardwareRequest.network = network;
+        hardwareRequest.path = hardwarePath;
+        hardwareRequest.password = resolveSecretArgument(argv[4]);
+        hardwareRequest.restoreHeight = restoreHeight;
+        hardwareRequest.deviceName = argc == 9 ? argv[8] : defaultLedgerDeviceName();
+        hardwareRequest.accountIndex = static_cast<uint32_t>(accountIndex);
+        hardwareWalletId = engine.createWalletFromDevice(hardwareRequest);
+
+        HardwareViewKeyExport viewKey =
+            engine.exportHardwarePrivateViewKey(hardwareWalletId);
+        if (viewKey.network != network || viewKey.address.empty() ||
+            viewKey.privateViewKey.empty()) {
+          throw WalletEngineError(
+              "Ledger view-key export did not return a complete local identity");
+        }
+
+        CreateViewOnlyWalletRequest viewRequest;
+        viewRequest.network = network;
+        viewRequest.path = viewPath;
+        viewRequest.password = resolveSecretArgument(argv[6]);
+        viewRequest.address = viewKey.address;
+        viewRequest.privateViewKey = viewKey.privateViewKey;
+        viewRequest.restoreHeight = restoreHeight;
+        viewWalletId = engine.createViewOnlyWallet(viewRequest);
+
+        engine.closeWallet(viewWalletId);
+        viewWalletId.clear();
+        engine.closeWallet(hardwareWalletId);
+        hardwareWalletId.clear();
+      } catch (...) {
+        if (!viewWalletId.empty()) {
+          engine.closeWallet(viewWalletId, false);
+        }
+        if (!hardwareWalletId.empty()) {
+          engine.closeWallet(hardwareWalletId, false);
+        }
+        throw;
+      }
+
+      // Deliberately avoid printing the address, path, view key, seed, or
+      // device response. The paired files are the only resulting artifact.
+      std::cout << "ledger_view_wallet_created=true\n";
+      std::cout << "ledger_view_wallet_restore_height=" << restoreHeight << "\n";
+      std::cout << "ledger_view_wallet_account_index=" << accountIndex << "\n";
+      return 0;
     }
 
     printUsage(argv[0]);

@@ -15,6 +15,16 @@ build_dir="${BUILD_DIR:-${output_root}/build/grpc-${grpc_version}}"
 install_dir="${INSTALL_DIR:-${output_root}/${grpc_version}}"
 jobs="${JOBS:-4}"
 cmake_bin="${CMAKE_BIN:-$(command -v cmake 2>/dev/null || true)}"
+cmake_platform_args=()
+sdk_platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+sdk_deployment_target=""
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  sdk_deployment_target="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
+  cmake_platform_args+=(
+    "-DCMAKE_OSX_ARCHITECTURES=arm64"
+    "-DCMAKE_OSX_DEPLOYMENT_TARGET=${sdk_deployment_target}"
+  )
+fi
 # The C++ stream smoke only needs an insecure local client, but gRPC itself
 # still compiles TLS support. Reuse the pinned OpenSSL that already belongs to
 # the Monero desktop build instead of silently depending on Homebrew.
@@ -66,6 +76,7 @@ ln -sfn "${openssl_source_root}/lib/libcrypto.a" "${openssl_root}/lib/libcrypto.
   third_party/zlib
 
 "${cmake_bin}" -S "${source_dir}" -B "${build_dir}" -G Ninja \
+  "${cmake_platform_args[@]}" \
   -DCMAKE_MAKE_PROGRAM="${ninja_bin}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="${install_dir}" \
@@ -98,6 +109,18 @@ ln -sfn "${openssl_source_root}/lib/libcrypto.a" "${openssl_root}/lib/libcrypto.
 
 "${cmake_bin}" --build "${build_dir}" --target install --parallel "${jobs}"
 
+# gRPC's generated static pkg-config metadata references its private RE2 and
+# OpenSSL dependencies. Their CMake module installs do not provide matching
+# .pc files, so add build-owned metadata rather than allowing pkg-config to
+# resolve arbitrary Homebrew or distribution packages.
+mkdir -p "${install_dir}/lib/pkgconfig"
+"${cmake_bin}" -E copy_if_different \
+  "${script_dir}/pkgconfig/re2.pc" \
+  "${install_dir}/lib/pkgconfig/re2.pc"
+"${cmake_bin}" -E copy_if_different \
+  "${script_dir}/pkgconfig/openssl.pc" \
+  "${install_dir}/lib/pkgconfig/openssl.pc"
+
 [[ -f "${install_dir}/lib/cmake/protobuf/protobuf-config.cmake" ]] || {
   echo "Host Protobuf CMake package was not installed." >&2
   exit 1
@@ -114,5 +137,19 @@ ln -sfn "${openssl_source_root}/lib/libcrypto.a" "${openssl_root}/lib/libcrypto.
   echo "Host gRPC C++ plugin was not installed." >&2
   exit 1
 }
+PKG_CONFIG_LIBDIR="${install_dir}/lib/pkgconfig:${install_dir}/share/pkgconfig" \
+  PKG_CONFIG_PATH="" \
+  pkg-config --exists --static grpc++ grpc protobuf || {
+    echo "Pinned host gRPC SDK is not self-contained for static pkg-config linking." >&2
+    exit 1
+  }
+
+cat > "${install_dir}/tex8-grpc-sdk-contract.txt" <<EOF
+schema=1
+grpc_version=${grpc_version}
+protobuf_version=31.1
+platform=${sdk_platform}
+deployment_target=${sdk_deployment_target}
+EOF
 
 printf '%s\n' "Host gRPC SDK ready: ${install_dir}"

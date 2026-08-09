@@ -1,8 +1,11 @@
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useI18n } from "../i18n";
-import type { WalletSnapshot } from "../services/NativeMoneroWallet";
+import type {
+  NetworkSyncStatus,
+  WalletSnapshot,
+} from "../services/NativeMoneroWallet";
 import type { WalletRuntimeStatus } from "../services/WalletState";
 import { colors, radius } from "../theme/colors";
 import {
@@ -10,11 +13,19 @@ import {
   updateWalletSyncEta,
   type WalletSyncEtaState,
 } from "../../../../packages/wallet-shared/src/walletSync";
+import {
+  formatSyncPercent,
+  normalizeSyncPercent,
+  presentNetworkSync,
+} from "../../../../packages/wallet-shared/src/networkSync";
 
 type SyncStatusBarProps = {
   compact?: boolean;
   error?: string;
+  expanded?: boolean;
   progress?: number;
+  networkStatus?: NetworkSyncStatus;
+  onExpandedChange?: (expanded: boolean) => void;
   snapshot?: WalletSnapshot;
   syncStartHeight?: number;
   status: WalletRuntimeStatus;
@@ -25,7 +36,10 @@ type SyncStatusBarProps = {
 export default function SyncStatusBar({
   compact,
   error,
+  expanded: controlledExpanded,
   progress,
+  networkStatus,
+  onExpandedChange,
   snapshot,
   syncStartHeight,
   status,
@@ -36,154 +50,272 @@ export default function SyncStatusBar({
   const presentation = presentWalletSync(snapshot, {
     startHeight: syncStartHeight,
   });
-  const etaSeconds = useSyncEta(presentation);
-  // A native snapshot is the source of truth.  Callers also pass a derived
-  // progress value for legacy layouts; prefer the snapshot presentation so a
-  // stale caller value can never reintroduce a synthetic 97–99% state.
-  const derivedProgress = snapshot ? presentation.progress : progress ?? presentation.progress;
-  const percent = presentation.coreConfirmed ? 100 : derivedProgress;
-  const isSynced = presentation.coreConfirmed;
-  const displayPercent = percent;
-  const hasSyncError = status === "error" || Boolean(error);
-  const tone = resolveTone(status, snapshot, hasSyncError);
-  const label = walletName
-    ? t("sync.walletName", { wallet: walletName })
-    : t("sync.wallet");
-  const fillWidth = `${Math.max(0, Math.min(100, displayPercent ?? 0))}%` as `${number}%`;
-  // The native core still decides when it is actually spend-ready.  During
-  // final verification we show the exact phase and block state, not a nearly
-  // complete percentage that looks stuck.
-  const finalizing = presentation.phase === "finalizing";
-  // Do not show a misleading 0–1% bar while the native core is connecting or
-  // restoring its latest checkpoint. The next native snapshot can already be
-  // fully synchronized, which otherwise looks like a jump from 0% to 100%.
-  const hasMeasuredProgress = (displayPercent ?? 0) > 1;
-  const showPercent =
-    hasMeasuredProgress && !hasSyncError && !finalizing && presentation.phase !== "waiting-for-node";
-  const working =
-    !hasSyncError &&
-    !isSynced &&
-    (status === "opening" ||
-      status === "syncing" ||
-      finalizing ||
-      presentation.phase === "waiting-for-node");
-  const animatedDots = useAnimatedDots(working);
-  const detail = `${resolveDetail(
+  const network = presentNetworkSync(networkStatus);
+  const etaSeconds = useSyncEta(presentation, networkStatus);
+  const connectionElapsedSeconds = useElapsedSeconds(
+    Boolean(networkStatus && !network.ready && !network.failed && network.busy),
+  );
+  const hasSyncError = status === "error" || Boolean(error) || network.failed;
+  const walletProgress = presentation.coreConfirmed
+    ? 100
+    : presentation.phase === "finalizing"
+    ? 99
+    : snapshot
+    ? presentation.progress ?? 0
+    : progress ?? 0;
+  // A wallet cache at the tip does not prove that the one process-wide
+  // downloader has finished an older shared range. Keep these two progress
+  // sources independent on mobile just as on desktop.
+  const blockchainProgress = network.ready ? 100 : network.progress ?? 0;
+  const blockchainCurrent =
+    network.downloadedHeight && network.downloadedHeight > 0
+      ? network.downloadedHeight
+      : network.chainHeight;
+  const connected = network.ready || network.connected;
+  const connecting = !connected && !network.failed && network.busy;
+  const walletOpened =
+    Boolean(snapshot) && (status === "open" || status === "syncing");
+  const showWalletSync = connected && walletOpened;
+  const walletDetail = resolveDetail(
     status,
     snapshot,
     hasSyncError,
     presentation.phase,
-    percent,
+    walletProgress,
     t,
-  )}${working ? animatedDots : ""}`;
+  );
+  const blockchainDetail =
+    blockchainProgress === 100
+      ? t("sync.synced")
+      : resolveNetworkDetail(network.phase, network.failed, t);
+  const blockchainExtra =
+    network.phase === "selecting-provider" ||
+    network.phase === "initializing-transport"
+      ? t("sync.startingConnectionElapsed", {
+          seconds: connectionElapsedSeconds,
+        })
+      : undefined;
+  const walletEta =
+    presentation.phase === "syncing" ? formatSyncEta(etaSeconds, t) : undefined;
+  const fullySynced =
+    showWalletSync &&
+    presentation.coreConfirmed &&
+    (networkStatus ? network.ready : true) &&
+    !hasSyncError;
+  const walletIdentity = snapshot?.id ?? walletName ?? "wallet";
+  const [internalExpanded, setInternalExpanded] = React.useState(() => !fullySynced);
+  const expanded = controlledExpanded ?? internalExpanded;
+  const updateExpanded = React.useCallback((nextExpanded: boolean) => {
+    if (controlledExpanded === undefined) {
+      setInternalExpanded(nextExpanded);
+    }
+    onExpandedChange?.(nextExpanded);
+  }, [controlledExpanded, onExpandedChange]);
+  const previousSyncState = React.useRef({ fullySynced, walletIdentity });
+  const compactStatus = hasSyncError
+    ? t("sync.error")
+    : fullySynced
+      ? t("sync.synced")
+      : !networkStatus || network.ready
+        ? walletDetail
+        : blockchainDetail;
 
-  if (isSynced && !hasSyncError) {
-    return (
-      <View style={[s.readyRow, compact && s.readyRowCompact]}>
-        <View style={[s.statusLed, s.statusLedReady]} />
-        <Text style={s.readyWallet} numberOfLines={1}>
-          {walletName ?? t("common.wallet")}
-        </Text>
-        <Text style={s.readyText}>{t("sync.synced")}</Text>
-      </View>
-    );
-  }
+  React.useEffect(() => {
+    const previous = previousSyncState.current;
+    if (previous.walletIdentity !== walletIdentity) {
+      updateExpanded(!fullySynced);
+    } else if (!previous.fullySynced && fullySynced) {
+      // Collapse once after completion. A user who opens it again remains in
+      // control, and routine one-block tip checks cannot make the card jump.
+      updateExpanded(false);
+    }
+    previousSyncState.current = { fullySynced, walletIdentity };
+  }, [fullySynced, updateExpanded, walletIdentity]);
 
   return (
-    <View style={[s.wrap, compact && s.wrapCompact]}>
-      <View style={s.topRow}>
-        <View style={s.titleGroup}>
-          <Text style={s.label} numberOfLines={1}>
-            {label}
+    <View
+      style={[s.wrap, compact && s.wrapCompact, !expanded && s.wrapCollapsed]}
+      testID="sync-status-popup"
+    >
+      <View style={s.connectionRow}>
+        <Text style={s.connectionTitle} numberOfLines={1}>
+          {walletName ?? t("common.wallet")}
+        </Text>
+        <Pressable
+          accessibilityLabel={
+            expanded ? t("sync.hideDetails") : t("sync.showDetails")
+          }
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          hitSlop={8}
+          onPress={() => updateExpanded(!expanded)}
+          style={({ pressed }) => [s.statusToggle, pressed && s.statusTogglePressed]}
+          testID="sync-status-toggle"
+        >
+          <Text
+            numberOfLines={1}
+            style={[
+              s.compactStatus,
+              fullySynced && s.compactStatusReady,
+              hasSyncError && s.compactStatusError,
+            ]}
+          >
+            {compactStatus}
           </Text>
-          <Text style={[s.detail, tone === "danger" && s.detailDanger]} numberOfLines={1}>
-            {detail}
-          </Text>
-        </View>
-        <View style={s.percentGroup}>
           <View
+            accessibilityLabel={
+              connected
+                ? t("sync.connected")
+                : connecting
+                ? t("sync.connectingNode")
+                : t("sync.nodeOffline")
+            }
             style={[
               s.statusLed,
-              tone === "ready" && s.statusLedReady,
-              tone === "danger" && s.statusLedDanger,
+              connected && s.statusLedReady,
+              !connected && !connecting && s.statusLedOffline,
             ]}
+            testID="sync-connection-led"
           />
-          {showPercent ? (
-            <Text style={[s.percent, tone === "ready" && s.percentReady]}>
-              {t("sync.percent", { percent: displayPercent ?? 0 })}
-            </Text>
-          ) : (
-            <Text style={[s.percent, s.percentMuted]}>
-              {working
-                ? animatedDots
-                : tone === "danger"
-                ? t("sync.offline")
-                : t("sync.waiting")}
-            </Text>
-          )}
-        </View>
+          <Text style={s.toggleChevron}>{expanded ? "−" : "+"}</Text>
+        </Pressable>
       </View>
-      {showPercent ? (
-        <View style={s.track}>
-          <View
-            style={[
-              s.fill,
-              tone === "ready" && s.fillReady,
-              tone === "danger" && s.fillDanger,
-              { width: fillWidth },
-            ]}
+      {expanded ? (
+        <View style={s.expandedBody} testID="sync-status-details">
+          <SyncProgressRow
+            current={blockchainCurrent}
+            detail={blockchainDetail}
+            extra={blockchainExtra}
+            label={t("sync.blockchainData")}
+            percent={blockchainProgress}
+            target={network.targetHeight}
+            testID="blockchain-progress"
           />
-        </View>
-      ) : null}
-      {!hasSyncError && !isSynced && presentation.targetHeight !== undefined ? (
-        <View style={s.metrics}>
-          <Text style={s.metric}>
-            {t("sync.blockHeight", {
-              current: formatBlockCount(presentation.walletHeight),
-              target: formatBlockCount(presentation.targetHeight),
-            })}
-          </Text>
-          {presentation.phase === "finalizing" ? (
-            <Text style={s.metric}>{t("sync.coreConfirming")}</Text>
-          ) : presentation.remainingBlocks !== undefined ? (
-            <Text style={s.metricStrong}>
-              {t("sync.blocksRemaining", { count: formatBlockCount(presentation.remainingBlocks) })}
+          {showWalletSync ? (
+            <>
+              <View style={s.divider} />
+              <SyncProgressRow
+                current={presentation.walletHeight}
+                detail={walletDetail}
+                extra={
+                  presentation.phase === "finalizing"
+                    ? t("sync.coreConfirming")
+                    : walletEta
+                }
+                label={t("sync.wallet")}
+                percent={walletProgress}
+                target={presentation.targetHeight}
+                testID="wallet-progress"
+              />
+            </>
+          ) : null}
+          {subtitle ? (
+            <Text style={s.subtitle} numberOfLines={2}>
+              {subtitle}
             </Text>
           ) : null}
-          {presentation.phase === "syncing" ? (
-            <Text style={s.metric}>{formatSyncEta(etaSeconds, t)}</Text>
-          ) : null}
         </View>
-      ) : null}
-      {subtitle ? (
-        <Text style={s.subtitle} numberOfLines={2}>
-          {subtitle}
-        </Text>
       ) : null}
     </View>
   );
 }
 
-function useAnimatedDots(active: boolean): string {
-  const [frame, setFrame] = React.useState(0);
-
-  React.useEffect(() => {
-    if (!active) {
-      setFrame(0);
-      return;
-    }
-    const interval = setInterval(() => {
-      setFrame(current => (current + 1) % 3);
-    }, 450);
-    return () => clearInterval(interval);
-  }, [active]);
-
-  return ".".repeat(frame + 1);
+function SyncProgressRow({
+  current,
+  detail,
+  extra,
+  label,
+  percent,
+  target,
+  testID,
+}: {
+  current?: number;
+  detail: string;
+  extra?: string;
+  label: string;
+  percent: number;
+  target?: number;
+  testID: string;
+}) {
+  const { t } = useI18n();
+  const normalizedPercent = normalizeSyncPercent(percent);
+  const fillWidth = `${normalizedPercent}%` as `${number}%`;
+  return (
+    <View style={s.progressSection} testID={testID}>
+      <View style={s.topRow}>
+        <View style={s.titleGroup}>
+          <Text style={s.label}>{label}</Text>
+          <Text style={s.detail} numberOfLines={1}>{detail}</Text>
+        </View>
+        <Text style={[s.percent, normalizedPercent === 100 && s.percentReady]}>
+          {t("sync.percent", { percent: formatSyncPercent(normalizedPercent) })}
+        </Text>
+      </View>
+      <View style={s.track}>
+        <View
+          style={[
+            s.fill,
+            normalizedPercent === 100 && s.fillReady,
+            { width: fillWidth },
+          ]}
+        />
+      </View>
+      {target !== undefined || extra ? (
+        <View style={s.metrics}>
+          {target !== undefined ? (
+            <Text style={s.metric}>
+              {t("sync.blockHeight", {
+                current: formatBlockCount(current),
+                target: formatBlockCount(target),
+              })}
+            </Text>
+          ) : null}
+          {extra ? <Text style={s.metricStrong}>{extra}</Text> : null}
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
-function useSyncEta(presentation: ReturnType<typeof presentWalletSync>) {
+function resolveNetworkDetail(
+  phase: ReturnType<typeof presentNetworkSync>["phase"],
+  failed: boolean,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (failed) return t("sync.retryingNode");
+  switch (phase) {
+    case "selecting-provider":
+      return t("sync.selectingSource");
+    case "initializing-transport":
+      return t("sync.startingConnection");
+    case "fetching-blocks":
+    case "waiting-next-batch":
+    case "scanning-wallets":
+      return t("sync.downloadingAndScanning");
+    case "checking-mempool":
+      return t("sync.checkingMempool");
+    case "checkpointing-wallets":
+      return t("sync.savingWallets");
+    case "degraded":
+      return t("sync.degraded");
+    default:
+      return t("sync.waitingForStatus");
+  }
+}
+
+function useSyncEta(
+  presentation: ReturnType<typeof presentWalletSync>,
+  networkStatus?: NetworkSyncStatus,
+) {
   const sampleRef = React.useRef<WalletSyncEtaState | undefined>(undefined);
   const [etaSeconds, setEtaSeconds] = React.useState<number | undefined>();
+  const etaActive =
+    !networkStatus ||
+    [
+      "fetching-blocks",
+      "scanning-wallets",
+      "waiting-next-batch",
+    ].includes(networkStatus.phase);
 
   React.useEffect(() => {
     if (
@@ -201,12 +333,44 @@ function useSyncEta(presentation: ReturnType<typeof presentWalletSync>) {
       sampleRef.current,
       presentation.remainingBlocks,
       Date.now(),
+      { active: etaActive },
     );
     sampleRef.current = estimate.state;
     setEtaSeconds(estimate.etaSeconds);
-  }, [presentation.phase, presentation.remainingBlocks, presentation.scannedBlocks]);
+  }, [
+    etaActive,
+    presentation.phase,
+    presentation.remainingBlocks,
+    presentation.scannedBlocks,
+  ]);
 
   return etaSeconds;
+}
+
+function useElapsedSeconds(active: boolean) {
+  const startedAtRef = React.useRef<number | undefined>(undefined);
+  const [elapsedSeconds, setElapsedSeconds] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!active) {
+      startedAtRef.current = undefined;
+      setElapsedSeconds(0);
+      return;
+    }
+
+    if (startedAtRef.current === undefined) {
+      startedAtRef.current = Date.now();
+    }
+    const update = () => {
+      const startedAt = startedAtRef.current ?? Date.now();
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1_000)));
+    };
+    update();
+    const interval = setInterval(update, 1_000);
+    return () => clearInterval(interval);
+  }, [active]);
+
+  return elapsedSeconds;
 }
 
 function formatBlockCount(value?: number) {
@@ -219,23 +383,6 @@ function formatSyncEta(seconds: number | undefined, t: ReturnType<typeof useI18n
   const minutes = Math.ceil(seconds / 60);
   if (minutes < 60) return t("sync.etaMinutes", { count: minutes });
   return t("sync.etaHours", { count: Math.ceil(minutes / 60) });
-}
-
-function resolveTone(
-  status: WalletRuntimeStatus,
-  snapshot: WalletSnapshot | undefined,
-  hasSyncError: boolean,
-): "danger" | "ready" | "syncing" | "waiting" {
-  if (hasSyncError) {
-    return "danger";
-  }
-  if (snapshot?.synchronized || status === "open") {
-    return "ready";
-  }
-  if (status === "syncing") {
-    return "syncing";
-  }
-  return "waiting";
 }
 
 function resolveDetail(
@@ -256,7 +403,9 @@ function resolveDetail(
     return t("sync.verifyingRecent");
   }
   if (phase === "waiting-for-node") {
-    return t("sync.connectingNode");
+    // The page header owns the single network connection indicator. This
+    // component reports only the selected wallet's private scan phase.
+    return t("sync.checkingBlocks");
   }
   if (status === "opening") {
     return t("sync.opening");
@@ -284,11 +433,71 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: "rgba(255,255,255,0.045)",
-    padding: 12,
-    marginBottom: 14,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    marginBottom: 11,
   },
   wrapCompact: {
-    marginBottom: 18,
+    marginBottom: 13,
+  },
+  wrapCollapsed: {
+    paddingVertical: 7,
+  },
+  connectionRow: {
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  expandedBody: {
+    marginTop: 8,
+  },
+  connectionTitle: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  statusToggle: {
+    minWidth: 0,
+    maxWidth: "72%",
+    minHeight: 30,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    gap: 7,
+    borderRadius: radius.full,
+    paddingHorizontal: 5,
+  },
+  statusTogglePressed: {
+    backgroundColor: "rgba(255,255,255,0.055)",
+  },
+  compactStatus: {
+    flexShrink: 1,
+    color: colors.warning,
+    fontSize: 11,
+    fontWeight: "800",
+  },
+  compactStatusReady: {
+    color: colors.success,
+  },
+  compactStatusError: {
+    color: colors.error,
+  },
+  toggleChevron: {
+    width: 13,
+    color: colors.textSecondary,
+    fontSize: 15,
+    fontWeight: "900",
+    lineHeight: 17,
+    textAlign: "center",
+  },
+  progressSection: { gap: 0 },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.border,
+    marginVertical: 10,
   },
   topRow: {
     flexDirection: "row",
@@ -316,7 +525,7 @@ const s = StyleSheet.create({
   },
   percent: {
     color: colors.warning,
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "900",
     minWidth: 52,
     textAlign: "right",
@@ -345,19 +554,22 @@ const s = StyleSheet.create({
   statusLedReady: {
     backgroundColor: colors.success,
   },
+  statusLedOffline: {
+    backgroundColor: colors.textSecondary,
+  },
   statusLedDanger: {
     backgroundColor: colors.error,
   },
   track: {
-    height: 5,
+    height: 4,
     borderRadius: radius.full,
     backgroundColor: "rgba(255,255,255,0.08)",
-    marginTop: 10,
+    marginTop: 8,
     overflow: "hidden",
   },
   metrics: {
-    marginTop: 11,
-    gap: 4,
+    marginTop: 8,
+    gap: 3,
   },
   metric: {
     color: colors.textMuted,
@@ -388,15 +600,17 @@ const s = StyleSheet.create({
     lineHeight: 17,
     marginTop: 8,
   },
+  readyWrap: {
+    marginBottom: 14,
+  },
+  readyWrapCompact: {
+    marginBottom: 16,
+  },
   readyRow: {
-    minHeight: 34,
+    minHeight: 30,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginBottom: 14,
-  },
-  readyRowCompact: {
-    marginBottom: 16,
   },
   readyWallet: {
     flex: 1,
@@ -408,5 +622,12 @@ const s = StyleSheet.create({
     color: colors.success,
     fontSize: 12,
     fontWeight: "900",
+  },
+  readyHeight: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: "600",
+    marginLeft: 17,
+    marginTop: 1,
   },
 });

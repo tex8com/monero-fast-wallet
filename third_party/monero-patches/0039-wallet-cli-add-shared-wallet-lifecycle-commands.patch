@@ -1,0 +1,235 @@
+From 424d5797050ccd78903bf56dd4c320fb80dfe268 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 6 Aug 2026 20:12:45 -0500
+Subject: [PATCH] wallet cli: add shared wallet lifecycle commands
+
+---
+ src/simplewallet/CMakeLists.txt        |   2 +-
+ src/simplewallet/product_cli_debug.cpp | 169 +++++++++++++++++++++++++
+ 2 files changed, 170 insertions(+), 1 deletion(-)
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index 05b4749..0bd7cda 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -118,7 +118,7 @@ execute_process(
+   OUTPUT_STRIP_TRAILING_WHITESPACE)
+ set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
+ set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
+-set(MFW_MONERO_PATCH_COUNT "38" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_MONERO_PATCH_COUNT "39" CACHE STRING "Applied TEX8 Monero patch count")
+ set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
+ set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
+ set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index c0d1ade..39ed892 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -4,12 +4,14 @@
+ #include "product_cli_debug.h"
+ #include "product_cli_app.h"
+ 
++#include <array>
+ #include <boost/filesystem.hpp>
+ #include <chrono>
+ #include <cstring>
+ #include <ctime>
+ #include <iomanip>
+ #include <iostream>
++#include <limits>
+ #include <sstream>
+ #include <stdexcept>
+ 
+@@ -120,6 +122,7 @@ namespace
+            << "\"product_core_schema_sha256\":\"" << mfw_product_core_schema_sha256() << "\","
+            << "\"diagnostic_registry_sha256\":\"" << mfw_product_core_diagnostic_registry_sha256() << "\","
+            << "\"app_vault_state_schema_sha256\":\"" << mfw_app_vault_state_schema_sha256() << "\","
++           << "\"wallet_lifecycle_schema_sha256\":\"" << mfw_wallet_lifecycle_schema_sha256() << "\","
+            << "\"feature_manifest_hash\":\"" << MFW_FEATURE_MANIFEST_HASH << "\","
+            << "\"build_target\":\"" << json_escape(MFW_BUILD_TARGET) << "\","
+            << "\"compiler\":\"" << json_escape(MFW_COMPILER) << "\","
+@@ -156,8 +159,147 @@ namespace
+       << "   ./fast-wallet-cli --generate-from-device <wallet-file>\n\n"
+       << "Diagnostics\n"
+       << "   ./fast-wallet-cli --debug\n\n"
++      << "Shared wallet rules\n"
++      << "   ./fast-wallet-cli wallet help\n"
++      << "   ./fast-wallet-cli wallet self-test --json\n\n"
+       << "Safety: never paste a seed into a command argument and never share it.\n";
+   }
++
++  void print_wallet_help()
++  {
++    std::cout
++      << "FAST-WALLET-CLI BY TEX8 - WALLET RULES\n\n"
++      << "wallet policy <privacy|convenience> [default|off|on] --json\n"
++      << "  Resolve the default Fast Wallet switch without creating a wallet.\n"
++      << "  privacy: Fast Wallet defaults off.\n"
++      << "  convenience: Fast Wallet defaults on with an independent seed.\n\n"
++      << "wallet contract --json\n"
++      << "  Print the exact shared lifecycle contract identity.\n\n"
++      << "wallet self-test --json\n"
++      << "  Test wallet creation, backup, removal, account total, restore floor,\n"
++      << "  and the mandatory payment review sequence without network or funds.\n";
++  }
++
++  bool wallet_policy_command(int argc, char* argv[], int& exit_code)
++  {
++    if (argc < 5 || argc > 6 || std::string(argv[argc - 1]) != "--json")
++    {
++      std::cerr << "Usage: wallet policy <privacy|convenience> [default|off|on] --json\n";
++      exit_code = 64;
++      return true;
++    }
++    const std::string preference_arg(argv[3]);
++    const std::string override_arg = argc == 6 ? argv[4] : "default";
++    const std::uint32_t preference = preference_arg == "privacy"
++      ? MFW_WALLET_PREFERENCE_PRIVACY_ONLY
++      : preference_arg == "convenience"
++        ? MFW_WALLET_PREFERENCE_PRIVACY_CONVENIENCE
++        : 0;
++    const std::uint32_t fast_override = override_arg == "default"
++      ? MFW_FAST_WALLET_OVERRIDE_DEFAULT
++      : override_arg == "off"
++        ? MFW_FAST_WALLET_OVERRIDE_DISABLED
++        : override_arg == "on"
++          ? MFW_FAST_WALLET_OVERRIDE_ENABLED
++          : std::numeric_limits<std::uint32_t>::max();
++    mfw_wallet_creation_policy_v1 policy{};
++    const std::uint32_t result = mfw_wallet_creation_policy_resolve_v1(
++      preference, fast_override, &policy);
++    if (result != MFW_ERROR_OK)
++    {
++      std::cerr << "Unknown wallet preference or Fast Wallet override. Run: wallet help\n";
++      exit_code = 64;
++      return true;
++    }
++    std::cout << "{"
++              << "\"schema_version\":" << policy.state_version << ","
++              << "\"preference\":\"" << preference_arg << "\","
++              << "\"fast_wallet_override\":\"" << override_arg << "\","
++              << "\"fast_wallet_enabled\":" << (policy.fast_wallet_enabled ? "true" : "false") << ","
++              << "\"fast_wallet_independent_seed\":"
++              << (policy.fast_wallet_independent_seed ? "true" : "false")
++              << "}\n";
++    exit_code = 0;
++    return true;
++  }
++
++  bool wallet_self_test(int& exit_code)
++  {
++    bool ok = true;
++    std::size_t assertions = 0;
++    const auto expect = [&](bool condition) {
++      ++assertions;
++      ok = ok && condition;
++    };
++
++    mfw_wallet_creation_policy_v1 policy{};
++    expect(mfw_wallet_creation_policy_resolve_v1(
++      MFW_WALLET_PREFERENCE_PRIVACY_ONLY,
++      MFW_FAST_WALLET_OVERRIDE_DEFAULT,
++      &policy) == MFW_ERROR_OK && policy.fast_wallet_enabled == 0);
++    expect(mfw_wallet_creation_policy_resolve_v1(
++      MFW_WALLET_PREFERENCE_PRIVACY_CONVENIENCE,
++      MFW_FAST_WALLET_OVERRIDE_DEFAULT,
++      &policy) == MFW_ERROR_OK && policy.fast_wallet_enabled == 1 &&
++      policy.fast_wallet_independent_seed == 1);
++
++    mfw_wallet_lifecycle_state_v1 state{};
++    mfw_wallet_lifecycle_state_v1 next{};
++    mfw_wallet_lifecycle_event_v1 event{};
++    event.struct_size = sizeof(event);
++    expect(mfw_wallet_lifecycle_default_v1(&state) == MFW_ERROR_OK);
++    event.event = MFW_WALLET_EVENT_BEGIN_CREATE;
++    event.value = MFW_WALLET_KIND_SOFTWARE;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&state, &event, &next) == MFW_ERROR_OK &&
++      next.lifecycle_state == MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP);
++    event.event = MFW_WALLET_EVENT_SELECT;
++    event.value = 0;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&next, &event, &state) != MFW_ERROR_OK);
++    event.event = MFW_WALLET_EVENT_CONFIRM_SEED_BACKUP;
++    event.value = 1;
++    expect(mfw_wallet_lifecycle_apply_event_v1(&next, &event, &state) == MFW_ERROR_OK &&
++      state.lifecycle_state == MFW_WALLET_LIFECYCLE_READY);
++
++    const std::array<std::uint64_t, 3> account_balances{{100, 200, 300}};
++    std::uint64_t total_balance = 0;
++    expect(mfw_wallet_checked_total_balance_v1(
++      account_balances.data(), account_balances.size(), &total_balance) == MFW_ERROR_OK &&
++      total_balance == 600);
++    std::uint64_t restore_height = std::numeric_limits<std::uint64_t>::max();
++    expect(mfw_wallet_restore_floor_v1(
++      50, MFW_WALLET_RESTORE_DEFAULT_SAFETY_BLOCKS, &restore_height) == MFW_ERROR_OK &&
++      restore_height == 0);
++
++    mfw_send_state_v1 send_state{};
++    expect(mfw_send_state_default_v1(&send_state) == MFW_ERROR_OK);
++    const std::array<std::uint32_t, 5> send_events{{
++      MFW_SEND_EVENT_VALIDATE_RECIPIENT,
++      MFW_SEND_EVENT_PREPARE,
++      MFW_SEND_EVENT_REVIEW,
++      MFW_SEND_EVENT_AUTHORIZE,
++      MFW_SEND_EVENT_SUBMIT}};
++    for (const std::uint32_t send_event : send_events)
++    {
++      mfw_send_state_v1 next_send{};
++      const bool transitioned = mfw_send_apply_event_v1(
++        &send_state, send_event, &next_send) == MFW_ERROR_OK;
++      expect(transitioned);
++      if (transitioned)
++        send_state = next_send;
++    }
++    expect(send_state.state == MFW_SEND_STATE_SUBMITTED);
++
++    std::cout << "{"
++              << "\"ok\":" << (ok ? "true" : "false") << ","
++              << "\"schema_version\":" << MFW_WALLET_LIFECYCLE_STATE_VERSION << ","
++              << "\"schema_sha256\":\"" << mfw_wallet_lifecycle_schema_sha256() << "\","
++              << "\"assertions\":" << assertions << ","
++              << "\"network_calls\":0,"
++              << "\"funds_touched\":false"
++              << "}\n";
++    exit_code = ok ? 0 : 70;
++    return true;
++  }
+ }
+ 
+ namespace mfw_cli
+@@ -191,6 +333,33 @@ namespace mfw_cli
+ 
+   bool handle_early_product_command(int argc, char* argv[], int& exit_code)
+   {
++    if (argc >= 3 && std::string(argv[1]) == "wallet")
++    {
++      const std::string command(argv[2]);
++      if (command == "help" && argc == 3)
++      {
++        print_wallet_help();
++        exit_code = 0;
++        return true;
++      }
++      if (command == "policy")
++        return wallet_policy_command(argc, argv, exit_code);
++      if (command == "contract" && argc == 4 && std::string(argv[3]) == "--json")
++      {
++        std::cout << "{"
++                  << "\"state_version\":" << MFW_WALLET_LIFECYCLE_STATE_VERSION << ","
++                  << "\"schema_sha256\":\"" << mfw_wallet_lifecycle_schema_sha256() << "\","
++                  << "\"restore_default_safety_blocks\":"
++                  << MFW_WALLET_RESTORE_DEFAULT_SAFETY_BLOCKS << ","
++                  << "\"restore_maximum_safety_blocks\":"
++                  << MFW_WALLET_RESTORE_MAXIMUM_SAFETY_BLOCKS
++                  << "}\n";
++        exit_code = 0;
++        return true;
++      }
++      if (command == "self-test" && argc == 4 && std::string(argv[3]) == "--json")
++        return wallet_self_test(exit_code);
++    }
+     if (argc == 2)
+     {
+       const std::string command(argv[1]);
+-- 
+2.50.1 (Apple Git-155)
+

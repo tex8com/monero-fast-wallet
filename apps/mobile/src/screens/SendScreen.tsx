@@ -129,6 +129,7 @@ export default function SendScreen({ navigation, route }: any) {
     error: walletError,
     connectLedgerForSigning,
     isRegisteredWalletOpen,
+    openRegisteredWalletById,
     refreshSnapshot,
     refreshTransactions,
     registeredWallet,
@@ -372,6 +373,9 @@ export default function SendScreen({ navigation, route }: any) {
     }
 
     const walletId = wallet.id;
+    clearPreparedTransaction();
+    setAmount('');
+    setSweepAll(false);
     if (isRegisteredWalletOpen(walletId)) {
       if (walletId !== registeredWallet?.id) {
         await setActiveRegisteredWallet(walletId);
@@ -379,15 +383,8 @@ export default function SendScreen({ navigation, route }: any) {
       return;
     }
 
-    clearPreparedTransaction();
-    setAmount('');
-    setSweepAll(false);
-    let selectedWallet = registeredWallet;
-    const changedWallet = walletId !== registeredWallet?.id;
-    if (changedWallet) {
-      selectedWallet = await setActiveRegisteredWallet(walletId);
-    }
-    if (changedWallet && selectedWallet?.credentialKey) {
+    const opened = await openRegisteredWalletById(walletId);
+    if (opened) {
       return;
     }
     navigation.navigate('WalletSetup', {

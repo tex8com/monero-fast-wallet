@@ -1,0 +1,109 @@
+#!/usr/bin/expect -f
+# Drive the interactive wallet-removal flow without ever printing wallet
+# secrets. The caller owns the permission-restricted transcript path.
+
+if {$argc != 4} {
+  puts stderr "Usage: remove-open-wallet.expect <cli> <wallet-file> <mode> <transcript>"
+  exit 2
+}
+
+set timeout 30
+set cli [lindex $argv 0]
+set wallet_file [lindex $argv 1]
+set mode [lindex $argv 2]
+set transcript [lindex $argv 3]
+set wallet_name [file tail $wallet_file]
+
+if {$mode ni {cancel remove fast-blocked mismatch staging-blocked directory-blocked}} {
+  puts stderr "Unknown removal test mode"
+  exit 2
+}
+
+log_user 1
+log_file -noappend $transcript
+spawn -noecho $cli \
+  --wallet-file $wallet_file \
+  --password "" \
+  --offline \
+  --log-file /dev/null
+
+expect {
+  -re {Do you want to do it now\?} {
+    send -- "no\r"
+    exp_continue
+  }
+  -re {Background refresh thread started} {
+    if {$mode eq "fast-blocked"} {
+      send -- "remove_wallet fast\r"
+    } else {
+      send -- "remove_wallet\r"
+    }
+  }
+  eof {
+    puts stderr "Wallet CLI exited before the removal command"
+    exit 70
+  }
+  timeout {
+    puts stderr "Timed out waiting for the wallet prompt"
+    exit 124
+  }
+}
+
+if {$mode eq "fast-blocked"} {
+  expect {
+    -re {Fast Wallet removal is blocked} {
+      send -- "exit\r"
+      exp_continue
+    }
+    eof {
+      set result [wait]
+      exit [lindex $result 3]
+    }
+    timeout {
+      puts stderr "Timed out waiting for the Fast Wallet removal refusal"
+      exit 124
+    }
+  }
+}
+
+expect {
+  -re {Have you written down and verified the recovery words\?} {
+    if {$mode eq "cancel"} {
+      send -- "no\r"
+    } else {
+      send -- "yes\r"
+    }
+    exp_continue
+  }
+  -re {Acknowledge the unknown current balance and continue\?} {
+    send -- "yes\r"
+    exp_continue
+  }
+  -re {Funds remain on the blockchain.*Remove this local wallet\?} {
+    send -- "yes\r"
+    exp_continue
+  }
+  -re {Type the exact wallet file name} {
+    if {$mode eq "mismatch"} {
+      send -- "wrong-wallet-name\r"
+    } else {
+      send -- "$wallet_name\r"
+    }
+    exp_continue
+  }
+  -re {Wallet removal cancelled|pre-existing staging artifact|unexpected directory artifact} {
+    send -- "exit\r"
+    exp_continue
+  }
+  -re {Wallet removed from this device} {
+    exp_continue
+  }
+  eof {
+    set result [wait]
+    exit [lindex $result 3]
+  }
+  timeout {
+    puts stderr "Timed out while exercising wallet removal"
+    exit 124
+  }
+}

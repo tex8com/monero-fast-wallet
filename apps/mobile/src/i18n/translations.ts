@@ -167,7 +167,26 @@ const en = {
   'communityV1.notificationsFailed':
     'Notifications could not be enabled. You can continue without them.',
   'sync.error': 'Sync error',
-  'sync.connectingNode': 'Connecting node',
+  'sync.connectingNode': 'Connecting securely to the Monero node',
+  'sync.selectingSource': 'Selecting sync source',
+  'sync.startingConnection': 'Starting the shared blockchain connection',
+  'sync.startingConnectionHint':
+    'Preparing the encrypted wallet and choosing the fastest available node. The app remains usable.',
+  'sync.startingConnectionElapsed':
+    '{seconds}s elapsed · Preparing the encrypted wallet and choosing the fastest available node. The app remains usable.',
+  'sync.showDetails': 'Show sync details',
+  'sync.hideDetails': 'Hide sync details',
+  'sync.downloadingBlocks': 'Downloading blocks',
+  'sync.scanningWallets': 'Scanning all wallets',
+  'sync.downloadingAndScanning': 'Downloading and scanning all wallets',
+  'sync.checkingMempool': 'Checking pending transactions',
+  'sync.savingWallets': 'Saving wallet state',
+  'sync.retryingNode': 'Retrying node connection',
+  'sync.degraded': 'Some wallets need another attempt',
+  'sync.blockchainData': 'Blockchain data',
+  'sync.connected': 'Connected',
+  'sync.sharedPipeline': 'Shared wallet sync',
+  'sync.walletsTogether': '{count} wallets use this block stream',
   'sync.checkingBlocks': 'Checking blocks',
   'sync.finalizing': 'Final verification',
   'sync.verifyingRecent': 'Verifying recent transactions',
@@ -193,7 +212,7 @@ const en = {
   'sync.waitingForStatus': 'Preparing',
   'sync.wallet': 'Wallet sync',
   'sync.walletName': '{wallet}',
-  'security.appProtection': 'App protection',
+  'security.appProtection': 'Protect your wallet',
   'security.preparingProtection': 'Preparing secure app protection…',
   'security.biometricPrompt': 'Unlock Monero Fast Wallet',
   'security.biometricUnavailable':
@@ -201,25 +220,25 @@ const en = {
   'security.enterPassword': 'Enter app password',
   'security.passwordIncorrect': 'The app password is incorrect.',
   'security.setUpAppProtectionHint':
-    'Choose how you would like to unlock the app. You can change this later in Settings.',
-  'security.useBiometrics': 'Fingerprint or face unlock',
+    'Use one simple check to open all your wallets.',
+  'security.useBiometrics': 'Use fingerprint instead',
   'security.biometricsRecommended': 'Recommended',
-  'security.biometricsFallback': 'If needed, you can use your device code.',
-  'security.useAppPassword': 'App password',
+  'security.biometricsFallback': 'Your phone PIN works as a backup.',
+  'security.useAppPassword': 'Use password instead',
   'security.passwordAlternative': 'Use a password you choose',
   'security.passwordRule':
     'Use at least 12 characters. A short sentence is easiest to remember.',
   'security.showPassword': 'Show password',
   'security.hidePassword': 'Hide password',
   'security.passwordRecoveryHelp':
-    'Important: After three incorrect app-password attempts, all local app and wallet data on this device is permanently erased. You need your 25-word recovery seed to restore your wallets.',
+    'Keep your recovery words safe. They can restore your wallets if you forget this password.',
   'security.passwordAttemptsRemaining':
-    'Incorrect app password. {count} attempts remaining before all local wallet data is erased.',
+    'Incorrect app password. Try again after the security delay.',
   'security.passwordAttemptRemaining':
-    'Incorrect app password. 1 attempt remaining before all local wallet data is erased.',
+    'Incorrect app password. Try again after the security delay.',
   'security.passwordResetInProgress':
-    'Three incorrect passwords. Local wallet data is being securely erased…',
-  'security.continueWithBiometrics': 'Continue with biometrics',
+    'App access is temporarily rate-limited. Wallet data remains safe.',
+  'security.continueWithBiometrics': 'Use fingerprint',
   'security.unlockApp': 'Unlock app',
   'security.unlockAppHint': 'Unlock once to access all your saved wallets.',
   'security.unlockFailed': 'The app could not be unlocked.',
@@ -230,7 +249,8 @@ const en = {
   'notification.closesIn': 'Closes in {seconds}s',
   'notification.ok': 'OK',
   'walletSelector.active': 'Active',
-  'walletSelector.fast': 'Fast',
+  'walletSelector.fast': '⚡ FAST',
+  'walletSelector.fastReady': 'Ready for payment alerts',
   'walletSelector.fastReceiveOnly': 'Fast Wallet can send after wallet sync.',
   'walletSelector.locked': 'Locked',
   'walletSelector.localOnly': 'Setting up',
@@ -240,6 +260,10 @@ const en = {
   'walletSelector.openToCheckNode': 'Open to check node',
   'walletSelector.openToSend': 'Open and send',
   'walletSelector.preparing': 'Preparing',
+  'walletSelector.ready': 'Ready',
+  'walletSelector.ledgerBalanceNeedsVerification': 'Connect Ledger to verify spending',
+  'walletSelector.scanningWallet': 'Scanning wallet',
+  'walletSelector.waitingSharedBlocks': 'Waiting for shared blocks',
   'walletSelector.pushOff': 'Push off',
   'walletSelector.pushReady': 'Active',
   'walletSelector.receiveTo': 'Receive to',
@@ -278,6 +302,16 @@ const en = {
     'The app is connecting this address to the Fast Wallet server.',
   'welcome.subtitle': 'Private, fast, and in your control.',
   'welcome.savedWallets': 'Your wallets',
+  'welcome.walletMode': 'Wallet mode',
+  'welcome.chooseExperience': 'Choose your default',
+  'welcome.chooseExperienceDescription':
+    'You can change Fast Wallet for every private-wallet creation. This choice never enables server scanning, alerts, or sharing.',
+  'welcome.privacyOnly': 'Privacy only',
+  'welcome.privacyOnlyDescription':
+    'Create only the private Monero wallet. Fast Wallet starts switched off.',
+  'welcome.privacyComfort': 'Privacy + comfort',
+  'welcome.privacyComfortDescription':
+    'Fast Wallet starts switched on for each private-wallet creation. It is a separate local wallet with its own recovery words.',
   'setup.biometric.checking': 'Checking device security',
   'setup.biometric.secureDeviceKey': 'Secure device key',
   'setup.biometric.storedSecret':
@@ -293,6 +327,21 @@ const en = {
   'setup.fastWalletLedgerDescription':
     'Create the reserved Ledger Fast Wallet in account 1. It stays separate from normal Ledger addresses in account 0.',
   'setup.fastWalletTitle': 'Create Fast Wallet',
+  'setup.fastWalletToggle': 'Fast Wallet',
+  'setup.fastWalletToggleDescription':
+    'Also create a separate local wallet with its own recovery words. No server scanning or alerts are enabled here.',
+  'setup.fastWalletBackupRequired':
+    'The separate Fast Wallet was created, but its recovery words still need to be backed up before you use its address.',
+  'setup.fastWalletCreateFailed':
+    'Your private wallet is ready. The optional Fast Wallet could not be created and can be added later from Wallets.',
+  'setup.fastWalletPrimaryBackupFirst':
+    'Back up the private wallet recovery words first. You can then create a Fast Wallet later from Wallets.',
+  'setup.fastWalletTransferSending':
+    'Sending encrypted view key to the Cuprate scan service…',
+  'setup.fastWalletTransferAccepted':
+    'Cuprate scan service accepted the encrypted view key.',
+  'setup.fastWalletTransferFailed':
+    'Cuprate scan service did not accept the encrypted view key.',
   'setup.createFastReceive': 'Creating Fast Wallet',
   'setup.device': 'Device',
   'setup.footer': 'Made with ❤️ by TEX8',
@@ -309,6 +358,8 @@ const en = {
   'setup.hardware.localViewTitle': 'Remember Ledger for viewing',
   'setup.hardware.localViewDescription':
     'Keep an encrypted, read-only wallet on this device. You can view balances and receive without reconnecting Ledger; sending still requires Ledger.',
+  'setup.hardware.fastWalletDescription':
+    'Also reserve Ledger account 1 as a separate Fast Wallet address.',
   'setup.hardware.localViewProtectionRequired':
     'Turn on app protection in Settings before saving Ledger viewing access on this device.',
   'setup.hardware.looking': 'Looking for an available Ledger transport.',
@@ -420,6 +471,18 @@ const en = {
   'home.timeframeMax': 'Max',
   'home.timeframeToday': 'Today',
   'home.totalBalance': 'Total Balance',
+  'home.ledgerBalanceNeedsVerification':
+    'Received Ledger funds are shown. Spend verification is still needed.',
+  'home.ledgerBalanceVerificationHint':
+    'Connect and unlock the Ledger, open its Monero app, then verify which outputs are available to spend.',
+  'home.verifyLedgerBalance': 'Verify with Ledger',
+  'home.verifyingLedgerBalance': 'Waiting for Ledger…',
+  'home.ledgerReconciliation.connecting-ledger': 'Finding Ledger…',
+  'home.ledgerReconciliation.checking-local-scan': 'Checking local wallet scan…',
+  'home.ledgerReconciliation.catching-up-local-scan': 'Scanning locally before Ledger verification…',
+  'home.ledgerReconciliation.deriving-owned-output-key-images': 'Verifying owned outputs with Ledger…',
+  'home.ledgerReconciliation.saving-ledger-balance': 'Saving verified balance…',
+  'home.ledgerWalletCouldNotOpen': 'The local Ledger companion could not be opened.',
   'home.transactions': 'Transactions',
   'home.walletLocked': 'Wallet Locked',
   'home.walletNotOpen': 'Wallet not open',
@@ -563,6 +626,10 @@ const en = {
   'receive.ledgerFastWallet': 'Ledger Fast Wallet',
   'receive.newAddress': 'New address',
   'receive.newAddressLabel': 'Address {count}',
+  'receive.newAddressName': 'Address label',
+  'receive.newAddressPlaceholder': 'For example: Savings or Invoice',
+  'receive.subaddressPrivacyHint':
+    'Each address belongs to this wallet and is recovered by the same recovery words.',
   'receive.manageAddresses': 'Manage receiving addresses',
   'receive.otherAddresses': 'Other receiving addresses',
   'receive.privacyText':
@@ -856,9 +923,9 @@ const en = {
   'menu.sharedAiModule': 'Tex8 Assistant',
   'settings.appearance': 'Appearance',
   'settings.autoLock': 'Auto-lock (5 min)',
-  'settings.appProtection': 'App protection',
+  'settings.appProtection': 'Protect your wallet',
   'settings.appProtectionHint':
-    'Choose how to unlock the app: biometrics or an app password. This protects all saved wallets.',
+    'One simple check protects all saved wallets.',
   'settings.noProtection': 'No protection',
   'settings.biometrics': 'Biometrics',
   'settings.appPassword': 'App password',
@@ -873,6 +940,9 @@ const en = {
   'settings.daemonTls': 'Daemon TLS',
   'settings.default': 'Default',
   'settings.diagnostics': 'Diagnostics',
+  'settings.ledgerBalanceVerification': 'Verify Ledger balance',
+  'settings.ledgerBalanceVerifying': 'Verifying with Ledger…',
+  'settings.ledgerBalanceVerified': 'The Ledger-signed spend status was verified and the local balance was updated.',
   'settings.disabled': 'Disabled',
   'settings.enableBiometrics': 'Enable biometrics',
   'settings.fastReceive': 'Fast Wallet',
@@ -880,6 +950,14 @@ const en = {
   'settings.language': 'Language',
   'settings.languageCurrent': 'Language: {language}',
   'settings.languageSubtitle': 'Choose the app language.',
+  'settings.scanPerformance': 'Scan performance',
+  'settings.scanPerformanceHint':
+    'A short one-time device test using public sample data. It never opens a wallet or uses wallet keys.',
+  'settings.performanceMeasuring': 'Measuring once…',
+  'settings.performanceMeasuringShort': 'Measuring…',
+  'settings.performanceMeasured': 'Measured',
+  'settings.performanceUnavailable': 'Not available',
+  'settings.derivationsPerSecond': '{rate} derivations/s',
   'settings.loading': 'Loading',
   'settings.mode': 'Mode',
   'settings.node': 'Node',
@@ -961,6 +1039,9 @@ const en = {
   'wallets.removeFastWalletConfirm':
     'Remove {name}? Automatic server scanning will also be disabled.',
   'wallets.removeFromApp': 'Remove from App',
+  'wallets.removeBackupTitle': 'Back up recovery words first',
+  'wallets.removeBackupDescription':
+    'Before removing {name}, write down and confirm its 25 recovery words. The wallet can then be removed from this app.',
   'wallets.removeWallet': 'Remove Wallet',
   'wallets.removeWalletConfirm':
     'Remove {name} from this app? This does not erase your 25-word seed.',
@@ -1146,7 +1227,26 @@ const de: Record<keyof typeof en, string> = {
   'communityV1.notificationsFailed':
     'Hinweise konnten nicht aktiviert werden. Du kannst die Community trotzdem nutzen.',
   'sync.error': 'Sync-Fehler',
-  'sync.connectingNode': 'Node verbinden',
+  'sync.connectingNode': 'Sichere Verbindung zum Monero-Node wird hergestellt',
+  'sync.selectingSource': 'Sync-Quelle auswählen',
+  'sync.startingConnection': 'Gemeinsame Blockchain-Verbindung wird gestartet',
+  'sync.startingConnectionHint':
+    'Die verschlüsselte Wallet wird vorbereitet und der schnellste verfügbare Node gewählt. Die App bleibt bedienbar.',
+  'sync.startingConnectionElapsed':
+    '{seconds} Sek. · Die verschlüsselte Wallet wird vorbereitet und der schnellste verfügbare Node gewählt. Die App bleibt bedienbar.',
+  'sync.showDetails': 'Sync-Details anzeigen',
+  'sync.hideDetails': 'Sync-Details ausblenden',
+  'sync.downloadingBlocks': 'Blöcke herunterladen',
+  'sync.scanningWallets': 'Alle Wallets scannen',
+  'sync.downloadingAndScanning': 'Blöcke laden und alle Wallets scannen',
+  'sync.checkingMempool': 'Ausstehende Transaktionen prüfen',
+  'sync.savingWallets': 'Wallet-Stand speichern',
+  'sync.retryingNode': 'Node-Verbindung erneut versuchen',
+  'sync.degraded': 'Einige Wallets benötigen einen neuen Versuch',
+  'sync.blockchainData': 'Blockchain-Daten',
+  'sync.connected': 'Verbunden',
+  'sync.sharedPipeline': 'Gemeinsamer Wallet-Sync',
+  'sync.walletsTogether': '{count} Wallets nutzen diesen Blockstrom',
   'sync.checkingBlocks': 'Blöcke prüfen',
   'sync.finalizing': 'Letzte Prüfung',
   'sync.verifyingRecent': 'Neueste Transaktionen werden geprüft',
@@ -1193,13 +1293,13 @@ const de: Record<keyof typeof en, string> = {
   'security.showPassword': 'Passwort anzeigen',
   'security.hidePassword': 'Passwort verbergen',
   'security.passwordRecoveryHelp':
-    'Wichtig: Nach drei falschen App-Passwörtern werden alle lokalen App- und Wallet-Daten auf diesem Gerät dauerhaft gelöscht. Du brauchst deinen 25-Wörter-Seed, um deine Wallets wiederherzustellen.',
+    'Falsche Passwörter werden zeitlich begrenzt und löschen niemals Wallet-Daten. Bewahre jeden Recovery Seed sicher auf, falls alle App-Entsperrmethoden verloren gehen.',
   'security.passwordAttemptsRemaining':
-    'Falsches App-Passwort. Noch {count} Versuche, bevor alle lokalen Wallet-Daten gelöscht werden.',
+    'Falsches App-Passwort. Versuche es nach der Sicherheitswartezeit erneut.',
   'security.passwordAttemptRemaining':
-    'Falsches App-Passwort. Noch 1 Versuch, bevor alle lokalen Wallet-Daten gelöscht werden.',
+    'Falsches App-Passwort. Versuche es nach der Sicherheitswartezeit erneut.',
   'security.passwordResetInProgress':
-    'Drei falsche Passwörter. Lokale Wallet-Daten werden sicher gelöscht…',
+    'Der App-Zugriff ist vorübergehend begrenzt. Die Wallet-Daten bleiben erhalten.',
   'security.continueWithBiometrics': 'Mit Biometrie fortfahren',
   'security.unlockApp': 'App entsperren',
   'security.unlockAppHint':
@@ -1212,7 +1312,8 @@ const de: Record<keyof typeof en, string> = {
   'notification.closesIn': 'Schließt in {seconds} s',
   'notification.ok': 'OK',
   'walletSelector.active': 'Aktiv',
-  'walletSelector.fast': 'Fast',
+  'walletSelector.fast': '⚡ FAST',
+  'walletSelector.fastReady': 'Bereit für Zahlungshinweise',
   'walletSelector.fastReceiveOnly':
     'Fast Wallet kann nach dem Wallet-Sync senden.',
   'walletSelector.locked': 'Gesperrt',
@@ -1223,6 +1324,10 @@ const de: Record<keyof typeof en, string> = {
   'walletSelector.openToCheckNode': 'Öffnen, um Node zu prüfen',
   'walletSelector.openToSend': 'Öffnen und senden',
   'walletSelector.preparing': 'Wird vorbereitet',
+  'walletSelector.ready': 'Bereit',
+  'walletSelector.ledgerBalanceNeedsVerification': 'Ledger verbinden, um das Senden zu prüfen',
+  'walletSelector.scanningWallet': 'Wallet wird gescannt',
+  'walletSelector.waitingSharedBlocks': 'Wartet auf gemeinsame Blöcke',
   'walletSelector.pushOff': 'Push aus',
   'walletSelector.pushReady': 'Aktiv',
   'walletSelector.receiveTo': 'Empfangen mit',
@@ -1261,6 +1366,16 @@ const de: Record<keyof typeof en, string> = {
     'Die App verbindet diese Adresse mit dem Fast-Wallet-Server.',
   'welcome.subtitle': 'Privat, schnell und unter deiner Kontrolle.',
   'welcome.savedWallets': 'Deine Wallets',
+  'welcome.walletMode': 'Wallet-Modus',
+  'welcome.chooseExperience': 'Standard auswählen',
+  'welcome.chooseExperienceDescription':
+    'Du kannst die Fast Wallet bei jeder Erstellung einer privaten Wallet ändern. Diese Auswahl aktiviert weder Server-Scans noch Mitteilungen oder Datenfreigaben.',
+  'welcome.privacyOnly': 'Nur Privatsphäre',
+  'welcome.privacyOnlyDescription':
+    'Es wird nur die private Monero-Wallet erstellt. Fast Wallet ist standardmäßig ausgeschaltet.',
+  'welcome.privacyComfort': 'Privatsphäre + Komfort',
+  'welcome.privacyComfortDescription':
+    'Fast Wallet ist bei jeder Erstellung einer privaten Wallet standardmäßig eingeschaltet. Sie ist eine getrennte lokale Wallet mit eigenen Wiederherstellungswörtern.',
   'setup.biometric.checking': 'Gerätesicherheit wird geprüft',
   'setup.biometric.secureDeviceKey': 'Sicherer Geräteschlüssel',
   'setup.biometric.storedSecret':
@@ -1276,6 +1391,21 @@ const de: Record<keyof typeof en, string> = {
   'setup.fastWalletLedgerDescription':
     'Erstellt die reservierte Ledger-Fast-Wallet in Konto 1. Sie bleibt von normalen Ledger-Adressen in Konto 0 getrennt.',
   'setup.fastWalletTitle': 'Fast Wallet erstellen',
+  'setup.fastWalletToggle': 'Fast Wallet',
+  'setup.fastWalletToggleDescription':
+    'Zusätzlich eine getrennte lokale Wallet mit eigenen Wiederherstellungswörtern erstellen. Server-Scans und Mitteilungen werden hier nicht aktiviert.',
+  'setup.fastWalletBackupRequired':
+    'Die getrennte Fast Wallet wurde erstellt, aber ihre Wiederherstellungswörter müssen noch gesichert werden, bevor ihre Adresse verwendet wird.',
+  'setup.fastWalletCreateFailed':
+    'Deine private Wallet ist bereit. Die optionale Fast Wallet konnte nicht erstellt werden und kann später unter Wallets hinzugefügt werden.',
+  'setup.fastWalletPrimaryBackupFirst':
+    'Sichere zuerst die Wiederherstellungswörter der privaten Wallet. Danach kannst du eine Fast Wallet unter Wallets erstellen.',
+  'setup.fastWalletTransferSending':
+    'Verschlüsselter View Key wird an den Cuprate-Scan-Dienst übertragen…',
+  'setup.fastWalletTransferAccepted':
+    'Der Cuprate-Scan-Dienst hat den verschlüsselten View Key angenommen.',
+  'setup.fastWalletTransferFailed':
+    'Der Cuprate-Scan-Dienst hat den verschlüsselten View Key nicht angenommen.',
   'setup.createFastReceive': 'Fast Wallet wird erstellt',
   'setup.device': 'Gerät',
   'setup.footer': 'Made with ❤️ by TEX8',
@@ -1292,6 +1422,8 @@ const de: Record<keyof typeof en, string> = {
   'setup.hardware.localViewTitle': 'Ledger zum Anzeigen merken',
   'setup.hardware.localViewDescription':
     'Speichert eine verschlüsselte Nur-Lese-Wallet auf diesem Gerät. Guthaben und Eingänge sind ohne Ledger sichtbar; zum Senden bleibt Ledger erforderlich.',
+  'setup.hardware.fastWalletDescription':
+    'Zusätzlich Ledger-Konto 1 als eigene Fast-Wallet-Adresse reservieren.',
   'setup.hardware.localViewProtectionRequired':
     'Aktiviere zuerst den App-Schutz in den Einstellungen, bevor der Ledger-Lesezugriff auf diesem Gerät gespeichert wird.',
   'setup.hardware.looking': 'Suche nach einem verfügbaren Ledger-Transport.',
@@ -1408,6 +1540,18 @@ const de: Record<keyof typeof en, string> = {
   'home.timeframeMax': 'Max',
   'home.timeframeToday': 'Heute',
   'home.totalBalance': 'Gesamtguthaben',
+  'home.ledgerBalanceNeedsVerification':
+    'Empfangene Ledger-Beträge werden angezeigt. Die Spend-Prüfung steht noch aus.',
+  'home.ledgerBalanceVerificationHint':
+    'Ledger verbinden und entsperren, darauf die Monero-App öffnen und prüfen, welche Outputs zum Senden verfügbar sind.',
+  'home.verifyLedgerBalance': 'Mit Ledger prüfen',
+  'home.verifyingLedgerBalance': 'Warte auf Ledger…',
+  'home.ledgerReconciliation.connecting-ledger': 'Ledger wird gesucht…',
+  'home.ledgerReconciliation.checking-local-scan': 'Lokaler Wallet-Scan wird geprüft…',
+  'home.ledgerReconciliation.catching-up-local-scan': 'Lokaler Scan läuft vor der Ledger-Prüfung…',
+  'home.ledgerReconciliation.deriving-owned-output-key-images': 'Eigene Outputs werden mit Ledger geprüft…',
+  'home.ledgerReconciliation.saving-ledger-balance': 'Geprüftes Guthaben wird gespeichert…',
+  'home.ledgerWalletCouldNotOpen': 'Die lokale Ledger-Begleitwallet konnte nicht geöffnet werden.',
   'home.transactions': 'Transaktionen',
   'home.walletLocked': 'Wallet gesperrt',
   'home.walletNotOpen': 'Wallet nicht geöffnet',
@@ -1561,6 +1705,10 @@ const de: Record<keyof typeof en, string> = {
   'receive.ledgerFastWallet': 'Ledger Fast Wallet',
   'receive.newAddress': 'Neue Adresse',
   'receive.newAddressLabel': 'Adresse {count}',
+  'receive.newAddressName': 'Bezeichnung der Adresse',
+  'receive.newAddressPlaceholder': 'Zum Beispiel: Ersparnisse oder Rechnung',
+  'receive.subaddressPrivacyHint':
+    'Jede Adresse gehört zu dieser Wallet und wird durch dieselben Wiederherstellungswörter wiederhergestellt.',
   'receive.manageAddresses': 'Empfangsadressen verwalten',
   'receive.otherAddresses': 'Weitere Empfangsadressen',
   'receive.privacyText':
@@ -1878,6 +2026,9 @@ const de: Record<keyof typeof en, string> = {
   'settings.daemonTls': 'Daemon TLS',
   'settings.default': 'Standard',
   'settings.diagnostics': 'Diagnose',
+  'settings.ledgerBalanceVerification': 'Ledger-Guthaben prüfen',
+  'settings.ledgerBalanceVerifying': 'Prüfung mit Ledger…',
+  'settings.ledgerBalanceVerified': 'Der vom Ledger signierte Ausgabestatus wurde geprüft und das lokale Guthaben aktualisiert.',
   'settings.disabled': 'Deaktiviert',
   'settings.enableBiometrics': 'Biometrie aktivieren',
   'settings.fastReceive': 'Fast Wallet',
@@ -1885,6 +2036,14 @@ const de: Record<keyof typeof en, string> = {
   'settings.language': 'Sprache',
   'settings.languageCurrent': 'Sprache: {language}',
   'settings.languageSubtitle': 'Wähle die Sprache der App.',
+  'settings.scanPerformance': 'Scan-Leistung',
+  'settings.scanPerformanceHint':
+    'Ein kurzer, einmaliger Gerätetest mit öffentlichen Beispieldaten. Dabei wird keine Wallet geöffnet und kein Wallet-Schlüssel verwendet.',
+  'settings.performanceMeasuring': 'Wird einmalig gemessen…',
+  'settings.performanceMeasuringShort': 'Wird gemessen…',
+  'settings.performanceMeasured': 'Gemessen',
+  'settings.performanceUnavailable': 'Nicht verfügbar',
+  'settings.derivationsPerSecond': '{rate} Ableitungen/s',
   'settings.loading': 'Lädt',
   'settings.mode': 'Modus',
   'settings.node': 'Node',
@@ -1966,6 +2125,9 @@ const de: Record<keyof typeof en, string> = {
   'wallets.removeFastWalletConfirm':
     '{name} entfernen? Der automatische Server-Scan wird ebenfalls deaktiviert.',
   'wallets.removeFromApp': 'Aus App entfernen',
+  'wallets.removeBackupTitle': 'Zuerst Wiederherstellungswörter sichern',
+  'wallets.removeBackupDescription':
+    'Bevor du {name} entfernst, schreibe die 25 Wiederherstellungswörter auf und bestätige sie. Danach kann die Wallet aus dieser App entfernt werden.',
   'wallets.removeWallet': 'Wallet entfernen',
   'wallets.removeWalletConfirm':
     '{name} aus dieser App entfernen? Dein 25-Wörter-Seed wird dadurch nicht gelöscht.',

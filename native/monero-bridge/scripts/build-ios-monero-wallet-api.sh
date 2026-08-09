@@ -11,7 +11,6 @@ abs_path() {
   esac
 }
 
-monero_source_dir="${MONERO_SOURCE_DIR:-${repo_root}/../monero-gui/monero}"
 output_root="$(abs_path "${OUTPUT_ROOT:-${repo_root}/build/ios-monero-wallet}")"
 dependency_root="$(abs_path "${MONERO_IOS_DEPENDENCY_ROOT:-${repo_root}/build/ios-deps}")"
 grpc_dependency_root="$(abs_path "${MONERO_IOS_GRPC_DEPENDENCY_ROOT:-${dependency_root}}")"
@@ -26,6 +25,11 @@ randomx_enable_jit="${RANDOMX_ENABLE_JIT:-OFF}"
 host_tools_root="$(abs_path "${MONERO_IOS_HOST_TOOLS_ROOT:-${MONERO_HOST_TOOLS_ROOT:-${repo_root}/build/host-protobuf-tools}}")"
 protoc_path="${PROTOC_PATH:-${host_tools_root}/protobuf-v31.1/bin/protoc}"
 grpc_cpp_plugin_path="${GRPC_CPP_PLUGIN_PATH:-}"
+mfw_product_core_root="$(abs_path "${MFW_PRODUCT_CORE_ROOT:-${repo_root}/native/product-core}")"
+mfw_product_core_library="${MFW_PRODUCT_CORE_LIBRARY:-}"
+
+source "${script_dir}/prepare-common-monero-core.sh"
+monero_source_dir="${MONERO_SOURCE_DIR}"
 
 if [[ ! -x "${protoc_path}" && -x "${repo_root}/build/android-host-tools/protobuf-v31.1/bin/protoc" ]]; then
   protoc_path="${repo_root}/build/android-host-tools/protobuf-v31.1/bin/protoc"
@@ -55,6 +59,8 @@ if [[ ! -f "${monero_source_dir}/CMakeLists.txt" ]]; then
   echo "Monero source checkout not found at ${monero_source_dir}" >&2
   exit 1
 fi
+
+monero_source_dir="$(cd "${monero_source_dir}" && pwd -P)"
 
 target_sdk() {
   case "$1" in
@@ -196,6 +202,21 @@ for label in "${targets[@]}"; do
     "-DUNBOUND_INCLUDE_DIR=${dependency_prefix}/include"
     "-DUNBOUND_LIBRARIES=${dependency_prefix}/lib/libunbound.a"
   )
+  if grep -Fq "MFW_PRODUCT_CORE_ROOT" "${monero_source_dir}/src/simplewallet/CMakeLists.txt"; then
+    if [[ ! -f "${mfw_product_core_root}/include/mfw_product_core.h" ||
+          ! -f "${mfw_product_core_root}/generated/c/mfw_product_core_contract.h" ]]; then
+      echo "Missing Monero Fast Wallet Product Core headers: ${mfw_product_core_root}" >&2
+      exit 1
+    fi
+    if [[ ! -f "${mfw_product_core_library}" ]]; then
+      echo "MFW_PRODUCT_CORE_LIBRARY must name an iOS Product Core library." >&2
+      exit 1
+    fi
+    cmake_args+=(
+      "-DMFW_PRODUCT_CORE_ROOT=${mfw_product_core_root}"
+      "-DMFW_PRODUCT_CORE_LIBRARY=${mfw_product_core_library}"
+    )
+  fi
   if [[ -x "${protoc_path}" ]]; then
     cmake_args+=("-DPROTOC_PATH=${protoc_path}")
   fi
@@ -212,6 +233,27 @@ for label in "${targets[@]}"; do
   add_boost_library_args SYSTEM "${boost_lib_dir}/libboost_system.a"
   add_boost_library_args THREAD "${boost_lib_dir}/libboost_thread.a"
 
+  if [[ -f "${build_dir}/CMakeCache.txt" ]]; then
+    cached_source_dir="$({
+      sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${build_dir}/CMakeCache.txt"
+    } | tail -n 1)"
+    if [[ -n "${cached_source_dir}" && "${cached_source_dir}" != "${monero_source_dir}" ]]; then
+      echo "==> reset stale ${label} CMake cache (${cached_source_dir} -> ${monero_source_dir})"
+      case "${build_dir}" in
+        "${output_root}/ios-device"|"${output_root}/ios-sim-arm64") ;;
+        *)
+          echo "Refusing to reset unexpected iOS build directory: ${build_dir}" >&2
+          exit 1
+          ;;
+      esac
+      # ExternalProject creates nested CMake caches (for example translations),
+      # so clearing only the top-level cache is insufficient after a verified
+      # source checkout moves. Reset exactly this generated target directory;
+      # dependency prefixes and installed archives remain untouched.
+      cmake -E remove_directory "${build_dir}"
+    fi
+  fi
+
   echo "==> configure ${label} ($(target_platform_name "${label}"))"
   env \
     "PKG_CONFIG_LIBDIR=$(join_by_colon "${pkg_config_dirs[@]}")" \
@@ -221,6 +263,8 @@ for label in "${targets[@]}"; do
   if [[ "${configure_only}" != "1" ]]; then
     echo "==> build wallet_api ${label}"
     cmake --build "${build_dir}" --target wallet_api -j "${jobs}"
+    tex8_write_common_core_stamp "${build_dir}/.tex8-monero-core-tree"
+    echo "Stamped common Monero Core ${MONERO_COMMON_CORE_TREE} for ${label}"
   fi
 done
 

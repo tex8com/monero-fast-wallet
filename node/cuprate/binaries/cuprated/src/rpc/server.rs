@@ -294,6 +294,18 @@ async fn run_rpc_server(
             "/getinfo",
             axum::routing::any(get_info_proxy::<CupratedRpcHandler>),
         )
+        // wallet2 performs its daemon capability handshake through this
+        // legacy-compatible endpoint rather than through `/json_rpc`.
+        // Keeping it alongside `/get_info` prevents clients from waiting for
+        // their failed-request retry window before beginning a wallet refresh.
+        .route(
+            "/get_version",
+            axum::routing::any(get_version_proxy::<CupratedRpcHandler>),
+        )
+        .route(
+            "/getversion",
+            axum::routing::any(get_version_proxy::<CupratedRpcHandler>),
+        )
         .with_state(rpc_handler);
     let resolver_router = Router::new()
         .route("/v1/mfw/names/{name}", get(resolve_mfw_name_http))
@@ -454,6 +466,39 @@ async fn get_info_proxy<H: cuprate_rpc_interface::RpcHandler>(
     // Serialize the response as JSON - the wallet expects a flat JSON object
     let json = serde_json::to_value(&info).map_err(|e| {
         eprintln!("[RPC] /get_info serialize error: {e:?}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(json))
+}
+
+/// Proxy the legacy `/get_version` endpoint to the JSON-RPC handler.
+///
+/// `wallet2` uses this direct daemon endpoint while it initializes a remote
+/// node.  Cuprate already implements the canonical JSON-RPC method, so this
+/// adapter preserves the expected flat JSON response without duplicating any
+/// consensus or version logic.
+async fn get_version_proxy<H: cuprate_rpc_interface::RpcHandler>(
+    State(handler): State<H>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    use cuprate_rpc_types::json::{JsonRpcRequest, JsonRpcResponse};
+    use tower::ServiceExt;
+
+    let response = handler
+        .oneshot(JsonRpcRequest::GetVersion(Default::default()))
+        .await
+        .map_err(|error| {
+            eprintln!("[RPC] /get_version handler error: {error:?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let JsonRpcResponse::GetVersion(version) = response else {
+        eprintln!("[RPC] /get_version wrong response variant");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+
+    let json = serde_json::to_value(&version).map_err(|error| {
+        eprintln!("[RPC] /get_version serialize error: {error:?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 

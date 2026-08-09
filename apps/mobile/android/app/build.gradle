@@ -92,14 +92,11 @@ def moneroFastWalletProtocolRoot = (findProperty("moneroFastWalletProtocolRoot")
 def moneroCommunityMatrixLibrary = (findProperty("moneroCommunityMatrixLibrary") ?: "").toString()
 def moneroCommunityMatrixRoot = (findProperty("moneroCommunityMatrixRoot") ?: "").toString()
 def moneroCommunityHarrierLibrary = (findProperty("moneroCommunityHarrierLibrary") ?: "").toString()
+def moneroCommunityHarrierJniLibs = (findProperty("moneroCommunityHarrierJniLibs") ?: "").toString()
 def moneroCommunityAssetRoot = (
         findProperty("moneroCommunityAssetRoot")
                 ?: file("${rootDir}/../../../build/community-v1-release-assets").absolutePath
 ).toString().trim()
-def fastWalletGatewayOrigin = (findProperty("fastWalletGatewayOrigin") ?: "").toString().trim()
-def fastWalletRegistrationOrigin = (findProperty("fastWalletRegistrationOrigin") ?: "").toString().trim()
-def fastWalletOfficialWorkerRootId =
-        (findProperty("fastWalletOfficialWorkerRootId") ?: "").toString().trim()
 def mobileAppVersionManifest =
         new groovy.json.JsonSlurper().parse(file("${rootDir}/../../../config/mobile-app-version.json"))
 if (mobileAppVersionManifest.schemaVersion != 1 ||
@@ -115,12 +112,50 @@ if (v1ReleaseFeatureManifest.schemaVersion != 1 ||
 }
 def fastWalletOfficialWorkerEnabled =
         v1ReleaseFeatureManifest.features.officialWorker == true
+def officialWorkerParameters =
+        v1ReleaseFeatureManifest.parameters.fastWalletOfficialWorker ?: [:]
+def fastWalletGatewayOrigin = (
+        findProperty("fastWalletGatewayOrigin")
+                ?: officialWorkerParameters.gatewayOrigin
+                ?: ""
+).toString().trim().replaceAll('/+$', '')
+def fastWalletRegistrationOrigin = (
+        findProperty("fastWalletRegistrationOrigin")
+                ?: officialWorkerParameters.registrationOrigin
+                ?: fastWalletGatewayOrigin
+).toString().trim().replaceAll('/+$', '')
+def fastWalletOfficialWorkerRootId = (
+        findProperty("fastWalletOfficialWorkerRootId")
+                ?: officialWorkerParameters.rootIdHex
+                ?: ""
+).toString().trim()
+if (fastWalletOfficialWorkerEnabled) {
+    if (!(fastWalletGatewayOrigin ==~ /^https:\/\/[^\/?#@\s]+$/) ||
+            !(fastWalletRegistrationOrigin ==~ /^https:\/\/[^\/?#@\s]+$/)) {
+        throw new GradleException(
+                "officialWorker requires exact HTTPS gateway and registration origins")
+    }
+    if (!(fastWalletOfficialWorkerRootId ==~ /^[0-9a-f]{64}$/)) {
+        throw new GradleException(
+                "officialWorker requires a pinned 32-byte lowercase-hex root ID")
+    }
+}
 def fastWalletPrivateWorkerPairingEnabled =
         v1ReleaseFeatureManifest.features.privateWorkerPairing == true
 def privatePhoneDeviceContactsEnabled =
         v1ReleaseFeatureManifest.features.deviceContactDiscovery == true
+def moneroEnthusiastV1DevelopmentDisabled = (
+        findProperty("moneroEnthusiastV1DevelopmentDisabled") ?: "false"
+).toString().toBoolean()
+if (moneroEnthusiastV1DevelopmentDisabled &&
+        moneroWalletApplicationId == "com.tex8.monerowallet") {
+    throw new GradleException(
+            "Monero Enthusiast V1 may be disabled only for a separate development application ID"
+    )
+}
 def moneroEnthusiastV1Enabled =
-        v1ReleaseFeatureManifest.features.moneroEnthusiastV1 == true
+        v1ReleaseFeatureManifest.features.moneroEnthusiastV1 == true &&
+                !moneroEnthusiastV1DevelopmentDisabled
 def moneroEnthusiastConfig =
         v1ReleaseFeatureManifest.parameters.moneroEnthusiastV1
 def communityHttpsOrigin = { value ->
@@ -360,9 +395,15 @@ android {
     }
 
     if (moneroEnthusiastV1Enabled) {
+        if (moneroCommunityHarrierJniLibs.isEmpty()) {
+            throw new GradleException(
+                    "Monero Enthusiast V1 requires the packaged Android Harrier shared library"
+            )
+        }
         sourceSets {
             main {
                 assets.srcDir(moneroCommunityAssetRoot)
+                jniLibs.srcDir(moneroCommunityHarrierJniLibs)
             }
         }
         androidResources {
@@ -431,6 +472,10 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("com.lambdapioneer.argon2kt:argon2kt:1.6.0")
+    if (moneroEnthusiastV1Enabled) {
+        // Version pinned in native/community-harrier-runtime/upstream.lock.
+        implementation("org.pytorch:executorch-android:1.3.1")
+    }
     testImplementation("junit:junit:4.13.2")
 
     androidTestImplementation("androidx.test:core:1.6.1")

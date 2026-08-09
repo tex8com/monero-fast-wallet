@@ -5,6 +5,7 @@
 #include "CommunityHarrierRuntimeC.h"
 
 #include "CommunityHarrierRuntime.h"
+#include "CommunityHarrierAndroidJni.h"
 
 #include <algorithm>
 #include <cstring>
@@ -49,6 +50,11 @@ tex8_community_harrier_create_v1(void) {
   } catch (...) {
     return nullptr;
   }
+}
+
+extern "C" void tex8_community_harrier_android_install_java_vm_v1(
+    void* java_vm) {
+  tex8::community::install_android_java_vm(static_cast<JavaVM*>(java_vm));
 }
 
 extern "C" void tex8_community_harrier_destroy_v1(

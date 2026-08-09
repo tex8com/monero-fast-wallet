@@ -23,6 +23,18 @@ extern "C" void tex8_desktop_result_free(
 extern "C" Tex8DesktopResult tex8_desktop_wallet_ledger_transport_status(
     Tex8DesktopWalletCore* core) noexcept;
 
+// Process-wide derivation policy. "auto" is the safe default; "cpu" disables
+// GPU dispatch and "gpu" lowers the GPU crossover threshold but never disables
+// the native CPU fallback or the mandatory backend self-test.
+extern "C" Tex8DesktopResult tex8_desktop_wallet_compute_backend_status(
+    Tex8DesktopWalletCore* core) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_set_compute_backend(
+    Tex8DesktopWalletCore* core, const char* preference) noexcept;
+// Runs a bounded benchmark with public synthetic points. No wallet needs to be
+// open and no wallet secret is read. The app caches the verified result.
+extern "C" Tex8DesktopResult tex8_desktop_wallet_benchmark_derivation_performance(
+    Tex8DesktopWalletCore* core) noexcept;
+
 extern "C" Tex8DesktopResult tex8_desktop_wallet_create(
     Tex8DesktopWalletCore* core,
     const char* path,
@@ -69,6 +81,13 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_set_daemon(
     Tex8DesktopWalletCore* core, const char* wallet_id, const char* address,
     int trusted, int use_ssl, const char* username, const char* password,
     const char* proxy_address) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_set_grpc_endpoint(
+    Tex8DesktopWalletCore* core, const char* wallet_id,
+    const char* endpoint) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_network_sync_status(
+    Tex8DesktopWalletCore* core, unsigned char network) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prioritize_network_wallet(
+    Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_start_refresh(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_stop_refresh(
@@ -84,12 +103,18 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_get_seed(
     const char* seed_offset) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_snapshot(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_sync_ledger_key_images(
+    Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
+    const char* view_only_wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_get_balance(
     Tex8DesktopWalletCore* core, const char* wallet_id,
     unsigned int account_index, int unlocked_only) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_create_subaddress(
     Tex8DesktopWalletCore* core, const char* wallet_id,
     unsigned int account_index, const char* label) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_list_subaddresses(
+    Tex8DesktopWalletCore* core, const char* wallet_id,
+    unsigned int account_index) noexcept;
 // Fast-receive creation returns public metadata only. The registration payload
 // is consumed by the Rust host, which posts the isolated private view key to a
 // scanner without exposing it to the Tauri renderer.

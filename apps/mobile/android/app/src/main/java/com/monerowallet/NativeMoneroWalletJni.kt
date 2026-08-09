@@ -33,6 +33,11 @@ internal object NativeMoneroWalletJni {
     return runCatching { nativeLinkedWithMonero() }.getOrDefault(false)
   }
 
+  fun benchmarkDerivationPerformance(): String {
+    requireLoaded()
+    return nativeBenchmarkDerivationPerformance()
+  }
+
   fun communityMatrixLinked(): Boolean {
     if (loadError != null) {
       return false
@@ -371,6 +376,35 @@ internal object NativeMoneroWalletJni {
     )
   }
 
+  fun sealLedgerFastWalletWatch(
+    walletId: String,
+    identityId: String,
+    accountIndex: Double,
+    network: String,
+    restoreHeight: Double,
+    workerDescriptorHex: String,
+    assignmentHandleHex: String,
+    assignmentEpoch: Double,
+    issuedAt: Double,
+    expiresAt: Double,
+    now: Double,
+  ): String {
+    requireLoaded()
+    return nativeSealLedgerFastWalletWatch(
+      walletId,
+      identityId,
+      accountIndex,
+      network,
+      restoreHeight,
+      workerDescriptorHex,
+      assignmentHandleHex,
+      assignmentEpoch,
+      issuedAt,
+      expiresAt,
+      now,
+    )
+  }
+
   fun verifiedFastWalletRelayOrigin(
     workerDescriptorHex: String,
     network: String,
@@ -422,6 +456,16 @@ internal object NativeMoneroWalletJni {
   fun setGrpcEndpoint(walletId: String, endpoint: String) {
     requireLoaded()
     nativeSetGrpcEndpoint(walletId, endpoint)
+  }
+
+  fun networkSyncStatus(network: String): Map<String, Any> {
+    requireLoaded()
+    return nativeNetworkSyncStatus(network)
+  }
+
+  fun prioritizeNetworkWallet(walletId: String) {
+    requireLoaded()
+    nativePrioritizeNetworkWallet(walletId)
   }
 
   fun startRefresh(walletId: String) {
@@ -1086,6 +1130,11 @@ internal object NativeMoneroWalletJni {
     return nativeCreateSubaddress(walletId, accountIndex, label)
   }
 
+  fun listSubaddresses(walletId: String, accountIndex: Double): List<Map<String, Any>> {
+    requireLoaded()
+    return nativeListSubaddresses(walletId, accountIndex)
+  }
+
   fun setWalletPassword(walletId: String, newPassword: String) {
     requireLoaded()
     nativeSetWalletPassword(walletId, newPassword)
@@ -1114,6 +1163,17 @@ internal object NativeMoneroWalletJni {
   fun getTransactions(walletId: String, limit: Double): List<Map<String, Any>> {
     requireLoaded()
     return nativeGetTransactions(walletId, limit)
+  }
+
+  fun syncLedgerKeyImagesToViewWallet(
+    hardwareWalletId: String,
+    viewOnlyWalletId: String,
+  ): Map<String, Any> {
+    requireLoaded()
+    return nativeSyncLedgerKeyImagesToViewWallet(
+      hardwareWalletId,
+      viewOnlyWalletId,
+    )
   }
 
   fun prepareTransaction(
@@ -1284,6 +1344,7 @@ internal object NativeMoneroWalletJni {
   }
 
   @JvmStatic private external fun nativeLinkedWithMonero(): Boolean
+  @JvmStatic private external fun nativeBenchmarkDerivationPerformance(): String
   @JvmStatic private external fun nativeCommunityMatrixLinked(): Boolean
   @JvmStatic private external fun nativeCommunityRuntimeLinked(): Boolean
   @JvmStatic private external fun nativeCommunityMatrixCreate(
@@ -1417,6 +1478,11 @@ internal object NativeMoneroWalletJni {
     label: String,
   ): Map<String, Any>
 
+  @JvmStatic private external fun nativeListSubaddresses(
+    walletId: String,
+    accountIndex: Double,
+  ): List<Map<String, Any>>
+
   @JvmStatic private external fun nativeCreateFastReceiveIdentity(
     sourceWalletId: String,
     identityId: String,
@@ -1439,6 +1505,20 @@ internal object NativeMoneroWalletJni {
     identityId: String,
     path: String,
     password: String,
+    network: String,
+    restoreHeight: Double,
+    workerDescriptorHex: String,
+    assignmentHandleHex: String,
+    assignmentEpoch: Double,
+    issuedAt: Double,
+    expiresAt: Double,
+    now: Double,
+  ): String
+
+  @JvmStatic private external fun nativeSealLedgerFastWalletWatch(
+    walletId: String,
+    identityId: String,
+    accountIndex: Double,
     network: String,
     restoreHeight: Double,
     workerDescriptorHex: String,
@@ -1477,6 +1557,11 @@ internal object NativeMoneroWalletJni {
     walletId: String,
     endpoint: String,
   )
+  @JvmStatic private external fun nativeNetworkSyncStatus(
+    network: String,
+  ): Map<String, Any>
+
+  @JvmStatic private external fun nativePrioritizeNetworkWallet(walletId: String)
 
   @JvmStatic private external fun nativeStartRefresh(walletId: String)
   @JvmStatic private external fun nativeStopRefresh(walletId: String)
@@ -1708,6 +1793,11 @@ internal object NativeMoneroWalletJni {
     walletId: String,
     limit: Double,
   ): List<Map<String, Any>>
+
+  @JvmStatic private external fun nativeSyncLedgerKeyImagesToViewWallet(
+    hardwareWalletId: String,
+    viewOnlyWalletId: String,
+  ): Map<String, Any>
 
   @JvmStatic private external fun nativePrepareTransaction(
     walletId: String,

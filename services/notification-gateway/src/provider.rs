@@ -5,6 +5,7 @@ use chacha20poly1305::{
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use fs2::FileExt;
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -33,6 +34,7 @@ const MAX_TOKEN_BYTES: usize = 4_096;
 const MAX_GRANT_LIFETIME_SECONDS: u64 = 5 * 60;
 const MAX_DELIVERY_ATTEMPTS: u16 = 12;
 const MAX_PROVIDER_RESPONSE_BYTES: u64 = 32 * 1024;
+const PROVIDER_LEASE_SECONDS: u64 = 45 * 24 * 60 * 60;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -198,7 +200,16 @@ pub trait ProviderDelivery: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct FcmDeliveryConfig {
     pub project_id: String,
-    pub access_token_file: PathBuf,
+    pub credentials: FcmCredentials,
+}
+
+/// FCM accepts OAuth access tokens. Production uses a restricted service
+/// account so the Gateway renews them itself; a token file remains available
+/// for isolated test environments and controlled emergency rotation.
+#[derive(Clone, Debug)]
+pub enum FcmCredentials {
+    AccessTokenFile(PathBuf),
+    ServiceAccountFile(PathBuf),
 }
 
 #[derive(Clone, Debug)]
@@ -256,7 +267,7 @@ impl DirectProviderDelivery {
 
     pub fn validate_credentials(&self) -> Result<(), String> {
         if let Some((config, _)) = &self.fcm {
-            drop(load_rotating_bearer(&config.access_token_file)?);
+            validate_fcm_credentials(config)?;
         }
         if let Some((config, _)) = &self.apns {
             drop(load_rotating_bearer(&config.provider_jwt_file)?);
@@ -284,7 +295,8 @@ impl DirectProviderDelivery {
         token: &str,
         event: &OpaqueNotificationEvent,
     ) -> Result<ProviderDeliveryResult, String> {
-        let bearer = load_rotating_bearer(&config.access_token_file)?;
+        let bearer = fcm_bearer(config, self.timeout, self.https_only)?;
+        let (title, body) = notification_copy(event);
         let response = self
             .client()?
             .post(endpoint)
@@ -293,18 +305,22 @@ impl DirectProviderDelivery {
                 "message": {
                     "token": token,
                     "notification": {
-                        "title": "Monero Fast Wallet",
-                        "body": "Open the app to check a new payment."
+                        "title": title,
+                        "body": body
                     },
                     "data": {
-                        "type": crate::EVENT_CATEGORY,
+                        "type": event.category,
                         "contractVersion": crate::CONTRACT_VERSION,
                         "eventId": event.id
                     },
                     "android": {
                         "priority": "high",
                         "notification": {
-                            "channel_id": "monero_payments"
+                            // Must match the channel created by the Android
+                            // release app.  A missing explicit channel can
+                            // cause a background FCM notification to fall
+                            // back or be invisible on Android 8+.
+                            "channel_id": "monero_transactions"
                         }
                     },
                     "apns": {
@@ -328,6 +344,7 @@ impl DirectProviderDelivery {
         event: &OpaqueNotificationEvent,
     ) -> Result<ProviderDeliveryResult, String> {
         let bearer = load_rotating_bearer(&config.provider_jwt_file)?;
+        let (title, body) = notification_copy(event);
         let response = self
             .client()?
             .post(format!(
@@ -341,12 +358,12 @@ impl DirectProviderDelivery {
             .json(&serde_json::json!({
                 "aps": {
                     "alert": {
-                        "title": "Monero Fast Wallet",
-                        "body": "Open the app to check a new payment."
+                        "title": title,
+                        "body": body
                     },
                     "sound": "default"
                 },
-                "type": crate::EVENT_CATEGORY,
+                "type": event.category,
                 "contractVersion": crate::CONTRACT_VERSION,
                 "eventId": event.id
             }))
@@ -362,6 +379,135 @@ impl DirectProviderDelivery {
             .http2_adaptive_window(true)
             .build()
             .map_err(|_| "provider HTTP client could not be created".to_owned())
+    }
+}
+
+const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const FIREBASE_MESSAGING_SCOPE: &str = "https://www.googleapis.com/auth/firebase.messaging";
+
+#[derive(Deserialize)]
+struct GoogleServiceAccount {
+    project_id: String,
+    client_email: String,
+    private_key: String,
+    token_uri: String,
+}
+
+#[derive(Serialize)]
+struct GoogleServiceAccountClaims<'a> {
+    iss: &'a str,
+    scope: &'static str,
+    aud: &'static str,
+    iat: u64,
+    exp: u64,
+}
+
+#[derive(Deserialize)]
+struct GoogleTokenResponse {
+    access_token: String,
+    token_type: String,
+}
+
+fn validate_fcm_credentials(config: &FcmDeliveryConfig) -> Result<(), String> {
+    match &config.credentials {
+        FcmCredentials::AccessTokenFile(path) => drop(load_rotating_bearer(path)?),
+        FcmCredentials::ServiceAccountFile(path) => {
+            let account = load_google_service_account(path)?;
+            if account.project_id != config.project_id {
+                return Err("FCM service account project does not match configuration".to_owned());
+            }
+            drop(service_account_assertion(account)?);
+        }
+    }
+    Ok(())
+}
+
+fn fcm_bearer(
+    config: &FcmDeliveryConfig,
+    timeout: Duration,
+    https_only: bool,
+) -> Result<Zeroizing<String>, String> {
+    match &config.credentials {
+        FcmCredentials::AccessTokenFile(path) => load_rotating_bearer(path),
+        FcmCredentials::ServiceAccountFile(path) => {
+            let account = load_google_service_account(path)?;
+            if account.project_id != config.project_id {
+                return Err("FCM service account project does not match configuration".to_owned());
+            }
+            let assertion = service_account_assertion(account)?;
+            let client = reqwest::blocking::Client::builder()
+                .timeout(timeout)
+                .https_only(https_only)
+                .build()
+                .map_err(|_| "FCM OAuth client could not be created".to_owned())?;
+            let response = client
+                .post(GOOGLE_OAUTH_TOKEN_URL)
+                .form(&[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                    ("assertion", assertion.as_str()),
+                ])
+                .send()
+                .map_err(|_| "FCM OAuth request failed".to_owned())?;
+            if !response.status().is_success() {
+                return Err("FCM OAuth request was rejected".to_owned());
+            }
+            let token = response
+                .json::<GoogleTokenResponse>()
+                .map_err(|_| "FCM OAuth response was invalid".to_owned())?;
+            if token.token_type != "Bearer" || token.access_token.len() < 16 {
+                return Err("FCM OAuth response was invalid".to_owned());
+            }
+            Ok(Zeroizing::new(token.access_token))
+        }
+    }
+}
+
+fn load_google_service_account(path: &Path) -> Result<GoogleServiceAccount, String> {
+    let contents = Zeroizing::new(
+        read_private_file(path)?.ok_or_else(|| "FCM service account file is missing".to_owned())?,
+    );
+    let account = serde_json::from_slice::<GoogleServiceAccount>(&contents)
+        .map_err(|_| "FCM service account is invalid".to_owned())?;
+    if account.project_id.is_empty()
+        || account.client_email.is_empty()
+        || account.private_key.is_empty()
+        || account.token_uri != GOOGLE_OAUTH_TOKEN_URL
+    {
+        return Err("FCM service account is invalid".to_owned());
+    }
+    Ok(account)
+}
+
+fn service_account_assertion(
+    mut account: GoogleServiceAccount,
+) -> Result<Zeroizing<String>, String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "System clock is invalid".to_owned())?
+        .as_secs();
+    let claims = GoogleServiceAccountClaims {
+        iss: &account.client_email,
+        scope: FIREBASE_MESSAGING_SCOPE,
+        aud: GOOGLE_OAUTH_TOKEN_URL,
+        iat: now,
+        exp: now.saturating_add(55 * 60),
+    };
+    let key = EncodingKey::from_rsa_pem(account.private_key.as_bytes())
+        .map_err(|_| "FCM service account key is invalid".to_owned())?;
+    account.private_key.zeroize();
+    encode(&Header::new(Algorithm::RS256), &claims, &key)
+        .map(Zeroizing::new)
+        .map_err(|_| "FCM OAuth assertion could not be created".to_owned())
+}
+
+fn notification_copy(event: &OpaqueNotificationEvent) -> (&'static str, &'static str) {
+    if event.category == crate::TEST_EVENT_CATEGORY {
+        (
+            "Monero Fast Wallet",
+            "Test notification: notifications are ready.",
+        )
+    } else {
+        ("Monero Fast Wallet", "Open the app to check a new payment.")
     }
 }
 
@@ -400,6 +546,10 @@ fn classify_fcm_response(
     let status = response.status();
     let retry = retry_after(&response);
     if status.is_success() {
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=fcm.response status={} outcome=delivered",
+            status.as_u16()
+        );
         return Ok(ProviderDeliveryResult::Delivered);
     }
     let body = bounded_response_body(response)?;
@@ -411,14 +561,26 @@ fn classify_fcm_response(
                 .windows(b"registration-token-not-registered".len())
                 .any(|value| value == b"registration-token-not-registered"));
     if invalid {
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=fcm.response status={} outcome=invalid-token",
+            status.as_u16()
+        );
         Ok(ProviderDeliveryResult::InvalidToken)
     } else if status.as_u16() == 429 || status.is_server_error() {
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=fcm.response status={} outcome=retry",
+            status.as_u16()
+        );
         Ok(ProviderDeliveryResult::RetryAfter(
             retry.unwrap_or(Duration::from_secs(5)),
         ))
     } else {
         // Authentication, project configuration and transient client-side
         // provider errors are never converted into token invalidation.
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=fcm.response status={} outcome=retry",
+            status.as_u16()
+        );
         Ok(ProviderDeliveryResult::RetryAfter(Duration::from_secs(300)))
     }
 }
@@ -557,8 +719,24 @@ struct ProviderDisk {
 struct StoredProvider {
     provider: ProviderKind,
     token: String,
+    #[serde(default)]
+    token_hash: String,
     updated_at: u64,
+    #[serde(default)]
+    generation: u64,
+    #[serde(default)]
+    lease_expires_at: u64,
     disabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProviderRegistrationStatus {
+    pub provider: ProviderKind,
+    pub token_hash: String,
+    pub generation: u64,
+    pub updated_at: u64,
+    pub lease_expires_at: u64,
+    pub disabled: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -585,13 +763,27 @@ impl ProviderStore {
         let lease = acquire_lease(&path)?;
         let cipher = XChaCha20Poly1305::new((&key).into());
         key.zeroize();
-        let disk = match read_private_file(&path)? {
+        let mut disk = match read_private_file(&path)? {
             Some(sealed) => open_disk(&cipher, &sealed)?,
             None => ProviderDisk {
                 version: STORE_VERSION,
                 ..ProviderDisk::default()
             },
         };
+        for registration in disk.registrations.values_mut() {
+            if registration.token_hash.is_empty() {
+                registration.token_hash =
+                    hex::encode(Sha256::digest(registration.token.as_bytes()));
+            }
+            if registration.generation == 0 {
+                registration.generation = 1;
+            }
+            if registration.lease_expires_at <= registration.updated_at {
+                registration.lease_expires_at = registration
+                    .updated_at
+                    .saturating_add(PROVIDER_LEASE_SECONDS);
+            }
+        }
         let store = Self {
             path,
             cipher,
@@ -625,12 +817,27 @@ impl ProviderStore {
         {
             return Err("provider registration capacity is exhausted".to_owned());
         }
+        let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
+        let generation = self
+            .disk
+            .registrations
+            .get(installation_id)
+            .map_or(1, |registration| {
+                if registration.provider == provider && registration.token_hash == token_hash {
+                    registration.generation.max(1)
+                } else {
+                    registration.generation.max(1).saturating_add(1)
+                }
+            });
         self.disk.registrations.insert(
             installation_id.to_owned(),
             StoredProvider {
                 provider,
                 token: token.to_owned(),
+                token_hash,
                 updated_at: now,
+                generation,
+                lease_expires_at: now.saturating_add(PROVIDER_LEASE_SECONDS),
                 disabled: false,
             },
         );
@@ -638,6 +845,71 @@ impl ProviderStore {
             .grant_replay_expiry
             .insert(replay, grant_expires_at);
         self.persist()
+    }
+
+    pub fn status(&self, installation_id: &str) -> Option<ProviderRegistrationStatus> {
+        self.disk
+            .registrations
+            .get(installation_id)
+            .map(|registration| ProviderRegistrationStatus {
+                provider: registration.provider,
+                token_hash: registration.token_hash.clone(),
+                generation: registration.generation.max(1),
+                updated_at: registration.updated_at,
+                lease_expires_at: registration.lease_expires_at,
+                disabled: registration.disabled,
+            })
+    }
+
+    /// Desktop apps cannot use the mobile Firebase App Check grant. Their
+    /// installation secret is generated in the OS secure store and presented
+    /// on every request; the public edge must additionally rate-limit this
+    /// bootstrap route. A registration can only create or replace its own
+    /// bounded provider record.
+    pub fn register_desktop(
+        &mut self,
+        installation_id: &str,
+        provider: ProviderKind,
+        token: &str,
+        now: u64,
+    ) -> Result<ProviderRegistrationStatus, String> {
+        self.prune(now);
+        if !matches!(provider, ProviderKind::Apns | ProviderKind::DesktopWss) {
+            return Err("desktop provider kind is invalid".to_owned());
+        }
+        validate_provider_token(provider, token)?;
+        if !self.disk.registrations.contains_key(installation_id)
+            && self.disk.registrations.len() >= MAX_INSTALLATIONS
+        {
+            return Err("provider registration capacity is exhausted".to_owned());
+        }
+        let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
+        let generation = self
+            .disk
+            .registrations
+            .get(installation_id)
+            .map_or(1, |registration| {
+                if registration.provider == provider && registration.token_hash == token_hash {
+                    registration.generation.max(1)
+                } else {
+                    registration.generation.max(1).saturating_add(1)
+                }
+            });
+        self.disk.registrations.insert(
+            installation_id.to_owned(),
+            StoredProvider {
+                provider,
+                token: token.to_owned(),
+                token_hash,
+                updated_at: now,
+                generation,
+                lease_expires_at: now.saturating_add(PROVIDER_LEASE_SECONDS),
+                disabled: false,
+            },
+        );
+        self.persist()?;
+        self.status(installation_id)
+            .ok_or_else(|| "desktop provider registration was not stored".to_owned())
     }
 
     pub fn remove(&mut self, installation_id: &str) -> Result<bool, String> {
@@ -679,6 +951,48 @@ impl ProviderStore {
         );
         self.persist()?;
         Ok(true)
+    }
+
+    /// Returns a one-shot delivery target for an authenticated, user-requested
+    /// delivery check.  This deliberately does not expose provider tokens to
+    /// the HTTP layer or to worker code.
+    pub fn direct_target(
+        &mut self,
+        installation_id: &str,
+        event: OpaqueNotificationEvent,
+        now: u64,
+    ) -> Result<Option<DeliveryTarget>, String> {
+        self.prune(now);
+        let Some(registration) = self.disk.registrations.get(installation_id) else {
+            return Ok(None);
+        };
+        if registration.disabled || registration.provider == ProviderKind::DesktopWss {
+            return Ok(None);
+        }
+        Ok(Some(DeliveryTarget {
+            installation_id: installation_id.to_owned(),
+            provider: registration.provider,
+            token: Zeroizing::new(registration.token.clone()),
+            event,
+        }))
+    }
+
+    /// Records the outcome of a direct, user-triggered delivery test.  A
+    /// permanently invalid provider token is disabled just like it would be
+    /// by the regular queue worker; transient failures do not discard it.
+    pub fn complete_direct(
+        &mut self,
+        target: &DeliveryTarget,
+        result: ProviderDeliveryResult,
+    ) -> Result<(), String> {
+        if matches!(result, ProviderDeliveryResult::InvalidToken) {
+            if let Some(registration) = self.disk.registrations.get_mut(&target.installation_id) {
+                registration.disabled = true;
+                registration.token.zeroize();
+            }
+            self.persist()?;
+        }
+        Ok(())
     }
 
     pub fn due(&mut self, now: u64, limit: usize) -> Result<Vec<DeliveryTarget>, String> {
@@ -744,6 +1058,9 @@ impl ProviderStore {
         self.disk
             .grant_replay_expiry
             .retain(|_, expires_at| *expires_at > now);
+        self.disk
+            .registrations
+            .retain(|_, registration| registration.lease_expires_at > now);
         self.disk.jobs.retain(|_, job| {
             job.attempts < MAX_DELIVERY_ATTEMPTS
                 && self.disk.registrations.contains_key(&job.installation_id)
@@ -759,7 +1076,16 @@ impl ProviderStore {
             return Err("provider store is invalid".to_owned());
         }
         for (installation, registration) in &self.disk.registrations {
+            let expected_hash = if registration.token.is_empty() {
+                registration.token_hash.clone()
+            } else {
+                hex::encode(Sha256::digest(registration.token.as_bytes()))
+            };
             if !valid_installation_id(installation)
+                || registration.token_hash.len() != 64
+                || registration.token_hash != expected_hash
+                || registration.generation == 0
+                || registration.lease_expires_at <= registration.updated_at
                 || if registration.disabled {
                     !registration.token.is_empty()
                 } else {
@@ -1071,6 +1397,61 @@ mod tests {
     }
 
     #[test]
+    fn provider_generation_tracks_token_rotation_and_expired_leases_are_pruned() {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("private").join("providers.enc");
+        let mut store = ProviderStore::open(path, [81_u8; 32]).unwrap();
+        let installation = "mwp_test_provider_generation_0123456789abcdef";
+        let first = format!("fcm_{}", "a".repeat(64));
+        let second = format!("fcm_{}", "b".repeat(64));
+        let now = 1_800_000_000;
+
+        store
+            .register(
+                installation,
+                ProviderKind::Fcm,
+                &first,
+                [82_u8; 32],
+                now + 60,
+                now,
+            )
+            .unwrap();
+        assert_eq!(store.status(installation).unwrap().generation, 1);
+
+        store
+            .register(
+                installation,
+                ProviderKind::Fcm,
+                &first,
+                [83_u8; 32],
+                now + 61,
+                now + 1,
+            )
+            .unwrap();
+        assert_eq!(store.status(installation).unwrap().generation, 1);
+
+        store
+            .register(
+                installation,
+                ProviderKind::Fcm,
+                &second,
+                [84_u8; 32],
+                now + 62,
+                now + 2,
+            )
+            .unwrap();
+        let rotated = store.status(installation).unwrap();
+        assert_eq!(rotated.generation, 2);
+        assert_eq!(
+            rotated.token_hash,
+            hex::encode(Sha256::digest(second.as_bytes()))
+        );
+
+        store.prune(rotated.lease_expires_at);
+        assert!(store.status(installation).is_none());
+    }
+
+    #[test]
     fn provider_jobs_deduplicate_retry_and_disable_invalid_tokens() {
         let temporary = tempdir().unwrap();
         let path = temporary.path().join("private").join("providers.enc");
@@ -1204,7 +1585,7 @@ mod tests {
                 Some((
                     FcmDeliveryConfig {
                         project_id: "monero-wallet".to_owned(),
-                        access_token_file: bearer_path,
+                        credentials: FcmCredentials::AccessTokenFile(bearer_path),
                     },
                     endpoint,
                 )),

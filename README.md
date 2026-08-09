@@ -11,7 +11,7 @@ under your control.
 > approved for a public mainnet release**. Signed release artifacts, physical
 > platform and Ledger validation, an independent security review, and several
 > operational and recovery tests remain open release gates. See the
-> [Safe V1 Release Implementation Plan](docs/FAST_WALLET_V1_RELEASE_IMPLEMENTATION_PLAN.md),
+> [V1 Execution Plan](docs/V1_EXECUTION_PLAN.md),
 > [Release Gate Matrix](docs/RELEASE_GATE_MATRIX.md) and
 > [Security Audit](docs/SECURITY_AUDIT_2026-07-24.md) for details.
 >
@@ -170,7 +170,7 @@ private spend key, or primary-wallet view key, and no Worker receives a raw
 FCM/APNs token. The broader signed public Directory, Community Worker,
 capacity-reservation, and validator architecture is deliberately post-V1. See
 the
-[`Safe V1 Release Implementation Plan`](docs/FAST_WALLET_V1_RELEASE_IMPLEMENTATION_PLAN.md),
+[`V1 Execution Plan`](docs/V1_EXECUTION_PLAN.md),
 [`FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md`](docs/FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md)
 and
 [`PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md`](docs/PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md)
@@ -456,6 +456,15 @@ automatically mean that an end-user artifact has been released.
 | Linux | ARM64 AppImage assembled locally with the core; DBus agent contract is present | Clean-user, real-node, Ledger, notification, and package validation |
 | Services | Scanner, Gateway, Cuprate, and the replacement Monero Enthusiast V1 service stack exist as separate components; V1 API, private Synapse and signed sequence-1 catalogs are live and smoke-tested | Validate backups, rotation, restore, load, abuse operations, reorganization handling, provider delivery, and monitoring |
 
+All five app targets are built from one authenticated Monero Core patch tree.
+Mobile link manifests carry the exact tree identity, Unix desktop builds verify
+the source tree, and Windows requires a matching DLL identity sidecar. Builds
+fail instead of silently using an older Core. The current Apple-Silicon wallet
+lifecycle reference is about **179 ms median / 194 ms P95** to create a wallet
+and its primary address; address reads, validation, and subaddress generation
+are below 1 ms. UI, AppVault, registry, and network time are measured
+separately from this native Core budget.
+
 The precise, auditable status is documented in
 [Platform Integration Status](docs/PLATFORM_INTEGRATION_STATUS.md) and the
 [Desktop/Mobile Parity Matrix](docs/DESKTOP_PARITY_MATRIX.md).
@@ -547,12 +556,13 @@ Monero and Cuprate also retain independently updateable forks:
 | Project | Remote | Documented product revision |
 | --- | --- | --- |
 | Product | `tex8com/monero-fast-wallet` | This branch / commit |
+| Common wallet Core | ordered product patch series | tree `dec8ca7c99efcb92fb45a4736b1361a2f1c711e4` |
 | Monero Core CPU | `tex8com/monero` | `382b8c06641c9e905a98dc4ac77c17f746aceb8c` |
 | Monero Core CPU + Metal | `tex8com/monero` | `cdcfa8151322a3fdd9306af97ab0c54092ac1e37` |
 | Monero CUDA research | `tex8com/monero` | `024224eb5cde9c8a243a152e3927399550479cd2` |
 | Cuprate production | `tex8com/cuprate` | `cd1ec57ab44301b93a21e9b504b9d913b88fc871` |
 
-The **21 Monero product patches** and **41 Cuprate patches** are stored in order
+The **26 Monero product patches** and **41 Cuprate patches** are stored in order
 inside the product repository. Patch reproduction verifies the expected final
 source tree before a core is built. Generated dependencies, wallet files,
 secrets, logs, and build outputs do not belong in Git.
@@ -624,6 +634,18 @@ cargo test --locked --manifest-path services/monero-news/Cargo.toml
 
 Never use a real wallet, seed, or production key in a testbench, log, or issue.
 
+### Shared Product-Core ABI and diagnostics
+
+The product CLI, React Native native adapters and Tauri use ABI version 1 from
+`native/product-core`. Its schemas generate byte-identical C, Rust,
+TypeScript, Kotlin and Swift contracts. The same registry defines diagnostic
+IDs, profiles, timeouts, measurements, success criteria and existing runner
+adapters; unknown result fields fail closed. Run its complete local gate with:
+
+```bash
+bash native/product-core/scripts/run-testbench.sh
+```
+
 ### Most recently documented broad validation
 
 | Area | Result |
@@ -641,11 +663,9 @@ current state of a later modified working copy.
 
 ## Documentation
 
-- [Roadmap](docs/ROADMAP.md)
+- [V1 Execution Plan](docs/V1_EXECUTION_PLAN.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Native Wallet Bridge](docs/NATIVE_WALLET_BRIDGE.md)
-- [Mobile Wallet Core Plan](docs/MOBILE_WALLET_CORE_IMPLEMENTATION_PLAN.md)
-- [Desktop App Plan](docs/DESKTOP_APP_PLAN.md)
 - [Desktop/Mobile Parity](docs/DESKTOP_PARITY_MATRIX.md)
 - [Backend Testing](docs/BACKEND_TESTING.md)
 - [Release Gates](docs/RELEASE_GATE_MATRIX.md)

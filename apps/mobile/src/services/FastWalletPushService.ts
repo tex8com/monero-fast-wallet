@@ -13,8 +13,11 @@ import { withSystemUiInterruption } from './SystemUiInterruption';
 declare const require: (moduleName: string) => any;
 
 const EVENT_CONTRACT = 'monero-fast-wallet-push.v3';
-const EVENT_TYPE = 'monero.fast_wallet.incoming';
+const INCOMING_EVENT_TYPE = 'monero.fast_wallet.incoming';
+const TEST_EVENT_TYPE = 'monero.fast_wallet.test';
+const EVENT_TYPES = new Set([INCOMING_EVENT_TYPE, TEST_EVENT_TYPE]);
 const SUBSCRIPTION_ID_KEY = 'monero-fast-wallet.push.subscription-id.v1';
+const REGISTRATION_STATE_KEY = 'monero-fast-wallet.push.registration-state.v1';
 const LAST_EVENT_KEY = 'monero-fast-wallet.push.last-event.v2';
 const LAST_EVENT_ID_KEY = 'monero-fast-wallet.push.last-event-id.v2';
 const OPAQUE_EVENT_ID = /^evt_[0-9a-f]{64}$/;
@@ -46,10 +49,28 @@ const FORBIDDEN_EVENT_FIELDS = [
 
 let backgroundHandlerInstalled = false;
 let lifecycleStarted = false;
+let registrationInFlight: Promise<void> | undefined;
+let pendingRegistrationToken: string | undefined;
+let registrationRetryTimer: ReturnType<typeof setTimeout> | undefined;
 const listeners = new Set<(event: FastWalletPushEvent) => void>();
 
+const REGISTRATION_REFRESH_MS = 7 * 24 * 60 * 60 * 1_000;
+const REGISTRATION_RETRY_MAX_MS = 60 * 60 * 1_000;
+
+type PushRegistrationState = {
+  desired: 'enabled' | 'disabled';
+  status: 'pending' | 'active' | 'needs-refresh' | 'disabled';
+  retryCount: number;
+  nextRetryAt?: number;
+  lastSuccessAt?: number;
+  providerTokenHash?: string;
+  generation?: number;
+  leaseExpiresAt?: number;
+  lastError?: string;
+};
+
 export interface FastWalletPushEvent {
-  type: 'monero.fast_wallet.incoming';
+  type: typeof INCOMING_EVENT_TYPE | typeof TEST_EVENT_TYPE;
   contractVersion: 'monero-fast-wallet-push.v3';
   eventId: string;
 }
@@ -94,6 +115,17 @@ export async function getNotificationAuthorizationStatus(): Promise<Notification
 }
 
 function messagingInstance(): any | undefined {
+  // Do not evaluate the Firebase JavaScript package when its native app
+  // module is intentionally absent (for example in the isolated simulator
+  // acceptance build). Requiring the package first makes its native event
+  // emitter throw and opens React Native's error overlay even if that error
+  // is caught below.
+  if (!NativeModules.RNFBAppModule) {
+    logWalletEvent('FastWalletPush', 'messaging.unavailable', {
+      error: 'Firebase native app module is missing',
+    });
+    return undefined;
+  }
   try {
     const module = require('@react-native-firebase/messaging');
     const factory = module.default ?? module;
@@ -109,6 +141,61 @@ function messagingInstance(): any | undefined {
 async function getStoredSubscriptionId(): Promise<string | undefined> {
   const value = await loadProtectedMetadata(SUBSCRIPTION_ID_KEY);
   return value?.trim() || undefined;
+}
+
+async function loadRegistrationState(): Promise<
+  PushRegistrationState | undefined
+> {
+  const encoded = await loadProtectedMetadata(REGISTRATION_STATE_KEY);
+  if (!encoded) return undefined;
+  try {
+    const value = JSON.parse(encoded) as Partial<PushRegistrationState>;
+    if (
+      !['enabled', 'disabled'].includes(value.desired ?? '') ||
+      !['pending', 'active', 'needs-refresh', 'disabled'].includes(
+        value.status ?? '',
+      ) ||
+      !Number.isInteger(value.retryCount) ||
+      (value.retryCount ?? -1) < 0
+    ) {
+      return undefined;
+    }
+    return value as PushRegistrationState;
+  } catch {
+    return undefined;
+  }
+}
+
+async function storeRegistrationState(
+  state: PushRegistrationState,
+): Promise<void> {
+  await storeProtectedMetadata(REGISTRATION_STATE_KEY, JSON.stringify(state));
+}
+
+function retryDelayMs(retryCount: number): number {
+  const exponential = Math.min(
+    REGISTRATION_RETRY_MAX_MS,
+    1_000 * 2 ** Math.min(retryCount, 12),
+  );
+  // Deterministic bounded jitter prevents a fleet-wide reconnect wave while
+  // keeping tests and diagnostics reproducible.
+  return exponential + Math.floor(exponential * 0.15);
+}
+
+function scheduleRegistrationRetry(nextRetryAt: number): void {
+  if (registrationRetryTimer) clearTimeout(registrationRetryTimer);
+  const delay = Math.max(
+    250,
+    Math.min(nextRetryAt - Date.now(), REGISTRATION_RETRY_MAX_MS),
+  );
+  registrationRetryTimer = setTimeout(() => {
+    registrationRetryTimer = undefined;
+    void refreshRegistrationQuietly();
+  }, delay);
+  // Node/Jest timers expose `unref`; React Native timers do not. Background
+  // retry must never keep a test process (or a headless JS runtime) alive.
+  const timer = registrationRetryTimer as unknown as { unref?: () => void };
+  timer.unref?.();
 }
 
 function permissionName(value: unknown): string {
@@ -151,9 +238,8 @@ async function requestPermission(instance: any): Promise<string> {
     return Platform.OS === 'android' ? 'authorized' : 'unknown';
   }
   const status = permissionName(
-    await withSystemUiInterruption(
-      'notification-permission',
-      () => instance.requestPermission(),
+    await withSystemUiInterruption('notification-permission', () =>
+      instance.requestPermission(),
     ),
   );
   if (status === 'denied' || status === 'not_determined') {
@@ -181,9 +267,7 @@ async function appIntegrityToken(): Promise<string> {
           provider: __DEV__ ? 'debug' : 'playIntegrity',
         },
         apple: {
-          provider: __DEV__
-            ? 'debug'
-            : 'appAttestWithDeviceCheckFallback',
+          provider: __DEV__ ? 'debug' : 'appAttestWithDeviceCheckFallback',
         },
         isTokenAutoRefreshEnabled: false,
       });
@@ -198,7 +282,11 @@ async function appIntegrityToken(): Promise<string> {
   }
   const module = require('@react-native-firebase/app-check');
   const instance = await appCheckInstancePromise;
-  const result = await module.getToken(instance, true);
+  // A forced refresh on every retry trips Firebase App Check's attempt
+  // throttle before the Gateway can receive the installation registration.
+  // A cached token remains cryptographically valid and Firebase refreshes it
+  // when needed, so normal registration must use the non-forced path.
+  const result = await module.getToken(instance, false);
   if (!result?.token || typeof result.token !== 'string') {
     throw new Error('App integrity verification returned no token');
   }
@@ -206,33 +294,108 @@ async function appIntegrityToken(): Promise<string> {
 }
 
 async function registerToken(token: string): Promise<string> {
-  const appCheckToken = await appIntegrityToken();
-  const registration =
-    await requireNativeMoneroWallet().registerFastWalletProvider(
-      token,
-      appCheckToken,
+  const startedAt = Date.now();
+  logWalletEvent('FastWalletPush', 'registration.appIntegrity.start');
+  try {
+    const appCheckToken = await appIntegrityToken();
+    logWalletEvent('FastWalletPush', 'registration.appIntegrity.success', {
+      elapsedMs: Date.now() - startedAt,
+      hasIntegrityToken: true,
+    });
+    const nativeStartedAt = Date.now();
+    logWalletEvent('FastWalletPush', 'registration.gateway.start', {
+      hasProviderToken: true,
+    });
+    const registration =
+      await requireNativeMoneroWallet().registerFastWalletProvider(
+        token,
+        appCheckToken,
+      );
+    logWalletEvent('FastWalletPush', 'registration.gateway.success', {
+      elapsedMs: Date.now() - nativeStartedAt,
+      generation: registration.generation,
+      success: true,
+    });
+    const persistStartedAt = Date.now();
+    await storeProtectedMetadata(
+      SUBSCRIPTION_ID_KEY,
+      registration.installationId,
     );
-  await storeProtectedMetadata(
-    SUBSCRIPTION_ID_KEY,
-    registration.installationId,
-  );
-  return registration.installationId;
+    await storeRegistrationState({
+      desired: 'enabled',
+      status: 'active',
+      retryCount: 0,
+      lastSuccessAt: Date.now(),
+      providerTokenHash: registration.providerTokenHash,
+      generation: registration.generation,
+      leaseExpiresAt: registration.leaseExpiresAt,
+    });
+    logWalletEvent('FastWalletPush', 'registration.persist.success', {
+      elapsedMs: Date.now() - persistStartedAt,
+      success: true,
+    });
+    return registration.installationId;
+  } catch (error) {
+    logWalletEvent('FastWalletPush', 'registration.provider.error', {
+      elapsedMs: Date.now() - startedAt,
+      error,
+    });
+    throw error;
+  }
 }
 
 async function enableFastWalletNotifications(): Promise<FastWalletPushRegistration> {
+  const startedAt = Date.now();
+  logWalletEvent('FastWalletPush', 'registration.start', {
+    platform: Platform.OS,
+  });
   const instance = messagingInstance();
   if (!instance) {
     throw new Error('Firebase Messaging is not configured');
   }
-  const permissionStatus = await requestPermission(instance);
-  const token = await instance.getToken();
-  if (!token) {
-    throw new Error('Firebase returned no push token');
+  await storeRegistrationState({
+    desired: 'enabled',
+    status: 'pending',
+    retryCount: 0,
+  });
+  let permissionStatus = 'unknown';
+  let subscriptionId: string;
+  try {
+    permissionStatus = await requestPermission(instance);
+    logWalletEvent('FastWalletPush', 'registration.permission.complete', {
+      permissionGranted:
+        permissionStatus === 'authorized' || permissionStatus === 'granted',
+      platform: Platform.OS,
+    });
+    const token = await instance.getToken();
+    if (!token) {
+      throw new Error('Firebase returned no push token');
+    }
+    subscriptionId = await registerToken(token);
+  } catch (error) {
+    const nextRetryAt = Date.now() + retryDelayMs(1);
+    await storeRegistrationState({
+      desired: 'enabled',
+      status: 'needs-refresh',
+      retryCount: 1,
+      nextRetryAt,
+      lastError: error instanceof Error ? error.message : String(error),
+    });
+    scheduleRegistrationRetry(nextRetryAt);
+    logWalletEvent('FastWalletPush', 'registration.error', {
+      elapsedMs: Date.now() - startedAt,
+      error,
+      platform: Platform.OS,
+      retryCount: 1,
+    });
+    throw error;
   }
-  const subscriptionId = await registerToken(token);
   logWalletEvent('FastWalletPush', 'registration.success', {
-    permissionStatus,
+    elapsedMs: Date.now() - startedAt,
+    permissionGranted:
+      permissionStatus === 'authorized' || permissionStatus === 'granted',
     platform: Platform.OS,
+    success: true,
   });
   return { permissionStatus, provider: 'fcm', subscriptionId };
 }
@@ -255,35 +418,114 @@ export async function requestMobilePushProviderToken(): Promise<MobilePushProvid
   return { permissionStatus, provider: 'fcm', token };
 }
 
-async function refreshRegistrationQuietly(token?: string): Promise<void> {
-  try {
-    // Protected metadata is unavailable while the native app session is
-    // locked. Treat that expected startup state like every other quiet refresh
-    // failure so it is recorded without becoming an unhandled promise.
-    const subscriptionId = await getStoredSubscriptionId();
-    if (!subscriptionId) {
-      return;
-    }
-    const instance = messagingInstance();
-    if (!instance) {
-      return;
-    }
-    await instance.setAutoInitEnabled?.(true);
-    await instance.registerDeviceForRemoteMessages?.();
-    const nextToken = token || (await instance.getToken());
-    if (nextToken) {
-      await registerToken(nextToken);
-    }
-  } catch (error) {
-    logWalletEvent('FastWalletPush', 'registration.refreshError', {
-      error: error instanceof Error ? error.message : String(error),
+async function performRegistrationRefresh(token?: string): Promise<void> {
+  const startedAt = Date.now();
+  logWalletEvent('FastWalletPush', 'registration.refresh.start', {
+    hasProviderToken: Boolean(token),
+  });
+  // The FCM token is not wallet data, but the subscription identifier is
+  // protected metadata. Do not attempt to read it before the one app-wide
+  // unlock; otherwise an entirely normal cold start is recorded as a
+  // misleading native "app-locked" failure.
+  const protection = await requireNativeMoneroWallet()
+    .getAppProtectionStatus()
+    .catch(() => undefined);
+  if (!protection || protection.locked) {
+    logWalletEvent('FastWalletPush', 'registration.refreshDeferred', {
+      reason: protection ? 'appLocked' : 'protectionStatusUnavailable',
+    });
+    return;
+  }
+  const state = await loadRegistrationState();
+  const subscriptionId = await getStoredSubscriptionId();
+  if (state?.desired === 'disabled') {
+    return;
+  }
+  if (!subscriptionId && state?.desired !== 'enabled') return;
+  const now = Date.now();
+  if (!token && state?.nextRetryAt && state.nextRetryAt > now) {
+    scheduleRegistrationRetry(state.nextRetryAt);
+    return;
+  }
+  if (
+    !token &&
+    state?.status === 'active' &&
+    state.lastSuccessAt &&
+    now - state.lastSuccessAt < REGISTRATION_REFRESH_MS
+  )
+    return;
+  const instance = messagingInstance();
+  if (!instance) {
+    return;
+  }
+  await instance.setAutoInitEnabled?.(true);
+  await instance.registerDeviceForRemoteMessages?.();
+  const nextToken = token || (await instance.getToken());
+  if (nextToken) {
+    await registerToken(nextToken);
+    logWalletEvent('FastWalletPush', 'registration.refresh.success', {
+      elapsedMs: Date.now() - startedAt,
+      success: true,
     });
   }
 }
 
+async function refreshRegistrationQuietly(token?: string): Promise<void> {
+  if (registrationInFlight) {
+    // Token rotations may race an ordinary lease refresh. Keep only the most
+    // recent provider token and drain it before releasing the single-flight
+    // registration. A raw token is deliberately never persisted.
+    if (token) pendingRegistrationToken = token;
+    await registrationInFlight;
+    return;
+  }
+  registrationInFlight = (async () => {
+    let nextToken = token;
+    do {
+      await performRegistrationRefresh(nextToken);
+      nextToken = pendingRegistrationToken;
+      pendingRegistrationToken = undefined;
+    } while (nextToken);
+  })()
+    .catch(async error => {
+      const previous = await loadRegistrationState().catch(() => undefined);
+      if (previous?.desired === 'disabled') return;
+      const retryCount = Math.min((previous?.retryCount ?? 0) + 1, 32);
+      const nextRetryAt = Date.now() + retryDelayMs(retryCount);
+      await storeRegistrationState({
+        desired: 'enabled',
+        status: 'needs-refresh',
+        retryCount,
+        nextRetryAt,
+        lastSuccessAt: previous?.lastSuccessAt,
+        lastError: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
+      scheduleRegistrationRetry(nextRetryAt);
+      logWalletEvent('FastWalletPush', 'registration.refreshError', {
+        error: error instanceof Error ? error.message : String(error),
+        retryCount,
+        nextRetryAt,
+      });
+    })
+    .finally(() => {
+      pendingRegistrationToken = undefined;
+      registrationInFlight = undefined;
+    });
+  await registrationInFlight;
+}
+
 async function disableFastWalletNotifications(): Promise<void> {
+  if (registrationRetryTimer) {
+    clearTimeout(registrationRetryTimer);
+    registrationRetryTimer = undefined;
+  }
   await requireNativeMoneroWallet().disableFastWalletDelivery();
   await deleteProtectedMetadata(SUBSCRIPTION_ID_KEY);
+  await storeRegistrationState({
+    desired: 'disabled',
+    status: 'disabled',
+    retryCount: 0,
+  });
   const instance = messagingInstance();
   await instance?.setAutoInitEnabled?.(false);
   await instance?.deleteToken?.();
@@ -298,7 +540,7 @@ export function parseFastWalletPushEvent(
     !data ||
     Object.keys(data).some(field => !allowedFields.has(field)) ||
     FORBIDDEN_EVENT_FIELDS.some(field => data[field] !== undefined) ||
-    data.type !== EVENT_TYPE ||
+    !EVENT_TYPES.has(data.type) ||
     data.contractVersion !== EVENT_CONTRACT ||
     typeof data.eventId !== 'string' ||
     !OPAQUE_EVENT_ID.test(data.eventId)
@@ -307,7 +549,7 @@ export function parseFastWalletPushEvent(
   }
 
   return {
-    type: EVENT_TYPE,
+    type: data.type,
     contractVersion: EVENT_CONTRACT,
     eventId: data.eventId,
   };
@@ -331,7 +573,10 @@ async function showAndroidForegroundNotification(
   // malformed or compromised upstream message cannot inject wallet details,
   // links, advertising, or frightening copy into the foreground notice.
   const title = 'Monero Fast Wallet';
-  const body = 'Open the app to check for a new payment.';
+  const body =
+    event.type === TEST_EVENT_TYPE
+      ? 'Test notification: notifications are ready.'
+      : 'Open the app to check for a new payment.';
 
   try {
     await notifier.show(title, body, event.eventId);
@@ -365,7 +610,15 @@ async function handleRemoteMessage(
   if (options.foreground) {
     await showAndroidForegroundNotification(message, event);
   }
-  logWalletEvent('FastWalletPush', 'incomingSignal.received');
+  logWalletEvent(
+    'FastWalletPush',
+    event.type === TEST_EVENT_TYPE ? 'testSignal.received' : 'incomingSignal.received',
+  );
+}
+
+async function sendTestNotification(): Promise<void> {
+  await requireNativeMoneroWallet().sendFastWalletTestPush();
+  logWalletEvent('FastWalletPush', 'testPush.accepted');
 }
 
 function installBackgroundHandler(): void {
@@ -448,6 +701,7 @@ export const FastWalletPushService = {
   getStoredSubscriptionId,
   installBackgroundHandler,
   refreshRegistrationQuietly,
+  sendTestNotification,
   startLifecycle,
   subscribe,
 };

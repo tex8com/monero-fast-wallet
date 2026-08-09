@@ -118,16 +118,24 @@ test('Community V1 accepts only the pinned server-signed catalog and has no paym
   );
 });
 
-test('safe V1 feature manifest fails closed for unfinished remote surfaces', () => {
+test('safe V1 feature manifest enables verified local surfaces and fails closed for unfinished remote surfaces', () => {
   assert.equal(manifest.schemaVersion, 1);
   assert.equal(manifest.profile, 'safe-wallet-v1');
   assert.equal(manifest.features.localFastWallet, true);
+  assert.equal(
+    manifest.features.ledgerFastWallet,
+    true,
+    'verified Ledger Fast Wallet must be enabled',
+  );
+  assert.equal(
+    manifest.features.officialWorker,
+    true,
+    'the deployed encrypted official Worker must be enabled',
+  );
   for (const feature of [
     'automaticFastWalletCreation',
     'plaintextFastWalletHosting',
-    'ledgerFastWallet',
     'scannerKeyImageSpendAuthority',
-    'officialWorker',
     'privateWorkerPairing',
     'legacyCommunity',
     'news',
@@ -975,13 +983,11 @@ test('legacy scanner cannot accept a V1 plaintext watch or key-image query', () 
 
 test('V1 documents local sync as the only spend-state authority', () => {
   const privacy = read('docs/PRIVACY_MODEL.md');
-  const implementation = read('docs/MOBILE_WALLET_CORE_IMPLEMENTATION_PLAN.md');
-  const roadmap = read('docs/ROADMAP.md');
+  const executionPlan = read('docs/V1_EXECUTION_PLAN.md');
 
   assert.match(privacy, /No wallet key images or\s+server-side key-image status are used/);
-  assert.match(implementation, /client does not\s+upload key images/);
-  assert.match(roadmap, /no key images are uploaded/);
-  assert.doesNotMatch(roadmap, /WalletService\.checkFastReceiveKeyImages/);
+  assert.match(executionPlan, /client does not upload key images/);
+  assert.doesNotMatch(executionPlan, /WalletService\.checkFastReceiveKeyImages/);
 });
 
 test('notification gateway rejects the legacy shared-token trust boundary', () => {
@@ -1090,7 +1096,8 @@ test('mobile installation identifiers come only from native secure randomness', 
     'apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm',
   );
 
-  assert.doesNotMatch(push, /Math\.random|Date\.now/);
+  assert.doesNotMatch(push, /(?:installation|subscription)Id\s*=\s*[^;]*(?:Math\.random|Date\.now)/i);
+  assert.doesNotMatch(push, /(?:Math\.random|Date\.now)[^;]*(?:installation|subscription)Id/i);
   assert.match(push, /registerFastWalletProvider/);
   assert.match(android, /fastWalletInstallationCredentials/);
   assert.match(ios, /fastWalletInstallationCredentials/);

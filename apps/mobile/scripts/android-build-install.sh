@@ -8,27 +8,54 @@ APP_ID="${MONERO_WALLET_ANDROID_APP_ID:-com.tex8.monerowallet}"
 VARIANT="${MONERO_WALLET_ANDROID_VARIANT:-debug}"
 VARIANT_CAPITALIZED="$(capitalize_variant "$VARIANT")"
 ARCHITECTURES="${MONERO_WALLET_ANDROID_ARCHITECTURES:-arm64-v8a}"
+DISABLE_COMMUNITY_V1="${MONERO_WALLET_SIMULATOR_DISABLE_COMMUNITY_V1:-0}"
+SKIP_GOOGLE_SERVICES="${MONERO_WALLET_SKIP_GOOGLE_SERVICES:-}"
+if [ -z "${SKIP_GOOGLE_SERVICES}" ]; then
+  if [ "${APP_ID}" = "com.tex8.monerowallet" ]; then
+    SKIP_GOOGLE_SERVICES=0
+  else
+    SKIP_GOOGLE_SERVICES=1
+  fi
+fi
 MONERO_LINK_ROOT="${MONERO_WALLET_LINK_ROOT:-${REPO_ROOT}/build/android-monero-link-manifests}"
 MONERO_TARGET="${MONERO_WALLET_ANDROID_TARGET:-android-arm64}"
 REQUIRE_MONERO="${MONERO_WALLET_ANDROID_REQUIRE_MONERO:-1}"
 EXTERNAL_BUILD_ROOT="${MONERO_WALLET_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
 FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-fast-wallet-protocol}"
+COMMUNITY_HARRIER_ROOT="${MONERO_COMMUNITY_HARRIER_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-community-harrier}"
+COMMUNITY_MATRIX_ROOT="${MONERO_COMMUNITY_MATRIX_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-community-matrix}"
 if [ ! -d "${EXTERNAL_BUILD_ROOT}" ]; then
   FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${REPO_ROOT}/build/mobile-fast-wallet-protocol}"
+  COMMUNITY_HARRIER_ROOT="${MONERO_COMMUNITY_HARRIER_ROOT:-${REPO_ROOT}/build/mobile-community-harrier}"
+  COMMUNITY_MATRIX_ROOT="${MONERO_COMMUNITY_MATRIX_ROOT:-${REPO_ROOT}/build/mobile-community-matrix}"
+else
+  # The Fast Wallet protocol build runs before Gradle's own cache setup.
+  # Point its mktemp/Cargo intermediates at the external build volume too.
+  export TMPDIR="${MONERO_WALLET_ANDROID_TMPDIR:-${EXTERNAL_BUILD_ROOT}/mobile-android-tmp}"
+  mkdir -p "${TMPDIR}"
 fi
 
-if [ -z "${MONERO_SOURCE_DIR:-}" ] \
-  && [ -d "${EXTERNAL_BUILD_ROOT}/monero-v0.18.4.6-tex8-patched" ]; then
-  MONERO_SOURCE_DIR="${EXTERNAL_BUILD_ROOT}/monero-v0.18.4.6-tex8-patched"
+if [ "$REQUIRE_MONERO" = "1" ]; then
+  MONERO_COMMON_CORE_BUILD_ROOT="$EXTERNAL_BUILD_ROOT" \
+    source "$REPO_ROOT/native/monero-bridge/scripts/prepare-common-monero-core.sh"
+else
+  MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
 fi
-MONERO_SOURCE_DIR="${MONERO_SOURCE_DIR:-${REPO_ROOT}/../monero-gui/monero}"
+
+link_manifest_matches_common_core() {
+  local manifest="$1"
+  [ -f "$manifest" ] &&
+    grep -Fq "set(MONERO_PATCHED_SOURCE_TREE \"${MONERO_COMMON_CORE_TREE}\")" "$manifest"
+}
 
 if [ -z "${MONERO_WALLET_LINK_ROOT:-}" ] \
   && [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ]; then
   for external_manifest_root in \
+    "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-${MONERO_COMMON_CORE_TREE}" \
     "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-tex8-patched" \
     "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests"; do
-    if [ -f "${external_manifest_root}/${MONERO_TARGET}/link.cmake" ]; then
+    if link_manifest_matches_common_core \
+      "${external_manifest_root}/${MONERO_TARGET}/link.cmake"; then
       MONERO_LINK_ROOT="${external_manifest_root}"
       break
     fi
@@ -36,9 +63,36 @@ if [ -z "${MONERO_WALLET_LINK_ROOT:-}" ] \
 fi
 
 GRADLE_ARGS=(
-  ":app:install${VARIANT_CAPITALIZED}"
+  ":app:assemble${VARIANT_CAPITALIZED}"
   "-PreactNativeArchitectures=${ARCHITECTURES}"
+  "-PmoneroWalletApplicationId=${APP_ID}"
 )
+if [ "${DISABLE_COMMUNITY_V1}" != "0" ] &&
+   [ "${DISABLE_COMMUNITY_V1}" != "1" ]; then
+  echo "MONERO_WALLET_SIMULATOR_DISABLE_COMMUNITY_V1 must be 0 or 1." >&2
+  exit 1
+fi
+if [ "${DISABLE_COMMUNITY_V1}" = "1" ]; then
+  if [ "${APP_ID}" = "com.tex8.monerowallet" ]; then
+    echo "Community V1 may be disabled only for a separate simulator application ID." >&2
+    exit 1
+  fi
+  GRADLE_ARGS+=("-PmoneroEnthusiastV1DevelopmentDisabled=true")
+fi
+if [ "${SKIP_GOOGLE_SERVICES}" != "0" ] &&
+   [ "${SKIP_GOOGLE_SERVICES}" != "1" ]; then
+  echo "MONERO_WALLET_SKIP_GOOGLE_SERVICES must be 0 or 1." >&2
+  exit 1
+fi
+if [ "${SKIP_GOOGLE_SERVICES}" = "1" ]; then
+  GRADLE_ARGS+=(
+    "-PmoneroSkipGoogleServices=true"
+    "-PmoneroDevelopmentDependencyLockingLenient=true"
+  )
+  export MONERO_WALLET_SKIP_FIREBASE_NATIVE=1
+fi
+
+reset_react_native_autolinking
 
 FAST_WALLET_PROTOCOL_ARTIFACT="${FAST_WALLET_PROTOCOL_ROOT}/${MONERO_TARGET}/libfast_wallet_protocol.a"
 if fast_wallet_protocol_artifact_needs_rebuild \
@@ -50,11 +104,49 @@ if fast_wallet_protocol_artifact_needs_rebuild \
     "${REPO_ROOT}/native/fast-wallet-protocol/build-mobile.sh"
 fi
 GRADLE_ARGS+=("-PmoneroFastWalletProtocolRoot=${FAST_WALLET_PROTOCOL_ROOT}")
+
+# The product application requires the complete, real Community runtime. Build
+# its Android-specific bridge and Rust archive before Gradle so CMake cannot
+# silently create a reduced "Not ready" application.
+COMMUNITY_HARRIER_LIBRARY="${COMMUNITY_HARRIER_ROOT}/android-arm64/libtex8_community_harrier_runtime.so"
+COMMUNITY_HARRIER_JNI_LIBS="${COMMUNITY_HARRIER_ROOT}/jni"
+COMMUNITY_MATRIX_LIBRARY="${COMMUNITY_MATRIX_ROOT}/android-arm64/libcommunity_matrix_core.a"
+if [ ! -f "${COMMUNITY_HARRIER_LIBRARY}" ] || \
+   find "${REPO_ROOT}/native/community-harrier-runtime" -type f -newer "${COMMUNITY_HARRIER_LIBRARY}" -print -quit | grep -q .; then
+  TEX8_COMMUNITY_HARRIER_OUTPUT_ROOT="${COMMUNITY_HARRIER_ROOT}" \
+    "${REPO_ROOT}/native/community-harrier-runtime/scripts/build-android-native.sh"
+fi
+if [ ! -f "${COMMUNITY_MATRIX_LIBRARY}" ] || \
+   find "${REPO_ROOT}/native/community-matrix-core" -type f -newer "${COMMUNITY_MATRIX_LIBRARY}" -print -quit | grep -q . || \
+   [ "${COMMUNITY_HARRIER_LIBRARY}" -nt "${COMMUNITY_MATRIX_LIBRARY}" ]; then
+  TARGETS=android-arm64 \
+    WITH_COMMUNITY_RUNTIME=1 \
+    HARRIER_LIBRARY_SUFFIX=.so \
+    TEX8_COMMUNITY_HARRIER_LIBRARY_ROOT="${COMMUNITY_HARRIER_ROOT}" \
+    OUTPUT_DIR="${COMMUNITY_MATRIX_ROOT}" \
+    "${REPO_ROOT}/native/community-matrix-core/build-mobile.sh"
+fi
+GRADLE_ARGS+=(
+  "-PmoneroCommunityMatrixLibrary=${COMMUNITY_MATRIX_LIBRARY}"
+  "-PmoneroCommunityHarrierLibrary=${COMMUNITY_HARRIER_LIBRARY}"
+  "-PmoneroCommunityHarrierJniLibs=${COMMUNITY_HARRIER_JNI_LIBS}"
+)
 if [ -n "${FAST_WALLET_GATEWAY_ORIGIN:-}" ]; then
   GRADLE_ARGS+=("-PfastWalletGatewayOrigin=${FAST_WALLET_GATEWAY_ORIGIN}")
 fi
 if [ -n "${FAST_WALLET_REGISTRATION_ORIGIN:-}" ]; then
   GRADLE_ARGS+=("-PfastWalletRegistrationOrigin=${FAST_WALLET_REGISTRATION_ORIGIN}")
+fi
+
+if [ -d "${EXTERNAL_BUILD_ROOT}" ]; then
+  APP_BUILD_DIR="${MONERO_WALLET_ANDROID_BUILD_DIR:-${EXTERNAL_BUILD_ROOT}/mobile-android-install-build}"
+  export GRADLE_USER_HOME="${MONERO_WALLET_GRADLE_USER_HOME:-${EXTERNAL_BUILD_ROOT}/mobile-gradle-user-home}"
+  export TMPDIR="${MONERO_WALLET_ANDROID_TMPDIR:-${EXTERNAL_BUILD_ROOT}/mobile-android-tmp}"
+  mkdir -p "${APP_BUILD_DIR}" "${GRADLE_USER_HOME}" "${TMPDIR}"
+  GRADLE_ARGS+=(
+    "--project-cache-dir=${MONERO_WALLET_ANDROID_PROJECT_CACHE_DIR:-${EXTERNAL_BUILD_ROOT}/mobile-android-install-project-cache}"
+    "-PmoneroWalletExternalBuildDir=${APP_BUILD_DIR}"
+  )
 fi
 
 if [ "$REQUIRE_MONERO" = "1" ]; then
@@ -77,20 +169,24 @@ fi
 
 DEVICE="$(select_android_device "$ADB_BIN")"
 
-echo "Installing ${APP_ID} ${VARIANT} on ${DEVICE}..."
+echo "Building ${APP_ID} ${VARIANT} for ${DEVICE}..."
 cd "$ANDROID_DIR"
 
-if "${ANDROID_DIR}/gradlew" ":app:tasks" --all | grep -Eq "^[[:space:]]*install${VARIANT_CAPITALIZED}([[:space:]]|$)"; then
-  "${ANDROID_DIR}/gradlew" "${GRADLE_ARGS[@]}"
-else
-  "${ANDROID_DIR}/gradlew" ":app:assemble${VARIANT_CAPITALIZED}" "${GRADLE_ARGS[@]:1}"
-  APK_PATH="${ANDROID_DIR}/app/build/outputs/apk/${VARIANT}/app-${VARIANT}.apk"
-
-  if [ ! -f "${APK_PATH}" ]; then
-    echo "Expected APK was not produced: ${APK_PATH}" >&2
-    exit 1
-  fi
-
-  "$ADB_BIN" -s "$DEVICE" install -r "$APK_PATH"
-fi
-"$ADB_BIN" -s "$DEVICE" shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 >/dev/null
+# Do not probe :app:tasks in a separate Gradle invocation. The app project
+# validates the packaged Community runtime while it is configured, and that
+# probe did not receive the build's -P paths.  It therefore failed before the
+# real build could start. Assemble with the selected build context, verify the
+# resulting APK for 16-KB-page compatibility, and only then install it.
+"${ANDROID_DIR}/gradlew" "${GRADLE_ARGS[@]}"
+APK_PATH="${APP_BUILD_DIR:-${ANDROID_DIR}/app/build}/outputs/apk/${VARIANT}/app-${VARIANT}.apk"
+"${REPO_ROOT}/apps/mobile/scripts/verify-android-16kb-elf.sh" "${APK_PATH}"
+echo "Installing verified ${APP_ID} ${VARIANT} on ${DEVICE}..."
+"$ADB_BIN" -s "$DEVICE" install -r "${APK_PATH}" >/dev/null
+# Android may retain the previous process across an in-place APK update.  That
+# process keeps the old JavaScript and native wallet sessions in memory, so it
+# cannot be used to verify the newly installed wallet build.  Stop it without
+# clearing application data, then start the newly installed process.  The
+# normal app-wide protection is still enforced on the next launch.
+"$ADB_BIN" -s "$DEVICE" shell am force-stop "$APP_ID" >/dev/null
+"$ADB_BIN" -s "$DEVICE" shell am start -W \
+  -n "${APP_ID}/com.monerowallet.MainActivity" >/dev/null

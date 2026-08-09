@@ -1,0 +1,89 @@
+From ecf2a110e5786bbe37e2047bc1ed2e3a03f5c610 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 7 Aug 2026 01:37:47 -0500
+Subject: [PATCH] wallet sync: add keyless public transport provider
+
+---
+ src/wallet/api/wallet2_api.h      | 11 +++++++++++
+ src/wallet/api/wallet_manager.cpp |  9 +++++++++
+ src/wallet/api/wallet_manager.h   |  2 ++
+ src/wallet/wallet2.cpp            |  8 +++++++-
+ 4 files changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 1d84b18..9ecfc68 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -1272,6 +1272,17 @@ struct Wallet
+ struct WalletManager
+ {
+ 
++    /*!
++     * \brief createSharedSyncProvider creates an in-memory public-data source
++     *        for app-wide block and mempool fan-out. It owns no account keys
++     *        and never creates wallet files.
++     * \param nettype network used to validate and request public chain data
++     * \param kdf_rounds retained for Wallet API constructor parity
++     * \return Wallet instance restricted by the caller to shared fetch APIs
++     */
++    virtual Wallet * createSharedSyncProvider(
++        NetworkType nettype, uint64_t kdf_rounds = 1) = 0;
++
+     /*!
+      * \brief  Creates new wallet
+      * \param  path           Name of wallet file
+diff --git a/src/wallet/api/wallet_manager.cpp b/src/wallet/api/wallet_manager.cpp
+index e81b8f8..40c8f10 100644
+--- a/src/wallet/api/wallet_manager.cpp
++++ b/src/wallet/api/wallet_manager.cpp
+@@ -54,6 +54,15 @@ WalletManagerImpl::WalletManagerImpl()
+     tools::set_strict_default_file_permissions(true);
+ }
+ 
++Wallet *WalletManagerImpl::createSharedSyncProvider(
++    NetworkType nettype, uint64_t kdf_rounds)
++{
++    // WalletImpl already owns the authenticated RPC/gRPC transport and the
++    // public block parser. Leaving the account uninitialised is intentional:
++    // this object must never own keys, scan ownership, or persist a wallet.
++    return new WalletImpl(nettype, kdf_rounds);
++}
++
+ Wallet *WalletManagerImpl::createWallet(const std::string &path, const std::string &password,
+                                     const std::string &language, NetworkType nettype, uint64_t kdf_rounds)
+ {
+diff --git a/src/wallet/api/wallet_manager.h b/src/wallet/api/wallet_manager.h
+index a223e1d..413f746 100644
+--- a/src/wallet/api/wallet_manager.h
++++ b/src/wallet/api/wallet_manager.h
+@@ -38,6 +38,8 @@ namespace Monero {
+ class WalletManagerImpl : public WalletManager
+ {
+ public:
++    Wallet * createSharedSyncProvider(
++        NetworkType nettype, uint64_t kdf_rounds = 1) override;
+     Wallet * createWallet(const std::string &path, const std::string &password,
+                           const std::string &language, NetworkType nettype, uint64_t kdf_rounds = 1) override;
+     Wallet * openWallet(const std::string &path, const std::string &password, NetworkType nettype, uint64_t kdf_rounds = 1, WalletListener * listener = nullptr) override;
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index aa808b1..c76e650 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -4296,7 +4296,13 @@ std::shared_ptr<const wallet2::shared_block_batch> wallet2::fetch_shared_block_b
+     (m_first_refresh_done || is_trusted_daemon()) ? 1 : FIRST_REFRESH_GRANULARITY);
+ 
+   uint64_t blocks_start_height = 0;
+-  if (requested_cursor > m_blockchain.size())
++  // An app-wide gRPC provider has no private wallet chain to advance. The
++  // authenticated shared-range request carries its explicit start cursor and
++  // a genesis locator, so it can stream public blocks without first fetching
++  // every historical hash. Bin-RPC keeps the established fast-refresh path.
++  const bool direct_shared_grpc =
++    !m_grpc_stream_endpoint.empty() && !m_grpc_stream_fallback_to_bin;
++  if (requested_cursor > m_blockchain.size() && !direct_shared_grpc)
+   {
+     fast_refresh(requested_cursor, blocks_start_height, short_chain_history);
+     short_chain_history.clear();
+-- 
+2.50.1 (Apple Git-155)
+

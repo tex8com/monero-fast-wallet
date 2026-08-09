@@ -132,4 +132,53 @@ describe('TransactionDetailScreen', () => {
     ReactTestRenderer.act(() => jest.runOnlyPendingTimers());
     jest.useRealTimers();
   });
+
+  it('shows amount and network fee with aligned full precision and muted trailing zeroes', () => {
+    mockedUseWalletState.mockReturnValue({
+      registeredWallet: { walletName: 'primary' },
+      transactions: [transaction],
+    } as unknown as ReturnType<typeof useWalletState>);
+
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    ReactTestRenderer.act(() => {
+      renderer = ReactTestRenderer.create(
+        <TransactionDetailScreen
+          navigation={{ goBack: jest.fn() }}
+          route={{ params: { transaction, transactionHash: hash } }}
+        />,
+      );
+    });
+
+    const renderedText = renderer!.root.findAllByType(Text);
+    const amount = renderedText.find(
+      node => node.props.testID === 'transaction-amount',
+    );
+    const fee = renderedText.find(
+      node => node.props.testID === 'transaction-network-fee',
+    );
+    expect(amount).toBeDefined();
+    expect(fee).toBeDefined();
+    expect(amount!.props.accessibilityLabel).toBe('0.003000000000 XMR');
+    expect(fee!.props.accessibilityLabel).toBe('0.000025000000 XMR');
+    expect(
+      renderer!.root.findByProps({
+        testID: 'transaction-amount-significant',
+      }).props.children,
+    ).toBe('0.003');
+    expect(
+      renderer!.root.findByProps({
+        testID: 'transaction-amount-trailing-zeros',
+      }).props.children,
+    ).toBe('000000000');
+    expect(
+      renderer!.root.findByProps({
+        testID: 'transaction-network-fee-significant',
+      }).props.children,
+    ).toBe('0.000025');
+    expect(
+      renderer!.root.findByProps({
+        testID: 'transaction-network-fee-trailing-zeros',
+      }).props.children,
+    ).toBe('000000');
+  });
 });

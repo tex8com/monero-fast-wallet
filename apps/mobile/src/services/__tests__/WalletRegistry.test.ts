@@ -21,6 +21,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createRegisteredWallet,
   isFastWalletRegistration,
+  ledgerBalanceNeedsVerification,
+  walletRegistrationIsRemovedWithTarget,
+  walletRequiresRecoverySeedBackup,
   loadRegisteredWallet,
   loadRegisteredWallets,
   loadWalletRegistry,
@@ -43,6 +46,100 @@ describe('isFastWalletRegistration', () => {
     expect(
       isFastWalletRegistration({ kind: 'software', role: 'standard' }),
     ).toBe(false);
+  });
+});
+
+describe('walletRequiresRecoverySeedBackup', () => {
+  it('requires backup only for wallets with local software entropy', () => {
+    expect(walletRequiresRecoverySeedBackup({ kind: 'software' })).toBe(true);
+    expect(walletRequiresRecoverySeedBackup({ kind: 'fast' })).toBe(true);
+    expect(walletRequiresRecoverySeedBackup({ kind: 'hardware' })).toBe(false);
+  });
+
+  it('never sends a Ledger account-1 Fast registration into seed backup', () => {
+    const ledgerFast = createRegisteredWallet({
+      walletName: 'ledger-fast-1',
+      path: '/app/wallets/mainnet/ledger-1',
+      network: 'mainnet',
+      kind: 'hardware',
+      role: 'fast',
+      accountIndex: 1,
+      sourceWalletId: 'hardware-mainnet-ledger-1',
+      now: '2026-08-05T20:27:00.000Z',
+    });
+
+    expect(ledgerFast.seedBackupStatus).toBe('not-required');
+    expect(walletRequiresRecoverySeedBackup(ledgerFast)).toBe(false);
+  });
+});
+
+describe('ledgerBalanceNeedsVerification', () => {
+  const ledger = createRegisteredWallet({
+    walletName: 'ledger-main',
+    path: '/app/wallets/mainnet/ledger-main',
+    network: 'mainnet',
+    kind: 'hardware',
+    viewOnlyPath: '/app/wallets/mainnet/ledger-main-view',
+    viewOnlyCredentialKey: 'ledger-main-view-secret',
+    ledgerKeyImagesVerifiedAt: '2026-08-09T00:00:00.000Z',
+    ledgerKeyImagesVerifiedHeight: 3_700_000,
+    now: '2026-08-09T00:00:00.000Z',
+  });
+
+  it('does not wake a Ledger merely because the chain tip advanced', () => {
+    expect(ledgerBalanceNeedsVerification(ledger, 0)).toBe(false);
+  });
+
+  it('queues a Ledger only when the Core reports a locally owned output without a key image', () => {
+    expect(ledgerBalanceNeedsVerification(ledger, 1)).toBe(true);
+  });
+
+  it('requires one initial Ledger pass for an unverified local companion', () => {
+    expect(
+      ledgerBalanceNeedsVerification(
+        { ...ledger, ledgerKeyImagesVerifiedAt: undefined },
+        0,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('walletRegistrationIsRemovedWithTarget', () => {
+  const ledgerRoot = {
+    id: 'ledger-root',
+    kind: 'hardware' as const,
+  };
+
+  it('cascades only a hardware child from its Ledger root', () => {
+    expect(
+      walletRegistrationIsRemovedWithTarget(
+        {
+          id: 'ledger-fast',
+          kind: 'hardware',
+          sourceWalletId: 'ledger-root',
+        },
+        ledgerRoot,
+      ),
+    ).toBe(true);
+  });
+
+  it('does not cascade an independent Fast Wallet with legacy provenance', () => {
+    expect(
+      walletRegistrationIsRemovedWithTarget(
+        {
+          id: 'independent-fast',
+          kind: 'fast',
+          sourceWalletId: 'ledger-root',
+        },
+        ledgerRoot,
+      ),
+    ).toBe(false);
+  });
+
+  it('always removes the target registration itself', () => {
+    expect(
+      walletRegistrationIsRemovedWithTarget(ledgerRoot, ledgerRoot),
+    ).toBe(true);
   });
 });
 

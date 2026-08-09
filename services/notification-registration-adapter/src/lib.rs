@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use axum::{
-    extract::State,
+    extract::{rejection::JsonRejection, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -73,9 +73,25 @@ async fn health() -> Json<HealthResponse> {
 async fn issue_grant(
     State(state): State<AdapterState>,
     headers: HeaderMap,
-    Json(input): Json<GrantRequest>,
+    input: Result<Json<GrantRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<GrantResponse>), AdapterError> {
-    input.validate()?;
+    // `Json<T>` rejections otherwise bypass this handler and Axum returns a
+    // 422 without any of our diagnostics.  Never print the rejection: it can
+    // contain client-controlled body text.  The stage is sufficient to tell a
+    // malformed routing probe from an App Check or grant failure.
+    let Json(input) = input.map_err(|_| {
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=registration-adapter event=grant.decode.error status=400"
+        );
+        AdapterError::BadRequest
+    })?;
+    eprintln!("FAST_WALLET_DIAGNOSTICS service=registration-adapter event=grant.start");
+    input.validate().map_err(|error| {
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=registration-adapter event=grant.binding.rejected status=400"
+        );
+        error
+    })?;
     let app_check = headers
         .get(APP_CHECK_HEADER)
         .and_then(|value| value.to_str().ok())
@@ -85,19 +101,43 @@ async fn issue_grant(
                 && value.len() <= MAX_APP_CHECK_TOKEN_BYTES
                 && value.bytes().all(|byte| byte.is_ascii_graphic())
         })
-        .ok_or(AdapterError::Unauthorized)?;
+        .ok_or_else(|| {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=registration-adapter event=app-check.missing-or-malformed status=401"
+            );
+            AdapterError::Unauthorized
+        })?;
     let now = unix_seconds();
     state
         .verifier
         .verify(app_check, now)
         .await
-        .map_err(|_| AdapterError::Unauthorized)?;
+        .map_err(|_| {
+            // Firebase validation errors deliberately stay opaque: App Check
+            // JWTs and their claims must never enter logs.
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=registration-adapter event=app-check.rejected status=401"
+            );
+            AdapterError::Unauthorized
+        })?;
+    eprintln!("FAST_WALLET_DIAGNOSTICS service=registration-adapter event=app-check.success");
     let attestation_key = hex::encode(Sha256::digest(app_check.as_bytes()));
     state
         .limiter
         .lock()
-        .map_err(|_| AdapterError::Unavailable)?
-        .admit(&attestation_key, now)?;
+        .map_err(|_| {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=registration-adapter event=grant.rate-limiter-unavailable status=503"
+            );
+            AdapterError::Unavailable
+        })?
+        .admit(&attestation_key, now)
+        .map_err(|error| {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=registration-adapter event=grant.rate-limited status=429"
+            );
+            error
+        })?;
 
     let provider_token_hash = decode_hash(&input.provider_token_hash)?;
     let installation_auth_hash = decode_hash(&input.installation_auth_hash)?;
@@ -114,6 +154,7 @@ async fn issue_grant(
         &state.signing_key,
     )
     .map_err(|_| AdapterError::BadRequest)?;
+    eprintln!("FAST_WALLET_DIAGNOSTICS service=registration-adapter event=grant.success status=201");
     Ok((StatusCode::CREATED, Json(GrantResponse { grant })))
 }
 
@@ -160,12 +201,16 @@ pub enum AdapterError {
 
 impl IntoResponse for AdapterError {
     fn into_response(self) -> Response {
-        let status = match self {
+        let status = match &self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::BadRequest => StatusCode::BAD_REQUEST,
             Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         };
+        eprintln!(
+            "FAST_WALLET_DIAGNOSTICS service=registration-adapter event=request.error status={}",
+            status.as_u16()
+        );
         let body = match self {
             Self::Unauthorized => "app integrity verification failed",
             Self::BadRequest => "registration binding is invalid",
@@ -551,5 +596,21 @@ mod tests {
                 assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn malformed_grant_body_is_logged_boundary_error_and_returns_bad_request() {
+        let app = router(AdapterState::new(
+            Arc::new(AcceptVerifier),
+            SigningKey::from_bytes(&[9_u8; 32]),
+        ));
+        let request = Request::post("/api/v1/provider-grants")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
     }
 }

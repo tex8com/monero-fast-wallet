@@ -19,7 +19,18 @@ assert.match(rootGradle, /com\.android\.tools\.build:gradle:8\.12\.0/);
 assert.match(rootGradle, /org\.jetbrains\.kotlin:kotlin-gradle-plugin:2\.1\.20/);
 assert.match(rootGradle, /com\.google\.gms:google-services:4\.4\.4/);
 assert.match(rootGradle, /project\(":app"\)[\s\S]*lockAllConfigurations\(\)/);
-assert.match(rootGradle, /lockMode = LockMode\.STRICT/);
+assert.match(
+  rootGradle,
+  /findProperty\("moneroDevelopmentDependencyLockingLenient"\) \?: "false"/,
+);
+assert.match(
+  rootGradle,
+  /developmentDependencyLockingLenient &&[\s\S]*configuredApplicationId == "com\.tex8\.monerowallet"[\s\S]*throw new GradleException/,
+);
+assert.match(
+  rootGradle,
+  /lockMode = developmentDependencyLockingLenient[\s\S]*\? LockMode\.LENIENT[\s\S]*: LockMode\.STRICT/,
+);
 
 const appGradle = read('android/app/build.gradle');
 assert.doesNotMatch(appGradle, /jsc-android:[^'"\n]*\+/);
@@ -32,6 +43,16 @@ assert.match(
   appGradle,
   /versionCode mobileAppVersionManifest\.androidVersionCode as int/,
 );
+
+const iosBuildInstall = read('scripts/ios-build-install.sh');
+assert.match(iosBuildInstall, /config\/mobile-app-version\.json/);
+assert.match(iosBuildInstall, /MARKETING_VERSION="\$IOS_VERSION_NAME"/);
+assert.match(iosBuildInstall, /CURRENT_PROJECT_VERSION="\$IOS_BUILD_NUMBER"/);
+assert.match(
+  iosBuildInstall,
+  /MONERO_WALLET_IOS_XCODEBUILD_QUIET:-1/,
+);
+assert.match(iosBuildInstall, /xcodebuild_args\+=\( -quiet \)/);
 assert.match(
   appGradle,
   /versionName mobileAppVersionManifest\.versionName/,
@@ -92,6 +113,20 @@ const walletApiBuilder = read(
 );
 assert.match(walletApiBuilder, /\.tex8-wallet-api-header\.sha256/);
 assert.match(walletApiBuilder, /Stamped wallet_api ABI/);
+assert.match(walletApiBuilder, /MFW_PRODUCT_CORE_LIBRARY/);
+const productCoreMobileBuilder = read('../../native/product-core/build-mobile.sh');
+assert.match(productCoreMobileBuilder, /--locked/);
+assert.match(productCoreMobileBuilder, /libmfw_product_core\.a/);
+assert.match(productCoreMobileBuilder, /aarch64-linux-android/);
+assert.match(productCoreMobileBuilder, /aarch64-apple-ios-sim/);
+const androidCoreBuilder = read(
+  '../../native/monero-bridge/scripts/build-android-monero-core-external.sh',
+);
+assert.match(androidCoreBuilder, /native\/product-core\/build-mobile\.sh/);
+assert.match(androidCoreBuilder, /MFW_PRODUCT_CORE_LIBRARY/);
+const iosCoreBuilder = read('scripts/ios-build-simulator-core.sh');
+assert.match(iosCoreBuilder, /native\/product-core\/build-mobile\.sh/);
+assert.match(iosCoreBuilder, /MFW_PRODUCT_CORE_LIBRARY/);
 const androidManifestGenerator = read(
   '../../native/monero-bridge/scripts/generate-android-monero-link-manifests.sh',
 );

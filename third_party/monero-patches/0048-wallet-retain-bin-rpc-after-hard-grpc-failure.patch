@@ -1,0 +1,63 @@
+From c6dbe7b6b9ceedd8a03dccfb5804ab412bea89ce Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sat, 8 Aug 2026 17:52:49 -0500
+Subject: [PATCH] wallet: retain bin RPC after hard gRPC failure
+
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 586d003..5b11f4e 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3507,8 +3507,13 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     {
+       MWARNING("grpc_stream: open_stream failed at start=" << effective_start
+         << " err=" << m_grpc_stream_client->last_error_message()
+-        << " -- falling back to bin RPC for this iteration");
+-      log_grpc_fallback("iteration", "stream_open_failed", "grpc_open",
++        << " -- falling back to bin RPC for this session");
++      // A hard open failure (for example an actively refused TCP endpoint)
++      // cannot produce a useful gRPC retry on every refresh iteration. Keep
++      // the established bin-RPC path for this wallet session and let explicit
++      // endpoint reconfiguration or a reorg reset the transport decision.
++      m_grpc_stream_fallback_to_bin = true;
++      log_grpc_fallback("session", "stream_open_failed", "grpc_open",
+         m_grpc_stream_client->last_error_code(), effective_start,
+         wallet_height, daemon_height, 0, 0);
+       return false;
+@@ -3525,17 +3530,19 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       std::chrono::steady_clock::now() - t_pop0).count();
+   if (!pop_ok)
+   {
+-    // End-of-stream (tip reached) OR timeout OR error. Close and let
+-    // caller fall back to bin RPC for this call. Next refresh cycle opens
+-    // a new stream starting at the new current height.
++    // A clean end at the tip is transient: the next refresh can reopen gRPC.
++    // A timeout or transport error is a hard failure for this session. Do not
++    // reopen a refused/broken connection every refresh iteration while the
++    // reliable bin-RPC path can make forward progress.
+     const bool ended_ok = m_grpc_stream_client->stream_ended_ok();
+     MWARNING("grpc_stream: next_chunk_payload returned empty "
+       << " (ended_ok=" << ended_ok
+       << " err_code=" << m_grpc_stream_client->last_error_code()
+       << " err='" << m_grpc_stream_client->last_error_message() << "')"
+-      << " -- closing stream, falling back to bin RPC for this iteration");
++      << " -- closing stream, falling back to bin RPC for "
++      << (ended_ok ? "this iteration" : "this session"));
+     const int fallback_error_code = m_grpc_stream_client->last_error_code();
+-    log_grpc_fallback("iteration",
++    log_grpc_fallback(ended_ok ? "iteration" : "session",
+       ended_ok ? "stream_end" : (fallback_error_code == 0
+         ? "chunk_timeout" : "stream_receive_failed"),
+       ended_ok ? "clean_end" : (fallback_error_code == 0
+@@ -3544,6 +3551,8 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       static_cast<uint64_t>(m_blockchain.size()), 0, 0, 0);
+     m_grpc_stream_client->close();
+     m_grpc_stream_active = false;
++    if (!ended_ok)
++      m_grpc_stream_fallback_to_bin = true;
+     return false;
+   }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

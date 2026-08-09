@@ -1,0 +1,112 @@
+From 63c9fed9877f2b229909fd8ce42165fa65018bbf Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Wed, 5 Aug 2026 16:30:12 -0500
+Subject: [PATCH] wallet: reuse Ledger cache for key image reconciliation
+
+Ledger is not a device_cold implementation and does not expose the Trezor
+cold-key-image protocol. Reconcile the already hardware-derived key images
+from the persisted Ledger wallet into its equivalent local view wallet after
+validating the account, chain height, output count and every output identity.
+
+This keeps the operation inside the trusted native process, requires no new
+block download and avoids asking the Ledger to rescan historical blocks merely
+to refresh spent state.
+
+---
+ src/wallet/wallet2.cpp | 72 +++++++++++++++++++++++++++++++-----------
+ 1 file changed, 54 insertions(+), 18 deletions(-)
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index c963273..de093ff 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -13481,6 +13481,11 @@ uint64_t wallet2::cold_key_image_sync(uint64_t &spent, uint64_t &unspent) {
+ }
+ //----------------------------------------------------------------------------------------------------
+ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent) {
++  // Keep this API name for wallet-api ABI compatibility. Ledger does not
++  // implement device_cold::ki_sync. Its normal wallet scan has already asked
++  // the hardware for each owned output key image and persisted the result in
++  // this source wallet. Copy only those authenticated cache entries after
++  // proving that source and destination describe the same scanned outputs.
+   const auto &source_address = get_account().get_keys().m_account_address;
+   const auto &destination_address = destination.get_account().get_keys().m_account_address;
+   CHECK_AND_ASSERT_THROW_MES(
+@@ -13489,26 +13494,57 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+           source_address.m_view_public_key == destination_address.m_view_public_key,
+       "Ledger source and view-only destination do not describe the same wallet");
+ 
+-  auto &hwdev = get_account().get_device();
+-  CHECK_AND_ASSERT_THROW_MES(hwdev.has_ki_cold_sync(), "Device does not support cold ki sync protocol");
+-
+-  auto dev_cold = dynamic_cast<::hw::device_cold*>(&hwdev);
+-  CHECK_AND_ASSERT_THROW_MES(dev_cold, "Device does not implement cold signing interface");
++  CHECK_AND_ASSERT_THROW_MES(
++      key_on_device(),
++      "Key-image cache source is not a hardware wallet");
++  CHECK_AND_ASSERT_THROW_MES(
++      destination.watch_only(),
++      "Key-image cache destination is not view-only");
++  CHECK_AND_ASSERT_THROW_MES(
++      get_blockchain_current_height() == destination.get_blockchain_current_height(),
++      "Ledger source and view-only destination are at different chain heights");
++  CHECK_AND_ASSERT_THROW_MES(
++      m_transfers.size() == destination.m_transfers.size(),
++      "Ledger source and view-only destination have different output counts");
+ 
+-  std::vector<std::pair<crypto::key_image, crypto::signature>> signed_key_images;
+-  hw::wallet_shim wallet_shim;
+-  setup_shim(&wallet_shim, this);
+-  dev_cold->ki_sync(&wallet_shim, m_transfers, signed_key_images);
++  destination.m_key_images.clear();
++  spent = 0;
++  unspent = 0;
++  uint64_t import_height = 0;
++  for (size_t index = 0; index < m_transfers.size(); ++index)
++  {
++    const transfer_details &source_transfer = m_transfers[index];
++    transfer_details &destination_transfer = destination.m_transfers[index];
++    CHECK_AND_ASSERT_THROW_MES(
++        source_transfer.m_txid == destination_transfer.m_txid &&
++            source_transfer.m_internal_output_index == destination_transfer.m_internal_output_index &&
++            source_transfer.m_global_output_index == destination_transfer.m_global_output_index &&
++            source_transfer.m_amount == destination_transfer.m_amount &&
++            source_transfer.m_subaddr_index == destination_transfer.m_subaddr_index &&
++            source_transfer.get_public_key() == destination_transfer.get_public_key(),
++        "Ledger source and view-only destination output identities differ at index " +
++            std::to_string(index));
++    CHECK_AND_ASSERT_THROW_MES(
++        source_transfer.m_key_image_known && !source_transfer.m_key_image_partial,
++        "Ledger cache has no complete key image for output " + std::to_string(index));
+ 
+-  // The destination verifies every Ledger signature against its corresponding
+-  // output before accepting the key image, then asks only its trusted daemon
+-  // for the authoritative spent state.
+-  const uint64_t import_height = destination.import_key_images(
+-      signed_key_images,
+-      0,
+-      spent,
+-      unspent,
+-      destination.is_trusted_daemon());
++    destination_transfer.m_key_image = source_transfer.m_key_image;
++    destination_transfer.m_key_image_known = true;
++    destination_transfer.m_key_image_request = false;
++    destination_transfer.m_key_image_partial = false;
++    destination_transfer.m_spent = source_transfer.m_spent;
++    destination_transfer.m_spent_height = source_transfer.m_spent_height;
++    destination.m_key_images[destination_transfer.m_key_image] = index;
++    destination.m_pub_keys[destination_transfer.get_public_key()] = index;
++    import_height = std::max(import_height, source_transfer.m_block_height);
++    if (source_transfer.m_frozen)
++      continue;
++    if (source_transfer.m_spent)
++      spent += source_transfer.amount();
++    else
++      unspent += source_transfer.amount();
++  }
++
+   m_device_last_key_image_sync = time(NULL);
+   destination.m_device_last_key_image_sync = m_device_last_key_image_sync;
+   return import_height;
+-- 
+2.50.1 (Apple Git-155)

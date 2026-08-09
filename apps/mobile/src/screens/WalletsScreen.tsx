@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -9,26 +9,22 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
-
 import { Icon } from '../components/Icon';
-import RecipientQrScanner from '../components/RecipientQrScanner';
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
 import { useI18n } from '../i18n';
-import type { FastReceiveIdentityRecord } from '../services/FastReceiveRegistry';
 import type { FastWalletStatusTone } from '../services/FastWalletStatus';
-import { parsePrivateFastWalletWorkerQr } from '../services/FastWalletWorkerQr';
 import {
   isFastWalletRegistration,
+  walletRegistrationIsRemovedWithTarget,
+  walletRequiresRecoverySeedBackup,
   walletDisplayName,
   type RegisteredWallet,
 } from '../services/WalletRegistry';
 import { walletService } from '../services/WalletService';
 import { useWalletState } from '../services/WalletState';
 import { colors, radius, spacing } from '../theme/colors';
-import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 
 export default function WalletsScreen({ navigation }: any) {
   const { t } = useI18n();
@@ -44,15 +40,19 @@ export default function WalletsScreen({ navigation }: any) {
     transactions,
     walletSnapshots,
   } = useWalletState();
-  const [fastReceiveIdentities, setFastReceiveIdentities] = useState<
-    FastReceiveIdentityRecord[]
-  >([]);
-  const [busy, setBusy] = useState(false);
-  const [busyIdentityId, setBusyIdentityId] = useState<string | undefined>();
-  const [privateWorkerTarget, setPrivateWorkerTarget] = useState<
-    FastReceiveIdentityRecord | undefined
+  const [backingUpWalletId, setBackingUpWalletId] = useState<
+    string | undefined
   >();
-  const [fastActionError, setFastActionError] = useState<string | undefined>();
+  const [fastWalletTransfer, setFastWalletTransfer] = useState<{
+    walletId: string;
+    status: 'transferring' | 'accepted' | 'failed';
+  }>();
+  const fastWalletTransferTimer = useRef<
+    ReturnType<typeof setTimeout> | undefined
+  >(undefined);
+  const [walletActionError, setWalletActionError] = useState<
+    string | undefined
+  >();
   const [renamingWalletId, setRenamingWalletId] = useState<
     string | undefined
   >();
@@ -60,70 +60,55 @@ export default function WalletsScreen({ navigation }: any) {
   const [renameError, setRenameError] = useState<string | undefined>();
   const [renameBusy, setRenameBusy] = useState(false);
   const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
-  const hasSecureWalletCredential = Boolean(session?.credentialKey);
-  const canCreateFastWallet =
-    Boolean(
-      session &&
-      !session.hardwareDevice &&
-      registeredWallet?.kind === 'software',
-    ) &&
-    hasSecureWalletCredential &&
-    !busy;
-  const showFastWalletInfo = () => {
-    Alert.alert(
-      'What is Fast Wallet?',
-      'A Fast Wallet is a separate local Monero wallet. It has its own recovery words and can receive and send normally. Back up those words before using its address.\n\nEncrypted background notifications will be added through the new Worker. No wallet secret is sent to the old scanner in this release.',
-    );
-  };
 
-  const selectRegisteredWallet = async (wallet: RegisteredWallet) => {
+  useEffect(
+    () => () => {
+      if (fastWalletTransferTimer.current) {
+        clearTimeout(fastWalletTransferTimer.current);
+      }
+    },
+    [],
+  );
+  const selectRegisteredWallet = (wallet: RegisteredWallet) => {
     if (openingWalletId) {
       return;
     }
 
-    setOpeningWalletId(wallet.id);
-    try {
-      const opened = await openRegisteredWalletById(wallet.id);
-      if (opened) {
+    if (wallet.kind !== 'hardware' && wallet.credentialKey) {
+      // Commit the selected wallet and cached snapshot immediately, then let a
+      // rare cold native open finish behind Home. There is no intermediate
+      // Open Wallet page or per-wallet authentication step.
+      const opening = openRegisteredWalletById(wallet.id);
+      if (isFastWalletRegistration(wallet)) {
+        navigation.navigate('Receive', { walletId: wallet.id });
+      } else {
         navigation.navigate('Home');
       }
-    } catch (error) {
-      Alert.alert(
-        t('wallets.openFailedTitle'),
-        error instanceof Error ? error.message : t('wallets.openFailed'),
-      );
-    } finally {
-      setOpeningWalletId(undefined);
+      opening.catch(() => undefined);
+      return;
     }
-  };
 
-  useFocusEffect(
-    useCallback(() => {
-      let mounted = true;
-      const refreshFastWallets = async () => {
-        try {
-          const identities = await walletService.loadFastReceiveIdentities();
-          if (!mounted) {
-            return;
-          }
-          setFastReceiveIdentities(identities);
-          setFastActionError(undefined);
-        } catch {
-          if (mounted) {
-            setFastActionError(t('fastWallet.status.errorDescription'));
+    setOpeningWalletId(wallet.id);
+    openRegisteredWalletById(wallet.id)
+      .then(opened => {
+        if (opened) {
+          if (isFastWalletRegistration(wallet)) {
+            navigation.navigate('Receive', { walletId: wallet.id });
+          } else {
+            navigation.navigate('Home');
           }
         }
-      };
+      })
+      .catch(error => {
+        Alert.alert(
+          t('wallets.openFailedTitle'),
+          error instanceof Error ? error.message : t('wallets.openFailed'),
+        );
+      })
+      .finally(() => setOpeningWalletId(undefined));
+  };
 
-      refreshFastWallets().catch(() => undefined);
-
-      return () => {
-        mounted = false;
-      };
-    }, [t]),
-  );
-
-  const confirmRemoveWallet = (wallet: RegisteredWallet) => {
+  const showRemoveWalletConfirmation = (wallet: RegisteredWallet) => {
     Alert.alert(
       t('wallets.removeWallet'),
       t('wallets.removeWalletConfirm', { name: walletDisplayName(wallet) }),
@@ -150,6 +135,76 @@ export default function WalletsScreen({ navigation }: any) {
     );
   };
 
+  const findPendingSeedBackupForRemoval = (
+    wallet: RegisteredWallet,
+    wallets = registeredWallets,
+  ): RegisteredWallet | undefined =>
+    wallets.find(
+      candidate =>
+        walletRegistrationIsRemovedWithTarget(candidate, wallet) &&
+        walletRequiresRecoverySeedBackup(candidate) &&
+        candidate.seedBackupStatus !== 'verified',
+    );
+
+  const backUpSeedBeforeRemoval = (
+    removalTarget: RegisteredWallet,
+    seedWallet: RegisteredWallet,
+  ) => {
+    Alert.alert(
+      t('wallets.removeBackupTitle'),
+      t('wallets.removeBackupDescription', {
+        name: walletDisplayName(seedWallet),
+      }),
+      [
+        { text: t('action.cancel'), style: 'cancel' },
+        {
+          text: t('settings.showBackupSeed'),
+          onPress: async () => {
+            try {
+              const confirmed = await backupRegisteredWalletSeed(
+                seedWallet.id,
+                t('settings.recoverySeedWarning'),
+              );
+              if (!confirmed) {
+                return;
+              }
+              await reloadRegisteredWallets();
+              // Reload before retrying so UI and service evaluate the same
+              // current registry state and the service-side deletion guard is
+              // never bypassed.
+              const refreshed = await walletService.loadRegisteredWallets();
+              const latestTarget = refreshed.find(
+                candidate => candidate.id === removalTarget.id,
+              );
+              if (latestTarget) {
+                confirmRemoveWallet(latestTarget, refreshed);
+              }
+            } catch (error) {
+              Alert.alert(
+                t('wallets.removeFailedTitle'),
+                error instanceof Error
+                  ? error.message
+                  : t('wallets.removeFailed'),
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const confirmRemoveWallet = (
+    wallet: RegisteredWallet,
+    wallets = registeredWallets,
+  ) => {
+    const walletNeedingBackup = findPendingSeedBackupForRemoval(wallet, wallets);
+    if (walletNeedingBackup) {
+      backUpSeedBeforeRemoval(wallet, walletNeedingBackup);
+      return;
+    }
+    showRemoveWalletConfirmation(wallet);
+  };
+
   const startRenameWallet = (wallet: RegisteredWallet) => {
     setRenamingWalletId(wallet.id);
     setRenameValue(walletDisplayName(wallet));
@@ -173,255 +228,62 @@ export default function WalletsScreen({ navigation }: any) {
     }
   };
 
-  const confirmRemoveFastWallet = (identity: FastReceiveIdentityRecord) => {
-    const localSnapshot = walletSnapshots[identity.id];
-    if (!localSnapshot?.synchronized) {
-      Alert.alert(
-        'Open and synchronize first',
-        'For safety, the app must verify this Fast Wallet locally before it can be removed.',
-      );
+  const manageWalletAddresses = (wallet: RegisteredWallet) => {
+    if (openingWalletId) {
       return;
     }
-    try {
-      if (BigInt(localSnapshot.balanceAtomic) > 0n) {
+    setOpeningWalletId(wallet.id);
+    navigation.navigate('Receive', {
+      walletId: wallet.id,
+      manageAddresses: true,
+    });
+    openRegisteredWalletById(wallet.id)
+      .catch(error => {
         Alert.alert(
-          'Wallet still contains Monero',
-          'Send the remaining balance or keep the recovery words and wallet on this device. A wallet with funds cannot be removed here.',
+          t('wallets.openFailedTitle'),
+          error instanceof Error ? error.message : t('wallets.openFailed'),
         );
+      })
+      .finally(() => setOpeningWalletId(undefined));
+  };
+
+  const backupFastWallet = async (wallet: RegisteredWallet) => {
+    if (backingUpWalletId) {
+      return;
+    }
+
+    setBackingUpWalletId(wallet.id);
+    setWalletActionError(undefined);
+    try {
+      const confirmed = await backupRegisteredWalletSeed(
+        wallet.id,
+        t('settings.recoverySeedWarning'),
+      );
+      if (!confirmed) {
         return;
       }
-    } catch {
-      Alert.alert(
-        'Balance could not be verified',
-        'The Fast Wallet cannot be removed until its local balance is known.',
-      );
-      return;
-    }
-    Alert.alert(
-      t('wallets.removeFastWallet'),
-      t('wallets.removeFastWalletConfirm', { name: identity.label }),
-      [
-        { text: t('action.cancel'), style: 'cancel' },
-        {
-          text: t('wallets.removeFromApp'),
-          style: 'destructive',
-          onPress: async () => {
-            setBusyIdentityId(identity.id);
-            setFastActionError(undefined);
-            try {
-              if (identity.scannerUrl && identity.status !== 'local-only') {
-                await walletService.disableFastReceiveIdentity({
-                  identityId: identity.id,
-                  scannerUrl: identity.scannerUrl,
-                });
-              }
-              const identities = await walletService.removeFastReceiveIdentity(
-                identity.id,
-              );
-              await removeRegisteredWallet(identity.id);
-              setFastReceiveIdentities(identities);
-            } catch {
-              setFastActionError(t('fastWallet.status.errorDescription'));
-            } finally {
-              setBusyIdentityId(undefined);
-            }
-          },
-        },
-      ],
-    );
-  };
-
-  const createFastWallet = async () => {
-    if (!canCreateFastWallet) {
-      return;
-    }
-
-    setBusy(true);
-    setFastActionError(undefined);
-    try {
-      const result = await walletService.createFastReceiveIdentity({});
-      setFastReceiveIdentities(result.identities);
-      await backupRegisteredWalletSeed(
-        result.identity.id,
-        t('settings.recoverySeedWarning'),
-      );
+      setFastWalletTransfer({
+        walletId: wallet.id,
+        status: 'transferring',
+      });
+      await walletService.enableEncryptedFastWalletAlerts({
+        identityId: wallet.id,
+      });
+      setFastWalletTransfer({ walletId: wallet.id, status: 'accepted' });
       await reloadRegisteredWallets();
-    } catch (error) {
-      const identities = await walletService.loadFastReceiveIdentities();
-      setFastReceiveIdentities(identities);
-      setFastActionError(
-        error instanceof Error
-          ? error.message
-          : t('fastWallet.status.errorDescription'),
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const restoreFastWallet = async () => {
-    if (busy) {
-      return;
-    }
-    setBusy(true);
-    setFastActionError(undefined);
-    try {
-      const result =
-        await walletService.restoreFastReceiveIdentityWithNativeSeed({});
-      setFastReceiveIdentities(result.identities);
-      await reloadRegisteredWallets();
-      Alert.alert(
-        'Fast Wallet restored',
-        'The app will now scan the blockchain locally to rebuild the complete history.',
+      fastWalletTransferTimer.current = setTimeout(
+        () => setFastWalletTransfer(undefined),
+        2200,
       );
     } catch (error) {
-      setFastActionError(
-        error instanceof Error
-          ? error.message
-          : t('fastWallet.status.errorDescription'),
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const backupFastWallet = async (identity: FastReceiveIdentityRecord) => {
-    if (busyIdentityId) {
-      return;
-    }
-
-    setBusyIdentityId(identity.id);
-    setFastActionError(undefined);
-    try {
-      await backupRegisteredWalletSeed(
-        identity.id,
-        t('settings.recoverySeedWarning'),
-      );
-      await reloadRegisteredWallets();
-    } catch (error) {
-      setFastActionError(
+      setFastWalletTransfer({ walletId: wallet.id, status: 'failed' });
+      setWalletActionError(
         error instanceof Error
           ? error.message
           : t('settings.recoverySeedError'),
       );
     } finally {
-      setBusyIdentityId(undefined);
-    }
-  };
-
-  const enableFastWalletAlerts = (identity: FastReceiveIdentityRecord) => {
-    Alert.alert(
-      'Turn on payment alerts?',
-      'The recommended TEX8 scan service can recognize incoming payments to this separate Fast Wallet, but it cannot spend them. Your recovery words and spending key stay on this device.',
-      [
-        { text: t('action.cancel'), style: 'cancel' },
-        {
-          text: 'Turn alerts on',
-          onPress: async () => {
-            setBusyIdentityId(identity.id);
-            setFastActionError(undefined);
-            try {
-              const result =
-                await walletService.enableEncryptedFastWalletAlerts({
-                  identityId: identity.id,
-                });
-              setFastReceiveIdentities(result.identities);
-            } catch (error) {
-              setFastActionError(
-                error instanceof Error ? error.message : String(error),
-              );
-            } finally {
-              setBusyIdentityId(undefined);
-            }
-          },
-        },
-      ],
-    );
-  };
-
-  const turnOffAllFastWalletAlerts = (identityId: string) => {
-    Alert.alert(
-      'Turn alerts off on this device?',
-      'This stops payment notifications for every Fast Wallet on this device. Your wallets and hosted scan data remain available.',
-      [
-        { text: t('action.cancel'), style: 'cancel' },
-        {
-          text: 'Turn alerts off',
-          style: 'destructive',
-          onPress: async () => {
-            setBusyIdentityId(identityId);
-            setFastActionError(undefined);
-            try {
-              const result =
-                await walletService.turnOffFastWalletAlerts(identityId);
-              setFastReceiveIdentities(result.identities);
-            } catch (error) {
-              setFastActionError(
-                error instanceof Error ? error.message : String(error),
-              );
-            } finally {
-              setBusyIdentityId(undefined);
-            }
-          },
-        },
-      ],
-    );
-  };
-
-  const deleteHostedFastWalletData = (identity: FastReceiveIdentityRecord) => {
-    Alert.alert(
-      'Delete hosted scan data?',
-      'The scan service will delete this Fast Wallet from its active list. Your local wallet is not removed. A viewing key already shared with a service cannot be made secret again; use a new Fast Wallet address if you need a new privacy boundary.',
-      [
-        { text: t('action.cancel'), style: 'cancel' },
-        {
-          text: 'Delete scan data',
-          style: 'destructive',
-          onPress: async () => {
-            setBusyIdentityId(identity.id);
-            setFastActionError(undefined);
-            try {
-              const result =
-                await walletService.deleteHostedFastWalletData(identity.id);
-              setFastReceiveIdentities(result.identities);
-            } catch (error) {
-              setFastActionError(
-                error instanceof Error ? error.message : String(error),
-              );
-            } finally {
-              setBusyIdentityId(undefined);
-            }
-          },
-        },
-      ],
-    );
-  };
-
-  const enrollWithPrivateWorker = async (workerDescriptorHex: string) => {
-    const identity = privateWorkerTarget;
-    setPrivateWorkerTarget(undefined);
-    if (!identity) {
-      return;
-    }
-
-    setBusyIdentityId(identity.id);
-    setFastActionError(undefined);
-    try {
-      await walletService.pairPrivateFastWalletWorker({
-        workerDescriptorHex,
-        network: identity.network,
-      });
-      const result = await walletService.enableEncryptedFastWalletAlerts({
-        identityId: identity.id,
-        workerDescriptorHex,
-      });
-      setFastReceiveIdentities(result.identities);
-    } catch (error) {
-      setFastActionError(
-        error instanceof Error ? error.message : String(error),
-      );
-    } finally {
-      setBusyIdentityId(undefined);
+      setBackingUpWalletId(undefined);
     }
   };
 
@@ -457,34 +319,79 @@ export default function WalletsScreen({ navigation }: any) {
         </View>
 
         <View style={s.section}>
-          <Text style={s.sectionTitle}>{t('wallets.privateWallets')}</Text>
-          {registeredWallets.some(
-            wallet => !isFastWalletRegistration(wallet),
-          ) ? (
-            registeredWallets
-              .filter(wallet => !isFastWalletRegistration(wallet))
-              .map(wallet => (
+          <Text style={s.sectionTitle}>{t('walletSelector.wallets')}</Text>
+          {registeredWallets.length > 0 ? (
+            registeredWallets.map(wallet => {
+              const fastWallet = isFastWalletRegistration(wallet);
+              const needsSeedBackup =
+                walletRequiresRecoverySeedBackup(wallet) &&
+                wallet.seedBackupStatus !== 'verified';
+              const transfer =
+                fastWalletTransfer?.walletId === wallet.id
+                  ? fastWalletTransfer.status
+                  : undefined;
+              return (
                 <View key={wallet.id}>
                   <WalletRow
                     active={wallet.id === registeredWallet?.id}
-                    address={walletSnapshots[wallet.id]?.primaryAddress}
-                    busy={openingWalletId === wallet.id}
-                    onSelect={() => {
-                      selectRegisteredWallet(wallet).catch(() => undefined);
-                    }}
+                    address={
+                      needsSeedBackup
+                        ? undefined
+                        : walletSnapshots[wallet.id]?.primaryAddress
+                    }
+                    badge={fastWallet ? t('walletSelector.fast') : undefined}
+                    busy={
+                      openingWalletId === wallet.id ||
+                      backingUpWalletId === wallet.id
+                    }
+                    onSelect={
+                      needsSeedBackup
+                        ? undefined
+                        : () => selectRegisteredWallet(wallet)
+                    }
+                    onSecondaryAction={
+                      needsSeedBackup
+                        ? () => backupFastWallet(wallet)
+                        : undefined
+                    }
+                    secondaryActionLabel={
+                      needsSeedBackup ? 'Back up' : undefined
+                    }
                     statusLabel={
-                      wallet.id === registeredWallet?.id
+                      transfer === 'transferring'
+                        ? t('setup.fastWalletTransferSending')
+                        : transfer === 'accepted'
+                        ? t('setup.fastWalletTransferAccepted')
+                        : transfer === 'failed'
+                        ? t('setup.fastWalletTransferFailed')
+                        : needsSeedBackup
+                        ? 'Back up recovery words'
+                        : wallet.id === registeredWallet?.id
                         ? t('walletSelector.active')
                         : undefined
                     }
-                    statusTone="success"
+                    statusTone={
+                      transfer === 'failed'
+                        ? 'danger'
+                        : transfer === 'transferring' ||
+                          needsSeedBackup
+                        ? 'warning'
+                        : 'success'
+                    }
                     subtitle={
-                      wallet.kind === 'hardware'
+                      fastWallet
+                        ? 'Receive quickly'
+                        : wallet.kind === 'hardware'
                         ? (wallet.hardwareDeviceName ?? 'Ledger Nano')
                         : wallet.network
                     }
                     title={walletDisplayName(wallet)}
                     onRename={() => startRenameWallet(wallet)}
+                    onManageAddresses={
+                      needsSeedBackup
+                        ? undefined
+                        : () => manageWalletAddresses(wallet)
+                    }
                     onRemove={() => confirmRemoveWallet(wallet)}
                   />
                   {renamingWalletId === wallet.id ? (
@@ -532,184 +439,14 @@ export default function WalletsScreen({ navigation }: any) {
                     </View>
                   ) : null}
                 </View>
-              ))
-          ) : (
-            <EmptyCard text={t('wallets.noWallets')} />
-          )}
-        </View>
-
-        <View style={s.section}>
-          <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>{t('wallets.fastWallets')}</Text>
-            <View style={s.fastHeaderActions}>
-              <TouchableOpacity
-                accessibilityLabel="What is Fast Wallet?"
-                accessibilityRole="button"
-                onPress={showFastWalletInfo}
-                style={s.fastInfoButton}
-              >
-                <Icon name="info" size={16} color={colors.orange} />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <View style={s.fastInfo}>
-            <Icon name="info" size={17} color={colors.orange} />
-            <Text style={s.fastInfoText}>
-              Separate local wallet. Back up its recovery words before using
-              the address.{' '}
-              {v1ReleaseFeatures.officialWorker ||
-              v1ReleaseFeatures.privateWorkerPairing
-                ? 'Encrypted payment alerts are optional after backup.'
-                : 'Encrypted payment alerts are not enabled in this signed build.'}
-            </Text>
-          </View>
-
-          {fastReceiveIdentities.length > 0 ? (
-            fastReceiveIdentities.map(identity => {
-              const registration = registeredWallets.find(
-                wallet => wallet.id === identity.id,
-              );
-              const backedUp = registration?.seedBackupStatus === 'verified';
-              const synchronized =
-                walletSnapshots[identity.id]?.synchronized === true;
-              const alertsAvailable =
-                backedUp &&
-                (v1ReleaseFeatures.officialWorker ||
-                  v1ReleaseFeatures.privateWorkerPairing);
-              return (
-                <View key={identity.id}>
-                  <WalletRow
-                    active={identity.id === registeredWallet?.id}
-                    address={backedUp ? identity.address : undefined}
-                    busy={busyIdentityId === identity.id}
-                    onRemove={() => confirmRemoveFastWallet(identity)}
-                    onSecondaryAction={
-                      backedUp ? undefined : () => backupFastWallet(identity)
-                    }
-                    secondaryActionLabel="Back up now"
-                    statusLabel={
-                      backedUp
-                        ? synchronized
-                          ? t('walletSelector.synced')
-                          : t('sync.scanningBlocks')
-                        : 'Back up recovery words'
-                    }
-                    statusTone={backedUp ? 'success' : 'warning'}
-                    subtitle={identity.network}
-                    title={identity.label}
-                  />
-                  {alertsAvailable ? (
-                    <View style={s.alertControls}>
-                      <View style={s.alertControlCopy}>
-                        <Text style={s.alertControlTitle}>
-                          {identity.notificationsEnabled
-                            ? 'Payment alerts on'
-                            : identity.assignmentHandle
-                              ? 'Payment alerts off'
-                              : 'Payment alerts available'}
-                        </Text>
-                        <Text style={s.alertControlText}>
-                          {identity.assignmentHandle
-                            ? 'Encrypted scan data is hosted. Your local wallet remains the authority.'
-                            : 'Optional. The recommended service sees incoming payments to this Fast Wallet only.'}
-                        </Text>
-                      </View>
-                      <View style={s.alertControlActions}>
-                        {identity.notificationsEnabled ? (
-                          <TouchableOpacity
-                            accessibilityRole="button"
-                            disabled={busyIdentityId === identity.id}
-                            onPress={() =>
-                              turnOffAllFastWalletAlerts(identity.id)
-                            }
-                            style={s.alertSecondaryButton}
-                          >
-                            <Text style={s.alertSecondaryButtonText}>
-                              Turn all alerts off
-                            </Text>
-                          </TouchableOpacity>
-                        ) : (
-                          <TouchableOpacity
-                            accessibilityRole="button"
-                            disabled={busyIdentityId === identity.id}
-                            onPress={() => enableFastWalletAlerts(identity)}
-                            style={s.alertPrimaryButton}
-                          >
-                            <Text style={s.alertPrimaryButtonText}>
-                              Turn alerts on
-                            </Text>
-                          </TouchableOpacity>
-                        )}
-                        {identity.assignmentHandle ? (
-                          <TouchableOpacity
-                            accessibilityRole="button"
-                            disabled={busyIdentityId === identity.id}
-                            onPress={() => deleteHostedFastWalletData(identity)}
-                            style={s.alertDeleteButton}
-                          >
-                            <Text style={s.alertDeleteButtonText}>
-                              Delete scan data
-                            </Text>
-                          </TouchableOpacity>
-                        ) : null}
-                        {v1ReleaseFeatures.privateWorkerPairing ? (
-                          <TouchableOpacity
-                            accessibilityRole="button"
-                            disabled={busyIdentityId === identity.id}
-                            onPress={() => setPrivateWorkerTarget(identity)}
-                            style={s.alertSecondaryButton}
-                          >
-                            <Text style={s.alertSecondaryButtonText}>
-                              Use my own scan service
-                            </Text>
-                          </TouchableOpacity>
-                        ) : null}
-                      </View>
-                    </View>
-                  ) : null}
-                </View>
               );
             })
           ) : (
-            <EmptyCard text={t('wallets.noFastWallets')} />
+            <EmptyCard text={t('wallets.noWallets')} />
           )}
-
-          {fastActionError ? (
-            <Text style={s.fastActionError}>{fastActionError}</Text>
+          {walletActionError ? (
+            <Text style={s.fastActionError}>{walletActionError}</Text>
           ) : null}
-
-          {session && !hasSecureWalletCredential ? (
-            <Text style={s.fastActionError}>
-              This legacy wallet is missing its protected device credential. Restore it from the recovery seed before managing Fast Wallet.
-            </Text>
-          ) : null}
-
-          <TouchableOpacity
-            activeOpacity={0.8}
-            disabled={!canCreateFastWallet}
-            onPress={createFastWallet}
-            style={[
-              s.fastCreateButton,
-              !canCreateFastWallet && s.fastCreateButtonDisabled,
-            ]}
-          >
-            <Icon name="plus" size={18} color="#FFF" strokeWidth={2.4} />
-            <Text style={s.fastCreateButtonText}>
-              {busy ? t('status.creating') : t('wallets.createFastWallet')}
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.8}
-            disabled={busy}
-            onPress={restoreFastWallet}
-            style={[s.fastCreateButton, busy && s.fastCreateButtonDisabled]}
-          >
-            <Icon name="arrow-down" size={18} color="#FFF" strokeWidth={2.4} />
-            <Text style={s.fastCreateButtonText}>
-              {busy ? t('status.creating') : 'Restore Fast Wallet'}
-            </Text>
-          </TouchableOpacity>
         </View>
 
         <View style={s.recentSection}>
@@ -749,17 +486,6 @@ export default function WalletsScreen({ navigation }: any) {
           )}
         </View>
       </ScrollView>
-      <RecipientQrScanner
-        visible={Boolean(privateWorkerTarget)}
-        hint="Scan the QR code shown by your private scan service."
-        invalidMessage="This is not a valid private scan-service QR code."
-        onClose={() => setPrivateWorkerTarget(undefined)}
-        onScanned={descriptorHex => {
-          enrollWithPrivateWorker(descriptorHex).catch(() => undefined);
-        }}
-        parseCode={parsePrivateFastWalletWorkerQr}
-        title="Connect private scan service"
-      />
     </View>
   );
 }
@@ -767,6 +493,7 @@ export default function WalletsScreen({ navigation }: any) {
 function WalletRow({
   active,
   address,
+  badge,
   busy,
   onRetry,
   onSelect,
@@ -777,10 +504,12 @@ function WalletRow({
   subtitle,
   title,
   onRename,
+  onManageAddresses,
   onRemove,
 }: {
   active?: boolean;
   address?: string;
+  badge?: string;
   busy?: boolean;
   onRetry?: () => void;
   onSelect?: () => void;
@@ -791,6 +520,7 @@ function WalletRow({
   subtitle: string;
   title: string;
   onRename?: () => void;
+  onManageAddresses?: () => void;
   onRemove: () => void;
 }) {
   const { t } = useI18n();
@@ -813,9 +543,12 @@ function WalletRow({
           )}
         </View>
         <View style={s.walletText}>
-          <Text style={s.walletTitle} numberOfLines={1}>
-            {title}
-          </Text>
+          <View style={s.walletTitleRow}>
+            <Text style={s.walletTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            {badge ? <Text style={s.walletBadge}>{badge}</Text> : null}
+          </View>
           <Text style={s.walletSubtitle} numberOfLines={1}>
             {address ? shortAddress(address) : subtitle}
           </Text>
@@ -875,8 +608,21 @@ function WalletRow({
         </View>
       ) : null}
       <View style={s.walletActions}>
+        {onManageAddresses ? (
+          <TouchableOpacity
+            accessibilityLabel={`${t('receive.manageAddresses')}: ${title}`}
+            accessibilityRole="button"
+            activeOpacity={0.72}
+            onPress={onManageAddresses}
+            style={s.addressesButton}
+          >
+            <Text style={s.addressesButtonText}>{t('receive.addresses')}</Text>
+          </TouchableOpacity>
+        ) : null}
         {onRename ? (
           <TouchableOpacity
+            accessibilityLabel={`Rename ${title}`}
+            accessibilityRole="button"
             activeOpacity={0.72}
             onPress={onRename}
             style={s.renameButton}
@@ -885,6 +631,8 @@ function WalletRow({
           </TouchableOpacity>
         ) : null}
         <TouchableOpacity
+          accessibilityLabel={`Remove ${title}`}
+          accessibilityRole="button"
           activeOpacity={0.72}
           onPress={onRemove}
           style={s.removeButton}
@@ -1111,7 +859,23 @@ const s = StyleSheet.create({
     backgroundColor: colors.orangeMuted,
   },
   walletText: { flex: 1, minWidth: 0 },
-  walletTitle: { color: colors.textPrimary, fontSize: 15, fontWeight: '900' },
+  walletTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  walletTitle: {
+    flexShrink: 1,
+    color: colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  walletBadge: {
+    overflow: 'hidden',
+    borderRadius: radius.full,
+    backgroundColor: 'rgba(242,104,34,0.14)',
+    color: colors.orange,
+    fontSize: 9,
+    fontWeight: '900',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
   walletSubtitle: { color: colors.textMuted, fontSize: 12, marginTop: 3 },
   statusColumn: {
     maxWidth: 104,
@@ -1144,6 +908,16 @@ const s = StyleSheet.create({
   },
   retryText: { color: colors.orange, fontSize: 10, fontWeight: '900' },
   walletActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  addressesButton: {
+    minHeight: 34,
+    justifyContent: 'center',
+    paddingHorizontal: 7,
+  },
+  addressesButtonText: {
+    color: colors.orange,
+    fontSize: 11,
+    fontWeight: '800',
+  },
   renameButton: {
     width: 34,
     height: 34,

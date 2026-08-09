@@ -4,7 +4,14 @@ upstream_url=https://github.com/monero-project/monero.git
 upstream_ref=v0.18.4.6
 upstream_commit=dbcc7d212c094bd1a45f7291dbb99a4b4627a96d
 upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
-patched_tree=8a34f9def50e00eb97d274a3eac7f8d55e0abe22
+# Patch 0057 adds a local, signed Worker identity pin for the Fast Wallet CLI.
+# It verifies only a public descriptor and stores no seed, password, key,
+# address, assignment handle, worker token, or node endpoint.
+# A cache at the verified patch-0051 tree may advance in place; a fresh checkout must
+# apply the complete series and reach `patched_tree` below.
+previous_patched_tree=73c0107a69d7beac7c4b9e5743a6a2994f27946e
+previous_patch_count=56
+patched_tree=bb0fa1be66a6eeb564378a06b9da097f06b0acaf
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

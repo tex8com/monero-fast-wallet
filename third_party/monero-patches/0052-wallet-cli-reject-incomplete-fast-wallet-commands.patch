@@ -1,0 +1,44 @@
+From c1dd5bd635a6727346a6147eca21242d68d0e957 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Fast Wallet <devnull@tex8.invalid>
+Date: Sat, 8 Aug 2026 21:49:25 -0500
+Subject: [PATCH] wallet cli: reject incomplete Fast Wallet commands
+
+---
+ src/simplewallet/product_cli_debug.cpp | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index a7bf844..a354877 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -469,8 +469,14 @@ namespace mfw_cli
+ 
+   bool handle_early_product_command(int argc, char* argv[], int& exit_code)
+   {
+-    if (argc >= 3 && std::string(argv[1]) == "fast-wallet")
++    if (argc >= 2 && std::string(argv[1]) == "fast-wallet")
+     {
++      if (argc == 2)
++      {
++        print_fast_wallet_help();
++        exit_code = 2;
++        return true;
++      }
+       const std::string command(argv[2]);
+       if (command == "help" && argc == 3)
+       {
+@@ -492,6 +498,11 @@ namespace mfw_cli
+       }
+       if (command == "self-test" && argc == 4 && std::string(argv[3]) == "--json")
+         return fast_wallet_self_test(exit_code);
++
++      std::cerr << "Unknown fast-wallet command.\n\n";
++      print_fast_wallet_help();
++      exit_code = 2;
++      return true;
+     }
+     if (argc >= 3 && std::string(argv[1]) == "wallet")
+     {
+-- 
+2.50.1 (Apple Git-155)
+

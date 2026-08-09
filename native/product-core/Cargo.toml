@@ -1,0 +1,16 @@
+[package]
+name = "mfw-product-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "BSD-3-Clause"
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+argon2 = "0.5"
+getrandom = "0.2"
+zeroize = "1.8"
+
+[dev-dependencies]

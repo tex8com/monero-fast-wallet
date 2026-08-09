@@ -22,7 +22,11 @@ provider_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --request POST --header 'content-type: application/json' --data '{}' \
   "$origin/api/v1/provider-grants")"
 case "$provider_status" in
-  400|401|403|422) ;;
+  # `{}` is deliberately malformed and must be rejected before any App Check
+  # verification or grant issuance.  It is a routing check, never a device
+  # registration attempt.  The adapter maps JSON decode errors to 400 and
+  # emits `grant.decode.error` for a clear diagnostic boundary.
+  400|401|403) ;;
   *)
     echo "Unexpected provider-grant route status: $provider_status" >&2
     exit 1

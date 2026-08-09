@@ -2,6 +2,9 @@ use std::{env, fs, path::PathBuf, process::Command};
 
 const COMMANDS: &[&str] = &[
     "wallet_core_status",
+    "compute_backend_status",
+    "set_compute_backend",
+    "derivation_performance",
     "app_protection_status",
     "retry_app_protection_status",
     "set_app_protection_password",
@@ -9,6 +12,9 @@ const COMMANDS: &[&str] = &[
     "set_app_protection_mode",
     "verify_system_auth",
     "lock_app",
+    "record_app_user_activity",
+    "auto_lock_settings",
+    "set_auto_lock_timeout",
     "fetch_market_backup",
     "ledger_transport_status",
     "store_wallet_password",
@@ -19,6 +25,7 @@ const COMMANDS: &[&str] = &[
     "create_hardware_wallet",
     "enable_ledger_read_only",
     "create_ledger_read_only_from_device",
+    "reconcile_ledger_balance",
     "wallet_open_requires_password",
     "open_wallet",
     "close_wallet",
@@ -26,11 +33,14 @@ const COMMANDS: &[&str] = &[
     "remove_registered_wallet",
     "list_registered_wallets",
     "activate_registered_wallet",
+    "queue_registered_wallet_sync",
     "list_fast_wallets",
     "open_fast_wallet",
     "close_fast_wallet",
     "remove_fast_wallet",
+    "remove_fast_wallet_entry",
     "present_fast_wallet_recovery_seed",
+    "confirm_fast_wallet_recovery_seed_backup",
     "create_fast_wallet",
     "pair_private_fast_wallet_worker",
     "enable_encrypted_fast_wallet_alerts",
@@ -48,6 +58,7 @@ const COMMANDS: &[&str] = &[
     "load_node_settings",
     "save_node_settings",
     "set_daemon",
+    "network_sync_status",
     "start_wallet_refresh",
     "stop_wallet_refresh",
     "wallet_address",
@@ -64,12 +75,15 @@ const COMMANDS: &[&str] = &[
     "refresh_mfw_name",
     "remove_mfw_name_local",
     "present_recovery_seed",
+    "confirm_recovery_seed_backup",
     "wallet_snapshot",
     "registered_wallet_snapshots",
     "wallet_balance",
     "wallet_unlocked_balance",
     "create_subaddress",
+    "list_subaddresses",
     "wallet_transactions",
+    "registered_wallet_transactions",
     "prepare_transaction",
     "commit_transaction",
     "wallet_hardware_status",
@@ -118,6 +132,46 @@ const COMMANDS: &[&str] = &[
     "enthusiast_v1_block_contact",
 ];
 
+fn expected_monero_core_tree(repo_root: &std::path::Path) -> String {
+    let lock_path = repo_root.join("third_party/monero-patches/upstream.lock");
+    let lock = fs::read_to_string(&lock_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", lock_path.display()));
+    let tree = lock
+        .lines()
+        .find_map(|line| line.strip_prefix("patched_tree="))
+        .unwrap_or_else(|| panic!("{} has no patched_tree", lock_path.display()));
+    if tree.len() != 40 || !tree.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        panic!("{} has an invalid patched_tree", lock_path.display());
+    }
+    tree.to_owned()
+}
+
+fn verify_monero_source_tree(source_dir: &std::path::Path, expected: &str) {
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(source_dir)
+        .args(["rev-parse", "HEAD^{tree}"])
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "run git for common Monero Core {}: {error}",
+                source_dir.display()
+            )
+        });
+    if !output.status.success() {
+        panic!(
+            "DESKTOP_MONERO_SOURCE_DIR is not a readable Git checkout: {}",
+            source_dir.display()
+        );
+    }
+    let actual = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if actual != expected {
+        panic!(
+            "Desktop Monero Core source is stale or unauthenticated: expected tree {expected}, got {actual}"
+        );
+    }
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest path"));
     configure_fast_wallet_release(&manifest_dir);
@@ -156,12 +210,14 @@ fn main() {
         }
     }
     let repo_root = manifest_dir.join("../../..");
+    let expected_core_tree = expected_monero_core_tree(&repo_root);
     let bridge_dir = repo_root.join("native/monero-bridge");
     let desktop_bridge_dir = repo_root.join("native/desktop-bridge");
     let fast_wallet_protocol_dir = repo_root.join("native/fast-wallet-protocol");
     let source_dir = env::var_os("DESKTOP_MONERO_SOURCE_DIR").map(PathBuf::from);
     let wallet_api = env::var_os("DESKTOP_MONERO_WALLET_API_LIBRARY").map(PathBuf::from);
     let windows_core_dll = env::var_os("DESKTOP_WINDOWS_MONERO_CORE_DLL").map(PathBuf::from);
+    let windows_core_tree = env::var("DESKTOP_WINDOWS_MONERO_CORE_TREE").ok();
     let fast_crypto = env::var_os("DESKTOP_MONERO_FAST_CRYPTO_LIBRARY")
         .map(PathBuf::from)
         .or_else(|| {
@@ -176,6 +232,7 @@ fn main() {
             })
         });
     let require_monero = env::var("DESKTOP_REQUIRE_MONERO").as_deref() == Ok("1");
+    let grpc_stream_enabled = env::var("DESKTOP_MONERO_GRPC_STREAM").as_deref() == Ok("1");
     let linked_with_monero = if cfg!(target_os = "windows") {
         windows_core_dll.as_ref().is_some_and(|path| path.is_file())
     } else {
@@ -191,6 +248,20 @@ fn main() {
         panic!(
             "release packages require DESKTOP_MONERO_SOURCE_DIR, DESKTOP_MONERO_WALLET_API_LIBRARY, and DESKTOP_MONERO_FAST_CRYPTO_LIBRARY"
         );
+    }
+    if linked_with_monero {
+        if cfg!(target_os = "windows") {
+            if windows_core_tree.as_deref() != Some(expected_core_tree.as_str()) {
+                panic!(
+                    "Windows Monero Core DLL is stale or unauthenticated: expected tree {expected_core_tree}"
+                );
+            }
+        } else {
+            verify_monero_source_tree(
+                source_dir.as_deref().expect("linked Core source path"),
+                &expected_core_tree,
+            );
+        }
     }
 
     for file in [
@@ -214,7 +285,9 @@ fn main() {
         "DESKTOP_MONERO_WALLET_API_LIBRARY",
         "DESKTOP_MONERO_FAST_CRYPTO_LIBRARY",
         "DESKTOP_WINDOWS_MONERO_CORE_DLL",
+        "DESKTOP_WINDOWS_MONERO_CORE_TREE",
         "DESKTOP_MONERO_EXTRA_LINK_ARGS",
+        "DESKTOP_MONERO_GRPC_STREAM",
         "DESKTOP_REQUIRE_MONERO",
     ] {
         println!("cargo:rerun-if-env-changed={variable}");
@@ -265,8 +338,25 @@ fn main() {
         native
             .define("TEX8_WALLET_BRIDGE_WITH_MONERO", Some("1"))
             .include(source_dir.join("src/wallet/api"));
+        native.define(
+            "TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM",
+            Some(if grpc_stream_enabled { "1" } else { "0" }),
+        );
+        let wallet_api_header = source_dir.join("src/wallet/api/wallet2_api.h");
+        let wallet_api_source = fs::read_to_string(&wallet_api_header)
+            .unwrap_or_else(|error| panic!("read {}: {error}", wallet_api_header.display()));
+        if !wallet_api_source.contains("hardwarePrivateViewKey") {
+            panic!(
+                "authenticated Monero Core is missing the required TEX8 Ledger extension: {}",
+                wallet_api_header.display()
+            );
+        }
+        native.define("TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS", Some("1"));
     } else if !cfg!(target_os = "windows") {
-        native.define("TEX8_WALLET_BRIDGE_WITH_MONERO", Some("0"));
+        native
+            .define("TEX8_WALLET_BRIDGE_WITH_MONERO", Some("0"))
+            .define("TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM", Some("0"))
+            .define("TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS", Some("0"));
     }
     native.compile("tex8_desktop_wallet_bridge");
 
@@ -318,6 +408,14 @@ fn main() {
     println!(
         "cargo:rustc-env=TEX8_DESKTOP_MONERO_LINKED={}",
         if linked_with_monero { "1" } else { "0" }
+    );
+    println!(
+        "cargo:rustc-env=TEX8_DESKTOP_MONERO_CORE_TREE={}",
+        if linked_with_monero {
+            expected_core_tree.as_str()
+        } else {
+            "unlinked"
+        }
     );
 }
 
@@ -462,8 +560,18 @@ fn configure_fast_wallet_release(manifest_dir: &std::path::Path) {
         .pointer("/features/privateWorkerPairing")
         .and_then(serde_json::Value::as_bool)
         == Some(true);
-    let gateway_origin = env::var("FAST_WALLET_GATEWAY_ORIGIN").unwrap_or_default();
-    let official_root = env::var("FAST_WALLET_OFFICIAL_WORKER_ROOT_ID").unwrap_or_default();
+    let configured_gateway_origin = manifest
+        .pointer("/parameters/fastWalletOfficialWorker/gatewayOrigin")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let configured_official_root = manifest
+        .pointer("/parameters/fastWalletOfficialWorker/rootIdHex")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let gateway_origin = env::var("FAST_WALLET_GATEWAY_ORIGIN")
+        .unwrap_or_else(|_| configured_gateway_origin.to_owned());
+    let official_root = env::var("FAST_WALLET_OFFICIAL_WORKER_ROOT_ID")
+        .unwrap_or_else(|_| configured_official_root.to_owned());
     if (official_enabled || private_enabled) && !valid_https_origin(&gateway_origin) {
         panic!(
             "remote Fast Wallet alerts require FAST_WALLET_GATEWAY_ORIGIN as an exact HTTPS origin"
