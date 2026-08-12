@@ -375,7 +375,7 @@ gate_fast_wallet_persisted_cache_reopen() {
   local refresh_output
   refresh_output="$(
     "${linked_runner}" refresh mainnet \
-      "${workdir}/fast-receive-v2-0-proof" \
+      "${workdir}/fast-receive-v2-199-proof" \
       "${fast_wallet_password}" \
       "${rpc}" \
       "${grpc}" \

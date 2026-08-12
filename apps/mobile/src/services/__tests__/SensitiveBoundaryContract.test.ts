@@ -195,6 +195,22 @@ describe('sensitive native boundary contract', () => {
     );
   });
 
+  it('retains every safe Ledger reconciliation phase in release diagnostics', () => {
+    for (const phase of [
+      'checking-local-scan',
+      'catching-up-local-scan',
+      'connecting-ledger',
+      'deriving-owned-output-key-images',
+      'saving-ledger-balance',
+    ]) {
+      expect(
+        formatWalletLogLine('WalletState', 'ledgerReconciliation.phase', {
+          phase,
+        }),
+      ).toContain(`"phase":"${phase}"`);
+    }
+  });
+
   it('keeps native diagnostics behind an explicit release build flag', () => {
     expect(walletEngine).toMatch(
       /void logEngineDiagnostic[\s\S]*?#if defined\(NDEBUG\) && !TEX8_WALLET_DIAGNOSTICS[\s\S]*?\(void\)fields;/,

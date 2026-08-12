@@ -22,6 +22,7 @@ import {
   createRegisteredWallet,
   isFastWalletRegistration,
   ledgerBalanceNeedsVerification,
+  ledgerInitialVerificationCanStart,
   walletRegistrationIsRemovedWithTarget,
   walletRequiresRecoverySeedBackup,
   loadRegisteredWallet,
@@ -127,6 +128,48 @@ describe('ledgerBalanceNeedsVerification', () => {
           viewOnlyPath: undefined,
         },
         0,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('ledgerInitialVerificationCanStart', () => {
+  const unverified = createRegisteredWallet({
+    walletName: 'ledger-initial-pass',
+    path: '/app/wallets/mainnet/ledger-initial-pass',
+    network: 'mainnet',
+    kind: 'hardware',
+    viewOnlyPath: '/app/wallets/mainnet/ledger-initial-pass-view',
+    viewOnlyCredentialKey: 'ledger-initial-pass-view-secret',
+    now: '2026-08-12T00:00:00.000Z',
+  });
+
+  it('waits until the historical local scan is complete', () => {
+    expect(
+      ledgerInitialVerificationCanStart(
+        unverified,
+        { synchronized: false, pendingOutputKeyImageCount: 14 },
+        14,
+      ),
+    ).toBe(false);
+    expect(
+      ledgerInitialVerificationCanStart(
+        unverified,
+        { synchronized: true, pendingOutputKeyImageCount: 14 },
+        14,
+      ),
+    ).toBe(true);
+  });
+
+  it('does not repeat a durably completed initial pass', () => {
+    expect(
+      ledgerInitialVerificationCanStart(
+        {
+          ...unverified,
+          ledgerKeyImagesVerifiedAt: '2026-08-12T01:00:00.000Z',
+        },
+        { synchronized: true, pendingOutputKeyImageCount: 0 },
+        14,
       ),
     ).toBe(false);
   });

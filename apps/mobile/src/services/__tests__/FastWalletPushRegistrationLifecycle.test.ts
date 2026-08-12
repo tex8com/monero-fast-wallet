@@ -165,4 +165,40 @@ describe('Fast Wallet provider registration lifecycle', () => {
       'app-check-token',
     );
   });
+
+  it('validates App Check and Gateway again on every diagnostic app start', async () => {
+    NativeModules.RNFBAppModule = {};
+    mockMetadata.set(
+      'monero-fast-wallet.push.subscription-id.v1',
+      'installation-existing',
+    );
+    mockMetadata.set(
+      'monero-fast-wallet.push.registration-state.v1',
+      JSON.stringify({
+        desired: 'enabled',
+        status: 'active',
+        retryCount: 0,
+        lastSuccessAt: Date.now(),
+      }),
+    );
+    mockRegisterFastWalletProvider.mockResolvedValue({
+      installationId: 'installation-existing',
+      provider: 'fcm',
+      providerTokenHash: 'hash-existing',
+      generation: 2,
+      acceptedAt: 2,
+      leaseExpiresAt: 3,
+      deliveryState: 'active',
+    });
+
+    const stop = FastWalletPushService.startLifecycle();
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    stop();
+
+    expect(mockRegisterFastWalletProvider).toHaveBeenCalledWith(
+      'fcm-current-token-000000',
+      'app-check-token',
+    );
+  });
 });

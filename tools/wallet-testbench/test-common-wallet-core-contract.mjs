@@ -344,7 +344,7 @@ test('restore heights are one-time creation inputs and shared-sync cache resets 
   assert.match(createViewOnly, /setRefreshFromBlockHeight\(request\.restoreHeight\)/);
   assert.match(createViewOnly, /return addWallet\([\s\S]*wallet\);/);
   assert.doesNotMatch(createViewOnly, /addWallet\([\s\S]*request\.restoreHeight/);
-  assert.match(testbench, /fast-receive-v2-0-proof/);
+  assert.match(testbench, /fast-receive-v2-199-proof/);
   assert.match(testbench, /independent-fast-wallet-password/);
   assert.match(testbench, /reopened_height/);
   assert.doesNotMatch(testbench, /"\$\{workdir\}\/fast-receive-0"/);

@@ -9,6 +9,7 @@ describe('Wallet creation and existing-wallet UI contract', () => {
   const setup = source('src', 'screens', 'WalletSetupScreen.tsx');
   const welcome = source('src', 'screens', 'WelcomeScreen.tsx');
   const service = source('src', 'services', 'WalletService.ts');
+  const translations = source('src', 'i18n', 'translations.ts');
   const walletState = source('src', 'services', 'WalletState.tsx');
   const walletCore = source(
     '..',
@@ -67,6 +68,8 @@ describe('Wallet creation and existing-wallet UI contract', () => {
     expect(setup).toContain('nextFastReceiveDerivationIndex(');
     expect(setup).toContain('fastWalletSlotEditedRef.current');
     expect(setup).toContain('setFastWalletSlotInput(String(suggestedSlot))');
+    expect(setup).toContain("t('setup.fastWalletSlotRetiredDescription'");
+    expect(translations).toContain('Deleted wallet files are gone');
     expect(setup).toContain(
       'productSlot: fastWalletSlotEditedRef.current ? productSlot : undefined',
     );

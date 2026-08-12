@@ -92,6 +92,26 @@ const androidCommon = read('scripts/android-common.sh');
 const androidBuild = read('scripts/android-build.sh');
 const androidBuildInstall = read('scripts/android-build-install.sh');
 assert.match(
+  androidBuild,
+  /CARGO_TARGET_DIR="\$\{EXTERNAL_BUILD_ROOT\}\/mobile-community-matrix-cargo-target"/,
+  'Android Community Matrix Cargo intermediates must stay on the external build volume',
+);
+assert.match(
+  androidBuildInstall,
+  /CARGO_TARGET_DIR="\$\{EXTERNAL_BUILD_ROOT\}\/mobile-community-matrix-cargo-target"/,
+  'Build-install Community Matrix Cargo intermediates must stay on the external build volume',
+);
+assert.match(
+  androidBuild,
+  /--project-cache-dir=\$\{MONERO_WALLET_ANDROID_PROJECT_CACHE_DIR:-\$\{EXTERNAL_BUILD_ROOT\}\/mobile-android-project-cache\}"/,
+  'Android Gradle project cache must use a syntactically complete external-volume fallback',
+);
+assert.match(
+  androidBuildInstall,
+  /--project-cache-dir=\$\{MONERO_WALLET_ANDROID_PROJECT_CACHE_DIR:-\$\{EXTERNAL_BUILD_ROOT\}\/mobile-android-install-project-cache\}"/,
+  'Build-install Gradle project cache must use a syntactically complete external-volume fallback',
+);
+assert.match(
   androidCommon,
   /fast_wallet_protocol_artifact_needs_rebuild\(\)/,
 );

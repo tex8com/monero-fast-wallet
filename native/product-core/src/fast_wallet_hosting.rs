@@ -344,7 +344,10 @@ mod tests {
         let plan = operation_plan(&missing).unwrap();
         assert_eq!(plan.operation_allowed, 1);
         assert_eq!(plan.execution_allowed, 0);
-        assert_eq!(plan.requirement_flags, REQUIREMENT_TRUSTED_WORKER_DESCRIPTOR);
+        assert_eq!(
+            plan.requirement_flags,
+            REQUIREMENT_TRUSTED_WORKER_DESCRIPTOR
+        );
         assert_eq!(plan.next_action, 0);
 
         missing.trusted_worker_descriptor = 1;
@@ -355,7 +358,10 @@ mod tests {
         missing.enrollment_stage = STAGE_PENDING_LOCAL;
         let pending = operation_plan(&missing).unwrap();
         assert_eq!(pending.execution_allowed, 0);
-        assert_eq!(pending.requirement_flags, REQUIREMENT_INSTALLATION_AUTHORIZED);
+        assert_eq!(
+            pending.requirement_flags,
+            REQUIREMENT_INSTALLATION_AUTHORIZED
+        );
     }
 
     #[test]

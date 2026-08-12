@@ -470,11 +470,17 @@ async function performRegistrationRefresh(
     logWalletEvent('FastWalletPush', 'registration.bootstrapAfterUnlock');
   }
   const now = Date.now();
-  if (!token && state?.nextRetryAt && state.nextRetryAt > now) {
+  if (
+    !announceDiagnostic &&
+    !token &&
+    state?.nextRetryAt &&
+    state.nextRetryAt > now
+  ) {
     scheduleRegistrationRetry(state.nextRetryAt);
     return;
   }
   if (
+    !announceDiagnostic &&
     !token &&
     state?.status === 'active' &&
     state.lastSuccessAt &&
@@ -728,7 +734,11 @@ function startLifecycle(): () => void {
       )
       .catch(() => undefined);
   }
-  void refreshRegistrationQuietly();
+  // This internal release is intentionally diagnostic: every cold app start
+  // validates the current FCM token through App Check and the Gateway and
+  // reports only token length plus the safe result. Raw provider/App Check
+  // tokens are never persisted or displayed.
+  void refreshRegistrationQuietly(undefined, true);
 
   return () => {
     unsubscribers.forEach(unsubscribe => unsubscribe());

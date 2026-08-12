@@ -95,6 +95,7 @@ if [ ! -f "${COMMUNITY_MATRIX_LIBRARY}" ] || \
     WITH_COMMUNITY_RUNTIME=1 \
     HARRIER_LIBRARY_SUFFIX=.so \
     TEX8_COMMUNITY_HARRIER_LIBRARY_ROOT="${COMMUNITY_HARRIER_ROOT}" \
+    CARGO_TARGET_DIR="${EXTERNAL_BUILD_ROOT}/mobile-community-matrix-cargo-target" \
     OUTPUT_DIR="${COMMUNITY_MATRIX_ROOT}" \
     "${REPO_ROOT}/native/community-matrix-core/build-mobile.sh"
 fi

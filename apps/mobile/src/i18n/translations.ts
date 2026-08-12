@@ -365,6 +365,8 @@ const en = {
   'setup.fastWalletSlot': 'Fast Wallet slot',
   'setup.fastWalletSlotDescription':
     'Default 199. Choose 1–999. An occupied slot is never reused or uploaded.',
+  'setup.fastWalletSlotRetiredDescription':
+    'Next safe slot {slot}. Deleted wallet files are gone. Any slot used for hosted scanning stays blocked locally because earlier view access cannot be revoked.',
   'setup.fastWalletSlotInvalid':
     'Choose a whole Fast Wallet slot from 1 to 999.',
   'setup.fastWalletBackupRequired':
@@ -1483,6 +1485,8 @@ const de: Record<keyof typeof en, string> = {
   'setup.fastWalletSlot': 'Fast-Wallet-Slot',
   'setup.fastWalletSlotDescription':
     'Standard 199. Wähle 1–999. Ein belegter Slot wird niemals wiederverwendet oder übertragen.',
+  'setup.fastWalletSlotRetiredDescription':
+    'Nächster sicherer Slot {slot}. Gelöschte Walletdateien sind entfernt. Jeder bereits gehostete Slot bleibt lokal gesperrt, weil früherer View-Zugriff nicht widerrufen werden kann.',
   'setup.fastWalletSlotInvalid':
     'Wähle einen ganzzahligen Fast-Wallet-Slot von 1 bis 999.',
   'setup.fastWalletBackupRequired':

@@ -402,12 +402,30 @@ describe('Wallet dashboard interaction contract', () => {
     expect(walletState).toContain('await reconcileLedgerBalance(true)');
     expect(walletState).toContain('ledgerInitialVerificationAttemptedRef');
     expect(walletState).toContain(
-      'ledgerInitialVerificationAttemptedRef.current.add(registration.id)',
+      'ledgerInitialVerificationAttemptedRef.current.add(registrationId)',
+    );
+    expect(walletState).toContain('ledgerInitialVerificationCanStart(');
+    expect(walletState).toContain(
+      'ledgerInitialVerificationAttemptedRef.current.delete(registrationId)',
+    );
+    expect(walletState).toContain(
+      'ledgerInitialVerificationNextAttemptAtRef.current',
     );
     expect(walletState).toContain('ledgerReconciliationInFlightRef');
     expect(walletState).toContain("reason: 'active-wallet-changed'");
-    expect(walletState).not.toContain('!currentSnapshot?.synchronized');
-    expect(walletState).not.toContain('snapshot?.synchronized &&');
+    expect(walletState).toContain("reason: 'effect-invalidated'");
+    expect(walletState).toContain('ledgerAutoVerificationReady');
+    expect(walletState).toContain('scheduleRetry(15_000)');
+    const autoVerificationEffect = walletState.slice(
+      walletState.indexOf('const ledgerAutoVerificationRegistrationId'),
+      walletState.indexOf("'openSessionPolling.started'"),
+    );
+    expect(autoVerificationEffect).not.toContain(
+      'ledgerReconciliationProgress,\n    reconcileLedgerBalance',
+    );
+    expect(autoVerificationEffect).not.toContain(
+      'registeredWallet,\n    snapshot,\n    walletSnapshots',
+    );
     expect(walletState).toContain('available: transport.available');
     expect(walletState).toContain('deviceCount: transport.deviceCount');
     expect(walletState).toContain(
@@ -448,6 +466,15 @@ describe('Wallet dashboard interaction contract', () => {
     expect(walletState).toContain('walletStateSamplesByRegistrationRef.current.set(');
     expect(walletState).toContain('const sample = walletStateSamplesByRegistrationRef.current.get(');
     expect(walletState).toContain('transactions: sample?.transactions ?? []');
+  });
+
+  it('shows discovered Ledger receives during restore without exposing provisional spends or balance', () => {
+    expect(walletState).toContain('const visibleTransactions = useMemo');
+    expect(walletState).toContain("transaction.direction === 'in'");
+    expect(walletState).toContain('transactions: [...visibleTransactions]');
+    expect(walletState).toContain('snapshot: publishedSnapshot');
+    expect(walletState).toContain('announceInitial:');
+    expect(walletState).not.toContain('suppressNotices: !wasLedgerVerified');
   });
 
   it('never wakes an inactive Ledger in the background and exposes an explicit settings action', () => {

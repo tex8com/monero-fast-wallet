@@ -1559,6 +1559,14 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     startCreateWalletWithDeviceSecret();
   };
 
+  const parsedFastWalletSlot = Number(fastWalletSlotInput);
+  const fastWalletSlotDescription =
+    Number.isSafeInteger(parsedFastWalletSlot) && parsedFastWalletSlot > 199
+      ? t('setup.fastWalletSlotRetiredDescription', {
+          slot: parsedFastWalletSlot,
+        })
+      : t('setup.fastWalletSlotDescription');
+
   return (
     <LinearGradient
       colors={['#12082A', '#0A0A18', '#07071A']}
@@ -1761,7 +1769,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                         {t('setup.fastWalletSlot')}
                       </Text>
                       <Text style={s.fastReceiveValue}>
-                        {t('setup.fastWalletSlotDescription')}
+                        {fastWalletSlotDescription}
                       </Text>
                     </View>
                     <TextInput
@@ -1980,7 +1988,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                       {t('setup.fastWalletSlot')}
                     </Text>
                     <Text style={s.fastReceiveValue}>
-                      {t('setup.fastWalletSlotDescription')}
+                      {fastWalletSlotDescription}
                     </Text>
                   </View>
                   <TextInput

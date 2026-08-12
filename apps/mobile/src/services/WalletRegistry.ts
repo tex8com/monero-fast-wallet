@@ -158,6 +158,32 @@ export function ledgerBalanceNeedsVerification(
   return Boolean(wallet.viewOnlyPath);
 }
 
+/**
+ * Starts the one-time hardware pass only after the complete local history is
+ * present. An earlier pass can correctly verify an empty partial cache and
+ * then miss outputs discovered by the remainder of the historical scan.
+ */
+export function ledgerInitialVerificationCanStart(
+  wallet: Parameters<typeof ledgerBalanceNeedsVerification>[0],
+  snapshot:
+    | {
+        synchronized: boolean;
+        pendingOutputKeyImageCount?: number;
+      }
+    | null
+    | undefined,
+  knownTransactionCount = 0,
+): boolean {
+  return Boolean(
+    snapshot?.synchronized === true &&
+      ledgerBalanceNeedsVerification(
+        wallet,
+        snapshot.pendingOutputKeyImageCount,
+        knownTransactionCount,
+      ),
+  );
+}
+
 export async function loadRegisteredWallet(): Promise<
   RegisteredWallet | undefined
 > {
