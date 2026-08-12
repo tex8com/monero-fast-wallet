@@ -78,3 +78,4 @@
 0077-wallet-expose-live-sync-throughput-in-every-client.patch
 0078-wallet-accept-clean-persistent-lane-tip.patch
 0079-wallet-use-six-persistent-grpc-lanes.patch
+0080-wallet-spill-public-blockstream-overflow-to-bounded-disk.patch

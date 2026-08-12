@@ -130,6 +130,20 @@ cmake_args=(
   "-DMFW_FAST_WALLET_PROTOCOL_LIBRARY=${fast_wallet_protocol_library}"
 )
 
+# Apple host builds must use the same pinned depends/toolchain boundary as the
+# shipped desktop bridge. Without it CMake can silently add Homebrew include
+# directories ahead of the selected gRPC/Protobuf SDK, producing generated
+# Protobuf code with one version and compiling it against another.
+if [[ "$(uname -s)" == "Darwin" && -n "${MONERO_DEPENDS_PREFIX:-}" ]]; then
+  macos_toolchain_default="${repo_root}/native/desktop-bridge/cmake/monero-core-macos-arm64-toolchain.cmake"
+  macos_toolchain="${MONERO_CMAKE_TOOLCHAIN_FILE:-${macos_toolchain_default}}"
+  [[ -f "${macos_toolchain}" ]] || {
+    echo "Pinned macOS Monero toolchain not found: ${macos_toolchain}" >&2
+    exit 1
+  }
+  cmake_args+=("-DCMAKE_TOOLCHAIN_FILE=${macos_toolchain}")
+fi
+
 # gRPC's generated C++ must use the same protoc as the protobuf headers in
 # the selected Monero depends prefix. These are optional to keep the standard
 # host build usable, but make a reproduced upstream checkout deterministic.
@@ -151,8 +165,12 @@ if [[ -n "${GRPC_CPP_PLUGIN_PATH:-}" ]]; then
   cmake_args+=("-DGRPC_CPP_PLUGIN_PATH=${GRPC_CPP_PLUGIN_PATH}")
 fi
 if [[ -n "${grpc_sdk_prefix}" ]]; then
+  cmake_prefix_path="${grpc_sdk_prefix}"
+  if [[ -n "${MONERO_DEPENDS_PREFIX:-}" ]]; then
+    cmake_prefix_path="${MONERO_DEPENDS_PREFIX};${grpc_sdk_prefix}"
+  fi
   cmake_args+=(
-    "-DCMAKE_PREFIX_PATH=${grpc_sdk_prefix}"
+    "-DCMAKE_PREFIX_PATH=${cmake_prefix_path}"
     "-DPKG_CONFIG_USE_CMAKE_PREFIX_PATH=FALSE"
   )
 fi

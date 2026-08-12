@@ -54,6 +54,7 @@ static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -62,6 +63,73 @@ static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
 #include <vector>
 
 namespace {
+
+void configurePublicBlockSpool() {
+  constexpr unsigned long long kMiB = 1024ULL * 1024ULL;
+  constexpr unsigned long long kGiB = 1024ULL * kMiB;
+  constexpr unsigned long long kMinimum = 512ULL * kMiB;
+  constexpr unsigned long long kMaximum = 8ULL * kGiB;
+  constexpr unsigned long long kReserve = 2ULL * kGiB;
+  NSFileManager *fileManager = [NSFileManager defaultManager];
+  NSURL *applicationSupport = [fileManager
+      URLForDirectory:NSApplicationSupportDirectory
+             inDomain:NSUserDomainMask
+    appropriateForURL:nil
+               create:YES
+                error:nil];
+  if (applicationSupport == nil) return;
+  NSURL *directory = [[[applicationSupport URLByAppendingPathComponent:@"MoneroWallet"]
+      URLByAppendingPathComponent:@"public-block-spool"] URLByStandardizingPath];
+  if (![fileManager createDirectoryAtURL:directory
+             withIntermediateDirectories:YES
+                              attributes:@{
+                                NSFileProtectionKey:
+                                    NSFileProtectionCompleteUntilFirstUserAuthentication,
+                                NSFilePosixPermissions: @0700,
+                              }
+                                   error:nil]) {
+    NSLog(@"MONERO_WALLET_SPOOL enabled=false reason=directory");
+    return;
+  }
+  [directory setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+
+  NSUInteger removedOrphans = 0;
+  NSArray<NSURL *> *files = [fileManager contentsOfDirectoryAtURL:directory
+                                       includingPropertiesForKeys:nil
+                                                          options:0
+                                                            error:nil];
+  for (NSURL *candidate in files ?: @[]) {
+    NSString *name = candidate.lastPathComponent;
+    if ([name hasPrefix:@"mfw-public-block-spool-"] &&
+        [name hasSuffix:@".chunk"] &&
+        [fileManager removeItemAtURL:candidate error:nil]) {
+      removedOrphans += 1;
+    }
+  }
+
+  NSDictionary<NSFileAttributeKey, id> *attributes =
+      [fileManager attributesOfFileSystemForPath:directory.path error:nil];
+  const unsigned long long available =
+      [attributes[NSFileSystemFreeSize] unsignedLongLongValue];
+  const unsigned long long reserved = std::min(kReserve, available / 2ULL);
+  const unsigned long long limit = std::min(kMaximum, available - reserved);
+  if (limit < kMinimum) {
+    NSLog(@"MONERO_WALLET_SPOOL enabled=false reason=capacity orphan_files_removed=%lu",
+          (unsigned long)removedOrphans);
+    return;
+  }
+  const std::string path = directory.path.UTF8String ?: "";
+  const std::string limitString = std::to_string(limit);
+  if (path.empty() ||
+      setenv("CUPRATE_GRPC_SPOOL_DIR", path.c_str(), 1) != 0 ||
+      setenv("CUPRATE_GRPC_SPOOL_MAX_BYTES", limitString.c_str(), 1) != 0) {
+    NSLog(@"MONERO_WALLET_SPOOL enabled=false reason=configuration");
+    return;
+  }
+  NSLog(@"MONERO_WALLET_SPOOL enabled=true max_mib=%llu orphan_files_removed=%lu",
+        limit / kMiB,
+        (unsigned long)removedOrphans);
+}
 
 NSDictionary *ledgerBleStatusDictionary(BOOL supported,
                                         BOOL available,
@@ -2436,6 +2504,13 @@ NSDictionary *toDictionary(const NetworkSyncStatus &status) {
     @"lastNonEmptyPayloadBytes": toNSNumber(status.lastNonEmptyPayloadBytes),
     @"networkBytesReceived": toNSNumber(status.networkBytesReceived),
     @"payloadBytesReceived": toNSNumber(status.payloadBytesReceived),
+    @"grpcFramedBytesReceived": toNSNumber(status.grpcFramedBytesReceived),
+    @"spoolBytesBuffered": toNSNumber(status.spoolBytesBuffered),
+    @"spoolPeakBytes": toNSNumber(status.spoolPeakBytes),
+    @"spoolWriteCount": toNSNumber(status.spoolWriteCount),
+    @"spoolReadCount": toNSNumber(status.spoolReadCount),
+    @"spoolBackpressureCount": toNSNumber(status.spoolBackpressureCount),
+    @"spoolEnabled": @(status.spoolEnabled),
     @"lastWalletScanMs": toNSNumber(status.lastWalletScanMs),
     @"lastNonEmptyWalletDerivationCount": toNSNumber(status.lastNonEmptyWalletDerivationCount),
     @"lastNonEmptyWalletDerivationUs": toNSNumber(status.lastNonEmptyWalletDerivationUs),
@@ -4837,6 +4912,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 {
   self = [super init];
   if (self) {
+    configurePublicBlockSpool();
     _appAuthorized.store(false);
     _autoLockSeconds = 30 * 60;
     _lastUserActivityUptime = NSProcessInfo.processInfo.systemUptime;

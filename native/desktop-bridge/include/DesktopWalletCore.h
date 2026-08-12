@@ -4,6 +4,12 @@
 // Request secrets are transient and must be zeroized by Rust immediately after
 // the native call returns.
 extern "C" int tex8_desktop_wallet_core_linked_with_monero() noexcept;
+// Configures the bounded public-block overflow spool before the first wallet
+// Core instance is constructed. Returns the selected byte limit, or zero when
+// the platform must retain the existing RAM backpressure behavior.
+extern "C" unsigned long long
+tex8_desktop_wallet_configure_public_block_spool(
+    const char* directory) noexcept;
 
 struct Tex8DesktopWalletCore;
 

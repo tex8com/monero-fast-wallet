@@ -33,6 +33,13 @@ internal object NativeMoneroWalletJni {
     return runCatching { nativeLinkedWithMonero() }.getOrDefault(false)
   }
 
+  fun configurePublicBlockSpool(directory: String, maxBytes: Long): Boolean {
+    if (loadError != null || directory.isBlank() || maxBytes <= 0L) return false
+    return runCatching {
+      nativeConfigurePublicBlockSpool(directory, maxBytes)
+    }.getOrDefault(false)
+  }
+
   fun benchmarkDerivationPerformance(): String {
     requireLoaded()
     return nativeBenchmarkDerivationPerformance()
@@ -1359,6 +1366,10 @@ internal object NativeMoneroWalletJni {
   }
 
   @JvmStatic private external fun nativeLinkedWithMonero(): Boolean
+  @JvmStatic private external fun nativeConfigurePublicBlockSpool(
+    directory: String,
+    maxBytes: Long,
+  ): Boolean
   @JvmStatic private external fun nativeDrainEngineDiagnostics(): List<String>
   @JvmStatic private external fun nativeBenchmarkDerivationPerformance(): String
   @JvmStatic private external fun nativeCommunityMatrixLinked(): Boolean

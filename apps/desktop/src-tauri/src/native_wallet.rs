@@ -1,5 +1,7 @@
 use std::{
     ffi::{c_char, c_int, CStr, CString},
+    fs,
+    path::PathBuf,
     ptr::NonNull,
 };
 use zeroize::Zeroizing;
@@ -22,6 +24,7 @@ struct RawResult {
 }
 
 unsafe extern "C" {
+    fn tex8_desktop_wallet_configure_public_block_spool(directory: *const c_char) -> u64;
     fn tex8_desktop_wallet_core_new() -> *mut RawCore;
     fn tex8_desktop_wallet_core_free(core: *mut RawCore);
     fn tex8_desktop_result_free(result: *mut RawResult);
@@ -294,6 +297,7 @@ unsafe impl Send for NativeWallet {}
 
 impl NativeWallet {
     pub fn new() -> Result<Self, String> {
+        configure_public_block_spool();
         NonNull::new(unsafe { tex8_desktop_wallet_core_new() })
             .map(|core| Self { core })
             .ok_or_else(|| "Native wallet core could not be initialized.".to_owned())
@@ -884,6 +888,71 @@ impl NativeWallet {
         };
         unsafe { tex8_desktop_result_free(&mut result) };
         output
+    }
+}
+
+fn configure_public_block_spool() {
+    const PREFIX: &str = "mfw-public-block-spool-";
+    const SUFFIX: &str = ".chunk";
+    let data_root: Option<PathBuf> = if cfg!(target_os = "macos") {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|path| path.join("Library/Application Support"))
+    } else if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .map(|path| path.join(".local/share"))
+            })
+    };
+    let Some(directory) = data_root.map(|path| {
+        path.join("com.tex8.monerowallet.desktop")
+            .join("public-block-spool")
+    }) else {
+        eprintln!("MONERO_DESKTOP_SPOOL enabled=false reason=data-directory");
+        return;
+    };
+    if fs::create_dir_all(&directory).is_err() {
+        eprintln!("MONERO_DESKTOP_SPOOL enabled=false reason=directory");
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&directory, fs::Permissions::from_mode(0o700));
+    }
+    let mut removed_orphans = 0_u64;
+    if let Ok(entries) = fs::read_dir(&directory) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with(PREFIX)
+                && name.ends_with(SUFFIX)
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+                && fs::remove_file(entry.path()).is_ok()
+            {
+                removed_orphans += 1;
+            }
+        }
+    }
+    let Ok(directory) = CString::new(directory.to_string_lossy().as_bytes()) else {
+        eprintln!("MONERO_DESKTOP_SPOOL enabled=false reason=path");
+        return;
+    };
+    let limit = unsafe { tex8_desktop_wallet_configure_public_block_spool(directory.as_ptr()) };
+    if limit == 0 {
+        eprintln!(
+            "MONERO_DESKTOP_SPOOL enabled=false reason=capacity orphan_files_removed={removed_orphans}"
+        );
+    } else {
+        eprintln!(
+            "MONERO_DESKTOP_SPOOL enabled=true max_mib={} orphan_files_removed={removed_orphans}",
+            limit / (1024 * 1024)
+        );
     }
 }
 impl Drop for NativeWallet {

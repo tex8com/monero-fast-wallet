@@ -1,0 +1,504 @@
+From 0b4e05b88419ffee0cdecc81203e6579052b6dd4 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet Engineering <wallet@tex8.com>
+Date: Wed, 12 Aug 2026 16:57:00 -0500
+Subject: [PATCH] wallet: spill public BlockStream overflow to bounded disk
+
+Keep the existing one-chunk per-lane RAM hot buffer. When it is full,
+persist only public, validated BlockStream payloads to an app-private,
+bounded disk spool and consume them in the original queue order. This lets
+the six transport lanes continue while the unchanged wallet scanner works.
+
+Every spilled payload is written mode 0600, flushed, CRC-checked on read,
+deleted immediately after consumption, and removed on close. Missing, full,
+or failing spool storage falls back to the established bounded RAM
+backpressure path. Process-wide counters expose aggregate transport and
+spool state without any wallet identifiers or private material.
+---
+ .../grpc_stream/grpc_block_stream_client.cpp  | 355 +++++++++++++++++-
+ src/wallet/grpc_stream/grpc_stream_status.h   |  25 ++
+ 2 files changed, 374 insertions(+), 6 deletions(-)
+
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+index d9e8e14..c2fa53f 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.cpp
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -24,13 +24,24 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <deque>
++#include <fstream>
++#include <limits>
+ #include <memory>
+ #include <mutex>
++#include <sstream>
+ #include <string>
+ #include <thread>
+ #include <unordered_map>
+ #include <utility>
+ 
++#if defined(_WIN32)
++#include <io.h>
++#include <process.h>
++#else
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
+ #include <grpc/impl/channel_arg_names.h>
+ #include <grpcpp/grpcpp.h>
+ #include "cuprate_stream.grpc.pb.h"
+@@ -43,12 +54,165 @@ std::atomic<int64_t>& last_successful_chunk_unix_ms()
+     return s_last;
+ }
+ 
++std::atomic<uint64_t>& transport_payload_bytes_received()
++{
++    static std::atomic<uint64_t> s_bytes{0};
++    return s_bytes;
++}
++
+ namespace {
+     constexpr size_t DEFAULT_QUEUE_CAPACITY = 32;
+     constexpr size_t MAX_QUEUE_CAPACITY = 128;
+     constexpr int MAX_GRPC_MESSAGE_BYTES = 1024 * 1024 * 1024;
+     constexpr int GRPC_HTTP2_BUFFER_BYTES = 64 * 1024 * 1024;
+     constexpr int GRPC_HTTP2_MAX_FRAME_BYTES = 16 * 1024 * 1024 - 1;
++    constexpr uint64_t DEFAULT_SPOOL_MAX_BYTES = 8ULL * 1024ULL * 1024ULL * 1024ULL;
++
++    uint32_t payload_crc32(const std::string& payload)
++    {
++        uint32_t crc = 0xffffffffU;
++        for (const unsigned char value : payload)
++        {
++            crc ^= value;
++            for (unsigned bit = 0; bit < 8; ++bit)
++                crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
++        }
++        return ~crc;
++    }
++
++    uint64_t parse_spool_limit(const char* value)
++    {
++        if (!value || !*value)
++            return DEFAULT_SPOOL_MAX_BYTES;
++        errno = 0;
++        char* end = nullptr;
++        const unsigned long long parsed = std::strtoull(value, &end, 10);
++        if (errno != 0 || !end || *end != '\0' || parsed == 0)
++            return DEFAULT_SPOOL_MAX_BYTES;
++        return static_cast<uint64_t>(parsed);
++    }
++
++    class hybrid_spool_budget
++    {
++    public:
++        hybrid_spool_budget()
++        {
++            const char* configured = std::getenv("CUPRATE_GRPC_SPOOL_DIR");
++            if (!configured || !*configured)
++                return;
++            directory_ = configured;
++            while (directory_.size() > 1 &&
++                   (directory_.back() == '/' || directory_.back() == '\\'))
++                directory_.pop_back();
++            max_bytes_ = parse_spool_limit(
++                std::getenv("CUPRATE_GRPC_SPOOL_MAX_BYTES"));
++            enabled_ = !directory_.empty() && max_bytes_ > 0;
++        }
++
++        bool enabled() const { return enabled_; }
++
++        bool try_reserve(uint64_t bytes)
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            if (!enabled_ || bytes == 0 || bytes > max_bytes_ -
++                    std::min(max_bytes_, buffered_bytes_))
++            {
++                ++backpressure_count_;
++                return false;
++            }
++            buffered_bytes_ += bytes;
++            peak_bytes_ = std::max(peak_bytes_, buffered_bytes_);
++            return true;
++        }
++
++        void release(uint64_t bytes)
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            buffered_bytes_ -= std::min(buffered_bytes_, bytes);
++        }
++
++        std::string next_path()
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++#if defined(_WIN32)
++            const unsigned long process_id = static_cast<unsigned long>(_getpid());
++#else
++            const unsigned long process_id = static_cast<unsigned long>(getpid());
++#endif
++            const uint64_t serial = ++path_sequence_;
++            const uint64_t monotonic = static_cast<uint64_t>(
++                std::chrono::steady_clock::now().time_since_epoch().count());
++            std::ostringstream name;
++            name << directory_ << "/mfw-public-block-spool-" << process_id
++                 << '-' << monotonic << '-' << serial << ".chunk";
++            return name.str();
++        }
++
++        void record_write()
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            ++write_count_;
++        }
++
++        void record_read()
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            ++read_count_;
++        }
++
++        void record_failure()
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            ++backpressure_count_;
++        }
++
++        uint64_t buffered_bytes() const
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            return buffered_bytes_;
++        }
++        uint64_t peak_bytes() const
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            return peak_bytes_;
++        }
++        uint64_t write_count() const
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            return write_count_;
++        }
++        uint64_t read_count() const
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            return read_count_;
++        }
++        uint64_t backpressure_count() const
++        {
++            std::lock_guard<std::mutex> lock(mu_);
++            return backpressure_count_;
++        }
++
++    private:
++        mutable std::mutex mu_;
++        std::string directory_;
++        uint64_t max_bytes_ = 0;
++        uint64_t buffered_bytes_ = 0;
++        uint64_t peak_bytes_ = 0;
++        uint64_t write_count_ = 0;
++        uint64_t read_count_ = 0;
++        uint64_t backpressure_count_ = 0;
++        uint64_t path_sequence_ = 0;
++        bool enabled_ = false;
++    };
++
++    hybrid_spool_budget& process_spool()
++    {
++        // Intentionally process-lived. gRPC clients can be destroyed from
++        // other static destructors, so a leaked singleton avoids teardown
++        // order turning cleanup into a use-after-destruction.
++        static hybrid_spool_budget* spool = new hybrid_spool_budget();
++        return *spool;
++    }
+ 
+     std::shared_ptr<grpc::Channel> acquire_process_channel(
+         const std::string& target,
+@@ -104,8 +268,113 @@ struct chunk_record {
+     uint32_t     n_blocks = 0;
+     uint32_t     payload_bytes = 0;
+     std::string  server_request_id;
++    std::string  spool_path;
++    uint32_t     spool_crc32 = 0;
++    uint64_t     spool_reserved_bytes = 0;
+ };
+ 
++namespace {
++    bool write_spooled_payload(chunk_record& record)
++    {
++        if (record.payload.empty() ||
++                record.payload.size() != record.payload_bytes ||
++                !process_spool().enabled() ||
++                !process_spool().try_reserve(record.payload.size()))
++            return false;
++        const uint64_t reserved = record.payload.size();
++        const std::string path = process_spool().next_path();
++        FILE* file = std::fopen(path.c_str(), "wb");
++        if (!file)
++        {
++            process_spool().release(reserved);
++            process_spool().record_failure();
++            return false;
++        }
++#if !defined(_WIN32)
++        (void)::fchmod(fileno(file), S_IRUSR | S_IWUSR);
++#endif
++        const size_t written = std::fwrite(
++            record.payload.data(), 1, record.payload.size(), file);
++        const bool flushed = written == record.payload.size() &&
++            std::fflush(file) == 0;
++#if defined(_WIN32)
++        const bool committed = flushed && _commit(_fileno(file)) == 0;
++#else
++        const bool committed = flushed && ::fsync(fileno(file)) == 0;
++#endif
++        const bool closed = std::fclose(file) == 0;
++        if (!committed || !closed)
++        {
++            std::remove(path.c_str());
++            process_spool().release(reserved);
++            process_spool().record_failure();
++            return false;
++        }
++        record.spool_crc32 = payload_crc32(record.payload);
++        record.spool_path = path;
++        record.spool_reserved_bytes = reserved;
++        std::string().swap(record.payload);
++        process_spool().record_write();
++        std::fprintf(stderr,
++            "[SYNC_METRIC] stage=spool event=write payload_bytes=%llu buffered_bytes=%llu peak_bytes=%llu writes=%llu\n",
++            (unsigned long long)reserved,
++            (unsigned long long)process_spool().buffered_bytes(),
++            (unsigned long long)process_spool().peak_bytes(),
++            (unsigned long long)process_spool().write_count());
++        return true;
++    }
++
++    bool read_spooled_payload(chunk_record& record)
++    {
++        if (record.spool_path.empty())
++            return true;
++        const uint64_t expected = record.spool_reserved_bytes;
++        FILE* file = std::fopen(record.spool_path.c_str(), "rb");
++        bool valid = file != nullptr &&
++            expected == record.payload_bytes &&
++            expected <= static_cast<uint64_t>(std::numeric_limits<size_t>::max());
++        std::string payload;
++        if (valid)
++        {
++            payload.resize(static_cast<size_t>(expected));
++            const size_t read = expected == 0 ? 0 : std::fread(
++                &payload[0], 1, static_cast<size_t>(expected), file);
++            const int trailing = std::fgetc(file);
++            valid = read == static_cast<size_t>(expected) && trailing == EOF &&
++                !std::ferror(file) && payload_crc32(payload) == record.spool_crc32;
++        }
++        if (file)
++            valid = std::fclose(file) == 0 && valid;
++        std::remove(record.spool_path.c_str());
++        process_spool().release(expected);
++        if (!valid)
++        {
++            process_spool().record_failure();
++            return false;
++        }
++        record.payload = std::move(payload);
++        record.spool_path.clear();
++        record.spool_reserved_bytes = 0;
++        process_spool().record_read();
++        std::fprintf(stderr,
++            "[SYNC_METRIC] stage=spool event=read payload_bytes=%llu buffered_bytes=%llu reads=%llu\n",
++            (unsigned long long)expected,
++            (unsigned long long)process_spool().buffered_bytes(),
++            (unsigned long long)process_spool().read_count());
++        return true;
++    }
++
++    void discard_spooled_payload(chunk_record& record)
++    {
++        if (record.spool_path.empty())
++            return;
++        std::remove(record.spool_path.c_str());
++        process_spool().release(record.spool_reserved_bytes);
++        record.spool_path.clear();
++        record.spool_reserved_bytes = 0;
++    }
++}
++
+ struct cuprate_grpc_stream_client::impl {
+     std::shared_ptr<grpc::Channel> channel;
+     std::unique_ptr<cuprate::stream::v1::BlockStream::Stub> stub;
+@@ -118,6 +387,7 @@ struct cuprate_grpc_stream_client::impl {
+     std::condition_variable   cv_not_empty;
+     std::condition_variable   cv_not_full;
+     std::deque<chunk_record>  queue;
++    size_t                    memory_queue_depth = 0;
+     bool                      done = false;
+     bool                      cancelled = false;
+ 
+@@ -222,6 +492,7 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+     p_->total_blocks = 0;
+     p_->total_bytes = 0;
+     p_->backpressure_waits = 0;
++    p_->memory_queue_depth = 0;
+     const size_t requested_queue_capacity = queue_capacity_hint > 0
+         ? queue_capacity_hint
+         : default_queue_capacity();
+@@ -290,17 +561,38 @@ bool cuprate_grpc_stream_client::open_stream(uint64_t start_height,
+             rec.n_blocks          = chunk.n_blocks();
+             rec.payload_bytes     = chunk.payload_bytes();
+             rec.server_request_id = chunk.server_request_id();
++            transport_payload_bytes_received().fetch_add(
++                rec.payload_bytes, std::memory_order_relaxed);
+ 
+             std::unique_lock<std::mutex> lk(p_->mu);
+             const auto t_enq0 = std::chrono::steady_clock::now();
+             const size_t queue_depth_before = p_->queue.size();
+-            p_->cv_not_full.wait(lk, [this]() {
+-                return p_->queue.size() < p_->queue_capacity || p_->cancelled;
+-            });
++            bool stored_on_disk = false;
++            if (p_->memory_queue_depth >= p_->queue_capacity &&
++                    process_spool().enabled())
++            {
++                lk.unlock();
++                stored_on_disk = write_spooled_payload(rec);
++                lk.lock();
++            }
++            if (!stored_on_disk)
++            {
++                p_->cv_not_full.wait(lk, [this]() {
++                    return p_->memory_queue_depth < p_->queue_capacity ||
++                        p_->cancelled;
++                });
++            }
+             const double enq_wait_ms = std::chrono::duration<double, std::milli>(
+                 std::chrono::steady_clock::now() - t_enq0).count();
+-            if (p_->cancelled) break;
+-            if (enq_wait_ms > 5.0) {
++            if (p_->cancelled)
++            {
++                lk.unlock();
++                discard_spooled_payload(rec);
++                break;
++            }
++            if (!stored_on_disk)
++                ++p_->memory_queue_depth;
++            if (!stored_on_disk && enq_wait_ms > 5.0) {
+                 ++p_->backpressure_waits;
+                 std::fprintf(stderr,
+                     "[SYNC_METRIC] stage=queue transport=grpc event=backpressure seq=%llu enq_wait_ms=%.1f queue_depth=%zu queue_capacity=%zu bottleneck=client_scan\n",
+@@ -438,15 +730,26 @@ bool cuprate_grpc_stream_client::next_chunk_payload(std::string& out_epee_bytes,
+     }
+     chunk_record rec = std::move(p_->queue.front());
+     p_->queue.pop_front();
++    if (rec.spool_path.empty() && p_->memory_queue_depth > 0)
++        --p_->memory_queue_depth;
+     p_->last_chunk_start_height       = rec.start_height;
+     p_->last_chunk_seq                = rec.chunk_seq;
+     p_->last_chunk_chain_tip          = rec.chain_tip;
+     p_->last_chunk_n_blocks           = rec.n_blocks;
+     p_->last_chunk_payload_bytes      = rec.payload_bytes;
+     p_->last_chunk_server_request_id  = rec.server_request_id;
+-    out_epee_bytes = std::move(rec.payload);
+     lk.unlock();
+     p_->cv_not_full.notify_one();
++    if (!read_spooled_payload(rec))
++    {
++        std::lock_guard<std::mutex> error_lock(p_->mu);
++        p_->last_error_code = -1;
++        p_->last_error_message = "public block spool integrity check failed";
++        p_->cancelled = true;
++        if (p_->ctx) p_->ctx->TryCancel();
++        return false;
++    }
++    out_epee_bytes = std::move(rec.payload);
+     return true;
+ }
+ 
+@@ -471,7 +774,10 @@ void cuprate_grpc_stream_client::close()
+     p_->ctx.reset();
+     {
+         std::lock_guard<std::mutex> lk(p_->mu);
++        for (auto& record : p_->queue)
++            discard_spooled_payload(record);
+         p_->queue.clear();
++        p_->memory_queue_depth = 0;
+     }
+ }
+ 
+@@ -485,4 +791,41 @@ std::string cuprate_grpc_stream_client::last_chunk_server_request_id() const { r
+ int         cuprate_grpc_stream_client::last_error_code()    const { return p_->last_error_code; }
+ std::string cuprate_grpc_stream_client::last_error_message() const { return p_->last_error_message; }
+ 
++uint64_t spool_bytes_buffered() { return process_spool().buffered_bytes(); }
++uint64_t spool_peak_bytes() { return process_spool().peak_bytes(); }
++uint64_t spool_write_count() { return process_spool().write_count(); }
++uint64_t spool_read_count() { return process_spool().read_count(); }
++uint64_t spool_backpressure_count() { return process_spool().backpressure_count(); }
++bool spool_enabled() { return process_spool().enabled(); }
++
+ } // namespace cuprate_grpc_stream
++
++extern "C" uint64_t monero_grpc_transport_payload_bytes_received()
++{
++    return cuprate_grpc_stream::transport_payload_bytes_received().load(
++        std::memory_order_relaxed);
++}
++extern "C" uint64_t monero_grpc_spool_bytes_buffered()
++{
++    return cuprate_grpc_stream::spool_bytes_buffered();
++}
++extern "C" uint64_t monero_grpc_spool_peak_bytes()
++{
++    return cuprate_grpc_stream::spool_peak_bytes();
++}
++extern "C" uint64_t monero_grpc_spool_write_count()
++{
++    return cuprate_grpc_stream::spool_write_count();
++}
++extern "C" uint64_t monero_grpc_spool_read_count()
++{
++    return cuprate_grpc_stream::spool_read_count();
++}
++extern "C" uint64_t monero_grpc_spool_backpressure_count()
++{
++    return cuprate_grpc_stream::spool_backpressure_count();
++}
++extern "C" int monero_grpc_spool_enabled()
++{
++    return cuprate_grpc_stream::spool_enabled() ? 1 : 0;
++}
+diff --git a/src/wallet/grpc_stream/grpc_stream_status.h b/src/wallet/grpc_stream/grpc_stream_status.h
+index 92fe08e..9d9cf39 100644
+--- a/src/wallet/grpc_stream/grpc_stream_status.h
++++ b/src/wallet/grpc_stream/grpc_stream_status.h
+@@ -15,4 +15,29 @@ namespace cuprate_grpc_stream {
+ // decide "stream live right now".
+ std::atomic<int64_t>& last_successful_chunk_unix_ms();
+ 
++// Process-wide counters for the public BlockStream transport. They contain
++// only public blockchain payload accounting; no wallet identifier, key,
++// address, ownership result, or transaction metadata crosses this boundary.
++// The bridge samples these monotonically increasing counters so a downloader
++// that is legitimately running ahead into the disk spool remains observable
++// while the wallet scanner consumes older batches.
++std::atomic<uint64_t>& transport_payload_bytes_received();
++
++uint64_t spool_bytes_buffered();
++uint64_t spool_peak_bytes();
++uint64_t spool_write_count();
++uint64_t spool_read_count();
++uint64_t spool_backpressure_count();
++bool spool_enabled();
++
+ } // namespace cuprate_grpc_stream
++
++extern "C" {
++uint64_t monero_grpc_transport_payload_bytes_received();
++uint64_t monero_grpc_spool_bytes_buffered();
++uint64_t monero_grpc_spool_peak_bytes();
++uint64_t monero_grpc_spool_write_count();
++uint64_t monero_grpc_spool_read_count();
++uint64_t monero_grpc_spool_backpressure_count();
++int monero_grpc_spool_enabled();
++}

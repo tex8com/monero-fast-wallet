@@ -27,6 +27,7 @@ static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -710,6 +711,13 @@ jobject toJavaMap(JNIEnv* env, const NetworkSyncStatus& status) {
   putMapDouble(env, map, putMethod, "lastNonEmptyPayloadBytes", status.lastNonEmptyPayloadBytes);
   putMapDouble(env, map, putMethod, "networkBytesReceived", status.networkBytesReceived);
   putMapDouble(env, map, putMethod, "payloadBytesReceived", status.payloadBytesReceived);
+  putMapDouble(env, map, putMethod, "grpcFramedBytesReceived", status.grpcFramedBytesReceived);
+  putMapDouble(env, map, putMethod, "spoolBytesBuffered", status.spoolBytesBuffered);
+  putMapDouble(env, map, putMethod, "spoolPeakBytes", status.spoolPeakBytes);
+  putMapDouble(env, map, putMethod, "spoolWriteCount", status.spoolWriteCount);
+  putMapDouble(env, map, putMethod, "spoolReadCount", status.spoolReadCount);
+  putMapDouble(env, map, putMethod, "spoolBackpressureCount", status.spoolBackpressureCount);
+  putMapBoolean(env, map, putMethod, "spoolEnabled", status.spoolEnabled);
   putMapDouble(env, map, putMethod, "lastWalletScanMs", status.lastWalletScanMs);
   putMapDouble(env, map, putMethod, "lastNonEmptyWalletDerivationCount", status.lastNonEmptyWalletDerivationCount);
   putMapDouble(env, map, putMethod, "lastNonEmptyWalletDerivationUs", status.lastNonEmptyWalletDerivationUs);
@@ -989,6 +997,28 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeLinkedWithMonero(
     JNIEnv*,
     jclass) {
   return WalletEngine::linkedWithMonero();
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeConfigurePublicBlockSpool(
+    JNIEnv* env,
+    jclass,
+    jstring directory,
+    jlong maxBytes) {
+  try {
+    const std::string spoolDirectory = toStdString(env, directory);
+    if (spoolDirectory.empty() || maxBytes <= 0) {
+      return JNI_FALSE;
+    }
+    const std::string limit = std::to_string(static_cast<uint64_t>(maxBytes));
+    if (setenv("CUPRATE_GRPC_SPOOL_DIR", spoolDirectory.c_str(), 1) != 0 ||
+        setenv("CUPRATE_GRPC_SPOOL_MAX_BYTES", limit.c_str(), 1) != 0) {
+      return JNI_FALSE;
+    }
+    return JNI_TRUE;
+  } catch (const std::exception&) {
+    return JNI_FALSE;
+  }
 }
 
 extern "C" JNIEXPORT jobject JNICALL

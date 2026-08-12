@@ -35,6 +35,13 @@
 
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
 #include "wallet2_api.h"
+extern "C" uint64_t monero_grpc_transport_payload_bytes_received();
+extern "C" uint64_t monero_grpc_spool_bytes_buffered();
+extern "C" uint64_t monero_grpc_spool_peak_bytes();
+extern "C" uint64_t monero_grpc_spool_write_count();
+extern "C" uint64_t monero_grpc_spool_read_count();
+extern "C" uint64_t monero_grpc_spool_backpressure_count();
+extern "C" int monero_grpc_spool_enabled();
 #if defined(__APPLE__)
 // A weak local fallback lets development builds link against an authenticated
 // older core archive. When patch 0025 is present its strong definition wins;
@@ -229,6 +236,12 @@ void logEngineDiagnostic(
       "networkBytesReceived",
       "payloadBytesReceived",
       "grpcFramedBytesReceived",
+      "spoolBytesBuffered",
+      "spoolPeakBytes",
+      "spoolWriteCount",
+      "spoolReadCount",
+      "spoolBackpressureCount",
+      "spoolEnabled",
       "pendingOutputCount",
       "remainingPendingOutputCount",
       "pendingIncomingCount",
@@ -750,6 +763,11 @@ class WalletEngine::Impl {
     bool transportStarted{false};
     bool downloadRangeInitialized{false};
     uint64_t configurationGeneration{0};
+    // The Core transport counter advances when public payload bytes arrive,
+    // before a slower wallet scanner consumes them. Keep a per-configuration
+    // baseline so the UI reports actual aggregate download throughput instead
+    // of the scanner's consumption rate.
+    uint64_t transportPayloadBaseline{0};
     // Incremented only when a new scanner joins. The worker coalesces that
     // short registration burst once; normal batch, scan and tip wakes must
     // never pay the startup delay again.
@@ -1757,6 +1775,8 @@ class WalletEngine::Impl {
       if (!slot) {
         slot = std::make_unique<NetworkSyncCoordinator>(network);
         slot->status.network = network;
+        slot->transportPayloadBaseline =
+            monero_grpc_transport_payload_bytes_received();
       }
       coordinator = slot.get();
     }
@@ -1965,6 +1985,22 @@ class WalletEngine::Impl {
     auto status = coordinator->status;
     status.providerGeneration = coordinator->configurationGeneration;
     status.phaseElapsedMs = elapsedMilliseconds(coordinator->phaseStarted);
+    const uint64_t transportTotal =
+        monero_grpc_transport_payload_bytes_received();
+    const uint64_t transportPayload =
+        transportTotal >= coordinator->transportPayloadBaseline
+            ? transportTotal - coordinator->transportPayloadBaseline
+            : 0;
+    // Keep bin-RPC fallback accounting intact while making gRPC transport
+    // progress visible even when it is buffered ahead of wallet scanning.
+    status.payloadBytesReceived =
+        std::max(status.payloadBytesReceived, transportPayload);
+    status.spoolBytesBuffered = monero_grpc_spool_bytes_buffered();
+    status.spoolPeakBytes = monero_grpc_spool_peak_bytes();
+    status.spoolWriteCount = monero_grpc_spool_write_count();
+    status.spoolReadCount = monero_grpc_spool_read_count();
+    status.spoolBackpressureCount = monero_grpc_spool_backpressure_count();
+    status.spoolEnabled = monero_grpc_spool_enabled() != 0;
     return status;
   }
 

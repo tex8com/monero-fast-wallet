@@ -197,6 +197,15 @@ struct NetworkSyncStatus {
   uint64_t payloadBytesReceived{0};
   // gRPC protobuf plus the fixed 5-byte message frame, not TCP/TLS wire bytes.
   uint64_t grpcFramedBytesReceived{0};
+  // Public BlockStream overflow diagnostics. The common Core keeps its small
+  // RAM hot queue and may spill only public payloads into a bounded private
+  // filesystem spool when scanners cannot keep up with the transport.
+  uint64_t spoolBytesBuffered{0};
+  uint64_t spoolPeakBytes{0};
+  uint64_t spoolWriteCount{0};
+  uint64_t spoolReadCount{0};
+  uint64_t spoolBackpressureCount{0};
+  bool spoolEnabled{false};
   uint64_t lastWalletScanMs{0};
   uint64_t totalWalletScanMs{0};
   uint64_t lastNonEmptyWalletDerivationCount{0};

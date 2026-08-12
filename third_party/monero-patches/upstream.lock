@@ -47,11 +47,15 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # disjoint lanes after a physical Pixel full-range raw transport test measured
 # 40.300476 MiB/s with four and 59.588780 MiB/s with six. Wallet scan,
 # derivations, ordering, and the bounded per-lane queues remain unchanged.
+# Patch 0080 retains the one-chunk RAM hot buffer and spills additional public
+# BlockStream payloads to an app-private bounded disk queue. Integrity failure,
+# missing storage, or a full quota falls back to the previous RAM backpressure
+# path; wallet scans, keys, ownership decisions, and ordering are unchanged.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=2d767f4c2abf1fc0bcc94d2e8883aea3029b3bb6
-previous_patch_count=78
-patched_tree=4543df86c9375dd43f95da82bb043892ea99234a
+previous_patched_tree=4543df86c9375dd43f95da82bb043892ea99234a
+previous_patch_count=79
+patched_tree=1bef2c97a28caac1df5f6723368914701851a680
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

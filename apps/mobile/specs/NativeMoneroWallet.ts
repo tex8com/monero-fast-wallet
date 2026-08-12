@@ -65,6 +65,13 @@ export type NetworkSyncStatus = {
   lastNonEmptyPayloadBytes: number;
   networkBytesReceived: number;
   payloadBytesReceived: number;
+  grpcFramedBytesReceived?: number;
+  spoolBytesBuffered?: number;
+  spoolPeakBytes?: number;
+  spoolWriteCount?: number;
+  spoolReadCount?: number;
+  spoolBackpressureCount?: number;
+  spoolEnabled?: boolean;
   lastWalletScanMs: number;
   lastNonEmptyWalletDerivationCount: number;
   lastNonEmptyWalletDerivationUs: number;

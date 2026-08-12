@@ -961,6 +961,7 @@ class NativeMoneroWalletModule(
   override fun lockApp(promise: Promise) {
     mainHandler.removeCallbacks(nativeAutoLockRunnable)
     NativeAppAuthorization.lock()
+    WalletSyncForegroundService.stop(reactApplicationContext)
     NativeSensitiveApprovalState.clear()
     walletAppVault.lock()
     runCatching { NativeMoneroWalletJni.closeAllWallets() }
@@ -1027,6 +1028,7 @@ class NativeMoneroWalletModule(
   private fun commitNativeLifecycleLock(reason: String) {
     mainHandler.removeCallbacks(nativeAutoLockRunnable)
     NativeAppAuthorization.lock()
+    WalletSyncForegroundService.stop(reactApplicationContext)
     NativeSensitiveApprovalState.clear()
     walletAppVault.lock()
     if (BuildConfig.DEBUG) {
@@ -2668,6 +2670,9 @@ class NativeMoneroWalletModule(
       mapOf("walletId" to maskIdentifier(walletId)),
     ) {
       NativeMoneroWalletJni.startRefresh(walletId)
+      if (NativeAppAuthorization.isAuthorized()) {
+        WalletSyncForegroundService.start(reactApplicationContext)
+      }
     }
   }
 
@@ -7403,6 +7408,7 @@ class NativeMoneroWalletModule(
       putString("lastError", status.stringValue("lastError"))
       putDouble("consecutiveFailures", status.numberValue("consecutiveFailures"))
       putDouble("phaseSequence", status.numberValue("phaseSequence"))
+      putDouble("providerGeneration", status.numberValue("providerGeneration"))
       putDouble("phaseElapsedMs", status.numberValue("phaseElapsedMs"))
       putDouble("lastProviderSelectionMs", status.numberValue("lastProviderSelectionMs"))
       putDouble("lastTransportInitializationMs", status.numberValue("lastTransportInitializationMs"))
@@ -7417,6 +7423,13 @@ class NativeMoneroWalletModule(
       putDouble("lastNonEmptyPayloadBytes", status.numberValue("lastNonEmptyPayloadBytes"))
       putDouble("networkBytesReceived", status.numberValue("networkBytesReceived"))
       putDouble("payloadBytesReceived", status.numberValue("payloadBytesReceived"))
+      putDouble("grpcFramedBytesReceived", status.numberValue("grpcFramedBytesReceived"))
+      putDouble("spoolBytesBuffered", status.numberValue("spoolBytesBuffered"))
+      putDouble("spoolPeakBytes", status.numberValue("spoolPeakBytes"))
+      putDouble("spoolWriteCount", status.numberValue("spoolWriteCount"))
+      putDouble("spoolReadCount", status.numberValue("spoolReadCount"))
+      putDouble("spoolBackpressureCount", status.numberValue("spoolBackpressureCount"))
+      putBoolean("spoolEnabled", status.booleanValue("spoolEnabled"))
       putDouble("lastWalletScanMs", status.numberValue("lastWalletScanMs"))
       putDouble("lastNonEmptyWalletDerivationCount", status.numberValue("lastNonEmptyWalletDerivationCount"))
       putDouble("lastNonEmptyWalletDerivationUs", status.numberValue("lastNonEmptyWalletDerivationUs"))

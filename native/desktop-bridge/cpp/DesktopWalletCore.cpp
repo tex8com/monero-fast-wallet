@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <iomanip>
 #include <new>
 #include <sstream>
@@ -28,6 +29,41 @@ extern "C" int tex8_desktop_wallet_core_linked_with_monero() noexcept {
     return tex8::wallet::WalletEngine::linkedWithMonero() ? 1 : 0;
   } catch (...) {
     // Rust must never receive a C++ exception across the FFI boundary.
+    return 0;
+  }
+}
+
+extern "C" unsigned long long
+tex8_desktop_wallet_configure_public_block_spool(
+    const char* directory) noexcept {
+  constexpr uint64_t kMiB = 1024ULL * 1024ULL;
+  constexpr uint64_t kGiB = 1024ULL * kMiB;
+  constexpr uint64_t kMinimum = 512ULL * kMiB;
+  constexpr uint64_t kMaximum = 8ULL * kGiB;
+  constexpr uint64_t kReserve = 2ULL * kGiB;
+  try {
+    if (directory == nullptr || directory[0] == '\0') return 0;
+    std::error_code error;
+    const auto space = std::filesystem::space(directory, error);
+    if (error) return 0;
+    const uint64_t available = space.available;
+    const uint64_t reserved = std::min(kReserve, available / 2ULL);
+    const uint64_t limit = std::min(kMaximum, available - reserved);
+    if (limit < kMinimum) return 0;
+    const std::string limitString = std::to_string(limit);
+#if defined(_WIN32)
+    if (_putenv_s("CUPRATE_GRPC_SPOOL_DIR", directory) != 0 ||
+        _putenv_s("CUPRATE_GRPC_SPOOL_MAX_BYTES", limitString.c_str()) != 0) {
+      return 0;
+    }
+#else
+    if (setenv("CUPRATE_GRPC_SPOOL_DIR", directory, 1) != 0 ||
+        setenv("CUPRATE_GRPC_SPOOL_MAX_BYTES", limitString.c_str(), 1) != 0) {
+      return 0;
+    }
+#endif
+    return limit;
+  } catch (...) {
     return 0;
   }
 }
@@ -311,6 +347,16 @@ std::string networkSyncStatusJson(
          << status.networkBytesReceived
          << ",\"payloadBytesReceived\":"
          << status.payloadBytesReceived
+         << ",\"grpcFramedBytesReceived\":"
+         << status.grpcFramedBytesReceived
+         << ",\"spoolBytesBuffered\":" << status.spoolBytesBuffered
+         << ",\"spoolPeakBytes\":" << status.spoolPeakBytes
+         << ",\"spoolWriteCount\":" << status.spoolWriteCount
+         << ",\"spoolReadCount\":" << status.spoolReadCount
+         << ",\"spoolBackpressureCount\":"
+         << status.spoolBackpressureCount
+         << ",\"spoolEnabled\":"
+         << (status.spoolEnabled ? "true" : "false")
          << ",\"lastWalletScanMs\":" << status.lastWalletScanMs
          << ",\"lastNonEmptyWalletDerivationCount\":"
          << status.lastNonEmptyWalletDerivationCount
