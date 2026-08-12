@@ -42,6 +42,7 @@ const moneroMetalObjectTargetPatch = read(
 const cudaHeader = read(repoRoot, 'native', 'cuda-derivation', 'include', 'monero_fast_cuda.h');
 const cudaSource = read(repoRoot, 'native', 'cuda-derivation', 'src', 'monero_fast_cuda.cu');
 const cudaCmake = read(repoRoot, 'native', 'cuda-derivation', 'CMakeLists.txt');
+const fastWalletProtocolCargo = read(repoRoot, 'native', 'fast-wallet-protocol', 'Cargo.toml');
 const desktopBridge = read(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopWalletCore.cpp');
 const tauriHost = read(desktopRoot, 'src-tauri', 'src', 'lib.rs');
 const desktopUi = read(desktopRoot, 'src', 'App.tsx');
@@ -200,13 +201,20 @@ test('the Monero patch series carries the CPU batch through Rust and wallet2', (
   assert.match(moneroNamePatch, /canonical varint/);
   assert.match(
     moneroLock,
-    /^patched_tree=2fce82505b9298e30ce8e315d838b5078c1cf035$/m,
+    /^patched_tree=21f6b377e1acbd83a7b5da34164dca12e6dcbbab$/m,
   );
   assert.match(
     moneroLock,
-    /^previous_patched_tree=55ec6a250e56fff1d988681f10d9ddd2e22031a4$/m,
+    /^previous_patched_tree=58b89028224460437e2d69ea12fbe8ed53135429$/m,
   );
-  assert.match(moneroLock, /^previous_patch_count=36$/m);
+  assert.match(moneroLock, /^previous_patch_count=76$/m);
+  assert.match(prepareMac, /-DMFW_MONERO_PATCH_COUNT="\$\{monero_patch_count\}"/);
+  assert.match(prepareMac, /-DMFW_PRODUCT_COMMIT="\$\{product_commit\}"/);
+  assert.match(prepareMac, /-DMFW_PRODUCT_DIRTY="\$\{product_dirty\}"/);
+  assert.match(prepareMac, /-DMFW_FEATURE_MANIFEST_HASH="\$\{feature_manifest_hash\}"/);
+  assert.match(fastWalletProtocolCargo, /crate-type = \["rlib", "staticlib", "cdylib"\]/);
+  assert.match(prepareMac, /libfast_wallet_protocol\.dylib/);
+  assert.match(prepareMac, /install_name,@rpath\/libfast_wallet_protocol\.dylib/);
   assert.match(prepareMonero, /rev-parse HEAD\^\{tree\}/);
   assert.match(prepareMonero, /monero_patch_actual_tree.*monero_patch_expected_tree/s);
   assert.match(prepareMonero, /monero_patch_previous_tree/);

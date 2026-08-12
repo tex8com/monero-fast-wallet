@@ -1165,6 +1165,16 @@ internal object NativeMoneroWalletJni {
     return nativeGetTransactions(walletId, limit)
   }
 
+  /**
+   * Returns key images already known by this wallet. This is intentionally an
+   * Android-internal helper for the app-private transaction audit; it is not
+   * exposed to JavaScript or diagnostic logcat output.
+   */
+  fun getOwnedOutputKeyImages(walletId: String): List<String> {
+    requireLoaded()
+    return nativeGetOwnedOutputKeyImages(walletId)
+  }
+
   fun syncLedgerKeyImagesToViewWallet(
     hardwareWalletId: String,
     viewOnlyWalletId: String,
@@ -1793,6 +1803,10 @@ internal object NativeMoneroWalletJni {
     walletId: String,
     limit: Double,
   ): List<Map<String, Any>>
+
+  @JvmStatic private external fun nativeGetOwnedOutputKeyImages(
+    walletId: String,
+  ): List<String>
 
   @JvmStatic private external fun nativeSyncLedgerKeyImagesToViewWallet(
     hardwareWalletId: String,

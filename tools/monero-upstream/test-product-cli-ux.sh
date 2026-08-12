@@ -59,11 +59,14 @@ fast_wallet_self_test="$(${short_cli} fast-wallet self-test --json)"
 fast_wallet_help="$(${short_cli} fast-wallet help)"
 fast_wallet_operation_help="$(${short_cli} fast-wallet operation-help)"
 fast_wallet_create_plan="$(${short_cli} fast-wallet plan create empty --json)"
+fast_wallet_adopt_plan="$(${short_cli} fast-wallet plan adopt-view empty --json)"
 fast_wallet_unbacked_plan="$(${short_cli} fast-wallet plan select awaiting-backup --json)"
 fast_wallet_remove_plan="$(${short_cli} fast-wallet plan remove ready --backup-confirmed --worker-enrolled --notifications-enabled --balance=zero --json)"
 privacy_policy="$(${short_cli} wallet policy privacy --json)"
 convenience_policy="$(${short_cli} wallet policy convenience --json)"
-[[ "${wallet_contract}" == *'"schema_sha256":"e170a28d8fb4b9607f34eab74e7542743b2ac50a29d96c6d8140102252271c00"'* ]] || fail "wallet lifecycle contract mismatch"
+fast_wallet_policy="$(${short_cli} wallet policy convenience --fastwallet=true --hostviewkey=false --json)"
+hosted_view_policy="$(${short_cli} wallet policy convenience --fastwallet=true --hostviewkey=true --json)"
+[[ "${wallet_contract}" == *'"schema_sha256":"ed8219a323a34c90084a189c2087dd3a417886b79f1d9677afd4ded2aa215f16"'* ]] || fail "wallet lifecycle contract mismatch"
 [[ "${wallet_self_test}" == *'"ok":true'* && "${wallet_self_test}" == *'"assertions":25'* ]] || fail "wallet lifecycle self-test failed"
 [[ "${fast_wallet_contract}" == *'"independent_seed_required":true'* &&
    "${fast_wallet_contract}" == *'"detach_required_before_removal":true'* ]] || fail "Fast Wallet lifecycle contract is incomplete"
@@ -77,13 +80,21 @@ convenience_policy="$(${short_cli} wallet policy convenience --json)"
    "${fast_wallet_help}" == *"fast-wallet self-test --json"* ]] || fail "Fast Wallet help is incomplete"
 [[ "${fast_wallet_operation_help}" == *"create --wallet-file <path> --password-file <0600-file>"* &&
    "${fast_wallet_operation_help}" == *"restore --wallet-file <path> --password-file <0600-file> --seed-file <0600-file>"* &&
+   "${fast_wallet_operation_help}" == *"adopt-view --wallet-file <existing-view-wallet> --password-file <0600-file>"* &&
    "${fast_wallet_operation_help}" == *"confirm-backup --wallet-file <path> [--json]"* &&
    "${fast_wallet_operation_help}" == *"worker pair --wallet-file <path> --descriptor-file <public-file>"* &&
+   "${fast_wallet_operation_help}" == *"worker seal-watch --wallet-file <path> --password-file <0600-file> --descriptor-file <public-file>"* &&
+   "${fast_wallet_operation_help}" == *"--assignment-handle-file <0600-file> --assignment-epoch <positive-integer>"* &&
    "${fast_wallet_operation_help}" == *"worker status --wallet-file <path> [--json]"* ]] || fail "Fast Wallet operation help is incomplete"
 [[ "${fast_wallet_create_plan}" == *'"operation_allowed":true'* &&
    "${fast_wallet_create_plan}" == *'"independent_seed":true'* &&
    "${fast_wallet_create_plan}" == *'"confirm_seed_backup":true'* &&
    "${fast_wallet_create_plan}" == *'"wallet_files_created":0'* ]] || fail "Fast Wallet create plan is unsafe or incomplete"
+[[ "${fast_wallet_adopt_plan}" == *'"operation_allowed":true'* &&
+   "${fast_wallet_adopt_plan}" == *'"execution_allowed":true'* &&
+   "${fast_wallet_adopt_plan}" == *'"independent_seed":false'* &&
+   "${fast_wallet_adopt_plan}" == *'"confirm_seed_backup":false'* &&
+   "${fast_wallet_adopt_plan}" == *'"result_state":"ready"'* ]] || fail "Fast Wallet view-cache adoption plan is unsafe or incomplete"
 [[ "${fast_wallet_unbacked_plan}" == *'"operation_allowed":true'* &&
    "${fast_wallet_unbacked_plan}" == *'"execution_allowed":false'* &&
    "${fast_wallet_unbacked_plan}" == *'"confirm_seed_backup":true'* ]] || fail "Fast Wallet unbacked gate is missing"
@@ -91,13 +102,23 @@ convenience_policy="$(${short_cli} wallet policy convenience --json)"
    "${fast_wallet_remove_plan}" == *'"detach_worker":true'* &&
    "${fast_wallet_remove_plan}" == *'"disable_notifications":true'* ]] || fail "Fast Wallet removal plan is incomplete"
 [[ "${privacy_policy}" == *'"fast_wallet_enabled":false'* ]] || fail "privacy default enabled Fast Wallet"
-[[ "${convenience_policy}" == *'"fast_wallet_enabled":true'* && "${convenience_policy}" == *'"fast_wallet_independent_seed":true'* ]] || fail "convenience default is not an independent Fast Wallet"
+[[ "${convenience_policy}" == *'"fast_wallet_enabled":false'* &&
+   "${convenience_policy}" == *'"host_view_key_requested":false'* ]] || fail "Fast Wallet or hosted View Key is enabled by default"
+[[ "${fast_wallet_policy}" == *'"fast_wallet_enabled":true'* &&
+   "${fast_wallet_policy}" == *'"fast_wallet_independent_seed":true'* &&
+   "${fast_wallet_policy}" == *'"worker_selection":"not_requested"'* ]] || fail "explicit Fast Wallet policy is incomplete"
+[[ "${hosted_view_policy}" == *'"fast_wallet_enabled":true'* &&
+   "${hosted_view_policy}" == *'"host_view_key_requested":true'* &&
+   "${hosted_view_policy}" == *'"worker_selection":"required"'* ]] || fail "hosted View Key policy does not require explicit Worker selection"
+if "${short_cli}" wallet policy convenience --fastwallet=false --hostviewkey=true --json > /dev/null 2>&1; then
+  fail "hosted View Key was allowed without an explicit Fast Wallet"
+fi
 
 version_json="$(${short_cli} version --json)"
 [[ "${version_json}" == *"\"patched_monero_tree\":\"${expected_tree}\""* ]] || fail "patched tree identity mismatch"
 [[ "${version_json}" == *"\"patch_count\":${expected_patch_count}"* ]] || fail "patch count mismatch"
 [[ "${version_json}" == *'"product_core_abi":1'* ]] || fail "Product Core ABI mismatch"
-[[ "${version_json}" == *'"wallet_lifecycle_schema_sha256":"e170a28d8fb4b9607f34eab74e7542743b2ac50a29d96c6d8140102252271c00"'* ]] || fail "wallet lifecycle provenance mismatch"
+[[ "${version_json}" == *'"wallet_lifecycle_schema_sha256":"ed8219a323a34c90084a189c2087dd3a417886b79f1d9677afd4ded2aa215f16"'* ]] || fail "wallet lifecycle provenance mismatch"
 
 short_sha="$(shasum -a 256 "${short_cli}" | awk '{print $1}')"
 long_sha="$(shasum -a 256 "${long_cli}" | awk '{print $1}')"
@@ -110,7 +131,7 @@ printf '%s\n' \
   "product_core_abi=1" \
   "wallet_lifecycle_assertions=25" \
   "fast_wallet_lifecycle_assertions=11" \
-  "fast_wallet_plan_checks=3" \
+  "fast_wallet_plan_checks=4" \
   "fast_wallet_operation_help=pass" \
   "product_binary_sha256=${short_sha}" \
   "quickstart_aliases=3/3" \

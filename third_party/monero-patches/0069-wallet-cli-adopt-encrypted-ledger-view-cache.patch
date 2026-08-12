@@ -1,0 +1,290 @@
+From 2cb19761e7f802f9c2f6acf3411ba9f809ef5728 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 9 Aug 2026 20:39:40 -0500
+Subject: [PATCH] wallet-cli: adopt encrypted Ledger view cache
+
+---
+ src/simplewallet/product_cli_debug.cpp       |   9 +-
+ src/simplewallet/product_cli_fast_wallet.cpp | 130 +++++++++++++++++--
+ 2 files changed, 127 insertions(+), 12 deletions(-)
+
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index 62211d9d9..8542a5251 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -192,7 +192,7 @@ namespace
+       << "fast-wallet plan <operation> <state> [flags] --json\n"
+       << "  Explain one shared Fast Wallet decision without opening a wallet,\n"
+       << "  touching a worker, network, seed, wallet file or funds.\n"
+-      << "  Operations: create, restore, backup, select, receive, send, pair,\n"
++      << "  Operations: create, restore, adopt-view, backup, select, receive, send, pair,\n"
+       << "  enroll, renew, revoke, remove. States: empty, awaiting-backup,\n"
+       << "  ready, removal-pending, removed.\n"
+       << "  Flags: --backup-confirmed --worker-enrolled\n"
+@@ -201,8 +201,9 @@ namespace
+       << "  Exercise the shared Fast Wallet coordinator without a worker, network,\n"
+       << "  wallet file, seed or funds: independent seed, mandatory backup, and\n"
+       << "  explicit worker detach and notification disable before removal.\n\n"
+-      << "fast-wallet create|restore|confirm-backup|status|worker pair|worker status\n"
+-      << "  Create or restore an independent Fast Wallet through the shared\n"
++      << "fast-wallet create|restore|adopt-view|confirm-backup|status|worker pair|worker status\n"
++      << "  Create or restore an independent Fast Wallet, or adopt an encrypted\n"
++      << "  watch-only cache, through the shared\n"
+       << "  lifecycle coordinator. Run: fast-wallet operation-help\n";
+   }
+ 
+@@ -210,6 +211,7 @@ namespace
+   {
+     if (name == "create") operation = MFW_FAST_WALLET_OPERATION_CREATE;
+     else if (name == "restore") operation = MFW_FAST_WALLET_OPERATION_RESTORE;
++    else if (name == "adopt-view") operation = MFW_FAST_WALLET_OPERATION_ADOPT_VIEW_CACHE;
+     else if (name == "backup") operation = MFW_FAST_WALLET_OPERATION_CONFIRM_SEED_BACKUP;
+     else if (name == "select") operation = MFW_FAST_WALLET_OPERATION_SELECT;
+     else if (name == "receive") operation = MFW_FAST_WALLET_OPERATION_RECEIVE;
+@@ -691,6 +693,7 @@ namespace mfw_cli
+           << "Operational Fast Wallet commands:\n"
+           << "  fast-wallet create --wallet-file <path> --password-file <0600-file> [--network mainnet|testnet|stagenet]\n"
+           << "  fast-wallet restore --wallet-file <path> --password-file <0600-file> --seed-file <0600-file> [--network mainnet|testnet|stagenet] [--restore-height <height>]\n"
++          << "  fast-wallet adopt-view --wallet-file <existing-view-wallet> --password-file <0600-file> --network <mainnet|testnet|stagenet> --restore-height <height>\n"
+           << "  fast-wallet confirm-backup --wallet-file <path> [--json]\n"
+           << "  fast-wallet status --wallet-file <path> [--json]\n"
+           << "  fast-wallet worker pair --wallet-file <path> --descriptor-file <public-file> [--now <unix-seconds>] [--json]\n"
+diff --git a/src/simplewallet/product_cli_fast_wallet.cpp b/src/simplewallet/product_cli_fast_wallet.cpp
+index bc3641684..4f05d8d58 100644
+--- a/src/simplewallet/product_cli_fast_wallet.cpp
++++ b/src/simplewallet/product_cli_fast_wallet.cpp
+@@ -41,7 +41,9 @@
+ namespace
+ {
+   constexpr char fast_wallet_magic[8] = {'M', 'F', 'W', 'F', 'W', '1', '\0', '\0'};
+-  constexpr std::uint32_t fast_wallet_disk_version = 2;
++  constexpr std::uint32_t fast_wallet_disk_version = 3;
++  constexpr std::uint32_t fast_wallet_kind_independent = 1;
++  constexpr std::uint32_t fast_wallet_kind_view_cache = 2;
+   constexpr char paired_worker_magic[8] = {'M', 'F', 'W', 'W', 'K', '1', '\0', '\0'};
+   constexpr std::uint32_t paired_worker_disk_version = 1;
+   constexpr char hosted_watch_magic[8] = {'M', 'F', 'W', 'H', 'S', '1', '\0', '\0'};
+@@ -70,7 +72,7 @@ namespace
+   // private local sidecar. A hosted watch must use this value rather than a
+   // caller-supplied approximation, otherwise a restored wallet could miss
+   // its earliest incoming output.
+-  struct persisted_fast_wallet
++  struct persisted_fast_wallet_v2
+   {
+     char magic[8];
+     std::uint32_t disk_version;
+@@ -84,6 +86,24 @@ namespace
+     std::uint32_t reserved;
+   };
+ 
++  // Version 3 distinguishes an independent seed wallet from an adopted,
++  // encrypted watch-only cache. The latter never contains a spend key and
++  // therefore has no new seed-backup step. The layout remains fixed-size so
++  // existing private sidecars migrate without exposing wallet material.
++  struct persisted_fast_wallet
++  {
++    char magic[8];
++    std::uint32_t disk_version;
++    std::uint32_t lifecycle_state;
++    std::uint32_t seed_backup_confirmed;
++    std::uint32_t network;
++    std::uint64_t generation;
++    std::uint64_t created_at;
++    std::uint64_t updated_at;
++    std::uint64_t restore_height;
++    std::uint32_t wallet_kind;
++  };
++
+   // This is a public Worker identity pin, not a hosted assignment. It holds
+   // neither the descriptor endpoint nor any wallet/installation secret. A
+   // later enrolment must present a fresh descriptor whose signed root ID
+@@ -317,7 +337,9 @@ namespace
+   void validate_metadata(const persisted_fast_wallet& state)
+   {
+     if (std::memcmp(state.magic, fast_wallet_magic, sizeof(fast_wallet_magic)) != 0 ||
+-        state.disk_version != fast_wallet_disk_version || state.reserved != 0 ||
++        state.disk_version != fast_wallet_disk_version ||
++        (state.wallet_kind != fast_wallet_kind_independent &&
++         state.wallet_kind != fast_wallet_kind_view_cache) ||
+         state.generation == 0 ||
+         state.seed_backup_confirmed > 1 ||
+         (state.lifecycle_state != MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP &&
+@@ -328,6 +350,19 @@ namespace
+       throw std::runtime_error("Fast Wallet lifecycle metadata is corrupt or unsupported");
+   }
+ 
++  void validate_metadata_v2(const persisted_fast_wallet_v2& state)
++  {
++    if (std::memcmp(state.magic, fast_wallet_magic, sizeof(fast_wallet_magic)) != 0 ||
++        state.disk_version != 2 || state.reserved != 0 || state.generation == 0 ||
++        state.seed_backup_confirmed > 1 ||
++        (state.lifecycle_state != MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP &&
++         state.lifecycle_state != MFW_WALLET_LIFECYCLE_READY &&
++         state.lifecycle_state != MFW_WALLET_LIFECYCLE_REMOVAL_PENDING &&
++         state.lifecycle_state != MFW_WALLET_LIFECYCLE_REMOVED) ||
++        state.network > static_cast<std::uint32_t>(Monero::STAGENET))
++      throw std::runtime_error("Fast Wallet lifecycle metadata is corrupt or unsupported");
++  }
++
+   void validate_metadata_v1(const persisted_fast_wallet_v1& state)
+   {
+     if (std::memcmp(state.magic, fast_wallet_magic, sizeof(fast_wallet_magic)) != 0 ||
+@@ -353,8 +388,22 @@ namespace
+       stream.read(reinterpret_cast<char*>(&state), sizeof(state));
+       if (!stream || stream.peek() != std::ifstream::traits_type::eof())
+         throw std::runtime_error("Fast Wallet lifecycle metadata has an invalid size");
+-      validate_metadata(state);
+-      return state;
++      if (state.disk_version == fast_wallet_disk_version)
++      {
++        validate_metadata(state);
++        return state;
++      }
++      if (state.disk_version == 2)
++      {
++        persisted_fast_wallet_v2 legacy{};
++        static_assert(sizeof(legacy) == sizeof(state), "Fast Wallet V2 migration layout changed");
++        std::memcpy(&legacy, &state, sizeof(legacy));
++        validate_metadata_v2(legacy);
++        state.disk_version = fast_wallet_disk_version;
++        state.wallet_kind = fast_wallet_kind_independent;
++        return state;
++      }
++      throw std::runtime_error("Fast Wallet lifecycle metadata is corrupt or unsupported");
+     }
+     if (size == sizeof(persisted_fast_wallet_v1))
+     {
+@@ -373,7 +422,7 @@ namespace
+       migrated.created_at = legacy.created_at;
+       migrated.updated_at = legacy.updated_at;
+       migrated.restore_height = 0;
+-      migrated.reserved = 0;
++      migrated.wallet_kind = fast_wallet_kind_independent;
+       return migrated;
+     }
+     throw std::runtime_error("Fast Wallet lifecycle metadata has an invalid size");
+@@ -1113,6 +1162,8 @@ namespace
+       << "  create --wallet-file <path> --password-file <0600-file> [--network mainnet|testnet|stagenet]\n"
+       << "  restore --wallet-file <path> --password-file <0600-file> --seed-file <0600-file>\n"
+       << "          [--network mainnet|testnet|stagenet] [--restore-height <height>]\n"
++      << "  adopt-view --wallet-file <existing-view-wallet> --password-file <0600-file>\n"
++      << "          --network <mainnet|testnet|stagenet> --restore-height <height>\n"
+       << "  confirm-backup --wallet-file <path> [--json]\n"
+       << "  status --wallet-file <path> [--json]\n"
+       << "  worker pair --wallet-file <path> --descriptor-file <public-file> [--now <unix-seconds>]\n"
+@@ -1124,6 +1175,7 @@ namespace
+       << "  worker hosted-status --wallet-file <path> [--json]\n"
+       << "  worker status --wallet-file <path> [--json]\n\n"
+       << "create and restore make a separate Monero wallet with its own seed and password.\n"
++      << "adopt-view accepts only an already encrypted software watch-only wallet and never imports a spend key.\n"
+       << "worker pair verifies and pins only a signed public Worker identity; it does not upload a watch.\n"
+       << "worker seal-watch reads the local Fast Wallet internally and writes only a fixed-size encrypted HPKE envelope for a pre-authorized assignment.\n"
+       << "It requires a fresh signed descriptor whose root matches this pin, makes no network connection, and never prints a View Key or envelope.\n"
+@@ -1136,17 +1188,20 @@ namespace
+   void print_status(const options& input, const persisted_fast_wallet& state)
+   {
+     const bool paired = has_paired_worker(input);
++    const bool independent = state.wallet_kind == fast_wallet_kind_independent;
+     if (input.json)
+       std::cout << "{\"schema_version\":1,\"wallet_kind\":\"fast\",\"network\":\""
+                 << network_name(static_cast<Monero::NetworkType>(state.network)) << "\",\"state\":\""
+                 << state_name(state.lifecycle_state) << "\",\"seed_backup_confirmed\":"
+                 << (state.seed_backup_confirmed ? "true" : "false")
+-                << ",\"independent_seed\":true,\"worker_paired\":"
++                << ",\"independent_seed\":" << (independent ? "true" : "false")
++                << ",\"worker_paired\":"
+                 << (paired ? "true" : "false")
+                 << ",\"worker_enrolled\":false,\"notifications_enabled\":false}\n";
+     else
+       std::cout << "Fast Wallet: " << state_name(state.lifecycle_state)
+-                << "; independent seed: yes; backup confirmed: "
++                << "; independent seed: " << (independent ? "yes" : "no")
++                << "; backup gate satisfied: "
+                 << (state.seed_backup_confirmed ? "yes" : "no")
+                 << "; Worker paired: " << (paired ? "yes" : "no") << ".\n";
+   }
+@@ -1164,9 +1219,65 @@ namespace
+     state.created_at = unix_seconds();
+     state.updated_at = state.created_at;
+     state.restore_height = input.restore_height;
++    state.wallet_kind = fast_wallet_kind_independent;
+     return state;
+   }
+ 
++  void adopt_view_cache(const options& input)
++  {
++    if (input.password_file.empty())
++      throw std::runtime_error("adopt-view requires --password-file");
++    if (!input.network_explicit || input.restore_height == 0)
++      throw std::runtime_error("adopt-view requires explicit --network and positive --restore-height");
++    const auto metadata = metadata_path(input);
++    if (boost::filesystem::exists(metadata) || boost::filesystem::is_symlink(metadata) ||
++        boost::filesystem::is_symlink(input.wallet_path))
++      throw std::runtime_error("Fast Wallet lifecycle metadata or wallet path is unsafe");
++    Monero::WalletManager* manager = Monero::WalletManagerFactory::getWalletManager();
++    if (manager == nullptr || !manager->walletExists(input.wallet_path.string()))
++      throw std::runtime_error("adopt-view requires an existing encrypted wallet");
++
++    std::string password = read_private_text_file(input.password_file, "password file");
++    secret_string_guard password_guard(password);
++    Monero::Wallet* wallet = nullptr;
++    try
++    {
++      wallet = manager->openWallet(input.wallet_path.string(), password, input.network);
++      wipe(password);
++      if (wallet == nullptr || wallet->status() != Monero::Wallet::Status_Ok)
++        throw std::runtime_error("adopt-view could not open the encrypted wallet");
++      if (wallet->nettype() != input.network || !wallet->watchOnly() ||
++          wallet->getDeviceType() != Monero::Wallet::Device_Software)
++        throw std::runtime_error("adopt-view accepts only a software watch-only wallet on the selected network");
++      std::string view_key = wallet->secretViewKey();
++      secret_string_guard view_key_guard(view_key);
++      if (view_key.size() != 64 || !std::all_of(view_key.begin(), view_key.end(),
++          [](const char value) {
++            return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
++          }))
++        throw std::runtime_error("adopt-view wallet has no valid private View Key");
++      if (!manager->closeWallet(wallet, false))
++      {
++        wallet = nullptr;
++        throw std::runtime_error("adopt-view could not close the verified wallet");
++      }
++      wallet = nullptr;
++
++      const auto decision = plan(MFW_FAST_WALLET_OPERATION_ADOPT_VIEW_CACHE);
++      persisted_fast_wallet state = new_metadata(input, decision);
++      state.seed_backup_confirmed = 1;
++      state.wallet_kind = fast_wallet_kind_view_cache;
++      write_metadata(input, state);
++      print_status(input, read_metadata(input));
++    }
++    catch (...)
++    {
++      wipe(password);
++      if (wallet != nullptr) manager->closeWallet(wallet, false);
++      throw;
++    }
++  }
++
+   void require_created_wallet(Monero::Wallet* wallet, Monero::WalletManager* manager)
+   {
+     if (wallet == nullptr || wallet->status() != Monero::Wallet::Status_Ok)
+@@ -1637,7 +1748,7 @@ namespace mfw_cli
+       if (argc < 4) return false;
+       operation += "-" + std::string(argv[3]);
+     }
+-    if (operation != "create" && operation != "restore" && operation != "confirm-backup" &&
++    if (operation != "create" && operation != "restore" && operation != "adopt-view" && operation != "confirm-backup" &&
+         operation != "status" && operation != "worker-pair" && operation != "worker-seal-watch" &&
+         operation != "worker-enroll" && operation != "worker-hosted-status" && operation != "worker-status")
+       return false;
+@@ -1688,6 +1799,7 @@ namespace mfw_cli
+       if (input.wallet_path.empty()) throw std::runtime_error("--wallet-file is required");
+       if (operation == "create") create(input);
+       else if (operation == "restore") restore(input);
++      else if (operation == "adopt-view") adopt_view_cache(input);
+       else if (operation == "confirm-backup") confirm_backup(input);
+       else if (operation == "status") print_status(input, read_metadata(input));
+       else if (operation == "worker-pair") pair_worker(input);
+-- 
+2.50.1 (Apple Git-155)

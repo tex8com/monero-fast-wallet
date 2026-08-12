@@ -6,6 +6,8 @@ Outbound-only V1 Worker building blocks.
 - decrypts only envelopes bound to its signed descriptor and HPKE key;
 - signs every outbound Relay pull and acknowledges only after durable local
   acceptance, so a crash safely retries instead of losing a watch;
+- returns a descriptor- and ciphertext-ID-bound signed acceptance receipt in
+  that ACK, which the Relay exposes only to the bearer of the exact message ID;
 - converts the decrypted watch into the existing encrypted scanner store;
 - reuses the existing ScanPack/Cuprate matcher separately;
 - has no public plaintext watch-registration route;

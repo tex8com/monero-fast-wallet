@@ -69,6 +69,7 @@ const mockNativeWallet = {
   endSystemUiInterruption: jest.fn(async () => undefined),
   presentRecoverySeed: jest.fn(async () => true),
   deleteEmptyWalletFiles: jest.fn(async () => undefined),
+  deleteProtectedWalletFiles: jest.fn(async () => undefined),
   deleteFastWalletAssignment: jest.fn(async () => undefined),
   logDiagnostics: jest.fn(async () => undefined),
   createWalletFromDeviceWithStoredSecret: jest.fn(async () => ({
@@ -103,13 +104,28 @@ const mockNativeWallet = {
   getAddress: jest.fn(async () => '8'.repeat(95)),
   getBalance: jest.fn(async () => '0'),
   getUnlockedBalance: jest.fn(async () => '0'),
-  getTransactions: jest.fn(async () => []),
+  getTransactions: jest.fn(
+    async (): Promise<Array<{ hash: string; subaddrAccount: number }>> => [],
+  ),
   syncLedgerKeyImagesToViewWallet: jest.fn(async () => ({
     importHeight: 100,
     spentAtomic: '1',
     unspentAtomic: '2',
+    pendingOutputCount: 2,
+    remainingPendingOutputCount: 0,
+    importedOutputCount: 2,
+    derivedOutputCount: 2,
+    spentStatusUnspentOutputCount: 1,
+    spentStatusBlockchainOutputCount: 1,
+    spentStatusPoolOutputCount: 0,
+    derivationDurationMs: 3,
+    spentStatusRpcDurationMs: 4,
+    outgoingRpcDurationMs: 2,
+    stateUpdateDurationMs: 1,
     verificationDurationMs: 12,
     verifiedOutputCount: 2,
+    storeDurationMs: 2,
+    totalDurationMs: 17,
   })),
   validateRecipientAddress: jest.fn(async (address: string) => address.trim()),
 };
@@ -125,6 +141,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createFastReceiveIdentityRecord,
   loadFastReceiveIdentities,
+  loadRetiredFastWalletSlots,
   upsertFastReceiveIdentity,
 } from '../FastReceiveRegistry';
 
@@ -156,6 +173,49 @@ describe('WalletService registered wallet opening', () => {
     );
   });
 
+  it('keeps the Core total for a normal wallet and scopes only an explicit account registration', async () => {
+    mockNativeWallet.snapshot.mockResolvedValue({
+      id: 'wallet-ledger',
+      path: '/current-container/wallets/mainnet/ledger-view',
+      primaryAddress: '4'.repeat(95),
+      balanceAtomic: '468600000000',
+      unlockedBalanceAtomic: '468600000000',
+      walletHeight: 100,
+      daemonHeight: 100,
+      daemonTargetHeight: 100,
+      synchronized: true,
+    });
+
+    const service = new WalletService();
+    await expect(
+      service.snapshot({ walletId: 'wallet-ledger', network: 'mainnet' }),
+    ).resolves.toMatchObject({
+      balanceAtomic: '468600000000',
+      unlockedBalanceAtomic: '468600000000',
+    });
+    expect(mockNativeWallet.getBalance).not.toHaveBeenCalled();
+    expect(mockNativeWallet.getUnlockedBalance).not.toHaveBeenCalled();
+
+    mockNativeWallet.getAddress.mockResolvedValueOnce('8'.repeat(95));
+    mockNativeWallet.getBalance.mockResolvedValueOnce('108600000000');
+    mockNativeWallet.getUnlockedBalance.mockResolvedValueOnce('108600000000');
+    await expect(
+      service.snapshot({
+        walletId: 'wallet-ledger',
+        network: 'mainnet',
+        accountIndex: 1,
+      }),
+    ).resolves.toMatchObject({
+      primaryAddress: '8'.repeat(95),
+      balanceAtomic: '108600000000',
+      unlockedBalanceAtomic: '108600000000',
+    });
+    expect(mockNativeWallet.getBalance).toHaveBeenCalledWith(
+      'wallet-ledger',
+      1,
+    );
+  });
+
   it('filters a ledger Fast Wallet account before applying a history limit', async () => {
     const accountZero = Array.from({ length: 25 }, (_, index) => ({
       hash: `standard-${index}`,
@@ -180,8 +240,31 @@ describe('WalletService registered wallet opening', () => {
       0,
     );
     expect(transactions).toHaveLength(13);
-    expect(transactions.every(transaction => transaction.subaddrAccount === 1)).toBe(
-      true,
+    expect(
+      transactions.every(transaction => transaction.subaddrAccount === 1),
+    ).toBe(true);
+  });
+
+  it('returns every account on the dedicated All Transactions screen', async () => {
+    mockNativeWallet.getTransactions.mockResolvedValue([
+      { hash: 'account-zero-in', subaddrAccount: 0 },
+      { hash: 'account-one-in', subaddrAccount: 1 },
+      { hash: 'account-one-out', subaddrAccount: 1 },
+    ]);
+
+    const transactions =
+      await new WalletService().getTransactionsForAllAccounts(
+        { walletId: 'wallet-ledger', network: 'mainnet', accountIndex: 0 },
+        0,
+      );
+
+    expect(mockNativeWallet.getTransactions).toHaveBeenCalledWith(
+      'wallet-ledger',
+      0,
+    );
+    expect(transactions).toHaveLength(3);
+    expect(transactions.map(transaction => transaction.subaddrAccount)).toEqual(
+      [0, 1, 1],
     );
   });
 
@@ -465,7 +548,7 @@ describe('WalletService registered wallet opening', () => {
           address: '4'.repeat(95),
           network: 'mainnet',
           restoreHeight: registration.restoreHeight ?? 0,
-          derivationIndex: 0,
+          derivationIndex: 199,
           scannerStatus: 'enabled',
         },
         registration.createdAt,
@@ -497,6 +580,7 @@ describe('WalletService registered wallet opening', () => {
       service.removeRegisteredWallet(registration.id),
     ).rejects.toThrow('local synchronization is complete');
     expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteProtectedWalletFiles).not.toHaveBeenCalled();
     expect(mockNativeWallet.deleteFastWalletAssignment).not.toHaveBeenCalled();
 
     mockNativeWallet.snapshot.mockResolvedValueOnce({
@@ -516,6 +600,7 @@ describe('WalletService registered wallet opening', () => {
       service.removeRegisteredWallet(registration.id),
     ).rejects.toThrow('still contains Monero');
     expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteProtectedWalletFiles).not.toHaveBeenCalled();
     expect(mockNativeWallet.deleteFastWalletAssignment).not.toHaveBeenCalled();
 
     mockNativeWallet.snapshot.mockResolvedValueOnce({
@@ -543,6 +628,9 @@ describe('WalletService registered wallet opening', () => {
       '11'.repeat(32),
     );
     await expect(loadFastReceiveIdentities()).resolves.toEqual([]);
+    await expect(loadRetiredFastWalletSlots()).resolves.toEqual([
+      expect.objectContaining({ network: 'mainnet', productSlot: 199 }),
+    ]);
   });
 
   it('never reapplies the import scan height when reopening a saved wallet', async () => {
@@ -567,99 +655,147 @@ describe('WalletService registered wallet opening', () => {
     });
   });
 
-  it('creates an isolated account-1 Ledger Fast Wallet with the same local read-only companion', async () => {
-    const service = new WalletService();
-    const result = await service.createNamedLedgerWalletPairFromDevice({
-      walletName: 'ledger',
+  it('closes and deletes a backed-up software wallet instead of hiding only its registration', async () => {
+    const registration = createRegisteredWallet({
+      id: 'software-mainnet-remove-completely',
+      walletName: 'remove-completely',
+      path: '/current-container/wallets/mainnet/remove-completely',
       network: 'mainnet',
-      restoreHeight: 3714305,
-      enableLocalViewOnly: true,
+      kind: 'software',
+      seedBackupStatus: 'verified',
+      seedBackedUpAt: '2026-08-10T15:00:00.000Z',
+      credentialKey: 'monero.wallet.software.mainnet.remove-completely.v1',
+      now: '2026-08-10T14:59:00.000Z',
     });
-    expect(
-      mockNativeWallet.createWalletFromDeviceWithStoredSecret,
-    ).toHaveBeenCalledTimes(1);
-    expect(result.registration).toMatchObject({
-      kind: 'hardware',
-    });
-    expect(result.session).toMatchObject({
-      walletId: 'wallet-ledger-view',
-      readOnly: true,
-      accountIndex: 0,
-    });
-    expect(mockNativeWallet.closeWallet).toHaveBeenCalledWith(
-      'wallet-ledger',
-      true,
-    );
-    expect(result.registration.role).toBeUndefined();
-    expect(result.registration.accountIndex).toBeUndefined();
-    expect(result.fastRegistration).toMatchObject({
-      kind: 'hardware',
-      role: 'fast',
-      accountIndex: 1,
-      sourceWalletId: result.registration.id,
-      viewOnlyPath: result.registration.viewOnlyPath,
-      viewOnlyCredentialKey: result.registration.viewOnlyCredentialKey,
-    });
-    const fastSession = await service.openRegisteredWalletRegistration(
-      result.fastRegistration,
-    );
-    expect(fastSession).toMatchObject({
-      walletId: result.session.walletId,
-      registrationId: result.fastRegistration.id,
-      accountIndex: 1,
-    });
-    expect(mockNativeWallet.openWalletWithStoredSecret).not.toHaveBeenCalled();
-    await expect(loadRegisteredWallets()).resolves.toHaveLength(2);
-  });
-
-  it('removes a Ledger Fast account without seed backup or shared-file deletion', async () => {
+    await saveRegisteredWallet(registration);
     const service = new WalletService();
-    const created = await service.createNamedLedgerWalletPairFromDevice({
-      walletName: 'ledger',
-      network: 'mainnet',
-      restoreHeight: 3714305,
-      enableLocalViewOnly: true,
-    });
+    await service.openRegisteredWallet();
 
     await expect(
-      service.removeRegisteredWallet(created.fastRegistration.id),
-    ).resolves.toEqual([created.registration]);
-
-    expect(mockNativeWallet.presentRecoverySeed).not.toHaveBeenCalled();
-    expect(mockNativeWallet.snapshot).not.toHaveBeenCalled();
-    expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
-    expect(mockNativeWallet.deleteWalletSecret).not.toHaveBeenCalled();
-    await expect(loadRegisteredWallets()).resolves.toEqual([
-      created.registration,
-    ]);
-  });
-
-  it('removes a complete Ledger pair without asking for impossible recovery words', async () => {
-    const service = new WalletService();
-    const created = await service.createNamedLedgerWalletPairFromDevice({
-      walletName: 'ledger',
-      network: 'mainnet',
-      restoreHeight: 3714305,
-      enableLocalViewOnly: true,
-    });
-
-    await expect(
-      service.removeRegisteredWallet(created.registration.id),
+      service.removeRegisteredWallet(registration.id),
     ).resolves.toEqual([]);
 
-    expect(mockNativeWallet.presentRecoverySeed).not.toHaveBeenCalled();
-    expect(mockNativeWallet.snapshot).not.toHaveBeenCalled();
-    expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
-    expect(mockNativeWallet.deleteWalletSecret).toHaveBeenCalledWith(
-      created.registration.credentialKey,
+    expect(mockNativeWallet.closeWallet).toHaveBeenCalledWith(
+      'wallet-fast',
+      true,
     );
+    expect(mockNativeWallet.deleteProtectedWalletFiles).toHaveBeenCalledWith([
+      registration.path,
+    ]);
     expect(mockNativeWallet.deleteWalletSecret).toHaveBeenCalledWith(
-      created.registration.viewOnlyCredentialKey,
+      registration.credentialKey,
     );
     await expect(loadRegisteredWallets()).resolves.toEqual([]);
   });
 
-  it('reuses a synchronized Ledger cache and stores verification after native spent-state reconciliation', async () => {
+  it('rejects the obsolete shared Ledger account-1 Fast Wallet model', async () => {
+    const service = new WalletService();
+    await expect(
+      service.createNamedLedgerWalletPairFromDevice({
+        walletName: 'ledger',
+        network: 'mainnet',
+        restoreHeight: 3714305,
+        enableLocalViewOnly: true,
+      }),
+    ).rejects.toThrow('independent software Fast Wallet');
+    expect(
+      mockNativeWallet.createWalletFromDeviceWithStoredSecret,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('removes a Ledger Fast account without seed backup or shared-file deletion', async () => {
+    const standard = createRegisteredWallet({
+      id: 'hardware-mainnet-ledger-root',
+      walletName: 'ledger',
+      path: '/current-container/wallets/mainnet/ledger',
+      viewOnlyPath: '/current-container/wallets/mainnet/ledger-view',
+      viewOnlyCredentialKey: 'monero.wallet.hardware-view.mainnet.ledger.v1',
+      credentialKey: 'monero.wallet.hardware.mainnet.ledger.v1',
+      network: 'mainnet',
+      kind: 'hardware',
+      now: '2026-08-10T14:00:00.000Z',
+    });
+    const legacyFast = createRegisteredWallet({
+      id: 'hardware-mainnet-ledger-account-1',
+      walletName: 'ledger-fast',
+      path: standard.path,
+      viewOnlyPath: standard.viewOnlyPath,
+      viewOnlyCredentialKey: standard.viewOnlyCredentialKey,
+      credentialKey: standard.credentialKey,
+      network: 'mainnet',
+      kind: 'hardware',
+      role: 'fast',
+      accountIndex: 1,
+      sourceWalletId: standard.id,
+      now: '2026-08-10T14:01:00.000Z',
+    });
+    await saveRegisteredWallet(standard);
+    await saveRegisteredWallet(legacyFast);
+    const service = new WalletService();
+
+    await expect(
+      service.removeRegisteredWallet(legacyFast.id),
+    ).resolves.toEqual([standard]);
+
+    expect(mockNativeWallet.presentRecoverySeed).not.toHaveBeenCalled();
+    expect(mockNativeWallet.snapshot).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteProtectedWalletFiles).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteWalletSecret).not.toHaveBeenCalled();
+    await expect(loadRegisteredWallets()).resolves.toEqual([standard]);
+  });
+
+  it('removes a complete Ledger pair without asking for impossible recovery words', async () => {
+    const standard = createRegisteredWallet({
+      id: 'hardware-mainnet-ledger-root',
+      walletName: 'ledger',
+      path: '/current-container/wallets/mainnet/ledger',
+      viewOnlyPath: '/current-container/wallets/mainnet/ledger-view',
+      viewOnlyCredentialKey: 'monero.wallet.hardware-view.mainnet.ledger.v1',
+      credentialKey: 'monero.wallet.hardware.mainnet.ledger.v1',
+      network: 'mainnet',
+      kind: 'hardware',
+      now: '2026-08-10T14:00:00.000Z',
+    });
+    const legacyFast = createRegisteredWallet({
+      id: 'hardware-mainnet-ledger-account-1',
+      walletName: 'ledger-fast',
+      path: standard.path,
+      viewOnlyPath: standard.viewOnlyPath,
+      viewOnlyCredentialKey: standard.viewOnlyCredentialKey,
+      credentialKey: standard.credentialKey,
+      network: 'mainnet',
+      kind: 'hardware',
+      role: 'fast',
+      accountIndex: 1,
+      sourceWalletId: standard.id,
+      now: '2026-08-10T14:01:00.000Z',
+    });
+    await saveRegisteredWallet(standard);
+    await saveRegisteredWallet(legacyFast);
+    const service = new WalletService();
+
+    await expect(service.removeRegisteredWallet(standard.id)).resolves.toEqual(
+      [],
+    );
+
+    expect(mockNativeWallet.presentRecoverySeed).not.toHaveBeenCalled();
+    expect(mockNativeWallet.snapshot).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteProtectedWalletFiles).toHaveBeenCalledWith([
+      standard.path,
+      standard.viewOnlyPath,
+    ]);
+    expect(mockNativeWallet.deleteWalletSecret).toHaveBeenCalledWith(
+      standard.credentialKey,
+    );
+    expect(mockNativeWallet.deleteWalletSecret).toHaveBeenCalledWith(
+      standard.viewOnlyCredentialKey,
+    );
+    await expect(loadRegisteredWallets()).resolves.toEqual([]);
+  });
+
+  it('retains the setup Ledger session through the initial spent-state reconciliation', async () => {
     const service = new WalletService();
     const created = await service.createNamedWalletFromDevice({
       walletName: 'ledger-verified',
@@ -667,24 +803,23 @@ describe('WalletService registered wallet opening', () => {
       restoreHeight: 3714305,
       enableLocalViewOnly: true,
     });
-    mockNativeWallet.openWalletWithStoredSecret
-      .mockResolvedValueOnce({ walletId: 'wallet-ledger-view' })
-      .mockResolvedValueOnce({ walletId: 'wallet-ledger-signing' });
-
+    const openedView = await service.openRegisteredWalletRegistration(
+      created.registration,
+    );
     const phases: string[] = [];
     const result = await service.reconcileLedgerViewOnlyWallet(
       created.registration,
       progress => phases.push(progress.phase),
     );
 
-    expect(mockNativeWallet.getLedgerTransportStatus).toHaveBeenCalledTimes(1);
+    expect(mockNativeWallet.getLedgerTransportStatus).not.toHaveBeenCalled();
     expect(
       mockNativeWallet.requestLedgerTransportAccess,
     ).not.toHaveBeenCalled();
     expect(mockNativeWallet.startRefresh).not.toHaveBeenCalled();
     expect(
       mockNativeWallet.syncLedgerKeyImagesToViewWallet,
-    ).toHaveBeenCalledWith('wallet-ledger-signing', 'wallet-ledger-view');
+    ).toHaveBeenCalledWith('wallet-ledger', openedView.walletId);
     expect(phases).toEqual([
       'checking-local-scan',
       'connecting-ledger',
@@ -716,8 +851,11 @@ describe('WalletService registered wallet opening', () => {
       restoreHeight: 3714305,
       enableLocalViewOnly: true,
     });
+    // Simulate a later app launch where the setup-time Ledger session no
+    // longer exists; reconciliation must then perform bounded discovery.
+    service.clearSessionReferencesAfterAppLock();
     mockNativeWallet.openWalletWithStoredSecret
-      .mockResolvedValueOnce({ walletId: 'wallet-ledger-view' })
+      .mockResolvedValueOnce({ walletId: 'wallet-ledger-view-reopened' })
       .mockResolvedValueOnce({ walletId: 'wallet-ledger-signing' });
 
     await service.reconcileLedgerViewOnlyWallet(created.registration);
@@ -728,10 +866,13 @@ describe('WalletService registered wallet opening', () => {
     );
     expect(
       mockNativeWallet.syncLedgerKeyImagesToViewWallet,
-    ).toHaveBeenCalledWith('wallet-ledger-signing', 'wallet-ledger-view');
+    ).toHaveBeenCalledWith(
+      'wallet-ledger-signing',
+      'wallet-ledger-view-reopened',
+    );
   });
 
-  it('removes a Ledger read registration without exposing generic file deletion', async () => {
+  it('removes all protected Ledger wallet files after closing the native session', async () => {
     const service = new WalletService();
     const result = await service.createNamedWalletFromDevice({
       walletName: 'ledger-private',
@@ -760,6 +901,10 @@ describe('WalletService registered wallet opening', () => {
     await service.removeRegisteredWallet(result.registration.id);
 
     expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteProtectedWalletFiles).toHaveBeenCalledWith([
+      result.registration.path,
+      result.registration.viewOnlyPath,
+    ]);
     expect(mockNativeWallet.deleteWalletSecret).toHaveBeenCalledWith(
       'monero.wallet.hardware-view.mainnet.ledger-private.v1',
     );

@@ -1,0 +1,457 @@
+From 08c03e39cee9d358040f078f7fac68d68c76a9e4 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 9 Aug 2026 17:13:43 -0500
+Subject: [PATCH] wallet-cli: seal a Fast Wallet watch only for its pinned
+ Worker
+
+---
+ src/simplewallet/product_cli_debug.cpp       |   5 +-
+ src/simplewallet/product_cli_fast_wallet.cpp | 285 ++++++++++++++++++-
+ 2 files changed, 279 insertions(+), 11 deletions(-)
+
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index d3cb42a..62211d9 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -694,11 +694,14 @@ namespace mfw_cli
+           << "  fast-wallet confirm-backup --wallet-file <path> [--json]\n"
+           << "  fast-wallet status --wallet-file <path> [--json]\n"
+           << "  fast-wallet worker pair --wallet-file <path> --descriptor-file <public-file> [--now <unix-seconds>] [--json]\n"
++          << "  fast-wallet worker seal-watch --wallet-file <path> --password-file <0600-file> --descriptor-file <public-file>\n"
++          << "      --assignment-handle-file <0600-file> --assignment-epoch <positive-integer> --envelope-file <new-0600-file> [--json]\n"
+           << "  fast-wallet worker status --wallet-file <path> [--json]\n"
+           << "\n"
+           << "Worker pair verifies and pins only the public signed Worker root ID locally.\n"
+           << "It does not upload a view key, contact a Worker, or enroll hosted scanning.\n"
+-          << "A later enrollment supplies a fresh signed descriptor; its verified HPKE public key encrypts the View Key for that exact pinned Worker.\n";
++          << "worker seal-watch supplies a fresh signed descriptor and writes a fixed-size HPKE envelope for that exact pinned Worker.\n"
++          << "It reads the local Fast Wallet internally, never prints a View Key or envelope, and makes no network connection.\n";
+         exit_code = 0;
+         return true;
+       }
+diff --git a/src/simplewallet/product_cli_fast_wallet.cpp b/src/simplewallet/product_cli_fast_wallet.cpp
+index e62bb40..781d8a0 100644
+--- a/src/simplewallet/product_cli_fast_wallet.cpp
++++ b/src/simplewallet/product_cli_fast_wallet.cpp
+@@ -34,13 +34,31 @@
+ namespace
+ {
+   constexpr char fast_wallet_magic[8] = {'M', 'F', 'W', 'F', 'W', '1', '\0', '\0'};
+-  constexpr std::uint32_t fast_wallet_disk_version = 1;
++  constexpr std::uint32_t fast_wallet_disk_version = 2;
+   constexpr char paired_worker_magic[8] = {'M', 'F', 'W', 'W', 'K', '1', '\0', '\0'};
+   constexpr std::uint32_t paired_worker_disk_version = 1;
++  constexpr std::uint64_t watch_lifetime_seconds = 10 * 60;
+ 
+   // This deliberately contains no seed, password, key, address, worker token
+   // or node endpoint. It is only the durable Product-Core lifecycle state for
+   // the adjacent, independently encrypted Monero wallet file.
++  struct persisted_fast_wallet_v1
++  {
++    char magic[8];
++    std::uint32_t disk_version;
++    std::uint32_t lifecycle_state;
++    std::uint32_t seed_backup_confirmed;
++    std::uint32_t network;
++    std::uint64_t generation;
++    std::uint64_t created_at;
++    std::uint64_t updated_at;
++    std::uint32_t reserved;
++  };
++
++  // Version 2 retains the V1 state and records the restore floor inside the
++  // private local sidecar. A hosted watch must use this value rather than a
++  // caller-supplied approximation, otherwise a restored wallet could miss
++  // its earliest incoming output.
+   struct persisted_fast_wallet
+   {
+     char magic[8];
+@@ -51,6 +69,7 @@ namespace
+     std::uint64_t generation;
+     std::uint64_t created_at;
+     std::uint64_t updated_at;
++    std::uint64_t restore_height;
+     std::uint32_t reserved;
+   };
+ 
+@@ -77,9 +96,12 @@ namespace
+     boost::filesystem::path password_file;
+     boost::filesystem::path seed_file;
+     boost::filesystem::path descriptor_file;
++    boost::filesystem::path assignment_handle_file;
++    boost::filesystem::path envelope_file;
+     Monero::NetworkType network = Monero::MAINNET;
+     bool network_explicit = false;
+     std::uint64_t restore_height = 0;
++    std::uint64_t assignment_epoch = 0;
+     std::uint64_t now = 0;
+     bool json = false;
+   };
+@@ -97,6 +119,18 @@ namespace
+     value.clear();
+   }
+ 
++  class secret_string_guard
++  {
++  public:
++    explicit secret_string_guard(std::string& value) : value_(value) {}
++    ~secret_string_guard() { wipe(value_); }
++    secret_string_guard(const secret_string_guard&) = delete;
++    secret_string_guard& operator=(const secret_string_guard&) = delete;
++
++  private:
++    std::string& value_;
++  };
++
+   bool parse_unsigned(const std::string& text, std::uint64_t& value)
+   {
+     if (text.empty() || !std::all_of(text.begin(), text.end(),
+@@ -229,17 +263,55 @@ namespace
+       throw std::runtime_error("Fast Wallet lifecycle metadata is corrupt or unsupported");
+   }
+ 
++  void validate_metadata_v1(const persisted_fast_wallet_v1& state)
++  {
++    if (std::memcmp(state.magic, fast_wallet_magic, sizeof(fast_wallet_magic)) != 0 ||
++        state.disk_version != 1 || state.reserved != 0 || state.generation == 0 ||
++        state.seed_backup_confirmed > 1 ||
++        (state.lifecycle_state != MFW_WALLET_LIFECYCLE_AWAITING_SEED_BACKUP &&
++         state.lifecycle_state != MFW_WALLET_LIFECYCLE_READY &&
++         state.lifecycle_state != MFW_WALLET_LIFECYCLE_REMOVAL_PENDING &&
++         state.lifecycle_state != MFW_WALLET_LIFECYCLE_REMOVED) ||
++        state.network > static_cast<std::uint32_t>(Monero::STAGENET))
++      throw std::runtime_error("Fast Wallet lifecycle metadata is corrupt or unsupported");
++  }
++
+   persisted_fast_wallet read_metadata(const options& input)
+   {
+     const auto path = metadata_path(input);
+     require_private_regular_file(path, "Fast Wallet lifecycle metadata");
++    const std::uintmax_t size = boost::filesystem::file_size(path);
+     std::ifstream stream(path.string(), std::ios::binary);
+-    persisted_fast_wallet state{};
+-    stream.read(reinterpret_cast<char*>(&state), sizeof(state));
+-    if (!stream || stream.peek() != std::ifstream::traits_type::eof())
+-      throw std::runtime_error("Fast Wallet lifecycle metadata has an invalid size");
+-    validate_metadata(state);
+-    return state;
++    if (size == sizeof(persisted_fast_wallet))
++    {
++      persisted_fast_wallet state{};
++      stream.read(reinterpret_cast<char*>(&state), sizeof(state));
++      if (!stream || stream.peek() != std::ifstream::traits_type::eof())
++        throw std::runtime_error("Fast Wallet lifecycle metadata has an invalid size");
++      validate_metadata(state);
++      return state;
++    }
++    if (size == sizeof(persisted_fast_wallet_v1))
++    {
++      persisted_fast_wallet_v1 legacy{};
++      stream.read(reinterpret_cast<char*>(&legacy), sizeof(legacy));
++      if (!stream || stream.peek() != std::ifstream::traits_type::eof())
++        throw std::runtime_error("Fast Wallet lifecycle metadata has an invalid size");
++      validate_metadata_v1(legacy);
++      persisted_fast_wallet migrated{};
++      std::memcpy(migrated.magic, legacy.magic, sizeof(migrated.magic));
++      migrated.disk_version = fast_wallet_disk_version;
++      migrated.lifecycle_state = legacy.lifecycle_state;
++      migrated.seed_backup_confirmed = legacy.seed_backup_confirmed;
++      migrated.network = legacy.network;
++      migrated.generation = legacy.generation;
++      migrated.created_at = legacy.created_at;
++      migrated.updated_at = legacy.updated_at;
++      migrated.restore_height = 0;
++      migrated.reserved = 0;
++      return migrated;
++    }
++    throw std::runtime_error("Fast Wallet lifecycle metadata has an invalid size");
+   }
+ 
+   void sync_path(const boost::filesystem::path& path)
+@@ -362,6 +434,56 @@ namespace
+       throw std::runtime_error("Fast Wallet Worker pairing metadata commit could not be verified");
+   }
+ 
++  void write_private_new_binary_file(const boost::filesystem::path& path,
++                                     const unsigned char* bytes,
++                                     const std::size_t length,
++                                     const char* description)
++  {
++    if (path.empty() || bytes == nullptr || length == 0)
++      throw std::runtime_error(std::string(description) + " path is invalid");
++    const auto parent = path.parent_path().empty()
++      ? boost::filesystem::current_path() : path.parent_path();
++    if (!boost::filesystem::exists(parent) || boost::filesystem::is_symlink(parent) ||
++        !boost::filesystem::is_directory(parent) || boost::filesystem::exists(path) ||
++        boost::filesystem::is_symlink(path))
++      throw std::runtime_error(std::string(description) + " already exists or its path is unsafe");
++#ifndef _WIN32
++    const int output = ::open(path.string().c_str(), O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
++    if (output < 0)
++      throw std::runtime_error(std::string(description) + " could not be created");
++    std::size_t written = 0;
++    while (written < length)
++    {
++      const ssize_t result = ::write(output, bytes + written, length - written);
++      if (result <= 0)
++      {
++        ::close(output);
++        throw std::runtime_error(std::string(description) + " could not be written");
++      }
++      written += static_cast<std::size_t>(result);
++    }
++    if (::fsync(output) != 0 || ::close(output) != 0)
++    {
++      throw std::runtime_error(std::string(description) + " could not be committed");
++    }
++    sync_path(parent);
++#else
++    std::ofstream output(path.string(), std::ios::binary | std::ios::out);
++    output.write(reinterpret_cast<const char*>(bytes), length);
++    output.flush();
++    if (!output)
++    {
++      output.close();
++      throw std::runtime_error(std::string(description) + " could not be written");
++    }
++#endif
++    require_private_regular_file(path, description);
++    if (boost::filesystem::file_size(path) != length)
++    {
++      throw std::runtime_error(std::string(description) + " commit could not be verified");
++    }
++  }
++
+   std::string hex_encode(const unsigned char* bytes, const std::size_t length)
+   {
+     static constexpr char alphabet[] = "0123456789abcdef";
+@@ -374,6 +496,28 @@ namespace
+     return output;
+   }
+ 
++  std::vector<unsigned char> decode_lowercase_hex(const std::string& value,
++                                                   const std::size_t required_bytes,
++                                                   const char* description)
++  {
++    if (value.size() != required_bytes * 2)
++      throw std::runtime_error(std::string(description) + " has an invalid length");
++    std::vector<unsigned char> output(required_bytes);
++    for (std::size_t index = 0; index < required_bytes; ++index)
++    {
++      const char high = value[index * 2];
++      const char low = value[index * 2 + 1];
++      const auto nibble = [](const char character) -> unsigned char
++      {
++        if (character >= '0' && character <= '9') return static_cast<unsigned char>(character - '0');
++        if (character >= 'a' && character <= 'f') return static_cast<unsigned char>(character - 'a' + 10);
++        throw std::runtime_error("hex data is not canonical lowercase hex");
++      };
++      output[index] = static_cast<unsigned char>((nibble(high) << 4) | nibble(low));
++    }
++    return output;
++  }
++
+   mfw_fast_wallet_coordinator_plan_v1 plan(const std::uint32_t operation,
+                                            const persisted_fast_wallet* state = nullptr)
+   {
+@@ -403,6 +547,10 @@ namespace
+       else if (token == "--password-file" && index + 1 < argc) output.password_file = argv[++index];
+       else if (token == "--seed-file" && index + 1 < argc) output.seed_file = argv[++index];
+       else if (token == "--descriptor-file" && index + 1 < argc) output.descriptor_file = argv[++index];
++      else if (token == "--assignment-handle-file" && index + 1 < argc)
++        output.assignment_handle_file = argv[++index];
++      else if (token == "--envelope-file" && index + 1 < argc)
++        output.envelope_file = argv[++index];
+       else if (token == "--network" && index + 1 < argc)
+       {
+         output.network = parse_network(argv[++index]);
+@@ -418,6 +566,11 @@ namespace
+         if (!parse_unsigned(argv[++index], output.restore_height))
+           throw std::runtime_error("--restore-height must be an unsigned integer");
+       }
++      else if (token == "--assignment-epoch" && index + 1 < argc)
++      {
++        if (!parse_unsigned(argv[++index], output.assignment_epoch) || output.assignment_epoch == 0)
++          throw std::runtime_error("--assignment-epoch must be a positive unsigned integer");
++      }
+       else if (token == "--json") output.json = true;
+       else throw std::runtime_error("unknown Fast Wallet option: " + token);
+     }
+@@ -435,10 +588,14 @@ namespace
+       << "  confirm-backup --wallet-file <path> [--json]\n"
+       << "  status --wallet-file <path> [--json]\n"
+       << "  worker pair --wallet-file <path> --descriptor-file <public-file> [--now <unix-seconds>]\n"
++      << "  worker seal-watch --wallet-file <path> --password-file <0600-file> --descriptor-file <public-file>\n"
++      << "          --assignment-handle-file <0600-file> --assignment-epoch <positive-integer>\n"
++      << "          --envelope-file <new-0600-file> [--now <unix-seconds>] [--json]\n"
+       << "  worker status --wallet-file <path> [--json]\n\n"
+       << "create and restore make a separate Monero wallet with its own seed and password.\n"
+       << "worker pair verifies and pins only a signed public Worker identity; it does not upload a watch.\n"
+-      << "A later hosted-watch enrolment must provide a fresh signed descriptor whose root matches this pin; the descriptor supplies the Worker HPKE public key.\n"
++      << "worker seal-watch reads the local Fast Wallet internally and writes only a fixed-size encrypted HPKE envelope for a pre-authorized assignment.\n"
++      << "It requires a fresh signed descriptor whose root matches this pin, makes no network connection, and never prints a View Key or envelope.\n"
+       << "The lifecycle sidecar contains no seed, password, private key, address, worker token or node endpoint.\n"
+       << "Never pass a seed or password directly as a command argument.\n";
+   }
+@@ -473,6 +630,7 @@ namespace
+     state.generation = 1;
+     state.created_at = unix_seconds();
+     state.updated_at = state.created_at;
++    state.restore_height = input.restore_height;
+     return state;
+   }
+ 
+@@ -613,6 +771,97 @@ namespace
+     write_paired_worker(input, paired);
+     print_worker_status(input);
+   }
++
++  void seal_worker_watch(const options& input)
++  {
++    const persisted_fast_wallet metadata = read_metadata(input);
++    const Monero::NetworkType wallet_network = static_cast<Monero::NetworkType>(metadata.network);
++    if (input.network_explicit && input.network != wallet_network)
++      throw std::runtime_error("--network does not match the Fast Wallet network");
++    if (input.password_file.empty() || input.descriptor_file.empty() ||
++        input.assignment_handle_file.empty() || input.assignment_epoch == 0 ||
++        input.envelope_file.empty())
++      throw std::runtime_error("worker seal-watch requires password, descriptor, assignment and new envelope files");
++    if (input.restore_height != 0 && input.restore_height != metadata.restore_height)
++      throw std::runtime_error("--restore-height does not match this Fast Wallet");
++    static_cast<void>(plan(MFW_FAST_WALLET_OPERATION_ENROLL_WORKER, &metadata));
++
++    const persisted_paired_worker paired = read_paired_worker(input);
++    if (paired.network != metadata.network)
++      throw std::runtime_error("Fast Wallet Worker pairing network does not match this wallet");
++    const std::uint64_t now = input.now == 0 ? unix_seconds() : input.now;
++    if (now > std::numeric_limits<std::uint64_t>::max() - watch_lifetime_seconds)
++      throw std::runtime_error("Worker watch expiry is invalid");
++    const std::vector<unsigned char> descriptor = read_public_bounded_file(
++      input.descriptor_file, "Worker descriptor file", 4096);
++    std::array<unsigned char, 32> fresh_root{};
++    const std::int32_t verified = tex8_fast_wallet_protocol_descriptor_worker_root_id_v1(
++      descriptor.data(), descriptor.size(), static_cast<std::uint8_t>(metadata.network), now,
++      fresh_root.data(), fresh_root.size());
++    if (verified != TEX8_FAST_WALLET_PROTOCOL_OK || fresh_root != paired.worker_root_id)
++      throw std::runtime_error("Worker descriptor is invalid, expired, for another network, or does not match the pinned Worker");
++
++    std::string assignment_text = read_private_text_file(
++      input.assignment_handle_file, "Worker assignment handle file");
++    secret_string_guard assignment_text_guard(assignment_text);
++    std::vector<unsigned char> assignment_handle = decode_lowercase_hex(
++      assignment_text, 32, "Worker assignment handle file");
++    if (std::all_of(assignment_handle.begin(), assignment_handle.end(),
++                    [](const unsigned char value) { return value == 0; }))
++      throw std::runtime_error("Worker assignment handle file is invalid");
++
++    std::string password = read_private_text_file(input.password_file, "password file");
++    secret_string_guard password_guard(password);
++    Monero::WalletManager* manager = Monero::WalletManagerFactory::getWalletManager();
++    if (manager == nullptr) throw std::runtime_error("native Monero WalletManager is unavailable");
++    Monero::Wallet* wallet = nullptr;
++    std::array<unsigned char, TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE> envelope{};
++    try
++    {
++      wallet = manager->openWallet(input.wallet_path.string(), password, wallet_network);
++      wipe(password);
++      if (wallet == nullptr || wallet->status() != Monero::Wallet::Status_Ok)
++        throw std::runtime_error("Fast Wallet could not be opened");
++      if (wallet->nettype() != wallet_network)
++        throw std::runtime_error("Fast Wallet network does not match its lifecycle metadata");
++      std::string address = wallet->address();
++      secret_string_guard address_guard(address);
++      std::string private_view_key = wallet->secretViewKey();
++      secret_string_guard private_view_key_guard(private_view_key);
++      std::vector<unsigned char> private_view_key_bytes = decode_lowercase_hex(
++        private_view_key, 32, "Fast Wallet private View Key");
++      const std::int32_t sealed = tex8_fast_wallet_protocol_seal_watch_v1(
++        descriptor.data(), descriptor.size(), static_cast<std::uint8_t>(metadata.network),
++        assignment_handle.data(), input.assignment_epoch, now, now + watch_lifetime_seconds,
++        now, reinterpret_cast<const unsigned char*>(address.data()), address.size(),
++        private_view_key_bytes.data(), metadata.restore_height, envelope.data(), envelope.size());
++      std::fill(private_view_key_bytes.begin(), private_view_key_bytes.end(), 0);
++      if (sealed != TEX8_FAST_WALLET_PROTOCOL_OK)
++        throw std::runtime_error("Fast Wallet Worker watch encryption failed");
++      if (!manager->closeWallet(wallet, false))
++      {
++        wallet = nullptr;
++        throw std::runtime_error("Fast Wallet could not be closed after watch encryption");
++      }
++      wallet = nullptr;
++      write_private_new_binary_file(input.envelope_file, envelope.data(), envelope.size(),
++                                    "encrypted Worker watch envelope");
++      std::fill(envelope.begin(), envelope.end(), 0);
++      if (input.json)
++        std::cout << "{\"schema_version\":1,\"watch_envelope_sealed\":true,\"worker_enrolled\":false,\"network\":\""
++                  << network_name(wallet_network) << "\"}\n";
++      else
++        std::cout << "Encrypted Worker watch prepared locally. No View Key was displayed or transmitted.\n";
++    }
++    catch (...)
++    {
++      std::fill(assignment_handle.begin(), assignment_handle.end(), 0);
++      std::fill(envelope.begin(), envelope.end(), 0);
++      if (wallet != nullptr) manager->closeWallet(wallet, false);
++      throw;
++    }
++    std::fill(assignment_handle.begin(), assignment_handle.end(), 0);
++  }
+ }
+ 
+ namespace mfw_cli
+@@ -627,12 +876,13 @@ namespace mfw_cli
+       operation += "-" + std::string(argv[3]);
+     }
+     if (operation != "create" && operation != "restore" && operation != "confirm-backup" &&
+-        operation != "status" && operation != "worker-pair" && operation != "worker-status")
++        operation != "status" && operation != "worker-pair" && operation != "worker-seal-watch" &&
++        operation != "worker-status")
+       return false;
+     try
+     {
+       options input;
+-      if (operation == "worker-pair" || operation == "worker-status")
++      if (operation == "worker-pair" || operation == "worker-seal-watch" || operation == "worker-status")
+       {
+         // `pair`/`status` are a two-word Fast Wallet subcommand; their options
+         // begin after that second word.
+@@ -641,7 +891,11 @@ namespace mfw_cli
+         {
+           const std::string token(argv[index]);
+           if (token == "--wallet-file" && index + 1 < argc) input.wallet_path = argv[++index];
++          else if (token == "--password-file" && index + 1 < argc) input.password_file = argv[++index];
+           else if (token == "--descriptor-file" && index + 1 < argc) input.descriptor_file = argv[++index];
++          else if (token == "--assignment-handle-file" && index + 1 < argc)
++            input.assignment_handle_file = argv[++index];
++          else if (token == "--envelope-file" && index + 1 < argc) input.envelope_file = argv[++index];
+           else if (token == "--network" && index + 1 < argc)
+           {
+             input.network = parse_network(argv[++index]);
+@@ -652,6 +906,16 @@ namespace mfw_cli
+             if (!parse_unsigned(argv[++index], input.now))
+               throw std::runtime_error("--now must be an unsigned Unix timestamp");
+           }
++          else if (token == "--restore-height" && index + 1 < argc)
++          {
++            if (!parse_unsigned(argv[++index], input.restore_height))
++              throw std::runtime_error("--restore-height must be an unsigned integer");
++          }
++          else if (token == "--assignment-epoch" && index + 1 < argc)
++          {
++            if (!parse_unsigned(argv[++index], input.assignment_epoch) || input.assignment_epoch == 0)
++              throw std::runtime_error("--assignment-epoch must be a positive unsigned integer");
++          }
+           else if (token == "--json") input.json = true;
+           else throw std::runtime_error("unknown Fast Wallet option: " + token);
+         }
+@@ -663,6 +927,7 @@ namespace mfw_cli
+       else if (operation == "confirm-backup") confirm_backup(input);
+       else if (operation == "status") print_status(input, read_metadata(input));
+       else if (operation == "worker-pair") pair_worker(input);
++      else if (operation == "worker-seal-watch") seal_worker_watch(input);
+       else print_worker_status(input);
+       exit_code = 0;
+     }
+-- 
+2.50.1 (Apple Git-155)
+

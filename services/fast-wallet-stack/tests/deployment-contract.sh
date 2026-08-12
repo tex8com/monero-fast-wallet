@@ -49,6 +49,8 @@ for public_route in \
 done
 grep -q 'limit_req zone=fast_wallet_desktop_bootstrap' "$nginx"
 grep -q 'limit_req_zone .*fast_wallet_desktop_bootstrap' "$rate_limits"
+grep -q '^location \^~ /api/v1/installations/assignments/ {' "$nginx"
+grep -q '^location \^~ /v1/envelopes/ {' "$nginx"
 
 # Internal-only endpoints may be documented in comments, but must never be an
 # Nginx location.

@@ -49,6 +49,7 @@ const mockNativeMoneroWalletTurboModule = {
     async () => "wallet-ledger-view",
   ),
   deleteEmptyWalletFiles: jest.fn(async () => undefined),
+  deleteProtectedWalletFiles: jest.fn(async () => undefined),
   createFastReceiveIdentity: jest.fn(async () => ({
     id: "fast-receive-v2-0",
     label: "Fast Receive",
@@ -304,6 +305,17 @@ describe("NativeMoneroWallet hardware bridge", () => {
       "wallet-ledger-view",
       "/tmp/wallet-ledger-view",
     );
+
+    await nativeWallet.deleteProtectedWalletFiles([
+      "/tmp/wallet-ledger",
+      "/tmp/wallet-ledger-view",
+    ]);
+    expect(
+      mockNativeMoneroWalletTurboModule.deleteProtectedWalletFiles,
+    ).toHaveBeenCalledWith([
+      "/tmp/wallet-ledger",
+      "/tmp/wallet-ledger-view",
+    ]);
   });
 
   it("passes only a secure-store key alias for scanner authorization", async () => {

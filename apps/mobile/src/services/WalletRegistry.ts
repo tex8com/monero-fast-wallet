@@ -37,8 +37,8 @@ export interface RegisteredWallet {
   ledgerKeyImagesVerifiedHeight?: number;
   restoreHeight?: number;
   /**
-   * A wallet can intentionally operate from another Monero account. Ledger
-   * Fast Wallets use account 1/address 0; ordinary wallets use account 0.
+   * A legacy wallet registration can intentionally operate from another
+   * Monero account. This is never an isolated Fast Wallet root.
    */
   accountIndex?: number;
   addressIndex?: number;
@@ -63,22 +63,43 @@ export interface WalletRegistryState {
   wallets: RegisteredWallet[];
 }
 
+// Registry updates arrive from startup warming, wallet selection, Fast Wallet
+// setup, and Ledger reconciliation. Protected metadata is a read/modify/write
+// document, so those operations must be serialized or a late stale write can
+// silently erase a field committed by an earlier operation.
+let walletRegistryMutationTail: Promise<void> = Promise.resolve();
+
+function mutateWalletRegistry<T>(mutation: () => Promise<T>): Promise<T> {
+  const result = walletRegistryMutationTail.then(mutation, mutation);
+  walletRegistryMutationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 /**
  * Independent Fast Wallets are ordinary local software wallets with a
  * dedicated receive identity and mandatory seed backup. `role: fast` remains
- * readable only so old, unsupported Ledger registrations can be removed.
+ * readable only so old, unsupported Ledger account registrations can be
+ * identified and removed without deleting their shared Ledger container.
  */
 export function isFastWalletRegistration(
   wallet: Pick<RegisteredWallet, 'kind' | 'role'> | null | undefined,
 ): boolean {
-  return wallet?.kind === 'fast' || wallet?.role === 'fast';
+  return wallet?.kind === 'fast';
+}
+
+export function isLegacyLedgerAccountRegistration(
+  wallet: Pick<RegisteredWallet, 'kind' | 'role'> | null | undefined,
+): boolean {
+  return wallet?.kind === 'hardware' && wallet?.role === 'fast';
 }
 
 /**
  * Only wallets backed by local software entropy have recovery words that this
- * app can present and confirm. A Ledger Fast Wallet is account 1 of the same
- * hardware wallet (`kind: hardware`, `role: fast`); its recovery words remain
- * on the Ledger and must never enter the software-wallet backup flow.
+ * app can present and confirm. Legacy Ledger account registrations remain
+ * hardware-backed and must never enter the software-wallet backup flow.
  */
 export function walletRequiresRecoverySeedBackup(
   wallet: Pick<RegisteredWallet, 'kind'> | null | undefined,
@@ -88,7 +109,7 @@ export function walletRequiresRecoverySeedBackup(
 
 /**
  * Returns whether removing `target` also removes `candidate` from the local
- * registry. Ledger account 1 is a logical child of the same hardware wallet,
+ * registry. A legacy Ledger account is a logical child of the same hardware wallet,
  * so deleting the Ledger root removes both registrations. Independent Fast
  * Wallets own their own file and seed and are never cascaded from another
  * wallet merely because older metadata contains a `sourceWalletId`.
@@ -114,27 +135,27 @@ export function ledgerBalanceNeedsVerification(
     | 'ledgerKeyImagesVerifiedHeight'
   >,
   pendingOutputKeyImageCount?: number,
+  knownTransactionCount = 0,
 ): boolean {
   if (wallet.kind !== 'hardware') {
     return false;
   }
-  // A directly opened Ledger cache can discover incoming outputs, but the
-  // durable, device-independent balance is authoritative only after the owner
-  // has explicitly exported the private view key into an encrypted local
-  // companion and Ledger-signed key images have supplied spent status.
-  if (!wallet.viewOnlyPath) {
-    return true;
+  // Product contract: the Ledger is required for one initial key-image pass.
+  // A successful pass is persisted only after Core has atomically imported
+  // and stored the verified state. From then on, transactions signed by this
+  // app update the same local wallet state without repeatedly waking Ledger.
+  if (wallet.ledgerKeyImagesVerifiedAt) {
+    return false;
   }
-  if (
-    !wallet.ledgerKeyImagesVerifiedAt ||
-    wallet.ledgerKeyImagesVerifiedHeight === undefined
-  ) {
-    return true;
-  }
-  // The Core publishes only a queue length, not any output/key-image data.
-  // This is the only condition that makes a later Ledger pass useful. Chain
-  // height alone must never wake the hardware device.
-  return (pendingOutputKeyImageCount ?? 0) > 0;
+  // The first pass is a wallet lifecycle step, not a reaction to the current
+  // output queue. In particular an empty new wallet must still persist the
+  // completion marker while the Ledger session from setup is available;
+  // otherwise its first later receive would incorrectly wake Ledger again.
+  // Keep the two counters in the public signature for callers and diagnostics,
+  // but never use them to postpone this one-time verification.
+  void pendingOutputKeyImageCount;
+  void knownTransactionCount;
+  return Boolean(wallet.viewOnlyPath);
 }
 
 export async function loadRegisteredWallet(): Promise<
@@ -157,6 +178,12 @@ export async function loadWalletRegistry(): Promise<WalletRegistryState> {
 export async function saveWalletRegistry(
   registry: WalletRegistryState,
 ): Promise<WalletRegistryState> {
+  return mutateWalletRegistry(() => saveWalletRegistryUnlocked(registry));
+}
+
+async function saveWalletRegistryUnlocked(
+  registry: WalletRegistryState,
+): Promise<WalletRegistryState> {
   const normalized = normalizeWalletRegistry(registry);
   await storeProtectedMetadata(
     WALLET_REGISTRY_STORAGE_KEY,
@@ -174,35 +201,54 @@ export async function saveRegisteredWallet(
 export async function upsertRegisteredWallet(
   wallet: RegisteredWallet,
   makeActive = false,
+  options?: { preserveLedgerVerification?: boolean },
 ): Promise<RegisteredWallet> {
-  const current = await loadWalletRegistry();
-  const existing = current.wallets.find(item => item.id === wallet.id);
-  const defaultName = defaultWalletDisplayName(wallet.kind, wallet.walletName);
-  // Opening an existing wallet recreates technical metadata. Keep a label the
-  // owner has chosen instead of silently replacing it with the default.
-  const normalized = normalizeRegisteredWallet(
-    existing &&
-      (!wallet.displayName ||
-        (wallet.displayName === defaultName &&
-          existing.displayName !== defaultName))
-      ? { ...wallet, displayName: existing.displayName }
-      : wallet,
-  );
-  const nextWallets = current.wallets.some(item => item.id === normalized.id)
-    ? current.wallets.map(item =>
-        item.id === normalized.id ? normalized : item,
-      )
-    : [...current.wallets, normalized];
+  return mutateWalletRegistry(async () => {
+    const current = await loadWalletRegistry();
+    const existing = current.wallets.find(item => item.id === wallet.id);
+    const defaultName = defaultWalletDisplayName(wallet.kind, wallet.walletName);
+    let merged = wallet;
+    // A successful Ledger key-image pass is monotonic lifecycle state. Normal
+    // touches/opening with an older object must not remove it. The one caller
+    // that creates a replacement companion opts out explicitly below.
+    if (
+      existing?.ledgerKeyImagesVerifiedAt &&
+      !wallet.ledgerKeyImagesVerifiedAt &&
+      options?.preserveLedgerVerification !== false
+    ) {
+      merged = {
+        ...wallet,
+        ledgerKeyImagesVerifiedAt: existing.ledgerKeyImagesVerifiedAt,
+        ledgerKeyImagesVerifiedHeight:
+          existing.ledgerKeyImagesVerifiedHeight,
+      };
+    }
+    // Opening an existing wallet recreates technical metadata. Keep a label
+    // the owner has chosen instead of silently replacing it with the default.
+    const normalized = normalizeRegisteredWallet(
+      existing &&
+        (!merged.displayName ||
+          (merged.displayName === defaultName &&
+            existing.displayName !== defaultName))
+        ? { ...merged, displayName: existing.displayName }
+        : merged,
+    );
+    const nextWallets = current.wallets.some(item => item.id === normalized.id)
+      ? current.wallets.map(item =>
+          item.id === normalized.id ? normalized : item,
+        )
+      : [...current.wallets, normalized];
 
-  await saveWalletRegistry({
-    version: 2,
-    activeWalletId:
-      makeActive || !current.activeWalletId
-        ? normalized.id
-        : current.activeWalletId,
-    wallets: nextWallets,
+    await saveWalletRegistryUnlocked({
+      version: 2,
+      activeWalletId:
+        makeActive || !current.activeWalletId
+          ? normalized.id
+          : current.activeWalletId,
+      wallets: nextWallets,
+    });
+    return normalized;
   });
-  return normalized;
 }
 
 export function createRegisteredWallet(input: {
@@ -287,33 +333,37 @@ export function touchRegisteredWallet(
 export async function setActiveRegisteredWallet(
   walletId: string,
 ): Promise<RegisteredWallet | undefined> {
-  const registry = await loadWalletRegistry();
-  const wallet = registry.wallets.find(item => item.id === walletId);
-  if (!wallet) {
-    return undefined;
-  }
+  return mutateWalletRegistry(async () => {
+    const registry = await loadWalletRegistry();
+    const wallet = registry.wallets.find(item => item.id === walletId);
+    if (!wallet) {
+      return undefined;
+    }
 
-  await saveWalletRegistry({
-    ...registry,
-    activeWalletId: wallet.id,
+    await saveWalletRegistryUnlocked({
+      ...registry,
+      activeWalletId: wallet.id,
+    });
+    return wallet;
   });
-  return wallet;
 }
 
 export async function removeRegisteredWallet(
   walletId: string,
 ): Promise<WalletRegistryState> {
-  const registry = await loadWalletRegistry();
-  const wallets = registry.wallets.filter(wallet => wallet.id !== walletId);
-  const activeWalletId =
-    registry.activeWalletId === walletId
-      ? wallets[0]?.id
-      : registry.activeWalletId;
+  return mutateWalletRegistry(async () => {
+    const registry = await loadWalletRegistry();
+    const wallets = registry.wallets.filter(wallet => wallet.id !== walletId);
+    const activeWalletId =
+      registry.activeWalletId === walletId
+        ? wallets[0]?.id
+        : registry.activeWalletId;
 
-  return saveWalletRegistry({
-    version: 2,
-    activeWalletId,
-    wallets,
+    return saveWalletRegistryUnlocked({
+      version: 2,
+      activeWalletId,
+      wallets,
+    });
   });
 }
 
@@ -321,28 +371,30 @@ export async function renameRegisteredWallet(
   walletId: string,
   displayName: string,
 ): Promise<RegisteredWallet | undefined> {
-  const registry = await loadWalletRegistry();
-  const normalizedName = normalizeDisplayName(displayName);
-  if (!normalizedName) {
-    throw new Error(
-      'Wallet name must be between 1 and 64 printable characters.',
-    );
-  }
-  const wallet = registry.wallets.find(item => item.id === walletId);
-  if (!wallet) {
-    return undefined;
-  }
-  const updated = normalizeRegisteredWallet({
-    ...wallet,
-    displayName: normalizedName,
+  return mutateWalletRegistry(async () => {
+    const registry = await loadWalletRegistry();
+    const normalizedName = normalizeDisplayName(displayName);
+    if (!normalizedName) {
+      throw new Error(
+        'Wallet name must be between 1 and 64 printable characters.',
+      );
+    }
+    const wallet = registry.wallets.find(item => item.id === walletId);
+    if (!wallet) {
+      return undefined;
+    }
+    const updated = normalizeRegisteredWallet({
+      ...wallet,
+      displayName: normalizedName,
+    });
+    await saveWalletRegistryUnlocked({
+      ...registry,
+      wallets: registry.wallets.map(item =>
+        item.id === updated.id ? updated : item,
+      ),
+    });
+    return updated;
   });
-  await saveWalletRegistry({
-    ...registry,
-    wallets: registry.wallets.map(item =>
-      item.id === updated.id ? updated : item,
-    ),
-  });
-  return updated;
 }
 
 export function walletDisplayName(
@@ -358,30 +410,31 @@ export async function markRegisteredWalletSeedBackedUp(
   walletId: string,
   now = new Date().toISOString(),
 ): Promise<RegisteredWallet | undefined> {
-  const registry = await loadWalletRegistry();
-  const wallet = registry.wallets.find(item => item.id === walletId);
-  if (!wallet) {
-    return undefined;
-  }
+  return mutateWalletRegistry(async () => {
+    const registry = await loadWalletRegistry();
+    const wallet = registry.wallets.find(item => item.id === walletId);
+    if (!wallet) {
+      return undefined;
+    }
 
-  const updated = normalizeRegisteredWallet({
-    ...wallet,
-    seedBackupStatus:
-      wallet.kind === 'software' || wallet.kind === 'fast'
-        ? 'verified'
-        : 'not-required',
-    seedBackedUpAt:
-      wallet.kind === 'software' || wallet.kind === 'fast' ? now : undefined,
+    const updated = normalizeRegisteredWallet({
+      ...wallet,
+      seedBackupStatus:
+        wallet.kind === 'software' || wallet.kind === 'fast'
+          ? 'verified'
+          : 'not-required',
+      seedBackedUpAt:
+        wallet.kind === 'software' || wallet.kind === 'fast' ? now : undefined,
+    });
+
+    await saveWalletRegistryUnlocked({
+      ...registry,
+      wallets: registry.wallets.map(item =>
+        item.id === updated.id ? updated : item,
+      ),
+    });
+    return updated;
   });
-
-  await saveWalletRegistry({
-    ...registry,
-    wallets: registry.wallets.map(item =>
-      item.id === updated.id ? updated : item,
-    ),
-  });
-
-  return updated;
 }
 
 export function createRegisteredWalletId(
@@ -617,9 +670,7 @@ function parseRegisteredWalletRecord(
   const fastWalletAssignmentExpiresAt = parseNumber(
     value.fastWalletAssignmentExpiresAt,
   );
-  const fastWalletWatchMessageId = parseString(
-    value.fastWalletWatchMessageId,
-  );
+  const fastWalletWatchMessageId = parseString(value.fastWalletWatchMessageId);
   const hardwareDeviceName = parseString(value.hardwareDeviceName);
   const hardwareDeviceType = parseString(value.hardwareDeviceType);
   const createdAt = parseString(value.createdAt);
@@ -638,7 +689,11 @@ function parseRegisteredWalletRecord(
     kind,
     seedBackupStatus:
       seedBackupStatus ??
-      (kind === 'software' ? 'verified' : kind === 'fast' ? 'pending' : 'not-required'),
+      (kind === 'software'
+        ? 'verified'
+        : kind === 'fast'
+        ? 'pending'
+        : 'not-required'),
     seedBackedUpAt,
     credentialKey,
     viewOnlyPath,

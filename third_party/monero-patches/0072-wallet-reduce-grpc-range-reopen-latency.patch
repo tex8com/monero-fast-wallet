@@ -1,0 +1,118 @@
+From 3ce3ef65d1f259c986953fc3d0e1cfb5d585e811 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet <engineering@tex8.app>
+Date: Mon, 10 Aug 2026 13:20:00 -0500
+Subject: [PATCH] wallet: reduce gRPC range reopen latency
+
+The January-2026 QA restore opened roughly 313 finite 512-block RPCs. Even
+with four proven physical transports, the slowest first response of every
+four-range group remained on the ordered commit path and dominated wall time.
+Server processing, local scanning, and payload encoding were not saturated.
+
+Keep the server response chunk hint bounded at 16..512 blocks, but decouple it
+from the finite scheduler span. Use 2048-block non-overlapping ranges while
+retaining one queued response per physical lane. This avoids CPU contention
+with local key derivation while keeping each RPC open across several server
+responses. The one global downloader and exact range-cache identity remain
+unchanged; this only reduces transport setup frequency.
+---
+ src/simplewallet/CMakeLists.txt               |  2 +-
+ .../grpc_stream/grpc_block_range_pool.cpp     | 22 +++++++++++++------
+ .../grpc_stream/grpc_block_range_pool.h       |  2 +-
+ 3 files changed, 17 insertions(+), 9 deletions(-)
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index 226a07c..b6ba483 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -135,7 +135,7 @@ execute_process(
+   OUTPUT_STRIP_TRAILING_WHITESPACE)
+ set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
+ set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
+-set(MFW_MONERO_PATCH_COUNT "71" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_MONERO_PATCH_COUNT "72" CACHE STRING "Applied TEX8 Monero patch count")
+ set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
+ set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
+ set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.cpp b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+index 3ba5a42..1592d05 100644
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.cpp
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+@@ -20,8 +20,13 @@ namespace {
+ // configuration. The pool remains one global downloader and assigns each
+ // non-overlapping range to one of these bounded process-wide transports.
+ constexpr size_t kMaxChannels = 4;
+-constexpr uint32_t kMinRangeBlocks = 16;
+-constexpr uint32_t kMaxRangeBlocks = 512;
++// A finite range is deliberately larger than a server response chunk. The old
++// 512-block range span reopened roughly 313 RPCs for a January-2026 restore;
++// each reopen paid WAN first-response latency and starved otherwise idle lanes.
++constexpr uint32_t kRangeBlocks = 2048;
++constexpr uint32_t kMinChunkBlocks = 16;
++constexpr uint32_t kMaxChunkBlocks = 512;
++constexpr size_t kPerRangeQueueCapacity = 1;
+ constexpr size_t kSharedCacheMaxEntries = 128;
+ constexpr size_t kSharedCacheMaxBytes = 96 * 1024 * 1024;
+ constexpr uint64_t kStableDepth = 64;
+@@ -55,7 +60,8 @@ public:
+     bool open(int& error_code, std::string& error) {
+         if (!client_.connect(target_, process_channel_lane_)
+                 || !client_.open_stream(
+-                start_, stop_, true, chunk_hint_, request_id_, locator_, 1)) {
++                start_, stop_, true, chunk_hint_, request_id_, locator_,
++                kPerRangeQueueCapacity)) {
+             error_code = client_.last_error_code();
+             error = client_.last_error_message();
+             return false;
+@@ -334,6 +340,7 @@ struct cuprate_grpc_block_range_pool::impl {
+     std::vector<slot> slots;
+     uint64_t next_expected = 0, next_assign = 0, stop_height = 0;
+     uint32_t range_blocks = 0;
++    uint32_t chunk_blocks_hint = 0;
+     size_t target_channels = 1;
+     bool opened = false, have_expected = false;
+     bool warmup_complete = false, ended_ok = false;
+@@ -365,7 +372,7 @@ bool open_slot(cuprate_grpc_block_range_pool::impl& p, size_t index,
+         ? p.locator : std::vector<std::string>{};
+     bool reused = false;
+     slot.range = process_range_cache().acquire(p.target, slot.start, slot.stop,
+-        p.range_blocks,
++        p.chunk_blocks_hint,
+         p.request_id + "-r" + std::to_string(slot.start), slot_locator,
+         index, reused, p.error_code, p.error);
+     if (!slot.range)
+@@ -392,7 +399,7 @@ bool fill_slots(cuprate_grpc_block_range_pool::impl& p) {
+ } // namespace
+ 
+ bool cuprate_grpc_block_range_pool::open(const std::string& target,
+-    uint64_t start_height, uint64_t stop_height, uint32_t range_blocks,
++    uint64_t start_height, uint64_t stop_height, uint32_t chunk_blocks_hint,
+     size_t max_channels, const std::string& client_request_id,
+     const std::vector<std::string>& chain_locator) {
+     close();
+@@ -405,8 +412,9 @@ bool cuprate_grpc_block_range_pool::open(const std::string& target,
+     p_->request_id = client_request_id;
+     p_->locator = chain_locator;
+     p_->stop_height = stop_height;
+-    p_->range_blocks = std::max(kMinRangeBlocks,
+-        std::min(kMaxRangeBlocks, range_blocks));
++    p_->range_blocks = kRangeBlocks;
++    p_->chunk_blocks_hint = std::max(kMinChunkBlocks,
++        std::min(kMaxChunkBlocks, chunk_blocks_hint));
+     p_->target_channels = std::max<size_t>(1,
+         std::min(kMaxChannels, max_channels));
+     p_->next_assign = start_height;
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.h b/src/wallet/grpc_stream/grpc_block_range_pool.h
+index 3581a7f..2f950ce 100644
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.h
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.h
+@@ -21,7 +21,7 @@ public:
+     cuprate_grpc_block_range_pool& operator=(const cuprate_grpc_block_range_pool&) = delete;
+ 
+     bool open(const std::string& target, uint64_t start_height, uint64_t stop_height,
+-              uint32_t range_blocks, size_t max_channels,
++              uint32_t chunk_blocks_hint, size_t max_channels,
+               const std::string& client_request_id,
+               const std::vector<std::string>& chain_locator);
+     bool next_chunk_payload(std::string& out_epee_bytes, uint32_t timeout_ms);
+-- 
+2.50.1 (Apple Git-155)

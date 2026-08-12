@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
     MFW_WALLET_PREFERENCE_PRIVACY_CONVENIENCE,
     MFW_FAST_WALLET_OVERRIDE_DEFAULT,
     &wallet_policy);
-  if (code != MFW_ERROR_OK || wallet_policy.fast_wallet_enabled != 1 ||
+  if (code != MFW_ERROR_OK || wallet_policy.fast_wallet_enabled != 0 ||
       wallet_policy.fast_wallet_kind != MFW_WALLET_KIND_FAST) {
     fail("privacy-and-convenience wallet creation policy failed", code);
   }
@@ -145,6 +145,38 @@ int main(int argc, char** argv) {
       fast_plan.result_lifecycle_state !=
         MFW_WALLET_LIFECYCLE_REMOVAL_PENDING) {
     fail("fast wallet removal coordinator failed", code);
+  }
+
+  mfw_fast_wallet_hosting_input_v1 hosting_input = {0};
+  hosting_input.struct_size = sizeof(hosting_input);
+  hosting_input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
+  hosting_input.operation = MFW_FAST_WALLET_HOSTING_OPERATION_ENROLL;
+  hosting_input.lifecycle_state = MFW_WALLET_LIFECYCLE_READY;
+  hosting_input.seed_backup_confirmed = 1;
+  hosting_input.installation_authorized = 1;
+  hosting_input.trusted_worker_descriptor = 1;
+  hosting_input.enrollment_stage = MFW_FAST_WALLET_HOSTING_STAGE_DELIVERY_ENABLED;
+  mfw_fast_wallet_hosting_plan_v1 hosting_plan = {0};
+  code = mfw_fast_wallet_hosting_plan_compute_v1(&hosting_input, &hosting_plan);
+  if (code != MFW_ERROR_OK || hosting_plan.operation_allowed != 1 ||
+      hosting_plan.execution_allowed != 1 ||
+      hosting_plan.next_action != MFW_FAST_WALLET_HOSTING_ACTION_SEAL_WATCH ||
+      hosting_plan.result_enrollment_stage !=
+        MFW_FAST_WALLET_HOSTING_STAGE_WATCH_SEALED ||
+      hosting_plan.worker_enrolled != 0) {
+    fail("fast wallet hosted-watch planner failed", code);
+  }
+
+  hosting_input.enrollment_stage = MFW_FAST_WALLET_HOSTING_STAGE_NONE;
+  hosting_input.installation_authorized = 0;
+  code = mfw_fast_wallet_hosting_plan_compute_v1(&hosting_input, &hosting_plan);
+  if (code != MFW_ERROR_OK || hosting_plan.operation_allowed != 1 ||
+      hosting_plan.execution_allowed != 1 || hosting_plan.requirement_flags != 0 ||
+      hosting_plan.next_action != MFW_FAST_WALLET_HOSTING_ACTION_PERSIST_PENDING ||
+      hosting_plan.result_enrollment_stage !=
+        MFW_FAST_WALLET_HOSTING_STAGE_PENDING_LOCAL ||
+      hosting_plan.worker_enrolled != 0) {
+    fail("fast wallet hosted-watch pending planner failed", code);
   }
 
   const uint64_t account_balances[] = {100, 200, 300};

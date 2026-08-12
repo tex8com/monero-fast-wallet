@@ -2,11 +2,40 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
+  networkSyncMegabitsPerSecond,
+  walletSyncDerivationsPerSecond,
+} from '../../../packages/wallet-shared/src/networkSync.ts';
+import {
   presentWalletSync,
   syncStartHeightForWallet,
   updateWalletSyncEta,
   walletIsSpendReady,
 } from '../../../packages/wallet-shared/src/walletSync.ts';
+
+test('shared live sync rates use native bytes and derivation time', () => {
+  assert.equal(networkSyncMegabitsPerSecond({
+    state: 'fetching-blocks',
+    phase: 'fetching-blocks',
+    chainHeight: 10,
+    targetHeight: 20,
+    transportStarts: 1,
+    joinedWallets: 1,
+    stalledWallets: 0,
+    lastNonEmptyBlockFetchMs: 2_000,
+    lastNonEmptyNetworkBytes: 25_000_000,
+  }), 100);
+  assert.equal(walletSyncDerivationsPerSecond({
+    state: 'scanning',
+    phase: 'scanning-wallets',
+    chainHeight: 10,
+    targetHeight: 20,
+    transportStarts: 1,
+    joinedWallets: 1,
+    stalledWallets: 0,
+    lastNonEmptyWalletDerivationCount: 24_000,
+    lastNonEmptyWalletDerivationUs: 200_000,
+  }), 120_000);
+});
 
 test('only the native core may confirm a wallet as synchronized', () => {
   const sync = presentWalletSync({
@@ -103,6 +132,19 @@ test('a configured restore height is the durable percentage baseline', async () 
   assert.match(desktopApp, /syncStartHeightForWallet\(wallet\?\.restoreHeight/);
 });
 
+test('Tauri requires the same explicit Ledger restore point as the CLI', async () => {
+  const [desktopApp, desktopHost] = await Promise.all([
+    readFile(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src-tauri/src/lib.rs', import.meta.url), 'utf8'),
+  ]);
+  assert.match(desktopApp, /mode === 'ledger' && !restoreStartDate\.trim\(\)/);
+  assert.match(desktopApp, /setup\.ledgerScanDateHint/);
+  assert.match(
+    desktopHost,
+    /filter\(\|height\| \*height > 1\)[\s\S]*Choose a Ledger scan start date/,
+  );
+});
+
 test('no cached height can turn an active 19k-block scan into 99%', () => {
   const sync = presentWalletSync({
     walletHeight: 3_705_094,
@@ -154,9 +196,45 @@ test('ETA excludes native checkpoint time and cannot jump on one slow batch', ()
   assert.ok(resumed.etaSeconds <= 170);
 });
 
-test('background Ledger reconciliation remains global and does not restart block sync', async () => {
+test('automatic Ledger reconciliation is pending-output-only, cooldown-gated, and globally single-flight', async () => {
   const desktopApp = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8');
-  assert.match(desktopApp, /ledgerBackgroundVerificationInFlightRef/);
+  const verificationPredicate = desktopApp.slice(
+    desktopApp.indexOf('function desktopLedgerBalanceNeedsVerification'),
+    desktopApp.indexOf('function networkSyncConnected'),
+  );
+  assert.match(verificationPredicate, /pendingOutputKeyImageCount/);
+  assert.match(verificationPredicate, /Number\.isFinite\(pending\) && pending > 0/);
+  assert.doesNotMatch(
+    verificationPredicate,
+    /ledgerKeyImagesVerifiedHeight/,
+    'missing historic verification metadata must not trigger hardware work',
+  );
+
+  const activeAutoReconciliation = desktopApp.slice(
+    desktopApp.indexOf('const activeLedgerNeedsAutomaticVerification'),
+    desktopApp.indexOf('  useEffect(() => {\n    if (ledgerVerificationPhase || !wallet?.id)'),
+  );
+  const activeCooldown = activeAutoReconciliation.indexOf(
+    'ledgerAutoVerificationAttemptedAtRef.current.set(wallet.id, Date.now());',
+  );
+  const activeDiscovery = activeAutoReconciliation.indexOf("invoke<string>('ledger_transport_status')");
+  assert.ok(activeCooldown >= 0 && activeCooldown < activeDiscovery, 'active BLE cooldown must begin before discovery');
+  assert.match(activeAutoReconciliation, /ledgerReconciliationInFlightRef\.current = true/);
+  assert.match(activeAutoReconciliation, /finally \{\n        ledgerReconciliationInFlightRef\.current = false;/);
+
+  const backgroundAutoReconciliation = desktopApp.slice(
+    desktopApp.indexOf('  useEffect(() => {\n    if (ledgerVerificationPhase || !wallet?.id)'),
+    desktopApp.indexOf('\n  return <div className="home-stack home-dashboard">'),
+  );
+  const backgroundCooldown = backgroundAutoReconciliation.indexOf(
+    'ledgerAutoVerificationAttemptedAtRef.current.set(candidate.id, Date.now());',
+  );
+  const backgroundDiscovery = backgroundAutoReconciliation.indexOf("invoke<string>('ledger_transport_status')");
+  assert.ok(backgroundCooldown >= 0 && backgroundCooldown < backgroundDiscovery, 'background BLE cooldown must begin before discovery');
+  assert.match(backgroundAutoReconciliation, /ledgerReconciliationInFlightRef\.current = true/);
+  assert.match(backgroundAutoReconciliation, /finally \{\n        ledgerReconciliationInFlightRef\.current = false;/);
+
+  assert.match(desktopApp, /const ledgerReconciliationInFlightRef = useRef\(false\)/);
   assert.match(desktopApp, /MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_START/);
   assert.match(desktopApp, /reconcile_ledger_balance/);
   assert.match(desktopApp, /The companion is already open and fully scanned/);

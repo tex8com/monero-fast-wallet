@@ -3,7 +3,7 @@ package com.tex8.monero.productcore
 
 object MfwWalletLifecycleContract {
     const val STATE_VERSION: Int = 1
-    const val SCHEMA_SHA256: String = "e170a28d8fb4b9607f34eab74e7542743b2ac50a29d96c6d8140102252271c00"
+    const val SCHEMA_SHA256: String = "ed8219a323a34c90084a189c2087dd3a417886b79f1d9677afd4ded2aa215f16"
     const val RESTORE_DEFAULT_SAFETY_BLOCKS: Long = 100L
     const val RESTORE_MAXIMUM_SAFETY_BLOCKS: Long = 100000L
     const val WALLET_PREFERENCE_PRIVACY_ONLY: Int = 1

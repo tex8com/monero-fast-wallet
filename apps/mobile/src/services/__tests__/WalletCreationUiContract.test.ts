@@ -57,7 +57,21 @@ describe('Wallet creation and existing-wallet UI contract', () => {
     expect(setup).toContain('onValueChange={changeFastWalletEnabled}');
     expect(setup).toContain("createSelectedFastWallet('software')");
     expect(setup).toContain("createSelectedFastWallet('restore')");
-    expect(setup).not.toContain('createSelectedFastWallet(\'hardware\')');
+    expect(setup).toContain("createSelectedFastWallet('hardware')");
+    expect(setup).toContain("useState('199')");
+    expect(setup).toContain("t('setup.fastWalletSlot')");
+  });
+
+  it('never proposes or reuses a retired hosted Fast Wallet slot by default', () => {
+    expect(setup).toContain('loadRetiredFastWalletSlots()');
+    expect(setup).toContain('nextFastReceiveDerivationIndex(');
+    expect(setup).toContain('fastWalletSlotEditedRef.current');
+    expect(setup).toContain('setFastWalletSlotInput(String(suggestedSlot))');
+    expect(setup).toContain(
+      'productSlot: fastWalletSlotEditedRef.current ? productSlot : undefined',
+    );
+    expect(setup).toContain('cannot be reused');
+    expect(setup).toContain('its local files are gone');
   });
 
   it('never lets daemon startup block the primary recovery-seed backup', () => {
@@ -134,9 +148,7 @@ describe('Wallet creation and existing-wallet UI contract', () => {
     expect(setup).toContain('setWalletOpenError(message)');
     expect(setup).toContain('accessibilityLiveRegion="assertive"');
     expect(
-      setup.indexOf(
-        'const openOperation = openRegisteredWalletById(walletId)',
-      ),
+      setup.indexOf('const openOperation = openRegisteredWalletById(walletId)'),
     ).toBeLessThan(setup.indexOf("navigation.navigate('Home')"));
     expect(setup).toContain('WALLET_OPEN_TIMEOUT_MS');
     expect(setup).toContain('openingElapsedSeconds');
@@ -160,6 +172,70 @@ describe('Wallet creation and existing-wallet UI contract', () => {
         'outside the protected app wallet directory',
       );
     }
+  });
+
+  it('does not start Ledger wallet creation until BLE is truly ready', () => {
+    const createStart = setup.indexOf(
+      'const startCreateHardwareWallet = async () =>',
+    );
+    const createEnd = setup.indexOf(
+      'const openExistingWallet = async () =>',
+      createStart,
+    );
+    const createFlow = setup.slice(createStart, createEnd);
+
+    expect(createFlow).toContain('ledgerTransportReady(transportStatus)');
+    expect(createFlow).toContain(
+      "setupLog('startCreateHardwareWallet.transportNotReady'",
+    );
+    expect(android).toContain('prepareLedgerBleTransport(status, promise)');
+    expect(android).toContain('NativeMoneroWalletJni.ledgerBleConnect()');
+    expect(android).toContain('LEDGER_BLE_CONNECT_RETRY_DELAY_MS');
+    expect(android).toContain('ledgerTransportExecutor.execute');
+    expect(android).toContain('Thread(work, "mfw-ledger-transport")');
+    expect(
+      android.indexOf('prepareLedgerBleTransport(status, promise)'),
+    ).toBeLessThan(
+      android.indexOf(
+        'promise.resolve(ledgerTransportStatusToWritableMap(preparedStatus))',
+      ),
+    );
+  });
+
+  it('requires an explicit Ledger scan date like the CLI reference flow', () => {
+    expect(setup).toContain('ledgerRestoreStartDate.trim().length > 0');
+    expect(setup).toContain("'setup.ledgerScanDateHint'");
+    expect(service).toContain(
+      'Choose a Ledger scan start date before its first transaction.',
+    );
+  });
+
+  it('opens the wallet without blocking setup on history or Key-Image reconciliation', () => {
+    const createStart = setup.indexOf(
+      'const startCreateHardwareWallet = async () =>',
+    );
+    const createEnd = setup.indexOf(
+      'const openExistingWallet = async () =>',
+      createStart,
+    );
+    const createFlow = setup.slice(createStart, createEnd);
+
+    expect(createFlow).not.toContain(
+      'walletService.reconcileLedgerViewOnlyWallet(',
+    );
+    expect(createFlow).toContain(
+      "'startCreateHardwareWallet.verificationDeferred'",
+    );
+    expect(createFlow).toContain('startNetwork: false');
+    expect(createFlow).toContain('startNetwork: true');
+    expect(createFlow.indexOf("navigation.navigate('Home')")).toBeLessThan(
+      createFlow.indexOf('void reloadRegisteredWallets()'),
+    );
+    expect(walletState).toContain("'ledgerAutoVerification.start'");
+    expect(walletState).toContain('await reconcileLedgerBalance(true)');
+    expect(setup).not.toContain(
+      'onValueChange={changePersistLedgerViewOnly}',
+    );
   });
 
   it('re-registers only wallets with a matching device-held credential', () => {

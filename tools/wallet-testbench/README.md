@@ -23,14 +23,37 @@ Strict full acceptance:
 tools/wallet-testbench/run-wallet-core-testbench.sh full
 ```
 
-Run the serial strict Mainnet comparison only when exclusive control over the
-TEX8 Cuprate service is available. The harness freezes the P2P tip, executes
-ScanPack, Fast-without-cache and Original in sequence, enforces the exact same
-restore height and postflight tip, and restores production in its exit trap:
+Run the serial strict Mainnet comparison only after **express approval** for a
+temporary TEX8 Cuprate configuration change. The harness freezes the P2P tip,
+executes ScanPack, Fast-without-cache and Original in sequence, enforces the
+exact same restore height and postflight tip, and restores production in its
+exit trap. Current Cuprate requires a positive outbound P2P buffer; therefore
+the harness uses one internal outbound slot plus a uniquely tagged temporary
+firewall rule that rejects only new non-loopback connections from the
+dedicated Cuprate service account. Public RPC/gRPC response traffic remains
+available, and the exact rule is removed before the production service is
+restarted. It creates the generated benchmark-wallet credential only in
+process memory and removes every generated wallet after measuring its size:
 
 ```sh
-tools/wallet-testbench/run-strict-mainnet-sync-matrix.sh <matrix-id>
+STRICT_MATRIX_ALLOW_CUPRATE_CONFIGURATION=1 \
+  tools/wallet-testbench/run-strict-mainnet-sync-matrix.sh <matrix-id>
 node tools/wallet-testbench/summarize-strict-mainnet-sync-matrix.mjs <matrix-id>
+```
+
+The Original leg uses the dedicated `original-restore-benchmark.cpp` runner.
+It is ABI-frozen to the archived upstream bridge and accepts only a generated
+Mainnet wallet with `@ephemeral`, Bin RPC and no gRPC endpoint. It neither
+prints nor persists the generated credential or mnemonic. This keeps the
+Original comparator independent of newer product-bridge APIs while the
+instrumented upstream Core emits its historical scan telemetry.
+
+Rebuild that comparator from the already archived upstream bridge/Core link
+closure (no Cuprate build or deployment):
+
+```sh
+bash tools/wallet-testbench/build-original-restore-benchmark.sh \
+  /Volumes/4TB/monero-fast-wallet-build/native-bridge-monero-upstream-instrumented-static
 ```
 
 The generated `strict-summary.json` is derived exclusively from immutable raw
@@ -76,6 +99,53 @@ chain, pays 1 XMR and 2 XMR into two accounts, proves aggregate/history
 parity, and removes only a copied positive-balance wallet fixture. The
 complete evidence is documented in
 `docs/FAST_WALLET_CLI_WALLET_REMOVAL_TEST_RESULTS_2026-08-06.md`.
+
+Verify the local, pinned-Worker HPKE boundary without hardware, network or
+funds:
+
+```sh
+tools/monero-upstream/test-fast-wallet-worker-seal-watch.sh \
+  <output-dir>/monero-fast-wallet-cli
+```
+
+The test creates an isolated temporary Fast Wallet, proves the backup gate,
+revalidates a fresh public Worker descriptor against the local pin and writes
+only a 484-byte `0600` encrypted envelope. It never prints a seed, password,
+View Key, address, assignment handle or envelope. It is deliberately not a
+Gateway/Relay/Worker upload or a live enrolment acceptance.
+
+The isolated hosted-watch retry contract covers the CLI adapter through its
+first deliberately failed loopback Gateway connection. It accepts HTTPS only,
+persists private retry state before the remote step, and never reports an
+active Worker after that failed request. It makes no Node, Ledger, deployed
+Gateway or Relay request and prints no credential or wallet data:
+
+```sh
+bash tools/monero-upstream/test-fast-wallet-worker-hosting-retry.sh \
+  <output-dir>/monero-fast-wallet-cli
+```
+
+The deployed Gateway/Relay/Worker boundary has a separate destructive,
+explicitly opt-in acceptance probe. It creates a valid synthetic Monero
+address/private-view pair only in RAM, uploads only the fixed 484-byte HPKE
+ciphertext, waits for and cryptographically verifies the exact Worker-signed
+durable-acceptance receipt, and removes the temporary assignment and
+installation. It prints no address, key, capability, handle, message ID,
+receipt or envelope:
+
+```sh
+source native/monero-bridge/scripts/prepare-wallet-crypto-cpu-backend.sh
+MFW_LIVE_ENROLLMENT_TEST=TEMPORARY_CIPHERTEXT_ENROLLMENT \
+  cargo run --locked \
+  --config "$(wallet_cpu_cargo_config)" \
+  --manifest-path services/fast-wallet-worker/Cargo.toml \
+  --bin live_enrollment_probe -- https://xmr.tex8.com
+```
+
+This proves the encrypted service path, not a wallet sync, client scan,
+transaction/balance comparison or real product-CLI wallet enrollment. The
+final server-side acceptance must additionally verify zero temporary
+Relay/Gateway records and the encrypted Worker database after cleanup.
 
 Address-generation profiling can be run on its own. The defaults create five
 fresh software wallets and 64 subaddresses, which is long enough for useful
@@ -399,6 +469,9 @@ export TESTBENCH_LEDGER_DAEMON_TLS=1
 # Optional concurrent scanner, already behind the current tip:
 export TESTBENCH_LEDGER_OBSERVER_WALLET=/isolated/observer-cache
 export TESTBENCH_LEDGER_OBSERVER_PASSWORD_FILE=/secure/observer-password
+# Punkt-10-Abnahme: ohne Observer-Fortschritt oder bei einem zweiten
+# Downloader-Start fail-closed ablehnen.
+export TESTBENCH_LEDGER_REQUIRE_CONCURRENT_SHARED_SYNC=1
 
 tools/wallet-testbench/run-ledger-key-image-benchmark.sh <unique-run-id>
 ```
@@ -455,18 +528,108 @@ node --test tools/wallet-testbench/test-official-ledger-reference-contract.mjs
 ```
 
 For a physical comparison, create an isolated view wallet via
-`ledger-create-view-wallet`, refresh it with `list-txs`, then run:
+`ledger-create-view-wallet`, then use `list-txs` only to produce each private,
+post-reconciliation account export. It is **not** evidence for one global
+block downloader: `list-txs` opens and refreshes one wallet process, so only a
+separate shared-sync/coordinator trace can prove that block data was fetched
+once and locally fanned out. Run the aggregate verifier after account 0 and
+account 1 have each completed Key-Image reconciliation:
 
 ```sh
 node tools/wallet-testbench/verify-official-ledger-cli-history.mjs \
-  <official-account-index> <private-bridge-output> <private-sanitized-report>
+  all <private-account-0-bridge-output> <private-account-1-bridge-output> \
+  <private-sanitized-report>
 ```
 
-The verifier accepts only a fully synchronized refresh and requires exact
-TxID, direction, atomic amount, fee and block-height equality. It stores no
-address, key, seed or transaction identifier in its report. A view-only scan
-can recognize incoming history but cannot classify every outgoing transaction
-until the separate Ledger key-image reconciliation has completed.
+The verifier accepts only fully synchronized refreshes and requires exact
+TxID, direction, atomic amount, fee, block-height and account equality. It
+also fail-closes unless the reconciled history reproduces the official balance
+for account 0, account 1 and their total. Its report retains only parity
+booleans, counts and allow-listed refresh telemetry—never a balance value,
+address, key, seed or transaction identifier. A view-only scan can recognize
+incoming history but cannot classify every outgoing transaction until the
+separate Ledger key-image reconciliation has completed.
+
+For the physical Nano-Ledger reference gate, use the dedicated single-process
+runner. Accounts 0 and 1 are two local subaddress accounts of one Nano Ledger
+wallet, so the runner opens exactly one hardware wallet and one encrypted
+View-Wallet. It creates both local accounts in those already-open sessions,
+then scans from the exact `2026-01-01` height, reconciles Key Images once, and
+compares both Tx/Rx histories and balances in memory. It must not create a
+second hardware wallet merely to inspect account 1. Its temporary local cache
+credentials are generated only in process memory, are never accepted from a
+user or written to a file, and are wiped after opening the isolated encrypted
+caches. Raw transaction output stays on a pipe and is never retained; only the
+sanitized result report is written.
+
+For the separate live Product-CLI hosting acceptance, the disposable software
+wallet and its random credential live only on a dedicated RAM volume. The
+runner consumes the create output without printing or retaining the seed,
+pins the public signed Worker descriptor, requires the signed durable Worker
+receipt, verifies the active CLI status, revokes the assignment and
+installation, and detaches the RAM volume. It must never be used as a durable
+wallet-creation workflow:
+
+```sh
+MFW_LIVE_PRODUCT_CLI_TEST=TEMPORARY_PRODUCT_CLI_FAST_WALLET_ENROLLMENT \
+  tools/wallet-testbench/run-live-product-cli-fast-wallet-enrollment.sh \
+  /path/to/fast-wallet-cli https://xmr.tex8.com
+```
+
+The runner acquires an exclusive local lock before it can open the sole
+hardware session. A concurrent or stale invocation fails before any Ledger
+transport action; it must be investigated locally rather than retried against
+the Nano. Select `Ledger` for USB or `Ledger:ble` for Bluetooth with
+`TESTBENCH_REFERENCE_DEVICE` (default: `Ledger`). Core returns immediately for
+an already connected process-local Ledger session. On a fresh connection it
+uses only a public-address readiness probe; wallet-open never sends
+`INS_RESET`.
+
+After `ledger-create-view-wallet` has created the encrypted software
+watch-only cache, the product CLI can adopt that existing cache without
+opening the Nano again or creating another seed:
+
+```sh
+monero-fast-wallet-cli fast-wallet adopt-view \
+  --wallet-file <encrypted-view-wallet> \
+  --password-file <private-0600-password-file> \
+  --network mainnet --restore-height <height> --json
+```
+
+`adopt-view` is opt-in. It fails closed for a hardware wallet, a wallet with a
+spend key, a network mismatch, a missing positive restore height, a symlink or
+existing Fast-Wallet metadata. The next explicit `worker pair` and `worker
+enroll` steps encrypt the View Key locally for the pinned signed Worker; the
+Nano is not contacted by those commands.
+
+The retained report keeps separate sync duration, blocks, payload bytes, Core
+network bytes, gRPC framed bytes, client scan time, global Key-Image phase
+durations and sampled client CPU/RSS. It derives rates only within their own
+unit (blocks/s, payload MiB/s, Core network bytes/s, gRPC framed bytes/s and
+Key-Image derivations/s). Server DB time is explicitly unavailable unless a
+separate correlated Cuprate journal supplies it; it is never inferred from a
+client duration.
+
+```sh
+export TESTBENCH_REFERENCE_LEDGER_RUNNER=/path/to/monero_wallet_bridge_smoke
+# USB: Ledger; Bluetooth: Ledger:ble
+export TESTBENCH_REFERENCE_DEVICE=Ledger
+# Punkt-10-Abnahme: erzeugt einen flüchtigen, hinter dem Tip liegenden
+# Observer-View-Cache. Der Lauf wird fail-closed abgelehnt, falls der Observer
+# nicht während der genau einen Key-Image-Reconciliation fortschreitet.
+export TESTBENCH_REFERENCE_REQUIRE_CONCURRENT_SHARED_SYNC=1
+node tools/wallet-testbench/run-official-ledger-cli-reference-sync.mjs
+```
+
+The Nano Ledger must be connected, unlocked, and have the Monero app open.
+This command never creates or reads a user password, seed, private key, view
+key or address.
+
+After an accepted comparison, the command prints the path to a local `0600`
+private summary. It contains account 0 and 1 receive addresses, their locked
+and unlocked atomic balances, plus the corresponding totals. It contains no
+credentials, keys, seeds, key images, or transaction data; the sanitized
+acceptance report remains free of addresses and balances.
 
 Summarize a preserved native log without mixing per-channel gRPC rates with
 end-to-end throughput. Pass the measured process duration only when the latter

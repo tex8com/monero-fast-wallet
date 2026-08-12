@@ -457,7 +457,7 @@ export function AppSecurityProvider({
           // app-wide lock is closed. Resume it once after the one valid
           // unlock instead of accessing protected Fast-Wallet metadata at
           // launch.
-          void FastWalletPushService.refreshRegistrationQuietly();
+          void FastWalletPushService.refreshRegistrationQuietly(undefined, true);
           void walletService.renewExpiringFastWalletAssignmentsQuietly();
         }}
         screenTransitionStartedAtMs={screenTransitionStartedAtMs}

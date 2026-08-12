@@ -41,6 +41,10 @@ import { useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
 import { presentNetworkSync } from '../../../../packages/wallet-shared/src/networkSync';
 import {
+  networkSyncFailureCode,
+  networkSyncFailureTranslationKey,
+} from '../services/NetworkSyncFailure';
+import {
   ledgerBalanceNeedsVerification,
   walletDisplayName,
 } from '../services/WalletRegistry';
@@ -323,46 +327,50 @@ export default function HomeScreen({ navigation }: any) {
     networkSync.ready || networkSync.connected
       ? colors.success
       : (!networkSync.failed && networkSync.busy) ||
-        nodeConnectionStatus === 'connecting'
-      ? colors.warning
-      : colors.textSecondary;
+          nodeConnectionStatus === 'connecting'
+        ? colors.warning
+        : colors.textSecondary;
+  const networkFailure = networkSyncFailureCode(networkSyncStatus);
   const nodeText = networkSync.failed
-      ? t('sync.retryingNode')
-      : networkSync.phase === 'fetching-blocks' || networkSync.phase === 'waiting-next-batch'
+    ? t(networkSyncFailureTranslationKey(networkFailure))
+    : networkSync.phase === 'fetching-blocks' ||
+        networkSync.phase === 'waiting-next-batch'
       ? t('sync.downloadingBlocks')
       : networkSync.phase === 'scanning-wallets'
-      ? t('sync.scanningWallets')
-      : networkSync.phase === 'checking-mempool'
-      ? t('sync.checkingMempool')
-      : networkSync.phase === 'checkpointing-wallets'
-      ? t('sync.savingWallets')
-      : networkSync.phase === 'selecting-provider'
-      ? t('sync.selectingSource')
-      : networkSync.phase === 'initializing-transport'
-      ? t('sync.startingConnection')
-      : networkSync.ready || nodeConnectionStatus === 'connected'
-      ? t('status.live')
-      : nodeConnectionStatus === 'error'
-      ? t('sync.error')
-      : nodeConnectionStatus === 'connecting'
-      ? t('sync.connectingNode')
-      : t('status.setup');
+        ? t('sync.scanningWallets')
+        : networkSync.phase === 'checking-mempool'
+          ? t('sync.checkingMempool')
+          : networkSync.phase === 'checkpointing-wallets'
+            ? t('sync.savingWallets')
+            : networkSync.phase === 'selecting-provider'
+              ? t('sync.selectingSource')
+            : networkSync.phase === 'initializing-transport'
+              ? t('sync.startingConnection')
+              : networkSync.phase === 'reconnecting'
+                ? t('sync.retryingNode')
+              : networkSync.ready || nodeConnectionStatus === 'connected'
+                  ? t('status.live')
+                  : nodeConnectionStatus === 'error'
+                    ? t('sync.error')
+                    : nodeConnectionStatus === 'connecting'
+                      ? t('sync.connectingNode')
+                      : t('status.setup');
 
   const positive =
     tf === '24H'
       ? change24h >= 0
       : points.length >= 2
-      ? points[points.length - 1].price >= points[0].price
-      : true;
+        ? points[points.length - 1].price >= points[0].price
+        : true;
 
   const changePercent =
     tf === '24H'
       ? change24h
       : points.length >= 2
-      ? ((points[points.length - 1].price - points[0].price) /
-          points[0].price) *
-        100
-      : 0;
+        ? ((points[points.length - 1].price - points[0].price) /
+            points[0].price) *
+          100
+        : 0;
 
   const changeUsd = price > 0 ? Math.abs((changePercent / 100) * price) : 0;
   const walletSnapshotMap = useMemo(
@@ -383,11 +391,13 @@ export default function HomeScreen({ navigation }: any) {
     : snapshot;
   const activeLedgerNeedsVerification = Boolean(
     registeredWallet &&
-      ledgerBalanceNeedsVerification(
-        registeredWallet,
-        activeWalletSnapshot?.pendingOutputKeyImageCount,
-      ),
+    ledgerBalanceNeedsVerification(
+      registeredWallet,
+      activeWalletSnapshot?.pendingOutputKeyImageCount,
+      transactions.length,
+    ),
   );
+
   const totalBalanceAtomic = toAtomicBigInt(activeWalletSnapshot?.balanceAtomic);
   const totalUnlockedAtomic = activeLedgerNeedsVerification
     ? 0n
@@ -399,12 +409,19 @@ export default function HomeScreen({ navigation }: any) {
   });
   const showLocked = lockedAtomic > 0n;
   const hasUnverifiedLedgerBalance = activeLedgerNeedsVerification;
-  const totalBalanceXmr = formatAtomicXmr(totalBalanceAtomic, {
-    maxFractionDigits: 4,
-    minFractionDigits: 2,
-  });
+  // A view wallet sees received outputs before Ledger-derived key images tell
+  // it which ones were spent. Showing that intermediate sum as real balance
+  // is financially misleading, so hide it until reconciliation completes.
+  const totalBalanceXmr = hasUnverifiedLedgerBalance
+    ? '—'
+    : formatAtomicXmr(totalBalanceAtomic, {
+        maxFractionDigits: 4,
+        minFractionDigits: 2,
+      });
   const totalBalanceUsd =
-    price > 0 ? xmrToUsd(atomicXmrToNumber(totalBalanceAtomic), price) : '—';
+    !hasUnverifiedLedgerBalance && price > 0
+      ? xmrToUsd(atomicXmrToNumber(totalBalanceAtomic), price)
+      : '—';
   const visibleNews = useMemo(
     () =>
       newsCategory === 'all'
@@ -550,6 +567,7 @@ export default function HomeScreen({ navigation }: any) {
             </View>
           ) : (
             <>
+              <Text style={s.priceLabel}>{t('home.marketPrice')}</Text>
               <Text style={s.priceBig}>
                 $
                 {price.toLocaleString(dateLocale, {
@@ -672,10 +690,10 @@ export default function HomeScreen({ navigation }: any) {
                       {category === 'all'
                         ? t('home.newsAll')
                         : category === 'network'
-                        ? t('home.newsNetwork')
-                        : category === 'wallet'
-                        ? t('home.newsWallet')
-                        : t('home.newsEcosystem')}
+                          ? t('home.newsNetwork')
+                          : category === 'wallet'
+                            ? t('home.newsWallet')
+                            : t('home.newsEcosystem')}
                     </Text>
                   </TouchableOpacity>
                 ),
@@ -713,8 +731,8 @@ export default function HomeScreen({ navigation }: any) {
                       {item.category === 'network'
                         ? t('home.newsNetwork')
                         : item.category === 'wallet'
-                        ? t('home.newsWallet')
-                        : t('home.newsEcosystem')}
+                          ? t('home.newsWallet')
+                          : t('home.newsEcosystem')}
                     </Text>
                     <Text numberOfLines={2} style={s.newsItemTitle}>
                       {item.title}
@@ -812,11 +830,6 @@ export default function HomeScreen({ navigation }: any) {
                   : t('home.createOrImport')}
               </Text>
             </TouchableOpacity>
-          ) : null}
-          {error ? (
-            <Text style={s.statusError} numberOfLines={2}>
-              {error}
-            </Text>
           ) : null}
         </View>
 
@@ -973,6 +986,13 @@ const s = StyleSheet.create({
     fontSize: 42,
     fontWeight: '800',
     letterSpacing: -1,
+  },
+  priceLabel: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 2,
+    textTransform: 'uppercase',
   },
   changeRow: {
     flexDirection: 'row',
@@ -1283,12 +1303,6 @@ const s = StyleSheet.create({
     backgroundColor: colors.orange,
   },
   balOpenButtonText: { color: '#FFF', fontSize: 13, fontWeight: '800' },
-  statusError: {
-    color: colors.error,
-    fontSize: 12,
-    lineHeight: 17,
-    marginTop: 10,
-  },
   ledgerVerificationPanel: {
     marginTop: 14,
     padding: 14,

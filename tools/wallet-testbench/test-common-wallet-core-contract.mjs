@@ -15,6 +15,9 @@ assert.ok(expectedTree, 'upstream.lock must pin one patched_tree');
 const common = read(
   'native/monero-bridge/scripts/prepare-common-monero-core.sh',
 );
+const localWalletApiBuild = read(
+  'native/monero-bridge/scripts/build-local-monero-wallet-api.sh',
+);
 
 test('one authenticated Monero source tree is authoritative for every app', () => {
   assert.match(common, /sed -n 's\/\^patched_tree=/);
@@ -71,6 +74,18 @@ test('mobile artifacts carry and verify the exact common-Core identity', () => {
     androidExternalBuild,
     /android-monero-link-manifests-\$\{MONERO_COMMON_CORE_TREE\}/,
   );
+});
+
+test('local wallet-api builds use the authenticated Dalek and pinned gRPC toolchain', () => {
+  assert.match(localWalletApiBuild, /prepare-wallet-crypto-cpu-backend\.sh/);
+  assert.match(localWalletApiBuild, /--config "\$\(wallet_cpu_cargo_config\)"/);
+  assert.match(localWalletApiBuild, /--locked/);
+  assert.match(localWalletApiBuild, /MFW_PRODUCT_CORE_ROOT/);
+  assert.match(localWalletApiBuild, /MFW_FAST_WALLET_PROTOCOL_ROOT/);
+  assert.match(localWalletApiBuild, /MONERO_GRPC_SDK_PREFIX/);
+  assert.match(localWalletApiBuild, /GRPC_CPP_PLUGIN_PATH/);
+  assert.match(localWalletApiBuild, /cmake_cache_reset_args/);
+  assert.match(localWalletApiBuild, /PKG_CONFIG_USE_CMAKE_PREFIX_PATH=FALSE/);
 });
 
 test('desktop refuses arbitrary Unix sources and unversioned Windows DLLs', () => {
@@ -144,6 +159,101 @@ test('the authenticated Core series includes the shared provider implementation'
     read('third_party/monero-patches/series'),
     /0048-wallet-retain-bin-rpc-after-hard-grpc-failure\.patch/,
   );
+  assert.match(
+    read('third_party/monero-patches/series'),
+    /0064-wallet-cli-seal-pinned-worker-watch\.patch/,
+  );
+  assert.match(
+    read('third_party/monero-patches/series'),
+    /0065-wallet-cli-gate-watch-sealing-through-shared-hosting-plan\.patch/,
+  );
+  assert.match(
+    read('third_party/monero-patches/series'),
+    /0066-wallet-cli-hosted-watch-gateway-adapter\.patch/,
+  );
+  const hostedAdapterPatch = read(
+    'third_party/monero-patches/0066-wallet-cli-hosted-watch-gateway-adapter.patch',
+  );
+  assert.match(hostedAdapterPatch, /MFW_FAST_WALLET_HOSTING_ACTION_REGISTER_INSTALLATION/);
+  assert.match(hostedAdapterPatch, /CURLOPT_SSL_VERIFYPEER, 1L/);
+  assert.match(hostedAdapterPatch, /CURLOPT_SSL_VERIFYHOST, 2L/);
+  assert.match(hostedAdapterPatch, /CURLOPT_FOLLOWLOCATION, 0L/);
+  assert.match(hostedAdapterPatch, /submit_watch_to_relay[\s\S]*https_request\(relay_origin,[\s\S]*nullptr\)/);
+  assert.match(hostedAdapterPatch, /response\.status != 200 && response\.status != 201/);
+  assert.match(hostedAdapterPatch, /fresh Worker descriptor does not match the accepted hosted assignment/);
+  assert.match(hostedAdapterPatch, /hosted\.descriptor_hash = fresh_descriptor_hash/);
+  assert.doesNotMatch(hostedAdapterPatch, /^\+.*std::cout.*private_view_key/m);
+});
+
+test('product CLI activates hosted scanning only after an exact signed Worker receipt', () => {
+  const series = read('third_party/monero-patches/series');
+  assert.match(
+    series,
+    /0067-wallet-cli-require-signed-worker-acceptance-receipt\.patch/,
+  );
+  const receiptPatch = read(
+    'third_party/monero-patches/0067-wallet-cli-require-signed-worker-acceptance-receipt.patch',
+  );
+  assert.match(receiptPatch, /MFW_FAST_WALLET_HOSTING_ACTION_VERIFY_WORKER_RECEIPT/);
+  assert.match(receiptPatch, /MFW_FAST_WALLET_HOSTING_STAGE_WORKER_CONFIRMED/);
+  assert.match(receiptPatch, /relay_message_id/);
+  assert.match(receiptPatch, /\/v1\/envelopes\/.*\/receipt/);
+  assert.match(receiptPatch, /tex8_fast_wallet_protocol_verify_worker_receipt_v1/);
+  assert.match(receiptPatch, /Worker receipt is still pending/);
+  assert.match(
+    receiptPatch,
+    /state\.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_ACTIVE[\s\S]*MFW_FAST_WALLET_HOSTING_STAGE_DELIVERY_ENABLED/,
+  );
+  assert.doesNotMatch(receiptPatch, /^\+.*std::cout.*private_view_key/m);
+
+  const hostingCore = read('native/product-core/src/fast_wallet_hosting.rs');
+  assert.match(hostingCore, /STAGE_RELAY_ACCEPTED.*ACTION_VERIFY_WORKER_RECEIPT/s);
+  assert.match(hostingCore, /STAGE_WORKER_CONFIRMED.*ACTION_COMMIT_ACTIVE/s);
+  assert.match(
+    hostingCore,
+    /worker_enrolled: u32::from\(input\.enrollment_stage == STAGE_ACTIVE\)/,
+  );
+  assert.match(
+    hostingCore,
+    /STAGE_WORKER_CONFIRMED[\s\S]*plan\.worker_enrolled = 1/,
+  );
+});
+
+test('live Product-CLI enrollment keeps its disposable wallet on a RAM volume and revokes it', () => {
+  const runner = read(
+    'tools/wallet-testbench/run-live-product-cli-fast-wallet-enrollment.sh',
+  );
+  assert.match(runner, /TEMPORARY_PRODUCT_CLI_FAST_WALLET_ENROLLMENT/);
+  assert.match(runner, /hdiutil attach -nomount ram:\/\//);
+  assert.match(runner, /fast-wallet create/);
+  assert.match(runner, /fast-wallet worker enroll/);
+  assert.match(runner, /worker_receipt_required=true/);
+  assert.match(runner, /\/api\/v1\/installations\/assignments\//);
+  assert.match(runner, /\/api\/v1\/installations\/provider/);
+  assert.match(runner, /plaintext_view_key_transmitted=false/);
+  assert.doesNotMatch(runner, /echo .*password|echo .*seed|print\(.*auth\)/i);
+});
+
+test('product CLI adopts only an encrypted software view cache through the shared Core', () => {
+  const series = read('third_party/monero-patches/series');
+  assert.match(
+    series,
+    /0069-wallet-cli-adopt-encrypted-ledger-view-cache\.patch/,
+  );
+  const patch = read(
+    'third_party/monero-patches/0069-wallet-cli-adopt-encrypted-ledger-view-cache.patch',
+  );
+  const coordinator = read('native/product-core/src/fast_wallet_coordinator.rs');
+  const header = read('native/product-core/include/mfw_product_core.h');
+
+  assert.match(header, /MFW_FAST_WALLET_OPERATION_ADOPT_VIEW_CACHE 12u/);
+  assert.match(coordinator, /OPERATION_ADOPT_VIEW_CACHE: u32 = 12/);
+  assert.match(patch, /adopt-view requires an existing encrypted wallet/);
+  assert.match(patch, /wallet->watchOnly\(\)/);
+  assert.match(patch, /wallet->getDeviceType\(\) != Monero::Wallet::Device_Software/);
+  assert.match(patch, /MFW_FAST_WALLET_OPERATION_ADOPT_VIEW_CACHE/);
+  assert.match(patch, /fast_wallet_kind_view_cache/);
+  assert.doesNotMatch(patch, /^\+.*std::cout.*view_key/m);
 });
 
 test('macOS filters only Boost 1.69 legacy Clang arguments outside the authenticated Core', () => {

@@ -1,0 +1,186 @@
+From 7c61921b558b8b162e77aac2bf03bfae95b0b313 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet <engineering@tex8.app>
+Date: Mon, 10 Aug 2026 15:40:00 -0500
+Subject: [PATCH] wallet: benchmark and report automatic derivation backend
+
+The shared batch dispatcher can use CPU, Metal, or CUDA, but the previous
+`rust_batch` scan metric did not identify which backend actually handled a
+batch. Automatic mode also relied only on platform thresholds instead of the
+performance of the packaged backend on the current device.
+
+On the first software-wallet batch, run a bounded correctness-checked public
+test-vector benchmark for CPU and the platform GPU. Use the GPU only when it
+is available, verified, and faster; retain the measured small-batch threshold
+and the unconditional CPU fallback. The once-per-process result is shared by
+CLI, React Native, and Tauri because selection remains inside wallet Core.
+Report the actual per-batch backend without exposing wallet material.
+---
+ src/crypto/crypto.cpp           | 80 ++++++++++++++++++++++++++++++++--
+ src/crypto/crypto.h             |  2 +
+ src/simplewallet/CMakeLists.txt |  2 +-
+ src/wallet/wallet2.cpp          |  2 +
+ 4 files changed, 83 insertions(+), 3 deletions(-)
+
+diff --git a/src/crypto/crypto.cpp b/src/crypto/crypto.cpp
+index cfb952a..4222d50 100644
+--- a/src/crypto/crypto.cpp
++++ b/src/crypto/crypto.cpp
+@@ -538,6 +538,69 @@ namespace {
+     result += ",\"error\":\"" + json_escape(benchmark.error) + "\"}";
+     return result;
+   }
++
++  std::once_flag automatic_backend_benchmark_once;
++  std::atomic<bool> automatic_gpu_selected{false};
++
++  void benchmark_automatic_derivation_backend()
++  {
++    std::call_once(automatic_backend_benchmark_once, [] {
++      const size_t cpu_workers = benchmark_cpu_workers();
++      const auto cpu = run_short_derivation_benchmark(
++        4096, std::chrono::milliseconds(100), 8,
++        [cpu_workers](uint8_t *results, const uint8_t *scalar,
++          const uint8_t *points, uint8_t *valid, size_t count) {
++          return static_cast<int64_t>(fast_generate_key_derivation_batch_same_scalar(
++            results, scalar, points, valid, count, cpu_workers));
++        });
++
++      derivation_benchmark_result gpu = unavailable_benchmark(
++        "GPU derivation backend is not available on this platform");
++      const char *gpu_name = "none";
++#ifdef MONERO_FAST_METAL
++      gpu_name = "metal";
++      if (verified_metal_available())
++      {
++        gpu = run_short_derivation_benchmark(
++          16384, std::chrono::milliseconds(60), 32,
++          [](uint8_t *results, const uint8_t *scalar,
++            const uint8_t *points, uint8_t *valid, size_t count) {
++            return fast_metal_generate_key_derivation_batch_same_scalar(
++              results, scalar, points, valid, count);
++          });
++      }
++      else
++      {
++        gpu.error = metal_verification_error();
++      }
++#elif defined(_WIN32) || defined(__linux__)
++      gpu_name = "cuda";
++      if (cuda_backend().available())
++      {
++        gpu = run_short_derivation_benchmark(
++          16384, std::chrono::milliseconds(60), 32,
++          [](uint8_t *results, const uint8_t *scalar,
++            const uint8_t *points, uint8_t *valid, size_t count) {
++            return cuda_backend().derive(results, scalar, points, valid, count);
++          });
++      }
++      else
++      {
++        gpu.error = cuda_backend().last_error();
++      }
++#endif
++      const bool select_gpu = gpu.verified
++        && (!cpu.verified
++          || gpu.derivations_per_second > cpu.derivations_per_second);
++      automatic_gpu_selected.store(select_gpu, std::memory_order_release);
++      std::fprintf(stderr,
++        "[DERIVATION_BACKEND] selection=%s gpu_kind=%s cpu_verified=%d cpu_derivations_per_s=%llu gpu_verified=%d gpu_derivations_per_s=%llu public_test_vector=1\n",
++        select_gpu ? gpu_name : "cpu", gpu_name, cpu.verified ? 1 : 0,
++        static_cast<unsigned long long>(cpu.derivations_per_second),
++        gpu.verified ? 1 : 0,
++        static_cast<unsigned long long>(gpu.derivations_per_second));
++    });
++  }
+ }
+ 
+ extern "C" int monero_fast_set_derivation_backend_preference(const char *preference)
+@@ -819,9 +882,15 @@ namespace crypto {
+           reinterpret_cast<const uint8_t*>(&unwrap(key2)),
+           reinterpret_cast<const uint8_t*>(points), valid, count, workers);
+     }
++    bool gpu_selected = preference == derivation_backend_preference::gpu;
++    if (preference == derivation_backend_preference::automatic)
++    {
++      benchmark_automatic_derivation_backend();
++      gpu_selected = automatic_gpu_selected.load(std::memory_order_acquire);
++    }
+ #ifdef MONERO_FAST_METAL
+     bool gpu_failed = false;
+-    if (metal_derivation_batch_enabled(
++    if (gpu_selected && metal_derivation_batch_enabled(
+           count, preference == derivation_backend_preference::gpu)
+         && verified_metal_available())
+     {
+@@ -842,7 +911,8 @@ namespace crypto {
+     }
+ #elif defined(_WIN32) || defined(__linux__)
+     bool gpu_failed = false;
+-    if (count >= cuda_minimum_points(preference) && cuda_backend().available())
++    if (gpu_selected && count >= cuda_minimum_points(preference)
++        && cuda_backend().available())
+     {
+       const int64_t cuda_successes = cuda_backend().derive(
+           reinterpret_cast<uint8_t*>(derivations),
+@@ -870,6 +940,12 @@ namespace crypto {
+         reinterpret_cast<const uint8_t*>(points), valid, count, workers);
+   }
+ 
++  std::string active_derivation_backend_name()
++  {
++    std::lock_guard<std::mutex> lock(backend_status_mutex);
++    return active_derivation_backend;
++  }
++
+   void crypto_ops::derivation_to_scalar(const key_derivation &derivation, size_t output_index, ec_scalar &res) {
+     struct {
+       key_derivation derivation;
+diff --git a/src/crypto/crypto.h b/src/crypto/crypto.h
+index 8e8287e..00f9268 100644
+--- a/src/crypto/crypto.h
++++ b/src/crypto/crypto.h
+@@ -36,6 +36,7 @@
+ #include <type_traits>
+ #include <vector>
+ #include <random>
++#include <string>
+ 
+ #include "common/pod-class.h"
+ #include "memwipe.h"
+@@ -240,6 +241,7 @@ namespace crypto {
+   size_t generate_key_derivation_batch_same_scalar(const secret_key &key2,
+     const public_key *points, key_derivation *derivations, uint8_t *valid,
+     size_t count, size_t workers);
++  std::string active_derivation_backend_name();
+   inline bool derive_public_key(const key_derivation &derivation, std::size_t output_index,
+     const public_key &base, public_key &derived_key) {
+     return crypto_ops::derive_public_key(derivation, output_index, base, derived_key);
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index b6ba483..7ae687b 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -135,7 +135,7 @@ execute_process(
+   OUTPUT_STRIP_TRAILING_WHITESPACE)
+ set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
+ set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
+-set(MFW_MONERO_PATCH_COUNT "72" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_MONERO_PATCH_COUNT "73" CACHE STRING "Applied TEX8 Monero patch count")
+ set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
+ set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
+ set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 6379383..d9d0fa8 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -4092,6 +4092,8 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+     << " derivations_per_s=" << (derivation_ms > 0.0
+       ? static_cast<double>(derivation_count) / (derivation_ms / 1000.0) : 0.0)
+     << " engine=" << (use_rust_derivation_batch ? "rust_batch" : "device_cpu")
++    << " backend=" << (use_rust_derivation_batch
++      ? crypto::active_derivation_backend_name() : "device")
+     << " workers=" << (use_rust_derivation_batch ? rust_batch_workers
+       : tpool.get_max_concurrency()));
+   auto t_geniod0 = std::chrono::steady_clock::now();
+-- 
+2.50.1 (Apple Git-155)
+

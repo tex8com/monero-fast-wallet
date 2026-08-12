@@ -20,6 +20,7 @@ unsafe extern "C" {
     fn tex8_desktop_wallet_core_free(core: *mut RawCore);
     fn tex8_desktop_result_free(result: *mut RawResult);
     fn tex8_desktop_wallet_ledger_transport_status(core: *mut RawCore) -> RawResult;
+    fn tex8_desktop_wallet_ledger_connection_status(core: *mut RawCore) -> RawResult;
     fn tex8_desktop_wallet_compute_backend_status(core: *mut RawCore) -> RawResult;
     fn tex8_desktop_wallet_set_compute_backend(
         core: *mut RawCore,
@@ -313,6 +314,9 @@ impl NativeWallet {
     }
     pub fn ledger_transport_status(&self) -> Result<String, String> {
         self.result(unsafe { tex8_desktop_wallet_ledger_transport_status(self.core.as_ptr()) })
+    }
+    pub fn ledger_connection_status(&self) -> Result<String, String> {
+        self.result(unsafe { tex8_desktop_wallet_ledger_connection_status(self.core.as_ptr()) })
     }
     pub fn compute_backend_status(&self) -> Result<String, String> {
         self.result(unsafe { tex8_desktop_wallet_compute_backend_status(self.core.as_ptr()) })

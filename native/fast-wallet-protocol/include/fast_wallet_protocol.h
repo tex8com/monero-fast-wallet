@@ -64,6 +64,15 @@ int32_t tex8_fast_wallet_protocol_descriptor_worker_root_id_v1(
     uint8_t *output,
     size_t output_len);
 
+int32_t tex8_fast_wallet_protocol_verify_worker_receipt_v1(
+    const uint8_t *descriptor,
+    size_t descriptor_len,
+    uint8_t expected_network,
+    uint64_t now,
+    const uint8_t message_id[32],
+    const uint8_t *receipt,
+    size_t receipt_len);
+
 int32_t tex8_fast_wallet_protocol_seal_watch_v1(
     const uint8_t *descriptor,
     size_t descriptor_len,

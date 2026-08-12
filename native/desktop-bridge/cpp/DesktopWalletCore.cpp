@@ -309,6 +309,14 @@ std::string networkSyncStatusJson(
          << ",\"payloadBytesReceived\":"
          << status.payloadBytesReceived
          << ",\"lastWalletScanMs\":" << status.lastWalletScanMs
+         << ",\"lastNonEmptyWalletDerivationCount\":"
+         << status.lastNonEmptyWalletDerivationCount
+         << ",\"lastNonEmptyWalletDerivationUs\":"
+         << status.lastNonEmptyWalletDerivationUs
+         << ",\"totalWalletDerivationCount\":"
+         << status.totalWalletDerivationCount
+         << ",\"totalWalletDerivationUs\":"
+         << status.totalWalletDerivationUs
          << ",\"lastMempoolMs\":" << status.lastMempoolMs
          << ",\"lastCheckpointMs\":" << status.lastCheckpointMs
          << ",\"lastIterationMs\":" << status.lastIterationMs
@@ -430,6 +438,20 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_ledger_transport_status(
         "\"supported\":false,\"available\":false,"
         "\"permissionGranted\":false,\"requiresUserAction\":true,"
         "\"deviceCount\":0,\"message\":\"Bluetooth Ledger is currently supported on macOS only.\"}");
+#endif
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_ledger_connection_status(
+    Tex8DesktopWalletCore* core) noexcept {
+  return invoke(core, [] {
+#if defined(__APPLE__)
+    return tex8::desktop::ledgerBleConnectionStatus();
+#else
+    return std::string(
+        "{\"platform\":\"desktop\",\"transport\":\"ble\","
+        "\"selected\":false,\"connected\":false,"
+        "\"message\":\"Bluetooth Ledger is currently supported on macOS only.\"}");
 #endif
   });
 }
@@ -647,7 +669,20 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_sync_ledger_key_images(
          << ",\"spentAtomic\":" << jsonString(std::to_string(result.spentAtomic))
          << ",\"unspentAtomic\":" << jsonString(std::to_string(result.unspentAtomic))
          << ",\"verifiedOutputCount\":" << result.verifiedOutputCount
+         << ",\"pendingOutputCount\":" << result.pendingOutputCount
+         << ",\"remainingPendingOutputCount\":" << result.remainingPendingOutputCount
+         << ",\"importedOutputCount\":" << result.importedOutputCount
+         << ",\"derivedOutputCount\":" << result.derivedOutputCount
+         << ",\"spentStatusUnspentOutputCount\":" << result.spentStatusUnspentOutputCount
+         << ",\"spentStatusBlockchainOutputCount\":" << result.spentStatusBlockchainOutputCount
+         << ",\"spentStatusPoolOutputCount\":" << result.spentStatusPoolOutputCount
+         << ",\"derivationDurationMs\":" << result.derivationDurationMs
+         << ",\"spentStatusRpcDurationMs\":" << result.spentStatusRpcDurationMs
+         << ",\"outgoingRpcDurationMs\":" << result.outgoingRpcDurationMs
+         << ",\"stateUpdateDurationMs\":" << result.stateUpdateDurationMs
          << ",\"verificationDurationMs\":" << result.verificationDurationMs
+         << ",\"storeDurationMs\":" << result.storeDurationMs
+         << ",\"totalDurationMs\":" << result.totalDurationMs
          << '}';
     return json.str();
   });

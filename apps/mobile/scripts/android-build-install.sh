@@ -24,10 +24,12 @@ EXTERNAL_BUILD_ROOT="${MONERO_WALLET_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/m
 FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-fast-wallet-protocol}"
 COMMUNITY_HARRIER_ROOT="${MONERO_COMMUNITY_HARRIER_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-community-harrier}"
 COMMUNITY_MATRIX_ROOT="${MONERO_COMMUNITY_MATRIX_ROOT:-${EXTERNAL_BUILD_ROOT}/mobile-community-matrix}"
+COMMUNITY_ASSET_ROOT="${MONERO_COMMUNITY_ASSET_ROOT:-${EXTERNAL_BUILD_ROOT}/community-v1-release-assets}"
 if [ ! -d "${EXTERNAL_BUILD_ROOT}" ]; then
   FAST_WALLET_PROTOCOL_ROOT="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${REPO_ROOT}/build/mobile-fast-wallet-protocol}"
   COMMUNITY_HARRIER_ROOT="${MONERO_COMMUNITY_HARRIER_ROOT:-${REPO_ROOT}/build/mobile-community-harrier}"
   COMMUNITY_MATRIX_ROOT="${MONERO_COMMUNITY_MATRIX_ROOT:-${REPO_ROOT}/build/mobile-community-matrix}"
+  COMMUNITY_ASSET_ROOT="${MONERO_COMMUNITY_ASSET_ROOT:-${REPO_ROOT}/build/community-v1-release-assets}"
 else
   # The Fast Wallet protocol build runs before Gradle's own cache setup.
   # Point its mktemp/Cargo intermediates at the external build volume too.
@@ -130,6 +132,7 @@ GRADLE_ARGS+=(
   "-PmoneroCommunityMatrixLibrary=${COMMUNITY_MATRIX_LIBRARY}"
   "-PmoneroCommunityHarrierLibrary=${COMMUNITY_HARRIER_LIBRARY}"
   "-PmoneroCommunityHarrierJniLibs=${COMMUNITY_HARRIER_JNI_LIBS}"
+  "-PmoneroCommunityAssetRoot=${COMMUNITY_ASSET_ROOT}"
 )
 if [ -n "${FAST_WALLET_GATEWAY_ORIGIN:-}" ]; then
   GRADLE_ARGS+=("-PfastWalletGatewayOrigin=${FAST_WALLET_GATEWAY_ORIGIN}")

@@ -112,25 +112,42 @@ class KeyImageLedgerState {
   }
 }
 
-test('key-image work never owns the bounded public-data producer', () => {
+test('key-image work never pauses global download or local scan fan-out', () => {
   const pipeline = new SharedBatchPipeline(['ledger-view', 'wallet-b'], 3);
-  let keyImageWorkActive = true;
+  let pendingOutputCount = 0;
+  let reconciliationRuns = 0;
+  let globalDownloaderStarts = 1;
 
-  assert.equal(pipeline.produce(), true);
-  assert.equal(pipeline.consume('wallet-b'), true);
-  assert.equal(keyImageWorkActive, true);
+  // A matching output is found by the ordinary local scanner. It queues a
+  // later Ledger job, but the scanner immediately releases this immutable
+  // batch; it does not wait for derivation, spent RPC, or commit.
+  for (let batch = 0; batch < 6; batch += 1) {
+    assert.equal(pipeline.produce(), true);
+    assert.equal(pipeline.consume('ledger-view'), true);
+    if (batch === 1) pendingOutputCount += 1;
+    assert.equal(pipeline.consume('wallet-b'), true);
+  }
+  assert.equal(pipeline.produced, 6);
+  assert.equal(pipeline.released, 6);
+  assert.equal(pipeline.queue.length, 0);
 
-  // The Ledger view is intentionally stalled. The producer still fills its
-  // bounded queue and stops only at the memory budget, never on Ledger state.
+  // The one deferred reconciliation is scheduled only after a positive
+  // pending count. It neither creates a second downloader nor blocks wallet-b
+  // from scanning the next shared batches.
+  if (pendingOutputCount > 0) reconciliationRuns += 1;
+  assert.equal(reconciliationRuns, 1);
+  assert.equal(globalDownloaderStarts, 1);
   assert.equal(pipeline.produce(), true);
-  assert.equal(pipeline.produce(), true);
-  assert.equal(pipeline.produce(), false);
-  assert.equal(pipeline.queue.length, 3);
-
-  keyImageWorkActive = false;
   assert.equal(pipeline.consume('ledger-view'), true);
-  assert.equal(pipeline.released, 1);
-  assert.equal(pipeline.produce(), true);
+  assert.equal(pipeline.consume('wallet-b'), true);
+  assert.equal(pipeline.released, 7);
+  pendingOutputCount = 0;
+  assert.equal(pendingOutputCount, 0);
+
+  // A new chain tip alone never starts a second reconciliation.
+  if (pendingOutputCount > 0) reconciliationRuns += 1;
+  assert.equal(reconciliationRuns, 1);
+  assert.equal(globalDownloaderStarts, 1);
 });
 
 test('a decoded batch is released only after its final wallet consumer', () => {

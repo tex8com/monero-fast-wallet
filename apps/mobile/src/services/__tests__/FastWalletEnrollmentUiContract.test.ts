@@ -16,10 +16,6 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
     join(mobileRoot, 'src/screens/WalletSetupScreen.tsx'),
     'utf8',
   );
-  const enrollmentService = readFileSync(
-    join(mobileRoot, 'src/services/FastWalletEnrollmentService.ts'),
-    'utf8',
-  );
   const walletState = readFileSync(
     join(mobileRoot, 'src/services/WalletState.tsx'),
     'utf8',
@@ -82,34 +78,7 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
     expect(walletsScreen).toContain("t('setup.fastWalletTransferAccepted')");
   });
 
-  it('hosts the selected Ledger Fast Wallet instead of stopping after local creation', () => {
-    const pairCreated = walletSetup.indexOf(
-      'createNamedLedgerWalletPairFromDevice',
-    );
-    const transferStarted = walletSetup.indexOf(
-      "setFastWalletTransferStatus('transferring')",
-      pairCreated,
-    );
-    const hosted = walletSetup.indexOf(
-      'walletService.enableEncryptedLedgerFastWalletAlerts',
-      transferStarted,
-    );
-    const accepted = walletSetup.indexOf(
-      "setFastWalletTransferStatus('accepted')",
-      hosted,
-    );
-
-    expect(pairCreated).toBeGreaterThan(0);
-    expect(transferStarted).toBeGreaterThan(pairCreated);
-    expect(hosted).toBeGreaterThan(transferStarted);
-    expect(accepted).toBeGreaterThan(hosted);
-    expect(walletSetup).not.toContain('hostingRequested: false');
-    expect(walletService).toContain('enableEncryptedLedgerFastWalletAlerts');
-    expect(enrollmentService).toContain('sealLedgerFastWalletWatch');
-    expect(enrollmentService).toContain('submitFastWalletWatch');
-  });
-
-  it('keeps a completed Ledger wallet when encrypted hosting is deferred', () => {
+  it('creates an independent software Fast Wallet when selected during Ledger setup', () => {
     const flowStart = walletSetup.indexOf(
       'const startCreateHardwareWallet = async () =>',
     );
@@ -118,59 +87,32 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
       flowStart,
     );
     const flow = walletSetup.slice(flowStart, flowEnd);
-    const enrollment = flow.indexOf(
-      'await walletService.enableEncryptedLedgerFastWalletAlerts',
-    );
-    const deferred = flow.indexOf(
-      "setupLog('startCreateHardwareWallet.fastWallet.hostingDeferred'",
-      enrollment,
-    );
-    const home = flow.indexOf("navigation.navigate('Home')", deferred);
 
-    expect(flowStart).toBeGreaterThan(0);
-    expect(flowEnd).toBeGreaterThan(flowStart);
-    expect(enrollment).toBeGreaterThan(0);
-    expect(deferred).toBeGreaterThan(enrollment);
-    expect(home).toBeGreaterThan(deferred);
-    expect(flow.slice(enrollment, deferred)).not.toContain(
-      'setLedgerPromptVisible(true)',
-    );
-    expect(flow).toContain(
-      "setupLog('startCreateHardwareWallet.walletListRefreshDeferred'",
-    );
+    expect(flow).toContain('walletService.createNamedWalletFromDevice({');
+    expect(flow).toContain("await createSelectedFastWallet('hardware')");
+    expect(flow).not.toContain('createNamedLedgerWalletPairFromDevice');
+    expect(flow).not.toContain('enableEncryptedLedgerFastWalletAlerts');
   });
 
-  it('registers the authenticated installation before Ledger hosting', () => {
+  it('fails closed if legacy Ledger-account hosting is called', () => {
     const method = walletService.slice(
       walletService.indexOf('async enableEncryptedLedgerFastWalletAlerts'),
       walletService.indexOf('async pairPrivateFastWalletWorker'),
     );
-    const push = method.indexOf(
-      'await FastWalletPushService.enableFastWalletNotifications()',
-    );
-    const enrollment = method.indexOf('await enrollLedgerFastWalletWatch');
-    const hosted = method.indexOf("fastWalletHostingStatus: 'enabled'");
+    const gate = method.indexOf('if (!v1ReleaseFeatures.ledgerFastWallet)');
+    const push = method.indexOf('enableFastWalletNotifications()');
 
-    expect(push).toBeGreaterThan(0);
-    expect(enrollment).toBeGreaterThan(0);
-    expect(enrollment).toBeGreaterThan(push);
-    expect(hosted).toBeGreaterThan(enrollment);
-    expect(method).not.toContain(
-      'void FastWalletPushService.enableFastWalletNotifications()',
+    expect(gate).toBeGreaterThan(0);
+    expect(push).toBeGreaterThan(gate);
+    expect(method.slice(gate, push)).toContain(
+      'does not have an independent Fast Wallet root',
     );
-    expect(method).toContain('ledgerFastWalletAlerts.push.error');
   });
 
-  it('repairs Fast Wallets created by older clients without blocking wallet open', () => {
-    expect(walletState).toContain('repairPendingLedgerFastWalletHosting(');
-    expect(walletState).toContain(
-      "wallet.fastWalletHostingStatus !== 'enabled'",
-    );
-    expect(walletState).toContain('.enableEncryptedLedgerFastWalletAlerts({');
-    expect(walletState).toContain("'ledgerFastWalletHostingRepair.accepted'");
-    expect(walletState).toContain("'ledgerFastWalletHostingRepair.deferred'");
+  it('does not auto-host legacy Ledger account registrations', () => {
+    expect(walletState).not.toContain('repairPendingLedgerFastWalletHosting(');
     expect(walletState).not.toContain(
-      'await repairPendingLedgerFastWalletHosting(',
+      '.enableEncryptedLedgerFastWalletAlerts({',
     );
   });
 

@@ -142,8 +142,16 @@ struct LedgerKeyImageSyncResult {
   uint64_t unspentAtomic{0};
   uint64_t verifiedOutputCount{0};
   uint64_t pendingOutputCount{0};
+  // Captured while both the hardware and View-Wallet session locks are still
+  // held, immediately after the durable reconciliation call. This is not the
+  // later global queue depth: a concurrently scanned new tip may legitimately
+  // add fresh work after the locks are released.
+  uint64_t remainingPendingOutputCount{0};
   uint64_t importedOutputCount{0};
   uint64_t derivedOutputCount{0};
+  uint64_t spentStatusUnspentOutputCount{0};
+  uint64_t spentStatusBlockchainOutputCount{0};
+  uint64_t spentStatusPoolOutputCount{0};
   uint64_t derivationDurationMs{0};
   uint64_t spentStatusRpcDurationMs{0};
   uint64_t outgoingRpcDurationMs{0};
@@ -184,6 +192,10 @@ struct NetworkSyncStatus {
   uint64_t grpcFramedBytesReceived{0};
   uint64_t lastWalletScanMs{0};
   uint64_t totalWalletScanMs{0};
+  uint64_t lastNonEmptyWalletDerivationCount{0};
+  uint64_t lastNonEmptyWalletDerivationUs{0};
+  uint64_t totalWalletDerivationCount{0};
+  uint64_t totalWalletDerivationUs{0};
   uint64_t lastMempoolMs{0};
   uint64_t totalMempoolMs{0};
   uint64_t lastCheckpointMs{0};

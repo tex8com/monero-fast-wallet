@@ -5,6 +5,7 @@ EXPORTS
   tex8_desktop_wallet_core_new
   tex8_desktop_wallet_core_free
   tex8_desktop_wallet_ledger_transport_status
+  tex8_desktop_wallet_ledger_connection_status
   tex8_desktop_wallet_compute_backend_status
   tex8_desktop_wallet_set_compute_backend
   tex8_desktop_wallet_benchmark_derivation_performance

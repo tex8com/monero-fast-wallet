@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Mon, 10 Aug 2026 23:59:00 -0500
+Subject: [PATCH] ledger: fail closed on HID read timeout
+
+hid_read_timeout returns zero when no Ledger response arrives before the
+configured deadline. Treating zero as a valid empty packet lets the response
+unwrap loop wait forever, holding the single Ledger session and blocking the
+wallet-open path. Reject it as a bounded transport failure instead. This
+changes neither APDU contents nor connection/reset behavior.
+
+---
+ src/device/device_io_hid.cpp | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/device/device_io_hid.cpp b/src/device/device_io_hid.cpp
+index 1e80a90..4c68be6 100644
+--- a/src/device/device_io_hid.cpp
++++ b/src/device/device_io_hid.cpp
+@@ -240,7 +240,11 @@ namespace hw {
+       } else {
+         hid_ret = hid_read(this->usb_device, buffer, MAX_BLOCK);
+       }
+-      ASSERT_X(hid_ret>=0, "Unable to read hidapi response. Error "+std::to_string(result)+": "+ safe_hid_error(this->usb_device));
++      // hid_read_timeout returns 0 when no reply arrived before the configured
++      // timeout. Treating it as a zero-length packet makes unwrapReponse()
++      // loop forever, leaving a wallet-open operation and its hardware lock
++      // stuck even though no Ledger reset or user action is in progress.
++      ASSERT_X(hid_ret > 0, "Ledger USB read timed out");
+       result = (unsigned int)hid_ret;
+       io_hid_log(1, buffer, result); 
+       offset = MAX_BLOCK;
+@@ -251,7 +255,7 @@ namespace hw {
+           break;
+         }
+         hid_ret = hid_read_timeout(this->usb_device, buffer + offset, MAX_BLOCK, this->timeout);
+-        ASSERT_X(hid_ret>=0, "Unable to receive hidapi response. Error "+std::to_string(result)+": "+ safe_hid_error(this->usb_device));
++        ASSERT_X(hid_ret > 0, "Ledger USB continuation read timed out");
+         result = (unsigned int)hid_ret;
+         io_hid_log(1, buffer + offset, result);
+         offset += MAX_BLOCK;
+-- 
+2.47.0

@@ -10,9 +10,13 @@ import {
   type WalletSyncEtaState,
 } from '../../../packages/wallet-shared/src/walletSync';
 import {
+  formatNetworkSyncRate,
   formatSyncPercent,
+  formatWalletDerivationRate,
+  networkSyncMegabitsPerSecond,
   normalizeSyncPercent,
   presentNetworkSync,
+  walletSyncDerivationsPerSecond,
 } from '../../../packages/wallet-shared/src/networkSync';
 import { useI18n } from './i18n';
 import { type MarketPoint, type MarketTimeframe, useXmrChart, useXmrPrice } from './marketData';
@@ -78,7 +82,7 @@ type NativePreparedTransaction = { id: string; status: string; error: string; am
 type NativeTransaction = { hash: string; paymentId: string; description: string; label: string; direction: string; pending: boolean; failed: boolean; coinbase: boolean; amountAtomic: string; feeAtomic: string; blockHeight: string; confirmations: string; unlockTime: string; timestamp: string; subaddressAccount: number; subaddressIndices: number[]; transfers: Array<{ amountAtomic: string; address: string }> };
 type NativeHardwareWalletStatus = { walletId: string; deviceName: string; deviceType: string; connected: boolean; requiresUserAction: boolean; promptKind: string; promptCode: string; progress: number; indeterminate: boolean };
 type NativeWalletSnapshot = { id: string; primaryAddress: string; balanceAtomic: string; unlockedBalanceAtomic: string; walletHeight: string; daemonHeight: string; daemonTargetHeight: string; pendingOutputKeyImageCount?: string; synchronized: boolean };
-type NetworkSyncStatus = { network: Network; state: string; phase: string; lastError: string; consecutiveFailures: number; phaseSequence: number; phaseElapsedMs: number; lastProviderSelectionMs: number; lastTransportInitializationMs: number; lastBlockFetchMs: number; lastPrefetchMs: number; lastPrefetchWaitMs: number; prefetchedPayloadBytes: number; peakPrefetchedPayloadBytes: number; lastNonEmptyBlockFetchMs: number; lastNonEmptyBlockCount: number; lastNonEmptyNetworkBytes: number; lastNonEmptyPayloadBytes: number; networkBytesReceived: number; payloadBytesReceived: number; lastWalletScanMs: number; lastMempoolMs: number; lastCheckpointMs: number; lastIterationMs: number; downloadStartHeight: number; downloadedHeight: number; chainHeight: number; targetHeight: number; transportStarts: number; fetchedBatches: number; fetchedBlocks: number; decodedBatches: number; prefetchedBatches: number; prefetchHits: number; fanoutDeliveries: number; poolSnapshots: number; cacheHits: number; cacheMisses: number; replayCachePayloadBytes: number; replayCachePeakPayloadBytes: number; replayCachePayloadLimitBytes: number; stalledWallets: number; scanWorkers: number; joinedWallets: number; queueDepth: number; prefetchQueueDepth: number; prefetchQueueCapacity: number; replayCacheEntries: number; replayCacheCapacity: number };
+type NetworkSyncStatus = { network: Network; state: string; phase: string; lastError: string; consecutiveFailures: number; phaseSequence: number; phaseElapsedMs: number; lastProviderSelectionMs: number; lastTransportInitializationMs: number; lastBlockFetchMs: number; lastPrefetchMs: number; lastPrefetchWaitMs: number; prefetchedPayloadBytes: number; peakPrefetchedPayloadBytes: number; lastNonEmptyBlockFetchMs: number; lastNonEmptyBlockCount: number; lastNonEmptyNetworkBytes: number; lastNonEmptyPayloadBytes: number; networkBytesReceived: number; payloadBytesReceived: number; lastWalletScanMs: number; lastNonEmptyWalletDerivationCount: number; lastNonEmptyWalletDerivationUs: number; totalWalletDerivationCount: number; totalWalletDerivationUs: number; lastMempoolMs: number; lastCheckpointMs: number; lastIterationMs: number; downloadStartHeight: number; downloadedHeight: number; chainHeight: number; targetHeight: number; transportStarts: number; fetchedBatches: number; fetchedBlocks: number; decodedBatches: number; prefetchedBatches: number; prefetchHits: number; fanoutDeliveries: number; poolSnapshots: number; cacheHits: number; cacheMisses: number; replayCachePayloadBytes: number; replayCachePeakPayloadBytes: number; replayCachePayloadLimitBytes: number; stalledWallets: number; scanWorkers: number; joinedWallets: number; queueDepth: number; prefetchQueueDepth: number; prefetchQueueCapacity: number; replayCacheEntries: number; replayCacheCapacity: number };
 type CommunityProfile = { identityId: string; displayName: string; bio: string; visible: boolean; radiusKm: number };
 type CommunityNearby = CommunityProfile & { approximateDistanceKm: number; relationship: 'none' | 'outgoing' | 'incoming' | 'connected' };
 type CommunityContact = CommunityProfile & { status: 'outgoing' | 'incoming' | 'connected' };
@@ -205,13 +209,15 @@ function syncLabel(snapshot: NativeWalletSnapshot | null, t?: ReturnType<typeof 
 }
 function desktopLedgerBalanceNeedsVerification(wallet: RegisteredWallet, snapshot: NativeWalletSnapshot | undefined, usesLedgerReadOnly: boolean) {
   if (wallet.kind !== 'hardware') return false;
+  // The local read-only companion is the authoritative scanner.  A missing
+  // companion still needs the explicit setup flow, but must never start an
+  // automatic hardware operation.
   if (!usesLedgerReadOnly) return true;
   const pending = Number(snapshot?.pendingOutputKeyImageCount ?? 0);
-  if (Number.isFinite(pending) && pending > 0) return true;
-  // Older native cores do not expose the metadata-only pending count. Keep a
-  // single initial reconciliation for that compatibility path, but never
-  // wake Ledger just because the chain advanced by one unrelated block.
-  return !wallet.ledgerKeyImagesVerifiedHeight;
+  // Missing metadata is deliberately not treated as pending.  In particular,
+  // historic registrations without a verified-height marker must not wake a
+  // Ledger just because a new chain tip arrived.
+  return Number.isFinite(pending) && pending > 0;
 }
 function networkSyncConnected(status: NetworkSyncStatus | null) {
   return Boolean(status && status.transportStarts > 0 && ['fetching-blocks', 'fanout', 'scanning', 'synced'].includes(status.state));
@@ -225,6 +231,7 @@ function networkSyncPhaseLabel(status: NetworkSyncStatus | null, t: ReturnType<t
   switch (sync.phase) {
     case 'selecting-provider': return t('home.syncSelectingSource');
     case 'initializing-transport': return t('home.syncStartingConnection');
+    case 'reconnecting': return t('home.syncRetrying');
     case 'fetching-blocks':
     case 'waiting-next-batch':
     case 'scanning-wallets': return t('home.syncDownloadingAndScanning');
@@ -1124,6 +1131,8 @@ function DesktopSyncProgress({ network, networkStatus, onRefresh, sync, syncEtaS
   const blockchainPercent = network.ready ? 100 : network.progress ?? 0;
   const blockchainCurrent = network.downloadedHeight && network.downloadedHeight > 0 ? network.downloadedHeight : network.chainHeight;
   const blockchainDetail = blockchainPercent === 100 ? t('home.syncComplete') : networkSyncPhaseLabel(networkStatus, t);
+  const networkRate = networkSyncMegabitsPerSecond(networkStatus);
+  const walletDerivationRate = walletSyncDerivationsPerSecond(networkStatus);
   const walletPercent = sync.coreConfirmed ? 100 : sync.phase === 'finalizing' ? 99 : sync.progress ?? 0;
   const connected = network.ready || network.connected;
   const connecting = !connected && !network.failed;
@@ -1182,15 +1191,15 @@ function DesktopSyncProgress({ network, networkStatus, onRefresh, sync, syncEtaS
       </button>
     </header>
     {expanded && <div className="primary-wallet-sync" data-testid="sync-status-details">
-        <DesktopSyncProgressRow detail={blockchainDetail} extra={connectionDetail} height={network.targetHeight !== undefined ? t('home.syncHeight', { current: formatSyncBlockCount(blockchainCurrent), target: formatSyncBlockCount(network.targetHeight) }) : undefined} label={t('home.blockchainData')} percent={blockchainPercent} testId="blockchain-progress" />
-        {showWalletSync && <DesktopSyncProgressRow detail={sync.phase === 'synchronized' ? t('home.syncComplete') : sync.phase === 'finalizing' ? t('home.syncVerifying') : sync.phase === 'waiting-for-node' ? t('home.syncUpdating') : t('home.syncScanning')} extra={sync.phase === 'finalizing' ? t('home.syncConfirming') : sync.phase === 'syncing' ? formatDesktopSyncEta(syncEtaSeconds, t) : undefined} height={sync.targetHeight !== undefined ? t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight), target: formatSyncBlockCount(sync.targetHeight) }) : undefined} label={t('home.walletScan')} onRefresh={onRefresh} percent={walletPercent} testId="wallet-progress" />}
+        <DesktopSyncProgressRow detail={blockchainDetail} extra={connectionDetail} height={network.targetHeight !== undefined ? t('home.syncHeight', { current: formatSyncBlockCount(blockchainCurrent), target: formatSyncBlockCount(network.targetHeight) }) : undefined} label={t('home.blockchainData')} percent={blockchainPercent} rate={networkRate === undefined ? undefined : t('home.syncNetworkRate', { rate: formatNetworkSyncRate(networkRate) })} testId="blockchain-progress" />
+        {showWalletSync && <DesktopSyncProgressRow detail={sync.phase === 'synchronized' ? t('home.syncComplete') : sync.phase === 'finalizing' ? t('home.syncVerifying') : sync.phase === 'waiting-for-node' ? t('home.syncUpdating') : t('home.syncScanning')} extra={sync.phase === 'finalizing' ? t('home.syncConfirming') : sync.phase === 'syncing' ? formatDesktopSyncEta(syncEtaSeconds, t) : undefined} height={sync.targetHeight !== undefined ? t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight), target: formatSyncBlockCount(sync.targetHeight) }) : undefined} label={t('home.walletScan')} onRefresh={onRefresh} percent={walletPercent} rate={walletDerivationRate === undefined ? undefined : t('home.syncDerivationRate', { rate: formatWalletDerivationRate(walletDerivationRate) })} testId="wallet-progress" />}
       </div>}
   </section>;
 }
 
-function DesktopSyncProgressRow({ detail, extra, height, label, onRefresh, percent, testId }: { detail: string; extra?: string; height?: string; label: string; onRefresh?: () => void; percent: number; testId: string }) {
+function DesktopSyncProgressRow({ detail, extra, height, label, onRefresh, percent, rate, testId }: { detail: string; extra?: string; height?: string; label: string; onRefresh?: () => void; percent: number; rate?: string; testId: string }) {
   const normalized = normalizeSyncPercent(percent);
-  return <section className="desktop-sync-progress" data-testid={testId}><div className="sync-reading"><strong><b>{label}</b><small>{detail}</small></strong>{onRefresh && <button className="sync-refresh" aria-label="Refresh" onClick={onRefresh} title="Refresh" type="button">↻</button>}<em className={normalized === 100 ? 'ready' : ''}>{formatSyncPercent(normalized)}%</em></div><div className="sync-track"><span className={normalized === 100 ? 'ready' : ''} style={{ width: `${normalized}%` }} /></div>{(height || extra) && <div className="sync-metrics">{height && <span>{height}</span>}{extra && <span>{extra}</span>}</div>}</section>;
+  return <section className="desktop-sync-progress" data-testid={testId}><div className="sync-reading"><strong><b>{label}</b><small>{detail}</small></strong>{onRefresh && <button className="sync-refresh" aria-label="Refresh" onClick={onRefresh} title="Refresh" type="button">↻</button>}<em className={normalized === 100 ? 'ready' : ''}>{formatSyncPercent(normalized)}%</em></div><div className="sync-track"><span className={normalized === 100 ? 'ready' : ''} style={{ width: `${normalized}%` }} /></div>{(height || rate || extra) && <div className="sync-metrics">{height && <span>{height}</span>}{rate && <span>{rate}</span>}{extra && <span>{extra}</span>}</div>}</section>;
 }
 
 function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, onWallets, onSelectWallet, onBackup, onLock, onSend, onReceive, onActivity, onWalletsChanged }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; savedWallets: RegisteredWallet[]; networkSync: NetworkSyncStatus | null; onSetup: () => void; onWallets: () => void; onSelectWallet: (wallet: RegisteredWallet) => void; onBackup: () => void; onLock: () => void; onSend: () => void; onReceive: () => void; onActivity: () => void; onWalletsChanged: () => Promise<void> }) {
@@ -1204,9 +1213,11 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
   const [ledgerVerificationPhase, setLedgerVerificationPhase] = useState<string | null>(null);
   const snapshotRefreshInFlight = useRef(false);
   const ledgerAutoVerificationAttemptedAtRef = useRef(new Map<string, number>());
-  // A single physical Ledger is reconciled sequentially across all saved
-  // hardware wallets. This must not depend on which wallet card is selected.
-  const ledgerBackgroundVerificationInFlightRef = useRef(false);
+  // This is intentionally acquired before asking the native transport for its
+  // status: status can start a BLE discovery.  The one marker covers both the
+  // selected wallet and every background wallet, so no two flows can discover
+  // or reconcile the same physical Ledger concurrently.
+  const ledgerReconciliationInFlightRef = useRef(false);
   // A wallet can be selected repeatedly while it is already scanning. Keep a
   // per-wallet live baseline only for wallets without a user-chosen scan
   // start. Imported and Ledger wallets must instead use their durable restore
@@ -1218,6 +1229,17 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
   const { items: newsItems, loading: newsLoading, unavailable: newsUnavailable, refresh: refreshNews } = useMoneroNews(v1ReleaseFeatures.news);
 
   const accountIndex = wallet?.accountIndex ?? 0;
+  const legacyLedgerAccountScoped = Boolean(
+    wallet?.kind === 'hardware'
+      && (wallet.role === 'fast'
+        || savedWallets.some((candidate) =>
+          candidate.kind === 'hardware'
+          && candidate.role === 'fast'
+          && candidate.sourceWalletId === wallet.id)),
+  );
+  const snapshotAccountIndex = legacyLedgerAccountScoped
+    ? accountIndex
+    : undefined;
   const loadSnapshot = useCallback(async (startRefresh = false) => {
     if (!walletId) return;
     if (snapshotRefreshInFlight.current) return;
@@ -1231,7 +1253,14 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
         syncStartHeightsRef.current.delete(walletId);
       }
       if (startRefresh) await invoke<void>('start_wallet_refresh', { input: { walletId } });
-      const raw = await invoke<string>('wallet_snapshot', { input: { walletId, accountIndex } });
+      const raw = await invoke<string>('wallet_snapshot', {
+        input: {
+          walletId,
+          ...(snapshotAccountIndex === undefined
+            ? {}
+            : { accountIndex: snapshotAccountIndex }),
+        },
+      });
       const nextSnapshot = parseNativeJson<NativeWalletSnapshot>(raw, 'The native wallet snapshot was invalid.');
       const nextHeight = nativeHeight(nextSnapshot.walletHeight);
       if (!configuredStartHeight && nextHeight && (nextSnapshot.synchronized || !syncStartHeightsRef.current.has(walletId))) {
@@ -1246,7 +1275,7 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
       if (!isBackgroundWalletWork(reason)) setMessage(errorMessage(reason, 'Could not read wallet state.'));
     }
     finally { snapshotRefreshInFlight.current = false; }
-  }, [accountIndex, wallet?.restoreHeight, walletId]);
+  }, [snapshotAccountIndex, wallet?.restoreHeight, walletId]);
   const loadTransactions = useCallback(async () => {
     if (!walletId || !wallet) return;
     try {
@@ -1426,14 +1455,22 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
       if (cancelled || ledgerVerificationPhase) return;
       const lastAttempt = ledgerAutoVerificationAttemptedAtRef.current.get(wallet.id) ?? 0;
       if (Date.now() - lastAttempt < 60_000) return;
+      if (ledgerReconciliationInFlightRef.current) return;
+
+      // Record the cooldown before the status call. On macOS that call may
+      // begin BLE discovery, so recording it afterwards would permit repeated
+      // discovery windows while no Ledger is available.
+      ledgerAutoVerificationAttemptedAtRef.current.set(wallet.id, Date.now());
+      ledgerReconciliationInFlightRef.current = true;
       try {
         const raw = await invoke<string>('ledger_transport_status');
         const transport = parseNativeJson<LedgerTransportStatus>(raw, 'The Ledger connection state was invalid.');
         if (!transport.supported || !transport.available || !transport.permissionGranted || transport.deviceCount < 1) return;
-        ledgerAutoVerificationAttemptedAtRef.current.set(wallet.id, Date.now());
         await verifyLedgerBalance();
       } catch (reason) {
         console.warn('MONERO_DESKTOP_LEDGER_AUTO_VERIFICATION_FAILED', errorMessage(reason, 'Ledger verification failed.'));
+      } finally {
+        ledgerReconciliationInFlightRef.current = false;
       }
     };
     void attempt();
@@ -1454,7 +1491,7 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
     if (ledgerVerificationPhase || !wallet?.id) return;
     let cancelled = false;
     const attempt = async () => {
-      if (cancelled || ledgerBackgroundVerificationInFlightRef.current) return;
+      if (cancelled || ledgerReconciliationInFlightRef.current) return;
       const candidate = savedWallets.find((registration) => {
         if (
           registration.id === wallet.id ||
@@ -1476,16 +1513,18 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
       const lastAttempt = ledgerAutoVerificationAttemptedAtRef.current.get(candidate.id) ?? 0;
       if (Date.now() - lastAttempt < 60_000) return;
 
+      // The cooldown and global single-flight marker must be set before this
+      // call because checking transport availability can itself open a bounded
+      // BLE discovery window.
       ledgerAutoVerificationAttemptedAtRef.current.set(candidate.id, Date.now());
-      const raw = await invoke<string>('ledger_transport_status');
-      const transport = parseNativeJson<LedgerTransportStatus>(raw, 'The Ledger connection state was invalid.');
-      if (!transport.supported || !transport.available || !transport.permissionGranted || transport.deviceCount < 1) return;
-
-      ledgerBackgroundVerificationInFlightRef.current = true;
-      console.info('MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_START', {
-        registrationId: candidate.id,
-      });
+      ledgerReconciliationInFlightRef.current = true;
       try {
+        const raw = await invoke<string>('ledger_transport_status');
+        const transport = parseNativeJson<LedgerTransportStatus>(raw, 'The Ledger connection state was invalid.');
+        if (!transport.supported || !transport.available || !transport.permissionGranted || transport.deviceCount < 1) return;
+        console.info('MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_START', {
+          registrationId: candidate.id,
+        });
         // The companion is already open and fully scanned. The Tauri command
         // reopens only a short-lived Ledger signing handle, derives KIs for
         // pending owned outputs, then restores the read-only companion. It
@@ -1503,7 +1542,7 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
           errorMessage(reason, 'Ledger reconciliation failed.'),
         );
       } finally {
-        ledgerBackgroundVerificationInFlightRef.current = false;
+        ledgerReconciliationInFlightRef.current = false;
       }
     };
     void attempt();
@@ -1656,6 +1695,10 @@ function Setup({ linked, wallets, onSelectSaved, onOpened, onCreated }: { linked
   };
   const submit = async () => {
     if (!linked || busy) return;
+    if (mode === 'ledger' && !restoreStartDate.trim()) {
+      setMessage(t('setup.ledgerScanDateRequired'));
+      return;
+    }
     let restoreHeight: number | undefined;
     try {
       restoreHeight = (mode === 'restore' || mode === 'ledger')
@@ -1697,10 +1740,10 @@ function Setup({ linked, wallets, onSelectSaved, onOpened, onCreated }: { linked
   const ledgerNeedsSearch = ledgerTransport === 'ble' && (!ledgerStatus?.supported || !ledgerStatus.available || !ledgerStatus.permissionGranted || ledgerStatus.deviceCount < 1);
   const actionLabel = busy ? t('setup.working') : !linked ? t('setup.coreRequired') : mode === 'ledger' ? ledgerNeedsSearch ? t('setup.searchLedger') : t('setup.createLedger') : mode === 'create' ? t('setup.create') : t('setup.import');
   const choices: Array<{ id: SetupMode; title: string; detail: string }> = [{ id: 'create', title: t('setup.create'), detail: t('setup.createDetail') }, { id: 'ledger', title: t('setup.ledger'), detail: t('setup.ledgerDetail') }, { id: 'restore', title: t('setup.import'), detail: t('setup.importDetail') }];
-  const scanDate = <><label>{t('setup.scanStart')} <small>{t('common.optional')}</small><input value={restoreStartDate} onChange={(event) => setRestoreStartDate(event.target.value)} type="date" max={todayRestoreDate()} /></label><small className="restore-start-hint">{t('setup.scanDateHint')}</small></>;
+  const scanDate = <><label>{t('setup.scanStart')} <small>{mode === 'ledger' ? t('common.required') : t('common.optional')}</small><input value={restoreStartDate} onChange={(event) => setRestoreStartDate(event.target.value)} type="date" max={todayRestoreDate()} required={mode === 'ledger'} /></label><small className="restore-start-hint">{t(mode === 'ledger' ? 'setup.ledgerScanDateHint' : 'setup.scanDateHint')}</small></>;
   const fastChoice = <label className="setup-preference-row"><span className="setup-preference-copy"><b>Fast Wallet</b><small>{mode === 'ledger' ? 'Also reserve Ledger account 1 as a separate Fast Wallet address.' : 'Also create a separate local wallet with its own recovery words. No server scanning or alerts are enabled here.'}</small></span><input aria-label="Fast Wallet" checked={createFastWallet} disabled={busy} onChange={(event) => changeFastWallet(event.target.checked)} role="switch" type="checkbox" /></label>;
   const ledgerViewKeyChoice = mode === 'ledger' ? <label className="setup-preference-row"><span className="setup-preference-copy"><b>Remember Ledger for viewing</b><small>Keep an encrypted, read-only wallet on this device. You can view balances and receive without reconnecting Ledger; sending still requires Ledger.</small></span><input aria-label="Remember Ledger for viewing" checked={persistLedgerViewOnly} disabled={busy} onChange={(event) => setPersistLedgerViewOnly(event.target.checked)} role="switch" type="checkbox" /></label> : null;
-  return <section className="setup-grid simple-setup"><header><p className="eyebrow">{t('setup.eyebrow')}</p><h2>{t('setup.title')}</h2><p>{t('setup.subtitle')}</p></header>{wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{walletTypeLabel(wallet, t)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : '⇣'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{t('common.mainnet')}</p><h2>{label}</h2><p>{description}</p><div className="wallet-form">{mode === 'restore' && <><p className="native-seed-notice">Your 25 recovery words are entered in a separate protected system window after you continue.</p>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}{ledgerViewKeyChoice}</>}{fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy} type="button">{actionLabel}</button>{message && <p className="setup-message">{message}</p>}</div></article>{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay title="Save your Ledger view key" detail="Waiting for Ledger approval…" />}</section>;
+  return <section className="setup-grid simple-setup"><header><p className="eyebrow">{t('setup.eyebrow')}</p><h2>{t('setup.title')}</h2><p>{t('setup.subtitle')}</p></header>{wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{walletTypeLabel(wallet, t)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : '⇣'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{t('common.mainnet')}</p><h2>{label}</h2><p>{description}</p><div className="wallet-form">{mode === 'restore' && <><p className="native-seed-notice">Your 25 recovery words are entered in a separate protected system window after you continue.</p>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}{ledgerViewKeyChoice}</>}{fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy || (mode === 'ledger' && !restoreStartDate.trim())} type="button">{actionLabel}</button>{message && <p className="setup-message">{message}</p>}</div></article>{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay title="Save your Ledger view key" detail="Waiting for Ledger approval…" />}</section>;
 }
 
 function FastWallets({ linked, sourceWalletId, sourceWallet, appProtection }: { linked: boolean; sourceWalletId: string | null; sourceWallet: RegisteredWallet | null; appProtection: AppProtectionStatus }) {

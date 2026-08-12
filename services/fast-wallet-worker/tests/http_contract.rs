@@ -1,6 +1,7 @@
 use fast_wallet_protocol::{
-    generate_hpke_keypair, Network as ProtocolNetwork, SigningKeyMaterial, WatchBinding,
-    WatchEnvelope, WatchSecret, WorkerDescriptor, WorkerDescriptorInput,
+    generate_hpke_keypair, key_id, worker_receipt_body, Network as ProtocolNetwork,
+    SigningKeyMaterial, WatchBinding, WatchEnvelope, WatchSecret, WorkerAuthPurpose,
+    WorkerDescriptor, WorkerDescriptorInput, WorkerRequestAuth,
 };
 use fast_wallet_relay::{router as relay_router, AssignmentPermit, RelayApiState, RelayMailbox};
 use fast_wallet_worker::{
@@ -89,8 +90,11 @@ async fn real_http_relay_pull_and_ack_are_signed_and_durable() {
         )
         .unwrap();
     mailbox.submit(&fixture.envelope, fixture.now).unwrap();
+    let message_id = key_id(&fixture.envelope);
+    let receipt_descriptor = fixture.descriptor.clone();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let worker_endpoint = endpoint.clone();
     let server = tokio::spawn(async move {
         axum::serve(
             listener,
@@ -108,7 +112,7 @@ async fn real_http_relay_pull_and_ack_are_signed_and_durable() {
     )
     .unwrap();
     let result = tokio::task::spawn_blocking(move || {
-        let relay = HttpRelayClient::new(endpoint, Duration::from_secs(3)).unwrap();
+        let relay = HttpRelayClient::new(worker_endpoint, Duration::from_secs(3)).unwrap();
         worker.poll_relay_once(&relay, 10, unix_seconds()).unwrap()
     })
     .await
@@ -117,6 +121,25 @@ async fn real_http_relay_pull_and_ack_are_signed_and_durable() {
     assert_eq!(result.leased, 1);
     assert_eq!(result.accepted, 1);
     assert_eq!(result.acknowledged, 1);
+    let response: serde_json::Value = ureq::get(&format!(
+        "{endpoint}/v1/envelopes/{}/receipt",
+        hex::encode(message_id)
+    ))
+    .call()
+    .unwrap()
+    .into_json()
+    .unwrap();
+    assert_eq!(response["status"], "accepted");
+    let receipt_bytes = hex::decode(response["receipt"].as_str().unwrap()).unwrap();
+    let receipt = WorkerRequestAuth::decode(&receipt_bytes).unwrap();
+    receipt
+        .verify(
+            &receipt_descriptor,
+            WorkerAuthPurpose::Receipt,
+            &worker_receipt_body(&receipt_descriptor.worker_root_id(), &message_id),
+            unix_seconds(),
+        )
+        .unwrap();
     server.abort();
 }
 

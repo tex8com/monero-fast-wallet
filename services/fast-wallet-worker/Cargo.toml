@@ -8,11 +8,13 @@ license = "AGPL-3.0-only"
 [dependencies]
 anyhow = "1"
 ctrlc = "3"
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
 ed25519-dalek = "2"
 fast-wallet-protocol = { path = "../../native/fast-wallet-protocol" }
 fast-wallet-relay = { path = "../fast-wallet-relay" }
 hex = "0.4"
 libc = "0.2"
+monero-address = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
 notify-scanner = { path = "../notify-scanner", features = ["epyc"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

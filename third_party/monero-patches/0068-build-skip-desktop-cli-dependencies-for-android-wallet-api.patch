@@ -1,0 +1,30 @@
+From 61f98ec8c31b5a23c38e6bfaef522ab60de5ed8a Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 9 Aug 2026 19:11:35 -0500
+Subject: [PATCH] build: keep desktop CLI dependencies out of Android wallet
+ API
+
+---
+ src/CMakeLists.txt | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 3335d3c21..f7da4913a 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -105,7 +105,11 @@ if(NOT IOS)
+ endif()
+ add_subdirectory(cryptonote_protocol)
+ if(NOT IOS)
+-  add_subdirectory(simplewallet)
++  # Android consumes wallet_api only. Keep desktop CLI-only dependencies such
++  # as the hosted-watch CURL adapter out of the Android configuration graph.
++  if(NOT ANDROID)
++    add_subdirectory(simplewallet)
++  endif()
+   add_subdirectory(gen_multisig)
+   add_subdirectory(gen_ssl_cert)
+   add_subdirectory(daemonizer)
+-- 
+2.50.1 (Apple Git-155)
+

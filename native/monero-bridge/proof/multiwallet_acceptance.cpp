@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <atomic>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -13,6 +14,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -52,13 +54,46 @@ NetworkType parseNetwork(const std::string& value) {
   throw WalletEngineError("network must be mainnet, testnet, or stagenet");
 }
 
-std::string readSecret(const std::string& value) {
+uint64_t fnv1a(std::string_view value, uint64_t state) noexcept {
+  for (const unsigned char byte : value) {
+    state ^= static_cast<uint64_t>(byte);
+    state *= 1099511628211ULL;
+  }
+  return state;
+}
+
+std::string ephemeralCredentialForWorkdir(
+    const std::filesystem::path& workdir) {
+  // This credential protects only throwaway test wallets on the caller-owned
+  // RAM volume.  It is deterministic for a checkpoint-restart pair, is never
+  // written to disk and is never emitted in test output.
+  const auto material = workdir.lexically_normal().string();
+  constexpr std::array<uint64_t, 4> seeds = {
+      1469598103934665603ULL,
+      1099511628211ULL,
+      0x9e3779b97f4a7c15ULL,
+      0xd6e8feb86659fd93ULL,
+  };
+  std::ostringstream encoded;
+  encoded << std::hex << std::setfill('0');
+  for (const uint64_t seed : seeds) {
+    encoded << std::setw(16) << fnv1a(material, seed);
+  }
+  return encoded.str();
+}
+
+std::string readCredential(
+    const std::string& value,
+    const std::filesystem::path& workdir) {
+  if (value == "@ephemeral") {
+    return ephemeralCredentialForWorkdir(workdir);
+  }
   if (value.size() < 2 || value.front() != '@') {
     return value;
   }
   std::ifstream input(value.substr(1));
   if (!input) {
-    throw WalletEngineError("could not open password file");
+    throw WalletEngineError("could not open credential file");
   }
   std::ostringstream buffer;
   buffer << input.rdbuf();
@@ -69,6 +104,18 @@ std::string readSecret(const std::string& value) {
   }
   return secret;
 }
+
+class SecretClearGuard {
+ public:
+  explicit SecretClearGuard(std::string& value) noexcept : value_(value) {}
+  ~SecretClearGuard() { tex8::wallet::secureClear(value_); }
+
+  SecretClearGuard(const SecretClearGuard&) = delete;
+  SecretClearGuard& operator=(const SecretClearGuard&) = delete;
+
+ private:
+  std::string& value_;
+};
 
 class GeneratedWalletCleanup {
  public:
@@ -309,7 +356,7 @@ NetworkSyncStatus replayFromHeight(
 void usage(const char* executable) {
   std::cerr
       << "Usage: " << executable
-      << " <network> <workdir> <password|@file> <wallet-count>"
+      << " <network> <workdir> <credential|@file|@ephemeral> <wallet-count>"
          " <restore-height> <daemon-host:port> <grpc-host:port|->"
          " <shallow-height> <shallow-previous-hash>"
          " <deep-height> <deep-previous-hash> [timeout-seconds]\n";
@@ -328,7 +375,8 @@ int main(int argc, char** argv) {
     }
     const NetworkType network = parseNetwork(argv[1]);
     const std::filesystem::path workdir = argv[2];
-    std::string password = readSecret(argv[3]);
+    std::string password = readCredential(argv[3], workdir);
+    SecretClearGuard passwordGuard(password);
     const size_t walletCount = static_cast<size_t>(
         parsePositive(argv[4], "wallet-count"));
     if (walletCount != 1 && walletCount != 2 &&
@@ -787,7 +835,6 @@ int main(int argc, char** argv) {
               << " stalled_wallets=" << afterDeep.stalledWallets
               << " history_consistent_wallets=" << historyConsistentWallets
               << "\n";
-    tex8::wallet::secureClear(password);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "acceptance_result=fail\n";

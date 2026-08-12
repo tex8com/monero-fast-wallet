@@ -2394,7 +2394,20 @@ NSDictionary *toDictionary(const LedgerKeyImageSyncResult &result) {
     @"spentAtomic": toNSString(std::to_string(result.spentAtomic)),
     @"unspentAtomic": toNSString(std::to_string(result.unspentAtomic)),
     @"verifiedOutputCount": @(result.verifiedOutputCount),
+    @"pendingOutputCount": @(result.pendingOutputCount),
+    @"remainingPendingOutputCount": @(result.remainingPendingOutputCount),
+    @"importedOutputCount": @(result.importedOutputCount),
+    @"derivedOutputCount": @(result.derivedOutputCount),
+    @"spentStatusUnspentOutputCount": @(result.spentStatusUnspentOutputCount),
+    @"spentStatusBlockchainOutputCount": @(result.spentStatusBlockchainOutputCount),
+    @"spentStatusPoolOutputCount": @(result.spentStatusPoolOutputCount),
+    @"derivationDurationMs": @(result.derivationDurationMs),
+    @"spentStatusRpcDurationMs": @(result.spentStatusRpcDurationMs),
+    @"outgoingRpcDurationMs": @(result.outgoingRpcDurationMs),
+    @"stateUpdateDurationMs": @(result.stateUpdateDurationMs),
     @"verificationDurationMs": @(result.verificationDurationMs),
+    @"storeDurationMs": @(result.storeDurationMs),
+    @"totalDurationMs": @(result.totalDurationMs),
   };
 }
 
@@ -2421,6 +2434,10 @@ NSDictionary *toDictionary(const NetworkSyncStatus &status) {
     @"networkBytesReceived": toNSNumber(status.networkBytesReceived),
     @"payloadBytesReceived": toNSNumber(status.payloadBytesReceived),
     @"lastWalletScanMs": toNSNumber(status.lastWalletScanMs),
+    @"lastNonEmptyWalletDerivationCount": toNSNumber(status.lastNonEmptyWalletDerivationCount),
+    @"lastNonEmptyWalletDerivationUs": toNSNumber(status.lastNonEmptyWalletDerivationUs),
+    @"totalWalletDerivationCount": toNSNumber(status.totalWalletDerivationCount),
+    @"totalWalletDerivationUs": toNSNumber(status.totalWalletDerivationUs),
     @"lastMempoolMs": toNSNumber(status.lastMempoolMs),
     @"lastCheckpointMs": toNSNumber(status.lastCheckpointMs),
     @"lastIterationMs": toNSNumber(status.lastIterationMs),
@@ -5857,6 +5874,71 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
       if (![fileManager removeItemAtPath:candidate error:&error]) {
         throw WalletEngineError("failed to delete wallet file: " +
             toStdString(error.localizedDescription));
+      }
+    }
+    return nil;
+  }];
+}
+
+- (void)deleteProtectedWalletFiles:(NSArray<NSString *> *)paths
+                            resolve:(RCTPromiseResolveBlock)resolve
+                             reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"deleteProtectedWalletFiles"
+                  fields:@{ @"walletCount": @(paths.count) }
+                    work:^id(WalletEngine &engine) {
+    (void)engine;
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSURL *appSupportUrl = [fileManager URLForDirectory:NSApplicationSupportDirectory
+                                               inDomain:NSUserDomainMask
+                                      appropriateForURL:nil
+                                                 create:NO
+                                                  error:nil];
+    if (appSupportUrl == nil) {
+      throw WalletEngineError("failed to resolve Application Support directory");
+    }
+    NSString *walletRoot = [[[[appSupportUrl URLByAppendingPathComponent:@"MoneroWallet"]
+        URLByAppendingPathComponent:@"wallets"] path] stringByStandardizingPath];
+    NSString *rootPrefix = [walletRoot stringByAppendingString:@"/"];
+    NSMutableSet<NSString *> *checkedPaths = [NSMutableSet set];
+    for (NSString *rawPath in paths) {
+      NSString *walletPath = [rawPath stringByStandardizingPath];
+      if (walletPath.length == 0 || ![walletPath hasPrefix:rootPrefix]) {
+        throw WalletEngineError(
+            "refusing to delete wallet files outside the wallet directory");
+      }
+      BOOL isDirectory = NO;
+      if ([fileManager fileExistsAtPath:walletPath isDirectory:&isDirectory] &&
+          isDirectory) {
+        throw WalletEngineError("refusing to delete a wallet directory");
+      }
+      [checkedPaths addObject:walletPath];
+    }
+    for (NSString *walletPath in checkedPaths) {
+      NSArray<NSString *> *candidates = @[
+        walletPath,
+        [walletPath stringByAppendingString:@".keys"],
+        [walletPath stringByAppendingString:@".address.txt"],
+        [walletPath stringByAppendingString:@".lock"],
+      ];
+      for (NSString *candidate in candidates) {
+        BOOL isDirectory = NO;
+        if (![fileManager fileExistsAtPath:candidate isDirectory:&isDirectory]) {
+          continue;
+        }
+        if (isDirectory) {
+          throw WalletEngineError("refusing to delete a wallet directory");
+        }
+        NSError *error = nil;
+        if (![fileManager removeItemAtPath:candidate error:&error]) {
+          throw WalletEngineError("failed to delete wallet file: " +
+              toStdString(error.localizedDescription));
+        }
       }
     }
     return nil;

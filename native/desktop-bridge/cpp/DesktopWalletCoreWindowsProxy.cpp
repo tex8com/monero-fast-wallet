@@ -75,6 +75,7 @@ extern "C" void tex8_desktop_result_free(Tex8DesktopResult* result) noexcept {
 }
 
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_ledger_transport_status, (Tex8DesktopWalletCore* core), (core))
+TEX8_FORWARD_RESULT(tex8_desktop_wallet_ledger_connection_status, (Tex8DesktopWalletCore* core), (core))
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_compute_backend_status, (Tex8DesktopWalletCore* core), (core))
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_set_compute_backend, (Tex8DesktopWalletCore* core, const char* preference), (core, preference))
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_benchmark_derivation_performance, (Tex8DesktopWalletCore* core), (core))

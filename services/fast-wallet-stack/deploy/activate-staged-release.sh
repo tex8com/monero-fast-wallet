@@ -108,6 +108,22 @@ id cuprate >/dev/null 2>&1 || {
   exit 1
 }
 
+# The activation keeps a recoverable copy of the complete immutable ScanPack
+# generation.  Refuse before touching a service when the target filesystem
+# cannot hold that copy plus enough space for the restarted unprivileged
+# services to write leases, state and logs.  A full root filesystem otherwise
+# causes misleading downstream 5xx and worker failures.
+scanpack_directory=/var/lib/cuprate/fast-wallet-scanpacks
+if [[ -d "$scanpack_directory" ]]; then
+  scanpack_kib="$(du -sk -- "$scanpack_directory" | awk '{print $1}')"
+  available_kib="$(df -Pk "$scanpack_directory" | awk 'NR == 2 {print $4}')"
+  required_kib=$((scanpack_kib + 2 * 1024 * 1024))
+  if (( available_kib < required_kib )); then
+    echo "Insufficient free space for the activation backup: need ${required_kib}KiB, have ${available_kib}KiB." >&2
+    exit 1
+  fi
+fi
+
 install -d -m 0700 "$backup_dir"
 for path in \
   /opt/monero-fast-wallet/bin \

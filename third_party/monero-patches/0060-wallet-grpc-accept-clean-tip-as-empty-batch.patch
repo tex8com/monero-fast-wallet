@@ -1,0 +1,52 @@
+From 0f2a120e9f6f4f5fccc39b91f7b709e45521ed16 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet <engineering@tex8.app>
+Date: Sun, 9 Aug 2026 19:10:00 +0000
+Subject: [PATCH] wallet: accept a clean gRPC tip as an empty block batch
+
+The BlockStream RPC closes cleanly once it has delivered the requested tip.
+`try_pull_blocks_grpc` previously returned `false` for that normal condition,
+which made `pull_blocks` issue a second `/getblocks.bin` request. A keyless
+shared provider has no private hash-chain to use for that fallback, and
+Cuprate correctly rejected its locator with "Block IDs were not sorted
+properly".
+
+Return an empty, valid batch at the stream cursor on a clean end. This
+preserves the latest confirmed cursor and avoids mixing the gRPC transport
+with an incompatible bin-RPC locator just to discover that there are no new
+blocks.
+---
+ src/wallet/wallet2.cpp | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index b6882a0..e933933 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3549,8 +3549,21 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       static_cast<uint64_t>(m_blockchain.size()), 0, 0, 0);
+     m_grpc_stream_client->close();
+     m_grpc_stream_active = false;
+-    if (!ended_ok)
+-      m_grpc_stream_fallback_to_bin = true;
+-    return false;
++    if (ended_ok)
++    {
++      // Reaching the requested gRPC tip is a successful empty refresh, not
++      // a reason to fall through to /getblocks.bin. In particular, the
++      // keyless shared provider deliberately has no private chain history
++      // suitable for a bin-RPC locator.
++      blocks_start_height = m_grpc_stream_next_height;
++      blocks.clear();
++      o_indices.clear();
++      current_height = m_grpc_stream_next_height;
++      m_last_pull_payload_bytes = 0;
++      return true;
++    }
++
++    m_grpc_stream_fallback_to_bin = true;
++    return false;
+   }
+ 
+   // Decode the chunk's payload — it's exactly the wire format the bin RPC's
+-- 
+2.50.1

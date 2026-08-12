@@ -13,7 +13,10 @@ base="${repo_root}/build/wallet-testbench/jan-2026-mainnet"
 result_dir="${base}/${run_id}"
 remote_dir="/srv/monero-fast-wallet/benchmark-logs/${run_id}"
 runner="${R3_NETWORK_RUNNER:?set R3_NETWORK_RUNNER to the explicitly selected runner}"
-password_file="${R3_NETWORK_PASSWORD_FILE:-${base}/password.txt}"
+# The paired native proof accepts this test-only marker and creates a fresh
+# credential in process memory. Never use a password file for a generated
+# benchmark wallet, and never permit a caller-provided secret here.
+credential="${R3_NETWORK_CREDENTIAL:-@ephemeral}"
 restore_height="${R3_NETWORK_RESTORE_HEIGHT:-3577876}"
 rpc="${R3_NETWORK_RPC:-152.53.133.188:18089}"
 grpc="${R3_NETWORK_GRPC:--}"
@@ -21,6 +24,7 @@ timeout_seconds="${R3_NETWORK_TIMEOUT_SECONDS:-1800}"
 journal_minutes="${R3_NETWORK_JOURNAL_MINUTES:-45}"
 expected_runner_sha256="${R3_NETWORK_EXPECTED_RUNNER_SHA256:-}"
 expected_tip="${R3_NETWORK_EXPECTED_TIP:-}"
+rust_derivation_workers="${R3_RUST_DERIVATION_WORKERS:-}"
 
 case "${variant}" in
   original|fast|scanpack) ;;
@@ -28,11 +32,12 @@ case "${variant}" in
 esac
 [[ "${run_id}" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "unsafe run id" >&2; exit 2; }
 [[ -x "${runner}" ]] || { echo "runner missing or not executable" >&2; exit 2; }
-[[ -f "${password_file}" ]] || { echo "password file missing" >&2; exit 2; }
+[[ "${credential}" == "@ephemeral" ]] || { echo "R3 benchmark accepts only @ephemeral credential" >&2; exit 2; }
 [[ "${restore_height}" =~ ^[1-9][0-9]*$ ]] || { echo "invalid restore height" >&2; exit 2; }
 [[ "${timeout_seconds}" =~ ^[1-9][0-9]*$ ]] || { echo "invalid timeout" >&2; exit 2; }
 [[ "${journal_minutes}" =~ ^[1-9][0-9]*$ ]] || { echo "invalid journal window" >&2; exit 2; }
 [[ -z "${expected_tip}" || "${expected_tip}" =~ ^[1-9][0-9]*$ ]] || { echo "invalid expected tip" >&2; exit 2; }
+[[ -z "${rust_derivation_workers}" || "${rust_derivation_workers}" =~ ^[1-9][0-9]*$ ]] || { echo "invalid Rust derivation worker count" >&2; exit 2; }
 [[ ! -e "${result_dir}" ]] || { echo "result directory already exists" >&2; exit 2; }
 
 if [[ "${variant}" == original && "${grpc}" != "-" ]]; then
@@ -90,8 +95,9 @@ umask 077
   printf 'preflight_tip=%s\nexpected_frozen_tip=%s\n' "${preflight_tip}" "${expected_tip:-not-set}"
   printf 'runner_path=%s\nrunner_sha256=%s\n' "${runner}" "${actual_runner_sha256}"
   printf 'runner_sha256_expected=%s\n' "${expected_runner_sha256:-not-set}"
+  printf 'rust_derivation_workers=%s\n' "${rust_derivation_workers:-auto-compute-pool-max}"
   printf 'wallet_mode=runner-created short-lived seed; block_scan must remain enabled\n'
-  printf 'network_definition=client TCP RX payload bytes from nettop divided by client process wall-time; IP/TCP packet headers excluded; counter resets carried forward\n'
+  printf 'network_definition=peak observed aggregate client TCP RX payload bytes from nettop divided by client process wall-time; IP/TCP packet headers excluded; lower bound because closed sockets disappear from the aggregate\n'
   printf 'comparison_rule=do not merge this run with R3 unless restore height, wallet mode, runner SHA, server state and observed chain tip satisfy the R3 contract\n'
   printf 'client_tcp_sysctl:\n'
   sysctl kern.ipc.maxsockbuf net.inet.tcp.recvspace net.inet.tcp.autorcvbufmax net.inet.tcp.sendspace net.inet.tcp.autosndbufmax net.inet.tcp.win_scale_factor
@@ -111,9 +117,11 @@ sudo -n /usr/bin/journalctl -u cuprate.service -n 0 --show-cursor --no-pager 2>/
   i=0
   while [ ! -e "$r/STOP" ]; do
     stamp="$(date +%s%N)"
-    # Both ports are sampled: Original uses Bin RPC 18089, Fast uses gRPC
-    # 48091 plus its small Bin-RPC bootstrap/hash requests on 18089.
-    ss -tinm state established '( sport = :18089 or sport = :48091 )' >"$r/system/${i}-${stamp}.wallet-tcp" 2>&1 || true
+    # All relevant server legs are sampled separately: Original uses Bin RPC
+    # 18089, the public Fast-Wallet WAN proxy accepts 18091, and Cuprate's
+    # loopback gRPC backend accepts 48091. Omitting 18091 would incorrectly
+    # report the backend congestion control as the WAN algorithm.
+    ss -tinm state established '( sport = :18089 or sport = :18091 or sport = :48091 )' >"$r/system/${i}-${stamp}.wallet-tcp" 2>&1 || true
     pid="$(systemctl show -p MainPID --value cuprate.service 2>/dev/null || true)"
     ps -o pid=,ppid=,%cpu=,rss=,etime= -p "$pid" >"$r/system/${i}-${stamp}.process-and-memory" 2>&1 || true
     cat "/proc/$pid/stat" >"$r/system/${i}-${stamp}.process-stat" 2>&1 || true
@@ -129,8 +137,10 @@ printf 'monitor_pid=%s\nserver_started=%s\n' "$(cat "$r/monitor.pid")" "$(date -
 REMOTE
 
 start_ns="$(date +%s%N)"
-MONERO_SYNC_TRACE=1 /usr/bin/time -l "${runner}" \
-  create-restore-refresh mainnet "${result_dir}/wallet" "@${password_file}" \
+client_env=(MONERO_SYNC_TRACE=1 TESTBENCH_SYNC_PROFILE=1 MONERO_LOG_FORMAT='%msg')
+[[ -n "${rust_derivation_workers}" ]] && client_env+=("MONERO_RUST_DERIVATION_WORKERS=${rust_derivation_workers}")
+env "${client_env[@]}" /usr/bin/time -l "${runner}" \
+  create-restore-refresh mainnet "${result_dir}/wallet" "${credential}" \
   "${restore_height}" "${rpc}" "${grpc}" "${timeout_seconds}" \
   >"${result_dir}/client.log" 2>&1 &
 client_pid=$!
@@ -157,8 +167,33 @@ process_sampler_pid=$!
 ) >"${result_dir}/client-network.csv" &
 network_sampler_pid=$!
 
-printf 'client_time_wrapper_pid=%s\nprocess_sampler_pid=%s\nnetwork_sampler_pid=%s\nstart_ns=%s\n' \
-  "${client_pid}" "${process_sampler_pid}" "${network_sampler_pid}" "${start_ns}" >"${result_dir}/local-pids.txt"
+# Count actual established TCP sockets separately from gRPC Channel objects.
+# gRPC may merge multiple Channel objects onto one shared subchannel unless the
+# Core explicitly requests local subchannel pools, so log endpoints rather than
+# inferring physical fan-out from client handles.
+socket_port="${grpc##*:}"
+[[ "${variant}" == "original" ]] && socket_port="${rpc##*:}"
+(
+  while kill -0 "${client_pid}" 2>/dev/null; do
+    target="${client_pid}"
+    child="$(pgrep -P "${client_pid}" 2>/dev/null | head -n 1 || true)"
+    [[ -n "${child}" ]] && target="${child}"
+    stamp="$(date +%s%N)"
+    printf '%s\t.\n' "${stamp}"
+    { lsof -nP -a -p "${target}" -iTCP -sTCP:ESTABLISHED -F n 2>/dev/null || true; } |
+      awk -v stamp="${stamp}" -v port=":${socket_port}" '
+        substr($0, 1, 1) == "n" && index($0, "->") && index($0, port) {
+          printf "%s\t%s\n", stamp, substr($0, 2)
+        }
+      '
+    sleep 1
+  done
+) >"${result_dir}/client-sockets.tsv" &
+socket_sampler_pid=$!
+
+printf 'client_time_wrapper_pid=%s\nprocess_sampler_pid=%s\nnetwork_sampler_pid=%s\nsocket_sampler_pid=%s\nstart_ns=%s\n' \
+  "${client_pid}" "${process_sampler_pid}" "${network_sampler_pid}" \
+  "${socket_sampler_pid}" "${start_ns}" >"${result_dir}/local-pids.txt"
 
 set +e
 wait "${client_pid}"
@@ -167,32 +202,59 @@ set -e
 process_end_ns="$(date +%s%N)"
 wait "${process_sampler_pid}" || true
 wait "${network_sampler_pid}" || true
+wait "${socket_sampler_pid}" || true
 end_ns="$(date +%s%N)"
 process_elapsed_ms=$(((process_end_ns - start_ns) / 1000000))
 harness_elapsed_ms=$(((end_ns - start_ns) / 1000000))
 
-# nettop's counter is per process/socket observation and may reset after a
-# socket disappears. Preserve the raw CSV and make the reset correction
-# explicit and reproducible here rather than treating a reset as no traffic.
+# nettop reports the aggregate of sockets that still exist at each sample. A
+# decrease therefore means that a socket disappeared; carrying the earlier
+# aggregate into the next value would double-count it. Preserve the raw CSV
+# and report the observed peak as a conservative lower bound.
 awk -F, -v elapsed_ms="${process_elapsed_ms}" '
   $1 != "time" && $5 ~ /^[0-9]+$/ {
     value = $5 + 0
-    if (!seen) { previous = value; seen = 1 }
-    else { if (value < previous) { carried += previous; resets += 1 }; previous = value }
+    if (!seen) { previous = value; peak = value; seen = 1 }
+    else {
+      if (value < previous) {
+        decreases += 1
+        if (value < previous * 0.5) material_decreases += 1
+        else minor_decreases += 1
+      }
+      previous = value
+      if (value > peak) peak = value
+    }
     samples += 1
   }
   END {
-    print "definition=client TCP RX payload bytes from nettop; packet headers excluded; counter resets carried forward"
+    print "definition=peak observed aggregate client TCP RX payload bytes from nettop; packet headers excluded; lower bound because closed sockets disappear from the aggregate"
     printf "process_elapsed_ms=%s\n", elapsed_ms
     printf "valid_samples=%d\n", samples
-    printf "counter_resets=%d\n", resets
+    printf "counter_decreases=%d\n", decreases
+    printf "material_counter_decreases=%d\n", material_decreases
+    printf "minor_counter_decreases=%d\n", minor_decreases
+    print "tcp_rx_exact=false"
     if (seen && elapsed_ms > 0) {
-      total = carried + previous
-      printf "tcp_rx_bytes=%d\n", total
-      printf "tcp_rx_mib_per_s=%.6f\n", total / 1048576 / (elapsed_ms / 1000)
+      printf "tcp_rx_bytes=%d\n", peak
+      printf "tcp_rx_mib_per_s=%.6f\n", peak / 1048576 / (elapsed_ms / 1000)
     } else { print "tcp_rx_bytes=unavailable"; print "tcp_rx_mib_per_s=unavailable" }
   }
 ' "${result_dir}/client-network.csv" >"${result_dir}/client-network-accounting.txt"
+
+awk -F '\t' '
+  $2 == "." { samples += 1; current = $1; count[current] += 0; next }
+  $2 != "" { count[$1] += 1; endpoints[$2] = 1 }
+  END {
+    max = 0
+    for (stamp in count) if (count[stamp] > max) max = count[stamp]
+    unique = 0
+    for (endpoint in endpoints) unique += 1
+    print "definition=established client TCP sockets to the selected block endpoint, sampled by lsof; distinct from gRPC Channel handles"
+    printf "socket_samples=%d\n", samples
+    printf "max_simultaneous_endpoint_sockets=%d\n", max
+    printf "unique_endpoint_sockets_observed=%d\n", unique
+  }
+' "${result_dir}/client-sockets.tsv" >"${result_dir}/client-socket-accounting.txt"
 
 {
   printf 'finished_utc=%s\nclient_exit_status=%s\nprocess_elapsed_ms=%s\nharness_elapsed_ms=%s\nserver_postflight:\n' \
@@ -248,12 +310,33 @@ if [[ "${variant}" == scanpack ]] && ! grep -q '^scanpack_hit_observed=true$' "$
   admission_status=1
 fi
 
+wallet_files_bytes=0
+for wallet_file in "${result_dir}/wallet" "${result_dir}/wallet.keys"; do
+  if [[ -f "${wallet_file}" ]]; then
+    file_bytes="$(wc -c <"${wallet_file}" | tr -d '[:space:]')"
+    [[ "${file_bytes}" =~ ^[0-9]+$ ]] || {
+      echo "wallet storage measurement failed" >&2
+      exit 1
+    }
+    wallet_files_bytes=$((wallet_files_bytes + file_bytes))
+  fi
+done
+printf 'wallet_files_bytes=%s\n' "${wallet_files_bytes}" >"${result_dir}/wallet-storage-bytes.txt"
+
 (
   cd "${result_dir}"
   shasum -a 256 client.log client-process.tsv client-network.csv client-network-accounting.txt \
-    preflight.txt local-pids.txt admission-check.txt server-service-journal.log server-system.tar.gz \
+    client-sockets.tsv client-socket-accounting.txt preflight.txt local-pids.txt \
+    admission-check.txt wallet-storage-bytes.txt \
+    server-service-journal.log server-system.tar.gz \
     >local-artifact-sha256.txt
 )
+
+# The generated seed exists only inside the encrypted benchmark wallet. Its
+# byte size is captured by the strict summarizer before this deletion; neither
+# a wallet nor a credential is retained in the result artifact.
+rm -f "${result_dir}/wallet" "${result_dir}/wallet.keys" \
+  "${result_dir}/wallet.address.txt"
 
 printf 'result_dir=%s\nclient_status=%s\nprocess_elapsed_ms=%s\nharness_elapsed_ms=%s\n' \
   "${result_dir}" "${client_status}" "${process_elapsed_ms}" "${harness_elapsed_ms}"

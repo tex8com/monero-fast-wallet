@@ -4,6 +4,7 @@ export type IncomingTransactionNotice = {
   id: string;
   walletId: string;
   walletName: string;
+  direction: 'in' | 'out';
   amountAtomic: string;
   pending: boolean;
   confirmations: number;
@@ -31,8 +32,11 @@ function transactionKey(transaction: WalletTransaction): string {
   ].join(':');
 }
 
-function isIncomingPayment(transaction: WalletTransaction): boolean {
-  if (transaction.direction !== 'in' || transaction.failed) {
+function isNotifiablePayment(transaction: WalletTransaction): boolean {
+  if (
+    (transaction.direction !== 'in' && transaction.direction !== 'out') ||
+    transaction.failed
+  ) {
     return false;
   }
 
@@ -67,19 +71,19 @@ export class IncomingTransactionObserver {
     announceInitial = false,
   }: ObserveIncomingTransactionsInput): IncomingTransactionNotice[] {
     const known = this.knownByWallet.get(walletId);
-    const incoming = newestFirst(transactions.filter(isIncomingPayment));
+    const payments = newestFirst(transactions.filter(isNotifiablePayment));
     const currentKeys = new Set(transactions.map(transactionKey));
 
     if (!known) {
       this.knownByWallet.set(walletId, currentKeys);
-      if (!announceInitial || incoming.length === 0) {
+      if (!announceInitial || payments.length === 0) {
         return [];
       }
 
-      return [this.toNotice(walletId, walletName, incoming[0])];
+      return [this.toNotice(walletId, walletName, payments[0])];
     }
 
-    const notices = incoming
+    const notices = payments
       .filter(transaction => !known.has(transactionKey(transaction)))
       .map(transaction => this.toNotice(walletId, walletName, transaction));
 
@@ -100,6 +104,7 @@ export class IncomingTransactionObserver {
       id: `${walletId}:${transactionKey(transaction)}`,
       walletId,
       walletName,
+      direction: transaction.direction === 'out' ? 'out' : 'in',
       amountAtomic: transaction.amountAtomic,
       pending: transaction.pending,
       confirmations: transaction.confirmations,

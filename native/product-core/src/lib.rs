@@ -6,6 +6,7 @@
 
 pub mod app_vault;
 pub mod fast_wallet_coordinator;
+pub mod fast_wallet_hosting;
 pub mod wallet_lifecycle;
 
 use std::cell::RefCell;
@@ -981,6 +982,31 @@ pub unsafe extern "C" fn mfw_fast_wallet_operation_plan_v1(
         return contract::ERROR_INVALID_ARGUMENT;
     }
     match fast_wallet_coordinator::operation_plan(&*input) {
+        Ok(plan) => {
+            *output = plan;
+            contract::ERROR_OK
+        }
+        Err(error) => error,
+    }
+}
+
+#[no_mangle]
+/// Plans one hosted Fast-Wallet watch step without performing I/O.
+///
+/// The ABI contains only enum values and booleans.  In particular it cannot
+/// receive an address, descriptor, assignment handle, installation capability,
+/// view key or encrypted envelope.
+///
+/// # Safety
+/// `input` must be a readable V1 value and `output` must be writable.
+pub unsafe extern "C" fn mfw_fast_wallet_hosting_plan_compute_v1(
+    input: *const fast_wallet_hosting::MfwFastWalletHostingInputV1,
+    output: *mut fast_wallet_hosting::MfwFastWalletHostingPlanV1,
+) -> u32 {
+    if input.is_null() || output.is_null() {
+        return contract::ERROR_INVALID_ARGUMENT;
+    }
+    match fast_wallet_hosting::operation_plan(&*input) {
         Ok(plan) => {
             *output = plan;
             contract::ERROR_OK

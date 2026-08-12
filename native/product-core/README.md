@@ -27,3 +27,23 @@ The product CLI packages Product-Core as a sibling dynamic library (`.dylib`
 on macOS, `.so` on Linux). This avoids linking two Rust standard-library copies
 into one process. Tauri links the Rust crate directly; Mobile compiles the same
 generated ABI/version/hash contracts into its native and platform adapters.
+
+## Hosted Fast Wallet watches
+
+`mfw_fast_wallet_hosting_plan_compute_v1` is a pure, crash-safe planning ABI
+for hosted receive watches. It accepts only lifecycle enums and booleans; it
+cannot receive a wallet address, Worker descriptor/root, assignment handle,
+installation capability, View Key or envelope.
+
+For enrolment it returns exactly one durable next action:
+
+`pending local → Gateway assignment → delivery enabled → seal watch → Relay accepted → active`.
+
+`worker_enrolled` becomes true only at the final, durably committed stage.
+Revocation is likewise ordered: delete the remote assignment first, then clear
+the local assignment state. It intentionally never disables installation-wide
+delivery, because another Fast Wallet may still use that installation.
+
+The planner does not implement a network client and does not attest a Gateway
+response. Each platform's secure storage and authorized transport adapter must
+prove the corresponding input predicate before executing its returned action.

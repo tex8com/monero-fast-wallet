@@ -14,6 +14,11 @@ desktop_dir="$(cd "${script_dir}/.." && pwd)"
 repo_root="$(cd "${desktop_dir}/../.." && pwd)"
 source "${repo_root}/native/monero-bridge/scripts/prepare-common-monero-core.sh"
 monero_source_dir="${MONERO_SOURCE_DIR}"
+monero_patch_count="$(awk 'NF && $1 !~ /^#/ { count += 1 } END { print count + 0 }' "${repo_root}/third_party/monero-patches/series")"
+product_commit="$(git -C "${repo_root}" rev-parse HEAD)"
+product_dirty=false
+[[ -z "$(git -C "${repo_root}" status --porcelain)" ]] || product_dirty=true
+feature_manifest_hash="$(shasum -a 256 "${repo_root}/config/v1-release-features.json" | awk '{print $1}')"
 
 if [[ -z "${monero_source_dir}" || ! -f "${monero_source_dir}/CMakeLists.txt" ]]; then
   echo "Pinned Monero source was not found. Set MONERO_SOURCE_DIR to the fork checkout." >&2
@@ -59,6 +64,9 @@ grpc_sdk_prefix="${MONERO_DESKTOP_GRPC_SDK_PREFIX:-${grpc_sdk_root}/${grpc_sdk_v
 product_core_root="${MFW_PRODUCT_CORE_ROOT:-${repo_root}/native/product-core}"
 product_core_target_dir="${MONERO_DESKTOP_PRODUCT_CORE_TARGET_DIR:-${MONERO_COMMON_CORE_BUILD_ROOT}/desktop-product-core-macos-${MONERO_COMMON_CORE_TREE}}"
 product_core_library="${product_core_target_dir}/release/libmfw_product_core.dylib"
+fast_wallet_protocol_root="${repo_root}/native/fast-wallet-protocol"
+fast_wallet_protocol_target_dir="${MONERO_DESKTOP_FAST_WALLET_PROTOCOL_TARGET_DIR:-${MONERO_COMMON_CORE_BUILD_ROOT}/desktop-fast-wallet-protocol-macos-${MONERO_COMMON_CORE_TREE}}"
+fast_wallet_protocol_library="${fast_wallet_protocol_target_dir}/release/libfast_wallet_protocol.dylib"
 community_build_root="${MONERO_DESKTOP_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
 community_cache_dir="${TEX8_HARRIER_CACHE_DIRECTORY:-${community_build_root}/harrier}"
 community_runtime_library="${DESKTOP_COMMUNITY_HARRIER_RUNTIME_LIBRARY:-${community_cache_dir}/native-runtime-build/libtex8_community_harrier_runtime.a}"
@@ -92,6 +100,10 @@ fi
 if [[ ! -f "${product_core_root}/include/mfw_product_core.h" ||
       ! -f "${product_core_root}/generated/c/mfw_product_core_contract.h" ]]; then
   echo "Missing generated Product-Core ABI headers: ${product_core_root}" >&2
+  return 65 2>/dev/null || exit 65
+fi
+if [[ ! -f "${fast_wallet_protocol_root}/include/fast_wallet_protocol.h" ]]; then
+  echo "Missing Fast Wallet protocol C ABI header: ${fast_wallet_protocol_root}" >&2
   return 65 2>/dev/null || exit 65
 fi
 boost_archiver="$(xcrun --find libtool 2>/dev/null || true)"
@@ -182,7 +194,7 @@ export MONERO_GRPC_PKG_CONFIG_PATH="${PKG_CONFIG_LIBDIR}"
   echo "Pinned desktop gRPC pkg-config isolation failed." >&2
   return 1 2>/dev/null || exit 1
 }
-mkdir -p "${depends_prefix}" "${monero_build_dir}" "${fast_crypto_target_dir}" "${product_core_target_dir}"
+mkdir -p "${depends_prefix}" "${monero_build_dir}" "${fast_crypto_target_dir}" "${product_core_target_dir}" "${fast_wallet_protocol_target_dir}"
 if [[ -n "${TMPDIR:-}" ]]; then
   # External build roots commonly point TMPDIR at a disposable volume path.
   # Clang and native Rust dependencies fail with a misleading compiler error
@@ -194,6 +206,13 @@ RUSTFLAGS='-C link-arg=-Wl,-install_name,@rpath/libmfw_product_core.dylib' \
     --target-dir "${product_core_target_dir}"
 if [[ ! -f "${product_core_library}" ]]; then
   echo "Product-Core runtime library was not produced: ${product_core_library}" >&2
+  return 65 2>/dev/null || exit 65
+fi
+RUSTFLAGS='-C link-arg=-Wl,-install_name,@rpath/libfast_wallet_protocol.dylib' \
+  cargo build --release --locked --manifest-path "${fast_wallet_protocol_root}/Cargo.toml" \
+  --target-dir "${fast_wallet_protocol_target_dir}"
+if [[ ! -f "${fast_wallet_protocol_library}" ]]; then
+  echo "Fast Wallet protocol runtime library was not produced: ${fast_wallet_protocol_library}" >&2
   return 65 2>/dev/null || exit 65
 fi
 "${repo_root}/native/monero-bridge/scripts/build-desktop-fast-crypto.sh" \
@@ -208,6 +227,10 @@ if [[ -f "${cmake_cache_path}" ]]; then
   cached_source_dir="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${cmake_cache_path}" | head -n 1)"
   if [[ -n "${cached_source_dir}" && "${cached_source_dir}" != "${monero_source_dir}" ]]; then
     echo "Refreshing stale CMake source binding: ${cached_source_dir} -> ${monero_source_dir}"
+    # Monero configures translations as an independent nested CMake project.
+    # A top-level --fresh does not clear that nested cache, which otherwise
+    # remains bound to the previous authenticated source checkout.
+    cmake -E rm -f "${monero_build_dir}/translations/CMakeCache.txt"
     cmake_configure_args=(--fresh "${cmake_configure_args[@]}")
   fi
 fi
@@ -236,6 +259,12 @@ fi
   -DPROTOC_PATH="${grpc_sdk_prefix}/bin/protoc" \
   -DMFW_PRODUCT_CORE_ROOT="${product_core_root}" \
   -DMFW_PRODUCT_CORE_LIBRARY="${product_core_library}" \
+  -DMFW_FAST_WALLET_PROTOCOL_ROOT="${fast_wallet_protocol_root}" \
+  -DMFW_FAST_WALLET_PROTOCOL_LIBRARY="${fast_wallet_protocol_library}" \
+  -DMFW_MONERO_PATCH_COUNT="${monero_patch_count}" \
+  -DMFW_PRODUCT_COMMIT="${product_commit}" \
+  -DMFW_PRODUCT_DIRTY="${product_dirty}" \
+  -DMFW_FEATURE_MANIFEST_HASH="${feature_manifest_hash}" \
   -DRANDOMX_ENABLE_JIT=OFF \
   -DMONERO_FAST_CRYPTO_LIBRARY="${fast_crypto_target_dir}/release/libmonero_fast_crypto.a" \
   -DMANUAL_SUBMODULES=1

@@ -6,7 +6,15 @@ import {
 
 export const FAST_RECEIVE_IDENTITIES_STORAGE_KEY =
   'monero-fast-wallet.fast-receive-identities.v1';
+export const RETIRED_FAST_WALLET_SLOTS_STORAGE_KEY =
+  'monero-fast-wallet.retired-fast-wallet-slots.v1';
 export const INDEPENDENT_FAST_RECEIVE_ID_PREFIX = 'fast-receive-v2-';
+/**
+ * Product namespace slot, not a Monero account/subaddress index. Until the
+ * reviewed deterministic Fast-root construction ships, the slot labels an
+ * independently random, separately backed-up Fast Wallet.
+ */
+export const DEFAULT_FAST_WALLET_PRODUCT_SLOT = 199;
 const FAST_RECEIVE_ID_PATTERN = /^[0-9A-Za-z_-]{1,80}$/;
 export const LEGACY_FAST_RECEIVE_DISABLED_MESSAGE =
   'This legacy Fast Wallet is disabled because its seed can reveal the source wallet. Keep its wallet files and use the guarded migration/recovery flow.';
@@ -47,6 +55,73 @@ export interface FastReceiveIdentityRecord {
   watchMessageId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RetiredFastWalletSlot {
+  network: MoneroNetwork;
+  productSlot: number;
+  retiredAt: string;
+}
+
+/**
+ * A retired slot contains no wallet address, key, path, or scanner handle.
+ * It is only a local confidentiality tombstone: a private view key that was
+ * once hosted cannot be made unknown by deleting the wallet files.
+ */
+export async function loadRetiredFastWalletSlots(): Promise<
+  RetiredFastWalletSlot[]
+> {
+  const value = await loadProtectedMetadata(
+    RETIRED_FAST_WALLET_SLOTS_STORAGE_KEY,
+  );
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap(item => {
+      if (!isRecord(item)) return [];
+      const network = parseNetwork(item.network);
+      const productSlot = parseNumber(item.productSlot);
+      const retiredAt = parseString(item.retiredAt);
+      if (
+        !network ||
+        !Number.isSafeInteger(productSlot) ||
+        productSlot! < 1 ||
+        productSlot! > 999 ||
+        !retiredAt
+      ) {
+        return [];
+      }
+      return [{ network, productSlot: productSlot!, retiredAt }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function reserveRetiredFastWalletSlot(
+  network: MoneroNetwork,
+  productSlot: number,
+  retiredAt = new Date().toISOString(),
+): Promise<RetiredFastWalletSlot[]> {
+  if (
+    !Number.isSafeInteger(productSlot) ||
+    productSlot < 1 ||
+    productSlot > 999
+  ) {
+    throw new Error('Fast Wallet slot must be a whole number from 1 to 999.');
+  }
+  const current = await loadRetiredFastWalletSlots();
+  const next = current.some(
+    item => item.network === network && item.productSlot === productSlot,
+  )
+    ? current
+    : [...current, { network, productSlot, retiredAt }];
+  await storeProtectedMetadata(
+    RETIRED_FAST_WALLET_SLOTS_STORAGE_KEY,
+    JSON.stringify(next),
+  );
+  return next;
 }
 
 export async function loadFastReceiveIdentities(): Promise<
@@ -144,12 +219,20 @@ export function createFastReceiveIdentityRecord(
 
 export function nextFastReceiveDerivationIndex(
   identities: FastReceiveIdentityRecord[],
+  retiredSlots: ReadonlyArray<number> = [],
 ): number {
-  if (identities.length === 0) {
-    return 0;
+  if (identities.length === 0 && retiredSlots.length === 0) {
+    return DEFAULT_FAST_WALLET_PRODUCT_SLOT;
   }
 
-  return Math.max(...identities.map(identity => identity.derivationIndex)) + 1;
+  return Math.max(
+    DEFAULT_FAST_WALLET_PRODUCT_SLOT,
+    Math.max(
+      0,
+      ...identities.map(identity => identity.derivationIndex),
+      ...retiredSlots,
+    ) + 1,
+  );
 }
 
 export function createFastReceiveIdentityId(
@@ -210,9 +293,7 @@ function normalizeFastReceiveIdentity(
     notificationsEnabled: identity.notificationsEnabled === true,
     assignmentHandle: cleanOptionalHex(identity.assignmentHandle, 32),
     assignmentEpoch: optionalPositiveInteger(identity.assignmentEpoch),
-    assignmentExpiresAt: optionalPositiveInteger(
-      identity.assignmentExpiresAt,
-    ),
+    assignmentExpiresAt: optionalPositiveInteger(identity.assignmentExpiresAt),
     workerKind: normalizeWorkerKind(identity.workerKind),
     workerDescriptorHex: cleanOptionalCanonicalHex(
       identity.workerDescriptorHex,
@@ -353,11 +434,7 @@ function optionalNonNegativeNumber(
 function optionalPositiveInteger(
   value: number | undefined,
 ): number | undefined {
-  if (
-    value === undefined ||
-    !Number.isSafeInteger(value) ||
-    value <= 0
-  ) {
+  if (value === undefined || !Number.isSafeInteger(value) || value <= 0) {
     return undefined;
   }
   return value;

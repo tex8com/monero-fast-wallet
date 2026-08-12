@@ -9,6 +9,26 @@
 #include <cstdint>
 #include <string>
 
+namespace {
+
+constexpr NSUInteger kLedgerBleDefaultFrameSize = 20;
+constexpr NSUInteger kLedgerBleMaxFrameSize = 255;
+constexpr uint8_t kLedgerBleApduTag = 0x05;
+constexpr uint8_t kLedgerBleGetMtuTag = 0x08;
+constexpr int64_t kLedgerBleNotificationSettleNanoseconds = 120 * NSEC_PER_MSEC;
+constexpr int64_t kLedgerBleProtocolMtuTimeoutNanoseconds = 2500 * NSEC_PER_MSEC;
+
+// Diagnostics deliberately contain only fixed phase labels and bounded public
+// transport metadata. Peripheral identifiers, names, APDUs and wallet data are
+// never logged.
+void ledgerBleDiagnostic(NSString *event, NSString *detail = nil) {
+  NSLog(@"MONERO_WALLET_DIAGNOSTICS native=macos scope=ledgerBleExchange event=%@%@",
+        event,
+        detail.length == 0 ? @"" : [@" " stringByAppendingString:detail]);
+}
+
+}  // namespace
+
 dispatch_queue_t ledgerBleQueue() {
   static dispatch_queue_t queue;
   static dispatch_once_t once;
@@ -59,18 +79,18 @@ BOOL hasKnownLedgerServiceAdvertisement(
   return NO;
 }
 
-NSArray<NSData *> *framesForCommand(NSData *command) {
-  static constexpr NSUInteger kMtu = 20;
-  if (command.length > UINT16_MAX) return @[];
+NSArray<NSData *> *framesForCommand(NSData *command, NSUInteger frameSize) {
+  if (command.length > UINT16_MAX || frameSize <= 5 ||
+      frameSize > kLedgerBleMaxFrameSize) return @[];
   NSMutableArray<NSData *> *frames = [NSMutableArray array];
   NSUInteger offset = 0;
   uint16_t index = 0;
   do {
     const NSUInteger header = index == 0 ? 5 : 3;
-    const NSUInteger payload = MIN(kMtu - header, command.length - offset);
+    const NSUInteger payload = MIN(frameSize - header, command.length - offset);
     NSMutableData *frame = [NSMutableData dataWithLength:header + payload];
     auto *bytes = static_cast<uint8_t *>(frame.mutableBytes);
-    bytes[0] = 0x05;
+    bytes[0] = kLedgerBleApduTag;
     bytes[1] = static_cast<uint8_t>((index >> 8) & 0xff);
     bytes[2] = static_cast<uint8_t>(index & 0xff);
     if (index == 0) {
@@ -98,6 +118,7 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
 - (BOOL)isConnected;
 - (NSData *)exchange:(NSData *)command userInput:(BOOL)userInput;
 - (std::string)connectionStatus;
+- (void)startProtocolMtuQuery:(CBPeripheral *)peripheral;
 @end
 
 @implementation DesktopLedgerBleTransport {
@@ -118,6 +139,11 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   NSString *_responseError;
   NSUInteger _expectedLength;
   uint16_t _nextIndex;
+  NSUInteger _frameSize;
+  BOOL _protocolMtuPending;
+  BOOL _protocolMtuWriteOutstanding;
+  BOOL _protocolMtuResponseReceived;
+  NSString *_lastExchangeError;
 }
 
 + (instancetype)shared {
@@ -132,6 +158,7 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   if (self) {
     _condition = [[NSCondition alloc] init];
     _exchangeLock = [[NSLock alloc] init];
+    _frameSize = kLedgerBleDefaultFrameSize;
   }
   return self;
 }
@@ -144,7 +171,8 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   CBPeripheral *previousPeripheral = _peripheral;
   CBPeripheral *peripheral = candidates.firstObject;
   const BOOL changed = previousPeripheral != nil &&
-      ![previousPeripheral.identifier isEqual:peripheral.identifier];
+      (![previousPeripheral.identifier isEqual:peripheral.identifier] ||
+       previousCentral != central);
   _central = central;
   _candidates = [candidates copy];
   _candidateIndex = 0;
@@ -152,7 +180,12 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   _ready = NO;
   _write = nil;
   _notify = nil;
+  _frameSize = kLedgerBleDefaultFrameSize;
+  _protocolMtuPending = NO;
+  _protocolMtuWriteOutstanding = NO;
+  _protocolMtuResponseReceived = NO;
   _connectionError = nil;
+  _lastExchangeError = nil;
   [_condition unlock];
   if (changed && previousCentral != nil && previousPeripheral != nil) {
     dispatch_async(ledgerBleQueue(), ^{
@@ -163,8 +196,11 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
 
 - (BOOL)isSelectedPeripheral:(CBPeripheral *)peripheral {
   [_condition lock];
-  const BOOL selected = _peripheral != nil &&
-      [_peripheral.identifier isEqual:peripheral.identifier];
+  // CoreBluetooth may deliver a delayed callback from a previous central
+  // after a fresh scan selected a new CBPeripheral object with the same UUID.
+  // Object identity prevents that stale callback from tearing down the new
+  // connection.
+  const BOOL selected = _peripheral == peripheral;
   [_condition unlock];
   return selected;
 }
@@ -181,6 +217,10 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   CBPeripheral *next = _peripheral;
   _write = nil;
   _notify = nil;
+  _frameSize = kLedgerBleDefaultFrameSize;
+  _protocolMtuPending = NO;
+  _protocolMtuWriteOutstanding = NO;
+  _protocolMtuResponseReceived = NO;
   _connectionError = nil;
   [_condition unlock];
   dispatch_async(ledgerBleQueue(), ^{
@@ -210,8 +250,19 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   }
   _ready = NO;
   _connectionError = nil;
+  _frameSize = kLedgerBleDefaultFrameSize;
+  _protocolMtuPending = NO;
+  _protocolMtuWriteOutstanding = NO;
+  _protocolMtuResponseReceived = NO;
   [_condition unlock];
-  if (central == nil || peripheral == nil) return NO;
+  if (central == nil || peripheral == nil) {
+    [_condition lock];
+    _connectionError = @"No Ledger Bluetooth device is selected.";
+    [_condition unlock];
+    ledgerBleDiagnostic(@"connection.failed", @"reason=no-selected-device");
+    return NO;
+  }
+  ledgerBleDiagnostic(@"connection.start");
   dispatch_async(ledgerBleQueue(), ^{
     central.delegate = self;
     peripheral.delegate = self;
@@ -233,13 +284,23 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
     }
     const BOOL connected = _ready && _connectionError == nil;
     const BOOL timedOut = !_ready && _connectionError == nil;
+    const NSUInteger connectedFrameSize = _frameSize;
     [_condition unlock];
-    if (connected) return YES;
-    if (!timedOut) return NO;
+    if (connected) {
+      ledgerBleDiagnostic(@"connection.ready",
+                          [NSString stringWithFormat:@"frameSize=%lu",
+                                                     static_cast<unsigned long>(connectedFrameSize)]);
+      return YES;
+    }
+    if (!timedOut) {
+      ledgerBleDiagnostic(@"connection.failed", @"reason=gatt-setup");
+      return NO;
+    }
     if (![self advanceToNextCandidate]) {
       [_condition lock];
       _connectionError = @"Ledger Bluetooth connection timed out.";
       [_condition unlock];
+      ledgerBleDiagnostic(@"connection.failed", @"reason=timeout");
       return NO;
     }
   }
@@ -252,6 +313,10 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   _ready = NO;
   _write = nil;
   _notify = nil;
+  _frameSize = kLedgerBleDefaultFrameSize;
+  _protocolMtuPending = NO;
+  _protocolMtuWriteOutstanding = NO;
+  _protocolMtuResponseReceived = NO;
   [_condition broadcast];
   [_condition unlock];
   if (central != nil && peripheral != nil) {
@@ -270,7 +335,8 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   [_condition lock];
   const BOOL selected = _peripheral != nil;
   const BOOL connected = _ready && _peripheral.state == CBPeripheralStateConnected;
-  NSString *message = _connectionError ?: (connected
+  const NSUInteger frameSize = _frameSize;
+  NSString *message = _lastExchangeError ?: _connectionError ?: (connected
       ? @"Ledger Bluetooth transport is connected."
       : selected
           ? @"Ledger Bluetooth transport has a selected device."
@@ -281,6 +347,7 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
     @"transport": @"ble",
     @"selected": @(selected),
     @"connected": @(connected),
+    @"frameSize": @(frameSize),
     @"message": message,
   };
   NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
@@ -290,12 +357,28 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
 
 - (NSData *)exchange:(NSData *)command userInput:(BOOL)userInput {
   [_exchangeLock lock];
+  ledgerBleDiagnostic(@"exchange.start",
+                      userInput ? @"userInput=true" : @"userInput=false");
+  [_condition lock];
+  _lastExchangeError = nil;
+  [_condition unlock];
   if (![self connect]) {
+    [_condition lock];
+    _lastExchangeError = _connectionError ?: @"Ledger Bluetooth connection failed.";
+    [_condition unlock];
+    ledgerBleDiagnostic(@"exchange.failed", @"reason=connection");
     [_exchangeLock unlock];
     return nil;
   }
-  NSArray<NSData *> *frames = framesForCommand(command);
+  [_condition lock];
+  const NSUInteger frameSize = _frameSize;
+  [_condition unlock];
+  NSArray<NSData *> *frames = framesForCommand(command, frameSize);
   if (frames.count == 0) {
+    [_condition lock];
+    _lastExchangeError = @"Ledger Bluetooth command framing failed.";
+    [_condition unlock];
+    ledgerBleDiagnostic(@"exchange.failed", @"reason=framing");
     [_exchangeLock unlock];
     return nil;
   }
@@ -342,8 +425,78 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
     result = _completeResponse;
     [_condition unlock];
   }
+  [_condition lock];
+  if (result == nil) {
+    _lastExchangeError = _responseError ?: _writeError ?:
+        @"Ledger Bluetooth exchange failed.";
+  } else {
+    _lastExchangeError = nil;
+  }
+  NSString *failure = _lastExchangeError;
+  [_condition unlock];
+  ledgerBleDiagnostic(result == nil ? @"exchange.failed" : @"exchange.complete",
+                      result == nil
+                          ? ([failure containsString:@"write"]
+                                 ? @"reason=write"
+                                 : [failure containsString:@"response"]
+                                       ? @"reason=response"
+                                       : @"reason=transport")
+                          : (userInput ? @"userInput=true" : @"userInput=false"));
   [_exchangeLock unlock];
   return result;
+}
+
+- (void)startProtocolMtuQuery:(CBPeripheral *)peripheral {
+  [_condition lock];
+  const BOOL selected = _peripheral == peripheral;
+  if (!selected || _write == nil ||
+      peripheral.state != CBPeripheralStateConnected) {
+    [_condition unlock];
+    [self fail:@"Ledger Bluetooth protocol handshake could not start."];
+    return;
+  }
+  CBCharacteristic *write = _write;
+  _frameSize = kLedgerBleDefaultFrameSize;
+  _protocolMtuPending = YES;
+  _protocolMtuWriteOutstanding = YES;
+  _protocolMtuResponseReceived = NO;
+  [_condition unlock];
+
+  const uint8_t queryBytes[] = {kLedgerBleGetMtuTag, 0x00, 0x00, 0x00, 0x00};
+  NSData *query = [NSData dataWithBytes:queryBytes length:sizeof(queryBytes)];
+  ledgerBleDiagnostic(@"protocolMtu.write.started");
+  [peripheral writeValue:query
+       forCharacteristic:write
+                    type:CBCharacteristicWriteWithResponse];
+
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, kLedgerBleProtocolMtuTimeoutNanoseconds),
+      ledgerBleQueue(), ^{
+        [self->_condition lock];
+        if (!self->_protocolMtuPending || self->_peripheral != peripheral) {
+          [self->_condition unlock];
+          return;
+        }
+        if (self->_protocolMtuWriteOutstanding) {
+          self->_protocolMtuPending = NO;
+          self->_ready = NO;
+          self->_connectionError = @"Ledger Bluetooth protocol handshake timed out.";
+          [self->_condition broadcast];
+          [self->_condition unlock];
+          ledgerBleDiagnostic(@"protocolMtu.failed", @"reason=write-timeout");
+          return;
+        }
+        // Older Ledger firmware can accept notifications without answering
+        // the optional MTU query. The mandatory 20-byte framing remains a
+        // safe, interoperable fallback, matching the working Android path.
+        self->_protocolMtuPending = NO;
+        self->_frameSize = kLedgerBleDefaultFrameSize;
+        self->_ready = YES;
+        self->_connectionError = nil;
+        [self->_condition broadcast];
+        [self->_condition unlock];
+        ledgerBleDiagnostic(@"protocolMtu.fallback", @"frameSize=20");
+      });
 }
 
 - (void)centralManagerDidUpdateState:(CBCentralManager *)central {
@@ -409,24 +562,99 @@ NSArray<NSData *> *framesForCommand(NSData *command) {
   [peripheral setNotifyValue:YES forCharacteristic:_notify];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
-  (void)characteristic;
   if (![self isSelectedPeripheral:peripheral]) return;
   if (error != nil || !characteristic.isNotifying) { [self fail:error.localizedDescription ?: @"Ledger Bluetooth notifications could not be enabled."]; return; }
-  [_condition lock]; _ready = YES; _connectionError = nil; [_condition broadcast]; [_condition unlock];
+  ledgerBleDiagnostic(@"notifications.enabled");
+  // Ledger's reference BLE transports wait briefly after notifications are
+  // enabled, then infer the protocol frame size before sending an APDU. The
+  // delay prevents the first control notification from being dropped.
+  dispatch_after(
+      dispatch_time(DISPATCH_TIME_NOW, kLedgerBleNotificationSettleNanoseconds),
+      ledgerBleQueue(), ^{
+        if ([self isSelectedPeripheral:peripheral]) {
+          [self startProtocolMtuQuery:peripheral];
+        }
+      });
 }
 - (void)peripheral:(CBPeripheral *)peripheral didWriteValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
   (void)characteristic;
   if (![self isSelectedPeripheral:peripheral]) return;
-  [_condition lock]; _writeFinished = error == nil; _writeError = error.localizedDescription; [_condition broadcast]; [_condition unlock];
+  [_condition lock];
+  if (_protocolMtuWriteOutstanding) {
+    _protocolMtuWriteOutstanding = NO;
+    if (error != nil) {
+      _protocolMtuPending = NO;
+      _ready = NO;
+      _connectionError = @"Ledger Bluetooth protocol handshake write failed.";
+    } else if (_protocolMtuResponseReceived) {
+      _protocolMtuPending = NO;
+      _ready = YES;
+      _connectionError = nil;
+    }
+    [_condition broadcast];
+    [_condition unlock];
+    ledgerBleDiagnostic(error == nil ? @"protocolMtu.write.complete"
+                                     : @"protocolMtu.failed",
+                        error == nil ? nil : @"reason=write");
+    return;
+  }
+  _writeFinished = error == nil;
+  _writeError = error == nil ? nil : @"Ledger Bluetooth write failed.";
+  [_condition broadcast];
+  [_condition unlock];
 }
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
   (void)characteristic;
   if (![self isSelectedPeripheral:peripheral]) return;
   [_condition lock];
-  if (error != nil) { _responseError = error.localizedDescription; [_condition broadcast]; [_condition unlock]; return; }
+  if (_protocolMtuPending) {
+    if (error != nil) {
+      _protocolMtuPending = NO;
+      _ready = NO;
+      _connectionError = @"Ledger Bluetooth protocol handshake response failed.";
+      [_condition broadcast];
+      [_condition unlock];
+      ledgerBleDiagnostic(@"protocolMtu.failed", @"reason=response");
+      return;
+    }
+    NSData *controlFrame = characteristic.value;
+    const auto *controlBytes =
+        static_cast<const uint8_t *>(controlFrame.bytes);
+    if (controlFrame.length >= 6 &&
+        controlBytes[0] == kLedgerBleGetMtuTag) {
+      const NSUInteger advertisedFrameSize = controlBytes[5];
+      const NSUInteger maximumWrite =
+          [peripheral maximumWriteValueLengthForType:
+                          CBCharacteristicWriteWithResponse];
+      const NSUInteger boundedFrameSize =
+          MIN(advertisedFrameSize, MIN(maximumWrite, kLedgerBleMaxFrameSize));
+      _frameSize = boundedFrameSize >= kLedgerBleDefaultFrameSize
+                           ? boundedFrameSize
+                           : kLedgerBleDefaultFrameSize;
+      _protocolMtuResponseReceived = YES;
+      if (!_protocolMtuWriteOutstanding) {
+        _protocolMtuPending = NO;
+        _ready = YES;
+        _connectionError = nil;
+      }
+      const NSUInteger negotiatedFrameSize = _frameSize;
+      [_condition broadcast];
+      [_condition unlock];
+      ledgerBleDiagnostic(@"protocolMtu.ready",
+                          [NSString stringWithFormat:@"frameSize=%lu",
+                                                     static_cast<unsigned long>(negotiatedFrameSize)]);
+      return;
+    }
+    // Match Ledger's reference behavior: ignore a stale APDU or another
+    // control notification while the bounded MTU query remains pending.
+    [_condition unlock];
+    ledgerBleDiagnostic(@"protocolMtu.response.ignored");
+    return;
+  }
+  if (error != nil) { _responseError = @"Ledger Bluetooth response failed."; [_condition broadcast]; [_condition unlock]; return; }
   NSData *frame = characteristic.value;
   const auto *bytes = static_cast<const uint8_t *>(frame.bytes);
-  if (frame.length < 3 || bytes[0] != 0x05) {
+  if (frame.length < 3 || bytes[0] != kLedgerBleApduTag) {
     _responseError = @"Ledger Bluetooth response frame is invalid.";
   } else {
     const uint16_t index = static_cast<uint16_t>((bytes[1] << 8) | bytes[2]);
@@ -619,7 +847,61 @@ std::string ledgerBleTransportStatus() {
     tex8::wallet::WalletEngine::setLedgerBleTransportCallbacks(callbacks);
   });
   DesktopLedgerBleProbe *probe = [[DesktopLedgerBleProbe alloc] init];
-  return [probe scan];
+  const std::string scanStatus = [probe scan];
+  NSData *scanData = [NSData dataWithBytes:scanStatus.data()
+                                    length:scanStatus.size()];
+  NSDictionary *decoded = [NSJSONSerialization JSONObjectWithData:scanData
+                                                           options:0
+                                                             error:nil];
+  if (![decoded isKindOfClass:[NSDictionary class]] ||
+      [decoded[@"deviceCount"] integerValue] < 1 ||
+      ![decoded[@"supported"] boolValue] ||
+      ![decoded[@"permissionGranted"] boolValue]) {
+    return scanStatus;
+  }
+
+  // Match the working React Native flow: discovery alone is not readiness.
+  // Establish GATT, enable notifications and finish Ledger's protocol-MTU
+  // handshake before the UI is allowed to offer wallet creation.
+  DesktopLedgerBleTransport *transport = [DesktopLedgerBleTransport shared];
+  const BOOL connected = [transport connect];
+  const std::string connectionStatus = [transport connectionStatus];
+  NSData *connectionData = [NSData dataWithBytes:connectionStatus.data()
+                                          length:connectionStatus.size()];
+  NSDictionary *connection =
+      [NSJSONSerialization JSONObjectWithData:connectionData options:0 error:nil];
+  NSMutableDictionary *payload = [decoded mutableCopy];
+  payload[@"available"] = @(connected);
+  payload[@"requiresUserAction"] = @(!connected);
+  payload[@"connected"] = @(connected);
+  if ([connection isKindOfClass:[NSDictionary class]]) {
+    if (connection[@"frameSize"] != nil) {
+      payload[@"frameSize"] = connection[@"frameSize"];
+    }
+    if (connection[@"message"] != nil) {
+      payload[@"message"] = connection[@"message"];
+    }
+  }
+  if (connected) {
+    payload[@"message"] =
+        @"Ledger Nano is connected. Keep it unlocked with the Monero app open.";
+  }
+  NSData *payloadData =
+      [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+  if (payloadData == nil) return scanStatus;
+  return std::string(static_cast<const char *>(payloadData.bytes),
+                     payloadData.length);
+}
+
+std::string ledgerBleConnectionPreflight() {
+  // Discovery installs callbacks and selects only a bounded candidate list.
+  // A connection alone performs no APDU exchange, wallet open or key access.
+  (void)ledgerBleTransportStatus();
+  DesktopLedgerBleTransport *transport = [DesktopLedgerBleTransport shared];
+  (void)[transport connect];
+  const std::string status = [transport connectionStatus];
+  [transport disconnect];
+  return status;
 }
 
 std::string ledgerBleConnectionStatus() {

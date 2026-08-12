@@ -31,7 +31,15 @@ const expectedBaseTree = lock.match(/^upstream_tree=([0-9a-f]{40})$/m)?.[1];
 const cliPatchName = '0035-wallet-cli-add-product-entrypoint-and-debug-bootstrap.patch';
 const productCorePatchName = '0036-wallet-cli-link-shared-product-core-ABI.patch';
 const appVaultPatchName = '0037-wallet-cli-add-shared-app-vault-commands.patch';
-for (const requiredPatch of [cliPatchName, productCorePatchName, appVaultPatchName]) {
+const staticGrpcPatchName = '0070-wallet-cli-static-grpc-link-closure.patch';
+const syncTelemetryPatchName = '0077-wallet-expose-live-sync-throughput-in-every-client.patch';
+for (const requiredPatch of [
+  cliPatchName,
+  productCorePatchName,
+  appVaultPatchName,
+  staticGrpcPatchName,
+  syncTelemetryPatchName,
+]) {
   assert(series.includes(requiredPatch), `required product CLI patch is missing: ${requiredPatch}`);
 }
 assert(
@@ -46,8 +54,14 @@ assert.equal(expectedBaseTree, 'c592d864569be294d2bdca25b674cd17f78614e5');
 const appVaultPatch = readFileSync(join(patchDirectory, appVaultPatchName), 'utf8');
 const patch = readFileSync(join(patchDirectory, productCorePatchName), 'utf8');
 const cliPatch = readFileSync(join(patchDirectory, cliPatchName), 'utf8');
+const staticGrpcPatch = readFileSync(join(patchDirectory, staticGrpcPatchName), 'utf8');
+const syncTelemetryPatch = readFileSync(join(patchDirectory, syncTelemetryPatchName), 'utf8');
 const pairBuildScript = readFileSync(
   join(repositoryRoot, 'tools', 'monero-upstream', 'build-cli-pair.sh'),
+  'utf8',
+);
+const localBuildScript = readFileSync(
+  join(repositoryRoot, 'native', 'monero-bridge', 'scripts', 'build-local-monero-wallet-api.sh'),
   'utf8',
 );
 for (const contract of [
@@ -98,6 +112,37 @@ for (const contract of [
   /libmfw_product_core\.so/,
 ]) {
   assert.match(pairBuildScript, contract);
+}
+for (const contract of [
+  /if\(STATIC OR NOT BUILD_SHARED_LIBS\)/,
+  /\*_STATIC_\*/,
+  /MFW_MONERO_PATCH_COUNT "70"/,
+]) {
+  assert.match(staticGrpcPatch, contract);
+}
+for (const contract of [
+  /Block "/,
+  /" of "/,
+  /Mbit\/s/,
+  /derivations\/s/,
+  /wallet_sync_transport_bytes_received/,
+  /wallet_sync_derivation_count/,
+  /wallet_sync_derivation_duration_us/,
+]) {
+  assert.match(syncTelemetryPatch, contract);
+}
+for (const contract of [
+  /monero_patch_series=.*third_party\/monero-patches\/series/,
+  /monero_patch_count=.*monero_patch_series/,
+  /-DMFW_MONERO_PATCH_COUNT=\$\{monero_patch_count\}/,
+  /-DMFW_PRODUCT_COMMIT=\$\{product_commit\}/,
+  /-DMFW_PRODUCT_DIRTY=\$\{product_dirty\}/,
+  /-DMFW_FEATURE_MANIFEST_HASH=\$\{feature_manifest_hash\}/,
+  /--features mobile-fast-crypto/,
+  /MONERO_FAST_CRYPTO_SOURCE=.*fast_crypto_source/,
+  /fast_crypto_library="\$\{fast_wallet_protocol_library\}"/,
+]) {
+  assert.match(localBuildScript, contract);
 }
 
 const productBinary = process.env.MFW_PRODUCT_CLI_BINARY;

@@ -12,6 +12,7 @@ import { useI18n, type TranslationKey } from '../i18n';
 import type { WalletSnapshot } from '../services/NativeMoneroWallet';
 import {
   isFastWalletRegistration,
+  isLegacyLedgerAccountRegistration,
   ledgerBalanceNeedsVerification,
   walletDisplayName,
   type RegisteredWallet,
@@ -175,29 +176,39 @@ export function resolveWalletOption(
   const registration = wallet as RegisteredWallet;
   const snapshot = snapshots[registration.id];
   const fastWallet = isFastWalletRegistration(registration);
+  const legacyLedgerAccount = isLegacyLedgerAccountRegistration(registration);
+  const ledgerVerificationRequired = ledgerBalanceNeedsVerification(
+    registration,
+    snapshot?.pendingOutputKeyImageCount,
+    snapshotHasKnownLedgerActivity(snapshot) ? 1 : 0,
+  );
   return {
     id: registration.id,
     address: snapshot?.primaryAddress,
-    badge: fastWallet
+    badge: legacyLedgerAccount
+      ? t('walletSelector.ledgerFast')
+      : fastWallet
       ? t('walletSelector.fast')
       : registration.kind === 'hardware'
-        ? (registration.hardwareDeviceName ?? 'Ledger')
-        : undefined,
+      ? registration.hardwareDeviceName ?? 'Ledger'
+      : undefined,
     // The node transport belongs to the app/network, not to this card. Wallet
     // cards report only private scan readiness and never inherit the global
     // connection state.
-    detail: snapshot
+    detail: ledgerVerificationRequired
+      ? t('walletSelector.preparing')
+      : snapshot
       ? walletSnapshotStatusLabel(snapshot, t)
-      : ledgerBalanceNeedsVerification(registration, snapshot?.pendingOutputKeyImageCount)
-        ? t('walletSelector.ledgerBalanceNeedsVerification')
-        : t('walletSelector.waitingSharedBlocks'),
+      : t('walletSelector.waitingSharedBlocks'),
     kind: fastWallet ? 'fast' : registration.kind,
     label: walletDisplayName(registration),
-    meta: fastWallet
+    meta: legacyLedgerAccount
+      ? t('walletSelector.ledgerFastAccount')
+      : fastWallet
       ? registration.network
       : registration.kind === 'hardware'
-        ? (registration.hardwareDeviceName ?? 'Ledger')
-        : registration.network,
+      ? registration.hardwareDeviceName ?? 'Ledger'
+      : registration.network,
     tone: snapshot ? 'balance' : 'warning',
   };
 }
@@ -231,6 +242,21 @@ function balanceLabel(snapshot: WalletSnapshot): string {
     maxFractionDigits: 4,
     minFractionDigits: 2,
   })} XMR`;
+}
+
+function snapshotHasKnownLedgerActivity(
+  snapshot: WalletSnapshot | undefined,
+): boolean {
+  if (!snapshot) return false;
+  try {
+    return (
+      BigInt(snapshot.balanceAtomic) !== 0n ||
+      BigInt(snapshot.unlockedBalanceAtomic) !== 0n
+    );
+  } catch {
+    // A malformed amount must never make an unverified Ledger balance visible.
+    return true;
+  }
 }
 
 const s = StyleSheet.create({

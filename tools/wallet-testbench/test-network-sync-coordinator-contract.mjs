@@ -198,14 +198,14 @@ test('one coordinator fetches and decodes once before wallet-private fan-out', (
   assert.match(worker, /scanExecutor->workerCount/);
   assert.match(worker, /std::async/);
   assert.match(worker, /networkSync\.batchPrefetched/);
-  assert.match(worker, /prefetchedBatch->startHeight\(\) == minimumTarget/);
+  assert.match(worker, /prefetchedBatch->startHeight\(\) == requestedDownloadCursor/);
   assert.match(worker, /\+\+coordinator\.status\.prefetchHits/);
   assert.match(worker, /coordinator\.status\.prefetchQueueDepth = 1/);
   assert.match(worker, /coordinator\.status\.prefetchQueueDepth = 0/);
   assert.match(worker, /peakPrefetchedPayloadBytes = std::max/);
   assert.match(worker, /stalledWallets == 0 \? "synced" : "degraded"/);
   assert.match(worker, /publicAtTip && pendingScans > 0/);
-  assert.match(worker, /if \(!atTip && !waitingOnlyForPrivateScans\)/);
+  assert.match(worker, /if \(!atTip && !waitingOnlyForPrivateScans &&[\s\S]*!indeterminateEmptyBatch\)/);
   assert.match(walletEngine, /coordinator\.wake = true;[\s\S]*coordinator\.condition\.notify_one\(\)/);
   assert.match(worker, /coordinator\.wake = true/);
   assert.match(worker, /coordinator\.condition\.notify_one\(\)/);
@@ -268,8 +268,38 @@ test('asynchronous consumers remain single-flight and cannot publish pre-restore
   assert.match(walletEngine, /coordinator\.inflightScans\[work\.id\]/);
   assert.match(walletEngine, /coordinator\.inflightScans\.erase\(result->id\)/);
   assert.match(worker, /if \(inflight != inflightScans\.end\(\)\)[\s\S]*continue;/);
+  assert.match(
+    worker,
+    /if \(inflight != inflightScans\.end\(\)\) \{[\s\S]*minimumRetainedTarget = std::min\([\s\S]*inflight->second\.cursor[\s\S]*minimumTarget = std::min\([\s\S]*busyScannerDownloadCursor/,
+    'an inflight CPU\/Metal scanner must pin retention without pinning the downloader',
+  );
+  assert.match(worker, /replayRingHasCapacityLocked/);
+  assert.match(
+    worker,
+    /const bool replayRingBackpressure =[\s\S]*!replayRingHasCapacity && downloaderAheadOfScanners/,
+  );
+  assert.match(
+    worker,
+    /const bool localCatchUpAtAuthenticatedTip =[\s\S]*busyScannerDownloadCursor >= lastAuthenticatedDownloadTarget[\s\S]*downloaderAheadOfScanners/,
+  );
+  assert.match(
+    worker,
+    /const bool replayRetainedBatch =[\s\S]*replayRingBackpressure \|\| localCatchUpAtAuthenticatedTip/,
+  );
+  assert.match(
+    worker,
+    /if \(replayRetainedBatch && !inflightScans\.empty\(\)\)[\s\S]*setNetworkPhaseLocked\(coordinator, "scanning-wallets"\)/,
+  );
+  assert.match(
+    worker,
+    /requestedDownloadCursor = replayRetainedBatch[\s\S]*\? minimumRetainedTarget[\s\S]*coordinator\.status\.downloadedHeight/,
+  );
   assert.match(worker, /const bool atTip = publicAtTip && pendingScans == 0/);
-  assert.match(worker, /work\.cursor >= batch\.endHeight/);
+  assert.match(worker, /work\.batch = findReplayBatchLocked/);
+  assert.match(worker, /const uint64_t requiredCursor = std::max\([\s\S]*work\.cursor, work\.target/);
+  assert.match(worker, /findReplayBatchLocked\([\s\S]*requiredCursor, configurationGeneration/);
+  assert.match(worker, /!work\.batch && requiredCursor < downloadedHeight/);
+  assert.match(worker, /work\.cursor >= work\.batch->endHeight/);
   assert.match(walletEngine, /cursor < batch->endHeight/);
   assert.match(worker, /lowestCursor = std::max\(lowestCursor, downloadStartHeight\)/);
   assert.match(walletEngine, /coordinator->scanExecutor->shutdown\(\)/);
@@ -285,16 +315,53 @@ test('the coordinator retains a strictly bounded immutable replay window', () =>
   assert.match(walletEngine, /struct ReplayBatch/);
   assert.match(walletEngine, /findReplayBatchLocked/);
   assert.match(walletEngine, /storeReplayBatchLocked/);
+  assert.match(walletEngine, /pruneReplayBatchesLocked/);
+  assert.match(walletEngine, /replayRingHasCapacityLocked/);
   assert.match(walletEngine, /constexpr size_t kEntryLimit = 128/);
   assert.match(
     walletEngine,
     /constexpr uint64_t kPayloadLimit = 96ULL \* 1024ULL \* 1024ULL/,
   );
+  assert.match(
+    walletEngine,
+    /constexpr uint64_t kBatchReservation = 32ULL \* 1024ULL \* 1024ULL/,
+  );
+  assert.match(
+    walletEngine,
+    /replayCachePayloadBytes <=[\s\S]*kPayloadLimit - kBatchReservation/,
+  );
+  assert.match(walletEngine, /batch->payloadBytes\(\) > kBatchReservation/);
   assert.match(worker, /usedReplayCache = nativeBatch != nullptr/);
   assert.match(worker, /usedReplayCache \? 0 : nativeBatch->networkBytes\(\)/);
   assert.match(worker, /!usedReplayCache && !publicAtTip/);
   assert.match(walletEngine, /resetReplayCacheLocked\(\*coordinator\)/);
   assert.match(walletEngine, /\+\+coordinator->configurationGeneration/);
+  assert.doesNotMatch(
+    walletEngine.slice(
+      walletEngine.indexOf('static void storeReplayBatchLocked'),
+      walletEngine.indexOf('void executeAsyncWalletScan'),
+    ),
+    /std::min_element/,
+    'the replay ring must not LRU-evict batches still needed by a scanner',
+  );
+});
+
+test('closing every wallet resets the shared download range before unlock', () => {
+  const closeAllStart = walletEngine.indexOf('void closeAllWallets(bool store)');
+  const closeAllEnd = walletEngine.indexOf(
+    'void configureNetworkSync(',
+    closeAllStart,
+  );
+  const closeAll = walletEngine.slice(closeAllStart, closeAllEnd);
+
+  assert.match(closeAll, /coordinator\.wallets\.clear\(\)/);
+  assert.match(closeAll, /coordinator\.scannerCursors\.clear\(\)/);
+  assert.match(closeAll, /resetReplayCacheLocked\(coordinator\)/);
+  assert.match(closeAll, /coordinator\.downloadRangeInitialized = false/);
+  assert.match(closeAll, /coordinator\.status\.downloadStartHeight = 0/);
+  assert.match(closeAll, /coordinator\.status\.downloadedHeight = 0/);
+  assert.match(closeAll, /"networkSync\.rangeReset"/);
+  assert.match(closeAll, /"all-wallets-closed"/);
 });
 
 test('real multiwallet acceptance covers failover and shallow/deep replay', () => {
@@ -314,6 +381,24 @@ test('real multiwallet acceptance covers failover and shallow/deep replay', () =
   assert.match(multiwalletAcceptance, /acceptance_replay_cache/);
   assert.match(multiwalletAcceptance, /afterLateJoin\.fetchedBatches != afterDynamicRemoval\.fetchedBatches/);
   assert.match(multiwalletAcceptance, /afterLateJoin\.cacheHits <= afterDynamicRemoval\.cacheHits/);
+});
+
+test('software-wallet acceptance keeps its ephemeral credential and wallets off persistent storage', () => {
+  assert.match(multiwalletAcceptance, /value == "@ephemeral"/);
+  assert.match(multiwalletAcceptance, /ephemeralCredentialForWorkdir/);
+  assert.match(multiwalletAcceptance, /SecretClearGuard passwordGuard\(password\)/);
+  assert.doesNotMatch(multiwalletAcceptance, /temporary-native-acceptance-password/);
+
+  for (const script of [multiwalletAcceptanceScript, checkpointRestartScript]) {
+    assert.match(script, /hdiutil attach -nomount ram:\/\/524288/);
+    assert.match(script, /diskutil erasevolume HFS\+/);
+    assert.match(script, /acceptance_workspace storage=ram-only credential=ephemeral/);
+    assert.match(script, /"@ephemeral"/);
+    assert.match(script, /hdiutil detach/);
+    assert.doesNotMatch(script, /password_file/);
+    assert.doesNotMatch(script, /temporary-native-acceptance-password/);
+    assert.doesNotMatch(script, /mktemp -d "\/tmp\/mfw/);
+  }
 });
 
 test('real acceptance can inject mixed restores and removal during synchronization', () => {
@@ -515,14 +600,58 @@ test('startup coalesces wallet joins and retains one initialized keyless provide
   const start = walletEngine.indexOf('void runNetworkCoordinator(');
   const end = walletEngine.indexOf('void stopAllNetworkCoordinators()', start);
   const worker = walletEngine.slice(start, end);
-  assert.match(worker, /std::chrono::milliseconds\(150\)/);
+  assert.match(walletEngine, /uint64_t walletJoinGeneration\{0\};/);
+  assert.match(walletEngine, /wallets\.insert\(walletId\)\.second/);
+  assert.match(walletEngine, /\+\+coordinator->walletJoinGeneration/);
+  assert.match(worker, /uint64_t coalescedWalletJoinGeneration = 0/);
+  assert.match(
+    worker,
+    /if \(coordinator\.walletJoinGeneration !=[\s\S]*?coalescedWalletJoinGeneration\)[\s\S]*?std::chrono::milliseconds\(150\)/,
+  );
+  assert.equal(
+    (worker.match(/std::chrono::milliseconds\(150\)/g) || []).length,
+    1,
+    'the startup coalescing delay must have exactly one guarded call site',
+  );
   assert.match(worker, /coordinator\.publicTransport == nullptr/);
   assert.match(worker, /provider = coordinator\.publicTransport/);
   assert.match(worker, /initializeProvider = !coordinator\.publicTransportInitialized/);
   assert.match(worker, /minimumTarget = std::min\(minimumTarget, target\)/);
-  assert.match(worker, /fetchSharedBlockBatchFrom\(minimumTarget\)/);
+  assert.match(worker, /fetchSharedBlockBatchFrom\([\s\S]*requestedDownloadCursor\)/);
   assert.doesNotMatch(worker, /target < minimumTarget/);
   assert.equal((worker.match(/\+\+coordinator\.status\.transportStarts/g) || []).length, 1);
+});
+
+test('wallet scan timing contains only completed Core scan tasks', () => {
+  assert.equal(
+    (walletEngine.match(/totalWalletScanMs \+=/g) || []).length,
+    1,
+    'prefetch wait or coordinator scheduling must not be counted as wallet scan time',
+  );
+  assert.match(
+    walletEngine,
+    /completeAsyncWalletScan\([\s\S]*?totalWalletScanMs \+= result->durationMs/,
+  );
+  assert.doesNotMatch(walletEngine, /walletScanStarted/);
+});
+
+test('an optional prefetch failure never invalidates the successful current batch', () => {
+  const workerStart = walletEngine.indexOf('void runNetworkCoordinator(');
+  const workerEnd = walletEngine.indexOf(
+    'void stopAllNetworkCoordinators()',
+    workerStart,
+  );
+  const worker = walletEngine.slice(workerStart, workerEnd);
+  const prefetchStart = worker.indexOf('if (prefetchFuture.valid())');
+  const prefetchEnd = worker.indexOf('uint64_t deliveries = 0', prefetchStart);
+  const prefetchCompletion = worker.slice(prefetchStart, prefetchEnd);
+
+  assert.match(prefetchCompletion, /try \{[\s\S]*prefetchFuture\.get\(\)/);
+  assert.match(prefetchCompletion, /catch \(const std::exception& error\)/);
+  assert.match(prefetchCompletion, /networkSync\.prefetchFailed/);
+  assert.match(prefetchCompletion, /prefetchedBatch\.reset\(\)/);
+  assert.match(prefetchCompletion, /prefetchQueueDepth = 0/);
+  assert.doesNotMatch(prefetchCompletion, /coordinator\.status\.state = "retrying"/);
 });
 
 test('a recoverable provider reinitialization preserves the Core gRPC fallback decision', () => {
@@ -548,8 +677,13 @@ test('a shared-transport failure is diagnosable without disclosing wallet data',
   const end = walletEngine.indexOf('void stopAllNetworkCoordinators()', start);
   const worker = walletEngine.slice(start, end);
   assert.match(worker, /coordinator\.status\.lastError\.clear\(\)/);
-  assert.match(worker, /coordinator\.status\.lastError = error\.what\(\)/);
+  assert.match(worker, /networkSyncFailureCode\(error\.what\(\)\)/);
+  assert.match(worker, /coordinator\.status\.lastError = hideTransientRetry[\s\S]*networkSyncSafeStatus\(failureCode\)/);
+  assert.doesNotMatch(worker, /coordinator\.status\.lastError = error\.what\(\)/);
   assert.match(worker, /\+\+coordinator\.status\.consecutiveFailures/);
+  assert.match(worker, /const char\* failureStage = "initializing-transport"/);
+  assert.match(worker, /"networkSync\.iterationFailed"[\s\S]*\{"stage", failureStage\}/);
+  assert.match(worker, /networkSync\.transportDiscarded/);
   assert.match(proofRunner, /benchmark_network_error=/);
   assert.match(proofRunner, /benchmark_network_fetched_blocks=/);
 });
@@ -560,7 +694,7 @@ test('the keyless public transport connects once before fetching public blocks',
   const worker = walletEngine.slice(start, end);
   const initialized = worker.indexOf('publicSyncTransport.init');
   const connected = worker.indexOf('provider->connectToDaemon()');
-  const fetch = worker.indexOf('provider->fetchSharedBlockBatchFrom(minimumTarget)');
+  const fetch = worker.indexOf('provider->fetchSharedBlockBatchFrom(\n                requestedDownloadCursor)');
   assert.ok(initialized >= 0 && connected > initialized && fetch > connected,
     'the only public provider must connect after init and before its first fetch');
   assert.match(worker, /publicSyncTransport\.connectToDaemon/);
@@ -578,6 +712,35 @@ test('idle tip checks stay stable and never publish block zero as fully synced',
   assert.match(worker, /if \(batch\.currentHeight > 0\) \{[\s\S]*coordinator\.status\.targetHeight = std::max/);
   assert.match(worker, /pendingScans = std::max\([\s\S]*coordinator\.inflightScans\.size\(\)\)/);
   assert.match(worker, /const bool allWalletsAtTarget = authenticatedTargetHeight > 0 &&[\s\S]*lowestCursor >= authenticatedTargetHeight/);
+  assert.match(worker, /const bool indeterminateEmptyBatch =[\s\S]*batch\.blockCount == 0 && batch\.currentHeight == 0 &&[\s\S]*authenticatedTargetHeight == 0/);
+  assert.match(worker, /indeterminateEmptyBatch \? "waiting-tip" : "scanning"/);
+  assert.match(worker, /!waitingOnlyForPrivateScans &&[\s\S]*!indeterminateEmptyBatch/);
   assert.match(worker, /updateCachedSnapshot\([\s\S]*authenticatedTargetHeight\)/);
   assert.match(walletEngine, /if \(coordinator\.status\.phase == phase\) \{\s+return;/);
+});
+
+test('isolated transport reconnects stay non-fatal but persistent or invalid failures remain visible', () => {
+  const start = walletEngine.indexOf('void runNetworkCoordinator(');
+  const end = walletEngine.indexOf('void stopAllNetworkCoordinators()', start);
+  const worker = walletEngine.slice(start, end);
+  assert.match(walletEngine, /bool isTransientNetworkTransportFailure/);
+  assert.match(walletEngine, /failureCode == "node-timeout"/);
+  assert.match(walletEngine, /failureCode == "node-unreachable"/);
+  assert.doesNotMatch(
+    walletEngine.slice(
+      walletEngine.indexOf('bool isTransientNetworkTransportFailure'),
+      walletEngine.indexOf('void logEngineDiagnostic'),
+    ),
+    /invalid-data/,
+  );
+  assert.match(worker, /kVisibleTransientFailureThreshold = 3/);
+  assert.match(worker, /const bool publicDownloadAtConfirmedTip =[\s\S]*coordinator\.status\.downloadedHeight >=[\s\S]*coordinator\.status\.targetHeight/);
+  assert.match(worker, /hideTransientRetry =[\s\S]*isTransientNetworkTransportFailure\(failureCode\)[\s\S]*nextFailureCount < kVisibleTransientFailureThreshold/);
+  assert.match(worker, /preserveConfirmedTip =[\s\S]*\(routineTipCheck \|\| publicDownloadAtConfirmedTip\)[\s\S]*hideTransientRetry/);
+  assert.match(worker, /hideTransientRetry \? "reconnecting" : "retrying"/);
+  assert.match(worker, /networkSync\.tipReconnectHidden/);
+  assert.match(worker, /networkSync\.transientReconnectHidden/);
+  assert.match(worker, /const bool retainPublicTransport =[\s\S]*privateReconciliationActive \|\| preserveConfirmedTip/);
+  assert.match(worker, /networkSync\.tipTransportRetained/);
+  assert.match(worker, /if \(!retainPublicTransport\) \{[\s\S]*coordinator\.publicTransport = nullptr/);
 });

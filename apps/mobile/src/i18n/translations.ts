@@ -182,6 +182,21 @@ const en = {
   'sync.checkingMempool': 'Checking pending transactions',
   'sync.savingWallets': 'Saving wallet state',
   'sync.retryingNode': 'Retrying node connection',
+  'sync.failureNodeConfiguration':
+    'Node settings are incomplete. Open Settings > Node.',
+  'sync.failureNodeTimeout': 'The node did not respond in time. Trying again.',
+  'sync.failureNodeUnreachable':
+    'The node cannot be reached. Check your internet connection and node settings.',
+  'sync.failureNodeSecurity':
+    'The node security settings do not match. Check Settings > Node.',
+  'sync.failureOptimizedService':
+    'The Fast Wallet service is temporarily unavailable. Trying again.',
+  'sync.failureServerResponse':
+    'The sync server response could not be processed. Retrying safely with smaller batches.',
+  'sync.failureServerResponseShort': 'Adjusting sync batch size',
+  'sync.retryAttempt': 'Retry {count} in progress',
+  'sync.failureWalletScan':
+    'The wallet scan needs another attempt. Your funds remain safe.',
   'sync.degraded': 'Some wallets need another attempt',
   'sync.blockchainData': 'Blockchain data',
   'sync.connected': 'Connected',
@@ -192,6 +207,8 @@ const en = {
   'sync.verifyingRecent': 'Verifying recent transactions',
   'sync.coreConfirming': 'Waiting for wallet confirmation',
   'sync.blockHeight': 'Block {current} of {target}',
+  'sync.networkRate': '{rate} Mbit/s',
+  'sync.derivationRate': '{rate} derivations/s',
   'sync.blocksRemaining': '{count} blocks remaining',
   'sync.etaCalculating': 'Calculating time remaining',
   'sync.etaSeconds': 'About {count}s remaining',
@@ -246,10 +263,16 @@ const en = {
   'notification.incomingTitle': 'Incoming XMR',
   'notification.incomingAmount': '{amount} XMR incoming',
   'notification.incomingWallet': 'To {wallet}',
+  'notification.outgoingTitle': 'XMR spent',
+  'notification.outgoingAmount': '{amount} XMR spent',
+  'notification.outgoingWallet': 'From {wallet}',
   'notification.closesIn': 'Closes in {seconds}s',
   'notification.ok': 'OK',
   'walletSelector.active': 'Active',
   'walletSelector.fast': '⚡ FAST',
+  'walletSelector.ledgerFast': 'LEGACY LEDGER A1',
+  'walletSelector.ledgerFastAccount':
+    'Ledger account 1 · local only · not a Fast Wallet',
   'walletSelector.fastReady': 'Ready for payment alerts',
   'walletSelector.fastReceiveOnly': 'Fast Wallet can send after wallet sync.',
   'walletSelector.locked': 'Locked',
@@ -261,7 +284,8 @@ const en = {
   'walletSelector.openToSend': 'Open and send',
   'walletSelector.preparing': 'Preparing',
   'walletSelector.ready': 'Ready',
-  'walletSelector.ledgerBalanceNeedsVerification': 'Connect Ledger to verify spending',
+  'walletSelector.ledgerBalanceNeedsVerification':
+    'One-time Ledger check pending',
   'walletSelector.scanningWallet': 'Scanning wallet',
   'walletSelector.waitingSharedBlocks': 'Waiting for shared blocks',
   'walletSelector.pushOff': 'Push off',
@@ -323,13 +347,18 @@ const en = {
     'Use an approximate area to discover people nearby, chat, and privately decide whether to meet.',
   'setup.enthusiastsTitle': 'Find Monero enthusiasts',
   'setup.fastWalletDescription':
-    'Create a separate wallet for private incoming-payment detection. Server alerts are enabled only after a Fast Wallet server is configured.',
+    'Create a separate wallet for incoming-payment alerts. After backup, only this wallet is enrolled with the selected scanner.',
   'setup.fastWalletLedgerDescription':
-    'Create the reserved Ledger Fast Wallet in account 1. It stays separate from normal Ledger addresses in account 0.',
+    'Create a separate software Fast Wallet with its own recovery words. Ledger account 1 is not used.',
   'setup.fastWalletTitle': 'Create Fast Wallet',
   'setup.fastWalletToggle': 'Fast Wallet',
   'setup.fastWalletToggleDescription':
-    'Also create a separate local wallet with its own recovery words. No server scanning or alerts are enabled here.',
+    'Also create a separate wallet with its own recovery words. After backup, its private view key is encrypted to the selected scanner for alerts.',
+  'setup.fastWalletSlot': 'Fast Wallet slot',
+  'setup.fastWalletSlotDescription':
+    'Default 199. Choose 1–999. An occupied slot is never reused or uploaded.',
+  'setup.fastWalletSlotInvalid':
+    'Choose a whole Fast Wallet slot from 1 to 999.',
   'setup.fastWalletBackupRequired':
     'The separate Fast Wallet was created, but its recovery words still need to be backed up before you use its address.',
   'setup.fastWalletCreateFailed':
@@ -346,6 +375,12 @@ const en = {
   'setup.device': 'Device',
   'setup.footer': 'Made with ❤️ by TEX8',
   'setup.hardware.connecting': 'Connecting Ledger',
+  'setup.hardware.checkingHistory': 'Checking local wallet history',
+  'setup.hardware.savingVerifiedBalance': 'Saving verified Ledger balance',
+  'setup.hardware.syncingHistory': 'Scanning wallet history, block',
+  'setup.hardware.syncingHistoryTitle': 'Wallet created — syncing history',
+  'setup.hardware.verifyingOutputs': 'Verifying owned outputs with Ledger',
+  'setup.hardware.verifyingTitle': 'Verifying Ledger wallet',
   'setup.hardware.bleFound': 'Ledger BLE found',
   'setup.hardware.desc': 'Create a hardware-backed Monero wallet',
   'setup.hardware.found': 'Ledger Nano found',
@@ -359,7 +394,7 @@ const en = {
   'setup.hardware.localViewDescription':
     'Keep an encrypted, read-only wallet on this device. You can view balances and receive without reconnecting Ledger; sending still requires Ledger.',
   'setup.hardware.fastWalletDescription':
-    'Also reserve Ledger account 1 as a separate Fast Wallet address.',
+    'Also create an independent software Fast Wallet with its own recovery words. It is not Ledger account 1.',
   'setup.hardware.localViewProtectionRequired':
     'Turn on app protection in Settings before saving Ledger viewing access on this device.',
   'setup.hardware.looking': 'Looking for an available Ledger transport.',
@@ -396,8 +431,11 @@ const en = {
   'setup.restoreHeightError': 'Restore height must be a number.',
   'setup.scanStart': 'Start syncing from date',
   'setup.scanAutomatic': 'Automatic (recommended)',
+  'setup.scanRequired': 'Choose a date',
   'setup.scanDateHint':
     'Optional. The wallet starts slightly before this date so no payment on the selected date is missed.',
+  'setup.ledgerScanDateHint':
+    'Required for Ledger. Choose a date before its first transaction; choose today only for a brand-new Ledger wallet.',
   'setup.scanDateError': 'Choose a valid date that is not in the future.',
   'setup.seedConfirm': 'I saved these 25 words offline.',
   'setup.seedFullError': 'Enter the full 25-word Monero seed.',
@@ -471,18 +509,23 @@ const en = {
   'home.timeframeMax': 'Max',
   'home.timeframeToday': 'Today',
   'home.totalBalance': 'Total Balance',
+  'home.marketPrice': 'Monero market price',
   'home.ledgerBalanceNeedsVerification':
-    'Received Ledger funds are shown. Spend verification is still needed.',
+    'One-time initial Ledger verification is still pending. Unlock Ledger and open its Monero app; this app completes the check automatically.',
   'home.ledgerBalanceVerificationHint':
     'Connect and unlock the Ledger, open its Monero app, then verify which outputs are available to spend.',
   'home.verifyLedgerBalance': 'Verify with Ledger',
   'home.verifyingLedgerBalance': 'Waiting for Ledger…',
   'home.ledgerReconciliation.connecting-ledger': 'Finding Ledger…',
-  'home.ledgerReconciliation.checking-local-scan': 'Checking local wallet scan…',
-  'home.ledgerReconciliation.catching-up-local-scan': 'Scanning locally before Ledger verification…',
-  'home.ledgerReconciliation.deriving-owned-output-key-images': 'Verifying owned outputs with Ledger…',
+  'home.ledgerReconciliation.checking-local-scan':
+    'Checking local wallet scan…',
+  'home.ledgerReconciliation.catching-up-local-scan':
+    'Scanning locally before Ledger verification…',
+  'home.ledgerReconciliation.deriving-owned-output-key-images':
+    'Verifying owned outputs with Ledger…',
   'home.ledgerReconciliation.saving-ledger-balance': 'Saving verified balance…',
-  'home.ledgerWalletCouldNotOpen': 'The local Ledger companion could not be opened.',
+  'home.ledgerWalletCouldNotOpen':
+    'The local Ledger companion could not be opened.',
   'home.transactions': 'Transactions',
   'home.walletLocked': 'Wallet Locked',
   'home.walletNotOpen': 'Wallet not open',
@@ -924,8 +967,7 @@ const en = {
   'settings.appearance': 'Appearance',
   'settings.autoLock': 'Auto-lock (5 min)',
   'settings.appProtection': 'Protect your wallet',
-  'settings.appProtectionHint':
-    'One simple check protects all saved wallets.',
+  'settings.appProtectionHint': 'One simple check protects all saved wallets.',
   'settings.noProtection': 'No protection',
   'settings.biometrics': 'Biometrics',
   'settings.appPassword': 'App password',
@@ -942,7 +984,8 @@ const en = {
   'settings.diagnostics': 'Diagnostics',
   'settings.ledgerBalanceVerification': 'Verify Ledger balance',
   'settings.ledgerBalanceVerifying': 'Verifying with Ledger…',
-  'settings.ledgerBalanceVerified': 'The Ledger-signed spend status was verified and the local balance was updated.',
+  'settings.ledgerBalanceVerified':
+    'The Ledger-signed spend status was verified and the local balance was updated.',
   'settings.disabled': 'Disabled',
   'settings.enableBiometrics': 'Enable biometrics',
   'settings.fastReceive': 'Fast Wallet',
@@ -1242,6 +1285,22 @@ const de: Record<keyof typeof en, string> = {
   'sync.checkingMempool': 'Ausstehende Transaktionen prüfen',
   'sync.savingWallets': 'Wallet-Stand speichern',
   'sync.retryingNode': 'Node-Verbindung erneut versuchen',
+  'sync.failureNodeConfiguration':
+    'Die Node-Einstellungen sind unvollständig. Öffne Einstellungen > Node.',
+  'sync.failureNodeTimeout':
+    'Die Node hat nicht rechtzeitig geantwortet. Neuer Versuch läuft.',
+  'sync.failureNodeUnreachable':
+    'Die Node ist nicht erreichbar. Prüfe Internet und Node-Einstellungen.',
+  'sync.failureNodeSecurity':
+    'Die Sicherheits-Einstellungen der Node passen nicht. Prüfe Einstellungen > Node.',
+  'sync.failureOptimizedService':
+    'Der Fast-Wallet-Dienst ist vorübergehend nicht erreichbar. Neuer Versuch läuft.',
+  'sync.failureServerResponse':
+    'Die Antwort des Sync-Servers konnte nicht verarbeitet werden. Sicherer Neuversuch mit kleineren Paketen läuft.',
+  'sync.failureServerResponseShort': 'Sync-Paketgröße wird angepasst',
+  'sync.retryAttempt': 'Wiederholungsversuch {count} läuft',
+  'sync.failureWalletScan':
+    'Der Wallet-Scan benötigt einen neuen Versuch. Dein Guthaben bleibt sicher.',
   'sync.degraded': 'Einige Wallets benötigen einen neuen Versuch',
   'sync.blockchainData': 'Blockchain-Daten',
   'sync.connected': 'Verbunden',
@@ -1252,6 +1311,8 @@ const de: Record<keyof typeof en, string> = {
   'sync.verifyingRecent': 'Neueste Transaktionen werden geprüft',
   'sync.coreConfirming': 'Warte auf Wallet-Bestätigung',
   'sync.blockHeight': 'Block {current} von {target}',
+  'sync.networkRate': '{rate} Mbit/s',
+  'sync.derivationRate': '{rate} Ableitungen/s',
   'sync.blocksRemaining': '{count} Blöcke verbleibend',
   'sync.etaCalculating': 'Restzeit wird berechnet',
   'sync.etaSeconds': 'Noch etwa {count} Sek.',
@@ -1309,10 +1370,16 @@ const de: Record<keyof typeof en, string> = {
   'notification.incomingTitle': 'Eingehendes XMR',
   'notification.incomingAmount': '{amount} XMR eingegangen',
   'notification.incomingWallet': 'Für {wallet}',
+  'notification.outgoingTitle': 'XMR ausgegeben',
+  'notification.outgoingAmount': '{amount} XMR ausgegeben',
+  'notification.outgoingWallet': 'Von {wallet}',
   'notification.closesIn': 'Schließt in {seconds} s',
   'notification.ok': 'OK',
   'walletSelector.active': 'Aktiv',
   'walletSelector.fast': '⚡ FAST',
+  'walletSelector.ledgerFast': 'ALTES LEDGER K1',
+  'walletSelector.ledgerFastAccount':
+    'Ledger-Konto 1 · nur lokal · keine Fast Wallet',
   'walletSelector.fastReady': 'Bereit für Zahlungshinweise',
   'walletSelector.fastReceiveOnly':
     'Fast Wallet kann nach dem Wallet-Sync senden.',
@@ -1325,7 +1392,8 @@ const de: Record<keyof typeof en, string> = {
   'walletSelector.openToSend': 'Öffnen und senden',
   'walletSelector.preparing': 'Wird vorbereitet',
   'walletSelector.ready': 'Bereit',
-  'walletSelector.ledgerBalanceNeedsVerification': 'Ledger verbinden, um das Senden zu prüfen',
+  'walletSelector.ledgerBalanceNeedsVerification':
+    'Einmalige Ledger-Prüfung offen',
   'walletSelector.scanningWallet': 'Wallet wird gescannt',
   'walletSelector.waitingSharedBlocks': 'Wartet auf gemeinsame Blöcke',
   'walletSelector.pushOff': 'Push aus',
@@ -1387,13 +1455,18 @@ const de: Record<keyof typeof en, string> = {
     'Nutze einen ungefähren Bereich, um Menschen in deiner Nähe zu finden, zu chatten und euch privat zu verabreden.',
   'setup.enthusiastsTitle': 'Monero-Enthusiasten finden',
   'setup.fastWalletDescription':
-    'Erstellt eine getrennte Wallet für private Eingangserkennung. Server-Mitteilungen werden erst nach Einrichtung eines Fast-Wallet-Servers aktiviert.',
+    'Erstellt eine getrennte Wallet für Eingangshinweise. Nach dem Backup wird nur diese Wallet beim gewählten Scanner registriert.',
   'setup.fastWalletLedgerDescription':
-    'Erstellt die reservierte Ledger-Fast-Wallet in Konto 1. Sie bleibt von normalen Ledger-Adressen in Konto 0 getrennt.',
+    'Erstellt eine getrennte Software-Fast-Wallet mit eigenen Wiederherstellungswörtern. Ledger-Konto 1 wird nicht verwendet.',
   'setup.fastWalletTitle': 'Fast Wallet erstellen',
   'setup.fastWalletToggle': 'Fast Wallet',
   'setup.fastWalletToggleDescription':
-    'Zusätzlich eine getrennte lokale Wallet mit eigenen Wiederherstellungswörtern erstellen. Server-Scans und Mitteilungen werden hier nicht aktiviert.',
+    'Zusätzlich eine getrennte Wallet mit eigenen Wiederherstellungswörtern erstellen. Nach dem Backup wird ihr privater View Key verschlüsselt an den gewählten Scanner für Hinweise übertragen.',
+  'setup.fastWalletSlot': 'Fast-Wallet-Slot',
+  'setup.fastWalletSlotDescription':
+    'Standard 199. Wähle 1–999. Ein belegter Slot wird niemals wiederverwendet oder übertragen.',
+  'setup.fastWalletSlotInvalid':
+    'Wähle einen ganzzahligen Fast-Wallet-Slot von 1 bis 999.',
   'setup.fastWalletBackupRequired':
     'Die getrennte Fast Wallet wurde erstellt, aber ihre Wiederherstellungswörter müssen noch gesichert werden, bevor ihre Adresse verwendet wird.',
   'setup.fastWalletCreateFailed':
@@ -1410,6 +1483,12 @@ const de: Record<keyof typeof en, string> = {
   'setup.device': 'Gerät',
   'setup.footer': 'Made with ❤️ by TEX8',
   'setup.hardware.connecting': 'Ledger wird verbunden',
+  'setup.hardware.checkingHistory': 'Lokaler Wallet-Verlauf wird geprüft',
+  'setup.hardware.savingVerifiedBalance': 'Geprüfter Ledger-Saldo wird gespeichert',
+  'setup.hardware.syncingHistory': 'Wallet-Verlauf wird gescannt, Block',
+  'setup.hardware.syncingHistoryTitle': 'Wallet erstellt – Verlauf wird synchronisiert',
+  'setup.hardware.verifyingOutputs': 'Eigene Ausgaben werden mit dem Ledger geprüft',
+  'setup.hardware.verifyingTitle': 'Ledger-Wallet wird geprüft',
   'setup.hardware.bleFound': 'Ledger BLE gefunden',
   'setup.hardware.desc': 'Hardware-gestützte Monero-Wallet erstellen',
   'setup.hardware.found': 'Ledger Nano gefunden',
@@ -1423,7 +1502,7 @@ const de: Record<keyof typeof en, string> = {
   'setup.hardware.localViewDescription':
     'Speichert eine verschlüsselte Nur-Lese-Wallet auf diesem Gerät. Guthaben und Eingänge sind ohne Ledger sichtbar; zum Senden bleibt Ledger erforderlich.',
   'setup.hardware.fastWalletDescription':
-    'Zusätzlich Ledger-Konto 1 als eigene Fast-Wallet-Adresse reservieren.',
+    'Zusätzlich eine unabhängige Software-Fast-Wallet mit eigenen Wiederherstellungswörtern erstellen. Sie ist nicht Ledger-Konto 1.',
   'setup.hardware.localViewProtectionRequired':
     'Aktiviere zuerst den App-Schutz in den Einstellungen, bevor der Ledger-Lesezugriff auf diesem Gerät gespeichert wird.',
   'setup.hardware.looking': 'Suche nach einem verfügbaren Ledger-Transport.',
@@ -1461,8 +1540,11 @@ const de: Record<keyof typeof en, string> = {
   'setup.restoreHeightError': 'Restore-Höhe muss eine Zahl sein.',
   'setup.scanStart': 'Synchronisierung starten ab',
   'setup.scanAutomatic': 'Automatisch (empfohlen)',
+  'setup.scanRequired': 'Datum auswählen',
   'setup.scanDateHint':
     'Optional. Die Wallet beginnt etwas vor diesem Datum, damit am gewählten Datum keine Zahlung übersehen wird.',
+  'setup.ledgerScanDateHint':
+    'Für Ledger erforderlich. Wähle ein Datum vor der ersten Transaktion; nur bei einer ganz neuen Ledger-Wallet wählst du heute.',
   'setup.scanDateError':
     'Wähle ein gültiges Datum, das nicht in der Zukunft liegt.',
   'setup.seedConfirm': 'Ich habe diese 25 Wörter offline gesichert.',
@@ -1540,18 +1622,24 @@ const de: Record<keyof typeof en, string> = {
   'home.timeframeMax': 'Max',
   'home.timeframeToday': 'Heute',
   'home.totalBalance': 'Gesamtguthaben',
+  'home.marketPrice': 'Monero-Marktpreis',
   'home.ledgerBalanceNeedsVerification':
-    'Empfangene Ledger-Beträge werden angezeigt. Die Spend-Prüfung steht noch aus.',
+    'Die einmalige Ledger-Erstprüfung ist noch offen. Ledger entsperren und darauf die Monero-App öffnen; die Prüfung läuft automatisch.',
   'home.ledgerBalanceVerificationHint':
     'Ledger verbinden und entsperren, darauf die Monero-App öffnen und prüfen, welche Outputs zum Senden verfügbar sind.',
   'home.verifyLedgerBalance': 'Mit Ledger prüfen',
   'home.verifyingLedgerBalance': 'Warte auf Ledger…',
   'home.ledgerReconciliation.connecting-ledger': 'Ledger wird gesucht…',
-  'home.ledgerReconciliation.checking-local-scan': 'Lokaler Wallet-Scan wird geprüft…',
-  'home.ledgerReconciliation.catching-up-local-scan': 'Lokaler Scan läuft vor der Ledger-Prüfung…',
-  'home.ledgerReconciliation.deriving-owned-output-key-images': 'Eigene Outputs werden mit Ledger geprüft…',
-  'home.ledgerReconciliation.saving-ledger-balance': 'Geprüftes Guthaben wird gespeichert…',
-  'home.ledgerWalletCouldNotOpen': 'Die lokale Ledger-Begleitwallet konnte nicht geöffnet werden.',
+  'home.ledgerReconciliation.checking-local-scan':
+    'Lokaler Wallet-Scan wird geprüft…',
+  'home.ledgerReconciliation.catching-up-local-scan':
+    'Lokaler Scan läuft vor der Ledger-Prüfung…',
+  'home.ledgerReconciliation.deriving-owned-output-key-images':
+    'Eigene Outputs werden mit Ledger geprüft…',
+  'home.ledgerReconciliation.saving-ledger-balance':
+    'Geprüftes Guthaben wird gespeichert…',
+  'home.ledgerWalletCouldNotOpen':
+    'Die lokale Ledger-Begleitwallet konnte nicht geöffnet werden.',
   'home.transactions': 'Transaktionen',
   'home.walletLocked': 'Wallet gesperrt',
   'home.walletNotOpen': 'Wallet nicht geöffnet',
@@ -2028,7 +2116,8 @@ const de: Record<keyof typeof en, string> = {
   'settings.diagnostics': 'Diagnose',
   'settings.ledgerBalanceVerification': 'Ledger-Guthaben prüfen',
   'settings.ledgerBalanceVerifying': 'Prüfung mit Ledger…',
-  'settings.ledgerBalanceVerified': 'Der vom Ledger signierte Ausgabestatus wurde geprüft und das lokale Guthaben aktualisiert.',
+  'settings.ledgerBalanceVerified':
+    'Der vom Ledger signierte Ausgabestatus wurde geprüft und das lokale Guthaben aktualisiert.',
   'settings.disabled': 'Deaktiviert',
   'settings.enableBiometrics': 'Biometrie aktivieren',
   'settings.fastReceive': 'Fast Wallet',

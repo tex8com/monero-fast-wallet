@@ -70,8 +70,7 @@
   },
   "invariants": [
     "fast_wallet_is_an_independent_wallet",
-    "privacy_only_defaults_fast_wallet_off",
-    "privacy_convenience_defaults_fast_wallet_on",
+    "fast_wallet_is_explicit_opt_in",
     "seed_wallet_is_not_ready_before_backup_confirmation",
     "ledger_and_view_only_wallets_do_not_claim_a_local_seed",
     "removal_risks_are_explicit_and_never_a_permanent_ui_dead_end",

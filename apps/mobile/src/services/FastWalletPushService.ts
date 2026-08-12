@@ -1,4 +1,4 @@
-import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import { Alert, NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import { checkNotifications, RESULTS } from 'react-native-permissions';
 
 import {
@@ -6,7 +6,7 @@ import {
   loadProtectedMetadata,
   storeProtectedMetadata,
 } from './ProtectedMetadataStorage';
-import { logWalletEvent } from './WalletLogger';
+import { classifyDiagnosticFailure, logWalletEvent } from './WalletLogger';
 import { requireNativeMoneroWallet } from './NativeMoneroWallet';
 import { withSystemUiInterruption } from './SystemUiInterruption';
 
@@ -79,6 +79,7 @@ export interface FastWalletPushRegistration {
   permissionStatus: string;
   provider: 'fcm';
   subscriptionId: string;
+  providerTokenLength: number;
 }
 
 export interface MobilePushProviderToken {
@@ -360,6 +361,7 @@ async function enableFastWalletNotifications(): Promise<FastWalletPushRegistrati
   });
   let permissionStatus = 'unknown';
   let subscriptionId: string;
+  let providerTokenLength = 0;
   try {
     permissionStatus = await requestPermission(instance);
     logWalletEvent('FastWalletPush', 'registration.permission.complete', {
@@ -371,6 +373,10 @@ async function enableFastWalletNotifications(): Promise<FastWalletPushRegistrati
     if (!token) {
       throw new Error('Firebase returned no push token');
     }
+    providerTokenLength = token.length;
+    logWalletEvent('FastWalletPush', 'registration.providerToken.obtained', {
+      providerTokenLength,
+    });
     subscriptionId = await registerToken(token);
   } catch (error) {
     const nextRetryAt = Date.now() + retryDelayMs(1);
@@ -397,7 +403,12 @@ async function enableFastWalletNotifications(): Promise<FastWalletPushRegistrati
     platform: Platform.OS,
     success: true,
   });
-  return { permissionStatus, provider: 'fcm', subscriptionId };
+  return {
+    permissionStatus,
+    provider: 'fcm',
+    subscriptionId,
+    providerTokenLength,
+  };
 }
 
 /**
@@ -418,7 +429,10 @@ export async function requestMobilePushProviderToken(): Promise<MobilePushProvid
   return { permissionStatus, provider: 'fcm', token };
 }
 
-async function performRegistrationRefresh(token?: string): Promise<void> {
+async function performRegistrationRefresh(
+  token?: string,
+  announceDiagnostic = false,
+): Promise<void> {
   const startedAt = Date.now();
   logWalletEvent('FastWalletPush', 'registration.refresh.start', {
     hasProviderToken: Boolean(token),
@@ -434,6 +448,12 @@ async function performRegistrationRefresh(token?: string): Promise<void> {
     logWalletEvent('FastWalletPush', 'registration.refreshDeferred', {
       reason: protection ? 'appLocked' : 'protectionStatusUnavailable',
     });
+    if (announceDiagnostic) {
+      Alert.alert(
+        'Push diagnostics',
+        'Push registration waits for the app to be unlocked.',
+      );
+    }
     return;
   }
   const state = await loadRegistrationState();
@@ -441,7 +461,14 @@ async function performRegistrationRefresh(token?: string): Promise<void> {
   if (state?.desired === 'disabled') {
     return;
   }
-  if (!subscriptionId && state?.desired !== 'enabled') return;
+  // First-time installs have neither protected registration metadata nor a
+  // subscription id yet.  The old early return made the post-unlock refresh
+  // a no-op forever unless a separate UI action happened to call `enable`.
+  // Bootstrap the registration after every valid app unlock instead.  Raw FCM
+  // tokens remain in memory only and registration still requires App Check.
+  if (!subscriptionId && state?.desired !== 'enabled') {
+    logWalletEvent('FastWalletPush', 'registration.bootstrapAfterUnlock');
+  }
   const now = Date.now();
   if (!token && state?.nextRetryAt && state.nextRetryAt > now) {
     scheduleRegistrationRetry(state.nextRetryAt);
@@ -467,10 +494,19 @@ async function performRegistrationRefresh(token?: string): Promise<void> {
       elapsedMs: Date.now() - startedAt,
       success: true,
     });
+    if (announceDiagnostic) {
+      Alert.alert(
+        'Push diagnostics',
+        `FCM token created (${nextToken.length} characters). App Check and Gateway registration accepted.`,
+      );
+    }
   }
 }
 
-async function refreshRegistrationQuietly(token?: string): Promise<void> {
+async function refreshRegistrationQuietly(
+  token?: string,
+  announceDiagnostic = false,
+): Promise<void> {
   if (registrationInFlight) {
     // Token rotations may race an ordinary lease refresh. Keep only the most
     // recent provider token and drain it before releasing the single-flight
@@ -482,7 +518,7 @@ async function refreshRegistrationQuietly(token?: string): Promise<void> {
   registrationInFlight = (async () => {
     let nextToken = token;
     do {
-      await performRegistrationRefresh(nextToken);
+      await performRegistrationRefresh(nextToken, announceDiagnostic);
       nextToken = pendingRegistrationToken;
       pendingRegistrationToken = undefined;
     } while (nextToken);
@@ -506,6 +542,13 @@ async function refreshRegistrationQuietly(token?: string): Promise<void> {
         retryCount,
         nextRetryAt,
       });
+      if (announceDiagnostic) {
+        const failureCode = classifyDiagnosticFailure(error);
+        Alert.alert(
+          'Push diagnostics',
+          `Push registration failed: ${failureCode}.`,
+        );
+      }
     })
     .finally(() => {
       pendingRegistrationToken = undefined;
@@ -616,9 +659,26 @@ async function handleRemoteMessage(
   );
 }
 
-async function sendTestNotification(): Promise<void> {
+async function sendTestNotification(): Promise<FastWalletPushRegistration> {
+  // A test push is also the first-run transport check.  It must not assume
+  // that an earlier Fast Wallet enrollment happened: otherwise a fresh app
+  // installation always reaches the Gateway without a provider registration
+  // and receives the opaque, but unhelpful, HTTP 409 response.
+  //
+  // This is an explicit user action, so it is the right moment to request
+  // notification permission, obtain the FCM token, verify App Check and
+  // register the installation before asking the Gateway to deliver the test.
+  // Neither token is persisted in JavaScript or emitted to diagnostics.
+  const startedAt = Date.now();
+  logWalletEvent('FastWalletPush', 'testPush.registration.start');
+  const registration = await enableFastWalletNotifications();
+  logWalletEvent('FastWalletPush', 'testPush.registration.success', {
+    elapsedMs: Date.now() - startedAt,
+    success: true,
+  });
   await requireNativeMoneroWallet().sendFastWalletTestPush();
   logWalletEvent('FastWalletPush', 'testPush.accepted');
+  return registration;
 }
 
 function installBackgroundHandler(): void {

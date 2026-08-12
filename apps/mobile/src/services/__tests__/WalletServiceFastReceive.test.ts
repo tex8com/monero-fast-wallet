@@ -17,7 +17,7 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 });
 
 const mockNativeWallet = {
-  getAppProtectionStatus: jest.fn(async () => ({locked: false})),
+  getAppProtectionStatus: jest.fn(async () => ({ locked: false })),
   ensureWalletSecret: jest.fn(async () => undefined),
   deleteWalletSecret: jest.fn(async () => undefined),
   createFastReceiveIdentityWithStoredSecret: jest.fn(
@@ -82,24 +82,23 @@ const mockNativeWallet = {
         notifications_enabled: true,
       }),
   ),
-  openWalletWithStoredSecret: jest.fn(
-    async (input: {path: string}) => ({
-      walletId: `native-${input.path.split('/').pop()}`,
-    }),
-  ),
+  openWalletWithStoredSecret: jest.fn(async (input: { path: string }) => ({
+    walletId: `native-${input.path.split('/').pop()}`,
+  })),
   setDaemon: jest.fn(async () => undefined),
   setGrpcEndpoint: jest.fn(async () => undefined),
   startRefresh: jest.fn(async () => undefined),
   getTransactions: jest.fn(async () => []),
+  getAddress: jest.fn(async () => '48A1fastWalletAddress'),
+  getBalance: jest.fn(async () => '0'),
+  getUnlockedBalance: jest.fn(async () => '0'),
   loadOfficialFastWalletWorkerDescriptor: jest.fn(async () => 'aa'),
   sponsorFastWalletAssignment: jest.fn(async () => ({
     assignmentHandle: '22'.repeat(32),
     assignmentEpoch: 2,
     expiresAt: Math.floor(Date.now() / 1_000) + 30 * 24 * 60 * 60,
   })),
-  sealFastReceiveWatchWithStoredSecret: jest.fn(async () =>
-    '33'.repeat(484),
-  ),
+  sealFastReceiveWatchWithStoredSecret: jest.fn(async () => '33'.repeat(484)),
   submitFastWalletWatch: jest.fn(async () => '44'.repeat(32)),
   prepareTransaction: jest.fn(async () => ({
     id: 'pending-1',
@@ -146,8 +145,7 @@ import {
 } from '../WalletRegistry';
 import { WalletService } from '../WalletService';
 
-const FAST_CREDENTIAL_KEY =
-  'monero.wallet.fast.mainnet.fast-receive-v2-7.v2';
+const FAST_CREDENTIAL_KEY = 'monero.wallet.fast.mainnet.fast-receive-v2-7.v2';
 const FAST_SCANNER_CREDENTIAL_KEY =
   'monero.wallet.fast-scanner.fast-receive-v2-7.v1';
 
@@ -174,7 +172,7 @@ describe('WalletService fast receive scanner flow', () => {
           scannerStatus: 'local-only',
         },
         '2026-07-08T00:00:00.000Z',
-        {credentialKey: FAST_CREDENTIAL_KEY},
+        { credentialKey: FAST_CREDENTIAL_KEY },
       ),
     );
 
@@ -210,7 +208,7 @@ describe('WalletService fast receive scanner flow', () => {
           scannerStatus: 'enabled',
         },
         new Date().toISOString(),
-        {credentialKey: FAST_CREDENTIAL_KEY},
+        { credentialKey: FAST_CREDENTIAL_KEY },
       ),
       status: 'enabled',
       notificationsEnabled: true,
@@ -227,7 +225,9 @@ describe('WalletService fast receive scanner flow', () => {
       service.renewExpiringFastWalletAssignmentsQuietly(),
     ]);
 
-    expect(mockNativeWallet.sponsorFastWalletAssignment).toHaveBeenCalledTimes(1);
+    expect(mockNativeWallet.sponsorFastWalletAssignment).toHaveBeenCalledTimes(
+      1,
+    );
     await expect(loadFastReceiveIdentities()).resolves.toEqual([
       expect.objectContaining({
         assignmentHandle: '22'.repeat(32),
@@ -263,7 +263,9 @@ describe('WalletService fast receive scanner flow', () => {
       walletId: 'wallet-1',
     };
 
-    const result = await service.createFastReceiveIdentity({});
+    const result = await service.createFastReceiveIdentity({
+      restoreHeight: 900,
+    });
     const independentCredential = result.identity.credentialKey;
 
     expect(result.identity).toMatchObject({
@@ -272,7 +274,7 @@ describe('WalletService fast receive scanner flow', () => {
       restoreHeight: 900,
     });
     expect(independentCredential).toMatch(
-      /^monero\.wallet\.fast\.mainnet\.fast-receive-v2-0-\w+\.v2$/,
+      /^monero\.wallet\.fast\.mainnet\.fast-receive-v2-199-\w+\.v2$/,
     );
     expect(independentCredential).not.toBe(primary.credentialKey);
     expect(mockNativeWallet.ensureWalletSecret).toHaveBeenCalledWith(
@@ -282,6 +284,7 @@ describe('WalletService fast receive scanner flow', () => {
       mockNativeWallet.createFastReceiveIdentityWithStoredSecret,
     ).toHaveBeenCalledWith(
       expect.objectContaining({
+        derivationIndex: 199,
         secretKey: independentCredential,
         sourceWalletId: 'wallet-1',
       }),
@@ -304,7 +307,7 @@ describe('WalletService fast receive scanner flow', () => {
     expect(persisted).not.toContain('mnemonic');
   });
 
-  it('rejects software Fast Wallet creation from a Ledger-backed wallet', async () => {
+  it('creates a separate software Fast Wallet from a Ledger setup context', async () => {
     const ledger = await saveRegisteredWallet(
       createRegisteredWallet({
         walletName: 'ledger',
@@ -340,13 +343,65 @@ describe('WalletService fast receive scanner flow', () => {
       walletId: 'ledger-wallet-1',
     };
 
+    const result = await service.createFastReceiveIdentity({
+      productSlot: 199,
+      restoreHeight: 0,
+    });
+    expect(result.identity).toMatchObject({
+      derivationIndex: 199,
+      sourceWalletId: ledger.id,
+    });
+    expect(
+      mockNativeWallet.createFastReceiveIdentityWithStoredSecret,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        derivationIndex: 199,
+        sourceWalletId: 'ledger-wallet-1',
+      }),
+    );
+    expect(await loadRegisteredWallet()).toEqual(ledger);
+  });
+
+  it('blocks an occupied product slot before native creation or hosting', async () => {
+    await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: 'primary',
+        path: '/local/primary',
+        network: 'mainnet',
+        credentialKey: 'monero.wallet.software.mainnet.primary.v1',
+        now: '2026-07-08T00:00:00.000Z',
+      }),
+    );
+    const service = new WalletService();
+    (
+      service as unknown as {
+        activeSession: {
+          credentialKey: string;
+          network: 'mainnet';
+          walletId: string;
+        };
+      }
+    ).activeSession = {
+      credentialKey: 'monero.wallet.software.mainnet.primary.v1',
+      network: 'mainnet',
+      walletId: 'wallet-1',
+    };
+
+    await service.createFastReceiveIdentity({
+      productSlot: 731,
+      restoreHeight: 0,
+    });
+    mockNativeWallet.createFastReceiveIdentityWithStoredSecret.mockClear();
+
     await expect(
-      service.createFastReceiveIdentity({restoreHeight: 0}),
-    ).rejects.toThrow('Open a private software wallet');
+      service.createFastReceiveIdentity({
+        productSlot: 731,
+        restoreHeight: 0,
+      }),
+    ).rejects.toThrow('slot 731 is already occupied');
     expect(
       mockNativeWallet.createFastReceiveIdentityWithStoredSecret,
     ).not.toHaveBeenCalled();
-    expect(await loadRegisteredWallet()).toEqual(ledger);
   });
 
   it('does not wait for a node snapshot when a restore height is supplied', async () => {
@@ -388,6 +443,59 @@ describe('WalletService fast receive scanner flow', () => {
     expect(result.identity.restoreHeight).toBe(0);
   });
 
+  it('uses a conservative current-date height before a new Ledger has synchronized', async () => {
+    const ledger = await saveRegisteredWallet(
+      createRegisteredWallet({
+        walletName: 'ledger',
+        path: '/local/ledger',
+        network: 'mainnet',
+        kind: 'hardware',
+        credentialKey: 'monero.wallet.hardware.mainnet.ledger.v1',
+      }),
+    );
+    const service = new WalletService();
+    (
+      service as unknown as {
+        activeSession: {
+          credentialKey: string;
+          hardwareDevice: { name: string; type: string };
+          network: 'mainnet';
+          walletId: string;
+        };
+      }
+    ).activeSession = {
+      credentialKey: ledger.credentialKey!,
+      hardwareDevice: { name: 'Ledger Nano', type: 'ledger' },
+      network: 'mainnet',
+      walletId: 'ledger-wallet-unsynced',
+    };
+    mockNativeWallet.snapshot.mockResolvedValueOnce({
+      balanceAtomic: '0',
+      unlockedBalanceAtomic: '0',
+      primaryAddress: '48A1ledger',
+      walletHeight: 1,
+      daemonHeight: 0,
+      daemonTargetHeight: 0,
+      synchronized: false,
+    });
+
+    await service.createFastReceiveIdentity({ productSlot: 199 });
+
+    expect(
+      mockNativeWallet.createFastReceiveIdentityWithStoredSecret,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        derivationIndex: 199,
+        restoreHeight: expect.any(Number),
+        sourceWalletId: 'ledger-wallet-unsynced',
+      }),
+    );
+    const calls =
+      mockNativeWallet.createFastReceiveIdentityWithStoredSecret.mock.calls;
+    const call = calls[calls.length - 1]?.[0];
+    expect(call.restoreHeight).toBeGreaterThan(2);
+  });
+
   it('refreshes every Fast Wallet locally after one generic incoming signal', async () => {
     const primary = await saveRegisteredWallet(
       createRegisteredWallet({
@@ -398,10 +506,7 @@ describe('WalletService fast receive scanner flow', () => {
         credentialKey: 'monero.wallet.software.mainnet.primary.v1',
       }),
     );
-    for (const id of [
-      'fast-receive-v2-1-signal',
-      'fast-receive-v2-2-signal',
-    ]) {
+    for (const id of ['fast-receive-v2-1-signal', 'fast-receive-v2-2-signal']) {
       await upsertRegisteredWallet(
         createRegisteredWallet({
           id,
@@ -434,7 +539,9 @@ describe('WalletService fast receive scanner flow', () => {
       'fast-receive-v2-2-signal',
     ]);
     expect(results.every(result => result.snapshot?.synchronized)).toBe(true);
-    expect(mockNativeWallet.openWalletWithStoredSecret).toHaveBeenCalledTimes(2);
+    expect(mockNativeWallet.openWalletWithStoredSecret).toHaveBeenCalledTimes(
+      2,
+    );
     expect(mockNativeWallet.startRefresh).toHaveBeenCalledTimes(2);
     expect(mockNativeWallet.getTransactions).toHaveBeenCalledTimes(2);
     expect(service.getActiveSession()).toEqual(activeSession);
@@ -514,7 +621,7 @@ describe('WalletService fast receive scanner flow', () => {
           scannerStatus: 'local-only',
         },
         '2026-07-08T00:00:00.000Z',
-        {credentialKey: FAST_CREDENTIAL_KEY},
+        { credentialKey: FAST_CREDENTIAL_KEY },
       ),
     );
 
@@ -545,7 +652,7 @@ describe('WalletService fast receive scanner flow', () => {
           scannerStatus: 'enabled',
         },
         '2026-07-08T00:00:00.000Z',
-        {credentialKey: FAST_CREDENTIAL_KEY},
+        { credentialKey: FAST_CREDENTIAL_KEY },
       ),
       scannerUrl: 'https://old-xmr.tex8.com',
       status: 'enabled' as const,
@@ -592,7 +699,7 @@ describe('WalletService fast receive scanner flow', () => {
           scannerStatus: 'local-only',
         },
         '2026-07-08T00:00:00.000Z',
-        {credentialKey: FAST_CREDENTIAL_KEY},
+        { credentialKey: FAST_CREDENTIAL_KEY },
       ),
     );
     mockNativeWallet.defaultWalletPath.mockResolvedValue(
@@ -773,7 +880,6 @@ describe('WalletService fast receive scanner flow', () => {
       registrationId: fastWallet.id,
       walletId: 'native-background-fast',
     });
-
   });
 
   it('lets the locally synchronized Core prepare a Fast Wallet send without a server spend-status dependency', async () => {
@@ -809,9 +915,9 @@ describe('WalletService fast receive scanner flow', () => {
           registrationId: fastWallet.id,
           walletId: 'native-fast',
         },
-        {address: '48A1destination', amountAtomic: '1'},
+        { address: '48A1destination', amountAtomic: '1' },
       ),
-    ).resolves.toMatchObject({status: 'ok'});
+    ).resolves.toMatchObject({ status: 'ok' });
     expect(mockNativeWallet.prepareTransaction).toHaveBeenCalledTimes(1);
   });
 });

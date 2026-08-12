@@ -1,0 +1,296 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet Team <wallet@tex8.local>
+Date: Sun, 9 Aug 2026 20:00:00 -0500
+Subject: [PATCH] wallet-cli: require signed Worker acceptance receipt
+
+Keep hosted enrollment pending after the Relay queues the ciphertext. Persist
+its opaque message identifier, poll the descriptor-owned receipt endpoint and
+verify the exact Worker's online-key signature before committing active.
+
+Migrate V1 hosted sidecars fail-closed: an old Relay-accepted record is
+resubmitted and an old active record must be resealed before it can become
+active again. No receipt, identifier, key or ciphertext is printed.
+---
+ src/simplewallet/product_cli_fast_wallet.cpp | 180 ++++++++++++++++++++++++---
+ 1 file changed, 161 insertions(+), 19 deletions(-)
+
+diff --git a/src/simplewallet/product_cli_fast_wallet.cpp b/src/simplewallet/product_cli_fast_wallet.cpp
+index be4f8001c..bc3641684 100644
+--- a/src/simplewallet/product_cli_fast_wallet.cpp
++++ b/src/simplewallet/product_cli_fast_wallet.cpp
+@@ -16,6 +16,7 @@
+ #include <mutex>
+ #include <stdexcept>
+ #include <string>
++#include <thread>
+ #include <vector>
+ 
+ #include <boost/filesystem.hpp>
+@@ -44,7 +45,7 @@ namespace
+   constexpr char paired_worker_magic[8] = {'M', 'F', 'W', 'W', 'K', '1', '\0', '\0'};
+   constexpr std::uint32_t paired_worker_disk_version = 1;
+   constexpr char hosted_watch_magic[8] = {'M', 'F', 'W', 'H', 'S', '1', '\0', '\0'};
+-  constexpr std::uint32_t hosted_watch_disk_version = 1;
++  constexpr std::uint32_t hosted_watch_disk_version = 2;
+   constexpr std::uint64_t watch_lifetime_seconds = 10 * 60;
+   constexpr std::uint64_t assignment_lifetime_seconds = 30 * 24 * 60 * 60;
+   constexpr std::size_t maximum_gateway_response_bytes = 16 * 1024;
+@@ -103,6 +104,29 @@ namespace
+   // opaque assignment routing state and an already encrypted HPKE envelope.
+   // It never carries a seed, password, address, private Spend Key or private
+   // View Key. The envelope is fixed-size ciphertext and is not printed.
++  struct persisted_hosted_watch_v1
++  {
++    char magic[8];
++    std::uint32_t disk_version;
++    std::uint32_t network;
++    std::uint32_t enrollment_stage;
++    std::uint32_t reserved;
++    std::uint64_t generation;
++    std::uint64_t created_at;
++    std::uint64_t updated_at;
++    std::uint64_t assignment_epoch;
++    std::uint64_t assignment_expires_at;
++    std::array<char, 45> installation_id;
++    std::array<unsigned char, 32> installation_auth;
++    std::array<unsigned char, 32> assignment_handle;
++    std::array<unsigned char, 32> worker_root_id;
++    std::array<unsigned char, 32> descriptor_hash;
++    std::array<unsigned char, TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE> envelope;
++  };
++
++  // Version 2 binds the locally pending state to the exact ciphertext ID
++  // acknowledged by the Relay. Active remains impossible until a signed
++  // receipt for this ID was verified against the pinned Worker descriptor.
+   struct persisted_hosted_watch
+   {
+     char magic[8];
+@@ -120,6 +144,7 @@ namespace
+     std::array<unsigned char, 32> assignment_handle;
+     std::array<unsigned char, 32> worker_root_id;
+     std::array<unsigned char, 32> descriptor_hash;
++    std::array<unsigned char, 32> relay_message_id;
+     std::array<unsigned char, TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE> envelope;
+   };
+ 
+@@ -501,6 +526,7 @@ namespace
+       stage == MFW_FAST_WALLET_HOSTING_STAGE_DELIVERY_ENABLED ||
+       stage == MFW_FAST_WALLET_HOSTING_STAGE_WATCH_SEALED ||
+       stage == MFW_FAST_WALLET_HOSTING_STAGE_RELAY_ACCEPTED ||
++      stage == MFW_FAST_WALLET_HOSTING_STAGE_WORKER_CONFIRMED ||
+       stage == MFW_FAST_WALLET_HOSTING_STAGE_ACTIVE ||
+       stage == MFW_FAST_WALLET_HOSTING_STAGE_REVOCATION_REMOTE_DELETED;
+   }
+@@ -525,24 +551,65 @@ namespace
+          bytes_are_zero(state.descriptor_hash.data(), state.descriptor_hash.size())))
+       throw std::runtime_error("Fast Wallet hosted-watch assignment expiry is invalid");
+     if ((state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_WATCH_SEALED ||
+-         state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_RELAY_ACCEPTED) &&
++         state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_RELAY_ACCEPTED ||
++         state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_WORKER_CONFIRMED) &&
+         bytes_are_zero(state.envelope.data(), state.envelope.size()))
+       throw std::runtime_error("Fast Wallet hosted-watch envelope is missing");
++    if ((state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_RELAY_ACCEPTED ||
++         state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_WORKER_CONFIRMED) &&
++        bytes_are_zero(state.relay_message_id.data(), state.relay_message_id.size()))
++      throw std::runtime_error("Fast Wallet hosted-watch Relay acknowledgement is missing");
+   }
+ 
+   persisted_hosted_watch read_hosted_watch(const options& input)
+   {
+     const auto path = hosted_watch_path(input);
+     require_private_regular_file(path, "Fast Wallet hosted-watch state");
+-    if (boost::filesystem::file_size(path) != sizeof(persisted_hosted_watch))
+-      throw std::runtime_error("Fast Wallet hosted-watch state has an invalid size");
++    const std::uintmax_t size = boost::filesystem::file_size(path);
+     std::ifstream stream(path.string(), std::ios::binary);
+-    persisted_hosted_watch state{};
+-    stream.read(reinterpret_cast<char*>(&state), sizeof(state));
+-    if (!stream || stream.peek() != std::ifstream::traits_type::eof())
+-      throw std::runtime_error("Fast Wallet hosted-watch state could not be read");
+-    validate_hosted_watch(state);
+-    return state;
++    if (size == sizeof(persisted_hosted_watch))
++    {
++      persisted_hosted_watch state{};
++      stream.read(reinterpret_cast<char*>(&state), sizeof(state));
++      if (!stream || stream.peek() != std::ifstream::traits_type::eof())
++        throw std::runtime_error("Fast Wallet hosted-watch state could not be read");
++      validate_hosted_watch(state);
++      return state;
++    }
++    if (size == sizeof(persisted_hosted_watch_v1))
++    {
++      persisted_hosted_watch_v1 legacy{};
++      stream.read(reinterpret_cast<char*>(&legacy), sizeof(legacy));
++      if (!stream || stream.peek() != std::ifstream::traits_type::eof() ||
++          std::memcmp(legacy.magic, hosted_watch_magic, sizeof(hosted_watch_magic)) != 0 ||
++          legacy.disk_version != 1 || legacy.reserved != 0)
++        throw std::runtime_error("Fast Wallet hosted-watch state could not be read");
++      persisted_hosted_watch state{};
++      std::memcpy(state.magic, legacy.magic, sizeof(state.magic));
++      state.disk_version = hosted_watch_disk_version;
++      state.network = legacy.network;
++      state.enrollment_stage = legacy.enrollment_stage;
++      state.generation = legacy.generation;
++      state.created_at = legacy.created_at;
++      state.updated_at = legacy.updated_at;
++      state.assignment_epoch = legacy.assignment_epoch;
++      state.assignment_expires_at = legacy.assignment_expires_at;
++      state.installation_id = legacy.installation_id;
++      state.installation_auth = legacy.installation_auth;
++      state.assignment_handle = legacy.assignment_handle;
++      state.worker_root_id = legacy.worker_root_id;
++      state.descriptor_hash = legacy.descriptor_hash;
++      state.envelope = legacy.envelope;
++      if (state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_RELAY_ACCEPTED)
++        state.enrollment_stage = MFW_FAST_WALLET_HOSTING_STAGE_WATCH_SEALED;
++      else if (state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_ACTIVE)
++        state.enrollment_stage = MFW_FAST_WALLET_HOSTING_STAGE_DELIVERY_ENABLED;
++      validate_hosted_watch(state);
++      volatile unsigned char* legacy_bytes = reinterpret_cast<volatile unsigned char*>(&legacy);
++      for (std::size_t index = 0; index < sizeof(legacy); ++index) legacy_bytes[index] = 0;
++      return state;
++    }
++    throw std::runtime_error("Fast Wallet hosted-watch state has an invalid size");
+   }
+ 
+   void wipe_hosted_watch(persisted_hosted_watch& state);
+@@ -805,6 +872,32 @@ namespace
+     return value;
+   }
+ 
++  std::string json_string(const std::string& body, const char* name,
++                          const std::size_t maximum_length)
++  {
++    const std::string key = std::string("\"") + name + "\"";
++    const std::size_t found = body.find(key);
++    if (found == std::string::npos)
++      throw std::runtime_error("Fast Wallet service response was invalid");
++    std::size_t cursor = found + key.size();
++    while (cursor < body.size() && std::isspace(static_cast<unsigned char>(body[cursor]))) ++cursor;
++    if (cursor == body.size() || body[cursor++] != ':')
++      throw std::runtime_error("Fast Wallet service response was invalid");
++    while (cursor < body.size() && std::isspace(static_cast<unsigned char>(body[cursor]))) ++cursor;
++    if (cursor == body.size() || body[cursor++] != '"')
++      throw std::runtime_error("Fast Wallet service response was invalid");
++    const std::size_t start = cursor;
++    while (cursor < body.size() && body[cursor] != '"')
++    {
++      if (body[cursor] == '\\' || static_cast<unsigned char>(body[cursor]) < 0x20)
++        throw std::runtime_error("Fast Wallet service response was invalid");
++      ++cursor;
++    }
++    if (cursor == body.size() || cursor == start || cursor - start > maximum_length)
++      throw std::runtime_error("Fast Wallet service response was invalid");
++    return body.substr(start, cursor - start);
++  }
++
+   void register_desktop_installation(const options& input, const persisted_hosted_watch& state)
+   {
+     const http_response response = https_request(input.gateway_origin, "POST",
+@@ -849,21 +942,60 @@ namespace
+     return require_https_origin(std::string(reinterpret_cast<const char*>(origin.data()), length), "Worker Relay origin");
+   }
+ 
+-  void submit_watch_to_relay(const persisted_hosted_watch& state, const std::string& relay_origin)
++  std::array<unsigned char, 32> submit_watch_to_relay(
++    const persisted_hosted_watch& state, const std::string& relay_origin)
+   {
+     const std::string body = "{\"envelope\":\"" + hex_encode(state.envelope.data(), state.envelope.size()) + "\"}";
+     // The Worker Relay is independently pinned by its signed descriptor. It
+     // must receive only the encrypted watch, never the Gateway installation
+     // capability or any other management credential.
+     const http_response response = https_request(relay_origin, "POST", "/v1/envelopes", body, nullptr);
+-    const std::size_t key = response.body.find("\"messageId\"");
+-    if ((response.status != 200 && response.status != 201) || key == std::string::npos)
++    if (response.status != 200 && response.status != 201)
+       throw std::runtime_error("Fast Wallet Worker Relay rejected the encrypted watch");
+-    const std::size_t first_quote = response.body.find('"', response.body.find(':', key));
+-    const std::size_t second_quote = first_quote == std::string::npos ? std::string::npos : response.body.find('"', first_quote + 1);
+-    if (second_quote == std::string::npos || second_quote - first_quote - 1 != 64 ||
+-        !std::all_of(response.body.begin() + first_quote + 1, response.body.begin() + second_quote, is_lowercase_hex))
++    const std::string message_id_text = json_string(response.body, "messageId", 64);
++    const std::vector<unsigned char> message_id = decode_lowercase_hex(
++      message_id_text, 32, "Fast Wallet Worker Relay message ID");
++    if (bytes_are_zero(message_id.data(), message_id.size()))
+       throw std::runtime_error("Fast Wallet Worker Relay returned an invalid acknowledgement");
++    std::array<unsigned char, 32> output{};
++    std::copy(message_id.begin(), message_id.end(), output.begin());
++    return output;
++  }
++
++  void verify_worker_receipt(const std::vector<unsigned char>& descriptor,
++                             const Monero::NetworkType network,
++                             const std::uint64_t now,
++                             const persisted_hosted_watch& state,
++                             const std::string& relay_origin)
++  {
++    if (bytes_are_zero(state.relay_message_id.data(), state.relay_message_id.size()))
++      throw std::runtime_error("Fast Wallet Worker Relay message ID is missing");
++    const std::string message_id = hex_encode(
++      state.relay_message_id.data(), state.relay_message_id.size());
++    const std::string path = "/v1/envelopes/" + message_id + "/receipt";
++    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
++    while (std::chrono::steady_clock::now() < deadline)
++    {
++      const http_response response = https_request(relay_origin, "GET", path.c_str(), "", nullptr);
++      if (response.status == 202 && json_string(response.body, "status", 16) == "pending")
++      {
++        std::this_thread::sleep_for(std::chrono::milliseconds(250));
++        continue;
++      }
++      if (response.status != 200 || json_string(response.body, "status", 16) != "accepted")
++        throw std::runtime_error("Fast Wallet Worker receipt is unavailable");
++      const std::string receipt_text = json_string(response.body, "receipt", 408);
++      const std::vector<unsigned char> receipt = decode_lowercase_hex(
++        receipt_text, 204, "Fast Wallet Worker receipt");
++      const std::uint64_t verification_time = now == 0 ? unix_seconds() : now;
++      if (tex8_fast_wallet_protocol_verify_worker_receipt_v1(
++          descriptor.data(), descriptor.size(), static_cast<std::uint8_t>(network),
++          verification_time, state.relay_message_id.data(), receipt.data(), receipt.size()) !=
++          TEX8_FAST_WALLET_PROTOCOL_OK)
++        throw std::runtime_error("Fast Wallet Worker receipt signature is invalid");
++      return;
++    }
++    throw std::runtime_error("Fast Wallet Worker receipt is still pending; rerun worker enroll");
+   }
+ 
+   std::array<unsigned char, 32> descriptor_hash(const std::vector<unsigned char>& descriptor)
+@@ -1395,7 +1527,7 @@ namespace
+     }
+     try
+     {
+-      for (unsigned int steps = 0; steps != 8; ++steps)
++      for (unsigned int steps = 0; steps != 10; ++steps)
+       {
+         const bool authorized = have_hosted &&
+           hosted.enrollment_stage != MFW_FAST_WALLET_HOSTING_STAGE_NONE;
+@@ -1460,7 +1592,16 @@ namespace
+         }
+         if (plan.next_action == MFW_FAST_WALLET_HOSTING_ACTION_SUBMIT_WATCH)
+         {
+-          submit_watch_to_relay(hosted, relay_origin_from_descriptor(descriptor, network, now));
++          hosted.relay_message_id = submit_watch_to_relay(
++            hosted, relay_origin_from_descriptor(descriptor, network, now));
++          hosted.enrollment_stage = plan.result_enrollment_stage;
++          write_hosted_watch(input, hosted);
++          continue;
++        }
++        if (plan.next_action == MFW_FAST_WALLET_HOSTING_ACTION_VERIFY_WORKER_RECEIPT)
++        {
++          verify_worker_receipt(descriptor, network, now, hosted,
++                                relay_origin_from_descriptor(descriptor, network, now));
+           hosted.enrollment_stage = plan.result_enrollment_stage;
+           write_hosted_watch(input, hosted);
+           continue;
+@@ -1469,6 +1610,7 @@ namespace
+         {
+           hosted.enrollment_stage = plan.result_enrollment_stage;
+           std::fill(hosted.envelope.begin(), hosted.envelope.end(), 0);
++          std::fill(hosted.relay_message_id.begin(), hosted.relay_message_id.end(), 0);
+           write_hosted_watch(input, hosted);
+           continue;
+         }
+-- 
+2.51.0

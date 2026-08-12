@@ -167,10 +167,11 @@ pub fn creation_policy(
     ) {
         return Err(contract::ERROR_UNKNOWN_ENUM);
     }
+    // A Fast Wallet creates a distinct wallet identity.  Convenience must
+    // never silently create that additional identity or enable hosting; the
+    // caller must opt in explicitly with the enabled override.
     let enabled = match fast_override {
-        contract::FAST_WALLET_OVERRIDE_DEFAULT => {
-            preference == contract::WALLET_PREFERENCE_PRIVACY_CONVENIENCE
-        }
+        contract::FAST_WALLET_OVERRIDE_DEFAULT => false,
         contract::FAST_WALLET_OVERRIDE_DISABLED => false,
         contract::FAST_WALLET_OVERRIDE_ENABLED => true,
         _ => unreachable!(),
@@ -544,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn preference_default_and_override_are_explicit() {
+    fn fast_wallet_is_opt_in_even_for_convenience_preference() {
         let private = creation_policy(
             contract::WALLET_PREFERENCE_PRIVACY_ONLY,
             contract::FAST_WALLET_OVERRIDE_DEFAULT,
@@ -556,7 +557,7 @@ mod tests {
             contract::FAST_WALLET_OVERRIDE_DEFAULT,
         )
         .unwrap();
-        assert_eq!(convenience.fast_wallet_enabled, 1);
+        assert_eq!(convenience.fast_wallet_enabled, 0);
         assert_eq!(convenience.fast_wallet_independent_seed, 1);
         assert_eq!(
             creation_policy(

@@ -1,0 +1,73 @@
+--- a/binaries/cuprated/src/rpc/grpc.rs
++++ b/binaries/cuprated/src/rpc/grpc.rs
+@@ -292,6 +292,10 @@
+             .ok_or_else(|| Error::msg("next lane stripe overflow"))?;
+         Ok((next <= self.stop_height).then_some(next))
+     }
++}
++
++fn reduced_chunk_blocks(actual_blocks: usize) -> Option<usize> {
++    (actual_blocks > 1).then_some(actual_blocks.saturating_add(1) / 2)
+ }
+ 
+ #[derive(Clone)]
+@@ -854,6 +858,7 @@
+     let mut total_bytes: u64 = 0;
+     let pipeline_depth = stream_pipeline_depth();
+     let mut prefetched: Option<tokio::task::JoinHandle<Result<Option<FetchedChunk>, Error>>> = None;
++    let mut next_chunk_blocks = chunk_blocks;
+ 
+     loop {
+         let fetch_stop_height = match lane_schedule {
+@@ -869,7 +874,7 @@
+                     state.clone(),
+                     next_height,
+                     fetch_stop_height,
+-                    chunk_blocks,
++                    next_chunk_blocks,
+                     prune,
+                     no_miner_tx,
+                     max_response_bytes,
+@@ -980,10 +985,23 @@
+         let enc_ms = t_enc.elapsed().as_secs_f64() * 1000.0;
+         let payload_len = payload_buf.len();
+         if payload_len > max_response_bytes {
+-            return Err(Error::msg(format!(
+-                "encoded chunk exceeds RPC byte limit: {payload_len} > {max_response_bytes}"
+-            )));
++            let Some(reduced_blocks) = reduced_chunk_blocks(actual_blocks) else {
++                return Err(Error::msg(format!(
++                    "single-block encoded chunk exceeds RPC byte limit: {payload_len} > {max_response_bytes}"
++                )));
++            };
++            if let Some(task) = prefetched.take() {
++                task.abort();
++            }
++            eprintln!(
++                "[GRPC {}] SPLIT_OVERSIZED id={} seq={} start={} blocks={} payload_bytes={} max_bytes={} retry_blocks={}",
++                rpc_name, server_req_id, chunk_seq, response_start, actual_blocks,
++                payload_len, max_response_bytes, reduced_blocks,
++            );
++            next_chunk_blocks = reduced_blocks;
++            continue;
+         }
++        next_chunk_blocks = chunk_blocks;
+ 
+         let queue_depth_before = channel_capacity.saturating_sub(tx.capacity());
+         let t_proto_copy = Instant::now();
+@@ -1131,6 +1149,15 @@
+         assert!(schedule.following_height(100, 513).is_err());
+         assert!(schedule.fetch_stop_height(612).is_err());
+     }
++
++    #[test]
++    fn oversized_chunks_are_reduced_until_one_block() {
++        assert_eq!(reduced_chunk_blocks(512), Some(256));
++        assert_eq!(reduced_chunk_blocks(3), Some(2));
++        assert_eq!(reduced_chunk_blocks(2), Some(1));
++        assert_eq!(reduced_chunk_blocks(1), None);
++        assert_eq!(reduced_chunk_blocks(0), None);
++    }
+ }
+ 
+ /// Build the tonic gRPC service ready to be added to a tonic Server.

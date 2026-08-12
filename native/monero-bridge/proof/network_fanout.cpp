@@ -14,6 +14,7 @@ int main() {
   using tex8::wallet::network_fanout::prioritize;
   using tex8::wallet::network_fanout::publicBatchValidationError;
   using tex8::wallet::network_fanout::run;
+  using tex8::wallet::network_fanout::mergeAuthenticatedTargetHeight;
   using tex8::wallet::network_fanout::updateDownloadRange;
   using tex8::wallet::network_fanout::workerCount;
 
@@ -32,6 +33,14 @@ int main() {
   assert(publicBatchValidationError(100, 101, 133, 200, 32));
   assert(publicBatchValidationError(100, 96, 201, 200, 105));
   assert(!publicBatchValidationError(199, 199, 199, 200, 0));
+
+  // A fresh app can open its one public transport while every local wallet is
+  // already at the tip. The resulting empty block stream has no chunk from
+  // which to recover currentHeight, so the connected daemon height supplies
+  // the first authenticated target. Later observations never regress it.
+  assert(mergeAuthenticatedTargetHeight(0, 3'738'164) == 3'738'164);
+  assert(mergeAuthenticatedTargetHeight(3'738'164, 0) == 3'738'164);
+  assert(mergeAuthenticatedTargetHeight(3'738'164, 3'738'165) == 3'738'165);
 
   bool rangeInitialized = false;
   uint64_t rangeStart = 0;

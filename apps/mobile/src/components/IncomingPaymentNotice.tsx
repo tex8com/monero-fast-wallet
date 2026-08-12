@@ -44,6 +44,7 @@ export default function IncomingPaymentNotice() {
   const amount = formatAtomicXmr(incomingTransactionNotice.amountAtomic, {
     maxFractionDigits: 12,
   });
+  const outgoing = incomingTransactionNotice.direction === 'out';
 
   return (
     <Modal
@@ -54,23 +55,37 @@ export default function IncomingPaymentNotice() {
       onRequestClose={dismissIncomingTransactionNotice}
     >
       <View style={s.backdrop}>
-        <View style={s.dialog}>
-          <View style={s.iconCircle}>
+        <View style={[s.dialog, outgoing && s.dialogOutgoing]}>
+          <View style={[s.iconCircle, outgoing && s.iconCircleOutgoing]}>
             <Icon
-              name="arrow-down"
+              name={outgoing ? 'arrow-up' : 'arrow-down'}
               size={28}
-              color={colors.success}
+              color={outgoing ? colors.error : colors.success}
               strokeWidth={2.4}
             />
           </View>
-          <Text style={s.title}>{t('notification.incomingTitle')}</Text>
-          <Text style={s.amount}>
-            {t('notification.incomingAmount', { amount })}
+          <Text style={s.title}>
+            {t(
+              outgoing
+                ? 'notification.outgoingTitle'
+                : 'notification.incomingTitle',
+            )}
+          </Text>
+          <Text style={[s.amount, outgoing && s.amountOutgoing]}>
+            {t(
+              outgoing
+                ? 'notification.outgoingAmount'
+                : 'notification.incomingAmount',
+              { amount },
+            )}
           </Text>
           <Text style={s.wallet} numberOfLines={1}>
-            {t('notification.incomingWallet', {
-              wallet: incomingTransactionNotice.walletName,
-            })}
+            {t(
+              outgoing
+                ? 'notification.outgoingWallet'
+                : 'notification.incomingWallet',
+              { wallet: incomingTransactionNotice.walletName },
+            )}
           </Text>
           <TouchableOpacity
             accessibilityLabel={t('notification.ok')}
@@ -109,6 +124,9 @@ const s = StyleSheet.create({
     paddingTop: 26,
     paddingBottom: 20,
   },
+  dialogOutgoing: {
+    borderColor: 'rgba(255,92,92,0.38)',
+  },
   iconCircle: {
     width: 58,
     height: 58,
@@ -118,11 +136,17 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(0,214,143,0.14)',
     marginBottom: 16,
   },
+  iconCircleOutgoing: {
+    backgroundColor: 'rgba(255,92,92,0.14)',
+  },
   title: {
     color: colors.textPrimary,
     fontSize: 21,
     fontWeight: '900',
     textAlign: 'center',
+  },
+  amountOutgoing: {
+    color: colors.error,
   },
   amount: {
     color: colors.success,

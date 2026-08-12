@@ -1,4 +1,10 @@
-import { presentNetworkSync } from '../../../../../packages/wallet-shared/src/networkSync';
+import {
+  formatNetworkSyncRate,
+  formatWalletDerivationRate,
+  networkSyncMegabitsPerSecond,
+  presentNetworkSync,
+  walletSyncDerivationsPerSecond,
+} from '../../../../../packages/wallet-shared/src/networkSync';
 
 const status = (overrides = {}) => ({
   state: 'fetching-blocks',
@@ -14,6 +20,33 @@ const status = (overrides = {}) => ({
 });
 
 describe('presentNetworkSync', () => {
+  it('calculates transport and wallet derivation rates from native batch counters', () => {
+    expect(networkSyncMegabitsPerSecond(status({
+      lastNonEmptyBlockFetchMs: 2_000,
+      lastNonEmptyNetworkBytes: 25_000_000,
+      lastNonEmptyPayloadBytes: 20_000_000,
+    }))).toBe(100);
+    expect(networkSyncMegabitsPerSecond(status({
+      lastNonEmptyBlockFetchMs: 1_000,
+      lastNonEmptyNetworkBytes: 0,
+      lastNonEmptyPayloadBytes: 10_000_000,
+    }))).toBe(80);
+    expect(walletSyncDerivationsPerSecond(status({
+      lastNonEmptyWalletDerivationCount: 24_000,
+      lastNonEmptyWalletDerivationUs: 200_000,
+    }))).toBe(120_000);
+  });
+
+  it('does not invent rates before a non-empty native measurement exists', () => {
+    expect(networkSyncMegabitsPerSecond(status())).toBeUndefined();
+    expect(walletSyncDerivationsPerSecond(status())).toBeUndefined();
+  });
+
+  it('formats both live rates without locale-dependent separators', () => {
+    expect(formatNetworkSyncRate(12.3456)).toBe('12.35');
+    expect(formatWalletDerivationRate(120_000.4)).toBe('120000');
+  });
+
   it('reports the shared downloader independently of a selected wallet', () => {
     expect(presentNetworkSync(status())).toEqual({
       phase: 'fetching-blocks',
@@ -78,6 +111,19 @@ describe('presentNetworkSync', () => {
     expect(presentNetworkSync(status({ state: 'scanner-backoff', phase: 'scanner-backoff' }))).toMatchObject({
       phase: 'retrying',
       failed: true,
+      ready: false,
+    });
+  });
+
+  it('keeps a short automatic reconnect visible without claiming node failure', () => {
+    expect(presentNetworkSync(status({
+      state: 'reconnecting',
+      phase: 'reconnecting',
+    }))).toMatchObject({
+      phase: 'reconnecting',
+      connected: false,
+      busy: true,
+      failed: false,
       ready: false,
     });
   });

@@ -37,6 +37,7 @@ const notice = {
   id: 'primary:incoming-1',
   walletId: 'primary',
   walletName: 'primary',
+  direction: 'in' as const,
   amountAtomic: '100000000',
   pending: true,
   confirmations: 0,

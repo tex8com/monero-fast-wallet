@@ -349,6 +349,25 @@ test('desktop Ledger Bluetooth discovery never blocks or re-enters the AppKit ma
   assert.doesNotMatch(desktopLedgerBleSource, /queue:dispatch_get_main_queue\(\)/);
 });
 
+test('desktop Ledger wallet creation cannot block the AppKit main thread', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const commandSource = rustFunction(hostSource, 'create_hardware_wallet');
+  assert.match(hostSource, /async fn create_hardware_wallet/);
+  assert.match(commandSource, /spawn_blocking/);
+  assert.match(commandSource, /\.await/);
+  assert.match(commandSource, /require_app_unlocked/);
+});
+
+test('macOS Ledger BLE prepares the protocol before reporting the device ready', () => {
+  assert.match(desktopLedgerBleSource, /kLedgerBleGetMtuTag = 0x08/);
+  assert.match(desktopLedgerBleSource, /120 \* NSEC_PER_MSEC/);
+  assert.match(desktopLedgerBleSource, /maximumWriteValueLengthForType/);
+  assert.match(desktopLedgerBleSource, /framesForCommand\(command, frameSize\)/);
+  assert.match(desktopLedgerBleSource, /const BOOL connected = \[transport connect\]/);
+  assert.match(desktopLedgerBleSource, /payload\[@"available"\] = @\(connected\)/);
+  assert.match(desktopLedgerBleSource, /protocolMtu\.fallback/);
+});
+
 test('Ledger Fast Wallet is release-gated before reading anything from Ledger', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
   const ledgerFastSource = rustFunction(hostSource, 'enable_ledger_fast_wallet');
@@ -788,6 +807,18 @@ test('wallet switching never runs native lock waits on the Tauri UI thread', () 
   }
   assert.match(appSource, /Opening\/creating a wallet already queues exactly one native sync worker/);
   assert.doesNotMatch(appSource, /void loadSnapshot\(true\);\s*void loadTransactions\(\);\s*void loadRegisteredSnapshots\(\);/);
+});
+
+test('normal wallet snapshots keep the Core aggregate across every Monero account', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const snapshotSource = rustFunction(hostSource, 'wallet_snapshot');
+  const registeredSnapshotsSource = rustFunction(hostSource, 'registered_wallet_snapshots');
+  assert.match(snapshotSource, /match input\.account_index/);
+  assert.match(snapshotSource, /None => wallet\.snapshot\(&input\.wallet_id\)/);
+  assert.match(registeredSnapshotsSource, /let legacy_account_scoped/);
+  assert.match(registeredSnapshotsSource, /wallet\.snapshot\(session_id\)/);
+  assert.match(appSource, /const snapshotAccountIndex = legacyLedgerAccountScoped/);
+  assert.match(appSource, /snapshotAccountIndex === undefined/);
 });
 
 test('slow node handshakes never freeze wallet selection, snapshots, or removal', () => {

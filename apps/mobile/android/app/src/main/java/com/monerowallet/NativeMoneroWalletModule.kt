@@ -47,6 +47,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
@@ -82,6 +83,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import org.json.JSONObject
+import org.json.JSONArray
 
 class NativeMoneroWalletModule(
   reactContext: ReactApplicationContext,
@@ -102,10 +104,18 @@ class NativeMoneroWalletModule(
   private var lastUserActivityElapsedMs = SystemClock.elapsedRealtime()
   private val nativeAutoLockRunnable = Runnable { enforceNativeAutoLock() }
   private val diagnosticLogLock = Any()
+  private val transactionAuditLock = Any()
   private val privatePhonePermitRefreshLock = Any()
   private val privatePhoneAskLock = Any()
   private val nativeWalletExecutor = Executors.newSingleThreadExecutor { work ->
     Thread(work, "mfw-native-wallet").apply { isDaemon = true }
+  }
+  // Establishing Android GATT can take two bounded 20-second attempts. It is
+  // transport setup only and must never occupy the serial wallet executor;
+  // otherwise snapshots/history time out while an unavailable Ledger is
+  // being discovered.
+  private val ledgerTransportExecutor = Executors.newSingleThreadExecutor { work ->
+    Thread(work, "mfw-ledger-transport").apply { isDaemon = true }
   }
   private val moneroEnthusiastV1 by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
     MoneroEnthusiastV1Controller(
@@ -131,6 +141,7 @@ class NativeMoneroWalletModule(
     mainHandler.removeCallbacks(nativeAutoLockRunnable)
     walletAppVault.lock()
     nativeWalletExecutor.shutdown()
+    ledgerTransportExecutor.shutdown()
     if (activeInstance?.get() === this) {
       activeInstance = null
     }
@@ -230,10 +241,180 @@ class NativeMoneroWalletModule(
           }
         }
         current.appendText("$message\n", Charsets.UTF_8)
+
+        // Release APKs are intentionally not debuggable, so `adb run-as`
+        // cannot read the private ring. Diagnostic builds mirror only these
+        // already allowlisted/sanitized lines into the app-specific external
+        // directory. This contains no keys, tokens, addresses or request
+        // bodies and is removed with the app.
+        val exportDirectory = reactApplicationContext
+          .getExternalFilesDir(DIAGNOSTIC_DIRECTORY)
+        if (exportDirectory != null &&
+          (exportDirectory.exists() || exportDirectory.mkdirs())
+        ) {
+          val exportCurrent = File(exportDirectory, DIAGNOSTIC_CURRENT_FILE)
+          if (exportCurrent.length() >= MAX_DIAGNOSTIC_FILE_BYTES) {
+            val exportPrevious = File(exportDirectory, DIAGNOSTIC_PREVIOUS_FILE)
+            if (exportPrevious.exists()) {
+              exportPrevious.delete()
+            }
+            if (!exportCurrent.renameTo(exportPrevious)) {
+              exportCurrent.delete()
+            }
+          }
+          exportCurrent.appendText("$message\n", Charsets.UTF_8)
+        }
       }.onFailure { error ->
         Log.w(NAME, "Wallet diagnostic ring write failed", error)
       }
     }
+  }
+
+  /**
+   * Stores a local-only audit snapshot for comparison with the same Ledger
+   * wallet on a computer. It deliberately never uses Logcat: transaction
+   * hashes, addresses and key images are sensitive linkability data.
+   *
+   * Monero does not reveal a sender address for incoming transfers. For those
+   * records the snapshot includes only the wallet-owned receiving subaddress;
+   * outgoing transfer destinations are recorded when the wallet knows them.
+   */
+  private fun persistTransactionAudit(
+    walletId: String,
+    transactions: List<Map<String, Any>>,
+  ) {
+    if (!BuildConfig.WALLET_DIAGNOSTICS_ENABLED) return
+
+    synchronized(transactionAuditLock) {
+      runCatching {
+        val directory = File(reactApplicationContext.filesDir, TRANSACTION_AUDIT_DIRECTORY)
+        check(directory.exists() || directory.mkdirs()) {
+          "transaction audit directory is unavailable"
+        }
+        val auditFileName = transactionAuditFileName(walletId)
+        val current = File(directory, auditFileName)
+        // A release build is deliberately not debuggable, so adb `run-as`
+        // cannot retrieve an internal file.  Keep the canonical copy private
+        // and mirror it only for an explicit diagnostics build into Android's
+        // app-specific external directory.  It remains scoped to this app
+        // (not a public media/download folder) and disappears on uninstall.
+        val exportDirectory = reactApplicationContext
+          .getExternalFilesDir(TRANSACTION_AUDIT_DIRECTORY)
+        check(exportDirectory != null && (exportDirectory.exists() || exportDirectory.mkdirs())) {
+          "transaction audit export directory is unavailable"
+        }
+        val exportCurrent = File(exportDirectory, auditFileName)
+
+        // Fetch every account that appears in the native history, rather than
+        // assuming that all activity belongs to account zero.  A missing
+        // account is harmless for this debug-only snapshot and must not make
+        // the transaction API fail.
+        val historyAccounts = transactions.mapNotNull { transaction ->
+          (transaction["subaddrAccount"] as? Number)?.toInt()
+        }.toSortedSet().ifEmpty { sortedSetOf(0) }
+        val subaddresses = historyAccounts.flatMap { accountIndex ->
+          runCatching {
+            NativeMoneroWalletJni.listSubaddresses(walletId, accountIndex.toDouble())
+          }.getOrDefault(emptyList())
+        }
+        // A Ledger Fast Wallet is a logical account of the same hardware
+        // wallet.  Keep its balances next to the account-scoped transaction
+        // history so a desktop Ledger comparison can distinguish a real
+        // account-one balance from a stale UI/cache value.  These values are
+        // intentionally written only to the local audit file, never Logcat.
+        val accountBalances = JSONArray().apply {
+          historyAccounts.forEach { accountIndex ->
+            val balanceAtomic = runCatching {
+              NativeMoneroWalletJni.getBalance(walletId, accountIndex.toDouble())
+            }.getOrNull()
+            val unlockedBalanceAtomic = runCatching {
+              NativeMoneroWalletJni.getUnlockedBalance(walletId, accountIndex.toDouble())
+            }.getOrNull()
+            put(JSONObject().apply {
+              put("accountIndex", accountIndex)
+              put("balanceAtomic", balanceAtomic ?: JSONObject.NULL)
+              put("unlockedBalanceAtomic", unlockedBalanceAtomic ?: JSONObject.NULL)
+            })
+          }
+        }
+        val keyImages = runCatching {
+          NativeMoneroWalletJni.getOwnedOutputKeyImages(walletId)
+        }.getOrDefault(emptyList())
+        val addressBySubaddressIndex = subaddresses.associateBy { subaddress ->
+          val accountIndex = (subaddress["accountIndex"] as? Number)?.toInt()
+          val addressIndex = (subaddress["addressIndex"] as? Number)?.toInt()
+          "${accountIndex ?: -1}:${addressIndex ?: -1}"
+        }
+        val auditedTransactions = JSONArray().apply {
+          transactions.forEach { transaction ->
+            val record = JSONObject(transaction)
+            val association = JSONObject()
+            when (transaction["direction"] as? String) {
+              "in" -> {
+                val accountIndex = (transaction["subaddrAccount"] as? Number)?.toInt()
+                val receivingAddresses = JSONArray()
+                (transaction["subaddrIndices"] as? List<*>)
+                  ?.mapNotNull { (it as? Number)?.toInt() }
+                  ?.forEach { addressIndex ->
+                    addressBySubaddressIndex["${accountIndex ?: -1}:$addressIndex"]
+                      ?.get("address")
+                      ?.let(receivingAddresses::put)
+                  }
+                association.put("receivingOwnedSubaddresses", receivingAddresses)
+                association.put("senderAddress", "unavailable-by-monero-design")
+              }
+              "out" -> {
+                val destinationAddresses = JSONArray()
+                @Suppress("UNCHECKED_CAST")
+                val transfers = transaction["transfers"] as? List<Map<String, Any>>
+                transfers?.mapNotNull { it["address"] as? String }
+                  ?.filter { it.isNotBlank() }
+                  ?.distinct()
+                  ?.forEach(destinationAddresses::put)
+                association.put("destinationAddresses", destinationAddresses)
+                association.put(
+                  "inputKeyImages",
+                  "not-exposed-per-transaction-by-current-core-api",
+                )
+              }
+            }
+            record.put("addressAssociation", association)
+            put(record)
+          }
+        }
+        val entry = JSONObject().apply {
+          put("schema", "tex8.transaction-audit.v2")
+          put("capturedAt", System.currentTimeMillis())
+          put("walletId", walletId)
+          put("transactions", auditedTransactions)
+          put("accountBalances", accountBalances)
+          put("ownedSubaddresses", JSONArray(subaddresses))
+          put("ownedOutputKeyImages", JSONArray(keyImages))
+          put("keyImageScope", "wallet-owned-output")
+          put("incomingSenderAddress", "unavailable-by-monero-design")
+        }
+        // Native history is fetched without a global limit. Replacing one
+        // complete snapshot avoids duplicate entries and keeps every currently
+        // known incoming/outgoing record available for the computer-side
+        // Ledger comparison.
+        val serialized = entry.toString()
+        current.writeText(serialized, Charsets.UTF_8)
+        exportCurrent.writeText(serialized, Charsets.UTF_8)
+      }.onFailure { error ->
+        // Do not include audit contents in the error or Logcat.
+        Log.w(NAME, "Local transaction audit write failed: ${error.javaClass.simpleName}")
+      }
+    }
+  }
+
+  private fun transactionAuditFileName(walletId: String): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+      .digest(walletId.toByteArray(Charsets.UTF_8))
+      .take(8)
+      .joinToString(separator = "") { byte ->
+        "%02x".format(Locale.US, byte.toInt() and 0xff)
+      }
+    return "ledger-transaction-audit-$digest.json"
   }
 
   override fun createSecureRandomIdentifier(prefix: String, promise: Promise) {
@@ -469,6 +650,14 @@ class NativeMoneroWalletModule(
     }
     pendingLedgerBleScanCallback = callback
 
+    logNativeEvent(
+      "ledgerBle.scan.start",
+      mapOf(
+        "available" to baseStatus.available,
+        "permissionGranted" to baseStatus.permissionGranted,
+      ),
+    )
+
     val filters = LEDGER_BLE_SERVICE_UUIDS.map { uuid ->
       ScanFilter.Builder().setServiceUuid(ParcelUuid(uuid)).build()
     }
@@ -494,6 +683,13 @@ class NativeMoneroWalletModule(
 
     mainHandler.postDelayed({
       val result = selectedResult
+      logNativeEvent(
+        if (result != null) {
+          "ledgerBle.scan.liveAdvertisement"
+        } else {
+          "ledgerBle.scan.rememberedDeviceFallback"
+        },
+      )
       finishLedgerBleScan(
         status = if (result != null) {
           ledgerBleDetectedStatus(result)
@@ -1238,6 +1434,57 @@ class NativeMoneroWalletModule(
         promise.reject(
           "monero_wallet_android_delete_error",
           error.message ?: "Failed to remove the empty wallet safely",
+          error,
+        )
+      }
+  }
+
+  override fun deleteProtectedWalletFiles(
+    paths: ReadableArray,
+    promise: Promise,
+  ) {
+    if (!requireAppAuthorized(promise)) {
+      return
+    }
+    runCatching {
+      val walletRoot = File(
+        reactApplicationContext.noBackupFilesDir,
+        "monero-wallets/wallets",
+      ).canonicalFile
+      val rootPrefix = walletRoot.path + File.separator
+      val checkedWalletFiles = (0 until paths.size()).map { index ->
+        val rawPath = paths.getString(index)
+          ?: error("Wallet removal path is missing")
+        val walletFile = File(rawPath).canonicalFile
+        require(walletFile.path.startsWith(rootPrefix)) {
+          "Wallet path is outside the protected app wallet directory"
+        }
+        require(!walletFile.isDirectory) { "Wallet path must not be a directory" }
+        walletFile
+      }.distinctBy { it.path }
+
+      checkedWalletFiles.forEach { walletFile ->
+        listOf(
+          walletFile,
+          File(walletFile.path + ".keys"),
+          File(walletFile.path + ".address.txt"),
+          File(walletFile.path + ".lock"),
+        ).forEach { file ->
+          if (file.exists() && !file.delete()) {
+            error("Failed to delete wallet file: ${file.name}")
+          }
+        }
+      }
+      logNativeEvent(
+        "deleteProtectedWalletFiles.complete",
+        mapOf("walletCount" to checkedWalletFiles.size),
+      )
+    }
+      .onSuccess { promise.resolve(null) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_delete_error",
+          error.message ?: "Failed to remove protected wallet files",
           error,
         )
       }
@@ -3975,9 +4222,9 @@ class NativeMoneroWalletModule(
       "getTransactions",
       mapOf("limit" to limit, "walletId" to maskIdentifier(walletId)),
     ) {
-      transactionsToWritableArray(
-        NativeMoneroWalletJni.getTransactions(walletId, limit),
-      )
+      val transactions = NativeMoneroWalletJni.getTransactions(walletId, limit)
+      persistTransactionAudit(walletId, transactions)
+      transactionsToWritableArray(transactions)
     }
   }
 
@@ -7071,6 +7318,14 @@ class NativeMoneroWalletModule(
       putDouble("walletHeight", snapshot.numberValue("walletHeight"))
       putDouble("daemonHeight", snapshot.numberValue("daemonHeight"))
       putDouble("daemonTargetHeight", snapshot.numberValue("daemonTargetHeight"))
+      // This metadata-only queue depth is the trigger for every incremental
+      // Ledger reconciliation after the initial history scan. Omitting it at
+      // the Kotlin/React boundary makes new outputs look permanently verified
+      // and leaves both spent state and the displayed balance stale.
+      putDouble(
+        "pendingOutputKeyImageCount",
+        snapshot.numberValue("pendingOutputKeyImageCount"),
+      )
       putBoolean("synchronized", snapshot.booleanValue("synchronized"))
     }
 
@@ -7080,6 +7335,39 @@ class NativeMoneroWalletModule(
     putDouble("importHeight", result.numberValue("importHeight"))
     putString("spentAtomic", result.stringValue("spentAtomic"))
     putString("unspentAtomic", result.stringValue("unspentAtomic"))
+    putDouble("verifiedOutputCount", result.numberValue("verifiedOutputCount"))
+    putDouble("pendingOutputCount", result.numberValue("pendingOutputCount"))
+    putDouble(
+      "remainingPendingOutputCount",
+      result.numberValue("remainingPendingOutputCount"),
+    )
+    putDouble("importedOutputCount", result.numberValue("importedOutputCount"))
+    putDouble("derivedOutputCount", result.numberValue("derivedOutputCount"))
+    putDouble(
+      "spentStatusUnspentOutputCount",
+      result.numberValue("spentStatusUnspentOutputCount"),
+    )
+    putDouble(
+      "spentStatusBlockchainOutputCount",
+      result.numberValue("spentStatusBlockchainOutputCount"),
+    )
+    putDouble(
+      "spentStatusPoolOutputCount",
+      result.numberValue("spentStatusPoolOutputCount"),
+    )
+    putDouble("derivationDurationMs", result.numberValue("derivationDurationMs"))
+    putDouble(
+      "spentStatusRpcDurationMs",
+      result.numberValue("spentStatusRpcDurationMs"),
+    )
+    putDouble("outgoingRpcDurationMs", result.numberValue("outgoingRpcDurationMs"))
+    putDouble("stateUpdateDurationMs", result.numberValue("stateUpdateDurationMs"))
+    putDouble(
+      "verificationDurationMs",
+      result.numberValue("verificationDurationMs"),
+    )
+    putDouble("storeDurationMs", result.numberValue("storeDurationMs"))
+    putDouble("totalDurationMs", result.numberValue("totalDurationMs"))
   }
 
   private fun networkSyncStatusToWritableMap(status: Map<String, Any>): WritableMap =
@@ -7087,6 +7375,8 @@ class NativeMoneroWalletModule(
       putString("network", status.stringValue("network"))
       putString("state", status.stringValue("state"))
       putString("phase", status.stringValue("phase"))
+      putString("lastError", status.stringValue("lastError"))
+      putDouble("consecutiveFailures", status.numberValue("consecutiveFailures"))
       putDouble("phaseSequence", status.numberValue("phaseSequence"))
       putDouble("phaseElapsedMs", status.numberValue("phaseElapsedMs"))
       putDouble("lastProviderSelectionMs", status.numberValue("lastProviderSelectionMs"))
@@ -7103,6 +7393,10 @@ class NativeMoneroWalletModule(
       putDouble("networkBytesReceived", status.numberValue("networkBytesReceived"))
       putDouble("payloadBytesReceived", status.numberValue("payloadBytesReceived"))
       putDouble("lastWalletScanMs", status.numberValue("lastWalletScanMs"))
+      putDouble("lastNonEmptyWalletDerivationCount", status.numberValue("lastNonEmptyWalletDerivationCount"))
+      putDouble("lastNonEmptyWalletDerivationUs", status.numberValue("lastNonEmptyWalletDerivationUs"))
+      putDouble("totalWalletDerivationCount", status.numberValue("totalWalletDerivationCount"))
+      putDouble("totalWalletDerivationUs", status.numberValue("totalWalletDerivationUs"))
       putDouble("lastMempoolMs", status.numberValue("lastMempoolMs"))
       putDouble("lastCheckpointMs", status.numberValue("lastCheckpointMs"))
       putDouble("lastIterationMs", status.numberValue("lastIterationMs"))
@@ -7786,7 +8080,148 @@ class NativeMoneroWalletModule(
 
     val promise = pendingLedgerBleScanPromise
     pendingLedgerBleScanPromise = null
-    promise?.resolve(ledgerTransportStatusToWritableMap(status))
+    if (promise == null) {
+      return
+    }
+
+    logNativeEvent(
+      if (status.deviceCount > 0) {
+        "ledgerBle.scan.deviceFound"
+      } else {
+        "ledgerBle.scan.noDevice"
+      },
+      mapOf(
+        "available" to status.available,
+        "deviceCount" to status.deviceCount,
+        "permissionGranted" to status.permissionGranted,
+      ),
+    )
+
+    // A BLE scan only discovers/selects the Nano. Previously the Promise was
+    // resolved here and JS immediately started wallet creation, so the first
+    // wallet request also had to establish GATT and commonly lost that race.
+    // Prepare the transport on the serialized native worker first. A status is
+    // "available" only when the selected Ledger is actually connected.
+    prepareLedgerBleTransport(status, promise)
+  }
+
+  private fun prepareLedgerBleTransport(
+    scannedStatus: LedgerTransportStatus,
+    promise: Promise,
+  ) {
+    if (scannedStatus.deviceCount <= 0) {
+      promise.resolve(
+        ledgerTransportStatusToWritableMap(
+          scannedStatus.copy(
+            available = false,
+            requiresUserAction = true,
+          ),
+        ),
+      )
+      return
+    }
+
+    val queuedAt = SystemClock.elapsedRealtime()
+    runCatching {
+      ledgerTransportExecutor.execute {
+        val preparedStatus = runCatching {
+          val startedAt = SystemClock.elapsedRealtime()
+          logNativeEvent(
+            "ledgerBle.prepare.start",
+            mapOf(
+              "deviceCount" to scannedStatus.deviceCount,
+              "queuedMs" to (startedAt - queuedAt),
+            ),
+          )
+
+          var attempt = 1
+          var connected = NativeMoneroWalletJni.ledgerBleConnect()
+          if (!connected) {
+            logNativeEvent(
+              "ledgerBle.prepare.attemptError",
+              mapOf("attempt" to attempt),
+            )
+            // Android occasionally returns a transient GATT connection error
+            // on the first connectGatt call. Close that GATT instance and make
+            // one bounded retry while the same Create action remains active.
+            NativeMoneroWalletJni.ledgerBleDisconnect()
+            SystemClock.sleep(LEDGER_BLE_CONNECT_RETRY_DELAY_MS)
+            attempt += 1
+            connected = NativeMoneroWalletJni.ledgerBleConnect()
+          }
+
+          val elapsedMs = SystemClock.elapsedRealtime() - startedAt
+          val connectionError = LedgerBleTransport.lastConnectionError()
+          logNativeEvent(
+            if (connected) {
+              "ledgerBle.prepare.success"
+            } else {
+              "ledgerBle.prepare.error.${ledgerBleFailureCode(connectionError)}"
+            },
+            mapOf(
+              "attempt" to attempt,
+              "elapsedMs" to elapsedMs,
+              "transportReady" to connected,
+            ),
+          )
+
+          if (connected) {
+            scannedStatus.copy(
+              available = true,
+              requiresUserAction = false,
+              message =
+                "Ledger Nano is connected. Keep it unlocked with the Monero app open.",
+            )
+          } else {
+            scannedStatus.copy(
+              available = false,
+              requiresUserAction = true,
+              message = buildString {
+                append("Ledger Nano was found, but Android could not establish the BLE connection")
+                if (!connectionError.isNullOrBlank()) {
+                  append(": ")
+                  append(connectionError)
+                }
+                append(". Keep the Ledger unlocked, open its Monero app, and try again.")
+              },
+            )
+          }
+        }.getOrElse {
+          logNativeEvent("ledgerBle.prepare.error.exception")
+          scannedStatus.copy(
+            available = false,
+            requiresUserAction = true,
+            message =
+              "Ledger BLE connection failed unexpectedly. Keep the Ledger unlocked, open its Monero app, and try again.",
+          )
+        }
+        mainHandler.post {
+          promise.resolve(ledgerTransportStatusToWritableMap(preparedStatus))
+        }
+      }
+    }.onFailure {
+      promise.resolve(
+        ledgerTransportStatusToWritableMap(
+          scannedStatus.copy(
+            available = false,
+            requiresUserAction = true,
+            message = "Ledger BLE preparation could not start. Reopen the app and try again.",
+          ),
+        ),
+      )
+    }
+  }
+
+  private fun ledgerBleFailureCode(message: String?): String {
+    val normalized = message.orEmpty().lowercase(Locale.US)
+    return when {
+      "timed out" in normalized -> "timeout"
+      "status" in normalized -> "gattStatus"
+      "service" in normalized -> "serviceDiscovery"
+      "notification" in normalized || "descriptor" in normalized -> "notifications"
+      "disconnected" in normalized -> "disconnected"
+      else -> "unknown"
+    }
   }
 
   private fun bluetoothAdapter(): BluetoothAdapter? =
@@ -8097,6 +8532,7 @@ class NativeMoneroWalletModule(
     private const val MAX_PRIVATE_PHONE_NUMBERS_PER_CONTACT = 8
     private const val MAX_PRIVATE_PHONE_DISPLAY_NAME_CHARS = 160
     private const val LEDGER_BLE_SCAN_TIMEOUT_MS = 4_000L
+    private const val LEDGER_BLE_CONNECT_RETRY_DELAY_MS = 350L
     private const val BIOMETRIC_ACTIVITY_READY_TIMEOUT_MS = 5_000L
     private const val BIOMETRIC_ACTIVITY_READY_RETRY_MS = 100L
     private const val BIOMETRIC_PROMPT_TIMEOUT_MS = 30_000L
@@ -8111,16 +8547,44 @@ class NativeMoneroWalletModule(
     private const val DIAGNOSTIC_PREVIOUS_FILE = "wallet-events.previous.log"
     private const val MAX_DIAGNOSTIC_LINE_CHARS = 2_048
     private const val MAX_DIAGNOSTIC_FILE_BYTES = 512 * 1024L
+    private const val TRANSACTION_AUDIT_DIRECTORY = "transaction-audit"
+    private const val TRANSACTION_AUDIT_CURRENT_FILE = "ledger-transaction-audit.json"
     private val NATIVE_DIAGNOSTIC_FIELD_ALLOWLIST =
       setOf(
         "count",
+        "accountIndex",
+        "attempt",
+        "available",
+        "derivedOutputCount",
+        "displayedTransactionCount",
+        "deviceCount",
+        "derivationDurationMs",
         "elapsedMs",
         "failedAttempts",
         "httpStatus",
+        "importHeight",
+        "importedOutputCount",
+        "nativeTransactionCount",
+        "outgoingRpcDurationMs",
+        "outgoingTransactionCount",
+        "pendingOutputCount",
+        "remainingPendingOutputCount",
+        "permissionGranted",
         "queuedMs",
         "remainingAttempts",
         "resetTriggered",
+        "scopedTransactionCount",
+        "spentStatusBlockchainOutputCount",
+        "spentStatusPoolOutputCount",
+        "spentStatusRpcDurationMs",
+        "spentStatusUnspentOutputCount",
+        "stateUpdateDurationMs",
+        "storeDurationMs",
+        "totalDurationMs",
         "txCount",
+        "transportReady",
+        "verificationDurationMs",
+        "verifiedOutputCount",
       )
     private val LEDGER_BLE_DEFAULT_NAME = Regex("(?i)^[0-9a-f]{4}$")
     private val LEDGER_PRODUCT_IDS = setOf(

@@ -1,0 +1,59 @@
+From 6cf3c95492d5513ef4fbbd1e6f4bc0df7c60f789 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 9 Aug 2026 18:02:00 -0500
+Subject: [PATCH] wallet-cli: gate watch sealing through shared hosting plan
+
+The local CLI sealing boundary now uses the shared Product-Core hosted-watch
+stage machine. It proves only the local stage transition: the CLI receives no
+installation capability, assignment handle, descriptor, address, View Key or
+ciphertext through Product Core. The later authorized Gateway adapter remains
+the only component that may attest an actual assignment or delivery state.
+---
+ src/simplewallet/product_cli_fast_wallet.cpp | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/src/simplewallet/product_cli_fast_wallet.cpp b/src/simplewallet/product_cli_fast_wallet.cpp
+index 781d8a0..e5f523b 100644
+--- a/src/simplewallet/product_cli_fast_wallet.cpp
++++ b/src/simplewallet/product_cli_fast_wallet.cpp
+@@ -535,6 +535,30 @@ namespace
+     return output;
+   }
+ 
++  void require_hosting_seal_plan(const persisted_fast_wallet& state)
++  {
++    // This local sealing boundary is entered only with a pre-authorized
++    // assignment hand-off. Product Core receives no assignment handle,
++    // descriptor, capability, address, View Key or envelope; it enforces only
++    // the shared durable stage transition.
++    mfw_fast_wallet_hosting_input_v1 input{};
++    input.struct_size = sizeof(input);
++    input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
++    input.operation = MFW_FAST_WALLET_HOSTING_OPERATION_ENROLL;
++    input.lifecycle_state = state.lifecycle_state;
++    input.seed_backup_confirmed = state.seed_backup_confirmed;
++    input.installation_authorized = 1;
++    input.trusted_worker_descriptor = 1;
++    input.enrollment_stage = MFW_FAST_WALLET_HOSTING_STAGE_DELIVERY_ENABLED;
++    mfw_fast_wallet_hosting_plan_v1 output{};
++    if (mfw_fast_wallet_hosting_plan_compute_v1(&input, &output) != MFW_ERROR_OK ||
++        output.operation_allowed != 1 || output.execution_allowed != 1 ||
++        output.next_action != MFW_FAST_WALLET_HOSTING_ACTION_SEAL_WATCH ||
++        output.result_enrollment_stage != MFW_FAST_WALLET_HOSTING_STAGE_WATCH_SEALED ||
++        output.worker_enrolled != 0)
++      throw std::runtime_error("the shared Product Core rejected this Fast Wallet hosted-watch stage");
++  }
++
+   options parse_options(const int argc, char* argv[])
+   {
+     if (argc < 3) throw std::runtime_error("Fast Wallet command requires an operation");
+@@ -809,6 +833,7 @@ namespace
+     if (std::all_of(assignment_handle.begin(), assignment_handle.end(),
+                     [](const unsigned char value) { return value == 0; }))
+       throw std::runtime_error("Worker assignment handle file is invalid");
++    require_hosting_seal_plan(metadata);
+ 
+     std::string password = read_private_text_file(input.password_file, "password file");
+     secret_string_guard password_guard(password);
+-- 
+2.39.5

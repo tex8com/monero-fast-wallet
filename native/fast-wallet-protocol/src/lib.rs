@@ -45,6 +45,7 @@ const WATCH_AAD_SIZE: usize = 180;
 const HPKE_ENCAPSULATED_KEY_SIZE: usize = 32;
 pub const WORKER_AUTH_SIZE: usize = 204;
 pub const MAX_WORKER_AUTH_LIFETIME_SECONDS: u64 = 60;
+pub const MAX_WORKER_RECEIPT_LIFETIME_SECONDS: u64 = MAX_DESCRIPTOR_LIFETIME_SECONDS;
 
 type Kem = X25519HkdfSha256;
 type Kdf = HkdfSha256;
@@ -285,6 +286,28 @@ impl WorkerAuthPurpose {
             _ => Err(ProtocolError::WrongPurpose),
         }
     }
+
+    fn maximum_lifetime(self) -> u64 {
+        match self {
+            Self::Receipt => MAX_WORKER_RECEIPT_LIFETIME_SECONDS,
+            Self::Pull | Self::Ack | Self::Wake => MAX_WORKER_AUTH_LIFETIME_SECONDS,
+        }
+    }
+}
+
+/// Canonical receipt body signed by the exact descriptor-bound Worker only
+/// after the encrypted watch was durably accepted. The message identifier is
+/// the SHA-256 identifier of the fixed-size ciphertext envelope, so this body
+/// carries no wallet plaintext or routing capability.
+pub fn worker_receipt_body(
+    worker_root_id: &[u8; 32],
+    message_id: &[u8; 32],
+) -> [u8; 72] {
+    let mut body = [0_u8; 72];
+    body[..8].copy_from_slice(b"TX8RCP01");
+    body[8..40].copy_from_slice(worker_root_id);
+    body[40..].copy_from_slice(message_id);
+    body
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -308,7 +331,7 @@ impl WorkerRequestAuth {
         issued_at: u64,
         expires_at: u64,
     ) -> Result<Self, ProtocolError> {
-        validate_time_window(issued_at, expires_at, MAX_WORKER_AUTH_LIFETIME_SECONDS)?;
+        validate_time_window(issued_at, expires_at, purpose.maximum_lifetime())?;
         if online_key.public_key() != descriptor.worker_online_public_key {
             return Err(ProtocolError::WrongWorker);
         }
@@ -340,7 +363,7 @@ impl WorkerRequestAuth {
             self.issued_at,
             self.expires_at,
             now,
-            MAX_WORKER_AUTH_LIFETIME_SECONDS,
+            self.purpose.maximum_lifetime(),
         )?;
         if self.purpose != expected_purpose {
             return Err(ProtocolError::WrongPurpose);
@@ -398,11 +421,7 @@ impl WorkerRequestAuth {
             signature: cursor.array()?,
         };
         cursor.finish()?;
-        validate_time_window(
-            auth.issued_at,
-            auth.expires_at,
-            MAX_WORKER_AUTH_LIFETIME_SECONDS,
-        )?;
+        validate_time_window(auth.issued_at, auth.expires_at, auth.purpose.maximum_lifetime())?;
         if auth.encode().as_slice() != encoded {
             return Err(ProtocolError::NonCanonical);
         }
@@ -1176,6 +1195,51 @@ pub mod ffi {
                 std::ptr::copy_nonoverlapping(root_id.as_ptr(), output, root_id.len());
             }
             OK
+        })
+        .unwrap_or(INVALID_DESCRIPTOR)
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn tex8_fast_wallet_protocol_verify_worker_receipt_v1(
+        descriptor: *const u8,
+        descriptor_len: usize,
+        expected_network: u8,
+        now: u64,
+        message_id: *const u8,
+        receipt: *const u8,
+        receipt_len: usize,
+    ) -> i32 {
+        catch_unwind(|| {
+            let Ok(network) = Network::decode(expected_network) else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(descriptor_bytes) = checked_input(descriptor, descriptor_len, 1, 4_096)
+            else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(message_id_bytes) = checked_input(message_id, 32, 32, 32) else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(receipt_bytes) =
+                checked_input(receipt, receipt_len, WORKER_AUTH_SIZE, WORKER_AUTH_SIZE)
+            else {
+                return INVALID_ARGUMENT;
+            };
+            let result = (|| {
+                let descriptor = WorkerDescriptor::decode(descriptor_bytes)?;
+                descriptor.verify(network, now)?;
+                let receipt = WorkerRequestAuth::decode(receipt_bytes)?;
+                let body = worker_receipt_body(
+                    &descriptor.worker_root_id(),
+                    &fixed_array(message_id_bytes)?,
+                );
+                receipt.verify(&descriptor, WorkerAuthPurpose::Receipt, &body, now)
+            })();
+            if result.is_ok() {
+                OK
+            } else {
+                INVALID_DESCRIPTOR
+            }
         })
         .unwrap_or(INVALID_DESCRIPTOR)
     }
@@ -5221,6 +5285,60 @@ mod tests {
                 now + 31
             ),
             Err(ProtocolError::Expired)
+        );
+    }
+
+    #[test]
+    fn worker_receipt_binds_the_exact_ciphertext_message_and_ffi_verifies_it() {
+        let now = 1_800_000_000;
+        let (_, _, descriptor) = fixture(now);
+        let online = SigningKeyMaterial::from_bytes([8_u8; 32]);
+        let message_id = key_id(b"fixed ciphertext envelope");
+        let body = worker_receipt_body(&descriptor.worker_root_id(), &message_id);
+        let receipt = WorkerRequestAuth::sign(
+            &descriptor,
+            &online,
+            WorkerAuthPurpose::Receipt,
+            &body,
+            now,
+            descriptor.expires_at,
+        )
+        .unwrap();
+        receipt
+            .verify(&descriptor, WorkerAuthPurpose::Receipt, &body, now)
+            .unwrap();
+
+        let descriptor_bytes = descriptor.encode().unwrap();
+        let receipt_bytes = receipt.encode();
+        assert_eq!(
+            unsafe {
+                ffi::tex8_fast_wallet_protocol_verify_worker_receipt_v1(
+                    descriptor_bytes.as_ptr(),
+                    descriptor_bytes.len(),
+                    Network::Stagenet as u8,
+                    now,
+                    message_id.as_ptr(),
+                    receipt_bytes.as_ptr(),
+                    receipt_bytes.len(),
+                )
+            },
+            ffi::OK
+        );
+
+        let wrong_message = key_id(b"different ciphertext envelope");
+        assert_eq!(
+            unsafe {
+                ffi::tex8_fast_wallet_protocol_verify_worker_receipt_v1(
+                    descriptor_bytes.as_ptr(),
+                    descriptor_bytes.len(),
+                    Network::Stagenet as u8,
+                    now,
+                    wrong_message.as_ptr(),
+                    receipt_bytes.as_ptr(),
+                    receipt_bytes.len(),
+                )
+            },
+            ffi::INVALID_DESCRIPTOR
         );
     }
 }

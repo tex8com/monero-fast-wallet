@@ -183,6 +183,17 @@ inline bool updateDownloadRange(
   return false;
 }
 
+inline uint64_t mergeAuthenticatedTargetHeight(
+    uint64_t previousTargetHeight,
+    uint64_t connectedDaemonHeight) {
+  // A stream opened exactly at the daemon tip can close without emitting a
+  // block chunk. In that valid case Core exposes currentHeight=0 on the empty
+  // batch, so seed the coordinator from the height authenticated by the same
+  // connected public transport. Retain the monotonic target used for normal
+  // non-empty batches and routine tip checks.
+  return std::max(previousTargetHeight, connectedDaemonHeight);
+}
+
 inline size_t workerCount(size_t taskCount, unsigned hardwareThreads) {
   const size_t available = std::max<unsigned>(1, hardwareThreads);
   const size_t bounded = std::max<size_t>(

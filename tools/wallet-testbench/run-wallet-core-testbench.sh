@@ -580,10 +580,15 @@ gate_ledger_probe() {
   if [[ "${TESTBENCH_LEDGER:-0}" != "1" ]]; then
     return 2
   fi
+  local ledger_device="${TESTBENCH_LEDGER_DEVICE:-Ledger}"
+  if [[ "${ledger_device}" != "Ledger" && "${ledger_device}" != "Ledger:ble" ]]; then
+    log "invalid TESTBENCH_LEDGER_DEVICE; expected Ledger (USB) or Ledger:ble (BLE)"
+    return 2
+  fi
   local workdir="${work_root}/ledger"
   rm -rf "${workdir}"
   mkdir -p "${workdir}"
-  "${linked_runner}" ledger-probe mainnet "${workdir}/ledger-wallet" "${password}" Ledger |
+  "${linked_runner}" ledger-probe mainnet "${workdir}/ledger-wallet" "${password}" "${ledger_device}" |
     grep -q "connected=true"
 }
 

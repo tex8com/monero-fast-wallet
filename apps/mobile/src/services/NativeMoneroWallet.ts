@@ -320,6 +320,7 @@ export interface NativeMoneroWalletModule {
     input: CreateViewOnlyWalletFromHardwareWithStoredSecretInput,
   ): Promise<{ walletId: string }>;
   deleteEmptyWalletFiles(walletId: string, path: string): Promise<void>;
+  deleteProtectedWalletFiles(paths: ReadonlyArray<string>): Promise<void>;
   createFastReceiveIdentity(
     input: CreateFastReceiveIdentityInput,
   ): Promise<FastReceiveIdentity>;
@@ -614,6 +615,8 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       }),
       deleteEmptyWalletFiles: (walletId, path) =>
         turboModule.deleteEmptyWalletFiles(walletId, path),
+      deleteProtectedWalletFiles: paths =>
+        turboModule.deleteProtectedWalletFiles(paths),
       createFastReceiveIdentity: input =>
         turboModule.createFastReceiveIdentity(
           input.sourceWalletId,

@@ -40,6 +40,7 @@ const messages = {
     "common.close": "Close",
     "common.save": "Save",
     "common.optional": "Optional",
+    "common.required": "Required",
     "common.mainnet": "Mainnet",
     "common.ledger": "Ledger",
     "shell.desktop": "Desktop",
@@ -335,6 +336,8 @@ const messages = {
     "home.syncVerifying": "Verifying recent transactions",
     "home.syncConfirming": "Waiting for wallet confirmation",
     "home.syncHeight": "Block {current} of {target}",
+    "home.syncNetworkRate": "{rate} Mbit/s",
+    "home.syncDerivationRate": "{rate} derivations/s",
     "home.syncRemaining": "{count} blocks remaining",
     "home.syncEtaCalculating": "Calculating time remaining",
     "home.syncEtaSeconds": "About {count}s remaining",
@@ -596,6 +599,9 @@ const messages = {
     "setup.scanStart": "Start syncing from date",
     "setup.scanDateHint":
       "Optional. The Core starts slightly before this date so no payment on the selected date is missed.",
+    "setup.ledgerScanDateHint":
+      "Required for Ledger. Choose a date before its first transaction; choose today only for a brand-new Ledger wallet.",
+    "setup.ledgerScanDateRequired": "Choose a Ledger scan start date.",
     "setup.dateInvalid": "Choose a valid date that is not in the future.",
   },
   de: {
@@ -623,6 +629,7 @@ const messages = {
     "common.close": "Schließen",
     "common.save": "Speichern",
     "common.optional": "Optional",
+    "common.required": "Erforderlich",
     "common.mainnet": "Mainnet",
     "common.ledger": "Ledger",
     "shell.desktop": "Desktop",
@@ -932,6 +939,8 @@ const messages = {
     "home.syncVerifying": "Neueste Transaktionen werden geprüft",
     "home.syncConfirming": "Warte auf Wallet-Bestätigung",
     "home.syncHeight": "Block {current} von {target}",
+    "home.syncNetworkRate": "{rate} Mbit/s",
+    "home.syncDerivationRate": "{rate} Ableitungen/s",
     "home.syncRemaining": "{count} Blöcke verbleibend",
     "home.syncEtaCalculating": "Restzeit wird berechnet",
     "home.syncEtaSeconds": "Noch etwa {count} Sek.",
@@ -1196,6 +1205,9 @@ const messages = {
     "setup.scanStart": "Synchronisierung starten ab",
     "setup.scanDateHint":
       "Optional. Der Core beginnt etwas vor diesem Datum, damit am gewählten Datum keine Zahlung übersehen wird.",
+    "setup.ledgerScanDateHint":
+      "Für Ledger erforderlich. Wähle ein Datum vor der ersten Transaktion; nur bei einer ganz neuen Ledger-Wallet wählst du heute.",
+    "setup.ledgerScanDateRequired": "Wähle ein Startdatum für den Ledger-Scan.",
     "setup.dateInvalid":
       "Wähle ein gültiges Datum, das nicht in der Zukunft liegt.",
   },

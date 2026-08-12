@@ -1,0 +1,890 @@
+From 7799eceb1926a9194ae2d472399eea24251d3bc9 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 9 Aug 2026 17:50:16 -0500
+Subject: [PATCH] wallet-cli: add hosted-watch Gateway adapter
+
+---
+ src/simplewallet/CMakeLists.txt              |   4 +-
+ src/simplewallet/product_cli_fast_wallet.cpp | 693 +++++++++++++++++--
+ 2 files changed, 649 insertions(+), 48 deletions(-)
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index d584104..7452ec0 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -117,10 +117,12 @@ target_include_directories(fastwallet PRIVATE
+   "${MFW_PRODUCT_CORE_ROOT}/generated/c"
+   "${MFW_FAST_WALLET_PROTOCOL_ROOT}/include")
+ find_package(Iconv REQUIRED)
++find_package(CURL REQUIRED)
+ target_link_libraries(fastwallet PRIVATE
+   "${MFW_PRODUCT_CORE_LIBRARY}"
+   "${MFW_FAST_WALLET_PROTOCOL_LIBRARY}"
+-  Iconv::Iconv)
++  Iconv::Iconv
++  CURL::libcurl)
+ 
+ find_package(Git REQUIRED)
+ execute_process(
+diff --git a/src/simplewallet/product_cli_fast_wallet.cpp b/src/simplewallet/product_cli_fast_wallet.cpp
+index e5f523b..dbe7a86 100644
+--- a/src/simplewallet/product_cli_fast_wallet.cpp
++++ b/src/simplewallet/product_cli_fast_wallet.cpp
+@@ -6,18 +6,24 @@
+ #include <algorithm>
+ #include <array>
+ #include <chrono>
++#include <cctype>
+ #include <cstdint>
+ #include <cstring>
+ #include <fstream>
+ #include <iostream>
+ #include <iterator>
+ #include <limits>
++#include <mutex>
+ #include <stdexcept>
+ #include <string>
+ #include <vector>
+ 
+ #include <boost/filesystem.hpp>
+ 
++#include <curl/curl.h>
++
++#include "crypto/crypto.h"
++#include "crypto/hash.h"
+ #include "wallet/api/wallet2_api.h"
+ 
+ #include "fast_wallet_protocol.h"
+@@ -37,7 +43,11 @@ namespace
+   constexpr std::uint32_t fast_wallet_disk_version = 2;
+   constexpr char paired_worker_magic[8] = {'M', 'F', 'W', 'W', 'K', '1', '\0', '\0'};
+   constexpr std::uint32_t paired_worker_disk_version = 1;
++  constexpr char hosted_watch_magic[8] = {'M', 'F', 'W', 'H', 'S', '1', '\0', '\0'};
++  constexpr std::uint32_t hosted_watch_disk_version = 1;
+   constexpr std::uint64_t watch_lifetime_seconds = 10 * 60;
++  constexpr std::uint64_t assignment_lifetime_seconds = 30 * 24 * 60 * 60;
++  constexpr std::size_t maximum_gateway_response_bytes = 16 * 1024;
+ 
+   // This deliberately contains no seed, password, key, address, worker token
+   // or node endpoint. It is only the durable Product-Core lifecycle state for
+@@ -89,6 +99,30 @@ namespace
+     std::uint32_t reserved;
+   };
+ 
++  // This 0600 sidecar carries only the authenticated installation capability,
++  // opaque assignment routing state and an already encrypted HPKE envelope.
++  // It never carries a seed, password, address, private Spend Key or private
++  // View Key. The envelope is fixed-size ciphertext and is not printed.
++  struct persisted_hosted_watch
++  {
++    char magic[8];
++    std::uint32_t disk_version;
++    std::uint32_t network;
++    std::uint32_t enrollment_stage;
++    std::uint32_t reserved;
++    std::uint64_t generation;
++    std::uint64_t created_at;
++    std::uint64_t updated_at;
++    std::uint64_t assignment_epoch;
++    std::uint64_t assignment_expires_at;
++    std::array<char, 45> installation_id;
++    std::array<unsigned char, 32> installation_auth;
++    std::array<unsigned char, 32> assignment_handle;
++    std::array<unsigned char, 32> worker_root_id;
++    std::array<unsigned char, 32> descriptor_hash;
++    std::array<unsigned char, TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE> envelope;
++  };
++
+   struct options
+   {
+     std::string operation;
+@@ -98,6 +132,7 @@ namespace
+     boost::filesystem::path descriptor_file;
+     boost::filesystem::path assignment_handle_file;
+     boost::filesystem::path envelope_file;
++    std::string gateway_origin;
+     Monero::NetworkType network = Monero::MAINNET;
+     bool network_explicit = false;
+     std::uint64_t restore_height = 0;
+@@ -188,6 +223,11 @@ namespace
+     return boost::filesystem::path(input.wallet_path.string() + ".mfw-fast-worker-v1");
+   }
+ 
++  boost::filesystem::path hosted_watch_path(const options& input)
++  {
++    return boost::filesystem::path(input.wallet_path.string() + ".mfw-fast-hosting-v1");
++  }
++
+   void require_private_regular_file(const boost::filesystem::path& path,
+                                     const char* description)
+   {
+@@ -434,6 +474,132 @@ namespace
+       throw std::runtime_error("Fast Wallet Worker pairing metadata commit could not be verified");
+   }
+ 
++  bool bytes_are_zero(const unsigned char* bytes, const std::size_t length)
++  {
++    return std::all_of(bytes, bytes + length, [](const unsigned char value) { return value == 0; });
++  }
++
++  bool is_lowercase_hex(const char value)
++  {
++    return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
++  }
++
++  bool valid_installation_id(const std::array<char, 45>& value)
++  {
++    static constexpr char prefix[] = "mwp_desktop_";
++    constexpr std::size_t prefix_length = sizeof(prefix) - 1;
++    if (std::memcmp(value.data(), prefix, prefix_length) != 0 || value.back() != '\0') return false;
++    return std::all_of(value.begin() + prefix_length, value.end() - 1, is_lowercase_hex);
++  }
++
++  bool valid_hosting_stage(const std::uint32_t stage)
++  {
++    return stage == MFW_FAST_WALLET_HOSTING_STAGE_NONE ||
++      stage == MFW_FAST_WALLET_HOSTING_STAGE_PENDING_LOCAL ||
++      stage == MFW_FAST_WALLET_HOSTING_STAGE_INSTALLATION_REGISTERED ||
++      stage == MFW_FAST_WALLET_HOSTING_STAGE_ASSIGNMENT_ACCEPTED ||
++      stage == MFW_FAST_WALLET_HOSTING_STAGE_DELIVERY_ENABLED ||
++      stage == MFW_FAST_WALLET_HOSTING_STAGE_WATCH_SEALED ||
++      stage == MFW_FAST_WALLET_HOSTING_STAGE_RELAY_ACCEPTED ||
++      stage == MFW_FAST_WALLET_HOSTING_STAGE_ACTIVE ||
++      stage == MFW_FAST_WALLET_HOSTING_STAGE_REVOCATION_REMOTE_DELETED;
++  }
++
++  void validate_hosted_watch(const persisted_hosted_watch& state)
++  {
++    if (std::memcmp(state.magic, hosted_watch_magic, sizeof(hosted_watch_magic)) != 0 ||
++        state.disk_version != hosted_watch_disk_version || state.reserved != 0 ||
++        state.generation == 0 || state.created_at == 0 || state.updated_at < state.created_at ||
++        state.network > static_cast<std::uint32_t>(Monero::STAGENET) ||
++        !valid_hosting_stage(state.enrollment_stage))
++      throw std::runtime_error("Fast Wallet hosted-watch state is corrupt or unsupported");
++
++    if (state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_NONE) return;
++    if (!valid_installation_id(state.installation_id) || state.assignment_epoch == 0 ||
++        bytes_are_zero(state.installation_auth.data(), state.installation_auth.size()) ||
++        bytes_are_zero(state.assignment_handle.data(), state.assignment_handle.size()) ||
++        bytes_are_zero(state.worker_root_id.data(), state.worker_root_id.size()))
++      throw std::runtime_error("Fast Wallet hosted-watch state is invalid");
++    if (state.enrollment_stage >= MFW_FAST_WALLET_HOSTING_STAGE_ASSIGNMENT_ACCEPTED &&
++        (state.assignment_expires_at == 0 ||
++         bytes_are_zero(state.descriptor_hash.data(), state.descriptor_hash.size())))
++      throw std::runtime_error("Fast Wallet hosted-watch assignment expiry is invalid");
++    if ((state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_WATCH_SEALED ||
++         state.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_RELAY_ACCEPTED) &&
++        bytes_are_zero(state.envelope.data(), state.envelope.size()))
++      throw std::runtime_error("Fast Wallet hosted-watch envelope is missing");
++  }
++
++  persisted_hosted_watch read_hosted_watch(const options& input)
++  {
++    const auto path = hosted_watch_path(input);
++    require_private_regular_file(path, "Fast Wallet hosted-watch state");
++    if (boost::filesystem::file_size(path) != sizeof(persisted_hosted_watch))
++      throw std::runtime_error("Fast Wallet hosted-watch state has an invalid size");
++    std::ifstream stream(path.string(), std::ios::binary);
++    persisted_hosted_watch state{};
++    stream.read(reinterpret_cast<char*>(&state), sizeof(state));
++    if (!stream || stream.peek() != std::ifstream::traits_type::eof())
++      throw std::runtime_error("Fast Wallet hosted-watch state could not be read");
++    validate_hosted_watch(state);
++    return state;
++  }
++
++  void wipe_hosted_watch(persisted_hosted_watch& state);
++
++  bool has_hosted_watch(const options& input)
++  {
++    const auto path = hosted_watch_path(input);
++    if (!boost::filesystem::exists(path) || boost::filesystem::is_symlink(path)) return false;
++    persisted_hosted_watch state = read_hosted_watch(input);
++    wipe_hosted_watch(state);
++    return true;
++  }
++
++  void write_hosted_watch(const options& input, persisted_hosted_watch state)
++  {
++    validate_hosted_watch(state);
++    const auto path = hosted_watch_path(input);
++    const auto parent = path.parent_path().empty() ? boost::filesystem::current_path() : path.parent_path();
++    const auto temporary = boost::filesystem::path(path.string() + ".tmp");
++    if (boost::filesystem::is_symlink(parent) || boost::filesystem::is_symlink(path))
++      throw std::runtime_error("Fast Wallet hosted-watch state path is unsafe");
++    if (boost::filesystem::exists(temporary)) boost::filesystem::remove(temporary);
++    ++state.generation;
++    state.updated_at = unix_seconds();
++    {
++      std::ofstream output(temporary.string(), std::ios::binary | std::ios::trunc);
++      output.write(reinterpret_cast<const char*>(&state), sizeof(state));
++      output.flush();
++      if (!output) throw std::runtime_error("Fast Wallet hosted-watch state could not be written");
++    }
++#ifndef _WIN32
++    ::chmod(temporary.string().c_str(), S_IRUSR | S_IWUSR);
++#endif
++    sync_path(temporary);
++#ifdef _WIN32
++    if (!MoveFileExW(temporary.wstring().c_str(), path.wstring().c_str(),
++                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
++      throw std::runtime_error("Fast Wallet hosted-watch state could not be committed");
++#else
++    if (::rename(temporary.string().c_str(), path.string().c_str()) != 0)
++      throw std::runtime_error("Fast Wallet hosted-watch state could not be committed");
++    sync_path(parent);
++#endif
++    persisted_hosted_watch verified = read_hosted_watch(input);
++    if (verified.generation != state.generation || verified.enrollment_stage != state.enrollment_stage)
++      throw std::runtime_error("Fast Wallet hosted-watch state commit could not be verified");
++    std::fill(verified.installation_auth.begin(), verified.installation_auth.end(), 0);
++    std::fill(verified.assignment_handle.begin(), verified.assignment_handle.end(), 0);
++    std::fill(verified.envelope.begin(), verified.envelope.end(), 0);
++  }
++
++  void wipe_hosted_watch(persisted_hosted_watch& state)
++  {
++    volatile unsigned char* bytes = reinterpret_cast<volatile unsigned char*>(&state);
++    for (std::size_t index = 0; index < sizeof(state); ++index) bytes[index] = 0;
++  }
++
+   void write_private_new_binary_file(const boost::filesystem::path& path,
+                                      const unsigned char* bytes,
+                                      const std::size_t length,
+@@ -518,6 +684,197 @@ namespace
+     return output;
+   }
+ 
++  std::string require_https_origin(const std::string& value, const char* description)
++  {
++    std::string origin = value;
++    while (!origin.empty() && origin.back() == '/') origin.pop_back();
++    if (origin.size() <= 8 || origin.size() > 256 || origin.compare(0, 8, "https://") != 0 ||
++        origin.find_first_of(" \t\r\n?#@") != std::string::npos ||
++        origin.find('/', 8) != std::string::npos)
++      throw std::runtime_error(std::string(description) + " must be a bare HTTPS origin");
++    return origin;
++  }
++
++  struct http_response
++  {
++    long status = 0;
++    std::string body;
++  };
++
++  std::size_t bounded_curl_write(char* data, const std::size_t size,
++                                 const std::size_t count, void* context)
++  {
++    if (count != 0 && size > maximum_gateway_response_bytes / count) return 0;
++    const std::size_t length = size * count;
++    http_response* response = static_cast<http_response*>(context);
++    if (length > maximum_gateway_response_bytes - response->body.size()) return 0;
++    response->body.append(data, length);
++    return length;
++  }
++
++  void require_curl_runtime()
++  {
++    static std::once_flag initialized;
++    static CURLcode result = CURLE_FAILED_INIT;
++    std::call_once(initialized, [] { result = curl_global_init(CURL_GLOBAL_DEFAULT); });
++    if (result != CURLE_OK) throw std::runtime_error("Fast Wallet HTTPS client is unavailable");
++  }
++
++  http_response https_request(const std::string& origin, const char* method,
++                              const char* path, const std::string& body,
++                              const persisted_hosted_watch* state)
++  {
++    require_curl_runtime();
++    const std::string safe_origin = require_https_origin(origin, "--gateway-origin");
++    if (path == nullptr || path[0] != '/')
++      throw std::runtime_error("Fast Wallet HTTPS request path is invalid");
++    CURL* client = curl_easy_init();
++    if (client == nullptr) throw std::runtime_error("Fast Wallet HTTPS client is unavailable");
++    http_response response;
++    struct curl_slist* headers = nullptr;
++    headers = curl_slist_append(headers, "accept: application/json");
++    headers = curl_slist_append(headers, "content-type: application/json");
++    if (state != nullptr)
++    {
++      const std::string installation_id(state->installation_id.data());
++      const std::string auth = hex_encode(state->installation_auth.data(), state->installation_auth.size());
++      const std::string id_header = "x-fast-wallet-installation-id: " + installation_id;
++      const std::string auth_header = "x-fast-wallet-installation-auth: " + auth;
++      headers = curl_slist_append(headers, id_header.c_str());
++      headers = curl_slist_append(headers, auth_header.c_str());
++    }
++    const std::string url = safe_origin + path;
++    const bool setup_failed =
++      curl_easy_setopt(client, CURLOPT_URL, url.c_str()) ||
++      curl_easy_setopt(client, CURLOPT_HTTPHEADER, headers) ||
++      curl_easy_setopt(client, CURLOPT_CUSTOMREQUEST, method) ||
++      curl_easy_setopt(client, CURLOPT_NOSIGNAL, 1L) ||
++      curl_easy_setopt(client, CURLOPT_CONNECTTIMEOUT, 5L) ||
++      curl_easy_setopt(client, CURLOPT_TIMEOUT, 12L) ||
++      curl_easy_setopt(client, CURLOPT_FOLLOWLOCATION, 0L) ||
++      curl_easy_setopt(client, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS) ||
++      curl_easy_setopt(client, CURLOPT_SSL_VERIFYPEER, 1L) ||
++      curl_easy_setopt(client, CURLOPT_SSL_VERIFYHOST, 2L) ||
++      curl_easy_setopt(client, CURLOPT_WRITEFUNCTION, bounded_curl_write) ||
++      curl_easy_setopt(client, CURLOPT_WRITEDATA, &response) ||
++      curl_easy_setopt(client, CURLOPT_POSTFIELDS, body.empty() ? nullptr : body.data()) ||
++      curl_easy_setopt(client, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
++    if (setup_failed)
++    {
++      curl_slist_free_all(headers);
++      curl_easy_cleanup(client);
++      throw std::runtime_error("Fast Wallet HTTPS request could not be configured");
++    }
++    const CURLcode result = curl_easy_perform(client);
++    if (result == CURLE_OK) curl_easy_getinfo(client, CURLINFO_RESPONSE_CODE, &response.status);
++    curl_slist_free_all(headers);
++    curl_easy_cleanup(client);
++    if (result != CURLE_OK || response.body.size() > maximum_gateway_response_bytes)
++      throw std::runtime_error("Fast Wallet Gateway or Relay request failed");
++    return response;
++  }
++
++  bool json_accepted(const std::string& body)
++  {
++    const std::size_t key = body.find("\"accepted\"");
++    if (key == std::string::npos) return false;
++    std::size_t cursor = key + 10;
++    while (cursor < body.size() && (body[cursor] == ' ' || body[cursor] == '\t' ||
++                                   body[cursor] == '\r' || body[cursor] == '\n')) ++cursor;
++    if (cursor == body.size() || body[cursor++] != ':') return false;
++    while (cursor < body.size() && (body[cursor] == ' ' || body[cursor] == '\t' ||
++                                   body[cursor] == '\r' || body[cursor] == '\n')) ++cursor;
++    return body.compare(cursor, 4, "true") == 0 &&
++      (cursor + 4 == body.size() || !std::isalnum(static_cast<unsigned char>(body[cursor + 4])));
++  }
++
++  std::uint64_t json_unsigned(const std::string& body, const char* name)
++  {
++    const std::string key = std::string("\"") + name + "\"";
++    const std::size_t found = body.find(key);
++    if (found == std::string::npos) throw std::runtime_error("Fast Wallet Gateway response was invalid");
++    std::size_t cursor = found + key.size();
++    while (cursor < body.size() && std::isspace(static_cast<unsigned char>(body[cursor]))) ++cursor;
++    if (cursor == body.size() || body[cursor++] != ':') throw std::runtime_error("Fast Wallet Gateway response was invalid");
++    while (cursor < body.size() && std::isspace(static_cast<unsigned char>(body[cursor]))) ++cursor;
++    const std::size_t first_digit = cursor;
++    while (cursor < body.size() && body[cursor] >= '0' && body[cursor] <= '9') ++cursor;
++    std::uint64_t value = 0;
++    if (cursor == first_digit || !parse_unsigned(body.substr(first_digit, cursor - first_digit), value))
++      throw std::runtime_error("Fast Wallet Gateway response was invalid");
++    return value;
++  }
++
++  void register_desktop_installation(const options& input, const persisted_hosted_watch& state)
++  {
++    const http_response response = https_request(input.gateway_origin, "POST",
++      "/api/v1/installations/desktop-provider", "{\"provider\":\"desktop_wss\",\"token\":\"\"}", &state);
++    if (response.status != 201 || !json_accepted(response.body))
++      throw std::runtime_error("Fast Wallet Gateway did not accept the desktop installation");
++  }
++
++  std::uint64_t sponsor_gateway_assignment(const options& input, const persisted_hosted_watch& state,
++                                           const std::vector<unsigned char>& descriptor,
++                                           const std::uint64_t requested_expiry, const std::uint64_t now)
++  {
++    const std::string body = "{\"workerDescriptor\":\"" + hex_encode(descriptor.data(), descriptor.size()) +
++      "\",\"assignmentHandle\":\"" + hex_encode(state.assignment_handle.data(), state.assignment_handle.size()) +
++      "\",\"assignmentEpoch\":" + std::to_string(state.assignment_epoch) +
++      ",\"expiresAt\":" + std::to_string(requested_expiry) + "}";
++    const http_response response = https_request(input.gateway_origin, "POST",
++      "/api/v1/installations/assignments", body, &state);
++    const std::uint64_t expires_at = json_unsigned(response.body, "expiresAt");
++    if (response.status != 201 || !json_accepted(response.body) || expires_at <= now || expires_at > requested_expiry)
++      throw std::runtime_error("Fast Wallet Gateway returned an invalid assignment");
++    return expires_at;
++  }
++
++  void enable_gateway_delivery(const options& input, const persisted_hosted_watch& state)
++  {
++    const http_response response = https_request(input.gateway_origin, "POST",
++      "/api/v1/installations/provider/delivery", "", &state);
++    if (response.status != 200 || !json_accepted(response.body))
++      throw std::runtime_error("Fast Wallet Gateway did not enable delivery");
++  }
++
++  std::string relay_origin_from_descriptor(const std::vector<unsigned char>& descriptor,
++                                           const Monero::NetworkType network, const std::uint64_t now)
++  {
++    std::array<unsigned char, 256> origin{};
++    std::size_t length = origin.size();
++    if (tex8_fast_wallet_protocol_descriptor_relay_origin_v1(descriptor.data(), descriptor.size(),
++        static_cast<std::uint8_t>(network), now, origin.data(), &length) != TEX8_FAST_WALLET_PROTOCOL_OK ||
++        length == 0 || length > origin.size())
++      throw std::runtime_error("Worker descriptor does not contain a valid Relay origin");
++    return require_https_origin(std::string(reinterpret_cast<const char*>(origin.data()), length), "Worker Relay origin");
++  }
++
++  void submit_watch_to_relay(const persisted_hosted_watch& state, const std::string& relay_origin)
++  {
++    const std::string body = "{\"envelope\":\"" + hex_encode(state.envelope.data(), state.envelope.size()) + "\"}";
++    // The Worker Relay is independently pinned by its signed descriptor. It
++    // must receive only the encrypted watch, never the Gateway installation
++    // capability or any other management credential.
++    const http_response response = https_request(relay_origin, "POST", "/v1/envelopes", body, nullptr);
++    const std::size_t key = response.body.find("\"messageId\"");
++    if ((response.status != 200 && response.status != 201) || key == std::string::npos)
++      throw std::runtime_error("Fast Wallet Worker Relay rejected the encrypted watch");
++    const std::size_t first_quote = response.body.find('"', response.body.find(':', key));
++    const std::size_t second_quote = first_quote == std::string::npos ? std::string::npos : response.body.find('"', first_quote + 1);
++    if (second_quote == std::string::npos || second_quote - first_quote - 1 != 64 ||
++        !std::all_of(response.body.begin() + first_quote + 1, response.body.begin() + second_quote, is_lowercase_hex))
++      throw std::runtime_error("Fast Wallet Worker Relay returned an invalid acknowledgement");
++  }
++
++  std::array<unsigned char, 32> descriptor_hash(const std::vector<unsigned char>& descriptor)
++  {
++    if (descriptor.empty()) throw std::runtime_error("Worker descriptor is invalid");
++    const crypto::hash hash = crypto::cn_fast_hash(descriptor.data(), descriptor.size());
++    std::array<unsigned char, 32> output{};
++    std::memcpy(output.data(), hash.data, output.size());
++    return output;
++  }
++
+   mfw_fast_wallet_coordinator_plan_v1 plan(const std::uint32_t operation,
+                                            const persisted_fast_wallet* state = nullptr)
+   {
+@@ -535,24 +892,37 @@ namespace
+     return output;
+   }
+ 
+-  void require_hosting_seal_plan(const persisted_fast_wallet& state)
++  mfw_fast_wallet_hosting_plan_v1 hosted_watch_plan(const persisted_fast_wallet& state,
++                                                    const std::uint32_t operation,
++                                                    const std::uint32_t enrollment_stage,
++                                                    const bool installation_authorized)
+   {
+-    // This local sealing boundary is entered only with a pre-authorized
+-    // assignment hand-off. Product Core receives no assignment handle,
+-    // descriptor, capability, address, View Key or envelope; it enforces only
+-    // the shared durable stage transition.
+     mfw_fast_wallet_hosting_input_v1 input{};
+     input.struct_size = sizeof(input);
+     input.state_version = MFW_WALLET_LIFECYCLE_STATE_VERSION;
+-    input.operation = MFW_FAST_WALLET_HOSTING_OPERATION_ENROLL;
++    input.operation = operation;
+     input.lifecycle_state = state.lifecycle_state;
+     input.seed_backup_confirmed = state.seed_backup_confirmed;
+-    input.installation_authorized = 1;
++    input.installation_authorized = installation_authorized ? 1 : 0;
+     input.trusted_worker_descriptor = 1;
+-    input.enrollment_stage = MFW_FAST_WALLET_HOSTING_STAGE_DELIVERY_ENABLED;
++    input.enrollment_stage = enrollment_stage;
+     mfw_fast_wallet_hosting_plan_v1 output{};
+     if (mfw_fast_wallet_hosting_plan_compute_v1(&input, &output) != MFW_ERROR_OK ||
+-        output.operation_allowed != 1 || output.execution_allowed != 1 ||
++        output.operation_allowed != 1)
++      throw std::runtime_error("the shared Product Core rejected this Fast Wallet hosted-watch operation");
++    return output;
++  }
++
++  void require_hosting_seal_plan(const persisted_fast_wallet& state)
++  {
++    // This local sealing boundary is entered only with a pre-authorized
++    // assignment hand-off. Product Core receives no assignment handle,
++    // descriptor, capability, address, View Key or envelope; it enforces only
++    // the shared durable stage transition.
++    const mfw_fast_wallet_hosting_plan_v1 output = hosted_watch_plan(
++      state, MFW_FAST_WALLET_HOSTING_OPERATION_ENROLL,
++      MFW_FAST_WALLET_HOSTING_STAGE_DELIVERY_ENABLED, true);
++    if (output.execution_allowed != 1 ||
+         output.next_action != MFW_FAST_WALLET_HOSTING_ACTION_SEAL_WATCH ||
+         output.result_enrollment_stage != MFW_FAST_WALLET_HOSTING_STAGE_WATCH_SEALED ||
+         output.worker_enrolled != 0)
+@@ -575,6 +945,8 @@ namespace
+         output.assignment_handle_file = argv[++index];
+       else if (token == "--envelope-file" && index + 1 < argc)
+         output.envelope_file = argv[++index];
++      else if (token == "--gateway-origin" && index + 1 < argc)
++        output.gateway_origin = argv[++index];
+       else if (token == "--network" && index + 1 < argc)
+       {
+         output.network = parse_network(argv[++index]);
+@@ -615,11 +987,16 @@ namespace
+       << "  worker seal-watch --wallet-file <path> --password-file <0600-file> --descriptor-file <public-file>\n"
+       << "          --assignment-handle-file <0600-file> --assignment-epoch <positive-integer>\n"
+       << "          --envelope-file <new-0600-file> [--now <unix-seconds>] [--json]\n"
++      << "  worker enroll --wallet-file <path> --password-file <0600-file> --descriptor-file <public-file>\n"
++      << "          --gateway-origin <https-origin> [--now <unix-seconds>] [--json]\n"
++      << "  worker hosted-status --wallet-file <path> [--json]\n"
+       << "  worker status --wallet-file <path> [--json]\n\n"
+       << "create and restore make a separate Monero wallet with its own seed and password.\n"
+       << "worker pair verifies and pins only a signed public Worker identity; it does not upload a watch.\n"
+       << "worker seal-watch reads the local Fast Wallet internally and writes only a fixed-size encrypted HPKE envelope for a pre-authorized assignment.\n"
+       << "It requires a fresh signed descriptor whose root matches this pin, makes no network connection, and never prints a View Key or envelope.\n"
++      << "worker enroll creates a protected installation capability, registers desktop delivery, sponsors the pinned Worker assignment, seals the watch locally, and submits only its encrypted envelope to the signed Relay.\n"
++      << "It follows Product Core one durable step at a time; the Gateway capability is never sent to the Worker Relay.\n"
+       << "The lifecycle sidecar contains no seed, password, private key, address, worker token or node endpoint.\n"
+       << "Never pass a seed or password directly as a command argument.\n";
+   }
+@@ -760,14 +1137,23 @@ namespace
+       return;
+     }
+     const persisted_paired_worker worker = read_paired_worker(input);
++    bool enrolled = false;
++    if (has_hosted_watch(input))
++    {
++      persisted_hosted_watch hosted = read_hosted_watch(input);
++      enrolled = hosted.network == worker.network && hosted.worker_root_id == worker.worker_root_id &&
++        hosted.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_ACTIVE;
++      wipe_hosted_watch(hosted);
++    }
+     const std::string root_id = hex_encode(worker.worker_root_id.data(), worker.worker_root_id.size());
+     if (input.json)
+-      std::cout << "{\"schema_version\":1,\"worker_paired\":true,\"worker_enrolled\":false,\"network\":\""
++      std::cout << "{\"schema_version\":1,\"worker_paired\":true,\"worker_enrolled\":"
++                << (enrolled ? "true" : "false") << ",\"network\":\""
+                 << network_name(static_cast<Monero::NetworkType>(worker.network))
+                 << "\",\"worker_root_id\":\"" << root_id << "\"}\n";
+     else
+-      std::cout << "Fast Wallet Worker: paired; no watch enrolled; signed Worker root: "
+-                << root_id << ".\n";
++      std::cout << "Fast Wallet Worker: paired; watch " << (enrolled ? "enrolled" : "not enrolled")
++                << "; signed Worker root: " << root_id << ".\n";
+   }
+ 
+   void pair_worker(const options& input)
+@@ -796,6 +1182,60 @@ namespace
+     print_worker_status(input);
+   }
+ 
++  std::array<unsigned char, TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE> seal_hosted_watch(
++    const options& input, const persisted_fast_wallet& metadata,
++    const std::vector<unsigned char>& descriptor, const std::uint64_t now,
++    const std::uint64_t expires_at, const std::uint64_t assignment_epoch,
++    const std::array<unsigned char, 32>& assignment_handle)
++  {
++    if (input.password_file.empty())
++      throw std::runtime_error("worker hosted-watch sealing requires --password-file");
++    const Monero::NetworkType wallet_network = static_cast<Monero::NetworkType>(metadata.network);
++    std::string password = read_private_text_file(input.password_file, "password file");
++    secret_string_guard password_guard(password);
++    Monero::WalletManager* manager = Monero::WalletManagerFactory::getWalletManager();
++    if (manager == nullptr) throw std::runtime_error("native Monero WalletManager is unavailable");
++    Monero::Wallet* wallet = nullptr;
++    std::array<unsigned char, TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE> envelope{};
++    std::vector<unsigned char> private_view_key_bytes;
++    try
++    {
++      wallet = manager->openWallet(input.wallet_path.string(), password, wallet_network);
++      wipe(password);
++      if (wallet == nullptr || wallet->status() != Monero::Wallet::Status_Ok)
++        throw std::runtime_error("Fast Wallet could not be opened");
++      if (wallet->nettype() != wallet_network)
++        throw std::runtime_error("Fast Wallet network does not match its lifecycle metadata");
++      std::string address = wallet->address();
++      secret_string_guard address_guard(address);
++      std::string private_view_key = wallet->secretViewKey();
++      secret_string_guard private_view_key_guard(private_view_key);
++      private_view_key_bytes = decode_lowercase_hex(private_view_key, 32, "Fast Wallet private View Key");
++      const std::int32_t sealed = tex8_fast_wallet_protocol_seal_watch_v1(
++        descriptor.data(), descriptor.size(), static_cast<std::uint8_t>(metadata.network),
++        assignment_handle.data(), assignment_epoch, now, expires_at, now,
++        reinterpret_cast<const unsigned char*>(address.data()), address.size(),
++        private_view_key_bytes.data(), metadata.restore_height, envelope.data(), envelope.size());
++      std::fill(private_view_key_bytes.begin(), private_view_key_bytes.end(), 0);
++      if (sealed != TEX8_FAST_WALLET_PROTOCOL_OK)
++        throw std::runtime_error("Fast Wallet Worker watch encryption failed");
++      if (!manager->closeWallet(wallet, false))
++      {
++        wallet = nullptr;
++        throw std::runtime_error("Fast Wallet could not be closed after watch encryption");
++      }
++      wallet = nullptr;
++      return envelope;
++    }
++    catch (...)
++    {
++      std::fill(private_view_key_bytes.begin(), private_view_key_bytes.end(), 0);
++      std::fill(envelope.begin(), envelope.end(), 0);
++      if (wallet != nullptr) manager->closeWallet(wallet, false);
++      throw;
++    }
++  }
++
+   void seal_worker_watch(const options& input)
+   {
+     const persisted_fast_wallet metadata = read_metadata(input);
+@@ -835,40 +1275,13 @@ namespace
+       throw std::runtime_error("Worker assignment handle file is invalid");
+     require_hosting_seal_plan(metadata);
+ 
+-    std::string password = read_private_text_file(input.password_file, "password file");
+-    secret_string_guard password_guard(password);
+-    Monero::WalletManager* manager = Monero::WalletManagerFactory::getWalletManager();
+-    if (manager == nullptr) throw std::runtime_error("native Monero WalletManager is unavailable");
+-    Monero::Wallet* wallet = nullptr;
+     std::array<unsigned char, TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE> envelope{};
++    std::array<unsigned char, 32> assignment_handle_bytes{};
++    std::copy(assignment_handle.begin(), assignment_handle.end(), assignment_handle_bytes.begin());
+     try
+     {
+-      wallet = manager->openWallet(input.wallet_path.string(), password, wallet_network);
+-      wipe(password);
+-      if (wallet == nullptr || wallet->status() != Monero::Wallet::Status_Ok)
+-        throw std::runtime_error("Fast Wallet could not be opened");
+-      if (wallet->nettype() != wallet_network)
+-        throw std::runtime_error("Fast Wallet network does not match its lifecycle metadata");
+-      std::string address = wallet->address();
+-      secret_string_guard address_guard(address);
+-      std::string private_view_key = wallet->secretViewKey();
+-      secret_string_guard private_view_key_guard(private_view_key);
+-      std::vector<unsigned char> private_view_key_bytes = decode_lowercase_hex(
+-        private_view_key, 32, "Fast Wallet private View Key");
+-      const std::int32_t sealed = tex8_fast_wallet_protocol_seal_watch_v1(
+-        descriptor.data(), descriptor.size(), static_cast<std::uint8_t>(metadata.network),
+-        assignment_handle.data(), input.assignment_epoch, now, now + watch_lifetime_seconds,
+-        now, reinterpret_cast<const unsigned char*>(address.data()), address.size(),
+-        private_view_key_bytes.data(), metadata.restore_height, envelope.data(), envelope.size());
+-      std::fill(private_view_key_bytes.begin(), private_view_key_bytes.end(), 0);
+-      if (sealed != TEX8_FAST_WALLET_PROTOCOL_OK)
+-        throw std::runtime_error("Fast Wallet Worker watch encryption failed");
+-      if (!manager->closeWallet(wallet, false))
+-      {
+-        wallet = nullptr;
+-        throw std::runtime_error("Fast Wallet could not be closed after watch encryption");
+-      }
+-      wallet = nullptr;
++      envelope = seal_hosted_watch(input, metadata, descriptor, now, now + watch_lifetime_seconds,
++                                   input.assignment_epoch, assignment_handle_bytes);
+       write_private_new_binary_file(input.envelope_file, envelope.data(), envelope.size(),
+                                     "encrypted Worker watch envelope");
+       std::fill(envelope.begin(), envelope.end(), 0);
+@@ -880,12 +1293,194 @@ namespace
+     }
+     catch (...)
+     {
+-      std::fill(assignment_handle.begin(), assignment_handle.end(), 0);
+       std::fill(envelope.begin(), envelope.end(), 0);
+-      if (wallet != nullptr) manager->closeWallet(wallet, false);
++      std::fill(assignment_handle.begin(), assignment_handle.end(), 0);
++      std::fill(assignment_handle_bytes.begin(), assignment_handle_bytes.end(), 0);
+       throw;
+     }
+     std::fill(assignment_handle.begin(), assignment_handle.end(), 0);
++    std::fill(assignment_handle_bytes.begin(), assignment_handle_bytes.end(), 0);
++  }
++
++  std::vector<unsigned char> require_fresh_pinned_descriptor(
++    const options& input, const persisted_fast_wallet& metadata,
++    const persisted_paired_worker& paired, const std::uint64_t now)
++  {
++    if (input.descriptor_file.empty())
++      throw std::runtime_error("worker enroll requires --descriptor-file");
++    if (paired.network != metadata.network)
++      throw std::runtime_error("Fast Wallet Worker pairing network does not match this wallet");
++    std::vector<unsigned char> descriptor = read_public_bounded_file(
++      input.descriptor_file, "Worker descriptor file", 4096);
++    std::array<unsigned char, 32> root{};
++    if (tex8_fast_wallet_protocol_descriptor_worker_root_id_v1(
++        descriptor.data(), descriptor.size(), static_cast<std::uint8_t>(metadata.network), now,
++        root.data(), root.size()) != TEX8_FAST_WALLET_PROTOCOL_OK || root != paired.worker_root_id)
++      throw std::runtime_error("Worker descriptor is invalid, expired, for another network, or does not match the pinned Worker");
++    return descriptor;
++  }
++
++  persisted_hosted_watch new_pending_hosted_watch(const persisted_fast_wallet& metadata,
++                                                  const persisted_paired_worker& paired,
++                                                  const std::uint32_t stage)
++  {
++    persisted_hosted_watch state{};
++    std::memcpy(state.magic, hosted_watch_magic, sizeof(state.magic));
++    state.disk_version = hosted_watch_disk_version;
++    state.network = metadata.network;
++    state.enrollment_stage = stage;
++    state.generation = 1;
++    state.created_at = unix_seconds();
++    state.updated_at = state.created_at;
++    state.assignment_epoch = 1;
++    std::array<unsigned char, 16> installation_suffix{};
++    crypto::rand(installation_suffix.size(), installation_suffix.data());
++    const std::string id = std::string("mwp_desktop_") +
++      hex_encode(installation_suffix.data(), installation_suffix.size());
++    std::copy(id.begin(), id.end(), state.installation_id.begin());
++    crypto::rand(state.installation_auth.size(), state.installation_auth.data());
++    crypto::rand(state.assignment_handle.size(), state.assignment_handle.data());
++    state.worker_root_id = paired.worker_root_id;
++    std::fill(installation_suffix.begin(), installation_suffix.end(), 0);
++    return state;
++  }
++
++  void print_hosted_watch_status(const options& input, const persisted_fast_wallet& metadata)
++  {
++    bool enrolled = false;
++    if (has_hosted_watch(input))
++    {
++      persisted_hosted_watch hosted = read_hosted_watch(input);
++      enrolled = hosted.enrollment_stage == MFW_FAST_WALLET_HOSTING_STAGE_ACTIVE;
++      wipe_hosted_watch(hosted);
++    }
++    if (input.json)
++      std::cout << "{\"schema_version\":1,\"worker_enrolled\":"
++                << (enrolled ? "true" : "false") << ",\"notifications_enabled\":"
++                << (enrolled ? "true" : "false") << ",\"network\":\""
++                << network_name(static_cast<Monero::NetworkType>(metadata.network)) << "\"}\n";
++    else
++      std::cout << "Fast Wallet hosted scan: " << (enrolled ? "active" : "not active") << ".\n";
++  }
++
++  void enroll_hosted_watch(const options& input)
++  {
++    const persisted_fast_wallet metadata = read_metadata(input);
++    const Monero::NetworkType network = static_cast<Monero::NetworkType>(metadata.network);
++    if (input.network_explicit && input.network != network)
++      throw std::runtime_error("--network does not match the Fast Wallet network");
++    if (input.gateway_origin.empty())
++      throw std::runtime_error("worker enroll requires --gateway-origin");
++    static_cast<void>(require_https_origin(input.gateway_origin, "--gateway-origin"));
++    const std::uint64_t now = input.now == 0 ? unix_seconds() : input.now;
++    const persisted_paired_worker paired = read_paired_worker(input);
++    const std::vector<unsigned char> descriptor = require_fresh_pinned_descriptor(input, metadata, paired, now);
++    const std::array<unsigned char, 32> fresh_descriptor_hash = descriptor_hash(descriptor);
++    persisted_hosted_watch hosted{};
++    bool have_hosted = has_hosted_watch(input);
++    if (have_hosted)
++    {
++      hosted = read_hosted_watch(input);
++      if (hosted.network != metadata.network || hosted.worker_root_id != paired.worker_root_id)
++      {
++        wipe_hosted_watch(hosted);
++        throw std::runtime_error("hosted scan state does not match this Fast Wallet Worker pairing");
++      }
++      if (hosted.enrollment_stage >= MFW_FAST_WALLET_HOSTING_STAGE_ASSIGNMENT_ACCEPTED &&
++          hosted.descriptor_hash != fresh_descriptor_hash)
++      {
++        wipe_hosted_watch(hosted);
++        throw std::runtime_error("fresh Worker descriptor does not match the accepted hosted assignment");
++      }
++    }
++    try
++    {
++      for (unsigned int steps = 0; steps != 8; ++steps)
++      {
++        const bool authorized = have_hosted &&
++          hosted.enrollment_stage != MFW_FAST_WALLET_HOSTING_STAGE_NONE;
++        const mfw_fast_wallet_hosting_plan_v1 plan = hosted_watch_plan(
++          metadata, MFW_FAST_WALLET_HOSTING_OPERATION_ENROLL,
++          have_hosted ? hosted.enrollment_stage : MFW_FAST_WALLET_HOSTING_STAGE_NONE, authorized);
++        if (plan.execution_allowed != 1 || plan.requirement_flags != 0)
++          throw std::runtime_error("Fast Wallet hosted scan prerequisites are not satisfied");
++        if (plan.next_action == 0)
++        {
++          print_hosted_watch_status(input, metadata);
++          wipe_hosted_watch(hosted);
++          return;
++        }
++        if (plan.next_action == MFW_FAST_WALLET_HOSTING_ACTION_PERSIST_PENDING)
++        {
++          if (have_hosted) throw std::runtime_error("Fast Wallet hosted scan state is inconsistent");
++          hosted = new_pending_hosted_watch(metadata, paired, plan.result_enrollment_stage);
++          write_hosted_watch(input, hosted);
++          have_hosted = true;
++          continue;
++        }
++        if (!have_hosted) throw std::runtime_error("Fast Wallet hosted scan state is missing");
++        if (plan.next_action == MFW_FAST_WALLET_HOSTING_ACTION_REGISTER_INSTALLATION)
++        {
++          register_desktop_installation(input, hosted);
++          hosted.enrollment_stage = plan.result_enrollment_stage;
++          write_hosted_watch(input, hosted);
++          continue;
++        }
++        if (plan.next_action == MFW_FAST_WALLET_HOSTING_ACTION_SPONSOR_ASSIGNMENT)
++        {
++          if (now > std::numeric_limits<std::uint64_t>::max() - assignment_lifetime_seconds)
++            throw std::runtime_error("Fast Wallet hosted assignment expiry is invalid");
++          hosted.assignment_expires_at = sponsor_gateway_assignment(
++            input, hosted, descriptor, now + assignment_lifetime_seconds, now);
++          hosted.descriptor_hash = fresh_descriptor_hash;
++          hosted.enrollment_stage = plan.result_enrollment_stage;
++          write_hosted_watch(input, hosted);
++          continue;
++        }
++        if (plan.next_action == MFW_FAST_WALLET_HOSTING_ACTION_ENABLE_DELIVERY)
++        {
++          enable_gateway_delivery(input, hosted);
++          hosted.enrollment_stage = plan.result_enrollment_stage;
++          write_hosted_watch(input, hosted);
++          continue;
++        }
++        if (plan.next_action == MFW_FAST_WALLET_HOSTING_ACTION_SEAL_WATCH)
++        {
++          if (now > std::numeric_limits<std::uint64_t>::max() - watch_lifetime_seconds)
++            throw std::runtime_error("Fast Wallet hosted-watch expiry is invalid");
++          const std::uint64_t watch_expires_at = std::min(now + watch_lifetime_seconds,
++                                                           hosted.assignment_expires_at);
++          if (watch_expires_at <= now)
++            throw std::runtime_error("Fast Wallet hosted assignment has expired");
++          hosted.envelope = seal_hosted_watch(input, metadata, descriptor, now,
++            watch_expires_at, hosted.assignment_epoch, hosted.assignment_handle);
++          hosted.enrollment_stage = plan.result_enrollment_stage;
++          write_hosted_watch(input, hosted);
++          continue;
++        }
++        if (plan.next_action == MFW_FAST_WALLET_HOSTING_ACTION_SUBMIT_WATCH)
++        {
++          submit_watch_to_relay(hosted, relay_origin_from_descriptor(descriptor, network, now));
++          hosted.enrollment_stage = plan.result_enrollment_stage;
++          write_hosted_watch(input, hosted);
++          continue;
++        }
++        if (plan.next_action == MFW_FAST_WALLET_HOSTING_ACTION_COMMIT_ACTIVE)
++        {
++          hosted.enrollment_stage = plan.result_enrollment_stage;
++          std::fill(hosted.envelope.begin(), hosted.envelope.end(), 0);
++          write_hosted_watch(input, hosted);
++          continue;
++        }
++        throw std::runtime_error("Fast Wallet hosted scan returned an unsupported plan action");
++      }
++      throw std::runtime_error("Fast Wallet hosted scan did not reach a stable state");
++    }
++    catch (...)
++    {
++      wipe_hosted_watch(hosted);
++      throw;
++    }
+   }
+ }
+ 
+@@ -902,12 +1497,13 @@ namespace mfw_cli
+     }
+     if (operation != "create" && operation != "restore" && operation != "confirm-backup" &&
+         operation != "status" && operation != "worker-pair" && operation != "worker-seal-watch" &&
+-        operation != "worker-status")
++        operation != "worker-enroll" && operation != "worker-hosted-status" && operation != "worker-status")
+       return false;
+     try
+     {
+       options input;
+-      if (operation == "worker-pair" || operation == "worker-seal-watch" || operation == "worker-status")
++      if (operation == "worker-pair" || operation == "worker-seal-watch" || operation == "worker-enroll" ||
++          operation == "worker-hosted-status" || operation == "worker-status")
+       {
+         // `pair`/`status` are a two-word Fast Wallet subcommand; their options
+         // begin after that second word.
+@@ -921,6 +1517,7 @@ namespace mfw_cli
+           else if (token == "--assignment-handle-file" && index + 1 < argc)
+             input.assignment_handle_file = argv[++index];
+           else if (token == "--envelope-file" && index + 1 < argc) input.envelope_file = argv[++index];
++          else if (token == "--gateway-origin" && index + 1 < argc) input.gateway_origin = argv[++index];
+           else if (token == "--network" && index + 1 < argc)
+           {
+             input.network = parse_network(argv[++index]);
+@@ -953,6 +1550,8 @@ namespace mfw_cli
+       else if (operation == "status") print_status(input, read_metadata(input));
+       else if (operation == "worker-pair") pair_worker(input);
+       else if (operation == "worker-seal-watch") seal_worker_watch(input);
++      else if (operation == "worker-enroll") enroll_hosted_watch(input);
++      else if (operation == "worker-hosted-status") print_hosted_watch_status(input, read_metadata(input));
+       else print_worker_status(input);
+       exit_code = 0;
+     }
+-- 
+2.50.1 (Apple Git-155)
+

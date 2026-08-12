@@ -52,3 +52,19 @@ binary whose embedded commit does not match the lock.
 The local Fast Wallet is not a successful substitute for step 4. Clients must
 show an explicit enrollment error while the official service is selected but
 the ciphertext upload cannot complete.
+
+The opt-in `live_enrollment_probe` has passed step 4's protocol boundary with
+a valid synthetic Monero address/private-view pair generated only in RAM. The
+public host accepted only the 484-byte HPKE ciphertext; the outbound Worker
+decrypted it, durably persisted the watch in its encrypted `0600` database,
+signed a descriptor- and message-bound acceptance receipt, and then processed
+the authenticated cleanup. The probe cryptographically verified that receipt.
+This proves the service path, but does not replace the still-required
+enrollment from an actual product CLI wallet or the closed-app platform checks
+in step 5.
+
+The CLI now keeps Relay acceptance pending and persists
+`worker_enrolled=true` only after verifying the exact Worker-signed receipt.
+Old sidecars that predate receipts migrate fail-closed and must repeat the
+ciphertext hand-off; a Relay upload acknowledgement alone can never activate
+hosted scanning.

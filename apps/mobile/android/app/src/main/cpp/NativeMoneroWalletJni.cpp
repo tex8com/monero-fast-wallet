@@ -581,8 +581,86 @@ jobject toJavaMap(JNIEnv* env, const LedgerKeyImageSyncResult& result) {
       env,
       map,
       putMethod,
+      "pendingOutputCount",
+      result.pendingOutputCount);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "remainingPendingOutputCount",
+      result.remainingPendingOutputCount);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "importedOutputCount",
+      result.importedOutputCount);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "derivedOutputCount",
+      result.derivedOutputCount);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "spentStatusUnspentOutputCount",
+      result.spentStatusUnspentOutputCount);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "spentStatusBlockchainOutputCount",
+      result.spentStatusBlockchainOutputCount);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "spentStatusPoolOutputCount",
+      result.spentStatusPoolOutputCount);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "derivationDurationMs",
+      result.derivationDurationMs);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "spentStatusRpcDurationMs",
+      result.spentStatusRpcDurationMs);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "outgoingRpcDurationMs",
+      result.outgoingRpcDurationMs);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "stateUpdateDurationMs",
+      result.stateUpdateDurationMs);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
       "verificationDurationMs",
       result.verificationDurationMs);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "storeDurationMs",
+      result.storeDurationMs);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "totalDurationMs",
+      result.totalDurationMs);
   return map;
 }
 
@@ -615,6 +693,10 @@ jobject toJavaMap(JNIEnv* env, const NetworkSyncStatus& status) {
   putMapDouble(env, map, putMethod, "networkBytesReceived", status.networkBytesReceived);
   putMapDouble(env, map, putMethod, "payloadBytesReceived", status.payloadBytesReceived);
   putMapDouble(env, map, putMethod, "lastWalletScanMs", status.lastWalletScanMs);
+  putMapDouble(env, map, putMethod, "lastNonEmptyWalletDerivationCount", status.lastNonEmptyWalletDerivationCount);
+  putMapDouble(env, map, putMethod, "lastNonEmptyWalletDerivationUs", status.lastNonEmptyWalletDerivationUs);
+  putMapDouble(env, map, putMethod, "totalWalletDerivationCount", status.totalWalletDerivationCount);
+  putMapDouble(env, map, putMethod, "totalWalletDerivationUs", status.totalWalletDerivationUs);
   putMapDouble(env, map, putMethod, "lastMempoolMs", status.lastMempoolMs);
   putMapDouble(env, map, putMethod, "lastCheckpointMs", status.lastCheckpointMs);
   putMapDouble(env, map, putMethod, "lastIterationMs", status.lastIterationMs);
@@ -3018,6 +3100,21 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeGetTransactions(
         walletEngine().getTransactions(
             toStdString(env, walletId),
             toUInt32(limit, "limit")));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeGetOwnedOutputKeyImages(
+    JNIEnv* env,
+    jclass,
+    jstring walletId) {
+  try {
+    return toJavaStringList(
+        env,
+        walletEngine().getOwnedOutputKeyImages(toStdString(env, walletId)));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;

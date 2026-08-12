@@ -6,6 +6,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
@@ -18,6 +19,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <random>
 #include <set>
 #include <sstream>
 #include <string>
@@ -28,7 +30,13 @@
 
 namespace {
 
-void initializeLedgerTransportForProof() {
+void initializeLedgerTransportForProof(const std::string& deviceName) {
+  if (deviceName != "Ledger:ble") {
+    // USB must not start CoreBluetooth discovery merely because this proof
+    // binary also supports BLE. The selected transport is the sole authority.
+    std::cout << "ledger_ble_transport_status=not-requested\n";
+    return;
+  }
 #if defined(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE) && \
     TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE
   // This both scans and installs the callback bridge before the Monero core
@@ -41,16 +49,22 @@ void initializeLedgerTransportForProof() {
 #endif
 }
 
+void initializeLedgerTransportForProof() {
+  initializeLedgerTransportForProof("Ledger:ble");
+}
+
 const char* defaultLedgerDeviceName() {
-#if defined(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE) && \
-    TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE
-  // The upstream Ledger device selects the callback transport only for the
-  // descriptor suffix `:ble`.  USB remains explicitly selectable by passing
-  // `Ledger`; macOS proof commands default to the local BLE transport.
-  return "Ledger:ble";
-#else
+  // Transport selection is explicit: `Ledger` selects USB and `Ledger:ble`
+  // selects the macOS BLE callback transport. Keep the portable USB selector
+  // as the default; callers may select BLE without rebuilding the CLI.
   return "Ledger";
-#endif
+}
+
+void requireSupportedLedgerDeviceName(const std::string& deviceName) {
+  if (deviceName != "Ledger" && deviceName != "Ledger:ble") {
+    throw tex8::wallet::WalletEngineError(
+        "Ledger transport must be Ledger (USB) or Ledger:ble (BLE)");
+  }
 }
 
 // Keep benchmark evidence actionable without ever retaining an exception
@@ -60,6 +74,10 @@ std::string classifyLedgerKeyImageFailure(const std::exception& error) {
   if (message.find("Unable to connect to Ledger") != std::string::npos ||
       message.find("Ledger Bluetooth") != std::string::npos) {
     return "ledger-connection";
+  }
+  if (message.find("Key export rejected on device") != std::string::npos ||
+      message.find("Ledger view-key export") != std::string::npos) {
+    return "ledger-view-key-export-rejected";
   }
   if (message.find("cold ki sync protocol") != std::string::npos ||
       message.find("cold key image") != std::string::npos) {
@@ -110,7 +128,7 @@ void printUsage(const char* binary) {
          " <password|@file> <restore-height>\n"
       << "  " << binary
       << " create-restore-refresh <mainnet|testnet|stagenet> <wallet-path>"
-         " <password|@file> <restore-height> <daemon-host:port>"
+         " <password|@file|@ephemeral> <restore-height> <daemon-host:port>"
          " [grpc-host:port|-] [max-seconds]\n"
       << "  " << binary
       << " address <mainnet|testnet|stagenet> <wallet-path>"
@@ -118,6 +136,7 @@ void printUsage(const char* binary) {
       << "  " << binary
       << " benchmark-address-generation <mainnet|testnet|stagenet> <workdir>"
          " <password|@file> [wallet-rounds] [subaddress-rounds]\n"
+      << "  " << binary << " derivation-benchmark\n"
       << "  " << binary
       << " create-stagenet-offline <wallet-path> <password>\n"
       << "  " << binary
@@ -167,15 +186,17 @@ void printUsage(const char* binary) {
       << " list-txs <mainnet|testnet|stagenet> <wallet-path>"
          " <password|@file> [daemon-host:port] [grpc-host:port|-] [limit]"
          " [refresh-seconds]\n"
+      << "  " << binary << " ledger-ble-status\n"
+      << "  " << binary << " ledger-ble-connect-preflight\n"
       << "  " << binary
       << " ledger-probe <mainnet|testnet|stagenet> <wallet-path>"
-         " <password|@file> [device-name; macOS default Ledger:ble]\n";
+         " <password|@file> [device-name: Ledger (USB) or Ledger:ble (BLE); default Ledger]\n";
   std::cout
       << "  " << binary
       << " ledger-create-view-wallet <mainnet|testnet|stagenet>"
          " <hardware-wallet-path> <hardware-password|@file>"
          " <view-wallet-path> <view-password|@file> <restore-height>"
-         " [device-name; macOS default Ledger:ble] [account-index; default 0]\n";
+         " [device-name: Ledger (USB) or Ledger:ble (BLE); default Ledger] [account-index; default 0]\n";
   std::cout
       << "  " << binary
       << " ledger-key-image-benchmark <mainnet|testnet|stagenet>"
@@ -183,6 +204,12 @@ void printUsage(const char* binary) {
          " <view-wallet-path> <view-password|@file>"
          " <daemon-host:port> <grpc-host:port|-> [max-sync-seconds]"
          " [observer-wallet-path observer-password|@file]\n";
+  std::cout
+      << "  " << binary
+      << " ledger-reference-sync <mainnet|testnet|stagenet> <new-workdir>"
+         " <restore-height> <daemon-host:port> <grpc-host:port|->"
+         " [max-sync-seconds] [device-name: Ledger (USB) or Ledger:ble (BLE); default Ledger]"
+         " [shared-observer]\n";
   std::cout
       << "  " << binary
       << " inspect-view-key-images <mainnet|testnet|stagenet>"
@@ -671,6 +698,34 @@ void removeBenchmarkWalletFiles(const std::string& path) {
   }
 }
 
+std::string makeEphemeralLocalCredential() {
+  // This credential protects an isolated test cache only while this process
+  // runs. It is never accepted from a user, printed, written to a file, or
+  // retained after the process exits.
+  std::array<unsigned char, 32> bytes{};
+  std::random_device entropy;
+  for (auto& byte : bytes) {
+    byte = static_cast<unsigned char>(entropy());
+  }
+  static constexpr char hex[] = "0123456789abcdef";
+  std::string credential;
+  credential.reserve(bytes.size() * 2);
+  for (const auto byte : bytes) {
+    credential.push_back(hex[(byte >> 4) & 0x0f]);
+    credential.push_back(hex[byte & 0x0f]);
+  }
+  std::fill(bytes.begin(), bytes.end(), 0);
+  return credential;
+}
+
+void clearEphemeralLocalCredential(std::string& credential) {
+  volatile char* data = credential.empty() ? nullptr : &credential[0];
+  for (size_t index = 0; data != nullptr && index < credential.size(); ++index) {
+    data[index] = '\0';
+  }
+  credential.clear();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -693,6 +748,56 @@ int main(int argc, char** argv) {
     }
 
     const std::string command = argv[1];
+    if (command == "derivation-benchmark") {
+      if (argc != 2) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      // This benchmark uses only the Core's fixed public test vector. It does
+      // not open a wallet, contact a node, or accept/output any secret.
+      requireLinked();
+      std::cout << "derivation_backend_status="
+                << WalletEngine::derivationBackendStatus() << "\n";
+      std::cout << "derivation_benchmark="
+                << WalletEngine::benchmarkDerivationPerformance() << "\n";
+      return 0;
+    }
+
+    if (command == "ledger-ble-status") {
+      if (argc != 2) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      // Deliberately limited to the bounded native CoreBluetooth discovery.
+      // No wallet is opened and no password, key, address, APDU or device
+      // identifier is accepted or emitted by this preflight command.
+      requireLinked();
+      initializeLedgerTransportForProof();
+      return 0;
+    }
+
+    if (command == "ledger-ble-connect-preflight") {
+      if (argc != 2) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      // One bounded BLE connection after candidate discovery. The transport
+      // is disconnected immediately and no APDU, wallet, key or password is
+      // involved, so the command remains safe before fixture creation.
+      requireLinked();
+#if defined(TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE) && \
+    TEX8_WALLET_BRIDGE_WITH_MACOS_LEDGER_BLE
+      std::cout << "ledger_ble_connection_preflight="
+                << tex8::desktop::ledgerBleConnectionPreflight() << "\n";
+#else
+      std::cout << "ledger_ble_connection_preflight=not-compiled\n";
+#endif
+      return 0;
+    }
+
     if (command == "benchmark-address-generation") {
       if (argc < 5 || argc > 7) {
         printUsage(argv[0]);
@@ -954,10 +1059,22 @@ int main(int argc, char** argv) {
 
       requireLinked();
 
+      const bool syncProfilingEnabled =
+          environmentEnabled("TESTBENCH_SYNC_PROFILE");
+      if (syncProfilingEnabled) {
+        WalletEngine::enableTestbenchSyncProfiling();
+      }
+
       CreateWalletRequest request;
       request.network = parseNetwork(argv[2]);
       request.path = argv[3];
-      request.password = resolveSecretArgument(argv[4]);
+      // A retained performance artifact must never require a password file.
+      // The test-only marker produces a fresh process-memory credential and
+      // is intentionally accepted only by this generated-wallet benchmark.
+      const bool usesEphemeralCredential = std::string(argv[4]) == "@ephemeral";
+      request.password = usesEphemeralCredential
+          ? makeEphemeralLocalCredential()
+          : resolveSecretArgument(argv[4]);
       request.restoreHeight = parseSeconds(argv[5]);
       if (request.restoreHeight == 0) {
         throw WalletEngineError("restore-height must be greater than zero");
@@ -979,7 +1096,7 @@ int main(int argc, char** argv) {
       seedSourceRequest.path = seedSourcePath;
       seedSourceRequest.restoreHeight = 0;
       const WalletId seedSourceId = engine.createWallet(seedSourceRequest);
-      const std::string mnemonic = engine.getSeed(seedSourceId);
+      std::string mnemonic = engine.getSeed(seedSourceId);
       engine.closeWallet(seedSourceId, false);
       std::error_code removeError;
       std::filesystem::remove(seedSourcePath, removeError);
@@ -996,9 +1113,19 @@ int main(int argc, char** argv) {
       restoreRequest.restoreHeight = request.restoreHeight;
       restoreRequest.kdfRounds = request.kdfRounds;
       const WalletId walletId = engine.restoreWallet(restoreRequest);
+      // The generated mnemonic and optional test-only credential have now
+      // been consumed by Core. They are never emitted or retained by the
+      // benchmark runner.
+      clearEphemeralLocalCredential(mnemonic);
+      if (usesEphemeralCredential) {
+        clearEphemeralLocalCredential(seedSourceRequest.password);
+        clearEphemeralLocalCredential(restoreRequest.password);
+        clearEphemeralLocalCredential(request.password);
+      }
       applyNode(engine, walletId, argv[6], argc >= 8 ? argv[7] : "");
 
       const auto initial = engine.snapshot(walletId);
+      const auto initialNetwork = engine.networkSyncStatus(request.network);
       const auto started = std::chrono::steady_clock::now();
       engine.startRefresh(walletId);
 
@@ -1019,10 +1146,44 @@ int main(int argc, char** argv) {
       const auto networkStatus = engine.networkSyncStatus(request.network);
       const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - started).count();
+      const uint64_t fetchedBlocks = nonnegativeDelta(
+          networkStatus.fetchedBlocks, initialNetwork.fetchedBlocks);
+      const uint64_t payloadBytes = nonnegativeDelta(
+          networkStatus.payloadBytesReceived,
+          initialNetwork.payloadBytesReceived);
+      const uint64_t networkBytes = nonnegativeDelta(
+          networkStatus.networkBytesReceived,
+          initialNetwork.networkBytesReceived);
+      const uint64_t grpcFramedBytes = nonnegativeDelta(
+          networkStatus.grpcFramedBytesReceived,
+          initialNetwork.grpcFramedBytesReceived);
+      const uint64_t blockFetchMs = nonnegativeDelta(
+          networkStatus.totalBlockFetchMs,
+          initialNetwork.totalBlockFetchMs);
+      const uint64_t clientScanMs = nonnegativeDelta(
+          networkStatus.totalWalletScanMs,
+          initialNetwork.totalWalletScanMs);
+      const uint64_t prefetchMs = nonnegativeDelta(
+          networkStatus.totalPrefetchMs,
+          initialNetwork.totalPrefetchMs);
+      const uint64_t prefetchWaitMs = nonnegativeDelta(
+          networkStatus.totalPrefetchWaitMs,
+          initialNetwork.totalPrefetchWaitMs);
+      const uint64_t mempoolMs = nonnegativeDelta(
+          networkStatus.totalMempoolMs,
+          initialNetwork.totalMempoolMs);
+      const uint64_t checkpointMs = nonnegativeDelta(
+          networkStatus.totalCheckpointMs,
+          initialNetwork.totalCheckpointMs);
+      const uint64_t iterationMs = nonnegativeDelta(
+          networkStatus.totalIterationMs,
+          initialNetwork.totalIterationMs);
 
       std::cout << "benchmark_mode=create-restore-refresh\n";
       std::cout << "benchmark_wallet_mode=recovered-generated-seed\n";
       std::cout << "benchmark_block_scan=enabled\n";
+      std::cout << "benchmark_sync_profile_enabled="
+                << (syncProfilingEnabled ? "true" : "false") << "\n";
       std::cout << "benchmark_restore_height=" << request.restoreHeight << "\n";
       std::cout << "benchmark_initial_wallet_height=" << initial.walletHeight << "\n";
       std::cout << "benchmark_initial_refresh_from_height="
@@ -1047,9 +1208,25 @@ int main(int argc, char** argv) {
       std::cout << "benchmark_network_fetched_batches="
                 << networkStatus.fetchedBatches << "\n";
       std::cout << "benchmark_network_fetched_blocks="
-                << networkStatus.fetchedBlocks << "\n";
+                << fetchedBlocks << "\n";
       std::cout << "benchmark_network_payload_bytes="
-                << networkStatus.payloadBytesReceived << "\n";
+                << payloadBytes << "\n";
+      std::cout << "benchmark_network_raw_bytes=" << networkBytes << "\n";
+      std::cout << "benchmark_network_grpc_framed_bytes="
+                << grpcFramedBytes << "\n";
+      std::cout << "benchmark_network_block_fetch_ms=" << blockFetchMs << "\n";
+      std::cout << "benchmark_network_client_scan_ms=" << clientScanMs << "\n";
+      std::cout << "benchmark_network_prefetch_ms=" << prefetchMs << "\n";
+      std::cout << "benchmark_network_prefetch_wait_ms="
+                << prefetchWaitMs << "\n";
+      std::cout << "benchmark_network_mempool_ms=" << mempoolMs << "\n";
+      std::cout << "benchmark_network_checkpoint_ms=" << checkpointMs << "\n";
+      std::cout << "benchmark_network_iteration_ms=" << iterationMs << "\n";
+      std::cout << "benchmark_network_transport_starts="
+                << nonnegativeDelta(
+                       networkStatus.transportStarts,
+                       initialNetwork.transportStarts)
+                << "\n";
 
       engine.closeWallet(walletId);
       return synchronized ? 0 : 1;
@@ -1120,12 +1297,12 @@ int main(int argc, char** argv) {
 
       CreateFastReceiveIdentityRequest identityRequest;
       identityRequest.sourceWalletId = walletA;
-      identityRequest.identityId = "fast-receive-v2-0-proof";
+      identityRequest.identityId = "fast-receive-v2-199-proof";
       identityRequest.path =
-          childPath(workdir, "fast-receive-v2-0-proof");
+          childPath(workdir, "fast-receive-v2-199-proof");
       identityRequest.password = "independent-fast-wallet-password";
       identityRequest.label = "Proof Fast Receive";
-      identityRequest.derivationIndex = 0;
+      identityRequest.derivationIndex = 199;
       identityRequest.restoreHeight = 0;
 
       const auto identity = engine.createFastReceiveIdentity(identityRequest);
@@ -1883,6 +2060,553 @@ int main(int argc, char** argv) {
       return durable ? 0 : 1;
     }
 
+    if (command == "ledger-reference-sync") {
+      if (argc < 7 || argc > 10) {
+        printUsage(argv[0]);
+        return 2;
+      }
+
+      requireLinked();
+      const auto network = parseNetwork(argv[2]);
+      const std::string workdir = argv[3];
+      const uint64_t restoreHeight = parseSeconds(argv[4]);
+      const std::string daemon = argv[5];
+      const std::string grpc = argv[6];
+      const uint64_t maxSyncSeconds = argc >= 8 ? parseSeconds(argv[7]) : 7200;
+      const std::string deviceName = argc >= 9 ? argv[8] : defaultLedgerDeviceName();
+      const bool requireConcurrentSharedSync = argc == 10;
+      if (requireConcurrentSharedSync &&
+          std::string(argv[9]) != "shared-observer") {
+        throw WalletEngineError(
+            "ledger-reference-sync optional mode must be shared-observer");
+      }
+      requireSupportedLedgerDeviceName(deviceName);
+      if (restoreHeight == 0) {
+        throw WalletEngineError("restore height must be greater than zero");
+      }
+      if (std::filesystem::exists(workdir)) {
+        throw WalletEngineError("reference-sync workdir must not already exist");
+      }
+      std::filesystem::create_directories(workdir);
+      const auto workdirStatus = std::filesystem::symlink_status(workdir);
+      if (!std::filesystem::is_directory(workdirStatus) ||
+          std::filesystem::is_symlink(workdirStatus)) {
+        throw WalletEngineError(
+            "reference-sync workdir must be a non-symlink directory");
+      }
+
+      // Account 0 and account 1 belong to one physical Ledger wallet. The
+      // reference runner therefore creates exactly one hardware session and
+      // one encrypted View-Wallet session, then represents both local
+      // subaddress accounts in that View-Wallet. Reopening a second hardware
+      // session merely to inspect account 1 can interrupt the Nano and is not
+      // a valid physical-reference topology.
+      struct ReferenceSession {
+        std::string hardwarePath;
+        std::string viewPath;
+        std::string observerPath;
+        WalletId hardwareWalletId;
+        WalletId viewWalletId;
+        WalletId observerWalletId;
+      };
+      ReferenceSession session;
+      bool refreshStarted = false;
+      const auto cleanup = [&]() noexcept {
+        try {
+          if (!session.observerWalletId.empty()) {
+            engine.stopRefresh(session.observerWalletId);
+            engine.closeWallet(session.observerWalletId);
+            session.observerWalletId.clear();
+          }
+        } catch (...) {
+        }
+        try {
+          if (!session.viewWalletId.empty()) {
+            engine.stopRefresh(session.viewWalletId);
+            engine.closeWallet(session.viewWalletId);
+            session.viewWalletId.clear();
+          }
+        } catch (...) {
+        }
+        try {
+          if (!session.hardwareWalletId.empty()) {
+            engine.closeWallet(session.hardwareWalletId);
+            session.hardwareWalletId.clear();
+          }
+        } catch (...) {
+        }
+        // These exact paths were created only under the new workdir above.
+        // Remove the generated encrypted cache after its in-memory reference
+        // comparison so an unreopenable test fixture is not retained.
+        try { removeBenchmarkWalletFiles(session.hardwarePath); } catch (...) {}
+        try { removeBenchmarkWalletFiles(session.viewPath); } catch (...) {}
+        try { removeBenchmarkWalletFiles(session.observerPath); } catch (...) {}
+        (void)refreshStarted;
+      };
+
+      // Retain only a bounded, safe failure phase. Core/platform error text
+      // can contain local or device detail and must never reach test evidence.
+      std::string referenceFailureStage = "ledger-transport";
+      // Emit only fixed, non-sensitive milestones.  This allows an operator
+      // to perform a controlled physical failure test (for example reject a
+      // view-key export) without guessing when the Nano is being used.  It
+      // intentionally contains no device response, address, key or error.
+      const auto emitReferencePhase = [&]() {
+        std::cout << "reference_sync_phase=" << referenceFailureStage << "\n"
+                  << std::flush;
+      };
+      uint64_t hardwareWalletCreateMs = 0;
+      bool referenceSyncMetricsAvailable = false;
+      uint64_t referenceSyncElapsedMs = 0;
+      uint64_t referenceSyncBlocks = 0;
+      uint64_t referenceSyncTransportStarts = 0;
+      uint64_t referenceSyncPayloadBytes = 0;
+      uint64_t referenceSyncNetworkBytes = 0;
+      uint64_t referenceSyncGrpcFramedBytes = 0;
+      uint64_t referenceSyncBlockFetchMs = 0;
+      uint64_t referenceSyncClientScanMs = 0;
+      uint64_t referenceObserverBlocksDuringKeyImages = 0;
+      uint64_t referenceObserverScanWorkersDuringKeyImages = 0;
+      uint64_t referenceDownloadedBlocksDuringKeyImages = 0;
+      uint64_t referenceTransportStartsDuringKeyImages = 0;
+      bool referenceSharedSyncObserved = false;
+      bool referenceKeyImagePhaseStarted = false;
+      std::chrono::steady_clock::time_point referenceKeyImageStartedAt;
+      const auto emitReferencePartialMetrics = [&]() {
+        if (!referenceSyncMetricsAvailable) return;
+        std::cout << "reference_sync_partial_metrics_available=true\n";
+        std::cout << "reference_ledger_ble_discovery_requested="
+                  << (deviceName == "Ledger:ble" ? "true" : "false") << "\n";
+        std::cout << "reference_ledger_hardware_wallet_create_ms="
+                  << hardwareWalletCreateMs << "\n";
+        std::cout << "reference_sync_elapsed_ms=" << referenceSyncElapsedMs << "\n";
+        std::cout << "reference_sync_blocks=" << referenceSyncBlocks << "\n";
+        std::cout << "reference_sync_transport_starts="
+                  << referenceSyncTransportStarts << "\n";
+        std::cout << "reference_sync_payload_bytes=" << referenceSyncPayloadBytes << "\n";
+        std::cout << "reference_sync_network_bytes=" << referenceSyncNetworkBytes << "\n";
+        std::cout << "reference_sync_grpc_framed_bytes="
+                  << referenceSyncGrpcFramedBytes << "\n";
+        std::cout << "reference_sync_block_fetch_ms=" << referenceSyncBlockFetchMs << "\n";
+        std::cout << "reference_sync_client_scan_ms="
+                  << referenceSyncClientScanMs << "\n";
+        std::cout << "reference_shared_sync_required="
+                  << (requireConcurrentSharedSync ? "true" : "false") << "\n";
+        std::cout << "reference_observer_blocks_during_key_images="
+                  << referenceObserverBlocksDuringKeyImages << "\n";
+        std::cout << "reference_observer_scan_workers_during_key_images="
+                  << referenceObserverScanWorkersDuringKeyImages << "\n";
+        std::cout << "reference_download_blocks_during_key_images="
+                  << referenceDownloadedBlocksDuringKeyImages << "\n";
+        std::cout << "reference_key_image_transport_starts_during_reconciliation="
+                  << referenceTransportStartsDuringKeyImages << "\n";
+        std::cout << "reference_key_image_no_second_block_downloader="
+                  << (referenceTransportStartsDuringKeyImages == 0
+                          ? "true" : "false") << "\n";
+        std::cout << "reference_shared_sync_observed="
+                  << (referenceSharedSyncObserved ? "true" : "false") << "\n";
+        if (referenceKeyImagePhaseStarted) {
+          const uint64_t elapsedMs = static_cast<uint64_t>(
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - referenceKeyImageStartedAt)
+                  .count());
+          std::cout << "reference_key_image_elapsed_ms=" << elapsedMs << "\n";
+        }
+      };
+      try {
+        emitReferencePhase();
+        initializeLedgerTransportForProof(deviceName);
+        referenceFailureStage = "account-setup";
+        emitReferencePhase();
+        session.hardwarePath = childPath(workdir, "reference-hardware");
+        session.viewPath = childPath(workdir, "reference-view");
+        requireBenchmarkWalletPathAvailable(session.hardwarePath);
+        requireBenchmarkWalletPathAvailable(session.viewPath);
+        if (requireConcurrentSharedSync) {
+          session.observerPath = childPath(workdir, "reference-observer");
+          requireBenchmarkWalletPathAvailable(session.observerPath);
+        }
+
+        std::string hardwareCredential = makeEphemeralLocalCredential();
+        std::string viewCredential = makeEphemeralLocalCredential();
+        std::string observerCredential = makeEphemeralLocalCredential();
+        HardwareViewKeyExport exported;
+        try {
+          CreateWalletFromDeviceRequest hardwareRequest;
+          hardwareRequest.network = network;
+          hardwareRequest.path = session.hardwarePath;
+          hardwareRequest.password = hardwareCredential;
+          hardwareRequest.restoreHeight = restoreHeight;
+          hardwareRequest.deviceName = deviceName;
+          // The Core creates local accounts 0 and 1 in this one wallet.
+          hardwareRequest.accountIndex = 1;
+          referenceFailureStage = "hardware-wallet-create";
+          emitReferencePhase();
+          const auto hardwareWalletCreateStartedAt = std::chrono::steady_clock::now();
+          session.hardwareWalletId = engine.createWalletFromDevice(hardwareRequest);
+          hardwareWalletCreateMs = static_cast<uint64_t>(
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - hardwareWalletCreateStartedAt)
+                  .count());
+
+          referenceFailureStage = "view-key-export";
+          emitReferencePhase();
+          exported = engine.exportHardwarePrivateViewKey(session.hardwareWalletId);
+          if (exported.network != network || exported.address.empty() ||
+              exported.privateViewKey.empty()) {
+            throw WalletEngineError(
+                "Ledger view-key export did not return a complete local identity");
+          }
+          CreateViewOnlyWalletRequest viewRequest;
+          viewRequest.network = network;
+          viewRequest.path = session.viewPath;
+          viewRequest.password = viewCredential;
+          viewRequest.address = exported.address;
+          viewRequest.privateViewKey = exported.privateViewKey;
+          viewRequest.restoreHeight = restoreHeight;
+          referenceFailureStage = "view-wallet-create";
+          emitReferencePhase();
+          session.viewWalletId = engine.createViewOnlyWallet(viewRequest);
+          referenceFailureStage = "view-wallet-account-1";
+          emitReferencePhase();
+          engine.ensureSubaddressAccount(session.viewWalletId, 1);
+          if (requireConcurrentSharedSync) {
+            CreateViewOnlyWalletRequest observerRequest;
+            observerRequest.network = network;
+            observerRequest.path = session.observerPath;
+            observerRequest.password = observerCredential;
+            observerRequest.address = exported.address;
+            observerRequest.privateViewKey = exported.privateViewKey;
+            // Keep this scanner deliberately behind the primary View-Wallet
+            // so it must consume shared batches while the Nano reconciliation
+            // is active. It is a disposable local cache, not another Ledger
+            // session and not another global network connection.
+            observerRequest.restoreHeight = restoreHeight > 10000
+                ? restoreHeight - 10000
+                : 1;
+            referenceFailureStage = "observer-wallet-create";
+            emitReferencePhase();
+            session.observerWalletId = engine.createViewOnlyWallet(
+                observerRequest);
+          }
+        } catch (...) {
+          clearEphemeralLocalCredential(exported.privateViewKey);
+          exported.address.clear();
+          clearEphemeralLocalCredential(hardwareCredential);
+          clearEphemeralLocalCredential(viewCredential);
+          clearEphemeralLocalCredential(observerCredential);
+          throw;
+        }
+        clearEphemeralLocalCredential(exported.privateViewKey);
+        exported.address.clear();
+        clearEphemeralLocalCredential(hardwareCredential);
+        clearEphemeralLocalCredential(viewCredential);
+        clearEphemeralLocalCredential(observerCredential);
+
+        referenceFailureStage = "node-configuration";
+        emitReferencePhase();
+        applyNode(engine, session.viewWalletId, daemon, grpc);
+        if (requireConcurrentSharedSync) {
+          referenceFailureStage = "observer-node-configuration";
+          emitReferencePhase();
+          applyNode(engine, session.observerWalletId, daemon, grpc);
+        }
+        const auto initialNetwork = engine.networkSyncStatus(network);
+        const auto initialSnapshot = engine.snapshot(session.viewWalletId);
+        referenceFailureStage = "shared-refresh";
+        emitReferencePhase();
+        if (requireConcurrentSharedSync) {
+          engine.startRefresh(session.observerWalletId);
+        }
+        engine.startRefresh(session.viewWalletId);
+        refreshStarted = true;
+
+        const auto syncStartedAt = std::chrono::steady_clock::now();
+        const auto syncDeadline = syncStartedAt + std::chrono::seconds(maxSyncSeconds);
+        WalletSnapshot finalSnapshot = initialSnapshot;
+        bool synchronized = false;
+        while (std::chrono::steady_clock::now() < syncDeadline) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          finalSnapshot = engine.snapshot(session.viewWalletId);
+          synchronized = finalSnapshot.synchronized && finalSnapshot.daemonHeight > 0 &&
+              finalSnapshot.walletHeight >= finalSnapshot.daemonHeight;
+          if (synchronized) break;
+        }
+        const uint64_t syncElapsedMs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - syncStartedAt).count());
+        const auto networkAfterSync = engine.networkSyncStatus(network);
+        if (!synchronized) {
+          throw WalletEngineError("reference sync did not reach the daemon height");
+        }
+
+        referenceSyncElapsedMs = syncElapsedMs;
+        referenceSyncBlocks = nonnegativeDelta(networkAfterSync.fetchedBlocks,
+                                                initialNetwork.fetchedBlocks);
+        referenceSyncTransportStarts = nonnegativeDelta(
+            networkAfterSync.transportStarts, initialNetwork.transportStarts);
+        referenceSyncPayloadBytes = nonnegativeDelta(
+            networkAfterSync.payloadBytesReceived, initialNetwork.payloadBytesReceived);
+        referenceSyncNetworkBytes = nonnegativeDelta(
+            networkAfterSync.networkBytesReceived, initialNetwork.networkBytesReceived);
+        referenceSyncGrpcFramedBytes = nonnegativeDelta(
+            networkAfterSync.grpcFramedBytesReceived,
+            initialNetwork.grpcFramedBytesReceived);
+        referenceSyncBlockFetchMs = nonnegativeDelta(networkAfterSync.totalBlockFetchMs,
+                                                      initialNetwork.totalBlockFetchMs);
+        referenceSyncClientScanMs = nonnegativeDelta(networkAfterSync.totalWalletScanMs,
+                                                      initialNetwork.totalWalletScanMs);
+        referenceSyncMetricsAvailable = true;
+
+        referenceFailureStage = "key-images";
+        emitReferencePhase();
+        const auto keyImageStartedAt = std::chrono::steady_clock::now();
+        referenceKeyImageStartedAt = keyImageStartedAt;
+        referenceKeyImagePhaseStarted = true;
+        const auto networkBeforeKeyImages = engine.networkSyncStatus(network);
+        const uint64_t observerCursorBefore = requireConcurrentSharedSync
+            ? engine.walletSyncCursor(session.observerWalletId)
+            : 0;
+        auto keyImageFuture = std::async(
+            std::launch::async,
+            [&engine, &session]() {
+              return engine.syncLedgerKeyImagesToViewWallet(
+                  session.hardwareWalletId, session.viewWalletId);
+            });
+        uint64_t maxDownloadedHeight = networkBeforeKeyImages.downloadedHeight;
+        uint64_t maxFetchedBlocks = networkBeforeKeyImages.fetchedBlocks;
+        size_t maxObserverScanWorkers = networkBeforeKeyImages.scanWorkers;
+        while (keyImageFuture.wait_for(std::chrono::milliseconds(25)) !=
+               std::future_status::ready) {
+          const auto status = engine.networkSyncStatus(network);
+          maxDownloadedHeight = std::max(
+              maxDownloadedHeight, status.downloadedHeight);
+          maxFetchedBlocks = std::max(maxFetchedBlocks, status.fetchedBlocks);
+          maxObserverScanWorkers = std::max(
+              maxObserverScanWorkers, status.scanWorkers);
+        }
+        const auto keyImages = keyImageFuture.get();
+        const auto networkAfterFirstKeyImages = engine.networkSyncStatus(network);
+        maxDownloadedHeight = std::max(
+            maxDownloadedHeight, networkAfterFirstKeyImages.downloadedHeight);
+        maxFetchedBlocks = std::max(
+            maxFetchedBlocks, networkAfterFirstKeyImages.fetchedBlocks);
+        maxObserverScanWorkers = std::max(
+            maxObserverScanWorkers, networkAfterFirstKeyImages.scanWorkers);
+        const uint64_t observerCursorAfterFirstKeyImages =
+            requireConcurrentSharedSync
+            ? engine.walletSyncCursor(session.observerWalletId)
+            : 0;
+        referenceDownloadedBlocksDuringKeyImages = nonnegativeDelta(
+            maxDownloadedHeight, networkBeforeKeyImages.downloadedHeight);
+        const uint64_t fetchedBlocksDuringKeyImages = nonnegativeDelta(
+            maxFetchedBlocks, networkBeforeKeyImages.fetchedBlocks);
+        referenceObserverBlocksDuringKeyImages = nonnegativeDelta(
+            observerCursorAfterFirstKeyImages, observerCursorBefore);
+        referenceObserverScanWorkersDuringKeyImages =
+            requireConcurrentSharedSync ? maxObserverScanWorkers : 0;
+        referenceTransportStartsDuringKeyImages = nonnegativeDelta(
+            networkAfterFirstKeyImages.transportStarts,
+            networkBeforeKeyImages.transportStarts);
+        referenceSharedSyncObserved = requireConcurrentSharedSync &&
+            (referenceObserverBlocksDuringKeyImages > 0 ||
+             referenceObserverScanWorkersDuringKeyImages > 0) &&
+            referenceTransportStartsDuringKeyImages == 0;
+        referenceFailureStage = "key-images-noop";
+        emitReferencePhase();
+        const auto secondKeyImageRun = engine.syncLedgerKeyImagesToViewWallet(
+            session.hardwareWalletId, session.viewWalletId);
+        // The first result was sampled under the two session locks directly
+        // after its durable commit. A later global snapshot can legitimately
+        // include a new output that the shared scanner found after releasing
+        // those locks, so it cannot prove the result of this reconciliation.
+        if (keyImages.remainingPendingOutputCount != 0) {
+          throw WalletEngineError(
+              "Ledger key-image reconciliation left pending local outputs");
+        }
+        const uint64_t keyImageElapsedMs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - keyImageStartedAt).count());
+        const auto networkAfterKeyImages = engine.networkSyncStatus(network);
+        (void)networkAfterKeyImages;
+        (void)fetchedBlocksDuringKeyImages;
+
+        const auto emitAccount = [&](uint32_t accountIndex) {
+          std::vector<WalletTransaction> transactions;
+          for (const auto& transaction : engine.getTransactions(session.viewWalletId, 100)) {
+            if (transaction.subaddrAccount == accountIndex) {
+              transactions.push_back(transaction);
+            }
+          }
+          std::cout << "reference_account_begin=" << accountIndex << "\n";
+          std::cout << "refresh_synchronized=true\n";
+          std::cout << "refresh_elapsed_ms=" << syncElapsedMs << "\n";
+          std::cout << "refresh_initial_wallet_height="
+                    << initialSnapshot.walletHeight << "\n";
+          std::cout << "refresh_final_wallet_height="
+                    << finalSnapshot.walletHeight << "\n";
+          std::cout << "refresh_daemon_height="
+                    << finalSnapshot.daemonHeight << "\n";
+          std::cout << "refresh_http_bytes_received="
+                    << nonnegativeDelta(
+                           finalSnapshot.daemonBytesReceived,
+                           initialSnapshot.daemonBytesReceived) << "\n";
+          std::cout << "transaction_count=" << transactions.size() << "\n";
+          for (const auto& transaction : transactions) {
+            std::cout << "txid=" << transaction.hash << "\n";
+            std::cout << "direction=" << transaction.direction << "\n";
+            std::cout << "amount_atomic=" << transaction.amountAtomic << "\n";
+            std::cout << "fee_atomic=" << transaction.feeAtomic << "\n";
+            std::cout << "block_height=" << transaction.blockHeight << "\n";
+            std::cout << "account_index=" << transaction.subaddrAccount << "\n";
+            std::cout << "---\n";
+          }
+          std::cout << "reference_account_end=" << accountIndex << "\n";
+        };
+
+        // This private, pipe-only summary is consumed in memory by the Node
+        // runner after the reference comparison succeeds. It contains only
+        // the two receive addresses and their account balances; it contains
+        // no key material, credential, transaction, or key image.
+        const auto emitPrivateAccountSummary = [&](uint32_t accountIndex) {
+          std::cout << "account_index=" << accountIndex << "\n";
+          std::cout << "address="
+                    << engine.getAddress(session.viewWalletId, accountIndex, 0)
+                    << "\n";
+          std::cout << "balance_atomic="
+                    << engine.getBalance(session.viewWalletId, accountIndex)
+                    << "\n";
+          std::cout << "unlocked_balance_atomic="
+                    << engine.getUnlockedBalance(session.viewWalletId, accountIndex)
+                    << "\n";
+          std::cout << "---\n";
+        };
+        std::cout << "reference_private_summary_begin\n";
+        emitPrivateAccountSummary(0);
+        emitPrivateAccountSummary(1);
+        std::cout << "reference_private_summary_end\n";
+
+        // This private, pipe-only section is consumed in memory by the Node
+        // verifier. Its caller must never redirect it to a terminal or log.
+        emitAccount(0);
+        emitAccount(1);
+        std::cout << "reference_sync_completed=true\n";
+        std::cout << "reference_ledger_ble_discovery_requested="
+                  << (deviceName == "Ledger:ble" ? "true" : "false") << "\n";
+        std::cout << "reference_ledger_hardware_wallet_create_ms="
+                  << hardwareWalletCreateMs << "\n";
+        std::cout << "reference_sync_elapsed_ms=" << syncElapsedMs << "\n";
+        std::cout << "reference_sync_blocks="
+                  << nonnegativeDelta(networkAfterSync.fetchedBlocks,
+                                      initialNetwork.fetchedBlocks) << "\n";
+        std::cout << "reference_sync_transport_starts="
+                  << nonnegativeDelta(networkAfterSync.transportStarts,
+                                      initialNetwork.transportStarts) << "\n";
+        std::cout << "reference_sync_payload_bytes="
+                  << nonnegativeDelta(networkAfterSync.payloadBytesReceived,
+                                      initialNetwork.payloadBytesReceived) << "\n";
+        std::cout << "reference_sync_network_bytes="
+                  << nonnegativeDelta(networkAfterSync.networkBytesReceived,
+                                      initialNetwork.networkBytesReceived) << "\n";
+        std::cout << "reference_sync_grpc_framed_bytes="
+                  << nonnegativeDelta(networkAfterSync.grpcFramedBytesReceived,
+                                      initialNetwork.grpcFramedBytesReceived) << "\n";
+        std::cout << "reference_sync_block_fetch_ms="
+                  << nonnegativeDelta(networkAfterSync.totalBlockFetchMs,
+                                      initialNetwork.totalBlockFetchMs) << "\n";
+        std::cout << "reference_sync_client_scan_ms="
+                  << nonnegativeDelta(networkAfterSync.totalWalletScanMs,
+                                      initialNetwork.totalWalletScanMs) << "\n";
+        std::cout << "reference_shared_sync_required="
+                  << (requireConcurrentSharedSync ? "true" : "false") << "\n";
+        std::cout << "reference_observer_blocks_during_key_images="
+                  << referenceObserverBlocksDuringKeyImages << "\n";
+        std::cout << "reference_observer_scan_workers_during_key_images="
+                  << referenceObserverScanWorkersDuringKeyImages << "\n";
+        std::cout << "reference_download_blocks_during_key_images="
+                  << referenceDownloadedBlocksDuringKeyImages << "\n";
+        std::cout << "reference_key_image_transport_starts_during_reconciliation="
+                  << referenceTransportStartsDuringKeyImages << "\n";
+        std::cout << "reference_key_image_no_second_block_downloader="
+                  << (referenceTransportStartsDuringKeyImages == 0
+                          ? "true" : "false") << "\n";
+        std::cout << "reference_shared_sync_observed="
+                  << (referenceSharedSyncObserved ? "true" : "false") << "\n";
+        std::cout << "reference_key_image_elapsed_ms=" << keyImageElapsedMs << "\n";
+        std::cout << "reference_key_image_global_pending="
+                  << keyImages.pendingOutputCount << "\n";
+        std::cout << "reference_key_image_post_pending_outputs="
+                  << keyImages.remainingPendingOutputCount << "\n";
+        const auto emitKeyImageMetrics = [](
+            const tex8::wallet::LedgerKeyImageSyncResult& result) {
+          const std::string prefix = "reference_key_image_global_";
+          std::cout << prefix << "verified_outputs="
+                    << result.verifiedOutputCount << "\n";
+          std::cout << prefix << "derived_outputs="
+                    << result.derivedOutputCount << "\n";
+          std::cout << prefix << "spent_status_unspent_outputs="
+                    << result.spentStatusUnspentOutputCount << "\n";
+          std::cout << prefix << "spent_status_blockchain_outputs="
+                    << result.spentStatusBlockchainOutputCount << "\n";
+          std::cout << prefix << "spent_status_pool_outputs="
+                    << result.spentStatusPoolOutputCount << "\n";
+          std::cout << prefix << "derivation_ms="
+                    << result.derivationDurationMs << "\n";
+          std::cout << prefix << "spent_status_rpc_ms="
+                    << result.spentStatusRpcDurationMs << "\n";
+          std::cout << prefix << "outgoing_rpc_ms="
+                    << result.outgoingRpcDurationMs << "\n";
+          std::cout << prefix << "state_update_ms="
+                    << result.stateUpdateDurationMs << "\n";
+          std::cout << prefix << "verification_ms="
+                    << result.verificationDurationMs << "\n";
+          std::cout << prefix << "store_ms=" << result.storeDurationMs << "\n";
+          std::cout << prefix << "total_ms=" << result.totalDurationMs << "\n";
+        };
+        emitKeyImageMetrics(keyImages);
+        std::cout << "reference_key_image_second_run_noop="
+                  << ((secondKeyImageRun.pendingOutputCount == 0 &&
+                       secondKeyImageRun.derivedOutputCount == 0 &&
+                       secondKeyImageRun.spentStatusRpcDurationMs == 0 &&
+                       secondKeyImageRun.outgoingRpcDurationMs == 0 &&
+                       secondKeyImageRun.storeDurationMs == 0)
+                          ? "true" : "false") << "\n";
+        cleanup();
+        return 0;
+      } catch (const std::exception& error) {
+        cleanup();
+        std::cout << "reference_sync_completed=false\n";
+        std::cout << "reference_sync_failure_stage=" << referenceFailureStage
+                  << "\n";
+        std::string failureClass = classifyLedgerKeyImageFailure(error);
+        // This stage contains only the initial create/open handshake for the
+        // explicitly selected physical Ledger. If Core supplies an unfamiliar
+        // platform error, retain the safe boundary rather than leaking its
+        // text or reporting an unhelpful generic category. No wallet, node or
+        // key-image operation exists yet at this point.
+        if (failureClass == "unclassified" &&
+            referenceFailureStage == "hardware-wallet-create") {
+          failureClass = "ledger-connection";
+        }
+        if (failureClass == "unclassified" &&
+            (referenceFailureStage == "key-images" ||
+             referenceFailureStage == "key-images-noop")) {
+          failureClass = "ledger-key-image-operation-failed";
+        }
+        emitReferencePartialMetrics();
+        std::cout << "reference_sync_failure_class=" << failureClass << "\n";
+        return 1;
+      } catch (...) {
+        cleanup();
+        std::cout << "reference_sync_completed=false\n";
+        std::cout << "reference_sync_failure_stage=" << referenceFailureStage
+                  << "\n";
+        emitReferencePartialMetrics();
+        std::cout << "reference_sync_failure_class=unclassified\n";
+        return 1;
+      }
+    }
+
     if (command == "ledger-key-image-benchmark") {
       if (argc != 9 && argc != 10 && argc != 12) {
         printUsage(argv[0]);
@@ -2145,6 +2869,9 @@ int main(int argc, char** argv) {
         keyImageFailureStage = classifyLedgerKeyImageFailureStage(error);
       }
       const auto networkAfterKeyImages = engine.networkSyncStatus(network);
+      const uint64_t transportStartsDuringKeyImages = nonnegativeDelta(
+          networkAfterKeyImages.transportStarts,
+          networkBeforeKeyImages.transportStarts);
       maxDownloadedHeight = std::max(
           maxDownloadedHeight,
           networkAfterKeyImages.downloadedHeight);
@@ -2157,6 +2884,17 @@ int main(int argc, char** argv) {
       const size_t keyImagesAfter = keyImageCompleted
           ? engine.getOwnedOutputKeyImages(viewWalletId).size()
           : keyImagesBefore;
+      const uint64_t downloadedBlocksDuringKeyImages = nonnegativeDelta(
+          maxDownloadedHeight, networkBeforeKeyImages.downloadedHeight);
+      const uint64_t fetchedBlocksDuringKeyImages = nonnegativeDelta(
+          maxFetchedBlocks, networkBeforeKeyImages.fetchedBlocks);
+      const uint64_t observerBlocksDuringKeyImages = observerConfigured
+          ? nonnegativeDelta(observerCursorAfter, observerCursorBefore)
+          : 0;
+      const bool sharedSyncObserved = observerConfigured &&
+          downloadedBlocksDuringKeyImages > 0 &&
+          fetchedBlocksDuringKeyImages > 0 &&
+          observerBlocksDuringKeyImages > 0;
 
       engine.stopRefresh(viewWalletId);
       if (observerConfigured) {
@@ -2176,19 +2914,22 @@ int main(int argc, char** argv) {
                 << (keyImageCompleted ? "true" : "false") << "\n";
       std::cout << "benchmark_coordinator_samples_during_key_images="
                 << coordinatorSamples << "\n";
+      std::cout << "benchmark_key_image_transport_starts_during_reconciliation="
+                << transportStartsDuringKeyImages << "\n";
+      std::cout << "benchmark_key_image_no_second_block_downloader="
+                << (transportStartsDuringKeyImages == 0 ? "true" : "false")
+                << "\n";
+      std::cout << "benchmark_key_image_shared_sync_observed="
+                << (sharedSyncObserved ? "true" : "false") << "\n";
       std::cout << "benchmark_download_height_before_key_images="
                 << networkBeforeKeyImages.downloadedHeight << "\n";
       std::cout << "benchmark_download_height_during_key_images_max="
                 << maxDownloadedHeight << "\n";
       std::cout << "benchmark_download_blocks_during_key_images="
-                << nonnegativeDelta(
-                       maxDownloadedHeight,
-                       networkBeforeKeyImages.downloadedHeight)
+                << downloadedBlocksDuringKeyImages
                 << "\n";
       std::cout << "benchmark_fetched_blocks_during_key_images="
-                << nonnegativeDelta(
-                       maxFetchedBlocks,
-                       networkBeforeKeyImages.fetchedBlocks)
+                << fetchedBlocksDuringKeyImages
                 << "\n";
       std::cout << "benchmark_observer_initial_cursor="
                 << observerCursorInitial << "\n";
@@ -2197,7 +2938,7 @@ int main(int argc, char** argv) {
       std::cout << "benchmark_observer_cursor_after_key_images="
                 << observerCursorAfter << "\n";
       std::cout << "benchmark_observer_blocks_during_key_images="
-                << nonnegativeDelta(observerCursorAfter, observerCursorBefore)
+                << observerBlocksDuringKeyImages
                 << "\n";
 
       if (keyImageCompleted) {
@@ -2264,14 +3005,14 @@ int main(int argc, char** argv) {
         return 2;
       }
 
-      requireLinked();
-      initializeLedgerTransportForProof();
-
       CreateWalletFromDeviceRequest request;
       request.network = parseNetwork(argv[2]);
       request.path = argv[3];
       request.password = resolveSecretArgument(argv[4]);
       request.deviceName = argc >= 6 ? argv[5] : defaultLedgerDeviceName();
+      requireSupportedLedgerDeviceName(request.deviceName);
+      requireLinked();
+      initializeLedgerTransportForProof(request.deviceName);
 
       WalletId walletId;
       try {
@@ -2310,13 +3051,15 @@ int main(int argc, char** argv) {
         return 2;
       }
 
-      requireLinked();
-      initializeLedgerTransportForProof();
       const auto network = parseNetwork(argv[2]);
       const std::string hardwarePath = argv[3];
       const std::string viewPath = argv[5];
       const uint64_t restoreHeight = parseSeconds(argv[7]);
       const uint64_t accountIndex = argc == 10 ? parseSeconds(argv[9]) : 0;
+      const std::string deviceName = argc >= 9 ? argv[8] : defaultLedgerDeviceName();
+      requireSupportedLedgerDeviceName(deviceName);
+      requireLinked();
+      initializeLedgerTransportForProof(deviceName);
       if (restoreHeight == 0) {
         throw WalletEngineError("restore height must be greater than zero");
       }
@@ -2334,7 +3077,7 @@ int main(int argc, char** argv) {
         hardwareRequest.path = hardwarePath;
         hardwareRequest.password = resolveSecretArgument(argv[4]);
         hardwareRequest.restoreHeight = restoreHeight;
-        hardwareRequest.deviceName = argc == 9 ? argv[8] : defaultLedgerDeviceName();
+        hardwareRequest.deviceName = deviceName;
         hardwareRequest.accountIndex = static_cast<uint32_t>(accountIndex);
         hardwareWalletId = engine.createWalletFromDevice(hardwareRequest);
 

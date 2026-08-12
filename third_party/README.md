@@ -20,8 +20,8 @@ The command refuses to overwrite an existing directory and stops on the first
 patch conflict. This makes upstream changes explicit and reviewable rather
 than silently carrying a modified Core worktree forward.
 
-The current Monero product series contains 48 patches. Its authenticated
-resulting tree is `1af6c7bde44da68846834e551e8f5b4e314e9839`. The tree pin,
+The current Monero product series contains 76 patches. Its authenticated
+resulting tree is `21f6b377e1acbd83a7b5da34164dca12e6dcbbab`. The tree pin,
 rather than a locally generated `git am` commit, is authoritative because a
 fresh application can create a different integration commit with identical
 contents.

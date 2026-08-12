@@ -140,6 +140,7 @@ const variants = ['original', 'fast', 'scanpack'].map(variant => {
   const networkText = readFileSync(join(runDir, 'client-network-accounting.txt'), 'utf8');
   const tcpBytes = Number(networkText.match(/tcp_rx_bytes=(\d+)/)?.[1]);
   const tcpMiBPerSecond = Number(networkText.match(/tcp_rx_mib_per_s=([0-9.]+)/)?.[1]);
+  const tcpExactMatch = networkText.match(/^tcp_rx_exact=(true|false)$/m);
   if (!Number.isFinite(tcpBytes) || !Number.isFinite(tcpMiBPerSecond)) {
     throw new Error(`${variant}: TCP accounting missing`);
   }
@@ -168,13 +169,23 @@ const variants = ['original', 'fast', 'scanpack'].map(variant => {
     hashPayloadBytes: sum(binHashes, 'bytes_rx'),
     tcpReceiveBytes: tcpBytes,
     tcpReceiveMiBPerSecond: tcpMiBPerSecond,
+    tcpReceiveExact: tcpExactMatch ? tcpExactMatch[1] === 'true' : null,
     clientScanMilliseconds,
     clientUserSeconds: time.userSeconds,
     clientSystemSeconds: time.sysSeconds,
     clientCpuSeconds,
     clientAverageCpuPercent: clientCpuSeconds / time.realSeconds * 100,
     clientMaxRssMiB: Number(maximumRssMatch[1]) / 1024 / 1024,
-    clientWalletFilesBytes: statSync(join(runDir, 'wallet')).size + statSync(join(runDir, 'wallet.keys')).size,
+    // `run-r3-network-mainnet.sh` records this before removing the generated
+    // encrypted fixture. A strict comparison never retains a benchmark seed.
+    clientWalletFilesBytes: (() => {
+      const value = Number(
+        readFileSync(join(runDir, 'wallet-storage-bytes.txt'), 'utf8')
+          .match(/^wallet_files_bytes=(\d+)$/m)?.[1],
+      );
+      if (!Number.isFinite(value)) throw new Error(`${variant}: wallet storage measurement missing`);
+      return value;
+    })(),
     serverRequestCount: serverRequests.length,
     serverResponseBlocks: sum(serverRequests, 'n_blocks'),
     serverBlockDbMilliseconds: sum(serverRequests, 'fetch_db_ms'),

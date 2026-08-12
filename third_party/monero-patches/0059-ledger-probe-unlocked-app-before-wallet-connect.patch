@@ -1,0 +1,62 @@
+From 7db55db7cc3d4e2cae92fbb6edf1411e76096ce8 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 9 Aug 2026 13:25:00 -0500
+Subject: [PATCH] ledger: preserve a ready app before wallet connect
+
+Do not send INS_RESET when opening a Ledger transport, nor tear down an active
+transport just to initialize or reconnect it. A process-local active session
+returns before any further APDU. A fresh connection is checked with the
+non-mutating public-address command, which establishes the V4 protocol without
+interrupting the Nano. Key export remains in account creation, where its
+explicit device approval belongs. If the probe cannot proceed, fail closed; transaction
+recovery must be an explicit operation, not an implicit wallet-open side effect.
+
+---
+ src/device/device_ledger.cpp | 22 +++++++++++++++-------
+ 1 file changed, 15 insertions(+), 7 deletions(-)
+
+diff --git a/src/device/device_ledger.cpp b/src/device/device_ledger.cpp
+index eb6c51f..2e5db9c 100644
+--- a/src/device/device_ledger.cpp
++++ b/src/device/device_ledger.cpp
+@@ -636,6 +636,11 @@ namespace hw {
+ 
+     bool device_ledger::init(void) {
+       this->controle_device = &hw::get_device("default");
++      // An active session is already initialized. Releasing it here closes
++      // the transport as a side effect, even when the caller only reuses it.
++      if (this->connected()) {
++        return true;
++      }
+       this->release();
+       if (!wants_ble_transport()) {
+       #if defined(HAVE_HIDAPI)
+@@ -653,16 +658,19 @@ namespace hw {
+     }
+ 
+     bool device_ledger::connect(void) {
+-      this->disconnect();
++      // A process-local transport that is already connected has already
++      // passed the readiness probe. Do not send another APDU merely because a
++      // wallet is opened: that can wake or disturb an unlocked Nano.
++      if (this->connected()) {
++        return true;
++      }
++
+       ASSERT_X(this->transport_connect(), "Unable to connect to Ledger device");
+-      this->reset();
+-      #ifdef DEBUG_HWDEVICE
++      // A fresh transport is checked with the non-mutating public-address
++      // command before wallet setup. In particular, wallet-open never sends
++      // INS_RESET; a locked device or closed Monero app fails closed here.
+       cryptonote::account_public_address pubkey;
+       this->get_public_address(pubkey);
+-      #endif
+-      crypto::secret_key vkey;
+-      crypto::secret_key skey;
+-      this->get_secret_keys(vkey,skey);
+ 
+       return true;
+     }
+-- 
+2.47.0

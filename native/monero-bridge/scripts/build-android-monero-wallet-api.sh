@@ -15,6 +15,7 @@ output_root="$(abs_path "${OUTPUT_ROOT:-${repo_root}/build/android-monero-wallet
 dependency_root="$(abs_path "${MONERO_ANDROID_DEPENDENCY_ROOT:-${repo_root}/build/android-deps}")"
 fast_crypto_root="$(abs_path "${MONERO_FAST_CRYPTO_ROOT:-${repo_root}/build/mobile-fast-crypto}")"
 fast_wallet_protocol_root="$(abs_path "${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${repo_root}/build/mobile-fast-wallet-protocol}")"
+fast_wallet_protocol_source_root="$(abs_path "${MFW_FAST_WALLET_PROTOCOL_ROOT:-${repo_root}/native/fast-wallet-protocol}")"
 android_api="${ANDROID_API:-24}"
 targets_csv="${TARGETS:-android-arm64}"
 jobs="${JOBS:-8}"
@@ -146,9 +147,18 @@ for label in "${targets[@]}"; do
   build_dir="${output_root}/${label}"
   dependency_prefix="${MONERO_ANDROID_DEPENDENCY_PREFIX:-${dependency_root}/${label}}"
   fast_crypto_lib="${fast_crypto_root}/${label}/libmonero_fast_crypto.a"
+  fast_wallet_protocol_lib="${fast_wallet_protocol_root}/${label}/libfast_wallet_protocol.a"
 
   if [[ ! -f "${fast_crypto_lib}" ]]; then
     echo "Missing monero-fast-crypto archive for ${label}: ${fast_crypto_lib}" >&2
+    exit 1
+  fi
+  if [[ ! -f "${fast_wallet_protocol_source_root}/include/fast_wallet_protocol.h" ]]; then
+    echo "Missing Fast Wallet protocol C ABI headers: ${fast_wallet_protocol_source_root}" >&2
+    exit 1
+  fi
+  if [[ ! -f "${fast_wallet_protocol_lib}" ]]; then
+    echo "Missing Fast Wallet protocol archive for ${label}: ${fast_wallet_protocol_lib}" >&2
     exit 1
   fi
 
@@ -173,6 +183,8 @@ for label in "${targets[@]}"; do
     "-DMONERO_ENABLE_GRPC_STREAM=${monero_enable_grpc_stream}"
     "-DRANDOMX_ENABLE_JIT=${randomx_enable_jit}"
     "-DMONERO_FAST_CRYPTO_LIBRARY=${fast_crypto_lib}"
+    "-DMFW_FAST_WALLET_PROTOCOL_ROOT=${fast_wallet_protocol_source_root}"
+    "-DMFW_FAST_WALLET_PROTOCOL_LIBRARY=${fast_wallet_protocol_lib}"
     -DMANUAL_SUBMODULES=1
   )
   if grep -Fq "MFW_PRODUCT_CORE_ROOT" "${monero_source_dir}/src/simplewallet/CMakeLists.txt"; then
@@ -212,6 +224,8 @@ for label in "${targets[@]}"; do
       "-DBoost_LIBRARY_DIR_RELEASE=${boost_lib_dir}"
       "-DICU_LIBRARIES=${dependency_prefix}/lib/libiconv.a"
       "-DICONV_LIBRARIES=${dependency_prefix}/lib/libiconv.a"
+      "-DIconv_LIBRARY=${dependency_prefix}/lib/libiconv.a"
+      "-DIconv_INCLUDE_DIR=${dependency_prefix}/include"
       "-DOPENSSL_ROOT_DIR=${dependency_prefix}"
       "-DOPENSSL_INCLUDE_DIR=${dependency_prefix}/include"
       "-DOPENSSL_CRYPTO_LIBRARY=${dependency_prefix}/lib/libcrypto.a"

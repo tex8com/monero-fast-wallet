@@ -1,0 +1,226 @@
+From 7ce7c58dcad9d87e4ef7b8be51f4a293818b7b6d Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet <engineering@tex8.app>
+Date: Mon, 10 Aug 2026 10:35:00 -0500
+Subject: [PATCH] wallet: bound global gRPC range pool to four transport lanes
+
+The adaptive wallet selected eight logical finite ranges, but every range
+client reused the same process channel because the cache was keyed only by the
+target. This collapsed the pool onto one physical HTTP/2/TCP transport. Current
+CLI profiles measured 312 range clients as one created plus 311 reused channel
+handles while block fetch dominated the end-to-end duration.
+
+Keep one global downloader and the existing exact-range cache, but key its
+process-wide channels by a bounded lane number and give every channel its local
+gRPC subchannel pool, preventing gRPC Core from merging the four channel
+objects back onto one physical TCP transport. Range slots reuse lanes zero
+through three across successive, non-overlapping ranges. This does not create
+per-wallet downloaders and never downloads one range twice. Four lanes are the
+measured optimum in the retained D5/D6 transport evidence; eight or more were
+slower.
+---
+ src/simplewallet/CMakeLists.txt                      |  2 +-
+ src/wallet/grpc_stream/grpc_block_range_pool.cpp  | 20 +++++++++++++-------
+ src/wallet/grpc_stream/grpc_block_stream_client.cpp | 15 +++++++++++----
+ src/wallet/grpc_stream/grpc_block_stream_client.h   | 11 ++++++-----
+ src/wallet/wallet2.cpp                              |  9 +++++----
+ 5 files changed, 36 insertions(+), 21 deletions(-)
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index c84cb73..7603714 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -135,7 +135,7 @@ execute_process(
+   OUTPUT_STRIP_TRAILING_WHITESPACE)
+ set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
+ set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
+-set(MFW_MONERO_PATCH_COUNT "70" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_MONERO_PATCH_COUNT "71" CACHE STRING "Applied TEX8 Monero patch count")
+ set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
+ set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
+ set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.cpp b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+index caa3999..3ba5a42 100644
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.cpp
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+@@ -16,7 +16,10 @@
+ 
+ namespace cuprate_grpc_stream {
+ namespace {
+-constexpr size_t kMaxChannels = 8;
++// Four physical lanes were the fastest measured Panama-to-node range-pool
++// configuration. The pool remains one global downloader and assigns each
++// non-overlapping range to one of these bounded process-wide transports.
++constexpr size_t kMaxChannels = 4;
+ constexpr uint32_t kMinRangeBlocks = 16;
+ constexpr uint32_t kMaxRangeBlocks = 512;
+ constexpr size_t kSharedCacheMaxEntries = 128;
+@@ -38,10 +41,11 @@ class shared_range {
+ public:
+     shared_range(std::string target, uint64_t start, uint64_t stop,
+         uint32_t chunk_hint, std::string request_id,
+-        std::vector<std::string> locator)
++        std::vector<std::string> locator, size_t process_channel_lane)
+       : target_(std::move(target)), start_(start), stop_(stop),
+         chunk_hint_(chunk_hint), request_id_(std::move(request_id)),
+-        locator_(std::move(locator)), expected_(start),
++        locator_(std::move(locator)),
++        process_channel_lane_(process_channel_lane), expected_(start),
+         last_access_(std::chrono::steady_clock::now()) {}
+ 
+     ~shared_range() {
+@@ -49,7 +53,8 @@ public:
+     }
+ 
+     bool open(int& error_code, std::string& error) {
+-        if (!client_.connect(target_) || !client_.open_stream(
++        if (!client_.connect(target_, process_channel_lane_)
++                || !client_.open_stream(
+                 start_, stop_, true, chunk_hint_, request_id_, locator_, 1)) {
+             error_code = client_.last_error_code();
+             error = client_.last_error_message();
+@@ -178,6 +183,7 @@ private:
+     uint32_t chunk_hint_ = 0;
+     std::string request_id_;
+     std::vector<std::string> locator_;
++    size_t process_channel_lane_ = 0;
+     cuprate_grpc_stream_client client_;
+ 
+     mutable std::mutex mu_;
+@@ -220,7 +226,8 @@ public:
+     std::shared_ptr<shared_range> acquire(const std::string& target,
+         uint64_t start, uint64_t stop, uint32_t chunk_hint,
+         const std::string& request_id, const std::vector<std::string>& locator,
+-        bool& reused, int& error_code, std::string& error) {
++        size_t process_channel_lane, bool& reused, int& error_code,
++        std::string& error) {
+         const std::string key = range_key(target, start, stop, chunk_hint, locator);
+         std::lock_guard<std::mutex> lock(mu_);
+         prune_locked();
+@@ -237,7 +244,7 @@ public:
+         }
+ 
+         auto range = std::make_shared<shared_range>(target, start, stop,
+-            chunk_hint, request_id, locator);
++            chunk_hint, request_id, locator, process_channel_lane);
+         if (!range->open(error_code, error))
+             return nullptr;
+         entries_.emplace(key, range);
+@@ -360,7 +367,7 @@ bool open_slot(cuprate_grpc_block_range_pool::impl& p, size_t index,
+     slot.range = process_range_cache().acquire(p.target, slot.start, slot.stop,
+         p.range_blocks,
+         p.request_id + "-r" + std::to_string(slot.start), slot_locator,
+-        reused, p.error_code, p.error);
++        index, reused, p.error_code, p.error);
+     if (!slot.range)
+         return false;
+     slot.cursor = 0;
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.cpp b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+index 1db9993..603b156 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.cpp
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+@@ -52,13 +52,15 @@ namespace {
+ 
+     std::shared_ptr<grpc::Channel> acquire_process_channel(
+         const std::string& target,
++        size_t process_channel_lane,
+         const grpc::ChannelArguments& arguments,
+         bool& reused)
+     {
+         static std::mutex channels_mutex;
+         static std::unordered_map<std::string, std::weak_ptr<grpc::Channel>> channels;
+         std::lock_guard<std::mutex> lock(channels_mutex);
+-        const auto found = channels.find(target);
++        const std::string channel_key = target + "\n" + std::to_string(process_channel_lane);
++        const auto found = channels.find(channel_key);
+         if (found != channels.end())
+         {
+             if (auto channel = found->second.lock())
+@@ -70,7 +72,7 @@ namespace {
+         }
+         auto channel = grpc::CreateCustomChannel(
+             target, grpc::InsecureChannelCredentials(), arguments);
+-        channels.emplace(target, channel);
++        channels.emplace(channel_key, channel);
+         reused = false;
+         return channel;
+     }
+@@ -152,7 +154,8 @@ cuprate_grpc_stream_client::~cuprate_grpc_stream_client()
+     close();
+ }
+ 
+-bool cuprate_grpc_stream_client::connect(const std::string& target)
++bool cuprate_grpc_stream_client::connect(const std::string& target,
++                                         size_t process_channel_lane)
+ {
+     if (target.empty()) {
+         p_->last_error_code = -1;
+@@ -167,11 +170,14 @@ bool cuprate_grpc_stream_client::connect(const std::string& target)
+     ch_args.SetInt(GRPC_ARG_HTTP2_MAX_FRAME_SIZE, GRPC_HTTP2_MAX_FRAME_BYTES);
+     ch_args.SetInt(GRPC_ARG_HTTP2_BDP_PROBE, 1);
++    ch_args.SetInt(GRPC_ARG_USE_LOCAL_SUBCHANNEL_POOL, 1);
+     bool reused = false;
+-    p_->channel = acquire_process_channel(target, ch_args, reused);
++    p_->channel = acquire_process_channel(
++        target, process_channel_lane, ch_args, reused);
+     p_->stub = cuprate::stream::v1::BlockStream::NewStub(p_->channel);
+     std::fprintf(stderr,
+-        "[GRPC client] CONNECT target=%s shared_channel=%s queue_capacity=%zu max_msg=%d http2_buffer=%d max_frame=%d (gRPC connect is lazy, first RPC opens TCP)\n",
++        "[GRPC client] CONNECT target=%s channel_lane=%zu shared_channel=%s local_subchannel_pool=1 queue_capacity=%zu max_msg=%d http2_buffer=%d max_frame=%d (gRPC connect is lazy, first RPC opens TCP)\n",
+         target.c_str(),
++        process_channel_lane,
+         reused ? "reused" : "created",
+         default_queue_capacity(),
+         MAX_GRPC_MESSAGE_BYTES,
+diff --git a/src/wallet/grpc_stream/grpc_block_stream_client.h b/src/wallet/grpc_stream/grpc_block_stream_client.h
+index dd33bd4..1e92a06 100644
+--- a/src/wallet/grpc_stream/grpc_block_stream_client.h
++++ b/src/wallet/grpc_stream/grpc_block_stream_client.h
+@@ -43,11 +43,12 @@ public:
+     cuprate_grpc_stream_client(const cuprate_grpc_stream_client&) = delete;
+     cuprate_grpc_stream_client& operator=(const cuprate_grpc_stream_client&) = delete;
+ 
+-    // Establish a gRPC channel to `target` (e.g. "host:18091"). Returns true
+-    // on success. Note: gRPC channel creation is lazy — actual TCP connection
+-    // happens on the first RPC call. This function only validates the target
+-    // string and constructs the channel object.
+-    bool connect(const std::string& target);
++    // Establish a gRPC channel to `target` (e.g. "host:18091"). Calls with
++    // the same process_channel_lane share one process-wide channel; distinct
++    // lanes keep bounded range-pool traffic on distinct HTTP/2 transports.
++    // Note: gRPC channel creation is lazy — actual TCP connection happens on
++    // the first RPC call.
++    bool connect(const std::string& target, size_t process_channel_lane = 0);
+ 
+     // Open a server-streaming StreamBlocks call. Spawns a background thread
+     // that drains the stream into the internal queue. Returns true on
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 646577b..6379383 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3442,8 +3442,9 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     {
+       // The range pool commits strictly in height order. It starts with one
+       // locator-validated range and then opens non-overlapping ranges on up to
+-      // eight independent HTTP/2 connections. Each connection buffers at most
+-      // one completed chunk, bounding reordering memory to eight chunks.
++      // four bounded HTTP/2 transport lanes owned by the one global range
++      // downloader. Each lane buffers at most one completed chunk, bounding
++      // reordering memory to four chunks.
+       constexpr uint32_t minimum_chunk_hint = 16;
+       const uint32_t configured_chunk_hint = std::max<uint32_t>(minimum_chunk_hint,
+         std::min<uint32_t>(m_grpc_stream_chunk_hint, 512));
+@@ -3465,10 +3466,10 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       }
+       else
+       {
+-        while (stream_channels < 8
++        while (stream_channels < 4
+           && blocks_to_tip > static_cast<uint64_t>(configured_chunk_hint) * stream_channels * 2)
+           stream_channels *= 2;
+-        plan = stream_channels == 8 ? "pool-8" : stream_channels == 4 ? "pool-4" : stream_channels == 2 ? "pool-2" : "pool-1";
++        plan = stream_channels == 4 ? "pool-4" : stream_channels == 2 ? "pool-2" : "pool-1";
+       }
+ 
+       MWARNING("grpc_stream: adaptive plan=" << plan
+-- 
+2.50.1

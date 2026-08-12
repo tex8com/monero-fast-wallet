@@ -22,6 +22,10 @@ extern "C" void tex8_desktop_result_free(
 // bridge retains transport ownership; no device keys cross this boundary.
 extern "C" Tex8DesktopResult tex8_desktop_wallet_ledger_transport_status(
     Tex8DesktopWalletCore* core) noexcept;
+// Returns the already-selected macOS BLE transport's sanitized state without
+// rescanning, reconnecting or exchanging an APDU.
+extern "C" Tex8DesktopResult tex8_desktop_wallet_ledger_connection_status(
+    Tex8DesktopWalletCore* core) noexcept;
 
 // Process-wide derivation policy. "auto" is the safe default; "cpu" disables
 // GPU dispatch and "gpu" lowers the GPU crossover threshold but never disables

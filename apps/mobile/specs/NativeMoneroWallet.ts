@@ -22,7 +22,20 @@ export type LedgerKeyImageSyncResult = {
   spentAtomic: string;
   unspentAtomic: string;
   verifiedOutputCount: number;
+  pendingOutputCount: number;
+  remainingPendingOutputCount: number;
+  importedOutputCount: number;
+  derivedOutputCount: number;
+  spentStatusUnspentOutputCount: number;
+  spentStatusBlockchainOutputCount: number;
+  spentStatusPoolOutputCount: number;
+  derivationDurationMs: number;
+  spentStatusRpcDurationMs: number;
+  outgoingRpcDurationMs: number;
+  stateUpdateDurationMs: number;
   verificationDurationMs: number;
+  storeDurationMs: number;
+  totalDurationMs: number;
 };
 
 export type NetworkSyncStatus = {
@@ -47,6 +60,10 @@ export type NetworkSyncStatus = {
   networkBytesReceived: number;
   payloadBytesReceived: number;
   lastWalletScanMs: number;
+  lastNonEmptyWalletDerivationCount: number;
+  lastNonEmptyWalletDerivationUs: number;
+  totalWalletDerivationCount: number;
+  totalWalletDerivationUs: number;
   lastMempoolMs: number;
   lastCheckpointMs: number;
   lastIterationMs: number;
@@ -314,10 +331,7 @@ export interface Spec extends TurboModule {
    * must not mistake permission or hardware-access sheets for the user
    * leaving the wallet. The returned token must be ended in a finally block.
    */
-  beginSystemUiInterruption(
-    reason: string,
-    timeoutMs: number,
-  ): Promise<string>;
+  beginSystemUiInterruption(reason: string, timeoutMs: number): Promise<string>;
 
   endSystemUiInterruption(token: string): Promise<void>;
 
@@ -448,6 +462,13 @@ export interface Spec extends TurboModule {
    * fully synchronized and has a zero balance.
    */
   deleteEmptyWalletFiles(walletId: string, path: string): Promise<void>;
+
+  /**
+   * Deletes exact wallet files inside the app's protected wallet directory.
+   * Callers must close every matching native session first. Native code
+   * validates the directory boundary and refuses directories.
+   */
+  deleteProtectedWalletFiles(paths: ReadonlyArray<string>): Promise<void>;
 
   createFastReceiveIdentity(
     sourceWalletId: string,

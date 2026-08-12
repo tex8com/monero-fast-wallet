@@ -185,6 +185,12 @@ impl WatchStore for EncryptedJsonFileStore {
         let removed = records.remove(identity_id);
         let mut matches = self.matches.write().expect("watch store poisoned");
         matches.retain(|_, output| output.identity_id != identity_id);
+        // The first atomic replacement deliberately preserves the preceding
+        // authenticated snapshot for crash recovery. After a revocation that
+        // preceding snapshot can still contain the removed View Key. Commit
+        // the already-deleted state a second time so both the primary and its
+        // recovery snapshot enforce the revocation before it is acknowledged.
+        self.persist(&records, &matches)?;
         self.persist(&records, &matches)?;
         Ok(removed)
     }
@@ -686,6 +692,22 @@ mod tests {
             1
         );
         assert!(read_records(&path, &recovered.cipher).is_ok());
+    }
+
+    #[test]
+    fn encrypted_store_removal_purges_primary_and_recovery_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watch.json.enc");
+        let key = [10u8; 32];
+        let store = EncryptedJsonFileStore::open(&path, key).unwrap();
+        store.upsert(registration()).unwrap();
+
+        assert!(store.remove("fast-receive-0").unwrap().is_some());
+        for snapshot in [&path, &backup_path(&path)] {
+            let stored = read_records(snapshot, &store.cipher).unwrap();
+            assert!(stored.records.is_empty());
+            assert!(stored.matches.is_empty());
+        }
     }
 
     #[test]

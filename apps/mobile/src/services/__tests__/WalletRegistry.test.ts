@@ -38,10 +38,10 @@ import {
 } from '../WalletRegistry';
 
 describe('isFastWalletRegistration', () => {
-  it('recognizes software and Ledger scanner wallets by their fast role', () => {
+  it('recognizes only independent software Fast Wallet roots', () => {
     expect(isFastWalletRegistration({ kind: 'fast' })).toBe(true);
     expect(isFastWalletRegistration({ kind: 'hardware', role: 'fast' })).toBe(
-      true,
+      false,
     );
     expect(
       isFastWalletRegistration({ kind: 'software', role: 'standard' }),
@@ -90,17 +90,45 @@ describe('ledgerBalanceNeedsVerification', () => {
     expect(ledgerBalanceNeedsVerification(ledger, 0)).toBe(false);
   });
 
-  it('queues a Ledger only when the Core reports a locally owned output without a key image', () => {
-    expect(ledgerBalanceNeedsVerification(ledger, 1)).toBe(true);
+  it('does not wake Ledger again after the initial key-image pass', () => {
+    expect(ledgerBalanceNeedsVerification(ledger, 1)).toBe(false);
   });
 
-  it('requires one initial Ledger pass for an unverified local companion', () => {
+  it('queues the initial pass when Core reports an owned output without a key image', () => {
     expect(
       ledgerBalanceNeedsVerification(
         { ...ledger, ledgerKeyImagesVerifiedAt: undefined },
-        0,
+        1,
       ),
     ).toBe(true);
+  });
+
+  it('queues the one initial pass even when the new Ledger cache is empty', () => {
+    const unverified = createRegisteredWallet({
+      walletName: 'ledger-old-cache',
+      path: '/app/wallets/mainnet/ledger-old-cache',
+      network: 'mainnet',
+      kind: 'hardware',
+      viewOnlyPath: '/app/wallets/mainnet/ledger-old-cache-view',
+      viewOnlyCredentialKey: 'ledger-old-cache-view-secret',
+      now: '2026-08-09T00:00:00.000Z',
+    });
+
+    expect(ledgerBalanceNeedsVerification(unverified, 0, 14)).toBe(true);
+    expect(ledgerBalanceNeedsVerification(unverified, 0, 0)).toBe(true);
+  });
+
+  it('does not queue verification without a local read-only companion', () => {
+    expect(
+      ledgerBalanceNeedsVerification(
+        {
+          ...ledger,
+          ledgerKeyImagesVerifiedAt: undefined,
+          viewOnlyPath: undefined,
+        },
+        0,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -137,15 +165,78 @@ describe('walletRegistrationIsRemovedWithTarget', () => {
   });
 
   it('always removes the target registration itself', () => {
-    expect(
-      walletRegistrationIsRemovedWithTarget(ledgerRoot, ledgerRoot),
-    ).toBe(true);
+    expect(walletRegistrationIsRemovedWithTarget(ledgerRoot, ledgerRoot)).toBe(
+      true,
+    );
   });
 });
 
 describe('WalletRegistry', () => {
   beforeEach(async () => {
     await AsyncStorage.clear();
+  });
+
+  it('does not let a stale wallet touch erase completed Ledger verification', async () => {
+    const ledger = createRegisteredWallet({
+      walletName: 'ledger-race',
+      path: '/app/wallets/mainnet/ledger-race',
+      network: 'mainnet',
+      kind: 'hardware',
+      viewOnlyPath: '/app/wallets/mainnet/ledger-race-view',
+      viewOnlyCredentialKey: 'ledger-race-view-secret',
+      now: '2026-08-11T00:00:00.000Z',
+    });
+    await saveRegisteredWallet(ledger);
+
+    await Promise.all([
+      upsertRegisteredWallet({
+        ...ledger,
+        ledgerKeyImagesVerifiedAt: '2026-08-11T00:01:00.000Z',
+        ledgerKeyImagesVerifiedHeight: 3_738_176,
+      }),
+      saveRegisteredWallet(
+        touchRegisteredWallet(ledger, '2026-08-11T00:02:00.000Z'),
+      ),
+    ]);
+
+    const stored = (await loadRegisteredWallets()).find(
+      wallet => wallet.id === ledger.id,
+    );
+    expect(stored?.ledgerKeyImagesVerifiedAt).toBe(
+      '2026-08-11T00:01:00.000Z',
+    );
+    expect(stored?.ledgerKeyImagesVerifiedHeight).toBe(3_738_176);
+  });
+
+  it('can explicitly reset verification when replacing the Ledger companion', async () => {
+    const ledger = createRegisteredWallet({
+      walletName: 'ledger-reset',
+      path: '/app/wallets/mainnet/ledger-reset',
+      network: 'mainnet',
+      kind: 'hardware',
+      viewOnlyPath: '/app/wallets/mainnet/ledger-reset-view',
+      viewOnlyCredentialKey: 'ledger-reset-view-secret',
+      ledgerKeyImagesVerifiedAt: '2026-08-11T00:01:00.000Z',
+      ledgerKeyImagesVerifiedHeight: 3_738_176,
+      now: '2026-08-11T00:00:00.000Z',
+    });
+    await saveRegisteredWallet(ledger);
+
+    await upsertRegisteredWallet(
+      {
+        ...ledger,
+        ledgerKeyImagesVerifiedAt: undefined,
+        ledgerKeyImagesVerifiedHeight: undefined,
+      },
+      true,
+      { preserveLedgerVerification: false },
+    );
+
+    const stored = (await loadRegisteredWallets()).find(
+      wallet => wallet.id === ledger.id,
+    );
+    expect(stored?.ledgerKeyImagesVerifiedAt).toBeUndefined();
+    expect(stored?.ledgerKeyImagesVerifiedHeight).toBeUndefined();
   });
 
   it('persists wallet metadata without secrets', async () => {

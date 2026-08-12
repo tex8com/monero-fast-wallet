@@ -5,11 +5,12 @@
 
 use anyhow::Context;
 use fast_wallet_protocol::{
-    gateway_wake_auth_body, key_id, HpkePrivateKey, Network as ProtocolNetwork, SigningKeyMaterial,
-    WatchEnvelope, WorkerAuthPurpose, WorkerDescriptor, WorkerRequestAuth,
+    gateway_wake_auth_body, key_id, worker_receipt_body, HpkePrivateKey,
+    Network as ProtocolNetwork, SigningKeyMaterial, WatchEnvelope, WorkerAuthPurpose,
+    WorkerDescriptor, WorkerRequestAuth,
 };
 use fast_wallet_relay::{
-    ack_auth_body, pull_auth_body, RelayMailbox, RelayPullBatch,
+    ack_auth_body, pull_auth_body, RelayAcceptanceReceipt, RelayMailbox, RelayPullBatch,
 };
 use notify_scanner::{
     MatchedOutput, Network, NotificationSink, RegisterWatchRequest, WatchRegistration, WatchStore,
@@ -102,6 +103,7 @@ pub trait RelayClient: Send + Sync {
         descriptor: &WorkerDescriptor,
         auth: &WorkerRequestAuth,
         message_ids: &[[u8; 32]],
+        acceptance_receipts: &[RelayAcceptanceReceipt],
         now: u64,
     ) -> anyhow::Result<usize>;
 }
@@ -131,9 +133,17 @@ impl RelayClient for RelayMailbox {
         descriptor: &WorkerDescriptor,
         auth: &WorkerRequestAuth,
         message_ids: &[[u8; 32]],
+        acceptance_receipts: &[RelayAcceptanceReceipt],
         now: u64,
     ) -> anyhow::Result<usize> {
-        RelayMailbox::ack(self, descriptor, auth, message_ids, now)
+        RelayMailbox::ack(
+            self,
+            descriptor,
+            auth,
+            message_ids,
+            acceptance_receipts,
+            now,
+        )
             .map_err(|error| anyhow::anyhow!("Relay ACK failed: {error}"))
     }
 }
@@ -307,6 +317,7 @@ impl RelayClient for HttpRelayClient {
         descriptor: &WorkerDescriptor,
         auth: &WorkerRequestAuth,
         message_ids: &[[u8; 32]],
+        acceptance_receipts: &[RelayAcceptanceReceipt],
         _now: u64,
     ) -> anyhow::Result<usize> {
         let response: HttpAckResponse = self.post_json(
@@ -315,6 +326,13 @@ impl RelayClient for HttpRelayClient {
                 worker_descriptor: hex::encode(descriptor.encode()?),
                 worker_auth: hex::encode(auth.encode()),
                 message_ids: message_ids.iter().map(hex::encode).collect(),
+                acceptance_receipts: acceptance_receipts
+                    .iter()
+                    .map(|receipt| HttpAcceptanceReceipt {
+                        message_id: hex::encode(receipt.message_id),
+                        receipt: hex::encode(receipt.receipt.encode()),
+                    })
+                    .collect(),
             },
         )?;
         if response.acknowledged > message_ids.len() {
@@ -381,6 +399,7 @@ impl OutboundRelayWorker {
             ..RelayPollResult::default()
         };
         let mut durable_message_ids = Vec::with_capacity(result.leased);
+        let mut acceptance_receipts = Vec::with_capacity(batch.deliveries.len());
         for deletion in batch.deletions {
             let assignment_id = assignment_id_from_handle(&deletion.assignment_handle);
             let existing = self.acceptor.store.get(&assignment_id)?;
@@ -401,6 +420,25 @@ impl OutboundRelayWorker {
                         AcceptanceDisposition::Accepted => result.accepted += 1,
                         AcceptanceDisposition::AlreadyAccepted => result.already_accepted += 1,
                     }
+                    let receipt_body = worker_receipt_body(
+                        &self.descriptor.worker_root_id(),
+                        &delivery.message_id,
+                    );
+                    let receipt = WorkerRequestAuth::sign(
+                        &self.descriptor,
+                        &self.online_signing_key,
+                        WorkerAuthPurpose::Receipt,
+                        &receipt_body,
+                        now,
+                        self.descriptor.expires_at,
+                    )
+                    .map_err(|error| {
+                        anyhow::anyhow!("could not sign durable Worker receipt: {error}")
+                    })?;
+                    acceptance_receipts.push(RelayAcceptanceReceipt {
+                        message_id: delivery.message_id,
+                        receipt,
+                    });
                     durable_message_ids.push(delivery.message_id);
                 }
                 Err(_) => result.rejected += 1,
@@ -419,7 +457,13 @@ impl OutboundRelayWorker {
             now.saturating_add(30),
         )
         .map_err(|error| anyhow::anyhow!("could not authenticate Relay ACK: {error}"))?;
-        result.acknowledged = relay.ack(&self.descriptor, &ack_auth, &durable_message_ids, now)?;
+        result.acknowledged = relay.ack(
+            &self.descriptor,
+            &ack_auth,
+            &durable_message_ids,
+            &acceptance_receipts,
+            now,
+        )?;
         Ok(result)
     }
 
@@ -579,6 +623,14 @@ struct HttpAckRequest {
     worker_descriptor: String,
     worker_auth: String,
     message_ids: Vec<String>,
+    acceptance_receipts: Vec<HttpAcceptanceReceipt>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HttpAcceptanceReceipt {
+    message_id: String,
+    receipt: String,
 }
 
 #[derive(Deserialize)]

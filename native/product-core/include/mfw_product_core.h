@@ -191,6 +191,7 @@ typedef struct mfw_wallet_removal_plan_v1 {
 #define MFW_FAST_WALLET_OPERATION_REMOVE 10u
 /* Pairing only pins a verified public Worker identity locally. */
 #define MFW_FAST_WALLET_OPERATION_PAIR_WORKER 11u
+#define MFW_FAST_WALLET_OPERATION_ADOPT_VIEW_CACHE 12u
 
 /* Bits 0-16 retain MFW_WALLET_REMOVAL_REQUIREMENT_* meanings. */
 #define MFW_FAST_WALLET_REQUIREMENT_INDEPENDENT_SEED (1u << 24)
@@ -217,6 +218,63 @@ typedef struct mfw_fast_wallet_coordinator_plan_v1 {
   uint32_t result_lifecycle_state;
   uint32_t reserved;
 } mfw_fast_wallet_coordinator_plan_v1;
+
+/* Hosted Fast Wallet watch plan. This is a pure state machine: it contains no
+ * address, descriptor, assignment handle, installation capability, view key
+ * or ciphertext. A platform adapter performs exactly one returned action and
+ * durably commits the next stage only after that action succeeds. */
+#define MFW_FAST_WALLET_HOSTING_OPERATION_ENROLL 1u
+#define MFW_FAST_WALLET_HOSTING_OPERATION_REVOKE 2u
+
+#define MFW_FAST_WALLET_HOSTING_STAGE_NONE 0u
+#define MFW_FAST_WALLET_HOSTING_STAGE_PENDING_LOCAL 1u
+#define MFW_FAST_WALLET_HOSTING_STAGE_INSTALLATION_REGISTERED 2u
+#define MFW_FAST_WALLET_HOSTING_STAGE_ASSIGNMENT_ACCEPTED 3u
+#define MFW_FAST_WALLET_HOSTING_STAGE_DELIVERY_ENABLED 4u
+#define MFW_FAST_WALLET_HOSTING_STAGE_WATCH_SEALED 5u
+#define MFW_FAST_WALLET_HOSTING_STAGE_RELAY_ACCEPTED 6u
+#define MFW_FAST_WALLET_HOSTING_STAGE_ACTIVE 7u
+#define MFW_FAST_WALLET_HOSTING_STAGE_REVOCATION_REMOTE_DELETED 8u
+#define MFW_FAST_WALLET_HOSTING_STAGE_WORKER_CONFIRMED 9u
+
+#define MFW_FAST_WALLET_HOSTING_REQUIREMENT_INSTALLATION_AUTHORIZED (1u << 26)
+#define MFW_FAST_WALLET_HOSTING_REQUIREMENT_TRUSTED_WORKER_DESCRIPTOR (1u << 27)
+#define MFW_FAST_WALLET_HOSTING_REQUIREMENT_ACTIVE_ASSIGNMENT (1u << 28)
+
+#define MFW_FAST_WALLET_HOSTING_ACTION_PERSIST_PENDING (1u << 0)
+#define MFW_FAST_WALLET_HOSTING_ACTION_REGISTER_INSTALLATION (1u << 1)
+#define MFW_FAST_WALLET_HOSTING_ACTION_SPONSOR_ASSIGNMENT (1u << 2)
+#define MFW_FAST_WALLET_HOSTING_ACTION_ENABLE_DELIVERY (1u << 3)
+#define MFW_FAST_WALLET_HOSTING_ACTION_SEAL_WATCH (1u << 4)
+#define MFW_FAST_WALLET_HOSTING_ACTION_SUBMIT_WATCH (1u << 5)
+#define MFW_FAST_WALLET_HOSTING_ACTION_COMMIT_ACTIVE (1u << 6)
+#define MFW_FAST_WALLET_HOSTING_ACTION_DELETE_ASSIGNMENT (1u << 7)
+#define MFW_FAST_WALLET_HOSTING_ACTION_CLEAR_LOCAL_ASSIGNMENT (1u << 8)
+#define MFW_FAST_WALLET_HOSTING_ACTION_VERIFY_WORKER_RECEIPT (1u << 9)
+
+typedef struct mfw_fast_wallet_hosting_input_v1 {
+  uint32_t struct_size;
+  uint32_t state_version;
+  uint32_t operation;
+  uint32_t lifecycle_state;
+  uint32_t seed_backup_confirmed;
+  uint32_t installation_authorized;
+  uint32_t trusted_worker_descriptor;
+  uint32_t enrollment_stage;
+  uint32_t reserved;
+} mfw_fast_wallet_hosting_input_v1;
+
+typedef struct mfw_fast_wallet_hosting_plan_v1 {
+  uint32_t struct_size;
+  uint32_t state_version;
+  uint32_t operation_allowed;
+  uint32_t execution_allowed;
+  uint32_t requirement_flags;
+  uint32_t next_action;
+  uint32_t result_enrollment_stage;
+  uint32_t worker_enrolled;
+  uint32_t reserved;
+} mfw_fast_wallet_hosting_plan_v1;
 
 typedef struct mfw_send_state_v1 {
   uint32_t struct_size;
@@ -311,6 +369,10 @@ MFW_PRODUCT_CORE_API uint32_t mfw_wallet_removal_plan_compute_v1(
 MFW_PRODUCT_CORE_API uint32_t mfw_fast_wallet_operation_plan_v1(
   const mfw_fast_wallet_coordinator_input_v1* input,
   mfw_fast_wallet_coordinator_plan_v1* output);
+
+MFW_PRODUCT_CORE_API uint32_t mfw_fast_wallet_hosting_plan_compute_v1(
+  const mfw_fast_wallet_hosting_input_v1* input,
+  mfw_fast_wallet_hosting_plan_v1* output);
 
 MFW_PRODUCT_CORE_API uint32_t mfw_wallet_checked_total_balance_v1(
   const uint64_t* account_balances,

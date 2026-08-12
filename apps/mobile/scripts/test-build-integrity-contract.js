@@ -75,6 +75,12 @@ assert.match(
 );
 assert.match(mainActivity, /onPostResume\(\)[\s\S]*applyScreenCapturePolicy\(\)/);
 
+const androidPlayBundle = read('scripts/android-play-bundle.sh');
+assert.match(
+  androidPlayBundle,
+  /MONERO_WALLET_DIAGNOSTICS:-false[\s\S]*MONERO_WALLET_ALLOW_SCREEN_CAPTURE:-[\s\S]*export MONERO_WALLET_ALLOW_SCREEN_CAPTURE=true/,
+);
+
 const walletSetup = read('src/screens/WalletSetupScreen.tsx');
 assert.match(walletSetup, /config\/mobile-app-version\.json/);
 assert.match(

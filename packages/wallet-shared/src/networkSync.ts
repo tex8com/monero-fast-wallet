@@ -15,12 +15,61 @@ export type NetworkSyncSource = {
   transportStarts: number;
   joinedWallets: number;
   stalledWallets: number;
+  lastNonEmptyBlockFetchMs?: number;
+  lastNonEmptyNetworkBytes?: number;
+  lastNonEmptyPayloadBytes?: number;
+  lastNonEmptyWalletDerivationCount?: number;
+  lastNonEmptyWalletDerivationUs?: number;
 };
+
+/**
+ * Effective block-download rate of the latest non-empty native batch.
+ * Real transport bytes win when the HTTP client can measure them; gRPC falls
+ * back to its authenticated application payload so every platform still
+ * reports one useful, consistently named Mbit/s value.
+ */
+export function networkSyncMegabitsPerSecond(
+  status: NetworkSyncSource | null | undefined,
+): number | undefined {
+  const elapsedMs = status?.lastNonEmptyBlockFetchMs ?? 0;
+  const measuredBytes = status?.lastNonEmptyNetworkBytes ?? 0;
+  const payloadBytes = status?.lastNonEmptyPayloadBytes ?? 0;
+  const bytes = measuredBytes > 0 ? measuredBytes : payloadBytes;
+  if (!Number.isFinite(bytes) || bytes <= 0 ||
+      !Number.isFinite(elapsedMs) || elapsedMs <= 0) {
+    return undefined;
+  }
+  return (bytes * 8) / (elapsedMs * 1_000);
+}
+
+/** Pure key-derivation throughput measured inside the latest wallet scan. */
+export function walletSyncDerivationsPerSecond(
+  status: NetworkSyncSource | null | undefined,
+): number | undefined {
+  const count = status?.lastNonEmptyWalletDerivationCount ?? 0;
+  const elapsedUs = status?.lastNonEmptyWalletDerivationUs ?? 0;
+  if (!Number.isFinite(count) || count <= 0 ||
+      !Number.isFinite(elapsedUs) || elapsedUs <= 0) {
+    return undefined;
+  }
+  return (count * 1_000_000) / elapsedUs;
+}
+
+export function formatNetworkSyncRate(value: number): string {
+  return Number.isFinite(value) && value >= 0 ? value.toFixed(2) : "0.00";
+}
+
+export function formatWalletDerivationRate(value: number): string {
+  return Number.isFinite(value) && value >= 0
+    ? Math.round(value).toString()
+    : "0";
+}
 
 export type NetworkSyncPresentationPhase =
   | "idle"
   | "selecting-provider"
   | "initializing-transport"
+  | "reconnecting"
   | "fetching-blocks"
   | "scanning-wallets"
   | "checking-mempool"
@@ -87,6 +136,7 @@ function normalizePhase(status: NetworkSyncSource): NetworkSyncPresentationPhase
     raw === "idle" ||
     raw === "selecting-provider" ||
     raw === "initializing-transport" ||
+    raw === "reconnecting" ||
     raw === "fetching-blocks" ||
     raw === "scanning-wallets" ||
     raw === "checking-mempool" ||
@@ -187,7 +237,8 @@ export function presentNetworkSync(
     phase !== "stopped";
   const connected =
     status.transportStarts > 0 &&
-    !failed;
+    !failed &&
+    phase !== "reconnecting";
   const downloadRange =
     downloadStartHeight !== undefined && targetHeight !== undefined
       ? Math.max(0, targetHeight - downloadStartHeight)

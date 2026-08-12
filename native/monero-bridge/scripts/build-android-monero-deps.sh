@@ -6,6 +6,10 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 targets_csv="${TARGETS:-android-arm64}"
 jobs="${JOBS:-8}"
 android_api="${ANDROID_API:-24}"
+# Keep every dependency builder on the caller-selected volume.  The Android
+# release wrapper uses this to keep multi-gigabyte native intermediates off
+# the macOS system disk.
+output_root="${OUTPUT_ROOT:-${MONERO_ANDROID_DEPENDENCY_ROOT:-${script_dir}/../../../build/android-deps}}"
 
 run_dep_builder() {
   local script_name="$1"
@@ -14,6 +18,7 @@ run_dep_builder() {
   TARGETS="${targets_csv}" \
     JOBS="${jobs}" \
     ANDROID_API="${android_api}" \
+    OUTPUT_ROOT="${output_root}" \
     "$@" \
     "${script_dir}/${script_name}"
 }

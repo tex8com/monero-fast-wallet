@@ -1,0 +1,207 @@
+From b90561cd841f9b31832c52ecbd0f4d34e524149f Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet <engineering@tex8.app>
+Date: Sun, 9 Aug 2026 20:40:00 +0000
+Subject: [PATCH] wallet: recover outbound history after deferred Ledger key images
+
+A view-only Ledger cache discovers received outputs before it knows their key
+images. It can therefore mark those outputs spent after the later hardware
+reconciliation, but cannot identify an ordinary external spend from the
+already-consumed public block stream. The old lookup only found self-spends
+whose input happened to be in an owned received transaction, leaving normal
+outbound history incomplete even when the spent balance was correct.
+
+Have bridge-created view wallets retain Core's existing local candidate-use
+references while scanning. After the Ledger-derived key images and the
+authoritative spent-status reply arrive, fetch only those candidate
+transactions, verify a real input key image locally, and then create outgoing
+history. Decoy ring appearances are discarded. This avoids a second public
+block download and keeps the device, spender RPC and file commit outside the
+global downloader.
+
+Also validate transaction lookup replies by membership rather than accidental
+unordered-set iteration order.
+---
+ src/wallet/api/wallet.cpp    |  6 ++++++
+ src/wallet/api/wallet.h      |  1 +
+ src/wallet/api/wallet2_api.h |  6 ++++++
+ src/wallet/wallet2.cpp       | 73 +++++++++++++++++++++++++++++++++++--------
+ 4 files changed, 73 insertions(+), 13 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 59f77f5..897f3a0 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -3215,6 +3215,12 @@ uint64_t WalletImpl::coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &
+     return height;
+ }
+ 
++void WalletImpl::setDeferredSpendTracking(bool enabled)
++{
++    clearStatus();
++    m_wallet->track_uses(enabled);
++}
++
+ void WalletImpl::deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId)
+ {
+     boost::optional<crypto::hash8> payment_id_param = boost::none;
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 7edab7a..54d3813 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -258,6 +258,7 @@ public:
+     virtual uint64_t coldKeyImageSync(uint64_t &spent, uint64_t &unspent) override;
+     virtual uint64_t coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, uint64_t &unspent) override;
+     virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats) override;
++    virtual void setDeferredSpendTracking(bool enabled) override;
+     virtual void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) override;
+     virtual bool reconnectDevice() override;
+     virtual uint64_t getBytesReceived() override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index ac1c00a..333ad82 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -1275,6 +1275,12 @@ struct Wallet
+     //! incremental Ledger key-image sync with isolated performance telemetry
+     virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats) = 0;
+ 
++    //! Retains only candidate spending transaction identifiers while scanning.
++    //! A view-only wallet uses these candidates after a later hardware
++    //! key-image reconciliation to recover outbound history without fetching
++    //! the public block range again.
++    virtual void setDeferredSpendTracking(bool enabled) = 0;
++
+     //! shows address on device display
+     virtual void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) = 0;
+ 
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index b6882a0..86ebf30 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -15911,6 +15911,8 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+   spent = 0;
+   unspent = 0;
+   std::unordered_set<crypto::hash> spent_txids;   // For each spent key image, search for a tx in m_transfers that uses it as input.
++  std::set<size_t> blockchain_spent_transfers;
++  std::set<size_t> resolved_spent_transfers;
+   std::vector<size_t> swept_transfers;            // If such a spending tx wasn't found in m_transfers, this means the spending tx 
+                                                   // was created by sweep_all, so we can't know the spent height and other detailed info.
+   std::unordered_map<crypto::key_image, crypto::hash> spent_key_images;
+@@ -15955,10 +15957,22 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+ 
+     if (i < daemon_resp.spent_status.size() && daemon_resp.spent_status[i] == COMMAND_RPC_IS_KEY_IMAGE_SPENT::SPENT_IN_BLOCKCHAIN)
+     {
++      const size_t transfer_index = i + offset;
++      blockchain_spent_transfers.insert(transfer_index);
++
++      // A view-only scan has no key images while it receives public blocks,
++      // so an ordinary external spend cannot be recognized at that time.
++      // `track_uses` records only candidate transaction ids for an owned
++      // output's ring appearances. Re-query those small candidates after the
++      // hardware-derived key image proves this output is spent; the input key
++      // image is verified below before any outgoing record is created.
++      for (const auto &use : td.m_uses)
++        spent_txids.insert(use.second);
++
++      // Keep the historical self-transfer shortcut for old wallets that were
++      // created before deferred spend tracking was enabled.
+       const std::unordered_map<crypto::key_image, crypto::hash>::const_iterator skii = spent_key_images.find(td.m_key_image);
+-      if (skii == spent_key_images.end())
+-        swept_transfers.push_back(i + offset);
+-      else
++      if (skii != spent_key_images.end())
+         spent_txids.insert(skii->second);
+     }
+   }
+@@ -15997,9 +16011,8 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+ 
+     // process each outgoing tx
+     PERF_TIMER_START(import_key_images_F);
+-    auto spent_txid = spent_txids.begin();
+     hw::device &hwdev =  m_account.get_device();
+-    auto it = spent_txids.begin();
++    std::unordered_set<crypto::hash> returned_spent_txids;
+     for (const COMMAND_RPC_GET_TRANSACTIONS::entry& e : gettxs_res.txs)
+     {
+       THROW_WALLET_EXCEPTION_IF(e.in_pool, error::wallet_internal_error, "spent tx isn't supposed to be in txpool");
+@@ -16007,8 +16020,28 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+       cryptonote::transaction spent_tx;
+       crypto::hash spnet_txid_parsed;
+       THROW_WALLET_EXCEPTION_IF(!get_pruned_tx(e, spent_tx, spnet_txid_parsed), error::wallet_internal_error, "Failed to get tx from daemon");
+-      THROW_WALLET_EXCEPTION_IF(!(spnet_txid_parsed == *it), error::wallet_internal_error, "parsed txid mismatch");
+-      ++it;
++      THROW_WALLET_EXCEPTION_IF(spent_txids.count(spnet_txid_parsed) == 0 || !returned_spent_txids.insert(spnet_txid_parsed).second,
++          error::wallet_internal_error, "daemon returned an unexpected or duplicate outgoing transaction");
++
++      bool confirmed_spend = false;
++      for (const cryptonote::txin_v& in : spent_tx.vin)
++      {
++        if (in.type() != typeid(cryptonote::txin_to_key))
++          continue;
++        const auto known_key_image = m_key_images.find(
++            boost::get<cryptonote::txin_to_key>(in).k_image);
++        if (known_key_image != m_key_images.end() &&
++            blockchain_spent_transfers.count(known_key_image->second) != 0)
++        {
++          confirmed_spend = true;
++          break;
++        }
++      }
++      // Ring appearances that are not the real key image are decoys. Their
++      // transaction ids are deliberately fetched but must not become wallet
++      // history or mutate any spent state.
++      if (!confirmed_spend)
++        continue;
+ 
+       // get received (change) amount
+       uint64_t tx_money_got_in_outs = 0;
+@@ -16069,35 +16102,42 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+           amount = td.amount();
+           tx_money_spent_in_ins += amount;
+ 
+-          LOG_PRINT_L0("Spent money: " << print_money(amount) << ", with tx: " << *spent_txid);
++          LOG_PRINT_L0("Spent money: " << print_money(amount) << ", with tx: " << spnet_txid_parsed);
+           set_spent(it->second, e.block_height);
+           if (m_callback)
+-            m_callback->on_money_spent(e.block_height, *spent_txid, spent_tx, amount, spent_tx, td.m_subaddr_index);
++            m_callback->on_money_spent(e.block_height, spnet_txid_parsed, spent_tx, amount, spent_tx, td.m_subaddr_index);
+           if (subaddr_account != (uint32_t)-1 && subaddr_account != td.m_subaddr_index.major)
+             LOG_PRINT_L0("WARNING: This tx spends outputs received by different subaddress accounts, which isn't supposed to happen");
+           subaddr_account = td.m_subaddr_index.major;
+           subaddr_indices.insert(td.m_subaddr_index.minor);
++          if (blockchain_spent_transfers.count(it->second) != 0)
++            resolved_spent_transfers.insert(it->second);
+         }
+       }
+ 
+       // create outgoing payment
+-      process_outgoing(*spent_txid, spent_tx, e.block_height, e.block_timestamp, tx_money_spent_in_ins, tx_money_got_in_outs, subaddr_account, subaddr_indices);
++      process_outgoing(spnet_txid_parsed, spent_tx, e.block_height, e.block_timestamp, tx_money_spent_in_ins, tx_money_got_in_outs, subaddr_account, subaddr_indices);
+ 
+       // erase corresponding incoming payment
+       for (auto j = m_payments.begin(); j != m_payments.end(); ++j)
+       {
+-        if (j->second.m_tx_hash == *spent_txid)
++        if (j->second.m_tx_hash == spnet_txid_parsed)
+         {
+           m_payments.erase(j);
+           break;
+         }
+       }
+-
+-      ++spent_txid;
+     }
++    THROW_WALLET_EXCEPTION_IF(returned_spent_txids.size() != spent_txids.size(), error::wallet_internal_error,
++        "daemon did not return every requested outgoing transaction");
+     PERF_TIMER_STOP(import_key_images_F);
+ 
+     PERF_TIMER_START(import_key_images_G);
++    for (const size_t transfer_index : blockchain_spent_transfers)
++    {
++      if (resolved_spent_transfers.count(transfer_index) == 0)
++        swept_transfers.push_back(transfer_index);
++    }
+     for (size_t n : swept_transfers)
+     {
+       const transfer_details& td = m_transfers[n];
+-- 
+2.50.1

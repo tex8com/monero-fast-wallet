@@ -83,6 +83,51 @@ test('shared scanning, mempool, and checkpoint work honor the session mutex', ()
   assert.match(engine, /checkpointWalletScan\(\)/);
 });
 
+test('Ledger key-image work cannot make the coordinator or scan workers wait on its wallet mutex', () => {
+  const coordinator = engine.slice(
+    engine.indexOf('void runNetworkCoordinator(NetworkSyncCoordinator& coordinator)'),
+    engine.indexOf('void stopAllNetworkCoordinators()', engine.indexOf('void runNetworkCoordinator(NetworkSyncCoordinator& coordinator)')),
+  );
+  const asyncScan = engine.slice(
+    engine.indexOf('void executeAsyncWalletScan('),
+    engine.indexOf('void completeAsyncWalletScan('),
+  );
+  assert.match(coordinator, /must not block public-provider selection or download/);
+  assert.match(coordinator, /temporarilyBusyScanners/);
+  assert.match(coordinator, /std::try_to_lock/);
+  assert.match(asyncScan, /std::try_to_lock/);
+  assert.match(asyncScan, /result->temporarilyBusy = true/);
+  assert.doesNotMatch(
+    coordinator,
+    /item\.second->mutationMutex\);\s*\n\s*const uint64_t (?:target|cursor)/,
+  );
+});
+
+test('A private key-image reconciliation defers public transport replacement', () => {
+  const coordinator = engine.slice(
+    engine.indexOf('void runNetworkCoordinator(NetworkSyncCoordinator& coordinator)'),
+    engine.indexOf('void stopAllNetworkCoordinators()', engine.indexOf('void runNetworkCoordinator(NetworkSyncCoordinator& coordinator)')),
+  );
+  assert.match(engine, /uint64_t privateReconciliationsInFlight\{0\}/);
+  assert.match(engine, /class PrivateReconciliationActivity/);
+  assert.match(engine, /PrivateReconciliationActivity privateReconciliation\(\*coordinator\)/);
+  assert.match(coordinator, /privateReconciliationActive/);
+  assert.match(coordinator, /networkSync\.transportRestartDeferred/);
+  assert.match(coordinator, /waiting-private-reconciliation/);
+  // A transient tip check can also retain the transport. The essential
+  // invariant is that an active private reconciliation is one explicit input
+  // to the common retain decision, and transport replacement happens only
+  // when that decision is false.
+  assert.match(
+    coordinator,
+    /const bool retainPublicTransport =\s*privateReconciliationActive \|\| preserveConfirmedTip;/,
+  );
+  assert.match(
+    coordinator,
+    /if \(!retainPublicTransport\) \{[\s\S]*coordinator\.publicTransport = nullptr/,
+  );
+});
+
 test('Core derives only pending outputs and makes the second run a true no-op', () => {
   assert.match(ledgerPatch, /pending_output_count/);
   assert.match(ledgerPatch, /m_key_image_known && !destination_transfer\.m_key_image_partial/);
@@ -125,6 +170,8 @@ test('the proof requires atomic commit and a zero-work second run', () => {
   assert.match(proof, /benchmark_key_image_spent_status_rpc_time_available=true/);
   assert.match(proof, /benchmark_key_image_atomic_commit_available=true/);
   assert.match(proof, /benchmark_key_image_second_run_noop/);
+  assert.match(proof, /benchmark_key_image_no_second_block_downloader/);
+  assert.match(proof, /benchmark_key_image_shared_sync_observed/);
   assert.doesNotMatch(proof, /benchmark_server_db_ms=0/);
 });
 

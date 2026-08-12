@@ -12,6 +12,7 @@ import {
   Platform,
   ScrollView,
   Switch,
+  TextInput,
   ActivityIndicator,
   Alert,
   Linking,
@@ -23,12 +24,17 @@ import Svg, { Path, Rect, Circle, Line } from 'react-native-svg';
 import { colors } from '../theme/colors';
 import MoneroCoinGhost from '../components/MoneroCoinGhost';
 import MoneroCoin from '../components/MoneroCoin';
-import { walletService } from '../services/WalletService';
-import type { CreateNamedLedgerWalletPairResult } from '../services/WalletService';
+import {
+  walletService,
+  type LedgerReconciliationProgress,
+} from '../services/WalletService';
 import { withSystemUiInterruption } from '../services/SystemUiInterruption';
 import { type TranslationKey, useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
-import { logWalletEvent } from '../services/WalletLogger';
+import {
+  classifyDiagnosticFailure,
+  logWalletEvent,
+} from '../services/WalletLogger';
 import { loadActiveNodeConnectionSettings } from '../services/NodeConnectionSettings';
 import type {
   BiometricAuthStatus,
@@ -43,6 +49,11 @@ import {
   loadFastWalletPreference,
   saveFastWalletPreference,
 } from '../services/FastWalletPreference';
+import {
+  loadFastReceiveIdentities,
+  loadRetiredFastWalletSlots,
+  nextFastReceiveDerivationIndex,
+} from '../services/FastReceiveRegistry';
 import {
   dateInputValue,
   isRestoreStartDateValid,
@@ -98,6 +109,29 @@ function setupLog(event: string, fields: Record<string, unknown> = {}) {
   logWalletEvent('WalletSetup', event, fields);
 }
 
+function fastWalletCreationFailureText(
+  error: unknown,
+  productSlot: number,
+): string {
+  const failureCode = classifyDiagnosticFailure(error);
+  if (failureCode === 'slot-occupied') {
+    return `Fast Wallet slot ${productSlot} cannot be reused. If its wallet was deleted, its local files are gone; the slot stays blocked because previously hosted read access cannot be taken back. Choose another slot.`;
+  }
+  if (failureCode === 'file-exists') {
+    return `A local Fast Wallet file already exists for slot ${productSlot}. Choose another slot or recover the existing wallet; nothing was overwritten.`;
+  }
+  if (failureCode === 'app-locked') {
+    return 'The app locked before Fast Wallet creation finished. Unlock it and add the Fast Wallet from Wallets.';
+  }
+  if (failureCode === 'wallet-scan' || failureCode === 'network') {
+    return 'The node height was not ready for safe Fast Wallet creation. Your private wallet is ready; reconnect and add the Fast Wallet from Wallets.';
+  }
+  if (failureCode === 'storage' || failureCode === 'credential') {
+    return 'Secure local storage could not finish Fast Wallet creation. Your private wallet is ready and no key was uploaded.';
+  }
+  return `Fast Wallet creation failed (${failureCode}). Your private wallet is ready and no key was uploaded. You can retry from Wallets.`;
+}
+
 function rejectAfter<T>(
   operation: Promise<T>,
   timeoutMs: number,
@@ -142,7 +176,7 @@ function ledgerStatusTitle(
   if (!status.supported) {
     return t('setup.hardware.transportUnavailable');
   }
-  if (status.requiresUserAction || !status.permissionGranted) {
+  if (!status.permissionGranted) {
     return t('setup.hardware.permissionRequired');
   }
   if (!status.available) {
@@ -280,16 +314,20 @@ function RestoreStartDateField({
   value,
   onChange,
   dateLocale,
+  required = false,
   t,
 }: {
   value: string;
   onChange: (value: string) => void;
   dateLocale: string;
+  required?: boolean;
   t: (key: TranslationKey) => string;
 }) {
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
-  const valid = isRestoreStartDateValid(value);
+  const valid =
+    (!required || value.trim().length > 0) &&
+    isRestoreStartDateValid(value);
   const selectedDate = (() => {
     try {
       return parseRestoreStartDate(value);
@@ -327,7 +365,9 @@ function RestoreStartDateField({
     ? new Intl.DateTimeFormat(dateLocale, { dateStyle: 'medium' }).format(
         selectedDate,
       )
-    : t('setup.scanAutomatic');
+    : required
+      ? t('setup.scanRequired')
+      : t('setup.scanAutomatic');
 
   return (
     <View style={s.restoreStartField}>
@@ -343,7 +383,9 @@ function RestoreStartDateField({
       {!valid ? (
         <Text style={s.errorText}>{t('setup.scanDateError')}</Text>
       ) : null}
-      <Text style={s.restoreDateHint}>{t('setup.scanDateHint')}</Text>
+      <Text style={s.restoreDateHint}>
+        {t(required ? 'setup.ledgerScanDateHint' : 'setup.scanDateHint')}
+      </Text>
       {calendarVisible ? (
         <View style={s.restoreCalendar}>
           <View style={s.restoreCalendarHeader}>
@@ -431,17 +473,19 @@ function RestoreStartDateField({
               );
             })}
           </View>
-          <TouchableOpacity
-            style={s.restoreAutomaticButton}
-            onPress={() => {
-              onChange('');
-              setCalendarVisible(false);
-            }}
-          >
-            <Text style={s.restoreAutomaticText}>
-              {t('setup.scanAutomatic')}
-            </Text>
-          </TouchableOpacity>
+          {!required ? (
+            <TouchableOpacity
+              style={s.restoreAutomaticButton}
+              onPress={() => {
+                onChange('');
+                setCalendarVisible(false);
+              }}
+            >
+              <Text style={s.restoreAutomaticText}>
+                {t('setup.scanAutomatic')}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -490,8 +534,15 @@ export default function WalletSetupScreen({ navigation, route }: any) {
   const [createError, setCreateError] = useState<string | undefined>();
   const [fastWalletTransferStatus, setFastWalletTransferStatus] =
     useState<FastWalletTransferStatus>('idle');
-  const [persistLedgerViewOnly, setPersistLedgerViewOnly] = useState(true);
+  const [hardwareSetupProgress, setHardwareSetupProgress] =
+    useState<LedgerReconciliationProgress>();
+  // A Ledger wallet cannot present a trustworthy balance or outgoing history
+  // without its encrypted local read-only companion and a completed Key-Image
+  // reconciliation. This is part of Ledger setup, not an optional feature.
+  const persistLedgerViewOnly = true;
   const [fastWalletEnabled, setFastWalletEnabled] = useState(false);
+  const [fastWalletSlotInput, setFastWalletSlotInput] = useState('199');
+  const fastWalletSlotEditedRef = useRef(false);
   const {
     backupRegisteredWalletSeed,
     registeredWallet,
@@ -526,6 +577,53 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     };
   }, [route?.params?.fastWalletEnabled]);
 
+  useEffect(() => {
+    if (!isFocused) {
+      return;
+    }
+
+    let cancelled = false;
+    fastWalletSlotEditedRef.current = false;
+    Promise.all([
+      loadActiveNodeConnectionSettings(),
+      loadFastReceiveIdentities(),
+      loadRetiredFastWalletSlots(),
+    ])
+      .then(([settings, identities, retiredSlots]) => {
+        if (cancelled || fastWalletSlotEditedRef.current) {
+          return;
+        }
+        const networkIdentities = identities.filter(
+          identity => identity.network === settings.network,
+        );
+        const networkRetiredSlots = retiredSlots
+          .filter(item => item.network === settings.network)
+          .map(item => item.productSlot);
+        const suggestedSlot = nextFastReceiveDerivationIndex(
+          networkIdentities,
+          networkRetiredSlots,
+        );
+        setFastWalletSlotInput(String(suggestedSlot));
+        setupLog('fastWalletSlot.defaultResolved', {
+          productSlot: suggestedSlot,
+        });
+      })
+      .catch(error => {
+        setupLog('fastWalletSlot.defaultError', {
+          error: errorMessage(error),
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isFocused]);
+
+  const changeFastWalletSlot = useCallback((value: string) => {
+    fastWalletSlotEditedRef.current = true;
+    setFastWalletSlotInput(value);
+  }, []);
+
   const changeFastWalletEnabled = useCallback((enabled: boolean) => {
     setFastWalletEnabled(enabled);
     saveFastWalletPreference(enabled ? 'enabled' : 'disabled').catch(error => {
@@ -535,15 +633,10 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     });
   }, []);
 
-  const changePersistLedgerViewOnly = useCallback((enabled: boolean) => {
-    setLedgerError(undefined);
-    setPersistLedgerViewOnly(enabled);
-  }, []);
-
   const restoreStartDateReady = isRestoreStartDateValid(restoreStartDate);
-  const ledgerRestoreStartDateReady = isRestoreStartDateValid(
-    ledgerRestoreStartDate,
-  );
+  const ledgerRestoreStartDateReady =
+    ledgerRestoreStartDate.trim().length > 0 &&
+    isRestoreStartDateValid(ledgerRestoreStartDate);
   const canUseBiometric = biometricReady(biometricStatus);
   const currentBiometricLabel = biometricLabel(biometricStatus);
   const hasLocalLedgerView =
@@ -958,19 +1051,40 @@ export default function WalletSetupScreen({ navigation, route }: any) {
    * Worker, but only after its own recovery words have been confirmed.
    */
   const createSelectedFastWallet = async (
-    source: 'software' | 'restore',
+    source: 'software' | 'restore' | 'hardware',
   ): Promise<boolean> => {
     if (!fastWalletEnabled) {
       return true;
+    }
+
+    const normalizedSlot = fastWalletSlotInput.trim();
+    const productSlot = Number(normalizedSlot);
+    if (
+      !/^[1-9][0-9]{0,2}$/.test(normalizedSlot) ||
+      !Number.isSafeInteger(productSlot) ||
+      productSlot > 999
+    ) {
+      setupLog('createSelectedFastWallet.invalidSlot', {
+        source,
+      });
+      Alert.alert(t('setup.fastWalletTitle'), t('setup.fastWalletSlotInvalid'));
+      return false;
     }
 
     const startedAt = Date.now();
     setupLog('createSelectedFastWallet.start', {
       source,
       hostedScanning: true,
+      productSlot,
     });
     try {
-      const result = await walletService.createFastReceiveIdentity({});
+      const result = await walletService.createFastReceiveIdentity({
+        // When the owner did not override the suggestion, re-resolve the next
+        // safe slot inside WalletService at the moment of creation. This also
+        // closes the small race between rendering the form and tapping Create.
+        productSlot: fastWalletSlotEditedRef.current ? productSlot : undefined,
+      });
+      setFastWalletSlotInput(String(result.identity.derivationIndex));
       await reloadRegisteredWallet();
       const backedUp = await backupRegisteredWalletSeed(
         result.identity.id,
@@ -1024,13 +1138,15 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       }
     } catch (error) {
       const message = errorMessage(error);
+      const failureCode = classifyDiagnosticFailure(error);
       setupLog('createSelectedFastWallet.error', {
         elapsedMs: Date.now() - startedAt,
         error: message,
+        failureCode,
       });
       Alert.alert(
         t('setup.fastWalletTitle'),
-        t('setup.fastWalletCreateFailed'),
+        fastWalletCreationFailureText(error, productSlot),
       );
       return false;
     }
@@ -1235,6 +1351,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
       setCreating(true);
       setCreatingKind('hardware');
+      setHardwareSetupProgress(undefined);
       setPasswordPromptMode(undefined);
       setCreateError(undefined);
       beginCreateAnimation(HARDWARE_STEPS);
@@ -1248,11 +1365,15 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         supported: transportStatus.supported,
         transport: transportStatus.transport,
       });
-      if (
-        !transportStatus.supported ||
-        !transportStatus.available ||
-        !transportStatus.permissionGranted
-      ) {
+      if (!ledgerTransportReady(transportStatus)) {
+        setupLog('startCreateHardwareWallet.transportNotReady', {
+          available: transportStatus.available,
+          deviceCount: transportStatus.deviceCount,
+          permissionGranted: transportStatus.permissionGranted,
+          requiresUserAction: transportStatus.requiresUserAction,
+          supported: transportStatus.supported,
+          transport: transportStatus.transport,
+        });
         throw new Error(transportStatus.message);
       }
 
@@ -1261,96 +1382,61 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       // This is the sole native request for the private view key. Keep the
       // Ledger approval instruction visible until that request resolves.
       setLedgerViewKeyExportPending(persistLedgerViewOnly);
-      const result = fastWalletEnabled
-        ? await walletService.createNamedLedgerWalletPairFromDevice({
-            walletName: DEFAULT_HARDWARE_WALLET_NAME,
-            network: settings.network,
-            deviceName,
-            restoreHeight,
-            enableLocalViewOnly: persistLedgerViewOnly,
-          })
-        : await walletService.createNamedWalletFromDevice({
-            walletName: DEFAULT_HARDWARE_WALLET_NAME,
-            network: settings.network,
-            deviceName,
-            restoreHeight,
-            enableLocalViewOnly: persistLedgerViewOnly,
-          });
+      const result = await walletService.createNamedWalletFromDevice({
+        walletName: DEFAULT_HARDWARE_WALLET_NAME,
+        network: settings.network,
+        deviceName,
+        restoreHeight,
+        enableLocalViewOnly: persistLedgerViewOnly,
+      });
       // The initial Ledger/view-wallet operation is complete. Do not keep the
       // device-export message visible while the distinct Worker enrollment
       // runs below.
       setLedgerViewKeyExportPending(false);
       await registerOpenedSession(result.session, result.registration, {
         refresh: false,
+        // Do not let daemon startup race the optional Fast Wallet backup
+        // flow. The normal WalletState refresh is scheduled immediately
+        // before navigation below.
+        startNetwork: false,
       });
       setupLog('startCreateHardwareWallet.registered', {
-        fastRegistrationCreated: 'fastRegistration' in result,
         registrationId: result.registration.id,
         walletName: result.registration.walletName,
       });
-      const fastRegistration = fastWalletEnabled
-        ? (result as CreateNamedLedgerWalletPairResult).fastRegistration
-        : undefined;
-      if (fastRegistration) {
-        setupLog('startCreateHardwareWallet.fastWallet.localCreated', {
-          fastRegistrationCreated: true,
-          hostingRequested: true,
-        });
-        try {
-          setFastWalletTransferStatus('transferring');
-          setCreateStep(t('setup.fastWalletTransferSending'));
-          // When a local read wallet was requested, native Core can seal the
-          // Ledger account-1 view key without a second device round-trip. If it
-          // was not requested, keep the Ledger approval guidance visible while
-          // native Core obtains and immediately encrypts the key.
-          setLedgerViewKeyExportPending(!persistLedgerViewOnly);
-          await walletService.enableEncryptedLedgerFastWalletAlerts({
-            registrationId: fastRegistration.id,
-            walletId: result.session.walletId,
-          });
-          setLedgerViewKeyExportPending(false);
-          setFastWalletTransferStatus('accepted');
-          setCreateStep(t('setup.fastWalletTransferAccepted'));
-          setupLog('startCreateHardwareWallet.fastWallet.hostingAccepted', {
-            fastRegistrationId: fastRegistration.id,
-            hostingRequested: true,
-          });
-          await new Promise<void>(resolve => setTimeout(resolve, 650));
-        } catch (error) {
-          // The Ledger wallet and its Fast Wallet already exist locally. A
-          // transient Worker/network failure must never roll the completed
-          // creation flow back to the Ledger form. WalletState retries every
-          // registration whose hosting status is not yet `enabled` after Home
-          // opens, while the registry keeps the visible needs-attention state.
-          setLedgerViewKeyExportPending(false);
-          setFastWalletTransferStatus('failed');
-          setCreateStep(t('setup.fastWalletTransferFailed'));
-          setupLog('startCreateHardwareWallet.fastWallet.hostingDeferred', {
-            error: errorMessage(error),
-            fastRegistrationId: fastRegistration.id,
-            hostingRequested: true,
-          });
-        }
+      if (fastWalletEnabled) {
+        // A Ledger Monero account shares the Ledger root private view key and
+        // is never an independently hostable Fast Wallet. Create the same
+        // separately backed-up software Fast Wallet offered by software setup.
+        await createSelectedFastWallet('hardware');
       }
-      setupLog('startCreateHardwareWallet.syncDeferred', {
-        reason: 'setupNavigation',
-        walletId: result.session.walletId,
+      // WalletState already owns the long-running refresh and automatically
+      // performs Ledger Key-Image reconciliation once the local companion
+      // reaches the chain tip. Setup must not duplicate that work or keep the
+      // owner on a full-screen "syncing history" barrier for minutes.
+      await registerOpenedSession(result.session, result.registration, {
+        refresh: false,
+        startNetwork: true,
+      });
+      setupLog('startCreateHardwareWallet.verificationDeferred', {
+        phase: 'checking-local-scan',
+      });
+      setupLog('startCreateHardwareWallet.setupComplete', {
+        ledgerVerified: false,
+        transactionHistoryReady: false,
       });
 
       finishCreateAnimation();
       setLedgerPromptVisible(false);
       setLedgerRestoreStartDate('');
-      setPersistLedgerViewOnly(true);
-      try {
-        await reloadRegisteredWallets();
-      } catch (error) {
-        // Registration is already durable. Home/WalletState reloads the list
-        // again, so a failed UI refresh is not a wallet-creation failure.
+      navigation.navigate('Home');
+      // Registration and the selected session are already in WalletState.
+      // Refreshing the complete list is useful but must not delay navigation.
+      void reloadRegisteredWallets().catch(error => {
         setupLog('startCreateHardwareWallet.walletListRefreshDeferred', {
           error: errorMessage(error),
         });
-      }
-      navigation.navigate('Home');
+      });
       setupLog('startCreateHardwareWallet.success', {
         elapsedMs: Date.now() - startedAt,
       });
@@ -1365,6 +1451,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
     } finally {
       setLedgerViewKeyExportPending(false);
+      setHardwareSetupProgress(undefined);
       setCreating(false);
     }
   };
@@ -1665,6 +1752,30 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     />
                   </View>
                 ) : null}
+                {fastWalletEnabled &&
+                (passwordPromptMode === 'create' ||
+                  passwordPromptMode === 'restore') ? (
+                  <View style={s.fastWalletSlotRow}>
+                    <View style={s.fastReceiveText}>
+                      <Text style={s.fastReceiveTitle}>
+                        {t('setup.fastWalletSlot')}
+                      </Text>
+                      <Text style={s.fastReceiveValue}>
+                        {t('setup.fastWalletSlotDescription')}
+                      </Text>
+                    </View>
+                    <TextInput
+                      accessibilityLabel={t('setup.fastWalletSlot')}
+                      value={fastWalletSlotInput}
+                      onChangeText={changeFastWalletSlot}
+                      editable={!creating}
+                      keyboardType="number-pad"
+                      maxLength={3}
+                      selectTextOnFocus
+                      style={s.fastWalletSlotInput}
+                    />
+                  </View>
+                ) : null}
                 {showBiometricCard ? (
                   <View style={s.biometricBox}>
                     <View style={s.biometricHeader}>
@@ -1829,6 +1940,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                 value={ledgerRestoreStartDate}
                 onChange={setLedgerRestoreStartDate}
                 dateLocale={dateLocale}
+                required
                 t={t}
               />
               <View style={s.fastReceiveRow}>
@@ -1840,15 +1952,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     {t('setup.hardware.localViewDescription')}
                   </Text>
                 </View>
-                <Switch
-                  value={persistLedgerViewOnly}
-                  onValueChange={changePersistLedgerViewOnly}
-                  trackColor={{
-                    false: 'rgba(255,255,255,0.12)',
-                    true: colors.orange,
-                  }}
-                  thumbColor="#FFF"
-                />
+                <Text style={{ color: colors.orange, fontSize: 20 }}>✓</Text>
               </View>
               <View style={s.fastReceiveRow}>
                 <View style={s.fastReceiveText}>
@@ -1869,6 +1973,28 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                   thumbColor="#FFF"
                 />
               </View>
+              {fastWalletEnabled ? (
+                <View style={s.fastWalletSlotRow}>
+                  <View style={s.fastReceiveText}>
+                    <Text style={s.fastReceiveTitle}>
+                      {t('setup.fastWalletSlot')}
+                    </Text>
+                    <Text style={s.fastReceiveValue}>
+                      {t('setup.fastWalletSlotDescription')}
+                    </Text>
+                  </View>
+                  <TextInput
+                    accessibilityLabel={t('setup.fastWalletSlot')}
+                    value={fastWalletSlotInput}
+                    onChangeText={changeFastWalletSlot}
+                    editable={!creating}
+                    keyboardType="number-pad"
+                    maxLength={3}
+                    selectTextOnFocus
+                    style={s.fastWalletSlotInput}
+                  />
+                </View>
+              ) : null}
               <View style={s.promptActions}>
                 <TouchableOpacity
                   style={s.secondaryButton}
@@ -1927,7 +2053,16 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                   <MoneroCoin size={70} />
                   <Text style={s.createTitle}>
                     {creatingKind === 'hardware'
-                      ? t('setup.hardware.connecting')
+                      ? hardwareSetupProgress?.phase ===
+                          'catching-up-local-scan' ||
+                        hardwareSetupProgress?.phase === 'checking-local-scan'
+                        ? t('setup.hardware.syncingHistoryTitle')
+                        : hardwareSetupProgress?.phase ===
+                            'deriving-owned-output-key-images' ||
+                          hardwareSetupProgress?.phase ===
+                            'saving-ledger-balance'
+                        ? t('setup.hardware.verifyingTitle')
+                        : t('setup.hardware.connecting')
                       : creatingKind === 'restore'
                       ? t('setup.importing')
                       : creatingKind === 'open'
@@ -1938,7 +2073,24 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     <ActivityIndicator color={colors.orange} size="large" />
                   </View>
                   <Text style={s.createStep}>
-                    {createStep} · {creatingElapsedSeconds}s
+                    {creatingKind === 'hardware' &&
+                    hardwareSetupProgress?.phase ===
+                      'catching-up-local-scan'
+                      ? `${t('setup.hardware.syncingHistory')} ${
+                          hardwareSetupProgress.viewHeight ?? '?'
+                        } / ${hardwareSetupProgress.targetHeight ?? '?'}`
+                      : creatingKind === 'hardware' &&
+                        hardwareSetupProgress?.phase === 'checking-local-scan'
+                      ? t('setup.hardware.checkingHistory')
+                      : creatingKind === 'hardware' &&
+                        hardwareSetupProgress?.phase ===
+                          'deriving-owned-output-key-images'
+                      ? t('setup.hardware.verifyingOutputs')
+                      : creatingKind === 'hardware' &&
+                        hardwareSetupProgress?.phase === 'saving-ledger-balance'
+                      ? t('setup.hardware.savingVerifiedBalance')
+                      : createStep}{' '}
+                    · {creatingElapsedSeconds}s
                   </Text>
                   {fastWalletTransferStatus !== 'idle' ? (
                     <View
@@ -2290,6 +2442,31 @@ const s = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     marginTop: 3,
+  },
+  fastWalletSlotRow: {
+    minHeight: 74,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 12,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  fastWalletSlotInput: {
+    width: 72,
+    minHeight: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    color: '#FFF',
+    fontSize: 18,
+    fontWeight: '800',
+    textAlign: 'center',
+    backgroundColor: 'rgba(0,0,0,0.24)',
   },
   createMethodRow: {
     minHeight: 48,

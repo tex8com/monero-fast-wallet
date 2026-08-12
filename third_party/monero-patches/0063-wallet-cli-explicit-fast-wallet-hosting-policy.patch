@@ -1,0 +1,167 @@
+From 4d4f7c1745a5739f7fef7b705ac4d34a97e5d5a2 Mon Sep 17 00:00:00 2001
+From: TEX8 <noreply@tex8.invalid>
+Date: Sun, 9 Aug 2026 16:10:00 +0000
+Subject: [PATCH] wallet-cli: require explicit Fast Wallet and hosting choices
+
+Fast Wallet creation is opt-in even for the convenience preference.  The CLI
+uses the human-readable --fastwallet and --hostviewkey policy flags, never
+offers a separate local-cache switch, and rejects hosted-view-key intent unless
+Fast Wallet is explicitly enabled.  A hosting request reports that an exact
+Worker selection is required; it does not upload a View Key.
+
+The Product CLI also links the shared protocol implementation that validates
+the fresh signed Worker descriptor and supplies the recipient HPKE public key
+at the later enrollment boundary.
+---
+ src/simplewallet/CMakeLists.txt              |  1 +
+ src/simplewallet/product_cli_debug.cpp       | 60 +++++++++++++++++++---------
+ src/simplewallet/product_cli_fast_wallet.cpp |  1 +
+ 3 files changed, 43 insertions(+), 19 deletions(-)
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index 8e8e2cd..d584104 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -119,6 +119,7 @@ target_include_directories(fastwallet PRIVATE
+ find_package(Iconv REQUIRED)
+ target_link_libraries(fastwallet PRIVATE
+   "${MFW_PRODUCT_CORE_LIBRARY}"
++  "${MFW_FAST_WALLET_PROTOCOL_LIBRARY}"
+   Iconv::Iconv)
+ 
+ find_package(Git REQUIRED)
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index 9e8f764..d3cb42a 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -171,10 +171,11 @@ namespace
+   {
+     std::cout
+       << "FAST-WALLET-CLI BY TEX8 - WALLET RULES\n\n"
+-      << "wallet policy <privacy|convenience> [default|off|on] --json\n"
+-      << "  Resolve the default Fast Wallet switch without creating a wallet.\n"
+-      << "  privacy: Fast Wallet defaults off.\n"
+-      << "  convenience: Fast Wallet defaults on with an independent seed.\n\n"
++      << "wallet policy <privacy|convenience> [--fastwallet=true|false] [--hostviewkey=true|false] --json\n"
++      << "  Resolve the explicit Fast Wallet and hosted-view-key choices without creating a wallet.\n"
++      << "  Fast Wallet and hosted View Key default to false; enabling a Fast Wallet creates its local encrypted wallet automatically.\n"
++      << "  Hosted View Key requires an enabled Fast Wallet and an explicitly selected Worker during enrolment.\n"
++      << "  This policy command never uploads a View Key or starts a Worker connection.\n\n"
+       << "wallet contract --json\n"
+       << "  Print the exact shared lifecycle contract identity.\n\n"
+       << "wallet self-test --json\n"
+@@ -336,26 +337,38 @@ namespace
+ 
+   bool wallet_policy_command(int argc, char* argv[], int& exit_code)
+   {
+-    if (argc < 5 || argc > 6 || std::string(argv[argc - 1]) != "--json")
++    if (argc < 5 || std::string(argv[argc - 1]) != "--json")
+     {
+-      std::cerr << "Usage: wallet policy <privacy|convenience> [default|off|on] --json\n";
++      std::cerr << "Usage: wallet policy <privacy|convenience> [--fastwallet=true|false] [--hostviewkey=true|false] --json\n";
+       exit_code = 64;
+       return true;
+     }
+     const std::string preference_arg(argv[3]);
+-    const std::string override_arg = argc == 6 ? argv[4] : "default";
+     const std::uint32_t preference = preference_arg == "privacy"
+       ? MFW_WALLET_PREFERENCE_PRIVACY_ONLY
+       : preference_arg == "convenience"
+         ? MFW_WALLET_PREFERENCE_PRIVACY_CONVENIENCE
+         : 0;
+-    const std::uint32_t fast_override = override_arg == "default"
+-      ? MFW_FAST_WALLET_OVERRIDE_DEFAULT
+-      : override_arg == "off"
+-        ? MFW_FAST_WALLET_OVERRIDE_DISABLED
+-        : override_arg == "on"
+-          ? MFW_FAST_WALLET_OVERRIDE_ENABLED
+-          : std::numeric_limits<std::uint32_t>::max();
++    std::uint32_t fast_override = MFW_FAST_WALLET_OVERRIDE_DEFAULT;
++    bool host_view_key = false;
++    for (int index = 4; index + 1 < argc; ++index)
++    {
++      const std::string option(argv[index]);
++      if (option == "--fastwallet=true" || option == "--fast-wallet=true")
++        fast_override = MFW_FAST_WALLET_OVERRIDE_ENABLED;
++      else if (option == "--fastwallet=false" || option == "--fast-wallet=false")
++        fast_override = MFW_FAST_WALLET_OVERRIDE_DISABLED;
++      else if (option == "--hostviewkey=true" || option == "--host-view-key=true")
++        host_view_key = true;
++      else if (option == "--hostviewkey=false" || option == "--host-view-key=false")
++        host_view_key = false;
++      else
++      {
++        std::cerr << "Unknown wallet policy option. Run: wallet help\n";
++        exit_code = 64;
++        return true;
++      }
++    }
+     mfw_wallet_creation_policy_v1 policy{};
+     const std::uint32_t result = mfw_wallet_creation_policy_resolve_v1(
+       preference, fast_override, &policy);
+@@ -365,13 +378,21 @@ namespace
+       exit_code = 64;
+       return true;
+     }
++    if (host_view_key && policy.fast_wallet_enabled == 0)
++    {
++      std::cerr << "--hostviewkey=true requires --fastwallet=true\n";
++      exit_code = 64;
++      return true;
++    }
+     std::cout << "{"
+               << "\"schema_version\":" << policy.state_version << ","
+               << "\"preference\":\"" << preference_arg << "\","
+-              << "\"fast_wallet_override\":\"" << override_arg << "\","
+               << "\"fast_wallet_enabled\":" << (policy.fast_wallet_enabled ? "true" : "false") << ","
+               << "\"fast_wallet_independent_seed\":"
+-              << (policy.fast_wallet_independent_seed ? "true" : "false")
++              << (policy.fast_wallet_independent_seed ? "true" : "false") << ","
++              << "\"host_view_key_requested\":" << (host_view_key ? "true" : "false") << ","
++              << "\"worker_selection\":\""
++              << (host_view_key ? "required" : "not_requested") << "\""
+               << "}\n";
+     exit_code = 0;
+     return true;
+@@ -394,7 +415,7 @@ namespace
+     expect(mfw_wallet_creation_policy_resolve_v1(
+       MFW_WALLET_PREFERENCE_PRIVACY_CONVENIENCE,
+       MFW_FAST_WALLET_OVERRIDE_DEFAULT,
+-      &policy) == MFW_ERROR_OK && policy.fast_wallet_enabled == 1 &&
++      &policy) == MFW_ERROR_OK && policy.fast_wallet_enabled == 0 &&
+       policy.fast_wallet_independent_seed == 1);
+ 
+     mfw_wallet_lifecycle_state_v1 state{};
+@@ -522,7 +543,7 @@ namespace
+     expect(mfw_wallet_creation_policy_resolve_v1(
+       MFW_WALLET_PREFERENCE_PRIVACY_CONVENIENCE,
+       MFW_FAST_WALLET_OVERRIDE_DEFAULT,
+-      &policy) == MFW_ERROR_OK && policy.fast_wallet_enabled == 1 &&
++      &policy) == MFW_ERROR_OK && policy.fast_wallet_enabled == 0 &&
+       policy.fast_wallet_kind == MFW_WALLET_KIND_FAST &&
+       policy.fast_wallet_independent_seed == 1);
+ 
+@@ -676,7 +697,8 @@ namespace mfw_cli
+           << "  fast-wallet worker status --wallet-file <path> [--json]\n"
+           << "\n"
+           << "Worker pair verifies and pins only the public signed Worker root ID locally.\n"
+-          << "It does not upload a view key, contact a Worker, or enroll hosted scanning.\n";
++          << "It does not upload a view key, contact a Worker, or enroll hosted scanning.\n"
++          << "A later enrollment supplies a fresh signed descriptor; its verified HPKE public key encrypts the View Key for that exact pinned Worker.\n";
+         exit_code = 0;
+         return true;
+       }
+diff --git a/src/simplewallet/product_cli_fast_wallet.cpp b/src/simplewallet/product_cli_fast_wallet.cpp
+index cb493be..e62bb40 100644
+--- a/src/simplewallet/product_cli_fast_wallet.cpp
++++ b/src/simplewallet/product_cli_fast_wallet.cpp
+@@ -438,6 +438,7 @@ namespace
+       << "  worker status --wallet-file <path> [--json]\n\n"
+       << "create and restore make a separate Monero wallet with its own seed and password.\n"
+       << "worker pair verifies and pins only a signed public Worker identity; it does not upload a watch.\n"
++      << "A later hosted-watch enrolment must provide a fresh signed descriptor whose root matches this pin; the descriptor supplies the Worker HPKE public key.\n"
+       << "The lifecycle sidecar contains no seed, password, private key, address, worker token or node endpoint.\n"
+       << "Never pass a seed or password directly as a command argument.\n";
+   }
+-- 
+2.39.5

@@ -49,7 +49,7 @@ export default function TransactionsScreen({ navigation }: any) {
     try {
       const [, nextTransactions] = await Promise.all([
         refreshSnapshot(),
-        walletService.getTransactions(session, 0),
+        walletService.getTransactionsForAllAccounts(session, 0),
       ]);
       setAllTransactions(nextTransactions);
     } finally {

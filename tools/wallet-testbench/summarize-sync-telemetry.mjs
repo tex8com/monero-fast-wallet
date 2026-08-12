@@ -46,6 +46,35 @@ export function summarizeSyncLog(text, elapsedMs = 0) {
       durationMs: 0,
       blocksPerSecond: 0,
       outputsPerSecond: 0,
+      cacheTransactions: {
+        transactions: 0,
+        durationMs: 0,
+        transactionsPerSecond: 0,
+      },
+      keyDerivation: {
+        derivations: 0,
+        durationMs: 0,
+        derivationsPerSecond: 0,
+        engines: {},
+      },
+      outputScan: {
+        outputs: 0,
+        durationMs: 0,
+        outputsPerSecond: 0,
+      },
+      chainCommit: {
+        blocks: 0,
+        durationMs: 0,
+        blocksPerSecond: 0,
+      },
+    },
+    pipeline: {
+      iterations: 0,
+      scanLimitedIterations: 0,
+      networkLimitedIterations: 0,
+      processMs: 0,
+      residualFetchWaitMs: 0,
+      wallMs: 0,
     },
     queue: {
       backpressureEvents: 0,
@@ -83,11 +112,43 @@ export function summarizeSyncLog(text, elapsedMs = 0) {
       summary.binRpc.blocks += number(event.blocks);
       summary.binRpc.receiveWireBytes += number(event.rx_wire_bytes);
       summary.binRpc.serialRequestDurationMs += number(event.duration_ms);
-    } else if (event.stage === 'client_scan' && event.substage === 'total') {
-      summary.clientScan.batches += 1;
-      summary.clientScan.blocks += number(event.blocks);
-      summary.clientScan.outputs += number(event.outputs);
-      summary.clientScan.durationMs += number(event.duration_ms);
+    } else if (event.stage === 'client_scan') {
+      if (event.substage === 'total') {
+        summary.clientScan.batches += 1;
+        summary.clientScan.blocks += number(event.blocks);
+        summary.clientScan.outputs += number(event.outputs);
+        summary.clientScan.durationMs += number(event.duration_ms);
+      } else if (event.substage === 'cache_transactions') {
+        summary.clientScan.cacheTransactions.transactions +=
+          number(event.transactions);
+        summary.clientScan.cacheTransactions.durationMs +=
+          number(event.duration_ms);
+      } else if (event.substage === 'key_derivation') {
+        summary.clientScan.keyDerivation.derivations +=
+          number(event.derivations);
+        summary.clientScan.keyDerivation.durationMs +=
+          number(event.duration_ms);
+        const engine = event.engine ?? 'unknown';
+        summary.clientScan.keyDerivation.engines[engine] =
+          (summary.clientScan.keyDerivation.engines[engine] ?? 0) + 1;
+      } else if (event.substage === 'scan_outputs') {
+        summary.clientScan.outputScan.outputs += number(event.outputs);
+        summary.clientScan.outputScan.durationMs += number(event.duration_ms);
+      } else if (event.substage === 'chain_commit') {
+        summary.clientScan.chainCommit.blocks += number(event.blocks);
+        summary.clientScan.chainCommit.durationMs += number(event.duration_ms);
+      }
+    } else if (event.stage === 'pipeline' && event.event === 'iteration') {
+      summary.pipeline.iterations += 1;
+      summary.pipeline.processMs += number(event.process_ms);
+      summary.pipeline.residualFetchWaitMs +=
+        number(event.residual_fetch_wait_ms);
+      summary.pipeline.wallMs += number(event.wall_ms);
+      if (event.bottleneck === 'client_scan') {
+        summary.pipeline.scanLimitedIterations += 1;
+      } else if (event.bottleneck === 'network_or_server') {
+        summary.pipeline.networkLimitedIterations += 1;
+      }
     } else if (event.stage === 'queue' && event.transport === 'grpc'
         && event.event === 'backpressure') {
       summary.queue.backpressureEvents += 1;
@@ -111,6 +172,19 @@ export function summarizeSyncLog(text, elapsedMs = 0) {
       / (summary.clientScan.durationMs / 1000);
     summary.clientScan.outputsPerSecond = summary.clientScan.outputs
       / (summary.clientScan.durationMs / 1000);
+  }
+  const scanRates = [
+    ['cacheTransactions', 'transactions', 'transactionsPerSecond'],
+    ['keyDerivation', 'derivations', 'derivationsPerSecond'],
+    ['outputScan', 'outputs', 'outputsPerSecond'],
+    ['chainCommit', 'blocks', 'blocksPerSecond'],
+  ];
+  for (const [phase, count, rate] of scanRates) {
+    const measurement = summary.clientScan[phase];
+    if (measurement.durationMs > 0) {
+      measurement[rate] = measurement[count]
+        / (measurement.durationMs / 1000);
+    }
   }
   return summary;
 }

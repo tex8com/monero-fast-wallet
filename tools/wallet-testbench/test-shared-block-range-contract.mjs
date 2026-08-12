@@ -19,12 +19,15 @@ test('the authenticated Monero patch series includes the shared exact-range cach
     .map(line => line.trim())
     .filter(line => line && !line.startsWith('#'));
   assert.ok(entries.includes(patchName));
+  assert.ok(entries.includes('0058-wallet-pending-ledger-key-image-queue.patch'));
+  assert.ok(entries.includes('0059-ledger-probe-unlocked-app-before-wallet-connect.patch'));
+  assert.ok(entries.includes('0075-wallet-use-persistent-striped-grpc-lanes.patch'));
   assert.equal(
     entries.at(-1),
-    '0048-wallet-retain-bin-rpc-after-hard-grpc-failure.patch',
+    '0077-wallet-expose-live-sync-throughput-in-every-client.patch',
   );
   assert.ok(entries.includes('0027-wallet-add-shared-multi-wallet-sync-provider.patch'));
-  assert.match(lock, /^previous_patch_count=47$/m);
+  assert.match(lock, /^previous_patch_count=76$/m);
   assert.match(lock, /^previous_patched_tree=[0-9a-f]{40}$/m);
   assert.match(lock, /^patched_tree=[0-9a-f]{40}$/m);
 });

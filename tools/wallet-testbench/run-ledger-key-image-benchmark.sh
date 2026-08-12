@@ -24,6 +24,12 @@ fi
 : "${TESTBENCH_LEDGER_GRPC:?set the direct gRPC endpoint or -}"
 
 max_seconds="${TESTBENCH_LEDGER_MAX_SYNC_SECONDS:-900}"
+require_concurrent_shared_sync="${TESTBENCH_LEDGER_REQUIRE_CONCURRENT_SHARED_SYNC:-0}"
+if [[ "$require_concurrent_shared_sync" != "0" &&
+      "$require_concurrent_shared_sync" != "1" ]]; then
+  echo "TESTBENCH_LEDGER_REQUIRE_CONCURRENT_SHARED_SYNC must be 0 or 1" >&2
+  exit 64
+fi
 results_root="${TESTBENCH_LEDGER_RESULTS_DIR:-${repo_root}/build/wallet-testbench/ledger-key-image-results}"
 result_dir="${results_root}/${run_id}"
 
@@ -107,6 +113,7 @@ fi
   printf 'daemon_tls=%s\n' "${TESTBENCH_LEDGER_DAEMON_TLS:-0}"
   printf 'grpc_enabled=%s\n' "$([[ "$TESTBENCH_LEDGER_GRPC" == "-" ]] && echo false || echo true)"
   printf 'observer_enabled=%s\n' "$([[ -n "${TESTBENCH_LEDGER_OBSERVER_WALLET:-}" ]] && echo true || echo false)"
+  printf 'concurrent_shared_sync_required=%s\n' "$require_concurrent_shared_sync"
   printf 'runner_sha256=%s\n' "$(shasum -a 256 "$TESTBENCH_LEDGER_RUNNER" | awk '{print $1}')"
 } >"${result_dir}/preflight.txt"
 
@@ -189,12 +196,26 @@ printf 'benchmark_key_image_real_derivation_required=true\n' \
 printf 'benchmark_key_image_real_derivation_accepted=%s\n' \
   "$real_derivation_accepted" >>"${result_dir}/benchmark-summary.txt"
 
+shared_sync_accepted=true
+if [[ "$require_concurrent_shared_sync" == "1" ]]; then
+  if [[ -z "${TESTBENCH_LEDGER_OBSERVER_WALLET:-}" ]] ||
+     ! rg -q '^benchmark_key_image_shared_sync_observed=true$' "${result_dir}/benchmark-summary.txt"; then
+    shared_sync_accepted=false
+  fi
+fi
+printf 'benchmark_key_image_shared_sync_required=%s\n' \
+  "$require_concurrent_shared_sync" >>"${result_dir}/benchmark-summary.txt"
+printf 'benchmark_key_image_shared_sync_accepted=%s\n' \
+  "$shared_sync_accepted" >>"${result_dir}/benchmark-summary.txt"
+
 if [[ $runner_status -ne 0 ]] ||
    ! rg -q '^benchmark_result=pass$' "${result_dir}/benchmark-summary.txt" ||
    ! rg -q '^benchmark_key_image_atomic_commit_available=true$' "${result_dir}/benchmark-summary.txt" ||
    ! rg -q '^benchmark_key_image_spent_status_rpc_time_available=true$' "${result_dir}/benchmark-summary.txt" ||
    ! rg -q '^benchmark_key_image_incremental_pending_count_available=true$' "${result_dir}/benchmark-summary.txt" ||
    ! rg -q '^benchmark_key_image_second_run_noop=true$' "${result_dir}/benchmark-summary.txt" ||
+   ! rg -q '^benchmark_key_image_no_second_block_downloader=true$' "${result_dir}/benchmark-summary.txt" ||
+   [[ "$shared_sync_accepted" != "true" ]] ||
    [[ "$real_derivation_accepted" != "true" ]]; then
   printf 'acceptance=fail\n' >>"${result_dir}/benchmark-summary.txt"
 else

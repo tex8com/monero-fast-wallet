@@ -116,7 +116,7 @@ describe('IncomingTransactionObserver', () => {
     ]);
   });
 
-  it('ignores outgoing, failed, and zero-value records', () => {
+  it('announces outgoing payments and ignores failed or zero-value records', () => {
     const observer = new IncomingTransactionObserver();
     observer.observe({
       walletId: 'primary',
@@ -124,16 +124,21 @@ describe('IncomingTransactionObserver', () => {
       transactions: [],
     });
 
-    expect(
-      observer.observe({
-        walletId: 'primary',
-        walletName: 'primary',
-        transactions: [
-          transaction({ hash: 'outgoing', direction: 'out' }),
-          transaction({ hash: 'failed', failed: true }),
-          transaction({ hash: 'zero', amountAtomic: '0' }),
-        ],
+    const notices = observer.observe({
+      walletId: 'primary',
+      walletName: 'primary',
+      transactions: [
+        transaction({ hash: 'outgoing', direction: 'out' }),
+        transaction({ hash: 'failed', failed: true }),
+        transaction({ hash: 'zero', amountAtomic: '0' }),
+      ],
+    });
+
+    expect(notices).toEqual([
+      expect.objectContaining({
+        id: 'primary:outgoing',
+        direction: 'out',
       }),
-    ).toEqual([]);
+    ]);
   });
 });

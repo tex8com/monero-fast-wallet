@@ -24,9 +24,17 @@ pub const OPERATION_REMOVE: u32 = 10;
 /// Pairing verifies and pins a public Worker identity locally. It neither
 /// uploads a watch nor discloses a private view key.
 pub const OPERATION_PAIR_WORKER: u32 = 11;
+/// Adopt an already encrypted, adapter-verified watch-only cache. It has no
+/// independent spend key or new seed, so the seed-backup gate is not
+/// applicable. The adapter must prove the wallet is watch-only before
+/// committing the returned ready state.
+pub const OPERATION_ADOPT_VIEW_CACHE: u32 = 12;
 
-/// The adapter must generate a fresh, Fast-Wallet-specific seed.  It must not
-/// derive the Fast Wallet from, or reuse, a main wallet seed.
+/// The adapter must create a cryptographically separate Fast-Wallet root. It
+/// may use the reviewed, domain-separated, one-way product-slot derivation
+/// once that construction and its test vectors are release-approved. Until
+/// then it must generate fresh independent entropy and require a separate
+/// backup. Ordinary Monero accounts and reversible seed offsets never qualify.
 pub const REQUIREMENT_INDEPENDENT_SEED: u32 = 1 << 24;
 /// A local seed wallet stays non-operational until backup confirmation.
 pub const REQUIREMENT_CONFIRM_SEED_BACKUP: u32 = 1 << 25;
@@ -142,6 +150,18 @@ pub fn operation_plan(
             plan.requirement_flags = REQUIREMENT_INDEPENDENT_SEED | REQUIREMENT_CONFIRM_SEED_BACKUP;
             plan.result_lifecycle_state = contract::WALLET_LIFECYCLE_AWAITING_SEED_BACKUP;
         }
+        OPERATION_ADOPT_VIEW_CACHE => {
+            if input.lifecycle_state != contract::WALLET_LIFECYCLE_EMPTY
+                || input.seed_backup_confirmed != 0
+                || input.worker_enrolled != 0
+                || input.notifications_enabled != 0
+            {
+                return Err(contract::ERROR_INVALID_ARGUMENT);
+            }
+            plan.operation_allowed = 1;
+            plan.execution_allowed = 1;
+            plan.result_lifecycle_state = contract::WALLET_LIFECYCLE_READY;
+        }
         OPERATION_CONFIRM_SEED_BACKUP => {
             if input.lifecycle_state != contract::WALLET_LIFECYCLE_AWAITING_SEED_BACKUP
                 || input.seed_backup_confirmed != 0
@@ -249,6 +269,25 @@ mod tests {
         assert_eq!(
             plan.result_lifecycle_state,
             contract::WALLET_LIFECYCLE_AWAITING_SEED_BACKUP
+        );
+    }
+
+    #[test]
+    fn adapter_verified_view_cache_is_ready_without_a_new_seed_gate() {
+        let plan = operation_plan(&input(OPERATION_ADOPT_VIEW_CACHE)).unwrap();
+        assert_eq!(plan.operation_allowed, 1);
+        assert_eq!(plan.execution_allowed, 1);
+        assert_eq!(plan.requirement_flags, 0);
+        assert_eq!(
+            plan.result_lifecycle_state,
+            contract::WALLET_LIFECYCLE_READY
+        );
+
+        let mut invalid = input(OPERATION_ADOPT_VIEW_CACHE);
+        invalid.seed_backup_confirmed = 1;
+        assert_eq!(
+            operation_plan(&invalid),
+            Err(contract::ERROR_INVALID_ARGUMENT)
         );
     }
 

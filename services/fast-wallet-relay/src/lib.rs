@@ -4,15 +4,15 @@
 //! can hold an address, view key, transaction ID, amount or provider token.
 
 use axum::{
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Path as AxumPath, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use fast_wallet_protocol::{
-    key_id, WatchEnvelope, WorkerAuthPurpose, WorkerDescriptor, WorkerRequestAuth,
-    WATCH_ENVELOPE_SIZE, WORKER_AUTH_SIZE,
+    key_id, worker_receipt_body, ProtocolError, WatchEnvelope, WorkerAuthPurpose,
+    WorkerDescriptor, WorkerRequestAuth, WATCH_ENVELOPE_SIZE, WORKER_AUTH_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -32,8 +32,9 @@ use zeroize::Zeroizing;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-const STATE_VERSION: u8 = 2;
+const STATE_VERSION: u8 = 3;
 const MAX_MESSAGES_PER_WORKER: usize = 20_000;
+const MAX_RECEIPTS: usize = 100_000;
 const MAX_MESSAGES_PER_ASSIGNMENT: usize = 4;
 const MAX_PULL_MESSAGES: usize = 100;
 const MAX_DELIVERY_ATTEMPTS: u16 = 5;
@@ -67,6 +68,19 @@ pub struct RelayDeletion {
     pub assignment_handle: [u8; 32],
     pub assignment_epoch: u64,
     pub delivery_attempt: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelayAcceptanceReceipt {
+    pub message_id: [u8; 32],
+    pub receipt: WorkerRequestAuth,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RelayReceiptStatus {
+    Pending,
+    Accepted(WorkerRequestAuth),
+    Unknown,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -144,6 +158,10 @@ pub fn router(state: RelayApiState) -> Router {
         .route("/v1/assignments/sponsor", post(sponsor_assignment))
         .route("/v1/assignments/delete", post(delete_assignment))
         .route("/v1/envelopes", post(submit_envelope))
+        .route(
+            "/v1/envelopes/{message_id}/receipt",
+            get(get_envelope_receipt),
+        )
         .route("/v1/workers/pull", post(pull_messages))
         .route("/v1/workers/ack", post(ack_messages))
         .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
@@ -212,6 +230,30 @@ async fn submit_envelope(
             already_queued,
         }),
     ))
+}
+
+async fn get_envelope_receipt(
+    State(state): State<RelayApiState>,
+    AxumPath(message_id): AxumPath<String>,
+) -> Result<(StatusCode, Json<ReceiptResponse>), RelayApiError> {
+    let message_id = decode_fixed(&message_id)?;
+    match state.mailbox.receipt_status(&message_id, unix_seconds())? {
+        RelayReceiptStatus::Pending => Ok((
+            StatusCode::ACCEPTED,
+            Json(ReceiptResponse {
+                status: "pending",
+                receipt: None,
+            }),
+        )),
+        RelayReceiptStatus::Accepted(receipt) => Ok((
+            StatusCode::OK,
+            Json(ReceiptResponse {
+                status: "accepted",
+                receipt: Some(hex::encode(receipt.encode())),
+            }),
+        )),
+        RelayReceiptStatus::Unknown => Err(RelayApiError::NotFound),
+    }
 }
 
 async fn pull_messages(
@@ -319,9 +361,22 @@ async fn ack_messages(
         .iter()
         .map(|id| decode_fixed(id))
         .collect::<Result<Vec<[u8; 32]>, _>>()?;
+    if input.acceptance_receipts.len() > ids.len() {
+        return Err(RelayApiError::BadRequest);
+    }
+    let receipts = input
+        .acceptance_receipts
+        .iter()
+        .map(|receipt| {
+            Ok(RelayAcceptanceReceipt {
+                message_id: decode_fixed(&receipt.message_id)?,
+                receipt: decode_auth(&receipt.receipt)?,
+            })
+        })
+        .collect::<Result<Vec<_>, RelayApiError>>()?;
     let acknowledged = state
         .mailbox
-        .ack(&descriptor, &auth, &ids, unix_seconds())?;
+        .ack(&descriptor, &auth, &ids, &receipts, unix_seconds())?;
     Ok(Json(AckResponse { acknowledged }))
 }
 
@@ -464,6 +519,14 @@ struct WorkerAckInput {
     worker_descriptor: String,
     worker_auth: String,
     message_ids: Vec<String>,
+    acceptance_receipts: Vec<AcceptanceReceiptInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcceptanceReceiptInput {
+    message_id: String,
+    receipt: String,
 }
 
 #[derive(Serialize)]
@@ -489,6 +552,14 @@ struct DeleteResponse {
 struct SubmitResponse {
     message_id: String,
     already_queued: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReceiptResponse {
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -541,14 +612,22 @@ impl RelayMailbox {
             Some(raw) => {
                 let mut value: serde_json::Value =
                     serde_json::from_slice(&raw).map_err(|_| RelayError::InvalidState)?;
-                if value.get("version").and_then(serde_json::Value::as_u64) == Some(1) {
+                let version = value.get("version").and_then(serde_json::Value::as_u64);
+                if version == Some(1) {
+                    let object = value.as_object_mut().ok_or(RelayError::InvalidState)?;
+                    object.insert(
+                        "deletions".to_owned(),
+                        serde_json::Value::Object(serde_json::Map::new()),
+                    );
+                }
+                if matches!(version, Some(1) | Some(2)) {
                     let object = value.as_object_mut().ok_or(RelayError::InvalidState)?;
                     object.insert(
                         "version".to_owned(),
                         serde_json::Value::from(u64::from(STATE_VERSION)),
                     );
                     object.insert(
-                        "deletions".to_owned(),
+                        "receipts".to_owned(),
                         serde_json::Value::Object(serde_json::Map::new()),
                     );
                 }
@@ -636,6 +715,9 @@ impl RelayMailbox {
         let worker_root_id = hex::encode(envelope.binding.worker_root_id);
         let mut state = self.lock()?;
         state.prune(now);
+        if state.receipts.contains_key(&message_key) {
+            return Ok(SubmitDisposition::AlreadyQueued(message_id));
+        }
         let permit = state
             .assignments
             .get(&assignment_key)
@@ -685,6 +767,26 @@ impl RelayMailbox {
         Ok(SubmitDisposition::Queued(message_id))
     }
 
+    pub fn receipt_status(
+        &self,
+        message_id: &[u8; 32],
+        now: u64,
+    ) -> Result<RelayReceiptStatus, RelayError> {
+        let key = hex::encode(message_id);
+        let mut state = self.lock()?;
+        state.prune(now);
+        if let Some(receipt) = state.receipts.get(&key) {
+            let bytes = hex::decode(&receipt.receipt_hex).map_err(|_| RelayError::InvalidState)?;
+            let receipt =
+                WorkerRequestAuth::decode(&bytes).map_err(|_| RelayError::InvalidState)?;
+            return Ok(RelayReceiptStatus::Accepted(receipt));
+        }
+        if state.messages.contains_key(&key) {
+            return Ok(RelayReceiptStatus::Pending);
+        }
+        Ok(RelayReceiptStatus::Unknown)
+    }
+
     pub fn pull(
         &self,
         descriptor: &WorkerDescriptor,
@@ -696,12 +798,49 @@ impl RelayMailbox {
         let limit = requested_limit.clamp(1, MAX_PULL_MESSAGES);
         let body = pull_auth_body(&descriptor.worker_root_id(), limit, include_envelopes);
         auth.verify(descriptor, WorkerAuthPurpose::Pull, &body, now)
-            .map_err(|_| RelayError::Unauthorized)?;
+            .map_err(|error| {
+                // This is intentionally a fixed error class: never log the
+                // descriptor, signature, nonce, request body or timestamps.
+                eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=fast-wallet-relay event=worker-auth.rejected operation=pull reason={}",
+                    worker_auth_failure_reason(&error)
+                );
+                RelayError::Unauthorized
+            })?;
         let replay_id = hex::encode(auth.replay_id());
         let worker_root_id = hex::encode(descriptor.worker_root_id());
         let mut state = self.lock()?;
         state.prune(now);
-        if !self.trusts_configured_worker(descriptor) && !state.trusts_worker(descriptor) {
+        let configured_trust = self.trusts_configured_worker(descriptor);
+        let assignment_trust = state.trusts_worker(descriptor);
+        if !configured_trust && !assignment_trust {
+            // Fixed booleans are sufficient to identify the failing trust
+            // boundary without disclosing a descriptor or key identifier.
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=fast-wallet-relay event=worker-trust.rejected configured={} assignment={}",
+                configured_trust,
+                assignment_trust
+            );
+            let request = TrustedWorkerIdentity::from(descriptor);
+            let root_match = self
+                .trusted_workers
+                .iter()
+                .any(|trusted| trusted.worker_root_id == request.worker_root_id);
+            let online_key_match = self
+                .trusted_workers
+                .iter()
+                .any(|trusted| trusted.worker_online_key_id == request.worker_online_key_id);
+            let hpke_key_match = self
+                .trusted_workers
+                .iter()
+                .any(|trusted| trusted.hpke_key_id == request.hpke_key_id);
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=fast-wallet-relay event=worker-trust.components configured_count={} root_match={} online_key_match={} hpke_key_match={}",
+                self.trusted_workers.len(),
+                root_match,
+                online_key_match,
+                hpke_key_match
+            );
             return Err(RelayError::Unauthorized);
         }
         state.consume_auth(replay_id, auth.expires_at)?;
@@ -767,9 +906,13 @@ impl RelayMailbox {
         descriptor: &WorkerDescriptor,
         auth: &WorkerRequestAuth,
         message_ids: &[[u8; 32]],
+        acceptance_receipts: &[RelayAcceptanceReceipt],
         now: u64,
     ) -> Result<usize, RelayError> {
-        if message_ids.is_empty() || message_ids.len() > MAX_PULL_MESSAGES {
+        if message_ids.is_empty()
+            || message_ids.len() > MAX_PULL_MESSAGES
+            || acceptance_receipts.len() > message_ids.len()
+        {
             return Err(RelayError::InvalidAck);
         }
         let body = ack_auth_body(&descriptor.worker_root_id(), message_ids);
@@ -790,7 +933,50 @@ impl RelayMailbox {
         {
             return Err(RelayError::WrongWorker);
         }
+        let mut receipts_by_id = BTreeMap::new();
+        for receipt in acceptance_receipts {
+            let id = hex::encode(receipt.message_id);
+            if !requested.contains(&id)
+                || receipts_by_id.insert(id.clone(), &receipt.receipt).is_some()
+            {
+                return Err(RelayError::InvalidAck);
+            }
+            let message = state.messages.get(&id).ok_or(RelayError::InvalidAck)?;
+            if message.worker_root_id != worker_root_id {
+                return Err(RelayError::WrongWorker);
+            }
+            let body = worker_receipt_body(&descriptor.worker_root_id(), &receipt.message_id);
+            receipt
+                .receipt
+                .verify(descriptor, WorkerAuthPurpose::Receipt, &body, now)
+                .map_err(|_| RelayError::Unauthorized)?;
+        }
+        for id in &requested {
+            if state.messages.contains_key(id) && !receipts_by_id.contains_key(id) {
+                return Err(RelayError::InvalidAck);
+            }
+        }
+        if state.receipts.len().saturating_add(receipts_by_id.len()) > MAX_RECEIPTS {
+            return Err(RelayError::MailboxFull);
+        }
         state.consume_auth(replay_id, auth.expires_at)?;
+        for (id, receipt) in receipts_by_id {
+            let assignment_handle = state
+                .messages
+                .get(&id)
+                .ok_or(RelayError::InvalidAck)?
+                .assignment_handle
+                .clone();
+            state.receipts.insert(
+                id,
+                StoredReceipt {
+                    worker_root_id: worker_root_id.clone(),
+                    assignment_handle,
+                    receipt_hex: hex::encode(receipt.encode()),
+                    expires_at: receipt.expires_at,
+                },
+            );
+        }
         let before = state.messages.len();
         state.messages.retain(|id, message| {
             !(requested.contains(id) && message.worker_root_id == worker_root_id)
@@ -818,6 +1004,9 @@ impl RelayMailbox {
         state
             .messages
             .retain(|_, message| message.assignment_handle != key);
+        state
+            .receipts
+            .retain(|_, receipt| receipt.assignment_handle != key);
         if let Some(assignment) = assignment {
             let message_id = deletion_message_id(
                 assignment_handle,
@@ -1000,6 +1189,8 @@ struct PersistedState {
     messages: BTreeMap<String, StoredMessage>,
     #[serde(default)]
     deletions: BTreeMap<String, StoredDeletion>,
+    #[serde(default)]
+    receipts: BTreeMap<String, StoredReceipt>,
     replay_expiry: BTreeMap<String, u64>,
 }
 
@@ -1010,6 +1201,7 @@ impl Default for PersistedState {
             assignments: BTreeMap::new(),
             messages: BTreeMap::new(),
             deletions: BTreeMap::new(),
+            receipts: BTreeMap::new(),
             replay_expiry: BTreeMap::new(),
         }
     }
@@ -1021,6 +1213,7 @@ impl PersistedState {
             || self.assignments.len() > MAX_MESSAGES_PER_WORKER
             || self.messages.len() > MAX_MESSAGES_PER_WORKER * 16
             || self.deletions.len() > MAX_MESSAGES_PER_WORKER * 16
+            || self.receipts.len() > MAX_RECEIPTS
             || self.replay_expiry.len() > MAX_REPLAY_RECORDS
         {
             return Err(RelayError::InvalidState);
@@ -1067,6 +1260,39 @@ impl PersistedState {
                 return Err(RelayError::InvalidState);
             }
         }
+        for (id, receipt) in &self.receipts {
+            if id.len() != 64
+                || receipt.worker_root_id.len() != 64
+                || receipt.assignment_handle.len() != 64
+                || receipt.receipt_hex.len() != WORKER_AUTH_SIZE * 2
+                || receipt.expires_at == 0
+                || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !receipt
+                    .worker_root_id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || !receipt
+                    .assignment_handle
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || !receipt
+                    .receipt_hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(RelayError::InvalidState);
+            }
+            let receipt_bytes =
+                hex::decode(&receipt.receipt_hex).map_err(|_| RelayError::InvalidState)?;
+            let decoded =
+                WorkerRequestAuth::decode(&receipt_bytes).map_err(|_| RelayError::InvalidState)?;
+            if decoded.purpose != WorkerAuthPurpose::Receipt
+                || hex::encode(decoded.worker_root_id) != receipt.worker_root_id
+                || decoded.expires_at != receipt.expires_at
+            {
+                return Err(RelayError::InvalidState);
+            }
+        }
         for (handle, assignment) in &self.assignments {
             if handle.len() != 64
                 || assignment.worker_root_id.len() != 64
@@ -1098,6 +1324,7 @@ impl PersistedState {
         self.messages.retain(|_, message| message.expires_at > now);
         self.deletions
             .retain(|_, deletion| deletion.expires_at > now);
+        self.receipts.retain(|_, receipt| receipt.expires_at > now);
         self.replay_expiry.retain(|_, expires_at| *expires_at > now);
     }
 
@@ -1158,6 +1385,40 @@ struct StoredDeletion {
     expires_at: u64,
     leased_until: u64,
     attempts: u16,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct StoredReceipt {
+    worker_root_id: String,
+    assignment_handle: String,
+    receipt_hex: String,
+    expires_at: u64,
+}
+
+fn worker_auth_failure_reason(error: &ProtocolError) -> &'static str {
+    match error {
+        ProtocolError::InvalidSignature => "invalid-signature",
+        ProtocolError::NotYetValid => "not-yet-valid",
+        ProtocolError::Expired => "expired",
+        ProtocolError::InvalidTimeWindow => "invalid-time-window",
+        ProtocolError::WrongWorker => "wrong-worker",
+        ProtocolError::WrongPurpose => "wrong-purpose",
+        ProtocolError::InvalidBodyHash => "body-mismatch",
+        ProtocolError::InvalidPublicKey => "invalid-public-key",
+        ProtocolError::UnsupportedVersion => "unsupported-version",
+        ProtocolError::UnknownNetwork | ProtocolError::WrongNetwork => "wrong-network",
+        ProtocolError::RandomnessUnavailable
+        | ProtocolError::InvalidAssignment
+        | ProtocolError::InvalidRelayOrigin
+        | ProtocolError::InvalidAddress
+        | ProtocolError::InvalidPrivateKey
+        | ProtocolError::Hpke
+        | ProtocolError::Truncated
+        | ProtocolError::TrailingData
+        | ProtocolError::Oversized
+        | ProtocolError::InvalidLength
+        | ProtocolError::NonCanonical => "invalid-auth",
+    }
 }
 
 #[derive(Debug, thiserror::Error, Eq, PartialEq)]
@@ -1283,6 +1544,26 @@ mod tests {
             .unwrap();
     }
 
+    fn acceptance_receipt(
+        fixture: &Fixture,
+        message_id: [u8; 32],
+        now: u64,
+    ) -> RelayAcceptanceReceipt {
+        let body = worker_receipt_body(&fixture.descriptor.worker_root_id(), &message_id);
+        RelayAcceptanceReceipt {
+            message_id,
+            receipt: WorkerRequestAuth::sign(
+                &fixture.descriptor,
+                &fixture.online,
+                WorkerAuthPurpose::Receipt,
+                &body,
+                now,
+                fixture.descriptor.expires_at,
+            )
+            .unwrap(),
+        }
+    }
+
     #[test]
     fn relay_state_contains_only_ciphertext_and_public_routing_metadata() {
         let fixture = fixture();
@@ -1354,11 +1635,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
+            relay.ack(
+                &fixture.descriptor,
+                &ack,
+                &[message_id],
+                &[],
+                fixture.now + 32,
+            ),
+            Err(RelayError::InvalidAck)
+        );
+        assert_eq!(
+            relay.receipt_status(&message_id, fixture.now + 32).unwrap(),
+            RelayReceiptStatus::Pending
+        );
+        assert_eq!(
             relay
-                .ack(&fixture.descriptor, &ack, &[message_id], fixture.now + 32)
+                .ack(
+                    &fixture.descriptor,
+                    &ack,
+                    &[message_id],
+                    &[acceptance_receipt(&fixture, message_id, fixture.now + 32)],
+                    fixture.now + 32,
+                )
                 .unwrap(),
             1
         );
+        assert!(matches!(
+            relay.receipt_status(&message_id, fixture.now + 33).unwrap(),
+            RelayReceiptStatus::Accepted(_)
+        ));
     }
 
     #[test]
@@ -1428,7 +1733,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             relay
-                .ack(&fixture.descriptor, &ack, &[deletion_id], fixture.now + 3)
+                .ack(&fixture.descriptor, &ack, &[deletion_id], &[], fixture.now + 3)
                 .unwrap(),
             1
         );
@@ -1491,7 +1796,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            relay.ack(&other, &ack, &[message_id], fixture.now),
+            relay.ack(&other, &ack, &[message_id], &[], fixture.now),
             Err(RelayError::Unauthorized)
         );
     }
@@ -1586,7 +1891,9 @@ mod tests {
             fixture.now + 30,
         )
         .unwrap();
+        let receipt = acceptance_receipt(&fixture, message_id, fixture.now + 1);
         let response = app
+            .clone()
             .oneshot(
                 Request::post("/v1/workers/ack")
                     .header("content-type", "application/json")
@@ -1594,7 +1901,11 @@ mod tests {
                         serde_json::json!({
                             "workerDescriptor": hex::encode(fixture.descriptor.encode().unwrap()),
                             "workerAuth": hex::encode(ack_auth.encode()),
-                            "messageIds": [hex::encode(message_id)]
+                            "messageIds": [hex::encode(message_id)],
+                            "acceptanceReceipts": [{
+                                "messageId": hex::encode(message_id),
+                                "receipt": hex::encode(receipt.receipt.encode())
+                            }]
                         })
                         .to_string(),
                     ))
@@ -1603,6 +1914,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::get(format!(
+                    "/v1/envelopes/{}/receipt",
+                    hex::encode(message_id)
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "accepted");
+        assert_eq!(
+            json["receipt"],
+            hex::encode(receipt.receipt.encode())
+        );
     }
 
     #[test]

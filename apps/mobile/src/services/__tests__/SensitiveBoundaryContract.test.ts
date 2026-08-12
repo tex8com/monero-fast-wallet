@@ -75,8 +75,9 @@ describe('sensitive native boundary contract', () => {
     expect(nativeSpec).not.toMatch(/\bsetWalletPassword\s*\(/);
   });
 
-  it('exposes no generic wallet-file deletion and rechecks empty Fast Wallet removal natively', () => {
+  it('keeps wallet deletion app-authorized, directory-bounded, and rechecks empty Fast Wallet removal natively', () => {
     expect(nativeSpec).toContain('deleteEmptyWalletFiles(');
+    expect(nativeSpec).toContain('deleteProtectedWalletFiles(');
     expect(nativeSpec).not.toMatch(/\bdeleteWalletFiles\s*\(/);
     expect(nativeAdapter).not.toMatch(/\bdeleteWalletFiles\s*:/);
     expect(androidWalletModule).toContain(
@@ -88,7 +89,14 @@ describe('sensitive native boundary contract', () => {
     expect(androidWalletModule).toContain(
       'java.math.BigInteger(balanceAtomic) == java.math.BigInteger.ZERO',
     );
+    expect(androidWalletModule).toContain(
+      'Wallet path is outside the protected app wallet directory',
+    );
+    expect(androidWalletModule).toContain(
+      'override fun deleteProtectedWalletFiles(',
+    );
     expect(iosWalletModule).toContain('- (void)deleteEmptyWalletFiles:');
+    expect(iosWalletModule).toContain('- (void)deleteProtectedWalletFiles:');
     expect(iosWalletModule).toContain('if (!snapshot.synchronized)');
     expect(iosWalletModule).toContain('if (snapshot.balanceAtomic != 0)');
   });
@@ -206,6 +214,12 @@ describe('sensitive native boundary contract', () => {
     expect(androidWalletModule).toContain(
       'if (!requireAppAuthorized(promise))',
     );
+  });
+
+  it('does not block wallet reads while Android prepares a Ledger GATT connection', () => {
+    expect(androidWalletModule).toContain('ledgerTransportExecutor.execute');
+    expect(androidWalletModule).toContain('"mfw-ledger-transport"');
+    expect(androidWalletModule).toContain('ledgerTransportExecutor.shutdown()');
   });
 
   it('migrates an invalid legacy app-protection marker before first setup', () => {

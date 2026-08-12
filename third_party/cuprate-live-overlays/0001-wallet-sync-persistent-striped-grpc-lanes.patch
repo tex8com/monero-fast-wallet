@@ -1,0 +1,633 @@
+diff --git a/binaries/cuprated/proto/cuprate_stream.proto b/binaries/cuprated/proto/cuprate_stream.proto
+index 3bbc2ac..36de6e0 100644
+--- a/binaries/cuprated/proto/cuprate_stream.proto
++++ b/binaries/cuprated/proto/cuprate_stream.proto
+@@ -40,6 +40,12 @@ service BlockStream {
+   // end-of-stream.
+   rpc StreamBlocks(StreamBlocksRequest) returns (stream BlockChunk);
+ 
++  // Persistent striped transport for one logical wallet downloader. Each
++  // lane serves only its assigned stripes. A separate method is intentional:
++  // an older server returns UNIMPLEMENTED instead of silently ignoring stripe
++  // fields and sending the complete range on every lane.
++  rpc StreamBlockLane(StreamBlocksRequest) returns (stream BlockChunk);
++
+   // Resolve a public blockchain-anchored MFW name. The server only returns
+   // derived, owner-signed public data. Clients MUST reject every status except
+   // MFW_NAME_STATUS_FINALIZED before preparing a payment.
+@@ -111,6 +117,16 @@ message StreamBlocksRequest {
+   // PERF log entry on the server. Lets the wallet correlate its own log
+   // lines with server logs without a shared clock. Keep <= 64 chars.
+   string client_request_id = 6;
++
++  // Optional Monero short-chain history. It is reserved for reorg-aware
++  // negotiation; servers which do not resolve it keep start_height exact.
++  repeated bytes chain_locator = 7;
++
++  // StreamBlockLane only. The request interval is split into fixed stripes;
++  // lane i serves stripes i, i+lane_count, ... .
++  uint32 stripe_span_blocks = 8;
++  uint32 lane_index = 9;
++  uint32 lane_count = 10;
+ }
+ 
+ message BlockChunk {
+diff --git a/binaries/cuprated/src/rpc/grpc.rs b/binaries/cuprated/src/rpc/grpc.rs
+index 068e05c..9280dce 100644
+--- a/binaries/cuprated/src/rpc/grpc.rs
++++ b/binaries/cuprated/src/rpc/grpc.rs
+@@ -84,6 +84,7 @@ const DEFAULT_CHUNK_BLOCKS: usize = 200;
+ const MIN_CHUNK_BLOCKS: usize = 16;
+ const MAX_CHUNK_BLOCKS: usize = 10000;
+ const MAX_GRPC_CHUNK_RESPONSE_BYTES: usize = 256 * 1024 * 1024;
++const MAX_LANE_CHUNK_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+ const MAX_GRPC_CHUNK_TX_COUNT: usize = 1_000_000;
+ pub const MAX_GRPC_MESSAGE_BYTES: usize = 1024 * 1024 * 1024;
+ pub const GRPC_HTTP2_STREAM_WINDOW_BYTES: u32 = 512 * 1024 * 1024;
+@@ -93,6 +94,8 @@ pub const GRPC_HTTP2_CONNECTION_WINDOW_BYTES: u32 = 512 * 1024 * 1024;
+ /// purpose in production, but high-throughput wallet restore tests need enough
+ /// room to absorb scanner stalls without immediately stalling HTTP/2.
+ const CHANNEL_CAPACITY: usize = 32;
++const LANE_CHANNEL_CAPACITY: usize = 2;
++const MAX_LANE_COUNT: usize = 4;
+ 
+ static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+ static ACTIVE_STREAMS: AtomicU64 = AtomicU64::new(0);
+@@ -167,21 +170,144 @@ struct QueuedBlockChunk {
+     enqueued_at: Instant,
+ }
+ 
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++struct LaneSchedule {
++    base_height: usize,
++    stop_height: usize,
++    stripe_span: usize,
++    lane_index: usize,
++    lane_count: usize,
++}
++
++impl LaneSchedule {
++    fn new(
++        start_height: u64,
++        stop_height: u64,
++        stripe_span_blocks: u32,
++        lane_index: u32,
++        lane_count: u32,
++    ) -> Result<Self, String> {
++        if stop_height == 0 || stop_height < start_height {
++            return Err("StreamBlockLane requires a finite non-empty range".to_string());
++        }
++        let stripe_span = usize::try_from(stripe_span_blocks)
++            .map_err(|_| "stripe span does not fit this server".to_string())?;
++        if !(MIN_CHUNK_BLOCKS..=MAX_CHUNK_BLOCKS).contains(&stripe_span) {
++            return Err(format!(
++                "stripe_span_blocks must be in {MIN_CHUNK_BLOCKS}..={MAX_CHUNK_BLOCKS}"
++            ));
++        }
++        let lane_count = usize::try_from(lane_count)
++            .map_err(|_| "lane count does not fit this server".to_string())?;
++        let lane_index = usize::try_from(lane_index)
++            .map_err(|_| "lane index does not fit this server".to_string())?;
++        if lane_count == 0 || lane_count > MAX_LANE_COUNT {
++            return Err(format!("lane_count must be in 1..={MAX_LANE_COUNT}"));
++        }
++        if lane_index >= lane_count {
++            return Err("lane_index must be smaller than lane_count".to_string());
++        }
++        let base_height = usize::try_from(start_height)
++            .map_err(|_| "start height does not fit this server".to_string())?;
++        let stop_height = usize::try_from(stop_height)
++            .map_err(|_| "stop height does not fit this server".to_string())?;
++        stripe_span
++            .checked_mul(lane_count)
++            .and_then(|stride| base_height.checked_add(stride))
++            .ok_or_else(|| "lane schedule overflows this server".to_string())?;
++        Ok(Self {
++            base_height,
++            stop_height,
++            stripe_span,
++            lane_index,
++            lane_count,
++        })
++    }
++
++    fn first_height(self) -> Result<Option<usize>, Error> {
++        let offset = self
++            .stripe_span
++            .checked_mul(self.lane_index)
++            .ok_or_else(|| Error::msg("lane first-height multiplication overflow"))?;
++        let first = self
++            .base_height
++            .checked_add(offset)
++            .ok_or_else(|| Error::msg("lane first-height overflow"))?;
++        Ok((first <= self.stop_height).then_some(first))
++    }
++
++    fn stripe_bounds(self, height: usize) -> Result<(usize, usize), Error> {
++        let relative = height
++            .checked_sub(self.base_height)
++            .ok_or_else(|| Error::msg("lane height precedes requested base"))?;
++        let stripe_ordinal = relative / self.stripe_span;
++        if stripe_ordinal % self.lane_count != self.lane_index {
++            return Err(Error::msg("height is outside the assigned lane stripes"));
++        }
++        let stripe_start = self
++            .base_height
++            .checked_add(
++                stripe_ordinal
++                    .checked_mul(self.stripe_span)
++                    .ok_or_else(|| Error::msg("lane stripe multiplication overflow"))?,
++            )
++            .ok_or_else(|| Error::msg("lane stripe start overflow"))?;
++        let stripe_end = stripe_start
++            .checked_add(self.stripe_span - 1)
++            .map_or(self.stop_height, |end| end.min(self.stop_height));
++        if height < stripe_start || height > stripe_end {
++            return Err(Error::msg("height is outside the current lane stripe"));
++        }
++        Ok((stripe_start, stripe_end))
++    }
++
++    fn fetch_stop_height(self, height: usize) -> Result<u64, Error> {
++        let (_, stripe_end) = self.stripe_bounds(height)?;
++        u64::try_from(stripe_end).map_err(Error::from)
++    }
++
++    fn following_height(self, start: usize, blocks: usize) -> Result<Option<usize>, Error> {
++        if blocks == 0 {
++            return Err(Error::msg("zero-sized lane chunk"));
++        }
++        let (stripe_start, stripe_end) = self.stripe_bounds(start)?;
++        let end = start
++            .checked_add(blocks)
++            .ok_or_else(|| Error::msg("lane chunk end overflow"))?;
++        let stripe_end_exclusive = stripe_end
++            .checked_add(1)
++            .ok_or_else(|| Error::msg("lane stripe end overflow"))?;
++        if end < stripe_end_exclusive {
++            return Ok(Some(end));
++        }
++        if end > stripe_end_exclusive {
++            return Err(Error::msg("lane chunk crossed its stripe boundary"));
++        }
++        let stride = self
++            .stripe_span
++            .checked_mul(self.lane_count)
++            .ok_or_else(|| Error::msg("lane stride overflow"))?;
++        let next = stripe_start
++            .checked_add(stride)
++            .ok_or_else(|| Error::msg("next lane stripe overflow"))?;
++        Ok((next <= self.stop_height).then_some(next))
++    }
++}
++
+ #[derive(Clone)]
+ pub struct BlockStreamService {
+     pub handler: CupratedRpcHandler,
+     pub mfw_name_index: Option<SharedNameIndex>,
+ }
+ 
+-#[tonic::async_trait]
+-impl BlockStream for BlockStreamService {
+-    type StreamBlocksStream =
+-        Pin<Box<dyn Stream<Item = Result<BlockChunk, Status>> + Send + 'static>>;
++type BlockChunkStream = Pin<Box<dyn Stream<Item = Result<BlockChunk, Status>> + Send + 'static>>;
+ 
+-    async fn stream_blocks(
++impl BlockStreamService {
++    async fn open_block_stream(
+         &self,
+-        request: Request<StreamBlocksRequest>,
+-    ) -> Result<Response<Self::StreamBlocksStream>, Status> {
++        request: StreamBlocksRequest,
++        lane_rpc: bool,
++    ) -> Result<Response<BlockChunkStream>, Status> {
+         let StreamBlocksRequest {
+             start_height,
+             stop_height,
+@@ -189,7 +315,39 @@ impl BlockStream for BlockStreamService {
+             chunk_blocks_hint,
+             no_miner_tx,
+             client_request_id,
+-        } = request.into_inner();
++            stripe_span_blocks,
++            lane_index,
++            lane_count,
++            ..
++        } = request;
++
++        let lane_schedule = lane_rpc
++            .then(|| {
++                LaneSchedule::new(
++                    start_height,
++                    stop_height,
++                    stripe_span_blocks,
++                    lane_index,
++                    lane_count,
++                )
++                .map_err(Status::invalid_argument)
++            })
++            .transpose()?;
++        let rpc_name = if lane_rpc {
++            "StreamBlockLane"
++        } else {
++            "StreamBlocks"
++        };
++        let max_chunk_bytes = if lane_rpc {
++            MAX_LANE_CHUNK_RESPONSE_BYTES
++        } else {
++            MAX_GRPC_CHUNK_RESPONSE_BYTES
++        };
++        let channel_capacity = if lane_rpc {
++            LANE_CHANNEL_CAPACITY
++        } else {
++            CHANNEL_CAPACITY
++        };
+ 
+         let counter_id = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+         let server_req_id = format!("grpc-{counter_id}");
+@@ -209,22 +367,25 @@ impl BlockStream for BlockStreamService {
+             .duration_since(UNIX_EPOCH)
+             .map(|d| d.as_millis())
+             .unwrap_or(0);
++        let (log_span, log_lane, log_lanes) = lane_schedule.map_or((0, 0, 1), |lane| {
++            (lane.stripe_span, lane.lane_index, lane.lane_count)
++        });
+ 
+         eprintln!(
+-            "[GRPC StreamBlocks] OPEN id={} client_req_id={} start={} stop={} prune={} no_miner_tx={} chunk_blocks={} max_chunk_bytes={} max_chunk_txs={} range_reads={} pipeline_depth={} active_streams={} open_epoch_ms={}",
+-            server_req_id, client_id_label, start_height, stop_height, prune, no_miner_tx,
+-            chunk_blocks, MAX_GRPC_CHUNK_RESPONSE_BYTES, MAX_GRPC_CHUNK_TX_COUNT,
+-            sync_range_reads_enabled(), stream_pipeline_depth(), active,
+-            open_epoch_ms,
++            "[GRPC {}] OPEN id={} client_req_id={} start={} stop={} prune={} no_miner_tx={} chunk_blocks={} max_chunk_bytes={} max_chunk_txs={} queue_capacity={} stripe_span={} lane_index={} lane_count={} range_reads={} pipeline_depth={} active_streams={} open_epoch_ms={}",
++            rpc_name, server_req_id, client_id_label, start_height, stop_height, prune,
++            no_miner_tx, chunk_blocks, max_chunk_bytes, MAX_GRPC_CHUNK_TX_COUNT,
++            channel_capacity, log_span, log_lane, log_lanes, sync_range_reads_enabled(),
++            stream_pipeline_depth(), active, open_epoch_ms,
+         );
+ 
+-        let (tx, rx) = mpsc::channel::<QueuedBlockChunk>(CHANNEL_CAPACITY);
++        let (tx, rx) = mpsc::channel::<QueuedBlockChunk>(channel_capacity);
+         let mut handler = self.handler.clone();
+         let id_for_task = server_req_id.clone();
+         let id_for_close = server_req_id.clone();
+ 
+         tokio::spawn(async move {
+-            let r = produce_block_stream(
++            let result = produce_block_stream(
+                 &mut handler,
+                 tx,
+                 start_height,
+@@ -232,27 +393,32 @@ impl BlockStream for BlockStreamService {
+                 prune,
+                 chunk_blocks,
+                 no_miner_tx,
++                lane_schedule,
++                max_chunk_bytes,
++                channel_capacity,
++                rpc_name,
+                 &id_for_task,
+             )
+             .await;
+             let active_after = ACTIVE_STREAMS.fetch_sub(1, Ordering::SeqCst) - 1;
+-            if let Err(e) = r {
++            if let Err(error) = result {
+                 eprintln!(
+-                    "[GRPC StreamBlocks] CLOSE_ERR id={} active_remaining={} err={:?}",
+-                    id_for_close, active_after, e
++                    "[GRPC {}] CLOSE_ERR id={} active_remaining={} err={:?}",
++                    rpc_name, id_for_close, active_after, error
+                 );
+             }
+         });
+ 
+-        // This closure runs when tonic polls our application stream.  Its
+-        // delay is therefore the mpsc residence time up to tonic's demand;
+-        // it deliberately does *not* claim to measure a completed TCP write.
++        // This closure runs when tonic polls our application stream. Its delay
++        // is the mpsc residence time up to tonic demand, not a completed TCP
++        // write.
+         let deep_trace = sync_deep_trace_enabled();
+         let outbound = ReceiverStream::new(rx).map(move |queued| {
+             if deep_trace {
+                 let tonic_poll_ms = queued.enqueued_at.elapsed().as_secs_f64() * 1000.0;
+                 eprintln!(
+-                    "[SYNC_TRACE_SERVER_EGRESS] id={} seq={} start={} n_blocks={} payload_bytes={} mpsc_to_tonic_poll_ms={:.3}",
++                    "[SYNC_TRACE_SERVER_EGRESS] rpc={} id={} seq={} start={} n_blocks={} payload_bytes={} mpsc_to_tonic_poll_ms={:.3}",
++                    rpc_name,
+                     queued.chunk.server_request_id,
+                     queued.chunk.chunk_seq,
+                     queued.chunk.start_height,
+@@ -266,6 +432,26 @@ impl BlockStream for BlockStreamService {
+ 
+         Ok(Response::new(Box::pin(outbound)))
+     }
++}
++
++#[tonic::async_trait]
++impl BlockStream for BlockStreamService {
++    type StreamBlocksStream = BlockChunkStream;
++    type StreamBlockLaneStream = BlockChunkStream;
++
++    async fn stream_blocks(
++        &self,
++        request: Request<StreamBlocksRequest>,
++    ) -> Result<Response<Self::StreamBlocksStream>, Status> {
++        self.open_block_stream(request.into_inner(), false).await
++    }
++
++    async fn stream_block_lane(
++        &self,
++        request: Request<StreamBlocksRequest>,
++    ) -> Result<Response<Self::StreamBlockLaneStream>, Status> {
++        self.open_block_stream(request.into_inner(), true).await
++    }
+ 
+     async fn resolve_mfw_name(
+         &self,
+@@ -478,6 +664,7 @@ async fn fetch_chunk(
+     chunk_blocks: usize,
+     prune: bool,
+     no_miner_tx: bool,
++    max_response_bytes: usize,
+ ) -> Result<Option<FetchedChunk>, Error> {
+     let t_top = Instant::now();
+     let (top_h, _) = bin_helper::top_height(&mut state).await?;
+@@ -558,7 +745,7 @@ async fn fetch_chunk(
+                     want,
+                     prune,
+                     no_miner_tx,
+-                    MAX_GRPC_CHUNK_RESPONSE_BYTES,
++                    max_response_bytes,
+                     MAX_GRPC_CHUNK_TX_COUNT,
+                 )
+                 .await?;
+@@ -576,7 +763,7 @@ async fn fetch_chunk(
+                 chain_height,
+                 want,
+                 prune,
+-                MAX_GRPC_CHUNK_RESPONSE_BYTES,
++                max_response_bytes,
+                 MAX_GRPC_CHUNK_TX_COUNT,
+             )
+             .await?;
+@@ -639,10 +826,29 @@ async fn produce_block_stream(
+     prune: bool,
+     chunk_blocks: usize,
+     no_miner_tx: bool,
++    lane_schedule: Option<LaneSchedule>,
++    max_response_bytes: usize,
++    channel_capacity: usize,
++    rpc_name: &'static str,
+     server_req_id: &str,
+ ) -> Result<(), Error> {
+     let stream_t0 = Instant::now();
+-    let mut next_height = u64_to_usize(start_height);
++    let (log_span, log_lane, log_lanes) = lane_schedule.map_or((0, 0, 1), |lane| {
++        (lane.stripe_span, lane.lane_index, lane.lane_count)
++    });
++    let mut next_height = match lane_schedule {
++        Some(schedule) => match schedule.first_height()? {
++            Some(height) => height,
++            None => {
++                eprintln!(
++                    "[GRPC {}] CLOSE id={} reason=lane_empty chunks=0 blocks=0 bytes=0 total_ms=0.0",
++                    rpc_name, server_req_id,
++                );
++                return Ok(());
++            }
++        },
++        None => u64_to_usize(start_height),
++    };
+     let mut chunk_seq: u64 = 0;
+     let mut total_blocks: u64 = 0;
+     let mut total_bytes: u64 = 0;
+@@ -650,6 +856,10 @@ async fn produce_block_stream(
+     let mut prefetched: Option<tokio::task::JoinHandle<Result<Option<FetchedChunk>, Error>>> = None;
+ 
+     loop {
++        let fetch_stop_height = match lane_schedule {
++            Some(schedule) => schedule.fetch_stop_height(next_height)?,
++            None => stop_height,
++        };
+         let fetched = match prefetched.take() {
+             Some(task) => task
+                 .await
+@@ -658,10 +868,11 @@ async fn produce_block_stream(
+                 fetch_chunk(
+                     state.clone(),
+                     next_height,
+-                    stop_height,
++                    fetch_stop_height,
+                     chunk_blocks,
+                     prune,
+                     no_miner_tx,
++                    max_response_bytes,
+                 )
+                 .await?
+             }
+@@ -675,8 +886,8 @@ async fn produce_block_stream(
+                 0.0
+             };
+             eprintln!(
+-                "[GRPC StreamBlocks] CLOSE id={} reason=tip_reached chunks={} blocks={} bytes={} total_ms={:.1} avg_mbs={:.2}",
+-                server_req_id, chunk_seq, total_blocks, total_bytes, total_ms, avg_mbs,
++                "[GRPC {}] CLOSE id={} reason=tip_reached chunks={} blocks={} bytes={} total_ms={:.1} avg_mbs={:.2}",
++                rpc_name, server_req_id, chunk_seq, total_blocks, total_bytes, total_ms, avg_mbs,
+             );
+             return Ok(());
+         };
+@@ -685,23 +896,38 @@ async fn produce_block_stream(
+ 
+         if actual_blocks == 0 {
+             eprintln!(
+-                "[GRPC StreamBlocks] CLOSE id={} reason=zero_blocks chunks={} blocks={} bytes={}",
+-                server_req_id, chunk_seq, total_blocks, total_bytes,
++                "[GRPC {}] CLOSE id={} reason=zero_blocks chunks={} blocks={} bytes={}",
++                rpc_name, server_req_id, chunk_seq, total_blocks, total_bytes,
+             );
+             return Ok(());
+         }
+ 
+-        let following_height = fetched.start + actual_blocks;
+-        if pipeline_depth == 2 && following_height < fetched.target_end {
++        let following_height = match lane_schedule {
++            Some(schedule) => schedule.following_height(fetched.start, actual_blocks)?,
++            None => {
++                let following = fetched
++                    .start
++                    .checked_add(actual_blocks)
++                    .ok_or_else(|| Error::msg("stream chunk end overflow"))?;
++                (following < fetched.target_end).then_some(following)
++            }
++        };
++        if pipeline_depth == 2 && following_height.is_some() {
+             let state_for_prefetch = state.clone();
++            let prefetched_height = following_height.expect("checked as some");
++            let prefetched_stop_height = match lane_schedule {
++                Some(schedule) => schedule.fetch_stop_height(prefetched_height)?,
++                None => stop_height,
++            };
+             prefetched = Some(tokio::spawn(async move {
+                 fetch_chunk(
+                     state_for_prefetch,
+-                    following_height,
+-                    stop_height,
++                    prefetched_height,
++                    prefetched_stop_height,
+                     chunk_blocks,
+                     prune,
+                     no_miner_tx,
++                    max_response_bytes,
+                 )
+                 .await
+             }));
+@@ -745,16 +971,21 @@ async fn produce_block_stream(
+             Ok(b) => b.freeze(),
+             Err(e) => {
+                 eprintln!(
+-                    "[GRPC StreamBlocks] ENCODE_ERR id={} seq={} err={:?}",
+-                    server_req_id, chunk_seq, e
++                    "[GRPC {}] ENCODE_ERR id={} seq={} err={:?}",
++                    rpc_name, server_req_id, chunk_seq, e
+                 );
+                 return Err(e.into());
+             }
+         };
+         let enc_ms = t_enc.elapsed().as_secs_f64() * 1000.0;
+         let payload_len = payload_buf.len();
++        if payload_len > max_response_bytes {
++            return Err(Error::msg(format!(
++                "encoded chunk exceeds RPC byte limit: {payload_len} > {max_response_bytes}"
++            )));
++        }
+ 
+-        let queue_depth_before = CHANNEL_CAPACITY.saturating_sub(tx.capacity());
++        let queue_depth_before = channel_capacity.saturating_sub(tx.capacity());
+         let t_proto_copy = Instant::now();
+         let chunk = BlockChunk {
+             start_height: response_start,
+@@ -776,8 +1007,8 @@ async fn produce_block_stream(
+             Err(_) => {
+                 let total_ms = stream_t0.elapsed().as_secs_f64() * 1000.0;
+                 eprintln!(
+-                "[GRPC StreamBlocks] CLOSE id={} reason=client_disconnect chunks={} blocks={} bytes={} total_ms={:.1}",
+-                server_req_id, chunk_seq, total_blocks, total_bytes, total_ms,
++                "[GRPC {}] CLOSE id={} reason=client_disconnect chunks={} blocks={} bytes={} total_ms={:.1}",
++                rpc_name, server_req_id, chunk_seq, total_blocks, total_bytes, total_ms,
+             );
+                 return Ok(());
+             }
+@@ -787,7 +1018,7 @@ async fn produce_block_stream(
+             chunk,
+             enqueued_at: Instant::now(),
+         });
+-        let queue_depth_after = CHANNEL_CAPACITY.saturating_sub(tx.capacity());
++        let queue_depth_after = channel_capacity.saturating_sub(tx.capacity());
+ 
+         total_blocks += actual_blocks as u64;
+         total_bytes += payload_len as u64;
+@@ -806,7 +1037,8 @@ async fn produce_block_stream(
+         };
+ 
+         eprintln!(
+-            "[SYNC_TRACE_SERVER] id={} seq={} start={} n_blocks={} payload_bytes={} range_read={} scanpack_hit={} pipeline_depth={} top_ms={:.3} fetch_ms={:.3} fetch_batches={} fetch_heights_ms={:.3} fetch_db_ms={:.3} fetch_collect_ms={:.3} fetch_txs={} fetch_est_bytes={} fetch_limit_bytes={} fetch_limit_txs={} idx_ms={:.3} idx_parse_ms={:.3} idx_db_ms={:.3} idx_reconstruct_ms={:.3} idx_txs={} idx_values={} response_build_ms={:.3} epee_encode_ms={:.3} protobuf_copy_ms={:.3} queue_depth_before={} queue_depth_after={} queue_send_wait_ms={:.3} upstream_ms={:.3} bp_ratio={:.3} cum_ms={:.3} cum_bytes={} cum_mbs={:.3} chain_tip={}",
++            "[SYNC_TRACE_SERVER] rpc={} id={} seq={} start={} n_blocks={} payload_bytes={} range_read={} scanpack_hit={} pipeline_depth={} top_ms={:.3} fetch_ms={:.3} fetch_batches={} fetch_heights_ms={:.3} fetch_db_ms={:.3} fetch_collect_ms={:.3} fetch_txs={} fetch_est_bytes={} fetch_limit_bytes={} fetch_limit_txs={} idx_ms={:.3} idx_parse_ms={:.3} idx_db_ms={:.3} idx_reconstruct_ms={:.3} idx_txs={} idx_values={} response_build_ms={:.3} epee_encode_ms={:.3} protobuf_copy_ms={:.3} queue_depth_before={} queue_depth_after={} queue_send_wait_ms={:.3} upstream_ms={:.3} bp_ratio={:.3} cum_ms={:.3} cum_bytes={} cum_mbs={:.3} chain_tip={} stripe_span={} lane_index={} lane_count={}",
++            rpc_name,
+             server_req_id, chunk_seq, response_start, actual_blocks, payload_len,
+             range_read, scanpack_hit, pipeline_depth,
+             top_ms, fetch_ms, fetch_metrics.batch_count, fetch_metrics.height_vector_ms,
+@@ -817,18 +1049,87 @@ async fn produce_block_stream(
+             index_metrics.reconstruct_ms, index_metrics.transactions,
+             index_metrics.output_index_values, response_build_ms, enc_ms, proto_copy_ms,
+             queue_depth_before, queue_depth_after, send_ms, upstream_ms, bp_ratio,
+-            cum_ms, total_bytes, cum_mbs, top_h,
++            cum_ms, total_bytes, cum_mbs, top_h, log_span, log_lane, log_lanes,
+         );
+ 
+         if bp_ratio > 2.0 {
+             eprintln!(
+-                "[GRPC StreamBlocks] BACKPRESSURE id={} seq={} send_ms={:.1} upstream_ms={:.1} ratio={:.2} -- client slower than server",
+-                server_req_id, chunk_seq, send_ms, upstream_ms, bp_ratio,
++                "[GRPC {}] BACKPRESSURE id={} seq={} send_ms={:.1} upstream_ms={:.1} ratio={:.2} -- client slower than server",
++                rpc_name, server_req_id, chunk_seq, send_ms, upstream_ms, bp_ratio,
+             );
+         }
+ 
+         chunk_seq += 1;
+-        next_height += actual_blocks;
++        match following_height {
++            Some(height) => next_height = height,
++            None => {
++                let total_ms = stream_t0.elapsed().as_secs_f64() * 1000.0;
++                let avg_mbs = if total_ms > 0.0 {
++                    (total_bytes as f64 / 1024.0 / 1024.0) / (total_ms / 1000.0)
++                } else {
++                    0.0
++                };
++                eprintln!(
++                    "[GRPC {}] CLOSE id={} reason=range_complete chunks={} blocks={} bytes={} total_ms={:.1} avg_mbs={:.2}",
++                    rpc_name, server_req_id, chunk_seq, total_blocks, total_bytes, total_ms, avg_mbs,
++                );
++                return Ok(());
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod lane_schedule_tests {
++    use super::*;
++
++    #[test]
++    fn four_lanes_cover_every_stripe_once() {
++        let base = 101_u64;
++        let stop = base + 512 * 11 + 87;
++        let mut stripes = Vec::new();
++        for lane_index in 0..4 {
++            let schedule = LaneSchedule::new(base, stop, 512, lane_index, 4).unwrap();
++            let mut next = schedule.first_height().unwrap();
++            while let Some(start) = next {
++                let (_, end) = schedule.stripe_bounds(start).unwrap();
++                stripes.push((start, end));
++                next = schedule.following_height(start, end - start + 1).unwrap();
++            }
++        }
++        stripes.sort_unstable();
++        assert_eq!(stripes.first().copied(), Some((101, 612)));
++        assert_eq!(stripes.last().copied(), Some((5733, 5820)));
++        assert!(stripes.windows(2).all(|pair| pair[0].1 + 1 == pair[1].0));
++    }
++
++    #[test]
++    fn lane_continues_inside_stripe_then_jumps_by_lane_stride() {
++        let schedule = LaneSchedule::new(100, 5000, 512, 0, 4).unwrap();
++        assert_eq!(schedule.first_height().unwrap(), Some(100));
++        assert_eq!(schedule.following_height(100, 200).unwrap(), Some(300));
++        assert_eq!(schedule.following_height(300, 312).unwrap(), Some(2148));
++        assert_eq!(schedule.fetch_stop_height(2148).unwrap(), 2659);
++    }
++
++    #[test]
++    fn final_partial_stripe_ends_cleanly() {
++        let schedule = LaneSchedule::new(100, 699, 512, 1, 4).unwrap();
++        assert_eq!(schedule.first_height().unwrap(), Some(612));
++        assert_eq!(schedule.fetch_stop_height(612).unwrap(), 699);
++        assert_eq!(schedule.following_height(612, 88).unwrap(), None);
++    }
++
++    #[test]
++    fn invalid_lane_contracts_fail_closed() {
++        assert!(LaneSchedule::new(100, 0, 512, 0, 4).is_err());
++        assert!(LaneSchedule::new(100, 99, 512, 0, 4).is_err());
++        assert!(LaneSchedule::new(100, 5000, 15, 0, 4).is_err());
++        assert!(LaneSchedule::new(100, 5000, 512, 4, 4).is_err());
++        assert!(LaneSchedule::new(100, 5000, 512, 0, 5).is_err());
++        let schedule = LaneSchedule::new(100, 5000, 512, 0, 4).unwrap();
++        assert!(schedule.following_height(100, 513).is_err());
++        assert!(schedule.fetch_stop_height(612).is_err());
+     }
+ }
+ 
+

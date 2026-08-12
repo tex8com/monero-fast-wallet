@@ -1,0 +1,139 @@
+From 13a421d6b029b7bb4a0c9b95c1f4964ecae580d4 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet <engineering@tex8.app>
+Date: Sun, 9 Aug 2026 21:05:00 +0000
+Subject: [PATCH] wallet: report only Ledger spent-status distribution
+
+Expose three aggregate counters from the authoritative
+`is_key_image_spent` reply: unspent, blockchain-spent and pool-spent outputs.
+The counters allow a reference acceptance run to distinguish a missing outgoing
+record caused by the Core recovery path from an incompatible daemon response,
+without exposing an output, key image, transaction, address or key material.
+
+Validate each status enum before it mutates a transfer. An unexpected status
+fails closed and is not reported as a successful spent-state result.
+---
+ src/wallet/api/wallet.cpp    |  3 +++
+ src/wallet/api/wallet2_api.h |  3 +++
+ src/wallet/wallet2.cpp       | 32 ++++++++++++++++++++++++++++++--
+ src/wallet/wallet2.h         |  4 +++-
+ 4 files changed, 39 insertions(+), 3 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 897f3a0..6c9d437 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -3207,6 +3207,9 @@ uint64_t WalletImpl::coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &
+     stats.pendingOutputCount = core_stats.pending_output_count;
+     stats.importedOutputCount = core_stats.imported_output_count;
+     stats.derivedOutputCount = core_stats.derived_output_count;
++    stats.spentStatusUnspentOutputCount = core_stats.spent_status_unspent_output_count;
++    stats.spentStatusBlockchainOutputCount = core_stats.spent_status_blockchain_output_count;
++    stats.spentStatusPoolOutputCount = core_stats.spent_status_pool_output_count;
+     stats.derivationDurationMs = core_stats.derivation_duration_ms;
+     stats.spentStatusRpcDurationMs = core_stats.spent_status_rpc_duration_ms;
+     stats.outgoingRpcDurationMs = core_stats.outgoing_rpc_duration_ms;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 333ad82..041b853 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -71,6 +71,9 @@ struct LedgerKeyImageSyncStats {
+     uint64_t pendingOutputCount = 0;
+     uint64_t importedOutputCount = 0;
+     uint64_t derivedOutputCount = 0;
++    uint64_t spentStatusUnspentOutputCount = 0;
++    uint64_t spentStatusBlockchainOutputCount = 0;
++    uint64_t spentStatusPoolOutputCount = 0;
+     uint64_t derivationDurationMs = 0;
+     uint64_t spentStatusRpcDurationMs = 0;
+     uint64_t outgoingRpcDurationMs = 0;
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 8ef7739..646577b 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -13854,7 +13854,10 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+         unspent,
+         true,
+         &stats.spent_status_rpc_duration_ms,
+-        &stats.outgoing_rpc_duration_ms);
++        &stats.outgoing_rpc_duration_ms,
++        &stats.spent_status_unspent_output_count,
++        &stats.spent_status_blockchain_output_count,
++        &stats.spent_status_pool_output_count);
+     const uint64_t update_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+         std::chrono::steady_clock::now() - update_started_at).count();
+     const uint64_t rpc_total_ms =
+@@ -15835,13 +15838,19 @@ uint64_t wallet2::import_key_images(const std::string &filename, uint64_t &spent
+ }
+ 
+ //----------------------------------------------------------------------------------------------------
+-uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, size_t offset, uint64_t &spent, uint64_t &unspent, bool check_spent, uint64_t *spent_status_rpc_duration_ms, uint64_t *outgoing_rpc_duration_ms)
++uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, size_t offset, uint64_t &spent, uint64_t &unspent, bool check_spent, uint64_t *spent_status_rpc_duration_ms, uint64_t *outgoing_rpc_duration_ms, uint64_t *spent_status_unspent_output_count, uint64_t *spent_status_blockchain_output_count, uint64_t *spent_status_pool_output_count)
+ {
+   PERF_TIMER(import_key_images_lots);
+   if (spent_status_rpc_duration_ms)
+     *spent_status_rpc_duration_ms = 0;
+   if (outgoing_rpc_duration_ms)
+     *outgoing_rpc_duration_ms = 0;
++  if (spent_status_unspent_output_count)
++    *spent_status_unspent_output_count = 0;
++  if (spent_status_blockchain_output_count)
++    *spent_status_blockchain_output_count = 0;
++  if (spent_status_pool_output_count)
++    *spent_status_pool_output_count = 0;
+   COMMAND_RPC_IS_KEY_IMAGE_SPENT::request req = AUTO_VAL_INIT(req);
+   COMMAND_RPC_IS_KEY_IMAGE_SPENT::response daemon_resp = AUTO_VAL_INIT(daemon_resp);
+ 
+@@ -15917,8 +15926,27 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+ 
+     for (size_t n = 0; n < daemon_resp.spent_status.size(); ++n)
+     {
++      const auto status = daemon_resp.spent_status[n];
++      if (status == COMMAND_RPC_IS_KEY_IMAGE_SPENT::UNSPENT)
++      {
++        if (spent_status_unspent_output_count)
++          ++*spent_status_unspent_output_count;
++      }
++      else if (status == COMMAND_RPC_IS_KEY_IMAGE_SPENT::SPENT_IN_BLOCKCHAIN)
++      {
++        if (spent_status_blockchain_output_count)
++          ++*spent_status_blockchain_output_count;
++      }
++      else if (status == COMMAND_RPC_IS_KEY_IMAGE_SPENT::SPENT_IN_POOL)
++      {
++        if (spent_status_pool_output_count)
++          ++*spent_status_pool_output_count;
++      }
++      else
++        THROW_WALLET_EXCEPTION_IF(true, error::wallet_internal_error,
++            "daemon returned an invalid key-image spent status");
+       transfer_details &td = m_transfers[n + offset];
+-      td.m_spent = daemon_resp.spent_status[n] != COMMAND_RPC_IS_KEY_IMAGE_SPENT::UNSPENT;
++      td.m_spent = status != COMMAND_RPC_IS_KEY_IMAGE_SPENT::UNSPENT;
+     }
+   }
+   spent = 0;
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 810fc39..276ad39 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -104,6 +104,9 @@ namespace tools
+     uint64_t pending_output_count{0};
+     uint64_t imported_output_count{0};
+     uint64_t derived_output_count{0};
++    uint64_t spent_status_unspent_output_count{0};
++    uint64_t spent_status_blockchain_output_count{0};
++    uint64_t spent_status_pool_output_count{0};
+     uint64_t derivation_duration_ms{0};
+     uint64_t spent_status_rpc_duration_ms{0};
+     uint64_t outgoing_rpc_duration_ms{0};
+@@ -1714,7 +1717,7 @@ private:
+     size_t reconcile_output_key_images(
+         const std::vector<std::pair<crypto::key_image, bool>> &spent_states,
+         uint64_t checked_height);
+-    uint64_t import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, size_t offset, uint64_t &spent, uint64_t &unspent, bool check_spent = true, uint64_t *spent_status_rpc_duration_ms = nullptr, uint64_t *outgoing_rpc_duration_ms = nullptr);
++    uint64_t import_key_images(const std::vector<std::pair<crypto::key_image, crypto::signature>> &signed_key_images, size_t offset, uint64_t &spent, uint64_t &unspent, bool check_spent = true, uint64_t *spent_status_rpc_duration_ms = nullptr, uint64_t *outgoing_rpc_duration_ms = nullptr, uint64_t *spent_status_unspent_output_count = nullptr, uint64_t *spent_status_blockchain_output_count = nullptr, uint64_t *spent_status_pool_output_count = nullptr);
+     uint64_t import_key_images(const std::string &filename, uint64_t &spent, uint64_t &unspent);
+     bool import_key_images(std::vector<crypto::key_image> key_images, size_t offset=0, boost::optional<std::unordered_set<size_t>> selected_transfers=boost::none);
+     bool import_key_images(signed_tx_set & signed_tx, size_t offset=0, bool only_selected_transfers=false);
+-- 
+2.50.1

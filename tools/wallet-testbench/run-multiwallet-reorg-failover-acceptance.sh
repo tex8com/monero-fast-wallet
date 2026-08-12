@@ -26,6 +26,8 @@ for required in \
   "${monero_build}/lib/libwallet_api.a" \
   "${monero_build}/lib/libcuprate_grpc_stream.a" \
   "${depends_prefix}/lib/libboost_chrono.a" \
+  "${grpc_prefix}/bin/protoc" \
+  "${grpc_prefix}/bin/grpc_cpp_plugin" \
   "${grpc_prefix}/lib/libz.a" \
   "${fast_crypto}"; do
   if [[ ! -f "${required}" ]]; then
@@ -42,22 +44,54 @@ export BRIDGE_BUILD_DIR="${bridge_build}"
 export MONERO_WALLET_BRIDGE_WITH_GRPC_STREAM=ON
 export MONERO_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=ON
 export MONERO_WALLET_BRIDGE_ENABLE_TEST_HOOKS=ON
-export PKG_CONFIG_PATH="${grpc_prefix}/lib/pkgconfig:${depends_prefix}/lib/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+export MONERO_GRPC_SDK_PREFIX="${grpc_prefix}"
+export MONERO_GRPC_PKG_CONFIG_PATH="${grpc_prefix}/lib/pkgconfig:${grpc_prefix}/share/pkgconfig"
+export PROTOC_PATH="${grpc_prefix}/bin/protoc"
+export GRPC_CPP_PLUGIN_PATH="${grpc_prefix}/bin/grpc_cpp_plugin"
+export PKG_CONFIG_LIBDIR="${MONERO_GRPC_PKG_CONFIG_PATH}"
+export PKG_CONFIG_PATH=""
 
 "${repo_root}/native/monero-bridge/scripts/configure-local-monero-bridge.sh"
 cmake --build "${bridge_build}" --target monero_wallet_multiwallet_acceptance -j4
 runner="${bridge_build}/monero_wallet_multiwallet_acceptance"
 
-workdir="$(mktemp -d "/tmp/mfw-real-${wallet_count}-wallets.XXXXXX")"
-password_file="$(mktemp "/tmp/mfw-real-${wallet_count}-password.XXXXXX")"
-printf 'temporary-native-acceptance-password' > "${password_file}"
-chmod 600 "${password_file}"
+ram_device=""
+ram_volume=""
+workdir=""
 cleanup() {
-  find "${workdir}" -type f -delete 2>/dev/null || true
-  find "${workdir}" -depth -type d -empty -delete 2>/dev/null || true
-  find "${password_file}" -type f -delete 2>/dev/null || true
+  local exit_status=$?
+  trap - EXIT
+  if [[ "${ram_device}" =~ ^/dev/disk ]]; then
+    diskutil unmount force "${ram_device}" >/dev/null 2>&1 || true
+    hdiutil detach "${ram_device}" >/dev/null 2>&1 || true
+  fi
+  exit "${exit_status}"
 }
 trap cleanup EXIT
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "The multiwallet acceptance runner requires a dedicated macOS RAM volume" >&2
+  exit 65
+fi
+ram_volume="TEX8MWA${$}"
+volume_path="/Volumes/${ram_volume}"
+if [[ -e "${volume_path}" ]]; then
+  echo "Refusing to reuse an existing RAM-volume path: ${volume_path}" >&2
+  exit 65
+fi
+ram_device="$(hdiutil attach -nomount ram://524288 | awk 'NR == 1 { print $1 }')"
+if [[ ! "${ram_device}" =~ ^/dev/disk ]]; then
+  echo "Could not create a dedicated RAM device" >&2
+  exit 65
+fi
+diskutil erasevolume HFS+ "${ram_volume}" "${ram_device}" >/dev/null
+if [[ ! -d "${volume_path}" ]]; then
+  echo "Dedicated RAM volume was not mounted" >&2
+  exit 65
+fi
+workdir="${volume_path}/wallets"
+mkdir -p "${workdir}"
+chmod 700 "${workdir}"
 
 rpc_url="http://${rpc}"
 tip="$(
@@ -88,8 +122,9 @@ log="${evidence_dir}/multiwallet-${wallet_count}-reorg-failover.log"
 printf 'acceptance_parameters wallets=%s tip=%s restore_height=%s shallow_height=%s deep_height=%s core_tree=%s\n' \
   "${wallet_count}" "${tip}" "${restore_height}" "${shallow_height}" \
   "${deep_height}" "${core_tree}" | tee "${log}"
+printf 'acceptance_workspace storage=ram-only credential=ephemeral\n' | tee -a "${log}"
 
-"${runner}" mainnet "${workdir}" "@${password_file}" "${wallet_count}" \
+"${runner}" mainnet "${workdir}" "@ephemeral" "${wallet_count}" \
   "${restore_height}" "${rpc}" "${grpc}" \
   "${shallow_height}" "${shallow_hash}" \
   "${deep_height}" "${deep_hash}" "${timeout}" 2>&1 | tee -a "${log}"

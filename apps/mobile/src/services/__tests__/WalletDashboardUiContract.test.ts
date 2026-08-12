@@ -12,6 +12,7 @@ describe('Wallet dashboard interaction contract', () => {
   const wallets = source('src', 'screens', 'WalletsScreen.tsx');
   const receive = source('src', 'screens', 'ReceiveScreen.tsx');
   const selector = source('src', 'components', 'WalletSelector.tsx');
+  const settings = source('src', 'screens', 'SettingsScreen.tsx');
   const syncStatus = source('src', 'components', 'SyncStatusBar.tsx');
   const walletState = source('src', 'services', 'WalletState.tsx');
   const appSecurity = source('src', 'services', 'AppSecurity.tsx');
@@ -29,6 +30,14 @@ describe('Wallet dashboard interaction contract', () => {
     'monerowallet',
     'NativeMoneroWalletModule.kt',
   );
+  const nativeAndroidJni = source(
+    'android',
+    'app',
+    'src',
+    'main',
+    'cpp',
+    'NativeMoneroWalletJni.cpp',
+  );
   const walletEngine = readFileSync(
     resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletEngine.cpp'),
     'utf8',
@@ -44,12 +53,52 @@ describe('Wallet dashboard interaction contract', () => {
       'lastNonEmptyPayloadBytes',
       'networkBytesReceived',
       'payloadBytesReceived',
+      'lastNonEmptyWalletDerivationCount',
+      'lastNonEmptyWalletDerivationUs',
+      'totalWalletDerivationCount',
+      'totalWalletDerivationUs',
     ];
 
     for (const field of requiredFields) {
       expect(nativeAndroidBridge).toContain(
         `putDouble("${field}", status.numberValue("${field}"))`,
       );
+    }
+  });
+
+  it('forwards Android sync failure diagnostics instead of dropping their cause', () => {
+    expect(nativeAndroidBridge).toContain(
+      'putString("lastError", status.stringValue("lastError"))',
+    );
+    expect(nativeAndroidBridge).toContain(
+      'putDouble("consecutiveFailures", status.numberValue("consecutiveFailures"))',
+    );
+  });
+
+  it('forwards the complete Ledger queue and reconciliation result through Android', () => {
+    expect(nativeAndroidBridge).toContain(
+      'snapshot.numberValue("pendingOutputKeyImageCount")',
+    );
+    const resultFields = [
+      'verifiedOutputCount',
+      'pendingOutputCount',
+      'remainingPendingOutputCount',
+      'importedOutputCount',
+      'derivedOutputCount',
+      'spentStatusUnspentOutputCount',
+      'spentStatusBlockchainOutputCount',
+      'spentStatusPoolOutputCount',
+      'derivationDurationMs',
+      'spentStatusRpcDurationMs',
+      'outgoingRpcDurationMs',
+      'stateUpdateDurationMs',
+      'verificationDurationMs',
+      'storeDurationMs',
+      'totalDurationMs',
+    ];
+    for (const field of resultFields) {
+      expect(nativeAndroidJni).toContain(`"${field}"`);
+      expect(nativeAndroidBridge).toContain(`result.numberValue("${field}")`);
     }
   });
 
@@ -122,19 +171,21 @@ describe('Wallet dashboard interaction contract', () => {
 
   it('opens wallet management from the All Wallets section header', () => {
     expect(selector).toContain('onManage?: () => void');
-    expect(selector).toContain("accessibilityRole=\"link\"");
+    expect(selector).toContain('accessibilityRole="link"');
     expect(selector).toContain("t('wallets.manage')");
     expect(home).toContain("onManage={() => navigation.navigate('Wallets')}");
   });
 
   it('manages every native subaddress from the selected wallet', () => {
-    expect(wallets).toContain("manageAddresses: true");
+    expect(wallets).toContain('manageAddresses: true');
     expect(wallets).toContain("navigation.navigate('Receive'");
     expect(receive).toContain('route?.params?.manageAddresses === true');
     expect(receive).toContain('walletService.listSubaddresses(session)');
     expect(receive).toContain("t('receive.newAddressName')");
     expect(walletServiceSource).toContain("'listSubaddresses'");
-    expect(walletServiceSource).toContain('requireNativeMoneroWallet().listSubaddresses');
+    expect(walletServiceSource).toContain(
+      'requireNativeMoneroWallet().listSubaddresses',
+    );
     expect(nativeWallet).toContain('listSubaddresses(');
   });
 
@@ -156,7 +207,7 @@ describe('Wallet dashboard interaction contract', () => {
       'ensureRegisteredWalletOpen(registration, isActive, true)',
     );
     expect(walletState).toContain("registration.kind === 'fast'");
-    expect(selector).toContain("badge: fastWallet");
+    expect(selector).toContain("? t('walletSelector.fast')");
     expect(selector).toContain("kind: fastWallet ? 'fast' : registration.kind");
     expect(selector).toContain('walletSnapshotStatusLabel(snapshot, t)');
   });
@@ -177,15 +228,19 @@ describe('Wallet dashboard interaction contract', () => {
 
   it('defers a Fast Wallet signal until the single app-wide lock is open', () => {
     expect(walletState).toContain("'incomingSignal.refresh.deferred'");
-    expect(walletState).toContain('if (!appSecurityReady || appSecurityLocked)');
-    expect(walletState).toContain("reason: !appSecurityReady ? 'appSecurityNotReady' : 'appLocked'");
+    expect(walletState).toContain(
+      'if (!appSecurityReady || appSecurityLocked)',
+    );
+    expect(walletState).toContain(
+      "reason: !appSecurityReady ? 'appSecurityNotReady' : 'appLocked'",
+    );
   });
 
   it('does not turn protected Fast Wallet metadata into a startup error', () => {
     expect(fastWalletPush).toContain('registration.refreshDeferred');
     expect(fastWalletPush).toContain('if (!protection || protection.locked)');
     expect(appSecurity).toContain(
-      'void FastWalletPushService.refreshRegistrationQuietly()',
+      'void FastWalletPushService.refreshRegistrationQuietly(undefined, true)',
     );
   });
 
@@ -196,11 +251,13 @@ describe('Wallet dashboard interaction contract', () => {
     );
     expect(activation).toContain('activeWalletPersistenceRef.current');
     expect(activation).toContain('activeWalletSelectionGenerationRef.current');
-    expect(activation.indexOf('setRegisteredWallet(optimisticWallet)')).toBeLessThan(
-      activation.indexOf('const persistSelection ='),
-    );
-    expect(activation.indexOf('setSnapshot(walletSnapshotsRef.current[walletId])')).toBeLessThan(
-      activation.indexOf('walletService.setActiveRegisteredWallet(walletId)'),
+    expect(
+      activation.indexOf('setRegisteredWallet(optimisticWallet)'),
+    ).toBeLessThan(activation.indexOf('const persistSelection ='));
+    expect(
+      activation.indexOf('setSnapshot(walletSnapshotsRef.current[walletId])'),
+    ).toBeLessThan(
+      activation.indexOf('walletService.setActiveRegisteredWallet('),
     );
   });
 
@@ -223,17 +280,28 @@ describe('Wallet dashboard interaction contract', () => {
     expect(syncStatus).toContain('testID="wallet-progress"');
     expect(syncStatus).toContain('const blockchainProgress =');
     expect(syncStatus).toContain('const walletProgress =');
+    expect(syncStatus).not.toContain("presentation.phase === 'finalizing'\n    ? 99");
     expect(syncStatus).toContain('const blockchainCurrent =');
     expect(syncStatus).toContain('network.ready ? 100 : network.progress ?? 0');
     expect(syncStatus).toContain('network.downloadedHeight');
     expect(syncStatus).toContain(': network.chainHeight');
     expect(syncStatus).toContain('target={network.targetHeight}');
+    expect(syncStatus).toContain('networkSyncMegabitsPerSecond(networkStatus)');
+    expect(syncStatus).toContain(
+      'walletSyncDerivationsPerSecond(networkStatus)',
+    );
+    expect(syncStatus).toContain("t('sync.networkRate'");
+    expect(syncStatus).toContain("t('sync.derivationRate'");
     expect(syncStatus).toContain('t("sync.startingConnectionElapsed"');
     expect(syncStatus).toContain('seconds: connectionElapsedSeconds');
-    expect(syncStatus).toContain('const connectionElapsedSeconds = useElapsedSeconds(');
+    expect(syncStatus).toContain(
+      'const connectionElapsedSeconds = useElapsedSeconds(',
+    );
     expect(syncStatus).toContain('extra={blockchainExtra}');
     expect(syncStatus).toContain('t("sync.blockHeight"');
-    expect(syncStatus).toContain('const showWalletSync = connected && walletOpened');
+    expect(syncStatus).toContain(
+      'const showWalletSync = connected && walletOpened',
+    );
     expect(syncStatus).toContain('{showWalletSync ? (');
   });
 
@@ -241,15 +309,51 @@ describe('Wallet dashboard interaction contract', () => {
     expect(walletEngine).toContain('wallet->numSubaddressAccounts()');
     expect(walletEngine).toContain('next.balanceAtomic += balance');
     expect(walletEngine).toContain('next.unlockedBalanceAtomic += unlocked');
-    expect(walletEngine).not.toContain('next.balanceAtomic = wallet->balance(0)');
+    expect(walletEngine).not.toContain(
+      'next.balanceAtomic = wallet->balance(0)',
+    );
+    expect(walletServiceSource).toContain(
+      'if (session.accountIndex === undefined)',
+    );
+    const snapshotMethod = walletServiceSource.slice(
+      walletServiceSource.indexOf('async snapshot(session: WalletSession)'),
+      walletServiceSource.indexOf(
+        'async getTransactions(',
+        walletServiceSource.indexOf('async snapshot(session: WalletSession)'),
+      ),
+    );
+    expect(snapshotMethod).not.toContain(
+      'const accountIndex = session.accountIndex ?? 0;',
+    );
     expect(home).toContain('const activeWalletSnapshot = registeredWallet');
     expect(home).toContain('walletSnapshotMap[registeredWallet.id]');
-    expect(home).toContain('const totalBalanceAtomic = toAtomicBigInt(activeWalletSnapshot?.balanceAtomic)');
+    expect(home).toContain(
+      'const totalBalanceAtomic = toAtomicBigInt(activeWalletSnapshot?.balanceAtomic)',
+    );
     expect(home).toContain('activeWalletSnapshot?.pendingOutputKeyImageCount');
     expect(walletServiceSource).toContain('enableLedgerReadOnlyCompanion');
     expect(walletState).toContain(
-      'await walletService.enableLedgerReadOnlyCompanion(activeRegistration)',
+      'await walletService.enableLedgerReadOnlyCompanion(',
     );
+  });
+
+  it('labels Ledger account 1 clearly and keeps internal verification diagnostics out of the dashboard', () => {
+    expect(selector).toContain("t('walletSelector.ledgerFast')");
+    expect(selector).toContain("t('walletSelector.ledgerFastAccount')");
+    expect(selector).toContain(
+      'isLegacyLedgerAccountRegistration(registration)',
+    );
+    expect(selector).toContain('ledgerVerificationRequired');
+    expect(selector).toContain('snapshotHasKnownLedgerActivity(snapshot)');
+    expect(home).toContain("hasUnverifiedLedgerBalance\n    ? '—'");
+    expect(home).not.toContain("t('home.ledgerBalanceNeedsVerification')");
+    expect(home).not.toContain('<Text style={s.statusError}');
+    expect(selector).not.toContain(
+      "t('walletSelector.ledgerBalanceNeedsVerification')",
+    );
+    expect(home).toContain("t('home.marketPrice')");
+    expect(home).not.toContain("t('home.ledgerBalanceVerificationHint')");
+    expect(home).not.toContain("t('home.verifyLedgerBalance')");
   });
 
   it('opens sync details by default while working and collapses after completion', () => {
@@ -265,21 +369,71 @@ describe('Wallet dashboard interaction contract', () => {
     expect(home).toContain('onExpandedChange={setSyncStatusExpanded}');
   });
 
-  it('automatically reconciles a remembered Ledger and reserves the button for enrollment', () => {
+  it('automatically reconciles a positive queue or one unverified migrated history with bounded discovery', () => {
     expect(walletState).toContain("'ledgerAutoVerification.start'");
-    expect(walletState).toContain('await walletService.getLedgerTransportStatus()');
-    expect(walletState).toContain('await walletService.requestLedgerTransportAccess()');
-    expect(walletState).toContain('await reconcileLedgerBalance()');
+    expect(walletState).toContain(
+      'await walletService.getLedgerTransportStatus()',
+    );
+    expect(walletState).toContain(
+      'await walletService.requestLedgerTransportAccess()',
+    );
+    expect(walletState).toContain('await reconcileLedgerBalance(true)');
+    expect(walletState).toContain('LEDGER_DISCOVERY_COOLDOWN_MS = 60_000');
+    expect(walletState).toContain('ledgerReconciliationInFlightRef');
+    expect(walletState).toContain("reason: 'active-wallet-changed'");
+    expect(walletState).not.toContain('!currentSnapshot?.synchronized');
+    expect(walletState).not.toContain('snapshot?.synchronized &&');
+    expect(walletState).toContain('available: transport.available');
+    expect(walletState).toContain('deviceCount: transport.deviceCount');
+    expect(walletState).toContain(
+      'permissionGranted: transport.permissionGranted',
+    );
+    expect(walletState).toContain('supported: transport.supported');
+    expect(walletServiceSource).toContain(
+      'viewSnapshot.walletHeight >= observedTargetHeight',
+    );
+    expect(walletServiceSource).not.toContain(
+      'viewSnapshot.synchronized &&\n      observedTargetHeight > 0',
+    );
     expect(home).toContain('activeWalletSnapshot?.pendingOutputKeyImageCount');
+    expect(home).toContain('transactions.length');
+    expect(home).not.toContain('onPress={verifyLedgerBalance}');
+    expect(settings).not.toContain('verifyLedgerBalance');
+    expect(settings).not.toContain('ledgerBalanceVerification');
+    expect(walletState).toContain(
+      'await walletService.getTransactionsForAllAccounts(activeSession, 0)',
+    );
+    expect(walletState).toContain("'ledgerReconciliation.stateRefreshed'");
+    expect(walletState).toContain('outgoingTransactionCount:');
+  });
+
+  it('shows the complete wallet-container history instead of only Ledger account 0', () => {
+    expect(walletState).toContain(
+      'walletService.getTransactionsForAllAccounts(',
+    );
+    expect(walletState).toContain(
+      "registration.kind === 'hardware' && registration.role === 'fast'",
+    );
   });
 
   it('reconciles inactive Ledger companions sequentially without replacing the selected wallet', () => {
-    expect(walletState).toContain('ledgerBackgroundReconciliationInFlightRef');
+    expect(walletState).toContain('ledgerReconciliationInFlightRef');
     expect(walletState).toContain("'ledgerBackgroundVerification.start'");
     expect(walletState).toContain('preserveActiveSession: true');
-    expect(walletState).toContain('closeViewSessionWhenComplete: true');
+    expect(walletState).toContain('const warmedViewSession =');
+    expect(walletState).toContain(
+      'closeViewSessionWhenComplete: !warmedViewSession',
+    );
+    expect(walletState).toContain(
+      'await walletService.openRegisteredWalletRegistration(\n            activeRegistration,',
+    );
     expect(walletServiceSource).toContain('preserveActiveSession?: boolean');
-    expect(walletServiceSource).toContain('this.activeSession = { ...previousSession }');
+    expect(walletServiceSource).toContain(
+      'viewSession !== leasedViewSession',
+    );
+    expect(walletServiceSource).toContain(
+      'this.activeSession = { ...previousSession }',
+    );
   });
 
   it('keeps node health global and transient snapshot reads off wallet cards', () => {

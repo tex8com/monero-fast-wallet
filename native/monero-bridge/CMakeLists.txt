@@ -146,6 +146,31 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
       ${MONERO_WALLET_API_LIBRARY}
   )
 
+  # The Ledger implementation is force-loaded from the Core build's separate
+  # libdevice archive. Track it explicitly: otherwise a rebuilt Core can leave
+  # an already-linked CLI proof binary running an older device transport.
+  get_filename_component(
+    TEX8_MONERO_WALLET_API_LIBRARY_DIR
+    "${MONERO_WALLET_API_LIBRARY}"
+    DIRECTORY
+  )
+  get_filename_component(
+    TEX8_MONERO_WALLET_BUILD_DIR
+    "${TEX8_MONERO_WALLET_API_LIBRARY_DIR}"
+    DIRECTORY
+  )
+  set(
+    TEX8_MONERO_LEDGER_DEVICE_ARCHIVE
+    "${TEX8_MONERO_WALLET_BUILD_DIR}/src/device/libdevice.a"
+  )
+  if(EXISTS "${TEX8_MONERO_LEDGER_DEVICE_ARCHIVE}")
+    set_property(
+      TARGET monero_wallet_bridge
+      APPEND PROPERTY INTERFACE_LINK_DEPENDS
+      "${TEX8_MONERO_LEDGER_DEVICE_ARCHIVE}"
+    )
+  endif()
+
   if(MONERO_WALLET_EXTRA_LIBRARY_DIRS)
     target_link_directories(monero_wallet_bridge
       PUBLIC
@@ -164,6 +189,29 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
     target_link_options(monero_wallet_bridge
       PUBLIC
         ${MONERO_WALLET_EXTRA_LINK_OPTIONS}
+    )
+
+    # Static Monero builds pass most Core archives as force-load linker
+    # options. CMake does not infer file dependencies from those options, so a
+    # rebuilt wallet or gRPC archive could otherwise leave an old QA/CLI binary
+    # untouched. Track every absolute archive explicitly and make all bridge
+    # consumers relink when the shared product Core changes.
+    set(TEX8_MONERO_STATIC_LINK_DEPENDS "${MONERO_WALLET_API_LIBRARY}")
+    foreach(TEX8_MONERO_LINK_OPTION IN LISTS MONERO_WALLET_EXTRA_LINK_OPTIONS)
+      if(TEX8_MONERO_LINK_OPTION MATCHES "^-Wl,-force_load,(.+\\.a)$")
+        list(APPEND TEX8_MONERO_STATIC_LINK_DEPENDS "${CMAKE_MATCH_1}")
+      elseif(IS_ABSOLUTE "${TEX8_MONERO_LINK_OPTION}"
+          AND TEX8_MONERO_LINK_OPTION MATCHES "\\.a$")
+        list(APPEND TEX8_MONERO_STATIC_LINK_DEPENDS
+          "${TEX8_MONERO_LINK_OPTION}"
+        )
+      endif()
+    endforeach()
+    list(REMOVE_DUPLICATES TEX8_MONERO_STATIC_LINK_DEPENDS)
+    set_property(
+      TARGET monero_wallet_bridge
+      APPEND PROPERTY INTERFACE_LINK_DEPENDS
+      ${TEX8_MONERO_STATIC_LINK_DEPENDS}
     )
   endif()
 else()

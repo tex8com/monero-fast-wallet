@@ -30,7 +30,7 @@
     "localFastWallet": true,
     "automaticFastWalletCreation": false,
     "plaintextFastWalletHosting": false,
-    "ledgerFastWallet": true,
+    "ledgerFastWallet": false,
     "scannerKeyImageSpendAuthority": false,
     "officialWorker": true,
     "privateWorkerPairing": false,

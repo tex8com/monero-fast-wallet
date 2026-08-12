@@ -2212,15 +2212,12 @@ async fn restore_fast_wallet_with_native_seed(
         wallet: record,
     })
 }
-#[tauri::command]
-fn create_hardware_wallet(
-    app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, WalletSessionState>,
-    protection: State<'_, AppProtectionState>,
+fn create_hardware_wallet_blocking(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    sessions: &WalletSessionState,
     mut input: CreateHardwareWalletInput,
 ) -> Result<WalletOperationResponse, String> {
-    require_app_unlocked(&protection)?;
     let account_index = input.account_index.unwrap_or(0);
     let role = input.role.as_deref().unwrap_or("standard");
     let create_fast = input.create_fast.unwrap_or(false);
@@ -2228,10 +2225,20 @@ fn create_hardware_wallet(
         return Err("Ledger creation must start from the standard account.".to_owned());
     }
     let native_account_index = if create_fast { 1 } else { account_index };
-    let wallet_name = next_wallet_file_name(&app, &input.wallet_name, "ledger")?;
+    let uses_ledger_ble = input
+        .device_name
+        .as_deref()
+        .unwrap_or("Ledger")
+        .ends_with(":ble");
+    let wallet_name = next_wallet_file_name(app, &input.wallet_name, "ledger")?;
     let wallet_network = input.network.clone();
-    let restore_height = input.restore_height.filter(|height| *height > 0);
-    let path = wallet_path(&app, &wallet_name)?;
+    let restore_height = input
+        .restore_height
+        .filter(|height| *height > 1)
+        .ok_or_else(|| {
+            "Choose a Ledger scan start date before its first transaction.".to_owned()
+        })?;
+    let path = wallet_path(app, &wallet_name)?;
     let mut password = wallet_password_or_generated(&mut input.password)?;
     // Diagnostic only: no address, path, credential, or key material is ever
     // written. This makes an accidental duplicate Ledger initialization clear
@@ -2249,7 +2256,7 @@ fn create_hardware_wallet(
             password: &password,
             network: network(&input.network)?,
             device_name: input.device_name.as_deref().unwrap_or("Ledger"),
-            restore_height: input.restore_height.unwrap_or(0),
+            restore_height,
             subaddress_lookahead: input.subaddress_lookahead.as_deref().unwrap_or(""),
             account_index: native_account_index,
         });
@@ -2265,21 +2272,30 @@ fn create_hardware_wallet(
                 "MONERO_DESKTOP_LEDGER_CREATE failed role={role} account={native_account_index} error={error}"
             );
             password.zeroize();
-            return Err(error);
+            let transport_detail = uses_ledger_ble
+                .then(|| state.0.lock().ok()?.ledger_connection_status().ok())
+                .flatten()
+                .and_then(|status| serde_json::from_str::<serde_json::Value>(&status).ok())
+                .and_then(|status| status.get("message")?.as_str().map(str::to_owned))
+                .filter(|message| !message.trim().is_empty());
+            return Err(match transport_detail {
+                Some(detail) => format!("{error}. {detail}"),
+                None => error,
+            });
         }
     };
     let registration = wallet_registry::hardware_wallet(
         &wallet_name,
         &wallet_network,
-        restore_height,
+        Some(restore_height),
         (account_index != 0).then_some(account_index),
         (role != "standard").then_some(role),
         None,
     );
     let response = finish_wallet_operation_with_password(
-        &app,
-        &state,
-        &sessions,
+        app,
+        state,
+        sessions,
         wallet_id,
         registration,
         password,
@@ -2290,24 +2306,46 @@ fn create_hardware_wallet(
         let fast_registration = wallet_registry::hardware_wallet(
             &fast_wallet_name,
             &wallet_network,
-            restore_height,
+            Some(restore_height),
             Some(1),
             Some("fast"),
             Some(&response.wallet.id),
         );
-        let fast_registration = wallet_registry::upsert_inactive(&app, fast_registration)?;
+        let fast_registration = wallet_registry::upsert_inactive(app, fast_registration)?;
         sessions
             .0
             .lock()
             .map_err(|_| "Wallet session state is busy.".to_owned())?
             .insert(fast_registration.id.clone(), response.wallet_id.clone());
         diagnostics::record(
-            &app,
+            app,
             "ledger.fast-wallet-created",
             &[("account", "1".to_owned())],
         );
     }
     Ok(response)
+}
+
+#[tauri::command]
+async fn create_hardware_wallet(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    input: CreateHardwareWalletInput,
+) -> Result<WalletOperationResponse, String> {
+    require_app_unlocked(&protection)?;
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Wallet creation can wait for several Ledger confirmations. Recheck
+        // authorization after scheduling, then keep all native BLE and wallet
+        // work off AppKit's main thread so macOS remains responsive.
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let state = background_app.state::<NativeWalletState>();
+        let sessions = background_app.state::<WalletSessionState>();
+        create_hardware_wallet_blocking(&background_app, &state, &sessions, input)
+    })
+    .await
+    .map_err(|_| "Ledger wallet creation worker stopped unexpectedly.".to_owned())?
 }
 
 /// Creates an explicitly requested, local read-only companion for a Ledger.
@@ -6000,9 +6038,18 @@ async fn wallet_snapshot(
     input: WalletIdInput,
 ) -> Result<String, String> {
     require_app_unlocked(&protection)?;
-    let account_index = checked_account_index(input.account_index)?;
     let wallet = try_lock_native_wallet(&app, &state, "wallet-snapshot")?;
-    snapshot_for_account(&wallet, &input.wallet_id, account_index)
+    match input.account_index {
+        Some(account_index) => snapshot_for_account(
+            &wallet,
+            &input.wallet_id,
+            checked_account_index(Some(account_index))?,
+        ),
+        // Omitting the account is intentional: the native snapshot is the
+        // complete wallet-container total across all Monero accounts and all
+        // of their subaddresses.
+        None => wallet.snapshot(&input.wallet_id),
+    }
 }
 #[tauri::command]
 async fn registered_wallet_snapshots(
@@ -6057,13 +6104,27 @@ async fn registered_wallet_snapshots(
                 .map(|session_id| (registration, snapshot_registration, session_id))
         })
         .map(|(registration, snapshot_registration, session_id)| {
+            let legacy_account_scoped = registration.kind == "hardware"
+                && (registration.role.as_deref() == Some("fast")
+                    || registered.wallets.iter().any(|candidate| {
+                        candidate.kind == "hardware"
+                            && candidate.role.as_deref() == Some("fast")
+                            && candidate.source_wallet_id.as_deref()
+                                == Some(registration.id.as_str())
+                    }));
             Ok(RegisteredWalletSnapshot {
                 registration_id: registration.id.clone(),
-                snapshot: snapshot_for_account(
-                    &wallet,
-                    session_id,
-                    snapshot_registration.account_index.unwrap_or(0),
-                )?,
+                snapshot: if legacy_account_scoped {
+                    // Preserve old Ledger account-pair registrations without
+                    // counting account 1 both in the parent and Fast card.
+                    snapshot_for_account(
+                        &wallet,
+                        session_id,
+                        snapshot_registration.account_index.unwrap_or(0),
+                    )?
+                } else {
+                    wallet.snapshot(session_id)?
+                },
                 uses_ledger_read_only: snapshot_registration.kind == "view-only",
             })
         })

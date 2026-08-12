@@ -1,0 +1,287 @@
+From baa51e84f461dd9caff339cd6f8abade11bf704c Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Tue, 11 Aug 2026 10:30:05 -0500
+Subject: [PATCH] wallet: expose live sync throughput in every client
+
+---
+ src/simplewallet/CMakeLists.txt   |  2 +-
+ src/simplewallet/simplewallet.cpp |  5 +--
+ src/simplewallet/simplewallet.h   | 56 ++++++++++++++++++++++++++++++-
+ src/wallet/api/wallet.cpp         | 18 ++++++++++
+ src/wallet/api/wallet.h           |  3 ++
+ src/wallet/api/wallet2_api.h      |  3 ++
+ src/wallet/wallet2.cpp            | 24 +++++++++++++
+ src/wallet/wallet2.h              |  8 +++++
+ 8 files changed, 115 insertions(+), 4 deletions(-)
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index 7ae687bfd..b7811c014 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -135,7 +135,7 @@ execute_process(
+   OUTPUT_STRIP_TRAILING_WHITESPACE)
+ set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
+ set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
+-set(MFW_MONERO_PATCH_COUNT "73" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_MONERO_PATCH_COUNT "77" CACHE STRING "Applied TEX8 Monero patch count")
+ set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
+ set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
+ set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
+diff --git a/src/simplewallet/simplewallet.cpp b/src/simplewallet/simplewallet.cpp
+index 00c4c6b62..1410dbc64 100644
+--- a/src/simplewallet/simplewallet.cpp
++++ b/src/simplewallet/simplewallet.cpp
+@@ -6338,6 +6338,7 @@ bool simple_wallet::refresh_main(uint64_t start_height, enum ResetType reset, bo
+ 
+   PAUSE_READLINE();
+ 
++  m_refresh_progress_reporter.reset();
+   message_writer() << tr("Starting refresh...");
+ 
+   uint64_t fetched_blocks = 0;
+@@ -6365,8 +6366,8 @@ bool simple_wallet::refresh_main(uint64_t start_height, enum ResetType reset, bo
+     }
+ 
+     ok = true;
+-    // Clear line "Height xxx of xxx"
+-    std::cout << "\r                                                                \r";
++    // Clear the live block, network and derivation telemetry line.
++    std::cout << "\r                                                                                                                                \r";
+     success_msg_writer(true) << tr("Refresh done, blocks received: ") << fetched_blocks;
+     if (is_init)
+       print_accounts();
+diff --git a/src/simplewallet/simplewallet.h b/src/simplewallet/simplewallet.h
+index 67d086d57..5dfd9109c 100644
+--- a/src/simplewallet/simplewallet.h
++++ b/src/simplewallet/simplewallet.h
+@@ -35,7 +35,9 @@
+  */
+ #pragma once
+ 
++#include <iomanip>
+ #include <memory>
++#include <sstream>
+ 
+ #include <boost/optional/optional.hpp>
+ #include <boost/program_options/variables_map.hpp>
+@@ -368,9 +370,24 @@ namespace cryptonote
+         , m_blockchain_height(0)
+         , m_blockchain_height_update_time()
+         , m_print_time()
++        , m_rate_started_at()
++        , m_transport_bytes_at_start(0)
++        , m_derivation_count_at_start(0)
++        , m_derivation_duration_us_at_start(0)
+       {
+       }
+ 
++      void reset()
++      {
++        m_rate_started_at = std::chrono::steady_clock::now();
++        m_transport_bytes_at_start =
++          m_simple_wallet.m_wallet->wallet_sync_transport_bytes_received();
++        m_derivation_count_at_start =
++          m_simple_wallet.m_wallet->wallet_sync_derivation_count();
++        m_derivation_duration_us_at_start =
++          m_simple_wallet.m_wallet->wallet_sync_derivation_duration_us();
++      }
++
+       void update(uint64_t height, bool force = false)
+       {
+         auto current_time = std::chrono::system_clock::now();
+@@ -383,7 +400,40 @@ namespace cryptonote
+ 
+         if (std::chrono::milliseconds(20) < current_time - m_print_time || force)
+         {
+-          std::cout << QT_TRANSLATE_NOOP("cryptonote::simple_wallet", "Height ") << height << " / " << m_blockchain_height << '\r' << std::flush;
++          const auto rate_now = std::chrono::steady_clock::now();
++          const double elapsed_seconds = std::chrono::duration<double>(
++            rate_now - m_rate_started_at).count();
++          const uint64_t transport_bytes =
++            m_simple_wallet.m_wallet->wallet_sync_transport_bytes_received();
++          const uint64_t derivation_count =
++            m_simple_wallet.m_wallet->wallet_sync_derivation_count();
++          const uint64_t derivation_duration_us =
++            m_simple_wallet.m_wallet->wallet_sync_derivation_duration_us();
++          const uint64_t downloaded_bytes = transport_bytes >= m_transport_bytes_at_start
++            ? transport_bytes - m_transport_bytes_at_start : 0;
++          const uint64_t completed_derivations = derivation_count >= m_derivation_count_at_start
++            ? derivation_count - m_derivation_count_at_start : 0;
++          const uint64_t measured_derivation_us =
++            derivation_duration_us >= m_derivation_duration_us_at_start
++              ? derivation_duration_us - m_derivation_duration_us_at_start : 0;
++          const double megabits_per_second = elapsed_seconds > 0.0
++            ? (static_cast<double>(downloaded_bytes) * 8.0)
++                / elapsed_seconds / 1000000.0
++            : 0.0;
++          const double derivations_per_second = measured_derivation_us > 0
++            ? static_cast<double>(completed_derivations) * 1000000.0
++                / static_cast<double>(measured_derivation_us)
++            : 0.0;
++          std::ostringstream line;
++          line << QT_TRANSLATE_NOOP("cryptonote::simple_wallet", "Block ")
++               << height
++               << QT_TRANSLATE_NOOP("cryptonote::simple_wallet", " of ")
++               << m_blockchain_height
++               << " · " << std::fixed << std::setprecision(2)
++               << megabits_per_second << " Mbit/s"
++               << " · " << std::setprecision(0)
++               << derivations_per_second << " derivations/s";
++          std::cout << line.str() << '\r' << std::flush;
+           m_print_time = current_time;
+         }
+       }
+@@ -409,6 +459,10 @@ namespace cryptonote
+       uint64_t m_blockchain_height;
+       std::chrono::system_clock::time_point m_blockchain_height_update_time;
+       std::chrono::system_clock::time_point m_print_time;
++      std::chrono::steady_clock::time_point m_rate_started_at;
++      uint64_t m_transport_bytes_at_start;
++      uint64_t m_derivation_count_at_start;
++      uint64_t m_derivation_duration_us_at_start;
+     };
+ 
+   private:
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 6c9d437bd..e76463efc 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1113,6 +1113,24 @@ uint64_t WalletImpl::walletSyncTargetCursor() const
+     return m_wallet->wallet_sync_target_cursor();
+ }
+ 
++uint64_t WalletImpl::walletSyncTransportBytesReceived() const
++{
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    return m_wallet->wallet_sync_transport_bytes_received();
++}
++
++uint64_t WalletImpl::walletSyncDerivationCount() const
++{
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    return m_wallet->wallet_sync_derivation_count();
++}
++
++uint64_t WalletImpl::walletSyncDerivationDurationUs() const
++{
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    return m_wallet->wallet_sync_derivation_duration_us();
++}
++
+ std::shared_ptr<const Wallet::SharedBlockBatch> WalletImpl::fetchSharedBlockBatch()
+ {
+     boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 54d3813d3..c73b97df4 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -110,6 +110,9 @@ public:
+     std::string grpcStreamEndpoint() const override;
+     uint64_t walletSyncCursor() const override;
+     uint64_t walletSyncTargetCursor() const override;
++    uint64_t walletSyncTransportBytesReceived() const override;
++    uint64_t walletSyncDerivationCount() const override;
++    uint64_t walletSyncDerivationDurationUs() const override;
+     std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatch() override;
+     std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatchFrom(uint64_t requestedCursor) override;
+     uint64_t consumeSharedBlockBatch(const SharedBlockBatch &batch) override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 041b85389..9d28cca86 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -627,6 +627,9 @@ struct Wallet
+     // accounting remain inside the receiving Wallet instance.
+     virtual uint64_t walletSyncCursor() const = 0;
+     virtual uint64_t walletSyncTargetCursor() const = 0;
++    virtual uint64_t walletSyncTransportBytesReceived() const = 0;
++    virtual uint64_t walletSyncDerivationCount() const = 0;
++    virtual uint64_t walletSyncDerivationDurationUs() const = 0;
+     virtual std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatch() = 0;
+     virtual std::shared_ptr<const SharedBlockBatch> fetchSharedBlockBatchFrom(uint64_t requestedCursor) = 0;
+     virtual uint64_t consumeSharedBlockBatch(const SharedBlockBatch &batch) = 0;
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 28c386e52..55b1c95ee 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3598,6 +3598,8 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       << " chain_tip=" << current_height
+       << " session=" << m_grpc_stream_session_id);
+   m_last_pull_payload_bytes = payload.size();
++  m_sync_transport_bytes_received.fetch_add(
++    payload.size(), std::memory_order_relaxed);
+   return true;
+ }
+ #endif
+@@ -3694,6 +3696,8 @@ void wallet2::pull_blocks(bool first, bool try_incremental, uint64_t start_heigh
+     THROW_WALLET_EXCEPTION_IF(res.blocks.size() != res.output_indices.size(), error::wallet_internal_error,
+         "mismatched blocks (" + boost::lexical_cast<std::string>(res.blocks.size()) + ") and output_indices (" +
+         boost::lexical_cast<std::string>(res.output_indices.size()) + ") sizes from daemon");
++    m_sync_transport_bytes_received.fetch_add(
++      rx_wire_bytes, std::memory_order_relaxed);
+     uint64_t pool_info_cost = res.added_pool_txs.size() * COST_PER_TX + (res.remaining_added_pool_txids.size() + res.removed_pool_txids.size()) * COST_PER_POOL_HASH;
+     check_rpc_cost("/getblocks.bin", res.credits, pre_call_credits, 1 + res.blocks.size() * COST_PER_BLOCK + pool_info_cost);
+   }
+@@ -4021,6 +4025,11 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
+   auto t_gender1 = std::chrono::steady_clock::now();
+   const double derivation_ms = std::chrono::duration<double, std::milli>(
+     t_gender1 - t_gender0).count();
++  const uint64_t derivation_us = std::chrono::duration_cast<
++    std::chrono::microseconds>(t_gender1 - t_gender0).count();
++  m_sync_derivation_count.fetch_add(derivation_count, std::memory_order_relaxed);
++  m_sync_derivation_duration_us.fetch_add(
++    derivation_us, std::memory_order_relaxed);
+   MWARNING("PERF process_parsed_blocks: generate_key_derivation phase in "
+     << std::chrono::duration_cast<std::chrono::milliseconds>(t_gender1 - t_gender0).count() << "ms");
+   MWARNING("[SYNC_METRIC] stage=client_scan substage=key_derivation"
+@@ -4219,6 +4228,21 @@ uint64_t wallet2::wallet_sync_target_cursor() const
+     std::max(m_refresh_from_block_height, m_skip_to_height));
+ }
+ //----------------------------------------------------------------------------------------------------
++uint64_t wallet2::wallet_sync_transport_bytes_received() const
++{
++  return m_sync_transport_bytes_received.load(std::memory_order_relaxed);
++}
++//----------------------------------------------------------------------------------------------------
++uint64_t wallet2::wallet_sync_derivation_count() const
++{
++  return m_sync_derivation_count.load(std::memory_order_relaxed);
++}
++//----------------------------------------------------------------------------------------------------
++uint64_t wallet2::wallet_sync_derivation_duration_us() const
++{
++  return m_sync_derivation_duration_us.load(std::memory_order_relaxed);
++}
++//----------------------------------------------------------------------------------------------------
+ std::shared_ptr<const wallet2::shared_block_batch> wallet2::fetch_shared_block_batch()
+ {
+   return fetch_shared_block_batch_from(wallet_sync_target_cursor());
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 276ad39e7..c23df6662 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1206,6 +1206,9 @@ private:
+     bool refresh(bool trusted_daemon, uint64_t & blocks_fetched, bool& received_money, bool& ok);
+     uint64_t wallet_sync_cursor() const;
+     uint64_t wallet_sync_target_cursor() const;
++    uint64_t wallet_sync_transport_bytes_received() const;
++    uint64_t wallet_sync_derivation_count() const;
++    uint64_t wallet_sync_derivation_duration_us() const;
+     std::shared_ptr<const shared_block_batch> fetch_shared_block_batch();
+     std::shared_ptr<const shared_block_batch> fetch_shared_block_batch_from(uint64_t requested_cursor);
+     uint64_t consume_shared_block_batch(const shared_block_batch &batch);
+@@ -2065,6 +2068,11 @@ private:
+     const std::unique_ptr<epee::net_utils::http::abstract_http_client> m_http_client;
+     std::vector<std::unique_ptr<epee::net_utils::http::abstract_http_client>> m_pull_clients;
+     uint64_t m_last_pull_payload_bytes = 0;
++    // Process-lifetime, non-secret telemetry for live product sync displays.
++    // These counters are deliberately not serialized into the wallet cache.
++    std::atomic<uint64_t> m_sync_transport_bytes_received{0};
++    std::atomic<uint64_t> m_sync_derivation_count{0};
++    std::atomic<uint64_t> m_sync_derivation_duration_us{0};
+ #ifdef MONERO_GRPC_STREAM
+     std::unique_ptr<cuprate_grpc_stream::cuprate_grpc_block_range_pool> m_grpc_stream_client;
+     std::string  m_grpc_stream_endpoint;
+-- 
+2.50.1 (Apple Git-155)
+
+

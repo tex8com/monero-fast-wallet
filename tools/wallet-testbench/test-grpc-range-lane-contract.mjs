@@ -1,0 +1,191 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import test from 'node:test';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, '..', '..');
+const read = path => readFileSync(resolve(repoRoot, path), 'utf8');
+const patchName =
+  '0071-wallet-bound-global-grpc-range-pool-to-four-lanes.patch';
+const patch = read(`third_party/monero-patches/${patchName}`);
+const spanPatchName =
+  '0072-wallet-reduce-grpc-range-reopen-latency.patch';
+const spanPatch = read(`third_party/monero-patches/${spanPatchName}`);
+const spanAdditions = spanPatch
+  .split(/\r?\n/)
+  .filter(line => line.startsWith('+') && !line.startsWith('+++'))
+  .join('\n');
+const additions = patch
+  .split(/\r?\n/)
+  .filter(line => line.startsWith('+') && !line.startsWith('+++'))
+  .join('\n');
+const sharedRangePatch = read(
+  'third_party/monero-patches/0026-wallet-share-bounded-gRPC-block-ranges-between-local-wallets.patch',
+);
+const bridgeCmake = read('native/monero-bridge/CMakeLists.txt');
+const networkRunner = read('tools/wallet-testbench/run-r3-network-mainnet.sh');
+const series = read('third_party/monero-patches/series')
+  .split(/\r?\n/)
+  .map(line => line.trim())
+  .filter(line => line && !line.startsWith('#'));
+const lock = read('third_party/monero-patches/upstream.lock');
+const hotPathPatch = read(
+  'third_party/monero-patches/0074-wallet-remove-hot-path-diagnostic-clocks.patch',
+);
+const persistentLanePatchName =
+  '0075-wallet-use-persistent-striped-grpc-lanes.patch';
+const persistentLanePatch = read(
+  `third_party/monero-patches/${persistentLanePatchName}`,
+);
+const persistentLaneAdditions = persistentLanePatch
+  .split(/\r?\n/)
+  .filter(line => line.startsWith('+') && !line.startsWith('+++'))
+  .join('\n');
+
+test('the authenticated Core ends with the measured production patches', () => {
+  assert.equal(series.length, 77);
+  assert.equal(series.at(-7), patchName);
+  assert.equal(series.at(-6), spanPatchName);
+  assert.equal(
+    series.at(-5),
+    '0073-wallet-benchmark-and-report-automatic-derivation-backend.patch',
+  );
+  assert.equal(
+    series.at(-4),
+    '0074-wallet-remove-hot-path-diagnostic-clocks.patch',
+  );
+  assert.equal(series.at(-3), persistentLanePatchName);
+  assert.equal(
+    series.at(-2),
+    '0076-ledger-hid-read-timeout-fail-closed.patch',
+  );
+  assert.equal(
+    series.at(-1),
+    '0077-wallet-expose-live-sync-throughput-in-every-client.patch',
+  );
+  assert.match(lock, /^previous_patch_count=76$/m);
+  assert.match(
+    lock,
+    /^previous_patched_tree=58b89028224460437e2d69ea12fbe8ed53135429$/m,
+  );
+  assert.match(
+    lock,
+    /^patched_tree=21f6b377e1acbd83a7b5da34164dca12e6dcbbab$/m,
+  );
+  assert.match(hotPathPatch, /^-.*process_new_transaction SLOW txid=/m);
+  assert.match(hotPathPatch, /^-.*SLOW_TX[^\n]*\n-.*txid=/m);
+  assert.match(hotPathPatch, /^-.*HOT_BLOCK/m);
+});
+
+test('persistent striped lanes are capability-safe and bounded', () => {
+  assert.match(
+    persistentLaneAdditions,
+    /rpc StreamBlockLane\(StreamBlocksRequest\) returns \(stream BlockChunk\)/,
+  );
+  assert.match(persistentLaneAdditions, /stripe_span_blocks = 8/);
+  assert.match(persistentLaneAdditions, /lane_index = 9/);
+  assert.match(persistentLaneAdditions, /lane_count = 10/);
+  assert.match(persistentLaneAdditions, /kLaneStripeBlocks = 512/);
+  assert.match(persistentLaneAdditions, /kMaxChunkBlocks = 256/);
+  assert.match(persistentLaneAdditions, /kPerLaneQueueCapacity = 1/);
+  assert.match(
+    persistentLaneAdditions,
+    /kLaneMaxChunkBytes = 32 \* 1024 \* 1024/,
+  );
+  assert.match(persistentLaneAdditions, /kGrpcUnimplemented = 12/);
+  assert.match(
+    persistentLaneAdditions,
+    /p\.lane_chunks_consumed == 0[\s\S]*p\.error_code == kGrpcUnimplemented/,
+  );
+  assert.match(
+    persistentLaneAdditions,
+    /FALLBACK from=StreamBlockLane to=StreamBlocks reason=unimplemented before_first_chunk/,
+  );
+  assert.match(persistentLaneAdditions, /stripe_ordinal % p\.target_channels/);
+  assert.match(persistentLaneAdditions, /chunk_end > stripe_stop \+ 1/);
+  assert.match(
+    persistentLaneAdditions,
+    /target_link_libraries\(cuprate_grpc_stream_test PRIVATE "-framework CoreFoundation"\)/,
+  );
+  assert.doesNotMatch(
+    persistentLaneAdditions,
+    /view_key|spend_key|private_key|mnemonic|seed/,
+  );
+});
+
+test('client and server retain the cap and recover with smaller chunks', () => {
+  const serverSplitPatch = read(
+    'third_party/cuprate-live-overlays/0002-wallet-sync-split-oversized-lane-chunks.patch',
+  );
+  assert.match(serverSplitPatch, /reduced_chunk_blocks\(actual_blocks\)/);
+  assert.match(serverSplitPatch, /task\.abort\(\)/);
+  assert.match(serverSplitPatch, /SPLIT_OVERSIZED/);
+  assert.match(serverSplitPatch, /next_chunk_blocks = reduced_blocks/);
+  assert.match(serverSplitPatch, /continue;/);
+  assert.match(serverSplitPatch, /single-block encoded chunk exceeds RPC byte limit/);
+  assert.match(serverSplitPatch, /reduced_chunk_blocks\(512\), Some\(256\)/);
+});
+
+test('one global downloader owns at most four process-wide transport lanes', () => {
+  assert.match(additions, /constexpr size_t kMaxChannels = 4/);
+  assert.match(
+    additions,
+    /connect\(const std::string& target, size_t process_channel_lane = 0\)/,
+  );
+  assert.match(additions, /target \+ "\\n" \+ std::to_string\(process_channel_lane\)/);
+  assert.match(additions, /GRPC_ARG_USE_LOCAL_SUBCHANNEL_POOL, 1/);
+  assert.match(additions, /local_subchannel_pool=1/);
+  assert.match(additions, /client_\.connect\(target_, process_channel_lane_\)/);
+  assert.match(additions, /index, reused, p\.error_code, p\.error/);
+  assert.match(additions, /while \(stream_channels < 4/);
+  assert.doesNotMatch(additions, /plan = stream_channels == 8/);
+});
+
+test('transport lanes do not change exact-range cache identity or duplicate data', () => {
+  const keySource = sharedRangePatch.slice(
+    sharedRangePatch.indexOf('std::string range_key('),
+    sharedRangePatch.indexOf('class shared_range_cache'),
+  );
+  for (const field of ['target', 'start', 'stop', 'chunk_hint', 'locator']) {
+    assert.match(keySource, new RegExp(`\\b${field}\\b`));
+  }
+  assert.doesNotMatch(keySource, /process_channel_lane|wallet|view_key|spend_key/);
+  assert.match(patch, /process_range_cache\(\)\.acquire/);
+  assert.match(patch, /non-overlapping range/);
+});
+
+test('finite range span is decoupled from the bounded server chunk hint', () => {
+  assert.match(spanAdditions, /constexpr uint32_t kRangeBlocks = 2048/);
+  assert.match(spanAdditions, /constexpr uint32_t kMinChunkBlocks = 16/);
+  assert.match(spanAdditions, /constexpr uint32_t kMaxChunkBlocks = 512/);
+  assert.match(spanAdditions, /constexpr size_t kPerRangeQueueCapacity = 1/);
+  assert.match(spanAdditions, /uint32_t chunk_blocks_hint = 0/);
+  assert.match(spanAdditions, /p_->range_blocks = kRangeBlocks/);
+  assert.match(spanAdditions, /p_->chunk_blocks_hint = std::max/);
+  assert.match(spanAdditions, /p\.chunk_blocks_hint/);
+  assert.doesNotMatch(spanAdditions, /process_channel_lane|wallet|view_key|spend_key/);
+});
+
+test('QA and CLI binaries relink after any force-loaded Core archive changes', () => {
+  assert.match(bridgeCmake, /TEX8_MONERO_STATIC_LINK_DEPENDS/);
+  assert.match(bridgeCmake, /MONERO_WALLET_EXTRA_LINK_OPTIONS/);
+  assert.match(bridgeCmake, /-Wl,-force_load,/);
+  assert.match(bridgeCmake, /IS_ABSOLUTE/);
+  assert.match(bridgeCmake, /INTERFACE_LINK_DEPENDS/);
+});
+
+test('the live runner measures physical endpoint sockets independently', () => {
+  assert.match(networkRunner, /client-sockets\.tsv/);
+  assert.match(networkRunner, /lsof -nP -a -p/);
+  assert.match(networkRunner, /max_simultaneous_endpoint_sockets/);
+  assert.match(networkRunner, /distinct from gRPC Channel handles/);
+  assert.match(networkRunner, /client-socket-accounting\.txt/);
+  assert.match(networkRunner, /closed sockets disappear from the aggregate/);
+  assert.match(networkRunner, /tcp_rx_exact=false/);
+  assert.match(networkRunner, /tcp_rx_bytes=%d\\n", peak/);
+  assert.doesNotMatch(networkRunner, /carried \+= previous/);
+  assert.match(networkRunner, /R3_RUST_DERIVATION_WORKERS/);
+  assert.match(networkRunner, /rust_derivation_workers=%s/);
+});

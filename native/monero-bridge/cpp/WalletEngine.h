@@ -20,6 +20,11 @@ class WalletEngine {
   WalletEngine& operator=(const WalletEngine&) = delete;
 
   static bool linkedWithMonero();
+  // Enables count/timing-only Core sync records for the standalone CLI
+  // testbench. Normal CLI, mobile and desktop sessions never call this.
+  // The sink is the platform null device plus the console, so no secondary
+  // Monero log file containing wallet data is created.
+  static void enableTestbenchSyncProfiling();
   // Public, synthetic device-performance diagnostics. The benchmark never
   // reads an open wallet, seed, view key, transaction, or daemon response.
   static std::string derivationBackendStatus();
@@ -105,6 +110,13 @@ class WalletEngine {
       const WalletId& walletId,
       uint32_t accountIndex = 0,
       const std::string& label = "");
+  // Extends an existing wallet locally without creating an address or
+  // contacting a daemon/hardware device. The physical Ledger reference
+  // runner uses this to represent its account 0 and account 1 in one
+  // long-lived wallet session.
+  void ensureSubaddressAccount(
+      const WalletId& walletId,
+      uint32_t accountIndex);
   std::vector<WalletSubaddress> listSubaddresses(
       const WalletId& walletId,
       uint32_t accountIndex = 0) const;

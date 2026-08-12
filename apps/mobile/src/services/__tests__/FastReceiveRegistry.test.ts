@@ -25,8 +25,10 @@ import {
   FAST_RECEIVE_IDENTITIES_STORAGE_KEY,
   isIndependentFastReceiveIdentityId,
   loadFastReceiveIdentities,
+  loadRetiredFastWalletSlots,
   nextFastReceiveDerivationIndex,
   removeFastReceiveIdentity,
+  reserveRetiredFastWalletSlot,
   upsertFastReceiveIdentity,
 } from '../FastReceiveRegistry';
 
@@ -49,8 +51,7 @@ describe('FastReceiveRegistry', () => {
       },
       '2026-06-17T00:00:00.000Z',
       {
-        credentialKey:
-          'monero.wallet.fast.stagenet.fast-receive-v2-0.v2',
+        credentialKey: 'monero.wallet.fast.stagenet.fast-receive-v2-0.v2',
         sourceWalletId: 'software-stagenet-primary',
       },
     );
@@ -68,8 +69,7 @@ describe('FastReceiveRegistry', () => {
         path: '/app/wallets/stagenet/fast-receive-v2-0',
         address: '54A1testAddress',
         network: 'stagenet',
-        credentialKey:
-          'monero.wallet.fast.stagenet.fast-receive-v2-0.v2',
+        credentialKey: 'monero.wallet.fast.stagenet.fast-receive-v2-0.v2',
         sourceWalletId: 'software-stagenet-primary',
         restoreHeight: 123,
         derivationIndex: 0,
@@ -108,7 +108,7 @@ describe('FastReceiveRegistry', () => {
     const loaded = await loadFastReceiveIdentities();
 
     expect(loaded).toHaveLength(1);
-    expect(nextFastReceiveDerivationIndex(loaded)).toBe(1);
+    expect(nextFastReceiveDerivationIndex(loaded)).toBe(199);
   });
 
   it('creates stable path-safe identity ids', () => {
@@ -118,6 +118,28 @@ describe('FastReceiveRegistry', () => {
     );
     expect(id).toBe('fast-receive-v2-2-20260617T123456');
     expect(isIndependentFastReceiveIdentityId(id)).toBe(true);
+  });
+
+  it('keeps a key-free tombstone so a previously hosted slot is never reused', async () => {
+    await reserveRetiredFastWalletSlot(
+      'mainnet',
+      199,
+      '2026-08-10T15:00:00.000Z',
+    );
+    await reserveRetiredFastWalletSlot(
+      'mainnet',
+      199,
+      '2026-08-10T15:01:00.000Z',
+    );
+
+    await expect(loadRetiredFastWalletSlots()).resolves.toEqual([
+      {
+        network: 'mainnet',
+        productSlot: 199,
+        retiredAt: '2026-08-10T15:00:00.000Z',
+      },
+    ]);
+    expect(nextFastReceiveDerivationIndex([], [199])).toBe(200);
   });
 
   it('marks legacy v1 identities as blocked without deleting metadata', async () => {

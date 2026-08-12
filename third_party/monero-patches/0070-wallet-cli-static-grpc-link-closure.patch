@@ -1,0 +1,39 @@
+From 9cf448b0d2ad362bd37c53a7b92a90205cf693ce Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Sun, 9 Aug 2026 15:10:00 -0500
+Subject: [PATCH] wallet cli: link static gRPC closure and stamp provenance
+
+---
+ src/simplewallet/CMakeLists.txt        | 2 +-
+ src/wallet/grpc_stream/CMakeLists.txt | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index 7452ec0..c84cb73 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -135,7 +135,7 @@ execute_process(
+   OUTPUT_STRIP_TRAILING_WHITESPACE)
+ set(MFW_MONERO_UPSTREAM_COMMIT "dbcc7d212c094bd1a45f7291dbb99a4b4627a96d" CACHE STRING "Pinned official Monero base")
+ set(MFW_MONERO_UPSTREAM_TREE "c592d864569be294d2bdca25b674cd17f78614e5" CACHE STRING "Pinned official Monero tree")
+-set(MFW_MONERO_PATCH_COUNT "39" CACHE STRING "Applied TEX8 Monero patch count")
++set(MFW_MONERO_PATCH_COUNT "70" CACHE STRING "Applied TEX8 Monero patch count")
+ set(MFW_PRODUCT_COMMIT "unknown" CACHE STRING "Monero Fast Wallet product commit")
+ set(MFW_PRODUCT_DIRTY "unknown" CACHE STRING "Monero Fast Wallet product dirty state")
+ set(MFW_CUPRATE_COMMIT "c041a8de1a0c27580e6816710c9443ff840287de" CACHE STRING "Pinned Cuprate product commit")
+diff --git a/src/wallet/grpc_stream/CMakeLists.txt b/src/wallet/grpc_stream/CMakeLists.txt
+index 0734db4..b49fd6b 100644
+--- a/src/wallet/grpc_stream/CMakeLists.txt
++++ b/src/wallet/grpc_stream/CMakeLists.txt
+@@ -79,7 +79,7 @@ target_include_directories(cuprate_grpc_stream
+ )
+ 
+ # INTERFACE so downstream targets (wallet, test exe) inherit the -L dirs too.
+-if(STATIC)
++if(STATIC OR NOT BUILD_SHARED_LIBS)
+     # pkg-config deliberately keeps transitive dependencies such as re2, upb,
+     # c-ares, OpenSSL and zlib in the *_STATIC_* variables.  Linking only the
+     # regular grpc++ list works with shared libraries but leaves unresolved
+-- 
+2.39.5 (Apple Git-154)
+

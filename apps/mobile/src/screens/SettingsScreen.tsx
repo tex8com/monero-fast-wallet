@@ -71,7 +71,7 @@ const NETWORKS: { value: MoneroNetwork; label: string }[] = [
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { language, setLanguage, t } = useI18n();
-  const { registeredWallet, reconcileLedgerBalance, session } = useWalletState();
+  const { registeredWallet, session } = useWalletState();
   const {
     mode: savedProtectionMode,
     setMode: setAppProtectionMode,
@@ -95,7 +95,6 @@ export default function SettingsScreen() {
     useState<DiagnosticProgress | null>(null);
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
   const [isSendingTestPush, setIsSendingTestPush] = useState(false);
-  const [isReconcilingLedger, setIsReconcilingLedger] = useState(false);
   const [isRevealingSeed, setIsRevealingSeed] = useState(false);
   const [protectionMode, setProtectionMode] =
     useState<AppProtectionMode>(savedProtectionMode);
@@ -314,35 +313,15 @@ export default function SettingsScreen() {
     if (isSendingTestPush) return;
     setIsSendingTestPush(true);
     try {
-      await FastWalletPushService.sendTestNotification();
+      const registration = await FastWalletPushService.sendTestNotification();
       Alert.alert(
         'Test notification sent',
-        'Firebase accepted a generic test notification for this phone. It contains no wallet or transaction details.',
+        `FCM token created (${registration.providerTokenLength} characters), App Check and Gateway registration accepted. Firebase accepted a generic test notification for this phone. It contains no wallet or transaction details.`,
       );
     } catch (error) {
       Alert.alert('Test notification', errorMessage(error));
     } finally {
       setIsSendingTestPush(false);
-    }
-  }
-
-  async function verifyLedgerBalance() {
-    if (isReconcilingLedger) return;
-    setIsReconcilingLedger(true);
-    try {
-      await reconcileLedgerBalance();
-      Alert.alert(
-        t('settings.ledgerBalanceVerification'),
-        t('settings.ledgerBalanceVerified'),
-      );
-      await runSettingsDiagnostics();
-    } catch (error) {
-      Alert.alert(
-        t('settings.ledgerBalanceVerification'),
-        errorMessage(error),
-      );
-    } finally {
-      setIsReconcilingLedger(false);
     }
   }
 
@@ -661,24 +640,6 @@ export default function SettingsScreen() {
               </View>
               <Icon name="chevron-right" size={18} color={colors.textMuted} />
             </TouchableOpacity>
-            {registeredWallet?.kind === 'hardware' &&
-            registeredWallet.viewOnlyPath ? (
-              <TouchableOpacity
-                style={[
-                  s.secondaryButton,
-                  isReconcilingLedger && s.primaryButtonDisabled,
-                ]}
-                activeOpacity={0.8}
-                disabled={isReconcilingLedger}
-                onPress={verifyLedgerBalance}
-              >
-                <Text style={s.secondaryButtonText}>
-                  {isReconcilingLedger
-                    ? t('settings.ledgerBalanceVerifying')
-                    : t('settings.ledgerBalanceVerification')}
-                </Text>
-              </TouchableOpacity>
-            ) : null}
           </View>
         </View>
 
