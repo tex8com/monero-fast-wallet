@@ -4,9 +4,11 @@ import { checkPermissions, getCurrentPosition, requestPermissions } from '@tauri
 import QRCode from 'qrcode';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  nextWalletPublication,
   presentWalletSync,
   syncStartHeightForWallet,
   updateWalletSyncEta,
+  type WalletPublication,
   type WalletSyncEtaState,
 } from '../../../packages/wallet-shared/src/walletSync';
 import {
@@ -64,6 +66,7 @@ type AppProtectionStatus = {
 type AutoLockSettings = { autoLockSeconds: number };
 type RegisteredWallet = { id: string; displayName?: string; walletName: string; network: Network; kind: string; seedBackupStatus: 'pending' | 'verified' | 'not-required'; restoreHeight?: number; accountIndex?: number; addressIndex?: number; role?: 'standard' | 'fast'; sourceWalletId?: string; ledgerKeyImagesVerifiedAt?: number; ledgerKeyImagesVerifiedHeight?: number; createdAt: number; lastOpenedAt: number; isOpen?: boolean; isActive?: boolean };
 type WalletOperationResponse = { walletId: string; wallet: RegisteredWallet };
+type WalletSessionRecoveryResponse = WalletOperationResponse & { sessionGeneration: number; reopenAttempt: number; reopened: boolean };
 type RegisteredWalletSnapshot = { registrationId: string; snapshot: string; usesLedgerReadOnly: boolean };
 type LedgerTransportStatus = { platform: string; transport: 'ble'; supported: boolean; available: boolean; permissionGranted: boolean; requiresUserAction: boolean; deviceCount: number; message: string };
 type SeedRevealRequest = {
@@ -81,8 +84,8 @@ type NativeSubaddress = { accountIndex: number; addressIndex: number; address: s
 type NativePreparedTransaction = { id: string; status: string; error: string; amountAtomic: string; dustAtomic: string; feeAtomic: string; txCount: string; txIds: string[]; subaddressAccounts: number[]; subaddressIndices: number[] };
 type NativeTransaction = { hash: string; paymentId: string; description: string; label: string; direction: string; pending: boolean; failed: boolean; coinbase: boolean; amountAtomic: string; feeAtomic: string; blockHeight: string; confirmations: string; unlockTime: string; timestamp: string; subaddressAccount: number; subaddressIndices: number[]; transfers: Array<{ amountAtomic: string; address: string }> };
 type NativeHardwareWalletStatus = { walletId: string; deviceName: string; deviceType: string; connected: boolean; requiresUserAction: boolean; promptKind: string; promptCode: string; progress: number; indeterminate: boolean };
-type NativeWalletSnapshot = { id: string; primaryAddress: string; balanceAtomic: string; unlockedBalanceAtomic: string; walletHeight: string; daemonHeight: string; daemonTargetHeight: string; pendingOutputKeyImageCount?: string; synchronized: boolean };
-type NetworkSyncStatus = { network: Network; state: string; phase: string; lastError: string; consecutiveFailures: number; phaseSequence: number; phaseElapsedMs: number; lastProviderSelectionMs: number; lastTransportInitializationMs: number; lastBlockFetchMs: number; lastPrefetchMs: number; lastPrefetchWaitMs: number; prefetchedPayloadBytes: number; peakPrefetchedPayloadBytes: number; lastNonEmptyBlockFetchMs: number; lastNonEmptyBlockCount: number; lastNonEmptyNetworkBytes: number; lastNonEmptyPayloadBytes: number; networkBytesReceived: number; payloadBytesReceived: number; lastWalletScanMs: number; lastNonEmptyWalletDerivationCount: number; lastNonEmptyWalletDerivationUs: number; totalWalletDerivationCount: number; totalWalletDerivationUs: number; lastMempoolMs: number; lastCheckpointMs: number; lastIterationMs: number; downloadStartHeight: number; downloadedHeight: number; chainHeight: number; targetHeight: number; transportStarts: number; fetchedBatches: number; fetchedBlocks: number; decodedBatches: number; prefetchedBatches: number; prefetchHits: number; fanoutDeliveries: number; poolSnapshots: number; cacheHits: number; cacheMisses: number; replayCachePayloadBytes: number; replayCachePeakPayloadBytes: number; replayCachePayloadLimitBytes: number; stalledWallets: number; scanWorkers: number; joinedWallets: number; queueDepth: number; prefetchQueueDepth: number; prefetchQueueCapacity: number; replayCacheEntries: number; replayCacheCapacity: number };
+type NativeWalletSnapshot = { id: string; primaryAddress: string; balanceAtomic: string; unlockedBalanceAtomic: string; walletHeight: string; daemonHeight: string; daemonTargetHeight: string; pendingOutputKeyImageCount?: string; snapshotRevision?: string; synchronized: boolean };
+type NetworkSyncStatus = { network: Network; state: string; phase: string; lastError: string; consecutiveFailures: number; phaseSequence: number; providerGeneration: number; phaseElapsedMs: number; lastProviderSelectionMs: number; lastTransportInitializationMs: number; lastBlockFetchMs: number; lastPrefetchMs: number; lastPrefetchWaitMs: number; prefetchedPayloadBytes: number; peakPrefetchedPayloadBytes: number; lastNonEmptyBlockFetchMs: number; lastNonEmptyBlockCount: number; lastNonEmptyNetworkBytes: number; lastNonEmptyPayloadBytes: number; networkBytesReceived: number; payloadBytesReceived: number; lastWalletScanMs: number; lastNonEmptyWalletDerivationCount: number; lastNonEmptyWalletDerivationUs: number; totalWalletDerivationCount: number; totalWalletDerivationUs: number; lastMempoolMs: number; lastCheckpointMs: number; lastIterationMs: number; downloadStartHeight: number; downloadedHeight: number; chainHeight: number; targetHeight: number; transportStarts: number; fetchedBatches: number; fetchedBlocks: number; decodedBatches: number; prefetchedBatches: number; prefetchHits: number; fanoutDeliveries: number; poolSnapshots: number; cacheHits: number; cacheMisses: number; replayCachePayloadBytes: number; replayCachePeakPayloadBytes: number; replayCachePayloadLimitBytes: number; stalledWallets: number; scanWorkers: number; joinedWallets: number; queueDepth: number; prefetchQueueDepth: number; prefetchQueueCapacity: number; replayCacheEntries: number; replayCacheCapacity: number };
 type CommunityProfile = { identityId: string; displayName: string; bio: string; visible: boolean; radiusKm: number };
 type CommunityNearby = CommunityProfile & { approximateDistanceKm: number; relationship: 'none' | 'outgoing' | 'incoming' | 'connected' };
 type CommunityContact = CommunityProfile & { status: 'outgoing' | 'incoming' | 'connected' };
@@ -148,6 +151,9 @@ function errorMessage(reason: unknown, fallback: string) {
 function isBackgroundWalletWork(reason: unknown) {
   return errorMessage(reason, '').includes('connecting in the background');
 }
+function isSessionStale(reason: unknown) {
+  return errorMessage(reason, '') === 'session-stale';
+}
 type WalletUiDiagnosticEvent =
   | 'wallet-list-reload-started'
   | 'wallet-list-reload-completed'
@@ -198,6 +204,19 @@ function nativeHeight(value: string | number | undefined) {
   const height = Number(value);
   return Number.isFinite(height) && height > 0 ? Math.floor(height) : undefined;
 }
+function snapshotPublicationToken(snapshot: NativeWalletSnapshot): string {
+  const revision = Number(snapshot.snapshotRevision ?? 0);
+  if (Number.isSafeInteger(revision) && revision > 0) return `revision:${revision}`;
+  return [
+    snapshot.walletHeight,
+    snapshot.daemonHeight,
+    snapshot.daemonTargetHeight,
+    snapshot.balanceAtomic,
+    snapshot.unlockedBalanceAtomic,
+    snapshot.pendingOutputKeyImageCount ?? '',
+    snapshot.synchronized ? '1' : '0',
+  ].join(':');
+}
 function syncLabel(snapshot: NativeWalletSnapshot | null, t?: ReturnType<typeof useI18n>['t'], startHeight?: number) {
   const sync = presentWalletSync(snapshot, { startHeight });
   if (sync.phase === 'synchronized') return `${t ? t('home.syncComplete') : 'Synchronized'} · 100%`;
@@ -208,16 +227,16 @@ function syncLabel(snapshot: NativeWalletSnapshot | null, t?: ReturnType<typeof 
   return t ? t('home.syncScanning') : 'Scanning blocks';
 }
 function desktopLedgerBalanceNeedsVerification(wallet: RegisteredWallet, snapshot: NativeWalletSnapshot | undefined, usesLedgerReadOnly: boolean) {
-  if (wallet.kind !== 'hardware') return false;
+  if (wallet.kind !== 'hardware' || wallet.role === 'fast') return false;
   // The local read-only companion is the authoritative scanner.  A missing
   // companion still needs the explicit setup flow, but must never start an
   // automatic hardware operation.
   if (!usesLedgerReadOnly) return true;
-  const pending = Number(snapshot?.pendingOutputKeyImageCount ?? 0);
-  // Missing metadata is deliberately not treated as pending.  In particular,
-  // historic registrations without a verified-height marker must not wake a
-  // Ledger just because a new chain tip arrived.
-  return Number.isFinite(pending) && pending > 0;
+  // Keep the pending-output field in the parity contract, but never use it to
+  // wake Ledger periodically. Once the initial import is durable, later
+  // outputs wait for Send or the explicit Settings action.
+  void snapshot?.pendingOutputKeyImageCount;
+  return !wallet.ledgerKeyImagesVerifiedAt;
 }
 function networkSyncConnected(status: NetworkSyncStatus | null) {
   return Boolean(status && status.transportStarts > 0 && ['fetching-blocks', 'fanout', 'scanning', 'synced'].includes(status.state));
@@ -258,8 +277,8 @@ function FixedAtomicXmr({ value }: { value: string | undefined }) {
 function parseXmrToAtomic(value: string) { const normalized = value.trim().replace(',', '.'); if (!/^(?:0|[1-9]\d*)(?:\.\d{1,12})?$/.test(normalized)) return null; const [whole, fraction = ''] = normalized.split('.'); return (BigInt(whole) * ATOMIC_XMR + BigInt(fraction.padEnd(12, '0'))).toString(); }
 function atomicXmrNumber(value: string | undefined) { return Number(atomicValue(value)) / Number(ATOMIC_XMR); }
 function formatUsd(value: number) { return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value); }
-function formatSyncBlockCount(value: number | undefined) {
-  return new Intl.NumberFormat().format(Math.max(0, Math.floor(value ?? 0)));
+function formatSyncBlockCount(value: number | undefined, locale?: string) {
+  return new Intl.NumberFormat(locale).format(Math.max(0, Math.floor(value ?? 0)));
 }
 function useDesktopSyncEta(sync: ReturnType<typeof presentWalletSync>, networkSync?: NetworkSyncStatus | null) {
   const sampleRef = useRef<WalletSyncEtaState | undefined>(undefined);
@@ -331,6 +350,7 @@ export default function App() {
   const [seedRevealBusy, setSeedRevealBusy] = useState(false);
   const seedRevealInFlightRef = useRef(false);
   const walletSwitchGenerationRef = useRef(0);
+  const walletRecoveryInFlightRef = useRef(new Map<string, Promise<WalletSessionRecoveryResponse>>());
   const fastWalletTransferTimerRef = useRef<number | null>(null);
   // A Fast Wallet is independent from the normal wallet and therefore gets a
   // separate recovery seed.  Keep the optional follow-up only in memory until
@@ -487,6 +507,46 @@ export default function App() {
     void reloadWallets();
     recordWalletUiDiagnostic('wallet-switch-completed', started);
   }, [reloadWallets]);
+  const recoverWalletSession = useCallback(async (wallet: RegisteredWallet) => {
+    const existing = walletRecoveryInFlightRef.current.get(wallet.id);
+    if (existing) return existing;
+    const switchGeneration = walletSwitchGenerationRef.current;
+    const recovery = invoke<WalletSessionRecoveryResponse>('recover_registered_wallet_session', {
+      input: { registrationId: wallet.id },
+    }).then((result) => {
+      if (switchGeneration === walletSwitchGenerationRef.current) {
+        setActiveWalletId(result.walletId);
+        setActiveWallet(result.wallet);
+        setError(null);
+      }
+      return result;
+    }).finally(() => {
+      walletRecoveryInFlightRef.current.delete(wallet.id);
+    });
+    walletRecoveryInFlightRef.current.set(wallet.id, recovery);
+    return recovery;
+  }, []);
+  useEffect(() => {
+    if (!activeWallet || !activeWalletId || appProtection?.locked !== false || section === 'home') return;
+    let cancelled = false;
+    const validate = async () => {
+      try {
+        await invoke<string>('wallet_snapshot', {
+          input: { walletId: activeWalletId, accountIndex: activeWallet.accountIndex ?? 0 },
+        });
+      } catch (reason) {
+        if (!cancelled && isSessionStale(reason)) {
+          await recoverWalletSession(activeWallet).catch(() => undefined);
+        }
+      }
+    };
+    // Home already brackets snapshot/history reads. Other screens still need
+    // one cheap selected-session watchdog so Activity, Send, Receive and
+    // Settings cannot retain a natively closed handle indefinitely.
+    void validate();
+    const timer = window.setInterval(() => void validate(), 5_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [activeWallet, activeWalletId, appProtection?.locked, recoverWalletSession, section]);
   // The native background lock runs independently while the window is hidden.
   // Never leave a stale renderer state to turn a wallet click into a dead-end
   // banner: a direct wallet action refreshes the authoritative native state and,
@@ -519,6 +579,16 @@ export default function App() {
     }
     catch (reason) {
       recordWalletUiDiagnostic('wallet-switch-failed', started);
+      if (isSessionStale(reason)) {
+        try {
+          const recovered = await recoverWalletSession(wallet);
+          await activateWallet(recovered);
+          return;
+        } catch (recoveryReason) {
+          setError(errorMessage(recoveryReason, 'The wallet session could not be restored.'));
+          return;
+        }
+      }
       const message = errorMessage(reason, 'The wallet could not be made active.');
       if (!retriedAfterUnlock && message === 'Unlock Monero Fast Wallet before opening wallets.' && await unlockForWalletAction()) {
         await activateOpenWallet(wallet, true);
@@ -878,17 +948,17 @@ export default function App() {
       {section !== 'setup' && section !== 'onboarding' && <header className="topbar"><div><p className="eyebrow">{active?.label ?? t('common.wallet')}</p><h1>{section === 'home' ? t('shell.homeTitle') : active?.label}</h1></div><div className="topbar-actions"><DesktopWalletSwitcher wallets={managedWallets} activeWallet={activeWallet} onSelect={openSavedWallet} onManage={() => setSection('wallets')} /><div className="topbar-connection" title={connectionTitle}><div aria-label={connectionText} className={`core-status ${connectionTone}`}><span /></div></div></div></header>}
       {!linked && <section className="notice" role="status"><div className="notice-icon"><img src="/monero-mark.png" alt="" /></div><div><h2>{t('shell.noticeEngineTitle')}</h2><p>{error ?? status?.message ?? t('shell.noticeEngineVerifying')}</p></div></section>}
       {linked && error && <section className="notice compact-notice" role="alert"><div><h2>{t('shell.noticeActionNeeded')}</h2><p>{error}</p></div></section>}
-      {section === 'home' && <Home linked={linked} walletId={activeWalletId} wallet={activeWallet} savedWallets={managedWallets} networkSync={networkSync} onSetup={startSetup} onWallets={() => setSection('wallets')} onSelectWallet={openSavedWallet} onBackup={() => void revealRecoverySeed()} onLock={() => void closeActiveWallet()} onSend={() => setSection('send')} onReceive={() => setSection('receive')} onActivity={() => setSection('activity')} onWalletsChanged={reloadWallets} />}
+      {section === 'home' && <Home linked={linked} walletId={activeWalletId} wallet={activeWallet} savedWallets={managedWallets} networkSync={networkSync} onSetup={startSetup} onWallets={() => setSection('wallets')} onSelectWallet={openSavedWallet} onBackup={() => void revealRecoverySeed()} onLock={() => void closeActiveWallet()} onSend={() => setSection('send')} onReceive={() => setSection('receive')} onActivity={() => setSection('activity')} onWalletsChanged={reloadWallets} onRecoverSession={recoverWalletSession} />}
       {section === 'wallets' && <Wallets linked={linked} walletId={activeWalletId} wallets={managedWallets} activeWallet={activeWallet} onSetup={startSetup} onOpen={openSavedWallet} onManageAddresses={(wallet) => { setAddressManagementRequest({ walletId: wallet.id, nonce: Date.now() }); openSavedWallet(wallet, 'receive'); }} onRenamed={() => void reloadWallets()} onRemove={removeWallet} onActivity={() => setSection('activity')} />}
       {section === 'setup' && <Setup linked={linked} wallets={wallets} onSelectSaved={openSavedWallet} onOpened={(result) => void activateWallet(result)} onCreated={(result, createFastWallet, requiresPrimarySeedBackup) => void createdWallet(result, createFastWallet, requiresPrimarySeedBackup)} />}
-      {section === 'send' && <Send linked={linked} walletId={activeWalletId} wallet={activeWallet} appProtection={appProtection} />}
+      {section === 'send' && <Send linked={linked} walletId={activeWalletId} wallet={activeWallet} appProtection={appProtection} onWalletsChanged={reloadWallets} />}
       {section === 'receive' && <><Receive linked={linked} walletId={activeWalletId} wallet={activeWallet} wallets={managedWallets} manageAddressesRequest={addressManagementRequest} onSelectWallet={(wallet) => openSavedWallet(wallet, 'receive')} onSetup={startSetup} onActivity={() => setSection('activity')} /><FastWalletReceive appProtection={appProtection} /></>}
       {section === 'activity' && <Activity linked={linked} walletId={activeWalletId} wallet={activeWallet} />}
       {section === 'mfw' && <MfwNames linked={linked} walletId={activeWalletId} wallet={activeWallet} appProtection={appProtection} />}
       {section === 'community' && v1ReleaseFeatures.legacyCommunity && <Community />}
       {section === 'enthusiast' && <MoneroEnthusiastV1 />}
       {section === 'assistant' && <Assistant wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
-      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} autoLockSeconds={autoLockSeconds} onSetAutoLockSeconds={updateAutoLockTimeout} appProtection={appProtection} onSetAppProtectionMode={setAppProtectionMode} onLockApp={lockDesktopApp} />}
+      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} onWalletsChanged={reloadWallets} autoLockSeconds={autoLockSeconds} onSetAutoLockSeconds={updateAutoLockTimeout} appProtection={appProtection} onSetAppProtectionMode={setAppProtectionMode} onLockApp={lockDesktopApp} />}
       {section === 'menu' && <DesktopMenu wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
       {seedRevealRequest && <SensitiveAuthorizationOverlay title="Show recovery words" description={activeProtectionMode === 'system' ? `Confirm with ${appProtection.systemAuth.label}, then your recovery words will open here in Monero Fast Wallet.` : 'Enter your app password, then your recovery words will open here in Monero Fast Wallet.'} password={seedAuthorizationPassword} mode={activeProtectionMode} systemLabel={appProtection.systemAuth.label} allowPasswordFallback={appProtection.passwordConfigured} busy={seedRevealBusy} onPasswordChange={setSeedAuthorizationPassword} onConfirm={() => void presentRecoverySeed()} onDismiss={() => { pendingFastWalletSourceRef.current = null; setSeedAuthorizationPassword(''); setSeedRevealRequest(null); }} />}
       {recoverySeedScreen && <RecoverySeedBackupScreen label={recoverySeedScreen.label} seed={recoverySeedScreen.seed} fastWallet={recoverySeedScreen.kind === 'fast'} busy={seedRevealBusy} onConfirm={() => void completeRecoverySeedBackup()} onDismiss={() => setRecoverySeedScreen(null)} />}
@@ -1123,7 +1193,7 @@ function MarketChart({ points, positive, onRetry }: { points: MarketPoint[]; pos
   return <div className="market-chart-interactive"><svg className="market-chart" viewBox="0 0 960 248" preserveAspectRatio="none" role="img" aria-label={t('home.chartAria')}><defs><linearGradient id="market-chart-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={color} stopOpacity="0.24" /><stop offset="1" stopColor={color} stopOpacity="0" /></linearGradient></defs><path d={geometry.area} fill="url(#market-chart-area)" /><path d={geometry.line} fill="none" stroke={color} strokeWidth="3" vectorEffect="non-scaling-stroke" /><rect x="0" y="0" width="960" height="248" fill="transparent" onPointerMove={(event) => selectPoint(event.clientX, event.currentTarget.getBoundingClientRect())} onPointerLeave={() => setHoverIndex(null)} />{hoverIndex !== null && <><line x1={activeX} x2={activeX} y1="0" y2="248" stroke="#d7d0e4" strokeOpacity="0.38" strokeWidth="1" vectorEffect="non-scaling-stroke" /><circle cx={activeX} cy={activeY} r="5.5" fill="#171322" stroke={color} strokeWidth="3" vectorEffect="non-scaling-stroke" /></>}<circle cx={geometry.x} cy={geometry.y} r="5" fill={color} /></svg>{hoverIndex !== null && <div className="market-chart-tooltip" style={{ left: `${tooltipPosition}%` }} role="status"><strong>{formatUsd(activePoint.price)}</strong><span>{marketChartTimestamp(activePoint.timestamp)}</span></div>}</div>;
 }
 
-function DesktopSyncProgress({ network, networkStatus, onRefresh, sync, syncEtaSeconds, t, walletName, walletOpened }: { network: ReturnType<typeof presentNetworkSync>; networkStatus: NetworkSyncStatus | null; onRefresh: () => void; sync: ReturnType<typeof presentWalletSync>; syncEtaSeconds: number | undefined; t: ReturnType<typeof useI18n>['t']; walletName: string; walletOpened: boolean }) {
+function DesktopSyncProgress({ locale, network, networkStatus, onRefresh, readinessPhase, sync, syncEtaSeconds, t, walletName, walletOpened, walletReady }: { locale: string; network: ReturnType<typeof presentNetworkSync>; networkStatus: NetworkSyncStatus | null; onRefresh: () => void; readinessPhase?: WalletPublication<NativeWalletSnapshot, NativeTransaction>['phase']; sync: ReturnType<typeof presentWalletSync>; syncEtaSeconds: number | undefined; t: ReturnType<typeof useI18n>['t']; walletName: string; walletOpened: boolean; walletReady: boolean }) {
   // A selected wallet can already have a cache at the chain tip while the
   // process-wide downloader is filling an older shared range for another
   // wallet. Wallet synchronization therefore cannot promote blockchain data
@@ -1149,13 +1219,19 @@ function DesktopSyncProgress({ network, networkStatus, onRefresh, sync, syncEtaS
       })
     : undefined;
   const showWalletSync = connected && walletOpened;
-  const fullySynced = showWalletSync && network.ready && sync.coreConfirmed && !network.failed;
+  const fullySynced = showWalletSync && network.ready && sync.coreConfirmed && walletReady && !network.failed;
   const [expanded, setExpanded] = useState(() => !fullySynced);
   const previousSyncState = useRef({ fullySynced, walletName });
   const compactStatus = network.failed
     ? t('home.syncRetrying')
     : fullySynced
       ? t('home.syncComplete')
+      : readinessPhase === 'recovering-session'
+        ? t('home.sessionRecovering')
+        : readinessPhase === 'recoverable-error'
+          ? t('home.sessionRecoveryFailed')
+        : readinessPhase === 'scanning-spend-outputs'
+          ? t('home.spendOutputsChecking')
       : !network.ready
         ? blockchainDetail
         : sync.phase === 'finalizing'
@@ -1191,28 +1267,38 @@ function DesktopSyncProgress({ network, networkStatus, onRefresh, sync, syncEtaS
       </button>
     </header>
     {expanded && <div className="primary-wallet-sync" data-testid="sync-status-details">
-        <DesktopSyncProgressRow detail={blockchainDetail} extra={connectionDetail} height={network.targetHeight !== undefined ? t('home.syncHeight', { current: formatSyncBlockCount(blockchainCurrent), target: formatSyncBlockCount(network.targetHeight) }) : undefined} label={t('home.blockchainData')} percent={blockchainPercent} rate={networkRate === undefined ? undefined : t('home.syncNetworkRate', { rate: formatNetworkSyncRate(networkRate) })} testId="blockchain-progress" />
-        {showWalletSync && <DesktopSyncProgressRow detail={sync.phase === 'synchronized' ? t('home.syncComplete') : sync.phase === 'finalizing' ? t('home.syncVerifying') : sync.phase === 'waiting-for-node' ? t('home.syncUpdating') : t('home.syncScanning')} extra={sync.phase === 'finalizing' ? t('home.syncConfirming') : sync.phase === 'syncing' ? formatDesktopSyncEta(syncEtaSeconds, t) : undefined} height={sync.targetHeight !== undefined ? t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight), target: formatSyncBlockCount(sync.targetHeight) }) : undefined} label={t('home.walletScan')} onRefresh={onRefresh} percent={walletPercent} rate={walletDerivationRate === undefined ? undefined : t('home.syncDerivationRate', { rate: formatWalletDerivationRate(walletDerivationRate) })} testId="wallet-progress" />}
+        <DesktopSyncProgressRow detail={blockchainDetail} extra={connectionDetail} height={network.targetHeight !== undefined ? t('home.syncHeight', { current: formatSyncBlockCount(blockchainCurrent, locale), target: formatSyncBlockCount(network.targetHeight, locale) }) : undefined} label={t('home.blockchainData')} percent={blockchainPercent} rate={networkRate === undefined ? undefined : t('home.syncNetworkRate', { rate: formatNetworkSyncRate(networkRate, locale) })} testId="blockchain-progress" />
+        {showWalletSync && <DesktopSyncProgressRow detail={readinessPhase === 'recovering-session' ? t('home.sessionRecovering') : readinessPhase === 'recoverable-error' ? t('home.sessionRecoveryFailed') : readinessPhase === 'scanning-spend-outputs' ? t('home.spendOutputsChecking') : sync.phase === 'synchronized' ? t('home.syncComplete') : sync.phase === 'finalizing' ? t('home.syncVerifying') : sync.phase === 'waiting-for-node' ? t('home.syncUpdating') : t('home.syncScanning')} extra={sync.phase === 'finalizing' ? t('home.syncConfirming') : sync.phase === 'syncing' ? formatDesktopSyncEta(syncEtaSeconds, t) : undefined} height={sync.targetHeight !== undefined ? t('home.syncHeight', { current: formatSyncBlockCount(sync.walletHeight, locale), target: formatSyncBlockCount(sync.targetHeight, locale) }) : undefined} label={readinessPhase === 'scanning-spend-outputs' ? t('home.spendOutputs') : t('home.walletScan')} onRefresh={onRefresh} percent={readinessPhase === 'scanning-spend-outputs' || readinessPhase === 'recovering-session' || readinessPhase === 'recoverable-error' ? undefined : walletPercent} rate={walletDerivationRate === undefined ? undefined : t('home.syncDerivationRate', { rate: formatWalletDerivationRate(walletDerivationRate, locale) })} testId="wallet-progress" />}
       </div>}
   </section>;
 }
 
-function DesktopSyncProgressRow({ detail, extra, height, label, onRefresh, percent, rate, testId }: { detail: string; extra?: string; height?: string; label: string; onRefresh?: () => void; percent: number; rate?: string; testId: string }) {
-  const normalized = normalizeSyncPercent(percent);
-  return <section className="desktop-sync-progress" data-testid={testId}><div className="sync-reading"><strong><b>{label}</b><small>{detail}</small></strong>{onRefresh && <button className="sync-refresh" aria-label="Refresh" onClick={onRefresh} title="Refresh" type="button">↻</button>}<em className={normalized === 100 ? 'ready' : ''}>{formatSyncPercent(normalized)}%</em></div><div className="sync-track"><span className={normalized === 100 ? 'ready' : ''} style={{ width: `${normalized}%` }} /></div>{(height || rate || extra) && <div className="sync-metrics">{height && <span>{height}</span>}{rate && <span>{rate}</span>}{extra && <span>{extra}</span>}</div>}</section>;
+function DesktopSyncProgressRow({ detail, extra, height, label, onRefresh, percent, rate, testId }: { detail: string; extra?: string; height?: string; label: string; onRefresh?: () => void; percent?: number; rate?: string; testId: string }) {
+  const normalized = percent === undefined ? undefined : normalizeSyncPercent(percent);
+  return <section className="desktop-sync-progress" data-testid={testId}><div className="sync-reading"><strong><b>{label}</b><small>{detail}</small></strong>{onRefresh && <button className="sync-refresh" aria-label="Refresh" onClick={onRefresh} title="Refresh" type="button">↻</button>}<em className={normalized === 100 ? 'ready' : ''}>{normalized === undefined ? '—' : `${formatSyncPercent(normalized)}%`}</em></div><div className="sync-track"><span className={normalized === 100 ? 'ready' : ''} style={{ width: `${normalized ?? 0}%` }} /></div>{(height || rate || extra) && <div className="sync-metrics"><div className="sync-metrics-primary">{height && <span>{height}</span>}{rate && <span>{rate}</span>}</div>{extra && <span className="sync-metrics-extra">{extra}</span>}</div>}</section>;
 }
 
-function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, onWallets, onSelectWallet, onBackup, onLock, onSend, onReceive, onActivity, onWalletsChanged }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; savedWallets: RegisteredWallet[]; networkSync: NetworkSyncStatus | null; onSetup: () => void; onWallets: () => void; onSelectWallet: (wallet: RegisteredWallet) => void; onBackup: () => void; onLock: () => void; onSend: () => void; onReceive: () => void; onActivity: () => void; onWalletsChanged: () => Promise<void> }) {
-  const { t } = useI18n();
+function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, onWallets, onSelectWallet, onBackup, onLock, onSend, onReceive, onActivity, onWalletsChanged, onRecoverSession }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; savedWallets: RegisteredWallet[]; networkSync: NetworkSyncStatus | null; onSetup: () => void; onWallets: () => void; onSelectWallet: (wallet: RegisteredWallet) => void; onBackup: () => void; onLock: () => void; onSend: () => void; onReceive: () => void; onActivity: () => void; onWalletsChanged: () => Promise<void>; onRecoverSession: (wallet: RegisteredWallet) => Promise<WalletSessionRecoveryResponse> }) {
+  const { language, t } = useI18n();
+  const locale = language === 'de' ? 'de-DE' : 'en-US';
   const [timeframe, setTimeframe] = useState<MarketTimeframe>('24H');
   const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>('all');
   const [snapshot, setSnapshot] = useState<NativeWalletSnapshot | null>(null);
   const [registeredSnapshots, setRegisteredSnapshots] = useState<RegisteredWalletSnapshot[]>([]);
   const [transactions, setTransactions] = useState<NativeTransaction[]>([]);
+  const [walletStateSample, setWalletStateSample] = useState<{ snapshot: NativeWalletSnapshot; transactions: NativeTransaction[] } | null>(null);
+  const publicationsByRegistrationRef = useRef(new Map<string, WalletPublication<NativeWalletSnapshot, NativeTransaction>>());
+  const cardPublicationsByRegistrationRef = useRef(new Map<string, WalletPublication<NativeWalletSnapshot, never>>());
+  const sessionGenerationsByRegistrationRef = useRef(new Map<string, number>());
+  const [publication, setPublication] = useState<WalletPublication<NativeWalletSnapshot, NativeTransaction> | undefined>();
+  const [publishedCardSnapshots, setPublishedCardSnapshots] = useState(new Map<string, NativeWalletSnapshot>());
+  const [sessionGeneration, setSessionGeneration] = useState(0);
+  const [sessionRecovering, setSessionRecovering] = useState(false);
+  const [sessionRecoveryFailed, setSessionRecoveryFailed] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [ledgerVerificationPhase, setLedgerVerificationPhase] = useState<string | null>(null);
   const snapshotRefreshInFlight = useRef(false);
-  const ledgerAutoVerificationAttemptedAtRef = useRef(new Map<string, number>());
+  const ledgerAutoVerificationAttemptedRef = useRef(new Set<string>());
   // This is intentionally acquired before asking the native transport for its
   // status: status can start a BLE discovery.  The one marker covers both the
   // selected wallet and every background wallet, so no two flows can discover
@@ -1227,6 +1313,32 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
   const { price, change24h, loading: priceLoading } = useXmrPrice();
   const { points, loading: chartLoading, refresh: refreshChart } = useXmrChart(timeframe);
   const { items: newsItems, loading: newsLoading, unavailable: newsUnavailable, refresh: refreshNews } = useMoneroNews(v1ReleaseFeatures.news);
+
+  const recoverStaleSession = useCallback(async (reason: unknown) => {
+    if (!wallet || !isSessionStale(reason)) return false;
+    setSessionRecovering(true);
+    setSessionRecoveryFailed(false);
+    setMessage(null);
+    try {
+      const recovered = await onRecoverSession(wallet);
+      sessionGenerationsByRegistrationRef.current.set(wallet.id, recovered.sessionGeneration);
+      setSessionGeneration(recovered.sessionGeneration);
+      return true;
+    } catch (recoveryReason) {
+      setMessage(errorMessage(recoveryReason, 'The wallet session could not be restored.'));
+      setSessionRecoveryFailed(true);
+      return true;
+    } finally {
+      setSessionRecovering(false);
+    }
+  }, [onRecoverSession, wallet]);
+
+  useEffect(() => {
+    setSessionGeneration(wallet?.id
+      ? sessionGenerationsByRegistrationRef.current.get(wallet.id) ?? 0
+      : 0);
+    setSessionRecoveryFailed(false);
+  }, [wallet?.id]);
 
   const accountIndex = wallet?.accountIndex ?? 0;
   const legacyLedgerAccountScoped = Boolean(
@@ -1268,23 +1380,28 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
       }
       setSnapshot(nextSnapshot);
       setMessage(startRefresh ? 'Local wallet refresh started.' : null);
+      return nextSnapshot;
     } catch (reason) {
       // A node handshake may be slow, but it must not blank the wallet or
       // replace a useful previous balance with an alarming error. Keep the
       // current view and let the next lightweight poll retry.
-      if (!isBackgroundWalletWork(reason)) setMessage(errorMessage(reason, 'Could not read wallet state.'));
+      if (!await recoverStaleSession(reason) && !isBackgroundWalletWork(reason)) setMessage(errorMessage(reason, 'Could not read wallet state.'));
+      return undefined;
     }
     finally { snapshotRefreshInFlight.current = false; }
-  }, [snapshotAccountIndex, wallet?.restoreHeight, walletId]);
+  }, [recoverStaleSession, snapshotAccountIndex, wallet?.restoreHeight, walletId]);
   const loadTransactions = useCallback(async () => {
     if (!walletId || !wallet) return;
     try {
       const raw = await invoke<string>('registered_wallet_transactions', { input: { registrationId: wallet.id } });
-      setTransactions(parseNativeJson<NativeTransaction[]>(raw, 'The native transaction history was invalid.'));
+      const nextTransactions = parseNativeJson<NativeTransaction[]>(raw, 'The native transaction history was invalid.');
+      setTransactions(nextTransactions);
+      return nextTransactions;
     } catch (reason) {
-      if (!isBackgroundWalletWork(reason)) setMessage(errorMessage(reason, 'Could not read wallet activity.'));
+      if (!await recoverStaleSession(reason) && !isBackgroundWalletWork(reason)) setMessage(errorMessage(reason, 'Could not read wallet activity.'));
+      return undefined;
     }
-  }, [wallet, walletId]);
+  }, [recoverStaleSession, wallet, walletId]);
   const loadRegisteredSnapshots = useCallback(async () => {
     try {
       const loaded = await invoke<RegisteredWalletSnapshot[]>('registered_wallet_snapshots');
@@ -1302,25 +1419,45 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
       setRegisteredSnapshots(loaded);
     }
     catch (reason) {
-      if (!isBackgroundWalletWork(reason)) setRegisteredSnapshots([]);
+      // This bulk command covers every warmed registration, but its safe
+      // error does not identify which registration owns a stale handle.
+      // The selected wallet's direct poll performs the targeted recovery.
+      if (!isBackgroundWalletWork(reason) && !isSessionStale(reason)) {
+        setMessage(errorMessage(reason, 'Could not update saved wallet states.'));
+      }
     }
   }, [savedWallets]);
-  const refreshWallet = async () => { await Promise.all([loadSnapshot(true), loadTransactions()]); };
+  const loadWalletState = useCallback(async (startRefresh = false) => {
+    const beforeHistory = await loadSnapshot(startRefresh);
+    if (!beforeHistory) return;
+    const nextTransactions = await loadTransactions();
+    if (!nextTransactions) return;
+    const afterHistory = await loadSnapshot();
+    if (!afterHistory) return;
+    // Snapshot and history are separate legacy FFI calls. Bracket the history
+    // read with the native monotonic revision so a block or Ledger mutation
+    // between calls can only defer publication to the next poll; it can never
+    // combine a balance from one state with transactions from another.
+    if (snapshotPublicationToken(beforeHistory) === snapshotPublicationToken(afterHistory)) {
+      setWalletStateSample({ snapshot: afterHistory, transactions: nextTransactions });
+      setSessionRecoveryFailed(false);
+    }
+  }, [loadSnapshot, loadTransactions]);
+  const refreshWallet = async () => { await loadWalletState(true); };
 
   useEffect(() => {
-    if (!walletId) { setSnapshot(null); setTransactions([]); void loadRegisteredSnapshots(); return; }
+    if (!walletId) { setSnapshot(null); setTransactions([]); setWalletStateSample(null); void loadRegisteredSnapshots(); return; }
     // Opening/creating a wallet already queues exactly one native sync worker.
     // Read its state here without issuing a second start-refresh command: that
     // duplicate used to queue behind daemon initialization and amplify every
     // quick wallet switch into another long native-lock wait.
-    void loadSnapshot();
-    void loadTransactions();
+    setWalletStateSample(null);
+    void loadWalletState();
     void loadRegisteredSnapshots();
-    const snapshotTimer = window.setInterval(() => void loadSnapshot(), 5_000);
-    const transactionTimer = window.setInterval(() => void loadTransactions(), 5_000);
+    const walletStateTimer = window.setInterval(() => void loadWalletState(), 5_000);
     const registeredSnapshotTimer = window.setInterval(() => void loadRegisteredSnapshots(), 5_000);
-    return () => { window.clearInterval(snapshotTimer); window.clearInterval(transactionTimer); window.clearInterval(registeredSnapshotTimer); };
-  }, [loadRegisteredSnapshots, loadSnapshot, loadTransactions, walletId]);
+    return () => { window.clearInterval(walletStateTimer); window.clearInterval(registeredSnapshotTimer); };
+  }, [loadRegisteredSnapshots, loadWalletState, walletId]);
 
   const positive = timeframe === '24H' ? change24h >= 0 : points.length < 2 || points.at(-1)!.price >= points[0].price;
   const changePercent = timeframe === '24H' ? change24h : points.length >= 2 ? ((points.at(-1)!.price - points[0].price) / points[0].price) * 100 : 0;
@@ -1337,23 +1474,78 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
     () => new Set(registeredSnapshots.filter(item => item.usesLedgerReadOnly).map(item => item.registrationId)),
     [registeredSnapshots],
   );
+  useEffect(() => {
+    const published = new Map<string, NativeWalletSnapshot>();
+    for (const registration of savedWallets) {
+      const candidate = snapshotsByRegistration.get(registration.id);
+      const requiresLedgerVerification = registration.kind === 'hardware' && registration.role !== 'fast';
+      const pendingOutputCount = Number(candidate?.pendingOutputKeyImageCount ?? 0);
+      const next = nextWalletPublication(
+        cardPublicationsByRegistrationRef.current.get(registration.id),
+        {
+          snapshot: candidate,
+          transactions: [],
+          requiresLedgerVerification,
+          ledgerVerified: !requiresLedgerVerification || Boolean(
+            ledgerReadOnlySnapshots.has(registration.id)
+            && registration.ledgerKeyImagesVerifiedAt
+            && Number.isFinite(pendingOutputCount)
+            && pendingOutputCount === 0,
+          ),
+          sessionGeneration: sessionGenerationsByRegistrationRef.current.get(registration.id) ?? 0,
+        },
+      );
+      cardPublicationsByRegistrationRef.current.set(registration.id, next);
+      if (next.publishedSnapshot) published.set(registration.id, next.publishedSnapshot);
+    }
+    setPublishedCardSnapshots(published);
+  }, [ledgerReadOnlySnapshots, savedWallets, snapshotsByRegistration]);
   const selectedSnapshot = wallet?.id
     ? snapshotsByRegistration.get(wallet.id) ?? snapshot
     : snapshot;
+  useEffect(() => {
+    if (!wallet?.id) {
+      setPublication(undefined);
+      return;
+    }
+    const prior = publicationsByRegistrationRef.current.get(wallet.id);
+    const candidate = walletStateSample?.snapshot;
+    const pendingOutputCount = Number(candidate?.pendingOutputKeyImageCount ?? 0);
+    const requiresLedgerVerification = wallet.kind === 'hardware' && wallet.role !== 'fast';
+    const ledgerVerified = !requiresLedgerVerification || Boolean(
+      ledgerReadOnlySnapshots.has(wallet.id)
+      && wallet.ledgerKeyImagesVerifiedAt
+      && Number.isFinite(pendingOutputCount)
+      && pendingOutputCount === 0,
+    );
+    const next = nextWalletPublication(prior, {
+      snapshot: candidate,
+      transactions: walletStateSample?.transactions ?? [],
+      requiresLedgerVerification,
+      ledgerVerified,
+      ledgerPhase: ledgerVerificationPhase ? 'scanning-spend-outputs' : undefined,
+      sessionRecovering,
+      recoverableError: sessionRecoveryFailed,
+      sessionGeneration,
+    });
+    publicationsByRegistrationRef.current.set(wallet.id, next);
+    setPublication(next);
+  }, [ledgerReadOnlySnapshots, ledgerVerificationPhase, sessionGeneration, sessionRecovering, sessionRecoveryFailed, wallet, walletStateSample]);
+  const publishedSnapshot = publication?.publishedSnapshot;
+  const publishedTransactions = publication?.publishedTransactions ?? [];
   // The dashboard is the selected wallet's balance. Do not sum every local
   // registration: Ledger Fast Wallet entries and historical registrations can
   // refer to the same wallet/account and would double-count the same outputs.
   const hasUnverifiedLedgerBalance = Boolean(
     wallet && desktopLedgerBalanceNeedsVerification(wallet, selectedSnapshot ?? undefined, ledgerReadOnlySnapshots.has(wallet.id)),
   );
-  const balanceAtomic = atomicValue(selectedSnapshot?.balanceAtomic).toString();
-  const unlockedAtomic = hasUnverifiedLedgerBalance
-    ? '0'
-    : atomicValue(selectedSnapshot?.unlockedBalanceAtomic).toString();
+  const balanceAtomic = atomicValue(publishedSnapshot?.balanceAtomic).toString();
+  const unlockedAtomic = atomicValue(publishedSnapshot?.unlockedBalanceAtomic).toString();
   const lockedAtomic = atomicValue(balanceAtomic) - atomicValue(unlockedAtomic);
   const balanceXmr = formatAtomicXmr(balanceAtomic);
   const lockedXmr = formatAtomicXmr(lockedAtomic.toString());
   const balanceUsd = price > 0 ? formatUsd(atomicXmrNumber(balanceAtomic) * price) : '—';
+  const hasPublishedBalance = Boolean(publishedSnapshot);
   const syncStartHeight = syncStartHeightForWallet(
     wallet?.restoreHeight,
     walletId ? syncStartHeightsRef.current.get(walletId) : undefined,
@@ -1382,7 +1574,7 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
     wallet?.id && ledgerReadOnlySnapshots.has(wallet.id),
   );
   const activeLedgerNeedsAutomaticVerification =
-    activeLedgerNeedsVerification && activeLedgerHasReadOnly;
+    activeLedgerNeedsVerification && activeLedgerHasReadOnly && !wallet?.ledgerKeyImagesVerifiedAt;
   const verifyLedgerBalance = async () => {
     if (!walletId || !wallet || wallet.kind !== 'hardware' || ledgerVerificationPhase) return;
     setLedgerVerificationPhase('Confirm once on your Ledger…');
@@ -1431,7 +1623,7 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
         }
       }
       if (!verified) throw lastReason ?? new Error('Ledger balance verification timed out.');
-      await Promise.all([onWalletsChanged(), loadRegisteredSnapshots()]);
+      await Promise.all([onWalletsChanged(), loadRegisteredSnapshots(), loadWalletState()]);
     } catch (reason) {
       // Reconciliation is an internal integrity step.  Keep failures in the
       // diagnostic log rather than adding a persistent dashboard warning.
@@ -1453,14 +1645,13 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
     let cancelled = false;
     const attempt = async () => {
       if (cancelled || ledgerVerificationPhase) return;
-      const lastAttempt = ledgerAutoVerificationAttemptedAtRef.current.get(wallet.id) ?? 0;
-      if (Date.now() - lastAttempt < 60_000) return;
+      if (ledgerAutoVerificationAttemptedRef.current.has(wallet.id)) return;
       if (ledgerReconciliationInFlightRef.current) return;
 
       // Record the cooldown before the status call. On macOS that call may
       // begin BLE discovery, so recording it afterwards would permit repeated
       // discovery windows while no Ledger is available.
-      ledgerAutoVerificationAttemptedAtRef.current.set(wallet.id, Date.now());
+      ledgerAutoVerificationAttemptedRef.current.add(wallet.id);
       ledgerReconciliationInFlightRef.current = true;
       try {
         const raw = await invoke<string>('ledger_transport_status');
@@ -1474,10 +1665,8 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
       }
     };
     void attempt();
-    const interval = window.setInterval(() => void attempt(), 15_000);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
     };
   }, [
     activeLedgerNeedsAutomaticVerification,
@@ -1487,83 +1676,8 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
     walletId,
   ]);
 
-  useEffect(() => {
-    if (ledgerVerificationPhase || !wallet?.id) return;
-    let cancelled = false;
-    const attempt = async () => {
-      if (cancelled || ledgerReconciliationInFlightRef.current) return;
-      const candidate = savedWallets.find((registration) => {
-        if (
-          registration.id === wallet.id ||
-          registration.kind !== 'hardware' ||
-          registration.role === 'fast' ||
-          !ledgerReadOnlySnapshots.has(registration.id)
-        ) return false;
-        const candidateSnapshot = snapshotsByRegistration.get(registration.id);
-        return Boolean(
-          candidateSnapshot?.synchronized &&
-          desktopLedgerBalanceNeedsVerification(
-            registration,
-            candidateSnapshot,
-            true,
-          ),
-        );
-      });
-      if (!candidate) return;
-      const lastAttempt = ledgerAutoVerificationAttemptedAtRef.current.get(candidate.id) ?? 0;
-      if (Date.now() - lastAttempt < 60_000) return;
-
-      // The cooldown and global single-flight marker must be set before this
-      // call because checking transport availability can itself open a bounded
-      // BLE discovery window.
-      ledgerAutoVerificationAttemptedAtRef.current.set(candidate.id, Date.now());
-      ledgerReconciliationInFlightRef.current = true;
-      try {
-        const raw = await invoke<string>('ledger_transport_status');
-        const transport = parseNativeJson<LedgerTransportStatus>(raw, 'The Ledger connection state was invalid.');
-        if (!transport.supported || !transport.available || !transport.permissionGranted || transport.deviceCount < 1) return;
-        console.info('MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_START', {
-          registrationId: candidate.id,
-        });
-        // The companion is already open and fully scanned. The Tauri command
-        // reopens only a short-lived Ledger signing handle, derives KIs for
-        // pending owned outputs, then restores the read-only companion. It
-        // never changes the selected wallet or starts another block download.
-        await invoke<string>('reconcile_ledger_balance', {
-          input: { sourceRegistrationId: candidate.id },
-        });
-        await Promise.all([onWalletsChanged(), loadRegisteredSnapshots()]);
-        console.info('MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_COMPLETE', {
-          registrationId: candidate.id,
-        });
-      } catch (reason) {
-        console.warn(
-          'MONERO_DESKTOP_LEDGER_BACKGROUND_RECONCILIATION_FAILED',
-          errorMessage(reason, 'Ledger reconciliation failed.'),
-        );
-      } finally {
-        ledgerReconciliationInFlightRef.current = false;
-      }
-    };
-    void attempt();
-    const interval = window.setInterval(() => void attempt(), 15_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [
-    ledgerReadOnlySnapshots,
-    ledgerVerificationPhase,
-    loadRegisteredSnapshots,
-    onWalletsChanged,
-    savedWallets,
-    snapshotsByRegistration,
-    wallet?.id,
-  ]);
-
   return <div className="home-stack home-dashboard">
-    {ledgerVerificationPhase && <LedgerViewKeyExportOverlay title="Verify with your Ledger" detail={ledgerVerificationPhase} />}
-    {showPrimaryWalletCard && <DesktopSyncProgress network={sharedSync} networkStatus={networkSync} onRefresh={() => void refreshWallet()} sync={sync} syncEtaSeconds={syncEtaSeconds} t={t} walletName={wallet ? walletDisplayName(wallet) : t('common.wallet')} walletOpened={Boolean(walletId && selectedSnapshot)} />}
+    {showPrimaryWalletCard && <DesktopSyncProgress locale={locale} network={sharedSync} networkStatus={networkSync} onRefresh={() => void refreshWallet()} readinessPhase={publication?.phase} sync={sync} syncEtaSeconds={syncEtaSeconds} t={t} walletName={wallet ? walletDisplayName(wallet) : t('common.wallet')} walletOpened={Boolean(walletId)} walletReady={publication?.ready === true} />}
 
     <section className="market-card">
       <div className="market-card-head"><div><p className="eyebrow">{t('home.liveMarket')}</p><h2>{priceLoading ? t('home.priceLoading') : price > 0 ? formatUsd(price) : t('home.marketUnavailable')}</h2>{price > 0 && <p className={positive ? 'market-change positive' : 'market-change negative'}><span>{positive ? '▲' : '▼'} {Math.abs(changePercent).toFixed(2)}%</span><span>{positive ? '+' : '-'}{formatUsd(changeUsd)}</span></p>}</div><img className="market-mark" src="/monero-mark.png" alt="Monero" /></div>
@@ -1573,7 +1687,7 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
 
     {showPrimaryWalletCard && <section className={`${selectedSnapshot?.synchronized && !showSharedSync ? 'wallet-sync-card ready' : 'wallet-sync-card'} home-primary-wallet balance-only`}>
       <div className="primary-wallet-balance">
-        <div><p className="eyebrow">{t('home.totalBalance')}</p><h2>{`${balanceXmr} XMR`}</h2><strong>{balanceUsd}</strong></div>
+        <div><p className="eyebrow">{t('home.totalBalance')}</p><h2>{hasPublishedBalance ? `${balanceXmr} XMR` : '— XMR'}</h2><strong>{hasPublishedBalance ? balanceUsd : '—'}</strong></div>
         <div className="primary-wallet-meta"><strong>{wallet ? walletDisplayName(wallet) : t('common.wallet')}</strong><small>{wallet ? `${networkLabel(wallet.network)} · ${wallet.kind === 'hardware' ? t('common.ledger') : t('wallets.software')}` : ''}</small>{lockedAtomic > 0n && !hasUnverifiedLedgerBalance && <span className="wallet-locked"><i />{lockedXmr} XMR locked</span>}</div>
       </div>
     </section>}
@@ -1586,10 +1700,9 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
 
     <section className="home-quick-actions" aria-label="Wallet actions"><button onClick={() => routeToWalletAction(onSend)} type="button"><span>↑</span><strong>{t('nav.send')}</strong><small>{t('home.sendDetail')}</small></button><button onClick={() => routeToWalletAction(onReceive)} type="button"><span>↓</span><strong>{t('nav.receive')}</strong><small>{t('home.receiveDetail')}</small></button></section>
 
-    <section className="home-wallets"><header><div><p className="eyebrow">{t('home.allWallets')}</p><h2>{t('home.yourWallets')}</h2></div><button className="quiet-button" onClick={onWallets} type="button">{t('home.manageWallets')}</button></header>{savedWallets.length ? <div className="wallet-strip">{savedWallets.map((item) => { const active = item.id === wallet?.id; const fast = isFastWalletRegistration(item); const itemSnapshot = snapshotsByRegistration.get(item.id); const itemStartHeight = syncStartHeightForWallet(item.restoreHeight, syncStartHeightsRef.current.get(item.id)); const itemSync = presentWalletSync(itemSnapshot ?? null, { startHeight: itemStartHeight }); const itemSyncPercent = itemSync.coreConfirmed ? 100 : itemSync.phase === 'finalizing' ? 99 : itemSync.progress ?? 0; const ledgerNeedsVerification = desktopLedgerBalanceNeedsVerification(item, itemSnapshot, ledgerReadOnlySnapshots.has(item.id)); return <button className={`${active ? 'wallet-mini-card active' : 'wallet-mini-card'}${fast ? ' fast' : ''}`} onClick={() => onSelectWallet(item)} key={item.id} type="button"><span>{walletDisplayName(item)}</span><small>{fast ? item.kind === 'hardware' ? 'FAST WALLET · LEDGER' : 'FAST WALLET' : item.kind === 'hardware' ? 'LEDGER' : networkLabel(item.network).toUpperCase()}</small><strong>{itemSnapshot ? `${formatAtomicXmr(itemSnapshot.balanceAtomic)} XMR` : ledgerNeedsVerification ? 'Connect Ledger to verify spending' : item.isOpen ? 'Reading local Core…' : fast ? 'Open Fast Wallet' : t('home.openToCheck')}</strong><div className="wallet-mini-sync"><span><b>{syncLabel(itemSnapshot ?? null, t, itemStartHeight)}</b><em>{itemSyncPercent}%</em></span><i><i className={itemSyncPercent === 100 ? 'ready' : ''} style={{ width: `${itemSyncPercent}%` }} /></i>{itemSnapshot && itemSync.remainingBlocks !== undefined && <small>{t('home.syncRemaining', { count: formatSyncBlockCount(itemSync.remainingBlocks) })}</small>}</div></button>; })}<button className="wallet-mini-card add" onClick={onSetup} type="button"><span>＋</span><strong>{t('home.addWallet')}</strong></button></div> : <div className="home-empty"><p>{t('home.noWallets')}</p><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></div>}</section>
-    <RecentTransactions hasOpenWallet={Boolean(walletId)} items={transactions} onActivity={() => routeToWalletAction(onActivity)} />
+    <section className="home-wallets"><header><div><p className="eyebrow">{t('home.allWallets')}</p><h2>{t('home.yourWallets')}</h2></div><button className="quiet-button" onClick={onWallets} type="button">{t('home.manageWallets')}</button></header>{savedWallets.length ? <div className="wallet-strip">{savedWallets.map((item) => { const active = item.id === wallet?.id; const fast = isFastWalletRegistration(item); const itemSnapshot = snapshotsByRegistration.get(item.id); const publishedItemSnapshot = publishedCardSnapshots.get(item.id); const itemStartHeight = syncStartHeightForWallet(item.restoreHeight, syncStartHeightsRef.current.get(item.id)); const itemSync = presentWalletSync(itemSnapshot ?? null, { startHeight: itemStartHeight }); const itemSyncPercent = itemSync.coreConfirmed ? 100 : itemSync.phase === 'finalizing' ? 99 : itemSync.progress ?? 0; return <button className={`${active ? 'wallet-mini-card active' : 'wallet-mini-card'}${fast ? ' fast' : ''}`} onClick={() => onSelectWallet(item)} key={item.id} type="button"><span>{walletDisplayName(item)}</span><small>{fast ? item.kind === 'hardware' ? 'FAST WALLET · LEDGER' : 'FAST WALLET' : item.kind === 'hardware' ? 'LEDGER' : networkLabel(item.network).toUpperCase()}</small><strong>{publishedItemSnapshot ? `${formatAtomicXmr(publishedItemSnapshot.balanceAtomic)} XMR` : item.isOpen ? '— XMR' : fast ? 'Open Fast Wallet' : t('home.openToCheck')}</strong><div className="wallet-mini-sync"><span><b>{syncLabel(itemSnapshot ?? null, t, itemStartHeight)}</b><em>{itemSyncPercent}%</em></span><i><i className={itemSyncPercent === 100 ? 'ready' : ''} style={{ width: `${itemSyncPercent}%` }} /></i>{itemSnapshot && itemSync.remainingBlocks !== undefined && <small>{t('home.syncRemaining', { count: formatSyncBlockCount(itemSync.remainingBlocks, locale) })}</small>}</div></button>; })}<button className="wallet-mini-card add" onClick={onSetup} type="button"><span>＋</span><strong>{t('home.addWallet')}</strong></button></div> : <div className="home-empty"><p>{t('home.noWallets')}</p><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></div>}</section>
+    <RecentTransactions hasOpenWallet={Boolean(walletId)} items={[...publishedTransactions]} onActivity={() => routeToWalletAction(onActivity)} />
 
-    {wallet?.kind === 'hardware' && walletId && <HardwareWalletCard walletId={walletId} />}
     {wallet?.seedBackupStatus === 'pending' && walletId && <section className="backup-warning"><div><p className="eyebrow">{t('home.securityStep')}</p><h2>{t('home.backupSeed')}</h2><p>{t('home.backupNote')}</p></div><button className="primary" onClick={onBackup} type="button">{t('home.showSeed')}</button></section>}
     {walletId && <div className="home-lock-row"><button className="quiet-button" onClick={onLock} type="button">{t('home.lock', { name: wallet ? walletDisplayName(wallet) : t('common.wallet') })}</button>{message && <p className="setup-message">{message}</p>}</div>}
   </div>;
@@ -2197,7 +2310,7 @@ function WalletFeature({ linked, title, text }: { linked: boolean; title: string
 
 type SendStep = 'recipient-choice' | 'manual-recipient' | 'address-book' | 'amount' | 'review';
 
-function Send({ linked, walletId, wallet, appProtection }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; appProtection: AppProtectionStatus }) {
+function Send({ linked, walletId, wallet, appProtection, onWalletsChanged }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; appProtection: AppProtectionStatus; onWalletsChanged: () => Promise<void> }) {
   const { t } = useI18n();
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
@@ -2220,7 +2333,9 @@ function Send({ linked, walletId, wallet, appProtection }: { linked: boolean; wa
     if (!walletId) return;
     if (refresh) await invoke<void>('start_wallet_refresh', { input: { walletId } });
     const raw = await invoke<string>('wallet_snapshot', { input: { walletId, accountIndex } });
-    setSnapshot(parseNativeJson<NativeWalletSnapshot>(raw, t('send.preparationFailed')));
+    const next = parseNativeJson<NativeWalletSnapshot>(raw, t('send.preparationFailed'));
+    setSnapshot(next);
+    return next;
   }, [accountIndex, t, walletId]);
   useEffect(() => {
     if (!linked || !walletId) return;
@@ -2281,12 +2396,33 @@ function Send({ linked, walletId, wallet, appProtection }: { linked: boolean; wa
     if (!sweepAll && snapshot && atomicValue(amountAtomic ?? undefined) > atomicValue(snapshot.unlockedBalanceAtomic)) { setMessage(t('send.insufficient')); return; }
     setBusy(true); setMessage(null);
     try {
+      let spendSnapshot = snapshot;
+      const requiresLedgerRecheck = wallet.kind === 'hardware'
+        && wallet.role !== 'fast'
+        && (!wallet.ledgerKeyImagesVerifiedAt
+          || Number(snapshot.pendingOutputKeyImageCount ?? 0) > 0);
+      if (requiresLedgerRecheck) {
+        setMessage(t('send.checkingSpendOutputs'));
+        await invoke<string>('reconcile_ledger_balance', {
+          input: { sourceRegistrationId: wallet.id },
+        });
+        await onWalletsChanged();
+        const refreshedSnapshot = await loadSnapshot();
+        if (!refreshedSnapshot?.synchronized
+          || Number(refreshedSnapshot.pendingOutputKeyImageCount ?? 0) > 0) {
+          throw new Error(t('send.waitForSync'));
+        }
+        spendSnapshot = refreshedSnapshot;
+      }
       const validatedRecipient = await invoke<string>('validate_recipient_address', {
         input: { address: recipient, network: wallet.network },
       });
+      if (!sweepAll && atomicValue(amountAtomic ?? undefined) > atomicValue(spendSnapshot?.unlockedBalanceAtomic)) {
+        throw new Error(t('send.insufficient'));
+      }
       // Keep the normal path identical to mobile: low priority, with the
       // actual fee always calculated by the native wallet before confirmation.
-      const raw = await invoke<string>('prepare_transaction', { input: { walletId, address: validatedRecipient, amountAtomic: sweepAll ? '' : amountAtomic ?? '', priority: 'low', accountIndex } });
+      const raw = await invoke<string>('prepare_transaction', { input: { walletId, registrationId: wallet.id, address: validatedRecipient, amountAtomic: sweepAll ? '' : amountAtomic ?? '', priority: 'low', accountIndex } });
       const prepared = parseNativeJson<NativePreparedTransaction>(raw, t('send.preparationFailed'));
       if (prepared.status !== 'ok') throw new Error(prepared.error || t('send.preparationFailed'));
       setReview(prepared);
@@ -2302,13 +2438,31 @@ function Send({ linked, walletId, wallet, appProtection }: { linked: boolean; wa
     if (!walletId || !review) return;
     setBusy(true); setMessage(null);
     try {
-      const raw = await invoke<string>('commit_transaction', { input: { walletId, pendingId: review.id, appPassword: authorizationPassword } });
+      const raw = await invoke<string>('commit_transaction', { input: { walletId, registrationId: wallet?.id, pendingId: review.id, appPassword: authorizationPassword } });
       const result = parseNativeJson<NativePreparedTransaction>(raw, t('send.broadcastFailed'));
       if (result.status !== 'ok') throw new Error(result.error || t('send.broadcastFailed'));
+      let ledgerRefreshPending = false;
+      if (wallet?.kind === 'hardware' && wallet.role !== 'fast') {
+        try {
+          await invoke<string>('reconcile_ledger_balance', {
+            input: { sourceRegistrationId: wallet.id },
+          });
+          await onWalletsChanged();
+        } catch {
+          // Broadcasting already succeeded. Never turn a post-send companion
+          // refresh failure into a send failure that could tempt a duplicate
+          // payment; retain the last published state and offer manual retry.
+          ledgerRefreshPending = true;
+        }
+      }
       setReview(null); setAuthorizationPassword(''); setUseAuthorizationPasswordFallback(false); setAmount(''); setSweepAll(false); setMessage(t('send.sent')); setStep('recipient-choice');
       setRecentContacts(rememberRecipient(address.trim(), contacts));
       setAddress('');
-      await loadSnapshot(true);
+      if (ledgerRefreshPending) {
+        setMessage(t('send.sentLedgerRefreshPending'));
+      } else {
+        await loadSnapshot(true);
+      }
     } catch (reason) { setAuthorizationPassword(''); setMessage(errorMessage(reason, t('send.broadcastFailed'))); }
     finally { setBusy(false); }
   };
@@ -2397,10 +2551,10 @@ function Receive({ linked, walletId, wallet, wallets, manageAddressesRequest, on
     finally { setBusy(false); }
   }, [accountIndex, t, wallet?.addressIndex, walletId]);
   const loadTransactions = useCallback(async () => {
-    if (!walletId) { setTransactions([]); return; }
-    const raw = await invoke<string>('wallet_transactions', { input: { walletId, accountIndex } });
+    if (!walletId || !wallet?.id) { setTransactions([]); return; }
+    const raw = await invoke<string>('registered_wallet_transactions', { input: { registrationId: wallet.id } });
     setTransactions(parseNativeJson<NativeTransaction[]>(raw, t('receive.addressUnavailable')));
-  }, [accountIndex, t, walletId]);
+  }, [t, wallet?.id, walletId]);
 
   useEffect(() => { if (linked && walletId) void load(); }, [linked, load, walletId]);
   useEffect(() => {
@@ -2554,7 +2708,7 @@ function HardwareWalletCard({ walletId }: { walletId: string }) {
 function Activity({ linked, walletId, wallet }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null }) {
   const { t } = useI18n();
   const [items, setItems] = useState<NativeTransaction[]>([]); const [message, setMessage] = useState<string | null>(null); const [selected, setSelected] = useState<NativeTransaction | null>(null);
-  const load = useCallback(async () => { if (!walletId) return; try { const raw = await invoke<string>('wallet_transactions', { input: { walletId, accountIndex: wallet?.accountIndex ?? 0 } }); setItems(parseNativeJson<NativeTransaction[]>(raw, 'The native transaction history was invalid.')); setMessage(null); } catch (reason) { setMessage(errorMessage(reason, 'Could not load activity.')); } }, [walletId, wallet?.accountIndex]);
+  const load = useCallback(async () => { if (!walletId || !wallet?.id) return; try { const raw = await invoke<string>('registered_wallet_transactions', { input: { registrationId: wallet.id } }); setItems(parseNativeJson<NativeTransaction[]>(raw, 'The native transaction history was invalid.')); setMessage(null); } catch (reason) { setMessage(errorMessage(reason, 'Could not load activity.')); } }, [wallet?.id, walletId]);
   useEffect(() => {
     if (!linked || !walletId) return;
     void load();
@@ -3047,7 +3201,7 @@ function Settings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoL
   return <section className="settings-page"><header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>Settings</h2><p>Desktop wallet controls mirror the mobile app while keeping keys and credentials local.</p></div><span>Desktop</span></header><section className="settings-section"><header><h3>Wallet</h3><small>{wallet ? `${wallet.walletName} · ${networkLabel(wallet.network)} · ${wallet.kind}` : 'No wallet open'}</small></header><article className="settings-panel settings-wallet-actions"><div><div><strong>Recovery seed</strong><p>{wallet?.kind === 'hardware' ? 'The recovery seed remains on the Ledger device.' : 'Reveal only while this local wallet is open.'}</p></div></div><button className="secondary" disabled={!walletId || wallet?.kind === 'hardware'} onClick={onRevealSeed} type="button">Show recovery seed</button></article><article className="settings-panel password-change"><div><strong>Change wallet password</strong><p>Changing the password requires the wallet to be open. The new password is never saved by this app.</p></div><div className="password-fields"><input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="New wallet password" /><input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="Confirm new password" /><button className="secondary" disabled={!walletId || changingPassword || !newPassword || !confirmPassword} onClick={() => void saveNewPassword()} type="button">{changingPassword ? 'Changing…' : 'Change password'}</button></div></article></section><section className="settings-section"><header><h3>Security</h3><small>Local controls</small></header><article className="settings-panel settings-toggle-row"><div><strong>Auto-lock after 5 minutes</strong><p>Locks the open wallet after the desktop app has been in the background for five minutes.</p></div><label className="toggle"><input checked={autoLockEnabled} onChange={(event) => onAutoLockChange(event.target.checked)} type="checkbox" /><span /></label></article><article className="settings-panel settings-info-row"><div><strong>Secure storage</strong><p>Node credentials and Fast Wallet scanner credentials stay in macOS Keychain. Recovery seeds and spend keys are never stored in this settings view.</p></div><span className="status-good">Keychain</span></article></section><section className="settings-section"><header><h3>Node</h3><small>{changed ? 'Unsaved changes' : savedProfile ? 'Saved' : 'Loading'}</small></header><article className="settings-panel node-settings"><p>{wallet ? `${wallet.walletName} uses its ${networkLabel(wallet.network)} profile when you save that network.` : 'Configure a network profile before opening a wallet.'}</p>{profile && <><div className="settings-field"><span>Network</span><div className="node-mode">{(['mainnet', 'testnet', 'stagenet'] as Network[]).map((item) => <button className={network === item ? 'selected' : ''} onClick={() => setNetwork(item)} key={item} type="button">{networkLabel(item)}</button>)}</div></div><div className="settings-field"><span>Connection</span><div className="node-mode">{([['optimized-grpc', 'Optimized'], ['original-rpc', 'Original RPC'], ['custom', 'Custom']] as const).map(([mode, label]) => <button className={profile.mode === mode ? 'selected' : ''} onClick={() => changeMode(mode)} key={mode} type="button">{label}</button>)}</div></div><div className="node-hint">{profile.mode === 'original-rpc' ? 'Original Monero daemon RPC. gRPC is disabled for this profile.' : profile.mode === 'optimized-grpc' ? 'Optimized Cuprate gRPC profile, matching the mobile default.' : 'Custom node endpoints remain local to this device.'}</div><div className="settings-form-grid"><label>Daemon address<input value={profile.daemonAddress} onChange={(event) => setProfile({ ...profile, daemonAddress: event.target.value })} placeholder="node.example:18089" autoComplete="off" /></label>{profile.mode !== 'original-rpc' && <label>Cuprate gRPC endpoint<input value={profile.grpcEndpoint} onChange={(event) => setProfile({ ...profile, grpcEndpoint: event.target.value })} placeholder="node.example:18091" autoComplete="off" /></label>}<label>Node username <small>Optional</small><input value={profile.username} onChange={(event) => setProfile({ ...profile, username: event.target.value })} autoComplete="off" /></label><label>Node password <small>Optional · Keychain only</small><input value={password} onChange={(event) => { setPassword(event.target.value); setClearPassword(false); }} type="password" autoComplete="new-password" placeholder={profile.passwordStored ? 'Password stored in Keychain' : 'Stored only in Keychain'} /></label><label>SOCKS5 proxy <small>Optional</small><input value={profile.proxyAddress} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.value })} placeholder="127.0.0.1:9050" autoComplete="off" /></label></div><div className="settings-checkboxes"><label className="checkbox"><input checked={profile.trusted} onChange={(event) => setProfile({ ...profile, trusted: event.target.checked })} type="checkbox" />Trusted node</label><label className="checkbox"><input checked={profile.useSsl} onChange={(event) => setProfile({ ...profile, useSsl: event.target.checked })} type="checkbox" />Use SSL/TLS for daemon RPC</label><label className="checkbox"><input checked={torEnabled} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.checked ? '127.0.0.1:9050' : '' })} type="checkbox" />Use Tor via local SOCKS5</label>{profile.passwordStored && <label className="checkbox"><input checked={clearPassword} onChange={(event) => setClearPassword(event.target.checked)} type="checkbox" />Forget stored node password</label>}</div><div className="settings-actions"><button className="secondary" onClick={reset} type="button">Reset defaults</button><button className="primary" disabled={busy || !changed} onClick={() => void save()} type="button">{busy ? 'Saving…' : wallet?.network === profile.network && walletId ? 'Save & apply node' : 'Save node profile'}</button></div></>}</article></section><section className="settings-section"><header><h3>Diagnostics</h3><small>{diagnosing ? 'Running…' : diagnostics.length ? 'Updated' : 'Ready'}</small></header><article className="settings-panel">{diagnostics.length > 0 && <div className="settings-diagnostics">{diagnostics.map((item) => <div key={item.label}><span>{item.label}</span><strong className={item.tone ?? 'neutral'}>{item.value}</strong></div>)}</div>}<button className="primary" disabled={diagnosing} onClick={() => void runDiagnostics()} type="button">{diagnosing ? 'Running diagnostics…' : 'Run diagnostics'}</button></article></section><section className="settings-section settings-about"><header><h3>About</h3><small>Local desktop build</small></header><article className="settings-panel"><div><strong>Privacy by design</strong><p>The packaged interface contains no remote web content. Wallet keys, passwords, transaction signing, and recovery seeds remain in the native Monero core.</p></div><div><strong>Market display</strong><p>Dashboard values use XMR/USD, the same default display as the mobile wallet.</p></div><div><strong>Open-source components</strong><p>Built with Tauri, React, Rust, and the pinned fork of Monero libwallet_api.</p></div></article></section><button className="danger-button settings-lock" disabled={!walletId} onClick={onCloseWallet} type="button">Close wallet</button>{message && <p className="setup-message">{message}</p>}</section>;
 }
 
-function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoLockSeconds, onSetAutoLockSeconds, appProtection, onSetAppProtectionMode, onLockApp }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; autoLockSeconds: number; onSetAutoLockSeconds: (seconds: number) => Promise<void>; appProtection: AppProtectionStatus; onSetAppProtectionMode: (mode: AppProtectionMode, password?: string, currentPassword?: string) => Promise<void>; onLockApp: () => Promise<void> }) {
+function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, onWalletsChanged, autoLockSeconds, onSetAutoLockSeconds, appProtection, onSetAppProtectionMode, onLockApp }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; onWalletsChanged: () => Promise<void>; autoLockSeconds: number; onSetAutoLockSeconds: (seconds: number) => Promise<void>; appProtection: AppProtectionStatus; onSetAppProtectionMode: (mode: AppProtectionMode, password?: string, currentPassword?: string) => Promise<void>; onLockApp: () => Promise<void> }) {
   const { language, setLanguage, t } = useI18n();
   const [network, setNetwork] = useState<Network>(wallet?.network ?? 'mainnet');
   const [profile, setProfile] = useState<NodeProfile | null>(null);
@@ -3070,6 +3224,7 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
   const [diagnosticReport, setDiagnosticReport] = useState<DiagnosticTestbenchReport | null>(null);
   const [diagnosticProgress, setDiagnosticProgress] = useState<DesktopDiagnosticProgress | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
+  const [ledgerRechecking, setLedgerRechecking] = useState(false);
 
   useEffect(() => { if (wallet?.network) setNetwork(wallet.network); }, [wallet?.network]);
   useEffect(() => { if (appProtection.mode) setProtectionMode(appProtection.mode); }, [appProtection.mode]);
@@ -3187,6 +3342,22 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
       setDiagnosticProgress(null);
     }
   };
+  const recheckLedgerSpendOutputs = async () => {
+    if (!wallet || wallet.kind !== 'hardware' || wallet.role === 'fast') return;
+    setLedgerRechecking(true);
+    setMessage(null);
+    try {
+      await invoke<string>('reconcile_ledger_balance', {
+        input: { sourceRegistrationId: wallet.id },
+      });
+      await onWalletsChanged();
+      setMessage(t('settings.recheckLedgerComplete'));
+    } catch (reason) {
+      setMessage(errorMessage(reason, t('settings.recheckLedgerFailed')));
+    } finally {
+      setLedgerRechecking(false);
+    }
+  };
   return <section className="settings-page">
     <header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>{t('settings.title')}</h2><p>{t('settings.subtitle')}</p></div><span>{status?.linked ? t('settings.ready') : t('settings.checking')}</span></header>
     <section className="settings-section"><header><h3>{t('settings.language')}</h3><small>{t('settings.languageHint')}</small></header>
@@ -3201,6 +3372,7 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, a
     </section>
     <section className="settings-section"><header><h3>{t('settings.wallet')}</h3><small>{wallet ? `${walletDisplayName(wallet)} · ${networkLabel(wallet.network)}` : t('settings.noWalletOpen')}</small></header>
       <article className="settings-panel settings-wallet-actions"><div><strong>{t('settings.recoverySeed')}</strong><p>{wallet?.kind === 'hardware' ? t('settings.seedHardware') : t('settings.seedHint')}</p></div><button className="secondary" disabled={!walletId || wallet?.kind === 'hardware'} onClick={onRevealSeed} type="button">{t('settings.showRecoverySeed')}</button></article>
+      {wallet?.kind === 'hardware' && wallet.role !== 'fast' && <article className="settings-panel settings-wallet-actions"><div><strong>{t('settings.recheckLedger')}</strong><p>{t('settings.recheckLedgerHint')}</p></div><button className="secondary" disabled={!walletId || ledgerRechecking} onClick={() => void recheckLedgerSpendOutputs()} type="button">{ledgerRechecking ? t('settings.recheckingLedger') : t('settings.recheckLedger')}</button></article>}
       <article className="settings-panel settings-info-row"><div><strong>{t('settings.unlock')}</strong><p>{t('settings.unlockHint')}</p></div><span className="status-good">{t('settings.keychain')}</span></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.security')}</h3><small>{t('settings.localDevice')}</small></header>

@@ -14,6 +14,8 @@ export type WalletSnapshot = {
   // the one-time compatibility enrolment path rather than guessing from block
   // height.
   pendingOutputKeyImageCount?: number;
+  /** Monotonic within the current native session. */
+  snapshotRevision?: number;
   synchronized: boolean;
 };
 
@@ -36,6 +38,8 @@ export type LedgerKeyImageSyncResult = {
   verificationDurationMs: number;
   storeDurationMs: number;
   totalDurationMs: number;
+  /** Authoritative destination snapshot rebuilt after the import. */
+  snapshotRevision?: number;
 };
 
 export type NetworkSyncStatus = {
@@ -45,6 +49,8 @@ export type NetworkSyncStatus = {
   lastError: string;
   consecutiveFailures: number;
   phaseSequence: number;
+  /** Changes whenever the shared native provider is recreated. */
+  providerGeneration?: number;
   phaseElapsedMs: number;
   lastProviderSelectionMs: number;
   lastTransportInitializationMs: number;

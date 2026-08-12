@@ -525,6 +525,40 @@ describe('WalletService registered wallet opening', () => {
     );
   });
 
+  it('atomically reopens one stale physical container for concurrent owners', async () => {
+    const registration = createRegisteredWallet({
+      id: 'software-mainnet-session-recovery',
+      walletName: 'session-recovery',
+      path: '/current-container/wallets/mainnet/session-recovery',
+      network: 'mainnet',
+      kind: 'software',
+      credentialKey: 'monero.wallet.software.mainnet.session-recovery.v1',
+      now: '2026-08-12T16:00:00.000Z',
+    });
+    mockNativeWallet.openWalletWithStoredSecret
+      .mockResolvedValueOnce({ walletId: 'wallet-stale' })
+      .mockResolvedValueOnce({ walletId: 'wallet-reopened' });
+
+    const service = new WalletService();
+    const staleSession = await service.openRegisteredWalletRegistration(
+      registration,
+    );
+    const [first, second] = await Promise.all([
+      service.recoverRegisteredWalletRegistration(registration, staleSession),
+      service.recoverRegisteredWalletRegistration(registration, staleSession),
+    ]);
+
+    expect(mockNativeWallet.openWalletWithStoredSecret).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(first.session.walletId).toBe('wallet-reopened');
+    expect(second.session.walletId).toBe('wallet-reopened');
+    expect(first.sessionGeneration).toBe(1);
+    expect(second.sessionGeneration).toBe(1);
+    expect(first.reopenAttempt).toBe(1);
+    expect(first.invalidatedRegistrationIds).toEqual([registration.id]);
+  });
+
   it('enforces synchronized zero balance below the UI before removing a Fast Wallet', async () => {
     const registration = createRegisteredWallet({
       id: 'fast-receive-v2-0-20260709T012217',

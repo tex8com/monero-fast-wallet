@@ -130,6 +130,7 @@ export default function SendScreen({ navigation, route }: any) {
     connectLedgerForSigning,
     isRegisteredWalletOpen,
     openRegisteredWalletById,
+    reconcileLedgerBalance,
     refreshSnapshot,
     refreshTransactions,
     registeredWallet,
@@ -425,6 +426,13 @@ export default function SendScreen({ navigation, route }: any) {
     setSending(true);
     setSendError(undefined);
     try {
+      if (
+        registeredWallet?.kind === 'hardware' &&
+        registeredWallet.role !== 'fast'
+      ) {
+        setSendStatus(t('send.checkingSpendOutputs'));
+        await reconcileLedgerBalance();
+      }
       const signingSession = session.readOnly
         ? await connectLedgerForSigning()
         : session;
@@ -484,6 +492,10 @@ export default function SendScreen({ navigation, route }: any) {
         );
       }
 
+      const ledgerCompanionNeedsRefresh =
+        registeredWallet?.kind === 'hardware' &&
+        registeredWallet.role !== 'fast';
+
       setAddress('');
       setAmount('');
       setPreparedTx(undefined);
@@ -497,6 +509,15 @@ export default function SendScreen({ navigation, route }: any) {
         setRecentRecipients(
           await rememberRecipient(address.trim(), recipientContacts),
         );
+      }
+      if (ledgerCompanionNeedsRefresh) {
+        // The payment is already broadcast at this point. Rebuild the local
+        // read-only companion while the Ledger is still available, but never
+        // misreport a successful payment as failed if only this refresh needs
+        // another try from Settings.
+        await reconcileLedgerBalance().catch(() => {
+          setSendStatus(t('send.transactionBroadcastRefreshPending'));
+        });
       }
       await Promise.all([refreshSnapshot(), refreshTransactions()]);
       if (completedNamePreset) {

@@ -33,6 +33,7 @@ const COMMANDS: &[&str] = &[
     "remove_registered_wallet",
     "list_registered_wallets",
     "activate_registered_wallet",
+    "recover_registered_wallet_session",
     "queue_registered_wallet_sync",
     "list_fast_wallets",
     "open_fast_wallet",

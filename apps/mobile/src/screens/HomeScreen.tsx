@@ -302,7 +302,6 @@ export default function HomeScreen({ navigation }: any) {
     v1ReleaseFeatures.moneroEnthusiastV1 && v1ReleaseFeatures.news,
   );
   const {
-    error,
     registeredWallet,
     registeredWallets,
     isRegisteredWalletOpen,
@@ -312,6 +311,8 @@ export default function HomeScreen({ navigation }: any) {
     session,
     setActiveRegisteredWallet,
     snapshot,
+    workingSnapshot,
+    walletReadinessPhase,
     status,
     syncProgress,
     syncStartHeight,
@@ -537,7 +538,8 @@ export default function HomeScreen({ navigation }: any) {
               onExpandedChange={setSyncStatusExpanded}
               progress={syncProgress}
               networkStatus={networkSyncStatus}
-              snapshot={snapshot}
+              readinessPhase={walletReadinessPhase}
+              snapshot={workingSnapshot}
               syncStartHeight={syncStartHeight}
               status={status}
               walletName={walletDisplayName(registeredWallet)}

@@ -141,4 +141,48 @@ describe('IncomingTransactionObserver', () => {
       }),
     ]);
   });
+
+  it('absorbs historical restore batches without announcing them', () => {
+    const observer = new IncomingTransactionObserver();
+    observer.observe({
+      walletId: 'ledger',
+      walletName: 'Ledger',
+      transactions: [],
+      suppressNotices: true,
+    });
+
+    expect(
+      observer.observe({
+        walletId: 'ledger',
+        walletName: 'Ledger',
+        transactions: [transaction({ hash: 'historical-in' })],
+        suppressNotices: true,
+      }),
+    ).toEqual([]);
+    expect(
+      observer.observe({
+        walletId: 'ledger',
+        walletName: 'Ledger',
+        transactions: [
+          transaction({ hash: 'historical-in' }),
+          transaction({ hash: 'historical-out', direction: 'out' }),
+        ],
+        suppressNotices: true,
+      }),
+    ).toEqual([]);
+
+    expect(
+      observer.observe({
+        walletId: 'ledger',
+        walletName: 'Ledger',
+        transactions: [
+          transaction({ hash: 'historical-in' }),
+          transaction({ hash: 'historical-out', direction: 'out' }),
+          transaction({ hash: 'new-live-payment' }),
+        ],
+      }),
+    ).toEqual([
+      expect.objectContaining({ id: 'ledger:new-live-payment' }),
+    ]);
+  });
 });

@@ -42,9 +42,11 @@ describe('presentNetworkSync', () => {
     expect(walletSyncDerivationsPerSecond(status())).toBeUndefined();
   });
 
-  it('formats both live rates without locale-dependent separators', () => {
-    expect(formatNetworkSyncRate(12.3456)).toBe('12.35');
-    expect(formatWalletDerivationRate(120_000.4)).toBe('120000');
+  it('formats both live rates for the active locale', () => {
+    expect(formatNetworkSyncRate(12.3456, 'en-US')).toBe('12.35');
+    expect(formatNetworkSyncRate(12.3456, 'de-DE')).toBe('12,35');
+    expect(formatWalletDerivationRate(120_000.4, 'en-US')).toBe('120,000');
+    expect(formatWalletDerivationRate(68_558, 'de-DE')).toBe('68.558');
   });
 
   it('reports the shared downloader independently of a selected wallet', () => {

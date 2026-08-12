@@ -106,6 +106,8 @@ const messages = {
     "send.preparing": "Preparing…",
     "send.sending": "Sending…",
     "send.sent": "Transaction submitted to the native wallet.",
+    "send.sentLedgerRefreshPending":
+      "Transaction sent. Reconnect Ledger later and use ‘Check again with Ledger’ in Settings to refresh the local balance.",
     "send.openWallet": "Open a wallet before sending.",
     "send.waitForSync": "Wait for the wallet to finish syncing before sending.",
     "send.recipientRequired": "Enter a Monero recipient address.",
@@ -116,6 +118,8 @@ const messages = {
     "send.broadcastFailed": "The transaction could not be sent.",
     "send.ledgerHint":
       "Keep the Ledger unlocked and confirm the transaction on its display.",
+    "send.checkingSpendOutputs":
+      "Checking spend outputs with your Ledger before preparing this payment…",
     "receive.title": "Receive Monero",
     "receive.subtitle":
       "This address and QR code are read from the local native wallet.",
@@ -218,6 +222,12 @@ const messages = {
     "settings.seedHardware": "The recovery seed remains on the Ledger device.",
     "settings.seedHint": "Show it only when you need to verify your backup.",
     "settings.showRecoverySeed": "Show recovery seed",
+    "settings.recheckLedger": "Recheck with Ledger",
+    "settings.recheckLedgerHint":
+      "Use this after spending from another device. New outputs are checked automatically before you send here.",
+    "settings.recheckingLedger": "Checking spend outputs…",
+    "settings.recheckLedgerComplete": "Ledger spend outputs are up to date.",
+    "settings.recheckLedgerFailed": "The Ledger spend-output check could not be completed.",
     "settings.unlock": "App protection",
     "settings.unlockHint":
       "Unlock the app once, then select saved wallets without separate password prompts.",
@@ -338,6 +348,10 @@ const messages = {
     "home.syncHeight": "Block {current} of {target}",
     "home.syncNetworkRate": "{rate} Mbit/s",
     "home.syncDerivationRate": "{rate} derivations/s",
+    "home.sessionRecovering": "Restoring wallet session",
+    "home.sessionRecoveryFailed": "Wallet session needs another attempt",
+    "home.spendOutputs": "Spend outputs",
+    "home.spendOutputsChecking": "Checking spend outputs",
     "home.syncRemaining": "{count} blocks remaining",
     "home.syncEtaCalculating": "Calculating time remaining",
     "home.syncEtaSeconds": "About {count}s remaining",
@@ -698,6 +712,8 @@ const messages = {
     "send.preparing": "Wird vorbereitet…",
     "send.sending": "Wird gesendet…",
     "send.sent": "Die Transaktion wurde an die native Wallet übergeben.",
+    "send.sentLedgerRefreshPending":
+      "Transaktion gesendet. Verbinde den Ledger später erneut und nutze in den Einstellungen „Mit Ledger erneut prüfen“, um den lokalen Kontostand zu aktualisieren.",
     "send.openWallet": "Öffne vor dem Senden eine Wallet.",
     "send.waitForSync": "Warte, bis die Wallet vollständig synchronisiert ist.",
     "send.recipientRequired": "Gib eine Monero-Empfängeradresse ein.",
@@ -709,6 +725,8 @@ const messages = {
     "send.broadcastFailed": "Die Transaktion konnte nicht gesendet werden.",
     "send.ledgerHint":
       "Lass den Ledger entsperrt und bestätige die Transaktion auf dem Gerät.",
+    "send.checkingSpendOutputs":
+      "Spend Outputs werden vor dieser Zahlung mit deinem Ledger geprüft…",
     "receive.title": "Monero empfangen",
     "receive.subtitle":
       "Adresse und QR-Code werden direkt aus der lokalen nativen Wallet gelesen.",
@@ -816,6 +834,12 @@ const messages = {
       "Der Wiederherstellungs-Seed bleibt auf dem Ledger-Gerät.",
     "settings.seedHint": "Zeige ihn nur, wenn du dein Backup überprüfen musst.",
     "settings.showRecoverySeed": "Wiederherstellungs-Seed anzeigen",
+    "settings.recheckLedger": "Mit Ledger erneut prüfen",
+    "settings.recheckLedgerHint":
+      "Nutze dies nach einer Ausgabe auf einem anderen Gerät. Neue Outputs werden vor dem Senden hier automatisch geprüft.",
+    "settings.recheckingLedger": "Spend Outputs werden geprüft…",
+    "settings.recheckLedgerComplete": "Die Spend Outputs sind auf dem aktuellen Ledger-Stand.",
+    "settings.recheckLedgerFailed": "Die Ledger-Prüfung der Spend Outputs konnte nicht abgeschlossen werden.",
     "settings.unlock": "App-Schutz",
     "settings.unlockHint":
       "Entsperre die App einmal und wähle gespeicherte Wallets danach ohne zusätzliche Passwortabfragen.",
@@ -941,6 +965,10 @@ const messages = {
     "home.syncHeight": "Block {current} von {target}",
     "home.syncNetworkRate": "{rate} Mbit/s",
     "home.syncDerivationRate": "{rate} Ableitungen/s",
+    "home.sessionRecovering": "Wallet-Sitzung wird wiederhergestellt",
+    "home.sessionRecoveryFailed": "Wallet-Sitzung benötigt einen neuen Versuch",
+    "home.spendOutputs": "Spend Outputs",
+    "home.spendOutputsChecking": "Spend Outputs werden geprüft",
     "home.syncRemaining": "{count} Blöcke verbleibend",
     "home.syncEtaCalculating": "Restzeit wird berechnet",
     "home.syncEtaSeconds": "Noch etwa {count} Sek.",

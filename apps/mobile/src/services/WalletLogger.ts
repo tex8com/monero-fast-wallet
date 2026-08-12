@@ -34,6 +34,7 @@ const SAFE_FIELDS = new Set([
   'locked',
   'mode',
   'network',
+  'ownerCount',
   'joinedWallets',
   'phaseElapsedMs',
   'phaseSequence',
@@ -52,6 +53,7 @@ const SAFE_FIELDS = new Set([
   'permissionGranted',
   'productSlot',
   'providerTokenLength',
+  'providerGeneration',
   'persistLedgerViewOnly',
   'phase',
   'platform',
@@ -60,6 +62,7 @@ const SAFE_FIELDS = new Set([
   'queuedMs',
   'remainingAttempts',
   'remainingPendingOutputCount',
+  'reopenAttempt',
   'requestedLimit',
   'retryCount',
   'refreshedWalletCount',
@@ -68,6 +71,7 @@ const SAFE_FIELDS = new Set([
   'status',
   'state',
   'stateUpdateDurationMs',
+  'sessionGeneration',
   'spentStatusBlockchainOutputCount',
   'spentStatusPoolOutputCount',
   'spentStatusRpcDurationMs',
@@ -113,6 +117,7 @@ const SAFE_STRING_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
     'node-security',
     'node-timeout',
     'node-unreachable',
+    'session-stale',
     'optimized-service',
     'hardware-unavailable',
     'invalid-data',
@@ -130,11 +135,18 @@ const SAFE_STRING_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
   mode: new Set(['biometric', 'custom', 'optimized-grpc', 'password']),
   network: new Set(['mainnet', 'stagenet', 'testnet']),
   phase: new Set([
+    'block-sync',
     'checking-mempool',
     'checkpointing-wallets',
     'degraded',
     'fetching-blocks',
     'idle',
+    'connecting-ledger',
+    'persisting-wallet',
+    'ready',
+    'recoverable-error',
+    'recovering-session',
+    'scanning-spend-outputs',
     'initializing-transport',
     'provider-backoff',
     'retrying',
@@ -143,6 +155,8 @@ const SAFE_STRING_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
     'selecting-provider',
     'stopped',
     'synced',
+    'waiting-ledger',
+    'wallet-scan',
     'waiting-next-batch',
   ]),
   state: new Set([
@@ -235,9 +249,19 @@ export function formatWalletLogLine(
 }
 
 export function classifyDiagnosticFailure(error: unknown): string {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'monero_wallet_session_stale'
+  ) {
+    return 'session-stale';
+  }
   const message = String(
     error instanceof Error ? `${error.name} ${error.message}` : error,
   ).toLowerCase();
+  if (/wallet session is no longer open|session-stale/.test(message))
+    return 'session-stale';
   if (/timed? ?out|timeout|deadline/.test(message)) return 'timeout';
   if (/already exists|file.*exist|overwrite/.test(message))
     return 'file-exists';

@@ -5973,7 +5973,21 @@ class NativeMoneroWalletModule(
       )
       logNativeEvent("$operation.error", failureFields)
       throw error
+    } finally {
+      persistEngineDiagnosticLines()
     }
+  }
+
+  private fun persistEngineDiagnosticLines() {
+    if (!BuildConfig.WALLET_DIAGNOSTICS_ENABLED) return
+    runCatching { NativeMoneroWalletJni.drainEngineDiagnostics() }
+      .getOrDefault(emptyList())
+      .asSequence()
+      .filter { line ->
+        line.startsWith("MONERO_WALLET_DIAGNOSTICS native=cpp ") &&
+          line.length <= MAX_DIAGNOSTIC_LINE_CHARS
+      }
+      .forEach(::persistDiagnosticLine)
   }
 
   private fun fastWalletHttpStatus(error: Throwable): Int? =
@@ -6121,9 +6135,20 @@ class NativeMoneroWalletModule(
   }
 
   private fun rejectNativeError(promise: Promise, error: Throwable) {
+    val message = error.message ?: "Native Monero wallet JNI call failed"
+    if (message.startsWith("unknown wallet id:")) {
+      // A native session was closed while a warm JavaScript reference still
+      // existed. The handle itself is sensitive process-local data and must
+      // never cross this error boundary or enter product diagnostics.
+      promise.reject(
+        "monero_wallet_session_stale",
+        "Wallet session is no longer open",
+      )
+      return
+    }
     promise.reject(
       "monero_wallet_android_native_error",
-      error.message ?: "Native Monero wallet JNI call failed",
+      message,
       error,
     )
   }

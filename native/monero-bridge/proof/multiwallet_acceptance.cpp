@@ -173,6 +173,8 @@ void printStatus(const std::string& phase, const NetworkSyncStatus& status) {
   std::cout << "acceptance_status"
             << " phase=" << phase
             << " state=" << status.state
+            << " sync_phase=" << status.phase
+            << " provider_generation=" << status.providerGeneration
             << " joined_wallets=" << status.joinedWallets
             << " transports=" << status.transportStarts
             << " fetched_batches=" << status.fetchedBatches
@@ -255,14 +257,18 @@ NetworkSyncStatus waitForSynchronized(
       size_t synchronizedWallets = 0;
       uint64_t minimumWalletHeight = std::numeric_limits<uint64_t>::max();
       uint64_t maximumWalletHeight = 0;
+      uint64_t minimumSnapshotRevision = std::numeric_limits<uint64_t>::max();
       for (const auto& walletId : walletIds) {
         const auto snapshot = engine.snapshot(walletId);
         minimumWalletHeight = std::min(
             minimumWalletHeight, snapshot.walletHeight);
         maximumWalletHeight = std::max(
             maximumWalletHeight, snapshot.walletHeight);
+        minimumSnapshotRevision = std::min(
+            minimumSnapshotRevision, snapshot.snapshotRevision);
         if (!snapshot.synchronized || snapshot.daemonHeight == 0 ||
-            snapshot.walletHeight < snapshot.daemonHeight) {
+            snapshot.walletHeight < snapshot.daemonHeight ||
+            snapshot.snapshotRevision == 0) {
           allSynchronized = false;
         } else {
           ++synchronizedWallets;
@@ -275,6 +281,7 @@ NetworkSyncStatus waitForSynchronized(
                   << " total_wallets=" << walletIds.size()
                   << " minimum_wallet_height=" << minimumWalletHeight
                   << " maximum_wallet_height=" << maximumWalletHeight
+                  << " minimum_snapshot_revision=" << minimumSnapshotRevision
                   << " target_height=" << status.targetHeight
                   << '\n';
       }
@@ -581,7 +588,8 @@ int main(int argc, char** argv) {
         initial.replayCachePayloadBytes == 0 ||
         initial.replayCachePayloadBytes >
             initial.replayCachePayloadLimitBytes ||
-        initial.joinedWallets != walletCount || initial.stalledWallets != 0) {
+        initial.joinedWallets != walletCount || initial.stalledWallets != 0 ||
+        initial.providerGeneration == 0) {
       throw WalletEngineError("initial shared synchronization invariant failed");
     }
     if (resumeFromCheckpoint) {
@@ -771,6 +779,9 @@ int main(int argc, char** argv) {
       totalSent += snapshot.daemonBytesSent;
       if (!snapshot.synchronized || snapshot.walletHeight < snapshot.daemonHeight) {
         throw WalletEngineError("final wallet snapshot is not synchronized");
+      }
+      if (snapshot.snapshotRevision == 0) {
+        throw WalletEngineError("final wallet snapshot has no authoritative revision");
       }
       if (snapshot.balanceAtomic != baselineBalances[index] ||
           engine.getTransactions(walletId, 1000).size() !=

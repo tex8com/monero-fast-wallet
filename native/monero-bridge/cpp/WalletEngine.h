@@ -29,6 +29,10 @@ class WalletEngine {
   // reads an open wallet, seed, view key, transaction, or daemon response.
   static std::string derivationBackendStatus();
   static std::string benchmarkDerivationPerformance();
+  // Drains the bounded, privacy-filtered diagnostic ring. Android diagnostic
+  // builds persist these already allowlisted lines beside the host records so
+  // native transport failures remain available after Logcat has rotated.
+  static std::vector<std::string> drainDiagnosticLines();
   static void setLedgerBleTransportCallbacks(
       const LedgerBleTransportCallbacks& callbacks);
   static void clearLedgerBleTransportCallbacks();

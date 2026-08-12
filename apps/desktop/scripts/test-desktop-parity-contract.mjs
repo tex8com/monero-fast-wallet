@@ -26,6 +26,10 @@ const nativeWalletSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src',
 const desktopBridgeHeader = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'include', 'DesktopWalletCore.h'), 'utf8');
 const desktopBridgeSource = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopWalletCore.cpp'), 'utf8');
 const walletEngineSource = readFileSync(resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletEngine.cpp'), 'utf8');
+const walletEngineTypes = readFileSync(resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletEngineTypes.h'), 'utf8');
+const mobileWalletStateSource = readFileSync(resolve(repoRoot, 'apps', 'mobile', 'src', 'services', 'WalletState.tsx'), 'utf8');
+const desktopDiagnosticsSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'diagnostics.rs'), 'utf8');
+const desktopTestbenchSource = readFileSync(resolve(desktopRoot, 'src', 'walletDiagnosticTestbench.ts'), 'utf8');
 const desktopLedgerBleSource = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopLedgerBleMac.mm'), 'utf8');
 const windowsExports = readFileSync(resolve(desktopRoot, 'windows', 'tex8_wallet_core.def'), 'utf8');
 
@@ -57,9 +61,71 @@ test('desktop counts complete wallet balances once and delays wallet scan UI unt
   assert.match(walletEngineSource, /next\.balanceAtomic \+= balance/);
   assert.doesNotMatch(walletEngineSource, /next\.balanceAtomic = wallet->balance\(0\)/);
   assert.match(appSource, /const selectedSnapshot = wallet\?\.id/);
-  assert.match(appSource, /const balanceAtomic = atomicValue\(selectedSnapshot\?\.balanceAtomic\)\.toString\(\)/);
+  assert.match(appSource, /const balanceAtomic = atomicValue\(publishedSnapshot\?\.balanceAtomic\)\.toString\(\)/);
   assert.match(appSource, /const showWalletSync = connected && walletOpened/);
   assert.match(appSource, /showWalletSync && <DesktopSyncProgressRow/);
+});
+
+test('desktop publishes only terminal wallet state and retains it during recovery', () => {
+  assert.match(appSource, /nextWalletPublication/);
+  assert.match(appSource, /publishedSnapshot/);
+  assert.match(appSource, /sessionRecovering/);
+  assert.match(appSource, /home\.sessionRecovering/);
+  assert.match(appSource, /hasPublishedBalance \? `\$\{balanceXmr\} XMR` : '— XMR'/);
+  assert.doesNotMatch(appSource, /LedgerViewKeyExportOverlay title="Verify with your Ledger"/);
+});
+
+test('key-image reconciliation refreshes the authoritative native snapshot before success', () => {
+  const reconciliation = walletEngineSource.slice(
+    walletEngineSource.indexOf('LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet('),
+    walletEngineSource.indexOf('#else', walletEngineSource.indexOf('LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet(')),
+  );
+  assert.match(reconciliation, /updateCachedSnapshot\(\*destinationSession/);
+  assert.match(reconciliation, /result\.snapshotRevision/);
+  assert.match(walletEngineTypes, /uint64_t snapshotRevision/);
+  assert.match(desktopBridgeSource, /snapshotRevision/);
+});
+
+test('desktop history is complete across every Monero account', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const history = rustFunction(hostSource, 'registered_wallet_transactions');
+  assert.match(history, /transactions\(&wallet_id\)/);
+  assert.doesNotMatch(history, /serialized_transactions_for_account/);
+});
+
+test('stale desktop sessions have one native single-flight recovery contract', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const nativeSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'native_wallet.rs'), 'utf8');
+  assert.match(nativeSource, /SESSION_STALE_CODE/);
+  assert.match(nativeSource, /unknown wallet id/);
+  assert.match(hostSource, /struct WalletSessionRecoveryState/);
+  assert.match(hostSource, /Condvar/);
+  assert.match(hostSource, /sessionGeneration/);
+  assert.match(hostSource, /reopenAttempt/);
+  assert.match(hostSource, /ownerCount/);
+  assert.match(hostSource, /recover_registered_wallet_session/);
+  assert.match(appSource, /recover_registered_wallet_session/);
+  assert.match(appSource, /sessionGenerationsByRegistrationRef/);
+  assert.match(appSource, /section === 'home'/);
+  assert.match(appSource, /selected-session watchdog/);
+  assert.match(appSource, /window\.setInterval\(\(\) => void validate\(\), 5_000\)/);
+  assert.match(mobileWalletStateSource, /sessionGenerationsByRegistrationRef/);
+  assert.match(mobileWalletStateSource, /nextWalletPublication/);
+});
+
+test('desktop recovery diagnostics are privacy-safe, generation-aware, and sampled', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const recoverySource = rustFunction(hostSource, 'recover_registered_wallet_session');
+  assert.match(hostSource, /registrationDigest/);
+  assert.match(hostSource, /sessionGeneration/);
+  assert.match(hostSource, /providerGeneration/);
+  assert.match(hostSource, /reopenAttempt/);
+  assert.match(hostSource, /ownerCount/);
+  assert.match(hostSource, /leaseState/);
+  assert.match(hostSource, /safeErrorCode/);
+  assert.match(desktopDiagnosticsSource, /record_sampled/);
+  assert.match(desktopTestbenchSource, /Provider generation/);
+  assert.doesNotMatch(recoverySource, /\("registrationId",/);
 });
 
 test('desktop Menu exposes every React Native Menu destination without release-flag hiding', () => {
@@ -303,6 +369,8 @@ test('Ledger read-only setup and spent-output reconciliation are reachable throu
   }
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
   const reconcileSource = rustFunction(hostSource, 'reconcile_ledger_balance');
+  const prepareSource = rustFunction(hostSource, 'prepare_transaction');
+  const commitSource = rustFunction(hostSource, 'commit_transaction');
   assert.match(reconcileSource, /sync_ledger_key_images/);
   assert.match(reconcileSource, /ledger_key_images_verified_height/);
   assert.match(reconcileSource, /flow", "owned-outputs-only"/);
@@ -328,6 +396,19 @@ test('Ledger read-only setup and spent-output reconciliation are reachable throu
   );
   assert.match(appSource, /wallet\.kind !== 'view-only'/);
   assert.match(appSource, /desktopLedgerBalanceNeedsVerification/);
+  assert.match(prepareSource, /ensure_ledger_hardware_session/);
+  assert.match(prepareSource, /pendingOutputKeyImageCount/);
+  assert.match(hostSource, /ledger-hardware-session-validate/);
+  assert.match(hostSource, /native_wallet::is_session_stale/);
+  assert.match(commitSource, /ledger_hardware_session_key/);
+  assert.match(commitSource, /commit_transaction\(&transaction_wallet_id/);
+  assert.match(appSource, /registrationId: wallet\.id/);
+  assert.match(appSource, /sentLedgerRefreshPending/);
+  assert.match(
+    appSource,
+    /Broadcasting already succeeded[\s\S]*Never turn a post-send companion[\s\S]*duplicate/,
+    'a failed post-send Ledger refresh must never present a successful broadcast as failed',
+  );
   assert.match(
     appSource,
     /deferSync: persistLedgerViewOnly/,
@@ -335,7 +416,7 @@ test('Ledger read-only setup and spent-output reconciliation are reachable throu
   );
   assert.match(
     appSource,
-    /if \(wallet\.kind !== 'hardware'\) return false;[\s\S]*if \(!usesLedgerReadOnly\) return true;/,
+    /if \(wallet\.kind !== 'hardware' \|\| wallet\.role === 'fast'\) return false;[\s\S]*if \(!usesLedgerReadOnly\) return true;/,
     'a directly connected Ledger balance must stay excluded until encrypted view-key storage and signed key images verify it',
   );
 });
@@ -572,10 +653,12 @@ test('a repeated Ledger view-key action is blocked before another device session
   assert.match(recoverySource, /begin_ledger_view_key_export\(&app, &exports, &source\.id, "recovery-device-session"\)/);
 });
 
-test('desktop keeps one Ledger instruction dialog open while direct balance setup resolves', () => {
+test('desktop keeps the setup instruction dialog but never overlays balance reconciliation', () => {
   assert.match(appSource, /function LedgerViewKeyExportOverlay\(\{/);
   assert.match(appSource, /approve <strong>Export view key<\/strong> once/);
-  assert.match(appSource, /ledgerVerificationPhase && <LedgerViewKeyExportOverlay title="Verify with your Ledger" detail=\{ledgerVerificationPhase\}/);
+  assert.doesNotMatch(appSource, /ledgerVerificationPhase && <LedgerViewKeyExportOverlay/);
+  assert.match(appSource, /readinessPhase=\{publication\?\.phase\}/);
+  assert.match(appSource, /home\.spendOutputsChecking/);
   assert.match(appSource, /finally \{\s*setLedgerVerificationPhase\(null\);\s*\}/);
   assert.doesNotMatch(appSource, /mode: 'open'/);
   assert.doesNotMatch(appSource, /wallet-switch-open-flow-shown/);
@@ -837,7 +920,7 @@ test('slow node handshakes never freeze wallet selection, snapshots, or removal'
   assert.match(removeSource, /try_lock\(\)/);
   assert.match(removeSource, /wallet\.remove-native-close-deferred/);
   assert.match(appSource, /function isBackgroundWalletWork/);
-  assert.match(appSource, /if \(!isBackgroundWalletWork\(reason\)\)/);
+  assert.match(appSource, /!isBackgroundWalletWork\(reason\)/);
 });
 
 test('saved software wallets switch directly after one app-wide unlock', () => {

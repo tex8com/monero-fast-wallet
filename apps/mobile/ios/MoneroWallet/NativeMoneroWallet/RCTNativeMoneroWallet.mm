@@ -2384,6 +2384,7 @@ NSDictionary *toDictionary(const WalletSnapshot &snapshot) {
     @"daemonHeight": toNSNumber(snapshot.daemonHeight),
     @"daemonTargetHeight": toNSNumber(snapshot.daemonTargetHeight),
     @"pendingOutputKeyImageCount": toNSNumber(snapshot.pendingOutputKeyImageCount),
+    @"snapshotRevision": toNSNumber(snapshot.snapshotRevision),
     @"synchronized": @(snapshot.synchronized),
   };
 }
@@ -2408,6 +2409,7 @@ NSDictionary *toDictionary(const LedgerKeyImageSyncResult &result) {
     @"verificationDurationMs": @(result.verificationDurationMs),
     @"storeDurationMs": @(result.storeDurationMs),
     @"totalDurationMs": @(result.totalDurationMs),
+    @"snapshotRevision": @(result.snapshotRevision),
   };
 }
 
@@ -2419,6 +2421,7 @@ NSDictionary *toDictionary(const NetworkSyncStatus &status) {
     @"lastError": toNSString(status.lastError),
     @"consecutiveFailures": toNSNumber(status.consecutiveFailures),
     @"phaseSequence": toNSNumber(status.phaseSequence),
+    @"providerGeneration": toNSNumber(status.providerGeneration),
     @"phaseElapsedMs": toNSNumber(status.phaseElapsedMs),
     @"lastProviderSelectionMs": toNSNumber(status.lastProviderSelectionMs),
     @"lastTransportInitializationMs": toNSNumber(status.lastTransportInitializationMs),
@@ -4788,6 +4791,12 @@ NSArray *privatePhoneDeviceContacts() {
 
 void rejectWithException(RCTPromiseRejectBlock reject, const std::exception &error) {
   NSString *message = toNSString(error.what());
+  if ([message hasPrefix:@"unknown wallet id:"]) {
+    reject(@"monero_wallet_session_stale",
+           @"Wallet session is no longer open",
+           nil);
+    return;
+  }
   NSError *nativeError = [NSError errorWithDomain:@"NativeMoneroWallet"
                                              code:1
                                          userInfo:@{NSLocalizedDescriptionKey: message}];

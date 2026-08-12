@@ -13,6 +13,7 @@ describe('Wallet dashboard interaction contract', () => {
   const receive = source('src', 'screens', 'ReceiveScreen.tsx');
   const selector = source('src', 'components', 'WalletSelector.tsx');
   const settings = source('src', 'screens', 'SettingsScreen.tsx');
+  const send = source('src', 'screens', 'SendScreen.tsx');
   const syncStatus = source('src', 'components', 'SyncStatusBar.tsx');
   const walletState = source('src', 'services', 'WalletState.tsx');
   const appSecurity = source('src', 'services', 'AppSecurity.tsx');
@@ -100,6 +101,26 @@ describe('Wallet dashboard interaction contract', () => {
       expect(nativeAndroidJni).toContain(`"${field}"`);
       expect(nativeAndroidBridge).toContain(`result.numberValue("${field}")`);
     }
+  });
+
+  it('checks Ledger spend outputs before signing and refreshes the companion after broadcast', () => {
+    const prepareFlow = send.slice(
+      send.indexOf('const prepareForReview = async'),
+      send.indexOf('const handleSend = async'),
+    );
+    const commitFlow = send.slice(
+      send.indexOf('const handleSend = async'),
+      send.indexOf('const validateRecipientAndContinue'),
+    );
+    expect(prepareFlow.indexOf('await reconcileLedgerBalance()')).toBeLessThan(
+      prepareFlow.indexOf('await connectLedgerForSigning()'),
+    );
+    expect(commitFlow.indexOf('await walletService.commitTransaction')).toBeLessThan(
+      commitFlow.indexOf('await reconcileLedgerBalance()'),
+    );
+    expect(commitFlow).toContain(
+      "setSendStatus(t('send.transactionBroadcastRefreshPending'))",
+    );
   });
 
   it('selects a software wallet immediately while a cold local open finishes behind Home', () => {
@@ -298,7 +319,8 @@ describe('Wallet dashboard interaction contract', () => {
       'const connectionElapsedSeconds = useElapsedSeconds(',
     );
     expect(syncStatus).toContain('extra={blockchainExtra}');
-    expect(syncStatus).toContain('t("sync.blockHeight"');
+    expect(syncStatus).toContain("t('sync.blockHeight'");
+    expect(syncStatus).toContain('style={s.metricsPrimary}');
     expect(syncStatus).toContain(
       'const showWalletSync = connected && walletOpened',
     );
@@ -369,7 +391,7 @@ describe('Wallet dashboard interaction contract', () => {
     expect(home).toContain('onExpandedChange={setSyncStatusExpanded}');
   });
 
-  it('automatically reconciles a positive queue or one unverified migrated history with bounded discovery', () => {
+  it('performs only the initial Ledger reconciliation automatically with bounded discovery', () => {
     expect(walletState).toContain("'ledgerAutoVerification.start'");
     expect(walletState).toContain(
       'await walletService.getLedgerTransportStatus()',
@@ -378,7 +400,10 @@ describe('Wallet dashboard interaction contract', () => {
       'await walletService.requestLedgerTransportAccess()',
     );
     expect(walletState).toContain('await reconcileLedgerBalance(true)');
-    expect(walletState).toContain('LEDGER_DISCOVERY_COOLDOWN_MS = 60_000');
+    expect(walletState).toContain('ledgerInitialVerificationAttemptedRef');
+    expect(walletState).toContain(
+      'ledgerInitialVerificationAttemptedRef.current.add(registration.id)',
+    );
     expect(walletState).toContain('ledgerReconciliationInFlightRef');
     expect(walletState).toContain("reason: 'active-wallet-changed'");
     expect(walletState).not.toContain('!currentSnapshot?.synchronized');
@@ -399,7 +424,8 @@ describe('Wallet dashboard interaction contract', () => {
     expect(home).toContain('transactions.length');
     expect(home).not.toContain('onPress={verifyLedgerBalance}');
     expect(settings).not.toContain('verifyLedgerBalance');
-    expect(settings).not.toContain('ledgerBalanceVerification');
+    expect(settings).toContain('settings.ledgerBalanceVerification');
+    expect(settings).toContain('recheckLedgerSpendOutputs');
     expect(walletState).toContain(
       'await walletService.getTransactionsForAllAccounts(activeSession, 0)',
     );
@@ -416,14 +442,20 @@ describe('Wallet dashboard interaction contract', () => {
     );
   });
 
-  it('reconciles inactive Ledger companions sequentially without replacing the selected wallet', () => {
+  it('publishes mobile balance and history only from one bracketed native revision', () => {
+    expect(walletState).toContain('snapshotPublicationToken(beforeHistory)');
+    expect(walletState).toContain('snapshotPublicationToken(afterHistory)');
+    expect(walletState).toContain('walletStateSamplesByRegistrationRef.current.set(');
+    expect(walletState).toContain('const sample = walletStateSamplesByRegistrationRef.current.get(');
+    expect(walletState).toContain('transactions: sample?.transactions ?? []');
+  });
+
+  it('never wakes an inactive Ledger in the background and exposes an explicit settings action', () => {
     expect(walletState).toContain('ledgerReconciliationInFlightRef');
-    expect(walletState).toContain("'ledgerBackgroundVerification.start'");
-    expect(walletState).toContain('preserveActiveSession: true');
-    expect(walletState).toContain('const warmedViewSession =');
-    expect(walletState).toContain(
-      'closeViewSessionWhenComplete: !warmedViewSession',
-    );
+    expect(walletState).not.toContain("'ledgerBackgroundVerification.start'");
+    expect(walletState).not.toContain('setInterval(() => void attempt(), 15_000)');
+    expect(settings).toContain('recheckLedgerSpendOutputs');
+    expect(settings).toContain('reconcileLedgerBalance()');
     expect(walletState).toContain(
       'await walletService.openRegisteredWalletRegistration(\n            activeRegistration,',
     );

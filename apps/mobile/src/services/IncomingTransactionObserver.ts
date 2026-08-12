@@ -15,6 +15,12 @@ export type ObserveIncomingTransactionsInput = {
   walletName: string;
   transactions: WalletTransaction[];
   announceInitial?: boolean;
+  /**
+   * Historical restore and the first Ledger key-image import may reveal many
+   * old transfers in successive batches. They establish the local baseline
+   * but are not live payment events and must not flood the owner with alerts.
+   */
+  suppressNotices?: boolean;
 };
 
 function transactionKey(transaction: WalletTransaction): string {
@@ -69,6 +75,7 @@ export class IncomingTransactionObserver {
     walletName,
     transactions,
     announceInitial = false,
+    suppressNotices = false,
   }: ObserveIncomingTransactionsInput): IncomingTransactionNotice[] {
     const known = this.knownByWallet.get(walletId);
     const payments = newestFirst(transactions.filter(isNotifiablePayment));
@@ -81,6 +88,11 @@ export class IncomingTransactionObserver {
       }
 
       return [this.toNotice(walletId, walletName, payments[0])];
+    }
+
+    if (suppressNotices) {
+      currentKeys.forEach(key => known.add(key));
+      return [];
     }
 
     const notices = payments

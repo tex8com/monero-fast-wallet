@@ -38,6 +38,11 @@ internal object NativeMoneroWalletJni {
     return nativeBenchmarkDerivationPerformance()
   }
 
+  fun drainEngineDiagnostics(): List<String> {
+    if (loadError != null) return emptyList()
+    return nativeDrainEngineDiagnostics()
+  }
+
   fun communityMatrixLinked(): Boolean {
     if (loadError != null) {
       return false
@@ -1354,6 +1359,7 @@ internal object NativeMoneroWalletJni {
   }
 
   @JvmStatic private external fun nativeLinkedWithMonero(): Boolean
+  @JvmStatic private external fun nativeDrainEngineDiagnostics(): List<String>
   @JvmStatic private external fun nativeBenchmarkDerivationPerformance(): String
   @JvmStatic private external fun nativeCommunityMatrixLinked(): Boolean
   @JvmStatic private external fun nativeCommunityRuntimeLinked(): Boolean

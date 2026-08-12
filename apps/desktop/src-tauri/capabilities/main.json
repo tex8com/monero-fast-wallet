@@ -40,6 +40,7 @@
     "allow-remove-registered-wallet",
     "allow-list-registered-wallets",
     "allow-activate-registered-wallet",
+    "allow-recover-registered-wallet-session",
     "allow-queue-registered-wallet-sync",
     "allow-list-fast-wallets",
     "allow-open-fast-wallet",

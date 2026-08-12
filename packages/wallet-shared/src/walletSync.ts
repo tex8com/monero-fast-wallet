@@ -12,6 +12,130 @@ export type WalletSyncSource = {
   synchronized: boolean;
 };
 
+export type WalletAuthoritativeSnapshot = WalletSyncSource & {
+  snapshotRevision?: number | string;
+  pendingOutputKeyImageCount?: number | string;
+};
+
+export type WalletReadinessPhase =
+  | "block-sync"
+  | "wallet-scan"
+  | "waiting-ledger"
+  | "connecting-ledger"
+  | "scanning-spend-outputs"
+  | "persisting-wallet"
+  | "recovering-session"
+  | "ready"
+  | "recoverable-error";
+
+export type WalletPublication<TSnapshot, TTransaction> = {
+  workingSnapshot: TSnapshot | undefined;
+  publishedSnapshot: TSnapshot | undefined;
+  publishedTransactions: readonly TTransaction[];
+  publishedRevision: number;
+  publishedSessionGeneration: number;
+  phase: WalletReadinessPhase;
+  ready: boolean;
+};
+
+export type WalletPublicationInput<TSnapshot, TTransaction> = {
+  snapshot: TSnapshot | null | undefined;
+  transactions: readonly TTransaction[];
+  requiresLedgerVerification: boolean;
+  ledgerVerified: boolean;
+  ledgerPhase?: Exclude<WalletReadinessPhase, "ready">;
+  sessionRecovering?: boolean;
+  recoverableError?: boolean;
+  /** Monotonic host generation; revisions may restart after a native reopen. */
+  sessionGeneration?: number;
+};
+
+function snapshotRevision(snapshot: WalletAuthoritativeSnapshot | null | undefined): number {
+  const parsed = Number(snapshot?.snapshotRevision ?? 0);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+/**
+ * The one cross-platform publication gate for wallet state.
+ *
+ * A native snapshot is working data until the Core is synchronized, any
+ * required Ledger key-image import is durable, no owned output is waiting for
+ * a key image, and the snapshot has a newer native revision. Until then the
+ * UI retains its last confirmed state instead of exposing an incoming-only
+ * balance or an incomplete history.
+ */
+export function nextWalletPublication<
+  TSnapshot extends WalletAuthoritativeSnapshot,
+  TTransaction,
+>(
+  previous: WalletPublication<TSnapshot, TTransaction> | undefined,
+  input: WalletPublicationInput<TSnapshot, TTransaction>,
+): WalletPublication<TSnapshot, TTransaction> {
+  const workingSnapshot = input.snapshot ?? undefined;
+  const priorSnapshot = previous?.publishedSnapshot;
+  const priorTransactions = previous?.publishedTransactions ?? [];
+  const priorRevision = previous?.publishedRevision ?? 0;
+  const priorSessionGeneration = previous?.publishedSessionGeneration ?? 0;
+  const requestedSessionGeneration = Number(
+    input.sessionGeneration ?? priorSessionGeneration,
+  );
+  const sessionGeneration = Number.isSafeInteger(requestedSessionGeneration) &&
+      requestedSessionGeneration >= 0
+    ? requestedSessionGeneration
+    : priorSessionGeneration;
+
+  let phase: WalletReadinessPhase;
+  if (input.sessionRecovering) phase = "recovering-session";
+  else if (input.recoverableError) phase = "recoverable-error";
+  else if (input.ledgerPhase) phase = input.ledgerPhase;
+  else if (!workingSnapshot || Math.max(
+    nonNegativeNumber(workingSnapshot.daemonHeight),
+    nonNegativeNumber(workingSnapshot.daemonTargetHeight),
+  ) <= 0) phase = "block-sync";
+  else if (!workingSnapshot.synchronized) phase = "wallet-scan";
+  else if (input.requiresLedgerVerification && !input.ledgerVerified) {
+    phase = "scanning-spend-outputs";
+  } else if (
+    input.requiresLedgerVerification &&
+    nonNegativeNumber(workingSnapshot.pendingOutputKeyImageCount ?? 0) > 0
+  ) {
+    // Future Ledger outputs remain usable as working scan data but cannot
+    // replace the last state whose spend status was hardware-confirmed.
+    phase = "scanning-spend-outputs";
+  } else phase = "ready";
+
+  const revision = snapshotRevision(workingSnapshot);
+  const terminal = phase === "ready" && Boolean(workingSnapshot);
+  const revisionIsPublishable = revision === 0
+    ? priorRevision === 0
+    : sessionGeneration > priorSessionGeneration || (
+        sessionGeneration === priorSessionGeneration && revision > priorRevision
+      );
+  if (terminal && workingSnapshot && revisionIsPublishable) {
+    return {
+      workingSnapshot,
+      publishedSnapshot: workingSnapshot,
+      publishedTransactions: [...input.transactions],
+      publishedRevision: revision,
+      publishedSessionGeneration: sessionGeneration,
+      phase,
+      ready: true,
+    };
+  }
+
+  return {
+    workingSnapshot,
+    publishedSnapshot: priorSnapshot,
+    publishedTransactions: priorTransactions,
+    publishedRevision: priorRevision,
+    publishedSessionGeneration: priorSessionGeneration,
+    phase,
+    // An identical terminal poll does not need another publication, but it is
+    // still ready. Reserve false for an active scan/reconciliation/recovery.
+    ready: terminal && Boolean(priorSnapshot),
+  };
+}
+
 export type WalletSyncPhase =
   "waiting-for-node" | "syncing" | "finalizing" | "synchronized";
 

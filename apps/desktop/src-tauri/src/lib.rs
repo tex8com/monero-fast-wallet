@@ -23,11 +23,12 @@ mod windows_notification_agent;
 
 use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
     net::ToSocketAddrs,
-    sync::{Mutex, MutexGuard, TryLockError},
+    sync::{Condvar, Mutex, MutexGuard, TryLockError},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -109,9 +110,11 @@ fn try_lock_native_wallet<'a>(
 ) -> Result<MutexGuard<'a, native_wallet::NativeWallet>, String> {
     match state.0.try_lock() {
         Ok(guard) => {
-            diagnostics::record(
+            diagnostics::record_sampled(
                 app,
                 "wallet.native-lock-acquired",
+                operation,
+                60,
                 &[
                     ("operation", operation.to_owned()),
                     ("waitMs", "0".to_owned()),
@@ -133,6 +136,132 @@ fn try_lock_native_wallet<'a>(
 /// Native wallet IDs are intentionally process-local. Only this in-memory map
 /// associates a persisted, non-secret registration with its open native session.
 struct WalletSessionState(Mutex<HashMap<String, String>>);
+
+#[derive(Default)]
+struct WalletSessionRecoveryRegistry {
+    generations: HashMap<String, u64>,
+    reopen_attempts: HashMap<String, u64>,
+    in_flight: HashSet<String>,
+    last_outcomes: HashMap<String, (u64, Result<u64, String>)>,
+}
+
+/// Serializes recovery per physical wallet container. Multiple renderer polls
+/// that discover the same stale native handle wait for one reopen and receive
+/// its one result; they can never create parallel Core sessions.
+struct WalletSessionRecoveryState {
+    registry: Mutex<WalletSessionRecoveryRegistry>,
+    completed: Condvar,
+    diagnostic_salt: [u8; 32],
+}
+
+enum WalletSessionRecoveryClaim {
+    Leader {
+        attempt: u64,
+    },
+    Completed {
+        attempt: u64,
+        outcome: Result<u64, String>,
+    },
+}
+
+impl WalletSessionRecoveryState {
+    fn new() -> Self {
+        let mut diagnostic_salt = [0_u8; 32];
+        getrandom::getrandom(&mut diagnostic_salt)
+            .expect("operating-system randomness is required for session diagnostics");
+        Self {
+            registry: Mutex::new(WalletSessionRecoveryRegistry::default()),
+            completed: Condvar::new(),
+            diagnostic_salt,
+        }
+    }
+
+    fn diagnostic_digest(&self, registration_id: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.diagnostic_salt);
+        hasher.update(registration_id.as_bytes());
+        hex::encode(&hasher.finalize()[..12])
+    }
+
+    fn observed_attempt(&self, recovery_key: &str) -> Result<u64, String> {
+        self.registry
+            .lock()
+            .map_err(|_| "Wallet recovery state is busy.".to_owned())
+            .map(|state| {
+                state
+                    .reopen_attempts
+                    .get(recovery_key)
+                    .copied()
+                    .unwrap_or(0)
+            })
+    }
+
+    /// Claims a reopen after a caller observed a stale native handle. If a
+    /// different caller completed recovery between that observation and this
+    /// claim, return its result instead of opening the same container twice.
+    fn claim_after_stale(
+        &self,
+        recovery_key: &str,
+        observed_attempt: u64,
+    ) -> Result<WalletSessionRecoveryClaim, String> {
+        let mut state = self
+            .registry
+            .lock()
+            .map_err(|_| "Wallet recovery state is busy.".to_owned())?;
+        loop {
+            let current_attempt = state
+                .reopen_attempts
+                .get(recovery_key)
+                .copied()
+                .unwrap_or(0);
+            if state.in_flight.contains(recovery_key) {
+                state = self
+                    .completed
+                    .wait(state)
+                    .map_err(|_| "Wallet recovery state is busy.".to_owned())?;
+                continue;
+            }
+            if current_attempt > observed_attempt {
+                let outcome = state
+                    .last_outcomes
+                    .get(recovery_key)
+                    .filter(|(attempt, _)| *attempt == current_attempt)
+                    .map(|(_, outcome)| outcome.clone())
+                    .ok_or_else(|| "Wallet session recovery result is unavailable.".to_owned())?;
+                return Ok(WalletSessionRecoveryClaim::Completed {
+                    attempt: current_attempt,
+                    outcome,
+                });
+            }
+            let attempt = current_attempt.saturating_add(1);
+            state
+                .reopen_attempts
+                .insert(recovery_key.to_owned(), attempt);
+            state.in_flight.insert(recovery_key.to_owned());
+            return Ok(WalletSessionRecoveryClaim::Leader { attempt });
+        }
+    }
+
+    fn finish(
+        &self,
+        recovery_key: &str,
+        attempt: u64,
+        outcome: Result<u64, String>,
+    ) -> Result<(), String> {
+        {
+            let mut state = self
+                .registry
+                .lock()
+                .map_err(|_| "Wallet recovery state is busy.".to_owned())?;
+            state.in_flight.remove(recovery_key);
+            state
+                .last_outcomes
+                .insert(recovery_key.to_owned(), (attempt, outcome));
+        }
+        self.completed.notify_all();
+        Ok(())
+    }
+}
 
 /// Copy a native session ID without allowing the mutex guard to escape into a
 /// caller expression. In particular, callers may safely invoke helpers that
@@ -401,6 +530,15 @@ struct WalletOperationResponse {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct WalletSessionRecoveryResponse {
+    wallet_id: String,
+    wallet: wallet_registry::RegisteredWallet,
+    session_generation: u64,
+    reopen_attempt: u64,
+    reopened: bool,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RegisteredWalletView {
     #[serde(flatten)]
     wallet: wallet_registry::RegisteredWallet,
@@ -565,6 +703,7 @@ struct SubaddressInput {
 #[serde(rename_all = "camelCase")]
 struct PrepareTransactionInput {
     wallet_id: String,
+    registration_id: Option<String>,
     address: String,
     amount_atomic: String,
     payment_id: Option<String>,
@@ -575,6 +714,7 @@ struct PrepareTransactionInput {
 #[serde(rename_all = "camelCase")]
 struct CommitTransactionInput {
     wallet_id: String,
+    registration_id: Option<String>,
     pending_id: String,
     app_password: String,
 }
@@ -2569,6 +2709,116 @@ fn synchronized_wallet_height(raw: &str) -> Result<u64, String> {
         .ok_or_else(|| "The Ledger wallet height could not be verified.".to_owned())
 }
 
+fn ensure_ledger_hardware_session(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    sessions: &WalletSessionState,
+    source: &wallet_registry::RegisteredWallet,
+    diagnostic_flow: &str,
+) -> Result<String, String> {
+    let signing_session_key = ledger_hardware_session_key(&source.id);
+    if let Some(wallet_id) = wallet_session_id(sessions, &signing_session_key)? {
+        let status = lock_native_wallet(app, state, "ledger-hardware-session-validate")?
+            .hardware_status(&wallet_id);
+        let connected = status
+            .as_ref()
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .and_then(|value| value.get("connected").and_then(serde_json::Value::as_bool))
+            == Some(true);
+        if connected {
+            return Ok(wallet_id);
+        }
+        let reconnect = if status
+            .as_ref()
+            .err()
+            .is_some_and(|error| native_wallet::is_session_stale(error))
+        {
+            Err(native_wallet::SESSION_STALE_CODE.to_owned())
+        } else {
+            lock_native_wallet(app, state, "ledger-hardware-session-reconnect-existing")?
+                .reconnect_hardware(&wallet_id)
+                .map(|_| ())
+        };
+        match reconnect {
+            Ok(()) => return Ok(wallet_id),
+            Err(error) if native_wallet::is_session_stale(&error) => {
+                let mut open_sessions = sessions
+                    .0
+                    .lock()
+                    .map_err(|_| "Wallet session state is busy.".to_owned())?;
+                if open_sessions.get(&signing_session_key) == Some(&wallet_id) {
+                    open_sessions.remove(&signing_session_key);
+                }
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Connect and unlock the Ledger, then open the Monero app on it. {error}"
+                ));
+            }
+        }
+    }
+
+    diagnostics::record(
+        app,
+        "ledger.hardware-session-reopen-started",
+        &[("flow", diagnostic_flow.to_owned())],
+    );
+    let path = wallet_path(app, &source.wallet_name)?;
+    let mut password = secure_store::load_wallet_password_current(&source.id)?.ok_or_else(|| {
+        "This Ledger wallet's protected local credential is unavailable. Remove and add this Ledger wallet again."
+            .to_owned()
+    })?;
+    let opened = lock_native_wallet(app, state, "ledger-hardware-session-open")?.open(
+        &path,
+        &password,
+        network(&source.network)?,
+        source.restore_height.unwrap_or(0),
+    );
+    password.zeroize();
+    let wallet_id = opened?;
+    let reconnect = lock_native_wallet(app, state, "ledger-hardware-session-reconnect")?
+        .reconnect_hardware(&wallet_id);
+    if let Err(error) = reconnect {
+        let _ = lock_native_wallet(app, state, "ledger-hardware-session-reconnect-cleanup")?
+            .close(&wallet_id, false);
+        diagnostics::record(
+            app,
+            "ledger.hardware-session-reopen-failed",
+            &[("flow", diagnostic_flow.to_owned())],
+        );
+        return Err(format!(
+            "Connect and unlock the Ledger, then open the Monero app on it. {error}"
+        ));
+    }
+
+    let existing = {
+        let mut open_sessions = sessions
+            .0
+            .lock()
+            .map_err(|_| "Wallet session state is busy.".to_owned())?;
+        if let Some(existing) = open_sessions.get(&signing_session_key).cloned() {
+            Some(existing)
+        } else {
+            open_sessions.insert(signing_session_key, wallet_id.clone());
+            None
+        }
+    };
+    if let Some(existing) = existing {
+        // A concurrent recovery won the race. Never expose or retain a second
+        // hardware handle for the same logical Ledger wallet.
+        let _ = lock_native_wallet(app, state, "ledger-hardware-session-race-cleanup")?
+            .close(&wallet_id, false);
+        return Ok(existing);
+    }
+    diagnostics::record(
+        app,
+        "ledger.hardware-session-reopen-complete",
+        &[("flow", diagnostic_flow.to_owned())],
+    );
+    Ok(wallet_id)
+}
+
 /// Completes the durable read-only companion after its local scan. The common
 /// C++ core asks Ledger only for key images belonging to outputs already found
 /// by the companion, then queries spent state once. The hardware wallet never
@@ -2601,72 +2851,27 @@ fn reconcile_ledger_balance(
         })
         .cloned()
         .ok_or_else(|| "Create the local Ledger read-only copy first.".to_owned())?;
-    let (hardware_wallet_id, view_only_wallet_id) = {
+    let view_only_wallet_id = {
         let sessions = sessions
             .0
             .lock()
             .map_err(|_| "Wallet session state is busy.".to_owned())?;
-        let view_only_wallet_id = sessions.get(&companion.id).cloned().ok_or_else(|| {
+        sessions.get(&companion.id).cloned().ok_or_else(|| {
             "Open the local Ledger read-only copy before verifying its balance.".to_owned()
-        })?;
-        let hardware_wallet_id = sessions
-            .get(&ledger_hardware_session_key(&source.id))
-            .cloned()
-            .or_else(|| {
-                sessions
-                    .get(&source.id)
-                    .filter(|wallet_id| *wallet_id != &view_only_wallet_id)
-                    .cloned()
-            });
-        (hardware_wallet_id, view_only_wallet_id)
+        })?
     };
     // The in-memory signing handle intentionally disappears when the process
     // exits. If the first key-image import was interrupted, recreate only the
     // hardware session from the encrypted wallet file and ask the already
     // connected Ledger to authorize it. The historical scan remains in the
     // local view-only companion and is never repeated on the hardware device.
-    let hardware_wallet_id = match hardware_wallet_id {
-        Some(wallet_id) => wallet_id,
-        None => {
-            diagnostics::record(&app, "ledger.key-images-hardware-reopen-started", &[]);
-            let path = wallet_path(&app, &source.wallet_name)?;
-            let mut password = secure_store::load_wallet_password_current(&source.id)?
-                .ok_or_else(|| {
-                    "This Ledger wallet's protected local credential is unavailable. Remove and add this Ledger wallet again."
-                        .to_owned()
-                })?;
-            let opened = lock_native_wallet(&app, &state, "ledger-key-images-hardware-open")?.open(
-                &path,
-                &password,
-                network(&source.network)?,
-                source.restore_height.unwrap_or(0),
-            );
-            password.zeroize();
-            let wallet_id = opened?;
-            let reconnect =
-                lock_native_wallet(&app, &state, "ledger-key-images-hardware-reconnect")?
-                    .reconnect_hardware(&wallet_id);
-            if let Err(error) = reconnect {
-                let _ = lock_native_wallet(
-                    &app,
-                    &state,
-                    "ledger-key-images-hardware-reconnect-cleanup",
-                )?
-                .close(&wallet_id, false);
-                diagnostics::record(&app, "ledger.key-images-hardware-reopen-failed", &[]);
-                return Err(format!(
-                    "Connect and unlock the Ledger, then open the Monero app on it. {error}"
-                ));
-            }
-            sessions
-                .0
-                .lock()
-                .map_err(|_| "Wallet session state is busy.".to_owned())?
-                .insert(ledger_hardware_session_key(&source.id), wallet_id.clone());
-            diagnostics::record(&app, "ledger.key-images-hardware-reopen-complete", &[]);
-            wallet_id
-        }
-    };
+    let hardware_wallet_id = ensure_ledger_hardware_session(
+        &app,
+        &state,
+        &sessions,
+        &source,
+        "key-image-reconciliation",
+    )?;
     if hardware_wallet_id == view_only_wallet_id {
         return Err("Ledger signing and read-only sessions must be separate.".to_owned());
     }
@@ -3524,6 +3729,375 @@ fn activate_registered_wallet(
         wallet_id: session_id,
         wallet,
     })
+}
+
+fn current_recovered_session(
+    app: &AppHandle,
+    registration_id: &str,
+    generation: u64,
+    reopen_attempt: u64,
+    reopened: bool,
+) -> Result<WalletSessionRecoveryResponse, String> {
+    let wallet = wallet_registry::list(app)?
+        .wallets
+        .into_iter()
+        .find(|wallet| wallet.id == registration_id)
+        .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
+    let sessions = app.state::<WalletSessionState>();
+    let wallet_id = sessions
+        .0
+        .lock()
+        .map_err(|_| "Wallet session state is busy.".to_owned())?
+        .get(registration_id)
+        .cloned()
+        .ok_or_else(|| native_wallet::SESSION_STALE_CODE.to_owned())?;
+    Ok(WalletSessionRecoveryResponse {
+        wallet_id,
+        wallet,
+        session_generation: generation,
+        reopen_attempt,
+        reopened,
+    })
+}
+
+fn recovery_sync_context(app: &AppHandle, wallet_network: &str) -> (String, String) {
+    let Ok(network_code) = network(wallet_network) else {
+        return ("unknown".to_owned(), "0".to_owned());
+    };
+    let state = app.state::<NativeWalletState>();
+    let Ok(native) = state.0.try_lock() else {
+        return ("native-busy".to_owned(), "0".to_owned());
+    };
+    let Ok(raw) = native.network_sync_status(network_code) else {
+        return ("unavailable".to_owned(), "0".to_owned());
+    };
+    let Ok(status) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return ("invalid".to_owned(), "0".to_owned());
+    };
+    let phase = status
+        .get("phase")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    let generation = status
+        .get("providerGeneration")
+        .and_then(|value| {
+            value
+                .as_u64()
+                .map(|number| number.to_string())
+                .or_else(|| value.as_str().map(str::to_owned))
+        })
+        .unwrap_or_else(|| "0".to_owned());
+    (phase, generation)
+}
+
+fn reopen_registered_wallet_session(
+    app: &AppHandle,
+    registration_id: &str,
+    diagnostic_digest: &str,
+    reopen_attempt: u64,
+) -> Result<(String, wallet_registry::RegisteredWallet, usize), String> {
+    let registry = wallet_registry::list(app)?;
+    let registration = registry
+        .wallets
+        .iter()
+        .find(|wallet| wallet.id == registration_id)
+        .cloned()
+        .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
+    let physical = physical_registration_for_open(app, &registration)?;
+    let sessions = app.state::<WalletSessionState>();
+
+    // Remove every logical owner of the obsolete handle in one map mutation.
+    // A Ledger parent, Fast account and read-only companion may all lease the
+    // same physical session; retaining even one alias recreates the bug.
+    let (stale_native_id, owner_count) = {
+        let mut open_sessions = sessions
+            .0
+            .lock()
+            .map_err(|_| "Wallet session state is busy.".to_owned())?;
+        let stale_native_id = open_sessions.get(registration_id).cloned().or_else(|| {
+            shared_native_session_for_physical_registration(&registry, &open_sessions, &physical.id)
+        });
+        let owner_count = stale_native_id
+            .as_ref()
+            .map(|native_id| {
+                open_sessions
+                    .values()
+                    .filter(|candidate| *candidate == native_id)
+                    .count()
+            })
+            .unwrap_or(0);
+        if let Some(native_id) = stale_native_id.as_ref() {
+            open_sessions.retain(|_, candidate| candidate != native_id);
+        }
+        (stale_native_id, owner_count)
+    };
+    if let Some(stale_native_id) = stale_native_id.as_ref() {
+        if let Ok(mut scheduled) = app.state::<WalletSyncState>().0.lock() {
+            scheduled.remove(stale_native_id);
+        }
+    }
+    diagnostics::record(
+        app,
+        "wallet.session-invalidated",
+        &[
+            ("registrationDigest", diagnostic_digest.to_owned()),
+            ("ownerCount", owner_count.to_string()),
+            ("leaseState", "invalidated".to_owned()),
+            (
+                "safeErrorCode",
+                native_wallet::SESSION_STALE_CODE.to_owned(),
+            ),
+            ("reopenAttempt", reopen_attempt.to_string()),
+        ],
+    );
+
+    let path = wallet_path(app, &physical.wallet_name)?;
+    let mut password = secure_store::load_wallet_password_current(&physical.id)?
+        .ok_or_else(|| {
+            "This wallet's protected local unlock data is unavailable. Restore the wallet on this device."
+                .to_owned()
+        })?;
+    let state = app.state::<NativeWalletState>();
+    let opened = lock_native_wallet(app, &state, "wallet-session-reopen")?.open(
+        &path,
+        &password,
+        network(&physical.network)?,
+        physical.restore_height.unwrap_or(0),
+    );
+    password.zeroize();
+    let native_id = opened?;
+    if physical.kind == "hardware" {
+        if let Err(error) = lock_native_wallet(app, &state, "wallet-session-reopen-ledger")?
+            .reconnect_hardware(&native_id)
+        {
+            let _ = lock_native_wallet(app, &state, "wallet-session-reopen-cleanup")?
+                .close(&native_id, false);
+            return Err(error);
+        }
+    }
+
+    let close_failed_reopen = || {
+        let _ = lock_native_wallet(app, &state, "wallet-session-reopen-cleanup")
+            .and_then(|native| native.close(&native_id, false));
+    };
+    let registration_id = registration.id.clone();
+    let wallet = match wallet_registry::upsert(app, registration) {
+        Ok(wallet) => wallet,
+        Err(error) => {
+            close_failed_reopen();
+            return Err(error);
+        }
+    };
+    let prioritize_result = lock_native_wallet(app, &state, "wallet-session-reopen-priority")
+        .and_then(|native| native.prioritize_network_wallet(&native_id));
+    if let Err(error) = prioritize_result {
+        close_failed_reopen();
+        return Err(error);
+    }
+
+    // Rebind every registration only after the newly opened native session is
+    // known to be usable. A failed reopen must not leave a half-published
+    // handle in the owner map where a later poll could mistake it for ready.
+    let bind_result = (|| -> Result<(), String> {
+        let mut open_sessions = sessions
+            .0
+            .lock()
+            .map_err(|_| "Wallet session state is busy.".to_owned())?;
+        for candidate in &registry.wallets {
+            if physical_registration_for_open(app, candidate)
+                .map(|resolved| resolved.id == physical.id)
+                .unwrap_or(false)
+            {
+                open_sessions.insert(candidate.id.clone(), native_id.clone());
+            }
+        }
+        open_sessions.insert(physical.id.clone(), native_id.clone());
+        open_sessions.insert(registration_id, native_id.clone());
+        Ok(())
+    })();
+    if let Err(error) = bind_result {
+        close_failed_reopen();
+        return Err(error);
+    }
+    schedule_wallet_sync(app.clone(), native_id.clone(), wallet.network.clone());
+    Ok((native_id, wallet, owner_count))
+}
+
+/// Repairs a process-local handle without exposing its value in diagnostics.
+/// Validation, invalidation and reopen are host-owned; the renderer receives
+/// only the already established wallet response plus monotonic generation.
+#[tauri::command]
+async fn recover_registered_wallet_session(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    input: RegistrationIdInput,
+) -> Result<WalletSessionRecoveryResponse, String> {
+    require_app_unlocked(&protection)?;
+    let registration_id = input.registration_id;
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let recovery = app.state::<WalletSessionRecoveryState>();
+        let registry = wallet_registry::list(&app)?;
+        let registration = registry
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == registration_id)
+            .cloned()
+            .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
+        let physical = physical_registration_for_open(&app, &registration)?;
+        let recovery_key = physical.id.clone();
+        let diagnostic_digest = recovery.diagnostic_digest(&recovery_key);
+        let observed_reopen_attempt = recovery.observed_attempt(&recovery_key)?;
+
+        // A request that reached the host after another caller already
+        // repaired the handle observes the valid session and returns it. It
+        // must not begin a second sequential reopen.
+        if let Some(candidate) =
+            wallet_session_id(&app.state::<WalletSessionState>(), &registration_id)?
+        {
+            match lock_native_wallet(
+                &app,
+                &app.state::<NativeWalletState>(),
+                "wallet-session-validate",
+            )?
+            .snapshot(&candidate)
+            {
+                Ok(_) => {
+                    let state = recovery
+                        .registry
+                        .lock()
+                        .map_err(|_| "Wallet recovery state is busy.".to_owned())?;
+                    let generation = state.generations.get(&recovery_key).copied().unwrap_or(1);
+                    let attempt = state
+                        .reopen_attempts
+                        .get(&recovery_key)
+                        .copied()
+                        .unwrap_or(0);
+                    return current_recovered_session(
+                        &app,
+                        &registration_id,
+                        generation,
+                        attempt,
+                        false,
+                    );
+                }
+                Err(error) if native_wallet::is_session_stale(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        let reopen_attempt =
+            match recovery.claim_after_stale(&recovery_key, observed_reopen_attempt)? {
+                WalletSessionRecoveryClaim::Completed { attempt, outcome } => {
+                    let generation = outcome?;
+                    return current_recovered_session(
+                        &app,
+                        &registration_id,
+                        generation,
+                        attempt,
+                        true,
+                    );
+                }
+                WalletSessionRecoveryClaim::Leader { attempt } => attempt,
+            };
+
+        let (started_sync_phase, started_provider_generation) =
+            recovery_sync_context(&app, &physical.network);
+
+        diagnostics::record(
+            &app,
+            "wallet.session-reopen-started",
+            &[
+                ("registrationDigest", diagnostic_digest.clone()),
+                ("reopenAttempt", reopen_attempt.to_string()),
+                ("phase", "recovering-session".to_owned()),
+                ("syncPhase", started_sync_phase),
+                ("providerGeneration", started_provider_generation),
+                ("leaseState", "single-flight".to_owned()),
+            ],
+        );
+        let reopened = reopen_registered_wallet_session(
+            &app,
+            &registration_id,
+            &diagnostic_digest,
+            reopen_attempt,
+        );
+        let outcome = match reopened {
+            Ok((_native_id, wallet, owner_count)) => {
+                let generation = {
+                    let mut state = recovery
+                        .registry
+                        .lock()
+                        .map_err(|_| "Wallet recovery state is busy.".to_owned())?;
+                    let generation = state
+                        .generations
+                        .get(&recovery_key)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1);
+                    state.generations.insert(recovery_key.clone(), generation);
+                    generation
+                };
+                let (sync_phase, provider_generation) =
+                    recovery_sync_context(&app, &wallet.network);
+                diagnostics::record(
+                    &app,
+                    "wallet.session-reopen-completed",
+                    &[
+                        ("registrationDigest", diagnostic_digest.clone()),
+                        ("sessionGeneration", generation.to_string()),
+                        ("reopenAttempt", reopen_attempt.to_string()),
+                        ("ownerCount", owner_count.to_string()),
+                        ("syncPhase", sync_phase),
+                        ("providerGeneration", provider_generation),
+                        ("leaseState", "active".to_owned()),
+                        ("result", "success".to_owned()),
+                    ],
+                );
+                Ok((generation, wallet))
+            }
+            Err(error) => {
+                let (sync_phase, provider_generation) =
+                    recovery_sync_context(&app, &physical.network);
+                diagnostics::record(
+                    &app,
+                    "wallet.session-reopen-failed",
+                    &[
+                        ("registrationDigest", diagnostic_digest),
+                        ("reopenAttempt", reopen_attempt.to_string()),
+                        ("syncPhase", sync_phase),
+                        ("providerGeneration", provider_generation),
+                        ("leaseState", "invalid".to_owned()),
+                        ("safeErrorCode", "reopen-failed".to_owned()),
+                        ("result", "failed".to_owned()),
+                    ],
+                );
+                Err(error)
+            }
+        };
+        recovery.finish(
+            &recovery_key,
+            reopen_attempt,
+            outcome
+                .as_ref()
+                .map(|(generation, _)| *generation)
+                .map_err(Clone::clone),
+        )?;
+        let (generation, wallet) = outcome?;
+        let wallet_id = wallet_session_id(&app.state::<WalletSessionState>(), &registration_id)?
+            .ok_or_else(|| native_wallet::SESSION_STALE_CODE.to_owned())?;
+        Ok(WalletSessionRecoveryResponse {
+            wallet_id,
+            wallet,
+            session_generation: generation,
+            reopen_attempt,
+            reopened: true,
+        })
+    })
+    .await
+    .map_err(|_| "Wallet session recovery worker stopped unexpectedly.".to_owned())?
 }
 
 /// Starts synchronization for a pre-opened wallet after it becomes the active
@@ -6236,7 +6810,6 @@ async fn registered_wallet_transactions(
         .find(|wallet| wallet.id == input.registration_id)
         .cloned()
         .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
-    let account_index = registration.account_index.unwrap_or(0);
     let read_registration = physical_registration_for_open(&app, &registration)?;
     let wallet_id = sessions
         .0
@@ -6245,25 +6818,85 @@ async fn registered_wallet_transactions(
         .get(&read_registration.id)
         .cloned()
         .ok_or_else(|| "The wallet's local read session is not open yet.".to_owned())?;
-    let raw = try_lock_native_wallet(&app, &state, "registered-wallet-transactions")?
-        .transactions(&wallet_id)?;
-    serialized_transactions_for_account(&raw, account_index)
+    // A wallet registration represents the complete Monero wallet in the
+    // main Activity and dashboard views. Return every account so outgoing
+    // history cannot disappear merely because it belongs to another account.
+    // Account-scoped address tools continue to use `wallet_transactions`.
+    try_lock_native_wallet(&app, &state, "registered-wallet-transactions")?.transactions(&wallet_id)
 }
 #[tauri::command]
 fn prepare_transaction(
+    app: AppHandle,
     state: State<'_, NativeWalletState>,
+    sessions: State<'_, WalletSessionState>,
     approvals: State<'_, PendingTransactionApprovalState>,
     protection: State<'_, AppProtectionState>,
     input: PrepareTransactionInput,
 ) -> Result<String, String> {
     require_app_unlocked(&protection)?;
     let account_index = checked_account_index(input.account_index)?;
+    let transaction_wallet_id = if let Some(registration_id) = input.registration_id.as_deref() {
+        let registry = wallet_registry::list(&app)?;
+        let registration = registry
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == registration_id)
+            .cloned()
+            .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
+        let current_read_session = wallet_session_id(&sessions, &registration.id)?
+            .ok_or_else(|| "The selected wallet session is not open yet.".to_owned())?;
+        if current_read_session != input.wallet_id {
+            return Err(
+                "The selected wallet session changed. Open it again before sending.".to_owned(),
+            );
+        }
+        if registration.kind == "hardware"
+            && registration.role.as_deref().unwrap_or("standard") == "standard"
+        {
+            if registration.ledger_key_images_verified_at.is_none() {
+                return Err("Check spend outputs with Ledger before sending.".to_owned());
+            }
+            let snapshot_raw = try_lock_native_wallet(&app, &state, "ledger-send-readiness")?
+                .snapshot(&current_read_session)?;
+            let snapshot: serde_json::Value = serde_json::from_str(&snapshot_raw)
+                .map_err(|_| "The Ledger wallet snapshot could not be verified.".to_owned())?;
+            if snapshot
+                .get("synchronized")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+                || snapshot
+                    .get("pendingOutputKeyImageCount")
+                    .and_then(|value| {
+                        value
+                            .as_u64()
+                            .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+                    })
+                    .unwrap_or(u64::MAX)
+                    != 0
+            {
+                return Err(
+                    "Check all pending spend outputs with Ledger before sending.".to_owned(),
+                );
+            }
+            ensure_ledger_hardware_session(
+                &app,
+                &state,
+                &sessions,
+                &registration,
+                "transaction-signing",
+            )?
+        } else {
+            current_read_session
+        }
+    } else {
+        input.wallet_id.clone()
+    };
     let raw = state
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
         .prepare_transaction(
-            &input.wallet_id,
+            &transaction_wallet_id,
             &input.address,
             &input.amount_atomic,
             input.payment_id.as_deref().unwrap_or(""),
@@ -6294,7 +6927,7 @@ fn prepare_transaction(
     pending.insert(
         pending_id.to_owned(),
         PendingTransactionApproval {
-            wallet_id: input.wallet_id,
+            wallet_id: transaction_wallet_id,
             address: input.address,
             amount_atomic: amount_atomic.to_owned(),
             fee_atomic: fee_atomic.to_owned(),
@@ -6308,6 +6941,7 @@ fn prepare_transaction(
 async fn commit_transaction(
     app: AppHandle,
     state: State<'_, NativeWalletState>,
+    sessions: State<'_, WalletSessionState>,
     approvals: State<'_, PendingTransactionApprovalState>,
     protection: State<'_, AppProtectionState>,
     mut input: CommitTransactionInput,
@@ -6327,9 +6961,44 @@ async fn commit_transaction(
         .ok_or_else(|| {
             "This transaction review is missing, expired, or was already used.".to_owned()
         })?;
-    if approval.wallet_id != input.wallet_id {
-        return Err("The transaction review belongs to a different wallet.".to_owned());
-    }
+    let transaction_wallet_id = if let Some(registration_id) = input.registration_id.as_deref() {
+        let registry = wallet_registry::list(&app)?;
+        let registration = registry
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == registration_id)
+            .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
+        let current_read_session = wallet_session_id(&sessions, &registration.id)?
+            .ok_or_else(|| "The selected wallet session is not open yet.".to_owned())?;
+        if current_read_session != input.wallet_id {
+            return Err(
+                "The selected wallet session changed. Prepare the transaction again.".to_owned(),
+            );
+        }
+        if registration.kind == "hardware"
+            && registration.role.as_deref().unwrap_or("standard") == "standard"
+        {
+            let signing_wallet_id =
+                wallet_session_id(&sessions, &ledger_hardware_session_key(&registration.id))?
+                    .ok_or_else(|| {
+                        "Reconnect Ledger and prepare the transaction again.".to_owned()
+                    })?;
+            if approval.wallet_id != signing_wallet_id {
+                return Err("The Ledger transaction review is no longer current.".to_owned());
+            }
+            signing_wallet_id
+        } else {
+            if approval.wallet_id != input.wallet_id {
+                return Err("The transaction review belongs to a different wallet.".to_owned());
+            }
+            input.wallet_id.clone()
+        }
+    } else {
+        if approval.wallet_id != input.wallet_id {
+            return Err("The transaction review belongs to a different wallet.".to_owned());
+        }
+        input.wallet_id.clone()
+    };
     if approval.expires_at <= now() {
         return Err("The transaction review expired. Prepare it again.".to_owned());
     }
@@ -6369,7 +7038,7 @@ async fn commit_transaction(
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
-        .commit_transaction(&input.wallet_id, &input.pending_id)?;
+        .commit_transaction(&transaction_wallet_id, &input.pending_id)?;
     if let Some(mfw) = approval.mfw {
         let committed: serde_json::Value = serde_json::from_str(&raw)
             .map_err(|_| "The native MFW broadcast result was invalid.".to_owned())?;
@@ -7661,6 +8330,7 @@ pub fn run() {
             native_wallet::NativeWallet::new().expect("native wallet core initialization"),
         )))
         .manage(WalletSessionState(Mutex::new(HashMap::new())))
+        .manage(WalletSessionRecoveryState::new())
         .manage(WalletSyncState(Mutex::new(HashSet::new())))
         .manage(NodeSyncState(Mutex::new(NodeSyncQueue::default())))
         .manage(WalletWarmState(Mutex::new(false)))
@@ -7901,6 +8571,7 @@ pub fn run() {
             remove_registered_wallet,
             list_registered_wallets,
             activate_registered_wallet,
+            recover_registered_wallet_session,
             queue_registered_wallet_sync,
             list_fast_wallets,
             open_fast_wallet,
@@ -8037,14 +8708,68 @@ mod tests {
         ledger_hardware_session_key, market_backup_url, require_app_unlocked,
         serialized_transactions_for_account, shared_native_session_for_physical_registration,
         validate_fast_wallet_removal_snapshot, wallet_file_path_is_available, wallet_session_id,
-        AppProtectionState, WalletSessionState,
+        AppProtectionState, WalletSessionRecoveryClaim, WalletSessionRecoveryState,
+        WalletSessionState,
     };
     use std::{
         collections::HashMap,
         fs,
-        sync::Mutex,
+        sync::{Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn parallel_stale_polls_share_exactly_one_reopen_attempt() {
+        let recovery = Arc::new(WalletSessionRecoveryState::new());
+        let key = "physical-container";
+        let leader_attempt = match recovery.claim_after_stale(key, 0).unwrap() {
+            WalletSessionRecoveryClaim::Leader { attempt } => attempt,
+            WalletSessionRecoveryClaim::Completed { .. } => panic!("first claim must lead"),
+        };
+        assert_eq!(leader_attempt, 1);
+
+        let followers = (0..8)
+            .map(|_| {
+                let recovery = Arc::clone(&recovery);
+                std::thread::spawn(move || recovery.claim_after_stale(key, 0).unwrap())
+            })
+            .collect::<Vec<_>>();
+        recovery.finish(key, leader_attempt, Ok(1)).unwrap();
+
+        for follower in followers {
+            match follower.join().unwrap() {
+                WalletSessionRecoveryClaim::Completed { attempt, outcome } => {
+                    assert_eq!(attempt, 1);
+                    assert_eq!(outcome.unwrap(), 1);
+                }
+                WalletSessionRecoveryClaim::Leader { .. } => {
+                    panic!("a parallel stale poll started a duplicate reopen")
+                }
+            }
+        }
+        assert_eq!(recovery.observed_attempt(key).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_completed_reopen_wins_over_an_older_stale_observation() {
+        let recovery = WalletSessionRecoveryState::new();
+        let key = "physical-container";
+        let attempt = match recovery.claim_after_stale(key, 0).unwrap() {
+            WalletSessionRecoveryClaim::Leader { attempt } => attempt,
+            WalletSessionRecoveryClaim::Completed { .. } => panic!("first claim must lead"),
+        };
+        recovery.finish(key, attempt, Ok(1)).unwrap();
+
+        match recovery.claim_after_stale(key, 0).unwrap() {
+            WalletSessionRecoveryClaim::Completed { attempt, outcome } => {
+                assert_eq!(attempt, 1);
+                assert_eq!(outcome.unwrap(), 1);
+            }
+            WalletSessionRecoveryClaim::Leader { .. } => {
+                panic!("an old stale read must not trigger a sequential duplicate")
+            }
+        }
+    }
 
     #[test]
     fn wallet_session_lookup_releases_the_mutex_before_nested_session_work() {

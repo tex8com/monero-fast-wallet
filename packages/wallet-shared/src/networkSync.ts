@@ -55,14 +55,22 @@ export function walletSyncDerivationsPerSecond(
   return (count * 1_000_000) / elapsedUs;
 }
 
-export function formatNetworkSyncRate(value: number): string {
-  return Number.isFinite(value) && value >= 0 ? value.toFixed(2) : "0.00";
+export function formatNetworkSyncRate(value: number, locale?: string): string {
+  return Number.isFinite(value) && value >= 0
+    ? new Intl.NumberFormat(locale, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(value)
+    : new Intl.NumberFormat(locale, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(0);
 }
 
-export function formatWalletDerivationRate(value: number): string {
+export function formatWalletDerivationRate(value: number, locale?: string): string {
   return Number.isFinite(value) && value >= 0
-    ? Math.round(value).toString()
-    : "0";
+    ? new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(value)
+    : new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(0);
 }
 
 export type NetworkSyncPresentationPhase =

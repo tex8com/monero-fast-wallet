@@ -545,6 +545,12 @@ jobject toJavaMap(JNIEnv* env, const WalletSnapshot& snapshot) {
       putMethod,
       "pendingOutputKeyImageCount",
       snapshot.pendingOutputKeyImageCount);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "snapshotRevision",
+      snapshot.snapshotRevision);
   putMapBoolean(env, map, putMethod, "synchronized", snapshot.synchronized);
 
   return map;
@@ -661,6 +667,12 @@ jobject toJavaMap(JNIEnv* env, const LedgerKeyImageSyncResult& result) {
       putMethod,
       "totalDurationMs",
       result.totalDurationMs);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "snapshotRevision",
+      result.snapshotRevision);
   return map;
 }
 
@@ -678,6 +690,12 @@ jobject toJavaMap(JNIEnv* env, const NetworkSyncStatus& status) {
   putMapString(env, map, putMethod, "lastError", status.lastError);
   putMapDouble(env, map, putMethod, "consecutiveFailures", status.consecutiveFailures);
   putMapDouble(env, map, putMethod, "phaseSequence", status.phaseSequence);
+  putMapDouble(
+      env,
+      map,
+      putMethod,
+      "providerGeneration",
+      status.providerGeneration);
   putMapDouble(env, map, putMethod, "phaseElapsedMs", status.phaseElapsedMs);
   putMapDouble(env, map, putMethod, "lastProviderSelectionMs", status.lastProviderSelectionMs);
   putMapDouble(env, map, putMethod, "lastTransportInitializationMs", status.lastTransportInitializationMs);
@@ -971,6 +989,18 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeLinkedWithMonero(
     JNIEnv*,
     jclass) {
   return WalletEngine::linkedWithMonero();
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeDrainEngineDiagnostics(
+    JNIEnv* env,
+    jclass) {
+  try {
+    return toJavaStringList(env, WalletEngine::drainDiagnosticLines());
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
 }
 
 extern "C" JNIEXPORT jstring JNICALL

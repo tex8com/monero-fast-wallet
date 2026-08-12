@@ -228,6 +228,11 @@ const en = {
   'sync.waiting': 'Waiting',
   'sync.waitingForStatus': 'Preparing',
   'sync.wallet': 'Wallet sync',
+  'sync.spendOutputs': 'Spend outputs',
+  'sync.spendOutputsChecking': 'Checking spent outputs',
+  'sync.connectingLedger': 'Connecting Ledger',
+  'sync.persistingWallet': 'Saving verified wallet state',
+  'sync.recoveringSession': 'Restoring wallet session',
   'sync.walletName': '{wallet}',
   'security.appProtection': 'Protect your wallet',
   'security.preparingProtection': 'Preparing secure app protection…',
@@ -268,6 +273,9 @@ const en = {
   'notification.outgoingWallet': 'From {wallet}',
   'notification.closesIn': 'Closes in {seconds}s',
   'notification.ok': 'OK',
+  'send.checkingSpendOutputs': 'Checking spent outputs with Ledger…',
+  'send.transactionBroadcastRefreshPending':
+    'Transaction broadcast. Recheck Ledger spend outputs later in Settings.',
   'walletSelector.active': 'Active',
   'walletSelector.fast': '⚡ FAST',
   'walletSelector.ledgerFast': 'LEGACY LEDGER A1',
@@ -983,6 +991,8 @@ const en = {
   'settings.default': 'Default',
   'settings.diagnostics': 'Diagnostics',
   'settings.ledgerBalanceVerification': 'Verify Ledger balance',
+  'settings.ledgerBalanceVerificationHint':
+    'Manually recheck key images after spending from this Ledger on another device.',
   'settings.ledgerBalanceVerifying': 'Verifying with Ledger…',
   'settings.ledgerBalanceVerified':
     'The Ledger-signed spend status was verified and the local balance was updated.',
@@ -1333,6 +1343,11 @@ const de: Record<keyof typeof en, string> = {
   'sync.waiting': 'Warten',
   'sync.waitingForStatus': 'Vorbereiten',
   'sync.wallet': 'Wallet-Sync',
+  'sync.spendOutputs': 'Spend-Outputs',
+  'sync.spendOutputsChecking': 'Ausgegebene Outputs werden geprüft',
+  'sync.connectingLedger': 'Ledger wird verbunden',
+  'sync.persistingWallet': 'Geprüfter Wallet-Stand wird gespeichert',
+  'sync.recoveringSession': 'Wallet-Sitzung wird wiederhergestellt',
   'sync.walletName': '{wallet}',
   'security.appProtection': 'App-Schutz',
   'security.preparingProtection': 'Sicherer App-Schutz wird vorbereitet…',
@@ -1375,6 +1390,9 @@ const de: Record<keyof typeof en, string> = {
   'notification.outgoingWallet': 'Von {wallet}',
   'notification.closesIn': 'Schließt in {seconds} s',
   'notification.ok': 'OK',
+  'send.checkingSpendOutputs': 'Ausgegebene Outputs werden mit Ledger geprüft…',
+  'send.transactionBroadcastRefreshPending':
+    'Transaktion gesendet. Prüfe die Ledger-Spend-Outputs später erneut in den Einstellungen.',
   'walletSelector.active': 'Aktiv',
   'walletSelector.fast': '⚡ FAST',
   'walletSelector.ledgerFast': 'ALTES LEDGER K1',
@@ -2115,6 +2133,8 @@ const de: Record<keyof typeof en, string> = {
   'settings.default': 'Standard',
   'settings.diagnostics': 'Diagnose',
   'settings.ledgerBalanceVerification': 'Ledger-Guthaben prüfen',
+  'settings.ledgerBalanceVerificationHint':
+    'Key Images manuell erneut prüfen, wenn dieser Ledger auf einem anderen Gerät verwendet wurde.',
   'settings.ledgerBalanceVerifying': 'Prüfung mit Ledger…',
   'settings.ledgerBalanceVerified':
     'Der vom Ledger signierte Ausgabestatus wurde geprüft und das lokale Guthaben aktualisiert.',

@@ -108,6 +108,15 @@ for (const buildScript of [androidBuild, androidBuildInstall]) {
 }
 
 const androidCmake = read('android/app/src/main/cpp/CMakeLists.txt');
+const androidNativeModule = read(
+  'android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
+);
+const androidNativeJni = read(
+  'android/app/src/main/cpp/NativeMoneroWalletJni.cpp',
+);
+assert.match(androidNativeModule, /persistEngineDiagnosticLines\(\)/);
+assert.match(androidNativeModule, /MONERO_WALLET_DIAGNOSTICS native=cpp/);
+assert.match(androidNativeJni, /nativeDrainEngineDiagnostics/);
 assert.match(androidCmake, /MONERO_WALLET_API_HEADER_SHA256/);
 assert.match(androidCmake, /MONERO_WALLET_API_LIBRARY_SHA256/);
 assert.match(

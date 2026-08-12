@@ -4,6 +4,12 @@ use std::{
 };
 use zeroize::Zeroizing;
 
+pub const SESSION_STALE_CODE: &str = "session-stale";
+
+pub fn is_session_stale(error: &str) -> bool {
+    error == SESSION_STALE_CODE
+}
+
 #[repr(C)]
 struct RawCore {
     _private: [u8; 0],
@@ -863,7 +869,15 @@ impl NativeWallet {
             if result.ok == 1 && !result.value.is_null() {
                 Ok(CStr::from_ptr(result.value).to_string_lossy().into_owned())
             } else if !result.error.is_null() {
-                Err(CStr::from_ptr(result.error).to_string_lossy().into_owned())
+                let error = CStr::from_ptr(result.error).to_string_lossy();
+                // Native process-local handles are deliberately never exposed
+                // or logged. Their one recoverable lookup failure crosses the
+                // FFI boundary only as a fixed safe code.
+                if error.starts_with("unknown wallet id:") {
+                    Err(SESSION_STALE_CODE.to_owned())
+                } else {
+                    Err(error.into_owned())
+                }
             } else {
                 Err("Native wallet operation failed.".to_owned())
             }
@@ -937,7 +951,7 @@ mod tests {
             assert!(benchmark[backend]["verified"].is_boolean());
         }
         #[cfg(target_os = "macos")]
-        {
+        if option_env!("TEX8_DESKTOP_MONERO_LINKED") == Some("1") {
             assert_eq!(benchmark["metal"]["available"], true);
             assert_eq!(benchmark["metal"]["verified"], true);
             assert!(

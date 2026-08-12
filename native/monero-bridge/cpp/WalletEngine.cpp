@@ -7,6 +7,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <deque>
 #include <exception>
 #include <future>
 #include <initializer_list>
@@ -57,6 +58,47 @@ extern "C" const char* monero_fast_derivation_benchmark_json(void)
 
 namespace tex8::wallet {
 namespace {
+
+constexpr size_t kDiagnosticRingCapacity = 256;
+std::mutex diagnosticRingMutex;
+std::deque<std::string> diagnosticRing;
+
+void enqueueDiagnosticLine(const std::string& line) {
+#if defined(NDEBUG) && !TEX8_WALLET_DIAGNOSTICS
+  (void)line;
+#else
+  std::lock_guard<std::mutex> lock(diagnosticRingMutex);
+  if (diagnosticRing.size() >= kDiagnosticRingCapacity) {
+    diagnosticRing.pop_front();
+  }
+  diagnosticRing.push_back(line);
+#endif
+}
+
+std::string diagnosticAtom(const std::string& value) {
+  // Diagnostics are count/phase records, never arbitrary Core error text.
+  // A short atom covers every allowlisted enum, boolean and number while
+  // rejecting addresses, hashes, key images, endpoints and free-form errors.
+  if (value.empty() || value.size() > 48) return "redacted";
+  for (const unsigned char character : value) {
+    if (!std::isalnum(character) && character != '-' && character != '_' &&
+        character != '.') {
+      return "redacted";
+    }
+  }
+  return value;
+}
+
+std::vector<std::string> takeDiagnosticLines() {
+  std::lock_guard<std::mutex> lock(diagnosticRingMutex);
+  std::vector<std::string> lines;
+  lines.reserve(diagnosticRing.size());
+  while (!diagnosticRing.empty()) {
+    lines.push_back(std::move(diagnosticRing.front()));
+    diagnosticRing.pop_front();
+  }
+  return lines;
+}
 
 std::string backendNotLinkedMessage() {
   return "WalletEngine was built without the forked Monero libwallet_api";
@@ -244,17 +286,19 @@ void logEngineDiagnostic(
       message << ", ";
     }
     first = false;
-    message << field.first << "=" << field.second;
+    message << field.first << "=" << diagnosticAtom(field.second);
   }
   message << "}";
+  const auto line = message.str();
+  enqueueDiagnosticLine(line);
 
 #if defined(__APPLE__)
-  os_log(OS_LOG_DEFAULT, "%{public}s", message.str().c_str());
+  os_log(OS_LOG_DEFAULT, "%{public}s", line.c_str());
 #elif defined(__ANDROID__)
   __android_log_write(
-      ANDROID_LOG_INFO, "NativeMoneroWallet", message.str().c_str());
+      ANDROID_LOG_INFO, "NativeMoneroWallet", line.c_str());
 #else
-  std::cerr << message.str() << std::endl;
+  std::cerr << line << std::endl;
 #endif
 #endif
 }
@@ -635,6 +679,7 @@ class WalletEngine::Impl {
     uint64_t ledgerPostScanControlPlaneGeneration{0};
     WalletSnapshot cachedSnapshot;
     bool cachedSnapshotReady{false};
+    uint64_t snapshotRevision{0};
     std::unordered_map<std::string, Monero::PendingTransaction*>
         pendingTransactions;
   };
@@ -1918,6 +1963,7 @@ class WalletEngine::Impl {
     }
     std::lock_guard<std::mutex> lock(coordinator->mutex);
     auto status = coordinator->status;
+    status.providerGeneration = coordinator->configurationGeneration;
     status.phaseElapsedMs = elapsedMilliseconds(coordinator->phaseStarted);
     return status;
   }
@@ -2807,6 +2853,18 @@ class WalletEngine::Impl {
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - operationStartedAt)
             .count();
+    // The signed key-image import changes spend status, balance and outbound
+    // history. Rebuild the destination cache while the same session lock is
+    // still held, so no caller can observe the pre-import incoming-only
+    // balance after this operation reports success.
+    uint64_t authoritativeTargetHeight = 0;
+    {
+      std::lock_guard<std::mutex> coordinatorLock(coordinator->mutex);
+      authoritativeTargetHeight = coordinator->status.targetHeight;
+    }
+    updateCachedSnapshot(*destinationSession, authoritativeTargetHeight);
+    result.snapshotRevision =
+        destinationSession->cachedSnapshot.snapshotRevision;
     logEngineDiagnostic(
         "syncLedgerKeyImagesToViewWallet.success",
         {{"hardwareWalletId", maskDiagnosticId(hardwareWalletId)},
@@ -2830,7 +2888,8 @@ class WalletEngine::Impl {
          {"stateUpdateDurationMs", std::to_string(result.stateUpdateDurationMs)},
          {"verificationDurationMs", std::to_string(result.verificationDurationMs)},
          {"storeDurationMs", std::to_string(result.storeDurationMs)},
-         {"totalDurationMs", std::to_string(result.totalDurationMs)}});
+         {"totalDurationMs", std::to_string(result.totalDurationMs)},
+         {"snapshotRevision", std::to_string(result.snapshotRevision)}});
     return result;
 #else
     (void)hardwareWalletId;
@@ -3202,6 +3261,7 @@ class WalletEngine::Impl {
       next.daemonTargetHeight = next.walletHeight;
       next.synchronized = wallet->synchronized();
     }
+    next.snapshotRevision = ++session.snapshotRevision;
     session.cachedSnapshot = std::move(next);
     session.cachedSnapshotReady = true;
   }
@@ -4498,6 +4558,10 @@ std::string WalletEngine::benchmarkDerivationPerformance() {
       "\"derivationsPerSecond\":0,\"sampleCount\":0,\"elapsedMs\":0,"
       "\"error\":\"Native Monero core is not linked\"}}";
 #endif
+}
+
+std::vector<std::string> WalletEngine::drainDiagnosticLines() {
+  return takeDiagnosticLines();
 }
 
 void WalletEngine::setLedgerBleTransportCallbacks(

@@ -57,6 +57,7 @@ type NodeProfile = {
 type NetworkStatus = {
   state: string;
   phase: string;
+  providerGeneration: number;
   chainHeight: number;
   targetHeight: number;
   transportStarts: number;
@@ -214,6 +215,7 @@ export async function runDesktopWalletDiagnosticTestbench(input: {
             { label: 'Chain height', value: String(networkStatus.chainHeight) },
             { label: 'Target height', value: String(networkStatus.targetHeight) },
             { label: 'Transport starts', value: String(networkStatus.transportStarts) },
+            { label: 'Provider generation', value: String(networkStatus.providerGeneration) },
           ],
         };
       },

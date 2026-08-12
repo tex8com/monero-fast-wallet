@@ -108,6 +108,28 @@ type RegisteredContainerLease = {
   registrationIds: Set<string>;
 };
 
+export type RegisteredWalletSessionRecovery = {
+  session: WalletSession;
+  invalidatedRegistrationIds: string[];
+  sessionGeneration: number;
+  reopenAttempt: number;
+};
+
+export function isWalletSessionStaleError(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'code' in error) {
+    return (
+      (error as { code?: unknown }).code === 'monero_wallet_session_stale'
+    );
+  }
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+      ? error
+      : '';
+  return message === 'Wallet session is no longer open';
+}
+
 /**
  * A Ledger root and its logical Fast account intentionally point at the same
  * encrypted read-wallet file.  The native Monero core must open and scan that
@@ -298,6 +320,12 @@ export class WalletService {
     string,
     Promise<WalletSession>
   >();
+  private registeredContainerRecoveryInFlight = new Map<
+    string,
+    Promise<RegisteredWalletSessionRecovery>
+  >();
+  private registeredContainerSessionGenerations = new Map<string, number>();
+  private registeredContainerReopenAttempts = new Map<string, number>();
   // A newly added Ledger is already connected and its hardware wallet is
   // open. Keep that exact session until the read-only companion finishes its
   // one initial key-image pass instead of disconnecting and asking Android to
@@ -1368,6 +1396,92 @@ export class WalletService {
         return registeredSession;
       },
     );
+  }
+
+  async recoverRegisteredWalletRegistration(
+    registration: RegisteredWallet,
+    staleSession: WalletSession,
+  ): Promise<RegisteredWalletSessionRecovery> {
+    const containerKey = registeredWalletContainerKey(registration);
+    const existing = this.registeredContainerRecoveryInFlight.get(containerKey);
+    if (existing) {
+      logWalletEvent('WalletService', 'recoverSession.coalesced', {
+        ownerCount:
+          this.registeredContainerLeases.get(containerKey)?.registrationIds
+            .size ?? 1,
+      });
+      return existing;
+    }
+
+    const recovery = (async () => {
+      const lease = this.registeredContainerLeases.get(containerKey);
+      const invalidatedRegistrationIds = lease
+        ? [...lease.registrationIds]
+        : [registration.id];
+      const ownerCount = invalidatedRegistrationIds.length;
+      const sessionGeneration =
+        (this.registeredContainerSessionGenerations.get(containerKey) ?? 0) +
+        1;
+      const reopenAttempt =
+        (this.registeredContainerReopenAttempts.get(containerKey) ?? 0) + 1;
+      this.registeredContainerSessionGenerations.set(
+        containerKey,
+        sessionGeneration,
+      );
+      this.registeredContainerReopenAttempts.set(containerKey, reopenAttempt);
+
+      logWalletEvent('WalletService', 'recoverSession.start', {
+        ownerCount,
+        reopenAttempt,
+        sessionGeneration,
+      });
+
+      if (!lease || lease.session.walletId === staleSession.walletId) {
+        for (const registrationId of invalidatedRegistrationIds) {
+          this.registeredContainerKeyByRegistrationId.delete(registrationId);
+        }
+        this.registeredContainerLeases.delete(containerKey);
+        this.registeredContainerKeyByWalletId.delete(staleSession.walletId);
+        this.registeredContainerOpenInFlight.delete(containerKey);
+        this.nativeRefreshInFlight.delete(staleSession.walletId);
+        this.nativeRefreshWalletIds.delete(staleSession.walletId);
+        if (this.activeSession?.walletId === staleSession.walletId) {
+          this.activeSession = undefined;
+        }
+      }
+
+      const session = await this.openRegisteredWalletRegistration(registration);
+      logWalletEvent('WalletService', 'recoverSession.success', {
+        ownerCount,
+        reopenAttempt,
+        sessionGeneration,
+      });
+      return {
+        session,
+        invalidatedRegistrationIds,
+        sessionGeneration,
+        reopenAttempt,
+      };
+    })();
+    this.registeredContainerRecoveryInFlight.set(containerKey, recovery);
+    try {
+      return await recovery;
+    } catch (error) {
+      logWalletEvent('WalletService', 'recoverSession.error', {
+        error,
+        reopenAttempt:
+          this.registeredContainerReopenAttempts.get(containerKey) ?? 1,
+        sessionGeneration:
+          this.registeredContainerSessionGenerations.get(containerKey) ?? 1,
+      });
+      throw error;
+    } finally {
+      if (
+        this.registeredContainerRecoveryInFlight.get(containerKey) === recovery
+      ) {
+        this.registeredContainerRecoveryInFlight.delete(containerKey);
+      }
+    }
   }
 
   async openRegisteredWallet(password?: string): Promise<WalletSession> {
@@ -3332,6 +3446,9 @@ export class WalletService {
     this.registeredContainerKeyByRegistrationId.clear();
     this.registeredContainerKeyByWalletId.clear();
     this.registeredContainerOpenInFlight.clear();
+    this.registeredContainerRecoveryInFlight.clear();
+    this.registeredContainerSessionGenerations.clear();
+    this.registeredContainerReopenAttempts.clear();
     this.pendingInitialLedgerSessions.clear();
     this.nativeRefreshInFlight.clear();
     this.nativeRefreshWalletIds.clear();

@@ -15,6 +15,7 @@ import { colors, radius } from '../theme/colors';
 import {
   presentWalletSync,
   updateWalletSyncEta,
+  type WalletReadinessPhase,
   type WalletSyncEtaState,
 } from '../../../../packages/wallet-shared/src/walletSync';
 import {
@@ -32,6 +33,7 @@ type SyncStatusBarProps = {
   error?: string;
   expanded?: boolean;
   progress?: number;
+  readinessPhase?: WalletReadinessPhase;
   networkStatus?: NetworkSyncStatus;
   onExpandedChange?: (expanded: boolean) => void;
   snapshot?: WalletSnapshot;
@@ -46,6 +48,7 @@ export default function SyncStatusBar({
   error,
   expanded: controlledExpanded,
   progress,
+  readinessPhase,
   networkStatus,
   onExpandedChange,
   snapshot,
@@ -54,7 +57,7 @@ export default function SyncStatusBar({
   subtitle,
   walletName,
 }: SyncStatusBarProps) {
-  const { t } = useI18n();
+  const { dateLocale, t } = useI18n();
   const presentationSnapshot = snapshotWithNetworkScanProgress(
     snapshot,
     networkStatus,
@@ -91,14 +94,23 @@ export default function SyncStatusBar({
   const walletOpened =
     Boolean(snapshot) && (status === 'open' || status === 'syncing');
   const showWalletSync = connected && walletOpened;
-  const walletDetail = resolveDetail(
-    status,
-    snapshot,
-    hasSyncError,
-    presentation.phase,
-    walletProgress,
-    t,
-  );
+  const walletDetail =
+    readinessPhase === 'scanning-spend-outputs'
+      ? t('sync.spendOutputsChecking')
+      : readinessPhase === 'connecting-ledger'
+      ? t('sync.connectingLedger')
+      : readinessPhase === 'persisting-wallet'
+      ? t('sync.persistingWallet')
+      : readinessPhase === 'recovering-session'
+      ? t('sync.recoveringSession')
+      : resolveDetail(
+          status,
+          snapshot,
+          hasSyncError,
+          presentation.phase,
+          walletProgress,
+          t,
+        );
   const blockchainDetail =
     blockchainProgress === 100
       ? t('sync.synced')
@@ -218,7 +230,7 @@ export default function SyncStatusBar({
             label={t('sync.blockchainData')}
             percent={blockchainProgress}
             rate={networkRate === undefined ? undefined : t('sync.networkRate', {
-              rate: formatNetworkSyncRate(networkRate),
+              rate: formatNetworkSyncRate(networkRate, dateLocale),
             })}
             target={network.targetHeight}
             testID="blockchain-progress"
@@ -234,10 +246,14 @@ export default function SyncStatusBar({
                     ? t('sync.coreConfirming')
                     : walletEta
                 }
-                label={t('sync.wallet')}
+                label={
+                  readinessPhase === 'scanning-spend-outputs'
+                    ? t('sync.spendOutputs')
+                    : t('sync.wallet')
+                }
                 percent={walletProgress}
                 rate={walletDerivationRate === undefined ? undefined : t('sync.derivationRate', {
-                  rate: formatWalletDerivationRate(walletDerivationRate),
+                  rate: formatWalletDerivationRate(walletDerivationRate, dateLocale),
                 })}
                 target={presentation.targetHeight}
                 testID="wallet-progress"
@@ -341,16 +357,18 @@ function SyncProgressRow({
       </View>
       {target !== undefined || rate || extra ? (
         <View style={s.metrics}>
-          {target !== undefined ? (
-            <Text style={s.metric}>
-                  {t("sync.blockHeight", {
-                current: formatBlockCount(current),
-                target: formatBlockCount(target),
-              })}
-            </Text>
-          ) : null}
-          {rate ? <Text style={s.metricStrong}>{rate}</Text> : null}
-          {extra ? <Text style={s.metricStrong}>{extra}</Text> : null}
+          <View style={s.metricsPrimary}>
+            {target !== undefined ? (
+              <Text style={s.metric} numberOfLines={1}>
+                {t('sync.blockHeight', {
+                  current: formatBlockCount(current),
+                  target: formatBlockCount(target),
+                })}
+              </Text>
+            ) : null}
+            {rate ? <Text style={s.metricStrong}>{rate}</Text> : null}
+          </View>
+          {extra ? <Text style={s.metricExtra}>{extra}</Text> : null}
         </View>
       ) : null}
     </View>
@@ -657,7 +675,13 @@ const s = StyleSheet.create({
   },
   metrics: {
     marginTop: 8,
-    gap: 3,
+    gap: 2,
+  },
+  metricsPrimary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
   },
   metric: {
     color: colors.textMuted,
@@ -666,6 +690,12 @@ const s = StyleSheet.create({
     lineHeight: 17,
   },
   metricStrong: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 17,
+  },
+  metricExtra: {
     color: colors.textSecondary,
     fontSize: 12,
     fontWeight: '800',

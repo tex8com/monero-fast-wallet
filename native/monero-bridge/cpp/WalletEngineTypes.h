@@ -133,6 +133,9 @@ struct WalletSnapshot {
   // Metadata-only queue depth for a Ledger view-only wallet. A positive
   // value means a later, background hardware reconciliation has useful work.
   uint64_t pendingOutputKeyImageCount{0};
+  // Monotonic within one native session. A UI may publish only this revision
+  // or a newer one after a mutation such as signed Ledger key-image import.
+  uint64_t snapshotRevision{0};
   bool synchronized{false};
 };
 
@@ -159,6 +162,9 @@ struct LedgerKeyImageSyncResult {
   uint64_t verificationDurationMs{0};
   uint64_t storeDurationMs{0};
   uint64_t totalDurationMs{0};
+  // Revision of the authoritative destination snapshot rebuilt before this
+  // operation returned success.
+  uint64_t snapshotRevision{0};
 };
 
 struct NetworkSyncStatus {
@@ -171,6 +177,7 @@ struct NetworkSyncStatus {
   std::string lastError;
   uint64_t consecutiveFailures{0};
   uint64_t phaseSequence{0};
+  uint64_t providerGeneration{0};
   uint64_t phaseElapsedMs{0};
   uint64_t lastProviderSelectionMs{0};
   uint64_t lastTransportInitializationMs{0};

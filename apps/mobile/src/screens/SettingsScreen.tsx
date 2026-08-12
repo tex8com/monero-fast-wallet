@@ -71,7 +71,7 @@ const NETWORKS: { value: MoneroNetwork; label: string }[] = [
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { language, setLanguage, t } = useI18n();
-  const { registeredWallet, session } = useWalletState();
+  const { reconcileLedgerBalance, registeredWallet, session } = useWalletState();
   const {
     mode: savedProtectionMode,
     setMode: setAppProtectionMode,
@@ -96,6 +96,7 @@ export default function SettingsScreen() {
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
   const [isSendingTestPush, setIsSendingTestPush] = useState(false);
   const [isRevealingSeed, setIsRevealingSeed] = useState(false);
+  const [isRecheckingLedger, setIsRecheckingLedger] = useState(false);
   const [protectionMode, setProtectionMode] =
     useState<AppProtectionMode>(savedProtectionMode);
   const [appPassword, setAppPassword] = useState('');
@@ -354,6 +355,27 @@ export default function SettingsScreen() {
       );
     } finally {
       setIsRevealingSeed(false);
+    }
+  }
+
+  async function recheckLedgerSpendOutputs() {
+    if (!registeredWallet || registeredWallet.kind !== 'hardware' || !session) {
+      return;
+    }
+    setIsRecheckingLedger(true);
+    try {
+      await reconcileLedgerBalance();
+      Alert.alert(
+        t('settings.ledgerBalanceVerification'),
+        t('settings.ledgerBalanceVerified'),
+      );
+    } catch (error) {
+      Alert.alert(
+        t('settings.ledgerBalanceVerification'),
+        errorMessage(error),
+      );
+    } finally {
+      setIsRecheckingLedger(false);
     }
   }
 
@@ -640,6 +662,34 @@ export default function SettingsScreen() {
               </View>
               <Icon name="chevron-right" size={18} color={colors.textMuted} />
             </TouchableOpacity>
+            {registeredWallet?.kind === 'hardware' &&
+            registeredWallet.role !== 'fast' ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                activeOpacity={0.7}
+                disabled={!session || isRecheckingLedger}
+                onPress={() => void recheckLedgerSpendOutputs()}
+                style={[
+                  s.row,
+                  (!session || isRecheckingLedger) && s.rowDisabled,
+                ]}
+              >
+                <View style={s.rowIconWrap}>
+                  <Icon name="key" size={20} color={colors.orange} />
+                </View>
+                <View style={s.rowCopy}>
+                  <Text style={s.rowLabel}>
+                    {isRecheckingLedger
+                      ? t('settings.ledgerBalanceVerifying')
+                      : t('settings.ledgerBalanceVerification')}
+                  </Text>
+                  <Text style={s.rowHint}>
+                    {t('settings.ledgerBalanceVerificationHint')}
+                  </Text>
+                </View>
+                <Icon name="chevron-right" size={18} color={colors.textMuted} />
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
 

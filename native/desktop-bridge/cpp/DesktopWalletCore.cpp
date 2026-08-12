@@ -270,6 +270,8 @@ std::string walletSnapshotJson(const tex8::wallet::WalletSnapshot& snapshot) {
          << jsonString(std::to_string(snapshot.daemonTargetHeight))
          << ",\"pendingOutputKeyImageCount\":"
          << jsonString(std::to_string(snapshot.pendingOutputKeyImageCount))
+         << ",\"snapshotRevision\":"
+         << jsonString(std::to_string(snapshot.snapshotRevision))
          << ",\"synchronized\":" << (snapshot.synchronized ? "true" : "false")
          << '}';
   return output.str();
@@ -284,6 +286,7 @@ std::string networkSyncStatusJson(
          << ",\"lastError\":" << jsonString(status.lastError)
          << ",\"consecutiveFailures\":" << status.consecutiveFailures
          << ",\"phaseSequence\":" << status.phaseSequence
+         << ",\"providerGeneration\":" << status.providerGeneration
          << ",\"phaseElapsedMs\":" << status.phaseElapsedMs
          << ",\"lastProviderSelectionMs\":"
          << status.lastProviderSelectionMs
@@ -683,6 +686,7 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_sync_ledger_key_images(
          << ",\"verificationDurationMs\":" << result.verificationDurationMs
          << ",\"storeDurationMs\":" << result.storeDurationMs
          << ",\"totalDurationMs\":" << result.totalDurationMs
+         << ",\"snapshotRevision\":" << result.snapshotRevision
          << '}';
     return json.str();
   });
