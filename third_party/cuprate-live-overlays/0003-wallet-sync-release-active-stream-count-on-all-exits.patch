@@ -1,0 +1,77 @@
+--- a/binaries/cuprated/src/rpc/grpc.rs
++++ b/binaries/cuprated/src/rpc/grpc.rs
+@@ -100,6 +100,32 @@
+ static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+ static ACTIVE_STREAMS: AtomicU64 = AtomicU64::new(0);
+ 
++/// Owns one entry in `ACTIVE_STREAMS`. Keeping the guard inside the spawned
++/// producer future makes cancellation, early returns and unwinding release
++/// the telemetry slot as well as the normal completion path.
++struct ActiveStreamGuard;
++
++impl ActiveStreamGuard {
++    fn acquire() -> (Self, u64) {
++        let active = ACTIVE_STREAMS.fetch_add(1, Ordering::SeqCst) + 1;
++        (Self, active)
++    }
++
++    fn remaining_after_drop(&self) -> u64 {
++        ACTIVE_STREAMS.load(Ordering::SeqCst).saturating_sub(1)
++    }
++}
++
++impl Drop for ActiveStreamGuard {
++    fn drop(&mut self) {
++        // A saturating update keeps diagnostics safe even if a future code
++        // path accidentally tries to release an unregistered stream.
++        let _ = ACTIVE_STREAMS.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |active| {
++            Some(active.saturating_sub(1))
++        });
++    }
++}
++
+ fn stream_pipeline_depth() -> usize {
+     static DEPTH: OnceLock<usize> = OnceLock::new();
+     *DEPTH.get_or_init(|| {
+@@ -370,7 +395,7 @@
+             n => (n as usize).clamp(MIN_CHUNK_BLOCKS, MAX_CHUNK_BLOCKS),
+         };
+ 
+-        let active = ACTIVE_STREAMS.fetch_add(1, Ordering::SeqCst) + 1;
++        let (active_stream_guard, active) = ActiveStreamGuard::acquire();
+         let open_epoch_ms = SystemTime::now()
+             .duration_since(UNIX_EPOCH)
+             .map(|d| d.as_millis())
+@@ -414,13 +439,14 @@
+                 &id_for_task,
+             )
+             .await;
+-            let active_after = ACTIVE_STREAMS.fetch_sub(1, Ordering::SeqCst) - 1;
++            let active_after = active_stream_guard.remaining_after_drop();
+             if let Err(error) = result {
+                 eprintln!(
+                     "[GRPC {}] CLOSE_ERR id={} active_remaining={} err={:?}",
+                     rpc_name, id_for_close, active_after, error
+                 );
+             }
++            drop(active_stream_guard);
+         });
+ 
+         // This closure runs when tonic polls our application stream. Its delay
+@@ -1149,6 +1175,16 @@
+         assert_eq!(reduced_chunk_blocks(1), None);
+         assert_eq!(reduced_chunk_blocks(0), None);
+     }
++
++    #[test]
++    fn active_stream_guard_releases_telemetry_slot() {
++        let before = ACTIVE_STREAMS.load(Ordering::SeqCst);
++        let (guard, active) = ActiveStreamGuard::acquire();
++        assert_eq!(active, before + 1);
++        assert_eq!(ACTIVE_STREAMS.load(Ordering::SeqCst), before + 1);
++        drop(guard);
++        assert_eq!(ACTIVE_STREAMS.load(Ordering::SeqCst), before);
++    }
+ }
+ 
+ /// Build the tonic gRPC service ready to be added to a tonic Server.

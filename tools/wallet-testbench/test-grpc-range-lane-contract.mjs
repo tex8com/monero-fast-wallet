@@ -43,40 +43,64 @@ const persistentLaneAdditions = persistentLanePatch
   .split(/\r?\n/)
   .filter(line => line.startsWith('+') && !line.startsWith('+++'))
   .join('\n');
+const cleanLaneTipPatchName =
+  '0078-wallet-accept-clean-persistent-lane-tip.patch';
+const cleanLaneTipPatch = read(
+  `third_party/monero-patches/${cleanLaneTipPatchName}`,
+);
+const cleanLaneTipAdditions = cleanLaneTipPatch
+  .split(/\r?\n/)
+  .filter(line => line.startsWith('+') && !line.startsWith('+++'))
+  .join('\n');
 
 test('the authenticated Core ends with the measured production patches', () => {
-  assert.equal(series.length, 77);
-  assert.equal(series.at(-7), patchName);
-  assert.equal(series.at(-6), spanPatchName);
+  assert.equal(series.length, 78);
+  assert.equal(series.at(-8), patchName);
+  assert.equal(series.at(-7), spanPatchName);
   assert.equal(
-    series.at(-5),
+    series.at(-6),
     '0073-wallet-benchmark-and-report-automatic-derivation-backend.patch',
   );
   assert.equal(
-    series.at(-4),
+    series.at(-5),
     '0074-wallet-remove-hot-path-diagnostic-clocks.patch',
   );
-  assert.equal(series.at(-3), persistentLanePatchName);
+  assert.equal(series.at(-4), persistentLanePatchName);
   assert.equal(
-    series.at(-2),
+    series.at(-3),
     '0076-ledger-hid-read-timeout-fail-closed.patch',
   );
   assert.equal(
-    series.at(-1),
+    series.at(-2),
     '0077-wallet-expose-live-sync-throughput-in-every-client.patch',
   );
-  assert.match(lock, /^previous_patch_count=76$/m);
+  assert.equal(series.at(-1), cleanLaneTipPatchName);
+  assert.match(lock, /^previous_patch_count=77$/m);
   assert.match(
     lock,
-    /^previous_patched_tree=58b89028224460437e2d69ea12fbe8ed53135429$/m,
+    /^previous_patched_tree=21f6b377e1acbd83a7b5da34164dca12e6dcbbab$/m,
   );
-  assert.match(
-    lock,
-    /^patched_tree=21f6b377e1acbd83a7b5da34164dca12e6dcbbab$/m,
-  );
+  assert.match(lock, /^patched_tree=[0-9a-f]{40}$/m);
   assert.match(hotPathPatch, /^-.*process_new_transaction SLOW txid=/m);
   assert.match(hotPathPatch, /^-.*SLOW_TX[^\n]*\n-.*txid=/m);
   assert.match(hotPathPatch, /^-.*HOT_BLOCK/m);
+});
+
+test('persistent lanes accept only a proven clean end above the reported tip', () => {
+  assert.match(cleanLaneTipPatch, /client\.stream_ended_ok\(\)/);
+  assert.match(cleanLaneTipAdditions, /p\.last_tip > 0/);
+  assert.match(cleanLaneTipAdditions, /p\.next_expected > p\.last_tip/);
+  assert.match(cleanLaneTipAdditions, /p\.ended_ok = true/);
+  assert.match(cleanLaneTipAdditions, /return lane_next_result::end/);
+  assert.match(cleanLaneTipAdditions, /empty_one_height_tip_probe/);
+  assert.match(cleanLaneTipAdditions, /p\.lane_chunks_consumed == 0/);
+  assert.match(cleanLaneTipAdditions, /p\.start_height == p\.stop_height/);
+  assert.match(cleanLaneTipAdditions, /p\.next_expected == p\.start_height/);
+  assert.match(cleanLaneTipPatch, /persistent lane ended before its next assigned stripe/);
+  assert.doesNotMatch(
+    cleanLaneTipAdditions,
+    /p\.next_expected >= p\.last_tip/,
+  );
 });
 
 test('persistent striped lanes are capability-safe and bounded', () => {
@@ -126,6 +150,18 @@ test('client and server retain the cap and recover with smaller chunks', () => {
   assert.match(serverSplitPatch, /continue;/);
   assert.match(serverSplitPatch, /single-block encoded chunk exceeds RPC byte limit/);
   assert.match(serverSplitPatch, /reduced_chunk_blocks\(512\), Some\(256\)/);
+});
+
+test('server active-stream telemetry is released by task lifetime', () => {
+  const serverGuardPatch = read(
+    'third_party/cuprate-live-overlays/0003-wallet-sync-release-active-stream-count-on-all-exits.patch',
+  );
+  assert.match(serverGuardPatch, /struct ActiveStreamGuard/);
+  assert.match(serverGuardPatch, /impl Drop for ActiveStreamGuard/);
+  assert.match(serverGuardPatch, /active_stream_guard.*ActiveStreamGuard::acquire/);
+  assert.match(serverGuardPatch, /drop\(active_stream_guard\)/);
+  assert.match(serverGuardPatch, /saturating_sub\(1\)/);
+  assert.doesNotMatch(serverGuardPatch, /view_key|spend_key|private_key|mnemonic|seed/);
 });
 
 test('one global downloader owns at most four process-wide transport lanes', () => {

@@ -10,6 +10,7 @@ must not be applied directly to the older series head.
 - overlay order:
   1. `0001-wallet-sync-persistent-striped-grpc-lanes.patch`
   2. `0002-wallet-sync-split-oversized-lane-chunks.patch`
+  3. `0003-wallet-sync-release-active-stream-count-on-all-exits.patch`
 
 The overlay keeps the legacy `StreamBlocks` method and adds the capability-safe
 `StreamBlockLane` method. Build it natively on the server with Cargo's locked
@@ -20,3 +21,8 @@ The second overlay keeps the 32-MiB per-lane memory bound. If exact EPEE
 encoding exceeds it, the producer cancels the speculative next fetch, halves
 the current block count, and retries the same height without closing the RPC.
 Only an individually encoded block above the limit fails closed.
+
+The third overlay makes the active-stream metric cancellation-safe. A guard
+owned by the producer task releases the counter on success, early error,
+cancellation and unwind; it changes telemetry only, not request validation or
+wallet data.

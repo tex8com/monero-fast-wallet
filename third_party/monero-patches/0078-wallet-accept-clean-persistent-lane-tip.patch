@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet <engineering@tex8.app>
+Date: Wed, 12 Aug 2026 16:00:00 +0000
+Subject: [PATCH] wallet: accept a clean persistent lane tip
+
+Persistent lanes cover only their assigned stripes. Accept a clean end after
+the shared cursor has moved above the last authenticated chain tip. Also accept
+the empty one-height probe used only when wallet2 asks again at its already-
+known daemon height. Every multi-height or partially delivered historical
+range remains a hard gap error.
+---
+ src/wallet/grpc_stream/grpc_block_range_pool.cpp | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.cpp b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.cpp
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+@@ -488,6 +488,23 @@ lane_next_result next_lane_chunk(cuprate_grpc_block_range_pool::impl& p,
+                 && p.error_code == kGrpcUnimplemented)
+             return lane_next_result::fallback;
+         if (client.stream_ended_ok()) {
++            const bool cursor_above_authenticated_tip =
++                p.last_tip > 0 && p.next_expected > p.last_tip;
++            const bool empty_one_height_tip_probe =
++                p.lane_chunks_consumed == 0
++                && p.start_height == p.stop_height
++                && p.next_expected == p.start_height;
++            if (cursor_above_authenticated_tip || empty_one_height_tip_probe) {
++                p.ended_ok = true;
++                p.error_code = 0;
++                p.error.clear();
++                std::fprintf(stderr,
++                    "[GRPC pool] CLEAN_TIP expected_next=%llu chain_tip=%llu empty_probe=%d\n",
++                    (unsigned long long)p.next_expected,
++                    (unsigned long long)p.last_tip,
++                    empty_one_height_tip_probe ? 1 : 0);
++                return lane_next_result::end;
++            }
+             p.error_code = -1;
+             p.error = "persistent lane ended before its next assigned stripe";
+         }
+-- 
+2.50.1

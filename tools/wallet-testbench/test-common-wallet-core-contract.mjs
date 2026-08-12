@@ -316,6 +316,14 @@ test('Ledger reconciliation derives key images only for locally discovered owned
   assert.doesNotMatch(combined, /^\+.*dev_cold->ki_sync/m);
 });
 
+test('native diagnostic persistence accepts only short non-secret atoms', () => {
+  const engine = read('native/monero-bridge/cpp/WalletEngine.cpp');
+  assert.match(engine, /value\.size\(\) > 48/);
+  assert.match(engine, /return "redacted"/);
+  assert.match(engine, /diagnosticAtom\(field\.second\)/);
+  assert.match(engine, /kDiagnosticRingCapacity = 256/);
+});
+
 test('restore heights are one-time creation inputs and shared-sync cache resets are explicit', () => {
   const engine = read('native/monero-bridge/cpp/WalletEngine.cpp');
   const testbench = read(

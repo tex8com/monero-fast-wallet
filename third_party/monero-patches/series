@@ -76,3 +76,4 @@
 0075-wallet-use-persistent-striped-grpc-lanes.patch
 0076-ledger-hid-read-timeout-fail-closed.patch
 0077-wallet-expose-live-sync-throughput-in-every-client.patch
+0078-wallet-accept-clean-persistent-lane-tip.patch

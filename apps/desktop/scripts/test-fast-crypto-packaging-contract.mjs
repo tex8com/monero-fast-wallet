@@ -201,13 +201,13 @@ test('the Monero patch series carries the CPU batch through Rust and wallet2', (
   assert.match(moneroNamePatch, /canonical varint/);
   assert.match(
     moneroLock,
-    /^patched_tree=21f6b377e1acbd83a7b5da34164dca12e6dcbbab$/m,
+    /^patched_tree=2d767f4c2abf1fc0bcc94d2e8883aea3029b3bb6$/m,
   );
   assert.match(
     moneroLock,
-    /^previous_patched_tree=58b89028224460437e2d69ea12fbe8ed53135429$/m,
+    /^previous_patched_tree=21f6b377e1acbd83a7b5da34164dca12e6dcbbab$/m,
   );
-  assert.match(moneroLock, /^previous_patch_count=76$/m);
+  assert.match(moneroLock, /^previous_patch_count=77$/m);
   assert.match(prepareMac, /-DMFW_MONERO_PATCH_COUNT="\$\{monero_patch_count\}"/);
   assert.match(prepareMac, /-DMFW_PRODUCT_COMMIT="\$\{product_commit\}"/);
   assert.match(prepareMac, /-DMFW_PRODUCT_DIRTY="\$\{product_dirty\}"/);
