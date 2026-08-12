@@ -24,10 +24,10 @@ test('the authenticated Monero patch series includes the shared exact-range cach
   assert.ok(entries.includes('0075-wallet-use-persistent-striped-grpc-lanes.patch'));
   assert.equal(
     entries.at(-1),
-    '0078-wallet-accept-clean-persistent-lane-tip.patch',
+    '0079-wallet-use-six-persistent-grpc-lanes.patch',
   );
   assert.ok(entries.includes('0027-wallet-add-shared-multi-wallet-sync-provider.patch'));
-  assert.match(lock, /^previous_patch_count=77$/m);
+  assert.match(lock, /^previous_patch_count=78$/m);
   assert.match(lock, /^previous_patched_tree=[0-9a-f]{40}$/m);
   assert.match(lock, /^patched_tree=[0-9a-f]{40}$/m);
 });

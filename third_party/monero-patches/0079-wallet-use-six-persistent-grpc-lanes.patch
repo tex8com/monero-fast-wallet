@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Wed, 12 Aug 2026 16:00:00 -0500
+Subject: [PATCH] wallet: use six persistent gRPC lanes
+
+Physical Pixel measurements over the complete public benchmark range showed
+40.300476 MiB/s with four independent lanes and 59.588780 MiB/s with six.
+Use the measured six-lane configuration in the one global downloader and its
+adaptive transport planner. Stripe ownership, bounded per-lane queues, exact
+ordering, and legacy fallback remain unchanged.
+---
+ src/wallet/grpc_stream/grpc_block_range_pool.cpp | 10 +++++-----
+ src/wallet/wallet2.cpp                           | 11 ++++++-----
+ 2 files changed, 11 insertions(+), 10 deletions(-)
+
+diff --git a/src/wallet/grpc_stream/grpc_block_range_pool.cpp b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+index b9ad647..9c10994 100644
+--- a/src/wallet/grpc_stream/grpc_block_range_pool.cpp
++++ b/src/wallet/grpc_stream/grpc_block_range_pool.cpp
+@@ -16,11 +16,11 @@
+ 
+ namespace cuprate_grpc_stream {
+ namespace {
+-// Four physical lanes were the fastest measured Panama-to-node range-pool
+-// configuration. The pool remains one global downloader and assigns each
+-// non-overlapping range to one of these bounded process-wide transports.
+-constexpr size_t kMaxChannels = 4;
+-// Legacy fallback only. The preferred protocol keeps four striped lane RPCs
++// Six physical lanes saturate the measured Android Wi-Fi path while the
++// pool remains one global downloader. Each lane owns a disjoint stripe and
++// one bounded process-wide transport.
++constexpr size_t kMaxChannels = 6;
++// Legacy fallback only. The preferred protocol keeps six striped lane RPCs
+ // open for the complete finite sync interval.
+ constexpr uint32_t kRangeBlocks = 2048;
+ constexpr uint32_t kLaneStripeBlocks = 512;
+
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 55b1c95..4027ed5 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3380,9 +3380,9 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     {
+       // The range pool commits strictly in height order. It starts with one
+       // locator-validated range and then opens non-overlapping ranges on up to
+-      // four bounded HTTP/2 transport lanes owned by the one global range
++      // six bounded HTTP/2 transport lanes owned by the one global range
+       // downloader. Each lane buffers at most one completed chunk, bounding
+-      // reordering memory to four chunks.
++      // reordering memory to six chunks.
+       constexpr uint32_t minimum_chunk_hint = 16;
+       const uint32_t configured_chunk_hint = std::max<uint32_t>(minimum_chunk_hint,
+         std::min<uint32_t>(m_grpc_stream_chunk_hint, 512));
+@@ -3404,10 +3404,11 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+       }
+       else
+       {
+-        while (stream_channels < 4
++        while (stream_channels < 6
+           && blocks_to_tip > static_cast<uint64_t>(configured_chunk_hint) * stream_channels * 2)
+-          stream_channels *= 2;
+-        plan = stream_channels == 4 ? "pool-4" : stream_channels == 2 ? "pool-2" : "pool-1";
++          stream_channels = std::min<size_t>(6, stream_channels * 2);
++        plan = stream_channels == 6 ? "pool-6" : stream_channels == 4 ? "pool-4"
++          : stream_channels == 2 ? "pool-2" : "pool-1";
+       }
+ 
+       MWARNING("grpc_stream: adaptive plan=" << plan
+-- 
+2.50.1

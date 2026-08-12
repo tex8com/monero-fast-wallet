@@ -90,7 +90,7 @@ class NativeMoneroWalletMainnetBenchmarkTest {
       var maxNativeHeapBytes = Debug.getNativeHeapAllocatedSize()
       var maxDerivationWorkers = countDerivationWorkers()
       var maxThermalStatus = currentThermalStatus(context)
-      var initialWalletHeight = restoreHeight
+      var initialSnapshotWalletHeight = restoreHeight
       var finalWalletHeight = restoreHeight
       var finalDaemonHeight = 0L
       var synchronized = false
@@ -116,7 +116,8 @@ class NativeMoneroWalletMainnetBenchmarkTest {
         "",
       )
       NativeMoneroWalletJni.setGrpcEndpoint(walletId, grpcEndpoint)
-      initialWalletHeight = mapLong(NativeMoneroWalletJni.snapshot(walletId), "walletHeight")
+      initialSnapshotWalletHeight =
+        mapLong(NativeMoneroWalletJni.snapshot(walletId), "walletHeight")
       NativeMoneroWalletJni.startRefresh(walletId)
 
       val deadlineMs = startElapsedMs + timeoutSeconds * 1_000L
@@ -159,7 +160,11 @@ class NativeMoneroWalletMainnetBenchmarkTest {
       val endRxBytes = TrafficStats.getUidRxBytes(Process.myUid())
       val elapsedMs = endElapsedMs - startElapsedMs
       val cpuMs = endCpuMs - startCpuMs
-      val scannedBlocks = (finalWalletHeight - initialWalletHeight).coerceAtLeast(0L)
+      // A newly restored wallet reports height 1 until its first refresh
+      // iteration applies the configured restore height. The benchmark's
+      // logical interval nevertheless starts at restoreHeight; using the
+      // pre-refresh snapshot would over-count millions of unscanned blocks.
+      val scannedBlocks = (finalWalletHeight - restoreHeight).coerceAtLeast(0L)
       val rxBytes =
         if (startRxBytes >= 0L && endRxBytes >= startRxBytes) {
           endRxBytes - startRxBytes
@@ -175,7 +180,8 @@ class NativeMoneroWalletMainnetBenchmarkTest {
           "cpuMs" to cpuMs,
           "daemonHeight" to finalDaemonHeight,
           "elapsedMs" to elapsedMs,
-          "initialWalletHeight" to initialWalletHeight,
+          "initialSnapshotWalletHeight" to initialSnapshotWalletHeight,
+          "restoreHeight" to restoreHeight,
           "maxDerivationWorkers" to maxDerivationWorkers,
           "maxNativeHeapBytes" to maxNativeHeapBytes,
           "maxPssKb" to maxPssKb,

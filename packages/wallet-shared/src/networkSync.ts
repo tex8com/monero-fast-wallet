@@ -20,7 +20,44 @@ export type NetworkSyncSource = {
   lastNonEmptyPayloadBytes?: number;
   lastNonEmptyWalletDerivationCount?: number;
   lastNonEmptyWalletDerivationUs?: number;
+  networkBytesReceived?: number;
+  payloadBytesReceived?: number;
 };
+
+export type NetworkSyncByteSample = {
+  observedAt: number;
+  source: "network" | "payload";
+  totalBytes: number;
+};
+
+/**
+ * Samples the coordinator-wide cumulative counter. Unlike the legacy latest
+ * batch value, its delta includes every lane whose completed data reached the
+ * shared downloader during the observation window.
+ */
+export function networkSyncByteSample(
+  status: NetworkSyncSource | null | undefined,
+  observedAt: number,
+): NetworkSyncByteSample | undefined {
+  const networkBytes = status?.networkBytesReceived ?? 0;
+  const payloadBytes = status?.payloadBytesReceived ?? 0;
+  const source = networkBytes > 0 ? "network" : "payload";
+  const totalBytes = source === "network" ? networkBytes : payloadBytes;
+  return Number.isFinite(observedAt) && Number.isFinite(totalBytes) && totalBytes >= 0
+    ? { observedAt, source, totalBytes }
+    : undefined;
+}
+
+export function networkSyncWindowMegabitsPerSecond(
+  first: NetworkSyncByteSample | undefined,
+  last: NetworkSyncByteSample | undefined,
+): number | undefined {
+  if (!first || !last || first.source !== last.source) return undefined;
+  const elapsedMs = last.observedAt - first.observedAt;
+  const bytes = last.totalBytes - first.totalBytes;
+  if (elapsedMs <= 0 || bytes <= 0) return undefined;
+  return (bytes * 8) / (elapsedMs * 1_000);
+}
 
 /**
  * Effective block-download rate of the latest non-empty native batch.

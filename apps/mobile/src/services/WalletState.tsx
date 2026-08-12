@@ -1294,15 +1294,28 @@ export function WalletStateProvider({
       }
       nativeRefreshWalletIdsRef.current.add(registrationId);
       nativeRefreshReadyWalletIdsRef.current.delete(registrationId);
-      // A new native refresh is a new measurement window. Until its first
-      // live Core snapshot arrives, the shared presenter intentionally keeps
-      // progress indeterminate instead of reusing a cached height.
-      syncStartHeightsRef.current.delete(registrationId);
+      // A new native refresh is a new measurement window, but an imported
+      // wallet's configured restore height is already an authoritative
+      // baseline. Keep it available while the native coordinator owns the
+      // wallet: live snapshot polling is deliberately paused during that
+      // interval and would otherwise leave the visible scan percentage
+      // indeterminate until synchronization had already completed.
+      const configuredSyncStartHeight = syncStartHeightForWallet(
+        registration.restoreHeight,
+      );
+      if (configuredSyncStartHeight === undefined) {
+        syncStartHeightsRef.current.delete(registrationId);
+      } else {
+        syncStartHeightsRef.current.set(
+          registrationId,
+          configuredSyncStartHeight,
+        );
+      }
       if (registeredWalletRef.current?.id === registrationId) {
-        setSyncStartHeight(undefined);
+        setSyncStartHeight(configuredSyncStartHeight);
       }
       logWalletEvent('WalletState', 'startNativeRefresh.start', {
-        clearedSyncStartHeight: true,
+        configuredSyncStartHeight,
         reason,
         registrationId,
       });

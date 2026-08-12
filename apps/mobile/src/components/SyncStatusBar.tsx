@@ -22,7 +22,9 @@ import {
   formatNetworkSyncRate,
   formatSyncPercent,
   formatWalletDerivationRate,
+  networkSyncByteSample,
   networkSyncMegabitsPerSecond,
+  networkSyncWindowMegabitsPerSecond,
   normalizeSyncPercent,
   presentNetworkSync,
   walletSyncDerivationsPerSecond,
@@ -62,11 +64,17 @@ export default function SyncStatusBar({
     snapshot,
     networkStatus,
   );
+  const presentationStartHeight =
+    syncStartHeight ?? networkStatus?.downloadStartHeight;
   const presentation = presentWalletSync(presentationSnapshot, {
-    startHeight: syncStartHeight,
+    // On a cold start, the native coordinator can begin scanning before the
+    // first coherent wallet snapshot is readable. Its authenticated download
+    // cursor is the exact start of that visible run and keeps percentage
+    // progress live without changing persisted wallet state.
+    startHeight: presentationStartHeight,
   });
   const network = presentNetworkSync(networkStatus);
-  const networkRate = networkSyncMegabitsPerSecond(networkStatus);
+  const networkRate = useAggregateNetworkRate(networkStatus);
   const walletDerivationRate = walletSyncDerivationsPerSecond(networkStatus);
   const networkFailure = networkSyncFailureCode(networkStatus);
   const etaSeconds = useSyncEta(presentation, networkStatus);
@@ -472,6 +480,41 @@ function useElapsedSeconds(active: boolean) {
   }, [active]);
 
   return elapsedSeconds;
+}
+
+/** Aggregate every completed transport lane over a short rolling window. */
+function useAggregateNetworkRate(status?: NetworkSyncStatus) {
+  const samplesRef = React.useRef<
+    NonNullable<ReturnType<typeof networkSyncByteSample>>[]
+  >([]);
+  const [rate, setRate] = React.useState<number | undefined>();
+
+  React.useEffect(() => {
+    const sample = networkSyncByteSample(status, Date.now());
+    if (!sample) return;
+    const prior = samplesRef.current.at(-1);
+    if (
+      prior &&
+      (prior.source !== sample.source || prior.totalBytes > sample.totalBytes)
+    ) {
+      samplesRef.current = [];
+    }
+    samplesRef.current.push(sample);
+    const cutoff = sample.observedAt - 3_000;
+    while (
+      samplesRef.current.length > 2 &&
+      samplesRef.current[1].observedAt <= cutoff
+    ) {
+      samplesRef.current.shift();
+    }
+    const aggregate = networkSyncWindowMegabitsPerSecond(
+      samplesRef.current[0],
+      sample,
+    );
+    if (aggregate !== undefined) setRate(aggregate);
+  }, [status]);
+
+  return rate ?? networkSyncMegabitsPerSecond(status);
 }
 
 function formatBlockCount(value?: number) {

@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Wed, 12 Aug 2026 16:05:00 -0500
+Subject: [PATCH] wallet sync: allow six persistent lanes
+
+The physical Pixel raw-transport acceptance transferred the complete public
+benchmark range at 59.588780 MiB/s with six disjoint streams, compared with
+40.300476 MiB/s using four. Raise only the validated lane-count ceiling; lane
+indices, ranges, response limits, queue bounds, and ordering checks are
+unchanged.
+The lane scheduler tests exercise the six-way cover and retain explicit
+fail-closed coverage above the new ceiling.
+---
+ binaries/cuprated/src/rpc/grpc.rs | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/binaries/cuprated/src/rpc/grpc.rs b/binaries/cuprated/src/rpc/grpc.rs
+--- a/binaries/cuprated/src/rpc/grpc.rs
++++ b/binaries/cuprated/src/rpc/grpc.rs
+@@ -95,7 +95,7 @@ pub const GRPC_HTTP2_CONNECTION_WINDOW_BYTES: u32 = 512 * 1024 * 1024;
+ /// room to absorb scanner stalls without immediately stalling HTTP/2.
+ const CHANNEL_CAPACITY: usize = 32;
+ const LANE_CHANNEL_CAPACITY: usize = 2;
+-const MAX_LANE_COUNT: usize = 4;
++const MAX_LANE_COUNT: usize = 6;
+ 
+ static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+ static ACTIVE_STREAMS: AtomicU64 = AtomicU64::new(0);
+@@ -1128,12 +1128,12 @@ mod lane_schedule_tests {
+     use super::*;
+ 
+     #[test]
+-    fn four_lanes_cover_every_stripe_once() {
++    fn six_lanes_cover_every_stripe_once() {
+         let base = 101_u64;
+         let stop = base + 512 * 11 + 87;
+         let mut stripes = Vec::new();
+-        for lane_index in 0..4 {
+-            let schedule = LaneSchedule::new(base, stop, 512, lane_index, 4).unwrap();
++        for lane_index in 0..6 {
++            let schedule = LaneSchedule::new(base, stop, 512, lane_index, 6).unwrap();
+             let mut next = schedule.first_height().unwrap();
+             while let Some(start) = next {
+                 let (_, end) = schedule.stripe_bounds(start).unwrap();
+@@ -1149,16 +1149,16 @@ mod lane_schedule_tests {
+ 
+     #[test]
+     fn lane_continues_inside_stripe_then_jumps_by_lane_stride() {
+-        let schedule = LaneSchedule::new(100, 5000, 512, 0, 4).unwrap();
++        let schedule = LaneSchedule::new(100, 5000, 512, 0, 6).unwrap();
+         assert_eq!(schedule.first_height().unwrap(), Some(100));
+         assert_eq!(schedule.following_height(100, 200).unwrap(), Some(300));
+-        assert_eq!(schedule.following_height(300, 312).unwrap(), Some(2148));
+-        assert_eq!(schedule.fetch_stop_height(2148).unwrap(), 2659);
++        assert_eq!(schedule.following_height(300, 312).unwrap(), Some(3172));
++        assert_eq!(schedule.fetch_stop_height(3172).unwrap(), 3683);
+     }
+ 
+     #[test]
+     fn final_partial_stripe_ends_cleanly() {
+-        let schedule = LaneSchedule::new(100, 699, 512, 1, 4).unwrap();
++        let schedule = LaneSchedule::new(100, 699, 512, 1, 6).unwrap();
+         assert_eq!(schedule.first_height().unwrap(), Some(612));
+         assert_eq!(schedule.fetch_stop_height(612).unwrap(), 699);
+         assert_eq!(schedule.following_height(612, 88).unwrap(), None);
+@@ -1166,12 +1166,12 @@ mod lane_schedule_tests {
+ 
+     #[test]
+     fn invalid_lane_contracts_fail_closed() {
+-        assert!(LaneSchedule::new(100, 0, 512, 0, 4).is_err());
+-        assert!(LaneSchedule::new(100, 99, 512, 0, 4).is_err());
+-        assert!(LaneSchedule::new(100, 5000, 15, 0, 4).is_err());
+-        assert!(LaneSchedule::new(100, 5000, 512, 4, 4).is_err());
+-        assert!(LaneSchedule::new(100, 5000, 512, 0, 5).is_err());
+-        let schedule = LaneSchedule::new(100, 5000, 512, 0, 4).unwrap();
++        assert!(LaneSchedule::new(100, 0, 512, 0, 6).is_err());
++        assert!(LaneSchedule::new(100, 99, 512, 0, 6).is_err());
++        assert!(LaneSchedule::new(100, 5000, 15, 0, 6).is_err());
++        assert!(LaneSchedule::new(100, 5000, 512, 6, 6).is_err());
++        assert!(LaneSchedule::new(100, 5000, 512, 0, 7).is_err());
++        let schedule = LaneSchedule::new(100, 5000, 512, 0, 6).unwrap();
+         assert!(schedule.following_height(100, 513).is_err());
+         assert!(schedule.fetch_stop_height(612).is_err());
+     }
+-- 
+2.50.1

@@ -43,11 +43,15 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # moved strictly above the last authenticated chain tip, plus wallet2's empty
 # one-height probe at its already-known daemon height. Historical gaps remain
 # hard errors.
+# Patch 0079 raises the one global persistent gRPC downloader from four to six
+# disjoint lanes after a physical Pixel full-range raw transport test measured
+# 40.300476 MiB/s with four and 59.588780 MiB/s with six. Wallet scan,
+# derivations, ordering, and the bounded per-lane queues remain unchanged.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=21f6b377e1acbd83a7b5da34164dca12e6dcbbab
-previous_patch_count=77
-patched_tree=2d767f4c2abf1fc0bcc94d2e8883aea3029b3bb6
+previous_patched_tree=2d767f4c2abf1fc0bcc94d2e8883aea3029b3bb6
+previous_patch_count=78
+patched_tree=4543df86c9375dd43f95da82bb043892ea99234a
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

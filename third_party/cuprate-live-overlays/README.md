@@ -11,6 +11,7 @@ must not be applied directly to the older series head.
   1. `0001-wallet-sync-persistent-striped-grpc-lanes.patch`
   2. `0002-wallet-sync-split-oversized-lane-chunks.patch`
   3. `0003-wallet-sync-release-active-stream-count-on-all-exits.patch`
+  4. `0004-wallet-sync-allow-six-persistent-lanes.patch`
 
 The overlay keeps the legacy `StreamBlocks` method and adds the capability-safe
 `StreamBlockLane` method. Build it natively on the server with Cargo's locked
@@ -26,3 +27,8 @@ The third overlay makes the active-stream metric cancellation-safe. A guard
 owned by the producer task releases the counter on success, early error,
 cancellation and unwind; it changes telemetry only, not request validation or
 wallet data.
+
+The fourth overlay raises only the validated lane-count ceiling from four to
+six. A physical Pixel full-range raw-transport test measured 40.300476 MiB/s
+with four lanes and 59.588780 MiB/s with six; range ownership, ordering,
+32-MiB response limits and queue bounds remain unchanged.

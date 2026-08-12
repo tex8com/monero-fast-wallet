@@ -21,6 +21,13 @@ remote_dir="/srv/monero-fast-wallet/benchmark-logs/${run_id}"
 app_build_dir="${MONERO_WALLET_ANDROID_BUILD_DIR:-${external_root}/mobile-android-benchmark-build}"
 monero_source="${MONERO_SOURCE_DIR}"
 link_root="${MONERO_WALLET_LINK_ROOT:-${external_root}/android-monero-link-manifests-${MONERO_COMMON_CORE_TREE}}"
+fast_wallet_protocol_root="${MONERO_FAST_WALLET_PROTOCOL_ROOT:-${external_root}/mobile-fast-wallet-protocol}"
+community_harrier_root="${MONERO_COMMUNITY_HARRIER_ROOT:-${external_root}/mobile-community-harrier}"
+community_matrix_root="${MONERO_COMMUNITY_MATRIX_ROOT:-${external_root}/mobile-community-matrix}"
+community_asset_root="${MONERO_COMMUNITY_ASSET_ROOT:-${external_root}/community-v1-release-assets}"
+community_harrier_library="${community_harrier_root}/android-arm64/libtex8_community_harrier_runtime.so"
+community_harrier_jni="${community_harrier_root}/jni"
+community_matrix_library="${community_matrix_root}/android-arm64/libcommunity_matrix_core.a"
 app_id="${MONERO_WALLET_ANDROID_BENCHMARK_APP_ID:-com.tex8.monerowallet.benchmark}"
 rpc="${MONERO_WALLET_ANDROID_BENCHMARK_RPC:-152.53.133.188:18089}"
 grpc="${MONERO_WALLET_ANDROID_BENCHMARK_GRPC:-152.53.133.188:18091}"
@@ -51,6 +58,22 @@ android_tmp="${MONERO_WALLET_ANDROID_TMPDIR:-${external_root}/mobile-android-tmp
 }
 [[ -f "${link_root}/android-arm64/link.cmake" ]] || {
   echo "Authenticated Android link manifest is missing: ${link_root}/android-arm64/link.cmake" >&2
+  exit 2
+}
+[[ -f "${fast_wallet_protocol_root}/android-arm64/libfast_wallet_protocol.a" ]] || {
+  echo "Android Fast Wallet protocol archive is missing: ${fast_wallet_protocol_root}" >&2
+  exit 2
+}
+for packaged_community_asset in \
+  "$community_harrier_library" \
+  "$community_matrix_library"; do
+  [[ -f "$packaged_community_asset" ]] || {
+    echo "Android Community benchmark asset is missing: ${packaged_community_asset}" >&2
+    exit 2
+  }
+done
+[[ -d "$community_harrier_jni" && -d "$community_asset_root" ]] || {
+  echo "Android Community benchmark asset directories are missing" >&2
   exit 2
 }
 
@@ -179,6 +202,11 @@ set +e
     -PmoneroWalletExternalBuildDir="$app_build_dir" \
     -PmoneroWalletApplicationId="$app_id" \
     -PmoneroSkipGoogleServices=true \
+    -PmoneroFastWalletProtocolRoot="$fast_wallet_protocol_root" \
+    -PmoneroCommunityMatrixLibrary="$community_matrix_library" \
+    -PmoneroCommunityHarrierLibrary="$community_harrier_library" \
+    -PmoneroCommunityHarrierJniLibs="$community_harrier_jni" \
+    -PmoneroCommunityAssetRoot="$community_asset_root" \
     -PmoneroWalletBridgeWithMonero=true \
     -PmoneroSourceDir="$monero_source" \
     -PmoneroWalletLinkRoot="$link_root" \

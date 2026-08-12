@@ -307,7 +307,11 @@ describe('Wallet dashboard interaction contract', () => {
     expect(syncStatus).toContain('network.downloadedHeight');
     expect(syncStatus).toContain(': network.chainHeight');
     expect(syncStatus).toContain('target={network.targetHeight}');
-    expect(syncStatus).toContain('networkSyncMegabitsPerSecond(networkStatus)');
+    expect(syncStatus).toContain('useAggregateNetworkRate(networkStatus)');
+    expect(syncStatus).toContain('networkSyncWindowMegabitsPerSecond(');
+    expect(syncStatus).toContain(
+      'syncStartHeight ?? networkStatus?.downloadStartHeight',
+    );
     expect(syncStatus).toContain(
       'walletSyncDerivationsPerSecond(networkStatus)',
     );

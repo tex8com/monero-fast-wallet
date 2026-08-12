@@ -91,6 +91,24 @@ assert.match(
 const androidCommon = read('scripts/android-common.sh');
 const androidBuild = read('scripts/android-build.sh');
 const androidBuildInstall = read('scripts/android-build-install.sh');
+const androidMainnetBenchmark = read(
+  'scripts/android-mainnet-scanpack-benchmark.sh',
+);
+assert.match(
+  androidMainnetBenchmark,
+  /-PmoneroCommunityMatrixLibrary="\$community_matrix_library"/,
+  'The isolated benchmark must package the same Community archive as the product build',
+);
+assert.doesNotMatch(
+  androidMainnetBenchmark,
+  /moneroEnthusiastV1DevelopmentDisabled|moneroDevelopmentDependencyLockingLenient/,
+  'The isolated benchmark must not compile a reduced application variant',
+);
+assert.match(
+  androidMainnetBenchmark,
+  /-PmoneroFastWalletProtocolRoot="\$fast_wallet_protocol_root"/,
+  'The isolated benchmark app must link the built Fast Wallet protocol archive',
+);
 assert.match(
   androidBuild,
   /CARGO_TARGET_DIR="\$\{EXTERNAL_BUILD_ROOT\}\/mobile-community-matrix-cargo-target"/,

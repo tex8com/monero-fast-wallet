@@ -1,7 +1,9 @@
 import {
   formatNetworkSyncRate,
   formatWalletDerivationRate,
+  networkSyncByteSample,
   networkSyncMegabitsPerSecond,
+  networkSyncWindowMegabitsPerSecond,
   presentNetworkSync,
   walletSyncDerivationsPerSecond,
 } from '../../../../../packages/wallet-shared/src/networkSync';
@@ -40,6 +42,18 @@ describe('presentNetworkSync', () => {
   it('does not invent rates before a non-empty native measurement exists', () => {
     expect(networkSyncMegabitsPerSecond(status())).toBeUndefined();
     expect(walletSyncDerivationsPerSecond(status())).toBeUndefined();
+  });
+
+  it('aggregates cumulative deliveries from every lane in the window', () => {
+    const first = networkSyncByteSample(status({
+      networkBytesReceived: 0,
+      payloadBytesReceived: 100_000_000,
+    }), 1_000);
+    const last = networkSyncByteSample(status({
+      networkBytesReceived: 0,
+      payloadBytesReceived: 160_000_000,
+    }), 2_000);
+    expect(networkSyncWindowMegabitsPerSecond(first, last)).toBe(480);
   });
 
   it('formats both live rates for the active locale', () => {

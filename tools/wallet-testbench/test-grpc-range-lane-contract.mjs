@@ -52,38 +52,66 @@ const cleanLaneTipAdditions = cleanLaneTipPatch
   .split(/\r?\n/)
   .filter(line => line.startsWith('+') && !line.startsWith('+++'))
   .join('\n');
+const sixLanePatchName =
+  '0079-wallet-use-six-persistent-grpc-lanes.patch';
+const sixLanePatch = read(
+  `third_party/monero-patches/${sixLanePatchName}`,
+);
+const sixLaneAdditions = sixLanePatch
+  .split(/\r?\n/)
+  .filter(line => line.startsWith('+') && !line.startsWith('+++'))
+  .join('\n');
 
 test('the authenticated Core ends with the measured production patches', () => {
-  assert.equal(series.length, 78);
-  assert.equal(series.at(-8), patchName);
-  assert.equal(series.at(-7), spanPatchName);
+  assert.equal(series.length, 79);
+  assert.equal(series.at(-9), patchName);
+  assert.equal(series.at(-8), spanPatchName);
   assert.equal(
-    series.at(-6),
+    series.at(-7),
     '0073-wallet-benchmark-and-report-automatic-derivation-backend.patch',
   );
   assert.equal(
-    series.at(-5),
+    series.at(-6),
     '0074-wallet-remove-hot-path-diagnostic-clocks.patch',
   );
-  assert.equal(series.at(-4), persistentLanePatchName);
+  assert.equal(series.at(-5), persistentLanePatchName);
   assert.equal(
-    series.at(-3),
+    series.at(-4),
     '0076-ledger-hid-read-timeout-fail-closed.patch',
   );
   assert.equal(
-    series.at(-2),
+    series.at(-3),
     '0077-wallet-expose-live-sync-throughput-in-every-client.patch',
   );
-  assert.equal(series.at(-1), cleanLaneTipPatchName);
-  assert.match(lock, /^previous_patch_count=77$/m);
+  assert.equal(series.at(-2), cleanLaneTipPatchName);
+  assert.equal(series.at(-1), sixLanePatchName);
+  assert.match(lock, /^previous_patch_count=78$/m);
   assert.match(
     lock,
-    /^previous_patched_tree=21f6b377e1acbd83a7b5da34164dca12e6dcbbab$/m,
+    /^previous_patched_tree=2d767f4c2abf1fc0bcc94d2e8883aea3029b3bb6$/m,
   );
-  assert.match(lock, /^patched_tree=[0-9a-f]{40}$/m);
+  assert.match(
+    lock,
+    /^patched_tree=4543df86c9375dd43f95da82bb043892ea99234a$/m,
+  );
   assert.match(hotPathPatch, /^-.*process_new_transaction SLOW txid=/m);
   assert.match(hotPathPatch, /^-.*SLOW_TX[^\n]*\n-.*txid=/m);
   assert.match(hotPathPatch, /^-.*HOT_BLOCK/m);
+});
+
+test('the measured Pixel transport uses six persistent disjoint lanes', () => {
+  assert.match(sixLaneAdditions, /constexpr size_t kMaxChannels = 6/);
+  assert.match(sixLaneAdditions, /Six physical lanes saturate/);
+  assert.match(sixLaneAdditions, /while \(stream_channels < 6/);
+  assert.match(
+    sixLaneAdditions,
+    /stream_channels = std::min<size_t>\(6, stream_channels \* 2\)/,
+  );
+  assert.match(sixLaneAdditions, /stream_channels == 6 \? "pool-6"/);
+  assert.doesNotMatch(
+    sixLaneAdditions,
+    /view_key|spend_key|private_key|mnemonic|seed|is_out_to_acc|is_spent|derivation/,
+  );
 });
 
 test('persistent lanes accept only a proven clean end above the reported tip', () => {
@@ -164,7 +192,25 @@ test('server active-stream telemetry is released by task lifetime', () => {
   assert.doesNotMatch(serverGuardPatch, /view_key|spend_key|private_key|mnemonic|seed/);
 });
 
-test('one global downloader owns at most four process-wide transport lanes', () => {
+test('the server validates up to the same measured six-lane ceiling', () => {
+  const serverSixLanePatch = read(
+    'third_party/cuprate-live-overlays/0004-wallet-sync-allow-six-persistent-lanes.patch',
+  );
+  const serverLaneProtocolPatch = read(
+    'third_party/cuprate-live-overlays/0001-wallet-sync-persistent-striped-grpc-lanes.patch',
+  );
+  assert.match(serverSixLanePatch, /const MAX_LANE_COUNT: usize = 6/);
+  assert.match(
+    serverLaneProtocolPatch,
+    /lane_count == 0 \|\| lane_count > MAX_LANE_COUNT/,
+  );
+  assert.doesNotMatch(
+    serverSixLanePatch,
+    /view_key|spend_key|private_key|mnemonic|seed|derivation/,
+  );
+});
+
+test('the historical base pool was bounded to four process-wide lanes', () => {
   assert.match(additions, /constexpr size_t kMaxChannels = 4/);
   assert.match(
     additions,

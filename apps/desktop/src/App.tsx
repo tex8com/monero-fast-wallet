@@ -15,7 +15,9 @@ import {
   formatNetworkSyncRate,
   formatSyncPercent,
   formatWalletDerivationRate,
+  networkSyncByteSample,
   networkSyncMegabitsPerSecond,
+  networkSyncWindowMegabitsPerSecond,
   normalizeSyncPercent,
   presentNetworkSync,
   walletSyncDerivationsPerSecond,
@@ -1193,6 +1195,40 @@ function MarketChart({ points, positive, onRetry }: { points: MarketPoint[]; pos
   return <div className="market-chart-interactive"><svg className="market-chart" viewBox="0 0 960 248" preserveAspectRatio="none" role="img" aria-label={t('home.chartAria')}><defs><linearGradient id="market-chart-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor={color} stopOpacity="0.24" /><stop offset="1" stopColor={color} stopOpacity="0" /></linearGradient></defs><path d={geometry.area} fill="url(#market-chart-area)" /><path d={geometry.line} fill="none" stroke={color} strokeWidth="3" vectorEffect="non-scaling-stroke" /><rect x="0" y="0" width="960" height="248" fill="transparent" onPointerMove={(event) => selectPoint(event.clientX, event.currentTarget.getBoundingClientRect())} onPointerLeave={() => setHoverIndex(null)} />{hoverIndex !== null && <><line x1={activeX} x2={activeX} y1="0" y2="248" stroke="#d7d0e4" strokeOpacity="0.38" strokeWidth="1" vectorEffect="non-scaling-stroke" /><circle cx={activeX} cy={activeY} r="5.5" fill="#171322" stroke={color} strokeWidth="3" vectorEffect="non-scaling-stroke" /></>}<circle cx={geometry.x} cy={geometry.y} r="5" fill={color} /></svg>{hoverIndex !== null && <div className="market-chart-tooltip" style={{ left: `${tooltipPosition}%` }} role="status"><strong>{formatUsd(activePoint.price)}</strong><span>{marketChartTimestamp(activePoint.timestamp)}</span></div>}</div>;
 }
 
+function useAggregateNetworkRate(status: NetworkSyncStatus | null) {
+  const samplesRef = useRef<
+    NonNullable<ReturnType<typeof networkSyncByteSample>>[]
+  >([]);
+  const [rate, setRate] = useState<number | undefined>();
+
+  useEffect(() => {
+    const sample = networkSyncByteSample(status, Date.now());
+    if (!sample) return;
+    const prior = samplesRef.current.at(-1);
+    if (
+      prior &&
+      (prior.source !== sample.source || prior.totalBytes > sample.totalBytes)
+    ) {
+      samplesRef.current = [];
+    }
+    samplesRef.current.push(sample);
+    const cutoff = sample.observedAt - 3_000;
+    while (
+      samplesRef.current.length > 2 &&
+      samplesRef.current[1].observedAt <= cutoff
+    ) {
+      samplesRef.current.shift();
+    }
+    const aggregate = networkSyncWindowMegabitsPerSecond(
+      samplesRef.current[0],
+      sample,
+    );
+    if (aggregate !== undefined) setRate(aggregate);
+  }, [status]);
+
+  return rate ?? networkSyncMegabitsPerSecond(status);
+}
+
 function DesktopSyncProgress({ locale, network, networkStatus, onRefresh, readinessPhase, sync, syncEtaSeconds, t, walletName, walletOpened, walletReady }: { locale: string; network: ReturnType<typeof presentNetworkSync>; networkStatus: NetworkSyncStatus | null; onRefresh: () => void; readinessPhase?: WalletPublication<NativeWalletSnapshot, NativeTransaction>['phase']; sync: ReturnType<typeof presentWalletSync>; syncEtaSeconds: number | undefined; t: ReturnType<typeof useI18n>['t']; walletName: string; walletOpened: boolean; walletReady: boolean }) {
   // A selected wallet can already have a cache at the chain tip while the
   // process-wide downloader is filling an older shared range for another
@@ -1201,7 +1237,7 @@ function DesktopSyncProgress({ locale, network, networkStatus, onRefresh, readin
   const blockchainPercent = network.ready ? 100 : network.progress ?? 0;
   const blockchainCurrent = network.downloadedHeight && network.downloadedHeight > 0 ? network.downloadedHeight : network.chainHeight;
   const blockchainDetail = blockchainPercent === 100 ? t('home.syncComplete') : networkSyncPhaseLabel(networkStatus, t);
-  const networkRate = networkSyncMegabitsPerSecond(networkStatus);
+  const networkRate = useAggregateNetworkRate(networkStatus);
   const walletDerivationRate = walletSyncDerivationsPerSecond(networkStatus);
   const walletPercent = sync.coreConfirmed ? 100 : sync.phase === 'finalizing' ? 99 : sync.progress ?? 0;
   const connected = network.ready || network.connected;
