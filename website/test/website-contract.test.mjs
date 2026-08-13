@@ -83,7 +83,16 @@ test("mobile download cards use content height without empty space", () => {
 
 test("MFN label is centered as one counter-rotated group", () => {
   assert.match(app, /className="node-label"><strong>MFN<\/strong><span>Monero Fast Node<\/span>/);
-  assert.match(styles, /\.node-label\s*\{[^}]*inset:\s*50%;[^}]*transform:\s*translate\(-50%,-50%\) rotate\(-45deg\);/);
+  assert.match(styles, /\.node-label\s*\{[^}]*left:\s*47%;[^}]*top:\s*47%;[^}]*transform:\s*translate\(-50%,-50%\) rotate\(-45deg\);/);
+});
+
+test("MFN section links ready-built packages and the dedicated source repository", () => {
+  assert.match(app, /nodeRepositoryUrl = "https:\/\/github\.com\/tex8com\/cuprate"/);
+  assert.match(app, /nodeReleaseUrl = `\$\{nodeRepositoryUrl\}\/releases`/);
+  assert.match(app, /href={nodeReleaseUrl}/);
+  assert.match(app, /href={nodeRepositoryUrl}/);
+  assert.match(content, /Fertige Node-Pakete/);
+  assert.match(content, /Ready-built node packages/);
 });
 
 test("hero carousel supports horizontal pointer swipes", () => {

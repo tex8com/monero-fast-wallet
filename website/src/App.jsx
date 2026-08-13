@@ -3,6 +3,8 @@ import { AssistantDock } from "./AssistantDock";
 import { copy, releaseUrl, repositoryUrl } from "./content";
 
 const badgeBase = "https://commons.wikimedia.org/wiki/Special:Redirect/file/";
+const nodeRepositoryUrl = "https://github.com/tex8com/cuprate";
+const nodeReleaseUrl = `${nodeRepositoryUrl}/releases`;
 
 function Mark() {
   return <img className="monero-mark" src="/monero-wallet-logo.svg" alt="" aria-hidden="true" />;
@@ -193,7 +195,7 @@ function Downloads({ text }) {
 
 function NodeSection({ text }) {
   return (
-    <section className="section node-section" id="mfn"><div className="shell node-grid"><div><p className="eyebrow">{text.nodeEyebrow}</p><h2>{text.nodeTitle}</h2><p className="lead">{text.nodeBody}</p><div className="node-card"><div className="node-orbit"><i /><i /><i /></div><div className="node-label"><strong>MFN</strong><span>Monero Fast Node</span></div></div></div><div className="node-steps">{text.nodeSteps.map(([number, title, body]) => <article key={number}><span>{number}</span><div><h3>{title}</h3><p>{body}</p></div></article>)}</div></div></section>
+    <section className="section node-section" id="mfn"><div className="shell node-grid"><div><p className="eyebrow">{text.nodeEyebrow}</p><h2>{text.nodeTitle}</h2><p className="lead">{text.nodeBody}</p><div className="node-card"><div className="node-orbit"><i /><i /><i /></div><div className="node-label"><strong>MFN</strong><span>Monero Fast Node</span></div></div></div><div className="node-side"><div className="node-steps">{text.nodeSteps.map(([number, title, body]) => <article key={number}><span>{number}</span><div><h3>{title}</h3><p>{body}</p></div></article>)}</div><aside className="node-download-card"><p>{text.nodeDownloadEyebrow}</p><h3>{text.nodeDownloadTitle}</h3><div className="node-download-actions"><a className="button primary" href={nodeReleaseUrl}>{text.nodeDownload} ↓</a><a className="button" href={nodeRepositoryUrl}>{text.nodeSource} ↗</a></div><small>{text.nodeReleaseGate}</small></aside></div></div></section>
   );
 }
 

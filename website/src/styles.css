@@ -170,7 +170,7 @@ h3 { letter-spacing: -.025em; }
 .node-section { border-block: 1px solid var(--line); background: radial-gradient(circle at 22% 50%,rgba(119,140,255,.12),transparent 32rem),#0b0913; }
 .node-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 85px; align-items: center; }
 .node-card { position: relative; width: 250px; height: 250px; margin: 47px auto 0; border: 1px solid rgba(119,140,255,.34); border-radius: 54px; background: linear-gradient(145deg,rgba(119,140,255,.23),rgba(20,17,33,.96)); box-shadow: 0 32px 90px rgba(31,45,120,.34); transform: rotate(45deg); }
-.node-label { position: absolute; inset: 50%; width: 210px; display: flex; flex-direction: column; align-items: center; transform: translate(-50%,-50%) rotate(-45deg); text-align: center; }
+.node-label { position: absolute; left: 47%; top: 47%; width: 210px; display: flex; flex-direction: column; align-items: center; transform: translate(-50%,-50%) rotate(-45deg); transform-origin: center; text-align: center; }
 .node-label strong { font-size: 45px; line-height: 1; letter-spacing: -.07em; }
 .node-label span { margin-top: 7px; color: #aeb8ff; font-size: 10px; font-weight: 850; line-height: 1; letter-spacing: .1em; }
 .node-orbit { position: absolute; inset: -42px; border: 1px solid rgba(119,140,255,.18); border-radius: 50%; animation: spin 28s linear infinite; }
@@ -178,11 +178,18 @@ h3 { letter-spacing: -.025em; }
 .node-orbit i:nth-child(1) { top: 20px; left: 68px; }
 .node-orbit i:nth-child(2) { right: 9px; bottom: 83px; background: var(--orange); box-shadow: 0 0 21px var(--orange); }
 .node-orbit i:nth-child(3) { left: 2px; bottom: 100px; background: var(--green); box-shadow: 0 0 21px var(--green); }
+.node-side { display: grid; gap: 16px; }
 .node-steps { display: grid; gap: 12px; }
 .node-steps article { padding: 24px; display: flex; gap: 18px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.025); }
 .node-steps article > span { flex: 0 0 auto; width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; background: rgba(255,104,31,.1); color: var(--orange); font-weight: 900; }
 .node-steps h3 { margin: 0 0 5px; font-size: 18px; }
 .node-steps p { margin: 0; color: var(--muted); font-size: 13px; }
+.node-download-card { padding: 25px; border: 1px solid var(--line-hot); border-radius: 20px; background: linear-gradient(135deg,rgba(255,104,31,.12),rgba(255,255,255,.025)); box-shadow: 0 22px 60px rgba(0,0,0,.2); }
+.node-download-card > p { margin-bottom: 7px; color: var(--orange-2); font-size: 10px; font-weight: 900; letter-spacing: .15em; text-transform: uppercase; }
+.node-download-card h3 { margin: 0 0 18px; font-size: 20px; }
+.node-download-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.node-download-actions .button { flex: 1 1 190px; }
+.node-download-card small { margin-top: 14px; display: block; color: var(--quiet); font-size: 10px; }
 
 .open-source-card { padding: clamp(30px,6vw,68px); display: grid; grid-template-columns: 230px 1fr; gap: 65px; align-items: center; border: 1px solid rgba(61,166,57,.3); border-radius: 30px; background: radial-gradient(circle at 15% 50%,rgba(61,166,57,.16),transparent 23rem),linear-gradient(140deg,#171222,#0c0a13); box-shadow: var(--shadow); }
 .osi-logo { width: 180px; height: 210px; margin: auto; padding: 20px; display: grid; place-items: center; border-radius: 30px; background: white; }
