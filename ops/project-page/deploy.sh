@@ -94,6 +94,8 @@ rollback() {
   if [[ -n "$previous_target" ]]; then
     ln -sfn "$previous_target" "${current_link}.next"
     mv -Tf "${current_link}.next" "$current_link"
+  else
+    rm -f "$current_link"
   fi
   nginx -t && systemctl reload nginx || true
 }
@@ -104,11 +106,14 @@ if ! nginx -t; then
 fi
 systemctl reload nginx
 
-if ! curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/ | grep -q 'id="root"'; then
+validation_dir="$(mktemp -d)"
+trap 'rm -rf "$validation_dir"' EXIT
+if ! curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/ -o "$validation_dir/root.html" || ! grep -q 'id="root"' "$validation_dir/root.html"; then
   rollback
   exit 1
 fi
-curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/en/ | grep -q 'lang="en"' || { rollback; exit 1; }
+curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/en/ -o "$validation_dir/en.html" || { rollback; exit 1; }
+grep -q 'lang="en"' "$validation_dir/en.html" || { rollback; exit 1; }
 curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/healthz >/dev/null || { rollback; exit 1; }
 
 echo "Monero Fast Wallet project page deployed. Release: $release_dir"
