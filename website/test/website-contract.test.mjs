@@ -6,6 +6,7 @@ const app = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
 const content = await readFile(new URL("../src/content.js", import.meta.url), "utf8");
 const assistant = await readFile(new URL("../src/AssistantDock.jsx", import.meta.url), "utf8");
 const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("German and English routes have SEO metadata", () => {
   assert.match(html, /hreflang="de"/);
@@ -40,4 +41,12 @@ test("assistant has fixed product identity, knowledge, and secret warning", () =
 test("node uses the public product name", () => {
   assert.match(content, /Monero Fast Node/);
   assert.match(content, /Monero Fast Node · MFN/);
+});
+
+test("mobile header keeps the logo and uses a labelled app button", () => {
+  assert.match(app, /className="brand-name"/);
+  assert.match(app, /className="mobile-download-label">APP</);
+  assert.doesNotMatch(styles, /\.brand span\s*\{\s*display:\s*none/);
+  assert.match(styles, /\.brand-name\s*\{\s*display:\s*none/);
+  assert.match(styles, /\.mobile-download-label\s*\{\s*display:\s*inline/);
 });

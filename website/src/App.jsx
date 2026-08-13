@@ -23,10 +23,10 @@ function Header({ language, text }) {
   return (
     <header className="site-header">
       <div className="shell nav-row">
-        <a className="brand" href="#top" aria-label="Monero Fast Wallet Home"><Mark /><span>Monero <em>Fast Wallet</em></span></a>
+        <a className="brand" href="#top" aria-label="Monero Fast Wallet Home"><Mark /><span className="brand-name">Monero <em>Fast Wallet</em></span></a>
         <div className="nav-actions">
           <LanguageLink language={language} text={text} />
-          <a className="download-button" href="#downloads"><span aria-hidden="true">↓</span><b>{text.download}</b></a>
+          <a className="download-button" href="#downloads" aria-label={`${text.download} App`}><span className="download-arrow" aria-hidden="true">↓</span><b>{text.download}</b><span className="mobile-download-label">APP</span></a>
           <button className="burger" type="button" aria-expanded={menuOpen} aria-controls="site-menu" aria-label={menuOpen ? text.close : text.menu} onClick={() => setMenuOpen((value) => !value)}><span /><span /><span /></button>
         </div>
       </div>
