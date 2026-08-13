@@ -60,3 +60,12 @@ test("MFN label is centered as one counter-rotated group", () => {
   assert.match(app, /className="node-label"><strong>MFN<\/strong><span>Monero Fast Node<\/span>/);
   assert.match(styles, /\.node-label\s*\{[^}]*inset:\s*50%;[^}]*transform:\s*translate\(-50%,-50%\) rotate\(-45deg\);/);
 });
+
+test("hero carousel supports horizontal pointer swipes", () => {
+  assert.match(app, /onPointerDown={startSwipe}/);
+  assert.match(app, /onPointerUp={finishSwipe}/);
+  assert.match(app, /Math\.abs\(horizontal\) < 48/);
+  assert.match(app, /aria-roledescription="carousel"/);
+  assert.match(styles, /touch-action:\s*pan-y pinch-zoom/);
+  assert.match(content, /heroCarouselLabel/);
+});

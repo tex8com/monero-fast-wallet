@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AssistantDock } from "./AssistantDock";
 import { copy, releaseUrl, repositoryUrl } from "./content";
 
@@ -67,17 +67,78 @@ function DesktopPlaceholder({ text }) {
 
 function Hero({ text }) {
   const [slide, setSlide] = useState(0);
+  const [direction, setDirection] = useState("forward");
+  const [manualChange, setManualChange] = useState(0);
+  const swipeStart = useRef(null);
+  const suppressClick = useRef(false);
+  const interactionActive = useRef(false);
+  const moveSlide = (step) => {
+    interactionActive.current = true;
+    setDirection(step > 0 ? "forward" : "backward");
+    setSlide((value) => (value + step + text.heroSlides.length) % text.heroSlides.length);
+    setManualChange((value) => value + 1);
+  };
+  const selectSlide = (index) => {
+    interactionActive.current = true;
+    setDirection(index >= slide ? "forward" : "backward");
+    setSlide(index);
+    setManualChange((value) => value + 1);
+  };
+  const startSwipe = (event) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    interactionActive.current = true;
+    suppressClick.current = false;
+    swipeStart.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  };
+  const finishSwipe = (event) => {
+    const start = swipeStart.current;
+    swipeStart.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (!start || start.pointerId !== event.pointerId) return;
+    const horizontal = event.clientX - start.x;
+    const vertical = event.clientY - start.y;
+    if (Math.abs(horizontal) < 48 || Math.abs(horizontal) <= Math.abs(vertical) * 1.2) return;
+    suppressClick.current = true;
+    moveSlide(horizontal < 0 ? 1 : -1);
+    window.setTimeout(() => { suppressClick.current = false; }, 0);
+  };
+  const protectLinksAfterSwipe = (event) => {
+    if (!suppressClick.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return undefined;
-    const timer = window.setInterval(() => setSlide((value) => (value + 1) % text.heroSlides.length), 7000);
+    interactionActive.current = false;
+    const timer = window.setInterval(() => {
+      if (interactionActive.current) {
+        interactionActive.current = false;
+        return;
+      }
+      setDirection("forward");
+      setSlide((value) => (value + 1) % text.heroSlides.length);
+    }, 7000);
     return () => window.clearInterval(timer);
-  }, [text.heroSlides.length]);
+  }, [manualChange, text.heroSlides.length]);
   const item = text.heroSlides[slide];
   const primaryHref = slide === 2 ? "#mfn" : "#downloads";
   const secondaryHref = slide === 2 ? "#benchmarks" : "#features";
   return (
-    <section className="hero shell" id="wallet">
-      <div className="hero-copy" key={`${text.lang}-${slide}`}>
+    <section
+      className="hero shell"
+      id="wallet"
+      role="region"
+      aria-roledescription="carousel"
+      aria-label={text.heroCarouselLabel}
+      data-slide={slide}
+      onPointerDown={startSwipe}
+      onPointerUp={finishSwipe}
+      onPointerCancel={() => { swipeStart.current = null; }}
+      onClickCapture={protectLinksAfterSwipe}
+      onDragStart={(event) => event.preventDefault()}
+    >
+      <div className={`hero-copy slide-${direction}`} key={`${text.lang}-${slide}`} aria-live="polite" aria-atomic="true">
         <p className="eyebrow">{item.eyebrow}</p>
         <h1>{item.title[0]} <span>{item.title[1]}</span></h1>
         <p className="hero-body">{item.body}</p>
@@ -85,10 +146,10 @@ function Hero({ text }) {
         <div className="trust-row">{text.trust.map((proof) => <span key={proof}>✓ {proof}</span>)}</div>
       </div>
       <div className="hero-visual"><DesktopPlaceholder text={text} /><PhonePlaceholder text={text} /></div>
-      <div className="slider-controls" aria-label="Hero slider">
-        <button type="button" onClick={() => setSlide((slide + text.heroSlides.length - 1) % text.heroSlides.length)} aria-label="Previous slide">←</button>
-        <div>{text.heroSlides.map((_, index) => <button type="button" className={index === slide ? "active" : ""} onClick={() => setSlide(index)} key={index} aria-label={`Slide ${index + 1}`} aria-current={index === slide ? "true" : undefined} />)}</div>
-        <button type="button" onClick={() => setSlide((slide + 1) % text.heroSlides.length)} aria-label="Next slide">→</button>
+      <div className="slider-controls" aria-label={text.heroCarouselLabel}>
+        <button type="button" onClick={() => moveSlide(-1)} aria-label={text.previousSlide}>←</button>
+        <div>{text.heroSlides.map((_, index) => <button type="button" className={index === slide ? "active" : ""} onClick={() => selectSlide(index)} key={index} aria-label={`${text.slideLabel} ${index + 1}`} aria-current={index === slide ? "true" : undefined} />)}</div>
+        <button type="button" onClick={() => moveSlide(1)} aria-label={text.nextSlide}>→</button>
       </div>
     </section>
   );

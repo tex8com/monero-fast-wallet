@@ -49,9 +49,11 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid 
 .menu-links a:hover { border-color: var(--line-hot); color: var(--text); background: rgba(255,104,31,.06); }
 .menu-links a span { color: var(--orange); }
 
-.hero { position: relative; min-height: 740px; padding: 92px 0 80px; display: grid; grid-template-columns: minmax(0,1fr) minmax(420px,.92fr); align-items: center; gap: clamp(36px,7vw,92px); }
+.hero { position: relative; min-height: 740px; padding: 92px 0 80px; display: grid; grid-template-columns: minmax(0,1fr) minmax(420px,.92fr); align-items: center; gap: clamp(36px,7vw,92px); touch-action: pan-y pinch-zoom; cursor: grab; }
+.hero:active { cursor: grabbing; }
 .hero::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: linear-gradient(90deg,transparent,var(--line),transparent); }
-.hero-copy { animation: reveal .55s ease both; }
+.hero-copy { animation: slide-forward .48s cubic-bezier(.22,.8,.25,1) both; }
+.hero-copy.slide-backward { animation-name: slide-backward; }
 .eyebrow { margin: 0 0 17px; display: flex; align-items: center; gap: 10px; color: var(--orange-2); font-size: 11px; font-weight: 900; letter-spacing: .17em; text-transform: uppercase; }
 .eyebrow::before { content: ""; width: 24px; height: 2px; background: currentColor; }
 h1,h2,h3,p { margin-top: 0; }
@@ -226,6 +228,8 @@ h3 { letter-spacing: -.025em; }
 .tx8-ui-assistant__form button:disabled { opacity: .5; cursor: default; }
 
 @keyframes reveal { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes slide-forward { from { opacity: 0; transform: translateX(34px); } to { opacity: 1; transform: none; } }
+@keyframes slide-backward { from { opacity: 0; transform: translateX(-34px); } to { opacity: 1; transform: none; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1050px) {
