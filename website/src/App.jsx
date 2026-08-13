@@ -175,7 +175,19 @@ function Modes({ text }) {
 function Benchmark({ text }) {
   const rows = [["Original Monero Wallet", "207 blocks/s · 12m 52s", "13%"], ["Monero Fast Wallet", "860 blocks/s · 3m 05s", "54%"], ["Fast Wallet + ScanPack", "1,605 blocks/s · 1m 39s", "100%"]];
   return (
-    <section className="section shell" id="benchmarks"><header className="section-head"><p className="eyebrow">{text.benchmarkEyebrow}</p><h2>{text.benchmarkTitle}</h2><p>{text.benchmarkBody}</p></header><div className="benchmark"><div className="benchmark-metric"><strong>7.77×</strong><span>{text.faster}</span></div><div className="benchmark-bars">{rows.map(([label, value, width], index) => <div className="benchmark-row" key={label}><div><b>{label}</b><span>{value}</span></div><i><em style={{ width }} className={`tone-${index}`} /></i></div>)}</div><footer><p><b>Important:</b> {text.benchmarkNote}</p><a href={`${repositoryUrl}/blob/main/docs/WALLET_SYNC_BENCHMARK_RESULTS.md`}>{text.method} ↗</a></footer></div></section>
+    <section className="section shell" id="benchmarks">
+      <header className="section-head"><p className="eyebrow">{text.benchmarkEyebrow}</p><h2>{text.benchmarkTitle}</h2><p>{text.benchmarkBody}</p></header>
+      <div className="benchmark">
+        <div className="benchmark-metric"><strong>7.77×</strong><span>{text.faster}</span><small>{text.benchmarkPending}</small></div>
+        <div className="benchmark-bars">{rows.map(([label, value, width], index) => <div className="benchmark-row" key={label}><div><b>{label}</b><span>{value}</span></div><i><em style={{ width }} className={`tone-${index}`} /></i></div>)}</div>
+        <footer><p><b>{text.important}:</b> {text.benchmarkNote}</p><a href={`${repositoryUrl}/blob/main/docs/WALLET_SYNC_BENCHMARK_RESULTS.md`}>{text.method} ↗</a></footer>
+      </div>
+      <div className="acceleration">
+        <header><div><p className="eyebrow">{text.derivationEyebrow}</p><h3>{text.derivationTitle}</h3></div><p>{text.derivationBody}</p></header>
+        <div className="acceleration-grid">{text.derivationRows.map((item) => <article key={item.title} className={`acceleration-card ${item.kind}`}><div><span>{item.platform}</span><small>{item.status}</small></div><h4>{item.title}</h4><strong>{item.rate}</strong><p>{text.derivationUnit}</p><em>{item.comparison}</em></article>)}</div>
+        <footer><p>{text.derivationNote}</p><a href={`${repositoryUrl}/blob/main/docs/WALLET_ACCELERATION_TESTBENCH_INDEX.md`}>{text.derivationMethod} ↗</a></footer>
+      </div>
+    </section>
   );
 }
 

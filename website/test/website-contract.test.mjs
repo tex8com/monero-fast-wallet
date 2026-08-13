@@ -103,3 +103,18 @@ test("hero carousel supports horizontal pointer swipes", () => {
   assert.match(styles, /touch-action:\s*pan-y pinch-zoom/);
   assert.match(content, /heroCarouselLabel/);
 });
+
+test("hardware acceleration is reported separately from end-to-end sync", () => {
+  assert.match(app, /className="acceleration"/);
+  assert.match(content, /Original Monero Ref10/);
+  assert.match(content, /27\.030,166/);
+  assert.match(content, /77\.962,845/);
+  assert.match(content, /459\.493,923/);
+  assert.match(content, /26\.818\.054,526/);
+  assert.match(content, /ARM64 MEHRKERN/);
+  assert.match(content, /NEON-fähig/);
+  assert.match(content, /NVIDIA CUDA/);
+  assert.match(content, /APPLE METAL/);
+  assert.match(content, /nicht Blöcke\/s und nicht die gesamte Sync-Zeit/);
+  assert.match(content, /new benchmark series is running/);
+});
