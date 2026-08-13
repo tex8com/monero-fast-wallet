@@ -46,7 +46,7 @@ explicitly documented.
 - Uses CoinGecko for public XMR price/chart data.
 - Has a typed `WalletService` / `NativeMoneroWallet` contract.
 - Has typed node connection profiles in Settings. The default profile points at
-  the deployed server-side Cuprate node and uses the optimized Cuprate gRPC
+  the deployed server-side Monero Fast Node (MFN), powered by Cuprate, and uses its optimized gRPC
   stream plus normal daemon RPC, while the original Monero profile clears the
   gRPC endpoint and uses daemon RPC only. Node profile settings persist across
   app restarts; daemon passwords are stored through native secure storage and

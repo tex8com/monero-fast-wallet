@@ -1,0 +1,27 @@
+{
+  "tenantId": "tex8",
+  "shopId": "monero-fast-wallet",
+  "appId": "xmr-website",
+  "businessName": "Monero Fast Wallet",
+  "appProfile": {
+    "displayName": "Monero Fast Wallet",
+    "storagePrefix": "mfw-website",
+    "chatStreamUrl": "https://xmr.tex8.com/api/assistant/stream"
+  },
+  "branding": {
+    "primaryColor": "#ff681f",
+    "accentColor": "#19d99a",
+    "backgroundColor": "#080710",
+    "textColor": "#fbfaff",
+    "radius": "20px"
+  },
+  "entitlements": ["ai-assistant"],
+  "agent": {
+    "agentId": "mfw-help",
+    "systemPromptId": "mfw-help-v1",
+    "knowledgeBaseId": "mfw-product-v1",
+    "allowedTools": []
+  },
+  "notes": "Dedicated public help-assistant context for xmr.tex8.com.",
+  "updatedBy": "monero-fast-wallet-project-page"
+}

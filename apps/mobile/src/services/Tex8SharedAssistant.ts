@@ -51,7 +51,7 @@ export const MONERO_SHARED_ELEMENTS: MoneroSharedElement[] = [
   {
     type: "monero_wallet",
     label: "Wallet",
-    description: "Balance, sync status, native wallet core, and Cuprate node mode.",
+    description: "Balance, sync status, native wallet core, and Monero Fast Node mode.",
     route: "Home",
     enabled: true,
   },
@@ -183,10 +183,10 @@ export function createMoneroAssistantReply(
     );
   }
 
-  if (matches(normalized, ["cuprate", "grpc", "node", "sync", "daemon"])) {
+  if (matches(normalized, ["mfn", "monero fast node", "cuprate", "grpc", "node", "sync", "daemon"])) {
     const grpc = context.grpcEndpoint ? ` gRPC: ${context.grpcEndpoint}.` : "";
     return localReply(
-      `The wallet can use optimized Cuprate gRPC or original daemon RPC through the same native wallet core. Current mode: ${context.nodeMode || "unknown"}; daemon: ${context.daemonAddress || "not configured"}.${grpc}`,
+      `The wallet can use optimized Monero Fast Node (MFN) gRPC or original daemon RPC through the same native wallet core. MFN is powered by Cuprate. Current mode: ${context.nodeMode || "unknown"}; daemon: ${context.daemonAddress || "not configured"}.${grpc}`,
       "monero_wallet",
     );
   }

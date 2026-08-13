@@ -49,7 +49,7 @@ React Native (iOS / Android)        React + Tauri 2 (desktop)
                          |
           +--------------+---------------+
           |                              |
-   original Monero RPC          optimized Cuprate gRPC
+   original Monero RPC      Monero Fast Node (MFN) gRPC
                                          |
                                   optional ScanPack
 ```
@@ -64,7 +64,7 @@ transactions, spending rules, or consensus.
 | **Much faster restore and synchronization** | In the strictly comparable mainnet R3 run, the optimized wallet path was **2.69× faster** than the unchanged Monero wallet. In its documented test context, the accepted ScanPack D4 median reached approximately **6.97×** the original synchronization rate. |
 | **Automatic use of suitable hardware** | The wallet selects CPU, AVX2, AVX-512 IFMA, or Apple Metal according to the platform and batch size. Small Metal batches deliberately remain on the CPU because launching the GPU would be slower. |
 | **Self-custody by default** | The seed, spend key, primary private view key, and wallet files remain local or on the Ledger. The normal wallet mode never uploads a private view key to TEX8. |
-| **Standard Monero compatibility** | The wallet can use the fast Cuprate gRPC path, a standard Monero daemon, or your own compatible node. Addresses, transactions, and consensus remain standard Monero. |
+| **Standard Monero compatibility** | The wallet can use the fast Monero Fast Node (MFN) gRPC path, a standard Monero daemon, or your own compatible node. Addresses, transactions, and consensus remain standard Monero. MFN is powered by Cuprate. |
 | **Fast but optional payment signals** | Fast Receive uses a separate receiving identity. The server cannot spend funds and sends only an opaque signal; the amount and transaction details are verified locally. |
 | **Mobile and desktop in one product repository** | React Native for iOS and Android and Tauri 2 for macOS, Windows, and Linux share wallet rules, native-core contracts, services, tests, and release documentation. |
 | **Verifiable optimizations** | CPU, Metal, Vulkan, CUDA, transport, and mainnet synchronization testbenches plus **1,678 text-based raw artifacts** are stored in this repository. Successful and rejected experiments are both documented. |
@@ -117,12 +117,12 @@ physical validation on every platform remains a release gate.
 
 ### Nodes and synchronization
 
-- **Optimized:** Cuprate gRPC with parallel hash prefetching, block streaming,
+- **Optimized:** Monero Fast Node (MFN), powered by Cuprate, with parallel hash prefetching, block streaming,
   range reads, and chain-drift/split diagnostics
 - **Compatible:** the original Monero daemon RPC path
 - **Flexible:** your own node and separate profiles for each network
 - Speculative block prefetching and a gzip-compatible binary RPC path
-- Persistent Cuprate ScanPack cache for fast access to historical block ranges
+- Persistent MFN ScanPack cache for fast access to historical block ranges
 - Controlled gRPC queues, HTTP/2 windows, and optional independent TCP lanes
 - Wallet-core-confirmed synchronization status: equal heights alone are not
   reported as fully synchronized

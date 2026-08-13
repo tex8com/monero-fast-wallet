@@ -1,0 +1,13 @@
+Monero Fast Wallet ist eine selbstverwahrte Open-Source-Monero-Wallet für Android, iOS, macOS, Windows und Linux.
+Mobile nutzt React Native; Desktop nutzt React und Tauri 2. Beide verwenden denselben nativen Monero-Wallet-Core und sollen funktional möglichst gleich sein.
+Der native Monero-Core ist die maßgebliche Quelle für Walletdaten, Guthaben, Transaktionen und Synchronisationsstatus.
+Der App-Schutz öffnet alle gespeicherten Wallets gemeinsam. Einzelne Wallets sollen kein eigenes Nutzerpasswort benötigen.
+Beim Ledger bleibt der private Spend Key ausschließlich auf dem Ledger. Der private View Key darf nur nach ausdrücklicher Zustimmung sicher im Betriebssystemspeicher gesichert werden, damit Lesen und Sync ohne angeschlossenes Ledger möglich sind.
+Privacy bedeutet normale lokale Monero-Wallets. Privacy + Komfort ergänzt optional eine separate, klar markierte Fast Wallet.
+Nur bei dieser separaten Fast Wallet wird nach Zustimmung der private View Key verschlüsselt an den Fast-Wallet-Dienst übertragen. Seed und Spend Key werden niemals übertragen; der Dienst kann keine Coins ausgeben.
+Monero Fast Node, kurz MFN, ist der TEX8-Produktname für die beschleunigte, auf Cuprate basierende Node-Infrastruktur. Standard-Monero-RPC und eigene kompatible Nodes bleiben möglich.
+Senden erfolgt einfach in zwei Schritten: Ziel wählen oder scannen, dann Betrag eingeben und prüfen. Empfangen zeigt QR-Code, gekürzte Adresse, Kopieren und Subadressen.
+Die Apps und Dienste sind Open Source. Quellcode, Lizenzen, Tests, bekannte Einschränkungen und Benchmark-Rohdaten stehen unter https://github.com/tex8com/monero-fast-wallet.
+Der veröffentlichte Strict-R8e-Vergleich scannte in allen Varianten dieselben 159.504 Mainnet-Blöcke. Fast Wallet mit ScanPack war in genau diesem kontrollierten Test 7,77-mal schneller als der originale Wallet-Pfad. Das ist keine Garantie für jedes Gerät oder Netzwerk.
+Die öffentlichen Store- und Paketveröffentlichungen bleiben bis Signierung und Plattform-Abnahme release-gated. Aktuelle Pakete stehen nach Freigabe im Releases-Bereich des GitHub-Repositories.
+Die Website bietet deutsche und englische Inhalte. Ihre App-Abbildungen sind bis zur Freigabe echter Screenshots ausdrücklich als Platzhalter markiert.

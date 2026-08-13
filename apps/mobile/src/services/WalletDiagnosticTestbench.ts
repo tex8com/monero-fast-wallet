@@ -122,7 +122,7 @@ export async function runWalletDiagnosticTestbench(
           status: valid ? 'pass' : 'fail',
           summary: valid
             ? optimized
-              ? 'Cuprate gRPC and daemon endpoints are configured.'
+              ? 'Monero Fast Node gRPC and daemon endpoints are configured.'
               : 'Original Monero RPC is configured.'
             : 'The active node profile is incomplete.',
           metrics: [

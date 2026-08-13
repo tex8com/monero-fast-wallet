@@ -541,7 +541,7 @@ test('desktop shows orange transfer state before enrollment and green only after
   assert.ok(transferring >= 0 && enrollment > transferring && accepted > enrollment);
   assert.match(flow, /else if \(v1ReleaseFeatures\.officialWorker\)/);
   assert.match(appSource, /function FastWalletTransferOverlay/);
-  assert.match(appSource, /Cuprate scan service accepted the encrypted view key/);
+  assert.match(appSource, /Monero Fast Node scan service accepted the encrypted view key/);
   assert.match(stylesSource, /\.fast-wallet-transfer-state\.accepted/);
   assert.match(stylesSource, /background:\s*#25d98b/);
   assert.match(stylesSource, /background:\s*#ff9d18/);

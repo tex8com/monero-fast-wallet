@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#080710">
-  <meta name="description" content="Monero Fast Wallet and TEX8 Cuprate: a simple private wallet for mobile and desktop, powered by open-source Monero infrastructure.">
-  <meta property="og:title" content="Monero Fast Wallet + TEX8 Cuprate">
+  <meta name="description" content="Monero Fast Wallet and Monero Fast Node: a simple private wallet for mobile and desktop, powered by open-source Monero infrastructure.">
+  <meta property="og:title" content="Monero Fast Wallet + Monero Fast Node">
   <meta property="og:description" content="Private Monero for everyone. Fast wallet sync, clear choices, and open-source infrastructure.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://xmr.tex8.com/">
-  <title>Monero Fast Wallet + TEX8 Cuprate</title>
+  <title>Monero Fast Wallet + Monero Fast Node</title>
   <style>
     :root {
       color-scheme: dark;
@@ -403,11 +403,11 @@
     <nav class="nav shell" aria-label="Main navigation">
       <a class="brand" href="#top" aria-label="Monero Fast Wallet home">
         <span class="brand-mark" aria-hidden="true"></span>
-        <span>Monero <em>Fast Wallet</em> + TEX8 Cuprate</span>
+        <span>Monero <em>Fast Wallet</em> + Monero Fast Node</span>
       </a>
       <div class="nav-links">
         <a href="#wallet">Wallet</a>
-        <a href="#cuprate">Cuprate</a>
+        <a href="#mfn">MFN</a>
         <a href="#benchmarks">Benchmarks</a>
         <a href="#downloads">Downloads</a>
         <a class="nav-cta" href="https://github.com/tex8com/monero-fast-wallet">View source ↗</a>
@@ -460,9 +460,9 @@
             <div class="hero-copy">
               <div class="eyebrow">The infrastructure underneath</div>
               <h1>A Rust node for the <span class="accent">Monero network.</span></h1>
-              <p>TEX8 Cuprate talks to the Monero network and supplies the blockchain data your wallet needs. The wallet still verifies its own data locally.</p>
+              <p>Monero Fast Node talks to the Monero network and supplies the blockchain data your wallet needs. The wallet still verifies its own data locally.</p>
               <div class="hero-actions">
-                <a class="button primary" href="#cuprate">Meet Cuprate ↓</a>
+                <a class="button primary" href="#mfn">Meet MFN ↓</a>
                 <a class="button" href="https://github.com/tex8com/monero-fast-wallet/tree/main/node/cuprate">Explore the code ↗</a>
               </div>
               <div class="micro-proof"><span>Built in Rust</span><span>Open source</span><span>Monero-compatible RPC</span></div>
@@ -471,7 +471,7 @@
               <div class="orb"></div>
               <div class="network-visual">
                 <div class="network-ring"></div><div class="network-ring second"></div>
-                <div class="node-core"><div class="node-core-inner"><b>Cuprate</b><span>TEX8 node</span></div></div>
+                <div class="node-core"><div class="node-core-inner"><b>MFN</b><span>Monero Fast Node</span></div></div>
                 <div class="floating-card one"><strong>Blocks in</strong><span>From the Monero network</span></div>
                 <div class="floating-card two"><strong>Verified locally</strong><span>By your wallet core</span></div>
               </div>
@@ -505,7 +505,7 @@
         <div class="slider-controls">
           <div class="dots" aria-label="Choose highlight">
             <button class="dot-button active" type="button" data-target="0" aria-label="Show wallet highlight" aria-current="true"></button>
-            <button class="dot-button" type="button" data-target="1" aria-label="Show Cuprate highlight"></button>
+            <button class="dot-button" type="button" data-target="1" aria-label="Show MFN highlight"></button>
             <button class="dot-button" type="button" data-target="2" aria-label="Show benchmark highlight"></button>
           </div>
           <div class="slider-buttons">
@@ -529,7 +529,7 @@
       <div class="section-head">
         <div class="eyebrow">Two projects, one experience</div>
         <h2>Simple on the surface. Serious underneath.</h2>
-        <p>The wallet handles the everyday experience. Cuprate handles the heavy network work. Both are open, testable, and designed to work together.</p>
+        <p>The wallet handles the everyday experience. Monero Fast Node (MFN), powered by Cuprate, handles the heavy network work. Both are open, testable, and designed to work together.</p>
       </div>
       <div class="project-grid">
         <article class="project-card wallet">
@@ -540,9 +540,9 @@
         </article>
         <article class="project-card cuprate">
           <div class="project-icon">C</div>
-          <h3>TEX8 Cuprate</h3>
+          <h3>Monero Fast Node</h3>
           <p>The node behind the connection. Written in Rust to speak Monero, serve wallet data, and support faster transport paths such as ScanPack.</p>
-          <a class="text-link" href="#cuprate">Understand the node <span>→</span></a>
+          <a class="text-link" href="#mfn">Understand the node <span>→</span></a>
         </article>
       </div>
     </section>
@@ -665,21 +665,21 @@
       </div>
     </section>
 
-    <section class="section shell" id="cuprate">
+    <section class="section shell" id="mfn">
       <div class="node-layout">
         <div class="section-head">
-          <div class="eyebrow">TEX8 Cuprate</div>
+          <div class="eyebrow">Monero Fast Node</div>
           <h2>What does a node actually do?</h2>
           <p>Think of it as the wallet’s route into the Monero network. It collects blockchain data and answers wallet requests. Your wallet then checks what belongs to you.</p>
           <div class="tech-card">
             <h3>Public infrastructure</h3>
-            <p><code>xmr.tex8.com:18089</code> Cuprate JSON RPC</p>
+            <p><code>xmr.tex8.com:18089</code> MFN-compatible Monero JSON RPC</p>
             <p><code>/healthz</code> service health</p>
             <p><code>/v1/fast-receive</code> Fast Receive API</p>
           </div>
         </div>
         <div class="node-steps">
-          <div class="node-step"><div><strong>The Monero network sends blocks</strong><p>Cuprate follows the chain and keeps the data needed to answer wallets.</p></div></div>
+          <div class="node-step"><div><strong>The Monero network sends blocks</strong><p>MFN follows the chain and keeps the data needed to answer wallets.</p></div></div>
           <div class="node-step"><div><strong>The wallet asks for its range</strong><p>Normal RPC works as expected; optimized transport can move the same block data more efficiently.</p></div></div>
           <div class="node-step"><div><strong>The native wallet core checks locally</strong><p>Balances, transactions, and sync status come from the wallet core—not from the website or market service.</p></div></div>
           <div class="node-step"><div><strong>Open source keeps it inspectable</strong><p>The app, node fork, scanner, tests, and privacy documentation live in the public repository.</p></div></div>
@@ -712,7 +712,7 @@
 
   <footer>
     <div class="footer-row shell">
-      <span>Developed with ❤️ by TEX8 · Monero Fast Wallet + TEX8 Cuprate</span>
+      <span>Developed with ❤️ by TEX8 · Monero Fast Wallet + Monero Fast Node</span>
       <div class="footer-links"><a href="https://github.com/tex8com/monero-fast-wallet">Source</a><a href="https://github.com/tex8com/monero-fast-wallet/tree/main/docs">Documentation</a><a href="https://solutions.tex8.com/en">TEX8</a></div>
     </div>
   </footer>

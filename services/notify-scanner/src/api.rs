@@ -545,7 +545,7 @@ mod tests {
         let body = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(body.contains("https://github.com/tex8com/monero-fast-wallet"));
         assert!(body.contains("/v1/fast-receive"));
-        assert!(body.contains("Monero Fast Wallet + TEX8 Cuprate"));
+        assert!(body.contains("Monero Fast Wallet + Monero Fast Node"));
         assert!(body.contains("7.77×"));
         assert!(body.contains("159,504 Mainnet blocks"));
         assert!(body.contains("Illustrative placeholders"));

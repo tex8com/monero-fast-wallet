@@ -39,7 +39,7 @@ type ChatMessage = {
 const QUICK_PROMPTS = [
   "Ledger Nano status",
   "Hosted private view key",
-  "Cuprate gRPC sync",
+  "Monero Fast Node sync",
   "Receive address",
   "Privacy model",
 ];

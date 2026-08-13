@@ -376,11 +376,11 @@ const en = {
   'setup.fastWalletPrimaryBackupFirst':
     'Back up the private wallet recovery words first. You can then create a Fast Wallet later from Wallets.',
   'setup.fastWalletTransferSending':
-    'Sending encrypted view key to the Cuprate scan service…',
+    'Sending encrypted view key to the Monero Fast Node scan service…',
   'setup.fastWalletTransferAccepted':
-    'Cuprate scan service accepted the encrypted view key.',
+    'Monero Fast Node scan service accepted the encrypted view key.',
   'setup.fastWalletTransferFailed':
-    'Cuprate scan service did not accept the encrypted view key.',
+    'Monero Fast Node scan service did not accept the encrypted view key.',
   'setup.createFastReceive': 'Creating Fast Wallet',
   'setup.device': 'Device',
   'setup.footer': 'Made with ❤️ by TEX8',
@@ -1496,11 +1496,11 @@ const de: Record<keyof typeof en, string> = {
   'setup.fastWalletPrimaryBackupFirst':
     'Sichere zuerst die Wiederherstellungswörter der privaten Wallet. Danach kannst du eine Fast Wallet unter Wallets erstellen.',
   'setup.fastWalletTransferSending':
-    'Verschlüsselter View Key wird an den Cuprate-Scan-Dienst übertragen…',
+    'Verschlüsselter View Key wird an den Monero-Fast-Node-Scan-Dienst übertragen…',
   'setup.fastWalletTransferAccepted':
-    'Der Cuprate-Scan-Dienst hat den verschlüsselten View Key angenommen.',
+    'Der Monero-Fast-Node-Scan-Dienst hat den verschlüsselten View Key angenommen.',
   'setup.fastWalletTransferFailed':
-    'Der Cuprate-Scan-Dienst hat den verschlüsselten View Key nicht angenommen.',
+    'Der Monero-Fast-Node-Scan-Dienst hat den verschlüsselten View Key nicht angenommen.',
   'setup.createFastReceive': 'Fast Wallet wird erstellt',
   'setup.device': 'Gerät',
   'setup.footer': 'Made with ❤️ by TEX8',
