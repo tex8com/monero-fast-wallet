@@ -31,12 +31,12 @@ test("assistant has fixed product identity, knowledge, and secret warning", () =
   assert.match(assistant, /shopId: "monero-fast-wallet"/);
   assert.match(assistant, /tenantId: "tex8"/);
   assert.match(assistant, /conversation_id: conversationId/);
-  assert.match(assistant, /system_instructions: assistantKnowledge/);
-  assert.match(content, /Fordere niemals Recovery Seed/);
+  assert.doesNotMatch(assistant, /system_instructions/);
+  assert.doesNotMatch(assistant, /assistantKnowledge/);
   assert.doesNotMatch(assistant, /private_view_key/);
 });
 
 test("node uses the public product name", () => {
   assert.match(content, /Monero Fast Node/);
-  assert.match(content, /kurz MFN/);
+  assert.match(content, /Monero Fast Node · MFN/);
 });

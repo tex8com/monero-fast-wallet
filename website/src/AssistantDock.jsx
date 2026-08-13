@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { assistantKnowledge } from "./content";
 import { AssistantPanel } from "./tex8/AssistantPanel";
 
 const assistantEndpoint = "/api/assistant/stream";
@@ -65,7 +64,6 @@ export function AssistantDock({ text, language }) {
           shopId: "monero-fast-wallet",
           appId: "xmr-website",
           anonymousDeviceId: deviceId(),
-          system_instructions: assistantKnowledge,
           ragMode: "auto",
         }),
       });
