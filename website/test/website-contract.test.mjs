@@ -23,6 +23,7 @@ test("download formats and equal badge contract are present", () => {
 
 test("open-source SVG links to the project repository", () => {
   assert.match(app, /Open_Source_Initiative\.svg/);
+  assert.match(app, /className="osi-logo" href={repositoryUrl}/);
   assert.match(content, /github\.com\/tex8com\/monero-fast-wallet/);
   assert.match(html, /codeRepository/);
 });

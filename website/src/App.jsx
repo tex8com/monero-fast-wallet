@@ -138,7 +138,7 @@ function NodeSection({ text }) {
 
 function OpenSource({ text }) {
   return (
-    <section className="section shell" id="open-source"><div className="open-source-card"><a className="osi-logo" href="https://opensource.org/" aria-label="Open Source Initiative"><img src={`${badgeBase}Open_Source_Initiative.svg`} alt={text.osiAlt} /></a><div><p className="eyebrow">{text.openEyebrow}</p><h2>{text.openTitle}</h2><p>{text.openBody}</p><div className="open-actions"><a className="button primary" href={repositoryUrl}>{text.viewSource} ↗</a><a className="button" href={`${repositoryUrl}/blob/main/LICENSE`}>Licenses ↗</a></div><small>{text.osiNote}</small></div></div></section>
+    <section className="section shell" id="open-source"><div className="open-source-card"><a className="osi-logo" href={repositoryUrl} aria-label={text.viewSource}><img src={`${badgeBase}Open_Source_Initiative.svg`} alt={text.osiAlt} /></a><div><p className="eyebrow">{text.openEyebrow}</p><h2>{text.openTitle}</h2><p>{text.openBody}</p><div className="open-actions"><a className="button primary" href={repositoryUrl}>{text.viewSource} ↗</a><a className="button" href={`${repositoryUrl}/blob/main/LICENSE`}>Licenses ↗</a></div><small>{text.osiNote}</small></div></div></section>
   );
 }
 
