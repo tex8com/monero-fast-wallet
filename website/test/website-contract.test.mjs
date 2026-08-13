@@ -55,3 +55,8 @@ test("mobile download cards use content height without empty space", () => {
   assert.match(styles, /\.download-card\s*\{\s*min-height:\s*0;\s*padding:\s*16px 12px;/);
   assert.match(styles, /\.package-links\s*\{\s*min-height:\s*0;\s*margin-top:\s*10px;/);
 });
+
+test("MFN label is centered as one counter-rotated group", () => {
+  assert.match(app, /className="node-label"><strong>MFN<\/strong><span>Monero Fast Node<\/span>/);
+  assert.match(styles, /\.node-label\s*\{[^}]*inset:\s*50%;[^}]*transform:\s*translate\(-50%,-50%\) rotate\(-45deg\);/);
+});
