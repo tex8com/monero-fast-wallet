@@ -124,8 +124,8 @@ test('safe V1 feature manifest enables verified local surfaces and fails closed 
   assert.equal(manifest.features.localFastWallet, true);
   assert.equal(
     manifest.features.ledgerFastWallet,
-    true,
-    'verified Ledger Fast Wallet must be enabled',
+    false,
+    'legacy Ledger account hosting must stay disabled; Ledger setup creates an independent Fast Wallet',
   );
   assert.equal(
     manifest.features.officialWorker,

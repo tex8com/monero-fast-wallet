@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn safe_v1_uses_independent_fast_wallets_and_disables_legacy_paths() {
         assert!(!enabled("plaintextFastWalletHosting"));
-        // A Fast Wallet owns independent entropy. It is never a hidden Ledger
-        // account whose private view key could be enrolled accidentally.
+        // Ledger setup creates an independent Fast Wallet. The legacy Ledger
+        // account-hosting path stays closed so it cannot export by accident.
         assert!(!enabled("ledgerFastWallet"));
         assert!(!enabled("scannerKeyImageSpendAuthority"));
         assert!(!enabled("legacyCommunity"));
