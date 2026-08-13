@@ -550,6 +550,10 @@ mod tests {
         assert!(body.contains("159,504 Mainnet blocks"));
         assert!(body.contains("Illustrative placeholders"));
         assert!(body.contains("class=\"desktop-preview\""));
+        assert!(
+            include_str!("../../../ops/notify-scanner/nginx-project-page-location.conf")
+                .contains("try_files /index.html =404")
+        );
         assert!(body.contains("Google_Play_Store_badge_EN.svg"));
         assert!(body.contains("Download_on_the_App_Store_RGB_blk.svg"));
         assert!(body.contains("Download_on_the_Mac_App_Store_Badge_US-UK_RGB_wht.svg"));
