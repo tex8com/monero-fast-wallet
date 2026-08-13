@@ -173,6 +173,32 @@ function Modes({ text }) {
   );
 }
 
+function Enthusiast({ text }) {
+  const icons = ["⌕", "✓", "↔", "◇"];
+  return (
+    <section className="section enthusiast-section" id="enthusiast">
+      <div className="shell enthusiast-layout">
+        <div className="enthusiast-copy">
+          <p className="eyebrow">{text.enthusiastEyebrow}</p>
+          <h2>{text.enthusiastTitle}</h2>
+          <p className="lead">{text.enthusiastBody}</p>
+          <div className="enthusiast-points">
+            {text.enthusiastPoints.map(([title, body], index) => <article key={title}><span aria-hidden="true">{icons[index]}</span><div><h3>{title}</h3><p>{body}</p></div></article>)}
+          </div>
+          <div className="enthusiast-actions"><a className="button primary" href="#downloads">{text.enthusiastDownload} ↓</a><a className="button" href={`${repositoryUrl}/blob/main/docs/PRIVACY_MODEL.md`}>{text.enthusiastPrivacyLink} ↗</a></div>
+          <p className="enthusiast-status"><i />{text.enthusiastStatus}</p>
+        </div>
+        <div className="community-preview" aria-label={text.enthusiastPreviewLabel}>
+          <div className="community-preview-head"><div><Mark /><span><b>Monero Enthusiast</b><small>{text.enthusiastPreviewLabel}</small></span></div><em>LOCAL</em></div>
+          <div className="community-search"><span aria-hidden="true">⌕</span><p>{text.enthusiastPreviewPlaceholder}</p><kbd>⌘ K</kbd></div>
+          <div className="community-results">{text.enthusiastPreviewResults.map(([kind, title, meta], index) => <article key={title}><div className={`community-result-icon tone-${index}`} aria-hidden="true">{index + 1}</div><div><span>{kind}</span><h3>{title}</h3><p>{meta}</p></div><b aria-hidden="true">→</b></article>)}</div>
+          <aside className="community-privacy"><span aria-hidden="true">◇</span><div><b>{text.enthusiastPrivacyLabel}</b><p>{text.enthusiastPrivacyText}</p></div></aside>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function Benchmark({ text }) {
   return (
     <section className="section shell" id="benchmarks">
@@ -232,5 +258,5 @@ export default function App() {
   const language = useMemo(() => window.location.pathname.startsWith("/de") ? "de" : "en", []);
   const text = copy[language];
   useEffect(() => { document.documentElement.lang = language; }, [language]);
-  return <><div id="top" /><Header language={language} text={text} /><main><Hero text={text} /><Features text={text} /><Modes text={text} /><Benchmark text={text} /><Downloads text={text} /><NodeSection text={text} /><OpenSource text={text} /><FAQ text={text} /></main><Footer text={text} /><AssistantDock text={text} language={language} /></>;
+  return <><div id="top" /><Header language={language} text={text} /><main><Hero text={text} /><Features text={text} /><Modes text={text} /><Enthusiast text={text} /><Benchmark text={text} /><Downloads text={text} /><NodeSection text={text} /><OpenSource text={text} /><FAQ text={text} /></main><Footer text={text} /><AssistantDock text={text} language={language} /></>;
 }

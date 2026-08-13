@@ -144,3 +144,13 @@ test("feature cards alternate their icon placement", () => {
   assert.match(app, /className="feature-icon"/);
   assert.match(styles, /\.feature-grid article:nth-child\(even\) \{ flex-direction: row-reverse; \}/);
 });
+
+test("Monero Enthusiast is visible, wallet-isolated, local-first, and honestly release-gated", () => {
+  assert.match(app, /id="enthusiast"/);
+  assert.match(app, /className="community-preview"/);
+  assert.match(content, /Ein signierter öffentlicher Katalog wird auf das Gerät geladen/);
+  assert.match(content, /end-to-end encrypted Matrix conversation/);
+  assert.match(content, /nicht mit Wallet-Adresse, Guthaben, Verlauf, Seed oder Schlüsseln verknüpft/);
+  assert.match(content, /public release acceptance still pending/);
+  assert.match(content, /Im Quellcode umgesetzt · öffentliche Freigabe noch in Prüfung/);
+});
