@@ -544,6 +544,9 @@ NSString *communityV1StringFromNativeBuffer(
   if ([operation isEqualToString:@"search"]) {
     return [self search:input];
   }
+  if ([operation isEqualToString:@"recordInterest"]) {
+    return [self recordInterest:input];
+  }
   if ([operation isEqualToString:@"suggestions"]) {
     return [self suggestions:input];
   }
@@ -1739,6 +1742,58 @@ NSString *communityV1StringFromNativeBuffer(
   communityV1Require(status == TEX8_COMMUNITY_RUNTIME_OK,
                      [self runtimeError]);
   return @"{}";
+}
+
+- (NSString *)recordInterest:(NSDictionary *)input {
+  communityV1RequireOnlyKeys(input, @[@"publicId", @"signal"]);
+  [self initializeRuntime];
+  NSString *signal = communityV1RequiredString(input, @"signal");
+  NSSet<NSString *> *allowed = [NSSet setWithArray:@[
+    @"content_opened",
+    @"longer_local_view",
+    @"contact_requested",
+    @"saved_locally",
+    @"more_like_this",
+    @"less_like_this",
+    @"hidden",
+  ]];
+  communityV1Require([allowed containsObject:signal],
+                     @"Local interest signal is invalid");
+  NSDictionary *request = @{
+    @"publicId": communityV1CheckedIdentifier(
+        communityV1RequiredString(input, @"publicId"), @"Public entry"),
+    @"signal": signal,
+  };
+  NSData *requestData = communityV1JsonData(request, @"Local interest event");
+  uint8_t *output = nullptr;
+  size_t outputLength = 0;
+  int32_t status = tex8_community_runtime_record_interest_v1(
+      _runtime,
+      static_cast<const uint8_t *>(requestData.bytes),
+      requestData.length,
+      communityV1NowMs(),
+      &output,
+      &outputLength);
+  if (status != TEX8_COMMUNITY_RUNTIME_OK) {
+    if (output != nullptr) {
+      tex8_community_runtime_free_buffer_v1(output, outputLength);
+    }
+    communityV1Fail([self runtimeError]);
+  }
+  NSString *response = communityV1StringFromNativeBuffer(
+      output,
+      outputLength,
+      tex8_community_runtime_free_buffer_v1,
+      @"Local interest event");
+#if DEBUG
+  NSDictionary *decoded = communityV1ObjectFromData(
+      [response dataUsingEncoding:NSUTF8StringEncoding],
+      @"Local interest event");
+  NSLog(@"MONERO_COMMUNITY_V1 local-interest signal=%@ status=%@",
+        signal,
+        decoded[@"status"] ?: @"unknown");
+#endif
+  return response;
 }
 
 - (NSArray *)checkedStringArray:(id)value

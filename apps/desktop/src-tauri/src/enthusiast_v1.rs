@@ -322,6 +322,48 @@ impl CommunityV1State {
         Err("Local Community search is not packaged for this desktop build.".to_owned())
     }
 
+    #[cfg(desktop_community_harrier)]
+    pub async fn record_interest(
+        &self,
+        app: &AppHandle,
+        request: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let config = require_config(app)?;
+        self.initialize_runtime(app, &config).await?;
+        let request = serde_json::to_vec(&request)
+            .map_err(|_| "The local interest event is invalid.".to_owned())?;
+        let runtime = self
+            .search
+            .lock()
+            .map_err(|_| "Local Community search is busy.".to_owned())?;
+        let runtime = runtime
+            .as_ref()
+            .ok_or_else(|| "Local Community search is not ready.".to_owned())?;
+        let response = runtime
+            .record_interest_json(&request, now_ms())
+            .map_err(|_| "The local interest event could not be recorded.".to_owned())?;
+        let response: serde_json::Value = serde_json::from_slice(&response)
+            .map_err(|_| "The local interest response is invalid.".to_owned())?;
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "MONERO_DESKTOP_COMMUNITY local-interest status={}",
+            response
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+        );
+        Ok(response)
+    }
+
+    #[cfg(not(desktop_community_harrier))]
+    pub async fn record_interest(
+        &self,
+        _app: &AppHandle,
+        _request: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        Err("Local Community search is not packaged for this desktop build.".to_owned())
+    }
+
     pub async fn register_notification(
         &self,
         app: &AppHandle,

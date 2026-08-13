@@ -108,7 +108,19 @@ int32_t tex8_community_runtime_search_v1(
     uint8_t **result_output,
     size_t *result_output_len);
 
-/* Securely deletes the bounded device-local entered-query cache. */
+/*
+ * Records a bounded on-device interaction by public catalog ID. Rust resolves
+ * the verified embedding internally; no private history leaves the device.
+ */
+int32_t tex8_community_runtime_record_interest_v1(
+    tex8_community_runtime_handle *handle,
+    const uint8_t *request_json,
+    size_t request_json_len,
+    uint64_t now_ms,
+    uint8_t **result_output,
+    size_t *result_output_len);
+
+/* Deletes local entered-query history and its learned interest profile. */
 int32_t tex8_community_runtime_clear_query_cache_v1(
     tex8_community_runtime_handle *handle);
 

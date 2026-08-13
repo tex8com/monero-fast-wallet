@@ -1786,6 +1786,39 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeSearch(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeRecordInterest(
+    JNIEnv* env,
+    jclass,
+    jstring requestValue,
+    jdouble nowMsValue) {
+#if TEX8_COMMUNITY_RUNTIME_LINKED
+  try {
+    auto request = toStdString(env, requestValue);
+    const auto nowMs = toExactUInt64(nowMsValue, "nowMs");
+    return communityRuntimeStringOperation(
+        env,
+        [&request, nowMs](auto* handle, auto** output, auto* outputLength) {
+          return tex8_community_runtime_record_interest_v1(
+              handle,
+              reinterpret_cast<const uint8_t*>(request.data()),
+              request.size(),
+              nowMs,
+              output,
+              outputLength);
+        });
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+#else
+  (void)env;
+  (void)requestValue;
+  (void)nowMsValue;
+  return nullptr;
+#endif
+}
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityRuntimeAdvertisements(
     JNIEnv* env,
     jclass,

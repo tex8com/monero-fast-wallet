@@ -3,8 +3,9 @@
 use community_search_core::{
     normalize_query_text_v1, AdvertisingCatalogCore, AdvertisingPlacement, AdvertisingSelection,
     CatalogItem, CatalogItemKind, CommonQueryCore, CommunitySearchCore, CommunitySearchError,
-    InstalledGeneration, InterestState, LocalQueryCache, LocalQueryEmbedding, LocalQuerySuggestion,
-    MediaReference, ModelContract, QuerySuggestion, SearchFilters, SearchResult,
+    InstalledGeneration, InterestDomain, InterestSignal, InterestState, LocalQueryCache,
+    LocalQueryEmbedding, LocalQuerySuggestion, MediaReference, ModelContract,
+    PersonalizationUpdate, QuerySuggestion, RepetitionFingerprint, SearchFilters, SearchResult,
     DEFAULT_LOCAL_QUERY_CACHE_CAPACITY, HARRIER_QUERY_INSTRUCTION_V2,
 };
 #[cfg(feature = "native-harrier")]
@@ -13,15 +14,18 @@ use community_search_core::{
 };
 use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
-    path::Path,
+    fs,
+    path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
 use thiserror::Error;
 
 const MAX_RESULTS: usize = 50;
 const QUERY_CACHE_PRUNE_INTERVAL_MS: u64 = 24 * 60 * 60 * 1_000;
+const INTEREST_STATE_FILE: &str = "local-interests.sealed";
 
 #[derive(Debug, Error)]
 pub enum CommunityRuntimeError {
@@ -50,7 +54,13 @@ pub struct CommunityLocalCore<E: QueryEmbedder> {
     last_query_prune_ms: Mutex<u64>,
     advertising: AdvertisingCatalogCore,
     interests: Mutex<InterestState>,
+    interest_storage: Option<InterestStorage>,
     embedder: Mutex<E>,
+}
+
+struct InterestStorage {
+    path: PathBuf,
+    key: [u8; 32],
 }
 
 impl<E: QueryEmbedder> CommunityLocalCore<E> {
@@ -123,6 +133,30 @@ impl<E: QueryEmbedder> CommunityLocalCore<E> {
     ) -> Result<Self> {
         let root = root.as_ref();
         let expected_scope = expected_scope.into();
+        let interest_storage = query_cache_key.map(|key| InterestStorage {
+            path: root.join(INTEREST_STATE_FILE),
+            key,
+        });
+        let interests = match &interest_storage {
+            Some(storage) if storage.path.exists() => {
+                let mut state = InterestState::open_from_protected_storage(
+                    &fs::read(&storage.path).map_err(|error| {
+                        CommunityRuntimeError::Search(CommunitySearchError::Storage(format!(
+                            "read local personalization state: {error}"
+                        )))
+                    })?,
+                    &storage.key,
+                )?;
+                state.set_enabled(true);
+                state
+            }
+            Some(_) => {
+                let mut state = InterestState::default();
+                state.set_enabled(true);
+                state
+            }
+            None => InterestState::default(),
+        };
         Ok(Self {
             search: CommunitySearchCore::open(root, expected_scope.clone(), catalog_verifying_key)?,
             queries: CommonQueryCore::open(
@@ -144,7 +178,8 @@ impl<E: QueryEmbedder> CommunityLocalCore<E> {
                 root.join("advertising"),
                 advertising_verifying_key,
             )?,
-            interests: Mutex::new(InterestState::default()),
+            interests: Mutex::new(interests),
+            interest_storage,
             embedder: Mutex::new(embedder),
         })
     }
@@ -303,6 +338,13 @@ impl<E: QueryEmbedder> CommunityLocalCore<E> {
         if let Some(cache) = &self.query_cache {
             cache.clear()?;
         }
+        let mut interests = self
+            .interests
+            .lock()
+            .map_err(|_| CommunityRuntimeError::LockUnavailable)?;
+        interests.reset();
+        interests.set_enabled(self.interest_storage.is_some());
+        self.persist_interests(&interests)?;
         Ok(())
     }
 
@@ -354,13 +396,118 @@ impl<E: QueryEmbedder> CommunityLocalCore<E> {
             coarse_region: request.coarse_region.clone(),
             include_advertising: request.include_advertising,
         };
-        let results = self
-            .search
-            .search(&query, request.limit, &filters, now_ms)?;
+        let results = {
+            let mut interests = self
+                .interests
+                .lock()
+                .map_err(|_| CommunityRuntimeError::LockUnavailable)?;
+            let fingerprint = event_fingerprint(&[
+                "search_submitted",
+                &request.language,
+                &normalize_query_text_v1(&request.query)?,
+            ])?;
+            interests.record(
+                request.interest_domain(),
+                InterestSignal::SearchSubmitted,
+                &fingerprint,
+                &query.model,
+                &query.embedding,
+                now_ms,
+            )?;
+            self.persist_interests(&interests)?;
+            self.search
+                .search_personalized(&query, request.limit, &filters, &interests, now_ms)?
+        };
         if let Some(cache) = &self.query_cache {
             cache.record(&request.query, &request.language, &query, now_ms)?;
         }
         Ok(results)
+    }
+
+    pub fn record_interest(
+        &self,
+        request: &CommunityInterestRequest,
+        now_ms: u64,
+    ) -> Result<PersonalizationUpdate> {
+        request.validate()?;
+        let item = self.search.interest_item(&request.public_id, now_ms)?;
+        let signal = request.signal.to_core();
+        let fingerprint = event_fingerprint(&[request.signal.as_str(), &request.public_id])?;
+        let mut interests = self
+            .interests
+            .lock()
+            .map_err(|_| CommunityRuntimeError::LockUnavailable)?;
+        let update = interests.record(
+            interest_domain(item.kind),
+            signal,
+            &fingerprint,
+            &item.model,
+            &item.embedding,
+            now_ms,
+        )?;
+        self.persist_interests(&interests)?;
+        Ok(update)
+    }
+
+    pub fn record_interest_json(&self, request_json: &[u8], now_ms: u64) -> Result<Vec<u8>> {
+        let request: CommunityInterestRequest =
+            serde_json::from_slice(request_json).map_err(|error| {
+                CommunityRuntimeError::InvalidRequest(format!(
+                    "invalid local interest event JSON: {error}"
+                ))
+            })?;
+        let status = personalization_status(self.record_interest(&request, now_ms)?);
+        serde_json::to_vec(&CommunityInterestResponse { status }).map_err(|error| {
+            CommunityRuntimeError::InvalidRequest(format!(
+                "local interest event response could not be encoded: {error}"
+            ))
+        })
+    }
+
+    fn persist_interests(&self, interests: &InterestState) -> Result<()> {
+        let Some(storage) = &self.interest_storage else {
+            return Ok(());
+        };
+        let sealed = interests.seal_for_protected_storage(&storage.key)?;
+        let temporary = storage.path.with_extension("sealed.tmp");
+        let previous = storage.path.with_extension("sealed.previous");
+        fs::write(&temporary, sealed).map_err(|error| {
+            CommunityRuntimeError::Search(CommunitySearchError::Storage(format!(
+                "write local personalization state: {error}"
+            )))
+        })?;
+        if storage.path.exists() {
+            if previous.exists() {
+                fs::remove_file(&previous).map_err(|error| {
+                    CommunityRuntimeError::Search(CommunitySearchError::Storage(format!(
+                        "remove stale local personalization backup: {error}"
+                    )))
+                })?;
+            }
+            fs::rename(&storage.path, &previous).map_err(|error| {
+                CommunityRuntimeError::Search(CommunitySearchError::Storage(format!(
+                    "backup local personalization state: {error}"
+                )))
+            })?;
+        }
+        if let Err(error) = fs::rename(&temporary, &storage.path) {
+            if previous.exists() {
+                let _ = fs::rename(&previous, &storage.path);
+            }
+            return Err(CommunityRuntimeError::Search(
+                CommunitySearchError::Storage(format!(
+                    "activate local personalization state: {error}"
+                )),
+            ));
+        }
+        if previous.exists() {
+            fs::remove_file(&previous).map_err(|error| {
+                CommunityRuntimeError::Search(CommunitySearchError::Storage(format!(
+                    "remove local personalization backup: {error}"
+                )))
+            })?;
+        }
+        Ok(())
     }
 
     pub fn search_json(&self, request_json: &[u8], now_ms: u64) -> Result<Vec<u8>> {
@@ -526,6 +673,83 @@ impl CommunitySearchRequest {
         validate_language(&self.language)?;
         Ok(())
     }
+
+    fn interest_domain(&self) -> InterestDomain {
+        if !self.kinds.is_empty() && self.kinds.iter().all(|kind| *kind == CatalogItemKind::News) {
+            InterestDomain::News
+        } else if !self.kinds.is_empty()
+            && self
+                .kinds
+                .iter()
+                .all(|kind| *kind == CatalogItemKind::Advertisement)
+        {
+            InterestDomain::Advertising
+        } else {
+            InterestDomain::Discovery
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommunityInterestSignal {
+    ContentOpened,
+    LongerLocalView,
+    ContactRequested,
+    SavedLocally,
+    MoreLikeThis,
+    LessLikeThis,
+    Hidden,
+}
+
+impl CommunityInterestSignal {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ContentOpened => "content_opened",
+            Self::LongerLocalView => "longer_local_view",
+            Self::ContactRequested => "contact_requested",
+            Self::SavedLocally => "saved_locally",
+            Self::MoreLikeThis => "more_like_this",
+            Self::LessLikeThis => "less_like_this",
+            Self::Hidden => "hidden",
+        }
+    }
+
+    fn to_core(self) -> InterestSignal {
+        match self {
+            Self::ContentOpened => InterestSignal::ContentOpened,
+            Self::LongerLocalView => InterestSignal::LongerLocalView,
+            Self::ContactRequested => InterestSignal::ContactRequested,
+            Self::SavedLocally => InterestSignal::SavedLocally,
+            Self::MoreLikeThis => InterestSignal::MoreLikeThis,
+            Self::LessLikeThis => InterestSignal::LessLikeThis,
+            Self::Hidden => InterestSignal::Hidden,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CommunityInterestRequest {
+    pub public_id: String,
+    pub signal: CommunityInterestSignal,
+}
+
+impl CommunityInterestRequest {
+    fn validate(&self) -> Result<()> {
+        if self.public_id.is_empty() || self.public_id.len() > 128 {
+            return Err(CommunityRuntimeError::InvalidRequest(
+                "local interest event public id is invalid".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommunityInterestResponse {
+    status: &'static str,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -613,6 +837,43 @@ fn default_advertising_limit() -> usize {
 
 fn default_language() -> String {
     "en".to_owned()
+}
+
+fn interest_domain(kind: CatalogItemKind) -> InterestDomain {
+    match kind {
+        CatalogItemKind::News => InterestDomain::News,
+        CatalogItemKind::Advertisement => InterestDomain::Advertising,
+        CatalogItemKind::Profile
+        | CatalogItemKind::Post
+        | CatalogItemKind::ServiceListing
+        | CatalogItemKind::ProductListing => InterestDomain::Discovery,
+    }
+}
+
+fn event_fingerprint(parts: &[&str]) -> Result<RepetitionFingerprint> {
+    let mut digest = Sha256::new();
+    digest.update(b"com.tex8.monerowallet.community-interest-event.v1\0");
+    for part in parts {
+        digest.update((part.len() as u64).to_le_bytes());
+        digest.update(part.as_bytes());
+    }
+    let bytes = digest.finalize();
+    let mut encoded = String::with_capacity(64);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    Ok(RepetitionFingerprint::from_hex(encoded)?)
+}
+
+fn personalization_status(update: PersonalizationUpdate) -> &'static str {
+    match update {
+        PersonalizationUpdate::Applied => "applied",
+        PersonalizationUpdate::Disabled => "disabled",
+        PersonalizationUpdate::RepetitionCapped => "repetition_capped",
+        PersonalizationUpdate::ExcludedSafetyAction => "excluded_safety_action",
+        PersonalizationUpdate::ModelResetAndApplied => "model_reset_and_applied",
+    }
 }
 
 fn validate_language(value: &str) -> Result<()> {
@@ -1129,6 +1390,31 @@ mod ffi {
     }
 
     #[no_mangle]
+    pub unsafe extern "C" fn tex8_community_runtime_record_interest_v1(
+        handle: *mut tex8_community_runtime_handle,
+        request_json: *const u8,
+        request_json_len: usize,
+        now_ms: u64,
+        result_output: *mut *mut u8,
+        result_output_len: *mut usize,
+    ) -> i32 {
+        let Some(handle) = handle.as_ref() else {
+            return STATUS_INVALID_ARGUMENT;
+        };
+        let result = (|| {
+            let request = ffi_bytes(
+                request_json,
+                request_json_len,
+                MAX_REQUEST_BYTES,
+                "local interest event",
+            )?;
+            let encoded = lock(&handle.core)?.record_interest_json(request, now_ms)?;
+            transfer_output(encoded, result_output, result_output_len)
+        })();
+        finish(handle, result)
+    }
+
+    #[no_mangle]
     pub unsafe extern "C" fn tex8_community_runtime_clear_query_cache_v1(
         handle: *mut tex8_community_runtime_handle,
     ) -> i32 {
@@ -1230,6 +1516,7 @@ mod ffi {
             ^ tex8_community_runtime_status_v1 as *const () as usize
             ^ tex8_community_runtime_suggestions_v1 as *const () as usize
             ^ tex8_community_runtime_search_v1 as *const () as usize
+            ^ tex8_community_runtime_record_interest_v1 as *const () as usize
             ^ tex8_community_runtime_clear_query_cache_v1 as *const () as usize
             ^ tex8_community_runtime_advertisements_v1 as *const () as usize
             ^ tex8_community_runtime_record_advertising_view_v1 as *const () as usize
@@ -1449,6 +1736,14 @@ mod tests {
         fn embed_prepared(&mut self, _prepared_text: &str) -> Result<Vec<f32>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(unit_vector())
+        }
+    }
+
+    struct FixedEmbedder(Vec<f32>);
+
+    impl QueryEmbedder for FixedEmbedder {
+        fn embed_prepared(&mut self, _prepared_text: &str) -> Result<Vec<f32>> {
+            Ok(self.0.clone())
         }
     }
 
@@ -2031,5 +2326,103 @@ mod tests {
             .is_empty());
         assert_eq!(core.search(&request, NOW + 2).unwrap().len(), 1);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn local_interest_is_encrypted_persisted_and_reranks_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let signer = SigningKey::generate(&mut OsRng);
+        let model = ModelContract::harrier_v1();
+        let make_item = |public_id: &str, axis: usize| CatalogItem {
+            public_id: public_id.to_owned(),
+            revision: 1,
+            owner_public_id: format!("person-{public_id}"),
+            kind: CatalogItemKind::ServiceListing,
+            title: format!("Service {public_id}"),
+            summary: "A locally personalized catalog test service.".to_owned(),
+            roles: Vec::new(),
+            categories: vec!["test".to_owned()],
+            languages: vec!["en".to_owned()],
+            coarse_region: None,
+            radius_km: None,
+            media: Vec::new(),
+            published_at_ms: NOW - 1_000,
+            expires_at_ms: Some(NOW + 60_000),
+            moderation_decision_id: format!("decision-{public_id}"),
+            sponsorship: None,
+            model: model.clone(),
+            embedding: unit_vector_axis(axis),
+            embedding_chunks: Vec::new(),
+        };
+        let catalog = CatalogPayload::Snapshot(CatalogSnapshot {
+            schema_version: 1,
+            catalog_scope_id: "global-v1".to_owned(),
+            sequence: 1,
+            model: model.clone(),
+            items: vec![make_item("service-a", 0), make_item("service-b", 1)],
+            tombstones: Vec::new(),
+        });
+        let signed = SignedCatalogPackage::create(
+            &catalog,
+            &signer,
+            "review-v1",
+            "policy-v1",
+            NOW - 1_000,
+            NOW + 60_000,
+        )
+        .unwrap();
+        let key = [0x42; 32];
+        let core = CommunityLocalCore::open_with_keys_and_query_cache(
+            directory.path(),
+            "global-v1",
+            signer.verifying_key(),
+            signer.verifying_key(),
+            key,
+            FixedEmbedder(unit_vector_axis(2)),
+        )
+        .unwrap();
+        core.install_catalog(&signed.manifest_json, &signed.payload_json, NOW)
+            .unwrap();
+        assert_eq!(
+            core.record_interest(
+                &CommunityInterestRequest {
+                    public_id: "service-b".to_owned(),
+                    signal: CommunityInterestSignal::ContentOpened,
+                },
+                NOW,
+            )
+            .unwrap(),
+            PersonalizationUpdate::Applied
+        );
+        let sealed = fs::read(directory.path().join(INTEREST_STATE_FILE)).unwrap();
+        assert!(!sealed
+            .windows("service-b".len())
+            .any(|window| window == b"service-b"));
+        drop(core);
+
+        let reopened = CommunityLocalCore::open_with_keys_and_query_cache(
+            directory.path(),
+            "global-v1",
+            signer.verifying_key(),
+            signer.verifying_key(),
+            key,
+            FixedEmbedder(unit_vector_axis(2)),
+        )
+        .unwrap();
+        let results = reopened
+            .search(
+                &CommunitySearchRequest {
+                    query: "unrelated local query".to_owned(),
+                    language: "en".to_owned(),
+                    limit: 2,
+                    kinds: vec![CatalogItemKind::ServiceListing],
+                    coarse_region: None,
+                    include_advertising: false,
+                },
+                NOW + 1,
+            )
+            .unwrap();
+        assert_eq!(results[0].item.public_id, "service-b");
+        assert!(results[0].personal_adjustment > results[1].personal_adjustment);
     }
 }

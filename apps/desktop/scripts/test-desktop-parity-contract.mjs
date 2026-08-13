@@ -1066,6 +1066,7 @@ test('desktop Community V1 matches mobile local search, contacts, history, and n
   for (const command of [
     'enthusiast_v1_search',
     'enthusiast_v1_suggestions',
+    'enthusiast_v1_record_interest',
     'enthusiast_v1_clear_search_history',
     'enthusiast_v1_request_contact',
     'enthusiast_v1_enable_notifications',
@@ -1075,6 +1076,11 @@ test('desktop Community V1 matches mobile local search, contacts, history, and n
     assert.match(appSource, new RegExp(`'${command}'`));
   }
   assert.match(enthusiastV1Source, /NativeHarrier::load_verified_xnnpack/);
+  assert.match(enthusiastV1Source, /record_interest_json/);
+  assert.match(appSource, /signal: 'content_opened'/);
+  assert.match(appSource, /signal: 'longer_local_view'/);
+  assert.match(appSource, /signal: 'contact_requested'/);
+  assert.match(appSource, /kinds: \['profile', 'post', 'service_listing', 'product_listing'\]/);
   assert.match(enthusiastV1Source, /open_with_keys_and_query_cache/);
   assert.match(enthusiastV1Source, /install_catalog/);
   assert.match(enthusiastV1Source, /install_query_catalog/);

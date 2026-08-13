@@ -2808,6 +2808,7 @@ function MoneroEnthusiastV1() {
   const [searchSuggestions, setSearchSuggestions] = useState<CommunityV1QuerySuggestion[]>([]);
   const [searchResults, setSearchResults] = useState<CommunityV1SearchResult[]>([]);
   const [searched, setSearched] = useState(false);
+  const [openedSearchResultId, setOpenedSearchResultId] = useState<string | null>(null);
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -2859,6 +2860,17 @@ function MoneroEnthusiastV1() {
     }, 180);
     return () => window.clearTimeout(timer);
   }, [language, searchQuery, status?.catalogReady, t]);
+  useEffect(() => {
+    if (!openedSearchResultId) return undefined;
+    const timer = window.setTimeout(() => {
+      void invoke('enthusiast_v1_record_interest', {
+        input: { publicId: openedSearchResultId, signal: 'longer_local_view' },
+      }).catch((reason) => {
+        console.warn('MONERO_DESKTOP_COMMUNITY local-interest-failed', errorMessage(reason, 'Local interest event failed.'));
+      });
+    }, 6_000);
+    return () => window.clearTimeout(timer);
+  }, [openedSearchResultId]);
   const ready = status?.ready === true;
   const begin = async () => {
     setLoading(true); setMessage(null);
@@ -2936,7 +2948,7 @@ function MoneroEnthusiastV1() {
           query,
           language,
           limit: 20,
-          kinds: [],
+          kinds: ['profile', 'post', 'service_listing', 'product_listing'],
           coarseRegion: null,
           includeAdvertising: false,
         },
@@ -2952,10 +2964,23 @@ function MoneroEnthusiastV1() {
       setLoading(false);
     }
   };
-  const requestSearchContact = async (peerId: string) => {
+  const openSearchResult = (publicId: string) => {
+    setOpenedSearchResultId(publicId);
+    void invoke('enthusiast_v1_record_interest', {
+      input: { publicId, signal: 'content_opened' },
+    }).catch((reason) => {
+      console.warn('MONERO_DESKTOP_COMMUNITY local-interest-failed', errorMessage(reason, 'Local interest event failed.'));
+    });
+  };
+  const requestSearchContact = async (peerId: string, publicId: string) => {
     setLoading(true); setMessage(null);
     try {
       await invoke('enthusiast_v1_request_contact', { peerId });
+      void invoke('enthusiast_v1_record_interest', {
+        input: { publicId, signal: 'contact_requested' },
+      }).catch((reason) => {
+        console.warn('MONERO_DESKTOP_COMMUNITY local-interest-failed', errorMessage(reason, 'Local interest event failed.'));
+      });
       setMessage(t('communityV1.contactRequested'));
       await loadPrivateData();
     } catch (reason) {
@@ -3109,7 +3134,7 @@ function MoneroEnthusiastV1() {
           <button className="primary" disabled={loading || !status?.catalogReady || !searchQuery.trim()} type="submit">{t('communityV1.search')}</button>
         </form>
         {searchSuggestions.length > 0 && <div className="enthusiast-v1-suggestions">{searchSuggestions.map((suggestion) => <button className="quiet-button" key={suggestion.queryId} onClick={() => void searchLocalCatalog(suggestion.displayText)} type="button">{suggestion.displayText}</button>)}</div>}
-        {searched && (searchResults.length === 0 ? <p className="enthusiast-v1-empty">{t('communityV1.noSearchResults')}</p> : <div className="enthusiast-v1-results">{searchResults.map((result) => <article key={`${result.item.publicId}-${result.item.ownerPublicId}`}><div><small>{result.item.kind === 'profile' ? t('communityV1.kindProfile') : result.item.kind === 'post' ? t('communityV1.kindPost') : result.item.kind === 'service_listing' ? t('communityV1.kindService') : t('communityV1.kindProduct')}</small><strong>{result.item.title}</strong><p>{result.item.summary}</p>{result.item.categories.length > 0 && <span>{result.item.categories.join(' · ')}</span>}</div><button className="secondary" disabled={loading || account?.suspended} onClick={() => void requestSearchContact(result.item.ownerPublicId)} type="button">{t('communityV1.connect')}</button></article>)}</div>)}
+        {searched && (searchResults.length === 0 ? <p className="enthusiast-v1-empty">{t('communityV1.noSearchResults')}</p> : <div className="enthusiast-v1-results">{searchResults.map((result) => <article className={openedSearchResultId === result.item.publicId ? 'opened' : undefined} key={`${result.item.publicId}-${result.item.ownerPublicId}`}><button className="enthusiast-v1-result-open" onClick={() => openSearchResult(result.item.publicId)} type="button"><small>{result.item.kind === 'profile' ? t('communityV1.kindProfile') : result.item.kind === 'post' ? t('communityV1.kindPost') : result.item.kind === 'service_listing' ? t('communityV1.kindService') : t('communityV1.kindProduct')}</small><strong>{result.item.title}</strong><p>{result.item.summary}</p>{result.item.categories.length > 0 && <span>{result.item.categories.join(' · ')}</span>}</button><button className="secondary" disabled={loading || account?.suspended} onClick={() => void requestSearchContact(result.item.ownerPublicId, result.item.publicId)} type="button">{t('communityV1.connect')}</button></article>)}</div>)}
       </article>
       <article className="enthusiast-v1-editor">
         <header><div><strong>{t('communityV1.publicProfile')}</strong><p>{t('communityV1.publicProfileText')}</p></div>{content.find((item) => item.draft.kind === 'profile') && <span>{content.find((item) => item.draft.kind === 'profile')?.status.replaceAll('_', ' ')}</span>}</header>

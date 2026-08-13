@@ -120,6 +120,33 @@ describe('Monero Enthusiast V1 app boundary', () => {
     expect(screen).not.toMatch(/fetch\(|axios|XMLHttpRequest/);
   });
 
+  it('learns from bounded UI events only inside encrypted native storage', () => {
+    const runtime = read('native/community-runtime-core/src/lib.rs');
+    const core = read('packages/community-search-core/src/store.rs');
+    const screen = read('apps/mobile/src/screens/MoneroEnthusiastScreen.tsx');
+    const service = read(
+      'apps/mobile/src/services/MoneroEnthusiastV1Service.ts',
+    );
+    const android = read(
+      'apps/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
+    );
+    const ios = read(
+      'apps/mobile/ios/MoneroWallet/NativeMoneroWallet/MoneroEnthusiastV1Controller.inc',
+    );
+
+    expect(runtime).toContain('search_personalized');
+    expect(runtime).toContain('seal_for_protected_storage');
+    expect(runtime).toContain('INTEREST_STATE_FILE');
+    expect(core).toContain('pub fn interest_item');
+    expect(service).toContain("runCommunityV1<{ status: string }>('recordInterest'");
+    expect(screen).toContain("'content_opened'");
+    expect(screen).toContain("'longer_local_view'");
+    expect(screen).toContain("'contact_requested'");
+    expect(android).toContain('"recordInterest" -> recordInterest(input)');
+    expect(ios).toContain('isEqualToString:@"recordInterest"');
+    expect(screen).not.toMatch(/embedding|fetch\(|axios|XMLHttpRequest/);
+  });
+
   it('shares completed search terms by default with visible Welcome and Settings controls', () => {
     const contribution = read(
       'apps/mobile/src/services/CommunityQueryContribution.ts',

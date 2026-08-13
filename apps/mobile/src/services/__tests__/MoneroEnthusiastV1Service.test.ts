@@ -55,6 +55,24 @@ describe('MoneroEnthusiastV1Service', () => {
     expect(mockRunNative.mock.calls[0][1]).not.toContain('embedding');
   });
 
+  it('records only a public id and bounded local interest signal', async () => {
+    mockRunNative.mockResolvedValueOnce(JSON.stringify({ status: 'applied' }));
+
+    await MoneroEnthusiastV1Service.recordInterest(
+      'content_0123456789abcdef0123456789abcdef',
+      'content_opened',
+    );
+
+    expect(mockRunNative).toHaveBeenCalledWith(
+      'recordInterest',
+      JSON.stringify({
+        publicId: 'content_0123456789abcdef0123456789abcdef',
+        signal: 'content_opened',
+      }),
+    );
+    expect(mockRunNative.mock.calls[0][1]).not.toContain('embedding');
+  });
+
   it('submits a product listing through the native boundary', async () => {
     const draft = {
       kind: 'product_listing' as const,
