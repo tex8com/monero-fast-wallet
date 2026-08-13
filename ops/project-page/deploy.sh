@@ -21,13 +21,15 @@ release_root="/var/www/monero-fast-wallet-releases"
 release_dir="$release_root/$timestamp"
 current_link="/var/www/monero-fast-wallet.current"
 snippet_path="/etc/nginx/snippets/notify-scanner-tex8-location.conf"
-rate_path="/etc/nginx/conf.d/mfw-project-page-rate-limit.conf"
+rate_path="/etc/nginx/conf.d/notify-scanner-rate-limit.conf"
+legacy_rate_path="/etc/nginx/conf.d/mfw-project-page-rate-limit.conf"
 backup_root="/root/monero-fast-wallet-page-backups/$timestamp"
 previous_target="$(readlink "$current_link" 2>/dev/null || true)"
 
 mkdir -p "$backup_root" "$release_root"
 [[ -f "$snippet_path" ]] && cp -a "$snippet_path" "$backup_root/notify-scanner-tex8-location.conf"
 [[ -f "$rate_path" ]] && cp -a "$rate_path" "$backup_root/mfw-project-page-rate-limit.conf"
+[[ -f "$legacy_rate_path" ]] && cp -a "$legacy_rate_path" "$backup_root/legacy-mfw-project-page-rate-limit.conf"
 
 install -d -o root -g root -m 0755 "$release_dir"
 cp -a "$SOURCE_DIR/website/dist/." "$release_dir/"
@@ -37,6 +39,7 @@ find "$release_dir" -type f -exec chmod 0644 {} +
 
 install -o root -g root -m 0644 "$SOURCE_DIR/ops/project-page/nginx-location.conf" "$snippet_path"
 install -o root -g root -m 0644 "$SOURCE_DIR/ops/project-page/nginx-rate-limit.conf" "$rate_path"
+rm -f "$legacy_rate_path"
 
 admin_token="$(docker inspect tex8_platform_service --format '{{range .Config.Env}}{{println .}}{{end}}' | awk -F= '$1 == "ADMIN_API_TOKEN" {sub(/^[^=]*=/, ""); print; exit}')"
 if [[ -z "$admin_token" ]]; then
@@ -91,6 +94,11 @@ rollback() {
   else
     rm -f "$rate_path"
   fi
+  if [[ -f "$backup_root/legacy-mfw-project-page-rate-limit.conf" ]]; then
+    cp -a "$backup_root/legacy-mfw-project-page-rate-limit.conf" "$legacy_rate_path"
+  else
+    rm -f "$legacy_rate_path"
+  fi
   if [[ -n "$previous_target" ]]; then
     ln -sfn "$previous_target" "${current_link}.next"
     mv -Tf "${current_link}.next" "$current_link"
@@ -105,6 +113,7 @@ if ! nginx -t; then
   exit 1
 fi
 systemctl reload nginx
+sleep 1
 
 validation_dir="$(mktemp -d)"
 trap 'rm -rf "$validation_dir"' EXIT
