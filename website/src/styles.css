@@ -137,7 +137,7 @@ h3 { letter-spacing: -.025em; }
 .benchmark > div:not(.benchmark-metric) { min-width: 0; }
 .benchmark { display: grid; grid-template-columns: 290px 1fr; }
 .benchmark-metric { padding: 48px; display: flex; flex-direction: column; justify-content: center; border-right: 1px solid var(--line); background: radial-gradient(circle at 15% 18%,rgba(255,104,31,.2),transparent 19rem); }
-.benchmark-metric strong { color: var(--orange); font-size: clamp(62px,8vw,94px); line-height: .9; letter-spacing: -.08em; }
+.benchmark-metric strong { color: var(--orange); font-size: clamp(62px,8vw,94px); font-variant-numeric: lining-nums tabular-nums; font-kerning: normal; line-height: .9; letter-spacing: -.025em; }
 .benchmark-metric span { margin-top: 17px; color: var(--muted); font-size: 15px; font-weight: 760; }
 .benchmark-metric small { max-width: 185px; margin-top: 13px; color: var(--orange-2); font-size: 9px; font-weight: 850; line-height: 1.45; letter-spacing: .08em; text-transform: uppercase; }
 .benchmark-bars { padding: 46px; display: grid; gap: 24px; }
