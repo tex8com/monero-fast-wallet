@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#080710">
+  <meta name="description" content="Monero Fast Wallet and TEX8 Cuprate: a simple private wallet for mobile and desktop, powered by open-source Monero infrastructure.">
+  <meta property="og:title" content="Monero Fast Wallet + TEX8 Cuprate">
+  <meta property="og:description" content="Private Monero for everyone. Fast wallet sync, clear choices, and open-source infrastructure.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://xmr.tex8.com/">
+  <title>Monero Fast Wallet + TEX8 Cuprate</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080710;
+      --bg-soft: #0d0b17;
+      --panel: #141121;
+      --panel-strong: #1a1528;
+      --line: rgba(255,255,255,.105);
+      --line-hot: rgba(255,102,32,.43);
+      --text: #fbf9ff;
+      --muted: #aaa4b9;
+      --quiet: #777184;
+      --orange: #ff681f;
+      --orange-soft: #ff8a4a;
+      --green: #19d99a;
+      --blue: #6c8cff;
+      --radius: 24px;
+      --shadow: 0 30px 80px rgba(0,0,0,.34);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      overflow-x: hidden;
+      background:
+        radial-gradient(circle at 80% 4%, rgba(255,104,31,.12), transparent 29rem),
+        radial-gradient(circle at 8% 24%, rgba(86,65,176,.12), transparent 32rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, a { font: inherit; }
+    a { color: inherit; text-decoration: none; }
+    a:focus-visible, button:focus-visible { outline: 3px solid rgba(255,104,31,.6); outline-offset: 4px; }
+    img, svg { display: block; max-width: 100%; }
+    .shell { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+    .site-header {
+      position: sticky;
+      z-index: 50;
+      top: 0;
+      border-bottom: 1px solid rgba(255,255,255,.07);
+      background: rgba(8,7,16,.78);
+      backdrop-filter: blur(18px);
+    }
+    .nav { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .brand { display: inline-flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 850; letter-spacing: -.02em; }
+    .brand-mark {
+      position: relative;
+      width: 38px;
+      height: 38px;
+      overflow: hidden;
+      border-radius: 50%;
+      background: linear-gradient(#ff681f 0 58%, #585660 58%);
+      box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 10px 26px rgba(255,104,31,.18);
+    }
+    .brand-mark::before {
+      content: "";
+      position: absolute;
+      inset: 9px 7px 0;
+      background: var(--text);
+      clip-path: polygon(0 0, 50% 48%, 100% 0, 100% 100%, 76% 100%, 76% 48%, 50% 73%, 24% 48%, 24% 100%, 0 100%);
+    }
+    .brand em { color: var(--orange); font-style: normal; }
+    .nav-links { display: flex; align-items: center; gap: 26px; color: var(--muted); font-size: 14px; font-weight: 720; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-cta, .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      min-height: 46px;
+      padding: 0 20px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      font-size: 14px;
+      font-weight: 820;
+      transition: transform .2s ease, border-color .2s ease, background .2s ease;
+    }
+    .nav-cta:hover, .button:hover { transform: translateY(-2px); border-color: rgba(255,255,255,.24); background: rgba(255,255,255,.07); }
+    .button.primary { border-color: var(--orange); background: var(--orange); color: #171019; box-shadow: 0 14px 40px rgba(255,104,31,.23); }
+    .button.primary:hover { background: #ff7b3b; }
+    .hero { position: relative; min-height: 720px; display: grid; align-items: center; padding: 62px 0 42px; }
+    .hero::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      width: min(1180px, calc(100% - 40px));
+      height: 1px;
+      transform: translateX(-50%);
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.13), transparent);
+    }
+    .slider { position: relative; min-height: 568px; }
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1.02fr) minmax(420px, .98fr);
+      align-items: center;
+      gap: clamp(40px, 7vw, 90px);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateX(24px);
+      transition: opacity .55s ease, transform .55s ease, visibility .55s;
+    }
+    .slide.active { position: relative; opacity: 1; visibility: visible; transform: none; }
+    .eyebrow { display: flex; align-items: center; gap: 10px; color: var(--orange-soft); font-size: 12px; font-weight: 900; letter-spacing: .16em; text-transform: uppercase; }
+    .eyebrow::before { content: ""; width: 24px; height: 2px; background: currentColor; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 720px; margin: 20px 0 24px; font-size: clamp(52px, 6.2vw, 88px); line-height: .95; letter-spacing: -.065em; }
+    h1 .accent { color: var(--orange); }
+    .hero-copy > p { max-width: 650px; margin-bottom: 30px; color: var(--muted); font-size: clamp(17px, 1.7vw, 21px); }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+    .micro-proof { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 28px; color: var(--quiet); font-size: 12px; font-weight: 720; }
+    .micro-proof span { display: inline-flex; align-items: center; gap: 7px; }
+    .micro-proof span::before { content: "✓"; color: var(--green); }
+    .visual-wrap { position: relative; min-height: 500px; display: grid; place-items: center; }
+    .orb { position: absolute; width: 430px; height: 430px; border-radius: 50%; background: radial-gradient(circle, rgba(255,104,31,.25), rgba(88,66,180,.07) 48%, transparent 69%); filter: blur(4px); }
+    .device-stage { position: relative; z-index: 2; width: 100%; min-height: 500px; }
+    .preview-label { position: absolute; z-index: 8; top: 18px; right: 8px; padding: 7px 11px; border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(8,7,16,.76); color: var(--muted); font-size: 9px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; backdrop-filter: blur(12px); }
+    .desktop-preview {
+      position: absolute;
+      z-index: 1;
+      top: 72px;
+      right: 0;
+      width: 440px;
+      height: 305px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.16);
+      border-radius: 20px;
+      background: #080710;
+      box-shadow: 0 42px 85px rgba(0,0,0,.5);
+      transform: perspective(1100px) rotateY(-8deg) rotateX(2deg);
+    }
+    .desktop-titlebar { height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 12px; border-bottom: 1px solid var(--line); background: #100d18; }
+    .desktop-titlebar i { width: 7px; height: 7px; border-radius: 50%; background: #5a5664; }
+    .desktop-body { height: calc(100% - 28px); display: grid; grid-template-columns: 86px 1fr; }
+    .desktop-sidebar { padding: 16px 10px; border-right: 1px solid var(--line); background: #110d20; }
+    .desktop-brand { height: 12px; width: 58px; margin-bottom: 25px; border-radius: 99px; background: linear-gradient(90deg, var(--orange) 25%, rgba(255,255,255,.18) 25%); }
+    .desktop-navline { height: 7px; margin: 0 4px 14px; border-radius: 99px; background: rgba(255,255,255,.1); }
+    .desktop-navline.active { height: 26px; margin: 0 0 10px; background: rgba(255,104,31,.13); border: 1px solid rgba(255,104,31,.2); }
+    .desktop-content { padding: 18px; }
+    .desktop-heading { width: 57%; height: 19px; margin-bottom: 14px; border-radius: 7px; background: rgba(255,255,255,.88); }
+    .desktop-sync { height: 44px; margin-bottom: 10px; border: 1px solid rgba(25,217,154,.25); border-radius: 10px; background: rgba(25,217,154,.05); }
+    .desktop-market { position: relative; height: 127px; overflow: hidden; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: linear-gradient(145deg, #181228, #0d0b16); }
+    .desktop-price { width: 35%; height: 19px; border-radius: 7px; background: rgba(255,255,255,.92); }
+    .desktop-market svg { position: absolute; left: 12px; right: 12px; bottom: 10px; width: calc(100% - 24px); height: 72px; }
+    .desktop-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 9px; }
+    .desktop-bottom i { height: 42px; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,255,255,.025); }
+    .phone {
+      position: relative;
+      z-index: 2;
+      width: 220px;
+      min-height: 434px;
+      overflow: hidden;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 42px;
+      background: #03030a;
+      box-shadow: 0 44px 90px rgba(0,0,0,.6), inset 0 0 0 4px rgba(255,255,255,.035);
+      transform: rotate(2deg) translateY(52px);
+    }
+    .phone::before { content: ""; display: block; width: 78px; height: 22px; margin: 0 auto 13px; border-radius: 0 0 15px 15px; background: #0b0912; }
+    .phone-screen { min-height: 377px; padding: 17px 14px; border-radius: 30px; background: linear-gradient(155deg, #121021, #080711 58%); }
+    .phone-head { display: flex; align-items: center; justify-content: space-between; font-weight: 800; font-size: 12px; }
+    .sync-pill { padding: 6px 9px; border-radius: 999px; background: rgba(25,217,154,.1); color: var(--green); font-size: 9px; }
+    .balance-label { margin-top: 31px; color: var(--muted); font-size: 10px; font-weight: 780; letter-spacing: .12em; text-transform: uppercase; }
+    .balance { margin-top: 6px; font-size: 28px; font-weight: 900; letter-spacing: -.05em; }
+    .chart { height: 84px; margin: 19px -2px 11px; }
+    .phone-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .phone-action { padding: 13px; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,255,255,.035); font-size: 11px; font-weight: 780; }
+    .phone-action b { display: block; margin-bottom: 3px; color: var(--orange); font-size: 17px; }
+    .fast-card { margin-top: 12px; padding: 13px; border: 1px solid rgba(255,104,31,.23); border-radius: 15px; background: rgba(255,104,31,.07); }
+    .fast-card strong { display: flex; justify-content: space-between; font-size: 11px; }
+    .fast-badge { color: var(--orange); font-size: 9px; letter-spacing: .08em; }
+    .floating-card { position: absolute; z-index: 3; padding: 15px 17px; border: 1px solid var(--line); border-radius: 16px; background: rgba(20,17,33,.88); box-shadow: var(--shadow); backdrop-filter: blur(12px); }
+    .floating-card strong { display: block; font-size: 13px; }
+    .floating-card span { color: var(--muted); font-size: 11px; }
+    .floating-card.one { top: 90px; left: -10px; }
+    .floating-card.two { right: -6px; bottom: 48px; }
+    .product-gallery { position: relative; min-height: 590px; display: grid; grid-template-columns: 1.08fr .92fr; align-items: center; gap: 48px; padding: clamp(28px, 5vw, 58px); overflow: hidden; border: 1px solid var(--line); border-radius: 30px; background: radial-gradient(circle at 76% 36%, rgba(255,104,31,.16), transparent 23rem), linear-gradient(140deg, #171222, #0c0a13); box-shadow: var(--shadow); }
+    .product-gallery-copy { position: relative; z-index: 5; max-width: 475px; }
+    .product-gallery-copy h3 { margin: 16px 0 18px; font-size: clamp(36px, 5vw, 60px); line-height: 1; letter-spacing: -.055em; }
+    .product-gallery-copy p { color: var(--muted); font-size: 17px; }
+    .preview-note { display: inline-flex; align-items: center; gap: 8px; margin-top: 17px; color: var(--quiet); font-size: 11px; font-weight: 760; }
+    .preview-note::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); }
+    .gallery-devices { position: relative; min-height: 500px; }
+    .gallery-devices .desktop-preview { top: 72px; right: -48px; width: 500px; height: 348px; }
+    .gallery-devices .phone { position: absolute; left: -3px; top: 0; z-index: 4; width: 230px; min-height: 455px; transform: rotate(-3deg); }
+    .network-visual { position: relative; width: 470px; height: 470px; display: grid; place-items: center; }
+    .network-ring { position: absolute; inset: 25px; border: 1px solid rgba(108,140,255,.2); border-radius: 50%; animation: spin 32s linear infinite; }
+    .network-ring::before, .network-ring::after { content: ""; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 22px var(--blue); }
+    .network-ring::before { top: 31px; left: 66px; }
+    .network-ring::after { right: 10px; bottom: 122px; background: var(--orange); box-shadow: 0 0 22px var(--orange); }
+    .network-ring.second { inset: 80px; animation-direction: reverse; animation-duration: 22s; }
+    .node-core { z-index: 2; width: 190px; height: 190px; display: grid; place-items: center; border: 1px solid rgba(108,140,255,.35); border-radius: 45px; background: linear-gradient(145deg, rgba(108,140,255,.22), rgba(20,17,33,.95)); box-shadow: 0 30px 80px rgba(26,42,110,.35); transform: rotate(45deg); }
+    .node-core-inner { transform: rotate(-45deg); text-align: center; }
+    .node-core-inner b { display: block; font-size: 25px; letter-spacing: -.04em; }
+    .node-core-inner span { color: #aebaff; font-size: 12px; font-weight: 780; text-transform: uppercase; letter-spacing: .1em; }
+    .benchmark-visual { width: 100%; padding: 32px; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(150deg, rgba(255,255,255,.055), rgba(255,255,255,.015)); box-shadow: var(--shadow); }
+    .benchmark-kicker { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    .benchmark-big { margin: 16px 0 28px; font-size: clamp(55px, 7vw, 84px); font-weight: 950; letter-spacing: -.07em; line-height: 1; }
+    .benchmark-big span { color: var(--orange); }
+    .mini-bars { display: grid; gap: 17px; }
+    .mini-row { display: grid; grid-template-columns: 92px 1fr 62px; align-items: center; gap: 12px; color: var(--muted); font-size: 11px; font-weight: 760; }
+    .track { height: 8px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.07); }
+    .fill { width: var(--w); height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--orange), #ffae79); }
+    .mini-row:first-child .fill { background: #555060; }
+    .slider-controls { display: flex; align-items: center; justify-content: space-between; margin-top: 20px; }
+    .dots { display: flex; gap: 9px; }
+    .dot-button { width: 9px; height: 9px; padding: 0; border: 0; border-radius: 99px; background: rgba(255,255,255,.22); cursor: pointer; transition: width .25s ease, background .25s ease; }
+    .dot-button.active { width: 34px; background: var(--orange); }
+    .slider-buttons { display: flex; gap: 8px; }
+    .round-button { width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 50%; background: rgba(255,255,255,.03); color: var(--text); cursor: pointer; }
+    .round-button:hover { border-color: rgba(255,255,255,.25); }
+    .status-strip { padding: 20px 0; border-bottom: 1px solid rgba(255,255,255,.07); }
+    .status-grid { display: grid; grid-template-columns: 1.3fr repeat(3, 1fr); align-items: center; gap: 24px; }
+    .live-status { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; font-weight: 760; }
+    .live-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); box-shadow: 0 0 18px var(--green); }
+    .stat { padding-left: 24px; border-left: 1px solid var(--line); }
+    .stat strong { display: block; color: var(--text); font-size: 18px; }
+    .stat span { color: var(--quiet); font-size: 11px; font-weight: 730; letter-spacing: .06em; text-transform: uppercase; }
+    .section { padding: 118px 0; }
+    .section.tight { padding-top: 70px; }
+    .section-head { max-width: 760px; margin-bottom: 48px; }
+    .section-head h2 { margin: 16px 0 18px; font-size: clamp(39px, 5vw, 64px); line-height: 1.02; letter-spacing: -.055em; }
+    .section-head p { max-width: 680px; color: var(--muted); font-size: 18px; }
+    .project-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .project-card { position: relative; min-height: 440px; overflow: hidden; padding: clamp(28px, 4vw, 48px); border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+    .project-card::after { content: ""; position: absolute; width: 260px; height: 260px; right: -80px; top: -100px; border-radius: 50%; background: var(--glow); filter: blur(8px); }
+    .project-card.wallet { --glow: rgba(255,104,31,.19); }
+    .project-card.cuprate { --glow: rgba(80,111,255,.18); }
+    .project-icon { width: 58px; height: 58px; display: grid; place-items: center; margin-bottom: 78px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.045); color: var(--orange); font-size: 25px; font-weight: 900; }
+    .project-card.cuprate .project-icon { color: #8ba2ff; }
+    .project-card h3 { margin-bottom: 13px; font-size: 30px; letter-spacing: -.035em; }
+    .project-card p { color: var(--muted); font-size: 16px; }
+    .text-link { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; color: var(--orange-soft); font-size: 14px; font-weight: 820; }
+    .text-link:hover { gap: 12px; }
+    .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .feature-card { padding: 28px; border: 1px solid var(--line); border-radius: 20px; background: rgba(20,17,33,.68); }
+    .feature-number { width: 35px; height: 35px; display: grid; place-items: center; margin-bottom: 34px; border-radius: 12px; background: rgba(255,104,31,.1); color: var(--orange); font-size: 13px; font-weight: 900; }
+    .feature-card h3 { margin-bottom: 9px; font-size: 19px; letter-spacing: -.02em; }
+    .feature-card p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
+    .fast-section { position: relative; overflow: hidden; border-block: 1px solid rgba(255,255,255,.07); background: linear-gradient(110deg, rgba(255,104,31,.075), transparent 44%), var(--bg-soft); }
+    .fast-layout { display: grid; grid-template-columns: .85fr 1.15fr; gap: clamp(50px, 8vw, 110px); align-items: center; }
+    .choice-stack { display: grid; gap: 12px; }
+    .choice { display: grid; grid-template-columns: auto 1fr; gap: 16px; padding: 22px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.025); }
+    .choice.active { border-color: var(--line-hot); background: rgba(255,104,31,.065); }
+    .radio { width: 21px; height: 21px; border: 2px solid var(--quiet); border-radius: 50%; }
+    .choice.active .radio { border: 6px solid var(--orange); }
+    .choice strong { display: block; margin-bottom: 5px; }
+    .choice p { margin: 0; color: var(--muted); font-size: 13px; }
+    .plain-list { display: grid; gap: 15px; margin: 26px 0 0; padding: 0; list-style: none; color: var(--muted); }
+    .plain-list li { display: grid; grid-template-columns: 23px 1fr; gap: 10px; }
+    .plain-list li::before { content: "✓"; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: rgba(25,217,154,.1); color: var(--green); font-size: 11px; font-weight: 900; }
+    .benchmark-panel { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, #171222, #0d0b15); box-shadow: var(--shadow); }
+    .benchmark-top { display: grid; grid-template-columns: .8fr 1.2fr; gap: 55px; padding: clamp(30px, 5vw, 58px); }
+    .benchmark-copy .metric { margin: 15px 0 12px; color: var(--orange); font-size: clamp(58px, 8vw, 104px); font-weight: 950; line-height: .85; letter-spacing: -.08em; }
+    .benchmark-copy h3 { font-size: 25px; }
+    .benchmark-copy p { color: var(--muted); font-size: 14px; }
+    .bars { display: grid; align-content: center; gap: 22px; }
+    .bar-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 13px; font-weight: 800; }
+    .bar-head span:last-child { color: var(--muted); font-weight: 700; }
+    .bar-track { height: 13px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.06); }
+    .bar-fill { width: var(--w); height: 100%; border-radius: inherit; background: var(--color); }
+    .benchmark-foot { display: flex; align-items: center; justify-content: space-between; gap: 30px; padding: 22px clamp(30px, 5vw, 58px); border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .benchmark-foot strong { color: var(--text); }
+    .download-section { text-align: center; }
+    .download-section .section-head { margin-inline: auto; }
+    .store-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+    .store-button {
+      min-width: 0;
+      min-height: 126px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 13px;
+      padding: 18px 12px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255,255,255,.027);
+      color: var(--text);
+      opacity: 1;
+      cursor: default;
+    }
+    .store-button img { width: auto; height: 42px; max-width: 100%; object-fit: contain; }
+    .store-button .soon { color: var(--quiet); font-size: 10px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+    .linux-lockup { min-height: 43px; display: flex; align-items: center; gap: 9px; text-align: left; }
+    .linux-lockup img { width: 38px; height: 38px; object-fit: contain; }
+    .linux-lockup small { display: block; color: #c8c4d1; font-size: 9px; }
+    .linux-lockup strong { font-size: 17px; line-height: 1; }
+    .download-note { margin-top: 20px; color: var(--quiet); font-size: 12px; }
+    .privacy-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; }
+    .privacy-main, .privacy-side { padding: clamp(30px, 5vw, 52px); border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+    .privacy-main h2 { margin: 15px 0 20px; font-size: clamp(37px, 5vw, 59px); line-height: 1; letter-spacing: -.055em; }
+    .privacy-main p, .privacy-side p { color: var(--muted); }
+    .shield { width: 60px; height: 68px; display: grid; place-items: center; margin-bottom: 36px; border: 1px solid rgba(25,217,154,.28); border-radius: 22px 22px 28px 28px; color: var(--green); background: rgba(25,217,154,.07); font-size: 25px; }
+    .privacy-side { display: grid; gap: 1px; padding: 0; overflow: hidden; background: var(--line); }
+    .privacy-item { padding: 27px 30px; background: var(--panel); }
+    .privacy-item strong { display: block; margin-bottom: 5px; }
+    .privacy-item p { margin: 0; font-size: 13px; }
+    .node-layout { display: grid; grid-template-columns: .9fr 1.1fr; gap: 60px; align-items: start; }
+    .node-steps { display: grid; gap: 12px; counter-reset: steps; }
+    .node-step { display: grid; grid-template-columns: auto 1fr; gap: 17px; padding: 22px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.025); }
+    .node-step::before { counter-increment: steps; content: counter(steps); width: 34px; height: 34px; display: grid; place-items: center; border-radius: 11px; background: rgba(108,140,255,.1); color: #9cafff; font-size: 12px; font-weight: 900; }
+    .node-step strong { display: block; margin-bottom: 4px; }
+    .node-step p { margin: 0; color: var(--muted); font-size: 13px; }
+    .tech-card { margin-top: 24px; padding: 22px; border: 1px solid var(--line); border-radius: 18px; background: #06050c; }
+    .tech-card h3 { font-size: 14px; }
+    code { display: inline-block; margin: 2px 0; padding: 3px 8px; border: 1px solid var(--line); border-radius: 7px; background: #090711; color: #ece8f5; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .faq-list { border-top: 1px solid var(--line); }
+    details { border-bottom: 1px solid var(--line); }
+    summary { position: relative; padding: 25px 50px 25px 0; cursor: pointer; list-style: none; font-size: 18px; font-weight: 800; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; position: absolute; right: 4px; top: 20px; color: var(--orange); font-size: 26px; font-weight: 400; }
+    details[open] summary::after { content: "−"; }
+    details p { max-width: 760px; padding: 0 0 25px; color: var(--muted); }
+    .final-cta { padding: 40px 0 110px; }
+    .cta-box { position: relative; overflow: hidden; padding: clamp(40px, 7vw, 80px); border: 1px solid var(--line-hot); border-radius: 30px; background: radial-gradient(circle at 85% 20%, rgba(255,104,31,.23), transparent 23rem), var(--panel); box-shadow: var(--shadow); }
+    .cta-box h2 { max-width: 700px; margin: 14px 0 28px; font-size: clamp(42px, 6vw, 72px); line-height: .98; letter-spacing: -.06em; }
+    footer { padding: 34px 0; border-top: 1px solid var(--line); color: var(--quiet); font-size: 12px; }
+    .footer-row { display: flex; justify-content: space-between; gap: 24px; }
+    .footer-links { display: flex; flex-wrap: wrap; gap: 20px; }
+    .footer-links a:hover { color: var(--text); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 960px) {
+      .nav-links a:not(.nav-cta) { display: none; }
+      .hero { min-height: 850px; }
+      .slider { min-height: 730px; }
+      .slide { grid-template-columns: 1fr; gap: 30px; }
+      .visual-wrap { min-height: 350px; }
+      .desktop-preview { width: 390px; right: 20px; }
+      .phone { width: 205px; min-height: 390px; }
+      .phone-screen { min-height: 335px; padding: 14px; }
+      .chart { height: 80px; }
+      .fast-card { display: none; }
+      .network-visual { width: 350px; height: 350px; }
+      .status-grid { grid-template-columns: 1fr 1fr; }
+      .project-grid, .fast-layout, .benchmark-top, .privacy-grid, .node-layout, .product-gallery { grid-template-columns: 1fr; }
+      .product-gallery { min-height: 980px; }
+      .gallery-devices .desktop-preview { right: 0; }
+      .feature-grid { grid-template-columns: 1fr 1fr; }
+      .store-grid { grid-template-columns: repeat(3, 1fr); }
+      .project-icon { margin-bottom: 50px; }
+    }
+    @media (max-width: 620px) {
+      .shell { width: min(100% - 28px, 1180px); }
+      .brand span { display: none; }
+      .nav-cta { min-height: 40px; padding-inline: 15px; }
+      .hero { min-height: 810px; padding-top: 38px; }
+      .slider { min-height: 690px; }
+      h1 { font-size: clamp(45px, 15vw, 66px); }
+      .hero-copy > p { font-size: 16px; }
+      .hero-actions .button { width: 100%; }
+      .micro-proof { gap: 9px 14px; }
+      .visual-wrap { min-height: 265px; transform: scale(.78); margin: -20px -50px; }
+      .phone { transform: rotate(2deg) translateY(30px); }
+      .desktop-preview { width: 370px; right: -36px; }
+      .floating-card.one { left: 20px; }
+      .floating-card.two { right: 20px; }
+      .network-visual { transform: scale(.74); }
+      .benchmark-visual { padding: 24px; }
+      .slider-controls { margin-top: 6px; }
+      .status-grid { grid-template-columns: 1fr; gap: 14px; }
+      .stat { padding: 12px 0 0; border-left: 0; border-top: 1px solid var(--line); }
+      .section { padding: 82px 0; }
+      .section-head { margin-bottom: 34px; }
+      .project-grid, .feature-grid, .store-grid { grid-template-columns: 1fr; }
+      .product-gallery { min-height: 810px; padding: 28px 22px; }
+      .gallery-devices { min-height: 410px; transform: scale(.78); transform-origin: top center; margin: 0 -80px -90px; }
+      .project-card { min-height: auto; }
+      .store-button { min-height: 108px; }
+      .benchmark-top { gap: 34px; }
+      .benchmark-foot, .footer-row { align-items: flex-start; flex-direction: column; }
+      .bar-head { font-size: 11px; }
+      .footer-links { gap: 12px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav shell" aria-label="Main navigation">
+      <a class="brand" href="#top" aria-label="Monero Fast Wallet home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>Monero <em>Fast Wallet</em> + TEX8 Cuprate</span>
+      </a>
+      <div class="nav-links">
+        <a href="#wallet">Wallet</a>
+        <a href="#cuprate">Cuprate</a>
+        <a href="#benchmarks">Benchmarks</a>
+        <a href="#downloads">Downloads</a>
+        <a class="nav-cta" href="https://github.com/tex8com/monero-fast-wallet">View source ↗</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero" aria-label="Project highlights">
+      <div class="shell">
+        <div class="slider" aria-live="polite">
+          <article class="slide active" data-slide="0" aria-hidden="false">
+            <div class="hero-copy">
+              <div class="eyebrow">Private money, made simple</div>
+              <h1>Monero without the <span class="accent">confusion.</span></h1>
+              <p>A clear, open-source wallet for phone and desktop. Send, receive, and manage real Monero without having to understand the machinery underneath.</p>
+              <div class="hero-actions">
+                <a class="button primary" href="#downloads">See the apps ↓</a>
+                <a class="button" href="#wallet">How it works</a>
+              </div>
+              <div class="micro-proof"><span>Native Monero wallet core</span><span>No account required</span><span>Ledger support</span></div>
+            </div>
+            <div class="visual-wrap" aria-hidden="true">
+              <div class="orb"></div>
+              <div class="device-stage">
+                <span class="preview-label">App preview</span>
+                <div class="desktop-preview">
+                  <div class="desktop-titlebar"><i></i><i></i><i></i></div>
+                  <div class="desktop-body"><div class="desktop-sidebar"><div class="desktop-brand"></div><div class="desktop-navline active"></div><div class="desktop-navline"></div><div class="desktop-navline"></div><div class="desktop-navline"></div></div><div class="desktop-content"><div class="desktop-heading"></div><div class="desktop-sync"></div><div class="desktop-market"><div class="desktop-price"></div><svg viewBox="0 0 300 80"><path d="M0 66 C25 50 30 63 54 46 S92 26 110 43 S143 70 166 45 S205 9 225 28 S254 53 300 12" fill="none" stroke="#19d99a" stroke-width="4" stroke-linecap="round"/></svg></div><div class="desktop-bottom"><i></i><i></i></div></div></div>
+                </div>
+                <div class="phone">
+                  <div class="phone-screen">
+                    <div class="phone-head"><span>Wallet 1</span><span class="sync-pill">● READY</span></div>
+                    <div class="balance-label">Total balance</div>
+                    <div class="balance">4.821 XMR</div>
+                    <svg class="chart" viewBox="0 0 240 100" role="presentation">
+                      <defs><linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#19d99a" stop-opacity=".32"/><stop offset="1" stop-color="#19d99a" stop-opacity="0"/></linearGradient></defs>
+                      <path d="M0 76 C18 68 22 81 39 61 S64 34 78 52 S101 80 118 55 S144 17 159 33 S177 72 193 51 S218 18 240 12 V100 H0Z" fill="url(#chart-fill)"/>
+                      <path d="M0 76 C18 68 22 81 39 61 S64 34 78 52 S101 80 118 55 S144 17 159 33 S177 72 193 51 S218 18 240 12" fill="none" stroke="#19d99a" stroke-width="3" stroke-linecap="round"/>
+                    </svg>
+                    <div class="phone-actions"><div class="phone-action"><b>↑</b>Send</div><div class="phone-action"><b>↓</b>Receive</div></div>
+                    <div class="fast-card"><strong><span>Fast Wallet</span><span class="fast-badge">OPTIONAL</span></strong></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="slide" data-slide="1" aria-hidden="true">
+            <div class="hero-copy">
+              <div class="eyebrow">The infrastructure underneath</div>
+              <h1>A Rust node for the <span class="accent">Monero network.</span></h1>
+              <p>TEX8 Cuprate talks to the Monero network and supplies the blockchain data your wallet needs. The wallet still verifies its own data locally.</p>
+              <div class="hero-actions">
+                <a class="button primary" href="#cuprate">Meet Cuprate ↓</a>
+                <a class="button" href="https://github.com/tex8com/monero-fast-wallet/tree/main/node/cuprate">Explore the code ↗</a>
+              </div>
+              <div class="micro-proof"><span>Built in Rust</span><span>Open source</span><span>Monero-compatible RPC</span></div>
+            </div>
+            <div class="visual-wrap" aria-hidden="true">
+              <div class="orb"></div>
+              <div class="network-visual">
+                <div class="network-ring"></div><div class="network-ring second"></div>
+                <div class="node-core"><div class="node-core-inner"><b>Cuprate</b><span>TEX8 node</span></div></div>
+                <div class="floating-card one"><strong>Blocks in</strong><span>From the Monero network</span></div>
+                <div class="floating-card two"><strong>Verified locally</strong><span>By your wallet core</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="slide" data-slide="2" aria-hidden="true">
+            <div class="hero-copy">
+              <div class="eyebrow">Measured performance</div>
+              <h1>Less waiting. More <span class="accent">Monero.</span></h1>
+              <p>Our accepted Strict‑R8e benchmark scanned the same 159,504 Mainnet blocks in every variant. Fast Wallet with ScanPack completed that test 7.77× faster than the original wallet path.</p>
+              <div class="hero-actions">
+                <a class="button primary" href="#benchmarks">See the benchmark ↓</a>
+                <a class="button" href="https://github.com/tex8com/monero-fast-wallet/blob/main/docs/WALLET_SYNC_BENCHMARK_RESULTS.md">Read the evidence ↗</a>
+              </div>
+              <div class="micro-proof"><span>Same block range</span><span>Same frozen tip</span><span>Successful final height</span></div>
+            </div>
+            <div class="visual-wrap">
+              <div class="benchmark-visual" aria-label="Strict R8e block throughput comparison">
+                <div class="benchmark-kicker"><span>Strict R8e</span><span>Blocks / second</span></div>
+                <div class="benchmark-big"><span>7.77×</span> faster</div>
+                <div class="mini-bars">
+                  <div class="mini-row"><span>Original</span><div class="track"><div class="fill" style="--w:13%"></div></div><b>207</b></div>
+                  <div class="mini-row"><span>Fast</span><div class="track"><div class="fill" style="--w:54%"></div></div><b>860</b></div>
+                  <div class="mini-row"><span>ScanPack</span><div class="track"><div class="fill" style="--w:100%"></div></div><b>1,605</b></div>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+        <div class="slider-controls">
+          <div class="dots" aria-label="Choose highlight">
+            <button class="dot-button active" type="button" data-target="0" aria-label="Show wallet highlight" aria-current="true"></button>
+            <button class="dot-button" type="button" data-target="1" aria-label="Show Cuprate highlight"></button>
+            <button class="dot-button" type="button" data-target="2" aria-label="Show benchmark highlight"></button>
+          </div>
+          <div class="slider-buttons">
+            <button class="round-button" type="button" data-direction="-1" aria-label="Previous highlight">←</button>
+            <button class="round-button" type="button" data-direction="1" aria-label="Next highlight">→</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="status-strip" aria-label="Project facts">
+      <div class="status-grid shell">
+        <div class="live-status"><span class="live-dot"></span><span id="service-status">Checking project services…</span></div>
+        <div class="stat"><strong>5 platforms</strong><span>One clear experience</span></div>
+        <div class="stat"><strong>100% open source</strong><span>Wallet + infrastructure</span></div>
+        <div class="stat"><strong>Native core</strong><span>Your wallet verifies</span></div>
+      </div>
+    </section>
+
+    <section class="section shell" id="wallet">
+      <div class="section-head">
+        <div class="eyebrow">Two projects, one experience</div>
+        <h2>Simple on the surface. Serious underneath.</h2>
+        <p>The wallet handles the everyday experience. Cuprate handles the heavy network work. Both are open, testable, and designed to work together.</p>
+      </div>
+      <div class="project-grid">
+        <article class="project-card wallet">
+          <div class="project-icon">M</div>
+          <h3>Monero Fast Wallet</h3>
+          <p>The app you use. A calm interface for sending, receiving, several wallets, subaddresses, Ledger, and optional faster receive notifications.</p>
+          <a class="text-link" href="#features">Explore the wallet <span>→</span></a>
+        </article>
+        <article class="project-card cuprate">
+          <div class="project-icon">C</div>
+          <h3>TEX8 Cuprate</h3>
+          <p>The node behind the connection. Written in Rust to speak Monero, serve wallet data, and support faster transport paths such as ScanPack.</p>
+          <a class="text-link" href="#cuprate">Understand the node <span>→</span></a>
+        </article>
+      </div>
+    </section>
+
+    <section class="section tight shell" id="features">
+      <div class="section-head">
+        <div class="eyebrow">Made for people</div>
+        <h2>Everything important. Nothing in the way.</h2>
+      </div>
+      <div class="feature-grid">
+        <article class="feature-card"><div class="feature-number">01</div><h3>Send in two steps</h3><p>Choose or scan the recipient first. Enter the amount second. “All” accounts for the real network fee.</p></article>
+        <article class="feature-card"><div class="feature-number">02</div><h3>Receive with one QR</h3><p>Show a large QR code, copy the short address, or create and label more receiving addresses.</p></article>
+        <article class="feature-card"><div class="feature-number">03</div><h3>One app lock</h3><p>Unlock the app once with biometrics or your operating system. Individual wallets do not ask for separate passwords.</p></article>
+        <article class="feature-card"><div class="feature-number">04</div><h3>Several wallets, together</h3><p>Your open wallets stay open and sync in parallel. Switching wallets does not throw away completed work.</p></article>
+        <article class="feature-card"><div class="feature-number">05</div><h3>Ledger stays Ledger</h3><p>The private spend key never leaves the device. Signing still requires your physical Ledger approval.</p></article>
+        <article class="feature-card"><div class="feature-number">06</div><h3>Real sync progress</h3><p>See the current block, target block, blocks remaining, and only a time estimate when enough real progress was measured.</p></article>
+      </div>
+    </section>
+
+    <section class="section tight shell" aria-label="App previews">
+      <div class="product-gallery">
+        <div class="product-gallery-copy">
+          <div class="eyebrow">The apps come first</div>
+          <h3>One visual language. Five platforms.</h3>
+          <p>React Native on iOS and Android. Tauri 2 on macOS, Windows, and Linux. The hardware is different; the wallet flow stays familiar.</p>
+          <ul class="plain-list"><li>The same clear dashboard and wallet status.</li><li>The same two-step send and simple receive flow.</li><li>The same Privacy only or Privacy + comfort choice.</li></ul>
+          <span class="preview-note">Illustrative placeholders—production screenshots will replace them later.</span>
+        </div>
+        <div class="gallery-devices" aria-label="Illustrative mobile and desktop app placeholders">
+          <div class="desktop-preview">
+            <div class="desktop-titlebar"><i></i><i></i><i></i></div>
+            <div class="desktop-body"><div class="desktop-sidebar"><div class="desktop-brand"></div><div class="desktop-navline active"></div><div class="desktop-navline"></div><div class="desktop-navline"></div><div class="desktop-navline"></div></div><div class="desktop-content"><div class="desktop-heading"></div><div class="desktop-sync"></div><div class="desktop-market"><div class="desktop-price"></div><svg viewBox="0 0 300 80"><path d="M0 66 C25 50 30 63 54 46 S92 26 110 43 S143 70 166 45 S205 9 225 28 S254 53 300 12" fill="none" stroke="#19d99a" stroke-width="4" stroke-linecap="round"/></svg></div><div class="desktop-bottom"><i></i><i></i></div></div></div>
+          </div>
+          <div class="phone">
+            <div class="phone-screen"><div class="phone-head"><span>Fast Wallet</span><span class="sync-pill">● READY</span></div><div class="balance-label">Monero market price</div><div class="balance">$ 356.24</div><svg class="chart" viewBox="0 0 240 100" role="presentation"><path d="M0 76 C18 68 22 81 39 61 S64 34 78 52 S101 80 118 55 S144 17 159 33 S177 72 193 51 S218 18 240 12" fill="none" stroke="#19d99a" stroke-width="3" stroke-linecap="round"/></svg><div class="phone-actions"><div class="phone-action"><b>↑</b>Send</div><div class="phone-action"><b>↓</b>Receive</div></div><div class="fast-card"><strong><span>Fast Wallet</span><span class="fast-badge">⚡ FAST</span></strong></div></div>
+          </div>
+          <span class="preview-label">App preview</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="fast-section section">
+      <div class="fast-layout shell">
+        <div class="choice-stack" aria-label="Privacy setup choices">
+          <div class="choice"><span class="radio"></span><div><strong>Privacy only</strong><p>Local Monero wallets. No hosted Fast Wallet is created.</p></div></div>
+          <div class="choice active"><span class="radio"></span><div><strong>Privacy + comfort</strong><p>The same private core, plus an optional separate Fast Wallet for quicker receive alerts.</p></div></div>
+        </div>
+        <div>
+          <div class="eyebrow">You choose</div>
+          <div class="section-head" style="margin-bottom:0">
+            <h2>Fast Wallet is an extra, not a replacement.</h2>
+            <p>Your normal wallets remain local. If you opt in, the app creates a separate receiving wallet and sends only its private viewing key to the Fast Wallet service.</p>
+          </div>
+          <ul class="plain-list">
+            <li>No seed or private spend key is uploaded.</li>
+            <li>The Fast Wallet is clearly marked everywhere in the app.</li>
+            <li>You can choose Privacy only at setup or change the mode later.</li>
+            <li>For maximum control, the open-source services can run on your own node.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section shell" id="benchmarks">
+      <div class="section-head">
+        <div class="eyebrow">Measured, not guessed</div>
+        <h2>A faster path through the same blocks.</h2>
+        <p>All three Strict‑R8e runs below scanned the same 159,504 Mainnet blocks from height 3,577,876 to the same frozen tip. Every wallet reached the correct final height.</p>
+      </div>
+      <div class="benchmark-panel">
+        <div class="benchmark-top">
+          <div class="benchmark-copy">
+            <div class="metric">7.77×</div>
+            <h3>faster in this test</h3>
+            <p>Fast Wallet with a ScanPack cache versus the original Monero wallet transport path.</p>
+          </div>
+          <div class="bars" aria-label="Strict R8e benchmark results">
+            <div><div class="bar-head"><span>Original Monero Wallet</span><span>207 blocks/s · 12m 52s</span></div><div class="bar-track"><div class="bar-fill" style="--w:13%;--color:#595462"></div></div></div>
+            <div><div class="bar-head"><span>Monero Fast Wallet</span><span>860 blocks/s · 3m 05s</span></div><div class="bar-track"><div class="bar-fill" style="--w:54%;--color:#ff8a4a"></div></div></div>
+            <div><div class="bar-head"><span>Fast Wallet + ScanPack</span><span>1,605 blocks/s · 1m 39s</span></div><div class="bar-track"><div class="bar-fill" style="--w:100%;--color:#ff681f"></div></div></div>
+          </div>
+        </div>
+        <div class="benchmark-foot">
+          <span><strong>Important:</strong> This is one accepted controlled comparison, not a promise for every device or connection. ScanPack also uses additional server storage.</span>
+          <a class="text-link" href="https://github.com/tex8com/monero-fast-wallet/blob/main/docs/WALLET_SYNC_BENCHMARK_RESULTS.md">Full method and raw evidence →</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="section download-section shell" id="downloads">
+      <div class="section-head">
+        <div class="eyebrow" style="justify-content:center">One wallet, every screen</div>
+        <h2>Use Monero where you are.</h2>
+        <p style="margin-inline:auto">Mobile and desktop follow the same lean flow. Store and package links will be connected after release signing and platform acceptance.</p>
+      </div>
+      <div class="store-grid">
+        <button class="store-button" type="button" disabled aria-label="Google Play download coming soon"><img src="https://commons.wikimedia.org/wiki/Special:Redirect/file/Google_Play_Store_badge_EN.svg" alt="Get it on Google Play"><span class="soon">Coming soon</span></button>
+        <button class="store-button" type="button" disabled aria-label="Apple App Store download coming soon"><img src="https://commons.wikimedia.org/wiki/Special:Redirect/file/Download_on_the_App_Store_RGB_blk.svg" alt="Download on the App Store"><span class="soon">Coming soon</span></button>
+        <button class="store-button" type="button" disabled aria-label="Mac App Store download coming soon"><img src="https://commons.wikimedia.org/wiki/Special:Redirect/file/Download_on_the_Mac_App_Store_Badge_US-UK_RGB_wht.svg" alt="Download on the Mac App Store"><span class="soon">Coming soon</span></button>
+        <button class="store-button" type="button" disabled aria-label="Microsoft Store download coming soon"><img src="https://commons.wikimedia.org/wiki/Special:Redirect/file/Get_it_from_Microsoft_Badge.svg" alt="Get it from Microsoft"><span class="soon">Coming soon</span></button>
+        <button class="store-button" type="button" disabled aria-label="Linux download coming soon"><span class="linux-lockup"><img src="https://commons.wikimedia.org/wiki/Special:Redirect/file/Linux_tux_circle_logo.svg" alt="Tux, the Linux mascot"><span><small>Download for</small><strong>Linux</strong></span></span><span class="soon">Coming soon</span></button>
+      </div>
+      <p class="download-note">The platform badges are intentionally not linked yet.</p>
+    </section>
+
+    <section class="section shell">
+      <div class="privacy-grid">
+        <article class="privacy-main">
+          <div class="shield" aria-hidden="true">✓</div>
+          <div class="eyebrow">Privacy by clear boundaries</div>
+          <h2>Your keys have one job: stay yours.</h2>
+          <p>The native Monero wallet core remains the authority for wallet data. Market prices, news, or a hosted service can never pretend that a wallet is synchronized.</p>
+          <a class="text-link" href="https://github.com/tex8com/monero-fast-wallet/blob/main/docs/PRIVACY_MODEL.md">Read the privacy model →</a>
+        </article>
+        <div class="privacy-side">
+          <div class="privacy-item"><strong>Software wallets</strong><p>Secrets are protected by the operating system and opened through one app-wide protection flow.</p></div>
+          <div class="privacy-item"><strong>Ledger wallets</strong><p>The spend key remains on Ledger. A viewing key is stored only after explicit approval for read-only sync.</p></div>
+          <div class="privacy-item"><strong>Fast Wallet</strong><p>Separate, clearly labelled, optional—and never given a seed or private spend key.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section shell" id="cuprate">
+      <div class="node-layout">
+        <div class="section-head">
+          <div class="eyebrow">TEX8 Cuprate</div>
+          <h2>What does a node actually do?</h2>
+          <p>Think of it as the wallet’s route into the Monero network. It collects blockchain data and answers wallet requests. Your wallet then checks what belongs to you.</p>
+          <div class="tech-card">
+            <h3>Public infrastructure</h3>
+            <p><code>xmr.tex8.com:18089</code> Cuprate JSON RPC</p>
+            <p><code>/healthz</code> service health</p>
+            <p><code>/v1/fast-receive</code> Fast Receive API</p>
+          </div>
+        </div>
+        <div class="node-steps">
+          <div class="node-step"><div><strong>The Monero network sends blocks</strong><p>Cuprate follows the chain and keeps the data needed to answer wallets.</p></div></div>
+          <div class="node-step"><div><strong>The wallet asks for its range</strong><p>Normal RPC works as expected; optimized transport can move the same block data more efficiently.</p></div></div>
+          <div class="node-step"><div><strong>The native wallet core checks locally</strong><p>Balances, transactions, and sync status come from the wallet core—not from the website or market service.</p></div></div>
+          <div class="node-step"><div><strong>Open source keeps it inspectable</strong><p>The app, node fork, scanner, tests, and privacy documentation live in the public repository.</p></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section tight shell">
+      <div class="section-head"><div class="eyebrow">Straight answers</div><h2>Questions people actually ask.</h2></div>
+      <div class="faq-list">
+        <details><summary>Is this a real Monero wallet?</summary><p>Yes. Wallet data and synchronization come from the native Monero wallet core. The interface is made simpler, but the underlying wallet is not replaced by a website or exchange account.</p></details>
+        <details><summary>Do I need Fast Wallet?</summary><p>No. Choose Privacy only and use local wallets without the hosted Fast Wallet. Privacy + comfort adds a separate optional receiving wallet for faster alerts.</p></details>
+        <details><summary>Does TEX8 hold my Monero?</summary><p>No. The service never needs your seed or private spend key. A Fast Wallet can share only its separate private viewing key after you explicitly opt in.</p></details>
+        <details><summary>What happens if I use Ledger?</summary><p>Your spend key remains on Ledger and signing requires the device. You may separately approve secure local storage of the viewing key so balances can sync without keeping Ledger attached.</p></details>
+        <details><summary>Why publish benchmarks?</summary><p>“Fast” should be measurable. We publish the test contract, exact heights, resource costs, rejected runs, and limitations so the result can be reviewed instead of merely advertised.</p></details>
+      </div>
+    </section>
+
+    <section class="final-cta shell">
+      <div class="cta-box">
+        <div class="eyebrow">Built in the open</div>
+        <h2>Help make private money easier to use.</h2>
+        <div class="hero-actions">
+          <a class="button primary" href="https://github.com/tex8com/monero-fast-wallet">Explore on GitHub ↗</a>
+          <a class="button" href="https://solutions.tex8.com/en">Meet TEX8 ↗</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-row shell">
+      <span>Developed with ❤️ by TEX8 · Monero Fast Wallet + TEX8 Cuprate</span>
+      <div class="footer-links"><a href="https://github.com/tex8com/monero-fast-wallet">Source</a><a href="https://github.com/tex8com/monero-fast-wallet/tree/main/docs">Documentation</a><a href="https://solutions.tex8.com/en">TEX8</a></div>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll('.slide')];
+      const dots = [...document.querySelectorAll('.dot-button')];
+      const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      let current = 0;
+      let timer;
+
+      function showSlide(index) {
+        current = (index + slides.length) % slides.length;
+        slides.forEach((slide, position) => {
+          const active = position === current;
+          slide.classList.toggle('active', active);
+          slide.setAttribute('aria-hidden', String(!active));
+        });
+        dots.forEach((dot, position) => {
+          const active = position === current;
+          dot.classList.toggle('active', active);
+          if (active) dot.setAttribute('aria-current', 'true'); else dot.removeAttribute('aria-current');
+        });
+      }
+
+      function startTimer() {
+        if (prefersReducedMotion) return;
+        window.clearInterval(timer);
+        timer = window.setInterval(() => showSlide(current + 1), 6500);
+      }
+
+      dots.forEach(dot => dot.addEventListener('click', () => { showSlide(Number(dot.dataset.target)); startTimer(); }));
+      document.querySelectorAll('[data-direction]').forEach(button => button.addEventListener('click', () => { showSlide(current + Number(button.dataset.direction)); startTimer(); }));
+      document.querySelector('.slider').addEventListener('mouseenter', () => window.clearInterval(timer));
+      document.querySelector('.slider').addEventListener('mouseleave', startTimer);
+      document.addEventListener('keydown', event => {
+        if (event.key === 'ArrowLeft') { showSlide(current - 1); startTimer(); }
+        if (event.key === 'ArrowRight') { showSlide(current + 1); startTimer(); }
+      });
+      startTimer();
+
+      const status = document.getElementById('service-status');
+      fetch('/healthz', { cache: 'no-store' })
+        .then(response => response.ok ? response.json() : Promise.reject())
+        .then(data => { status.textContent = data.ok ? 'TEX8 project services online' : 'Service status unavailable'; })
+        .catch(() => { status.textContent = 'Project website online'; });
+    })();
+  </script>
+</body>
+</html>

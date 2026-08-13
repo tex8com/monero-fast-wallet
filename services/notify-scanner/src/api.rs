@@ -437,137 +437,7 @@ struct TestIncomingTransactionRequest {
     identity_id: String,
 }
 
-const PROJECT_PAGE_HTML: &str = r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Tex8 XMR Services</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #070511;
-      --panel: #141025;
-      --line: #30294d;
-      --text: #f6f1ff;
-      --muted: #b7aec9;
-      --orange: #ff6b21;
-      --green: #28d88f;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: radial-gradient(circle at 50% 0%, #201538 0, #070511 45%);
-      color: var(--text);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      line-height: 1.55;
-    }
-    main {
-      width: min(920px, calc(100% - 40px));
-      margin: 0 auto;
-      padding: 72px 0;
-    }
-    .eyebrow {
-      color: var(--orange);
-      font-weight: 800;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      font-size: 13px;
-    }
-    h1 {
-      margin: 14px 0 14px;
-      font-size: clamp(42px, 8vw, 82px);
-      line-height: .95;
-      letter-spacing: 0;
-    }
-    p { color: var(--muted); font-size: 18px; max-width: 720px; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 16px;
-      margin-top: 34px;
-    }
-    section {
-      border: 1px solid var(--line);
-      background: color-mix(in srgb, var(--panel) 88%, transparent);
-      border-radius: 8px;
-      padding: 22px;
-    }
-    h2 { margin: 0 0 12px; font-size: 20px; }
-    ul { padding-left: 18px; margin: 0; color: var(--muted); }
-    code {
-      display: inline-block;
-      color: #fff;
-      background: #080614;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 2px 7px;
-      margin: 2px 0;
-    }
-    a { color: var(--orange); font-weight: 750; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .status {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 18px;
-      color: var(--green);
-      font-weight: 800;
-    }
-    .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: var(--green);
-      box-shadow: 0 0 18px var(--green);
-    }
-  </style>
-</head>
-<body>
-  <main>
-    <div class="eyebrow">Tex8 XMR Services</div>
-    <h1>Monero wallet infrastructure.</h1>
-    <p>
-      This host provides the Tex8 Cuprate node endpoints and the Fast Receive
-      scanner API for opt-in hosted view-key notifications. Never paste a seed,
-      spend key, wallet password, or Ledger secret into this website.
-    </p>
-    <div class="status"><span class="dot"></span><span>Service page online</span></div>
-
-    <div class="grid">
-      <section>
-        <h2>Public Endpoints</h2>
-        <ul>
-          <li>Cuprate JSON RPC: <code>xmr.tex8.com:18089</code></li>
-          <li>Cuprate gRPC: internal scanner fallback</li>
-          <li>Scanner health: <code>/healthz</code></li>
-          <li>Fast Receive API: <code>/v1/fast-receive</code></li>
-        </ul>
-      </section>
-
-      <section>
-        <h2>Fast Receive</h2>
-        <ul>
-          <li>Opt-in only.</li>
-          <li>Uses a separate hosted receive identity.</li>
-          <li>Accepts only that identity private view key.</li>
-          <li>Never accepts seeds or private spend keys.</li>
-        </ul>
-      </section>
-
-      <section>
-        <h2>Source And Docs</h2>
-        <ul>
-          <li><a href="https://github.com/tex8com/monero-fast-wallet">GitHub repository</a></li>
-          <li><a href="https://github.com/tex8com/monero-fast-wallet/tree/main/services/notify-scanner">Scanner service</a></li>
-          <li><a href="https://github.com/tex8com/monero-fast-wallet/blob/main/docs/WALLET_CORE_TESTBENCH_MATRIX.md">Wallet testbench matrix</a></li>
-          <li><a href="https://github.com/tex8com/monero-fast-wallet/blob/main/docs/PRIVACY_MODEL.md">Privacy model</a></li>
-        </ul>
-      </section>
-    </div>
-  </main>
-</body>
-</html>"#;
+const PROJECT_PAGE_HTML: &str = include_str!("../assets/project-page.html");
 
 #[derive(Debug)]
 enum ApiError {
@@ -675,6 +545,18 @@ mod tests {
         let body = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(body.contains("https://github.com/tex8com/monero-fast-wallet"));
         assert!(body.contains("/v1/fast-receive"));
+        assert!(body.contains("Monero Fast Wallet + TEX8 Cuprate"));
+        assert!(body.contains("7.77×"));
+        assert!(body.contains("159,504 Mainnet blocks"));
+        assert!(body.contains("Illustrative placeholders"));
+        assert!(body.contains("class=\"desktop-preview\""));
+        assert!(body.contains("Google_Play_Store_badge_EN.svg"));
+        assert!(body.contains("Download_on_the_App_Store_RGB_blk.svg"));
+        assert!(body.contains("Download_on_the_Mac_App_Store_Badge_US-UK_RGB_wht.svg"));
+        assert!(body.contains("Get_it_from_Microsoft_Badge.svg"));
+        assert!(body.contains("Linux_tux_circle_logo.svg"));
+        assert_eq!(body.matches("class=\"store-button\"").count(), 5);
+        assert!(!body.contains("store-button\" href="));
         assert!(!body.contains("private_view_key"));
     }
 
