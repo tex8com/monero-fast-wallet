@@ -295,7 +295,11 @@ h3 { letter-spacing: -.025em; }
   .phone-buttons span { min-height: 53px; }
   .phone-placeholder .placeholder-note { display: none; }
   .download-grid { grid-template-columns: 1fr; }
-  .download-card { min-height: 230px; }
+  .download-grid { gap: 10px; }
+  .download-card { min-height: 0; padding: 16px 12px; }
+  .download-card h3 { margin-bottom: 10px; }
+  .store-badge { height: 72px; }
+  .package-links { min-height: 0; margin-top: 10px; }
   .assistant-dock { right: 14px; bottom: 14px; }
   .assistant-trigger b { display: none; }
   .assistant-trigger { width: 54px; padding: 0; justify-content: center; }

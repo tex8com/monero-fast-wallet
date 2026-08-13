@@ -50,3 +50,8 @@ test("mobile header keeps the logo and uses a labelled app button", () => {
   assert.match(styles, /\.brand-name\s*\{\s*display:\s*none/);
   assert.match(styles, /\.mobile-download-label\s*\{\s*display:\s*inline/);
 });
+
+test("mobile download cards use content height without empty space", () => {
+  assert.match(styles, /\.download-card\s*\{\s*min-height:\s*0;\s*padding:\s*16px 12px;/);
+  assert.match(styles, /\.package-links\s*\{\s*min-height:\s*0;\s*margin-top:\s*10px;/);
+});
