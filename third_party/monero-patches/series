@@ -79,3 +79,4 @@
 0078-wallet-accept-clean-persistent-lane-tip.patch
 0079-wallet-use-six-persistent-grpc-lanes.patch
 0080-wallet-spill-public-blockstream-overflow-to-bounded-disk.patch
+0081-wallet-cli-dispatch-Community-V1-companion.patch

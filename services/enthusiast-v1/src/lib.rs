@@ -700,7 +700,13 @@ async fn delete_identity(
         lifecycle
             .deactivate_and_erase(matrix_user_id.as_str())
             .await
-            .map_err(|_| ApiError::Unavailable)?;
+            .map_err(|error| {
+                eprintln!(
+                    "enthusiast-v1: Matrix account deletion failed for identity {}: {}",
+                    identity, error
+                );
+                ApiError::Unavailable
+            })?;
     }
     state
         .publication
@@ -748,7 +754,14 @@ async fn provision_matrix_identity(
     let account = provisioner
         .provision(&identity, password.as_str())
         .await
-        .map_err(|_| ApiError::Unavailable)?;
+        .map_err(|error| {
+            // Never log the submitted Matrix password or authorization header.
+            eprintln!(
+                "enthusiast-v1: Matrix provisioning failed for identity {}: {}",
+                identity, error
+            );
+            ApiError::Unavailable
+        })?;
     state
         .contacts
         .register_matrix_identity(&identity, &account.matrix_user_id, now_ms())

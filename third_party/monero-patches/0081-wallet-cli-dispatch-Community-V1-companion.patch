@@ -1,0 +1,189 @@
+From 8d3dea02113ce4925430a02fe5569f7d9ae10b38 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet Engineering <wallet@tex8.com>
+Date: Wed, 12 Aug 2026 18:43:32 -0500
+Subject: [PATCH] wallet-cli: dispatch Community V1 companion
+
+---
+ src/simplewallet/CMakeLists.txt            |   3 +-
+ src/simplewallet/product_cli_community.cpp | 116 +++++++++++++++++++++
+ src/simplewallet/product_cli_community.h   |   9 ++
+ src/simplewallet/product_cli_debug.cpp     |   3 +
+ 4 files changed, 130 insertions(+), 1 deletion(-)
+ create mode 100644 src/simplewallet/product_cli_community.cpp
+ create mode 100644 src/simplewallet/product_cli_community.h
+
+diff --git a/src/simplewallet/CMakeLists.txt b/src/simplewallet/CMakeLists.txt
+index b7811c0..79634db 100644
+--- a/src/simplewallet/CMakeLists.txt
++++ b/src/simplewallet/CMakeLists.txt
+@@ -33,7 +33,8 @@ set(product_cli_sources
+   simplewallet.cpp
+   product_cli_debug.cpp
+   product_cli_app.cpp
+-  product_cli_fast_wallet.cpp)
++  product_cli_fast_wallet.cpp
++  product_cli_community.cpp)
+ 
+ set(simplewallet_headers)
+ 
+diff --git a/src/simplewallet/product_cli_community.cpp b/src/simplewallet/product_cli_community.cpp
+new file mode 100644
+index 0000000..9633e9f
+--- /dev/null
++++ b/src/simplewallet/product_cli_community.cpp
+@@ -0,0 +1,116 @@
++// Copyright (c) 2026 TEX8
++// SPDX-License-Identifier: BSD-3-Clause
++
++#include "product_cli_community.h"
++
++#include <boost/filesystem.hpp>
++#include <cerrno>
++#include <cstring>
++#include <iostream>
++#include <string>
++#include <vector>
++
++#if defined(_WIN32)
++#include <process.h>
++#include <windows.h>
++#elif defined(__APPLE__)
++#include <mach-o/dyld.h>
++#include <unistd.h>
++#else
++#include <limits.h>
++#include <unistd.h>
++#endif
++
++namespace
++{
++  boost::filesystem::path executable_path()
++  {
++#if defined(_WIN32)
++    std::vector<char> buffer(32768, '\0');
++    const DWORD length = GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
++    if (length == 0 || length >= buffer.size())
++      return {};
++    return boost::filesystem::path(std::string(buffer.data(), length));
++#elif defined(__APPLE__)
++    uint32_t size = 0;
++    if (_NSGetExecutablePath(nullptr, &size) != -1 || size == 0)
++      return {};
++    std::vector<char> buffer(size, '\0');
++    if (_NSGetExecutablePath(buffer.data(), &size) != 0)
++      return {};
++    return boost::filesystem::canonical(boost::filesystem::path(buffer.data()));
++#else
++    std::vector<char> buffer(PATH_MAX + 1, '\0');
++    const ssize_t length = readlink("/proc/self/exe", buffer.data(), PATH_MAX);
++    if (length <= 0 || length > PATH_MAX)
++      return {};
++    return boost::filesystem::path(std::string(buffer.data(), static_cast<std::size_t>(length)));
++#endif
++  }
++
++  int run_companion(const boost::filesystem::path& companion,
++                    const std::vector<std::string>& arguments)
++  {
++#if defined(_WIN32)
++    std::vector<const char*> raw;
++    raw.reserve(arguments.size() + 2);
++    const std::string executable = companion.string();
++    raw.push_back(executable.c_str());
++    for (const std::string& argument : arguments)
++      raw.push_back(argument.c_str());
++    raw.push_back(nullptr);
++    return static_cast<int>(_spawnv(_P_WAIT, executable.c_str(), raw.data()));
++#else
++    std::vector<char*> raw;
++    raw.reserve(arguments.size() + 2);
++    std::string executable = companion.string();
++    raw.push_back(&executable[0]);
++    for (const std::string& argument : arguments)
++      raw.push_back(const_cast<char*>(argument.c_str()));
++    raw.push_back(nullptr);
++    execv(executable.c_str(), raw.data());
++    return -1;
++#endif
++  }
++}
++
++namespace mfw_cli
++{
++  bool handle_community_command(int argc, char* argv[], int& exit_code)
++  {
++    if (argc < 2 || std::string(argv[1]) != "community")
++      return false;
++
++    const boost::filesystem::path current = executable_path();
++#if defined(_WIN32)
++    const char* companion_name = "monero-enthusiast-cli.exe";
++#else
++    const char* companion_name = "monero-enthusiast-cli";
++#endif
++    const boost::filesystem::path companion = current.parent_path() / companion_name;
++    if (current.empty() || !boost::filesystem::is_regular_file(companion))
++    {
++      std::cerr << "The packaged Monero Enthusiast CLI companion is missing next to this executable.\n";
++      exit_code = 69;
++      return true;
++    }
++
++    std::vector<std::string> arguments;
++    for (int index = 2; index < argc; ++index)
++      arguments.emplace_back(argv[index]);
++    if (arguments.empty())
++      arguments.emplace_back("--help");
++    const int result = run_companion(companion, arguments);
++    if (result < 0)
++    {
++      std::cerr << "Could not start the packaged Monero Enthusiast CLI: "
++                << std::strerror(errno) << "\n";
++      exit_code = 69;
++    }
++    else
++    {
++      exit_code = result;
++    }
++    return true;
++  }
++}
+diff --git a/src/simplewallet/product_cli_community.h b/src/simplewallet/product_cli_community.h
+new file mode 100644
+index 0000000..97f1682
+--- /dev/null
++++ b/src/simplewallet/product_cli_community.h
+@@ -0,0 +1,9 @@
++// Copyright (c) 2026 TEX8
++// SPDX-License-Identifier: BSD-3-Clause
++
++#pragma once
++
++namespace mfw_cli
++{
++  bool handle_community_command(int argc, char* argv[], int& exit_code);
++}
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index 8542a52..3fd81e2 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -3,6 +3,7 @@
+ 
+ #include "product_cli_debug.h"
+ #include "product_cli_app.h"
++#include "product_cli_community.h"
+ #include "product_cli_fast_wallet.h"
+ 
+ #include <array>
+@@ -670,6 +671,8 @@ namespace mfw_cli
+ 
+   bool handle_early_product_command(int argc, char* argv[], int& exit_code)
+   {
++    if (handle_community_command(argc, argv, exit_code))
++      return true;
+     if (handle_fast_wallet_operation(argc, argv, exit_code))
+       return true;
+     if (argc >= 2 && std::string(argv[1]) == "fast-wallet")
+-- 
+2.50.1 (Apple Git-155)
+

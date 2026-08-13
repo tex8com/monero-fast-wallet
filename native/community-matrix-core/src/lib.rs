@@ -1,7 +1,7 @@
 //! Native Matrix E2EE boundary for Monero Enthusiast V1.
 
 use matrix_sdk::{
-    config::SyncSettings,
+    config::{RequestConfig, SyncSettings},
     encryption::{recovery::RecoveryState, EncryptionSettings},
     room::MessagesOptions,
     ruma::{
@@ -11,7 +11,7 @@ use matrix_sdk::{
         },
         EventId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
     },
-    Client, Room,
+    Client, Room, RoomMemberships, RoomState,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -32,6 +32,7 @@ const SHORT_RATE_LIMIT: usize = 5;
 const LONG_RATE_LIMIT: usize = 60;
 const MAX_PAGE_SIZE: usize = 100;
 const MAX_PAGINATION_TOKEN_BYTES: usize = 4_096;
+const MATRIX_NETWORK_OPERATION_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Error)]
 pub enum MatrixCoreError {
@@ -41,12 +42,20 @@ pub enum MatrixCoreError {
     InvalidInput(String),
     #[error("Matrix session is unavailable")]
     SessionUnavailable,
-    #[error("Matrix room is not an encrypted one-to-one chat")]
-    UnsafeRoom,
+    #[error(
+        "Matrix room is not an encrypted one-to-one chat (direct={direct}, activeMembers={active_members}, encrypted={encrypted})"
+    )]
+    UnsafeRoom {
+        direct: bool,
+        active_members: u64,
+        encrypted: bool,
+    },
     #[error("Please wait before sending another message")]
     RateLimited,
     #[error("Matrix operation failed")]
     Matrix,
+    #[error("Matrix operation failed during {0}")]
+    MatrixStage(&'static str),
     #[error("Matrix local state is unavailable")]
     LockUnavailable,
 }
@@ -87,14 +96,18 @@ impl MatrixE2eeClient {
         validate_password(password)?;
         validate_device_name(device_display_name)?;
         let client = build_client(&config).await?;
-        client
-            .matrix_auth()
-            .login_username(matrix_user_id.as_str(), password)
-            .initial_device_display_name(device_display_name)
-            .request_refresh_token()
-            .send()
-            .await
-            .map_err(|_| MatrixCoreError::SessionUnavailable)?;
+        tokio::time::timeout(
+            MATRIX_NETWORK_OPERATION_TIMEOUT,
+            client
+                .matrix_auth()
+                .login_username(matrix_user_id.as_str(), password)
+                .initial_device_display_name(device_display_name)
+                .request_refresh_token()
+                .send(),
+        )
+        .await
+        .map_err(|_| MatrixCoreError::MatrixStage("login timeout"))?
+        .map_err(|_| MatrixCoreError::SessionUnavailable)?;
         let session = client
             .matrix_auth()
             .session()
@@ -122,7 +135,7 @@ impl MatrixE2eeClient {
         client
             .restore_session(session)
             .await
-            .map_err(|_| MatrixCoreError::SessionUnavailable)?;
+            .map_err(|_| MatrixCoreError::MatrixStage("session restoration"))?;
         Ok(Self::from_client(client))
     }
 
@@ -162,7 +175,7 @@ impl MatrixE2eeClient {
         self.client
             .sync_once(SyncSettings::default().timeout(timeout))
             .await
-            .map_err(|_| MatrixCoreError::Matrix)?;
+            .map_err(|_| MatrixCoreError::MatrixStage("sync"))?;
         Ok(())
     }
 
@@ -174,14 +187,53 @@ impl MatrixE2eeClient {
                 "a direct room requires another user".to_owned(),
             ));
         }
-        let room = if let Some(room) = self.client.get_dm_room(&peer) {
-            room
+        let room_id = if let Some(room) = self.client.get_dm_room(&peer) {
+            room.room_id().to_owned()
         } else {
             self.client
                 .create_dm(&peer)
                 .await
                 .map_err(|_| MatrixCoreError::Matrix)?
+                .room_id()
+                .to_owned()
         };
+        // `create_dm` sends an encrypted initial-state event, but the returned
+        // local Room can still predate the following sync response. Never
+        // weaken the encryption check: synchronize and re-read the room.
+        self.sync_once(Duration::from_secs(5)).await?;
+        let room = self.room(room_id.as_str())?;
+        self.require_safe_direct_room(&room).await?;
+        Ok(room_id)
+    }
+
+    /// Accept an encrypted direct-room invitation and verify the one-to-one
+    /// invariant again after joining. This is intentionally separate from
+    /// `sync_once`: receiving an invitation must never accept it implicitly.
+    pub async fn join_direct_room(&self, room_id: &str) -> Result<OwnedRoomId> {
+        let room = self.room(room_id)?;
+        // The invite sync already carries the stripped `m.room.encryption`
+        // event. Synapse correctly rejects a full state-event query before the
+        // invite is accepted, so use only that authenticated local invite
+        // state here and re-check against authoritative state after joining.
+        let invited_direct = room
+            .is_direct()
+            .await
+            .map_err(|_| MatrixCoreError::MatrixStage("invitation direct-room check"))?;
+        let invited_encrypted = room.encryption_settings().is_some();
+        if room.state() != RoomState::Invited || !invited_direct || !invited_encrypted {
+            return Err(MatrixCoreError::UnsafeRoom {
+                direct: invited_direct,
+                active_members: room.active_members_count(),
+                encrypted: invited_encrypted,
+            });
+        }
+        room.join()
+            .await
+            .map_err(|_| MatrixCoreError::MatrixStage("invitation acceptance"))?;
+        self.sync_once(Duration::from_secs(5)).await?;
+        room.set_is_direct(true)
+            .await
+            .map_err(|_| MatrixCoreError::MatrixStage("direct-room marking"))?;
         self.require_safe_direct_room(&room).await?;
         Ok(room.room_id().to_owned())
     }
@@ -349,18 +401,33 @@ impl MatrixE2eeClient {
     }
 
     async fn require_safe_direct_room(&self, room: &Room) -> Result<()> {
-        if !room
+        // A freshly created/restored room may have encryption and direct-room
+        // account data but no locally hydrated member events yet. Fetch the
+        // authoritative member list before enforcing the exact two-member
+        // boundary; a cached zero must never be mistaken for an unsafe room.
+        let active_members = tokio::time::timeout(
+            MATRIX_NETWORK_OPERATION_TIMEOUT,
+            room.members(RoomMemberships::ACTIVE),
+        )
+        .await
+        .map_err(|_| MatrixCoreError::MatrixStage("member-list timeout"))?
+        .map_err(|_| MatrixCoreError::MatrixStage("member-list hydration"))?
+        .len() as u64;
+        let direct = room
             .is_direct()
             .await
-            .map_err(|_| MatrixCoreError::Matrix)?
-            || room.active_members_count() != 2
-            || !room
-                .latest_encryption_state()
-                .await
-                .map_err(|_| MatrixCoreError::Matrix)?
-                .is_encrypted()
-        {
-            return Err(MatrixCoreError::UnsafeRoom);
+            .map_err(|_| MatrixCoreError::MatrixStage("direct-room check"))?;
+        let encrypted = room
+            .latest_encryption_state()
+            .await
+            .map_err(|_| MatrixCoreError::MatrixStage("room encryption check"))?
+            .is_encrypted();
+        if !direct || active_members != 2 || !encrypted {
+            return Err(MatrixCoreError::UnsafeRoom {
+                direct,
+                active_members,
+                encrypted,
+            });
         }
         Ok(())
     }
@@ -390,18 +457,31 @@ impl MatrixE2eeClient {
 
 async fn build_client(config: &MatrixClientConfig<'_>) -> Result<Client> {
     let passphrase = Zeroizing::new(config.store_passphrase.to_owned());
-    Client::builder()
+    let build = Client::builder()
         .homeserver_url(config.homeserver)
+        // SDK defaults retry transient failures without a total limit. Wallet
+        // UI and CI must fail visibly instead of waiting forever.
+        .request_config(
+            RequestConfig::new()
+                .timeout(Duration::from_secs(20))
+                .max_retry_time(Duration::from_secs(30)),
+        )
         .sqlite_store(config.store_path, Some(passphrase.as_str()))
         .with_encryption_settings(EncryptionSettings {
-            auto_enable_cross_signing: true,
-            auto_enable_backups: true,
+            // Login must remain a bounded authentication operation. Recovery
+            // and cross-signing are explicitly enabled by the user later;
+            // auto-bootstrap here performs extra authenticated requests and
+            // can trip Synapse login limits during multi-wallet startup.
+            auto_enable_cross_signing: false,
+            auto_enable_backups: false,
             ..Default::default()
         })
         .handle_refresh_tokens()
-        .build()
+        .build();
+    tokio::time::timeout(MATRIX_NETWORK_OPERATION_TIMEOUT, build)
         .await
-        .map_err(|_| MatrixCoreError::Matrix)
+        .map_err(|_| MatrixCoreError::MatrixStage("client initialization timeout"))?
+        .map_err(|_| MatrixCoreError::MatrixStage("client initialization"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1128,9 +1208,11 @@ mod ffi {
                 STATUS_INVALID_ARGUMENT
             }
             MatrixCoreError::SessionUnavailable => STATUS_SESSION_UNAVAILABLE,
-            MatrixCoreError::UnsafeRoom => STATUS_UNSAFE_ROOM,
+            MatrixCoreError::UnsafeRoom { .. } => STATUS_UNSAFE_ROOM,
             MatrixCoreError::RateLimited => STATUS_RATE_LIMITED,
-            MatrixCoreError::Matrix | MatrixCoreError::LockUnavailable => STATUS_OPERATION_FAILED,
+            MatrixCoreError::Matrix
+            | MatrixCoreError::MatrixStage(_)
+            | MatrixCoreError::LockUnavailable => STATUS_OPERATION_FAILED,
         }
     }
 

@@ -1,0 +1,37 @@
+[package]
+name = "monero-enthusiast-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+rust-version = "1.93"
+
+[[bin]]
+name = "monero-enthusiast-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+community-matrix-core = { path = "../../native/community-matrix-core" }
+community-search-core = { path = "../../packages/community-search-core" }
+ed25519-dalek = "2"
+hex = "0.4"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+url = "2"
+zeroize = "1"
+
+[dev-dependencies]
+async-trait = "0.1"
+axum = { version = "0.8", features = ["http1", "json", "tokio"], default-features = false }
+community-chat-report-core = { path = "../../packages/community-chat-report-core" }
+community-contact-core = { path = "../../packages/community-contact-core" }
+community-notification-core = { path = "../../packages/community-notification-core" }
+community-publication-core = { path = "../../packages/community-publication-core" }
+community-query-contribution-core = { path = "../../packages/community-query-contribution-core" }
+enthusiast-v1 = { path = "../../services/enthusiast-v1" }
+rand = "0.8"
+tempfile = "3"

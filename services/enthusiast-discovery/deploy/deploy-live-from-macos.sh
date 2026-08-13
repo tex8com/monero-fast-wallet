@@ -87,7 +87,9 @@ if ! id "$service_user" >/dev/null 2>&1; then
     --shell /usr/sbin/nologin "$service_user"
 fi
 
-sudo install -d -m 0750 /etc/monero-fast-wallet
+# Shared service configuration root: per-file modes provide confidentiality.
+# A service-specific 0750 group here would break sibling services' traversal.
+sudo install -d -o root -g root -m 0755 /etc/monero-fast-wallet
 # A non-empty but malformed environment file used to pass the old check and
 # left systemd in a restart loop because the service never received its storage
 # key.  Validate the exact, non-secret shape instead.  Replacing an invalid

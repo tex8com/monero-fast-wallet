@@ -7,6 +7,12 @@ on:
   schedule:
     - cron: '17 3 * * 6'
   workflow_dispatch:
+    inputs:
+      run_live_community_matrix:
+        description: Run disposable Community/Matrix E2EE acceptance against xmr.tex8.com
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -115,6 +121,8 @@ jobs:
             manifest: packages/community-search-core/Cargo.toml
           - name: community-runtime-core
             manifest: native/community-runtime-core/Cargo.toml
+          - name: community-cli-full-testbench
+            manifest: tools/community-cli/Cargo.toml
           - name: monero-news
             manifest: services/monero-news/Cargo.toml
           - name: notification-gateway
@@ -128,6 +136,25 @@ jobs:
           rustup toolchain install 1.97.0 --profile minimal
           rustup default 1.97.0
       - run: cargo test --locked --manifest-path ${{ matrix.manifest }}
+
+  community-live-matrix:
+    name: Live Community Matrix E2EE acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live_community_matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install exact Rust toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+      - name: Build the locked Community CLI
+        run: cargo build --locked --release --manifest-path tools/community-cli/Cargo.toml
+      - name: Exercise disposable live identities and Matrix E2EE
+        env:
+          MFW_LIVE_COMMUNITY_MATRIX_TEST: RUN_DISPOSABLE_COMMUNITY_MATRIX_E2E
+          MFW_COMMUNITY_CLI_BIN: ${{ github.workspace }}/tools/community-cli/target/release/monero-enthusiast-cli
+        run: ./tools/community-cli/test-live-matrix.sh
 
   cuprate:
     name: Cuprate locked compile
