@@ -7,6 +7,8 @@ const content = await readFile(new URL("../src/content.js", import.meta.url), "u
 const assistant = await readFile(new URL("../src/AssistantDock.jsx", import.meta.url), "utf8");
 const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+const nginx = await readFile(new URL("../../ops/project-page/nginx-location.conf", import.meta.url), "utf8");
+const deploy = await readFile(new URL("../../ops/project-page/deploy.sh", import.meta.url), "utf8");
 
 test("German and English routes have SEO metadata", () => {
   assert.match(html, /hreflang="de"/);
@@ -53,6 +55,12 @@ test("mobile header keeps the logo and uses a labelled app button", () => {
   assert.doesNotMatch(styles, /\.brand-name\s*\{\s*display:\s*none/);
   assert.doesNotMatch(styles, /\.monero-mark i/);
   assert.match(styles, /\.mobile-download-label\s*\{\s*display:\s*inline/);
+});
+
+test("the production route and deployment gate serve the real wallet logo", () => {
+  assert.match(nginx, /location = \/monero-wallet-logo\.svg/);
+  assert.match(deploy, /https:\/\/xmr\.tex8\.com\/monero-wallet-logo\.svg/);
+  assert.match(deploy, /grep -q '<svg'/);
 });
 
 test("language selection lives inside the burger menu", () => {
