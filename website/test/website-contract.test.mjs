@@ -26,6 +26,7 @@ test("English is canonical at root and German lives under de", () => {
   assert.match(app, /pathname\.startsWith\("\/de"\) \? "de" : "en"/);
   assert.match(postbuild, /canonical: "https:\/\/xmr\.tex8\.com\/de\/"/);
   assert.match(nginx, /location = \/en\/ \{\s*return 301 \/;/);
+  assert.match(deploy, /301 https:\/\/xmr\.tex8\.com\//);
 });
 
 test("download formats and equal badge contract are present", () => {
