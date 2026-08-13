@@ -121,8 +121,10 @@ if ! curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/ -o "$v
   rollback
   exit 1
 fi
-curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/en/ -o "$validation_dir/en.html" || { rollback; exit 1; }
-grep -q 'lang="en"' "$validation_dir/en.html" || { rollback; exit 1; }
+grep -q 'lang="en"' "$validation_dir/root.html" || { rollback; exit 1; }
+curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/de/ -o "$validation_dir/de.html" || { rollback; exit 1; }
+grep -q 'lang="de"' "$validation_dir/de.html" || { rollback; exit 1; }
+curl -fsSI --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/en/ | grep -qi '^location: /' || { rollback; exit 1; }
 curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/monero-wallet-logo.svg -o "$validation_dir/monero-wallet-logo.svg" || { rollback; exit 1; }
 grep -q '<svg' "$validation_dir/monero-wallet-logo.svg" || { rollback; exit 1; }
 curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/healthz >/dev/null || { rollback; exit 1; }

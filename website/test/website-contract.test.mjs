@@ -9,6 +9,7 @@ const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 const nginx = await readFile(new URL("../../ops/project-page/nginx-location.conf", import.meta.url), "utf8");
 const deploy = await readFile(new URL("../../ops/project-page/deploy.sh", import.meta.url), "utf8");
+const postbuild = await readFile(new URL("../scripts/postbuild.mjs", import.meta.url), "utf8");
 
 test("German and English routes have SEO metadata", () => {
   assert.match(html, /hreflang="de"/);
@@ -16,6 +17,15 @@ test("German and English routes have SEO metadata", () => {
   assert.match(html, /SoftwareApplication/);
   assert.match(content, /de:\s*{/);
   assert.match(content, /en:\s*{/);
+});
+
+test("English is canonical at root and German lives under de", () => {
+  assert.match(html, /<html lang="en">/);
+  assert.match(html, /hreflang="en" href="https:\/\/xmr\.tex8\.com\/"/);
+  assert.match(html, /hreflang="de" href="https:\/\/xmr\.tex8\.com\/de\/"/);
+  assert.match(app, /pathname\.startsWith\("\/de"\) \? "de" : "en"/);
+  assert.match(postbuild, /canonical: "https:\/\/xmr\.tex8\.com\/de\/"/);
+  assert.match(nginx, /location = \/en\/ \{\s*return 301 \/;/);
 });
 
 test("download formats and equal badge contract are present", () => {

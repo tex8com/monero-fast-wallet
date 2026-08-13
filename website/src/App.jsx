@@ -11,7 +11,7 @@ function Mark() {
 }
 
 function LanguageLink({ language, text }) {
-  const href = language === "de" ? "/en/" : "/";
+  const href = language === "de" ? "/" : "/de/";
   return <a className="menu-language-link" href={href} lang={language === "de" ? "en" : "de"} aria-label={text.switchLabel}>{language === "de" ? "English" : "Deutsch"}<span>{language === "de" ? text.en : text.de} ↗</span></a>;
 }
 
@@ -229,7 +229,7 @@ function Footer({ text }) {
 }
 
 export default function App() {
-  const language = useMemo(() => window.location.pathname.startsWith("/en") ? "en" : "de", []);
+  const language = useMemo(() => window.location.pathname.startsWith("/de") ? "de" : "en", []);
   const text = copy[language];
   useEffect(() => { document.documentElement.lang = language; }, [language]);
   return <><div id="top" /><Header language={language} text={text} /><main><Hero text={text} /><Features text={text} /><Modes text={text} /><Benchmark text={text} /><Downloads text={text} /><NodeSection text={text} /><OpenSource text={text} /><FAQ text={text} /></main><Footer text={text} /><AssistantDock text={text} language={language} /></>;
