@@ -29,13 +29,15 @@ test("open-source SVG links to the project repository", () => {
   assert.match(html, /codeRepository/);
 });
 
-test("assistant has fixed product identity, knowledge, and secret warning", () => {
+test("assistant has fixed product identity, knowledge, secret warning, and persistent prompt", () => {
   assert.match(assistant, /shopId: "monero-fast-wallet"/);
   assert.match(assistant, /tenantId: "tex8"/);
   assert.match(assistant, /conversation_id: conversationId/);
   assert.doesNotMatch(assistant, /system_instructions/);
   assert.doesNotMatch(assistant, /assistantKnowledge/);
   assert.doesNotMatch(assistant, /private_view_key/);
+  assert.match(assistant, /className="assistant-quick-form"/);
+  assert.match(assistant, /onSubmit={sendFromDock}/);
 });
 
 test("node uses the public product name", () => {
@@ -44,11 +46,26 @@ test("node uses the public product name", () => {
 });
 
 test("mobile header keeps the logo and uses a labelled app button", () => {
+  assert.match(app, /src="\/monero-wallet-logo\.svg"/);
   assert.match(app, /className="brand-name"/);
   assert.match(app, /className="mobile-download-label">APP</);
   assert.doesNotMatch(styles, /\.brand span\s*\{\s*display:\s*none/);
-  assert.match(styles, /\.brand-name\s*\{\s*display:\s*none/);
+  assert.doesNotMatch(styles, /\.brand-name\s*\{\s*display:\s*none/);
+  assert.doesNotMatch(styles, /\.monero-mark i/);
   assert.match(styles, /\.mobile-download-label\s*\{\s*display:\s*inline/);
+});
+
+test("language selection lives inside the burger menu", () => {
+  const navActions = app.slice(app.indexOf('<div className="nav-actions">'), app.indexOf('<nav id="site-menu"'));
+  const menu = app.slice(app.indexOf('<nav id="site-menu"'), app.indexOf('</header>'));
+  assert.doesNotMatch(navActions, /<LanguageLink/);
+  assert.match(menu, /<LanguageLink/);
+  assert.match(app, /className="menu-language-link"/);
+});
+
+test("mobile page clamps horizontal overflow while the hero remains swipeable", () => {
+  assert.match(styles, /html, body, #root\s*\{[^}]*overflow-x:\s*clip;[^}]*overscroll-behavior-x:\s*none;/);
+  assert.match(styles, /\.hero\s*\{[^}]*touch-action:\s*pan-y pinch-zoom;/);
 });
 
 test("mobile download cards use content height without empty space", () => {

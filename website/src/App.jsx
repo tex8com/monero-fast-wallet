@@ -5,12 +5,12 @@ import { copy, releaseUrl, repositoryUrl } from "./content";
 const badgeBase = "https://commons.wikimedia.org/wiki/Special:Redirect/file/";
 
 function Mark() {
-  return <span className="monero-mark" aria-hidden="true"><i /></span>;
+  return <img className="monero-mark" src="/monero-wallet-logo.svg" alt="" aria-hidden="true" />;
 }
 
 function LanguageLink({ language, text }) {
   const href = language === "de" ? "/en/" : "/";
-  return <a className="language-link" href={href} lang={language === "de" ? "en" : "de"} aria-label={text.switchLabel}>{language === "de" ? text.en : text.de}</a>;
+  return <a className="menu-language-link" href={href} lang={language === "de" ? "en" : "de"} aria-label={text.switchLabel}>{language === "de" ? "English" : "Deutsch"}<span>{language === "de" ? text.en : text.de} ↗</span></a>;
 }
 
 function Header({ language, text }) {
@@ -25,13 +25,13 @@ function Header({ language, text }) {
       <div className="shell nav-row">
         <a className="brand" href="#top" aria-label="Monero Fast Wallet Home"><Mark /><span className="brand-name">Monero <em>Fast Wallet</em></span></a>
         <div className="nav-actions">
-          <LanguageLink language={language} text={text} />
           <a className="download-button" href="#downloads" aria-label={`${text.download} App`}><span className="download-arrow" aria-hidden="true">↓</span><b>{text.download}</b><span className="mobile-download-label">APP</span></a>
           <button className="burger" type="button" aria-expanded={menuOpen} aria-controls="site-menu" aria-label={menuOpen ? text.close : text.menu} onClick={() => setMenuOpen((value) => !value)}><span /><span /><span /></button>
         </div>
       </div>
       <nav id="site-menu" className={`menu-panel ${menuOpen ? "is-open" : ""}`} aria-hidden={!menuOpen}>
         <div className="shell menu-links">
+          <LanguageLink language={language} text={text} />
           {text.nav.map(([href, label]) => <a href={href} key={href} onClick={() => setMenuOpen(false)}>{label}<span>↘</span></a>)}
           <a href={repositoryUrl}>{text.github}<span>↗</span></a>
         </div>

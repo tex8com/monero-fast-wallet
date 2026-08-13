@@ -18,8 +18,9 @@
 }
 
 * { box-sizing: border-box; }
-html { overflow-x: hidden; scroll-behavior: smooth; scroll-padding-top: 90px; }
-body { margin: 0; min-width: 320px; overflow-x: hidden; background: radial-gradient(circle at 86% 2%, rgba(255,104,31,.13), transparent 32rem), radial-gradient(circle at 5% 30%, rgba(92,70,190,.13), transparent 36rem), var(--bg); color: var(--text); line-height: 1.55; -webkit-font-smoothing: antialiased; }
+html, body, #root { max-width: 100%; overflow-x: clip; overscroll-behavior-x: none; }
+html { scroll-behavior: smooth; scroll-padding-top: 90px; }
+body { position: relative; margin: 0; min-width: 320px; padding-bottom: 88px; background: radial-gradient(circle at 86% 2%, rgba(255,104,31,.13), transparent 32rem), radial-gradient(circle at 5% 30%, rgba(92,70,190,.13), transparent 36rem), var(--bg); color: var(--text); line-height: 1.55; -webkit-font-smoothing: antialiased; }
 a { color: inherit; text-decoration: none; }
 button, input { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
@@ -31,11 +32,11 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid 
 .site-header { position: sticky; z-index: 80; top: 0; border-bottom: 1px solid rgba(255,255,255,.07); background: rgba(8,7,16,.82); backdrop-filter: blur(20px); }
 .nav-row { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .brand { display: inline-flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 880; letter-spacing: -.025em; }
+.brand-name { white-space: nowrap; }
 .brand-name em { color: var(--orange); font-style: normal; }
-.monero-mark { position: relative; flex: 0 0 auto; width: 38px; height: 38px; overflow: hidden; border-radius: 50%; background: linear-gradient(#ff681f 0 58%, #585660 58%); box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 10px 28px rgba(255,104,31,.18); }
-.monero-mark i { position: absolute; inset: 9px 7px 0; background: white; clip-path: polygon(0 0,50% 48%,100% 0,100% 100%,76% 100%,76% 48%,50% 73%,24% 48%,24% 100%,0 100%); }
+.monero-mark { flex: 0 0 auto; width: 38px; height: 38px; object-fit: contain; filter: drop-shadow(0 10px 18px rgba(255,104,31,.16)); }
 .nav-actions { display: flex; align-items: center; gap: 9px; }
-.language-link, .burger { height: 46px; min-width: 46px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.035); color: var(--muted); font-size: 12px; font-weight: 850; }
+.burger { height: 46px; min-width: 46px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.035); color: var(--muted); font-size: 12px; font-weight: 850; }
 .download-button { height: 46px; padding: 0 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: var(--orange); color: #170d0b; font-size: 14px; font-weight: 900; box-shadow: 0 12px 36px rgba(255,104,31,.22); }
 .download-button b { font: inherit; }
 .mobile-download-label { display: none; }
@@ -77,7 +78,6 @@ h3 { letter-spacing: -.025em; }
 .desktop-layout { height: calc(100% - 30px); display: grid; grid-template-columns: 92px 1fr; }
 .desktop-layout aside { padding: 17px 12px; display: flex; flex-direction: column; gap: 15px; border-right: 1px solid var(--line); background: #110d20; }
 .desktop-layout aside .monero-mark { width: 25px; height: 25px; }
-.desktop-layout aside .monero-mark i { inset: 6px 5px 0; }
 .desktop-layout aside > span { height: 8px; border-radius: 20px; background: rgba(255,255,255,.1); }
 .desktop-layout aside > span:first-of-type { height: 27px; background: rgba(255,104,31,.14); border: 1px solid rgba(255,104,31,.22); }
 .desktop-layout main { padding: 20px; }
@@ -93,7 +93,6 @@ h3 { letter-spacing: -.025em; }
 .phone-ui { min-height: 386px; padding: 20px 14px; border-radius: 30px; background: linear-gradient(155deg,#151126,#080711 62%); }
 .phone-header { display: flex; align-items: center; justify-content: space-between; color: var(--green); font-size: 9px; font-weight: 850; }
 .phone-header .monero-mark { width: 27px; height: 27px; }
-.phone-header .monero-mark i { inset: 6px 5px 0; }
 .phone-ui > p { margin: 31px 0 5px; color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .12em; }
 .phone-ui > strong { font-size: 29px; letter-spacing: -.055em; }
 .phone-ui > svg { height: 96px; margin: 15px 0 18px; }
@@ -207,10 +206,16 @@ h3 { letter-spacing: -.025em; }
 .service-status.online { color: var(--green); }
 .service-status.offline { color: #e1b755; }
 
-.assistant-dock { position: fixed; z-index: 100; right: 20px; bottom: 20px; }
-.assistant-trigger { min-height: 52px; padding: 0 20px 0 10px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line-hot); border-radius: 999px; background: var(--surface-2); color: var(--text); box-shadow: 0 22px 60px rgba(0,0,0,.5); cursor: pointer; }
-.assistant-trigger span { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; background: var(--orange); color: #1a0e09; font-size: 18px; }
-.assistant-trigger b { font-size: 13px; }
+.assistant-dock { position: fixed; z-index: 100; bottom: max(14px,env(safe-area-inset-bottom)); }
+.assistant-dock:not(.is-open) { left: 50%; width: min(680px,calc(100vw - 32px)); transform: translateX(-50%); }
+.assistant-dock.is-open { right: 20px; }
+.assistant-quick-form { width: 100%; min-height: 58px; padding: 7px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line-hot); border-radius: 18px; background: rgba(16,13,24,.96); box-shadow: 0 22px 60px rgba(0,0,0,.55); backdrop-filter: blur(18px); }
+.assistant-quick-form input { flex: 1; min-width: 0; height: 42px; padding: 0 8px; border: 0; background: transparent; color: var(--text); outline: 0; }
+.assistant-quick-form input::placeholder { color: var(--quiet); }
+.assistant-quick-open, .assistant-quick-send { flex: 0 0 auto; width: 42px; height: 42px; display: grid; place-items: center; border: 0; border-radius: 12px; cursor: pointer; }
+.assistant-quick-open { background: rgba(255,104,31,.13); color: var(--orange); font-size: 19px; }
+.assistant-quick-send { background: var(--orange); color: #180e0b; font-size: 20px; font-weight: 900; }
+.assistant-quick-send:disabled { opacity: .4; cursor: default; }
 .tx8-ui-assistant { width: min(390px,calc(100vw - 28px)); overflow: hidden; border: 1px solid var(--line-hot); border-radius: 20px; background: #100d18; box-shadow: 0 30px 90px rgba(0,0,0,.6); }
 .tx8-ui-assistant__header { padding: 16px; display: flex; align-items: center; justify-content: space-between; background: linear-gradient(110deg,#25152a,#17111f); }
 .tx8-ui-assistant__header div { display: grid; gap: 2px; }
@@ -246,8 +251,9 @@ h3 { letter-spacing: -.025em; }
 
 @media (max-width: 760px) {
   .shell { width: min(100% - 28px,1180px); }
-  .nav-row { min-height: 68px; }
-  .brand-name { display: none; }
+  .nav-row { min-height: 68px; gap: 10px; }
+  .brand { gap: 8px; font-size: 13px; }
+  .brand .monero-mark { width: 34px; height: 34px; }
   .download-button { width: auto; min-width: 62px; padding: 0 15px; font-size: 12px; letter-spacing: .06em; }
   .download-button b, .download-arrow { display: none; }
   .mobile-download-label { display: inline; }
@@ -281,6 +287,11 @@ h3 { letter-spacing: -.025em; }
 }
 
 @media (max-width: 480px) {
+  .brand { gap: 7px; font-size: 12px; }
+  .brand .monero-mark { width: 32px; height: 32px; }
+  .nav-actions { gap: 7px; }
+  .download-button { min-width: 52px; height: 44px; padding-inline: 12px; }
+  .burger { min-width: 44px; height: 44px; }
   .hero-actions .button { width: 100%; }
   .trust-row { display: grid; gap: 7px; }
   .hero-visual { width: 100%; min-height: 385px; margin-top: 26px; }
@@ -304,9 +315,8 @@ h3 { letter-spacing: -.025em; }
   .download-card h3 { margin-bottom: 10px; }
   .store-badge { height: 72px; }
   .package-links { min-height: 0; margin-top: 10px; }
-  .assistant-dock { right: 14px; bottom: 14px; }
-  .assistant-trigger b { display: none; }
-  .assistant-trigger { width: 54px; padding: 0; justify-content: center; }
+  .assistant-dock:not(.is-open) { width: calc(100vw - 28px); }
+  .assistant-dock.is-open { right: 14px; }
   .tx8-ui-assistant { width: calc(100vw - 28px); }
 }
 

@@ -44,7 +44,7 @@ export function AssistantDock({ text, language }) {
   }, [messages, open]);
 
   async function send(event) {
-    event.preventDefault();
+    event?.preventDefault();
     const prompt = value.trim();
     if (!prompt || sending) return;
     const userMessage = { id: `user-${Date.now()}`, role: "user", text: prompt };
@@ -103,10 +103,23 @@ export function AssistantDock({ text, language }) {
     }
   }
 
+  function sendFromDock(event) {
+    event.preventDefault();
+    if (!value.trim() || sending) return;
+    setOpen(true);
+    void send();
+  }
+
   return (
     <div className={`assistant-dock ${open ? "is-open" : ""}`}>
       {open && <div ref={messagesRef}><AssistantPanel title={text.assistantTitle} statusLabel={text.assistantStatus} messages={messages} value={value} placeholder={text.assistantPlaceholder} isSending={sending} onValueChange={setValue} onSend={send} onClose={() => setOpen(false)} sendLabel={text.assistantSend} closeLabel={text.assistantClose} safety={text.assistantSafety} /></div>}
-      {!open && <button className="assistant-trigger" type="button" onClick={() => setOpen(true)} aria-label={text.assistantOpen}><span aria-hidden="true">✦</span><b>{text.assistantTitle}</b></button>}
+      {!open && (
+        <form className="assistant-quick-form" onSubmit={sendFromDock}>
+          <button className="assistant-quick-open" type="button" onClick={() => setOpen(true)} aria-label={text.assistantOpen}><span aria-hidden="true">✦</span></button>
+          <input aria-label={text.assistantPlaceholder} value={value} onChange={(event) => setValue(event.target.value)} placeholder={text.assistantPlaceholder} disabled={sending} />
+          <button className="assistant-quick-send" type="submit" disabled={!value.trim() || sending} aria-label={text.assistantSend}>↑</button>
+        </form>
+      )}
     </div>
   );
 }
