@@ -158,10 +158,11 @@ function Hero({ text }) {
 }
 
 function Features({ text }) {
+  const featureIcons = ["↑", "↓", "↻", "◆", "◈", "+"];
   return (
     <section className="section shell" id="features">
       <header className="section-head"><p className="eyebrow">{text.simpleEyebrow}</p><h2>{text.simpleTitle}</h2><p>{text.simpleBody}</p></header>
-      <div className="feature-grid">{text.features.map(([title, body], index) => <article key={title}><span>{String(index + 1).padStart(2, "0")}</span><h3>{title}</h3><p>{body}</p></article>)}</div>
+      <div className="feature-grid">{text.features.map(([title, body], index) => <article key={title}><div className="feature-icon" aria-hidden="true">{featureIcons[index]}</div><div className="feature-copy"><span className="feature-index">{String(index + 1).padStart(2, "0")}</span><h3>{title}</h3><p>{body}</p></div></article>)}</div>
     </section>
   );
 }

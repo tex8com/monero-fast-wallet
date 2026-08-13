@@ -127,3 +127,9 @@ test("current strict sync matrix replaces the former published comparison", () =
   assert.match(content, /750\.875 s → 57\.640 s|34,351 GiB/);
   assert.match(content, /2,802 blocks\/s · 58 s/);
 });
+
+test("feature cards alternate their icon placement", () => {
+  assert.match(app, /const featureIcons = \["↑", "↓", "↻", "◆", "◈", "\+"\]/);
+  assert.match(app, /className="feature-icon"/);
+  assert.match(styles, /\.feature-grid article:nth-child\(even\) \{ flex-direction: row-reverse; \}/);
+});
