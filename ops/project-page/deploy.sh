@@ -123,7 +123,16 @@ if ! curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/ -o "$v
 fi
 grep -q 'lang="en"' "$validation_dir/root.html" || { rollback; exit 1; }
 curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/de/ -o "$validation_dir/de.html" || { rollback; exit 1; }
-grep -q 'lang="de"' "$validation_dir/de.html" || { rollback; exit 1; }
+grep -q 'lang="de-DE" dir="ltr"' "$validation_dir/de.html" || { rollback; exit 1; }
+for locale_contract in \
+  'es:es-ES:ltr' 'pt-br:pt-BR:ltr' 'ru:ru-RU:ltr' 'vi:vi-VN:ltr' \
+  'id:id-ID:ltr' 'uk:uk-UA:ltr' 'tr:tr-TR:ltr' 'hi:hi-IN:ltr' \
+  'ur:ur-PK:rtl' 'fr:fr-FR:ltr' 'fil:fil-PH:ltr' 'ja:ja-JP:ltr' \
+  'ko:ko-KR:ltr' 'ar:ar:rtl' 'zh-cn:zh-CN:ltr' 'zh-tw:zh-TW:ltr'; do
+  IFS=: read -r route language direction <<<"$locale_contract"
+  curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 "https://xmr.tex8.com/$route/" -o "$validation_dir/$route.html" || { rollback; exit 1; }
+  grep -q "lang=\"$language\" dir=\"$direction\"" "$validation_dir/$route.html" || { rollback; exit 1; }
+done
 legacy_english_redirect="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/en/)"
 [[ "$legacy_english_redirect" == "301 https://xmr.tex8.com/" ]] || { rollback; exit 1; }
 curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/monero-wallet-logo.svg -o "$validation_dir/monero-wallet-logo.svg" || { rollback; exit 1; }

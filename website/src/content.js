@@ -1,5 +1,6 @@
 export const repositoryUrl = "https://github.com/tex8com/monero-fast-wallet";
 export const releaseUrl = `${repositoryUrl}/releases`;
+import { generatedWebsiteCopy, localeMetadata } from "./locales.generated.js";
 
 const shared = {
   brand: "Monero Fast Wallet",
@@ -290,3 +291,6 @@ export const copy = {
     statusOffline: "Status currently unavailable",
   },
 };
+
+Object.assign(copy, generatedWebsiteCopy);
+export { localeMetadata };

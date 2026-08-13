@@ -10,6 +10,20 @@ const styles = await readFile(new URL("../src/styles.css", import.meta.url), "ut
 const nginx = await readFile(new URL("../../ops/project-page/nginx-location.conf", import.meta.url), "utf8");
 const deploy = await readFile(new URL("../../ops/project-page/deploy.sh", import.meta.url), "utf8");
 const postbuild = await readFile(new URL("../scripts/postbuild.mjs", import.meta.url), "utf8");
+const localeConfig = JSON.parse(await readFile(new URL("../../config/product-locales.json", import.meta.url), "utf8"));
+const generatedLocales = await readFile(new URL("../src/locales.generated.js", import.meta.url), "utf8");
+const { copy, localeMetadata } = await import(new URL("../src/content.js", import.meta.url));
+
+function stringLeaves(value, path = [], result = new Map()) {
+  if (typeof value === "string") result.set(JSON.stringify(path), value);
+  else if (Array.isArray(value)) value.forEach((entry, index) => stringLeaves(entry, [...path, index], result));
+  else if (value && typeof value === "object") Object.entries(value).forEach(([key, entry]) => stringLeaves(entry, [...path, key], result));
+  return result;
+}
+
+function placeholders(value) {
+  return [...value.matchAll(/\{[A-Za-z0-9_]+\}/g)].map(match => match[0]).sort();
+}
 
 test("German and English routes have SEO metadata", () => {
   assert.match(html, /hreflang="de"/);
@@ -23,10 +37,25 @@ test("English is canonical at root and German lives under de", () => {
   assert.match(html, /<html lang="en">/);
   assert.match(html, /hreflang="en" href="https:\/\/xmr\.tex8\.com\/"/);
   assert.match(html, /hreflang="de" href="https:\/\/xmr\.tex8\.com\/de\/"/);
-  assert.match(app, /pathname\.startsWith\("\/de"\) \? "de" : "en"/);
-  assert.match(postbuild, /canonical: "https:\/\/xmr\.tex8\.com\/de\/"/);
+  assert.match(app, /locale\.route === route/);
+  assert.match(postbuild, /canonical: `https:\/\/xmr\.tex8\.com\/\$\{locale\.route\}\/`/);
   assert.match(nginx, /location = \/en\/ \{\s*return 301 \/;/);
   assert.match(deploy, /301 https:\/\/xmr\.tex8\.com\//);
+});
+
+test("all 18 requested website locales are complete, routed, and RTL-aware", () => {
+  assert.equal(localeConfig.length, 18);
+  assert.equal(Object.keys(localeMetadata).length, 18);
+  const englishLeaves = stringLeaves(copy.en);
+  for (const locale of localeConfig) {
+    const translatedLeaves = stringLeaves(copy[locale.code]);
+    assert.deepEqual([...translatedLeaves.keys()], [...englishLeaves.keys()], `${locale.code} key shape`);
+    for (const [path, source] of englishLeaves) assert.deepEqual(placeholders(translatedLeaves.get(path)), placeholders(source), `${locale.code} placeholders at ${path}`);
+    if (locale.route) assert.match(nginx, new RegExp(locale.route.replace("-", "\\-")));
+  }
+  assert.match(app, /document\.documentElement\.dir = localeMetadata\[language\]\.direction/);
+  assert.match(styles, /html\[dir="rtl"\]/);
+  assert.match(postbuild, /hreflang/);
 });
 
 test("download formats and equal badge contract are present", () => {
@@ -79,7 +108,8 @@ test("language selection lives inside the burger menu", () => {
   const menu = app.slice(app.indexOf('<nav id="site-menu"'), app.indexOf('</header>'));
   assert.doesNotMatch(navActions, /<LanguageLink/);
   assert.match(menu, /<LanguageLink/);
-  assert.match(app, /className="menu-language-link"/);
+  assert.match(app, /className="menu-language-picker"/);
+  assert.match(app, /Object\.entries\(localeMetadata\)/);
 });
 
 test("mobile page clamps horizontal overflow while the hero remains swipeable", () => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AssistantDock } from "./AssistantDock";
-import { copy, releaseUrl, repositoryUrl } from "./content";
+import { copy, localeMetadata, releaseUrl, repositoryUrl } from "./content";
 
 const badgeBase = "https://commons.wikimedia.org/wiki/Special:Redirect/file/";
 const nodeRepositoryUrl = "https://github.com/tex8com/cuprate";
@@ -11,8 +11,7 @@ function Mark() {
 }
 
 function LanguageLink({ language, text }) {
-  const href = language === "de" ? "/" : "/de/";
-  return <a className="menu-language-link" href={href} lang={language === "de" ? "en" : "de"} aria-label={text.switchLabel}>{language === "de" ? "English" : "Deutsch"}<span>{language === "de" ? text.en : text.de} ↗</span></a>;
+  return <div className="menu-language-picker" aria-label={text.switchLabel}>{Object.entries(localeMetadata).map(([code, locale]) => <a className={code === language ? "selected" : ""} href={locale.route ? `/${locale.route}/` : "/"} lang={locale.tag} aria-current={code === language ? "page" : undefined} key={code}>{locale.nativeName}<span>{code === language ? "✓" : "↗"}</span></a>)}</div>;
 }
 
 function Header({ language, text }) {
@@ -255,8 +254,11 @@ function Footer({ text }) {
 }
 
 export default function App() {
-  const language = useMemo(() => window.location.pathname.startsWith("/de") ? "de" : "en", []);
+  const language = useMemo(() => {
+    const route = window.location.pathname.split("/").filter(Boolean)[0]?.toLowerCase() ?? "";
+    return Object.entries(localeMetadata).find(([, locale]) => locale.route === route)?.[0] ?? "en";
+  }, []);
   const text = copy[language];
-  useEffect(() => { document.documentElement.lang = language; }, [language]);
+  useEffect(() => { document.documentElement.lang = localeMetadata[language].tag; document.documentElement.dir = localeMetadata[language].direction; }, [language]);
   return <><div id="top" /><Header language={language} text={text} /><main><Hero text={text} /><Features text={text} /><Modes text={text} /><Enthusiast text={text} /><Benchmark text={text} /><Downloads text={text} /><NodeSection text={text} /><OpenSource text={text} /><FAQ text={text} /></main><Footer text={text} /><AssistantDock text={text} language={language} /></>;
 }

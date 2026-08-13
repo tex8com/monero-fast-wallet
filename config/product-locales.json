@@ -1,0 +1,20 @@
+[
+  { "code": "en", "tag": "en-US", "route": "", "nativeName": "English", "direction": "ltr", "translationTarget": "en" },
+  { "code": "de", "tag": "de-DE", "route": "de", "nativeName": "Deutsch", "direction": "ltr", "translationTarget": "de" },
+  { "code": "es", "tag": "es-ES", "route": "es", "nativeName": "Español", "direction": "ltr", "translationTarget": "es" },
+  { "code": "pt-BR", "tag": "pt-BR", "route": "pt-br", "nativeName": "Português (Brasil)", "direction": "ltr", "translationTarget": "pt" },
+  { "code": "ru", "tag": "ru-RU", "route": "ru", "nativeName": "Русский", "direction": "ltr", "translationTarget": "ru" },
+  { "code": "vi", "tag": "vi-VN", "route": "vi", "nativeName": "Tiếng Việt", "direction": "ltr", "translationTarget": "vi" },
+  { "code": "id", "tag": "id-ID", "route": "id", "nativeName": "Bahasa Indonesia", "direction": "ltr", "translationTarget": "id" },
+  { "code": "uk", "tag": "uk-UA", "route": "uk", "nativeName": "Українська", "direction": "ltr", "translationTarget": "uk" },
+  { "code": "tr", "tag": "tr-TR", "route": "tr", "nativeName": "Türkçe", "direction": "ltr", "translationTarget": "tr" },
+  { "code": "hi", "tag": "hi-IN", "route": "hi", "nativeName": "हिन्दी", "direction": "ltr", "translationTarget": "hi" },
+  { "code": "ur", "tag": "ur-PK", "route": "ur", "nativeName": "اردو", "direction": "rtl", "translationTarget": "ur" },
+  { "code": "fr", "tag": "fr-FR", "route": "fr", "nativeName": "Français", "direction": "ltr", "translationTarget": "fr" },
+  { "code": "fil", "tag": "fil-PH", "route": "fil", "nativeName": "Filipino", "direction": "ltr", "translationTarget": "tl" },
+  { "code": "ja", "tag": "ja-JP", "route": "ja", "nativeName": "日本語", "direction": "ltr", "translationTarget": "ja" },
+  { "code": "ko", "tag": "ko-KR", "route": "ko", "nativeName": "한국어", "direction": "ltr", "translationTarget": "ko" },
+  { "code": "ar", "tag": "ar", "route": "ar", "nativeName": "العربية", "direction": "rtl", "translationTarget": "ar" },
+  { "code": "zh-CN", "tag": "zh-CN", "route": "zh-cn", "nativeName": "简体中文", "direction": "ltr", "translationTarget": "zh-CN" },
+  { "code": "zh-TW", "tag": "zh-TW", "route": "zh-tw", "nativeName": "繁體中文", "direction": "ltr", "translationTarget": "zh-TW" }
+]
