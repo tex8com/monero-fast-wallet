@@ -61,7 +61,7 @@ transactions, spending rules, or consensus.
 
 | Benefit | What it means for users |
 | --- | --- |
-| **Much faster restore and synchronization** | In the strictly comparable mainnet R3 run, the optimized wallet path was **2.69× faster** than the unchanged Monero wallet. In its documented test context, the accepted ScanPack D4 median reached approximately **6.97×** the original synchronization rate. |
+| **Much faster restore and synchronization** | In the current strictly comparable Mainnet matrix, the optimized wallet path was **3.49× faster** than the unchanged Monero wallet, while the ScanPack path reached **13.03×**. All three serial runs scanned the same 161,523 blocks to one frozen tip. |
 | **Automatic use of suitable hardware** | The wallet selects CPU, AVX2, AVX-512 IFMA, or Apple Metal according to the platform and batch size. Small Metal batches deliberately remain on the CPU because launching the GPU would be slower. |
 | **Self-custody by default** | The seed, spend key, primary private view key, and wallet files remain local or on the Ledger. The normal wallet mode never uploads a private view key to TEX8. |
 | **Standard Monero compatibility** | The wallet can use the fast Monero Fast Node (MFN) gRPC path, a standard Monero daemon, or your own compatible node. Addresses, transactions, and consensus remain standard Monero. MFN is powered by Cuprate. |
@@ -363,6 +363,9 @@ finish cleanly on the same chain.
 
 | Path | Synchronization time | Blocks/s | Factor vs original duration | Comparison quality |
 | --- | ---: | ---: | ---: | --- |
+| Original Monero Wallet, current-core P0085 R1 | 750.875 s | 215.113 | **1.00×** | Current strict baseline; same frozen tip and 161,523 blocks |
+| Monero Fast Wallet gRPC, current-core P0085 R1 | 214.903 s | 751.609 | **3.49×** | Current strict comparison; same frozen tip and 161,523 blocks |
+| ScanPack, current-core P0085 R1 | 57.640 s | 2,802.273 | **13.03×** | Current strict comparison; same frozen tip and 161,523 blocks |
 | Original Monero Wallet, R3 | 1,007.483 s | 146.06 | **1.00×** | Valid baseline |
 | Monero Fast Wallet gRPC, R3 | 375.166 s | 392.25 | **2.69×** | Strict comparison with the same restore contract |
 | ScanPack C0, median of 3 runs | 173.760 s | 848.01 | **≈5.80×** context | Different live tip; not a strict R3 A/B test |

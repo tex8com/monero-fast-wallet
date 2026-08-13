@@ -116,5 +116,14 @@ test("hardware acceleration is reported separately from end-to-end sync", () => 
   assert.match(content, /NVIDIA CUDA/);
   assert.match(content, /APPLE METAL/);
   assert.match(content, /nicht Blöcke\/s und nicht die gesamte Sync-Zeit/);
-  assert.match(content, /new benchmark series is running/);
+  assert.match(content, /Validated current core/);
+});
+
+test("current strict sync matrix replaces the former published comparison", () => {
+  assert.match(app, /<strong>13\.03×<\/strong>/);
+  assert.doesNotMatch(app, /<strong>7\.77×<\/strong>/);
+  assert.match(content, /161\.523 Mainnet-Blöcke/);
+  assert.match(content, /2\.802 Blöcke\/s · 58 s/);
+  assert.match(content, /750\.875 s → 57\.640 s|34,351 GiB/);
+  assert.match(content, /2,802 blocks\/s · 58 s/);
 });
