@@ -203,7 +203,7 @@ function Benchmark({ text }) {
     <section className="section shell" id="benchmarks">
       <header className="section-head"><p className="eyebrow">{text.benchmarkEyebrow}</p><h2>{text.benchmarkTitle}</h2><p>{text.benchmarkBody}</p></header>
       <div className="benchmark">
-        <div className="benchmark-metric"><strong>13.03×</strong><span>{text.faster}</span><small>{text.benchmarkPending}</small></div>
+        <div className="benchmark-metric"><strong><span className="benchmark-value">13.03</span><span className="benchmark-times" aria-label="times">×</span></strong><span>{text.faster}</span><small>{text.benchmarkPending}</small></div>
         <div className="benchmark-bars">{text.benchmarkRows.map(([label, value, width], index) => <div className="benchmark-row" key={label}><div><b>{label}</b><span>{value}</span></div><i><em style={{ width }} className={`tone-${index}`} /></i></div>)}</div>
         <footer><p><b>{text.important}:</b> {text.benchmarkNote}</p><a href={`${repositoryUrl}/blob/main/docs/WALLET_SYNC_BENCHMARK_RESULTS.md`}>{text.method} ↗</a></footer>
       </div>

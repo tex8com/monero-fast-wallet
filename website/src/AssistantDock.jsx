@@ -1,7 +1,19 @@
-import { useEffect, useRef, useState } from "react";
-import { AssistantPanel } from "./tex8/AssistantPanel";
+import { useEffect, useId, useRef, useState } from "react";
 
 const assistantEndpoint = "/api/assistant/stream";
+const assistantModuleVersion = "1.5.0";
+
+function SendIcon() {
+  return <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 3-7.5 18-3.8-7.7L2 9.5 21 3Z" /><path d="m9.7 13.3 4.6-4.6" /></svg>;
+}
+
+function CloseIcon() {
+  return <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>;
+}
+
+function AssistantLogo({ className }) {
+  return <span className={className}><img src="/monero-wallet-logo.svg" alt="" aria-hidden="true" /></span>;
+}
 
 function deviceId() {
   const key = "mfw.website.assistant.device.v1";
@@ -33,6 +45,7 @@ export function AssistantDock({ text, language }) {
   const [conversationId, setConversationId] = useState(null);
   const [messages, setMessages] = useState([{ id: "welcome", role: "assistant", text: text.assistantWelcome }]);
   const messagesRef = useRef(null);
+  const panelId = useId();
 
   useEffect(() => {
     setMessages([{ id: "welcome", role: "assistant", text: text.assistantWelcome }]);
@@ -40,7 +53,7 @@ export function AssistantDock({ text, language }) {
   }, [language, text.assistantWelcome]);
 
   useEffect(() => {
-    if (open) messagesRef.current?.scrollIntoView({ block: "end" });
+    if (open) messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, open]);
 
   async function send(event) {
@@ -103,23 +116,41 @@ export function AssistantDock({ text, language }) {
     }
   }
 
-  function sendFromDock(event) {
-    event.preventDefault();
-    if (!value.trim() || sending) return;
-    setOpen(true);
-    void send();
-  }
-
   return (
-    <div className={`assistant-dock ${open ? "is-open" : ""}`}>
-      {open && <div ref={messagesRef}><AssistantPanel title={text.assistantTitle} statusLabel={text.assistantStatus} messages={messages} value={value} placeholder={text.assistantPlaceholder} isSending={sending} onValueChange={setValue} onSend={send} onClose={() => setOpen(false)} sendLabel={text.assistantSend} closeLabel={text.assistantClose} safety={text.assistantSafety} /></div>}
-      {!open && (
-        <form className="assistant-quick-form" onSubmit={sendFromDock}>
-          <button className="assistant-quick-open" type="button" onClick={() => setOpen(true)} aria-label={text.assistantOpen}><span aria-hidden="true">✦</span></button>
-          <input aria-label={text.assistantPlaceholder} value={value} onChange={(event) => setValue(event.target.value)} placeholder={text.assistantPlaceholder} disabled={sending} />
-          <button className="assistant-quick-send" type="submit" disabled={!value.trim() || sending} aria-label={text.assistantSend}>↑</button>
+    <div className="tx8-assistant assistant-dock" data-module-version={assistantModuleVersion} data-contract-version="tex8.customer-assistant.v1">
+      {open && <button className="tx8-assistant__backdrop" type="button" aria-label={text.assistantClose} onClick={() => setOpen(false)} />}
+      <div className="tx8-assistant__root">
+        {open && (
+          <section className="tx8-assistant__panel" aria-labelledby={panelId} aria-modal="true" role="dialog">
+            <header className="tx8-assistant__header">
+              <div className="tx8-assistant__identity">
+                <AssistantLogo className="tx8-assistant__brand-logo" />
+                <span><strong id={panelId}>{text.assistantTitle}</strong><small>● {text.assistantStatus}</small></span>
+              </div>
+              <button className="tx8-assistant__close" type="button" aria-label={text.assistantClose} onClick={() => setOpen(false)}><CloseIcon /></button>
+            </header>
+            <div className="tx8-assistant__messages" ref={messagesRef} aria-live="polite">
+              {messages.map((message) => (
+                <div className={`tx8-assistant__message is-${message.role}`} key={message.id}>
+                  {message.role === "assistant" && <AssistantLogo className="tx8-assistant__message-logo" />}
+                  <p>{message.text || (sending ? "…" : "")}</p>
+                </div>
+              ))}
+            </div>
+            <p className="tx8-assistant__safety">{text.assistantSafety}</p>
+          </section>
+        )}
+        <form className="tx8-assistant__dock" onSubmit={send}>
+          <button className="tx8-assistant__chip" type="button" aria-controls={panelId} aria-expanded={open} aria-label={text.assistantOpen} onClick={() => setOpen((current) => !current)}>
+            <AssistantLogo className="tx8-assistant__chip-logo" /><b>AI</b>
+          </button>
+          <label className="tx8-assistant__input">
+            <span className="visually-hidden">{text.assistantPlaceholder}</span>
+            <input aria-label={text.assistantPlaceholder} value={value} onFocus={() => setOpen(true)} onChange={(event) => setValue(event.target.value)} placeholder={text.assistantPlaceholder} disabled={sending} maxLength={800} autoComplete="off" />
+          </label>
+          <button className="tx8-assistant__send" type="submit" disabled={!value.trim() || sending} aria-label={text.assistantSend}><SendIcon /></button>
         </form>
-      )}
+      </div>
     </div>
   );
 }

@@ -78,8 +78,16 @@ test("assistant has fixed product identity, knowledge, secret warning, and persi
   assert.doesNotMatch(assistant, /system_instructions/);
   assert.doesNotMatch(assistant, /assistantKnowledge/);
   assert.doesNotMatch(assistant, /private_view_key/);
-  assert.match(assistant, /className="assistant-quick-form"/);
-  assert.match(assistant, /onSubmit={sendFromDock}/);
+  assert.match(assistant, /data-contract-version="tex8\.customer-assistant\.v1"/);
+  assert.match(assistant, /data-module-version={assistantModuleVersion}/);
+  assert.match(assistant, /className="tx8-assistant__panel"/);
+  assert.match(assistant, /className="tx8-assistant__dock" onSubmit={send}/);
+  assert.match(assistant, /role="dialog"/);
+});
+
+test("benchmark multiplier is a separate typographic unit", () => {
+  assert.match(app, /className="benchmark-value">13\.03<\/span><span className="benchmark-times"/);
+  assert.match(styles, /\.benchmark-times\s*\{[^}]*font-size:\s*\.58em;/);
 });
 
 test("node uses the public product name", () => {
@@ -161,7 +169,7 @@ test("hardware acceleration is reported separately from end-to-end sync", () => 
 });
 
 test("current strict sync matrix replaces the former published comparison", () => {
-  assert.match(app, /<strong>13\.03×<\/strong>/);
+  assert.match(app, /className="benchmark-value">13\.03<\/span><span className="benchmark-times"[^>]*>×<\/span>/);
   assert.doesNotMatch(app, /<strong>7\.77×<\/strong>/);
   assert.match(content, /161\.523 Mainnet-Blöcke/);
   assert.match(content, /2\.802 Blöcke\/s · 58 s/);
