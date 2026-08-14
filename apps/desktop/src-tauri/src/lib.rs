@@ -1301,6 +1301,7 @@ fn require_fresh_app_password(password: &mut String) -> Result<(), String> {
 }
 
 async fn app_protection_snapshot(
+    app: &AppHandle,
     protection: &AppProtectionState,
 ) -> Result<AppProtectionStatus, String> {
     if secure_store::diagnostic_automation_unlock_enabled() {
@@ -1314,6 +1315,17 @@ async fn app_protection_snapshot(
         eprintln!("MONERO_DESKTOP_APP_PROTECTION diagnostic-automation-unlocked");
     }
     let mode = secure_store::load_app_protection_mode()?;
+    if mode.as_deref() == Some("none") && app_is_locked(protection)? {
+        secure_store::unlock_app_vault_with_system()?;
+        reset_app_session_activity(app)?;
+        *protection
+            .0
+            .lock()
+            .map_err(|_| "App protection state is busy.".to_owned())? = false;
+        migrate_and_prime_app_session_credentials(app)?;
+        warm_registered_wallet_sessions_after_unlock(app.clone());
+        eprintln!("MONERO_DESKTOP_APP_PROTECTION skipped-auto-unlocked");
+    }
     let configured = mode.is_some();
     let system_auth = platform_auth::status().await;
     let password_configured = match mode.as_deref() {
@@ -1757,6 +1769,10 @@ async fn require_fresh_app_authorization(
             password.zeroize();
             platform_auth::authenticate(app, reason).await
         }
+        Some("none") => {
+            password.zeroize();
+            Ok(())
+        }
         _ => {
             password.zeroize();
             Err("App protection is not configured on this device.".to_owned())
@@ -1766,18 +1782,20 @@ async fn require_fresh_app_authorization(
 
 #[tauri::command]
 async fn app_protection_status(
+    app: AppHandle,
     protection: State<'_, AppProtectionState>,
 ) -> Result<AppProtectionStatus, String> {
-    app_protection_snapshot(&protection).await
+    app_protection_snapshot(&app, &protection).await
 }
 
 #[tauri::command]
 async fn retry_app_protection_status(
+    app: AppHandle,
     protection: State<'_, AppProtectionState>,
 ) -> Result<AppProtectionStatus, String> {
     secure_store::retry_failed_secret_reads()?;
     eprintln!("MONERO_DESKTOP_APP_PROTECTION status-retry-requested");
-    app_protection_snapshot(&protection).await
+    app_protection_snapshot(&app, &protection).await
 }
 
 #[tauri::command]
@@ -1807,7 +1825,7 @@ async fn set_app_protection_password(
     migrate_and_prime_app_session_credentials(&app)?;
     warm_registered_wallet_sessions_after_unlock(app.clone());
     eprintln!("MONERO_DESKTOP_APP_PROTECTION configured");
-    app_protection_snapshot(&protection).await
+    app_protection_snapshot(&app, &protection).await
 }
 
 #[tauri::command]
@@ -1852,7 +1870,7 @@ async fn verify_app_protection_password(
     migrate_and_prime_app_session_credentials(&app)?;
     warm_registered_wallet_sessions_after_unlock(app.clone());
     eprintln!("MONERO_DESKTOP_APP_PROTECTION unlocked");
-    app_protection_snapshot(&protection).await
+    app_protection_snapshot(&app, &protection).await
 }
 
 #[tauri::command]
@@ -1930,6 +1948,15 @@ async fn set_app_protection_mode(
             }
             secure_store::store_app_protection_mode("system")?;
         }
+        "none" => {
+            if already_configured {
+                input.password.zeroize();
+                return Err("App protection can only be skipped during initial setup.".to_owned());
+            }
+            input.password.zeroize();
+            secure_store::unlock_app_vault_with_system()?;
+            secure_store::store_app_protection_mode("none")?;
+        }
         _ => {
             input.password.zeroize();
             return Err("Choose app password or secure system sign-in.".to_owned());
@@ -1944,7 +1971,7 @@ async fn set_app_protection_mode(
     migrate_and_prime_app_session_credentials(&app)?;
     warm_registered_wallet_sessions_after_unlock(app.clone());
     eprintln!("MONERO_DESKTOP_APP_PROTECTION mode={}", input.mode);
-    app_protection_snapshot(&protection).await
+    app_protection_snapshot(&app, &protection).await
 }
 
 #[tauri::command]
@@ -1965,7 +1992,7 @@ async fn verify_system_auth(
     migrate_and_prime_app_session_credentials(&app)?;
     warm_registered_wallet_sessions_after_unlock(app.clone());
     eprintln!("MONERO_DESKTOP_APP_PROTECTION system-unlocked");
-    app_protection_snapshot(&protection).await
+    app_protection_snapshot(&app, &protection).await
 }
 
 fn lock_app_native(
@@ -2047,6 +2074,10 @@ fn lock_app(
     protection: State<'_, AppProtectionState>,
     community_v1: State<'_, enthusiast_v1::CommunityV1State>,
 ) -> Result<(), String> {
+    if secure_store::load_app_protection_mode()?.as_deref() == Some("none") {
+        eprintln!("MONERO_DESKTOP_APP_PROTECTION lock-skipped mode=none");
+        return Ok(());
+    }
     let result = lock_app_native(
         &state,
         &sessions,
@@ -8413,6 +8444,14 @@ pub fn run() {
                 }
                 let protection = security_app.state::<AppProtectionState>();
                 if app_is_locked(&protection).unwrap_or(true) {
+                    continue;
+                }
+                if secure_store::load_app_protection_mode()
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some("none")
+                {
                     continue;
                 }
                 let timed_out = security_app

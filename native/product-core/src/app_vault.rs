@@ -155,11 +155,20 @@ pub fn validate_state(state: &MfwAppVaultStateV1) -> Result<(), u32> {
         {
             return Err(contract::ERROR_INVALID_ARGUMENT);
         }
-    } else if !matches!(
-        state.protection_mode,
-        contract::APP_VAULT_PROTECTION_MODE_PASSWORD | contract::APP_VAULT_PROTECTION_MODE_SYSTEM
-    ) {
-        return Err(contract::ERROR_UNKNOWN_ENUM);
+    } else {
+        if !matches!(
+            state.protection_mode,
+            contract::APP_VAULT_PROTECTION_MODE_PASSWORD
+                | contract::APP_VAULT_PROTECTION_MODE_SYSTEM
+                | contract::APP_VAULT_PROTECTION_MODE_NONE
+        ) {
+            return Err(contract::ERROR_UNKNOWN_ENUM);
+        }
+        if state.protection_mode == contract::APP_VAULT_PROTECTION_MODE_NONE
+            && state.session_authorized != 1
+        {
+            return Err(contract::ERROR_INVALID_ARGUMENT);
+        }
     }
     Ok(())
 }
@@ -224,6 +233,17 @@ pub fn apply_event(
             next.blocked_until_unix_seconds = 0;
             next.last_activity_monotonic_ms = event.now_monotonic_ms;
         }
+        contract::APP_VAULT_EVENT_SKIP_PROTECTION => {
+            if state.configured != 0 || state.onboarding_complete == 0 || event.value != 1 {
+                return Err(contract::ERROR_INVALID_ARGUMENT);
+            }
+            next.configured = 1;
+            next.protection_mode = contract::APP_VAULT_PROTECTION_MODE_NONE;
+            next.session_authorized = 1;
+            next.failed_attempts = 0;
+            next.blocked_until_unix_seconds = 0;
+            next.last_activity_monotonic_ms = event.now_monotonic_ms;
+        }
         contract::APP_VAULT_EVENT_UNLOCK_SUCCESS => {
             if state.configured == 0 || state.blocked_until_unix_seconds > event.now_unix_seconds {
                 return Err(contract::ERROR_INVALID_ARGUMENT);
@@ -249,7 +269,8 @@ pub fn apply_event(
             next.last_activity_monotonic_ms = event.now_monotonic_ms;
         }
         contract::APP_VAULT_EVENT_TIMEOUT => {
-            if state.session_authorized == 0
+            if state.protection_mode == contract::APP_VAULT_PROTECTION_MODE_NONE
+                || state.session_authorized == 0
                 || state.auto_lock_seconds == 0
                 || event
                     .now_monotonic_ms
@@ -261,7 +282,9 @@ pub fn apply_event(
             next.session_authorized = 0;
         }
         contract::APP_VAULT_EVENT_MANUAL_LOCK => {
-            if state.configured == 0 {
+            if state.configured == 0
+                || state.protection_mode == contract::APP_VAULT_PROTECTION_MODE_NONE
+            {
                 return Err(contract::ERROR_INVALID_ARGUMENT);
             }
             next.session_authorized = 0;
@@ -718,6 +741,40 @@ mod tests {
         assert_eq!(warmup_batch(100, 0), (0, 4));
         assert_eq!(warmup_batch(100, 96), (96, 4));
         assert_eq!(warmup_batch(100, 100), (100, 0));
+    }
+
+    #[test]
+    fn skipped_protection_is_persisted_authorized_and_never_auto_locks() {
+        let mut state = MfwAppVaultStateV1 {
+            ready: 1,
+            ..Default::default()
+        };
+        state = apply_event(
+            &state,
+            &event(contract::APP_VAULT_EVENT_WELCOME_CONTINUE, 0, 100, 10),
+        )
+        .unwrap();
+        state = apply_event(
+            &state,
+            &event(contract::APP_VAULT_EVENT_SKIP_PROTECTION, 1, 100, 11),
+        )
+        .unwrap();
+        assert_eq!(state.protection_mode, contract::APP_VAULT_PROTECTION_MODE_NONE);
+        assert_eq!(state.session_authorized, 1);
+        assert_eq!(
+            presentation(&state, 100).unwrap(),
+            contract::APP_VAULT_PRESENTATION_CONTENT
+        );
+        assert!(apply_event(
+            &state,
+            &event(contract::APP_VAULT_EVENT_TIMEOUT, 0, 200, 9_999_999)
+        )
+        .is_err());
+        assert!(apply_event(
+            &state,
+            &event(contract::APP_VAULT_EVENT_MANUAL_LOCK, 0, 200, 20)
+        )
+        .is_err());
     }
 
     #[test]

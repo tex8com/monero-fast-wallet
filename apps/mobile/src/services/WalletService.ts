@@ -383,7 +383,7 @@ export class WalletService {
   }
 
   async configureAppProtection(
-    mode: 'biometric' | 'password',
+    mode: 'biometric' | 'none' | 'password',
     password = '',
   ): Promise<void> {
     return traceWalletOperation('configureAppProtection', { mode }, () =>

@@ -334,6 +334,9 @@ pub fn set_app_vault_recovery_password(password: &str) -> Result<(), String> {
 }
 
 pub fn unlock_app_vault_with_system() -> Result<(), String> {
+    if app_vault::is_unlocked() {
+        return Ok(());
+    }
     let existed = app_vault::exists()?;
     let (system_kek, created) = load_or_create_app_vault_system_kek()?;
     if existed {
@@ -421,7 +424,7 @@ pub fn store_app_protection_password(mut password: String) -> Result<(), String>
 }
 
 pub fn store_app_protection_mode(mode: &str) -> Result<(), String> {
-    if !matches!(mode, "password" | "system") {
+    if !matches!(mode, "none" | "password" | "system") {
         return Err("Unsupported app-protection mode.".to_owned());
     }
     store_secret(
@@ -442,7 +445,7 @@ pub fn load_app_protection_mode() -> Result<Option<String>, String> {
         "app protection choice",
     )?;
     match mode.as_deref() {
-        Some("password" | "system") => Ok(mode),
+        Some("none" | "password" | "system") => Ok(mode),
         Some(_) => Err("The saved app-protection choice is invalid.".to_owned()),
         None if app_protection_password_configured()? => Ok(Some("password".to_owned())),
         None => Ok(None),

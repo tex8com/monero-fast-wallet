@@ -690,6 +690,8 @@ html[dir="rtl"] input, html[dir="rtl"] textarea { text-align: right; }
 .protection-mode-choices.compact { width: 100%; margin-top: 4px; }
 .protection-mode-choices.compact > button { min-height: 82px; }
 .protection-fallback { justify-self: center; margin-top: -7px; color: #f6a16f; }
+.protection-skip { justify-self: center; color: #f6a16f; font-size: 15px; }
+.app-protection-card .protection-skip-hint { max-width: 430px; justify-self: center; text-align: center; }
 .app-protection-settings .protection-save { justify-self: start; margin: 0; }
 .app-protection-settings > small { color: #958a9d; line-height: 1.45; }
 @media (max-width: 620px) {

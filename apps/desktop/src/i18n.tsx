@@ -289,6 +289,9 @@ const baseMessages = {
     "protection.unlocking": "Unlocking…",
     "protection.setUpSystem": "Set up {system}",
     "protection.useSystem": "Use {system}",
+    "protection.skip": "Skip",
+    "protection.skipHint":
+      "This choice is remembered. You can enable app protection later in Settings.",
     "protection.useRecoveryInstead": "Use recovery app password instead",
     "protection.passwordMismatch": "The two app passwords do not match.",
     "protection.passwordMinimum": "Use an app password with at least 12 characters.",
@@ -708,6 +711,8 @@ const baseMessages = {
     "send.useSystem": "Use {system}",
     "send.useRecoveryPassword": "Use recovery app password instead",
     "send.osReview": "The operating system will show this exact recipient, amount, and fee once more before broadcast.",
+    "send.noAppProtectionReview":
+      "App protection is currently off. Check the recipient, amount, and fee carefully before sending.",
     "send.confirmSystem": "Confirm with {system}",
     "fastReceive.optional": "Optional",
     "fastReceive.title": "Fast Wallet addresses",
@@ -730,6 +735,10 @@ const baseMessages = {
     "settings.appLock": "App lock",
     "settings.appLockHint": "Choose one secure way to unlock this app before selecting saved wallets.",
     "settings.lockNow": "Lock app now",
+    "settings.noProtectionActive":
+      "No app protection is active. Choose a method below to enable it.",
+    "settings.autoLockNeedsProtection":
+      "Enable app protection first to use automatic locking.",
     "settings.systemRecommended": "Recommended · quick and protected by your device",
     "settings.appPasswordOnly": "A separate password only for this app",
     "settings.currentAppPassword": "Current app password",
@@ -1192,6 +1201,9 @@ const baseMessages = {
     "protection.unlocking": "Wird entsperrt…",
     "protection.setUpSystem": "{system} einrichten",
     "protection.useSystem": "{system} verwenden",
+    "protection.skip": "Überspringen",
+    "protection.skipHint":
+      "Diese Auswahl wird gespeichert. Du kannst den App-Schutz später in den Einstellungen aktivieren.",
     "protection.useRecoveryInstead": "Stattdessen Wiederherstellungs-App-Passwort verwenden",
     "protection.passwordMismatch": "Die beiden App-Passwörter stimmen nicht überein.",
     "protection.passwordMinimum": "Verwende mindestens 12 Zeichen für das App-Passwort.",
@@ -1619,6 +1631,8 @@ const baseMessages = {
     "send.useSystem": "{system} verwenden",
     "send.useRecoveryPassword": "Stattdessen Wiederherstellungs-App-Passwort verwenden",
     "send.osReview": "Das Betriebssystem zeigt Empfänger, Betrag und Gebühr vor dem Senden noch einmal exakt an.",
+    "send.noAppProtectionReview":
+      "Der App-Schutz ist derzeit aus. Prüfe Empfänger, Betrag und Gebühr vor dem Senden besonders sorgfältig.",
     "send.confirmSystem": "Mit {system} bestätigen",
     "fastReceive.optional": "Optional",
     "fastReceive.title": "Fast Wallet-Adressen",
@@ -1641,6 +1655,10 @@ const baseMessages = {
     "settings.appLock": "App-Sperre",
     "settings.appLockHint": "Wähle eine sichere Methode, um diese App vor der Auswahl gespeicherter Wallets zu entsperren.",
     "settings.lockNow": "App jetzt sperren",
+    "settings.noProtectionActive":
+      "Derzeit ist kein App-Schutz aktiv. Wähle unten eine Methode, um ihn zu aktivieren.",
+    "settings.autoLockNeedsProtection":
+      "Aktiviere zuerst den App-Schutz, um die automatische Sperre zu verwenden.",
     "settings.systemRecommended": "Empfohlen · schnell und durch dein Gerät geschützt",
     "settings.appPasswordOnly": "Ein eigenes Passwort nur für diese App",
     "settings.currentAppPassword": "Aktuelles App-Passwort",

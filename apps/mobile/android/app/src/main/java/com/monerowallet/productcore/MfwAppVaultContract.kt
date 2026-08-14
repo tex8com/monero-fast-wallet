@@ -3,7 +3,7 @@ package com.tex8.monero.productcore
 
 object MfwAppVaultContract {
     const val STATE_SCHEMA_VERSION: Int = 1
-    const val STATE_SCHEMA_SHA256: String = "e642865f8b9eaf3b2c53544289a27b338adf58157b83ae8927a241574ba0abad"
+    const val STATE_SCHEMA_SHA256: String = "7e2049872d2060476ebebd5a9fab9f4e3a39a5df4e07d0cde482df6b57bd6356"
     const val DEFAULT_AUTO_LOCK_SECONDS: Long = 1800L
     val AUTO_LOCK_SECONDS: Set<Long> = setOf(0L, 60L, 300L, 900L, 1800L, 3600L)
     val UNLOCK_BACKOFF_SECONDS: LongArray = longArrayOf(0L, 2L, 5L, 30L, 60L, 120L, 240L, 300L)
@@ -19,6 +19,7 @@ object MfwAppVaultContract {
     const val PROTECTION_MODE_UNCONFIGURED: Int = 0
     const val PROTECTION_MODE_PASSWORD: Int = 1
     const val PROTECTION_MODE_SYSTEM: Int = 2
+    const val PROTECTION_MODE_NONE: Int = 3
     const val PRESENTATION_PREPARING: Int = 0
     const val PRESENTATION_WELCOME: Int = 1
     const val PRESENTATION_PROTECTION_SETUP: Int = 2
@@ -43,6 +44,7 @@ object MfwAppVaultContract {
     const val EVENT_CHANGE_TO_PASSWORD: Int = 9
     const val EVENT_CHANGE_TO_SYSTEM: Int = 10
     const val EVENT_MIGRATION_ADVANCE: Int = 11
+    const val EVENT_SKIP_PROTECTION: Int = 12
     const val STEP_UP_SEED_EXPORT: Int = 1
     const val STEP_UP_PRIVATE_KEY_EXPORT: Int = 2
     const val STEP_UP_SEND_COMMIT: Int = 3

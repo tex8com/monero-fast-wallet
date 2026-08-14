@@ -744,7 +744,7 @@ class NativeMoneroWalletModule(
       ).orEmpty()
       if (
         protectedMode.isSuccess &&
-          (mode == "password" || mode == "biometric")
+          (mode == "password" || mode == "biometric" || mode == "none")
       ) {
         // Upgrade existing installations after their next valid device
         // unlock, so later launches can remain fail-closed on the Android
@@ -753,11 +753,21 @@ class NativeMoneroWalletModule(
           .putString(APP_PROTECTION_MODE_HINT_KEY, mode)
           .apply()
       }
+      if (protectedMode.isSuccess && mode == "none") {
+        unlockWalletAppVaultWithSystem()
+        NativeAppAuthorization.authorize()
+      }
       val throttle = nativeUnlockThrottle()
       Arguments.createMap().apply {
-        putBoolean("configured", mode == "password" || mode == "biometric")
-        putBoolean("locked", !NativeAppAuthorization.isAuthorized())
-        putString("mode", if (mode == "biometric") "biometric" else "password")
+        putBoolean(
+          "configured",
+          mode == "password" || mode == "biometric" || mode == "none",
+        )
+        putBoolean("locked", mode != "none" && !NativeAppAuthorization.isAuthorized())
+        putString(
+          "mode",
+          if (mode == "none") "none" else if (mode == "biometric") "biometric" else "password",
+        )
         putInt("failedPasswordAttempts", throttle.failures)
         putBoolean("resetRequired", false)
       }
@@ -808,6 +818,10 @@ class NativeMoneroWalletModule(
           unlockWalletAppVaultWithSystem()
           deleteSecretValue(APP_PASSWORD_VERIFIER_KEY)
         }
+        "none" -> {
+          unlockWalletAppVaultWithSystem()
+          deleteSecretValue(APP_PASSWORD_VERIFIER_KEY)
+        }
         else -> error("Unsupported app protection mode")
       }
       storeSecretValue(APP_PROTECTION_MODE_KEY, mode)
@@ -843,7 +857,7 @@ class NativeMoneroWalletModule(
     // unconfigured, so configuration must make the same decision here.
     // Treat it as a migration, rather than asking an as-yet-unconfigured app
     // session to authenticate itself.
-    if (currentMode != "password" && currentMode != "biometric") {
+    if (currentMode != "password" && currentMode != "biometric" && currentMode != "none") {
       if (currentMode != null) {
         deleteSecretValue(APP_PROTECTION_MODE_KEY)
         appSecurityPreferences().edit()
@@ -894,6 +908,24 @@ class NativeMoneroWalletModule(
           message = "App protection has not been configured",
         ),
       )
+      return
+    }
+    if (mode == "none") {
+      runCatching {
+        unlockWalletAppVaultWithSystem()
+        NativeAppAuthorization.authorize()
+        biometricAuthResultToWritableMap(
+          success = true,
+          biometryType = "none",
+          message = "App protection is skipped",
+        )
+      }.onSuccess(promise::resolve).onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_app_protection_error",
+          error.message ?: "Failed to open the app vault",
+          error,
+        )
+      }
       return
     }
     if (mode == "biometric" && password.isEmpty()) {
@@ -959,6 +991,19 @@ class NativeMoneroWalletModule(
   }
 
   override fun lockApp(promise: Promise) {
+    if (runCatching { readSecretValue(APP_PROTECTION_MODE_KEY) }.getOrNull() == "none") {
+      runCatching {
+        unlockWalletAppVaultWithSystem()
+        NativeAppAuthorization.authorize()
+      }.onSuccess { promise.resolve(null) }.onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_app_protection_error",
+          error.message ?: "Failed to keep the app vault open",
+          error,
+        )
+      }
+      return
+    }
     mainHandler.removeCallbacks(nativeAutoLockRunnable)
     NativeAppAuthorization.lock()
     WalletSyncForegroundService.stop(reactApplicationContext)
@@ -1007,13 +1052,21 @@ class NativeMoneroWalletModule(
   private fun resetNativeAutoLockDeadline() {
     lastUserActivityElapsedMs = SystemClock.elapsedRealtime()
     mainHandler.removeCallbacks(nativeAutoLockRunnable)
-    if (autoLockSeconds > 0L && NativeAppAuthorization.isAuthorized()) {
+    if (
+      autoLockSeconds > 0L &&
+        NativeAppAuthorization.isAuthorized() &&
+        runCatching { readSecretValue(APP_PROTECTION_MODE_KEY) }.getOrNull() != "none"
+    ) {
       mainHandler.postDelayed(nativeAutoLockRunnable, autoLockSeconds * 1_000L)
     }
   }
 
   private fun enforceNativeAutoLock() {
-    if (!NativeAppAuthorization.isAuthorized() || autoLockSeconds == 0L) {
+    if (
+      !NativeAppAuthorization.isAuthorized() ||
+        autoLockSeconds == 0L ||
+        runCatching { readSecretValue(APP_PROTECTION_MODE_KEY) }.getOrNull() == "none"
+    ) {
       return
     }
     val timeoutMs = autoLockSeconds * 1_000L
@@ -1155,6 +1208,7 @@ class NativeMoneroWalletModule(
         completion = completion,
       )
       "password" -> presentFreshPasswordDialog(reason, completion)
+      "none" -> completion(true, "App protection is skipped")
       else -> completion(false, "App protection has not been configured")
     }
   }
@@ -7047,7 +7101,9 @@ class NativeMoneroWalletModule(
     val imported = if (!walletAppVault.exists()) {
       walletAppVault.createSystemOnly(legacy)
     } else {
-      walletAppVault.unlockWithSystem()
+      if (!walletAppVault.isUnlocked()) {
+        walletAppVault.unlockWithSystem()
+      }
       walletAppVault.mergeLegacy(legacy)
     }
     deleteCommittedLegacyWalletSecrets(imported)

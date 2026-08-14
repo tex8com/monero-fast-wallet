@@ -14,7 +14,7 @@ type WalletRef = {
   addressIndex?: number;
 };
 type AppProtectionRef = {
-  mode: 'password' | 'system' | null;
+  mode: 'none' | 'password' | 'system' | null;
   systemAuth: { label: string };
 };
 type OwnedNameStage =
@@ -483,6 +483,7 @@ export default function MfwNames({
   }
 
   const systemAuthorization = appProtection.mode === 'system';
+  const passwordAuthorization = appProtection.mode === 'password';
   return (
     <section className="mfw-names-page">
       <header>
@@ -744,7 +745,7 @@ export default function MfwNames({
             />
           </label>
         </div>
-        {!systemAuthorization && (
+        {passwordAuthorization && (
           <label>
             App password
             <input
@@ -760,7 +761,7 @@ export default function MfwNames({
           disabled={
             !importName.trim() ||
             importPassword.length < 12 ||
-            (!systemAuthorization && !authorizationPassword) ||
+            (passwordAuthorization && !authorizationPassword) ||
             busy
           }
           onClick={() => void importRecovery()}
@@ -809,7 +810,7 @@ export default function MfwNames({
                 />
               </label>
             )}
-            {!systemAuthorization && (
+            {passwordAuthorization && (
               <label>
                 App password
                 <input
@@ -827,7 +828,7 @@ export default function MfwNames({
                 className="secondary"
                 disabled={
                   recoveryPassword.length < 12 ||
-                  (!systemAuthorization && !authorizationPassword) ||
+                  (passwordAuthorization && !authorizationPassword) ||
                   busy
                 }
                 onClick={() => void exportRecovery(prepared.nameId)}
@@ -860,7 +861,7 @@ export default function MfwNames({
                   (prepared.recoveryExportRequired &&
                     !names.find(record => record.id === prepared.nameId)
                       ?.recoveryExportedAt) ||
-                  (!systemAuthorization && !authorizationPassword)
+                  (passwordAuthorization && !authorizationPassword)
                 }
                 onClick={() => void commitPrepared()}
                 type="button"

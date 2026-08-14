@@ -199,6 +199,43 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
     expect(renderer!.root.findAllByType(TextInput)).toHaveLength(1);
   });
 
+  it('remembers skipped protection and opens protected content without a prompt', async () => {
+    mockedWalletService.getAppProtectionStatus.mockResolvedValue({
+      configured: false,
+      locked: true,
+      mode: 'password',
+    });
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <LanguageProvider>
+          <AppSecurityProvider>
+            <View testID="protected-wallet-content" />
+          </AppSecurityProvider>
+        </LanguageProvider>,
+      );
+    });
+    await ReactTestRenderer.act(async () => {
+      buttonWithText(renderer!, 'Get Started').props.onPress();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(visibleText(renderer!)).toContain('Skip');
+
+    await ReactTestRenderer.act(async () => {
+      await renderer!.root.findByProps({ testID: 'app-security-skip' }).props.onPress();
+    });
+
+    expect(mockedWalletService.configureAppProtection).toHaveBeenCalledWith(
+      'none',
+      '',
+    );
+    expect(mockedWalletService.lockApp).not.toHaveBeenCalled();
+    expect(
+      renderer!.root.findAllByProps({ testID: 'protected-wallet-content' }),
+    ).not.toHaveLength(0);
+  });
+
   it('locks native wallet sessions before the first biometric prompt', async () => {
     mockedWalletService.getAppProtectionStatus.mockResolvedValue({
       configured: false,

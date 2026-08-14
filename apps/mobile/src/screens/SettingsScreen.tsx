@@ -47,6 +47,8 @@ import {
   type AppProtectionMode,
   useAppSecurity,
 } from '../services/AppSecurity';
+
+type ConfigurableAppProtectionMode = Exclude<AppProtectionMode, 'none'>;
 import mobileAppVersion from '../../../../config/mobile-app-version.json';
 import {
   loadCommunityQueryContributionState,
@@ -99,7 +101,9 @@ export default function SettingsScreen() {
   const [isRevealingSeed, setIsRevealingSeed] = useState(false);
   const [isRecheckingLedger, setIsRecheckingLedger] = useState(false);
   const [protectionMode, setProtectionMode] =
-    useState<AppProtectionMode>(savedProtectionMode);
+    useState<ConfigurableAppProtectionMode>(
+      savedProtectionMode === 'none' ? 'biometric' : savedProtectionMode,
+    );
   const [appPassword, setAppPassword] = useState('');
   const [confirmAppPassword, setConfirmAppPassword] = useState('');
   const [isSavingAppProtection, setIsSavingAppProtection] = useState(false);
@@ -109,7 +113,9 @@ export default function SettingsScreen() {
   const [isMeasuringPerformance, setIsMeasuringPerformance] = useState(true);
 
   useEffect(() => {
-    setProtectionMode(savedProtectionMode);
+    setProtectionMode(
+      savedProtectionMode === 'none' ? 'biometric' : savedProtectionMode,
+    );
   }, [savedProtectionMode]);
 
   useEffect(() => {
@@ -551,6 +557,11 @@ export default function SettingsScreen() {
             <Text style={s.passwordHint}>
               {t('settings.appProtectionHint')}
             </Text>
+            {savedProtectionMode === 'none' ? (
+              <Text style={s.passwordDestructiveWarning}>
+                {t('settings.noProtectionActive')}
+              </Text>
+            ) : null}
             <View style={s.segmented}>
               {(
                 [

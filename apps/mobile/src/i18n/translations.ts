@@ -1043,6 +1043,8 @@ const en = {
   'settings.appProtection': 'Protect your wallet',
   'settings.appProtectionHint': 'One simple check protects all saved wallets.',
   'settings.noProtection': 'No protection',
+  'settings.noProtectionActive':
+    'No app protection is active. Choose a method below to enable it.',
   'settings.biometrics': 'Biometrics',
   'settings.appPassword': 'App password',
   'settings.setAppPassword': 'Set app password',
@@ -1065,6 +1067,9 @@ const en = {
   'settings.diagnosticFailed': 'Failed',
   'settings.diagnosticSkipped': 'Skipped',
   'settings.diagnosticTotal': 'Total test time: {duration} ms',
+  'action.skip': 'Skip',
+  'security.skipProtectionHint':
+    'This choice is remembered. You can enable app protection later in Settings.',
   'diagnostic.category.core': 'Core',
   'diagnostic.category.security': 'Security',
   'diagnostic.category.network': 'Network',
@@ -2376,6 +2381,8 @@ const de: Record<keyof typeof en, string> = {
   'settings.appProtectionHint':
     'Wähle, wie die App entsperrt wird: mit Biometrie oder einem App-Passwort. Das schützt alle gespeicherten Wallets.',
   'settings.noProtection': 'Kein Schutz',
+  'settings.noProtectionActive':
+    'Derzeit ist kein App-Schutz aktiv. Wähle unten eine Methode, um ihn zu aktivieren.',
   'settings.biometrics': 'Biometrie',
   'settings.appPassword': 'App-Passwort',
   'settings.setAppPassword': 'App-Passwort festlegen',
@@ -2398,6 +2405,9 @@ const de: Record<keyof typeof en, string> = {
   'settings.diagnosticFailed': 'Fehlgeschlagen',
   'settings.diagnosticSkipped': 'Übersprungen',
   'settings.diagnosticTotal': 'Gesamte Testdauer: {duration} ms',
+  'action.skip': 'Überspringen',
+  'security.skipProtectionHint':
+    'Diese Auswahl wird gespeichert. Du kannst den App-Schutz später in den Einstellungen aktivieren.',
   'diagnostic.category.core': 'Core',
   'diagnostic.category.security': 'Sicherheit',
   'diagnostic.category.network': 'Netzwerk',

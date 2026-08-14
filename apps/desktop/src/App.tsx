@@ -56,7 +56,8 @@ type ComputeBackendPreference = 'auto' | 'cpu' | 'gpu';
 type ComputeBackendStatus = { preference: ComputeBackendPreference; activeBackend: string; gpuAvailable: boolean; gpuKind: string; deviceName: string; deviceCount: number; selfTestPassed: boolean; cpuFallback: boolean; lastError: string };
 type BackendPerformance = { available: boolean; verified: boolean; derivationsPerSecond: number; sampleCount: number; elapsedMs: number; error: string };
 type DerivationPerformance = { schemaVersion: number; cpuWorkers: number; cpu: BackendPerformance; metal: BackendPerformance; cuda: BackendPerformance };
-type AppProtectionMode = 'password' | 'system';
+type AppProtectionMode = 'none' | 'password' | 'system';
+type ConfigurableAppProtectionMode = Exclude<AppProtectionMode, 'none'>;
 type FastWalletTransferStatus = 'idle' | 'transferring' | 'accepted' | 'failed';
 type SystemAuthStatus = { available: boolean; label: string; detail: string; requiresRecoveryPassword: boolean };
 type AppProtectionStatus = {
@@ -767,7 +768,7 @@ export default function App() {
     // is only valid when password protection was actually selected. Linux may
     // retain the small chooser because its system-auth path can expose an
     // explicit recovery-password fallback.
-    if (appProtection?.mode === 'system') {
+    if (appProtection?.mode === 'system' || appProtection?.mode === 'none') {
       return presentRecoverySeedRequest(request);
     }
     setSeedRevealRequest(request);
@@ -994,8 +995,10 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
   const [welcomeAcknowledged, setWelcomeAcknowledged] = useState(!setup);
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
-  const [mode, setMode] = useState<AppProtectionMode>(
-    status.configured ? status.mode ?? 'password' : status.systemAuth.available ? 'system' : 'password',
+  const [mode, setMode] = useState<ConfigurableAppProtectionMode>(
+    status.configured && status.mode !== 'none'
+      ? status.mode ?? 'password'
+      : status.systemAuth.available ? 'system' : 'password',
   );
   const [useRecoveryPassword, setUseRecoveryPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1021,6 +1024,23 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
       setPassword(''); setConfirmation(''); onUnlocked(nextStatus);
     } catch (reason) { setPassword(''); setConfirmation(''); setError(errorMessage(reason, t('error.appUnlock'))); }
     finally { setBusy(false); }
+  };
+  const skipProtection = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const nextStatus = await invoke<AppProtectionStatus>(
+        'set_app_protection_mode',
+        { input: { mode: 'none', password: '' } },
+      );
+      setPassword('');
+      setConfirmation('');
+      onUnlocked(nextStatus);
+    } catch (reason) {
+      setError(errorMessage(reason, t('error.appUnlock')));
+    } finally {
+      setBusy(false);
+    }
   };
   // Keep desktop behaviour aligned with React Native: returning to a locked
   // biometric app presents exactly one system-auth request. If it is cancelled,
@@ -1089,6 +1109,10 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
           {primaryLabel}
         </button>
       </form>
+      {setup && <>
+        <button className="quiet-button protection-skip" disabled={busy} onClick={() => void skipProtection()} type="button">{t('protection.skip')}</button>
+        <small className="protection-skip-hint">{t('protection.skipHint')}</small>
+      </>}
       {!setup && status.mode === 'system' && status.passwordConfigured && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUseRecoveryPassword(value => !value); setPassword(''); setError(null); }} type="button">
         {useRecoveryPassword ? t('protection.useSystem', { system: status.systemAuth.label }) : t('protection.useRecoveryInstead')}
       </button>}
@@ -2563,7 +2587,7 @@ function Send({ linked, walletId, wallet, appProtection, onWalletsChanged }: { l
     {step === 'manual-recipient' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.recipient')}</h2><p>{t('send.manualRecipientHint')}</p></header><label>{t('send.recipient')}<span className="recipient-address-input"><input value={address} onChange={(event) => { setAddress(event.target.value); setReview(null); setMessage(null); }} placeholder={t('send.recipientPlaceholder')} autoComplete="off" spellCheck="false" /><button className="paste-button" onClick={() => void pasteRecipient()} type="button">{t('common.paste')}</button></span></label><section className="recipient-picker" aria-label={t('send.addressBook')}>{contacts.length > 0 && <div><strong>{t('send.addressBook')}</strong><div className="recipient-chips">{contacts.slice(0, 3).map((contact) => <button className={contact.donor ? 'recipient-chip donor' : 'recipient-chip'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div><button className="quiet-button address-book-link" onClick={() => setStep('address-book')} type="button">{t('send.viewMore')} ›</button></div>}{recentContacts.length > 0 && <div><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}</section><button className="primary" onClick={() => { if (!address.trim()) { setMessage(t('send.recipientRequired')); return; } void validateAndUseRecipient(address); }} type="button">{t('common.continue')}</button></>}
     {step === 'address-book' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.addressBook')}</h2><p>{t('send.addressBookHint')}</p></header><section className="address-book-panel">{contacts.length > 0 ? <div className="address-book-list">{contacts.map((contact) => <button className={contact.donor ? 'address-book-entry donor' : 'address-book-entry'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><span>{contact.donor ? '♥' : '◎'}</span><div><strong>{contact.label}</strong><small>{shortHash(contact.address)}</small></div><b>›</b></button>)}</div> : <p className="community-empty">{t('send.noSavedAddresses')}</p>}{recentContacts.length > 0 && <div className="address-book-recents"><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}<div className="address-book-add"><strong>{t('send.addAddress')}</strong><label>{t('send.contactName')}<input value={contactLabel} onChange={(event) => setContactLabel(event.target.value)} maxLength={80} /></label><label>{t('send.recipient')}<input value={contactAddress} onChange={(event) => setContactAddress(event.target.value)} autoComplete="off" spellCheck="false" placeholder={t('send.recipientPlaceholder')} /></label><button className="secondary" onClick={saveContact} type="button">{t('send.saveAddress')}</button></div></section></>}
     {step === 'amount' && <><button className="quiet-button step-back" onClick={() => setStep('manual-recipient')} type="button">‹ {t('common.back')}</button><header className="send-screen-header"><h2>{t('send.title')}</h2><p>{t('send.available')}: {snapshot ? `${formatAtomicXmr(snapshot.unlockedBalanceAtomic, 12)} XMR` : t('common.loading')}</p></header><section className="recipient-summary"><span>{t('send.recipient')}</span><strong>{shortHash(address.trim())}</strong><button className="quiet-button" onClick={() => setStep('manual-recipient')} type="button">{t('common.change')}</button></section><section className="send-amount-card"><header><strong>{t('send.amount')}</strong><button className="quiet-button" disabled={!snapshot || busy} onClick={useMaximum} type="button">{t('send.max')}</button></header><output>{amount || '0.0000'}</output><b>XMR</b><div className="send-keypad">{['1', '2', '3', '4', '5', '6', '7', '8', '.', '9', '0', 'backspace'].map(key => <button aria-label={key === 'backspace' ? t('send.deleteKey') : key} key={key} onClick={() => enterAmountKey(key)} type="button">{key === 'backspace' ? '⌫' : key}</button>)}</div></section>{sweepAll && <p className="transaction-note">{t('send.sweepAll')}</p>}<button className="primary send-review-button" disabled={busy} onClick={() => void prepare()} type="button">{busy ? t('send.preparing') : t('send.review')}</button></>}
-    {step === 'review' && review && <><button className="quiet-button step-back" disabled={busy} onClick={() => { setReview(null); setAuthorizationPassword(''); setUseAuthorizationPasswordFallback(false); setStep('amount'); }} type="button">‹ {t('common.back')}</button><section className="review-card"><header><strong>{t('send.reviewTitle')}</strong><p>{t('send.reviewSubtitle')}</p></header><code>{address.trim()}</code><dl className="review-details"><div><dt>{t('send.amount')}</dt><dd>{formatAtomicXmr(review.amountAtomic, 12)} XMR</dd></div><div><dt>{t('send.networkFee')}</dt><dd>{formatAtomicXmr(review.feeAtomic, 12)} XMR</dd></div><div><dt>{t('send.total')}</dt><dd>{formatAtomicXmr(totalAtomic.toString(), 12)} XMR</dd></div></dl>{appProtection.mode === 'password' || useAuthorizationPasswordFallback ? <label>{appProtection.mode === 'system' ? t('send.recoveryPassword') : t('send.appPassword')}<input value={authorizationPassword} onChange={(event) => setAuthorizationPassword(event.target.value)} type="password" autoComplete="current-password" placeholder={t('send.finalApprovalPassword')} /></label> : <p className="transaction-note">{t('send.confirmWithSystem', { system: appProtection.systemAuth.label })}</p>}{appProtection.mode === 'system' && appProtection.passwordConfigured && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUseAuthorizationPasswordFallback(value => !value); setAuthorizationPassword(''); }} type="button">{useAuthorizationPasswordFallback ? t('send.useSystem', { system: appProtection.systemAuth.label }) : t('send.useRecoveryPassword')}</button>}<p className="transaction-note">{t('send.osReview')}</p>{wallet?.kind === 'hardware' && <p className="transaction-note">{t('send.ledgerHint')}</p>}{review.error && <p className="setup-message">{review.error}</p>}<button className="primary" disabled={busy || ((appProtection.mode === 'password' || useAuthorizationPasswordFallback) && !authorizationPassword)} onClick={() => void commit()} type="button">{busy ? t('send.sending') : appProtection.mode === 'system' && !useAuthorizationPasswordFallback ? t('send.confirmSystem', { system: appProtection.systemAuth.label }) : t('send.confirm')}</button></section></>}
+    {step === 'review' && review && <><button className="quiet-button step-back" disabled={busy} onClick={() => { setReview(null); setAuthorizationPassword(''); setUseAuthorizationPasswordFallback(false); setStep('amount'); }} type="button">‹ {t('common.back')}</button><section className="review-card"><header><strong>{t('send.reviewTitle')}</strong><p>{t('send.reviewSubtitle')}</p></header><code>{address.trim()}</code><dl className="review-details"><div><dt>{t('send.amount')}</dt><dd>{formatAtomicXmr(review.amountAtomic, 12)} XMR</dd></div><div><dt>{t('send.networkFee')}</dt><dd>{formatAtomicXmr(review.feeAtomic, 12)} XMR</dd></div><div><dt>{t('send.total')}</dt><dd>{formatAtomicXmr(totalAtomic.toString(), 12)} XMR</dd></div></dl>{appProtection.mode === 'password' || useAuthorizationPasswordFallback ? <label>{appProtection.mode === 'system' ? t('send.recoveryPassword') : t('send.appPassword')}<input value={authorizationPassword} onChange={(event) => setAuthorizationPassword(event.target.value)} type="password" autoComplete="current-password" placeholder={t('send.finalApprovalPassword')} /></label> : appProtection.mode === 'system' ? <p className="transaction-note">{t('send.confirmWithSystem', { system: appProtection.systemAuth.label })}</p> : <p className="transaction-note">{t('send.noAppProtectionReview')}</p>}{appProtection.mode === 'system' && appProtection.passwordConfigured && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUseAuthorizationPasswordFallback(value => !value); setAuthorizationPassword(''); }} type="button">{useAuthorizationPasswordFallback ? t('send.useSystem', { system: appProtection.systemAuth.label }) : t('send.useRecoveryPassword')}</button>}{appProtection.mode !== 'none' && <p className="transaction-note">{t('send.osReview')}</p>}{wallet?.kind === 'hardware' && <p className="transaction-note">{t('send.ledgerHint')}</p>}{review.error && <p className="setup-message">{review.error}</p>}<button className="primary" disabled={busy || ((appProtection.mode === 'password' || useAuthorizationPasswordFallback) && !authorizationPassword)} onClick={() => void commit()} type="button">{busy ? t('send.sending') : appProtection.mode === 'system' && !useAuthorizationPasswordFallback ? t('send.confirmSystem', { system: appProtection.systemAuth.label }) : t('send.confirm')}</button></section></>}
     {message && <p className="setup-message">{message}</p>}
     {amount && !review && parseXmrToAtomic(amount) && <small className="amount-preview">{formatAtomicXmr(amountAtomic, 12)} XMR</small>}
     <DesktopRecipientQrScanner open={scannerOpen} onClose={() => setScannerOpen(false)} onScanned={(scannedAddress) => { setScannerOpen(false); void validateAndUseRecipient(scannedAddress); }} />
@@ -3270,7 +3294,9 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
   const [currentAppPassword, setCurrentAppPassword] = useState('');
   const [appProtectionBusy, setAppProtectionBusy] = useState(false);
   const [autoLockBusy, setAutoLockBusy] = useState(false);
-  const [protectionMode, setProtectionMode] = useState<AppProtectionMode>(appProtection.mode ?? 'password');
+  const [protectionMode, setProtectionMode] = useState<ConfigurableAppProtectionMode>(
+    appProtection.mode === 'none' ? 'system' : appProtection.mode ?? 'password',
+  );
   const [shareCommunitySearches, setShareCommunitySearches] = useState(true);
   const [computeStatus, setComputeStatus] = useState<ComputeBackendStatus | null>(null);
   const [computeBusy, setComputeBusy] = useState(false);
@@ -3282,7 +3308,11 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
   const [ledgerRechecking, setLedgerRechecking] = useState(false);
 
   useEffect(() => { if (wallet?.network) setNetwork(wallet.network); }, [wallet?.network]);
-  useEffect(() => { if (appProtection.mode) setProtectionMode(appProtection.mode); }, [appProtection.mode]);
+  useEffect(() => {
+    if (appProtection.mode && appProtection.mode !== 'none') {
+      setProtectionMode(appProtection.mode);
+    }
+  }, [appProtection.mode]);
   const load = useCallback(async () => {
     try {
       const loaded = await invoke<NodeProfile>('load_node_settings', { network });
@@ -3439,7 +3469,8 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
     <section className="settings-section"><header><h3>{t('settings.security')}</h3><small>{t('settings.localDevice')}</small></header>
       <article className="settings-panel app-protection-settings">
         <div><strong>{t('settings.appLock')}</strong><p>{t('settings.appLockHint')}</p></div>
-        <div className="settings-actions"><button className="secondary" disabled={appProtectionBusy} onClick={() => void onLockApp()} type="button">{t('settings.lockNow')}</button></div>
+        {appProtection.mode === 'none' && <p className="setup-message">{t('settings.noProtectionActive')}</p>}
+        <div className="settings-actions"><button className="secondary" disabled={appProtectionBusy || appProtection.mode === 'none'} onClick={() => void onLockApp()} type="button">{t('settings.lockNow')}</button></div>
         <div className="protection-mode-choices compact">
           <button className={protectionMode === 'system' ? 'selected' : ''} disabled={!appProtection.systemAuth.available || appProtectionBusy} onClick={() => { setProtectionMode('system'); setAppPassword(''); setAppPasswordConfirm(''); }} type="button"><span>◎</span><strong>{appProtection.systemAuth.label}</strong><small>{appProtection.systemAuth.available ? t('settings.systemRecommended') : appProtection.systemAuth.detail}</small></button>
           <button className={protectionMode === 'password' ? 'selected' : ''} disabled={appProtectionBusy} onClick={() => { setProtectionMode('password'); setAppPassword(''); setAppPasswordConfirm(''); }} type="button"><span>•••</span><strong>{t('send.appPassword')}</strong><small>{t('settings.appPasswordOnly')}</small></button>
@@ -3449,7 +3480,7 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
         <button className="primary protection-save" disabled={appProtectionBusy || (appProtection.mode === 'password' && !currentAppPassword) || (protectionMode === 'password' && (!appPassword || !appPasswordConfirm))} onClick={() => void saveAppProtection()} type="button">{appProtectionBusy ? t('settings.saving') : protectionMode === 'system' ? t('settings.useSystem', { system: appProtection.systemAuth.label }) : t('settings.saveAppProtection')}</button>
         <small>{protectionMode === 'system' ? t('settings.systemBackup', { system: appProtection.systemAuth.label }) : t('settings.passwordOnlyHere')}</small>
       </article>
-      <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.autoLock')}</strong><p>{t('settings.autoLockDetail')}</p></div><label><span className="sr-only">{t('settings.inactivityTimeout')}</span><select value={autoLockSeconds} disabled={autoLockBusy} onChange={(event) => void updateAutoLock(Number(event.target.value))}><option value={60}>{t('settings.timeout1Minute')}</option><option value={300}>{t('settings.timeout5Minutes')}</option><option value={900}>{t('settings.timeout15Minutes')}</option><option value={1800}>{t('settings.timeout30Minutes')}</option><option value={3600}>{t('settings.timeout1Hour')}</option><option value={0}>{t('settings.timeoutNever')}</option></select></label></article>
+      <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.autoLock')}</strong><p>{appProtection.mode === 'none' ? t('settings.autoLockNeedsProtection') : t('settings.autoLockDetail')}</p></div><label><span className="sr-only">{t('settings.inactivityTimeout')}</span><select value={autoLockSeconds} disabled={autoLockBusy || appProtection.mode === 'none'} onChange={(event) => void updateAutoLock(Number(event.target.value))}><option value={60}>{t('settings.timeout1Minute')}</option><option value={300}>{t('settings.timeout5Minutes')}</option><option value={900}>{t('settings.timeout15Minutes')}</option><option value={1800}>{t('settings.timeout30Minutes')}</option><option value={3600}>{t('settings.timeout1Hour')}</option><option value={0}>{t('settings.timeoutNever')}</option></select></label></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.node')}</h3><small>{changed ? t('settings.unsaved') : savedProfile ? t('settings.saved') : t('settings.loading')}</small></header>
       <article className="settings-panel node-settings">{profile && <>

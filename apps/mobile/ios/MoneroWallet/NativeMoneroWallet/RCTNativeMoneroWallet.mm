@@ -1808,6 +1808,9 @@ class IOSWalletAppVault {
 
   void unlockSystem() {
     VaultLockGuard guard(_lock);
+    if (_sessionAmk != nil && _sessionSecrets != nil) {
+      return;
+    }
     NSDictionary *legacy = legacyManagedSecrets();
     NSArray<NSString *> *imported = nil;
     if (![NSFileManager.defaultManager fileExistsAtPath:vaultURL().path]) {
@@ -5046,7 +5049,13 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
   if (_autoLockTimer == nil) {
     return;
   }
-  if (_autoLockSeconds == 0 || !_appAuthorized.load()) {
+  NSString *mode = nil;
+  try {
+    mode = readKeychainSecret(kAppProtectionModeKey);
+  } catch (const std::exception &) {
+  }
+  if (_autoLockSeconds == 0 || !_appAuthorized.load() ||
+      [mode isEqualToString:@"none"]) {
     dispatch_source_set_timer(
         _autoLockTimer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
     return;
@@ -5061,7 +5070,13 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 
 - (void)enforceNativeAutoLock
 {
-  if (!_appAuthorized.load() || _autoLockSeconds == 0) {
+  NSString *mode = nil;
+  try {
+    mode = readKeychainSecret(kAppProtectionModeKey);
+  } catch (const std::exception &) {
+  }
+  if (!_appAuthorized.load() || _autoLockSeconds == 0 ||
+      [mode isEqualToString:@"none"]) {
     return;
   }
   NSTimeInterval elapsed =
@@ -5419,6 +5434,11 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     return;
   }
 
+  if ([mode isEqualToString:@"none"]) {
+    completion(YES, @"App protection is skipped");
+    return;
+  }
+
   if (![mode isEqualToString:@"password"]) {
     completion(NO, @"App protection has not been configured");
     return;
@@ -5513,13 +5533,21 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 {
   try {
     NSString *mode = readKeychainSecret(kAppProtectionModeKey);
+    if ([mode isEqualToString:@"none"]) {
+      IOSWalletAppVault::shared().unlockSystem();
+      _appAuthorized.store(true);
+    }
     const NativeUnlockThrottle throttle = nativeUnlockThrottle();
     BOOL configured =
-        [mode isEqualToString:@"password"] || [mode isEqualToString:@"biometric"];
+        [mode isEqualToString:@"password"] ||
+        [mode isEqualToString:@"biometric"] ||
+        [mode isEqualToString:@"none"];
     resolve(@{
       @"configured": @(configured),
-      @"locked": @(!_appAuthorized.load()),
-      @"mode": [mode isEqualToString:@"biometric"] ? @"biometric" : @"password",
+      @"locked": @(![mode isEqualToString:@"none"] && !_appAuthorized.load()),
+      @"mode": [mode isEqualToString:@"none"]
+          ? @"none"
+          : ([mode isEqualToString:@"biometric"] ? @"biometric" : @"password"),
       @"failedPasswordAttempts": @(throttle.failures),
       @"resetRequired": @NO,
     });
@@ -5578,6 +5606,9 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
         } else {
           IOSWalletAppVault::shared().unlockSystem();
         }
+      } else if ([mode isEqualToString:@"none"]) {
+        IOSWalletAppVault::shared().unlockSystem();
+        deleteKeychainSecret(kAppPasswordVerifierKey);
       } else {
         throw WalletEngineError("Unsupported app protection mode");
       }
@@ -5585,7 +5616,8 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
       clearNativeUnlockThrottle();
       // Selecting biometrics is only configuration. The following system
       // authentication prompt is what grants wallet access.
-      _appAuthorized.store([mode isEqualToString:@"password"]);
+      _appAuthorized.store(
+          [mode isEqualToString:@"password"] || [mode isEqualToString:@"none"]);
       if ([mode isEqualToString:@"biometric"]) {
         IOSWalletAppVault::shared().lockVault();
       } else {
@@ -5624,6 +5656,13 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     if (mode == nil) {
       resolve(biometricAuthResultDictionary(
           NO, @"none", @"App protection has not been configured"));
+      return;
+    }
+    if ([mode isEqualToString:@"none"]) {
+      IOSWalletAppVault::shared().unlockSystem();
+      _appAuthorized.store(true);
+      resolve(biometricAuthResultDictionary(
+          YES, @"none", @"App protection is skipped"));
       return;
     }
     if ([mode isEqualToString:@"biometric"] && password.length == 0) {
@@ -5692,6 +5731,18 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 - (void)lockApp:(RCTPromiseResolveBlock)resolve
          reject:(RCTPromiseRejectBlock)reject
 {
+  try {
+    NSString *mode = readKeychainSecret(kAppProtectionModeKey);
+    if ([mode isEqualToString:@"none"]) {
+      IOSWalletAppVault::shared().unlockSystem();
+      _appAuthorized.store(true);
+      resolve([NSNull null]);
+      return;
+    }
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+    return;
+  }
   _appAuthorized.store(false);
   if (_autoLockTimer != nil) {
     dispatch_source_set_timer(

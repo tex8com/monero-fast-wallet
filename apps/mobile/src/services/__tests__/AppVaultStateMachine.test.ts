@@ -53,6 +53,24 @@ describe('shared AppVault state machine', () => {
     ).toBe('unlock-system');
   });
 
+  it('treats a persisted protection skip as configured and authorized', () => {
+    const skipped = {
+      ...defaultAppVaultState(),
+      ready: true,
+      onboardingComplete: true,
+      configured: true,
+      protectionMode: 'none' as const,
+      sessionAuthorized: true,
+    };
+    expect(deriveAppVaultPresentation(skipped, 100)).toBe('content');
+    expect(() =>
+      deriveAppVaultPresentation(
+        {...skipped, sessionAuthorized: false},
+        100,
+      ),
+    ).toThrow('must remain authorized');
+  });
+
   it('keeps failures non-destructive and migrations resumable', () => {
     expect(unlockBackoffSeconds(1)).toBe(2);
     expect(unlockBackoffSeconds(3)).toBe(30);

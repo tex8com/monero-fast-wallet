@@ -3416,7 +3416,12 @@ export function applyManualTranslationOverrides<T extends Record<string, string>
       const reviewed = overrides?.[source];
       if (reviewed) return [key, reviewed];
       const generated = translated[key];
-      return [key, isGeneratedTranslationSafe(source, generated) ? generated : source];
+      return [
+        key,
+        typeof generated === 'string' && isGeneratedTranslationSafe(source, generated)
+          ? generated
+          : source,
+      ];
     }),
   ) as T;
 }

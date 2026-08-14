@@ -11,7 +11,7 @@ import {
   MfwAppVaultProtectionMode,
 } from './generated/mfwAppVaultContract';
 
-export type AppVaultProtectionMode = 'password' | 'system';
+export type AppVaultProtectionMode = 'none' | 'password' | 'system';
 export type AppVaultPresentation =
   | 'preparing'
   | 'welcome'
@@ -63,6 +63,12 @@ export function validateAppVaultState(state: AppVaultStateV1): void {
   if (!state.configured && state.sessionAuthorized) {
     throw new Error('An unconfigured AppVault cannot be authorized.');
   }
+  if (
+    state.protectionMode === 'none' &&
+    (!state.configured || !state.sessionAuthorized)
+  ) {
+    throw new Error('Skipped AppVault protection must remain authorized.');
+  }
   if (!isAllowedAutoLockSeconds(state.autoLockSeconds)) {
     throw new Error('Unsupported AppVault inactivity timeout.');
   }
@@ -111,6 +117,8 @@ export function protectionModeNumber(mode: AppVaultProtectionMode | null): numbe
     ? MfwAppVaultProtectionMode.PASSWORD
     : mode === 'system'
       ? MfwAppVaultProtectionMode.SYSTEM
+      : mode === 'none'
+        ? MfwAppVaultProtectionMode.NONE
       : MfwAppVaultProtectionMode.UNCONFIGURED;
 }
 

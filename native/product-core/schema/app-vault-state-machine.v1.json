@@ -26,7 +26,8 @@
   "protectionModes": [
     {"name": "UNCONFIGURED", "value": 0},
     {"name": "PASSWORD", "value": 1},
-    {"name": "SYSTEM", "value": 2}
+    {"name": "SYSTEM", "value": 2},
+    {"name": "NONE", "value": 3}
   ],
   "presentations": [
     {"name": "PREPARING", "value": 0},
@@ -56,7 +57,8 @@
     {"name": "MANUAL_LOCK", "value": 8},
     {"name": "CHANGE_TO_PASSWORD", "value": 9},
     {"name": "CHANGE_TO_SYSTEM", "value": 10},
-    {"name": "MIGRATION_ADVANCE", "value": 11}
+    {"name": "MIGRATION_ADVANCE", "value": 11},
+    {"name": "SKIP_PROTECTION", "value": 12}
   ],
   "stepUpActions": [
     {"name": "SEED_EXPORT", "value": 1},
@@ -75,6 +77,7 @@
     "persistent_backoff_uses_wall_clock_deadline",
     "auto_lock_uses_monotonic_elapsed_time",
     "migration_advances_one_durable_boundary_at_a_time",
-    "system_auth_always_has_password_recovery_envelope"
+    "system_auth_always_has_password_recovery_envelope",
+    "skipped_protection_is_persisted_and_authorized_without_prompts"
   ]
 }

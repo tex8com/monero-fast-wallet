@@ -122,13 +122,14 @@ describe('app-wide protection UI contract', () => {
     expect(walletsSource).not.toContain('hasSecureWalletCredential');
   });
 
-  it('makes app protection mandatory and enforces it in native code', () => {
+  it('keeps one app-wide vault while allowing protection to be skipped once', () => {
     expect(appSecuritySource).toContain(
-      "export type AppProtectionMode = 'biometric' | 'password'",
+      "export type AppProtectionMode = 'biometric' | 'none' | 'password'",
     );
-    expect(appSecuritySource).not.toContain(
-      "export type AppProtectionMode = 'none'",
-    );
+    expect(appSecuritySource).toContain("await onConfigure('none')");
+    expect(appSecuritySource).toContain('testID="app-security-skip"');
+    expect(androidNativeSource).toContain('mode == "none"');
+    expect(iosNativeSource).toContain('[mode isEqualToString:@"none"]');
     expect(appSecuritySource).toMatch(
       /validateRecoveryPassword\(password(?:\s*\?\?\s*['"]{2})?\)/,
     );

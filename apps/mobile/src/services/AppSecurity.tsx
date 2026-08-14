@@ -46,7 +46,7 @@ import {
   validateRecoveryPassword,
 } from '../../../../packages/wallet-shared/src/appVaultStateMachine';
 
-export type AppProtectionMode = 'biometric' | 'password';
+export type AppProtectionMode = 'biometric' | 'none' | 'password';
 
 type AppSecurityContextValue = {
   configured: boolean;
@@ -113,14 +113,15 @@ export function AppSecurityProvider({
   }, []);
 
   const commitInactivityLock = useCallback(() => {
+    if (mode === 'none') return;
     setLocked(true);
     logWalletEvent('AppSecurity', 'inactivity.locked', { autoLockSeconds });
     walletService.lockApp().catch(() => undefined);
-  }, [autoLockSeconds]);
+  }, [autoLockSeconds, mode]);
 
   const recordUserActivity = useCallback(() => {
     if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
-    if (!configured || locked) return;
+    if (!configured || locked || mode === 'none') return;
     lastUserActivityAtMsRef.current = Date.now();
     if (
       lastUserActivityAtMsRef.current -
@@ -139,7 +140,7 @@ export function AppSecurityProvider({
     // Node-based contract tests expose `unref`; React Native timers do not.
     // Avoid keeping the test process alive without changing device behavior.
     (inactivityTimerRef.current as unknown as { unref?: () => void }).unref?.();
-  }, [autoLockSeconds, commitInactivityLock, configured, locked]);
+  }, [autoLockSeconds, commitInactivityLock, configured, locked, mode]);
 
   useEffect(() => {
     recordUserActivity();
@@ -160,7 +161,13 @@ export function AppSecurityProvider({
           mode: status.mode,
           resetRequired: false,
         });
-        setModeState(status.mode === 'biometric' ? 'biometric' : 'password');
+        setModeState(
+          status.mode === 'none'
+            ? 'none'
+            : status.mode === 'biometric'
+              ? 'biometric'
+              : 'password',
+        );
         setConfigured(status.configured);
         setLocked(status.locked || !status.configured);
         setScreenTransitionStartedAtMs(Date.now());
@@ -191,7 +198,10 @@ export function AppSecurityProvider({
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {
-      if (nextState !== 'active' || (ready && !locked)) {
+      if (
+        nextState !== 'active' ||
+        (ready && !locked && mode !== 'none')
+      ) {
         return;
       }
       void loadProtectionStatus().then(loaded => {
@@ -201,7 +211,7 @@ export function AppSecurityProvider({
       });
     });
     return () => subscription.remove();
-  }, [loadProtectionStatus, locked, ready]);
+  }, [loadProtectionStatus, locked, mode, ready]);
 
   useEffect(() => {
     const clearBackgroundLockTimer = () => {
@@ -211,6 +221,7 @@ export function AppSecurityProvider({
       }
     };
     const commitBackgroundLock = (reason: string) => {
+      if (mode === 'none') return;
       if (backgroundLockCommittedRef.current) {
         return;
       }
@@ -237,6 +248,10 @@ export function AppSecurityProvider({
     };
     const subscription = AppState.addEventListener('change', nextState => {
       if (/inactive|background/.test(nextState)) {
+        if (mode === 'none') {
+          previousAppState.current = nextState;
+          return;
+        }
         // The security surface deliberately keeps `locked` true while a
         // biometric unlock is in flight. iOS reports its Face ID sheet as an
         // inactive app state. Calling lockApp() again from that transition
@@ -303,7 +318,7 @@ export function AppSecurityProvider({
       clearBackgroundLockTimer();
       subscription.remove();
     };
-  }, [autoLockSeconds, locked, recordUserActivity]);
+  }, [autoLockSeconds, locked, mode, recordUserActivity]);
 
   const setMode = useCallback(
     async (nextMode: AppProtectionMode, password?: string) => {
@@ -313,7 +328,10 @@ export function AppSecurityProvider({
         initialSetup: isInitialSetup,
         mode: nextMode,
       });
-      if (nextMode === 'password' || (password?.length ?? 0) > 0) {
+      if (
+        nextMode !== 'none' &&
+        (nextMode === 'password' || (password?.length ?? 0) > 0)
+      ) {
         try {
           validateRecoveryPassword(password ?? '');
         } catch {
@@ -370,6 +388,7 @@ export function AppSecurityProvider({
         setInitialProtectionTransitionStartedAtMs(undefined);
       },
       lock: () => {
+        if (mode === 'none') return;
         setLocked(true);
         walletService.lockApp().catch(() => undefined);
       },
@@ -398,9 +417,11 @@ export function AppSecurityProvider({
       onboardingComplete: onboardingStage === 'protection',
       configured,
       protectionMode: configured
-        ? mode === 'biometric'
-          ? 'system'
-          : 'password'
+        ? mode === 'none'
+          ? 'none'
+          : mode === 'biometric'
+            ? 'system'
+            : 'password'
         : null,
       sessionAuthorized: configured && !locked,
       migrationState: 0,
@@ -761,6 +782,21 @@ function AppSecurityLockScreen({
     t,
   ]);
 
+  const skipProtection = useCallback(async () => {
+    const startedAt = Date.now();
+    onProtectionSubmit(startedAt);
+    setWorking(true);
+    setError(undefined);
+    logWalletEvent('AppSecurity', 'protectionSetup.skipped');
+    try {
+      await onConfigure('none');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setWorking(false);
+    }
+  }, [onConfigure, onProtectionSubmit]);
+
   useEffect(() => {
     if (
       !configured ||
@@ -999,6 +1035,22 @@ function AppSecurityLockScreen({
                 : t('settings.saveAppProtection')}
             </Text>
           </TouchableOpacity>
+          {!configured ? (
+            <>
+              <TouchableOpacity
+                accessibilityRole="button"
+                disabled={working}
+                onPress={() => void skipProtection()}
+                style={styles.skipButton}
+                testID="app-security-skip"
+              >
+                <Text style={styles.skipButtonText}>{t('action.skip')}</Text>
+              </TouchableOpacity>
+              <Text style={styles.skipHint}>
+                {t('security.skipProtectionHint')}
+              </Text>
+            </>
+          ) : null}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -1201,5 +1253,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
   },
   primaryText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  skipButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 40,
+  },
+  skipButtonText: {
+    color: colors.orangeLight,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  skipHint: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: 'center',
+  },
   disabled: { opacity: 0.45 },
 });
