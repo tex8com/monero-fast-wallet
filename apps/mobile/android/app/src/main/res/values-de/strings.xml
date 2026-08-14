@@ -1,4 +1,9 @@
 <resources>
+    <string name="app_name">Monero Fast Wallet</string>
     <string name="monero_transaction_channel_name">Monero-Transaktionen</string>
-    <string name="monero_transaction_channel_description">Hinweise zu Fast-Wallet-Zahlungen und Bestätigungen</string>
+    <string name="monero_transaction_channel_description">Hinweise zu Fast Wallet-Zahlungen und Bestätigungen</string>
+    <string name="monero_sync_channel_name">Wallet-Synchronisierung</string>
+    <string name="monero_sync_channel_description">Hält die Verlaufs-Synchronisierung aktiver Wallets aufrecht</string>
+    <string name="monero_sync_notification_title">Wallet-Verlauf wird synchronisiert</string>
+    <string name="monero_sync_notification_description">Öffentliche Blockchain-Daten werden geladen und gescannt</string>
 </resources>

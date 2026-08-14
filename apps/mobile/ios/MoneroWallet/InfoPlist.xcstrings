@@ -1,0 +1,566 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "NSLocationWhenInUseUsageDescription": {
+      "localizations": {
+        "en-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Location is used only when you enable nearby Monero Enthusiast discovery. The app reduces it to an approximate area and never displays your exact position."
+          }
+        },
+        "de-DE": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Standort wird nur verwendet, wenn du die Monero Enthusiast-Suche in deiner Nähe aktivierst. Die App reduziert ihn auf ein ungefähres Gebiet und zeigt niemals deine genaue Position an."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La ubicación solo se usa cuando activas el descubrimiento de Monero Enthusiast cercanos. La app la reduce a una zona aproximada y nunca muestra tu posición exacta."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A localização só é usada quando você ativa a descoberta de Monero Enthusiast próximos. O app a reduz a uma área aproximada e nunca mostra sua posição exata."
+          }
+        },
+        "ru-RU": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Геопозиция используется только при включённом поиске Monero Enthusiast поблизости. Приложение округляет её до примерной области и никогда не показывает точное местоположение."
+          }
+        },
+        "vi-VN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Vị trí chỉ được dùng khi bạn bật tìm Monero Enthusiast gần đó. Ứng dụng làm tròn thành khu vực gần đúng và không bao giờ hiển thị vị trí chính xác."
+          }
+        },
+        "id-ID": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Lokasi hanya digunakan saat Anda mengaktifkan penemuan Monero Enthusiast terdekat. Aplikasi membulatkannya menjadi area perkiraan dan tidak pernah menampilkan posisi tepat Anda."
+          }
+        },
+        "uk-UA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Геопозиція використовується лише коли ви вмикаєте пошук Monero Enthusiast поруч. Застосунок округлює її до приблизної області та ніколи не показує ваше точне місцезнаходження."
+          }
+        },
+        "tr-TR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Konum yalnızca yakındaki Monero Enthusiast keşfini etkinleştirdiğinizde kullanılır. Uygulama konumu yaklaşık bir alana yuvarlar ve kesin konumunuzu asla göstermez."
+          }
+        },
+        "hi-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "स्थान का उपयोग केवल तभी होता है जब आप पास के Monero Enthusiast की खोज चालू करते हैं। ऐप इसे एक अनुमानित क्षेत्र तक सीमित करता है और आपका सटीक स्थान कभी नहीं दिखाता।"
+          }
+        },
+        "ur-PK": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "مقام صرف اس وقت استعمال ہوتا ہے جب آپ قریبی Monero Enthusiast کی تلاش فعال کرتے ہیں۔ ایپ اسے ایک تقریبی علاقے تک محدود کرتی ہے اور آپ کا عین مقام کبھی نہیں دکھاتی۔"
+          }
+        },
+        "fr-FR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La localisation n'est utilisée que lorsque vous activez la recherche de Monero Enthusiast à proximité. L'app la réduit à une zone approximative et n'affiche jamais votre position exacte."
+          }
+        },
+        "fil-PH": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ginagamit lang ang lokasyon kapag in-enable mo ang paghahanap ng kalapit na Monero Enthusiast. Ginagawa itong tinatayang lugar ng app at hindi kailanman ipinapakita ang eksaktong posisyon mo."
+          }
+        },
+        "ja-JP": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "位置情報は、近くの Monero Enthusiast 検索を有効にした場合にのみ使用されます。アプリは概算エリアに丸め、正確な位置を表示しません。"
+          }
+        },
+        "ko-KR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "위치는 근처 Monero Enthusiast 탐색을 켤을 때만 사용됩니다. 앱은 위치를 대략적인 영역으로 반올림하며 정확한 위치를 표시하지 않습니다."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يُستخدم الموقع فقط عند تفعيل اكتشاف Monero Enthusiast القريبين. يحوّله التطبيق إلى منطقة تقريبية ولا يعرض موقعك الدقيق أبدًا."
+          }
+        },
+        "zh-CN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅当您启用附近 Monero Enthusiast 发现功能时才会使用位置。应用会将其简化为大致区域，绝不显示您的准确位置。"
+          }
+        },
+        "zh-TW": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "只有在您啟用附近 Monero Enthusiast 探索時才會使用位置。應用程式會將其簡化為大致區域，絕不顯示您的精確位置。"
+          }
+        }
+      }
+    },
+    "NSBluetoothAlwaysUsageDescription": {
+      "localizations": {
+        "en-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth is used to connect to Ledger Nano hardware wallets."
+          }
+        },
+        "de-DE": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth wird zur Verbindung mit Ledger-Nano-Hardware-Wallets verwendet."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth se usa para conectar wallets de hardware Ledger Nano."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O Bluetooth é usado para conectar carteiras de hardware Ledger Nano."
+          }
+        },
+        "ru-RU": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth используется для подключения аппаратных кошельков Ledger Nano."
+          }
+        },
+        "vi-VN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth được dùng để kết nối ví phần cứng Ledger Nano."
+          }
+        },
+        "id-ID": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth digunakan untuk menghubungkan hardware wallet Ledger Nano."
+          }
+        },
+        "uk-UA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth використовується для підключення апаратних гаманців Ledger Nano."
+          }
+        },
+        "tr-TR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth, Ledger Nano donanım cüzdanlarına bağlanmak için kullanılır."
+          }
+        },
+        "hi-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth का उपयोग Ledger Nano हार्डवेयर वॉलेट से जुड़ने के लिए होता है।"
+          }
+        },
+        "ur-PK": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth کا استعمال Ledger Nano ہارڈویئر والٹ سے جڑنے کے لیے ہوتا ہے۔"
+          }
+        },
+        "fr-FR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth sert à connecter les portefeuilles matériels Ledger Nano."
+          }
+        },
+        "fil-PH": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ginagamit ang Bluetooth para kumonekta sa Ledger Nano hardware wallet."
+          }
+        },
+        "ja-JP": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth は Ledger Nano ハードウェアウォレットへの接続に使用されます。"
+          }
+        },
+        "ko-KR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth는 Ledger Nano 하드웨어 지갑 연결에 사용됩니다."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يُستخدم Bluetooth للاتصال بمحافظ Ledger Nano للأجهزة."
+          }
+        },
+        "zh-CN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth 用于连接 Ledger Nano 硬件钱包。"
+          }
+        },
+        "zh-TW": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth 用於連接 Ledger Nano 硬體錢包。"
+          }
+        }
+      }
+    },
+    "NSBluetoothPeripheralUsageDescription": {
+      "localizations": {
+        "en-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth is used to connect to Ledger Nano hardware wallets."
+          }
+        },
+        "de-DE": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth wird zur Verbindung mit Ledger-Nano-Hardware-Wallets verwendet."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth se usa para conectar wallets de hardware Ledger Nano."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O Bluetooth é usado para conectar carteiras de hardware Ledger Nano."
+          }
+        },
+        "ru-RU": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth используется для подключения аппаратных кошельков Ledger Nano."
+          }
+        },
+        "vi-VN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth được dùng để kết nối ví phần cứng Ledger Nano."
+          }
+        },
+        "id-ID": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth digunakan untuk menghubungkan hardware wallet Ledger Nano."
+          }
+        },
+        "uk-UA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth використовується для підключення апаратних гаманців Ledger Nano."
+          }
+        },
+        "tr-TR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth, Ledger Nano donanım cüzdanlarına bağlanmak için kullanılır."
+          }
+        },
+        "hi-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth का उपयोग Ledger Nano हार्डवेयर वॉलेट से जुड़ने के लिए होता है।"
+          }
+        },
+        "ur-PK": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth کا استعمال Ledger Nano ہارڈویئر والٹ سے جڑنے کے لیے ہوتا ہے۔"
+          }
+        },
+        "fr-FR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth sert à connecter les portefeuilles matériels Ledger Nano."
+          }
+        },
+        "fil-PH": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ginagamit ang Bluetooth para kumonekta sa Ledger Nano hardware wallet."
+          }
+        },
+        "ja-JP": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth は Ledger Nano ハードウェアウォレットへの接続に使用されます。"
+          }
+        },
+        "ko-KR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth는 Ledger Nano 하드웨어 지갑 연결에 사용됩니다."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يُستخدم Bluetooth للاتصال بمحافظ Ledger Nano للأجهزة."
+          }
+        },
+        "zh-CN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth 用于连接 Ledger Nano 硬件钱包。"
+          }
+        },
+        "zh-TW": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bluetooth 用於連接 Ledger Nano 硬體錢包。"
+          }
+        }
+      }
+    },
+    "NSCameraUsageDescription": {
+      "localizations": {
+        "en-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Camera access is used only to scan a Monero receiving-address QR code."
+          }
+        },
+        "de-DE": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Der Kamerazugriff wird nur zum Scannen eines QR-Codes mit einer Monero-Empfangsadresse verwendet."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El acceso a la cámara solo se usa para escanear el código QR de una dirección de recepción Monero."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O acesso à câmera só é usado para ler o código QR de um endereço de recebimento Monero."
+          }
+        },
+        "ru-RU": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Доступ к камере нужен только для сканирования QR-кода адреса получения Monero."
+          }
+        },
+        "vi-VN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Quyền camera chỉ được dùng để quét mã QR địa chỉ nhận Monero."
+          }
+        },
+        "id-ID": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Akses kamera hanya digunakan untuk memindai kode QR alamat penerimaan Monero."
+          }
+        },
+        "uk-UA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Доступ до камери потрібен лише для сканування QR-коду адреси отримання Monero."
+          }
+        },
+        "tr-TR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kamera erişimi yalnızca bir Monero alıcı adresi QR kodunu taramak için kullanılır."
+          }
+        },
+        "hi-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "कैमरा एक्सेस का उपयोग केवल Monero प्राप्ति पते के QR कोड को स्कैन करने के लिए होता है।"
+          }
+        },
+        "ur-PK": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "کیمرہ تک رسائی صرف Monero وصولی پتے کا QR کوڈ اسکین کرنے کے لیے استعمال ہوتی ہے۔"
+          }
+        },
+        "fr-FR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "L'accès à la caméra sert uniquement à scanner le code QR d'une adresse de réception Monero."
+          }
+        },
+        "fil-PH": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ginagamit lang ang camera para i-scan ang QR code ng Monero receiving address."
+          }
+        },
+        "ja-JP": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "カメラは Monero 受取アドレスの QR コードのスキャンにのみ使用されます。"
+          }
+        },
+        "ko-KR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "카메라는 Monero 수신 주소 QR 코드 스캔에만 사용됩니다."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يُستخدم الوصول إلى الكاميرا فقط لمسح رمز QR لعنوان استلام Monero."
+          }
+        },
+        "zh-CN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相机权限仅用于扫描 Monero 收款地址二维码。"
+          }
+        },
+        "zh-TW": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相機權限僅用於掃描 Monero 收款地址 QR 碼。"
+          }
+        }
+      }
+    },
+    "NSFaceIDUsageDescription": {
+      "localizations": {
+        "en-US": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID is used to unlock Monero Fast Wallet securely on this device."
+          }
+        },
+        "de-DE": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID wird verwendet, um Monero Fast Wallet auf diesem Gerät sicher zu entsperren."
+          }
+        },
+        "es-ES": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID se usa para desbloquear Monero Fast Wallet de forma segura en este dispositivo."
+          }
+        },
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O Face ID é usado para desbloquear a Monero Fast Wallet com segurança neste dispositivo."
+          }
+        },
+        "ru-RU": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID используется для безопасной разблокировки Monero Fast Wallet на этом устройстве."
+          }
+        },
+        "vi-VN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID được dùng để mở khóa Monero Fast Wallet an toàn trên thiết bị này."
+          }
+        },
+        "id-ID": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID digunakan untuk membuka kunci Monero Fast Wallet dengan aman di perangkat ini."
+          }
+        },
+        "uk-UA": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID використовується для безпечного розблокування Monero Fast Wallet на цьому пристрої."
+          }
+        },
+        "tr-TR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID, bu cihazda Monero Fast Wallet uygulamasını güvenli biçimde açmak için kullanılır."
+          }
+        },
+        "hi-IN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID का उपयोग इस डिवाइस पर Monero Fast Wallet को सुरक्षित रूप से अनलॉक करने के लिए होता है।"
+          }
+        },
+        "ur-PK": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID کا استعمال اس ڈیوائس پر Monero Fast Wallet کو محفوظ طریقے سے کھولنے کے لیے ہوتا ہے۔"
+          }
+        },
+        "fr-FR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID sert à déverrouiller Monero Fast Wallet en toute sécurité sur cet appareil."
+          }
+        },
+        "fil-PH": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ginagamit ang Face ID para ligtas na i-unlock ang Monero Fast Wallet sa device na ito."
+          }
+        },
+        "ja-JP": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID は、このデバイスで Monero Fast Wallet を安全にロック解除するために使用されます。"
+          }
+        },
+        "ko-KR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID는 이 기기에서 Monero Fast Wallet의 잠금을 안전하게 해제하는 데 사용됩니다."
+          }
+        },
+        "ar": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "يُستخدم Face ID لفتح Monero Fast Wallet بأمان على هذا الجهاز."
+          }
+        },
+        "zh-CN": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID 用于在此设备上安全解锁 Monero Fast Wallet。"
+          }
+        },
+        "zh-TW": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Face ID 用於在此裝置上安全解鎖 Monero Fast Wallet。"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

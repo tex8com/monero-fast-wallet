@@ -98,9 +98,13 @@ export default function TabNavigator() {
         <Tab.Screen name="EnthusiastChat" component={EnthusiastChatScreen} />
       ) : null}
       <Tab.Screen name="Settings" component={SettingsScreen} />
-      <Tab.Screen name="Tex8Assistant" component={Tex8AssistantScreen} />
+      {v1ReleaseFeatures.assistant ? (
+        <Tab.Screen name="Tex8Assistant" component={Tex8AssistantScreen} />
+      ) : null}
       <Tab.Screen name="Wallets" component={WalletsScreen} />
-      <Tab.Screen name="MfwNames" component={MfwNamesScreen} />
+      {v1ReleaseFeatures.mfwNameRegistration ? (
+        <Tab.Screen name="MfwNames" component={MfwNamesScreen} />
+      ) : null}
       <Tab.Screen name="Transactions" component={TransactionsScreen} />
       <Tab.Screen name="TransactionDetail" component={TransactionDetailScreen} />
       <Tab.Screen name="Welcome" component={WelcomeScreen} />

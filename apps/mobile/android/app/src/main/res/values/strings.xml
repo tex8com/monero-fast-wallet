@@ -3,7 +3,7 @@
     <string name="monero_transaction_channel_name">Monero transactions</string>
     <string name="monero_transaction_channel_description">Fast Wallet payment and confirmation alerts</string>
     <string name="monero_sync_channel_name">Wallet synchronization</string>
-    <string name="monero_sync_channel_description">Keeps an active wallet history synchronization running</string>
+    <string name="monero_sync_channel_description">Keeps active wallet history synchronization running</string>
     <string name="monero_sync_notification_title">Synchronizing wallet history</string>
     <string name="monero_sync_notification_description">Downloading and scanning public blockchain data</string>
 </resources>

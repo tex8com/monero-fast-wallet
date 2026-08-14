@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Monero 거래</string>
+    <string name="monero_transaction_channel_description">Fast Wallet 결제 및 확인 알림</string>
+    <string name="monero_sync_channel_name">지갑 동기화</string>
+    <string name="monero_sync_channel_description">활성 지갑 기록 동기화를 계속 실행합니다</string>
+    <string name="monero_sync_notification_title">지갑 기록 동기화 중</string>
+    <string name="monero_sync_notification_description">공개 블록체인 데이터 다운로드 및 스캔 중</string>
+</resources>

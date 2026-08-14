@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Monero 交易</string>
+    <string name="monero_transaction_channel_description">Fast Wallet 付款與確認通知</string>
+    <string name="monero_sync_channel_name">錢包同步</string>
+    <string name="monero_sync_channel_description">持續同步使用中錢包的歷史記錄</string>
+    <string name="monero_sync_notification_title">正在同步錢包歷史記錄</string>
+    <string name="monero_sync_notification_description">正在下載與掃描公開區塊鏈資料</string>
+</resources>

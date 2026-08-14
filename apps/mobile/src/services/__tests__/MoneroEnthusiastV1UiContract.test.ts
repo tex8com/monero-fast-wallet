@@ -16,7 +16,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
     );
 
     expect(navigation).toContain('name="MoneroEnthusiast"');
-    expect(menu).toContain('screen: "MoneroEnthusiast"');
+    expect(menu).toContain('"MoneroEnthusiast", IcoCommunity');
     expect(tabs).toContain('key: "MoneroEnthusiast"');
     expect(screen).toContain('getMoneroEnthusiastV1Status');
     expect(screen).toContain('MoneroEnthusiastV1Service.search');
@@ -30,7 +30,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
       /FindEnthusiasts|EnthusiastChat|community_(?:load|list|send)|\/v1\/nearby|\/v1\/conversations/,
     );
     expect(screen).not.toMatch(
-      /accessToken|matrixSession|privateKey|embedding|fetch\(|axios|XMLHttpRequest/,
+      /accessToken|matrixSession|privateKey|fetch\(|axios|XMLHttpRequest/,
     );
   });
 

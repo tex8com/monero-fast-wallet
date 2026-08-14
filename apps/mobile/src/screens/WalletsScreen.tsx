@@ -355,7 +355,7 @@ export default function WalletsScreen({ navigation }: any) {
                         : undefined
                     }
                     secondaryActionLabel={
-                      needsSeedBackup ? 'Back up' : undefined
+                      needsSeedBackup ? t('wallets.backup') : undefined
                     }
                     statusLabel={
                       transfer === 'transferring'
@@ -365,7 +365,7 @@ export default function WalletsScreen({ navigation }: any) {
                         : transfer === 'failed'
                         ? t('setup.fastWalletTransferFailed')
                         : needsSeedBackup
-                        ? 'Back up recovery words'
+                        ? t('wallets.backupRecoveryWords')
                         : wallet.id === registeredWallet?.id
                         ? t('walletSelector.active')
                         : undefined
@@ -380,7 +380,7 @@ export default function WalletsScreen({ navigation }: any) {
                     }
                     subtitle={
                       fastWallet
-                        ? 'Receive quickly'
+                        ? t('wallets.receiveQuickly')
                         : wallet.kind === 'hardware'
                         ? (wallet.hardwareDeviceName ?? 'Ledger Nano')
                         : wallet.network
@@ -401,7 +401,7 @@ export default function WalletsScreen({ navigation }: any) {
                         autoFocus
                         maxLength={64}
                         onChangeText={setRenameValue}
-                        placeholder="Wallet name"
+                        placeholder={t('wallets.walletNamePlaceholder')}
                         placeholderTextColor={colors.textMuted}
                         style={s.renameInput}
                         value={renameValue}
@@ -429,7 +429,7 @@ export default function WalletsScreen({ navigation }: any) {
                           {renameBusy ? (
                             <ActivityIndicator color="#FFF" size="small" />
                           ) : (
-                            <Text style={s.renameSaveText}>Save</Text>
+                            <Text style={s.renameSaveText}>{t('action.save')}</Text>
                           )}
                         </TouchableOpacity>
                       </View>

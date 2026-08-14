@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">معاملات Monero</string>
+    <string name="monero_transaction_channel_description">تنبيهات الدفع والتأكيد في Fast Wallet</string>
+    <string name="monero_sync_channel_name">مزامنة المحفظة</string>
+    <string name="monero_sync_channel_description">يحافظ على تشغيل مزامنة سجل المحفظة النشطة</string>
+    <string name="monero_sync_notification_title">جارٍ مزامنة سجل المحفظة</string>
+    <string name="monero_sync_notification_description">جارٍ تنزيل بيانات سلسلة الكتل العامة ومسحها</string>
+</resources>

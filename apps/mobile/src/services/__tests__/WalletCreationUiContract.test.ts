@@ -73,8 +73,8 @@ describe('Wallet creation and existing-wallet UI contract', () => {
     expect(setup).toContain(
       'productSlot: fastWalletSlotEditedRef.current ? productSlot : undefined',
     );
-    expect(setup).toContain('cannot be reused');
-    expect(setup).toContain('its local files are gone');
+    expect(translations).toContain('cannot be reused');
+    expect(translations).toContain('its local files are gone');
   });
 
   it('never lets daemon startup block the primary recovery-seed backup', () => {

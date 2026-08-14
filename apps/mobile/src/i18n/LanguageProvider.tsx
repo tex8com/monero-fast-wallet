@@ -7,7 +7,7 @@ import React, {
   useMemo,
   useState,
 } from "react";
-import { NativeModules, Platform } from "react-native";
+import { NativeModules, Platform, StyleSheet, View } from "react-native";
 import {
   isLanguageCode,
   languageDateLocales,
@@ -16,6 +16,7 @@ import {
   translations,
   type TranslationKey,
 } from "./translations";
+import { matchProductLanguage, productLocaleByCode, type ProductTextDirection } from '../../../../config/productLocales';
 
 const LANGUAGE_STORAGE_KEY = "monero_wallet_language";
 
@@ -25,6 +26,7 @@ type LanguageContextValue = {
   dateLocale: string;
   language: LanguageCode;
   languageLabel: string;
+  textDirection: ProductTextDirection;
   setLanguage: (language: LanguageCode) => Promise<void>;
   t: (key: TranslationKey, params?: TranslationParams) => string;
 };
@@ -41,11 +43,7 @@ function getDeviceLanguage(): LanguageCode {
   const locale =
     Platform.OS === "ios" ? iosLocale : androidLocale ?? iosLocale;
 
-  if (typeof locale === "string" && locale.toLowerCase().startsWith("de")) {
-    return "de";
-  }
-
-  return "en";
+  return matchProductLanguage(locale);
 }
 
 function interpolate(value: string, params?: TranslationParams): string {
@@ -88,7 +86,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
 
   const t = useCallback(
     (key: TranslationKey, params?: TranslationParams) => {
-      const translated = translations[language][key] ?? translations.en[key];
+      const translated = translations[language]?.[key] ?? translations.en[key];
       return interpolate(translated, params);
     },
     [language],
@@ -99,6 +97,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
       dateLocale: languageDateLocales[language],
       language,
       languageLabel: languageNames[language],
+      textDirection: productLocaleByCode[language].direction,
       setLanguage,
       t,
     }),
@@ -107,10 +106,12 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <LanguageContext.Provider value={value}>
-      {children}
+      <View style={[styles.root, { direction: value.textDirection }]}>{children}</View>
     </LanguageContext.Provider>
   );
 }
+
+const styles = StyleSheet.create({ root: { flex: 1 } });
 
 export function useI18n() {
   const context = useContext(LanguageContext);

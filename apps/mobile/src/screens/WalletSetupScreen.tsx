@@ -112,24 +112,25 @@ function setupLog(event: string, fields: Record<string, unknown> = {}) {
 function fastWalletCreationFailureText(
   error: unknown,
   productSlot: number,
+  t: ReturnType<typeof useI18n>['t'],
 ): string {
   const failureCode = classifyDiagnosticFailure(error);
   if (failureCode === 'slot-occupied') {
-    return `Fast Wallet slot ${productSlot} cannot be reused. If its wallet was deleted, its local files are gone; the slot stays blocked because previously hosted read access cannot be taken back. Choose another slot.`;
+    return t('setup.fastWalletSlotOccupied', { slot: productSlot });
   }
   if (failureCode === 'file-exists') {
-    return `A local Fast Wallet file already exists for slot ${productSlot}. Choose another slot or recover the existing wallet; nothing was overwritten.`;
+    return t('setup.fastWalletFileExists', { slot: productSlot });
   }
   if (failureCode === 'app-locked') {
-    return 'The app locked before Fast Wallet creation finished. Unlock it and add the Fast Wallet from Wallets.';
+    return t('setup.fastWalletAppLocked');
   }
   if (failureCode === 'wallet-scan' || failureCode === 'network') {
-    return 'The node height was not ready for safe Fast Wallet creation. Your private wallet is ready; reconnect and add the Fast Wallet from Wallets.';
+    return t('setup.fastWalletNodeUnavailable');
   }
   if (failureCode === 'storage' || failureCode === 'credential') {
-    return 'Secure local storage could not finish Fast Wallet creation. Your private wallet is ready and no key was uploaded.';
+    return t('setup.fastWalletStorageUnavailable');
   }
-  return `Fast Wallet creation failed (${failureCode}). Your private wallet is ready and no key was uploaded. You can retry from Wallets.`;
+  return t('setup.fastWalletCreationFailed', { reason: failureCode });
 }
 
 function rejectAfter<T>(
@@ -192,17 +193,22 @@ function biometricReady(status: BiometricAuthStatus | undefined): boolean {
   return Boolean(status?.supported && status.available && status.enrolled);
 }
 
-function biometricLabel(status: BiometricAuthStatus | undefined): string {
+function biometricLabel(
+  status: BiometricAuthStatus | undefined,
+  t: (key: TranslationKey) => string,
+): string {
   if (status?.biometryType === 'face') {
     return 'Face ID';
   }
   if (status?.biometryType === 'fingerprint') {
-    return Platform.OS === 'ios' ? 'Touch ID' : 'Fingerprint';
+    return Platform.OS === 'ios'
+      ? 'Touch ID'
+      : t('setup.biometricFingerprint');
   }
   if (Platform.OS === 'android') {
-    return 'Fingerprint or Face Unlock';
+    return t('setup.biometricFingerprintOrFace');
   }
-  return 'Biometrics';
+  return t('setup.biometricGeneric');
 }
 
 /* ── Icons ──────────────────────────────────────────────────────────── */
@@ -638,7 +644,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
     ledgerRestoreStartDate.trim().length > 0 &&
     isRestoreStartDateValid(ledgerRestoreStartDate);
   const canUseBiometric = biometricReady(biometricStatus);
-  const currentBiometricLabel = biometricLabel(biometricStatus);
+  const currentBiometricLabel = biometricLabel(biometricStatus, t);
   const hasLocalLedgerView =
     registeredWallet?.kind === 'hardware' &&
     Boolean(
@@ -680,7 +686,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         ? t('setup.prompt.openStored', { biometric: currentBiometricLabel })
         : openUsesHardwareWallet
         ? t('setup.prompt.openHardware')
-        : 'This wallet is missing its protected device credential. Restore it from the recovery seed to create a new local copy.'
+        : t('setup.prompt.missingCredential')
       : passwordPromptMode === 'restore'
       ? t('setup.prompt.restoreStored')
       : t('setup.prompt.createDeviceNoBiometric');
@@ -899,7 +905,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         // recovery without ever trying a different saved wallet.
         setRestoreStartDate('');
         setCreateError(
-          'This wallet is missing its protected device credential. Restore it from the recovery seed to create a new local copy.',
+          t('setup.prompt.missingCredential'),
         );
         setPasswordPromptMode('restore');
       } catch (error) {
@@ -921,6 +927,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       openRegisteredWalletById,
       openingWalletId,
       registeredWallets,
+      t,
     ],
   );
 
@@ -1146,7 +1153,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       });
       Alert.alert(
         t('setup.fastWalletTitle'),
-        fastWalletCreationFailureText(error, productSlot),
+        fastWalletCreationFailureText(error, productSlot, t),
       );
       return false;
     }
@@ -1469,7 +1476,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       const message =
         ledgerError ??
         ledgerStatus?.message ??
-        'Connect a Ledger Nano before opening this wallet';
+        t('setup.ledgerConnectBeforeOpen');
       setCreateError(message);
       refreshLedgerTransport(true).catch(() => undefined);
       return;
@@ -1693,18 +1700,11 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       <View style={s.footerBlock}>
         <TouchableOpacity
           accessibilityRole="link"
-          accessibilityLabel="Made with love by TEX8"
+          accessibilityLabel={t('setup.footerAccessibility')}
           onPress={() => void Linking.openURL('https://solutions.tex8.com/en')}
           activeOpacity={0.72}
         >
-          <Text style={s.footer}>
-            Made with <Text style={{ color: colors.orange }}>❤️</Text> by{' '}
-            <Text
-              style={{ color: 'rgba(255,255,255,0.62)', fontWeight: '800' }}
-            >
-              TEX8
-            </Text>
-          </Text>
+          <Text style={s.footer}>{t('setup.footer')}</Text>
         </TouchableOpacity>
         <Text style={s.version}>v{mobileAppVersion.versionName}</Text>
       </View>

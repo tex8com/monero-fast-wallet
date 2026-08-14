@@ -652,14 +652,14 @@ export default function ReceiveScreen({ navigation, route }: any) {
             </View>
             <Text style={s.emptyTitle}>
               {selectedFastBackupPending
-                ? 'Back up this Fast Wallet first'
+                ? t('receive.backupFastWalletFirst')
                 : status === 'locked'
                 ? t('receive.walletLocked')
                 : t('receive.noWalletOpen')}
             </Text>
             <Text style={s.emptyText}>
               {selectedFastBackupPending
-                ? 'Its receive address stays hidden until you confirm that the recovery words are safely backed up.'
+                ? t('receive.backupFastWalletText')
                 : t('receive.emptyText')}
             </Text>
             <TouchableOpacity
@@ -675,7 +675,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
             >
               <Text style={s.openButtonText}>
                 {selectedFastBackupPending
-                  ? 'Back up now'
+                  ? t('receive.backupNow')
                   : status === 'locked'
                   ? t('action.openWallet')
                   : t('action.createWallet')}

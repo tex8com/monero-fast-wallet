@@ -22,7 +22,7 @@ import {
   presentNetworkSync,
   walletSyncDerivationsPerSecond,
 } from '../../../packages/wallet-shared/src/networkSync';
-import { useI18n } from './i18n';
+import { languageNames, supportedLanguages, useI18n } from './i18n';
 import { type MarketPoint, type MarketTimeframe, useXmrChart, useXmrPrice } from './marketData';
 import { type MoneroNewsCategory, useMoneroNews } from './moneroNews';
 import { restoreHeightFromStartDate, todayRestoreDate } from './restoreStart';
@@ -41,6 +41,7 @@ import type {
   DiagnosticTestStatus,
   DiagnosticTestbenchReport,
 } from '../../../packages/wallet-shared/src/diagnosticTestbench';
+import { localizeDiagnosticText } from '../../../packages/wallet-shared/src/diagnosticLocalization';
 import DesktopIcon, { type DesktopIconName } from './DesktopIcon';
 import {
   deriveAppVaultPresentation,
@@ -201,6 +202,22 @@ function walletTypeLabel(wallet: RegisteredWallet, t: ReturnType<typeof useI18n>
   if (wallet.kind === 'view-only') return 'Ledger read-only';
   return t('wallets.software');
 }
+function communityPublicationStatusLabel(status: string, t: ReturnType<typeof useI18n>['t']) {
+  switch (status.trim().toLowerCase()) {
+    case 'awaiting_screening': return t('communityV1.status.awaitingScreening');
+    case 'human_review': return t('communityV1.status.humanReview');
+    case 'needs_changes': return t('communityV1.status.needsChanges');
+    case 'quarantined': return t('communityV1.status.quarantined');
+    case 'approved_awaiting_embedding': return t('communityV1.status.approvedAwaitingEmbedding');
+    case 'published': return t('communityV1.status.published');
+    case 'hidden': return t('communityV1.status.hidden');
+    case 'rejected': return t('communityV1.status.rejected');
+    case 'removed': return t('communityV1.status.removed');
+    case 'expired': return t('communityV1.status.expired');
+    case 'withdrawn': return t('communityV1.status.withdrawn');
+    default: return t('communityV1.preparing');
+  }
+}
 function parseNativeJson<T>(value: string, fallback: string): T { try { return JSON.parse(value) as T; } catch { throw new Error(fallback); } }
 function nativeHeight(value: string | number | undefined) {
   const height = Number(value);
@@ -316,7 +333,7 @@ function formatDesktopSyncEta(seconds: number | undefined, t: ReturnType<typeof 
   return t('home.syncEtaHours', { count: Math.ceil(seconds / 3_600) });
 }
 function shortHash(value: string) { return value.length > 20 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
-function transactionTimestamp(value: string) { const timestamp = Number(value); return Number.isFinite(timestamp) && timestamp > 0 ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp * 1000)) : 'Time not available'; }
+function transactionTimestamp(value: string) { const timestamp = Number(value); return Number.isFinite(timestamp) && timestamp > 0 ? new Intl.DateTimeFormat(document.documentElement.lang || undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp * 1000)) : '—'; }
 function approximateAreaForCoordinates(latitude: number, longitude: number) { const alphabet = '0123456789bcdefghjkmnpqrstuvwxyz'; let latitudeRange: [number, number] = [-90, 90]; let longitudeRange: [number, number] = [-180, 180]; let bits = 0; let value = 0; let useLongitude = true; let result = ''; while (result.length < 5) { const range = useLongitude ? longitudeRange : latitudeRange; const coordinate = useLongitude ? longitude : latitude; const midpoint = (range[0] + range[1]) / 2; value = value * 2 + (coordinate >= midpoint ? 1 : 0); if (coordinate >= midpoint) range[0] = midpoint; else range[1] = midpoint; useLongitude = !useLongitude; bits += 1; if (bits === 5) { result += alphabet[value]; bits = 0; value = 0; } } return result; }
 function communityTimestamp(value: number) { return Number.isFinite(value) && value > 0 ? new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : 'Time not available'; }
 
@@ -463,9 +480,9 @@ export default function App() {
     }
     catch (reason) {
       recordWalletUiDiagnostic('wallet-list-reload-failed', started);
-      setError(errorMessage(reason, 'The local wallet list could not be loaded.'));
+      setError(errorMessage(reason, t('error.walletList')));
     }
-  }, []);
+  }, [t]);
 
   const loadAppProtection = useCallback(async (explicitRetry = false) => {
     setAppProtectionRetrying(explicitRetry);
@@ -483,7 +500,7 @@ export default function App() {
     } catch (reason) {
       const message = errorMessage(
         reason,
-        'App protection could not read secure storage.',
+        t('error.protectionStorage'),
       );
       console.error(
         explicitRetry
@@ -495,12 +512,12 @@ export default function App() {
     } finally {
       setAppProtectionRetrying(false);
     }
-  }, [reloadWallets]);
+  }, [reloadWallets, t]);
 
   useEffect(() => {
-    invoke<WalletCoreStatus>('wallet_core_status').then(setStatus).catch(() => setError('The desktop host could not verify the native wallet core.'));
+    invoke<WalletCoreStatus>('wallet_core_status').then(setStatus).catch(() => setError(t('error.coreStatus')));
     void loadAppProtection();
-  }, [loadAppProtection]);
+  }, [loadAppProtection, t]);
 
   const activateWallet = useCallback(async (result: WalletOperationResponse) => {
     const started = performance.now();
@@ -566,10 +583,10 @@ export default function App() {
       await reloadWallets();
       return !unlocked.locked;
     } catch (reason) {
-      setError(errorMessage(reason, 'The app could not be unlocked with system authentication.'));
+      setError(errorMessage(reason, t('error.systemUnlock')));
       return false;
     }
-  }, [reloadWallets]);
+  }, [reloadWallets, t]);
   const activateOpenWallet = async (wallet: RegisteredWallet, retriedAfterUnlock = false) => {
     const started = performance.now();
     recordWalletUiDiagnostic('wallet-switch-activate-started');
@@ -587,11 +604,11 @@ export default function App() {
           await activateWallet(recovered);
           return;
         } catch (recoveryReason) {
-          setError(errorMessage(recoveryReason, 'The wallet session could not be restored.'));
+          setError(errorMessage(recoveryReason, t('error.sessionRestore')));
           return;
         }
       }
-      const message = errorMessage(reason, 'The wallet could not be made active.');
+      const message = errorMessage(reason, t('error.walletActivate'));
       if (!retriedAfterUnlock && message === 'Unlock Monero Fast Wallet before opening wallets.' && await unlockForWalletAction()) {
         await activateOpenWallet(wallet, true);
         return;
@@ -639,7 +656,7 @@ export default function App() {
         } catch (reason) {
           recordWalletUiDiagnostic('wallet-switch-core-open-failed', started);
           if (generation === walletSwitchGenerationRef.current) {
-            setError(errorMessage(reason, 'The Fast Wallet could not be opened.'));
+            setError(errorMessage(reason, t('error.fastWalletOpen')));
           }
         }
         return;
@@ -681,7 +698,7 @@ export default function App() {
       } catch (reason) {
         recordWalletUiDiagnostic('wallet-switch-core-open-failed', started);
         if (generation === walletSwitchGenerationRef.current) {
-          setError(errorMessage(reason, 'The wallet could not be opened.'));
+          setError(errorMessage(reason, t('error.walletOpen')));
         }
       }
     })();
@@ -714,9 +731,9 @@ export default function App() {
       // page stays in front until the words have been saved.
       setSection('receive');
     } catch (reason) {
-      setError(errorMessage(reason, 'The optional Fast Wallet could not be created. Your normal wallet is ready and safe.'));
+      setError(errorMessage(reason, t('error.fastWalletCreate')));
     }
-  }, [reloadFastWallets]);
+  }, [reloadFastWallets, t]);
   const presentRecoverySeedRequest = async (request: SeedRevealRequest, appPassword = ''): Promise<boolean> => {
     if (!appProtection?.mode || (appProtection.mode === 'password' && !appPassword) || seedRevealInFlightRef.current) return false;
     seedRevealInFlightRef.current = true;
@@ -736,7 +753,7 @@ export default function App() {
     } catch (reason) {
       pendingFastWalletSourceRef.current = null;
       setSeedAuthorizationPassword('');
-      setError(errorMessage(reason, 'The trusted recovery-seed view could not be opened.'));
+      setError(errorMessage(reason, t('error.seedView')));
       return false;
     } finally {
       seedRevealInFlightRef.current = false;
@@ -820,13 +837,13 @@ export default function App() {
           }, 2600);
           setError(errorMessage(
             reason,
-            'The Fast Wallet is safe on this device, but its encrypted payment-alert setup failed.',
+            t('error.fastWalletAlerts'),
           ));
           setSection('wallets');
         }
       }
     } catch (reason) {
-      setError(errorMessage(reason, 'The recovery-word backup could not be confirmed.'));
+      setError(errorMessage(reason, t('error.backupConfirm')));
     } finally {
       setSeedRevealBusy(false);
     }
@@ -846,16 +863,16 @@ export default function App() {
       // normal list and the next click opens it directly without an
       // intermediate setup screen.
       setSection(walletToUnlock ? 'wallets' : 'home');
-    } catch (reason) { setError(errorMessage(reason, 'The wallet could not be locked.')); }
-  }, [activeWallet, activeWalletId, reloadFastWallets, reloadWallets]);
+    } catch (reason) { setError(errorMessage(reason, t('error.walletClose'))); }
+  }, [activeWallet, activeWalletId, reloadFastWallets, reloadWallets, t]);
   const lockDesktopApp = useCallback(async () => {
     try {
       await invoke<void>('lock_app');
       setActiveWalletId(null); setActiveWallet(null); setSeedRevealRequest(null);
       setSection('home'); setAppProtection(current => current ? { ...current, configured: true, locked: true } : current);
       await reloadWallets();
-    } catch (reason) { setError(errorMessage(reason, 'Monero Fast Wallet could not be locked.')); }
-  }, [reloadWallets]);
+    } catch (reason) { setError(errorMessage(reason, t('error.appLock'))); }
+  }, [reloadWallets, t]);
   const setAppProtectionMode = useCallback(async (mode: AppProtectionMode, password = '', currentPassword = '') => {
     const result = await invoke<AppProtectionStatus>('set_app_protection_mode', { input: { mode, password, currentPassword } });
     setAppProtection(result);
@@ -872,7 +889,7 @@ export default function App() {
     try {
       if (wallet.kind === 'fast') {
         const record = fastWallets.find(item => item.id === wallet.id);
-        if (!record) throw new Error('The Fast Wallet is no longer available on this device.');
+        if (!record) throw new Error(t('error.fastWalletMissing'));
         const metadataOnly = record.status === 'legacy-blocked' || record.seedBackupStatus === 'pending';
         if (!metadataOnly) {
           await invoke<FastWalletOpenResponse>('open_fast_wallet', { input: { identityId: wallet.id } });
@@ -891,10 +908,10 @@ export default function App() {
       }
       await Promise.all([reloadWallets(), reloadFastWallets()]);
     } catch (reason) {
-      setError(errorMessage(reason, 'The wallet could not be removed from this app.'));
+      setError(errorMessage(reason, t('error.walletRemove')));
       throw reason;
     }
-  }, [activeWallet?.id, fastWallets, reloadFastWallets, reloadWallets]);
+  }, [activeWallet?.id, fastWallets, reloadFastWallets, reloadWallets, t]);
   const linked = Boolean(status?.linked);
   const nodeConnected = networkSyncConnected(networkSync);
   const nodeFailed = networkSyncFailed(networkSync);
@@ -909,7 +926,7 @@ export default function App() {
           ? t('shell.nodeRetrying')
           : t('home.syncConnecting');
   const connectionTitle = activeWallet
-    ? `${networkLabel(activeWallet.network)} · ${networkSync?.state ?? 'idle'}`
+    ? `${networkLabel(activeWallet.network)} · ${connectionText}`
     : statusLabel(status, t);
   const connectionTone =
     networkPresentation.ready || networkPresentation.connected || (!activeWallet && linked)
@@ -922,9 +939,9 @@ export default function App() {
     <section className="app-protection-card" role={error ? 'alert' : 'status'}>
       <img src="/monero-mark.png" alt="" />
       <p className="eyebrow">Monero Fast Wallet</p>
-      <h1>{error ? 'Secure storage is unavailable' : t('protection.preparing')}</h1>
+      <h1>{error ? t('protection.storageUnavailable') : t('protection.preparing')}</h1>
       <p>{error ?? t('protection.preparing')}</p>
-      {error && <button className="primary" disabled={appProtectionRetrying} onClick={() => void loadAppProtection(true)} type="button">{appProtectionRetrying ? 'Retrying…' : 'Retry'}</button>}
+      {error && <button className="primary" disabled={appProtectionRetrying} onClick={() => void loadAppProtection(true)} type="button">{appProtectionRetrying ? t('protection.retrying') : t('common.retry')}</button>}
     </section>
   </main>;
   if (!appProtection.configured) return <AppProtectionGate status={appProtection} onUnlocked={(value) => { setAppProtection(value); void invoke<void>('record_app_user_activity'); void reloadWallets(); }} />;
@@ -932,19 +949,19 @@ export default function App() {
     <section className="app-protection-card" role="alert">
       <img src="/monero-mark.png" alt="" />
       <p className="eyebrow">Monero Fast Wallet</p>
-      <h1>App protection needs attention</h1>
-      <p>The saved protection method is missing. For safety, no wallet or password prompt was opened.</p>
-      <button className="primary" disabled={appProtectionRetrying} onClick={() => void loadAppProtection(true)} type="button">{appProtectionRetrying ? 'Retrying…' : 'Retry secure storage'}</button>
+      <h1>{t('protection.attentionTitle')}</h1>
+      <p>{t('protection.attentionText')}</p>
+      <button className="primary" disabled={appProtectionRetrying} onClick={() => void loadAppProtection(true)} type="button">{appProtectionRetrying ? t('protection.retrying') : t('protection.retryStorage')}</button>
     </section>
   </main>;
   if (appProtection.locked) return <AppProtectionGate status={appProtection} onUnlocked={(value) => { setAppProtection(value); void invoke<void>('record_app_user_activity'); void reloadWallets(); }} />;
   const activeProtectionMode = appProtection.mode;
   return <main className="app-shell">
-    <aside className="sidebar" aria-label="Main navigation">
+    <aside className="sidebar" aria-label={t('shell.mainNavigation')}>
       <div className="brand"><img className="brand-mark" src="/monero-mark.png" alt="" /><div><strong>Monero<span>Fast Wallet</span></strong><small>{t('shell.desktop')}</small></div></div>
       <nav>{primaryNavigation.map((item) => <NavItem item={item} active={primaryNavigationSection(section)} onSelect={setSection} key={item.id} />)}</nav>
       {secondaryNavigation.length > 0 && <><div className="sidebar-divider" /><nav>{secondaryNavigation.map((item) => <NavItem item={item} active={section} onSelect={setSection} key={item.id} />)}</nav></>}
-      <p className="sidebar-note">Developed with <span aria-label="love">❤️</span> by <a href="https://solutions.tex8.com/en" target="_blank" rel="noreferrer">TEX8</a></p>
+      <p className="sidebar-note">{t('shell.developedWith')} <span aria-label={t('shell.love')}>❤️</span> {t('shell.by')} <a href="https://solutions.tex8.com/en" target="_blank" rel="noreferrer">TEX8</a></p>
     </aside>
     <section className="content">
       {section !== 'setup' && section !== 'onboarding' && <header className="topbar"><div><p className="eyebrow">{active?.label ?? t('common.wallet')}</p><h1>{section === 'home' ? t('shell.homeTitle') : active?.label}</h1></div><div className="topbar-actions"><DesktopWalletSwitcher wallets={managedWallets} activeWallet={activeWallet} onSelect={openSavedWallet} onManage={() => setSection('wallets')} /><div className="topbar-connection" title={connectionTitle}><div aria-label={connectionText} className={`core-status ${connectionTone}`}><span /></div></div></div></header>}
@@ -956,13 +973,13 @@ export default function App() {
       {section === 'send' && <Send linked={linked} walletId={activeWalletId} wallet={activeWallet} appProtection={appProtection} onWalletsChanged={reloadWallets} />}
       {section === 'receive' && <><Receive linked={linked} walletId={activeWalletId} wallet={activeWallet} wallets={managedWallets} manageAddressesRequest={addressManagementRequest} onSelectWallet={(wallet) => openSavedWallet(wallet, 'receive')} onSetup={startSetup} onActivity={() => setSection('activity')} /><FastWalletReceive appProtection={appProtection} /></>}
       {section === 'activity' && <Activity linked={linked} walletId={activeWalletId} wallet={activeWallet} />}
-      {section === 'mfw' && <MfwNames linked={linked} walletId={activeWalletId} wallet={activeWallet} appProtection={appProtection} />}
+      {section === 'mfw' && v1ReleaseFeatures.mfwNameRegistration && <MfwNames linked={linked} walletId={activeWalletId} wallet={activeWallet} appProtection={appProtection} />}
       {section === 'community' && v1ReleaseFeatures.legacyCommunity && <Community />}
       {section === 'enthusiast' && <MoneroEnthusiastV1 />}
-      {section === 'assistant' && <Assistant wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
+      {section === 'assistant' && v1ReleaseFeatures.assistant && <Assistant wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
       {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} onWalletsChanged={reloadWallets} autoLockSeconds={autoLockSeconds} onSetAutoLockSeconds={updateAutoLockTimeout} appProtection={appProtection} onSetAppProtectionMode={setAppProtectionMode} onLockApp={lockDesktopApp} />}
       {section === 'menu' && <DesktopMenu wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
-      {seedRevealRequest && <SensitiveAuthorizationOverlay title="Show recovery words" description={activeProtectionMode === 'system' ? `Confirm with ${appProtection.systemAuth.label}, then your recovery words will open here in Monero Fast Wallet.` : 'Enter your app password, then your recovery words will open here in Monero Fast Wallet.'} password={seedAuthorizationPassword} mode={activeProtectionMode} systemLabel={appProtection.systemAuth.label} allowPasswordFallback={appProtection.passwordConfigured} busy={seedRevealBusy} onPasswordChange={setSeedAuthorizationPassword} onConfirm={() => void presentRecoverySeed()} onDismiss={() => { pendingFastWalletSourceRef.current = null; setSeedAuthorizationPassword(''); setSeedRevealRequest(null); }} />}
+      {seedRevealRequest && <SensitiveAuthorizationOverlay title={t('protection.showRecoveryWords')} description={activeProtectionMode === 'system' ? t('protection.showRecoveryWordsSystem', { system: appProtection.systemAuth.label }) : t('protection.showRecoveryWordsPassword')} password={seedAuthorizationPassword} mode={activeProtectionMode} systemLabel={appProtection.systemAuth.label} allowPasswordFallback={appProtection.passwordConfigured} busy={seedRevealBusy} onPasswordChange={setSeedAuthorizationPassword} onConfirm={() => void presentRecoverySeed()} onDismiss={() => { pendingFastWalletSourceRef.current = null; setSeedAuthorizationPassword(''); setSeedRevealRequest(null); }} />}
       {recoverySeedScreen && <RecoverySeedBackupScreen label={recoverySeedScreen.label} seed={recoverySeedScreen.seed} fastWallet={recoverySeedScreen.kind === 'fast'} busy={seedRevealBusy} onConfirm={() => void completeRecoverySeedBackup()} onDismiss={() => setRecoverySeedScreen(null)} />}
       {fastWalletTransferStatus !== 'idle' && <FastWalletTransferOverlay status={fastWalletTransferStatus} />}
     </section>
@@ -1002,7 +1019,7 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
           ? await invoke<AppProtectionStatus>('verify_system_auth')
           : await invoke<AppProtectionStatus>('verify_app_protection_password', { input: { password } });
       setPassword(''); setConfirmation(''); onUnlocked(nextStatus);
-    } catch (reason) { setPassword(''); setConfirmation(''); setError(errorMessage(reason, 'The app could not be unlocked.')); }
+    } catch (reason) { setPassword(''); setConfirmation(''); setError(errorMessage(reason, t('error.appUnlock'))); }
     finally { setBusy(false); }
   };
   // Keep desktop behaviour aligned with React Native: returning to a locked
@@ -1028,9 +1045,9 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
     lastActivityMonotonicMs: 0,
   }, Math.floor(Date.now() / 1000));
   const primaryLabel = busy
-    ? setup ? 'Protecting…' : 'Unlocking…'
+    ? setup ? t('protection.protecting') : t('protection.unlocking')
     : setup
-      ? mode === 'system' ? `Set up ${status.systemAuth.label}` : 'Use app password'
+      ? mode === 'system' ? t('protection.setUpSystem', { system: status.systemAuth.label }) : t('protection.usePassword')
       : status.mode === 'system' && !useRecoveryPassword ? `${t('protection.unlock')} · ${status.systemAuth.label}` : t('protection.unlock');
   if (presentation === 'welcome') return <main className="app-protection-gate">
     <section className="app-protection-card" role="dialog" aria-modal="true" aria-labelledby="app-welcome-title">
@@ -1051,7 +1068,7 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
         ? t('protection.choose')
         : status.mode === 'system' ? t('protection.unlockSystem', { system: status.systemAuth.label }) : t('protection.unlockPassword')}
       </p>
-      {setup && <div className="protection-mode-choices" role="radiogroup" aria-label="App protection">
+      {setup && <div className="protection-mode-choices" role="radiogroup" aria-label={t('protection.label')}>
         <button className={mode === 'system' ? 'selected' : ''} disabled={!status.systemAuth.available || busy} onClick={() => { setMode('system'); setPassword(''); setConfirmation(''); setError(null); }} role="radio" aria-checked={mode === 'system'} type="button">
           <span>◎</span><strong>{status.systemAuth.label}</strong><small>{status.systemAuth.available ? `${t('protection.recommended')} · ${status.systemAuth.detail}` : status.systemAuth.detail}</small>
         </button>
@@ -1073,7 +1090,7 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
         </button>
       </form>
       {!setup && status.mode === 'system' && status.passwordConfigured && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUseRecoveryPassword(value => !value); setPassword(''); setError(null); }} type="button">
-        {useRecoveryPassword ? `Use ${status.systemAuth.label}` : 'Use recovery app password instead'}
+        {useRecoveryPassword ? t('protection.useSystem', { system: status.systemAuth.label }) : t('protection.useRecoveryInstead')}
       </button>}
       {error && <p className="setup-message">{error}</p>}
       <small>{t('protection.biometricPrivacy')}</small>
@@ -1108,7 +1125,7 @@ function DesktopWalletSwitcher({ wallets, activeWallet, onSelect, onManage }: { 
           : wallet.isOpen
             ? t('wallets.use')
             : isFastWalletRegistration(wallet)
-              ? 'Open Fast Wallet'
+              ? t('wallets.openFastWallet')
             : wallet.kind === 'hardware'
               ? t('wallets.connectLedger')
               : t('setup.open');
@@ -1136,14 +1153,14 @@ function DesktopMenu({ wallet, walletId, onNavigate }: { wallet: RegisteredWalle
   }, [wallet?.accountIndex, walletId]);
   const items: Array<{ section: Section; icon: DesktopIconName; title: string; hint: string }> = [
     { section: 'wallets', icon: 'wallet', title: t('menu.wallets'), hint: t('menu.walletsHint') },
-    { section: 'mfw', icon: 'key', title: 'MFW Names', hint: 'Register and manage public .mfw recipient names' },
+    ...(v1ReleaseFeatures.mfwNameRegistration ? [{ section: 'mfw' as Section, icon: 'key' as DesktopIconName, title: 'MFW Names', hint: 'Register and manage public .mfw recipient names' }] : []),
     { section: 'enthusiast', icon: 'community-menu', title: t('communityV1.title'), hint: t('communityV1.menuHint') },
     { section: 'settings', icon: 'settings', title: t('menu.settings'), hint: t('menu.settingsHint') },
-    { section: 'assistant', icon: 'sparkles', title: t('menu.assistant'), hint: t('menu.assistantHint') },
+    ...(v1ReleaseFeatures.assistant ? [{ section: 'assistant' as Section, icon: 'sparkles' as DesktopIconName, title: t('menu.assistant'), hint: t('menu.assistantHint') }] : []),
     { section: 'settings', icon: 'globe', title: t('menu.node'), hint: t('menu.nodeHint') },
   ];
   const addressLabel = address ? `${address.slice(0, 6)}…${address.slice(-5)}` : wallet ? t('menu.openWallet') : t('menu.noWallet');
-  return <section className="desktop-menu-page"><header className="desktop-menu-profile"><img src="/monero-mark.png" alt="" /><div><h2>{wallet ? walletDisplayName(wallet) : t('menu.title')}</h2><code>{addressLabel}</code></div></header><div className="desktop-menu-list">{items.map((item, index) => <button key={`${item.section}-${index}`} onClick={() => onNavigate(item.section)} type="button"><span className="desktop-menu-icon"><DesktopIcon name={item.icon} size={20} /></span><span><strong>{item.title}</strong><small>{item.hint}</small></span><em><DesktopIcon name="chevron-right" size={19} /></em></button>)}</div><a className="desktop-menu-footer" href="https://solutions.tex8.com/en" target="_blank" rel="noreferrer">Made with <span aria-label="love">❤️</span> by <strong>TEX8</strong></a></section>;
+  return <section className="desktop-menu-page"><header className="desktop-menu-profile"><img src="/monero-mark.png" alt="" /><div><h2>{wallet ? walletDisplayName(wallet) : t('menu.title')}</h2><code>{addressLabel}</code></div></header><div className="desktop-menu-list">{items.map((item, index) => <button key={`${item.section}-${index}`} onClick={() => onNavigate(item.section)} type="button"><span className="desktop-menu-icon"><DesktopIcon name={item.icon} size={20} /></span><span><strong>{item.title}</strong><small>{item.hint}</small></span><em><DesktopIcon name="chevron-right" size={19} /></em></button>)}</div><a className="desktop-menu-footer" href="https://solutions.tex8.com/en" target="_blank" rel="noreferrer">{t('shell.developedWith')} <span aria-label={t('shell.love')}>❤️</span> {t('shell.by')} <strong>TEX8</strong></a></section>;
 }
 
 function marketChartTimestamp(timestamp: number) {
@@ -1310,13 +1327,13 @@ function DesktopSyncProgress({ locale, network, networkStatus, onRefresh, readin
 }
 
 function DesktopSyncProgressRow({ detail, extra, height, label, onRefresh, percent, rate, testId }: { detail: string; extra?: string; height?: string; label: string; onRefresh?: () => void; percent?: number; rate?: string; testId: string }) {
+  const { t } = useI18n();
   const normalized = percent === undefined ? undefined : normalizeSyncPercent(percent);
-  return <section className="desktop-sync-progress" data-testid={testId}><div className="sync-reading"><strong><b>{label}</b><small>{detail}</small></strong>{onRefresh && <button className="sync-refresh" aria-label="Refresh" onClick={onRefresh} title="Refresh" type="button">↻</button>}<em className={normalized === 100 ? 'ready' : ''}>{normalized === undefined ? '—' : `${formatSyncPercent(normalized)}%`}</em></div><div className="sync-track"><span className={normalized === 100 ? 'ready' : ''} style={{ width: `${normalized ?? 0}%` }} /></div>{(height || rate || extra) && <div className="sync-metrics"><div className="sync-metrics-primary">{height && <span>{height}</span>}{rate && <span>{rate}</span>}</div>{extra && <span className="sync-metrics-extra">{extra}</span>}</div>}</section>;
+  return <section className="desktop-sync-progress" data-testid={testId}><div className="sync-reading"><strong><b>{label}</b><small>{detail}</small></strong>{onRefresh && <button className="sync-refresh" aria-label={t('common.refresh')} onClick={onRefresh} title={t('common.refresh')} type="button">↻</button>}<em className={normalized === 100 ? 'ready' : ''}>{normalized === undefined ? '—' : `${formatSyncPercent(normalized)}%`}</em></div><div className="sync-track"><span className={normalized === 100 ? 'ready' : ''} style={{ width: `${normalized ?? 0}%` }} /></div>{(height || rate || extra) && <div className="sync-metrics"><div className="sync-metrics-primary">{height && <span>{height}</span>}{rate && <span>{rate}</span>}</div>{extra && <span className="sync-metrics-extra">{extra}</span>}</div>}</section>;
 }
 
 function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, onWallets, onSelectWallet, onBackup, onLock, onSend, onReceive, onActivity, onWalletsChanged, onRecoverSession }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; savedWallets: RegisteredWallet[]; networkSync: NetworkSyncStatus | null; onSetup: () => void; onWallets: () => void; onSelectWallet: (wallet: RegisteredWallet) => void; onBackup: () => void; onLock: () => void; onSend: () => void; onReceive: () => void; onActivity: () => void; onWalletsChanged: () => Promise<void>; onRecoverSession: (wallet: RegisteredWallet) => Promise<WalletSessionRecoveryResponse> }) {
-  const { language, t } = useI18n();
-  const locale = language === 'de' ? 'de-DE' : 'en-US';
+  const { dateLocale: locale, t } = useI18n();
   const [timeframe, setTimeframe] = useState<MarketTimeframe>('24H');
   const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>('all');
   const [snapshot, setSnapshot] = useState<NativeWalletSnapshot | null>(null);
@@ -1361,13 +1378,13 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
       setSessionGeneration(recovered.sessionGeneration);
       return true;
     } catch (recoveryReason) {
-      setMessage(errorMessage(recoveryReason, 'The wallet session could not be restored.'));
+      setMessage(errorMessage(recoveryReason, t('error.sessionRestore')));
       setSessionRecoveryFailed(true);
       return true;
     } finally {
       setSessionRecovering(false);
     }
-  }, [onRecoverSession, wallet]);
+  }, [onRecoverSession, t, wallet]);
 
   useEffect(() => {
     setSessionGeneration(wallet?.id
@@ -1409,35 +1426,35 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
             : { accountIndex: snapshotAccountIndex }),
         },
       });
-      const nextSnapshot = parseNativeJson<NativeWalletSnapshot>(raw, 'The native wallet snapshot was invalid.');
+      const nextSnapshot = parseNativeJson<NativeWalletSnapshot>(raw, t('error.invalidWalletSnapshot'));
       const nextHeight = nativeHeight(nextSnapshot.walletHeight);
       if (!configuredStartHeight && nextHeight && (nextSnapshot.synchronized || !syncStartHeightsRef.current.has(walletId))) {
         syncStartHeightsRef.current.set(walletId, nextHeight);
       }
       setSnapshot(nextSnapshot);
-      setMessage(startRefresh ? 'Local wallet refresh started.' : null);
+      setMessage(startRefresh ? t('error.refreshStarted') : null);
       return nextSnapshot;
     } catch (reason) {
       // A node handshake may be slow, but it must not blank the wallet or
       // replace a useful previous balance with an alarming error. Keep the
       // current view and let the next lightweight poll retry.
-      if (!await recoverStaleSession(reason) && !isBackgroundWalletWork(reason)) setMessage(errorMessage(reason, 'Could not read wallet state.'));
+      if (!await recoverStaleSession(reason) && !isBackgroundWalletWork(reason)) setMessage(errorMessage(reason, t('error.walletState')));
       return undefined;
     }
     finally { snapshotRefreshInFlight.current = false; }
-  }, [recoverStaleSession, snapshotAccountIndex, wallet?.restoreHeight, walletId]);
+  }, [recoverStaleSession, snapshotAccountIndex, t, wallet?.restoreHeight, walletId]);
   const loadTransactions = useCallback(async () => {
     if (!walletId || !wallet) return;
     try {
       const raw = await invoke<string>('registered_wallet_transactions', { input: { registrationId: wallet.id } });
-      const nextTransactions = parseNativeJson<NativeTransaction[]>(raw, 'The native transaction history was invalid.');
+      const nextTransactions = parseNativeJson<NativeTransaction[]>(raw, t('activity.invalidHistory'));
       setTransactions(nextTransactions);
       return nextTransactions;
     } catch (reason) {
-      if (!await recoverStaleSession(reason) && !isBackgroundWalletWork(reason)) setMessage(errorMessage(reason, 'Could not read wallet activity.'));
+      if (!await recoverStaleSession(reason) && !isBackgroundWalletWork(reason)) setMessage(errorMessage(reason, t('error.walletActivity')));
       return undefined;
     }
-  }, [recoverStaleSession, wallet, walletId]);
+  }, [recoverStaleSession, t, wallet, walletId]);
   const loadRegisteredSnapshots = useCallback(async () => {
     try {
       const loaded = await invoke<RegisteredWalletSnapshot[]>('registered_wallet_snapshots');
@@ -1459,10 +1476,10 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
       // error does not identify which registration owns a stale handle.
       // The selected wallet's direct poll performs the targeted recovery.
       if (!isBackgroundWalletWork(reason) && !isSessionStale(reason)) {
-        setMessage(errorMessage(reason, 'Could not update saved wallet states.'));
+        setMessage(errorMessage(reason, t('error.walletStates')));
       }
     }
-  }, [savedWallets]);
+  }, [savedWallets, t]);
   const loadWalletState = useCallback(async (startRefresh = false) => {
     const beforeHistory = await loadSnapshot(startRefresh);
     if (!beforeHistory) return;
@@ -1613,7 +1630,7 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
     activeLedgerNeedsVerification && activeLedgerHasReadOnly && !wallet?.ledgerKeyImagesVerifiedAt;
   const verifyLedgerBalance = async () => {
     if (!walletId || !wallet || wallet.kind !== 'hardware' || ledgerVerificationPhase) return;
-    setLedgerVerificationPhase('Confirm once on your Ledger…');
+    setLedgerVerificationPhase(t('home.ledgerConfirm'));
     try {
       const companion = await invoke<WalletOperationResponse>('enable_ledger_read_only', {
         input: {
@@ -1622,7 +1639,7 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
           restoreHeight: wallet.restoreHeight,
         },
       });
-      setLedgerVerificationPhase('Reading your Ledger balance…');
+      setLedgerVerificationPhase(t('home.ledgerReading'));
       await invoke<void>('queue_registered_wallet_sync', { walletId: companion.wallet.id }).catch(() => undefined);
 
       let verified = false;
@@ -1643,7 +1660,7 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
           startHeight: syncStartHeightForWallet(wallet.restoreHeight),
         });
         if (progress.progress !== undefined && progress.progress < 100) {
-          setLedgerVerificationPhase(`Reading your Ledger balance… ${Math.max(0, Math.floor(progress.progress))}%`);
+          setLedgerVerificationPhase(t('home.ledgerReadingProgress', { percent: Math.max(0, Math.floor(progress.progress)) }));
         }
         if (!candidate?.synchronized) continue;
         try {
@@ -1718,13 +1735,13 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
     <section className="market-card">
       <div className="market-card-head"><div><p className="eyebrow">{t('home.liveMarket')}</p><h2>{priceLoading ? t('home.priceLoading') : price > 0 ? formatUsd(price) : t('home.marketUnavailable')}</h2>{price > 0 && <p className={positive ? 'market-change positive' : 'market-change negative'}><span>{positive ? '▲' : '▼'} {Math.abs(changePercent).toFixed(2)}%</span><span>{positive ? '+' : '-'}{formatUsd(changeUsd)}</span></p>}</div><img className="market-mark" src="/monero-mark.png" alt="Monero" /></div>
       <div className="market-chart-wrap">{chartLoading && points.length < 2 ? <div className="market-chart-empty">{t('home.chartLoading')}</div> : <MarketChart points={points} positive={positive} onRetry={refreshChart} />}</div>
-      <div className="market-timeframes" aria-label="Market chart timeframe">{(['24H', '7D', '1M', '1Y', 'Max'] as MarketTimeframe[]).map((item) => <button className={timeframe === item ? 'selected' : ''} onClick={() => setTimeframe(item)} key={item} type="button">{item}</button>)}</div>
+      <div className="market-timeframes" aria-label={t('home.marketTimeframe')}>{(['24H', '7D', '1M', '1Y', 'Max'] as MarketTimeframe[]).map((item) => <button className={timeframe === item ? 'selected' : ''} onClick={() => setTimeframe(item)} key={item} type="button">{item}</button>)}</div>
     </section>
 
     {showPrimaryWalletCard && <section className={`${selectedSnapshot?.synchronized && !showSharedSync ? 'wallet-sync-card ready' : 'wallet-sync-card'} home-primary-wallet balance-only`}>
       <div className="primary-wallet-balance">
         <div><p className="eyebrow">{t('home.totalBalance')}</p><h2>{hasPublishedBalance ? `${balanceXmr} XMR` : '— XMR'}</h2><strong>{hasPublishedBalance ? balanceUsd : '—'}</strong></div>
-        <div className="primary-wallet-meta"><strong>{wallet ? walletDisplayName(wallet) : t('common.wallet')}</strong><small>{wallet ? `${networkLabel(wallet.network)} · ${wallet.kind === 'hardware' ? t('common.ledger') : t('wallets.software')}` : ''}</small>{lockedAtomic > 0n && !hasUnverifiedLedgerBalance && <span className="wallet-locked"><i />{lockedXmr} XMR locked</span>}</div>
+        <div className="primary-wallet-meta"><strong>{wallet ? walletDisplayName(wallet) : t('common.wallet')}</strong><small>{wallet ? `${networkLabel(wallet.network)} · ${wallet.kind === 'hardware' ? t('common.ledger') : t('wallets.software')}` : ''}</small>{lockedAtomic > 0n && !hasUnverifiedLedgerBalance && <span className="wallet-locked"><i />{t('home.lockedBalance', { amount: lockedXmr })}</span>}</div>
       </div>
     </section>}
 
@@ -1734,9 +1751,9 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
       {newsLoading && newsItems.length === 0 ? <p className="official-updates-status">{t('home.newsLoading')}</p> : newsUnavailable && newsItems.length === 0 ? <div className="official-updates-status"><span>{t('home.newsUnavailable')}</span><button className="quiet-button" onClick={refreshNews} type="button">{t('home.chartRetry')}</button></div> : visibleNews.length === 0 ? <p className="official-updates-status">{t('home.newsEmpty')}</p> : <div className="official-updates-list">{visibleNews.slice(0, 8).map((item) => <a href={item.url} key={item.id} target="_blank" rel="noreferrer"><span><b>{item.category === 'network' ? t('home.newsNetwork') : item.category === 'wallet' ? t('home.newsWallet') : t('home.newsEcosystem')}</b><strong>{item.title}</strong><small>{item.summary}</small></span><time>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.publishedAt))}</time><em>›</em></a>)}</div>}
     </section>}
 
-    <section className="home-quick-actions" aria-label="Wallet actions"><button onClick={() => routeToWalletAction(onSend)} type="button"><span>↑</span><strong>{t('nav.send')}</strong><small>{t('home.sendDetail')}</small></button><button onClick={() => routeToWalletAction(onReceive)} type="button"><span>↓</span><strong>{t('nav.receive')}</strong><small>{t('home.receiveDetail')}</small></button></section>
+    <section className="home-quick-actions" aria-label={t('wallets.actions')}><button onClick={() => routeToWalletAction(onSend)} type="button"><span>↑</span><strong>{t('nav.send')}</strong><small>{t('home.sendDetail')}</small></button><button onClick={() => routeToWalletAction(onReceive)} type="button"><span>↓</span><strong>{t('nav.receive')}</strong><small>{t('home.receiveDetail')}</small></button></section>
 
-    <section className="home-wallets"><header><div><p className="eyebrow">{t('home.allWallets')}</p><h2>{t('home.yourWallets')}</h2></div><button className="quiet-button" onClick={onWallets} type="button">{t('home.manageWallets')}</button></header>{savedWallets.length ? <div className="wallet-strip">{savedWallets.map((item) => { const active = item.id === wallet?.id; const fast = isFastWalletRegistration(item); const itemSnapshot = snapshotsByRegistration.get(item.id); const publishedItemSnapshot = publishedCardSnapshots.get(item.id); const itemStartHeight = syncStartHeightForWallet(item.restoreHeight, syncStartHeightsRef.current.get(item.id)); const itemSync = presentWalletSync(itemSnapshot ?? null, { startHeight: itemStartHeight }); const itemSyncPercent = itemSync.coreConfirmed ? 100 : itemSync.phase === 'finalizing' ? 99 : itemSync.progress ?? 0; return <button className={`${active ? 'wallet-mini-card active' : 'wallet-mini-card'}${fast ? ' fast' : ''}`} onClick={() => onSelectWallet(item)} key={item.id} type="button"><span>{walletDisplayName(item)}</span><small>{fast ? item.kind === 'hardware' ? 'FAST WALLET · LEDGER' : 'FAST WALLET' : item.kind === 'hardware' ? 'LEDGER' : networkLabel(item.network).toUpperCase()}</small><strong>{publishedItemSnapshot ? `${formatAtomicXmr(publishedItemSnapshot.balanceAtomic)} XMR` : item.isOpen ? '— XMR' : fast ? 'Open Fast Wallet' : t('home.openToCheck')}</strong><div className="wallet-mini-sync"><span><b>{syncLabel(itemSnapshot ?? null, t, itemStartHeight)}</b><em>{itemSyncPercent}%</em></span><i><i className={itemSyncPercent === 100 ? 'ready' : ''} style={{ width: `${itemSyncPercent}%` }} /></i>{itemSnapshot && itemSync.remainingBlocks !== undefined && <small>{t('home.syncRemaining', { count: formatSyncBlockCount(itemSync.remainingBlocks, locale) })}</small>}</div></button>; })}<button className="wallet-mini-card add" onClick={onSetup} type="button"><span>＋</span><strong>{t('home.addWallet')}</strong></button></div> : <div className="home-empty"><p>{t('home.noWallets')}</p><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></div>}</section>
+    <section className="home-wallets"><header><div><p className="eyebrow">{t('home.allWallets')}</p><h2>{t('home.yourWallets')}</h2></div><button className="quiet-button" onClick={onWallets} type="button">{t('home.manageWallets')}</button></header>{savedWallets.length ? <div className="wallet-strip">{savedWallets.map((item) => { const active = item.id === wallet?.id; const fast = isFastWalletRegistration(item); const itemSnapshot = snapshotsByRegistration.get(item.id); const publishedItemSnapshot = publishedCardSnapshots.get(item.id); const itemStartHeight = syncStartHeightForWallet(item.restoreHeight, syncStartHeightsRef.current.get(item.id)); const itemSync = presentWalletSync(itemSnapshot ?? null, { startHeight: itemStartHeight }); const itemSyncPercent = itemSync.coreConfirmed ? 100 : itemSync.phase === 'finalizing' ? 99 : itemSync.progress ?? 0; return <button className={`${active ? 'wallet-mini-card active' : 'wallet-mini-card'}${fast ? ' fast' : ''}`} onClick={() => onSelectWallet(item)} key={item.id} type="button"><span>{walletDisplayName(item)}</span><small>{fast ? item.kind === 'hardware' ? `${t('setup.fastWallet').toUpperCase()} · ${t('common.ledger').toUpperCase()}` : t('setup.fastWallet').toUpperCase() : item.kind === 'hardware' ? t('common.ledger').toUpperCase() : networkLabel(item.network).toUpperCase()}</small><strong>{publishedItemSnapshot ? `${formatAtomicXmr(publishedItemSnapshot.balanceAtomic)} XMR` : item.isOpen ? '— XMR' : fast ? t('wallets.openFastWallet') : t('home.openToCheck')}</strong><div className="wallet-mini-sync"><span><b>{syncLabel(itemSnapshot ?? null, t, itemStartHeight)}</b><em>{itemSyncPercent}%</em></span><i><i className={itemSyncPercent === 100 ? 'ready' : ''} style={{ width: `${itemSyncPercent}%` }} /></i>{itemSnapshot && itemSync.remainingBlocks !== undefined && <small>{t('home.syncRemaining', { count: formatSyncBlockCount(itemSync.remainingBlocks, locale) })}</small>}</div></button>; })}<button className="wallet-mini-card add" onClick={onSetup} type="button"><span>＋</span><strong>{t('home.addWallet')}</strong></button></div> : <div className="home-empty"><p>{t('home.noWallets')}</p><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></div>}</section>
     <RecentTransactions hasOpenWallet={Boolean(walletId)} items={[...publishedTransactions]} onActivity={() => routeToWalletAction(onActivity)} />
 
     {wallet?.seedBackupStatus === 'pending' && walletId && <section className="backup-warning"><div><p className="eyebrow">{t('home.securityStep')}</p><h2>{t('home.backupSeed')}</h2><p>{t('home.backupNote')}</p></div><button className="primary" onClick={onBackup} type="button">{t('home.showSeed')}</button></section>}
@@ -1762,9 +1779,9 @@ function Wallets({ linked, walletId, wallets, activeWallet, onSetup, onOpen, onM
     if (!walletId || !activeWallet) { setTransactions([]); return; }
     try {
       const raw = await invoke<string>('registered_wallet_transactions', { input: { registrationId: activeWallet.id } });
-      setTransactions(parseNativeJson<NativeTransaction[]>(raw, 'The native wallet transaction history was invalid.'));
-    } catch (reason) { setMessage(errorMessage(reason, 'Could not read wallet activity.')); }
-  }, [activeWallet, walletId]);
+      setTransactions(parseNativeJson<NativeTransaction[]>(raw, t('activity.invalidHistory')));
+    } catch (reason) { setMessage(errorMessage(reason, t('error.walletActivity'))); }
+  }, [activeWallet, t, walletId]);
   useEffect(() => {
     if (!linked || !walletId) return;
     void loadTransactions();
@@ -1778,7 +1795,7 @@ function Wallets({ linked, walletId, wallets, activeWallet, onSetup, onOpen, onM
     try {
       await invoke<RegisteredWallet>('rename_wallet', { input: { walletId: editingId, displayName } });
       setEditingId(null); setDisplayName(''); onRenamed();
-    } catch (reason) { setMessage(errorMessage(reason, 'The wallet name could not be updated.')); }
+    } catch (reason) { setMessage(errorMessage(reason, t('error.walletRename'))); }
     finally { setRenaming(false); }
   };
   const remove = async (wallet: RegisteredWallet) => {
@@ -1792,16 +1809,17 @@ function Wallets({ linked, walletId, wallets, activeWallet, onSetup, onOpen, onM
     finally { setRemovingId(null); }
   };
   const walletSection = wallets.length > 0
-    ? <><header><div><h2>{t('wallets.saved')}</h2><p>Add, switch, and remove private or Fast Wallets.</p></div><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></header><div className="wallet-list">{wallets.map((wallet) => { const fast = isFastWalletRegistration(wallet); return <div className="wallet-row-wrap" key={wallet.id}><article className={`${activeWallet?.id === wallet.id ? 'wallet-row active' : 'wallet-row'}${fast ? ' fast-wallet-row' : ''}`}><div className="wallet-row-mark">{fast ? <span className="fast-wallet-mark">⚡</span> : <img src="/monero-mark.png" alt="" />}</div><div className="wallet-row-copy"><div><h3>{walletDisplayName(wallet)}{fast && <b className="fast-wallet-badge">FAST</b>}</h3><span className={wallet.seedBackupStatus === 'pending' ? 'wallet-chip warning' : 'wallet-chip'}>{wallet.seedBackupStatus === 'pending' ? t('wallets.backupNeeded') : fast ? 'Ready to receive' : wallet.isOpen ? t('home.openLocal') : wallet.kind === 'hardware' ? t('wallets.ledgerRequired') : t('wallets.available')}</span></div><p>{fast ? 'Receive quickly' : wallet.kind === 'hardware' ? walletTypeLabel(wallet, t) : networkLabel(wallet.network)}</p></div><div className="wallet-row-actions">{wallet.seedBackupStatus !== 'pending' && <button className="quiet-button" disabled={!linked || Boolean(removingId)} onClick={() => onManageAddresses(wallet)} type="button">{t('receive.manageAddresses')}</button>}{wallet.kind !== 'fast' && <button className="quiet-button" disabled={Boolean(removingId)} onClick={() => startRename(wallet)} type="button">{t('wallets.rename')}</button>}<button className="secondary" disabled={!linked || Boolean(removingId)} onClick={() => onOpen(wallet)} type="button">{fast ? 'Use wallet' : wallet.isOpen ? t('wallets.use') : wallet.kind === 'hardware' ? t('wallets.connectLedger') : t('setup.open')}</button><button className="danger-button" disabled={Boolean(removingId)} onClick={() => { setRemovalCandidate(wallet); setEditingId(null); setDisplayName(''); setMessage(null); }} type="button">{removingId === wallet.id ? t('wallets.removing') : t('wallets.remove')}</button></div></article>{editingId === wallet.id && <div className="wallet-rename"><input autoFocus value={displayName} maxLength={64} onChange={(event) => setDisplayName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void saveRename(); if (event.key === 'Escape') setEditingId(null); }} placeholder={t('wallets.namePlaceholder')} /><div><button className="quiet-button" disabled={renaming || Boolean(removingId)} onClick={() => { setEditingId(null); setMessage(null); }} type="button">{t('common.cancel')}</button><button className="secondary" disabled={renaming || Boolean(removingId)} onClick={() => void saveRename()} type="button">{renaming ? t('wallets.saving') : t('wallets.saveName')}</button></div></div>}</div>; })}</div></>
-    : <><header><div><h2>{t('wallets.saved')}</h2><p>Add, switch, and remove private or Fast Wallets.</p></div><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></header><div className="home-empty wallet-list-empty-inline"><p>{linked ? t('wallets.emptyText') : t('wallets.protectedText')}</p><button className="primary" onClick={onSetup} type="button">{t('wallets.openSetup')}</button></div></>;
+    ? <><header><div><h2>{t('wallets.saved')}</h2><p>{t('wallets.subtitle')}</p></div><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></header><div className="wallet-list">{wallets.map((wallet) => { const fast = isFastWalletRegistration(wallet); return <div className="wallet-row-wrap" key={wallet.id}><article className={`${activeWallet?.id === wallet.id ? 'wallet-row active' : 'wallet-row'}${fast ? ' fast-wallet-row' : ''}`}><div className="wallet-row-mark">{fast ? <span className="fast-wallet-mark">⚡</span> : <img src="/monero-mark.png" alt="" />}</div><div className="wallet-row-copy"><div><h3>{walletDisplayName(wallet)}{fast && <b className="fast-wallet-badge">FAST</b>}</h3><span className={wallet.seedBackupStatus === 'pending' ? 'wallet-chip warning' : 'wallet-chip'}>{wallet.seedBackupStatus === 'pending' ? t('wallets.backupNeeded') : fast ? t('wallets.readyToReceive') : wallet.isOpen ? t('home.openLocal') : wallet.kind === 'hardware' ? t('wallets.ledgerRequired') : t('wallets.available')}</span></div><p>{fast ? t('wallets.receiveQuickly') : wallet.kind === 'hardware' ? walletTypeLabel(wallet, t) : networkLabel(wallet.network)}</p></div><div className="wallet-row-actions">{wallet.seedBackupStatus !== 'pending' && <button className="quiet-button" disabled={!linked || Boolean(removingId)} onClick={() => onManageAddresses(wallet)} type="button">{t('receive.manageAddresses')}</button>}{wallet.kind !== 'fast' && <button className="quiet-button" disabled={Boolean(removingId)} onClick={() => startRename(wallet)} type="button">{t('wallets.rename')}</button>}<button className="secondary" disabled={!linked || Boolean(removingId)} onClick={() => onOpen(wallet)} type="button">{fast ? t('wallets.useWallet') : wallet.isOpen ? t('wallets.use') : wallet.kind === 'hardware' ? t('wallets.connectLedger') : t('setup.open')}</button><button className="danger-button" disabled={Boolean(removingId)} onClick={() => { setRemovalCandidate(wallet); setEditingId(null); setDisplayName(''); setMessage(null); }} type="button">{removingId === wallet.id ? t('wallets.removing') : t('wallets.remove')}</button></div></article>{editingId === wallet.id && <div className="wallet-rename"><input autoFocus value={displayName} maxLength={64} onChange={(event) => setDisplayName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void saveRename(); if (event.key === 'Escape') setEditingId(null); }} placeholder={t('wallets.namePlaceholder')} /><div><button className="quiet-button" disabled={renaming || Boolean(removingId)} onClick={() => { setEditingId(null); setMessage(null); }} type="button">{t('common.cancel')}</button><button className="secondary" disabled={renaming || Boolean(removingId)} onClick={() => void saveRename()} type="button">{renaming ? t('wallets.saving') : t('wallets.saveName')}</button></div></div>}</div>; })}</div></>
+    : <><header><div><h2>{t('wallets.saved')}</h2><p>{t('wallets.subtitle')}</p></div><button className="primary" onClick={onSetup} type="button">{t('home.addWallet')}</button></header><div className="home-empty wallet-list-empty-inline"><p>{linked ? t('wallets.emptyText') : t('wallets.protectedText')}</p><button className="primary" onClick={onSetup} type="button">{t('wallets.openSetup')}</button></div></>;
   const removalIsFast = isFastWalletRegistration(removalCandidate);
-  return <section className="wallet-list-page">{walletSection}{message && <p className="setup-message wallet-list-message" role="alert">{message}</p>}{removalCandidate && <div className="seed-overlay" role="dialog" aria-modal="true" aria-labelledby="remove-wallet-title"><section className="seed-dialog wallet-remove-dialog"><p className="eyebrow">Remove wallet</p><h2 id="remove-wallet-title">Remove {walletDisplayName(removalCandidate)}?</h2><p>{removalIsFast && removalCandidate.seedBackupStatus === 'pending' ? 'The recovery words have not been backed up. Remove this wallet from the app? Its encrypted recovery data stays on this device, so no funds are erased.' : 'Remove this wallet from the app? Its recovery words and funds are not erased.'}</p><div className="dialog-actions"><button className="quiet-button" disabled={Boolean(removingId)} onClick={() => setRemovalCandidate(null)} type="button">{t('common.cancel')}</button><button className="danger-button" disabled={Boolean(removingId)} onClick={() => void remove(removalCandidate)} type="button">{removingId === removalCandidate.id ? t('wallets.removing') : t('wallets.remove')}</button></div></section></div>}<RecentTransactions hasOpenWallet={Boolean(walletId)} items={transactions} onActivity={onActivity} /></section>;
+  return <section className="wallet-list-page">{walletSection}{message && <p className="setup-message wallet-list-message" role="alert">{message}</p>}{removalCandidate && <div className="seed-overlay" role="dialog" aria-modal="true" aria-labelledby="remove-wallet-title"><section className="seed-dialog wallet-remove-dialog"><p className="eyebrow">{t('wallets.removeTitle')}</p><h2 id="remove-wallet-title">{t('wallets.removeQuestion', { name: walletDisplayName(removalCandidate) })}</h2><p>{removalIsFast && removalCandidate.seedBackupStatus === 'pending' ? t('wallets.removePendingText') : t('wallets.removeText')}</p><div className="dialog-actions"><button className="quiet-button" disabled={Boolean(removingId)} onClick={() => setRemovalCandidate(null)} type="button">{t('common.cancel')}</button><button className="danger-button" disabled={Boolean(removingId)} onClick={() => void remove(removalCandidate)} type="button">{removingId === removalCandidate.id ? t('wallets.removing') : t('wallets.remove')}</button></div></section></div>}<RecentTransactions hasOpenWallet={Boolean(walletId)} items={transactions} onActivity={onActivity} /></section>;
 }
 
 /** The only action is on the Ledger. Closing this prompt would hide a pending
  * device approval, so it unmounts solely when the native export resolves. */
-function LedgerViewKeyExportOverlay({ title = 'Approve on your Ledger', detail = 'Waiting for the Ledger…' }: { title?: string; detail?: string } = {}) {
-  return <div className="seed-overlay ledger-view-key-overlay" role="dialog" aria-modal="true" aria-labelledby="ledger-view-key-title"><section className="seed-dialog ledger-view-key-dialog"><img src="/monero-mark.png" alt="" /><p className="eyebrow">Ledger Nano</p><h2 id="ledger-view-key-title">{title}</h2><p>Keep the Ledger unlocked with the Monero app open. If it asks, approve <strong>Export view key</strong> once. Your spend key never leaves the Ledger.</p><div className="ledger-view-key-wait"><span aria-hidden="true" /><strong>{detail}</strong></div></section></div>;
+function LedgerViewKeyExportOverlay({ title, detail }: { title?: string; detail?: string } = {}) {
+  const { t } = useI18n();
+  return <div className="seed-overlay ledger-view-key-overlay" role="dialog" aria-modal="true" aria-labelledby="ledger-view-key-title"><section className="seed-dialog ledger-view-key-dialog"><img src="/monero-mark.png" alt="" /><p className="eyebrow">Ledger Nano</p><h2 id="ledger-view-key-title">{title ?? t('setup.saveLedgerViewKey')}</h2><p>{t('ledger.exportInstruction')}</p><div className="ledger-view-key-wait"><span aria-hidden="true" /><strong>{detail ?? t('setup.waitingLedgerApproval')}</strong></div></section></div>;
 }
 
 function Setup({ linked, wallets, onSelectSaved, onOpened, onCreated }: { linked: boolean; wallets: RegisteredWallet[]; onSelectSaved: (wallet: RegisteredWallet) => void; onOpened: (result: WalletOperationResponse) => void; onCreated: (result: WalletOperationResponse, createFastWallet: boolean, requiresPrimarySeedBackup: boolean) => void }) {
@@ -1890,9 +1908,9 @@ function Setup({ linked, wallets, onSelectSaved, onOpened, onCreated }: { linked
   const actionLabel = busy ? t('setup.working') : !linked ? t('setup.coreRequired') : mode === 'ledger' ? ledgerNeedsSearch ? t('setup.searchLedger') : t('setup.createLedger') : mode === 'create' ? t('setup.create') : t('setup.import');
   const choices: Array<{ id: SetupMode; title: string; detail: string }> = [{ id: 'create', title: t('setup.create'), detail: t('setup.createDetail') }, { id: 'ledger', title: t('setup.ledger'), detail: t('setup.ledgerDetail') }, { id: 'restore', title: t('setup.import'), detail: t('setup.importDetail') }];
   const scanDate = <><label>{t('setup.scanStart')} <small>{mode === 'ledger' ? t('common.required') : t('common.optional')}</small><input value={restoreStartDate} onChange={(event) => setRestoreStartDate(event.target.value)} type="date" max={todayRestoreDate()} required={mode === 'ledger'} /></label><small className="restore-start-hint">{t(mode === 'ledger' ? 'setup.ledgerScanDateHint' : 'setup.scanDateHint')}</small></>;
-  const fastChoice = <label className="setup-preference-row"><span className="setup-preference-copy"><b>Fast Wallet</b><small>{mode === 'ledger' ? 'Also reserve Ledger account 1 as a separate Fast Wallet address.' : 'Also create a separate local wallet with its own recovery words. No server scanning or alerts are enabled here.'}</small></span><input aria-label="Fast Wallet" checked={createFastWallet} disabled={busy} onChange={(event) => changeFastWallet(event.target.checked)} role="switch" type="checkbox" /></label>;
-  const ledgerViewKeyChoice = mode === 'ledger' ? <label className="setup-preference-row"><span className="setup-preference-copy"><b>Remember Ledger for viewing</b><small>Keep an encrypted, read-only wallet on this device. You can view balances and receive without reconnecting Ledger; sending still requires Ledger.</small></span><input aria-label="Remember Ledger for viewing" checked={persistLedgerViewOnly} disabled={busy} onChange={(event) => setPersistLedgerViewOnly(event.target.checked)} role="switch" type="checkbox" /></label> : null;
-  return <section className="setup-grid simple-setup"><header><p className="eyebrow">{t('setup.eyebrow')}</p><h2>{t('setup.title')}</h2><p>{t('setup.subtitle')}</p></header>{wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{walletTypeLabel(wallet, t)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : '⇣'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{t('common.mainnet')}</p><h2>{label}</h2><p>{description}</p><div className="wallet-form">{mode === 'restore' && <><p className="native-seed-notice">Your 25 recovery words are entered in a separate protected system window after you continue.</p>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}{ledgerViewKeyChoice}</>}{fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy || (mode === 'ledger' && !restoreStartDate.trim())} type="button">{actionLabel}</button>{message && <p className="setup-message">{message}</p>}</div></article>{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay title="Save your Ledger view key" detail="Waiting for Ledger approval…" />}</section>;
+  const fastChoice = <label className="setup-preference-row"><span className="setup-preference-copy"><b>{t('setup.fastWallet')}</b><small>{mode === 'ledger' ? t('setup.fastWalletLedgerDescription') : t('setup.fastWalletLocalDescription')}</small></span><input aria-label={t('setup.fastWallet')} checked={createFastWallet} disabled={busy} onChange={(event) => changeFastWallet(event.target.checked)} role="switch" type="checkbox" /></label>;
+  const ledgerViewKeyChoice = mode === 'ledger' ? <label className="setup-preference-row"><span className="setup-preference-copy"><b>{t('setup.rememberLedger')}</b><small>{t('setup.rememberLedgerDescription')}</small></span><input aria-label={t('setup.rememberLedger')} checked={persistLedgerViewOnly} disabled={busy} onChange={(event) => setPersistLedgerViewOnly(event.target.checked)} role="switch" type="checkbox" /></label> : null;
+  return <section className="setup-grid simple-setup"><header><p className="eyebrow">{t('setup.eyebrow')}</p><h2>{t('setup.title')}</h2><p>{t('setup.subtitle')}</p></header>{wallets.length > 0 && <section className="setup-saved-wallets"><strong>{t('home.yourWallets')}</strong><div>{wallets.map(wallet => <button key={wallet.id} onClick={() => onSelectSaved(wallet)} type="button"><img src="/monero-mark.png" alt="" /><span><b>{walletDisplayName(wallet)}</b><small>{walletTypeLabel(wallet, t)}</small></span></button>)}</div></section>}<div className="setup-choices" role="tablist" aria-label={t('setup.eyebrow')}>{choices.map((item) => <button className={item.id === mode ? 'selected' : ''} onClick={() => chooseMode(item.id)} type="button" key={item.id}><span>{item.id === 'create' ? '＋' : item.id === 'ledger' ? '⌁' : '⇣'}</span><strong>{item.title}</strong><small>{item.detail}</small></button>)}</div><article className="setup-option simple-setup-form"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{t('common.mainnet')}</p><h2>{label}</h2><p>{description}</p><div className="wallet-form">{mode === 'restore' && <><p className="native-seed-notice">{t('setup.recoveryWordsProtected')}</p>{scanDate}</>}{mode === 'ledger' && <><div className="setup-transport"><button className={ledgerTransport === 'usb' ? 'selected' : ''} onClick={() => { setLedgerTransport('usb'); setMessage(null); }} type="button">USB</button><button className={ledgerTransport === 'ble' ? 'selected' : ''} onClick={() => void checkLedgerBluetooth()} type="button">Bluetooth</button></div><p className={ledgerStatus?.available && ledgerStatus.deviceCount > 0 ? 'ledger-status ready' : 'ledger-status'}>{ledgerTransport === 'usb' ? t('setup.usbHint') : ledgerStatus?.message ?? t('setup.bluetoothHint')}</p>{scanDate}{ledgerViewKeyChoice}</>}{fastChoice}</div><button className="primary" onClick={() => void submit()} disabled={!linked || busy || (mode === 'ledger' && !restoreStartDate.trim())} type="button">{actionLabel}</button>{message && <p className="setup-message">{message}</p>}</div></article>{ledgerViewKeyExportPending && <LedgerViewKeyExportOverlay />}</section>;
 }
 
 function FastWallets({ linked, sourceWalletId, sourceWallet, appProtection }: { linked: boolean; sourceWalletId: string | null; sourceWallet: RegisteredWallet | null; appProtection: AppProtectionStatus }) {
@@ -2342,7 +2360,7 @@ function FastWallets({ linked, sourceWalletId, sourceWallet, appProtection }: { 
   </section>;
 }
 
-function WalletFeature({ linked, title, text }: { linked: boolean; title: string; text: string }) { return <section className="empty-state"><img className="empty-mark" src="/monero-mark.png" alt="" /><h2>{title}</h2><p>{text}</p>{!linked && <p className="feature-lock">Available when the local Monero engine is linked.</p>}</section>; }
+function WalletFeature({ linked, title, text }: { linked: boolean; title: string; text: string }) { const { t } = useI18n(); return <section className="empty-state"><img className="empty-mark" src="/monero-mark.png" alt="" /><h2>{title}</h2><p>{text}</p>{!linked && <p className="feature-lock">{t('shell.engineLinkedRequired')}</p>}</section>; }
 
 type SendStep = 'recipient-choice' | 'manual-recipient' | 'address-book' | 'amount' | 'review';
 
@@ -2403,7 +2421,7 @@ function Send({ linked, walletId, wallet, appProtection, onWalletsChanged }: { l
   const saveContact = async () => {
     const label = contactLabel.trim();
     const recipient = contactAddress.trim();
-    if (!label || !recipient) { setMessage('Enter a name and a Monero address.'); return; }
+    if (!label || !recipient) { setMessage(t('send.contactRequired')); return; }
     if (!wallet) { setMessage(t('send.openWallet')); return; }
     let validated: string;
     try {
@@ -2541,11 +2559,11 @@ function Send({ linked, walletId, wallet, appProtection, onWalletsChanged }: { l
 
   if (!linked || !walletId) return <WalletFeature linked={linked} title={t('send.title')} text={t('send.openWallet')} />;
   return <section className="transaction-form transaction-page">
-    {step === 'recipient-choice' && <><header className="send-screen-header"><p className="eyebrow">{t('send.from')}</p><h2>{t('send.title')}</h2><p>{t('send.subtitle')}</p></header><section className="send-choice-stack"><button className="send-choice-card primary-choice" onClick={() => setScannerOpen(true)} type="button"><span className="send-choice-icon" aria-hidden="true">⌗</span><span><strong>{t('send.scanAddress')}</strong><small>{t('send.scanHint')}</small></span><b aria-hidden="true">›</b></button><div className="send-choice-or"><span />{t('send.or')}<span /></div><button className="send-choice-card" onClick={() => setStep('manual-recipient')} type="button"><span className="send-choice-icon" aria-hidden="true">✎</span><span><strong>{t('send.manualRecipient')}</strong><small>{t('send.manualRecipientHint')}</small></span><b aria-hidden="true">›</b></button><button className="send-choice-card" onClick={() => setStep('address-book')} type="button"><span className="send-choice-icon" aria-hidden="true">◎</span><span><strong>{t('send.addressBook')}</strong><small>Choose a saved recipient.</small></span><b aria-hidden="true">›</b></button>{recentContacts.length > 0 && <section className="send-quick-recipients"><header><strong>{t('send.recentContacts')}</strong><button className="quiet-button" onClick={() => setStep('address-book')} type="button">{t('send.viewMore')}</button></header><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></section>}</section></>}
+    {step === 'recipient-choice' && <><header className="send-screen-header"><p className="eyebrow">{t('send.from')}</p><h2>{t('send.title')}</h2><p>{t('send.subtitle')}</p></header><section className="send-choice-stack"><button className="send-choice-card primary-choice" onClick={() => setScannerOpen(true)} type="button"><span className="send-choice-icon" aria-hidden="true">⌗</span><span><strong>{t('send.scanAddress')}</strong><small>{t('send.scanHint')}</small></span><b aria-hidden="true">›</b></button><div className="send-choice-or"><span />{t('send.or')}<span /></div><button className="send-choice-card" onClick={() => setStep('manual-recipient')} type="button"><span className="send-choice-icon" aria-hidden="true">✎</span><span><strong>{t('send.manualRecipient')}</strong><small>{t('send.manualRecipientHint')}</small></span><b aria-hidden="true">›</b></button><button className="send-choice-card" onClick={() => setStep('address-book')} type="button"><span className="send-choice-icon" aria-hidden="true">◎</span><span><strong>{t('send.addressBook')}</strong><small>{t('send.savedRecipientHint')}</small></span><b aria-hidden="true">›</b></button>{recentContacts.length > 0 && <section className="send-quick-recipients"><header><strong>{t('send.recentContacts')}</strong><button className="quiet-button" onClick={() => setStep('address-book')} type="button">{t('send.viewMore')}</button></header><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></section>}</section></>}
     {step === 'manual-recipient' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.recipient')}</h2><p>{t('send.manualRecipientHint')}</p></header><label>{t('send.recipient')}<span className="recipient-address-input"><input value={address} onChange={(event) => { setAddress(event.target.value); setReview(null); setMessage(null); }} placeholder={t('send.recipientPlaceholder')} autoComplete="off" spellCheck="false" /><button className="paste-button" onClick={() => void pasteRecipient()} type="button">{t('common.paste')}</button></span></label><section className="recipient-picker" aria-label={t('send.addressBook')}>{contacts.length > 0 && <div><strong>{t('send.addressBook')}</strong><div className="recipient-chips">{contacts.slice(0, 3).map((contact) => <button className={contact.donor ? 'recipient-chip donor' : 'recipient-chip'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div><button className="quiet-button address-book-link" onClick={() => setStep('address-book')} type="button">{t('send.viewMore')} ›</button></div>}{recentContacts.length > 0 && <div><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}</section><button className="primary" onClick={() => { if (!address.trim()) { setMessage(t('send.recipientRequired')); return; } void validateAndUseRecipient(address); }} type="button">{t('common.continue')}</button></>}
-    {step === 'address-book' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.addressBook')}</h2><p>Choose a saved recipient. Donation stays first when configured for this release.</p></header><section className="address-book-panel">{contacts.length > 0 ? <div className="address-book-list">{contacts.map((contact) => <button className={contact.donor ? 'address-book-entry donor' : 'address-book-entry'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><span>{contact.donor ? '♥' : '◎'}</span><div><strong>{contact.label}</strong><small>{shortHash(contact.address)}</small></div><b>›</b></button>)}</div> : <p className="community-empty">No saved addresses yet. Add one below or paste an address instead.</p>}{recentContacts.length > 0 && <div className="address-book-recents"><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}<div className="address-book-add"><strong>Add address</strong><label>Name<input value={contactLabel} onChange={(event) => setContactLabel(event.target.value)} maxLength={80} /></label><label>{t('send.recipient')}<input value={contactAddress} onChange={(event) => setContactAddress(event.target.value)} autoComplete="off" spellCheck="false" placeholder={t('send.recipientPlaceholder')} /></label><button className="secondary" onClick={saveContact} type="button">Save address</button></div></section></>}
-    {step === 'amount' && <><button className="quiet-button step-back" onClick={() => setStep('manual-recipient')} type="button">‹ {t('common.back')}</button><header className="send-screen-header"><h2>{t('send.title')}</h2><p>{t('send.available')}: {snapshot ? `${formatAtomicXmr(snapshot.unlockedBalanceAtomic, 12)} XMR` : t('common.loading')}</p></header><section className="recipient-summary"><span>{t('send.recipient')}</span><strong>{shortHash(address.trim())}</strong><button className="quiet-button" onClick={() => setStep('manual-recipient')} type="button">{t('common.change')}</button></section><section className="send-amount-card"><header><strong>{t('send.amount')}</strong><button className="quiet-button" disabled={!snapshot || busy} onClick={useMaximum} type="button">{t('send.max')}</button></header><output>{amount || '0.0000'}</output><b>XMR</b><div className="send-keypad">{['1', '2', '3', '4', '5', '6', '7', '8', '.', '9', '0', 'backspace'].map(key => <button aria-label={key === 'backspace' ? 'Delete' : key} key={key} onClick={() => enterAmountKey(key)} type="button">{key === 'backspace' ? '⌫' : key}</button>)}</div></section>{sweepAll && <p className="transaction-note">{t('send.sweepAll')}</p>}<button className="primary send-review-button" disabled={busy} onClick={() => void prepare()} type="button">{busy ? t('send.preparing') : t('send.review')}</button></>}
-    {step === 'review' && review && <><button className="quiet-button step-back" disabled={busy} onClick={() => { setReview(null); setAuthorizationPassword(''); setUseAuthorizationPasswordFallback(false); setStep('amount'); }} type="button">‹ {t('common.back')}</button><section className="review-card"><header><strong>{t('send.reviewTitle')}</strong><p>{t('send.reviewSubtitle')}</p></header><code>{address.trim()}</code><dl className="review-details"><div><dt>{t('send.amount')}</dt><dd>{formatAtomicXmr(review.amountAtomic, 12)} XMR</dd></div><div><dt>{t('send.networkFee')}</dt><dd>{formatAtomicXmr(review.feeAtomic, 12)} XMR</dd></div><div><dt>{t('send.total')}</dt><dd>{formatAtomicXmr(totalAtomic.toString(), 12)} XMR</dd></div></dl>{appProtection.mode === 'password' || useAuthorizationPasswordFallback ? <label>{appProtection.mode === 'system' ? 'Recovery app password' : 'App password'}<input value={authorizationPassword} onChange={(event) => setAuthorizationPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="Required for final approval" /></label> : <p className="transaction-note">You will confirm this payment with {appProtection.systemAuth.label}.</p>}{appProtection.mode === 'system' && appProtection.passwordConfigured && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUseAuthorizationPasswordFallback(value => !value); setAuthorizationPassword(''); }} type="button">{useAuthorizationPasswordFallback ? `Use ${appProtection.systemAuth.label}` : 'Use recovery app password instead'}</button>}<p className="transaction-note">The operating system will show this exact recipient, amount, and fee once more before broadcast.</p>{wallet?.kind === 'hardware' && <p className="transaction-note">{t('send.ledgerHint')}</p>}{review.error && <p className="setup-message">{review.error}</p>}<button className="primary" disabled={busy || ((appProtection.mode === 'password' || useAuthorizationPasswordFallback) && !authorizationPassword)} onClick={() => void commit()} type="button">{busy ? t('send.sending') : appProtection.mode === 'system' && !useAuthorizationPasswordFallback ? `Confirm with ${appProtection.systemAuth.label}` : t('send.confirm')}</button></section></>}
+    {step === 'address-book' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.addressBook')}</h2><p>{t('send.addressBookHint')}</p></header><section className="address-book-panel">{contacts.length > 0 ? <div className="address-book-list">{contacts.map((contact) => <button className={contact.donor ? 'address-book-entry donor' : 'address-book-entry'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><span>{contact.donor ? '♥' : '◎'}</span><div><strong>{contact.label}</strong><small>{shortHash(contact.address)}</small></div><b>›</b></button>)}</div> : <p className="community-empty">{t('send.noSavedAddresses')}</p>}{recentContacts.length > 0 && <div className="address-book-recents"><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}<div className="address-book-add"><strong>{t('send.addAddress')}</strong><label>{t('send.contactName')}<input value={contactLabel} onChange={(event) => setContactLabel(event.target.value)} maxLength={80} /></label><label>{t('send.recipient')}<input value={contactAddress} onChange={(event) => setContactAddress(event.target.value)} autoComplete="off" spellCheck="false" placeholder={t('send.recipientPlaceholder')} /></label><button className="secondary" onClick={saveContact} type="button">{t('send.saveAddress')}</button></div></section></>}
+    {step === 'amount' && <><button className="quiet-button step-back" onClick={() => setStep('manual-recipient')} type="button">‹ {t('common.back')}</button><header className="send-screen-header"><h2>{t('send.title')}</h2><p>{t('send.available')}: {snapshot ? `${formatAtomicXmr(snapshot.unlockedBalanceAtomic, 12)} XMR` : t('common.loading')}</p></header><section className="recipient-summary"><span>{t('send.recipient')}</span><strong>{shortHash(address.trim())}</strong><button className="quiet-button" onClick={() => setStep('manual-recipient')} type="button">{t('common.change')}</button></section><section className="send-amount-card"><header><strong>{t('send.amount')}</strong><button className="quiet-button" disabled={!snapshot || busy} onClick={useMaximum} type="button">{t('send.max')}</button></header><output>{amount || '0.0000'}</output><b>XMR</b><div className="send-keypad">{['1', '2', '3', '4', '5', '6', '7', '8', '.', '9', '0', 'backspace'].map(key => <button aria-label={key === 'backspace' ? t('send.deleteKey') : key} key={key} onClick={() => enterAmountKey(key)} type="button">{key === 'backspace' ? '⌫' : key}</button>)}</div></section>{sweepAll && <p className="transaction-note">{t('send.sweepAll')}</p>}<button className="primary send-review-button" disabled={busy} onClick={() => void prepare()} type="button">{busy ? t('send.preparing') : t('send.review')}</button></>}
+    {step === 'review' && review && <><button className="quiet-button step-back" disabled={busy} onClick={() => { setReview(null); setAuthorizationPassword(''); setUseAuthorizationPasswordFallback(false); setStep('amount'); }} type="button">‹ {t('common.back')}</button><section className="review-card"><header><strong>{t('send.reviewTitle')}</strong><p>{t('send.reviewSubtitle')}</p></header><code>{address.trim()}</code><dl className="review-details"><div><dt>{t('send.amount')}</dt><dd>{formatAtomicXmr(review.amountAtomic, 12)} XMR</dd></div><div><dt>{t('send.networkFee')}</dt><dd>{formatAtomicXmr(review.feeAtomic, 12)} XMR</dd></div><div><dt>{t('send.total')}</dt><dd>{formatAtomicXmr(totalAtomic.toString(), 12)} XMR</dd></div></dl>{appProtection.mode === 'password' || useAuthorizationPasswordFallback ? <label>{appProtection.mode === 'system' ? t('send.recoveryPassword') : t('send.appPassword')}<input value={authorizationPassword} onChange={(event) => setAuthorizationPassword(event.target.value)} type="password" autoComplete="current-password" placeholder={t('send.finalApprovalPassword')} /></label> : <p className="transaction-note">{t('send.confirmWithSystem', { system: appProtection.systemAuth.label })}</p>}{appProtection.mode === 'system' && appProtection.passwordConfigured && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUseAuthorizationPasswordFallback(value => !value); setAuthorizationPassword(''); }} type="button">{useAuthorizationPasswordFallback ? t('send.useSystem', { system: appProtection.systemAuth.label }) : t('send.useRecoveryPassword')}</button>}<p className="transaction-note">{t('send.osReview')}</p>{wallet?.kind === 'hardware' && <p className="transaction-note">{t('send.ledgerHint')}</p>}{review.error && <p className="setup-message">{review.error}</p>}<button className="primary" disabled={busy || ((appProtection.mode === 'password' || useAuthorizationPasswordFallback) && !authorizationPassword)} onClick={() => void commit()} type="button">{busy ? t('send.sending') : appProtection.mode === 'system' && !useAuthorizationPasswordFallback ? t('send.confirmSystem', { system: appProtection.systemAuth.label }) : t('send.confirm')}</button></section></>}
     {message && <p className="setup-message">{message}</p>}
     {amount && !review && parseXmrToAtomic(amount) && <small className="amount-preview">{formatAtomicXmr(amountAtomic, 12)} XMR</small>}
     <DesktopRecipientQrScanner open={scannerOpen} onClose={() => setScannerOpen(false)} onScanned={(scannedAddress) => { setScannerOpen(false); void validateAndUseRecipient(scannedAddress); }} />
@@ -2618,7 +2636,7 @@ function Receive({ linked, walletId, wallet, wallets, manageAddressesRequest, on
     if (!address) return;
     try {
       if (navigator.share) {
-        await navigator.share({ title: 'Monero address', text: address });
+        await navigator.share({ title: t('receive.shareTitle'), text: address });
         setMessage(t('receive.shared'));
       } else {
         await navigator.clipboard.writeText(address);
@@ -2657,13 +2675,14 @@ function Receive({ linked, walletId, wallet, wallets, manageAddressesRequest, on
 
   return <section className="transaction-form transaction-page receive-page">
     <header><p className="eyebrow">{wallet ? walletDisplayName(wallet) : t('common.wallet')}</p><h2>{t('receive.title')}</h2><p>{t('receive.subtitle')}</p></header>
-    <div className="wallet-strip receive-wallet-strip">{wallets.map((item) => <button className={`${item.id === wallet?.id ? 'wallet-mini-card active' : 'wallet-mini-card'}${isFastWalletRegistration(item) ? ' fast' : ''}`} key={item.id} onClick={() => onSelectWallet(item)} type="button"><span>{walletDisplayName(item)}</span><small>{isFastWalletRegistration(item) ? 'FAST WALLET' : item.kind === 'hardware' ? 'LEDGER' : networkLabel(item.network).toUpperCase()}</small><strong>{item.id === wallet?.id && walletId ? t('wallets.use') : item.isOpen ? t('home.openLocal') : t('home.openToCheck')}</strong></button>)}<button className="wallet-mini-card add" onClick={onSetup} type="button"><span>＋</span><strong>{t('home.addWallet')}</strong></button></div>
-    {!linked || !walletId ? <WalletFeature linked={linked} title={t('receive.title')} text={t('send.openWallet')} /> : !address ? <button className="primary" disabled={busy} onClick={() => void load()} type="button">{busy ? t('common.loading') : t('receive.showAddress')}</button> : <><section className="receive-simple-card"><div className="receive-qr"><div>{qrCode ? <img src={qrCode} alt="QR code for the displayed Monero receive address" /> : <span>{t('common.loading')}</span>}</div></div><div className="simple-address-row"><code title={address}>{shortHash(address)}</code><button className="copy-icon-button" aria-label={t('receive.copyAddress')} onClick={() => void copy()} title={t('receive.copyAddress')} type="button">⧉</button></div><p>{wallet?.kind === 'hardware' ? t('receive.ledgerHint') : t('receive.qrHint')}</p></section><RecentTransactions hasOpenWallet items={transactions} onActivity={onActivity} /><button className="quiet-button address-tools-toggle" onClick={() => setShowAddressTools((visible) => !visible)} type="button">{showAddressTools ? t('receive.hideAddressTools') : t('receive.manageAddresses')}</button>{showAddressTools && <section className="address-tools"><div className="receive-actions"><button className="secondary" onClick={() => void share()} type="button">{t('receive.shareAddress')}</button>{wallet?.kind === 'hardware' && <button className="secondary" disabled={busy} onClick={() => void showOnLedger()} type="button">{t('receive.verifyLedger')}</button>}</div><section className="subaddress-section"><div><strong>{t('receive.newSubaddress')}</strong><p>{t('receive.qrHint')}</p></div><label>{t('receive.subaddressLabel')}<input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('receive.subaddressPlaceholder')} maxLength={80} /></label><button className="secondary" disabled={busy} onClick={() => void subaddress()} type="button">{t('receive.createSubaddress')}</button></section>{subaddresses.some((item) => item.address !== address) && <section className="subaddress-list">{subaddresses.filter((item) => item.address !== address).map((item) => <button key={`${item.accountIndex}-${item.addressIndex}`} onClick={() => { setAddress(item.address); setAddressIndex(item.addressIndex); setMessage(null); }} type="button"><span><strong>{item.label || `${t('receive.primaryAddress')} ${item.accountIndex}/${item.addressIndex}`}</strong><small>{shortHash(item.address)}</small></span><em>{item.accountIndex}/{item.addressIndex}</em></button>)}</section>}</section>}</>}
+    <div className="wallet-strip receive-wallet-strip">{wallets.map((item) => <button className={`${item.id === wallet?.id ? 'wallet-mini-card active' : 'wallet-mini-card'}${isFastWalletRegistration(item) ? ' fast' : ''}`} key={item.id} onClick={() => onSelectWallet(item)} type="button"><span>{walletDisplayName(item)}</span><small>{isFastWalletRegistration(item) ? t('setup.fastWallet').toUpperCase() : item.kind === 'hardware' ? t('common.ledger').toUpperCase() : networkLabel(item.network).toUpperCase()}</small><strong>{item.id === wallet?.id && walletId ? t('wallets.use') : item.isOpen ? t('home.openLocal') : t('home.openToCheck')}</strong></button>)}<button className="wallet-mini-card add" onClick={onSetup} type="button"><span>＋</span><strong>{t('home.addWallet')}</strong></button></div>
+    {!linked || !walletId ? <WalletFeature linked={linked} title={t('receive.title')} text={t('send.openWallet')} /> : !address ? <button className="primary" disabled={busy} onClick={() => void load()} type="button">{busy ? t('common.loading') : t('receive.showAddress')}</button> : <><section className="receive-simple-card"><div className="receive-qr"><div>{qrCode ? <img src={qrCode} alt={t('receive.qrAlt')} /> : <span>{t('common.loading')}</span>}</div></div><div className="simple-address-row"><code title={address}>{shortHash(address)}</code><button className="copy-icon-button" aria-label={t('receive.copyAddress')} onClick={() => void copy()} title={t('receive.copyAddress')} type="button">⧉</button></div><p>{wallet?.kind === 'hardware' ? t('receive.ledgerHint') : t('receive.qrHint')}</p></section><RecentTransactions hasOpenWallet items={transactions} onActivity={onActivity} /><button className="quiet-button address-tools-toggle" onClick={() => setShowAddressTools((visible) => !visible)} type="button">{showAddressTools ? t('receive.hideAddressTools') : t('receive.manageAddresses')}</button>{showAddressTools && <section className="address-tools"><div className="receive-actions"><button className="secondary" onClick={() => void share()} type="button">{t('receive.shareAddress')}</button>{wallet?.kind === 'hardware' && <button className="secondary" disabled={busy} onClick={() => void showOnLedger()} type="button">{t('receive.verifyLedger')}</button>}</div><section className="subaddress-section"><div><strong>{t('receive.newSubaddress')}</strong><p>{t('receive.qrHint')}</p></div><label>{t('receive.subaddressLabel')}<input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('receive.subaddressPlaceholder')} maxLength={80} /></label><button className="secondary" disabled={busy} onClick={() => void subaddress()} type="button">{t('receive.createSubaddress')}</button></section>{subaddresses.some((item) => item.address !== address) && <section className="subaddress-list">{subaddresses.filter((item) => item.address !== address).map((item) => <button key={`${item.accountIndex}-${item.addressIndex}`} onClick={() => { setAddress(item.address); setAddressIndex(item.addressIndex); setMessage(null); }} type="button"><span><strong>{item.label || `${t('receive.primaryAddress')} ${item.accountIndex}/${item.addressIndex}`}</strong><small>{shortHash(item.address)}</small></span><em>{item.accountIndex}/{item.addressIndex}</em></button>)}</section>}</section>}</>}
     {message && <p className="setup-message">{message}</p>}
   </section>;
 }
 
 function FastWalletReceive({ appProtection }: { appProtection: AppProtectionStatus }) {
+  const { t } = useI18n();
   const [wallets, setWallets] = useState<FastWalletRecord[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [transferStatus, setTransferStatus] = useState<{
@@ -2674,12 +2693,12 @@ function FastWalletReceive({ appProtection }: { appProtection: AppProtectionStat
   const [seedScreen, setSeedScreen] = useState<{ walletId: string; registrationId: string; label: string; seed: string } | null>(null);
   const load = useCallback(async () => {
     try { setWallets(await invoke<FastWalletRecord[]>('list_fast_wallets')); }
-    catch (reason) { setMessage(errorMessage(reason, 'Fast Wallets could not be loaded.')); }
-  }, []);
+    catch (reason) { setMessage(errorMessage(reason, t('fastReceive.loadFailed'))); }
+  }, [t]);
   useEffect(() => { void load(); }, [load]);
   const copy = async (address: string) => {
-    try { await navigator.clipboard.writeText(address); setMessage('Address copied.'); }
-    catch { setMessage('The address could not be copied.'); }
+    try { await navigator.clipboard.writeText(address); setMessage(t('receive.copied')); }
+    catch { setMessage(t('receive.copyFailed')); }
   };
   const backUp = async (wallet: FastWalletRecord) => {
     setBusyId(wallet.id); setMessage(null);
@@ -2690,7 +2709,7 @@ function FastWalletReceive({ appProtection }: { appProtection: AppProtectionStat
       });
       setSeedScreen({ walletId: opened.walletId, registrationId: wallet.id, label: wallet.label, seed });
     } catch (reason) {
-      setMessage(errorMessage(reason, `Could not back up ${wallet.label}.`));
+      setMessage(errorMessage(reason, t('fastReceive.backupFailed', { name: wallet.label })));
     } finally {
       setBusyId(null);
     }
@@ -2712,21 +2731,21 @@ function FastWalletReceive({ appProtection }: { appProtection: AppProtectionStat
       });
       setTransferStatus({ walletId: current.registrationId, status: 'accepted' });
       await load();
-      setMessage('Your Fast Wallet is ready to receive. Cuprate accepted its encrypted viewing data.');
+      setMessage(t('fastReceive.readyConfirmed'));
     } catch (reason) {
       setTransferStatus({ walletId: current.registrationId, status: 'failed' });
-      setMessage(errorMessage(reason, 'The recovery-word backup could not be confirmed.'));
+      setMessage(errorMessage(reason, t('fastReceive.backupConfirmFailed')));
     } finally {
       setBusyId(null);
     }
   };
   if (wallets.length === 0 && !message) return null;
   return <section className="fast-wallet-receive">
-    <header><div><p className="eyebrow">Optional</p><h2>Fast Wallet addresses</h2><p>Use a separate address for faster receiving. Your normal wallet remains private and independent.</p></div></header>
+    <header><div><p className="eyebrow">{t('fastReceive.optional')}</p><h2>{t('fastReceive.title')}</h2><p>{t('fastReceive.subtitle')}</p></div></header>
     <div className="fast-wallet-receive-list">{wallets.map((wallet) => {
       const ready = wallet.seedBackupStatus === 'verified';
       const transfer = transferStatus?.walletId === wallet.id ? transferStatus.status : null;
-      return <article key={wallet.id}><div><span className={ready ? 'wallet-chip' : 'wallet-chip warning'}>{ready ? 'Ready' : 'One step left'}</span><h3>{wallet.label}</h3><p>{ready ? 'This separate address is ready to receive Monero.' : 'First, safely write down the recovery words.'}</p>{transfer && <div className={`fast-wallet-inline-transfer ${transfer}`} role="status" aria-live="polite"><span aria-hidden="true" /><strong>{transfer === 'accepted' ? 'Cuprate accepted the encrypted view key.' : transfer === 'failed' ? 'Cuprate did not accept the encrypted view key.' : 'Sending encrypted view key to Cuprate…'}</strong></div>}</div>{ready ? <div className="simple-address-row"><code title={wallet.address}>{shortHash(wallet.address)}</code><button className="copy-icon-button" aria-label="Copy Fast Wallet address" onClick={() => void copy(wallet.address)} title="Copy address" type="button">⧉</button></div> : <button className="primary" disabled={busyId === wallet.id} onClick={() => void backUp(wallet)} type="button">{busyId === wallet.id ? 'Opening…' : `Back up with ${appProtection.mode === 'system' ? appProtection.systemAuth.label : 'app password'}`}</button>}</article>;
+      return <article key={wallet.id}><div><span className={ready ? 'wallet-chip' : 'wallet-chip warning'}>{ready ? t('fastReceive.ready') : t('fastReceive.oneStep')}</span><h3>{wallet.label}</h3><p>{ready ? t('fastReceive.readyText') : t('fastReceive.backupText')}</p>{transfer && <div className={`fast-wallet-inline-transfer ${transfer}`} role="status" aria-live="polite"><span aria-hidden="true" /><strong>{transfer === 'accepted' ? t('fastReceive.transferAccepted') : transfer === 'failed' ? t('fastReceive.transferFailed') : t('fastReceive.transferring')}</strong></div>}</div>{ready ? <div className="simple-address-row"><code title={wallet.address}>{shortHash(wallet.address)}</code><button className="copy-icon-button" aria-label={t('fastReceive.copy')} onClick={() => void copy(wallet.address)} title={t('receive.copyAddress')} type="button">⧉</button></div> : <button className="primary" disabled={busyId === wallet.id} onClick={() => void backUp(wallet)} type="button">{busyId === wallet.id ? t('fastReceive.opening') : t('fastReceive.backupWith', { method: appProtection.mode === 'system' ? appProtection.systemAuth.label : t('fastReceive.appPassword') })}</button>}</article>;
     })}</div>
     {message && <p className="setup-message">{message}</p>}
     {seedScreen && <RecoverySeedBackupScreen label={seedScreen.label} seed={seedScreen.seed} fastWallet busy={busyId === seedScreen.registrationId} onConfirm={() => void confirmBackup()} onDismiss={() => setSeedScreen(null)} />}
@@ -2744,7 +2763,7 @@ function HardwareWalletCard({ walletId }: { walletId: string }) {
 function Activity({ linked, walletId, wallet }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null }) {
   const { t } = useI18n();
   const [items, setItems] = useState<NativeTransaction[]>([]); const [message, setMessage] = useState<string | null>(null); const [selected, setSelected] = useState<NativeTransaction | null>(null);
-  const load = useCallback(async () => { if (!walletId || !wallet?.id) return; try { const raw = await invoke<string>('registered_wallet_transactions', { input: { registrationId: wallet.id } }); setItems(parseNativeJson<NativeTransaction[]>(raw, 'The native transaction history was invalid.')); setMessage(null); } catch (reason) { setMessage(errorMessage(reason, 'Could not load activity.')); } }, [wallet?.id, walletId]);
+  const load = useCallback(async () => { if (!walletId || !wallet?.id) return; try { const raw = await invoke<string>('registered_wallet_transactions', { input: { registrationId: wallet.id } }); setItems(parseNativeJson<NativeTransaction[]>(raw, t('activity.invalidHistory'))); setMessage(null); } catch (reason) { setMessage(errorMessage(reason, t('activity.loadFailed'))); } }, [t, wallet?.id, walletId]);
   useEffect(() => {
     if (!linked || !walletId) return;
     void load();
@@ -2875,7 +2894,7 @@ function MoneroEnthusiastV1() {
     setLoading(true); setMessage(null);
     try {
       const existing = content.find((item) => item.draft.kind === 'profile');
-      const input = { kind: 'profile', title: profileName.trim(), summary: profileSummary.trim(), roles: [], categories: [], languages: ['en'], coarseRegion: null, radiusKm: null, media: [] };
+      const input = { kind: 'profile', title: profileName.trim(), summary: profileSummary.trim(), roles: [], categories: [], languages: [language], coarseRegion: null, radiusKm: null, media: [] };
       if (existing) await invoke('enthusiast_v1_resubmit_content', { publicId: existing.publicId, input });
       else await invoke('enthusiast_v1_submit_content', { input });
       setMessage(t('communityV1.profileSubmitted'));
@@ -2900,7 +2919,7 @@ function MoneroEnthusiastV1() {
         summary: productDescription.trim(),
         roles: [],
         categories,
-        languages: ['en'],
+        languages: [language],
         coarseRegion: null,
         radiusKm: null,
         media: [],
@@ -3096,7 +3115,7 @@ function MoneroEnthusiastV1() {
       <header><strong>{t('communityV1.status')}</strong><button className="secondary" disabled={loading} onClick={() => void load()} type="button">{t('common.refresh')}</button></header>
       <p><span>{t('communityV1.catalog')}</span><b className={status?.catalogReady ? 'ready' : ''}>{status?.catalogReady ? t('communityV1.ready') : t('communityV1.preparing')}</b></p>
       <p><span>{t('communityV1.privateMessages')}</span><b className={status?.matrixReady ? 'ready' : ''}>{status?.matrixReady ? t('communityV1.ready') : t('communityV1.preparing')}</b></p>
-      {!ready && <small>{message ?? status?.reason ?? t('communityV1.notReady')}</small>}
+      {!ready && <small>{message ?? t('communityV1.notReady')}</small>}
       {status?.packaged && !ready && <button className="primary" disabled={loading} onClick={() => void begin()} type="button">{status.identityExists ? t('communityV1.openPrivateChat') : t('communityV1.createProfile')}</button>}
       {status?.identityExists && <button className="danger-button" disabled={loading} onClick={() => void remove()} type="button">{t('communityV1.deleteProfile')}</button>}
     </article>
@@ -3112,7 +3131,7 @@ function MoneroEnthusiastV1() {
         {searched && (searchResults.length === 0 ? <p className="enthusiast-v1-empty">{t('communityV1.noSearchResults')}</p> : <div className="enthusiast-v1-results">{searchResults.map((result) => <article key={`${result.item.publicId}-${result.item.ownerPublicId}`}><div><small>{result.item.kind === 'profile' ? t('communityV1.kindProfile') : result.item.kind === 'post' ? t('communityV1.kindPost') : result.item.kind === 'service_listing' ? t('communityV1.kindService') : t('communityV1.kindProduct')}</small><strong>{result.item.title}</strong><p>{result.item.summary}</p>{result.item.categories.length > 0 && <span>{result.item.categories.join(' · ')}</span>}</div><button className="secondary" disabled={loading || account?.suspended} onClick={() => void requestSearchContact(result.item.ownerPublicId)} type="button">{t('communityV1.connect')}</button></article>)}</div>)}
       </article>
       <article className="enthusiast-v1-editor">
-        <header><div><strong>{t('communityV1.publicProfile')}</strong><p>{t('communityV1.publicProfileText')}</p></div>{content.find((item) => item.draft.kind === 'profile') && <span>{content.find((item) => item.draft.kind === 'profile')?.status.replaceAll('_', ' ')}</span>}</header>
+        <header><div><strong>{t('communityV1.publicProfile')}</strong><p>{t('communityV1.publicProfileText')}</p></div>{content.find((item) => item.draft.kind === 'profile') && <span>{communityPublicationStatusLabel(content.find((item) => item.draft.kind === 'profile')?.status ?? '', t)}</span>}</header>
         <label>{t('communityV1.publicName')}<input value={profileName} onChange={(event) => setProfileName(event.target.value)} maxLength={120} /></label>
         <label>{t('communityV1.publicAbout')}<textarea value={profileSummary} onChange={(event) => setProfileSummary(event.target.value)} maxLength={2000} /></label>
         <button className="primary" disabled={loading || account?.suspended || !profileName.trim() || !profileSummary.trim()} onClick={() => void saveProfile()} type="button">{t('communityV1.submitReview')}</button>
@@ -3130,7 +3149,7 @@ function MoneroEnthusiastV1() {
         <label>{t('communityV1.productDescription')}<textarea value={productDescription} onChange={(event) => setProductDescription(event.target.value)} maxLength={2000} /></label>
         <label>{t('communityV1.productCategories')}<input value={productCategories} onChange={(event) => setProductCategories(event.target.value)} maxLength={512} /><small>{t('communityV1.productCategoriesHint')}</small></label>
         <button className="primary" disabled={loading || account?.suspended || !productTitle.trim() || !productDescription.trim()} onClick={() => void submitProductListing()} type="button">{t('communityV1.submitProduct')}</button>
-        {content.filter((item) => item.draft.kind === 'product_listing').map((listing) => <div className="enthusiast-v1-outcome" key={listing.publicId}><strong>{listing.draft.title}</strong><p>{listing.draft.summary}</p><small>{t('communityV1.reviewStatus')}: {listing.status.replaceAll('_', ' ')}</small></div>)}
+        {content.filter((item) => item.draft.kind === 'product_listing').map((listing) => <div className="enthusiast-v1-outcome" key={listing.publicId}><strong>{listing.draft.title}</strong><p>{listing.draft.summary}</p><small>{t('communityV1.reviewStatus')}: {communityPublicationStatusLabel(listing.status, t)}</small></div>)}
       </article>
       <section className="enthusiast-v1-contacts">
         <header><div><h3>{t('communityV1.contacts')}</h3><p>{t('communityV1.notificationsText')}</p></div><button className="secondary" disabled={loading} onClick={() => void enableCommunityNotifications()} type="button">{t('communityV1.enableNotifications')}</button></header>
@@ -3238,7 +3257,7 @@ function Settings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoL
 }
 
 function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, onWalletsChanged, autoLockSeconds, onSetAutoLockSeconds, appProtection, onSetAppProtectionMode, onLockApp }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; onWalletsChanged: () => Promise<void>; autoLockSeconds: number; onSetAutoLockSeconds: (seconds: number) => Promise<void>; appProtection: AppProtectionStatus; onSetAppProtectionMode: (mode: AppProtectionMode, password?: string, currentPassword?: string) => Promise<void>; onLockApp: () => Promise<void> }) {
-  const { language, setLanguage, t } = useI18n();
+  const { dateLocale, language, setLanguage, t } = useI18n();
   const [network, setNetwork] = useState<Network>(wallet?.network ?? 'mainnet');
   const [profile, setProfile] = useState<NodeProfile | null>(null);
   const [savedProfile, setSavedProfile] = useState<NodeProfile | null>(null);
@@ -3318,12 +3337,12 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
   };
   const saveAppProtection = async () => {
     const needsPassword = protectionMode === 'password';
-    if (needsPassword && appPassword !== appPasswordConfirm) { setMessage('The two app passwords do not match.'); return; }
-    if (needsPassword && appPassword.length < 12) { setMessage('Use an app password with at least 12 characters.'); return; }
-    if (appProtection.mode === 'password' && !currentAppPassword) { setMessage('Enter your current app password first.'); return; }
+    if (needsPassword && appPassword !== appPasswordConfirm) { setMessage(t('settings.appPasswordMismatch')); return; }
+    if (needsPassword && appPassword.length < 12) { setMessage(t('settings.appPasswordMinimum')); return; }
+    if (appProtection.mode === 'password' && !currentAppPassword) { setMessage(t('settings.currentPasswordRequired')); return; }
     setAppProtectionBusy(true); setMessage(null);
-    try { await onSetAppProtectionMode(protectionMode, appPassword, currentAppPassword); setAppPassword(''); setAppPasswordConfirm(''); setCurrentAppPassword(''); setMessage(protectionMode === 'system' ? `${appProtection.systemAuth.label} now protects this app.` : 'Your app password now protects this app.'); }
-    catch (reason) { setCurrentAppPassword(''); setMessage(errorMessage(reason, 'App protection could not be changed.')); }
+    try { await onSetAppProtectionMode(protectionMode, appPassword, currentAppPassword); setAppPassword(''); setAppPasswordConfirm(''); setCurrentAppPassword(''); setMessage(protectionMode === 'system' ? t('settings.systemProtectionSaved', { system: appProtection.systemAuth.label }) : t('settings.passwordProtectionSaved')); }
+    catch (reason) { setCurrentAppPassword(''); setMessage(errorMessage(reason, t('settings.protectionFailed'))); }
     finally { setAppProtectionBusy(false); }
   };
   const updateCommunitySearchSharing = async (enabled: boolean) => {
@@ -3349,9 +3368,9 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
     setAutoLockBusy(true); setMessage(null);
     try {
       await onSetAutoLockSeconds(seconds);
-      setMessage(`The app will lock after ${seconds < 3600 ? `${seconds / 60} minutes` : `${seconds / 3600} hours`} without user activity.`);
+      setMessage(t('settings.autoLockSaved'));
     } catch (reason) {
-      setMessage(errorMessage(reason, 'The inactivity timeout could not be changed.'));
+      setMessage(errorMessage(reason, t('settings.autoLockFailed')));
     } finally {
       setAutoLockBusy(false);
     }
@@ -3359,20 +3378,26 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
   const runDiagnosticTestbench = async () => {
     setDiagnosing(true);
     setDiagnosticReport(null);
-    setDiagnosticProgress({ completed: 0, total: 12, label: 'Starting diagnostic testbench' });
+    setDiagnosticProgress({ completed: 0, total: 12, label: t('settings.diagnosticStarting') });
     setMessage(null);
     try {
       const report = await runDesktopWalletDiagnosticTestbench({
         network,
         walletId,
-        onProgress: setDiagnosticProgress,
+        onProgress: progress => setDiagnosticProgress({
+          ...progress,
+          label: localizeDiagnosticText(
+            progress.label,
+            (key, params) => t(key as import('./i18n').TranslationKey, params),
+          ),
+        }),
       });
       setDiagnosticReport(report);
       setMessage(report.failed > 0
-        ? `Diagnostics found ${report.failed} failed test${report.failed === 1 ? '' : 's'}.`
-        : 'The diagnostic testbench completed.');
+        ? t('settings.diagnosticFailures', { count: report.failed })
+        : t('settings.diagnosticFinished'));
     } catch (reason) {
-      setMessage(errorMessage(reason, 'The diagnostic testbench could not be completed.'));
+      setMessage(errorMessage(reason, t('settings.diagnosticRunFailed')));
     } finally {
       setDiagnosing(false);
       setDiagnosticProgress(null);
@@ -3397,11 +3422,11 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
   return <section className="settings-page">
     <header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>{t('settings.title')}</h2><p>{t('settings.subtitle')}</p></div><span>{status?.linked ? t('settings.ready') : t('settings.checking')}</span></header>
     <section className="settings-section"><header><h3>{t('settings.language')}</h3><small>{t('settings.languageHint')}</small></header>
-      <article className="settings-panel settings-language"><button className={language === 'de' ? 'selected' : ''} onClick={() => setLanguage('de')} type="button">Deutsch</button><button className={language === 'en' ? 'selected' : ''} onClick={() => setLanguage('en')} type="button">English</button></article>
+      <article className="settings-panel settings-language">{supportedLanguages.map(code => <button className={language === code ? 'selected' : ''} onClick={() => setLanguage(code)} key={code} lang={code} type="button">{languageNames[code]}</button>)}</article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.performance')}</h3><small>{computeBusy ? t('settings.computeChecking') : computeStatus?.gpuAvailable ? t('settings.computeGpuReady') : t('settings.computeCpuReady')}</small></header>
       <article className="settings-panel"><div><strong>{t('settings.computeBackend')}</strong><p>{t('settings.computeHint')}</p></div><div className="node-mode">{([['auto', t('settings.computeAuto')], ['cpu', t('settings.computeCpu')], ['gpu', t('settings.computeGpu')]] as const).map(([preference, label]) => <button className={computeStatus?.preference === preference ? 'selected' : ''} disabled={computeBusy} onClick={() => void updateComputeBackend(preference)} key={preference} type="button">{label}</button>)}</div><p>{computeStatus?.gpuAvailable ? t('settings.computeDevice', { device: computeStatus.deviceName || computeStatus.gpuKind.toUpperCase() }) : t('settings.computeFallback')}</p></article>
-      <article className="settings-panel"><div><strong>{t('settings.scanPerformance')}</strong><p>{t('settings.scanPerformanceHint')}</p></div><div className="settings-diagnostics">{([['CPU', derivationPerformance?.cpu], ['Metal', derivationPerformance?.metal], ['CUDA', derivationPerformance?.cuda]] as const).map(([label, measured]) => <div key={label}><span>{label}</span><strong className={measured?.verified ? 'good' : 'neutral'}>{performanceMeasuring ? t('settings.performanceMeasuring') : measured?.verified ? t('settings.derivationsPerSecond', { rate: new Intl.NumberFormat(language === 'de' ? 'de-DE' : 'en-US').format(measured.derivationsPerSecond) }) : t('settings.performanceUnavailable')}</strong></div>)}</div></article>
+      <article className="settings-panel"><div><strong>{t('settings.scanPerformance')}</strong><p>{t('settings.scanPerformanceHint')}</p></div><div className="settings-diagnostics">{([['CPU', derivationPerformance?.cpu], ['Metal', derivationPerformance?.metal], ['CUDA', derivationPerformance?.cuda]] as const).map(([label, measured]) => <div key={label}><span>{label}</span><strong className={measured?.verified ? 'good' : 'neutral'}>{performanceMeasuring ? t('settings.performanceMeasuring') : measured?.verified ? t('settings.derivationsPerSecond', { rate: new Intl.NumberFormat(dateLocale).format(measured.derivationsPerSecond) }) : t('settings.performanceUnavailable')}</strong></div>)}</div></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.communityPrivacy')}</h3><small>{shareCommunitySearches ? t('settings.notificationsReady') : t('settings.notificationsOff')}</small></header>
       <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.shareSearches')}</strong><p>{t('settings.shareSearchesHint')}</p></div><label className="toggle"><input checked={shareCommunitySearches} onChange={(event) => void updateCommunitySearchSharing(event.target.checked)} type="checkbox" /><span /></label></article>
@@ -3413,18 +3438,18 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
     </section>
     <section className="settings-section"><header><h3>{t('settings.security')}</h3><small>{t('settings.localDevice')}</small></header>
       <article className="settings-panel app-protection-settings">
-        <div><strong>App lock</strong><p>Choose one secure way to unlock this app before selecting saved wallets.</p></div>
-        <div className="settings-actions"><button className="secondary" disabled={appProtectionBusy} onClick={() => void onLockApp()} type="button">Lock app now</button></div>
+        <div><strong>{t('settings.appLock')}</strong><p>{t('settings.appLockHint')}</p></div>
+        <div className="settings-actions"><button className="secondary" disabled={appProtectionBusy} onClick={() => void onLockApp()} type="button">{t('settings.lockNow')}</button></div>
         <div className="protection-mode-choices compact">
-          <button className={protectionMode === 'system' ? 'selected' : ''} disabled={!appProtection.systemAuth.available || appProtectionBusy} onClick={() => { setProtectionMode('system'); setAppPassword(''); setAppPasswordConfirm(''); }} type="button"><span>◎</span><strong>{appProtection.systemAuth.label}</strong><small>{appProtection.systemAuth.available ? 'Recommended · quick and protected by your device' : appProtection.systemAuth.detail}</small></button>
-          <button className={protectionMode === 'password' ? 'selected' : ''} disabled={appProtectionBusy} onClick={() => { setProtectionMode('password'); setAppPassword(''); setAppPasswordConfirm(''); }} type="button"><span>•••</span><strong>App password</strong><small>A separate password only for this app</small></button>
+          <button className={protectionMode === 'system' ? 'selected' : ''} disabled={!appProtection.systemAuth.available || appProtectionBusy} onClick={() => { setProtectionMode('system'); setAppPassword(''); setAppPasswordConfirm(''); }} type="button"><span>◎</span><strong>{appProtection.systemAuth.label}</strong><small>{appProtection.systemAuth.available ? t('settings.systemRecommended') : appProtection.systemAuth.detail}</small></button>
+          <button className={protectionMode === 'password' ? 'selected' : ''} disabled={appProtectionBusy} onClick={() => { setProtectionMode('password'); setAppPassword(''); setAppPasswordConfirm(''); }} type="button"><span>•••</span><strong>{t('send.appPassword')}</strong><small>{t('settings.appPasswordOnly')}</small></button>
         </div>
-        {appProtection.mode === 'password' && <div className="password-fields"><input value={currentAppPassword} onChange={(event) => setCurrentAppPassword(event.target.value)} type="password" autoComplete="current-password" placeholder="Current app password" /></div>}
-        {protectionMode === 'password' && <div className="password-fields"><input value={appPassword} onChange={(event) => setAppPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="New app password (at least 12 characters)" /><input value={appPasswordConfirm} onChange={(event) => setAppPasswordConfirm(event.target.value)} type="password" autoComplete="new-password" placeholder="Confirm password" /></div>}
-        <button className="primary protection-save" disabled={appProtectionBusy || (appProtection.mode === 'password' && !currentAppPassword) || (protectionMode === 'password' && (!appPassword || !appPasswordConfirm))} onClick={() => void saveAppProtection()} type="button">{appProtectionBusy ? 'Saving…' : protectionMode === 'system' ? `Use ${appProtection.systemAuth.label}` : 'Set app password'}</button>
-        <small>{protectionMode === 'system' ? `${appProtection.systemAuth.label} uses your Mac sign-in as backup. No extra app password is needed.` : 'This password is used only for Monero Fast Wallet.'}</small>
+        {appProtection.mode === 'password' && <div className="password-fields"><input value={currentAppPassword} onChange={(event) => setCurrentAppPassword(event.target.value)} type="password" autoComplete="current-password" placeholder={t('settings.currentAppPassword')} /></div>}
+        {protectionMode === 'password' && <div className="password-fields"><input value={appPassword} onChange={(event) => setAppPassword(event.target.value)} type="password" autoComplete="new-password" placeholder={t('settings.newAppPassword')} /><input value={appPasswordConfirm} onChange={(event) => setAppPasswordConfirm(event.target.value)} type="password" autoComplete="new-password" placeholder={t('settings.confirmAppPassword')} /></div>}
+        <button className="primary protection-save" disabled={appProtectionBusy || (appProtection.mode === 'password' && !currentAppPassword) || (protectionMode === 'password' && (!appPassword || !appPasswordConfirm))} onClick={() => void saveAppProtection()} type="button">{appProtectionBusy ? t('settings.saving') : protectionMode === 'system' ? t('settings.useSystem', { system: appProtection.systemAuth.label }) : t('settings.saveAppProtection')}</button>
+        <small>{protectionMode === 'system' ? t('settings.systemBackup', { system: appProtection.systemAuth.label }) : t('settings.passwordOnlyHere')}</small>
       </article>
-      <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.autoLock')}</strong><p>Lock all wallets together after this period without keyboard, pointer, touch, or scroll activity.</p></div><label><span className="sr-only">Inactivity timeout</span><select value={autoLockSeconds} disabled={autoLockBusy} onChange={(event) => void updateAutoLock(Number(event.target.value))}><option value={60}>1 minute</option><option value={300}>5 minutes</option><option value={900}>15 minutes</option><option value={1800}>30 minutes (default)</option><option value={3600}>1 hour</option><option value={0}>Never (not recommended)</option></select></label></article>
+      <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.autoLock')}</strong><p>{t('settings.autoLockDetail')}</p></div><label><span className="sr-only">{t('settings.inactivityTimeout')}</span><select value={autoLockSeconds} disabled={autoLockBusy} onChange={(event) => void updateAutoLock(Number(event.target.value))}><option value={60}>{t('settings.timeout1Minute')}</option><option value={300}>{t('settings.timeout5Minutes')}</option><option value={900}>{t('settings.timeout15Minutes')}</option><option value={1800}>{t('settings.timeout30Minutes')}</option><option value={3600}>{t('settings.timeout1Hour')}</option><option value={0}>{t('settings.timeoutNever')}</option></select></label></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.node')}</h3><small>{changed ? t('settings.unsaved') : savedProfile ? t('settings.saved') : t('settings.loading')}</small></header>
       <article className="settings-panel node-settings">{profile && <>
@@ -3436,26 +3461,26 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
         <div className="settings-actions"><button className="secondary" onClick={() => { setProfile(defaultNodeProfile(network)); setNodePassword(''); setClearPassword(false); }} type="button">{t('settings.resetDefaults')}</button><button className="primary" disabled={busy || !changed} onClick={() => void save()} type="button">{busy ? t('settings.saving') : t('settings.saveNode')}</button></div>
       </>}</article>
     </section>
-    <section className="settings-section"><header><h3>Diagnostic testbench</h3><small>{diagnosing ? 'Running live tests' : diagnosticReport ? 'Last run complete' : 'Ready'}</small></header>
+    <section className="settings-section"><header><h3>{t('settings.diagnosticTestbench')}</h3><small>{diagnosing ? t('settings.diagnosticsRunning') : diagnosticReport ? t('settings.diagnosticsComplete') : t('settings.diagnosticsReady')}</small></header>
       <article className="settings-panel diagnostic-testbench">
-        <div><strong>Safe end-to-end checks</strong><p>Tests the native Core, protected storage, shared node connection, real block throughput, wallet fan-out, Fast Wallet hosting, key derivation and Ledger transport. It never sends funds or changes wallet hosting.</p></div>
+        <div><strong>{t('settings.safeChecks')}</strong><p>{t('settings.safeChecksText')}</p></div>
         {diagnosing && diagnosticProgress && <div className="diagnostic-progress" role="status" aria-live="polite"><div><span>{diagnosticProgress.label}</span><strong>{diagnosticProgress.completed}/{diagnosticProgress.total}</strong></div><progress value={diagnosticProgress.completed} max={diagnosticProgress.total} /></div>}
         {diagnosticReport && <>
-          <div className="diagnostic-summary" aria-label="Diagnostic test summary">
-            <DiagnosticCount label="Passed" value={diagnosticReport.passed} status="pass" />
-            <DiagnosticCount label="Warnings" value={diagnosticReport.warnings} status="warning" />
-            <DiagnosticCount label="Failed" value={diagnosticReport.failed} status="fail" />
-            <DiagnosticCount label="Skipped" value={diagnosticReport.skipped} status="skipped" />
+          <div className="diagnostic-summary" aria-label={t('settings.diagnosticSummary')}>
+            <DiagnosticCount label={t('settings.diagnosticPassed')} value={diagnosticReport.passed} status="pass" />
+            <DiagnosticCount label={t('settings.diagnosticWarnings')} value={diagnosticReport.warnings} status="warning" />
+            <DiagnosticCount label={t('settings.diagnosticFailed')} value={diagnosticReport.failed} status="fail" />
+            <DiagnosticCount label={t('settings.diagnosticSkipped')} value={diagnosticReport.skipped} status="skipped" />
           </div>
           <div className="diagnostic-results">{diagnosticReport.tests.map(test => <article className="diagnostic-test" key={test.id}>
-            <header><div><small>{test.category}</small><strong>{test.label}</strong></div><span className={`diagnostic-badge ${test.status}`}>{diagnosticStatusLabel(test.status)}</span></header>
-            <p>{test.summary}</p>
-            {test.metrics.length > 0 && <dl>{test.metrics.map(metric => <div key={`${test.id}-${metric.label}`}><dt>{metric.label}</dt><dd>{metric.value}{metric.unit ? ` ${metric.unit}` : ''}</dd></div>)}</dl>}
+            <header><div><small>{localizeDiagnosticText(test.category, key => t(key as import('./i18n').TranslationKey))}</small><strong>{localizeDiagnosticText(test.label, key => t(key as import('./i18n').TranslationKey))}</strong></div><span className={`diagnostic-badge ${test.status}`}>{diagnosticStatusLabel(test.status, t)}</span></header>
+            <p>{localizeDiagnosticText(test.summary, (key, params) => t(key as import('./i18n').TranslationKey, params))}</p>
+            {test.metrics.length > 0 && <dl>{test.metrics.map(metric => <div key={`${test.id}-${metric.label}`}><dt>{localizeDiagnosticText(metric.label, key => t(key as import('./i18n').TranslationKey))}</dt><dd>{localizeDiagnosticText(metric.value, key => t(key as import('./i18n').TranslationKey))}{metric.unit ? ` ${metric.unit}` : ''}</dd></div>)}</dl>}
             <small className="diagnostic-duration">{test.durationMs} ms</small>
           </article>)}</div>
-          <p className="diagnostic-total">Total test time: {diagnosticReport.durationMs} ms</p>
+          <p className="diagnostic-total">{t('settings.diagnosticTotal', { duration: diagnosticReport.durationMs })}</p>
         </>}
-        <button className="primary" disabled={diagnosing} onClick={() => void runDiagnosticTestbench()} type="button">{diagnosing ? 'Running testbench…' : 'Run full testbench'}</button>
+        <button className="primary" disabled={diagnosing} onClick={() => void runDiagnosticTestbench()} type="button">{diagnosing ? t('settings.runningTestbench') : t('settings.runTestbench')}</button>
       </article>
     </section>
     <section className="settings-section settings-about"><header><h3>{t('settings.about')}</h3><small>{t('settings.localDesktop')}</small></header><article className="settings-panel"><div><strong>{t('settings.privacyByDesign')}</strong><p>{t('settings.privacyText')}</p></div><div><strong>{t('settings.marketDisplay')}</strong><p>{t('settings.marketText')}</p></div></article></section>
@@ -3468,51 +3493,54 @@ function DiagnosticCount({ label, value, status }: { label: string; value: numbe
   return <div className={`diagnostic-count ${status}`}><strong>{value}</strong><span>{label}</span></div>;
 }
 
-function diagnosticStatusLabel(status: DiagnosticTestStatus): string {
-  if (status === 'pass') return 'Passed';
-  if (status === 'warning') return 'Warning';
-  if (status === 'fail') return 'Failed';
-  return 'Skipped';
+function diagnosticStatusLabel(status: DiagnosticTestStatus, t: ReturnType<typeof useI18n>['t']): string {
+  if (status === 'pass') return t('settings.diagnosticPassed');
+  if (status === 'warning') return t('settings.diagnosticWarnings');
+  if (status === 'fail') return t('settings.diagnosticFailed');
+  return t('settings.diagnosticSkipped');
 }
 
 function SensitiveAuthorizationOverlay({ title, description, password, mode, systemLabel, allowPasswordFallback, busy, onPasswordChange, onConfirm, onDismiss }: { title: string; description: string; password: string; mode: AppProtectionMode; systemLabel: string; allowPasswordFallback: boolean; busy: boolean; onPasswordChange: (value: string) => void; onConfirm: () => void; onDismiss: () => void }) {
+  const { t } = useI18n();
   const [usePasswordFallback, setUsePasswordFallback] = useState(false);
   const usesPassword = mode === 'password' || usePasswordFallback;
-  return <div className="seed-overlay" role="dialog" aria-modal="true" aria-labelledby="sensitive-authorization-title"><section className="seed-dialog"><p className="eyebrow">Confirm it is you</p><h2 id="sensitive-authorization-title">{title}</h2><p>{description}</p>{usesPassword && <input autoFocus value={password} onChange={(event) => onPasswordChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && password) onConfirm(); }} type="password" autoComplete="current-password" placeholder={mode === 'system' ? 'Recovery app password' : 'App password'} />}{mode === 'system' && allowPasswordFallback && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUsePasswordFallback(value => !value); onPasswordChange(''); }} type="button">{usePasswordFallback ? `Use ${systemLabel}` : 'Use recovery app password instead'}</button>}<div className="dialog-actions"><button className="quiet-button" disabled={busy} onClick={onDismiss} type="button">Cancel</button><button className="primary" disabled={busy || (usesPassword && !password)} onClick={onConfirm} type="button">{busy ? 'Confirming…' : usesPassword ? 'Continue securely' : `Confirm with ${systemLabel}`}</button></div></section></div>;
+  return <div className="seed-overlay" role="dialog" aria-modal="true" aria-labelledby="sensitive-authorization-title"><section className="seed-dialog"><p className="eyebrow">{t('authorization.confirmIdentity')}</p><h2 id="sensitive-authorization-title">{title}</h2><p>{description}</p>{usesPassword && <input autoFocus value={password} onChange={(event) => onPasswordChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && password) onConfirm(); }} type="password" autoComplete="current-password" placeholder={mode === 'system' ? t('authorization.recoveryPassword') : t('authorization.appPassword')} />}{mode === 'system' && allowPasswordFallback && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUsePasswordFallback(value => !value); onPasswordChange(''); }} type="button">{usePasswordFallback ? t('settings.useSystem', { system: systemLabel }) : t('authorization.useRecoveryPassword')}</button>}<div className="dialog-actions"><button className="quiet-button" disabled={busy} onClick={onDismiss} type="button">{t('common.cancel')}</button><button className="primary" disabled={busy || (usesPassword && !password)} onClick={onConfirm} type="button">{busy ? t('authorization.confirming') : usesPassword ? t('authorization.continue') : t('authorization.confirmSystem', { system: systemLabel })}</button></div></section></div>;
 }
 
 function RecoverySeedBackupScreen({ label, seed, fastWallet = false, busy, onConfirm, onDismiss }: { label: string; seed: string; fastWallet?: boolean; busy: boolean; onConfirm: () => void; onDismiss: () => void }) {
+  const { t } = useI18n();
   const [writtenDown, setWrittenDown] = useState(false);
   const words = useMemo(() => seed.trim().split(/\s+/).filter(Boolean), [seed]);
   return <div className="seed-overlay recovery-seed-overlay" role="dialog" aria-modal="true" aria-labelledby="recovery-seed-title">
     <section className="recovery-seed-screen">
-      <header><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{fastWallet ? 'Fast Wallet backup' : 'Wallet backup'}</p><h2 id="recovery-seed-title">Write down your recovery words</h2></div></header>
-      <p className="recovery-seed-intro"><strong>{label}</strong> can only be restored with these words. Write them down in this exact order and keep the paper somewhere safe.</p>
-      <section className="recovery-seed-warning"><span>!</span><div><strong>Never share these words</strong><p>Anyone who has them can access your wallet. Monero Fast Wallet will never ask you to send them to anyone.</p></div></section>
-      <ol className="recovery-seed-words" aria-label="Recovery words">{words.map((word, index) => <li key={`${index}-${word}`}><span>{index + 1}</span><b>{word}</b></li>)}</ol>
-      <label className="seed-confirm recovery-seed-check"><input checked={writtenDown} onChange={(event) => setWrittenDown(event.target.checked)} type="checkbox" />I have written down all {words.length} words in the right order.</label>
-      <div className="dialog-actions recovery-seed-actions"><button className="quiet-button" disabled={busy} onClick={onDismiss} type="button">I’ll do this later</button><button className="primary" disabled={busy || !writtenDown} onClick={onConfirm} type="button">{busy ? 'Saving…' : 'I have saved my words'}</button></div>
+      <header><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{fastWallet ? t('backup.fastTitle') : t('backup.walletTitle')}</p><h2 id="recovery-seed-title">{t('backup.writeWords')}</h2></div></header>
+      <p className="recovery-seed-intro">{t('backup.intro', { name: label })}</p>
+      <section className="recovery-seed-warning"><span>!</span><div><strong>{t('backup.neverShare')}</strong><p>{t('backup.warning')}</p></div></section>
+      <ol className="recovery-seed-words" aria-label={t('backup.wordsLabel')}>{words.map((word, index) => <li key={`${index}-${word}`}><span>{index + 1}</span><b>{word}</b></li>)}</ol>
+      <label className="seed-confirm recovery-seed-check"><input checked={writtenDown} onChange={(event) => setWrittenDown(event.target.checked)} type="checkbox" />{t('backup.confirmWords', { count: words.length })}</label>
+      <div className="dialog-actions recovery-seed-actions"><button className="quiet-button" disabled={busy} onClick={onDismiss} type="button">{t('backup.later')}</button><button className="primary" disabled={busy || !writtenDown} onClick={onConfirm} type="button">{busy ? t('backup.saving') : t('backup.saved')}</button></div>
     </section>
   </div>;
 }
 
 function FastWalletTransferOverlay({ status }: { status: Exclude<FastWalletTransferStatus, 'idle'> }) {
+  const { t } = useI18n();
   const accepted = status === 'accepted';
   const failed = status === 'failed';
   return <div className="seed-overlay fast-wallet-transfer-overlay" role="status" aria-live="polite" aria-atomic="true">
     <section className="seed-dialog fast-wallet-transfer-dialog">
       <img src="/monero-mark.png" alt="" />
       <p className="eyebrow">Fast Wallet</p>
-      <h2>{accepted ? 'Connected' : failed ? 'Connection needs attention' : 'Connecting securely'}</h2>
+      <h2>{accepted ? t('fastTransfer.connected') : failed ? t('fastTransfer.attention') : t('fastTransfer.connecting')}</h2>
       <div className={`fast-wallet-transfer-state ${status}`}>
         <span className="fast-wallet-transfer-led" aria-hidden="true" />
         <strong>{accepted
-          ? 'Monero Fast Node scan service accepted the encrypted view key.'
+          ? t('fastTransfer.accepted')
           : failed
-            ? 'Monero Fast Node scan service did not accept the encrypted view key.'
-            : 'Sending encrypted view key to the Monero Fast Node scan service…'}</strong>
+            ? t('fastTransfer.failed')
+            : t('fastTransfer.sending')}</strong>
       </div>
-      <p>Your spend key and recovery words never leave this device.</p>
+      <p>{t('fastTransfer.safety')}</p>
     </section>
   </div>;
 }

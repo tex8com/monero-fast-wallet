@@ -41,7 +41,7 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
   );
 
   it('keeps the primary wallet list simple and treats Fast Wallet as a wallet', () => {
-    expect(walletsScreen).toContain('Back up recovery words');
+    expect(walletsScreen).toContain("t('wallets.backupRecoveryWords')");
     expect(walletsScreen).toContain("t('walletSelector.fast')");
     expect(walletsScreen).toContain(
       "navigation.navigate('Receive', { walletId: wallet.id })",

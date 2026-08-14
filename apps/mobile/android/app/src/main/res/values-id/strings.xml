@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Transaksi Monero</string>
+    <string name="monero_transaction_channel_description">Peringatan pembayaran dan konfirmasi Fast Wallet</string>
+    <string name="monero_sync_channel_name">Sinkronisasi wallet</string>
+    <string name="monero_sync_channel_description">Menjaga sinkronisasi riwayat wallet aktif tetap berjalan</string>
+    <string name="monero_sync_notification_title">Menyinkronkan riwayat wallet</string>
+    <string name="monero_sync_notification_description">Mengunduh dan memindai data blockchain publik</string>
+</resources>

@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Giao dịch Monero</string>
+    <string name="monero_transaction_channel_description">Thông báo thanh toán và xác nhận Fast Wallet</string>
+    <string name="monero_sync_channel_name">Đồng bộ ví</string>
+    <string name="monero_sync_channel_description">Duy trì đồng bộ lịch sử ví đang hoạt động</string>
+    <string name="monero_sync_notification_title">Đang đồng bộ lịch sử ví</string>
+    <string name="monero_sync_notification_description">Đang tải xuống và quét dữ liệu blockchain công khai</string>
+</resources>

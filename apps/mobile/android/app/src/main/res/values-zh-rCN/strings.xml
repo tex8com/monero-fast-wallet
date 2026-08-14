@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Monero 交易</string>
+    <string name="monero_transaction_channel_description">Fast Wallet 付款和确认通知</string>
+    <string name="monero_sync_channel_name">钱包同步</string>
+    <string name="monero_sync_channel_description">保持活动钱包的历史记录同步运行</string>
+    <string name="monero_sync_notification_title">正在同步钱包历史记录</string>
+    <string name="monero_sync_notification_description">正在下载和扫描公开区块链数据</string>
+</resources>

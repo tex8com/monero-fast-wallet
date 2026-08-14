@@ -18,6 +18,7 @@
 		B4D87E000000000000000009 /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B4D87E00000000000000000A /* CoreBluetooth.framework */; };
 		B4D87E00000000000000000C /* DisableDevLoadingView.m in Sources */ = {isa = PBXBuildFile; fileRef = B4D87E00000000000000000B /* DisableDevLoadingView.m */; };
 		B4D87E00000000000000000E /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B4D87E00000000000000000D /* CoreLocation.framework */; };
+		B4D87E000000000000000010 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = B4D87E000000000000000011 /* InfoPlist.xcstrings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +38,7 @@
 		B4D87E00000000000000000A /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
 		B4D87E00000000000000000B /* DisableDevLoadingView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = DisableDevLoadingView.m; path = MoneroWallet/DisableDevLoadingView.m; sourceTree = "<group>"; };
 		B4D87E00000000000000000D /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
+		B4D87E000000000000000011 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; name = InfoPlist.xcstrings; path = MoneroWallet/InfoPlist.xcstrings; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -63,6 +65,7 @@
 				B4D87E00000000000000000B /* DisableDevLoadingView.m */,
 				B4D87E000000000000000006 /* NativeMoneroWallet */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
+				B4D87E000000000000000011 /* InfoPlist.xcstrings */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
 			);
@@ -176,6 +179,23 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
+				de,
+				es,
+				"pt-BR",
+				ru,
+				vi,
+				id,
+				uk,
+				tr,
+				hi,
+				ur,
+				fr,
+				fil,
+				ja,
+				ko,
+				ar,
+				"zh-CN",
+				"zh-TW",
 				Base,
 			);
 			mainGroup = 83CBB9F61A601CBA00E9B192;
@@ -196,6 +216,7 @@
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				14852E68180482014C282A19 /* PrivacyInfo.xcprivacy in Resources */,
+				B4D87E000000000000000010 /* InfoPlist.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

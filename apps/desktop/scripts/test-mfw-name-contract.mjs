@@ -20,9 +20,15 @@ const releaseManifest = JSON.parse(
   readFileSync(new URL('../../../config/v1-release-features.json', import.meta.url), 'utf8'),
 );
 
-test('desktop MFW discovery stays reachable while transactions remain release-gated', () => {
-  assert.match(app, /section === 'mfw' && <MfwNames/);
-  assert.match(app, /section: 'mfw'.*MFW Names/);
+test('desktop MFW registration stays hidden while its release trust contract is disabled', () => {
+  assert.match(
+    app,
+    /section === 'mfw' && v1ReleaseFeatures\.mfwNameRegistration && <MfwNames/,
+  );
+  assert.match(
+    app,
+    /v1ReleaseFeatures\.mfwNameRegistration \? \[\{ section: 'mfw'/,
+  );
   assert.match(host, /release_features::require\(\s*"mfwNameRegistration"/);
   assert.equal(releaseManifest.features.mfwNameRegistration, false);
   assert.equal(releaseManifest.parameters.mfwNameGenesis, null);

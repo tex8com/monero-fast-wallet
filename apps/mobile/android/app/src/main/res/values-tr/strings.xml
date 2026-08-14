@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Monero işlemleri</string>
+    <string name="monero_transaction_channel_description">Fast Wallet ödeme ve onay bildirimleri</string>
+    <string name="monero_sync_channel_name">Cüzdan senkronizasyonu</string>
+    <string name="monero_sync_channel_description">Etkin cüzdan geçmişi senkronizasyonunu çalışır durumda tutar</string>
+    <string name="monero_sync_notification_title">Cüzdan geçmişi senkronize ediliyor</string>
+    <string name="monero_sync_notification_description">Herkese açık blockchain verileri indiriliyor ve taranıyor</string>
+</resources>

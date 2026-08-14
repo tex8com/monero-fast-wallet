@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Monero لین دین</string>
+    <string name="monero_transaction_channel_description">Fast Wallet کی ادائیگی اور تصدیق کے انتباہات</string>
+    <string name="monero_sync_channel_name">والٹ کی ہم آہنگی</string>
+    <string name="monero_sync_channel_description">فعال والٹ کی ہسٹری کی ہم آہنگی جاری رکھتا ہے</string>
+    <string name="monero_sync_notification_title">والٹ کی ہسٹری ہم آہنگ ہو رہی ہے</string>
+    <string name="monero_sync_notification_description">عوامی بلاک چین ڈیٹا ڈاؤن لوڈ اور اسکین کیا جا رہا ہے</string>
+</resources>

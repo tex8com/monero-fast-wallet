@@ -1379,7 +1379,7 @@ export default function SendScreen({ navigation, route }: any) {
               <TouchableOpacity
                 key={key}
                 accessibilityRole="button"
-                accessibilityLabel={key === 'backspace' ? 'Delete' : key}
+                accessibilityLabel={key === 'backspace' ? t('action.delete') : key}
                 style={s.keypadKey}
                 onPress={() => enterAmountKey(key)}
                 activeOpacity={0.72}

@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Monero लेनदेन</string>
+    <string name="monero_transaction_channel_description">Fast Wallet भुगतान और पुष्टि अलर्ट</string>
+    <string name="monero_sync_channel_name">वॉलेट सिंक</string>
+    <string name="monero_sync_channel_description">सक्रिय वॉलेट इतिहास सिंक को चलता रखता है</string>
+    <string name="monero_sync_notification_title">वॉलेट इतिहास सिंक हो रहा है</string>
+    <string name="monero_sync_notification_description">सार्वजनिक ब्लॉकचेन डेटा डाउनलोड और स्कैन हो रहा है</string>
+</resources>

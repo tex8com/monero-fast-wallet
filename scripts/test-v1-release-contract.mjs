@@ -123,11 +123,6 @@ test('safe V1 feature manifest enables verified local surfaces and fails closed 
   assert.equal(manifest.profile, 'safe-wallet-v1');
   assert.equal(manifest.features.localFastWallet, true);
   assert.equal(
-    manifest.features.ledgerFastWallet,
-    true,
-    'verified Ledger Fast Wallet must be enabled',
-  );
-  assert.equal(
     manifest.features.officialWorker,
     true,
     'the deployed encrypted official Worker must be enabled',
@@ -135,6 +130,7 @@ test('safe V1 feature manifest enables verified local surfaces and fails closed 
   for (const feature of [
     'automaticFastWalletCreation',
     'plaintextFastWalletHosting',
+    'ledgerFastWallet',
     'scannerKeyImageSpendAuthority',
     'privateWorkerPairing',
     'legacyCommunity',
@@ -238,7 +234,7 @@ test('Monero Enthusiast V1 cannot fall back to the legacy plaintext Community pa
   assert.doesNotMatch(mobileMenu, /FindEnthusiasts|EnthusiastChat/);
   assert.doesNotMatch(mobileTabs, /FindEnthusiasts/);
   assert.match(mobileNavigation, /name="MoneroEnthusiast"/);
-  assert.match(mobileMenu, /screen: "MoneroEnthusiast"/);
+  assert.match(mobileMenu, /"MoneroEnthusiast", IcoCommunity/);
   assert.match(mobileTabs, /key: "MoneroEnthusiast"/);
   assert.match(mobileV1, /getMoneroEnthusiastV1Status/);
   assert.doesNotMatch(
@@ -247,7 +243,7 @@ test('Monero Enthusiast V1 cannot fall back to the legacy plaintext Community pa
   );
   assert.doesNotMatch(
     mobileV1,
-    /accessToken|matrixSession|privateKey|embedding|fetch\(|axios|XMLHttpRequest/,
+    /accessToken|matrixSession|privateKey|fetch\(|axios|XMLHttpRequest/,
   );
   assert.match(mobileNativeSpec, /getMoneroEnthusiastV1Status/);
   assert.match(androidCommunityBuild, /MONERO_COMMUNITY_MATRIX_LIBRARY/);

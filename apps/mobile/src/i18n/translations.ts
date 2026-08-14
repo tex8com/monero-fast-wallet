@@ -1,3 +1,7 @@
+import { generatedLocaleMetadata, generatedTranslations } from './translations.generated';
+import { applyManualTranslationOverrides } from '../../../../packages/wallet-shared/src/manualTranslationOverrides';
+import { productLanguageCodes, productLocaleByCode, type ProductLanguageCode } from '../../../../config/productLocales';
+
 const en = {
   'action.addWallet': 'Add Wallet',
   'action.back': 'Back',
@@ -7,6 +11,7 @@ const en = {
   'action.close': 'Close',
   'action.closeWallet': 'Close wallet',
   'action.continue': 'Continue',
+  'action.delete': 'Delete',
   'action.getStarted': 'Get Started',
   'action.copyAddress': 'Copy address',
   'action.copied': 'Copied',
@@ -37,6 +42,16 @@ const en = {
   'common.optional': 'Optional',
   'common.required': 'Required',
   'common.wallet': 'Wallet',
+  'native.notification.transactions': 'Monero transactions',
+  'native.notification.transactionsDescription': 'Fast Wallet payment and confirmation alerts',
+  'native.notification.sync': 'Wallet synchronization',
+  'native.notification.syncDescription': 'Keeps active wallet history synchronization running',
+  'native.notification.syncTitle': 'Synchronizing wallet history',
+  'native.notification.syncBody': 'Downloading and scanning public blockchain data',
+  'native.permission.location': 'Location is used only when you enable nearby Monero Enthusiast discovery. The app reduces it to an approximate area and never displays your exact position.',
+  'native.permission.bluetooth': 'Bluetooth is used to connect to Ledger Nano hardware wallets.',
+  'native.permission.camera': 'Camera access is used only to scan a Monero receiving-address QR code.',
+  'native.permission.faceId': 'Face ID is used to unlock Monero Fast Wallet securely on this device.',
   'language.de': 'Deutsch',
   'language.en': 'English',
   'tabs.home': 'Home',
@@ -88,6 +103,18 @@ const en = {
   'communityV1.publicName': 'Public name',
   'communityV1.publicAbout': 'About you',
   'communityV1.reviewStatus': 'Review status',
+  'communityV1.status.awaitingScreening': 'Waiting for automatic review',
+  'communityV1.status.humanReview': 'Waiting for human review',
+  'communityV1.status.needsChanges': 'Changes needed',
+  'communityV1.status.quarantined': 'Held for safety review',
+  'communityV1.status.approvedAwaitingEmbedding':
+    'Approved · preparing local search',
+  'communityV1.status.published': 'Published',
+  'communityV1.status.hidden': 'Hidden',
+  'communityV1.status.rejected': 'Not approved',
+  'communityV1.status.removed': 'Removed',
+  'communityV1.status.expired': 'Expired',
+  'communityV1.status.withdrawn': 'Withdrawn',
   'communityV1.submitReview': 'Send for review',
   'communityV1.profileSubmitted': 'Your profile was sent for a safety review.',
   'communityV1.profileFailed': 'Your profile could not be saved.',
@@ -381,9 +408,13 @@ const en = {
     'Monero Fast Node scan service accepted the encrypted view key.',
   'setup.fastWalletTransferFailed':
     'Monero Fast Node scan service did not accept the encrypted view key.',
+  'setup.biometricFingerprint': 'Fingerprint',
+  'setup.biometricFingerprintOrFace': 'Fingerprint or face unlock',
+  'setup.biometricGeneric': 'Biometrics',
   'setup.createFastReceive': 'Creating Fast Wallet',
   'setup.device': 'Device',
   'setup.footer': 'Made with ❤️ by TEX8',
+  'setup.footerAccessibility': 'Made with love by TEX8',
   'setup.hardware.connecting': 'Connecting Ledger',
   'setup.hardware.checkingHistory': 'Checking local wallet history',
   'setup.hardware.savingVerifiedBalance': 'Saving verified Ledger balance',
@@ -433,6 +464,8 @@ const en = {
   'setup.prompt.openPassword': 'Enter the password for the local wallet file.',
   'setup.prompt.openStored':
     'Confirm {biometric} to unlock the local wallet file.',
+  'setup.prompt.missingCredential':
+    'This wallet is missing its protected device credential. Restore it from the recovery seed to create a new local copy.',
   'setup.prompt.restore':
     'Paste your 25-word Monero seed and choose a local password.',
   'setup.prompt.restoreStored':
@@ -446,6 +479,20 @@ const en = {
     'Optional. The wallet starts slightly before this date so no payment on the selected date is missed.',
   'setup.ledgerScanDateHint':
     'Required for Ledger. Choose a date before its first transaction; choose today only for a brand-new Ledger wallet.',
+  'setup.ledgerConnectBeforeOpen':
+    'Connect a Ledger Nano before opening this wallet.',
+  'setup.fastWalletSlotOccupied':
+    'Fast Wallet slot {slot} cannot be reused. If its wallet was deleted, its local files are gone; the slot stays blocked because previously hosted read access cannot be taken back. Choose another slot.',
+  'setup.fastWalletFileExists':
+    'A local Fast Wallet file already exists for slot {slot}. Choose another slot or recover the existing wallet; nothing was overwritten.',
+  'setup.fastWalletAppLocked':
+    'The app locked before Fast Wallet creation finished. Unlock it and add the Fast Wallet from Wallets.',
+  'setup.fastWalletNodeUnavailable':
+    'The node height was not ready for safe Fast Wallet creation. Your private wallet is ready; reconnect and add the Fast Wallet from Wallets.',
+  'setup.fastWalletStorageUnavailable':
+    'Secure local storage could not finish Fast Wallet creation. Your private wallet is ready and no key was uploaded.',
+  'setup.fastWalletCreationFailed':
+    'Fast Wallet creation failed ({reason}). Your private wallet is ready and no key was uploaded. You can retry from Wallets.',
   'setup.scanDateError': 'Choose a valid date that is not in the future.',
   'setup.seedConfirm': 'I saved these 25 words offline.',
   'setup.seedFullError': 'Enter the full 25-word Monero seed.',
@@ -669,6 +716,10 @@ const en = {
   'receive.connected': 'Connected',
   'receive.emptyText':
     'Open or create a wallet to show your receiving address.',
+  'receive.backupFastWalletFirst': 'Back up this Fast Wallet first',
+  'receive.backupFastWalletText':
+    'Its receive address stays hidden until you confirm that the recovery words are safely backed up.',
+  'receive.backupNow': 'Back up now',
   'receive.hardwareAddressConfirmed': 'Address confirmed on the Ledger Nano.',
   'receive.hardwareConfirmAddress':
     'Confirm the address request on the Ledger Nano.',
@@ -967,6 +1018,9 @@ const en = {
   'menu.export': 'Export',
   'menu.exportDesc': 'Export transactions',
   'menu.footer': 'Made with ❤️ by TEX8',
+  'menu.footerAccessibility': 'Made with love by TEX8',
+  'menu.footerPrefix': 'Made with',
+  'menu.footerBy': 'by',
   'menu.help': 'Help',
   'menu.helpDesc': 'FAQ & Support',
   'menu.locked': 'Locked',
@@ -974,8 +1028,18 @@ const en = {
   'menu.noWalletOpen': 'No wallet open',
   'menu.nodeStatus': 'Node Status',
   'menu.sharedAiModule': 'Tex8 Assistant',
+  'assistant.kicker': 'Tex8 Shared',
+  'assistant.title': 'AI Assistant',
+  'assistant.placeholder': 'Ask about wallet features…',
   'settings.appearance': 'Appearance',
   'settings.autoLock': 'Auto-lock (5 min)',
+  'settings.lockAfterInactivity': 'Lock after inactivity',
+  'settings.timeout1Minute': '1 min',
+  'settings.timeout5Minutes': '5 min',
+  'settings.timeout15Minutes': '15 min',
+  'settings.timeout30Minutes': '30 min',
+  'settings.timeout1Hour': '1 hour',
+  'settings.timeoutNever': 'Never',
   'settings.appProtection': 'Protect your wallet',
   'settings.appProtectionHint': 'One simple check protects all saved wallets.',
   'settings.noProtection': 'No protection',
@@ -985,6 +1049,8 @@ const en = {
   'settings.confirmAppPassword': 'Confirm app password',
   'settings.saveAppProtection': 'Save protection',
   'settings.appProtectionSaved': 'App protection saved.',
+  'settings.appProtectionFailed':
+    'App protection could not be changed. Nothing was changed.',
   'settings.changeWalletPassword': 'Change wallet password',
   'settings.confirmWalletPassword': 'Confirm new password',
   'settings.createIdentity': 'Create Identity',
@@ -992,12 +1058,133 @@ const en = {
   'settings.daemonTls': 'Daemon TLS',
   'settings.default': 'Default',
   'settings.diagnostics': 'Diagnostics',
+  'settings.diagnosticRunFailed':
+    'Diagnostics could not be completed. The technical error was written to the app log.',
+  'settings.diagnosticPassed': 'Passed',
+  'settings.diagnosticWarnings': 'Warnings',
+  'settings.diagnosticFailed': 'Failed',
+  'settings.diagnosticSkipped': 'Skipped',
+  'settings.diagnosticTotal': 'Total test time: {duration} ms',
+  'diagnostic.category.core': 'Core',
+  'diagnostic.category.security': 'Security',
+  'diagnostic.category.network': 'Network',
+  'diagnostic.category.performance': 'Performance',
+  'diagnostic.category.wallet': 'Wallet',
+  'diagnostic.category.fastWallet': 'Fast Wallet',
+  'diagnostic.category.hardware': 'Hardware',
+  'diagnostic.test.nativeCore': 'Native Monero Core',
+  'diagnostic.test.secureStorage': 'Protected storage round-trip',
+  'diagnostic.test.nodeConfiguration': 'Node configuration',
+  'diagnostic.test.sharedConnection': 'Shared blockchain connection',
+  'diagnostic.test.scanPack': 'gRPC / ScanPack path',
+  'diagnostic.test.throughput': 'Block download throughput',
+  'diagnostic.test.walletSnapshot': 'Wallet snapshot',
+  'diagnostic.test.multiWallet': 'Multi-wallet fan-out',
+  'diagnostic.test.fastWalletIntegrity': 'Fast Wallet local integrity',
+  'diagnostic.test.fastWalletHosting': 'Encrypted Fast Wallet hosting',
+  'diagnostic.test.derivationEngine': 'Key derivation engine',
+  'diagnostic.test.ledgerTransport': 'Ledger transport',
+  'diagnostic.metric.backend': 'Backend',
+  'diagnostic.metric.productCoreAbi': 'Product Core ABI',
+  'diagnostic.metric.productCoreSchema': 'Product Core schema',
+  'diagnostic.metric.schema': 'Schema',
+  'diagnostic.metric.registry': 'Diagnostic registry',
+  'diagnostic.metric.appVaultSchema': 'AppVault state schema',
+  'diagnostic.metric.mode': 'Mode',
+  'diagnostic.metric.network': 'Network',
+  'diagnostic.metric.state': 'State',
+  'diagnostic.metric.phase': 'Phase',
+  'diagnostic.metric.chainHeight': 'Chain height',
+  'diagnostic.metric.targetHeight': 'Target height',
+  'diagnostic.metric.transportStarts': 'Transport starts',
+  'diagnostic.metric.providerGeneration': 'Provider generation',
+  'diagnostic.metric.batches': 'Batches',
+  'diagnostic.metric.blocks': 'Blocks',
+  'diagnostic.metric.decoded': 'Decoded',
+  'diagnostic.metric.networkThroughput': 'Network throughput',
+  'diagnostic.metric.payloadThroughput': 'Payload throughput',
+  'diagnostic.metric.blockThroughput': 'Block throughput',
+  'diagnostic.metric.networkSample': 'Network sample',
+  'diagnostic.metric.payloadSample': 'Payload sample',
+  'diagnostic.metric.fetchTime': 'Fetch time',
+  'diagnostic.metric.walletHeight': 'Wallet height',
+  'diagnostic.metric.daemonHeight': 'Daemon height',
+  'diagnostic.metric.synchronized': 'Synchronized',
+  'diagnostic.metric.registeredWallets': 'Registered wallets',
+  'diagnostic.metric.joinedWallets': 'Joined wallets',
+  'diagnostic.metric.scanWorkers': 'Scan workers',
+  'diagnostic.metric.stalledWallets': 'Stalled wallets',
+  'diagnostic.metric.deliveries': 'Deliveries',
+  'diagnostic.metric.fastWallets': 'Fast Wallets',
+  'diagnostic.metric.hosted': 'Hosted',
+  'diagnostic.metric.missingCredentials': 'Missing credentials',
+  'diagnostic.metric.missingRegistrations': 'Missing registrations',
+  'diagnostic.metric.invalidAssignments': 'Invalid assignments',
+  'diagnostic.metric.officialWorker': 'Official Worker',
+  'diagnostic.metric.privateWorker': 'Private Worker',
+  'diagnostic.metric.invalid': 'Invalid',
+  'diagnostic.metric.hostedAssignments': 'Hosted assignments',
+  'diagnostic.metric.verifiedWorkers': 'Verified Workers',
+  'diagnostic.metric.cpuWorkers': 'CPU workers',
+  'diagnostic.metric.transport': 'Transport',
+  'diagnostic.metric.devices': 'Devices',
+  'diagnostic.value.configured': 'Configured',
+  'diagnostic.value.disabled': 'Disabled',
+  'diagnostic.value.yes': 'Yes',
+  'diagnostic.value.no': 'No',
+  'diagnostic.value.none': 'None',
+  'diagnostic.value.unknown': 'Unknown',
+  'diagnostic.summary.coreReady': 'The packaged Monero wallet core is linked and callable.',
+  'diagnostic.summary.coreMissing': 'The native Monero wallet core is missing.',
+  'diagnostic.summary.secureStorageReady': 'A temporary protected credential was stored, read, and deleted.',
+  'diagnostic.summary.secureStorageFailed': 'Protected storage did not return the temporary credential.',
+  'diagnostic.summary.nodeOptimized': 'Monero Fast Node gRPC and daemon endpoints are configured.',
+  'diagnostic.summary.nodeOriginal': 'Original Monero RPC is configured.',
+  'diagnostic.summary.nodeIncomplete': 'The active node profile is incomplete.',
+  'diagnostic.summary.openWalletForNetwork': 'Open at least one wallet to test the shared node connection.',
+  'diagnostic.summary.sharedState': 'The shared connection is {state}.',
+  'diagnostic.summary.sharedReady': 'One shared connection supplies every open wallet.',
+  'diagnostic.summary.sharedPending': 'The first shared node connection is still pending.',
+  'diagnostic.summary.originalPath': 'The active profile deliberately uses original Monero RPC.',
+  'diagnostic.summary.scanPackPending': 'gRPC is configured, but no authenticated block batch has arrived yet.',
+  'diagnostic.summary.scanPackReady': 'The optimized transport returned decoded shared block batches.',
+  'diagnostic.summary.noThroughput': 'No non-empty block batch has been downloaded in this app session yet.',
+  'diagnostic.summary.throughputReady': 'Measured directly at the Monero node transport.',
+  'diagnostic.summary.throughputSmall': 'Measured, but the latest batch is too small for a stable capacity estimate.',
+  'diagnostic.summary.openWalletForSnapshot': 'Open a wallet to test its local Core snapshot.',
+  'diagnostic.summary.snapshotReady': 'The active wallet returned a consistent local Core snapshot.',
+  'diagnostic.summary.snapshotInvalid': 'The wallet height is inconsistent with the authenticated chain target.',
+  'diagnostic.summary.noJoinedWallet': 'No wallet is currently joined to the shared sync coordinator.',
+  'diagnostic.summary.walletStalled': 'At least one wallet scanner is stalled.',
+  'diagnostic.summary.fanoutReady': 'Downloaded batches are delivered to all joined wallet scanners.',
+  'diagnostic.summary.noFastWallet': 'No Fast Wallet is configured.',
+  'diagnostic.summary.fastWalletReady': 'Every Fast Wallet has protected local credentials and consistent registration data.',
+  'diagnostic.summary.fastWalletInvalid': 'Fast Wallet registration or protected credential data is incomplete.',
+  'diagnostic.summary.noHostedFastWallet': 'No Fast Wallet currently has hosted encrypted scan data.',
+  'diagnostic.summary.hostingReady': 'Every protected Worker assignment was verified without changing it.',
+  'diagnostic.summary.hostingInvalid': 'At least one encrypted assignment is incomplete or expired.',
+  'diagnostic.summary.engineReady': 'The packaged engine passed the bounded public-vector benchmark.',
+  'diagnostic.summary.engineInvalid': 'The CPU derivation backend did not return a verified result.',
+  'diagnostic.summary.ledgerUnsupported': 'Ledger is not supported on this platform.',
+  'diagnostic.summary.ledgerMissing': 'No Ledger is connected; no permission prompt was opened.',
+  'diagnostic.summary.ledgerReady': 'The Ledger transport is available.',
+  'diagnostic.summary.ledgerPermission': 'Ledger is visible, but transport permission is required.',
+  'settings.testNotificationTitle': 'Test notification',
+  'settings.testNotificationFailed':
+    'The test notification could not be sent. The technical error was written to the app log.',
+  'settings.testNotificationSentTitle': 'Test notification sent',
+  'settings.testNotificationSentBody':
+    'FCM token created ({count} characters), App Check and Gateway registration accepted. Firebase accepted a generic test notification for this phone. It contains no wallet or transaction details.',
+  'settings.sendingTestNotification': 'Sending test…',
+  'settings.sendTestNotification': 'Send test notification',
   'settings.ledgerBalanceVerification': 'Verify Ledger balance',
   'settings.ledgerBalanceVerificationHint':
     'Manually recheck key images after spending from this Ledger on another device.',
   'settings.ledgerBalanceVerifying': 'Verifying with Ledger…',
   'settings.ledgerBalanceVerified':
     'The Ledger-signed spend status was verified and the local balance was updated.',
+  'settings.ledgerBalanceFailed':
+    'The Ledger balance could not be verified. The technical error was written to the app log.',
   'settings.disabled': 'Disabled',
   'settings.enableBiometrics': 'Enable biometrics',
   'settings.fastReceive': 'Fast Wallet',
@@ -1005,6 +1192,7 @@ const en = {
   'settings.language': 'Language',
   'settings.languageCurrent': 'Language: {language}',
   'settings.languageSubtitle': 'Choose the app language.',
+  'settings.version': 'Version {version}',
   'settings.scanPerformance': 'Scan performance',
   'settings.scanPerformanceHint':
     'A short one-time device test using public sample data. It never opens a wallet or uses wallet keys.',
@@ -1079,6 +1267,10 @@ const en = {
   'status.unconfirmed': 'Unconfirmed',
   'status.warnings': 'Warnings',
   'wallets.createFastWallet': 'Create Fast Wallet',
+  'wallets.backup': 'Back up',
+  'wallets.backupRecoveryWords': 'Back up recovery words',
+  'wallets.receiveQuickly': 'Receive quickly',
+  'wallets.walletNamePlaceholder': 'Wallet name',
   'wallets.fastWalletOriginalDisabled':
     'Switch to Tex8 Node to use automatic Fast Wallet detection.',
   'wallets.fastWalletTex8Only':
@@ -1115,6 +1307,7 @@ const de: Record<keyof typeof en, string> = {
   'action.close': 'Schließen',
   'action.closeWallet': 'Wallet schließen',
   'action.continue': 'Weiter',
+  'action.delete': 'Löschen',
   'action.getStarted': 'Los geht’s',
   'action.copyAddress': 'Adresse kopieren',
   'action.copied': 'Kopiert',
@@ -1145,6 +1338,16 @@ const de: Record<keyof typeof en, string> = {
   'common.optional': 'Optional',
   'common.required': 'Erforderlich',
   'common.wallet': 'Wallet',
+  'native.notification.transactions': 'Monero-Transaktionen',
+  'native.notification.transactionsDescription': 'Hinweise zu Fast Wallet-Zahlungen und Bestätigungen',
+  'native.notification.sync': 'Wallet-Synchronisierung',
+  'native.notification.syncDescription': 'Hält die Verlaufs-Synchronisierung aktiver Wallets aufrecht',
+  'native.notification.syncTitle': 'Wallet-Verlauf wird synchronisiert',
+  'native.notification.syncBody': 'Öffentliche Blockchain-Daten werden geladen und gescannt',
+  'native.permission.location': 'Der Standort wird nur verwendet, wenn du die Monero Enthusiast-Suche in deiner Nähe aktivierst. Die App reduziert ihn auf ein ungefähres Gebiet und zeigt niemals deine genaue Position an.',
+  'native.permission.bluetooth': 'Bluetooth wird zur Verbindung mit Ledger-Nano-Hardware-Wallets verwendet.',
+  'native.permission.camera': 'Der Kamerazugriff wird nur zum Scannen eines QR-Codes mit einer Monero-Empfangsadresse verwendet.',
+  'native.permission.faceId': 'Face ID wird verwendet, um Monero Fast Wallet auf diesem Gerät sicher zu entsperren.',
   'language.de': 'Deutsch',
   'language.en': 'English',
   'tabs.home': 'Home',
@@ -1196,6 +1399,19 @@ const de: Record<keyof typeof en, string> = {
   'communityV1.publicName': 'Öffentlicher Name',
   'communityV1.publicAbout': 'Über dich',
   'communityV1.reviewStatus': 'Prüfstatus',
+  'communityV1.status.awaitingScreening': 'Wartet auf automatische Prüfung',
+  'communityV1.status.humanReview': 'Wartet auf menschliche Prüfung',
+  'communityV1.status.needsChanges': 'Änderungen erforderlich',
+  'communityV1.status.quarantined':
+    'Zur Sicherheitsprüfung zurückgehalten',
+  'communityV1.status.approvedAwaitingEmbedding':
+    'Freigegeben · lokale Suche wird vorbereitet',
+  'communityV1.status.published': 'Veröffentlicht',
+  'communityV1.status.hidden': 'Ausgeblendet',
+  'communityV1.status.rejected': 'Nicht freigegeben',
+  'communityV1.status.removed': 'Entfernt',
+  'communityV1.status.expired': 'Abgelaufen',
+  'communityV1.status.withdrawn': 'Zurückgezogen',
   'communityV1.submitReview': 'Zur Prüfung senden',
   'communityV1.profileSubmitted':
     'Dein Profil wurde zur Sicherheitsprüfung gesendet.',
@@ -1306,7 +1522,7 @@ const de: Record<keyof typeof en, string> = {
   'sync.failureNodeSecurity':
     'Die Sicherheits-Einstellungen der Node passen nicht. Prüfe Einstellungen > Node.',
   'sync.failureOptimizedService':
-    'Der Fast-Wallet-Dienst ist vorübergehend nicht erreichbar. Neuer Versuch läuft.',
+    'Der Fast Wallet-Dienst ist vorübergehend nicht erreichbar. Neuer Versuch läuft.',
   'sync.failureServerResponse':
     'Die Antwort des Sync-Servers konnte nicht verarbeitet werden. Sicherer Neuversuch mit kleineren Paketen läuft.',
   'sync.failureServerResponseShort': 'Sync-Paketgröße wird angepasst',
@@ -1429,7 +1645,7 @@ const de: Record<keyof typeof en, string> = {
   'walletSelector.wallets': 'Wallets',
   'fastWallet.status.actionNeeded': 'Aktion nötig',
   'fastWallet.status.activeDescription':
-    'Der Fast-Wallet-Server überwacht Eingänge rund um die Uhr.',
+    'Der Fast Wallet-Server überwacht Eingänge rund um die Uhr.',
   'fastWallet.status.activeNoPushDescription':
     'Die automatische Erkennung ist aktiv. Aktiviere Mitteilungen für sofortige Hinweise.',
   'fastWallet.status.errorDescription':
@@ -1442,16 +1658,16 @@ const de: Record<keyof typeof en, string> = {
     'Die Adresse ist aktiv, aber Mitteilungen konnten nicht aktiviert werden.',
   'fastWallet.status.localOnly': 'Nur lokal',
   'fastWallet.status.localOnlyDescription':
-    'Diese Empfangsadresse ist bereit. Verbinde sie mit dem Fast-Wallet-Server für automatische Zahlungshinweise.',
+    'Diese Empfangsadresse ist bereit. Verbinde sie mit dem Fast Wallet-Server für automatische Zahlungshinweise.',
   'fastWallet.status.legacyBlocked': 'Sicherheitsupdate nötig',
   'fastWallet.status.legacyBlockedDescription':
     'Diese alte Fast Wallet ist gesperrt, weil ihr Seed die Quell-Wallet offenlegen kann. Behalte die Dateien und nutze den geschützten Migrationsweg.',
   'fastWallet.status.paused': 'Fast pausiert',
   'fastWallet.status.serverChangedDescription':
-    'Verbinde diese Fast Wallet einmal mit dem ausgewählten Fast-Wallet-Server.',
+    'Verbinde diese Fast Wallet einmal mit dem ausgewählten Fast Wallet-Server.',
   'fastWallet.status.settingUp': 'Wird eingerichtet',
   'fastWallet.status.settingUpDescription':
-    'Die App verbindet diese Adresse mit dem Fast-Wallet-Server.',
+    'Die App verbindet diese Adresse mit dem Fast Wallet-Server.',
   'welcome.subtitle': 'Privat, schnell und unter deiner Kontrolle.',
   'welcome.savedWallets': 'Deine Wallets',
   'welcome.walletMode': 'Wallet-Modus',
@@ -1473,22 +1689,22 @@ const de: Record<keyof typeof en, string> = {
   'setup.existingWallets': 'Vorhandene Wallets',
   'setup.enthusiastsDescription':
     'Nutze einen ungefähren Bereich, um Menschen in deiner Nähe zu finden, zu chatten und euch privat zu verabreden.',
-  'setup.enthusiastsTitle': 'Monero-Enthusiasten finden',
+  'setup.enthusiastsTitle': 'Monero-Begeisterte finden',
   'setup.fastWalletDescription':
     'Erstellt eine getrennte Wallet für Eingangshinweise. Nach dem Backup wird nur diese Wallet beim gewählten Scanner registriert.',
   'setup.fastWalletLedgerDescription':
-    'Erstellt eine getrennte Software-Fast-Wallet mit eigenen Wiederherstellungswörtern. Ledger-Konto 1 wird nicht verwendet.',
+    'Erstellt eine getrennte Software-Fast Wallet mit eigenen Wiederherstellungswörtern. Ledger-Konto 1 wird nicht verwendet.',
   'setup.fastWalletTitle': 'Fast Wallet erstellen',
   'setup.fastWalletToggle': 'Fast Wallet',
   'setup.fastWalletToggleDescription':
     'Zusätzlich eine getrennte Wallet mit eigenen Wiederherstellungswörtern erstellen. Nach dem Backup wird ihr privater View Key verschlüsselt an den gewählten Scanner für Hinweise übertragen.',
-  'setup.fastWalletSlot': 'Fast-Wallet-Slot',
+  'setup.fastWalletSlot': 'Fast Wallet-Slot',
   'setup.fastWalletSlotDescription':
     'Standard 199. Wähle 1–999. Ein belegter Slot wird niemals wiederverwendet oder übertragen.',
   'setup.fastWalletSlotRetiredDescription':
     'Nächster sicherer Slot {slot}. Gelöschte Walletdateien sind entfernt. Jeder bereits gehostete Slot bleibt lokal gesperrt, weil früherer View-Zugriff nicht widerrufen werden kann.',
   'setup.fastWalletSlotInvalid':
-    'Wähle einen ganzzahligen Fast-Wallet-Slot von 1 bis 999.',
+    'Wähle einen ganzzahligen Fast Wallet-Slot von 1 bis 999.',
   'setup.fastWalletBackupRequired':
     'Die getrennte Fast Wallet wurde erstellt, aber ihre Wiederherstellungswörter müssen noch gesichert werden, bevor ihre Adresse verwendet wird.',
   'setup.fastWalletCreateFailed':
@@ -1496,14 +1712,15 @@ const de: Record<keyof typeof en, string> = {
   'setup.fastWalletPrimaryBackupFirst':
     'Sichere zuerst die Wiederherstellungswörter der privaten Wallet. Danach kannst du eine Fast Wallet unter Wallets erstellen.',
   'setup.fastWalletTransferSending':
-    'Verschlüsselter View Key wird an den Monero-Fast-Node-Scan-Dienst übertragen…',
+    'Verschlüsselter View Key wird an den Scan-Dienst von Monero Fast Node übertragen…',
   'setup.fastWalletTransferAccepted':
-    'Der Monero-Fast-Node-Scan-Dienst hat den verschlüsselten View Key angenommen.',
+    'Der Scan-Dienst von Monero Fast Node hat den verschlüsselten View Key angenommen.',
   'setup.fastWalletTransferFailed':
-    'Der Monero-Fast-Node-Scan-Dienst hat den verschlüsselten View Key nicht angenommen.',
+    'Der Scan-Dienst von Monero Fast Node hat den verschlüsselten View Key nicht angenommen.',
   'setup.createFastReceive': 'Fast Wallet wird erstellt',
   'setup.device': 'Gerät',
-  'setup.footer': 'Made with ❤️ by TEX8',
+  'setup.footer': 'Entwickelt mit ❤️ von TEX8',
+  'setup.footerAccessibility': 'Mit Liebe von TEX8 entwickelt',
   'setup.hardware.connecting': 'Ledger wird verbunden',
   'setup.hardware.checkingHistory': 'Lokaler Wallet-Verlauf wird geprüft',
   'setup.hardware.savingVerifiedBalance': 'Geprüfter Ledger-Saldo wird gespeichert',
@@ -1524,9 +1741,12 @@ const de: Record<keyof typeof en, string> = {
   'setup.hardware.localViewDescription':
     'Speichert eine verschlüsselte Nur-Lese-Wallet auf diesem Gerät. Guthaben und Eingänge sind ohne Ledger sichtbar; zum Senden bleibt Ledger erforderlich.',
   'setup.hardware.fastWalletDescription':
-    'Zusätzlich eine unabhängige Software-Fast-Wallet mit eigenen Wiederherstellungswörtern erstellen. Sie ist nicht Ledger-Konto 1.',
+    'Zusätzlich eine unabhängige Software-Fast Wallet mit eigenen Wiederherstellungswörtern erstellen. Sie ist nicht Ledger-Konto 1.',
   'setup.hardware.localViewProtectionRequired':
     'Aktiviere zuerst den App-Schutz in den Einstellungen, bevor der Ledger-Lesezugriff auf diesem Gerät gespeichert wird.',
+  'setup.biometricFingerprint': 'Fingerabdruck',
+  'setup.biometricFingerprintOrFace': 'Fingerabdruck oder Gesichtserkennung',
+  'setup.biometricGeneric': 'Biometrie',
   'setup.hardware.looking': 'Suche nach einem verfügbaren Ledger-Transport.',
   'setup.hardware.openReady':
     'Bereit zum Öffnen mit der verbundenen Hardware-Wallet.',
@@ -1554,6 +1774,8 @@ const de: Record<keyof typeof en, string> = {
     'Gib das Passwort für die lokale Wallet-Datei ein.',
   'setup.prompt.openStored':
     'Bestätige mit {biometric}, um die lokale Wallet-Datei zu entsperren.',
+  'setup.prompt.missingCredential':
+    'Dieser Wallet fehlt der geschützte Geräteschlüssel. Stelle sie mit den Wiederherstellungswörtern wieder her, um eine neue lokale Kopie zu erstellen.',
   'setup.prompt.restore':
     'Füge deinen 25-Wörter-Monero-Seed ein und wähle ein lokales Passwort.',
   'setup.prompt.restoreStored':
@@ -1567,6 +1789,20 @@ const de: Record<keyof typeof en, string> = {
     'Optional. Die Wallet beginnt etwas vor diesem Datum, damit am gewählten Datum keine Zahlung übersehen wird.',
   'setup.ledgerScanDateHint':
     'Für Ledger erforderlich. Wähle ein Datum vor der ersten Transaktion; nur bei einer ganz neuen Ledger-Wallet wählst du heute.',
+  'setup.ledgerConnectBeforeOpen':
+    'Verbinde einen Ledger Nano, bevor du diese Wallet öffnest.',
+  'setup.fastWalletSlotOccupied':
+    'Fast Wallet-Slot {slot} kann nicht wiederverwendet werden. Wurde seine Wallet gelöscht, sind die lokalen Dateien entfernt; der Slot bleibt gesperrt, weil ein früher gewährter Lesezugriff nicht zurückgenommen werden kann. Wähle einen anderen Slot.',
+  'setup.fastWalletFileExists':
+    'Für Slot {slot} existiert bereits eine lokale Fast Wallet-Datei. Wähle einen anderen Slot oder stelle die bestehende Wallet wieder her; nichts wurde überschrieben.',
+  'setup.fastWalletAppLocked':
+    'Die App wurde gesperrt, bevor die Fast Wallet fertig erstellt war. Entsperre sie und füge die Fast Wallet unter Wallets hinzu.',
+  'setup.fastWalletNodeUnavailable':
+    'Die Node-Höhe war für die sichere Erstellung der Fast Wallet noch nicht bereit. Deine private Wallet ist bereit; verbinde dich erneut und füge die Fast Wallet unter Wallets hinzu.',
+  'setup.fastWalletStorageUnavailable':
+    'Der sichere lokale Speicher konnte die Erstellung der Fast Wallet nicht abschließen. Deine private Wallet ist bereit und kein Schlüssel wurde übertragen.',
+  'setup.fastWalletCreationFailed':
+    'Die Erstellung der Fast Wallet ist fehlgeschlagen ({reason}). Deine private Wallet ist bereit und kein Schlüssel wurde übertragen. Du kannst es unter Wallets erneut versuchen.',
   'setup.scanDateError':
     'Wähle ein gültiges Datum, das nicht in der Zukunft liegt.',
   'setup.seedConfirm': 'Ich habe diese 25 Wörter offline gesichert.',
@@ -1632,9 +1868,9 @@ const de: Record<keyof typeof en, string> = {
   'home.noTransactions': 'Noch keine Transaktionen',
   'home.noTransactionsText':
     'Aktivität erscheint hier, nachdem die Wallet passende Outputs gescannt hat.',
-  'home.fastWalletTransactionsTitle': 'Fast-Wallet-Überwachung aktiv',
+  'home.fastWalletTransactionsTitle': 'Fast Wallet-Überwachung aktiv',
   'home.fastWalletTransactionsText':
-    'Eingänge werden vom Fast-Wallet-Server überwacht. Diese Wallet muss dafür lokal nicht geöffnet sein.',
+    'Eingänge werden vom Fast Wallet-Server überwacht. Diese Wallet muss dafür lokal nicht geöffnet sein.',
   'home.noWallet': 'Keine Wallet',
   'home.openWalletToLoad':
     'Öffne oder erstelle eine Wallet, um private Aktivität zu laden.',
@@ -1805,6 +2041,10 @@ const de: Record<keyof typeof en, string> = {
   'receive.connected': 'Verbunden',
   'receive.emptyText':
     'Öffne oder erstelle eine Wallet, um deine Empfangsadresse anzuzeigen.',
+  'receive.backupFastWalletFirst': 'Diese Fast Wallet zuerst sichern',
+  'receive.backupFastWalletText':
+    'Ihre Empfangsadresse bleibt verborgen, bis du bestätigst, dass die Wiederherstellungswörter sicher gesichert sind.',
+  'receive.backupNow': 'Jetzt sichern',
   'receive.hardwareAddressConfirmed': 'Adresse wurde am Ledger Nano bestätigt.',
   'receive.hardwareConfirmAddress':
     'Bestätige die Adressanfrage am Ledger Nano.',
@@ -1863,7 +2103,7 @@ const de: Record<keyof typeof en, string> = {
   'enthusiasts.status.unavailable': 'Standort ist derzeit nicht verfügbar',
   'enthusiasts.subtitle':
     'Finde Menschen in deiner Nähe, ohne den genauen Standort zu teilen.',
-  'enthusiasts.title': 'Monero-Enthusiasten',
+  'enthusiasts.title': 'Monero Enthusiast',
   'enthusiasts.visibility': 'In der Nähe sichtbar',
   'enthusiasts.accept': 'Annehmen',
   'enthusiasts.acceptedContact': 'Bestätigter Kontakt',
@@ -2110,6 +2350,9 @@ const de: Record<keyof typeof en, string> = {
   'menu.export': 'Export',
   'menu.exportDesc': 'Transaktionen exportieren',
   'menu.footer': 'Made with ❤️ by TEX8',
+  'menu.footerAccessibility': 'Mit Liebe von TEX8 entwickelt',
+  'menu.footerPrefix': 'Entwickelt mit',
+  'menu.footerBy': 'von',
   'menu.help': 'Hilfe',
   'menu.helpDesc': 'FAQ & Support',
   'menu.locked': 'Gesperrt',
@@ -2117,8 +2360,18 @@ const de: Record<keyof typeof en, string> = {
   'menu.noWalletOpen': 'Keine Wallet geöffnet',
   'menu.nodeStatus': 'Node-Status',
   'menu.sharedAiModule': 'Tex8-Assistent',
+  'assistant.kicker': 'Tex8 Shared',
+  'assistant.title': 'KI-Assistent',
+  'assistant.placeholder': 'Frage nach Wallet-Funktionen…',
   'settings.appearance': 'Darstellung',
   'settings.autoLock': 'Auto-Sperre (5 Min.)',
+  'settings.lockAfterInactivity': 'Nach Inaktivität sperren',
+  'settings.timeout1Minute': '1 Min.',
+  'settings.timeout5Minutes': '5 Min.',
+  'settings.timeout15Minutes': '15 Min.',
+  'settings.timeout30Minutes': '30 Min.',
+  'settings.timeout1Hour': '1 Stunde',
+  'settings.timeoutNever': 'Nie',
   'settings.appProtection': 'App-Schutz',
   'settings.appProtectionHint':
     'Wähle, wie die App entsperrt wird: mit Biometrie oder einem App-Passwort. Das schützt alle gespeicherten Wallets.',
@@ -2129,6 +2382,8 @@ const de: Record<keyof typeof en, string> = {
   'settings.confirmAppPassword': 'App-Passwort bestätigen',
   'settings.saveAppProtection': 'Schutz speichern',
   'settings.appProtectionSaved': 'App-Schutz gespeichert.',
+  'settings.appProtectionFailed':
+    'Der App-Schutz konnte nicht geändert werden. Es wurde nichts verändert.',
   'settings.changeWalletPassword': 'Wallet-Passwort ändern',
   'settings.confirmWalletPassword': 'Neues Passwort bestätigen',
   'settings.createIdentity': 'Identität erstellen',
@@ -2136,12 +2391,133 @@ const de: Record<keyof typeof en, string> = {
   'settings.daemonTls': 'Daemon TLS',
   'settings.default': 'Standard',
   'settings.diagnostics': 'Diagnose',
+  'settings.diagnosticRunFailed':
+    'Die Diagnose konnte nicht abgeschlossen werden. Der technische Fehler wurde im App-Log gespeichert.',
+  'settings.diagnosticPassed': 'Bestanden',
+  'settings.diagnosticWarnings': 'Warnungen',
+  'settings.diagnosticFailed': 'Fehlgeschlagen',
+  'settings.diagnosticSkipped': 'Übersprungen',
+  'settings.diagnosticTotal': 'Gesamte Testdauer: {duration} ms',
+  'diagnostic.category.core': 'Core',
+  'diagnostic.category.security': 'Sicherheit',
+  'diagnostic.category.network': 'Netzwerk',
+  'diagnostic.category.performance': 'Leistung',
+  'diagnostic.category.wallet': 'Wallet',
+  'diagnostic.category.fastWallet': 'Fast Wallet',
+  'diagnostic.category.hardware': 'Hardware',
+  'diagnostic.test.nativeCore': 'Nativer Monero-Core',
+  'diagnostic.test.secureStorage': 'Test des geschützten Speichers',
+  'diagnostic.test.nodeConfiguration': 'Node-Konfiguration',
+  'diagnostic.test.sharedConnection': 'Gemeinsame Blockchain-Verbindung',
+  'diagnostic.test.scanPack': 'gRPC-/ScanPack-Pfad',
+  'diagnostic.test.throughput': 'Block-Download-Durchsatz',
+  'diagnostic.test.walletSnapshot': 'Wallet-Snapshot',
+  'diagnostic.test.multiWallet': 'Verteilung an mehrere Wallets',
+  'diagnostic.test.fastWalletIntegrity': 'Lokale Integrität der Fast Wallet',
+  'diagnostic.test.fastWalletHosting': 'Verschlüsseltes Fast Wallet-Hosting',
+  'diagnostic.test.derivationEngine': 'Schlüsselableitungs-Engine',
+  'diagnostic.test.ledgerTransport': 'Ledger-Verbindung',
+  'diagnostic.metric.backend': 'Backend',
+  'diagnostic.metric.productCoreAbi': 'Product-Core-ABI',
+  'diagnostic.metric.productCoreSchema': 'Product-Core-Schema',
+  'diagnostic.metric.schema': 'Schema',
+  'diagnostic.metric.registry': 'Diagnoseregister',
+  'diagnostic.metric.appVaultSchema': 'AppVault-Statusschema',
+  'diagnostic.metric.mode': 'Modus',
+  'diagnostic.metric.network': 'Netzwerk',
+  'diagnostic.metric.state': 'Status',
+  'diagnostic.metric.phase': 'Phase',
+  'diagnostic.metric.chainHeight': 'Blockchain-Höhe',
+  'diagnostic.metric.targetHeight': 'Zielhöhe',
+  'diagnostic.metric.transportStarts': 'Verbindungsstarts',
+  'diagnostic.metric.providerGeneration': 'Anbietergeneration',
+  'diagnostic.metric.batches': 'Pakete',
+  'diagnostic.metric.blocks': 'Blöcke',
+  'diagnostic.metric.decoded': 'Dekodiert',
+  'diagnostic.metric.networkThroughput': 'Netzwerkdurchsatz',
+  'diagnostic.metric.payloadThroughput': 'Nutzdatendurchsatz',
+  'diagnostic.metric.blockThroughput': 'Blockdurchsatz',
+  'diagnostic.metric.networkSample': 'Netzwerkstichprobe',
+  'diagnostic.metric.payloadSample': 'Nutzdatenstichprobe',
+  'diagnostic.metric.fetchTime': 'Abrufzeit',
+  'diagnostic.metric.walletHeight': 'Wallet-Höhe',
+  'diagnostic.metric.daemonHeight': 'Daemon-Höhe',
+  'diagnostic.metric.synchronized': 'Synchronisiert',
+  'diagnostic.metric.registeredWallets': 'Registrierte Wallets',
+  'diagnostic.metric.joinedWallets': 'Verbundene Wallets',
+  'diagnostic.metric.scanWorkers': 'Scan-Worker',
+  'diagnostic.metric.stalledWallets': 'Stockende Wallets',
+  'diagnostic.metric.deliveries': 'Zustellungen',
+  'diagnostic.metric.fastWallets': 'Fast Wallets',
+  'diagnostic.metric.hosted': 'Gehostet',
+  'diagnostic.metric.missingCredentials': 'Fehlende Zugangsdaten',
+  'diagnostic.metric.missingRegistrations': 'Fehlende Registrierungen',
+  'diagnostic.metric.invalidAssignments': 'Ungültige Zuordnungen',
+  'diagnostic.metric.officialWorker': 'Offizieller Worker',
+  'diagnostic.metric.privateWorker': 'Privater Worker',
+  'diagnostic.metric.invalid': 'Ungültig',
+  'diagnostic.metric.hostedAssignments': 'Gehostete Zuordnungen',
+  'diagnostic.metric.verifiedWorkers': 'Geprüfte Worker',
+  'diagnostic.metric.cpuWorkers': 'CPU-Worker',
+  'diagnostic.metric.transport': 'Verbindung',
+  'diagnostic.metric.devices': 'Geräte',
+  'diagnostic.value.configured': 'Eingerichtet',
+  'diagnostic.value.disabled': 'Deaktiviert',
+  'diagnostic.value.yes': 'Ja',
+  'diagnostic.value.no': 'Nein',
+  'diagnostic.value.none': 'Keine',
+  'diagnostic.value.unknown': 'Unbekannt',
+  'diagnostic.summary.coreReady': 'Der mitgelieferte Monero-Wallet-Core ist verbunden und ansprechbar.',
+  'diagnostic.summary.coreMissing': 'Der native Monero-Wallet-Core fehlt.',
+  'diagnostic.summary.secureStorageReady': 'Temporäre geschützte Zugangsdaten wurden gespeichert, gelesen und gelöscht.',
+  'diagnostic.summary.secureStorageFailed': 'Der geschützte Speicher lieferte die temporären Zugangsdaten nicht zurück.',
+  'diagnostic.summary.nodeOptimized': 'Die gRPC- und Daemon-Endpunkte von Monero Fast Node sind eingerichtet.',
+  'diagnostic.summary.nodeOriginal': 'Die originale Monero-RPC-Verbindung ist eingerichtet.',
+  'diagnostic.summary.nodeIncomplete': 'Das aktive Node-Profil ist unvollständig.',
+  'diagnostic.summary.openWalletForNetwork': 'Öffne mindestens eine Wallet, um die gemeinsame Node-Verbindung zu testen.',
+  'diagnostic.summary.sharedState': 'Die gemeinsame Verbindung hat den Status {state}.',
+  'diagnostic.summary.sharedReady': 'Eine gemeinsame Verbindung versorgt alle geöffneten Wallets.',
+  'diagnostic.summary.sharedPending': 'Die erste gemeinsame Node-Verbindung steht noch aus.',
+  'diagnostic.summary.originalPath': 'Das aktive Profil verwendet bewusst die originale Monero-RPC-Verbindung.',
+  'diagnostic.summary.scanPackPending': 'gRPC ist eingerichtet, aber es ist noch kein authentifiziertes Blockpaket eingetroffen.',
+  'diagnostic.summary.scanPackReady': 'Der optimierte Transport lieferte dekodierte gemeinsame Blockpakete.',
+  'diagnostic.summary.noThroughput': 'In dieser App-Sitzung wurde noch kein nicht leeres Blockpaket geladen.',
+  'diagnostic.summary.throughputReady': 'Direkt am Transport des Monero-Nodes gemessen.',
+  'diagnostic.summary.throughputSmall': 'Gemessen, aber das letzte Paket ist für eine stabile Kapazitätsschätzung zu klein.',
+  'diagnostic.summary.openWalletForSnapshot': 'Öffne eine Wallet, um ihren lokalen Core-Snapshot zu testen.',
+  'diagnostic.summary.snapshotReady': 'Die aktive Wallet lieferte einen konsistenten lokalen Core-Snapshot.',
+  'diagnostic.summary.snapshotInvalid': 'Die Wallet-Höhe stimmt nicht mit dem authentifizierten Blockchain-Ziel überein.',
+  'diagnostic.summary.noJoinedWallet': 'Der gemeinsamen Synchronisierung ist derzeit keine Wallet beigetreten.',
+  'diagnostic.summary.walletStalled': 'Mindestens ein Wallet-Scanner stockt.',
+  'diagnostic.summary.fanoutReady': 'Heruntergeladene Pakete werden an alle verbundenen Wallet-Scanner verteilt.',
+  'diagnostic.summary.noFastWallet': 'Es ist keine Fast Wallet eingerichtet.',
+  'diagnostic.summary.fastWalletReady': 'Jede Fast Wallet besitzt geschützte lokale Zugangsdaten und konsistente Registrierungsdaten.',
+  'diagnostic.summary.fastWalletInvalid': 'Fast Wallet-Registrierung oder geschützte Zugangsdaten sind unvollständig.',
+  'diagnostic.summary.noHostedFastWallet': 'Keine Fast Wallet besitzt derzeit gehostete verschlüsselte Scandaten.',
+  'diagnostic.summary.hostingReady': 'Jede geschützte Worker-Zuordnung wurde geprüft, ohne sie zu verändern.',
+  'diagnostic.summary.hostingInvalid': 'Mindestens eine verschlüsselte Zuordnung ist unvollständig oder abgelaufen.',
+  'diagnostic.summary.engineReady': 'Die mitgelieferte Engine hat den begrenzten Benchmark mit öffentlichen Testvektoren bestanden.',
+  'diagnostic.summary.engineInvalid': 'Das CPU-Backend für Schlüsselableitungen lieferte kein bestätigtes Ergebnis.',
+  'diagnostic.summary.ledgerUnsupported': 'Ledger wird auf dieser Plattform nicht unterstützt.',
+  'diagnostic.summary.ledgerMissing': 'Kein Ledger ist verbunden; es wurde keine Berechtigungsabfrage geöffnet.',
+  'diagnostic.summary.ledgerReady': 'Die Ledger-Verbindung ist verfügbar.',
+  'diagnostic.summary.ledgerPermission': 'Ledger ist sichtbar, benötigt aber eine Verbindungsberechtigung.',
+  'settings.testNotificationTitle': 'Testbenachrichtigung',
+  'settings.testNotificationFailed':
+    'Die Testbenachrichtigung konnte nicht gesendet werden. Der technische Fehler wurde im App-Log gespeichert.',
+  'settings.testNotificationSentTitle': 'Testbenachrichtigung gesendet',
+  'settings.testNotificationSentBody':
+    'FCM-Token erstellt ({count} Zeichen), App Check und Gateway-Registrierung akzeptiert. Firebase hat eine allgemeine Testbenachrichtigung für dieses Telefon angenommen. Sie enthält keine Wallet- oder Transaktionsdaten.',
+  'settings.sendingTestNotification': 'Test wird gesendet…',
+  'settings.sendTestNotification': 'Testbenachrichtigung senden',
   'settings.ledgerBalanceVerification': 'Ledger-Guthaben prüfen',
   'settings.ledgerBalanceVerificationHint':
     'Key Images manuell erneut prüfen, wenn dieser Ledger auf einem anderen Gerät verwendet wurde.',
   'settings.ledgerBalanceVerifying': 'Prüfung mit Ledger…',
   'settings.ledgerBalanceVerified':
     'Der vom Ledger signierte Ausgabestatus wurde geprüft und das lokale Guthaben aktualisiert.',
+  'settings.ledgerBalanceFailed':
+    'Das Ledger-Guthaben konnte nicht geprüft werden. Der technische Fehler wurde im App-Log gespeichert.',
   'settings.disabled': 'Deaktiviert',
   'settings.enableBiometrics': 'Biometrie aktivieren',
   'settings.fastReceive': 'Fast Wallet',
@@ -2149,6 +2525,7 @@ const de: Record<keyof typeof en, string> = {
   'settings.language': 'Sprache',
   'settings.languageCurrent': 'Sprache: {language}',
   'settings.languageSubtitle': 'Wähle die Sprache der App.',
+  'settings.version': 'Version {version}',
   'settings.scanPerformance': 'Scan-Leistung',
   'settings.scanPerformanceHint':
     'Ein kurzer, einmaliger Gerätetest mit öffentlichen Beispieldaten. Dabei wird keine Wallet geöffnet und kein Wallet-Schlüssel verwendet.',
@@ -2166,7 +2543,7 @@ const de: Record<keyof typeof en, string> = {
   'settings.grpcEndpoint': 'gRPC-Endpunkt',
   'settings.originalNodeAddress': 'Original-Node-Adresse',
   'settings.originalNodeHelp':
-    'Normale Monero-Node verwenden. Die automatische Fast-Wallet-Erkennung ist in diesem Modus nicht verfügbar.',
+    'Normale Monero-Node verwenden. Die automatische Fast Wallet-Erkennung ist in diesem Modus nicht verfügbar.',
   'settings.openSourceLicenses': 'Open-Source-Lizenzen',
   'settings.openWalletFirst': 'Wallet zuerst öffnen',
   'settings.password': 'Passwort',
@@ -2196,9 +2573,9 @@ const de: Record<keyof typeof en, string> = {
     'Schreibe diese Wörter offline auf. Teile sie niemals mit anderen.',
   'settings.softwareWalletRequired': 'Software-Wallet erforderlich',
   'settings.storedSecureStorage': 'Im sicheren Gerätespeicher abgelegt',
-  'settings.fastWalletServerAddress': 'Fast-Wallet-Server',
+  'settings.fastWalletServerAddress': 'Fast Wallet-Server',
   'settings.tex8NodeHelp':
-    'Optimierte Tex8-Node mit automatischer Fast-Wallet-Erkennung verwenden.',
+    'Optimierte Tex8-Node mit automatischer Fast Wallet-Erkennung verwenden.',
   'settings.title': 'Einstellungen',
   'settings.trustedDaemon': 'Vertrauenswürdiger Daemon',
   'settings.unsaved': 'Ungespeichert',
@@ -2223,8 +2600,12 @@ const de: Record<keyof typeof en, string> = {
   'status.unconfirmed': 'Unbestätigt',
   'status.warnings': 'Warnungen',
   'wallets.createFastWallet': 'Fast Wallet erstellen',
+  'wallets.backup': 'Sichern',
+  'wallets.backupRecoveryWords': 'Wiederherstellungswörter sichern',
+  'wallets.receiveQuickly': 'Schnell empfangen',
+  'wallets.walletNamePlaceholder': 'Wallet-Name',
   'wallets.fastWalletOriginalDisabled':
-    'Wechsle zu Tex8 Node für die automatische Fast-Wallet-Erkennung.',
+    'Wechsle zu Tex8 Node für die automatische Fast Wallet-Erkennung.',
   'wallets.fastWalletTex8Only':
     'Fast Wallets sind eigene Wallets. Der Server erkennt Eingänge; Spend Keys bleiben auf diesem Gerät.',
   'wallets.fastWallets': 'Fast Wallets',
@@ -2252,26 +2633,28 @@ const de: Record<keyof typeof en, string> = {
   'wallets.title': 'Wallets',
 };
 
+export type LanguageCode = ProductLanguageCode;
+export type TranslationKey = keyof typeof en;
+
 export const translations = {
   en,
   de,
-} as const;
+  ...Object.fromEntries(
+    Object.entries(generatedTranslations).map(([locale, catalog]) => [
+      locale,
+      applyManualTranslationOverrides(locale, en, catalog as Record<keyof typeof en, string>),
+    ]),
+  ),
+} as Record<LanguageCode, Record<TranslationKey, string>>;
 
-export type LanguageCode = keyof typeof translations;
-export type TranslationKey = keyof typeof en;
+export const supportedLanguages: LanguageCode[] = productLanguageCodes;
 
-export const supportedLanguages: LanguageCode[] = ['en', 'de'];
+export const languageNames = Object.fromEntries(supportedLanguages.map(code => [code, productLocaleByCode[code].nativeName])) as Record<LanguageCode, string>;
 
-export const languageNames: Record<LanguageCode, string> = {
-  en: en['language.en'],
-  de: de['language.de'],
-};
+export const languageDateLocales = Object.fromEntries(supportedLanguages.map(code => [code, productLocaleByCode[code].tag])) as Record<LanguageCode, string>;
 
-export const languageDateLocales: Record<LanguageCode, string> = {
-  en: 'en-US',
-  de: 'de-DE',
-};
+export { generatedLocaleMetadata };
 
 export function isLanguageCode(value: unknown): value is LanguageCode {
-  return typeof value === 'string' && value in translations;
+  return typeof value === 'string' && supportedLanguages.includes(value as LanguageCode);
 }

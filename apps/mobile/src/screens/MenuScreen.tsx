@@ -4,9 +4,10 @@ import Svg, { Path, Circle } from "react-native-svg";
 import { colors } from "../theme/colors";
 import MoneroLogo from "../components/MoneroLogo";
 import { Icon } from "../components/Icon";
-import { useI18n } from "../i18n";
+import { useI18n, type TranslationKey } from "../i18n";
 import { useWalletState } from "../services/WalletState";
 import { walletDisplayName } from "../services/WalletRegistry";
+import { v1ReleaseFeatures } from "../../../../packages/wallet-shared/src/v1ReleaseFeatures";
 
 /* ── SVG Icons ────────────────────────────────────────────────────── */
 function IcoCommunity({ c }: { c: string }) {
@@ -28,14 +29,21 @@ function IcoKey({ c }: { c: string }) {
   return <Icon name="key" size={20} color={c} />;
 }
 
-const MENU_ITEMS = [
-  { labelKey: "wallets.manage", descKey: "wallets.subtitle", screen: "Wallets", Icon: IcoWallet },
-  { labelKey: "mfwNames.title", descKey: "mfwNames.subtitle", screen: "MfwNames", Icon: IcoKey },
-  { labelKey: "communityV1.title", descKey: "communityV1.menuDescription", screen: "MoneroEnthusiast", Icon: IcoCommunity },
-  { labelKey: "settings.title", descKey: "menu.configureWallet", screen: "Settings", Icon: IcoGear },
-  { label: "Tex8 Assistant", descKey: "menu.sharedAiModule", screen: "Tex8Assistant", Icon: IcoSpark },
-  { labelKey: "menu.nodeStatus", descKey: "menu.connectionStatus", screen: "Settings", Icon: IcoGlobe },
-] as const;
+type MenuItem = {
+  labelKey: TranslationKey;
+  descKey: TranslationKey;
+  screen: string;
+  Icon: React.ComponentType<{ c: string }>;
+};
+const menuItem = (labelKey: TranslationKey, descKey: TranslationKey, screen: string, MenuIcon: MenuItem['Icon']): MenuItem => ({ labelKey, descKey, screen, Icon: MenuIcon });
+const MENU_ITEMS: ReadonlyArray<MenuItem> = [
+  menuItem("wallets.manage", "wallets.subtitle", "Wallets", IcoWallet),
+  ...(v1ReleaseFeatures.mfwNameRegistration ? [menuItem("mfwNames.title", "mfwNames.subtitle", "MfwNames", IcoKey)] : []),
+  menuItem("communityV1.title", "communityV1.menuDescription", "MoneroEnthusiast", IcoCommunity),
+  menuItem("settings.title", "menu.configureWallet", "Settings", IcoGear),
+  ...(v1ReleaseFeatures.assistant ? [menuItem("assistant.title", "menu.sharedAiModule", "Tex8Assistant", IcoSpark)] : []),
+  menuItem("menu.nodeStatus", "menu.connectionStatus", "Settings", IcoGlobe),
+];
 
 export default function MenuScreen({ navigation }: any) {
   const { t } = useI18n();
@@ -76,7 +84,7 @@ export default function MenuScreen({ navigation }: any) {
         {/* Menu Items */}
         {MENU_ITEMS.map(item => (
           <TouchableOpacity
-            key={"label" in item ? item.label : item.labelKey}
+            key={`${item.screen}-${item.labelKey}`}
             style={s.menuItem}
             activeOpacity={0.6}
             onPress={() => navigation.navigate(item.screen)}
@@ -86,9 +94,7 @@ export default function MenuScreen({ navigation }: any) {
             </View>
             <View style={s.menuInfo}>
               <Text style={s.menuLabel}>
-                {"labelKey" in item && item.labelKey
-                  ? t(item.labelKey)
-                  : item.label}
+                {t(item.labelKey)}
               </Text>
               <Text style={s.menuDesc}>{t(item.descKey)}</Text>
             </View>
@@ -98,13 +104,13 @@ export default function MenuScreen({ navigation }: any) {
 
         <TouchableOpacity
           accessibilityRole="link"
-          accessibilityLabel="Made with love by TEX8"
+          accessibilityLabel={t('menu.footerAccessibility')}
           onPress={() => void Linking.openURL("https://solutions.tex8.com/en")}
           activeOpacity={0.72}
         >
-          <Text style={s.footer}>Made with <Text style={s.heart}>❤️</Text> by <Text style={s.tex8}>TEX8</Text></Text>
+          <Text style={s.footer}>{t('menu.footerPrefix')} <Text style={s.heart}>❤️</Text> {t('menu.footerBy')} <Text style={s.tex8}>TEX8</Text></Text>
         </TouchableOpacity>
-        <View style={{ height: 100 }} />
+        <View style={s.bottomSpacer} />
       </ScrollView>
     </View>
   );
@@ -128,4 +134,5 @@ const s = StyleSheet.create({
   footer: { color: colors.textMuted, fontSize: 12, textAlign: "center", marginTop: 28, lineHeight: 20 },
   heart: { color: colors.orange },
   tex8: { color: colors.textPrimary, fontWeight: "800" },
+  bottomSpacer: { height: 100 },
 });

@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Monero 取引</string>
+    <string name="monero_transaction_channel_description">Fast Wallet の支払いと承認の通知</string>
+    <string name="monero_sync_channel_name">ウォレットの同期</string>
+    <string name="monero_sync_channel_description">使用中のウォレット履歴の同期を継続します</string>
+    <string name="monero_sync_notification_title">ウォレット履歴を同期中</string>
+    <string name="monero_sync_notification_description">公開ブロックチェーンデータをダウンロードしてスキャン中</string>
+</resources>

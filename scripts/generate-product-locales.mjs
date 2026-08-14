@@ -1,12 +1,17 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { applyManualTranslationOverrides } from "../packages/wallet-shared/src/manualTranslationOverrides.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localeConfig = JSON.parse(await readFile(resolve(root, "config/product-locales.json"), "utf8"));
 const generatedLocales = localeConfig.filter(({ code }) => !["en", "de"].includes(code));
 const cacheRoot = resolve(root, "build/localization-cache-v1");
 const targets = new Set(process.argv.slice(2).length ? process.argv.slice(2) : ["website", "mobile", "desktop"]);
+const localTranslationEndpoint = process.env.MFW_TRANSLATION_ENDPOINT?.replace(/\/$/, "");
+const exportInputDirectory = process.env.MFW_EXPORT_TRANSLATION_INPUT_DIR;
+const importOutputDirectory = process.env.MFW_IMPORT_TRANSLATION_OUTPUT_DIR;
 
 const protectedTerms = [
   "Monero Fast Wallet",
@@ -19,6 +24,7 @@ const protectedTerms = [
   "AppVault",
   "ScanPack",
   "Cuprate",
+  "LEDGER",
   "Ledger",
   "Matrix",
   "Mainnet",
@@ -34,7 +40,7 @@ const protectedTerms = [
   "NEON",
   "XMR",
   "MFN",
-];
+].sort((left, right) => right.length - left.length);
 
 function findMatchingBrace(source, openIndex) {
   let depth = 0;
@@ -87,14 +93,15 @@ function rebuild(template, translations, path = []) {
 function protect(text) {
   const replacements = [];
   let protectedText = text.replace(/\{[A-Za-z0-9_]+\}/g, value => {
-    const token = `__MFWVAR${replacements.length}__`;
+    const token = `<x${replacements.length}/>`;
     replacements.push([token, value]);
     return token;
   });
   for (const term of protectedTerms) {
-    protectedText = protectedText.replaceAll(term, () => {
-      const token = `__MFWTERM${replacements.length}__`;
-      replacements.push([token, term]);
+    const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    protectedText = protectedText.replace(new RegExp(`(?<![A-Za-z0-9])${escapedTerm}(?![A-Za-z0-9])`, "gi"), match => {
+      const token = `<x${replacements.length}/>`;
+      replacements.push([token, match]);
       return token;
     });
   }
@@ -103,10 +110,11 @@ function protect(text) {
 
 function restore(text, replacements) {
   let restored = text.trim();
-  for (const [token, value] of replacements) {
-    restored = restored.replaceAll(token, value);
-    const relaxedToken = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/__$/, "\\s*__");
-    restored = restored.replace(new RegExp(relaxedToken, "g"), value);
+  for (const [index, [, value]] of replacements.entries()) {
+    const pattern = new RegExp(`<\\s*x\\s*${index}\\s*\\/\\s*>`, "gi");
+    const matches = restored.match(pattern)?.length ?? 0;
+    if (matches !== 1) throw new Error(`Protected token <x${index}/> was returned ${matches} times`);
+    restored = restored.replace(pattern, value);
   }
   return restored.replace(/\s+([,.;:!?])/g, "$1");
 }
@@ -116,26 +124,26 @@ function responseText(payload) {
   return payload[0].map(segment => segment?.[0] ?? "").join("");
 }
 
-async function translateSingleFallback(entry, language, attempt = 0) {
-  const prepared = { ...entry, ...protect(entry.value) };
-  const url = new URL("https://api.mymemory.translated.net/get");
-  url.searchParams.set("q", prepared.protectedText);
-  url.searchParams.set("langpair", `en|${language.translationTarget}`);
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload.responseStatus !== 200 || typeof payload.responseData?.translatedText !== "string") throw new Error(payload.responseDetails || "Unexpected fallback response");
-    return { path: entry.path, value: restore(payload.responseData.translatedText, prepared.replacements) };
-  } catch (error) {
-    if (attempt >= 5) throw new Error(`${language.code} fallback: ${error.message}`);
-    await new Promise(resolveDelay => setTimeout(resolveDelay, 800 * (2 ** attempt)));
-    return translateSingleFallback(entry, language, attempt + 1);
-  }
-}
-
 async function translateBatch(entries, language, attempt = 0) {
-  const prepared = entries.map((entry, index) => ({ ...entry, ...protect(entry.value), marker: `__MFWITEM${String(index).padStart(4, "0")}__` }));
+  const prepared = entries.map((entry, index) => ({ ...entry, ...protect(entry.value), marker: `[[MFWITEM${String(index).padStart(4, "0")}]]` }));
+  if (localTranslationEndpoint) {
+    try {
+      const response = await fetch(`${localTranslationEndpoint}/translate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ texts: prepared.map(entry => entry.protectedText), target: language.code }),
+        signal: AbortSignal.timeout(300_000),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 180)}`);
+      const payload = await response.json();
+      if (!Array.isArray(payload.translations) || payload.translations.length !== prepared.length) throw new Error("Unexpected local translation response");
+      return prepared.map((entry, index) => ({ path: entry.path, value: restore(payload.translations[index], entry.replacements) }));
+    } catch (error) {
+      if (attempt >= 4) throw new Error(`${language.code} local translator: ${error.message}`);
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 2_000 * (attempt + 1)));
+      return translateBatch(entries, language, attempt + 1);
+    }
+  }
   const query = prepared.length === 1 ? prepared[0].protectedText : prepared.map(entry => `${entry.marker} ${entry.protectedText}`).join("\n");
   const body = new URLSearchParams({ client: "gtx", sl: "en", tl: language.translationTarget, dt: "t", q: query });
   try {
@@ -149,7 +157,7 @@ async function translateBatch(entries, language, attempt = 0) {
     const translated = responseText(await response.json());
     if (prepared.length === 1) return [{ path: prepared[0].path, value: restore(translated, prepared[0].replacements) }];
     const parts = new Map();
-    const pattern = /__MFWITEM(\d{4})__\s*([\s\S]*?)(?=__MFWITEM\d{4}__|$)/g;
+    const pattern = /\[\[MFWITEM(\d{4})\]\]\s*([\s\S]*?)(?=\[\[MFWITEM\d{4}\]\]|$)/g;
     for (const match of translated.matchAll(pattern)) parts.set(Number(match[1]), match[2]);
     if (parts.size !== prepared.length) {
       if (entries.length === 1) throw new Error(`Only ${parts.size}/${prepared.length} markers returned`);
@@ -168,13 +176,13 @@ async function translateBatch(entries, language, attempt = 0) {
   }
 }
 
-function batches(entries, maximumLength = 3600) {
+function batches(entries, maximumLength = 3600, maximumItems = 32) {
   const result = [];
   let current = [];
   let length = 0;
   for (const entry of entries) {
     const nextLength = protect(entry.value).protectedText.length + 22;
-    if (current.length && length + nextLength > maximumLength) {
+    if (current.length && (length + nextLength > maximumLength || current.length >= maximumItems)) {
       result.push(current);
       current = [];
       length = 0;
@@ -190,26 +198,24 @@ async function translateObject(name, template, language) {
   await mkdir(cacheRoot, { recursive: true });
   const cachePath = resolve(cacheRoot, `${name}-${language.code}.json`);
   const entries = flatten(template);
+  const sourceHash = createHash("sha256").update(JSON.stringify(entries)).digest("hex");
   let cachedTranslations = [];
   try {
     const cached = JSON.parse(await readFile(cachePath, "utf8"));
-    if (cached.sourceCount === entries.length && cached.value) return cached.value;
-    if (cached.sourceCount === entries.length && Array.isArray(cached.translations)) cachedTranslations = cached.translations;
+    if (cached.sourceHash === sourceHash && cached.value) return cached.value;
+    if (cached.sourceHash === sourceHash && Array.isArray(cached.translations)) cachedTranslations = cached.translations;
   } catch { /* Generate the missing cache. */ }
   const map = new Map(cachedTranslations.map(entry => [JSON.stringify(entry.path), entry.value]));
   const pending = entries.filter(entry => !map.has(JSON.stringify(entry.path)));
-  const maximumBatchLength = language.code === "fil" ? 1 : 2_400;
-  for (const batch of batches(pending, maximumBatchLength)) {
-    const translated = language.code === "fil" && batch.length === 1
-      ? [await translateSingleFallback(batch[0], language)]
-      : await translateBatch(batch, language);
+  for (const batch of batches(pending, 2_400)) {
+    const translated = await translateBatch(batch, language);
     for (const entry of translated) map.set(JSON.stringify(entry.path), entry.value);
     const translations = [...map].map(([path, value]) => ({ path: JSON.parse(path), value }));
-    await writeFile(cachePath, `${JSON.stringify({ sourceCount: entries.length, translations }, null, 2)}\n`);
-    await new Promise(resolveDelay => setTimeout(resolveDelay, language.code === "fil" ? 100 : 900));
+    await writeFile(cachePath, `${JSON.stringify({ sourceCount: entries.length, sourceHash, translations }, null, 2)}\n`);
+    await new Promise(resolveDelay => setTimeout(resolveDelay, localTranslationEndpoint ? 10 : 900));
   }
   const value = rebuild(template, map);
-  await writeFile(cachePath, `${JSON.stringify({ sourceCount: entries.length, value }, null, 2)}\n`);
+  await writeFile(cachePath, `${JSON.stringify({ sourceCount: entries.length, sourceHash, value }, null, 2)}\n`);
   return value;
 }
 
@@ -229,6 +235,61 @@ function typescriptExport(name, value) {
   return `// Generated by scripts/generate-product-locales.mjs. Do not edit by hand.\nexport const ${name} = ${JSON.stringify(value, null, 2)} as const;\n`;
 }
 
+function escapeAndroidXml(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("'", "\\'");
+}
+
+async function writeMobileNativeLocales(catalogs) {
+  const androidKeys = {
+    "native.notification.transactions": "monero_transaction_channel_name",
+    "native.notification.transactionsDescription": "monero_transaction_channel_description",
+    "native.notification.sync": "monero_sync_channel_name",
+    "native.notification.syncDescription": "monero_sync_channel_description",
+    "native.notification.syncTitle": "monero_sync_notification_title",
+    "native.notification.syncBody": "monero_sync_notification_description",
+  };
+  const appleKeys = [
+    ["native.permission.location", "NSLocationWhenInUseUsageDescription"],
+    ["native.permission.bluetooth", "NSBluetoothAlwaysUsageDescription"],
+    ["native.permission.bluetooth", "NSBluetoothPeripheralUsageDescription"],
+    ["native.permission.camera", "NSCameraUsageDescription"],
+    ["native.permission.faceId", "NSFaceIDUsageDescription"],
+  ];
+  const effectiveCatalogs = Object.fromEntries(localeConfig.map(locale => [
+    locale.code,
+    ["en", "de"].includes(locale.code)
+      ? catalogs[locale.code]
+      : applyManualTranslationOverrides(locale.code, catalogs.en, catalogs[locale.code]),
+  ]));
+  const appleCatalog = Object.fromEntries(
+    appleKeys.map(([, name]) => [name, {
+      localizations: Object.fromEntries(localeConfig.map(locale => [locale.tag, {
+        stringUnit: {
+          state: "translated",
+          value: effectiveCatalogs[locale.code][appleKeys.find(([, appleName]) => appleName === name)[0]],
+        },
+      }])),
+    }]),
+  );
+  for (const locale of localeConfig) {
+    const catalog = effectiveCatalogs[locale.code];
+    if (!catalog) throw new Error(`mobile native locales: missing ${locale.code}`);
+    const androidLocale = locale.code === "pt-BR" ? "pt-rBR" : locale.code === "zh-CN" ? "zh-rCN" : locale.code === "zh-TW" ? "zh-rTW" : locale.code;
+    const android = `<resources>\n    <string name="app_name">Monero Fast Wallet</string>\n${Object.entries(androidKeys).map(([key, name]) => `    <string name="${name}">${escapeAndroidXml(catalog[key])}</string>`).join("\n")}\n</resources>\n`;
+    const androidDirectory = resolve(root, "apps/mobile/android/app/src/main/res", locale.code === "en" ? "values" : `values-${androidLocale}`);
+    await mkdir(androidDirectory, { recursive: true });
+    await writeFile(resolve(androidDirectory, "strings.xml"), android);
+  }
+  await writeFile(
+    resolve(root, "apps/mobile/ios/MoneroWallet/InfoPlist.xcstrings"),
+    `${JSON.stringify({ sourceLanguage: "en", strings: appleCatalog, version: "1.0" }, null, 2)}\n`,
+  );
+}
+
 async function writeGenerated(path, content) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content);
@@ -237,6 +298,106 @@ async function writeGenerated(path, content) {
 
 const metadata = Object.fromEntries(localeConfig.map(({ code, tag, route, nativeName, direction }) => [code, { tag, route, nativeName, direction }]));
 
+async function sourceCatalog(target) {
+  const sourcePath = target === "mobile"
+    ? resolve(root, "apps/mobile/src/i18n/translations.ts")
+    : resolve(root, "apps/desktop/src/i18n.tsx");
+  const source = await readFile(sourcePath, "utf8");
+  const english = target === "mobile"
+    ? readObject(source, "const en =")
+    : readObject(source, "const baseMessages =", "en:");
+  const german = target === "mobile"
+    ? readObject(source, "const de:")
+    : readObject(source, "const baseMessages =", "de:");
+  validateBaseCatalog(target, english, german);
+  return english;
+}
+
+function variables(value) {
+  return [...value.matchAll(/\{[A-Za-z0-9_]+\}/g)].map(match => match[0]).sort();
+}
+
+function occurrences(value, term) {
+  return value.split(term).length - 1;
+}
+
+function validateBaseCatalog(target, english, german) {
+  const expectedKeys = Object.keys(english).sort();
+  const germanKeys = Object.keys(german).sort();
+  if (JSON.stringify(germanKeys) !== JSON.stringify(expectedKeys)) throw new Error(`${target}/de: key set does not match English`);
+  for (const key of expectedKeys) {
+    if (typeof english[key] !== "string" || !english[key].trim()) throw new Error(`${target}/en/${key}: empty source text`);
+    if (typeof german[key] !== "string" || !german[key].trim()) throw new Error(`${target}/de/${key}: empty translation`);
+    if (JSON.stringify(variables(german[key])) !== JSON.stringify(variables(english[key]))) throw new Error(`${target}/de/${key}: placeholder mismatch`);
+  }
+}
+
+function validateImportedCatalog(target, source, imported) {
+  const expectedKeys = Object.keys(source).sort();
+  for (const language of generatedLocales) {
+    const catalog = imported[language.code];
+    if (!catalog || typeof catalog !== "object") throw new Error(`${target}: missing ${language.code} catalog`);
+    const actualKeys = Object.keys(catalog).sort();
+    if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) throw new Error(`${target}/${language.code}: key set does not match English`);
+    for (const key of expectedKeys) {
+      if (typeof catalog[key] !== "string" || !catalog[key].trim()) throw new Error(`${target}/${language.code}/${key}: empty translation`);
+      const expectedVariables = variables(source[key]);
+      const actualVariables = variables(catalog[key]);
+      if (JSON.stringify(actualVariables) !== JSON.stringify(expectedVariables)) throw new Error(`${target}/${language.code}/${key}: placeholder mismatch`);
+      for (const term of protectedTerms) {
+        if (occurrences(catalog[key], term) !== occurrences(source[key], term)) throw new Error(`${target}/${language.code}/${key}: protected term mismatch for ${term}`);
+      }
+    }
+  }
+}
+
+if (exportInputDirectory) {
+  const outputDirectory = resolve(exportInputDirectory);
+  await mkdir(outputDirectory, { recursive: true });
+  for (const target of ["mobile", "desktop"]) {
+    if (!targets.has(target)) continue;
+    await writeFile(resolve(outputDirectory, `${target}.json`), `${JSON.stringify(await sourceCatalog(target), null, 2)}\n`);
+    console.log(`wrote ${resolve(outputDirectory, `${target}.json`)}`);
+  }
+  process.exit(0);
+}
+
+if (importOutputDirectory) {
+  const inputDirectory = resolve(importOutputDirectory);
+  const mobileCatalogs = {};
+  for (const target of ["mobile", "desktop"]) {
+    if (!targets.has(target)) continue;
+    const source = await sourceCatalog(target);
+    const imported = JSON.parse(await readFile(resolve(inputDirectory, `${target}.json`), "utf8"));
+    validateImportedCatalog(target, source, imported);
+    const path = target === "mobile"
+      ? resolve(root, "apps/mobile/src/i18n/translations.generated.ts")
+      : resolve(root, "apps/desktop/src/i18n.generated.ts");
+    const exportName = target === "mobile" ? "generatedTranslations" : "generatedMessages";
+    await writeGenerated(path, `${typescriptExport(exportName, imported)}\n${typescriptExport("generatedLocaleMetadata", metadata)}`);
+    if (target === "mobile") Object.assign(mobileCatalogs, imported);
+  }
+  if (targets.has("mobile")) {
+    const mobileSource = await sourceCatalog("mobile");
+    const sourceText = await readFile(resolve(root, "apps/mobile/src/i18n/translations.ts"), "utf8");
+    const german = readObject(sourceText, "const de:");
+    await writeMobileNativeLocales({ en: mobileSource, de: german, ...mobileCatalogs });
+  }
+  process.exit(0);
+}
+
+if (targets.has("native-existing")) {
+  const sourceText = await readFile(resolve(root, "apps/mobile/src/i18n/translations.ts"), "utf8");
+  const generatedText = await readFile(resolve(root, "apps/mobile/src/i18n/translations.generated.ts"), "utf8");
+  const english = readObject(sourceText, "const en =");
+  const german = readObject(sourceText, "const de:");
+  const generated = readObject(generatedText, "export const generatedTranslations =");
+  validateImportedCatalog("mobile", english, generated);
+  await writeMobileNativeLocales({ en: english, de: german, ...generated });
+  console.log("wrote existing reviewed mobile catalogs to Android and iOS native resources");
+  process.exit(0);
+}
+
 if (targets.has("website")) {
   const contentModule = await import(`${pathToFileURL(resolve(root, "website/src/content.js")).href}?generation=${Date.now()}`);
   const translations = await mapWithConcurrency(generatedLocales, Number(process.env.MFW_TRANSLATION_CONCURRENCY ?? 1), async language => [language.code, { ...(await translateObject("website", contentModule.copy.en, language)), lang: language.code }]);
@@ -244,15 +405,17 @@ if (targets.has("website")) {
 }
 
 if (targets.has("mobile")) {
-  const source = await readFile(resolve(root, "apps/mobile/src/i18n/translations.ts"), "utf8");
-  const english = readObject(source, "const en =");
+  const english = await sourceCatalog("mobile");
   const translations = await mapWithConcurrency(generatedLocales, Number(process.env.MFW_TRANSLATION_CONCURRENCY ?? 1), async language => [language.code, await translateObject("mobile", english, language)]);
-  await writeGenerated(resolve(root, "apps/mobile/src/i18n/translations.generated.ts"), `${typescriptExport("generatedTranslations", Object.fromEntries(translations))}\n${typescriptExport("generatedLocaleMetadata", metadata)}`);
+  const generated = Object.fromEntries(translations);
+  await writeGenerated(resolve(root, "apps/mobile/src/i18n/translations.generated.ts"), `${typescriptExport("generatedTranslations", generated)}\n${typescriptExport("generatedLocaleMetadata", metadata)}`);
+  const sourceText = await readFile(resolve(root, "apps/mobile/src/i18n/translations.ts"), "utf8");
+  const german = readObject(sourceText, "const de:");
+  await writeMobileNativeLocales({ en: english, de: german, ...generated });
 }
 
 if (targets.has("desktop")) {
-  const source = await readFile(resolve(root, "apps/desktop/src/i18n.tsx"), "utf8");
-  const english = readObject(source, "const messages =", "en:");
+  const english = await sourceCatalog("desktop");
   const translations = await mapWithConcurrency(generatedLocales, Number(process.env.MFW_TRANSLATION_CONCURRENCY ?? 1), async language => [language.code, await translateObject("desktop", english, language)]);
   await writeGenerated(resolve(root, "apps/desktop/src/i18n.generated.ts"), `${typescriptExport("generatedMessages", Object.fromEntries(translations))}\n${typescriptExport("generatedLocaleMetadata", metadata)}`);
 }

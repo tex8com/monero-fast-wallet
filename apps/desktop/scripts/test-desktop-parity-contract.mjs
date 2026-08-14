@@ -128,13 +128,13 @@ test('desktop recovery diagnostics are privacy-safe, generation-aware, and sampl
   assert.doesNotMatch(recoverySource, /\("registrationId",/);
 });
 
-test('desktop Menu exposes every React Native Menu destination without release-flag hiding', () => {
+test('desktop Menu exposes release-ready destinations and gates unfinished modules explicitly', () => {
   const menuSource = appSource.slice(
     appSource.indexOf('function DesktopMenu('),
     appSource.indexOf('function marketChartTimestamp('),
   );
 
-  for (const destination of ['wallets', 'mfw', 'enthusiast', 'settings', 'assistant']) {
+  for (const destination of ['wallets', 'enthusiast', 'settings']) {
     assert.match(menuSource, new RegExp(`section: '${destination}'`));
   }
   assert.match(menuSource, /section: 'settings', icon: 'globe'/, 'Node status must remain available');
@@ -142,9 +142,22 @@ test('desktop Menu exposes every React Native Menu destination without release-f
     assert.match(menuSource, new RegExp(`icon: '${icon}'`));
   }
   assert.doesNotMatch(menuSource, /[◈＠◎⚙✦◌]/, 'desktop menu must use the mobile SVG icon family');
-  assert.doesNotMatch(menuSource, /v1ReleaseFeatures\.(mfwNameRegistration|assistant)/);
-  assert.match(appSource, /section === 'mfw' && <MfwNames/);
-  assert.match(appSource, /section === 'assistant' && <Assistant/);
+  assert.match(menuSource, /v1ReleaseFeatures\.mfwNameRegistration/);
+  assert.match(menuSource, /v1ReleaseFeatures\.assistant/);
+  assert.match(appSource, /section === 'mfw' && v1ReleaseFeatures\.mfwNameRegistration && <MfwNames/);
+  assert.match(appSource, /section === 'assistant' && v1ReleaseFeatures\.assistant && <Assistant/);
+});
+
+test('desktop Monero Enthusiast publishes and searches in the selected app language', () => {
+  const enthusiastSource = appSource.slice(
+    appSource.indexOf('function MoneroEnthusiastV1()'),
+    appSource.indexOf('function CommunityConversation('),
+  );
+  assert.match(enthusiastSource, /const \{ language, t \} = useI18n\(\)/);
+  assert.match(enthusiastSource, /languages: \[language\]/);
+  assert.doesNotMatch(enthusiastSource, /languages: \[['"]en['"]\]/);
+  assert.match(enthusiastSource, /input: \{ prefix, language, limit: 6 \}/);
+  assert.match(enthusiastSource, /enthusiast_v1_contribute_query', \{ query, language \}/);
 });
 
 test('narrow desktop windows keep the same bottom-navigation behavior as mobile', () => {
@@ -178,7 +191,8 @@ test('desktop Send keeps the same simple recipient-first flow as mobile', () => 
   assert.match(sendSource, /setStep\('review'\)/);
   assert.match(sendSource, /saveRecipientContacts/);
   assert.match(sendSource, /recentContacts\.map/);
-  assert.match(sendSource, /Donation stays first/);
+  assert.match(sendSource, /send\.addressBookHint/);
+  assert.match(i18nSource, /Donation stays first/);
   assert.match(sendSource, /validate_recipient_address/);
   assert.match(sendSource, /validateAndUseRecipient/);
   assert.match(sendSource, /send-choice-card primary-choice/);
@@ -299,9 +313,11 @@ test('desktop persists the Fast Wallet default and exposes the choice for create
   const fastSource = appSource.slice(appSource.indexOf('function FastWallets('), appSource.indexOf('function WalletFeature('));
   assert.match(appSource, /loadFastWalletPreference/);
   assert.match(appSource, /saveFastWalletPreference/);
-  assert.match(setupSource, />Fast Wallet</);
-  assert.match(setupSource, /Also reserve Ledger account 1 as a separate Fast Wallet address/);
-  assert.match(setupSource, /Also create a separate local wallet with its own recovery words/);
+  assert.match(setupSource, /setup\.fastWallet/);
+  assert.match(setupSource, /setup\.fastWalletLedgerDescription/);
+  assert.match(setupSource, /setup\.fastWalletLocalDescription/);
+  assert.match(i18nSource, /Also reserve Ledger account 1 as a separate Fast Wallet address/);
+  assert.match(i18nSource, /Also create a separate local wallet with its own recovery words/);
   assert.match(setupSource, /const fastChoice =/);
   assert.match(setupSource, /\{fastChoice\}/);
   assert.match(appSource, /createFastWalletAfterBackup/);
@@ -330,12 +346,15 @@ test('desktop presents private and Fast Wallets in one mobile-parity wallet list
   assert.doesNotMatch(walletsSource, /<FastWallets/);
   assert.match(appSource, /<FastWalletReceive appProtection=\{appProtection\} \/>/);
   assert.match(receiveSource, /function FastWalletReceive/);
-  assert.match(receiveSource, /Fast Wallet addresses/);
-  assert.match(receiveSource, /Address copied/);
+  assert.match(receiveSource, /fastReceive\.title/);
+  assert.match(receiveSource, /receive\.copied/);
+  assert.match(i18nSource, /Fast Wallet addresses/);
+  assert.match(i18nSource, /Address copied/);
   assert.match(appSource, /const managedWallets = useMemo/);
   assert.match(appSource, /\.map\(fastWalletAsRegistration\)/);
   assert.match(walletsSource, /wallets\.map\(\(wallet\)/);
-  assert.match(walletsSource, /Receive quickly/);
+  assert.match(walletsSource, /wallets\.receiveQuickly/);
+  assert.match(i18nSource, /Receive quickly/);
   assert.match(walletsSource, /fast-wallet-badge/);
   assert.doesNotMatch(appSource, /Independent local wallets|Independent wallets|FastWalletPreview|FastWalletWalletRows/);
   assert.doesNotMatch(appSource, /Ledger Fast Wallet is not available yet/);
@@ -386,7 +405,8 @@ test('Ledger read-only setup and spent-output reconciliation are reachable throu
   );
   assert.match(appSource, /activeLedgerNeedsAutomaticVerification/);
   assert.match(appSource, /MONERO_DESKTOP_LEDGER_AUTO_VERIFICATION_FAILED/);
-  assert.match(appSource, /Remember Ledger for viewing/);
+  assert.match(appSource, /setup\.rememberLedger/);
+  assert.match(i18nSource, /Remember Ledger for viewing/);
   assert.doesNotMatch(appSource, /Show Ledger balance/);
   assert.match(hostSource, /registration_id: registration\.id\.clone\(\)/);
   assert.match(
@@ -463,15 +483,18 @@ test('Ledger Fast Wallet is release-gated before reading anything from Ledger', 
 test('renderer exposes Ledger Fast Wallet enrollment only through Ledger setup', () => {
   const setupSource = appSource.slice(appSource.indexOf('function Setup('), appSource.indexOf('function FastWallets('));
   assert.match(setupSource, /createFast: createFastWallet/);
-  assert.match(setupSource, /Also reserve Ledger account 1 as a separate Fast Wallet address/);
+  assert.match(setupSource, /setup\.fastWalletLedgerDescription/);
+  assert.match(i18nSource, /Also reserve Ledger account 1 as a separate Fast Wallet address/);
   assert.doesNotMatch(setupSource, /Ledger Fast Wallet is not available yet/);
 });
 
 test('Ledger setup explicitly offers encrypted local private-view-key storage', () => {
   const setupSource = appSource.slice(appSource.indexOf('function Setup('), appSource.indexOf('function FastWallets('));
   assert.match(setupSource, /persistLedgerViewOnly/);
-  assert.match(setupSource, /Remember Ledger for viewing/);
-  assert.match(setupSource, /Keep an encrypted, read-only wallet on this device/);
+  assert.match(setupSource, /setup\.rememberLedger/);
+  assert.match(setupSource, /setup\.rememberLedgerDescription/);
+  assert.match(i18nSource, /Remember Ledger for viewing/);
+  assert.match(i18nSource, /Keep an encrypted, read-only wallet on this device/);
   assert.match(setupSource, /mode === 'ledger' && persistLedgerViewOnly/);
   assert.match(setupSource, /invoke<WalletOperationResponse>\('enable_ledger_read_only'/);
   assert.match(setupSource, /sourceWalletId: result\.walletId/);
@@ -541,7 +564,8 @@ test('desktop shows orange transfer state before enrollment and green only after
   assert.ok(transferring >= 0 && enrollment > transferring && accepted > enrollment);
   assert.match(flow, /else if \(v1ReleaseFeatures\.officialWorker\)/);
   assert.match(appSource, /function FastWalletTransferOverlay/);
-  assert.match(appSource, /Monero Fast Node scan service accepted the encrypted view key/);
+  assert.match(appSource, /fastTransfer\.accepted/);
+  assert.match(i18nSource, /Monero Fast Node scan service accepted the encrypted view key/);
   assert.match(stylesSource, /\.fast-wallet-transfer-state\.accepted/);
   assert.match(stylesSource, /background:\s*#25d98b/);
   assert.match(stylesSource, /background:\s*#ff9d18/);
@@ -655,7 +679,8 @@ test('a repeated Ledger view-key action is blocked before another device session
 
 test('desktop keeps the setup instruction dialog but never overlays balance reconciliation', () => {
   assert.match(appSource, /function LedgerViewKeyExportOverlay\(\{/);
-  assert.match(appSource, /approve <strong>Export view key<\/strong> once/);
+  assert.match(appSource, /ledger\.exportInstruction/);
+  assert.match(i18nSource, /approve Export view key once/);
   assert.doesNotMatch(appSource, /ledgerVerificationPhase && <LedgerViewKeyExportOverlay/);
   assert.match(appSource, /readinessPhase=\{publication\?\.phase\}/);
   assert.match(appSource, /home\.spendOutputsChecking/);
@@ -750,9 +775,12 @@ test('desktop shows recovery words in a deliberate in-app backup screen, never a
   assert.match(standardConfirmSource, /mark_seed_backed_up/);
   assert.match(fastConfirmSource, /mark_seed_backed_up/);
   assert.match(appSource, /function RecoverySeedBackupScreen/);
-  assert.match(appSource, /Write down your recovery words/);
-  assert.match(appSource, /I have written down all/);
-  assert.match(appSource, /I have saved my words/);
+  assert.match(appSource, /backup\.writeWords/);
+  assert.match(appSource, /backup\.confirmWords/);
+  assert.match(appSource, /backup\.saved/);
+  assert.match(i18nSource, /Write down your recovery words/);
+  assert.match(i18nSource, /I have written down all/);
+  assert.match(i18nSource, /I have saved my words/);
   assert.match(appSource, /setRecoverySeedScreen\(null\)/);
   assert.match(stylesSource, /\.recovery-seed-words/);
 });

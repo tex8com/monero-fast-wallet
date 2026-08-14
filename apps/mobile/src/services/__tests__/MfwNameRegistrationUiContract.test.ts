@@ -20,11 +20,12 @@ describe('MFW name registration UI contract', () => {
     ),
   );
 
-  it('keeps the discovery screen reachable while transaction activation stays gated', () => {
+  it('keeps the discovery screen explicitly release-gated with transaction activation', () => {
     expect(home).toMatch(
       /v1ReleaseFeatures\.mfwNameRegistration[\s\S]+mfwNames\.claimYourAddress/,
     );
-    expect(menu).toContain('screen: "MfwNames"');
+    expect(menu).toContain('v1ReleaseFeatures.mfwNameRegistration');
+    expect(menu).toContain('"MfwNames", IcoKey');
     expect(navigation).toContain('name="MfwNames"');
     expect(manifest.features.mfwNameRegistration).toBe(false);
     expect(manifest.parameters.mfwNameGenesis).toBeNull();

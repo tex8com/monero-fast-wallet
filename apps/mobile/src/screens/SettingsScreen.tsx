@@ -40,6 +40,7 @@ import {
   type DiagnosticProgress,
 } from '../services/WalletDiagnosticTestbench';
 import type { DiagnosticTestbenchReport } from '../../../../packages/wallet-shared/src/diagnosticTestbench';
+import { localizeDiagnosticText } from '../../../../packages/wallet-shared/src/diagnosticLocalization';
 import { walletService } from '../services/WalletService';
 import { useWalletState } from '../services/WalletState';
 import {
@@ -70,7 +71,7 @@ const NETWORKS: { value: MoneroNetwork; label: string }[] = [
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { language, setLanguage, t } = useI18n();
+  const { dateLocale, language, setLanguage, t } = useI18n();
   const { reconcileLedgerBalance, registeredWallet, session } = useWalletState();
   const {
     mode: savedProtectionMode,
@@ -290,7 +291,13 @@ export default function SettingsScreen() {
 
     try {
       const diagnostics = await runWalletDiagnosticTestbench(progress => {
-        setDiagnosticProgress(progress);
+        setDiagnosticProgress({
+          ...progress,
+          label: localizeDiagnosticText(
+            progress.label,
+            (key, params) => t(key as TranslationKey, params),
+          ),
+        });
       });
       setDiagnosticReport(diagnostics);
       setDiagnosticsStatusText(
@@ -301,9 +308,10 @@ export default function SettingsScreen() {
             : 'Ready',
       );
     } catch (error) {
+      console.warn('MONERO_MOBILE_DIAGNOSTICS_FAILED', errorMessage(error));
       setDiagnosticReport(null);
       setDiagnosticsStatusText('Error');
-      Alert.alert(t('settings.diagnostics'), errorMessage(error));
+      Alert.alert(t('settings.diagnostics'), t('settings.diagnosticRunFailed'));
     } finally {
       setDiagnosticProgress(null);
       setIsRunningDiagnostics(false);
@@ -316,11 +324,17 @@ export default function SettingsScreen() {
     try {
       const registration = await FastWalletPushService.sendTestNotification();
       Alert.alert(
-        'Test notification sent',
-        `FCM token created (${registration.providerTokenLength} characters), App Check and Gateway registration accepted. Firebase accepted a generic test notification for this phone. It contains no wallet or transaction details.`,
+        t('settings.testNotificationSentTitle'),
+        t('settings.testNotificationSentBody', {
+          count: registration.providerTokenLength,
+        }),
       );
     } catch (error) {
-      Alert.alert('Test notification', errorMessage(error));
+      console.warn('MONERO_MOBILE_TEST_NOTIFICATION_FAILED', errorMessage(error));
+      Alert.alert(
+        t('settings.testNotificationTitle'),
+        t('settings.testNotificationFailed'),
+      );
     } finally {
       setIsSendingTestPush(false);
     }
@@ -370,9 +384,10 @@ export default function SettingsScreen() {
         t('settings.ledgerBalanceVerified'),
       );
     } catch (error) {
+      console.warn('MONERO_MOBILE_LEDGER_BALANCE_FAILED', errorMessage(error));
       Alert.alert(
         t('settings.ledgerBalanceVerification'),
-        errorMessage(error),
+        t('settings.ledgerBalanceFailed'),
       );
     } finally {
       setIsRecheckingLedger(false);
@@ -411,7 +426,11 @@ export default function SettingsScreen() {
         );
       }
     } catch (error) {
-      Alert.alert(t('settings.appProtection'), errorMessage(error));
+      console.warn('MONERO_MOBILE_APP_PROTECTION_FAILED', errorMessage(error));
+      Alert.alert(
+        t('settings.appProtection'),
+        t('settings.appProtectionFailed'),
+      );
     } finally {
       setIsSavingAppProtection(false);
     }
@@ -425,7 +444,9 @@ export default function SettingsScreen() {
         <View style={s.header}>
           <MoneroLogo size={44} />
           <Text style={s.title}>{t('settings.title')}</Text>
-          <Text style={s.version}>Version {mobileAppVersion.versionName}</Text>
+          <Text style={s.version}>
+            {t('settings.version', { version: mobileAppVersion.versionName })}
+          </Text>
         </View>
 
         <View style={s.section}>
@@ -458,11 +479,11 @@ export default function SettingsScreen() {
           </View>
           <View style={s.nodePanel}>
             <Text style={s.languageHelp}>{t('settings.languageSubtitle')}</Text>
-            <View style={s.segmented}>
+            <View style={s.languageGrid}>
               {supportedLanguages.map(code => (
                 <TouchableOpacity
                   key={code}
-                  style={[s.segment, language === code && s.segmentActive]}
+                  style={[s.languageOption, language === code && s.segmentActive]}
                   activeOpacity={0.75}
                   onPress={() => {
                     setLanguage(code).catch(() => undefined);
@@ -514,9 +535,7 @@ export default function SettingsScreen() {
                       ? t('settings.performanceMeasuringShort')
                       : measured?.verified
                         ? t('settings.derivationsPerSecond', {
-                            rate: new Intl.NumberFormat(
-                              language === 'de' ? 'de-DE' : 'en-US',
-                            ).format(measured.derivationsPerSecond),
+                            rate: new Intl.NumberFormat(dateLocale).format(measured.derivationsPerSecond),
                           })
                         : t('settings.performanceUnavailable')}
                   </Text>
@@ -608,23 +627,30 @@ export default function SettingsScreen() {
                   : t('settings.saveAppProtection')}
               </Text>
             </TouchableOpacity>
-            <Text style={s.passwordHint}>Lock after inactivity</Text>
-            <View style={[s.segmented, { flexWrap: 'wrap' }]}>
+            <Text style={s.passwordHint}>{t('settings.lockAfterInactivity')}</Text>
+            <View style={[s.segmented, s.segmentedWrapped]}>
               {[
-                [60, '1 min'],
-                [300, '5 min'],
-                [900, '15 min'],
-                [1800, '30 min'],
-                [3600, '1 hour'],
-                [0, 'Never'],
+                [60, t('settings.timeout1Minute')],
+                [300, t('settings.timeout5Minutes')],
+                [900, t('settings.timeout15Minutes')],
+                [1800, t('settings.timeout30Minutes')],
+                [3600, t('settings.timeout1Hour')],
+                [0, t('settings.timeoutNever')],
               ].map(([seconds, label]) => (
                 <TouchableOpacity
                   accessibilityRole="button"
                   key={seconds}
                   onPress={() => {
-                    setAutoLockSeconds(Number(seconds)).catch(error =>
-                      Alert.alert(t('settings.appProtection'), errorMessage(error)),
-                    );
+                    setAutoLockSeconds(Number(seconds)).catch(error => {
+                      console.warn(
+                        'MONERO_MOBILE_AUTO_LOCK_FAILED',
+                        errorMessage(error),
+                      );
+                      Alert.alert(
+                        t('settings.appProtection'),
+                        t('settings.appProtectionFailed'),
+                      );
+                    });
                   }}
                   style={[
                     s.segment,
@@ -888,17 +914,17 @@ export default function SettingsScreen() {
             {diagnosticReport ? (
               <View style={s.diagnosticList}>
                 <View style={s.diagnosticSummary}>
-                  <DiagnosticCount label="Passed" value={diagnosticReport.passed} tone="pass" />
-                  <DiagnosticCount label="Warnings" value={diagnosticReport.warnings} tone="warning" />
-                  <DiagnosticCount label="Failed" value={diagnosticReport.failed} tone="fail" />
-                  <DiagnosticCount label="Skipped" value={diagnosticReport.skipped} tone="skipped" />
+                  <DiagnosticCount label={t('settings.diagnosticPassed')} value={diagnosticReport.passed} tone="pass" />
+                  <DiagnosticCount label={t('settings.diagnosticWarnings')} value={diagnosticReport.warnings} tone="warning" />
+                  <DiagnosticCount label={t('settings.diagnosticFailed')} value={diagnosticReport.failed} tone="fail" />
+                  <DiagnosticCount label={t('settings.diagnosticSkipped')} value={diagnosticReport.skipped} tone="skipped" />
                 </View>
                 {diagnosticReport.tests.map(test => (
                   <View key={test.id} style={s.diagnosticTest}>
                     <View style={s.diagnosticTestHeader}>
                       <View style={s.diagnosticTestHeading}>
-                        <Text style={s.diagnosticCategory}>{test.category}</Text>
-                        <Text style={s.diagnosticTestTitle}>{test.label}</Text>
+                        <Text style={s.diagnosticCategory}>{localizeDiagnosticText(test.category, key => t(key as TranslationKey))}</Text>
+                        <Text style={s.diagnosticTestTitle}>{localizeDiagnosticText(test.label, key => t(key as TranslationKey))}</Text>
                       </View>
                       <Text
                         style={[
@@ -906,17 +932,17 @@ export default function SettingsScreen() {
                           diagnosticStatusStyle(test.status),
                         ]}
                       >
-                        {test.status.toUpperCase()}
+                        {translateStatusText(test.status === 'pass' ? 'Passed' : test.status === 'warning' ? 'Warnings' : test.status === 'fail' ? 'Failed' : 'Skipped', t).toUpperCase()}
                       </Text>
                     </View>
-                    <Text style={s.diagnosticSummaryText}>{test.summary}</Text>
+                    <Text style={s.diagnosticSummaryText}>{localizeDiagnosticText(test.summary, (key, params) => t(key as TranslationKey, params))}</Text>
                     {test.metrics.length > 0 ? (
                       <View style={s.diagnosticMetrics}>
                         {test.metrics.map(metric => (
                           <View key={`${test.id}-${metric.label}`} style={s.diagnosticMetric}>
-                            <Text style={s.diagnosticMetricLabel}>{metric.label}</Text>
+                            <Text style={s.diagnosticMetricLabel}>{localizeDiagnosticText(metric.label, key => t(key as TranslationKey))}</Text>
                             <Text style={s.diagnosticMetricValue}>
-                              {metric.value}{metric.unit ? ` ${metric.unit}` : ''}
+                              {localizeDiagnosticText(metric.value, key => t(key as TranslationKey))}{metric.unit ? ` ${metric.unit}` : ''}
                             </Text>
                           </View>
                         ))}
@@ -926,7 +952,9 @@ export default function SettingsScreen() {
                   </View>
                 ))}
                 <Text style={s.diagnosticRunDuration}>
-                  Total test time: {diagnosticReport.durationMs} ms
+                  {t('settings.diagnosticTotal', {
+                    duration: diagnosticReport.durationMs,
+                  })}
                 </Text>
               </View>
             ) : null}
@@ -957,7 +985,9 @@ export default function SettingsScreen() {
               onPress={sendTestPush}
             >
               <Text style={s.secondaryButtonText}>
-                {isSendingTestPush ? 'Sending test…' : 'Send test notification'}
+                {isSendingTestPush
+                  ? t('settings.sendingTestNotification')
+                  : t('settings.sendTestNotification')}
               </Text>
             </TouchableOpacity>
           </View>
@@ -981,6 +1011,8 @@ function translateStatusText(value: string, t: Translator): string {
   switch (value) {
     case 'Applied':
       return t('status.applied');
+    case 'Passed':
+      return t('settings.diagnosticPassed');
     case 'Creating':
       return t('status.creating');
     case 'Default':
@@ -997,6 +1029,10 @@ function translateStatusText(value: string, t: Translator): string {
       return t('status.running');
     case 'Saved':
       return t('status.saved');
+    case 'Failed':
+      return t('settings.diagnosticFailed');
+    case 'Skipped':
+      return t('settings.diagnosticSkipped');
     case 'Saving':
       return t('action.saving');
     case 'Unsaved':
@@ -1151,6 +1187,24 @@ const s = StyleSheet.create({
     padding: 12,
   },
   languageHelp: { color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
+  languageGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+    marginTop: 4,
+  },
+  segmentedWrapped: { flexWrap: 'wrap' },
+  languageOption: {
+    width: '48%',
+    minHeight: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+    paddingHorizontal: 8,
+  },
   nodeHintBox: {
     flexDirection: 'row',
     alignItems: 'flex-start',

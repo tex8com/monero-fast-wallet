@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useI18n } from "../i18n";
 
 import { Icon } from "../components/Icon";
 import { colors, radius, spacing } from "../theme/colors";
@@ -75,6 +76,7 @@ function commandLabel(command: AppControlCommand): string {
 }
 
 export default function Tex8AssistantScreen({ navigation }: any) {
+  const { t } = useI18n();
   const insets = useSafeAreaInsets();
   const listRef = useRef<FlatList<ChatMessage>>(null);
   const {
@@ -197,8 +199,8 @@ export default function Tex8AssistantScreen({ navigation }: any) {
           <Icon name="arrow-left" size={20} color={colors.textSecondary} />
         </TouchableOpacity>
         <View style={s.headerText}>
-          <Text style={s.kicker}>Tex8 Shared</Text>
-          <Text style={s.title}>AI Assistant</Text>
+          <Text style={s.kicker}>{t('assistant.kicker')}</Text>
+          <Text style={s.title}>{t('assistant.title')}</Text>
         </View>
       </View>
 
@@ -265,7 +267,7 @@ export default function Tex8AssistantScreen({ navigation }: any) {
           <TextInput
             value={input}
             onChangeText={setInput}
-            placeholder="Ask about wallet features..."
+            placeholder={t('assistant.placeholder')}
             placeholderTextColor={colors.textMuted}
             style={s.input}
             multiline

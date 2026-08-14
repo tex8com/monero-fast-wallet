@@ -49,6 +49,26 @@ const EMPTY_STATUS: MoneroEnthusiastV1Status = {
   reason: '',
 };
 
+function publicationStatusLabel(
+  status: string,
+  t: ReturnType<typeof useI18n>['t'],
+): string {
+  switch (status.trim().toLowerCase()) {
+    case 'awaiting_screening': return t('communityV1.status.awaitingScreening');
+    case 'human_review': return t('communityV1.status.humanReview');
+    case 'needs_changes': return t('communityV1.status.needsChanges');
+    case 'quarantined': return t('communityV1.status.quarantined');
+    case 'approved_awaiting_embedding': return t('communityV1.status.approvedAwaitingEmbedding');
+    case 'published': return t('communityV1.status.published');
+    case 'hidden': return t('communityV1.status.hidden');
+    case 'rejected': return t('communityV1.status.rejected');
+    case 'removed': return t('communityV1.status.removed');
+    case 'expired': return t('communityV1.status.expired');
+    case 'withdrawn': return t('communityV1.status.withdrawn');
+    default: return t('communityV1.preparing');
+  }
+}
+
 /**
  * The V1 renderer receives only public DTOs and message text the user opened.
  * Account credentials, Matrix sessions, store keys, model internals and search
@@ -574,7 +594,7 @@ export default function MoneroEnthusiastScreen() {
           />
           {!status.ready ? (
             <Text style={s.cardText}>
-              {notice ?? status.reason ?? t('communityV1.notReady')}
+              {notice ?? t('communityV1.notReady')}
             </Text>
           ) : null}
           {status.packaged && !status.ready ? (
@@ -642,7 +662,8 @@ export default function MoneroEnthusiastScreen() {
               />
               {profile ? (
                 <Text style={s.small}>
-                  {t('communityV1.reviewStatus')}: {profile.status}
+                  {t('communityV1.reviewStatus')}:{' '}
+                  {publicationStatusLabel(profile.status, t)}
                 </Text>
               ) : null}
               {contentOutcomes
@@ -732,7 +753,8 @@ export default function MoneroEnthusiastScreen() {
                   <Text style={s.resultTitle}>{listing.draft.title}</Text>
                   <Text style={s.cardText}>{listing.draft.summary}</Text>
                   <Text style={s.small}>
-                    {t('communityV1.reviewStatus')}: {listing.status}
+                    {t('communityV1.reviewStatus')}:{' '}
+                    {publicationStatusLabel(listing.status, t)}
                   </Text>
                 </View>
               ))}

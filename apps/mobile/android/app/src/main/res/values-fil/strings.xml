@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Monero Fast Wallet</string>
+    <string name="monero_transaction_channel_name">Mga transaksyon sa Monero</string>
+    <string name="monero_transaction_channel_description">Mga alert sa bayad at kumpirmasyon ng Fast Wallet</string>
+    <string name="monero_sync_channel_name">Pag-sync ng wallet</string>
+    <string name="monero_sync_channel_description">Pinananatiling aktibo ang pag-sync ng kasaysayan ng wallet</string>
+    <string name="monero_sync_notification_title">Sini-sync ang kasaysayan ng wallet</string>
+    <string name="monero_sync_notification_description">Dina-download at sine-scan ang pampublikong blockchain data</string>
+</resources>
