@@ -3366,6 +3366,25 @@ export function hasDuplicatedAdjacentWord(value: string): boolean {
   });
 }
 
+export function hasEnglishSourceLeak(source: string, translated: string): boolean {
+  const normalizedSource = source.trim();
+  const normalizedTranslation = translated.trim();
+  if (
+    normalizedSource.length < 3
+    || normalizedTranslation.localeCompare(normalizedSource, undefined, { sensitivity: 'base' }) === 0
+    || normalizedTranslation.replace(/[.!?…。؛،]+$/u, '').localeCompare(
+      normalizedSource.replace(/[.!?…。؛،]+$/u, ''),
+      undefined,
+      { sensitivity: 'base' },
+    ) === 0
+  ) return false;
+  const pattern = normalizedSource
+    .split(/\s+/u)
+    .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('\\s+');
+  return new RegExp(`(^|[^\\p{L}\\p{N}-])${pattern}(?=$|[^\\p{L}\\p{N}-])`, 'iu').test(normalizedTranslation);
+}
+
 export function isGeneratedTranslationCriticallyUnsafe(source: string, translated: string): boolean {
   const sourceLength = [...source].length;
   const translatedLength = [...translated].length;
@@ -3379,6 +3398,7 @@ export function isGeneratedTranslationCriticallyUnsafe(source: string, translate
 
 export function isGeneratedTranslationSafe(source: string, translated: string): boolean {
   if (isGeneratedTranslationCriticallyUnsafe(source, translated)) return false;
+  if (hasEnglishSourceLeak(source, translated)) return false;
   const sourceLength = [...source].length;
   const translatedLength = [...translated].length;
   if (translatedLength > sourceLength * 1.8 && translatedLength - sourceLength > 8) return false;

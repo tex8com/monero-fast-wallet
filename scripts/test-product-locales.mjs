@@ -7,6 +7,7 @@ import { matchProductLanguage, productLocales } from '../config/productLocales.t
 import {
   applyManualTranslationOverrides,
   hasDuplicatedAdjacentWord,
+  hasEnglishSourceLeak,
   isGeneratedTranslationCriticallyUnsafe,
   isGeneratedTranslationSafe,
   manualTranslationOverrides,
@@ -81,6 +82,7 @@ function verifyTranslationQuality(target, language, key, source, value) {
   assert.doesNotMatch(value, /<\s*\/?\s*x?\d*\s*\/?>|&(?:quot|amp|lt|gt);/iu, `${label}: leaked markup`);
   assert.equal(hasDuplicatedAdjacentWord(value), false, `${label}: duplicated adjacent word`);
   if (!/\d/.test(source)) assert.doesNotMatch(value, /\d/, `${label}: translation invented a number`);
+  assert.equal(hasEnglishSourceLeak(source, value), false, `${label}: translation contains an appended English source phrase`);
 }
 
 async function catalogs(target) {
@@ -200,4 +202,13 @@ test('device locales select the same product language in both apps', () => {
   assert.equal(matchProductLanguage('zh-Hans-SG'), 'zh-CN');
   assert.equal(matchProductLanguage('ar-AE'), 'ar');
   assert.equal(matchProductLanguage('unlisted-language'), 'en');
+});
+
+test('generated translation safety rejects appended English source text', () => {
+  assert.equal(hasEnglishSourceLeak('Close', 'Close Cerrar'), true);
+  assert.equal(hasEnglishSourceLeak('Menu', 'Menú Menu'), true);
+  assert.equal(hasEnglishSourceLeak('Monero', 'Monero'), false);
+  assert.equal(hasEnglishSourceLeak('Max', 'Max.'), false);
+  assert.equal(hasEnglishSourceLeak('Save', 'I-save'), false);
+  assert.equal(isGeneratedTranslationSafe('Close', 'Close Cerrar'), false);
 });
