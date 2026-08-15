@@ -123,6 +123,8 @@ jobs:
             manifest: services/monero-news/Cargo.toml
           - name: notification-gateway
             manifest: services/notification-gateway/Cargo.toml
+          - name: notification-registration-adapter
+            manifest: services/notification-registration-adapter/Cargo.toml
           - name: notify-scanner
             manifest: services/notify-scanner/Cargo.toml
     steps:

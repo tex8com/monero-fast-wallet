@@ -11,7 +11,7 @@ axum = { version = "0.8", features = ["json"] }
 ed25519-dalek = { version = "2.2", features = ["zeroize"] }
 getrandom = "0.4"
 hex = "0.4"
-jsonwebtoken = { version = "10.2", default-features = false, features = ["rust_crypto"] }
+jsonwebtoken = { version = "10.2", default-features = false, features = ["aws_lc_rs"] }
 libc = "0.2"
 notification-gateway = { path = "../notification-gateway" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

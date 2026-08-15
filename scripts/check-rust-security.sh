@@ -13,6 +13,7 @@ clean_lockfiles=(
   "${repo_root}/services/enthusiast-discovery/Cargo.lock"
   "${repo_root}/services/monero-news/Cargo.lock"
   "${repo_root}/services/notification-gateway/Cargo.lock"
+  "${repo_root}/services/notification-registration-adapter/Cargo.lock"
   "${repo_root}/services/notify-scanner/Cargo.lock"
 )
 
