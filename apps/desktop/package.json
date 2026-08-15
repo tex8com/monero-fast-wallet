@@ -14,6 +14,7 @@
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
     "test:parity-contract": "node --test scripts/test-desktop-parity-contract.mjs",
+    "test:connection-contract": "node --test scripts/test-connection-settings-contract.mjs",
     "test:mfw-contract": "node --test scripts/test-mfw-name-contract.mjs",
     "test:update-contract": "node --test scripts/test-app-update-contract.mjs",
     "test:push-contract": "node --experimental-strip-types --test scripts/test-fast-wallet-push-contract.mjs",

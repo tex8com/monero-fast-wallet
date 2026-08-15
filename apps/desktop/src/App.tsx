@@ -47,6 +47,15 @@ import {
   deriveAppVaultPresentation,
   validateRecoveryPassword,
 } from '../../../packages/wallet-shared/src/appVaultStateMachine';
+import {
+  fixedMainnetNodeConnection,
+  type FixedNodeId,
+  type FixedNodeTransport,
+} from '../../../packages/wallet-shared/src/nodePresets';
+import type {
+  CommunityFastWalletWorker,
+  FastWalletWorkerSelection,
+} from '../../../packages/wallet-shared/src/fastWalletWorkerDirectory';
 
 type Section = 'home' | 'wallets' | 'setup' | 'onboarding' | 'send' | 'receive' | 'activity' | 'mfw' | 'enthusiast' | 'community' | 'assistant' | 'settings' | 'menu';
 type Network = 'mainnet' | 'testnet' | 'stagenet';
@@ -727,7 +736,7 @@ export default function App() {
           await invoke<FastWalletRecord>('enable_encrypted_fast_wallet_alerts', {
             input: {
               identityId: created.id,
-              worker: 'official',
+              worker: selectedDesktopEnrollmentWorker(source.wallet.network),
               appPassword: '',
             },
           });
@@ -950,7 +959,7 @@ export default function App() {
       {section === 'community' && v1ReleaseFeatures.legacyCommunity && <Community />}
       {section === 'enthusiast' && <MoneroEnthusiastV1 />}
       {section === 'assistant' && v1ReleaseFeatures.assistant && <Assistant wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
-      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} onWalletsChanged={reloadWallets} autoLockSeconds={autoLockSeconds} onSetAutoLockSeconds={updateAutoLockTimeout} appProtection={appProtection} onSetAppProtectionMode={setAppProtectionMode} onLockApp={lockDesktopApp} />}
+      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} onWalletsChanged={reloadWallets} autoLockSeconds={autoLockSeconds} onSetAutoLockSeconds={updateAutoLockTimeout} appProtection={appProtection} onSetAppProtectionMode={setAppProtectionMode} onLockApp={lockDesktopApp} onOpenMfwNames={() => setSection('mfw')} />}
       {section === 'menu' && <DesktopMenu wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
       {seedRevealRequest && <SensitiveAuthorizationOverlay title={t('protection.showRecoveryWords')} description={activeProtectionMode === 'system' ? t('protection.showRecoveryWordsSystem', { system: appProtection.systemAuth.label }) : t('protection.showRecoveryWordsPassword')} password={seedAuthorizationPassword} mode={activeProtectionMode} systemLabel={appProtection.systemAuth.label} allowPasswordFallback={appProtection.passwordConfigured} busy={seedRevealBusy} onPasswordChange={setSeedAuthorizationPassword} onConfirm={() => void presentRecoverySeed()} onDismiss={() => { pendingFastWalletSourceRef.current = null; setSeedAuthorizationPassword(''); setSeedRevealRequest(null); }} />}
       {fastWalletTransferStatus !== 'idle' && <FastWalletTransferOverlay status={fastWalletTransferStatus} />}
@@ -2050,7 +2059,7 @@ function FastWallets({ linked, sourceWalletId, sourceWallet, appProtection }: { 
         const updated = await invoke<FastWalletRecord>('enable_encrypted_fast_wallet_alerts', {
           input: {
             identityId: wallet.id,
-            worker: 'official',
+            worker: selectedDesktopEnrollmentWorker(wallet.network),
             appPassword,
           },
         });
@@ -2692,7 +2701,7 @@ function FastWalletReceive({ appProtection }: { appProtection: AppProtectionStat
       await invoke<FastWalletRecord>('enable_encrypted_fast_wallet_alerts', {
         input: {
           identityId: wallet.id,
-          worker: 'official',
+          worker: selectedDesktopEnrollmentWorker(wallet.network),
           appPassword: '',
         },
       });
@@ -3207,6 +3216,28 @@ function Community() {
 
 function settingsProfileSignature(profile: NodeProfile | null) { return profile ? JSON.stringify({ mode: profile.mode, network: profile.network, daemonAddress: profile.daemonAddress, grpcEndpoint: profile.grpcEndpoint, trusted: profile.trusted, useSsl: profile.useSsl, username: profile.username, proxyAddress: profile.proxyAddress, passwordStored: profile.passwordStored }) : ''; }
 function defaultNodeProfile(network: Network, mode: NodeProfile['mode'] = 'optimized-grpc'): NodeProfile { const ports: Record<Network, { daemon: number; rpc: number; grpc: number }> = { mainnet: { daemon: 18089, rpc: 18081, grpc: 18091 }, testnet: { daemon: 28089, rpc: 28081, grpc: 28091 }, stagenet: { daemon: 38089, rpc: 38081, grpc: 38091 } }; const values = ports[network]; return { mode, network, daemonAddress: `xmr.tex8.com:${mode === 'original-rpc' ? values.rpc : values.daemon}`, grpcEndpoint: mode === 'original-rpc' ? '' : `xmr.tex8.com:${values.grpc}`, trusted: true, useSsl: false, username: '', proxyAddress: '', passwordStored: false, updatedAt: 0 }; }
+const FAST_WALLET_WORKER_SELECTION_KEY = 'monero-fast-wallet.worker-selection.v1';
+function loadDesktopFastWalletWorkerSelection(network: Network): FastWalletWorkerSelection {
+  try {
+    const raw = window.localStorage.getItem(`${FAST_WALLET_WORKER_SELECTION_KEY}.${network}`);
+    if (!raw) return { kind: 'recommended', network };
+    const parsed = JSON.parse(raw) as Partial<FastWalletWorkerSelection>;
+    if (parsed.network !== network) return { kind: 'recommended', network };
+    if (parsed.kind === 'recommended') return { kind: 'recommended', network };
+    if ((parsed.kind === 'community' || parsed.kind === 'private') && typeof parsed.workerId === 'string' && typeof parsed.label === 'string' && typeof parsed.workerDescriptor === 'string' && /^[0-9a-f]+$/.test(parsed.workerDescriptor) && parsed.workerDescriptor.length % 2 === 0) {
+      return { kind: parsed.kind, network, workerId: parsed.workerId, label: parsed.label, workerDescriptor: parsed.workerDescriptor };
+    }
+  } catch {
+    // A damaged public preference falls back to the compiled official Worker.
+  }
+  return { kind: 'recommended', network };
+}
+function saveDesktopFastWalletWorkerSelection(selection: FastWalletWorkerSelection): void {
+  window.localStorage.setItem(`${FAST_WALLET_WORKER_SELECTION_KEY}.${selection.network}`, JSON.stringify(selection));
+}
+function selectedDesktopEnrollmentWorker(network: Network): 'official' | 'private' {
+  return loadDesktopFastWalletWorkerSelection(network).kind === 'recommended' ? 'official' : 'private';
+}
 function Settings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoLockEnabled, onAutoLockChange }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; autoLockEnabled: boolean; onAutoLockChange: (value: boolean) => void }) {
   const [network, setNetwork] = useState<Network>(wallet?.network ?? 'mainnet'); const [profile, setProfile] = useState<NodeProfile | null>(null); const [savedProfile, setSavedProfile] = useState<NodeProfile | null>(null); const [password, setPassword] = useState(''); const [clearPassword, setClearPassword] = useState(false); const [message, setMessage] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [diagnostics, setDiagnostics] = useState<SettingsDiagnostic[]>([]); const [diagnosing, setDiagnosing] = useState(false); const [newPassword, setNewPassword] = useState(''); const [confirmPassword, setConfirmPassword] = useState(''); const [changingPassword, setChangingPassword] = useState(false);
   useEffect(() => { if (wallet?.network) setNetwork(wallet.network); }, [wallet?.network]);
@@ -3222,7 +3253,7 @@ function Settings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoL
   return <section className="settings-page"><header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>Settings</h2><p>Desktop wallet controls mirror the mobile app while keeping keys and credentials local.</p></div><span>Desktop</span></header><section className="settings-section"><header><h3>Wallet</h3><small>{wallet ? `${wallet.walletName} · ${networkLabel(wallet.network)} · ${wallet.kind}` : 'No wallet open'}</small></header><article className="settings-panel settings-wallet-actions"><div><div><strong>Recovery seed</strong><p>{wallet?.kind === 'hardware' ? 'The recovery seed remains on the Ledger device.' : 'Reveal only while this local wallet is open.'}</p></div></div><button className="secondary" disabled={!walletId || wallet?.kind === 'hardware'} onClick={onRevealSeed} type="button">Show recovery seed</button></article><article className="settings-panel password-change"><div><strong>Change wallet password</strong><p>Changing the password requires the wallet to be open. The new password is never saved by this app.</p></div><div className="password-fields"><input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="New wallet password" /><input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="Confirm new password" /><button className="secondary" disabled={!walletId || changingPassword || !newPassword || !confirmPassword} onClick={() => void saveNewPassword()} type="button">{changingPassword ? 'Changing…' : 'Change password'}</button></div></article></section><section className="settings-section"><header><h3>Security</h3><small>Local controls</small></header><article className="settings-panel settings-toggle-row"><div><strong>Auto-lock after 5 minutes</strong><p>Locks the open wallet after the desktop app has been in the background for five minutes.</p></div><label className="toggle"><input checked={autoLockEnabled} onChange={(event) => onAutoLockChange(event.target.checked)} type="checkbox" /><span /></label></article><article className="settings-panel settings-info-row"><div><strong>Secure storage</strong><p>Node credentials and Fast Wallet scanner credentials stay in macOS Keychain. Recovery seeds and spend keys are never stored in this settings view.</p></div><span className="status-good">Keychain</span></article></section><section className="settings-section"><header><h3>Node</h3><small>{changed ? 'Unsaved changes' : savedProfile ? 'Saved' : 'Loading'}</small></header><article className="settings-panel node-settings"><p>{wallet ? `${wallet.walletName} uses its ${networkLabel(wallet.network)} profile when you save that network.` : 'Configure a network profile before opening a wallet.'}</p>{profile && <><div className="settings-field"><span>Network</span><div className="node-mode">{(['mainnet', 'testnet', 'stagenet'] as Network[]).map((item) => <button className={network === item ? 'selected' : ''} onClick={() => setNetwork(item)} key={item} type="button">{networkLabel(item)}</button>)}</div></div><div className="settings-field"><span>Connection</span><div className="node-mode">{([['optimized-grpc', 'Optimized'], ['original-rpc', 'Original RPC'], ['custom', 'Custom']] as const).map(([mode, label]) => <button className={profile.mode === mode ? 'selected' : ''} onClick={() => changeMode(mode)} key={mode} type="button">{label}</button>)}</div></div><div className="node-hint">{profile.mode === 'original-rpc' ? 'Original Monero daemon RPC. gRPC is disabled for this profile.' : profile.mode === 'optimized-grpc' ? 'Optimized Monero Fast Node (MFN) gRPC profile, matching the mobile default.' : 'Custom node endpoints remain local to this device.'}</div><div className="settings-form-grid"><label>Daemon address<input value={profile.daemonAddress} onChange={(event) => setProfile({ ...profile, daemonAddress: event.target.value })} placeholder="node.example:18089" autoComplete="off" /></label>{profile.mode !== 'original-rpc' && <label>Monero Fast Node (MFN) gRPC endpoint<input value={profile.grpcEndpoint} onChange={(event) => setProfile({ ...profile, grpcEndpoint: event.target.value })} placeholder="node.example:18091" autoComplete="off" /></label>}<label>Node username <small>Optional</small><input value={profile.username} onChange={(event) => setProfile({ ...profile, username: event.target.value })} autoComplete="off" /></label><label>Node password <small>Optional · Keychain only</small><input value={password} onChange={(event) => { setPassword(event.target.value); setClearPassword(false); }} type="password" autoComplete="new-password" placeholder={profile.passwordStored ? 'Password stored in Keychain' : 'Stored only in Keychain'} /></label><label>SOCKS5 proxy <small>Optional</small><input value={profile.proxyAddress} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.value })} placeholder="127.0.0.1:9050" autoComplete="off" /></label></div><div className="settings-checkboxes"><label className="checkbox"><input checked={profile.trusted} onChange={(event) => setProfile({ ...profile, trusted: event.target.checked })} type="checkbox" />Trusted node</label><label className="checkbox"><input checked={profile.useSsl} onChange={(event) => setProfile({ ...profile, useSsl: event.target.checked })} type="checkbox" />Use SSL/TLS for daemon RPC</label><label className="checkbox"><input checked={torEnabled} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.checked ? '127.0.0.1:9050' : '' })} type="checkbox" />Use Tor via local SOCKS5</label>{profile.passwordStored && <label className="checkbox"><input checked={clearPassword} onChange={(event) => setClearPassword(event.target.checked)} type="checkbox" />Forget stored node password</label>}</div><div className="settings-actions"><button className="secondary" onClick={reset} type="button">Reset defaults</button><button className="primary" disabled={busy || !changed} onClick={() => void save()} type="button">{busy ? 'Saving…' : wallet?.network === profile.network && walletId ? 'Save & apply node' : 'Save node profile'}</button></div></>}</article></section><section className="settings-section"><header><h3>Diagnostics</h3><small>{diagnosing ? 'Running…' : diagnostics.length ? 'Updated' : 'Ready'}</small></header><article className="settings-panel">{diagnostics.length > 0 && <div className="settings-diagnostics">{diagnostics.map((item) => <div key={item.label}><span>{item.label}</span><strong className={item.tone ?? 'neutral'}>{item.value}</strong></div>)}</div>}<button className="primary" disabled={diagnosing} onClick={() => void runDiagnostics()} type="button">{diagnosing ? 'Running diagnostics…' : 'Run diagnostics'}</button></article></section><section className="settings-section settings-about"><header><h3>About</h3><small>Local desktop build</small></header><article className="settings-panel"><div><strong>Privacy by design</strong><p>The packaged interface contains no remote web content. Wallet keys, passwords, transaction signing, and recovery seeds remain in the native Monero core.</p></div><div><strong>Market display</strong><p>Dashboard values use XMR/USD, the same default display as the mobile wallet.</p></div><div><strong>Open-source components</strong><p>Built with Tauri, React, Rust, and the pinned fork of Monero libwallet_api.</p></div></article></section><button className="danger-button settings-lock" disabled={!walletId} onClick={onCloseWallet} type="button">Close wallet</button>{message && <p className="setup-message">{message}</p>}</section>;
 }
 
-function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, onWalletsChanged, autoLockSeconds, onSetAutoLockSeconds, appProtection, onSetAppProtectionMode, onLockApp }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; onWalletsChanged: () => Promise<void>; autoLockSeconds: number; onSetAutoLockSeconds: (seconds: number) => Promise<void>; appProtection: AppProtectionStatus; onSetAppProtectionMode: (mode: AppProtectionMode, password?: string, currentPassword?: string) => Promise<void>; onLockApp: () => Promise<void> }) {
+function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, onWalletsChanged, autoLockSeconds, onSetAutoLockSeconds, appProtection, onSetAppProtectionMode, onLockApp, onOpenMfwNames }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; onWalletsChanged: () => Promise<void>; autoLockSeconds: number; onSetAutoLockSeconds: (seconds: number) => Promise<void>; appProtection: AppProtectionStatus; onSetAppProtectionMode: (mode: AppProtectionMode, password?: string, currentPassword?: string) => Promise<void>; onLockApp: () => Promise<void>; onOpenMfwNames: () => void }) {
   const { dateLocale, language, setLanguage, t } = useI18n();
   const [network, setNetwork] = useState<Network>(wallet?.network ?? 'mainnet');
   const [profile, setProfile] = useState<NodeProfile | null>(null);
@@ -3248,6 +3279,14 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
   const [diagnosticProgress, setDiagnosticProgress] = useState<DesktopDiagnosticProgress | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
   const [ledgerRechecking, setLedgerRechecking] = useState(false);
+  const [workerSelection, setWorkerSelection] = useState<FastWalletWorkerSelection>(() => loadDesktopFastWalletWorkerSelection(wallet?.network ?? 'mainnet'));
+  const [communityWorkers, setCommunityWorkers] = useState<CommunityFastWalletWorker[]>([]);
+  const [workerDirectoryLoading, setWorkerDirectoryLoading] = useState(false);
+  const [workerDirectoryError, setWorkerDirectoryError] = useState(false);
+  const [workerBusy, setWorkerBusy] = useState(false);
+  const [showPrivateWorker, setShowPrivateWorker] = useState(false);
+  const [privateWorkerDescriptor, setPrivateWorkerDescriptor] = useState('');
+  const [workerAuthorizationPassword, setWorkerAuthorizationPassword] = useState('');
 
   useEffect(() => { if (wallet?.network) setNetwork(wallet.network); }, [wallet?.network]);
   useEffect(() => {
@@ -3262,6 +3301,28 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
     } catch (reason) { setMessage(errorMessage(reason, t('settings.nodeLoadFailed'))); }
   }, [network, t]);
   useEffect(() => { void load(); }, [load]);
+  const loadCommunityWorkers = useCallback(async () => {
+    if (network !== 'mainnet' || !v1ReleaseFeatures.privateWorkerPairing) {
+      setCommunityWorkers([]);
+      setWorkerDirectoryError(false);
+      return;
+    }
+    setWorkerDirectoryLoading(true);
+    setWorkerDirectoryError(false);
+    try {
+      setCommunityWorkers(await invoke<CommunityFastWalletWorker[]>('list_community_fast_wallet_workers', { input: { network } }));
+    } catch (reason) {
+      setCommunityWorkers([]);
+      setWorkerDirectoryError(true);
+      setMessage(errorMessage(reason, t('settings.workerUnavailable')));
+    } finally {
+      setWorkerDirectoryLoading(false);
+    }
+  }, [network, t]);
+  useEffect(() => {
+    setWorkerSelection(loadDesktopFastWalletWorkerSelection(network));
+    void loadCommunityWorkers();
+  }, [loadCommunityWorkers, network]);
   useEffect(() => {
     let mounted = true;
     void invoke<boolean>('enthusiast_v1_query_contribution_enabled')
@@ -3291,6 +3352,64 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
     if (mode === 'custom') { setProfile({ ...profile, mode }); return; }
     const defaults = defaultNodeProfile(profile.network, mode);
     setProfile({ ...profile, ...defaults, username: profile.username, proxyAddress: profile.proxyAddress, passwordStored: profile.passwordStored });
+  };
+  const useFixedNode = (node: FixedNodeId, transport: FixedNodeTransport) => {
+    const preset = fixedMainnetNodeConnection(node, transport);
+    setNetwork('mainnet');
+    setProfile({
+      mode: preset.mode,
+      network: 'mainnet',
+      daemonAddress: preset.daemonAddress,
+      grpcEndpoint: preset.grpcEndpoint,
+      trusted: true,
+      useSsl: false,
+      username: '',
+      proxyAddress: preset.proxyAddress,
+      passwordStored: false,
+      updatedAt: 0,
+    });
+    setNodePassword('');
+    setClearPassword(false);
+  };
+  const chooseRecommendedWorker = () => {
+    const selection: FastWalletWorkerSelection = { kind: 'recommended', network };
+    saveDesktopFastWalletWorkerSelection(selection);
+    setWorkerSelection(selection);
+    setMessage(t('settings.workerSelected'));
+  };
+  const chooseCommunityWorker = async (worker: CommunityFastWalletWorker) => {
+    setWorkerBusy(true); setMessage(null);
+    try {
+      const paired = await invoke<{ workerRootId: string }>('select_community_fast_wallet_worker', { input: { worker, network, appPassword: workerAuthorizationPassword } });
+      if (paired.workerRootId !== worker.workerId) throw new Error(t('settings.workerIdentityMismatch'));
+      const selection: FastWalletWorkerSelection = { kind: 'community', network, workerId: worker.workerId, label: worker.operatorLabel, workerDescriptor: worker.workerDescriptor };
+      saveDesktopFastWalletWorkerSelection(selection);
+      setWorkerSelection(selection);
+      setWorkerAuthorizationPassword('');
+      setMessage(t('settings.workerSelected'));
+    } catch (reason) {
+      setWorkerAuthorizationPassword('');
+      setMessage(errorMessage(reason, t('settings.workerSelectFailed')));
+    } finally { setWorkerBusy(false); }
+  };
+  const choosePrivateWorker = async () => {
+    const checked = privateWorkerDescriptor.trim();
+    if (!checked) return;
+    const descriptor = checked.startsWith('tex8-fast-wallet-worker:v1:') ? checked.slice('tex8-fast-wallet-worker:v1:'.length) : checked;
+    setWorkerBusy(true); setMessage(null);
+    try {
+      const paired = await invoke<{ workerRootId: string }>('pair_private_fast_wallet_worker', { input: { workerQr: `tex8-fast-wallet-worker:v1:${descriptor}`, network, appPassword: workerAuthorizationPassword } });
+      const selection: FastWalletWorkerSelection = { kind: 'private', network, workerId: paired.workerRootId, label: t('settings.privateWorker'), workerDescriptor: descriptor };
+      saveDesktopFastWalletWorkerSelection(selection);
+      setWorkerSelection(selection);
+      setPrivateWorkerDescriptor('');
+      setWorkerAuthorizationPassword('');
+      setShowPrivateWorker(false);
+      setMessage(t('settings.workerSelected'));
+    } catch (reason) {
+      setWorkerAuthorizationPassword('');
+      setMessage(errorMessage(reason, t('settings.workerSelectFailed')));
+    } finally { setWorkerBusy(false); }
   };
   const save = async () => {
     if (!profile) return;
@@ -3393,6 +3512,45 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
   };
   return <section className="settings-page">
     <header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>{t('settings.title')}</h2><p>{t('settings.subtitle')}</p></div><span>{status?.linked ? t('settings.ready') : t('settings.checking')}</span></header>
+    <section className="settings-section"><header><h3>{t('settings.worker')}</h3><small>{workerSelection.kind === 'recommended' ? t('settings.recommendedWorker') : workerSelection.label}</small></header>
+      <article className="settings-panel worker-settings">
+        <p>{t('settings.workerSubtitle')}</p>
+        <div className="settings-choice-list">
+          <button className={`settings-choice-card ${workerSelection.kind === 'recommended' ? 'selected' : ''}`} disabled={workerBusy} onClick={chooseRecommendedWorker} type="button">
+            <span className="settings-choice-icon"><DesktopIcon name="sparkles" size={19} /></span>
+            <span className="settings-choice-copy"><strong>{t('settings.recommendedWorker')}</strong><small>{t('settings.recommendedWorkerHint')}</small></span>
+            {workerSelection.kind === 'recommended' && <span className="settings-choice-check">✓</span>}
+          </button>
+        </div>
+        {appProtection.mode === 'password' && (communityWorkers.length > 0 || showPrivateWorker) && <label className="worker-authorization">{t('settings.currentAppPassword')}<input autoComplete="current-password" onChange={(event) => setWorkerAuthorizationPassword(event.target.value)} type="password" value={workerAuthorizationPassword} /></label>}
+        {v1ReleaseFeatures.privateWorkerPairing && network === 'mainnet' && <div className="worker-group">
+          <div className="worker-group-header"><div><strong>{t('settings.communityWorkers')}</strong><p>{t('settings.communityWorkerHint')}</p></div><button className="quiet-button" disabled={workerDirectoryLoading} onClick={() => void loadCommunityWorkers()} type="button">{workerDirectoryLoading ? t('settings.workerLoading') : t('common.retry')}</button></div>
+          <div className="settings-choice-list">{communityWorkers.map(worker => {
+            const selected = workerSelection.kind === 'community' && workerSelection.workerId === worker.workerId;
+            return <button className={`settings-choice-card ${selected ? 'selected' : ''}`} disabled={workerBusy || (appProtection.mode === 'password' && !workerAuthorizationPassword)} key={worker.workerId} onClick={() => void chooseCommunityWorker(worker)} type="button">
+              <span className="settings-choice-icon"><DesktopIcon name="community-menu" size={19} /></span>
+              <span className="settings-choice-copy"><strong>{worker.operatorLabel}</strong><small>{worker.region || t('settings.communityWorker')}</small></span>
+              {selected && <span className="settings-choice-check">✓</span>}
+            </button>;
+          })}</div>
+          {workerDirectoryError && <p className="worker-warning">{t('settings.workerUnavailable')}</p>}
+        </div>}
+        {v1ReleaseFeatures.privateWorkerPairing && <div className="worker-group">
+          <button className={`settings-choice-card ${workerSelection.kind === 'private' ? 'selected' : ''}`} disabled={workerBusy} onClick={() => setShowPrivateWorker(value => !value)} type="button">
+            <span className="settings-choice-icon"><DesktopIcon name="key" size={19} /></span>
+            <span className="settings-choice-copy"><strong>{t('settings.privateWorker')}</strong><small>{t('settings.privateWorkerHint')}</small></span>
+            <DesktopIcon name="chevron-right" size={18} />
+          </button>
+          {showPrivateWorker && <div className="worker-private-form">
+            <textarea autoComplete="off" onChange={(event) => setPrivateWorkerDescriptor(event.target.value)} placeholder={t('settings.privateWorkerPlaceholder')} rows={4} value={privateWorkerDescriptor} />
+            <button className="primary" disabled={workerBusy || !privateWorkerDescriptor.trim() || (appProtection.mode === 'password' && !workerAuthorizationPassword)} onClick={() => void choosePrivateWorker()} type="button">{t('settings.useWorker')}</button>
+          </div>}
+        </div>}
+      </article>
+    </section>
+    {v1ReleaseFeatures.mfwNameRegistration && <section className="settings-section"><header><h3>{t('settings.mfwRegistry')}</h3><small>.mfw</small></header>
+      <article className="settings-panel settings-registry-card"><span className="settings-choice-icon"><DesktopIcon name="key" size={20} /></span><div><strong>{t('settings.mfwRegistry')}</strong><p>{t('settings.mfwRegistryHint')}</p></div><button className="secondary" onClick={onOpenMfwNames} type="button">{t('settings.openMfwRegistry')}</button></article>
+    </section>}
     <section className="settings-section"><header><h3>{t('settings.language')}</h3><small>{t('settings.languageHint')}</small></header>
       <article className="settings-panel settings-language">{supportedLanguages.map(code => <button className={language === code ? 'selected' : ''} onClick={() => setLanguage(code)} key={code} lang={code} type="button">{languageNames[code]}</button>)}</article>
     </section>
@@ -3428,6 +3586,11 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
       <article className="settings-panel node-settings">{profile && <>
         <p>{wallet ? t('settings.nodeForWallet', { name: walletDisplayName(wallet), network: networkLabel(profile.network) }) : t('settings.nodeChoose')}</p>
         <div className="settings-field"><span>{t('settings.network')}</span><div className="node-mode">{(['mainnet', 'testnet', 'stagenet'] as Network[]).map((item) => <button className={network === item ? 'selected' : ''} onClick={() => setNetwork(item)} key={item} type="button">{networkLabel(item)}</button>)}</div></div>
+        {profile.network === 'mainnet' && <div className="settings-field"><span>{t('settings.availableNodeAddresses')}</span><div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).flatMap(node => (['clearnet', 'onion'] as FixedNodeTransport[]).map(transport => {
+          const preset = fixedMainnetNodeConnection(node, transport);
+          const selected = profile.mode === preset.mode && profile.daemonAddress === preset.daemonAddress && profile.grpcEndpoint === preset.grpcEndpoint && profile.proxyAddress === preset.proxyAddress;
+          return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`${node}-${transport}`} onClick={() => useFixedNode(node, transport)} type="button"><span className="settings-choice-icon"><DesktopIcon name={transport === 'onion' ? 'key' : 'globe'} size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{transport === 'onion' ? t('settings.onionAddress') : t('settings.clearnetAddress')} · {preset.daemonAddress}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>;
+        }))}</div><small className="settings-field-help">{t('settings.availableNodeAddressesHelp')}</small></div>}
         <div className="settings-field"><span>{t('settings.connection')}</span><div className="node-mode">{([['optimized-grpc', t('settings.optimized')], ['original-rpc', t('settings.originalRpc')], ['custom', t('settings.custom')]] as const).map(([mode, title]) => <button className={profile.mode === mode ? 'selected' : ''} onClick={() => useMode(mode)} key={mode} type="button">{title}</button>)}</div></div>
         <div className="settings-form-grid"><label>{t('settings.daemonAddress')}<input value={profile.daemonAddress} onChange={(event) => setProfile({ ...profile, daemonAddress: event.target.value })} autoComplete="off" /></label>{profile.mode !== 'original-rpc' && <label>{t('settings.grpcEndpoint')}<input value={profile.grpcEndpoint} onChange={(event) => setProfile({ ...profile, grpcEndpoint: event.target.value })} autoComplete="off" /></label>}<label>{t('settings.nodeUsername')} <small>{t('common.optional')}</small><input value={profile.username} onChange={(event) => setProfile({ ...profile, username: event.target.value })} autoComplete="off" /></label><label>{t('settings.nodePassword')} <small>{t('settings.optionalKeychain')}</small><input value={nodePassword} onChange={(event) => { setNodePassword(event.target.value); setClearPassword(false); }} type="password" autoComplete="new-password" placeholder={profile.passwordStored ? t('settings.passwordStored') : t('settings.passwordKeychain')} /></label><label>{t('settings.socks5Proxy')} <small>{t('common.optional')}</small><input value={profile.proxyAddress} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.value })} placeholder="127.0.0.1:9050" autoComplete="off" /></label></div>
         <div className="settings-checkboxes"><label className="checkbox"><input checked={profile.trusted} onChange={(event) => setProfile({ ...profile, trusted: event.target.checked })} type="checkbox" />{t('settings.trustedNode')}</label><label className="checkbox"><input checked={profile.useSsl} onChange={(event) => setProfile({ ...profile, useSsl: event.target.checked })} type="checkbox" />{t('settings.tls')}</label>{profile.passwordStored && <label className="checkbox"><input checked={clearPassword} onChange={(event) => setClearPassword(event.target.checked)} type="checkbox" />{t('settings.forgetNodePassword')}</label>}</div>

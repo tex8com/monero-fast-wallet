@@ -307,6 +307,13 @@ const baseMessages = {
     "settings.optimized": "Optimized",
     "settings.originalRpc": "Original RPC",
     "settings.custom": "Custom",
+    "settings.availableNodeAddresses": "Available node addresses",
+    "settings.availableNodeAddressesHelp":
+      "Choose one address. Onion connections use your local Tor proxy at 127.0.0.1:9050.",
+    "settings.tex8Node": "TEX8 Node",
+    "settings.communityNode": "Community Node",
+    "settings.clearnetAddress": "Clearnet",
+    "settings.onionAddress": "Onion",
     "settings.daemonAddress": "Daemon address",
     "settings.grpcEndpoint": "Monero Fast Node (MFN) gRPC endpoint",
     "settings.nodeUsername": "Node username",
@@ -326,6 +333,31 @@ const baseMessages = {
     "settings.nodeSaved": "Node profile for {network} saved.",
     "settings.nodeLoadFailed": "Could not load the saved node settings.",
     "settings.nodeSaveFailed": "Could not save the node settings.",
+    "settings.worker": "Fast Wallet Worker",
+    "settings.workerSubtitle":
+      "Choose who watches the additional Fast Wallet for incoming payments. Spending keys never leave your wallet.",
+    "settings.recommendedWorker": "Recommended",
+    "settings.recommendedWorkerHint":
+      "Use the signed TEX8 Worker configured in this app.",
+    "settings.communityWorkers": "Approved Community Workers",
+    "settings.communityWorker": "Community Worker",
+    "settings.communityWorkerHint":
+      "Only Workers approved in the signed public directory are shown. The app verifies the approval natively.",
+    "settings.workerLoading": "Loading…",
+    "settings.workerUnavailable":
+      "The Worker directory is temporarily unavailable. Your current choice remains active.",
+    "settings.privateWorker": "Private Worker",
+    "settings.privateWorkerHint":
+      "Advanced: pair your own Worker from its signed QR code or descriptor.",
+    "settings.privateWorkerPlaceholder": "Paste Worker QR text or descriptor",
+    "settings.useWorker": "Use this Worker",
+    "settings.workerSelected": "Fast Wallet Worker selected.",
+    "settings.workerIdentityMismatch": "The Worker identity does not match its approval.",
+    "settings.workerSelectFailed": "The Fast Wallet Worker could not be selected.",
+    "settings.mfwRegistry": "Monero Name Registry",
+    "settings.mfwRegistryHint":
+      "Register and manage a simple public .mfw name for a receive address.",
+    "settings.openMfwRegistry": "Open name registry",
     "settings.about": "About",
     "settings.localDesktop": "Local desktop wallet",
     "settings.privacyByDesign": "Privacy by design",
@@ -1219,6 +1251,13 @@ const baseMessages = {
     "settings.optimized": "Optimiert",
     "settings.originalRpc": "Original-RPC",
     "settings.custom": "Benutzerdefiniert",
+    "settings.availableNodeAddresses": "Verfügbare Node-Adressen",
+    "settings.availableNodeAddressesHelp":
+      "Wähle eine Adresse. Onion-Verbindungen nutzen deinen lokalen Tor-Proxy unter 127.0.0.1:9050.",
+    "settings.tex8Node": "TEX8-Node",
+    "settings.communityNode": "Community-Node",
+    "settings.clearnetAddress": "Clearnet",
+    "settings.onionAddress": "Onion",
     "settings.daemonAddress": "Daemon-Adresse",
     "settings.grpcEndpoint": "Monero Fast Node (MFN) gRPC-Endpunkt",
     "settings.nodeUsername": "Node-Benutzername",
@@ -1240,6 +1279,31 @@ const baseMessages = {
       "Gespeicherte Node-Einstellungen konnten nicht geladen werden.",
     "settings.nodeSaveFailed":
       "Node-Einstellungen konnten nicht gespeichert werden.",
+    "settings.worker": "Fast Wallet Worker",
+    "settings.workerSubtitle":
+      "Wähle, wer die zusätzliche Fast Wallet auf eingehende Zahlungen prüft. Spending Keys verlassen deine Wallet nie.",
+    "settings.recommendedWorker": "Empfohlen",
+    "settings.recommendedWorkerHint":
+      "Den in dieser App festgelegten, signierten TEX8-Worker verwenden.",
+    "settings.communityWorkers": "Bestätigte Community Worker",
+    "settings.communityWorker": "Community Worker",
+    "settings.communityWorkerHint":
+      "Es erscheinen nur Worker aus dem bestätigten öffentlichen Verzeichnis. Die App prüft die Zulassung nativ.",
+    "settings.workerLoading": "Lädt…",
+    "settings.workerUnavailable":
+      "Das Worker-Verzeichnis ist vorübergehend nicht erreichbar. Deine bisherige Auswahl bleibt aktiv.",
+    "settings.privateWorker": "Privater Worker",
+    "settings.privateWorkerHint":
+      "Erweitert: eigenen Worker mit seinem signierten QR-Code oder Descriptor verbinden.",
+    "settings.privateWorkerPlaceholder": "Worker-QR-Text oder Descriptor einfügen",
+    "settings.useWorker": "Diesen Worker verwenden",
+    "settings.workerSelected": "Fast Wallet Worker ausgewählt.",
+    "settings.workerIdentityMismatch": "Die Worker-Identität passt nicht zu ihrer Zulassung.",
+    "settings.workerSelectFailed": "Der Fast Wallet Worker konnte nicht ausgewählt werden.",
+    "settings.mfwRegistry": "Monero Name Registry",
+    "settings.mfwRegistryHint":
+      "Einen einfachen öffentlichen .mfw-Namen für eine Empfangsadresse registrieren und verwalten.",
+    "settings.openMfwRegistry": "Namensregister öffnen",
     "settings.about": "Über",
     "settings.localDesktop": "Lokale Desktop-Wallet",
     "settings.privacyByDesign": "Privat von Grund auf",

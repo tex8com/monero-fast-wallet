@@ -439,6 +439,23 @@ internal object NativeMoneroWalletJni {
     )
   }
 
+  fun verifiedFastWalletWorkerAdmission(
+    workerDescriptorHex: String,
+    admissionCertificateHex: String,
+    directoryPublicKeyHex: String,
+    network: String,
+    now: Double,
+  ): Double {
+    requireLoaded()
+    return nativeVerifiedFastWalletWorkerAdmission(
+      workerDescriptorHex,
+      admissionCertificateHex,
+      directoryPublicKeyHex,
+      network,
+      now,
+    )
+  }
+
   fun closeWallet(walletId: String, store: Boolean) {
     requireLoaded()
     nativeCloseWallet(walletId, store)
@@ -1567,6 +1584,14 @@ internal object NativeMoneroWalletJni {
     network: String,
     now: Double,
   ): String
+
+  @JvmStatic private external fun nativeVerifiedFastWalletWorkerAdmission(
+    workerDescriptorHex: String,
+    admissionCertificateHex: String,
+    directoryPublicKeyHex: String,
+    network: String,
+    now: Double,
+  ): Double
 
   @JvmStatic private external fun nativeCloseWallet(walletId: String, store: Boolean)
 

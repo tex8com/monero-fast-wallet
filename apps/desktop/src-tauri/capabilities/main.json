@@ -50,6 +50,8 @@
     "allow-present-fast-wallet-recovery-seed",
     "allow-create-fast-wallet",
     "allow-pair-private-fast-wallet-worker",
+    "allow-list-community-fast-wallet-workers",
+    "allow-select-community-fast-wallet-worker",
     "allow-enable-encrypted-fast-wallet-alerts",
     "allow-turn-off-fast-wallet-alerts",
     "allow-delete-hosted-fast-wallet-data",

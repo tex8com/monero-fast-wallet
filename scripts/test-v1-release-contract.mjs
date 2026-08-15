@@ -127,12 +127,16 @@ test('safe V1 feature manifest enables verified local surfaces and fails closed 
     true,
     'the deployed encrypted official Worker must be enabled',
   );
+  assert.equal(
+    manifest.features.privateWorkerPairing,
+    true,
+    'natively verified Community and private Worker selection must be enabled',
+  );
   for (const feature of [
     'automaticFastWalletCreation',
     'plaintextFastWalletHosting',
     'ledgerFastWallet',
     'scannerKeyImageSpendAuthority',
-    'privateWorkerPairing',
     'legacyCommunity',
     'news',
     'assistant',

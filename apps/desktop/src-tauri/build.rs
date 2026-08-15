@@ -43,6 +43,8 @@ const COMMANDS: &[&str] = &[
     "present_fast_wallet_recovery_seed",
     "create_fast_wallet",
     "pair_private_fast_wallet_worker",
+    "list_community_fast_wallet_workers",
+    "select_community_fast_wallet_worker",
     "enable_encrypted_fast_wallet_alerts",
     "turn_off_fast_wallet_alerts",
     "delete_hosted_fast_wallet_data",

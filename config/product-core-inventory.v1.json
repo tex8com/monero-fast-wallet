@@ -280,7 +280,7 @@
       "ledgerFastWallet": false,
       "scannerKeyImageSpendAuthority": false,
       "officialWorker": true,
-      "privateWorkerPairing": false,
+      "privateWorkerPairing": true,
       "moneroEnthusiastV1": true,
       "legacyCommunity": false,
       "news": false,

@@ -32,6 +32,7 @@ import {
 } from './NodeConnectionSettings';
 import type { NodeConnectionSettings } from './NodeConnectionSettings';
 import { logWalletEvent } from './WalletLogger';
+import { loadFastWalletWorkerSelection } from './FastWalletWorkerSettings';
 import {
   createRegisteredWallet,
   isFastWalletRegistration,
@@ -2953,15 +2954,6 @@ export class WalletService {
   async enableEncryptedFastWalletAlerts(
     input: EnableEncryptedFastWalletAlertsInput,
   ): Promise<CreateFastReceiveIdentityResult> {
-    const privateWorkerRequested = Boolean(input.workerDescriptorHex?.trim());
-    if (
-      (privateWorkerRequested && !v1ReleaseFeatures.privateWorkerPairing) ||
-      (!privateWorkerRequested && !v1ReleaseFeatures.officialWorker)
-    ) {
-      throw new Error(
-        'Fast Wallet alerts are not configured in this signed release.',
-      );
-    }
     return traceWalletOperation(
       'enableEncryptedFastWalletAlerts',
       { identityId: input.identityId },
@@ -2970,6 +2962,24 @@ export class WalletService {
         const existing = identities.find(item => item.id === input.identityId);
         if (!existing) {
           throw new Error('Unknown Fast Wallet');
+        }
+        const explicitWorkerDescriptor = input.workerDescriptorHex?.trim();
+        const workerSelection = explicitWorkerDescriptor
+          ? undefined
+          : await loadFastWalletWorkerSelection(existing.network);
+        const selectedWorkerDescriptor =
+          explicitWorkerDescriptor ||
+          (workerSelection?.kind === 'recommended'
+            ? undefined
+            : workerSelection?.workerDescriptor);
+        const privateWorkerRequested = Boolean(selectedWorkerDescriptor);
+        if (
+          (privateWorkerRequested && !v1ReleaseFeatures.privateWorkerPairing) ||
+          (!privateWorkerRequested && !v1ReleaseFeatures.officialWorker)
+        ) {
+          throw new Error(
+            'Fast Wallet alerts are not configured in this signed release.',
+          );
         }
         assertIndependentFastReceiveIdentityId(existing.id);
         if (!existing.credentialKey) {
@@ -3010,7 +3020,7 @@ export class WalletService {
               credentialKey: existing.credentialKey,
               network: existing.network,
               restoreHeight: existing.restoreHeight,
-              workerDescriptorHex: input.workerDescriptorHex,
+              workerDescriptorHex: selectedWorkerDescriptor,
             },
           );
           const checkedAt = new Date().toISOString();
@@ -3024,9 +3034,15 @@ export class WalletService {
             assignmentHandle: enrolled.assignment.assignmentHandle,
             assignmentEpoch: enrolled.assignment.assignmentEpoch,
             assignmentExpiresAt: enrolled.assignment.expiresAt,
-            workerKind: privateWorkerRequested ? 'private' : 'official',
+            workerKind: explicitWorkerDescriptor
+              ? 'private'
+              : workerSelection?.kind === 'community'
+              ? 'community'
+              : workerSelection?.kind === 'private'
+              ? 'private'
+              : 'official',
             workerDescriptorHex: privateWorkerRequested
-              ? input.workerDescriptorHex?.trim()
+              ? selectedWorkerDescriptor
               : undefined,
             watchMessageId: enrolled.messageId,
             updatedAt: checkedAt,
@@ -3080,15 +3096,6 @@ export class WalletService {
         'Ledger account hosting is disabled because it does not have an independent Fast Wallet root.',
       );
     }
-    const privateWorkerRequested = Boolean(input.workerDescriptorHex?.trim());
-    if (
-      (privateWorkerRequested && !v1ReleaseFeatures.privateWorkerPairing) ||
-      (!privateWorkerRequested && !v1ReleaseFeatures.officialWorker)
-    ) {
-      throw new Error(
-        'Fast Wallet alerts are not configured in this signed release.',
-      );
-    }
     return traceWalletOperation(
       'enableEncryptedLedgerFastWalletAlerts',
       { registrationId: maskIdentifier(input.registrationId) },
@@ -3104,6 +3111,24 @@ export class WalletService {
           !registration.accountIndex
         ) {
           throw new Error('Unknown Ledger Fast Wallet');
+        }
+        const explicitWorkerDescriptor = input.workerDescriptorHex?.trim();
+        const workerSelection = explicitWorkerDescriptor
+          ? undefined
+          : await loadFastWalletWorkerSelection(registration.network);
+        const selectedWorkerDescriptor =
+          explicitWorkerDescriptor ||
+          (workerSelection?.kind === 'recommended'
+            ? undefined
+            : workerSelection?.workerDescriptor);
+        const privateWorkerRequested = Boolean(selectedWorkerDescriptor);
+        if (
+          (privateWorkerRequested && !v1ReleaseFeatures.privateWorkerPairing) ||
+          (!privateWorkerRequested && !v1ReleaseFeatures.officialWorker)
+        ) {
+          throw new Error(
+            'Fast Wallet alerts are not configured in this signed release.',
+          );
         }
 
         await upsertRegisteredWallet(
@@ -3151,7 +3176,7 @@ export class WalletService {
               accountIndex: registration.accountIndex,
               network: registration.network,
               restoreHeight: registration.restoreHeight ?? 0,
-              workerDescriptorHex: input.workerDescriptorHex,
+              workerDescriptorHex: selectedWorkerDescriptor,
             },
           );
           const hostedAt = new Date().toISOString();
@@ -3244,8 +3269,8 @@ export class WalletService {
             credentialKey: identity.credentialKey!,
             network: identity.network,
             restoreHeight: identity.restoreHeight,
-            workerDescriptorHex:
-              identity.workerKind === 'private'
+          workerDescriptorHex:
+              identity.workerKind && identity.workerKind !== 'official'
                 ? identity.workerDescriptorHex
                 : undefined,
           },

@@ -48,7 +48,7 @@ export interface FastReceiveIdentityRecord {
   assignmentEpoch?: number;
   assignmentExpiresAt?: number;
   /** Public routing choice required to renew the opaque assignment. */
-  workerKind?: 'official' | 'private';
+  workerKind?: 'official' | 'community' | 'private';
   /** Public signed Worker descriptor. It contains no wallet secret or key. */
   workerDescriptorHex?: string;
   /** Public opaque Relay receipt identifier, never a transaction identifier. */
@@ -484,13 +484,19 @@ function cleanOptionalCanonicalHex(
 }
 
 function normalizeWorkerKind(
-  value: 'official' | 'private' | undefined,
-): 'official' | 'private' | undefined {
-  return value === 'official' || value === 'private' ? value : undefined;
+  value: 'official' | 'community' | 'private' | undefined,
+): 'official' | 'community' | 'private' | undefined {
+  return value === 'official' || value === 'community' || value === 'private'
+    ? value
+    : undefined;
 }
 
-function parseWorkerKind(value: unknown): 'official' | 'private' | undefined {
-  return value === 'official' || value === 'private' ? value : undefined;
+function parseWorkerKind(
+  value: unknown,
+): 'official' | 'community' | 'private' | undefined {
+  return value === 'official' || value === 'community' || value === 'private'
+    ? value
+    : undefined;
 }
 
 function parseString(value: unknown): string | undefined {

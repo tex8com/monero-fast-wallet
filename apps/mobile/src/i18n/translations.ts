@@ -1212,10 +1212,41 @@ const en = {
   'settings.network': 'Network',
   'settings.nodeModeOriginal': 'Original Node',
   'settings.nodeModeTex8': 'Tex8 Node',
+  'settings.nodeModeCustom': 'Custom',
+  'settings.availableNodeAddresses': 'Available node addresses',
+  'settings.availableNodeAddressesHelp':
+    'Tap one address to use it. Onion connections use your local Tor proxy at 127.0.0.1:9050.',
+  'settings.tex8Node': 'TEX8 Node',
+  'settings.communityNode': 'Community Node',
+  'settings.clearnetAddress': 'Clearnet',
+  'settings.onionAddress': 'Onion',
+  'settings.worker': 'Fast Wallet Worker',
+  'settings.workerSubtitle':
+    'Choose who watches the additional Fast Wallet for incoming payments. Spending keys never leave your wallet.',
+  'settings.recommendedWorker': 'Recommended',
+  'settings.recommendedWorkerHint':
+    'Use the signed TEX8 Worker configured in this app.',
+  'settings.communityWorkers': 'Approved Community Workers',
+  'settings.communityWorker': 'Community Worker',
+  'settings.communityWorkerHint':
+    'Only Workers approved in the signed public directory are shown. The app verifies the approval natively.',
+  'settings.workerLoading': 'Loading…',
+  'settings.workerUnavailable':
+    'The Worker directory is temporarily unavailable. Your current choice remains active.',
+  'settings.privateWorker': 'Private Worker',
+  'settings.privateWorkerHint':
+    'Advanced: pair your own Worker from its signed QR code or descriptor.',
+  'settings.privateWorkerPlaceholder': 'Paste Worker QR text or descriptor',
+  'settings.useWorker': 'Use this Worker',
+  'settings.mfwRegistry': 'Monero Name Registry',
+  'settings.mfwRegistryHint':
+    'Register and manage a simple public .mfw name for a receive address.',
   'settings.grpcEndpoint': 'gRPC endpoint',
   'settings.originalNodeAddress': 'Original node address',
   'settings.originalNodeHelp':
     'Use a normal Monero node. Automatic Fast Wallet detection is not available in this mode.',
+  'settings.customNodeHelp':
+    'Use your own daemon, optional MFN gRPC endpoint, and optional local proxy.',
   'settings.openSourceLicenses': 'Open source licenses',
   'settings.openWalletFirst': 'Open wallet first',
   'settings.password': 'Password',
@@ -2550,10 +2581,41 @@ const de: Record<keyof typeof en, string> = {
   'settings.network': 'Netzwerk',
   'settings.nodeModeOriginal': 'Original Node',
   'settings.nodeModeTex8': 'Tex8 Node',
+  'settings.nodeModeCustom': 'Eigene',
+  'settings.availableNodeAddresses': 'Verfügbare Node-Adressen',
+  'settings.availableNodeAddressesHelp':
+    'Tippe eine Adresse an, um sie zu verwenden. Onion-Verbindungen nutzen deinen lokalen Tor-Proxy unter 127.0.0.1:9050.',
+  'settings.tex8Node': 'TEX8-Node',
+  'settings.communityNode': 'Community-Node',
+  'settings.clearnetAddress': 'Clearnet',
+  'settings.onionAddress': 'Onion',
+  'settings.worker': 'Fast Wallet Worker',
+  'settings.workerSubtitle':
+    'Wähle, wer die zusätzliche Fast Wallet auf eingehende Zahlungen prüft. Spending Keys verlassen deine Wallet nie.',
+  'settings.recommendedWorker': 'Empfohlen',
+  'settings.recommendedWorkerHint':
+    'Den in dieser App festgelegten, signierten TEX8-Worker verwenden.',
+  'settings.communityWorkers': 'Bestätigte Community Worker',
+  'settings.communityWorker': 'Community Worker',
+  'settings.communityWorkerHint':
+    'Es erscheinen nur Worker aus dem bestätigten öffentlichen Verzeichnis. Die App prüft die Zulassung nativ.',
+  'settings.workerLoading': 'Lädt…',
+  'settings.workerUnavailable':
+    'Das Worker-Verzeichnis ist vorübergehend nicht erreichbar. Deine bisherige Auswahl bleibt aktiv.',
+  'settings.privateWorker': 'Privater Worker',
+  'settings.privateWorkerHint':
+    'Erweitert: eigenen Worker mit seinem signierten QR-Code oder Descriptor verbinden.',
+  'settings.privateWorkerPlaceholder': 'Worker-QR-Text oder Descriptor einfügen',
+  'settings.useWorker': 'Diesen Worker verwenden',
+  'settings.mfwRegistry': 'Monero Name Registry',
+  'settings.mfwRegistryHint':
+    'Einen einfachen öffentlichen .mfw-Namen für eine Empfangsadresse registrieren und verwalten.',
   'settings.grpcEndpoint': 'gRPC-Endpunkt',
   'settings.originalNodeAddress': 'Original-Node-Adresse',
   'settings.originalNodeHelp':
     'Normale Monero-Node verwenden. Die automatische Fast Wallet-Erkennung ist in diesem Modus nicht verfügbar.',
+  'settings.customNodeHelp':
+    'Eigenen Daemon, optionalen MFN-gRPC-Endpunkt und optionalen lokalen Proxy verwenden.',
   'settings.openSourceLicenses': 'Open-Source-Lizenzen',
   'settings.openWalletFirst': 'Wallet zuerst öffnen',
   'settings.password': 'Passwort',

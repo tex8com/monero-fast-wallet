@@ -286,6 +286,27 @@ inline std::string verifiedWorkerRootId(
   return encodeHex(output.data(), output.size());
 }
 
+inline uint32_t verifiedWorkerAdmission(
+    const std::string& workerDescriptorHex,
+    const std::string& admissionCertificateHex,
+    const std::string& directoryPublicKeyHex,
+    NetworkType network,
+    uint64_t now) {
+  auto descriptor = decodeHex(workerDescriptorHex, 1, 4096);
+  auto certificate = decodeHex(admissionCertificateHex, 1, 4096);
+  auto directoryPublicKey = decodeHex(directoryPublicKeyHex, 32, 32);
+  uint32_t maximumAssignments = 0;
+  const auto status = tex8_fast_wallet_protocol_verify_worker_admission_v1(
+      descriptor.data(), descriptor.size(), networkCode(network), now,
+      certificate.data(), certificate.size(), directoryPublicKey.data(),
+      directoryPublicKey.size(), &maximumAssignments);
+  if (status != TEX8_FAST_WALLET_PROTOCOL_OK || maximumAssignments == 0) {
+    throw WalletEngineError(
+        "Fast Wallet Community Worker admission is invalid");
+  }
+  return maximumAssignments;
+}
+
 inline std::string verifiedNameAddress(
     WalletEngine& engine,
     const std::string& recordPayloadHex,

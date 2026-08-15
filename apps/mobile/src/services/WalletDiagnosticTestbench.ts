@@ -369,6 +369,7 @@ export async function runWalletDiagnosticTestbench(
           metrics: [
             { label: 'Hosted', value: String(hosted.length) },
             { label: 'Official Worker', value: String(hosted.filter(item => item.workerKind === 'official').length) },
+            { label: 'Community Worker', value: String(hosted.filter(item => item.workerKind === 'community').length) },
             { label: 'Private Worker', value: String(hosted.filter(item => item.workerKind === 'private').length) },
             { label: 'Invalid', value: String(incomplete.length) },
           ],

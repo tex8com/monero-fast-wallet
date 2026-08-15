@@ -565,6 +565,18 @@ export interface Spec extends TurboModule {
     now: number,
   ): Promise<string>;
 
+  /**
+   * Verifies the Directory admission certificate natively before pinning an
+   * approved public Community Worker.
+   */
+  pairCommunityFastWalletWorkerDescriptor(
+    workerDescriptorHex: string,
+    admissionCertificateHex: string,
+    directoryPublicKeyHex: string,
+    network: string,
+    now: number,
+  ): Promise<string>;
+
   sponsorFastWalletAssignment(
     identityId: string,
     workerDescriptorHex: string,

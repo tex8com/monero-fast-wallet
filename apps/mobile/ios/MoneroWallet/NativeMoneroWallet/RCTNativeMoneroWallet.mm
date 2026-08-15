@@ -2898,6 +2898,8 @@ NSString *const kFastWalletInstallationAuthKey =
     @"monero.fastwallet.installation.auth.v1";
 NSString *const kFastWalletPrivateWorkerRootKey =
     @"monero.fastwallet.private-worker-root.v1";
+NSString *const kFastWalletDirectoryAdmissionPublicKey =
+    @"69a0559931de88f8cbd42220f753981fe01ae663f174df2933a90deadabf5551";
 constexpr NSUInteger kFastWalletWatchEnvelopeBytes = 484;
 constexpr NSUInteger kFastWalletMaximumRequestBytes = 24 * 1024;
 constexpr NSUInteger kFastWalletMaximumResponseBytes = 24 * 1024;
@@ -7046,6 +7048,80 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
                        completion:^(BOOL authorized, NSString *message) {
     if (!authorized) {
       reject(@"monero_wallet_private_worker_pairing_cancelled", message, nil);
+      return;
+    }
+    try {
+      if (!_appAuthorized.load()) {
+        throw WalletEngineError("The native app session was locked");
+      }
+      storeKeychainSecret(kFastWalletPrivateWorkerRootKey, root);
+      resolve(root);
+    } catch (const std::exception &error) {
+      rejectWithException(reject, error);
+    }
+  }];
+}
+
+- (void)pairCommunityFastWalletWorkerDescriptor:(NSString *)workerDescriptorHex
+                        admissionCertificateHex:(NSString *)admissionCertificateHex
+                         directoryPublicKeyHex:(NSString *)directoryPublicKeyHex
+                                       network:(NSString *)network
+                                           now:(double)now
+                                       resolve:(RCTPromiseResolveBlock)resolve
+                                        reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  if (!fastWalletBuildFeatureEnabled(
+          @"FAST_WALLET_PRIVATE_WORKER_PAIRING_ENABLED")) {
+    reject(@"monero_wallet_community_worker_disabled",
+           @"Community scan-service selection is disabled in this signed app",
+           nil);
+    return;
+  }
+  TrustedFastWalletDescriptor verified;
+  try {
+    NSString *descriptor = checkedFastWalletHex(
+        workerDescriptorHex, @"workerDescriptor", 0, 512);
+    NSString *certificate = checkedFastWalletHex(
+        admissionCertificateHex, @"admissionCertificate", 0, 512);
+    NSString *directoryKey = checkedFastWalletHex(
+        directoryPublicKeyHex, @"directoryPublicKey", 32, 0);
+    if (![directoryKey isEqualToString:kFastWalletDirectoryAdmissionPublicKey]) {
+      throw WalletEngineError(
+          "Community scan-service directory identity does not match this app");
+    }
+    uint64_t checkedNow = checkedFastWalletInteger(now, "now");
+    uint32_t maximumAssignments =
+        tex8::wallet::fast_wallet_protocol_bridge::verifiedWorkerAdmission(
+            toStdString(descriptor), toStdString(certificate),
+            toStdString(directoryKey), toNetworkType(network), checkedNow);
+    if (maximumAssignments == 0) {
+      throw WalletEngineError("Community scan-service admission is invalid");
+    }
+    verified.relayOrigin =
+        tex8::wallet::fast_wallet_protocol_bridge::verifiedRelayOrigin(
+            toStdString(descriptor), toNetworkType(network), checkedNow);
+    verified.workerRootId =
+        tex8::wallet::fast_wallet_protocol_bridge::verifiedWorkerRootId(
+            toStdString(descriptor), toNetworkType(network), checkedNow);
+  } catch (const std::exception &error) {
+    rejectWithException(reject, error);
+    return;
+  }
+  NSString *root = toNSString(verified.workerRootId);
+  NSString *fingerprint = [NSString stringWithFormat:@"%@…%@",
+      [root substringToIndex:8],
+      [root substringFromIndex:root.length - 8]];
+  NSString *reason = [NSString stringWithFormat:
+      @"Use approved Community scan service %@ with fingerprint %@? It can "
+       "recognize incoming payments to a Fast Wallet, but it cannot spend them.",
+      toNSString(verified.relayOrigin), fingerprint];
+  [self requestFreshAuthorization:reason
+                       completion:^(BOOL authorized, NSString *message) {
+    if (!authorized) {
+      reject(@"monero_wallet_community_worker_pairing_cancelled", message, nil);
       return;
     }
     try {

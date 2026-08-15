@@ -36,6 +36,14 @@ import type {
   NodeConnectionMode,
 } from '../services/NodeConnectionSettings';
 import {
+  fixedMainnetNodeConnection,
+  type FixedNodeId,
+} from '../../../../packages/wallet-shared/src/nodePresets';
+import type {
+  CommunityFastWalletWorker,
+  FastWalletWorkerSelection,
+} from '../../../../packages/wallet-shared/src/fastWalletWorkerDirectory';
+import {
   runWalletDiagnosticTestbench,
   type DiagnosticProgress,
 } from '../services/WalletDiagnosticTestbench';
@@ -59,10 +67,19 @@ import {
   type DerivationPerformance,
 } from '../services/DerivationPerformance';
 import { FastWalletPushService } from '../services/FastWalletPushService';
+import {
+  loadCommunityFastWalletWorkers,
+  loadFastWalletWorkerSelection,
+  selectCommunityFastWalletWorker,
+  selectPrivateFastWalletWorker,
+  selectRecommendedFastWalletWorker,
+} from '../services/FastWalletWorkerSettings';
+import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 
 const NODE_MODES: { value: NodeConnectionMode; labelKey: TranslationKey }[] = [
   { value: 'optimized-grpc', labelKey: 'settings.nodeModeTex8' },
   { value: 'original-rpc', labelKey: 'settings.nodeModeOriginal' },
+  { value: 'custom', labelKey: 'settings.nodeModeCustom' },
 ];
 
 const NETWORKS: { value: MoneroNetwork; label: string }[] = [
@@ -71,7 +88,17 @@ const NETWORKS: { value: MoneroNetwork; label: string }[] = [
   { value: 'stagenet', label: 'Stagenet' },
 ];
 
-export default function SettingsScreen() {
+const KNOWN_NODE_PRESETS: readonly {
+  node: FixedNodeId;
+  transport: 'clearnet' | 'onion';
+}[] = [
+  { node: 'tex8', transport: 'clearnet' },
+  { node: 'community', transport: 'clearnet' },
+  { node: 'tex8', transport: 'onion' },
+  { node: 'community', transport: 'onion' },
+];
+
+export default function SettingsScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { dateLocale, language, setLanguage, t } = useI18n();
   const { reconcileLedgerBalance, registeredWallet, session } = useWalletState();
@@ -111,6 +138,19 @@ export default function SettingsScreen() {
   const [derivationPerformance, setDerivationPerformance] =
     useState<DerivationPerformance | null>(null);
   const [isMeasuringPerformance, setIsMeasuringPerformance] = useState(true);
+  const [workerSelection, setWorkerSelection] =
+    useState<FastWalletWorkerSelection>({
+      kind: 'recommended',
+      network: 'mainnet',
+    });
+  const [communityWorkers, setCommunityWorkers] = useState<
+    CommunityFastWalletWorker[]
+  >([]);
+  const [workerSettingsBusy, setWorkerSettingsBusy] = useState(false);
+  const [workerDirectoryLoading, setWorkerDirectoryLoading] = useState(false);
+  const [workerDirectoryError, setWorkerDirectoryError] = useState(false);
+  const [showPrivateWorker, setShowPrivateWorker] = useState(false);
+  const [privateWorkerDescriptor, setPrivateWorkerDescriptor] = useState('');
 
   useEffect(() => {
     setProtectionMode(
@@ -145,6 +185,55 @@ export default function SettingsScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+    loadFastWalletWorkerSelection(draft.network)
+      .then(selection => {
+        if (mounted) setWorkerSelection(selection);
+      })
+      .catch(() => {
+        if (mounted) {
+          setWorkerSelection({ kind: 'recommended', network: draft.network });
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [draft.network]);
+
+  useEffect(() => {
+    if (
+      draft.network !== 'mainnet' ||
+      !v1ReleaseFeatures.privateWorkerPairing
+    ) {
+      setCommunityWorkers([]);
+      return;
+    }
+    let mounted = true;
+    setWorkerDirectoryLoading(true);
+    setWorkerDirectoryError(false);
+    loadCommunityFastWalletWorkers()
+      .then(directory => {
+        if (mounted) setCommunityWorkers(directory.workers);
+      })
+      .catch(error => {
+        console.warn(
+          'MONERO_MOBILE_WORKER_DIRECTORY_FAILED',
+          errorMessage(error),
+        );
+        if (mounted) {
+          setCommunityWorkers([]);
+          setWorkerDirectoryError(true);
+        }
+      })
+      .finally(() => {
+        if (mounted) setWorkerDirectoryLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [draft.network]);
+
   async function updateSearchSharing(enabled: boolean) {
     setShareCommunitySearches(enabled);
     try {
@@ -168,16 +257,8 @@ export default function SettingsScreen() {
           return;
         }
 
-        const visibleSettings =
-          settings.mode === 'custom'
-            ? createDefaultNodeConnectionSettings(
-                settings.network,
-                'optimized-grpc',
-              )
-            : settings;
-
-        setSavedSettings(visibleSettings);
-        setDraft(nodeConnectionSettingsToDraft(visibleSettings));
+        setSavedSettings(settings);
+        setDraft(nodeConnectionSettingsToDraft(settings));
         setNodeStatusText('Saved');
       })
       .catch(() => {
@@ -208,6 +289,7 @@ export default function SettingsScreen() {
   const hasChanges =
     JSON.stringify(resolvedSettings) !== JSON.stringify(savedSettings);
   const isOriginalRpc = draft.mode === 'original-rpc';
+  const isCustomNode = draft.mode === 'custom';
   const nodeStatus =
     hasChanges && !isLoadingNodeSettings ? 'Unsaved' : nodeStatusText;
   const displayedNodeStatus = translateStatusText(nodeStatus, t);
@@ -252,6 +334,91 @@ export default function SettingsScreen() {
 
   function setNetwork(network: MoneroNetwork) {
     setDraft(current => applyNodeNetworkDefaults(current, network));
+  }
+
+  function selectNodePreset(
+    node: FixedNodeId,
+    transport: 'clearnet' | 'onion',
+  ) {
+    const preset = fixedMainnetNodeConnection(node, transport);
+    const settings = createDefaultNodeConnectionSettings(
+      'mainnet',
+      preset.mode,
+    );
+    setDraft(
+      nodeConnectionSettingsToDraft({
+        ...settings,
+        daemon: {
+          ...settings.daemon,
+          address: preset.daemonAddress,
+          proxyAddress: preset.proxyAddress,
+          trusted: true,
+        },
+        grpcEndpoint: preset.grpcEndpoint,
+      }),
+    );
+  }
+
+  async function refreshCommunityWorkers() {
+    if (workerDirectoryLoading) return;
+    setWorkerDirectoryLoading(true);
+    setWorkerDirectoryError(false);
+    try {
+      const directory = await loadCommunityFastWalletWorkers();
+      setCommunityWorkers(directory.workers);
+    } catch (error) {
+      console.warn('MONERO_MOBILE_WORKER_DIRECTORY_FAILED', errorMessage(error));
+      setCommunityWorkers([]);
+      setWorkerDirectoryError(true);
+    } finally {
+      setWorkerDirectoryLoading(false);
+    }
+  }
+
+  async function chooseRecommendedWorker() {
+    if (workerSettingsBusy) return;
+    setWorkerSettingsBusy(true);
+    try {
+      setWorkerSelection(
+        await selectRecommendedFastWalletWorker(draft.network),
+      );
+    } catch (error) {
+      Alert.alert(t('settings.worker'), errorMessage(error));
+    } finally {
+      setWorkerSettingsBusy(false);
+    }
+  }
+
+  async function chooseCommunityWorker(worker: CommunityFastWalletWorker) {
+    if (workerSettingsBusy) return;
+    setWorkerSettingsBusy(true);
+    try {
+      setWorkerSelection(
+        await selectCommunityFastWalletWorker(draft.network, worker),
+      );
+    } catch (error) {
+      Alert.alert(t('settings.worker'), errorMessage(error));
+    } finally {
+      setWorkerSettingsBusy(false);
+    }
+  }
+
+  async function choosePrivateWorker() {
+    if (workerSettingsBusy || !privateWorkerDescriptor.trim()) return;
+    setWorkerSettingsBusy(true);
+    try {
+      const selected = await selectPrivateFastWalletWorker(
+        draft.network,
+        privateWorkerDescriptor,
+      );
+      setWorkerSelection(selected);
+      setPrivateWorkerDescriptor('');
+      setShowPrivateWorker(false);
+    } catch (error) {
+      Alert.alert(t('settings.worker'), errorMessage(error));
+    } finally {
+      setWorkerSettingsBusy(false);
+    }
   }
 
   function resetNodeDefaults() {
@@ -454,6 +621,200 @@ export default function SettingsScreen() {
             {t('settings.version', { version: mobileAppVersion.versionName })}
           </Text>
         </View>
+
+        <View style={s.section}>
+          <View style={s.sectionHeaderRow}>
+            <Text style={s.sectionTitle}>{t('settings.worker')}</Text>
+            <Text style={s.nodeStatus}>
+              {workerSelection.kind === 'recommended'
+                ? t('settings.recommendedWorker')
+                : workerSelection.label}
+            </Text>
+          </View>
+          <View style={s.nodePanel}>
+            <Text style={s.languageHelp}>{t('settings.workerSubtitle')}</Text>
+            <TouchableOpacity
+              accessibilityRole="radio"
+              accessibilityState={{
+                selected: workerSelection.kind === 'recommended',
+              }}
+              activeOpacity={0.75}
+              disabled={workerSettingsBusy}
+              onPress={chooseRecommendedWorker}
+              style={[
+                s.row,
+                workerSelection.kind === 'recommended' &&
+                  s.nodePresetCardSelected,
+              ]}
+            >
+              <View style={s.rowIconWrap}>
+                <Icon name="check" size={20} color={colors.orange} />
+              </View>
+              <View style={s.rowCopy}>
+                <Text style={s.rowLabel}>
+                  {t('settings.recommendedWorker')}
+                </Text>
+                <Text style={s.rowHint}>
+                  {t('settings.recommendedWorkerHint')}
+                </Text>
+              </View>
+              {workerSelection.kind === 'recommended' ? (
+                <Icon name="check" size={18} color={colors.orange} />
+              ) : null}
+            </TouchableOpacity>
+
+            {v1ReleaseFeatures.privateWorkerPairing &&
+            draft.network === 'mainnet' ? (
+              <View style={s.workerGroup}>
+                <View style={s.sectionHeaderRow}>
+                  <Text style={s.fieldLabel}>
+                    {t('settings.communityWorkers')}
+                  </Text>
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    disabled={workerDirectoryLoading}
+                    onPress={refreshCommunityWorkers}
+                  >
+                    <Text style={s.inlineAction}>
+                      {workerDirectoryLoading
+                        ? t('settings.workerLoading')
+                        : t('action.retry')}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={s.nodePresetHelp}>
+                  {t('settings.communityWorkerHint')}
+                </Text>
+                {communityWorkers.map(worker => {
+                  const selected =
+                    workerSelection.kind === 'community' &&
+                    workerSelection.workerId === worker.workerId;
+                  return (
+                    <TouchableOpacity
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                      activeOpacity={0.75}
+                      disabled={workerSettingsBusy}
+                      key={worker.workerId}
+                      onPress={() => chooseCommunityWorker(worker)}
+                      style={[
+                        s.nodePresetCard,
+                        selected && s.nodePresetCardSelected,
+                      ]}
+                    >
+                      <View style={s.nodePresetIcon}>
+                        <Icon name="users" size={18} color={colors.orange} />
+                      </View>
+                      <View style={s.nodePresetCopy}>
+                        <Text style={s.nodePresetName}>
+                          {worker.operatorLabel}
+                        </Text>
+                        <Text style={s.nodePresetAddress}>
+                          {worker.region || t('settings.communityWorker')}
+                        </Text>
+                      </View>
+                      {selected ? (
+                        <Icon name="check" size={18} color={colors.orange} />
+                      ) : null}
+                    </TouchableOpacity>
+                  );
+                })}
+                {workerDirectoryError ? (
+                  <Text style={s.warningText}>
+                    {t('settings.workerUnavailable')}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+
+            {v1ReleaseFeatures.privateWorkerPairing ? (
+              <View style={s.workerGroup}>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  activeOpacity={0.75}
+                  onPress={() => setShowPrivateWorker(value => !value)}
+                  style={s.row}
+                >
+                  <View style={s.rowIconWrap}>
+                    <Icon name="lock" size={20} color={colors.orange} />
+                  </View>
+                  <View style={s.rowCopy}>
+                    <Text style={s.rowLabel}>
+                      {t('settings.privateWorker')}
+                    </Text>
+                    <Text style={s.rowHint}>
+                      {t('settings.privateWorkerHint')}
+                    </Text>
+                  </View>
+                  <Icon
+                    name="chevron-right"
+                    size={18}
+                    color={colors.textMuted}
+                  />
+                </TouchableOpacity>
+                {showPrivateWorker ? (
+                  <View style={s.privateWorkerForm}>
+                    <TextInput
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      multiline
+                      onChangeText={setPrivateWorkerDescriptor}
+                      placeholder={t('settings.privateWorkerPlaceholder')}
+                      placeholderTextColor={colors.textMuted}
+                      style={[s.input, s.workerDescriptorInput]}
+                      value={privateWorkerDescriptor}
+                    />
+                    <TouchableOpacity
+                      accessibilityRole="button"
+                      activeOpacity={0.8}
+                      disabled={
+                        workerSettingsBusy || !privateWorkerDescriptor.trim()
+                      }
+                      onPress={choosePrivateWorker}
+                      style={[
+                        s.primaryButton,
+                        (workerSettingsBusy ||
+                          !privateWorkerDescriptor.trim()) &&
+                          s.primaryButtonDisabled,
+                      ]}
+                    >
+                      <Text style={s.primaryButtonText}>
+                        {t('settings.useWorker')}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        </View>
+
+        {v1ReleaseFeatures.mfwNameRegistration ? (
+          <View style={s.section}>
+            <Text style={s.sectionTitle}>{t('settings.mfwRegistry')}</Text>
+            <TouchableOpacity
+              accessibilityRole="button"
+              activeOpacity={0.75}
+              onPress={() => navigation.navigate('MfwNames')}
+              style={s.sectionCard}
+            >
+              <View style={s.row}>
+                <View style={s.rowIconWrap}>
+                  <Icon name="key" size={20} color={colors.orange} />
+                </View>
+                <View style={s.rowCopy}>
+                  <Text style={s.rowLabel}>{t('mfwNames.title')}</Text>
+                  <Text style={s.rowHint}>{t('settings.mfwRegistryHint')}</Text>
+                </View>
+                <Icon
+                  name="chevron-right"
+                  size={18}
+                  color={colors.textMuted}
+                />
+              </View>
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <View style={s.section}>
           <Text style={s.sectionTitle}>{t('communityV1.privacySettings')}</Text>
@@ -799,9 +1160,88 @@ export default function SettingsScreen() {
               <Text style={s.nodeHintText}>
                 {isOriginalRpc
                   ? t('settings.originalNodeHelp')
+                  : isCustomNode
+                  ? t('settings.customNodeHelp')
                   : t('settings.tex8NodeHelp')}
               </Text>
             </View>
+
+            {draft.network === 'mainnet' ? (
+              <View style={s.nodePresetSection}>
+                <Text style={s.fieldLabel}>
+                  {t('settings.availableNodeAddresses')}
+                </Text>
+                <View style={s.nodePresetList}>
+                  {KNOWN_NODE_PRESETS.map(({ node, transport }) => {
+                    const preset = fixedMainnetNodeConnection(node, transport);
+                    const address = preset.daemonAddress;
+                    const selected =
+                      draft.mode === preset.mode &&
+                      draft.daemonAddress.trim() === preset.daemonAddress &&
+                      draft.grpcEndpoint.trim() === preset.grpcEndpoint &&
+                      draft.proxyAddress.trim() === preset.proxyAddress;
+                    return (
+                      <TouchableOpacity
+                        accessibilityLabel={`${
+                          node === 'tex8'
+                            ? t('settings.tex8Node')
+                            : t('settings.communityNode')
+                        }, ${
+                          transport === 'onion'
+                            ? t('settings.onionAddress')
+                            : t('settings.clearnetAddress')
+                        }, ${address}`}
+                        key={`${node}-${transport}`}
+                        accessibilityRole="button"
+                        activeOpacity={0.75}
+                        onPress={() => selectNodePreset(node, transport)}
+                        style={[
+                          s.nodePresetCard,
+                          selected && s.nodePresetCardSelected,
+                        ]}
+                      >
+                        <View style={s.nodePresetIcon}>
+                          <Icon
+                            name={transport === 'onion' ? 'onion' : 'globe'}
+                            size={18}
+                            color={selected ? colors.orange : colors.textMuted}
+                          />
+                        </View>
+                        <View style={s.nodePresetCopy}>
+                          <View style={s.nodePresetHeading}>
+                            <Text style={s.nodePresetName}>
+                              {node === 'tex8'
+                                ? t('settings.tex8Node')
+                                : t('settings.communityNode')}
+                            </Text>
+                            <Text
+                              style={[
+                                s.nodePresetTransport,
+                                transport === 'onion' &&
+                                  s.nodePresetTransportOnion,
+                              ]}
+                            >
+                              {transport === 'onion'
+                                ? t('settings.onionAddress')
+                                : t('settings.clearnetAddress')}
+                            </Text>
+                          </View>
+                          <Text selectable style={s.nodePresetAddress}>
+                            {address}
+                          </Text>
+                        </View>
+                        {selected ? (
+                          <Icon name="check" size={18} color={colors.orange} />
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+                <Text style={s.nodePresetHelp}>
+                  {t('settings.availableNodeAddressesHelp')}
+                </Text>
+              </View>
+            ) : null}
 
             {isOriginalRpc ? (
               <NodeInput
@@ -1174,6 +1614,91 @@ const s = StyleSheet.create({
     borderColor: colors.border,
     padding: spacing.md,
     gap: 12,
+  },
+  nodePresetSection: { gap: 8 },
+  nodePresetList: { gap: 8 },
+  nodePresetCard: {
+    alignItems: 'center',
+    backgroundColor: colors.bgInput,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    minHeight: 70,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  nodePresetCardSelected: {
+    backgroundColor: colors.orangeMuted,
+    borderColor: colors.orange,
+  },
+  nodePresetIcon: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 24,
+  },
+  nodePresetCopy: { flex: 1 },
+  nodePresetHeading: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+  },
+  nodePresetName: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  nodePresetTransport: {
+    backgroundColor: `${colors.success}18`,
+    borderRadius: radius.full,
+    color: colors.success,
+    fontSize: 9,
+    fontWeight: '800',
+    overflow: 'hidden',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  nodePresetTransportOnion: {
+    backgroundColor: `${colors.orange}18`,
+    color: colors.orange,
+  },
+  nodePresetAddress: {
+    color: colors.textMuted,
+    fontFamily: 'monospace',
+    fontSize: 9,
+    lineHeight: 13,
+    marginTop: 5,
+  },
+  nodePresetHelp: {
+    color: colors.textMuted,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  workerGroup: {
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
+    gap: 8,
+    paddingTop: 12,
+  },
+  inlineAction: {
+    color: colors.orange,
+    fontSize: 12,
+    fontWeight: '800',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  warningText: {
+    color: colors.warning,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  privateWorkerForm: { gap: 10 },
+  workerDescriptorInput: {
+    minHeight: 92,
+    paddingTop: 12,
+    textAlignVertical: 'top',
   },
   rowDisabled: { opacity: 0.5 },
   rowCopy: { flex: 1, gap: 3 },

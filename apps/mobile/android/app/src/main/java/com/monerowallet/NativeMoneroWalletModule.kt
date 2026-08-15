@@ -2343,6 +2343,98 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun pairCommunityFastWalletWorkerDescriptor(
+    workerDescriptorHex: String,
+    admissionCertificateHex: String,
+    directoryPublicKeyHex: String,
+    network: String,
+    now: Double,
+    promise: Promise,
+  ) {
+    if (!requireAppAuthorized(promise) || !requireLinked(promise)) {
+      return
+    }
+    if (!BuildConfig.FAST_WALLET_PRIVATE_WORKER_PAIRING_ENABLED) {
+      promise.reject(
+        "monero_wallet_community_worker_disabled",
+        "Community scan-service selection is disabled in this signed app",
+      )
+      return
+    }
+    val verified = runCatching {
+      val checkedNow = checkedJsUnsignedInteger(now, "now")
+      val descriptor = checkedCanonicalHex(
+        workerDescriptorHex,
+        "workerDescriptor",
+        maximumBytes = 512,
+      )
+      val admissionCertificate = checkedCanonicalHex(
+        admissionCertificateHex,
+        "admissionCertificate",
+        maximumBytes = 512,
+      )
+      val directoryPublicKey = checkedCanonicalHex(
+        directoryPublicKeyHex,
+        "directoryPublicKey",
+        exactBytes = 32,
+      )
+      require(directoryPublicKey == FAST_WALLET_DIRECTORY_ADMISSION_PUBLIC_KEY) {
+        "Community scan-service directory identity does not match this app"
+      }
+      val maximumAssignments =
+        NativeMoneroWalletJni.verifiedFastWalletWorkerAdmission(
+          descriptor,
+          admissionCertificate,
+          directoryPublicKey,
+          network,
+          checkedNow.toDouble(),
+        )
+      require(maximumAssignments >= 1.0) {
+        "Community scan-service admission is invalid"
+      }
+      val relayOrigin = NativeMoneroWalletJni.verifiedFastWalletRelayOrigin(
+        descriptor,
+        network,
+        checkedNow.toDouble(),
+      )
+      val workerRootId = NativeMoneroWalletJni.verifiedFastWalletWorkerRootId(
+        descriptor,
+        network,
+        checkedNow.toDouble(),
+      )
+      TrustedFastWalletDescriptor(relayOrigin, workerRootId)
+    }.getOrElse { error ->
+      rejectNativeError(promise, error)
+      return
+    }
+    val fingerprint =
+      "${verified.workerRootId.take(8)}…${verified.workerRootId.takeLast(8)}"
+    requestFreshAuthorization(
+      "Use approved Community scan service ${verified.relayOrigin} with fingerprint $fingerprint? " +
+        "It can recognize incoming payments to a Fast Wallet, but it cannot spend them.",
+    ) { authorized, message ->
+      if (!authorized) {
+        promise.reject(
+          "monero_wallet_community_worker_pairing_cancelled",
+          message,
+        )
+        return@requestFreshAuthorization
+      }
+      runCatching {
+        check(NativeAppAuthorization.isAuthorized()) {
+          "The native app session was locked"
+        }
+        storeDurableSecretValue(
+          FAST_WALLET_PRIVATE_WORKER_ROOT_SECRET_KEY,
+          verified.workerRootId,
+        )
+        verified.workerRootId
+      }
+        .onSuccess(promise::resolve)
+        .onFailure { error -> rejectNativeError(promise, error) }
+    }
+  }
+
   override fun sponsorFastWalletAssignment(
     identityId: String,
     workerDescriptorHex: String,
@@ -8496,6 +8588,8 @@ class NativeMoneroWalletModule(
       "monero.fastwallet.installation.auth.v1"
     private const val FAST_WALLET_PRIVATE_WORKER_ROOT_SECRET_KEY =
       "monero.fastwallet.private-worker-root.v1"
+    private const val FAST_WALLET_DIRECTORY_ADMISSION_PUBLIC_KEY =
+      "69a0559931de88f8cbd42220f753981fe01ae663f174df2933a90deadabf5551"
     private const val MFW_NAME_STATE_SECRET_PREFIX =
       "monero.mfw.name-state.v1."
     private const val PRIVATE_PHONE_IDENTITY_PRIVATE_KEY =

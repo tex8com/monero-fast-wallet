@@ -51,9 +51,10 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
     expect(walletsScreen).not.toContain('Delete scan data');
   });
 
-  it('keeps official and private enrollment capability below the simple UI', () => {
+  it('uses the selected official, approved Community, or private Worker below the simple UI', () => {
+    expect(walletService).toContain('loadFastWalletWorkerSelection');
     expect(walletService).toContain(
-      'const privateWorkerRequested = Boolean(input.workerDescriptorHex?.trim())',
+      'const privateWorkerRequested = Boolean(selectedWorkerDescriptor)',
     );
     expect(walletService).toMatch(
       /privateWorkerRequested && !v1ReleaseFeatures\.privateWorkerPairing/,

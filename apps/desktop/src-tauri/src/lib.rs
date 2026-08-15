@@ -803,6 +803,19 @@ struct PairPrivateFastWalletWorkerInput {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ListCommunityFastWalletWorkersInput {
+    network: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SelectCommunityFastWalletWorkerInput {
+    worker: fast_wallet_enrollment::CommunityWorkerView,
+    network: String,
+    #[serde(default)]
+    app_password: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AuthorizedFastWalletIdInput {
     identity_id: String,
     #[serde(default)]
@@ -4812,6 +4825,69 @@ async fn pair_private_fast_wallet_worker(
     )
     .await?;
     fast_wallet_enrollment::store_private_worker(&input.network, &worker)?;
+    eprintln!(
+        "MONERO_DESKTOP_FAST_WALLET_WORKER selected kind=private network={}",
+        input.network
+    );
+    Ok(view)
+}
+
+#[tauri::command]
+async fn list_community_fast_wallet_workers(
+    protection: State<'_, AppProtectionState>,
+    input: ListCommunityFastWalletWorkersInput,
+) -> Result<Vec<fast_wallet_enrollment::CommunityWorkerView>, String> {
+    require_app_unlocked(&protection)?;
+    let workers = fast_wallet_enrollment::community_workers(&input.network, now()).await?;
+    eprintln!(
+        "MONERO_DESKTOP_FAST_WALLET_WORKER directory-loaded network={} count={}",
+        input.network,
+        workers.len()
+    );
+    Ok(workers)
+}
+
+#[tauri::command]
+async fn select_community_fast_wallet_worker(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    mut input: SelectCommunityFastWalletWorkerInput,
+) -> Result<fast_wallet_enrollment::PairedWorkerView, String> {
+    require_app_unlocked(&protection)?;
+    let (worker, view) =
+        fast_wallet_enrollment::verify_community_worker(&input.worker, &input.network, now())?;
+    let roots = fast_wallet_enrollment::paired_private_worker_roots()?;
+    if roots.iter().any(|root| root != &view.worker_root_id) {
+        let has_assignment = fast_wallet::list(&app)?.iter().try_fold(
+            false,
+            |found, record| -> Result<bool, String> {
+                Ok(found
+                    || record.assignment_handle.is_some()
+                    || fast_wallet_enrollment::load_assignment(&record.id)?.is_some())
+            },
+        )?;
+        if has_assignment {
+            input.app_password.zeroize();
+            return Err(
+                "Delete hosted scan data for every Fast Wallet before selecting a different Community Worker."
+                    .to_owned(),
+            );
+        }
+    }
+    require_fresh_app_authorization(
+        app,
+        &mut input.app_password,
+        &format!(
+            "Use approved Community scan service {} ({})? It can recognize incoming Fast Wallet payments, but it cannot spend them.",
+            view.relay_origin, view.fingerprint
+        ),
+    )
+    .await?;
+    fast_wallet_enrollment::store_private_worker(&input.network, &worker)?;
+    eprintln!(
+        "MONERO_DESKTOP_FAST_WALLET_WORKER selected kind=community network={}",
+        input.network
+    );
     Ok(view)
 }
 
@@ -8599,6 +8675,8 @@ pub fn run() {
             present_fast_wallet_recovery_seed,
             create_fast_wallet,
             pair_private_fast_wallet_worker,
+            list_community_fast_wallet_workers,
+            select_community_fast_wallet_worker,
             enable_encrypted_fast_wallet_alerts,
             turn_off_fast_wallet_alerts,
             delete_hosted_fast_wallet_data,

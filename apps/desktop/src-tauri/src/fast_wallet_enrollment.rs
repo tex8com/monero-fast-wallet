@@ -1,4 +1,6 @@
-use fast_wallet_protocol::{Network, WorkerDescriptor, WATCH_ENVELOPE_SIZE};
+use fast_wallet_protocol::{
+    Network, WorkerAdmissionCertificate, WorkerDescriptor, WATCH_ENVELOPE_SIZE,
+};
 use reqwest::{header, redirect::Policy, Client, Response, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,6 +13,9 @@ const MAX_DESCRIPTOR_BYTES: usize = 512;
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
 const ASSIGNMENT_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
 pub const WATCH_LIFETIME_SECONDS: u64 = 10 * 60;
+const COMMUNITY_WORKER_DIRECTORY_KEY_HEX: &str =
+    "69a0559931de88f8cbd42220f753981fe01ae663f174df2933a90deadabf5551";
+const MAX_DIRECTORY_WORKERS: usize = 10_000;
 
 #[derive(Clone, Debug)]
 pub struct TrustedWorker {
@@ -42,6 +47,29 @@ pub struct PairedWorkerView {
     pub worker_root_id: String,
     pub fingerprint: String,
     pub relay_origin: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CommunityWorkerView {
+    pub worker_id: String,
+    pub worker_descriptor: String,
+    pub admission_certificate: String,
+    pub operator_label: String,
+    pub region: String,
+    pub policy_url: String,
+    pub maximum_assignments: u32,
+    pub last_seen_at: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CommunityWorkerDirectoryResponse {
+    schema_version: u8,
+    sequence: u64,
+    generated_at: u64,
+    admission_public_key: String,
+    workers: Vec<CommunityWorkerView>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -141,6 +169,90 @@ pub fn verify_private_worker_qr(
         relay_origin: worker.descriptor.relay_origin.clone(),
     };
     Ok((worker, view))
+}
+
+pub async fn community_workers(
+    network: &str,
+    now: u64,
+) -> Result<Vec<CommunityWorkerView>, String> {
+    crate::release_features::require(
+        "privateWorkerPairing",
+        "Community scan-service selection is disabled in this signed app.",
+    )?;
+    let origin = gateway_origin()?;
+    let response = client()?
+        .get(route(&origin, "/api/v1/community-workers"))
+        .header(header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|_| "The Community Worker directory could not be reached.".to_owned())?;
+    let directory: CommunityWorkerDirectoryResponse = bounded_json(
+        response,
+        "The Community Worker directory returned invalid data.",
+    )
+    .await?;
+    if directory.schema_version != 1
+        || directory.sequence == 0
+        || directory.generated_at == 0
+        || directory.workers.len() > MAX_DIRECTORY_WORKERS
+        || !constant_hex_eq(
+            directory.admission_public_key.trim(),
+            COMMUNITY_WORKER_DIRECTORY_KEY_HEX,
+        )
+    {
+        return Err("The Community Worker directory identity is invalid.".to_owned());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for worker in &directory.workers {
+        verify_community_worker(worker, network, now)?;
+        if !ids.insert(worker.worker_id.clone()) {
+            return Err("The Community Worker directory contains a duplicate.".to_owned());
+        }
+    }
+    Ok(directory.workers)
+}
+
+pub fn verify_community_worker(
+    worker: &CommunityWorkerView,
+    network: &str,
+    now: u64,
+) -> Result<(TrustedWorker, PairedWorkerView), String> {
+    if worker.operator_label.trim().is_empty()
+        || worker.operator_label.len() > 80
+        || worker.region.len() > 80
+        || worker.policy_url.len() > 256
+        || worker.last_seen_at == 0
+        || worker.maximum_assignments == 0
+        || !canonical_hex(&worker.worker_id, 32)
+    {
+        return Err("The Community Worker entry is invalid.".to_owned());
+    }
+    let trusted = verify_descriptor(&worker.worker_descriptor, network, now)?;
+    let root = hex::encode(trusted.descriptor.worker_root_id());
+    if !constant_hex_eq(&root, &worker.worker_id) {
+        return Err("The Community Worker identity does not match.".to_owned());
+    }
+    let certificate_bytes = hex::decode(worker.admission_certificate.trim())
+        .map_err(|_| "The Community Worker admission is invalid.".to_owned())?;
+    let certificate = WorkerAdmissionCertificate::decode(&certificate_bytes)
+        .map_err(|_| "The Community Worker admission is invalid.".to_owned())?;
+    let directory_key_bytes = hex::decode(COMMUNITY_WORKER_DIRECTORY_KEY_HEX)
+        .map_err(|_| "The Community Worker Directory key is invalid.".to_owned())?;
+    let directory_key: [u8; 32] = directory_key_bytes
+        .try_into()
+        .map_err(|_| "The Community Worker Directory key is invalid.".to_owned())?;
+    certificate
+        .verify(&trusted.descriptor, &directory_key, now)
+        .map_err(|_| "The Community Worker admission is invalid or expired.".to_owned())?;
+    if certificate.maximum_assignments != worker.maximum_assignments {
+        return Err("The Community Worker capacity does not match its approval.".to_owned());
+    }
+    let view = PairedWorkerView {
+        worker_root_id: root.clone(),
+        fingerprint: fingerprint(&root),
+        relay_origin: trusted.descriptor.relay_origin.clone(),
+    };
+    Ok((trusted, view))
 }
 
 pub fn store_private_worker(network: &str, worker: &TrustedWorker) -> Result<(), String> {

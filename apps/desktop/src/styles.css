@@ -547,6 +547,30 @@ html[dir="rtl"] input, html[dir="rtl"] textarea { text-align: right; }
 .settings-panel { display: grid; gap: 15px; padding: 19px 21px; border: 1px solid #332b45; border-radius: 15px; background: #12101d; }
 .settings-panel strong { color: #f5f0f7; font-size: 15px; }
 .settings-panel p { margin: 5px 0 0; color: #b6aebe; font-size: 13px; line-height: 1.5; }
+.settings-choice-list { display: grid; gap: 8px; }
+.settings-choice-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; padding: 13px 14px; border: 1px solid #3a334a; border-radius: 12px; color: #f5f0f7; background: #0d0b14; cursor: pointer; font: inherit; text-align: left; transition: border-color 0.16s ease, background 0.16s ease; }
+.settings-choice-card:hover:not(:disabled) { border-color: #765044; background: #18111b; }
+.settings-choice-card.selected { border-color: #fa671c; background: #24151a; box-shadow: inset 0 0 0 1px rgb(250 103 28 / 18%); }
+.settings-choice-card:disabled { cursor: default; opacity: 0.55; }
+.settings-choice-icon { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; color: #ff8a50; background: #35202a; }
+.settings-choice-copy { display: grid; min-width: 0; gap: 4px; }
+.settings-choice-copy strong { color: #f5f0f7; font-size: 13px; }
+.settings-choice-copy small { overflow: hidden; color: #aaa2b5; font-size: 11px; line-height: 1.4; text-overflow: ellipsis; }
+.settings-choice-check { color: #fa671c; font-size: 18px; font-weight: 900; }
+.worker-settings > p { margin: 0; }
+.worker-group { display: grid; gap: 9px; padding-top: 3px; }
+.worker-group-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.worker-group-header .quiet-button { flex: 0 0 auto; margin: 0; }
+.worker-warning { color: #ffd17d !important; }
+.worker-private-form { display: grid; gap: 9px; padding: 12px; border: 1px solid #39314a; border-radius: 11px; background: #0d0b14; }
+.worker-private-form textarea,
+.worker-authorization input { min-width: 0; width: 100%; border: 1px solid #3a334a; border-radius: 9px; padding: 10px 11px; color: #f7f4fa; background: #08070d; font: inherit; outline: none; resize: vertical; }
+.worker-private-form textarea:focus,
+.worker-authorization input:focus { border-color: #fa671c; }
+.worker-private-form .primary { justify-self: start; margin: 0; }
+.worker-authorization { display: grid; gap: 7px; color: #c4bdcd; font-size: 12px; font-weight: 750; }
+.settings-registry-card { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
+.settings-registry-card .secondary { margin: 0; }
 .notification-privacy { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 .notification-privacy > div { min-width: 0; }
 .notification-privacy small { display: block; max-width: 690px; margin-top: 8px; color: #f0c26c; font-size: 11px; line-height: 1.45; }
@@ -569,6 +593,9 @@ html[dir="rtl"] input, html[dir="rtl"] textarea { text-align: right; }
 .node-settings { gap: 15px; }
 .node-settings > p { margin: 0; }
 .settings-field { display: grid; gap: 7px; color: #c4bdcd; font-size: 13px; font-weight: 750; }
+.settings-field-help { color: #91899a; font-size: 11px; font-weight: 600; line-height: 1.45; }
+.node-preset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.node-preset-card .settings-choice-copy small { white-space: nowrap; }
 .node-mode { display: flex; gap: 6px; padding: 5px; border: 1px solid #332b45; border-radius: 11px; background: #0d0b14; }
 .node-mode button { flex: 1; padding: 9px 8px; border: 0; border-radius: 8px; color: #b8b0c4; background: transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 750; }
 .node-mode button.selected { color: #1b1018; background: #fa671c; }
@@ -622,6 +649,9 @@ html[dir="rtl"] input, html[dir="rtl"] textarea { text-align: right; }
 .settings-lock { justify-self: start; margin: 0; }
 @media (max-width: 760px) {
   .diagnostic-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .node-preset-grid { grid-template-columns: 1fr; }
+  .settings-registry-card { grid-template-columns: auto minmax(0, 1fr); }
+  .settings-registry-card .secondary { grid-column: 1 / -1; width: 100%; }
 }
 .node-mode { display: flex; gap: 7px; padding: 5px; border: 1px solid #332b45; border-radius: 11px; background: #0d0b14; }
 .node-mode button { flex: 1; padding: 9px 8px; border: 0; border-radius: 8px; color: #b8b0c4; background: transparent; cursor: pointer; font: inherit; font-size: 12px; font-weight: 750; }

@@ -2193,6 +2193,29 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeVerifiedFastWalletWorkerRootId
   }
 }
 
+extern "C" JNIEXPORT jdouble JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeVerifiedFastWalletWorkerAdmission(
+    JNIEnv* env,
+    jclass,
+    jstring workerDescriptorHex,
+    jstring admissionCertificateHex,
+    jstring directoryPublicKeyHex,
+    jstring network,
+    jdouble now) {
+  try {
+    return static_cast<jdouble>(
+        tex8::wallet::fast_wallet_protocol_bridge::verifiedWorkerAdmission(
+            toStdString(env, workerDescriptorHex),
+            toStdString(env, admissionCertificateHex),
+            toStdString(env, directoryPublicKeyHex),
+            parseNetwork(toStdString(env, network)),
+            toUInt64(now, "now")));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return 0;
+  }
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeCloseWallet(
     JNIEnv* env,

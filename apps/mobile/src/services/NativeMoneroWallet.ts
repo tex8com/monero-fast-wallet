@@ -347,6 +347,13 @@ export interface NativeMoneroWalletModule {
     network: MoneroNetwork,
     now: number,
   ): Promise<string>;
+  pairCommunityFastWalletWorkerDescriptor(
+    workerDescriptorHex: string,
+    admissionCertificateHex: string,
+    directoryPublicKeyHex: string,
+    network: MoneroNetwork,
+    now: number,
+  ): Promise<string>;
   sponsorFastWalletAssignment(
     input: SponsorFastWalletAssignmentInput,
   ): Promise<FastWalletAssignment>;
@@ -677,6 +684,20 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       ) =>
         turboModule.pairPrivateFastWalletWorkerDescriptor(
           workerDescriptorHex,
+          network,
+          now,
+        ),
+      pairCommunityFastWalletWorkerDescriptor: (
+        workerDescriptorHex,
+        admissionCertificateHex,
+        directoryPublicKeyHex,
+        network,
+        now,
+      ) =>
+        turboModule.pairCommunityFastWalletWorkerDescriptor(
+          workerDescriptorHex,
+          admissionCertificateHex,
+          directoryPublicKeyHex,
           network,
           now,
         ),
