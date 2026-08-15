@@ -198,7 +198,7 @@ impl GatewayWakeNotificationSink {
         let origin = validate_service_origin(&endpoint.into(), "Gateway")?;
         Ok(Self {
             worker,
-            endpoint: format!("{origin}/api/v1/internal/worker-wake"),
+            endpoint: format!("{origin}/api/v1/workers/wake"),
             agent: ureq::AgentBuilder::new().timeout(timeout).build(),
         })
     }

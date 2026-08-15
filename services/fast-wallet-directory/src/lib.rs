@@ -234,9 +234,14 @@ async fn worker_admission(
         .workers
         .get(&worker_id)
         .ok_or(ApiError::NotFound)?;
+    match record.status {
+        WorkerStatus::Pending | WorkerStatus::Paused => return Err(ApiError::Forbidden),
+        WorkerStatus::Revoked => return Err(ApiError::Gone),
+        WorkerStatus::Approved => {}
+    }
     public_worker(&state, &worker_id, record, now)
         .map(Json)
-        .ok_or(ApiError::NotFound)
+        .ok_or(ApiError::Unavailable)
 }
 
 async fn approve_worker(
@@ -648,7 +653,9 @@ impl DirectoryStore {
 enum ApiError {
     Invalid,
     Unauthorized,
+    Forbidden,
     NotFound,
+    Gone,
     Conflict,
     Unavailable,
 }
@@ -658,7 +665,9 @@ impl axum::response::IntoResponse for ApiError {
         let status = match self {
             Self::Invalid => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
+            Self::Gone => StatusCode::GONE,
             Self::Conflict => StatusCode::CONFLICT,
             Self::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         };
@@ -756,6 +765,17 @@ mod tests {
         assert_eq!(pending["status"], "pending");
 
         let worker_id = hex::encode(descriptor.worker_root_id());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/community-workers/{worker_id}/admission"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
         let response = app
             .clone()
             .oneshot(

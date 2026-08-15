@@ -2,7 +2,7 @@ use ed25519_dalek::VerifyingKey;
 use fast_wallet_protocol::WorkerDescriptor;
 use notification_gateway::{
     provider::{ApnsDeliveryConfig, DirectProviderDelivery, FcmCredentials, FcmDeliveryConfig},
-    router, GatewayState, HttpRelayControl,
+    router, GatewayState, HttpRelayControl, HttpWorkerAdmissionDirectory,
 };
 use std::{
     env,
@@ -98,9 +98,26 @@ async fn run() -> Result<(), String> {
     let official_worker_descriptor = load_worker_descriptor_file(&required_path(
         "NOTIFICATION_GATEWAY_OFFICIAL_WORKER_DESCRIPTOR_FILE",
     )?)?;
+    let worker_directory = Arc::new(HttpWorkerAdmissionDirectory::new(
+        required_env("NOTIFICATION_GATEWAY_WORKER_DIRECTORY_ORIGIN")?,
+        load_public_key_file(&required_path(
+            "NOTIFICATION_GATEWAY_WORKER_DIRECTORY_PUBLIC_KEY_FILE",
+        )?)?,
+        Duration::from_millis(env_u64(
+            "NOTIFICATION_GATEWAY_WORKER_DIRECTORY_TIMEOUT_MS",
+            5_000,
+        )?),
+    )?);
+    let official_maximum = env_usize(
+        "NOTIFICATION_GATEWAY_OFFICIAL_WORKER_MAXIMUM_ASSIGNMENTS",
+        100_000,
+    )?;
+    let private_maximum = env_usize("NOTIFICATION_GATEWAY_PRIVATE_WORKER_MAXIMUM_ASSIGNMENTS", 8)?;
     let state = state_result?
         .with_relay_control(relay_control)
-        .with_official_worker_descriptor(official_worker_descriptor, unix_seconds())?;
+        .with_official_worker_descriptor(official_worker_descriptor, unix_seconds())?
+        .with_worker_admission_directory(worker_directory)
+        .with_worker_assignment_limits(official_maximum, private_maximum)?;
     let listener = TcpListener::bind(bind)
         .await
         .map_err(|_| "notification gateway could not bind".to_owned())?;
@@ -282,6 +299,15 @@ fn env_u64(name: &str, default: u64) -> Result<u64, String> {
     env::var(name)
         .ok()
         .map(|value| value.parse::<u64>())
+        .transpose()
+        .map_err(|_| format!("{name} must be an unsigned integer"))
+        .map(|value| value.unwrap_or(default))
+}
+
+fn env_usize(name: &str, default: usize) -> Result<usize, String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.parse::<usize>())
         .transpose()
         .map_err(|_| format!("{name} must be an unsigned integer"))
         .map(|value| value.unwrap_or(default))

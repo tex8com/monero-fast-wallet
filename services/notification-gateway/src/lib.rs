@@ -18,8 +18,8 @@ use axum::{
     Json, Router,
 };
 use fast_wallet_protocol::{
-    gateway_wake_auth_body, WorkerAuthPurpose, WorkerDescriptor, WorkerRequestAuth,
-    WORKER_AUTH_SIZE,
+    gateway_wake_auth_body, WorkerAdmissionCertificate, WorkerAuthPurpose, WorkerDescriptor,
+    WorkerRequestAuth, WORKER_ADMISSION_CERTIFICATE_SIZE, WORKER_AUTH_SIZE,
 };
 use fs2::FileExt;
 use futures_util::StreamExt;
@@ -71,6 +71,9 @@ pub struct GatewayState {
     provider_adapter: Option<Arc<ProviderAdapter>>,
     relay_control: Option<Arc<dyn RelayControl>>,
     official_worker_descriptor: Option<Arc<WorkerDescriptor>>,
+    worker_directory: Option<Arc<dyn WorkerAdmissionDirectory>>,
+    official_worker_maximum_assignments: usize,
+    private_worker_maximum_assignments: usize,
 }
 
 struct ProviderAdapter {
@@ -89,6 +92,121 @@ pub trait RelayControl: Send + Sync {
     ) -> Result<(), String>;
 
     fn delete(&self, assignment_handle: [u8; 32]) -> Result<(), String>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerAdmissionLookup {
+    Approved(u32),
+    NotListed,
+    Denied,
+}
+
+pub trait WorkerAdmissionDirectory: Send + Sync {
+    fn lookup(
+        &self,
+        descriptor: &WorkerDescriptor,
+        now: u64,
+    ) -> Result<WorkerAdmissionLookup, String>;
+}
+
+pub struct HttpWorkerAdmissionDirectory {
+    origin: String,
+    admission_public_key: [u8; 32],
+    client: reqwest::blocking::Client,
+}
+
+impl HttpWorkerAdmissionDirectory {
+    pub fn new(
+        origin: impl Into<String>,
+        admission_public_key: [u8; 32],
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        let origin = validate_internal_origin(&origin.into(), "Worker Directory")?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(timeout)
+            .user_agent("Monero-Fast-Wallet-Gateway/0.1")
+            .build()
+            .map_err(|_| "Gateway Worker Directory client could not be created".to_owned())?;
+        Ok(Self {
+            origin,
+            admission_public_key,
+            client,
+        })
+    }
+}
+
+impl WorkerAdmissionDirectory for HttpWorkerAdmissionDirectory {
+    fn lookup(
+        &self,
+        descriptor: &WorkerDescriptor,
+        now: u64,
+    ) -> Result<WorkerAdmissionLookup, String> {
+        let worker_id = hex::encode(descriptor.worker_root_id());
+        let response = self
+            .client
+            .get(format!(
+                "{}/api/v1/community-workers/{worker_id}/admission",
+                self.origin
+            ))
+            .send()
+            .map_err(|_| "Worker Directory request failed".to_owned())?;
+        match response.status() {
+            StatusCode::NOT_FOUND => return Ok(WorkerAdmissionLookup::NotListed),
+            StatusCode::FORBIDDEN | StatusCode::GONE => return Ok(WorkerAdmissionLookup::Denied),
+            status if status.is_success() => {}
+            status => {
+                return Err(format!(
+                    "Worker Directory request failed with HTTP {}",
+                    status.as_u16()
+                ))
+            }
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > 16 * 1024)
+        {
+            return Err("Worker Directory response is too large".to_owned());
+        }
+        let mut bounded = response.take(16 * 1024 + 1);
+        let mut body = Vec::new();
+        bounded
+            .read_to_end(&mut body)
+            .map_err(|_| "Worker Directory response could not be read".to_owned())?;
+        if body.len() > 16 * 1024 {
+            return Err("Worker Directory response is too large".to_owned());
+        }
+        let admission: WorkerAdmissionResponse = serde_json::from_slice(&body)
+            .map_err(|_| "Worker Directory response is invalid".to_owned())?;
+        let _public_metadata = (
+            &admission.operator_label,
+            &admission.region,
+            &admission.policy_url,
+            admission.last_seen_at,
+        );
+        let descriptor_bytes = descriptor
+            .encode()
+            .map_err(|_| "Worker descriptor could not be encoded".to_owned())?;
+        if admission.worker_id != worker_id
+            || admission.worker_descriptor != hex::encode(descriptor_bytes)
+        {
+            return Err("Worker Directory returned a different Worker".to_owned());
+        }
+        let certificate_bytes = decode_canonical_hex_string(
+            &admission.admission_certificate,
+            WORKER_ADMISSION_CERTIFICATE_SIZE,
+        )?;
+        let certificate = WorkerAdmissionCertificate::decode(&certificate_bytes)
+            .map_err(|_| "Worker admission certificate is invalid".to_owned())?;
+        certificate
+            .verify(descriptor, &self.admission_public_key, now)
+            .map_err(|_| "Worker admission certificate is invalid".to_owned())?;
+        if admission.maximum_assignments != certificate.maximum_assignments {
+            return Err("Worker admission quota does not match its certificate".to_owned());
+        }
+        Ok(WorkerAdmissionLookup::Approved(
+            certificate.maximum_assignments,
+        ))
+    }
 }
 
 pub struct HttpRelayControl {
@@ -182,6 +300,9 @@ impl GatewayState {
             provider_adapter: None,
             relay_control: None,
             official_worker_descriptor: None,
+            worker_directory: None,
+            official_worker_maximum_assignments: MAX_ASSIGNMENTS,
+            private_worker_maximum_assignments: 8,
         })
     }
 
@@ -206,12 +327,40 @@ impl GatewayState {
             })),
             relay_control: None,
             official_worker_descriptor: None,
+            worker_directory: None,
+            official_worker_maximum_assignments: MAX_ASSIGNMENTS,
+            private_worker_maximum_assignments: 8,
         })
     }
 
     pub fn with_relay_control(mut self, relay_control: Arc<dyn RelayControl>) -> Self {
         self.relay_control = Some(relay_control);
         self
+    }
+
+    pub fn with_worker_admission_directory(
+        mut self,
+        directory: Arc<dyn WorkerAdmissionDirectory>,
+    ) -> Self {
+        self.worker_directory = Some(directory);
+        self
+    }
+
+    pub fn with_worker_assignment_limits(
+        mut self,
+        official_maximum: usize,
+        private_maximum: usize,
+    ) -> Result<Self, String> {
+        if official_maximum == 0
+            || official_maximum > MAX_ASSIGNMENTS
+            || private_maximum == 0
+            || private_maximum > MAX_ASSIGNMENTS
+        {
+            return Err("Gateway Worker assignment limits are invalid".to_owned());
+        }
+        self.official_worker_maximum_assignments = official_maximum;
+        self.private_worker_maximum_assignments = private_maximum;
+        Ok(self)
     }
 
     pub fn with_official_worker_descriptor(
@@ -259,6 +408,13 @@ impl GatewayState {
         descriptor
             .verify(descriptor.network, now)
             .map_err(|_| ApiError::Unauthorized)?;
+        {
+            self.store
+                .lock()
+                .await
+                .authenticate_installation(installation_id, auth_secret)?;
+        }
+        let maximum_worker_assignments = self.worker_assignment_limit(descriptor, now).await?;
         if assignment_handle == [0_u8; 32]
             || assignment_epoch == 0
             || expires_at <= now
@@ -275,6 +431,7 @@ impl GatewayState {
             assignment_epoch,
             expires_at,
             now,
+            maximum_worker_assignments,
         )?;
         let Some(relay) = &self.relay_control else {
             return Ok(());
@@ -297,6 +454,37 @@ impl GatewayState {
             return Err(ApiError::Unavailable);
         }
         Ok(())
+    }
+
+    async fn worker_assignment_limit(
+        &self,
+        descriptor: &WorkerDescriptor,
+        now: u64,
+    ) -> Result<usize, ApiError> {
+        if let Some(official) = &self.official_worker_descriptor {
+            if descriptor.network != official.network
+                || descriptor.relay_origin != official.relay_origin
+            {
+                return Err(ApiError::Unauthorized);
+            }
+            if descriptor == official.as_ref() {
+                return Ok(self.official_worker_maximum_assignments);
+            }
+        }
+        let Some(directory) = &self.worker_directory else {
+            return Ok(self.private_worker_maximum_assignments);
+        };
+        let directory = directory.clone();
+        let descriptor = descriptor.clone();
+        let lookup = tokio::task::spawn_blocking(move || directory.lookup(&descriptor, now))
+            .await
+            .map_err(|_| ApiError::Unavailable)?
+            .map_err(|_| ApiError::Unavailable)?;
+        match lookup {
+            WorkerAdmissionLookup::Approved(maximum) => Ok(maximum as usize),
+            WorkerAdmissionLookup::NotListed => Ok(self.private_worker_maximum_assignments),
+            WorkerAdmissionLookup::Denied => Err(ApiError::Unauthorized),
+        }
     }
 
     pub async fn dispatch_provider_once(
@@ -398,6 +586,7 @@ pub fn router(state: GatewayState) -> Router {
             "/api/v1/installations/desktop-provider",
             post(register_desktop_provider),
         )
+        .route("/api/v1/workers/wake", post(accept_worker_wake))
         .route("/api/v1/internal/worker-wake", post(accept_worker_wake))
         .route("/api/v1/notifications/stream", get(stream_events))
         .with_state(state)
@@ -432,12 +621,11 @@ async fn register_provider(
         );
         ApiError::Unavailable
     })?;
-    let (installation_id, installation_auth) = installation_auth(&headers).map_err(|error| {
+    let (installation_id, installation_auth) = installation_auth(&headers).inspect_err(|_error| {
         // Installation credentials and their identifiers are not safe to log.
         eprintln!(
             "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.rejected status=401 reason=installation-auth"
         );
-        error
     })?;
     let nonce = input
         .grant
@@ -458,12 +646,11 @@ async fn register_provider(
     state
         .register_installation(&installation_id, &installation_auth)
         .await
-        .map_err(|error| {
+        .inspect_err(|error| {
             eprintln!(
                 "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=provider-registration.rejected status={} reason=installation-store",
-                api_error_status(&error).as_u16(),
+                api_error_status(error).as_u16(),
             );
-            error
         })?;
     let status = {
         let mut store = adapter.store.lock().await;
@@ -985,6 +1172,19 @@ struct OfficialWorkerDescriptorResponse {
     worker_descriptor: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WorkerAdmissionResponse {
+    worker_id: String,
+    worker_descriptor: String,
+    admission_certificate: String,
+    operator_label: String,
+    region: String,
+    policy_url: String,
+    maximum_assignments: u32,
+    last_seen_at: u64,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AssignmentAcceptedResponse {
@@ -1400,6 +1600,7 @@ impl EventStore {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn sponsor_assignment(
         &mut self,
         installation_id: &str,
@@ -1409,6 +1610,7 @@ impl EventStore {
         assignment_epoch: u64,
         expires_at: u64,
         now: u64,
+        maximum_worker_assignments: usize,
     ) -> Result<bool, ApiError> {
         self.prune_expired(now);
         self.authenticate_installation(installation_id, auth_secret)?;
@@ -1447,6 +1649,13 @@ impl EventStore {
                     .filter(|assignment| assignment.installation_id == installation_id)
                     .count()
                     >= MAX_ASSIGNMENTS_PER_INSTALLATION
+                || self
+                    .disk
+                    .assignments
+                    .values()
+                    .filter(|assignment| assignment.worker_root_id == next.worker_root_id)
+                    .count()
+                    >= maximum_worker_assignments
             {
                 return Err(ApiError::Capacity);
             }
@@ -1822,6 +2031,17 @@ fn decode_bounded(value: &str, maximum: usize) -> Result<Vec<u8>, ApiError> {
     Ok(bytes)
 }
 
+fn decode_canonical_hex_string(value: &str, expected_bytes: usize) -> Result<Vec<u8>, String> {
+    if value.len() != expected_bytes.saturating_mul(2)
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_uppercase() || !byte.is_ascii_hexdigit())
+    {
+        return Err("Worker Directory response contains invalid hex".to_owned());
+    }
+    hex::decode(value).map_err(|_| "Worker Directory response contains invalid hex".to_owned())
+}
+
 fn constant_hex_eq(left: &str, right: &str) -> bool {
     left.as_bytes().ct_eq(right.as_bytes()).into()
 }
@@ -1909,6 +2129,41 @@ mod tests {
         now: u64,
     }
 
+    struct StaticAdmissionDirectory(WorkerAdmissionLookup);
+
+    impl WorkerAdmissionDirectory for StaticAdmissionDirectory {
+        fn lookup(
+            &self,
+            _descriptor: &WorkerDescriptor,
+            _now: u64,
+        ) -> Result<WorkerAdmissionLookup, String> {
+            Ok(self.0)
+        }
+    }
+
+    fn descriptor_for(
+        root_byte: u8,
+        online_byte: u8,
+        now: u64,
+        relay_origin: &str,
+    ) -> WorkerDescriptor {
+        let root = SigningKeyMaterial::from_bytes([root_byte; 32]);
+        let online = SigningKeyMaterial::from_bytes([online_byte; 32]);
+        let (_, hpke_public_key) = generate_hpke_keypair().expect("HPKE key");
+        WorkerDescriptor::sign(
+            WorkerDescriptorInput {
+                network: Network::Mainnet,
+                issued_at: now.saturating_sub(1),
+                expires_at: now + 600,
+                worker_online_public_key: online.public_key(),
+                hpke_public_key,
+                relay_origin: relay_origin.to_owned(),
+            },
+            &root,
+        )
+        .expect("descriptor")
+    }
+
     async fn fixture() -> Fixture {
         let now = unix_seconds();
         let root = SigningKeyMaterial::from_bytes([1_u8; 32]);
@@ -1941,6 +2196,117 @@ mod tests {
             online,
             now,
         }
+    }
+
+    #[tokio::test]
+    async fn community_worker_admission_is_fail_closed_and_quota_bound() {
+        let now = unix_seconds();
+        let official = descriptor_for(61, 62, now, "https://relay.example");
+        let community = descriptor_for(63, 64, now, "https://relay.example");
+
+        let denied = GatewayState::open(storage())
+            .unwrap()
+            .with_official_worker_descriptor(official.clone(), now)
+            .unwrap()
+            .with_worker_admission_directory(Arc::new(StaticAdmissionDirectory(
+                WorkerAdmissionLookup::Denied,
+            )));
+        denied
+            .register_installation(INSTALLATION, &AUTH)
+            .await
+            .unwrap();
+        assert!(matches!(
+            denied
+                .sponsor_assignment(
+                    INSTALLATION,
+                    &AUTH,
+                    &community,
+                    [31_u8; 32],
+                    1,
+                    now + 300,
+                    now,
+                )
+                .await,
+            Err(ApiError::Unauthorized)
+        ));
+
+        let private = GatewayState::open(storage())
+            .unwrap()
+            .with_official_worker_descriptor(official, now)
+            .unwrap()
+            .with_worker_admission_directory(Arc::new(StaticAdmissionDirectory(
+                WorkerAdmissionLookup::NotListed,
+            )))
+            .with_worker_assignment_limits(100, 1)
+            .unwrap();
+        private
+            .register_installation(INSTALLATION, &AUTH)
+            .await
+            .unwrap();
+        private
+            .sponsor_assignment(
+                INSTALLATION,
+                &AUTH,
+                &community,
+                [32_u8; 32],
+                1,
+                now + 300,
+                now,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            private
+                .sponsor_assignment(
+                    INSTALLATION,
+                    &AUTH,
+                    &community,
+                    [33_u8; 32],
+                    1,
+                    now + 300,
+                    now,
+                )
+                .await,
+            Err(ApiError::Capacity)
+        ));
+
+        let approved = GatewayState::open(storage())
+            .unwrap()
+            .with_worker_admission_directory(Arc::new(StaticAdmissionDirectory(
+                WorkerAdmissionLookup::Approved(2),
+            )));
+        approved
+            .register_installation(INSTALLATION, &AUTH)
+            .await
+            .unwrap();
+        for handle_byte in [34_u8, 35] {
+            approved
+                .sponsor_assignment(
+                    INSTALLATION,
+                    &AUTH,
+                    &community,
+                    [handle_byte; 32],
+                    1,
+                    now + 300,
+                    now,
+                )
+                .await
+                .unwrap();
+        }
+        assert!(matches!(
+            approved
+                .sponsor_assignment(
+                    INSTALLATION,
+                    &AUTH,
+                    &community,
+                    [36_u8; 32],
+                    1,
+                    now + 300,
+                    now,
+                )
+                .await,
+            Err(ApiError::Capacity)
+        ));
     }
 
     #[tokio::test]
@@ -2435,7 +2801,7 @@ mod tests {
         });
         let request = Request::builder()
             .method(Method::POST)
-            .uri("/api/v1/internal/worker-wake")
+            .uri("/api/v1/workers/wake")
             .header("content-type", "application/json")
             .body(Body::from(wake.to_string()))
             .unwrap();
