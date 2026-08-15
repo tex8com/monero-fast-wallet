@@ -153,6 +153,36 @@ pub struct HttpRelayClient {
     agent: ureq::Agent,
 }
 
+pub struct CommunityDirectoryClient {
+    endpoint: String,
+    agent: ureq::Agent,
+    metadata: CommunityWorkerMetadata,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommunityWorkerMetadata {
+    pub operator_label: String,
+    pub region: String,
+    pub policy_url: String,
+    pub maximum_assignments: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CommunityWorkerStatus {
+    Pending,
+    Approved,
+    Paused,
+    Revoked,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommunityRegistrationOutcome {
+    pub worker_id: String,
+    pub status: CommunityWorkerStatus,
+    pub admitted: bool,
+}
+
 pub struct GatewayWakeNotificationSink {
     worker: Arc<OutboundRelayWorker>,
     endpoint: String,
@@ -262,6 +292,108 @@ impl HttpRelayClient {
     }
 }
 
+impl CommunityDirectoryClient {
+    pub fn new(
+        endpoint: impl Into<String>,
+        metadata: CommunityWorkerMetadata,
+        timeout: Duration,
+    ) -> anyhow::Result<Self> {
+        let endpoint = validate_service_origin(&endpoint.into(), "Worker Directory")?;
+        if metadata.maximum_assignments == 0 {
+            anyhow::bail!("Community Worker maximum assignments must be positive");
+        }
+        Ok(Self {
+            endpoint,
+            agent: ureq::AgentBuilder::new().timeout(timeout).build(),
+            metadata,
+        })
+    }
+
+    pub fn publish(
+        &self,
+        worker: &OutboundRelayWorker,
+        heartbeat: bool,
+        now: u64,
+    ) -> anyhow::Result<CommunityRegistrationOutcome> {
+        let request = self.registration_request(worker, heartbeat, now)?;
+        let path = if heartbeat {
+            "/api/v1/community-workers/heartbeat"
+        } else {
+            "/api/v1/community-workers/register"
+        };
+        let response = self
+            .agent
+            .post(&format!("{}{}", self.endpoint, path))
+            .set("content-type", "application/json")
+            .send_json(&request)
+            .map_err(|error| match error {
+                ureq::Error::Status(status, _) => {
+                    anyhow::anyhow!("Worker Directory rejected registration with HTTP {status}")
+                }
+                ureq::Error::Transport(_) => {
+                    anyhow::anyhow!("Worker Directory transport request failed")
+                }
+            })?;
+        const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut body)?;
+        if body.len() > usize::try_from(MAX_RESPONSE_BYTES)? {
+            anyhow::bail!("Worker Directory response exceeds its size limit");
+        }
+        let response: CommunityRegistrationResponse = serde_json::from_slice(&body)?;
+        let expected_worker_id = hex::encode(worker.descriptor.worker_root_id());
+        if response.worker_id != expected_worker_id {
+            anyhow::bail!("Worker Directory returned another Worker identity");
+        }
+        Ok(CommunityRegistrationOutcome {
+            worker_id: response.worker_id,
+            status: response.status,
+            admitted: response.admission_certificate.is_some()
+                && response.status == CommunityWorkerStatus::Approved,
+        })
+    }
+
+    fn registration_request(
+        &self,
+        worker: &OutboundRelayWorker,
+        heartbeat: bool,
+        now: u64,
+    ) -> anyhow::Result<CommunityRegistrationRequest> {
+        let descriptor = worker.descriptor.encode()?;
+        let body = fast_wallet_protocol::community_worker_registration_body(
+            &descriptor,
+            &self.metadata.operator_label,
+            &self.metadata.region,
+            &self.metadata.policy_url,
+            self.metadata.maximum_assignments,
+        )?;
+        let purpose = if heartbeat {
+            WorkerAuthPurpose::DirectoryHeartbeat
+        } else {
+            WorkerAuthPurpose::DirectoryRegister
+        };
+        let auth = WorkerRequestAuth::sign(
+            &worker.descriptor,
+            &worker.online_signing_key,
+            purpose,
+            &body,
+            now,
+            now.saturating_add(30),
+        )?;
+        Ok(CommunityRegistrationRequest {
+            worker_descriptor: hex::encode(descriptor),
+            operator_label: self.metadata.operator_label.clone(),
+            region: self.metadata.region.clone(),
+            policy_url: self.metadata.policy_url.clone(),
+            maximum_assignments: self.metadata.maximum_assignments,
+            worker_auth: hex::encode(auth.encode()),
+        })
+    }
+}
+
 impl RelayClient for HttpRelayClient {
     fn pull(
         &self,
@@ -360,6 +492,10 @@ impl OutboundRelayWorker {
             descriptor,
             online_signing_key,
         })
+    }
+
+    pub fn descriptor(&self) -> &WorkerDescriptor {
+        &self.descriptor
     }
 
     /// One outbound mailbox cycle. A message is acknowledged only after the
@@ -641,6 +777,25 @@ struct HttpAckResponse {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct CommunityRegistrationRequest {
+    worker_descriptor: String,
+    operator_label: String,
+    region: String,
+    policy_url: String,
+    maximum_assignments: u32,
+    worker_auth: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CommunityRegistrationResponse {
+    worker_id: String,
+    status: CommunityWorkerStatus,
+    admission_certificate: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GatewayWakeRequest {
     contract_version: &'static str,
     event_id: String,
@@ -698,6 +853,13 @@ fn unix_seconds() -> u64 {
 
 pub fn assignment_id(envelope: &WatchEnvelope) -> String {
     assignment_id_from_handle(&envelope.binding.assignment_handle)
+}
+
+pub fn private_worker_pairing_code(descriptor: &WorkerDescriptor) -> anyhow::Result<String> {
+    Ok(format!(
+        "tex8-fast-wallet-worker:v1:{}",
+        hex::encode(descriptor.encode()?)
+    ))
 }
 
 fn assignment_id_from_handle(handle: &[u8; 32]) -> String {
@@ -771,6 +933,39 @@ pub fn load_secret_file(path: &Path) -> anyhow::Result<[u8; 32]> {
     result
 }
 
+/// Loads the public, root-signed Worker descriptor without following symlinks.
+pub fn load_worker_descriptor_file(path: &Path) -> anyhow::Result<WorkerDescriptor> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("could not securely open {}", path.display()))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > 2_048 {
+        anyhow::bail!("Worker descriptor file is invalid");
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o022 != 0 {
+        anyhow::bail!("Worker descriptor file must not be group/world writable");
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let encoded = match std::str::from_utf8(&bytes) {
+        Ok(value) if value.trim().bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+            let value = value.trim();
+            if value.bytes().any(|byte| byte.is_ascii_uppercase()) {
+                anyhow::bail!("Worker descriptor hex must be lowercase");
+            }
+            hex::decode(value)?
+        }
+        _ => bytes,
+    };
+    WorkerDescriptor::decode(&encoded)
+        .map_err(|error| anyhow::anyhow!("Worker descriptor is invalid: {error}"))
+}
+
 fn scanner_network(network: ProtocolNetwork) -> Network {
     match network {
         ProtocolNetwork::Mainnet => Network::Mainnet,
@@ -832,6 +1027,50 @@ mod tests {
             .unwrap()
             .encode()
             .to_vec()
+    }
+
+    #[test]
+    fn community_directory_request_is_worker_signed_and_pairing_is_public_only() {
+        let now = 1_800_000_000;
+        let (acceptor, descriptor, _, online) = fixture(now);
+        let worker = OutboundRelayWorker::new(acceptor, descriptor.clone(), online, now).unwrap();
+        let client = CommunityDirectoryClient::new(
+            "http://127.0.0.1:8096",
+            CommunityWorkerMetadata {
+                operator_label: "Example Operator".to_owned(),
+                region: "PA".to_owned(),
+                policy_url: "https://example.com/privacy".to_owned(),
+                maximum_assignments: 25,
+            },
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let request = client.registration_request(&worker, false, now).unwrap();
+        let descriptor_bytes = hex::decode(&request.worker_descriptor).unwrap();
+        let body = fast_wallet_protocol::community_worker_registration_body(
+            &descriptor_bytes,
+            &request.operator_label,
+            &request.region,
+            &request.policy_url,
+            request.maximum_assignments,
+        )
+        .unwrap();
+        let auth = WorkerRequestAuth::decode(&hex::decode(request.worker_auth).unwrap()).unwrap();
+        auth.verify(
+            &descriptor,
+            WorkerAuthPurpose::DirectoryRegister,
+            &body,
+            now,
+        )
+        .unwrap();
+        let pairing = private_worker_pairing_code(&descriptor).unwrap();
+        assert_eq!(
+            pairing,
+            format!(
+                "tex8-fast-wallet-worker:v1:{}",
+                hex::encode(descriptor.encode().unwrap())
+            )
+        );
     }
 
     #[test]

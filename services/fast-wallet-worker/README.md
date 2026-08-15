@@ -16,6 +16,31 @@ Outbound-only V1 Worker building blocks.
   from private credential files;
 - returns/logs only opaque assignment and envelope identifiers.
 
+## Community mode
+
+`FAST_WALLET_WORKER_MODE` accepts `public` (the default) or `private`.
+
+- `public` signs a registration and regular heartbeats for the configured
+  Directory. A new Worker remains `pending` until TEX8 approves it. The
+  Directory then publishes a short-lived certificate bound to this exact
+  Worker descriptor and Relay.
+- `private` never contacts the Directory. Run `fast-wallet-worker-pairing`
+  with `FAST_WALLET_WORKER_DESCRIPTOR_FILE` set to print the signed pairing
+  code for manual entry in a Wallet.
+
+Public mode additionally requires:
+
+```text
+FAST_WALLET_WORKER_DIRECTORY_ORIGIN=https://xmr.tex8.com
+FAST_WALLET_WORKER_OPERATOR_LABEL=Example operator
+FAST_WALLET_WORKER_REGION=PA
+FAST_WALLET_WORKER_POLICY_URL=https://example.com/privacy
+FAST_WALLET_WORKER_MAXIMUM_ASSIGNMENTS=100
+```
+
+The Worker opens no public port in either mode. Relay pulls, Directory
+registration and notification wakes are outbound HTTPS requests.
+
 The public V1 feature remains disabled until the Relay, signed receipts/wakes,
 provider Gateway and physical client acceptance are complete.
 

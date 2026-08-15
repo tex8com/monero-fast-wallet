@@ -1,11 +1,10 @@
 use anyhow::{bail, Context, Result};
 use ed25519_dalek::VerifyingKey;
-use fast_wallet_protocol::{
-    HpkePrivateKey, Network as ProtocolNetwork, SigningKeyMaterial, WorkerDescriptor,
-};
+use fast_wallet_protocol::{HpkePrivateKey, Network as ProtocolNetwork, SigningKeyMaterial};
 use fast_wallet_worker::{
-    harden_worker_process, load_secret_file, GatewayWakeNotificationSink, HttpRelayClient,
-    OutboundRelayWorker, WorkerAdmissionGate, WorkerWatchAcceptor,
+    harden_worker_process, load_secret_file, load_worker_descriptor_file, CommunityDirectoryClient,
+    CommunityWorkerMetadata, GatewayWakeNotificationSink, HttpRelayClient, OutboundRelayWorker,
+    WorkerAdmissionGate, WorkerWatchAcceptor,
 };
 use notify_scanner::{
     dispatch_pending_notifications, BlockSource, CuprateHttpMempoolSource, EncryptedJsonFileStore,
@@ -14,9 +13,7 @@ use notify_scanner::{
 };
 use std::{
     env,
-    fs::OpenOptions,
-    io::Read,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc,
@@ -26,18 +23,16 @@ use std::{
 };
 use zeroize::Zeroize;
 
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
 fn main() -> Result<()> {
     harden_worker_process()?;
+    let worker_mode = WorkerMode::from_environment()?;
     let running = Arc::new(AtomicBool::new(true));
     let signal_flag = running.clone();
     ctrlc::set_handler(move || signal_flag.store(false, Ordering::Release))
         .context("could not install Worker shutdown handler")?;
 
     let descriptor_path = required_path("FAST_WALLET_WORKER_DESCRIPTOR_FILE")?;
-    let descriptor = load_descriptor_file(&descriptor_path)?;
+    let descriptor = load_worker_descriptor_file(&descriptor_path)?;
     let now = unix_seconds();
     descriptor
         .verify(descriptor.network, now)
@@ -100,6 +95,35 @@ fn main() -> Result<()> {
         online_signing_key,
         now,
     )?);
+    let directory_heartbeat = Duration::from_millis(env_u64(
+        "FAST_WALLET_WORKER_DIRECTORY_HEARTBEAT_MS",
+        60_000,
+    )?);
+    if directory_heartbeat < Duration::from_secs(15) {
+        bail!("FAST_WALLET_WORKER_DIRECTORY_HEARTBEAT_MS must be at least 15000");
+    }
+    let directory = match worker_mode {
+        WorkerMode::Public => Some(CommunityDirectoryClient::new(
+            required_env("FAST_WALLET_WORKER_DIRECTORY_ORIGIN")?,
+            CommunityWorkerMetadata {
+                operator_label: required_env("FAST_WALLET_WORKER_OPERATOR_LABEL")?,
+                region: optional_env("FAST_WALLET_WORKER_REGION"),
+                policy_url: optional_env("FAST_WALLET_WORKER_POLICY_URL"),
+                maximum_assignments: u32::try_from(env_u64(
+                    "FAST_WALLET_WORKER_MAXIMUM_ASSIGNMENTS",
+                    100,
+                )?)
+                .context("FAST_WALLET_WORKER_MAXIMUM_ASSIGNMENTS is too large")?,
+            },
+            Duration::from_millis(env_u64("FAST_WALLET_WORKER_HTTP_TIMEOUT_MS", 10_000)?),
+        )?),
+        WorkerMode::Private => {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=directory.disabled mode=private pairingCommand=fast-wallet-worker-pairing"
+            );
+            None
+        }
+    };
     let relay = HttpRelayClient::new(
         descriptor.relay_origin.clone(),
         Duration::from_millis(env_u64("FAST_WALLET_WORKER_HTTP_TIMEOUT_MS", 10_000)?),
@@ -122,9 +146,10 @@ fn main() -> Result<()> {
     }
     let matcher = HardwareHostedViewKeyMatcher::new(derivation_workers)?;
     eprintln!(
-        "fast-wallet-worker backend={} workers={} public_ingress=disabled",
+        "fast-wallet-worker backend={} workers={} mode={} public_ingress=disabled",
         matcher.backend_name(),
-        matcher.workers()
+        matcher.workers(),
+        worker_mode.as_str()
     );
 
     let block_max = env_usize("FAST_WALLET_WORKER_BLOCK_MAX_BLOCKS", 25)?;
@@ -192,8 +217,30 @@ fn main() -> Result<()> {
             }
         })?;
 
+    let mut directory_registered = false;
+    let mut next_directory_publish = now;
     while running.load(Ordering::Acquire) {
-        match worker.poll_relay_once(&relay, relay_limit, unix_seconds()) {
+        let cycle_now = unix_seconds();
+        if let Some(directory) = directory.as_ref() {
+            if cycle_now >= next_directory_publish {
+                match directory.publish(&worker, directory_registered, cycle_now) {
+                    Ok(outcome) => {
+                        directory_registered = true;
+                        eprintln!(
+                            "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=directory.publish worker={} status={:?} admitted={}",
+                            outcome.worker_id.get(..8).unwrap_or("invalid"),
+                            outcome.status,
+                            outcome.admitted
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!("fast-wallet-worker Directory publish failed closed: {error:#}")
+                    }
+                }
+                next_directory_publish = cycle_now.saturating_add(directory_heartbeat.as_secs());
+            }
+        }
+        match worker.poll_relay_once(&relay, relay_limit, cycle_now) {
             Ok(result) => {
                 if result.leased > 0
                     || result.accepted > 0
@@ -271,38 +318,6 @@ impl BlockSource for AdmissionBlockSource {
     }
 }
 
-fn load_descriptor_file(path: &Path) -> Result<WorkerDescriptor> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("could not securely open {}", path.display()))?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.len() > 2_048 {
-        bail!("Worker descriptor file is invalid");
-    }
-    #[cfg(unix)]
-    if metadata.permissions().mode() & 0o022 != 0 {
-        bail!("Worker descriptor file must not be group/world writable");
-    }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    let encoded = match std::str::from_utf8(&bytes) {
-        Ok(value) if value.trim().bytes().all(|byte| byte.is_ascii_hexdigit()) => {
-            let value = value.trim();
-            if value.bytes().any(|byte| byte.is_ascii_uppercase()) {
-                bail!("Worker descriptor hex must be lowercase");
-            }
-            hex::decode(value)?
-        }
-        _ => bytes,
-    };
-    WorkerDescriptor::decode(&encoded)
-        .map_err(|error| anyhow::anyhow!("Worker descriptor is invalid: {error}"))
-}
-
 fn required_path(name: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(required_env(name)?))
 }
@@ -313,6 +328,13 @@ fn required_env(name: &str) -> Result<String> {
         .ok()
         .filter(|value| !value.is_empty())
         .with_context(|| format!("{name} is required"))
+}
+
+fn optional_env(name: &str) -> String {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_default()
 }
 
 fn required_lower_hex_32(name: &str) -> Result<[u8; 32]> {
@@ -370,5 +392,31 @@ fn sleep_while_running(running: &AtomicBool, duration: Duration) {
         let step = remaining.min(Duration::from_millis(100));
         thread::sleep(step);
         remaining = remaining.saturating_sub(step);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerMode {
+    Public,
+    Private,
+}
+
+impl WorkerMode {
+    fn from_environment() -> Result<Self> {
+        match env::var("FAST_WALLET_WORKER_MODE")
+            .unwrap_or_else(|_| "public".to_owned())
+            .trim()
+        {
+            "public" => Ok(Self::Public),
+            "private" => Ok(Self::Private),
+            _ => bail!("FAST_WALLET_WORKER_MODE must be public or private"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Private => "private",
+        }
     }
 }
