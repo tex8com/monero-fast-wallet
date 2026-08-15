@@ -9,8 +9,12 @@ fi
 
 cli="${1:-}"
 origin="${2:-https://xmr.tex8.com}"
-if [[ ! -x "$cli" || ! "$origin" =~ ^https://[^/?#]+$ ]]; then
-  echo 'Usage: run-live-product-cli-fast-wallet-enrollment.sh <fast-wallet-cli> [https-origin]' >&2
+worker_descriptor_source="${3:-}"
+restore_height="${MFW_LIVE_PRODUCT_CLI_RESTORE_HEIGHT:-3577876}"
+if [[ ! -x "$cli" || ! "$origin" =~ ^https://[^/?#]+$ ||
+      ( -n "$worker_descriptor_source" && ! -f "$worker_descriptor_source" ) ||
+      ! "$restore_height" =~ ^[0-9]+$ ]]; then
+  echo 'Usage: run-live-product-cli-fast-wallet-enrollment.sh <fast-wallet-cli> [https-origin] [worker-descriptor-file]' >&2
   exit 2
 fi
 
@@ -45,7 +49,7 @@ with open(sidecar, "rb") as source:
 if len(state) < 173 or bytes(state[:8]) != b"MFWHS1\0\0":
     raise SystemExit("safe_cleanup_state_valid=false")
 version = struct.unpack_from("<I", state, 8)[0]
-if version != 2:
+if version not in (2, 3):
     raise SystemExit("safe_cleanup_state_valid=false")
 installation = bytes(state[64:109]).split(b"\0", 1)[0].decode("ascii")
 auth = bytes(state[109:141]).hex()
@@ -116,22 +120,33 @@ openssl rand -hex 32 >"$password_file"
 chmod 600 "$password_file"
 
 descriptor_started="$(now_ns)"
-curl --fail --silent --show-error --max-time 12 \
-  "$origin/api/v1/official-worker-descriptor" |
-  node -e '
-    const chunks=[];
-    process.stdin.on("data", chunk => chunks.push(chunk));
-    process.stdin.on("end", () => {
-      const parsed=JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      if (!/^[0-9a-f]+$/.test(parsed.workerDescriptor ?? "") || parsed.workerDescriptor.length % 2) process.exit(1);
-      process.stdout.write(Buffer.from(parsed.workerDescriptor, "hex"));
-    });
-  ' >"$descriptor_file"
+if [[ -n "$worker_descriptor_source" ]]; then
+  install -m 0600 "$worker_descriptor_source" "$descriptor_file"
+  descriptor_kind=manual
+else
+  curl --fail --silent --show-error --max-time 12 \
+    "$origin/api/v1/official-worker-descriptor" |
+    node -e '
+      const chunks=[];
+      process.stdin.on("data", chunk => chunks.push(chunk));
+      process.stdin.on("end", () => {
+        const parsed=JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (!/^[0-9a-f]+$/.test(parsed.workerDescriptor ?? "") || parsed.workerDescriptor.length % 2) process.exit(1);
+        process.stdout.write(Buffer.from(parsed.workerDescriptor, "hex"));
+      });
+    ' >"$descriptor_file"
+  descriptor_kind=official
+fi
+descriptor_size="$(stat -f '%z' "$descriptor_file")"
+if [[ "$descriptor_size" -lt 128 || "$descriptor_size" -gt 512 ]]; then
+  echo 'Worker descriptor failed its bounded public-file contract.' >&2
+  exit 1
+fi
 descriptor_finished="$(now_ns)"
 
 create_started="$(now_ns)"
 "$cli" fast-wallet create --wallet-file "$wallet_file" \
-  --password-file "$password_file" --network mainnet --restore-height 3577876 \
+  --password-file "$password_file" --network mainnet --restore-height "$restore_height" \
   2>"$volume/create.stderr" |
   node -e '
     const chunks=[];
@@ -204,14 +219,32 @@ status_finished="$(now_ns)"
 
 sidecar_mode="$(stat -f '%Lp' "$wallet_file.mfw-fast-hosting-v1")"
 sidecar_size="$(stat -f '%z' "$wallet_file.mfw-fast-hosting-v1")"
-if [[ "$sidecar_mode" != 600 || "$sidecar_size" != 760 ]]; then
-  echo 'Hosted-watch sidecar failed its private-file contract.' >&2
+sidecar_header="$(python3 - "$wallet_file.mfw-fast-hosting-v1" <<'PY'
+import struct
+import sys
+
+with open(sys.argv[1], "rb") as source:
+    header = source.read(12)
+valid = len(header) == 12 and header[:8] == b"MFWHS1\0\0" and \
+    struct.unpack_from("<I", header, 8)[0] == 3
+print("true" if valid else header.hex())
+PY
+)"
+# Version 3 is the canonical 753-byte state plus its 32-byte integrity hash.
+# `hosted-status` above has already made the Product CLI verify that hash.
+if [[ "$sidecar_mode" != 600 || "$sidecar_header" != true ||
+      "$sidecar_size" != 785 ]]; then
+  printf 'Hosted-watch sidecar failed its private-file contract (mode=%s bytes=%s header=%s).\n' \
+    "$sidecar_mode" "$sidecar_size" "$sidecar_header" >&2
   exit 1
 fi
 
 cleanup_remote
 
 printf 'descriptor_fetch_ms=%s\n' "$(elapsed_ms "$descriptor_started" "$descriptor_finished")"
+printf 'descriptor_source=%s\n' "$descriptor_kind"
+printf 'descriptor_bytes=%s\n' "$descriptor_size"
+printf 'restore_height=%s\n' "$restore_height"
 printf 'wallet_create_ms=%s\n' "$(elapsed_ms "$create_started" "$create_finished")"
 printf 'backup_gate_ms=%s\n' "$(elapsed_ms "$confirm_started" "$confirm_finished")"
 printf 'worker_pair_ms=%s\n' "$(elapsed_ms "$pair_started" "$pair_finished")"
