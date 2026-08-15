@@ -39,6 +39,7 @@ const WATCH_AAD_MAGIC: &[u8; 8] = b"TX8WA001";
 const WATCH_PLAINTEXT_MAGIC: &[u8; 8] = b"TX8WP001";
 const WORKER_AUTH_MAGIC: &[u8; 8] = b"TX8AU001";
 const GATEWAY_WAKE_MAGIC: &[u8; 8] = b"TX8GW001";
+const DIRECTORY_REGISTRATION_MAGIC: &[u8; 8] = b"TX8DR001";
 const HPKE_INFO: &[u8] = b"TEX8 Fast Wallet watch-envelope.v1";
 const WATCH_PURPOSE: u8 = 1;
 const WATCH_AAD_SIZE: usize = 180;
@@ -48,6 +49,9 @@ pub const WORKER_ADMISSION_CERTIFICATE_SIZE: usize = 224;
 pub const MAX_WORKER_AUTH_LIFETIME_SECONDS: u64 = 60;
 pub const MAX_WORKER_RECEIPT_LIFETIME_SECONDS: u64 = MAX_DESCRIPTOR_LIFETIME_SECONDS;
 pub const MAX_WORKER_ADMISSION_LIFETIME_SECONDS: u64 = 31 * 24 * 60 * 60;
+pub const MAX_WORKER_OPERATOR_LABEL_BYTES: usize = 80;
+pub const MAX_WORKER_REGION_BYTES: usize = 32;
+pub const MAX_WORKER_POLICY_URL_BYTES: usize = 200;
 
 const WORKER_ADMISSION_MAGIC: &[u8; 8] = b"TX8WC001";
 
@@ -441,6 +445,57 @@ impl WorkerAdmissionCertificate {
         );
         encoded
     }
+}
+
+/// Canonical body signed by a Worker's current online key when it registers
+/// or renews its public Directory entry. The body contains public metadata
+/// only and binds it to the exact descriptor bytes.
+pub fn community_worker_registration_body(
+    descriptor_encoded: &[u8],
+    operator_label: &str,
+    region: &str,
+    policy_url: &str,
+    maximum_assignments: u32,
+) -> Result<Vec<u8>, ProtocolError> {
+    if descriptor_encoded.is_empty()
+        || descriptor_encoded.len() > 512
+        || operator_label.is_empty()
+        || operator_label.len() > MAX_WORKER_OPERATOR_LABEL_BYTES
+        || region.len() > MAX_WORKER_REGION_BYTES
+        || policy_url.len() > MAX_WORKER_POLICY_URL_BYTES
+        || maximum_assignments == 0
+        || operator_label.chars().any(char::is_control)
+        || region.chars().any(char::is_control)
+        || policy_url.chars().any(char::is_control)
+    {
+        return Err(ProtocolError::NonCanonical);
+    }
+    if !policy_url.is_empty() {
+        let parsed = Url::parse(policy_url).map_err(|_| ProtocolError::NonCanonical)?;
+        if parsed.scheme() != "https"
+            || parsed.host_str().is_none()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+        {
+            return Err(ProtocolError::NonCanonical);
+        }
+    }
+    let label_length = u16::try_from(operator_label.len()).map_err(|_| ProtocolError::Oversized)?;
+    let region_length = u16::try_from(region.len()).map_err(|_| ProtocolError::Oversized)?;
+    let policy_length = u16::try_from(policy_url.len()).map_err(|_| ProtocolError::Oversized)?;
+    let mut body = Vec::with_capacity(
+        8 + 32 + 4 + 2 + operator_label.len() + 2 + region.len() + 2 + policy_url.len(),
+    );
+    body.extend_from_slice(DIRECTORY_REGISTRATION_MAGIC);
+    body.extend_from_slice(&key_id(descriptor_encoded));
+    body.extend_from_slice(&maximum_assignments.to_be_bytes());
+    body.extend_from_slice(&label_length.to_be_bytes());
+    body.extend_from_slice(operator_label.as_bytes());
+    body.extend_from_slice(&region_length.to_be_bytes());
+    body.extend_from_slice(region.as_bytes());
+    body.extend_from_slice(&policy_length.to_be_bytes());
+    body.extend_from_slice(policy_url.as_bytes());
+    Ok(body)
 }
 
 /// Canonical receipt body signed by the exact descriptor-bound Worker only
@@ -5464,6 +5519,38 @@ mod tests {
             certificate.verify(&other_descriptor, &directory.public_key(), now + 1),
             Err(ProtocolError::WrongWorker)
         );
+    }
+
+    #[test]
+    fn community_registration_body_is_canonical_and_descriptor_bound() {
+        let (_, _, descriptor) = fixture(1_800_000_000);
+        let encoded = descriptor.encode().unwrap();
+        let body = community_worker_registration_body(
+            &encoded,
+            "TEX8 Community Operator",
+            "PA",
+            "https://example.com/privacy",
+            250,
+        )
+        .unwrap();
+        assert_eq!(&body[..8], DIRECTORY_REGISTRATION_MAGIC);
+        assert_eq!(&body[8..40], &key_id(&encoded));
+        assert!(community_worker_registration_body(
+            &encoded,
+            "Bad\nOperator",
+            "PA",
+            "https://example.com/privacy",
+            250,
+        )
+        .is_err());
+        assert!(community_worker_registration_body(
+            &encoded,
+            "Operator",
+            "PA",
+            "http://example.com/privacy",
+            250,
+        )
+        .is_err());
     }
 
     #[test]
