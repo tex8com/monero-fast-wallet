@@ -1,8 +1,8 @@
 [Unit]
 Description=Monero Fast Wallet privacy-safe notification Gateway
 Documentation=https://github.com/tex8com/monero-fast-wallet
-Wants=network-online.target fast-wallet-relay.service
-After=network-online.target fast-wallet-relay.service
+Wants=network-online.target fast-wallet-relay.service fast-wallet-directory.service
+After=network-online.target fast-wallet-relay.service fast-wallet-directory.service
 
 [Service]
 Type=simple

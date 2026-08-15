@@ -14,3 +14,13 @@ token, assignment handle or notification event.
 
 Private Workers do not call this service. They pair directly with one Wallet
 through the signed `tex8-fast-wallet-worker:v1:` descriptor.
+
+On the TEX8 host, a pending public Worker is reviewed and admitted with:
+
+```bash
+sudo manage-community-worker approve <worker-id> <maximum-assignments>
+```
+
+`pause` temporarily removes it from routing; `revoke` permanently rejects new
+assignments for that Worker identity. These administration routes remain on
+loopback and are never published through Nginx.

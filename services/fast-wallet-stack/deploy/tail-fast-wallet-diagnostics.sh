@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SERVICES=(
+  fast-wallet-directory.service
   notification-registration-adapter.service
   notification-gateway.service
   fast-wallet-relay.service

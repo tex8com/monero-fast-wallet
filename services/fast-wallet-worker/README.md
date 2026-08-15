@@ -41,6 +41,22 @@ FAST_WALLET_WORKER_MAXIMUM_ASSIGNMENTS=100
 The Worker opens no public port in either mode. Relay pulls, Directory
 registration and notification wakes are outbound HTTPS requests.
 
+Create a fresh Community Worker identity from source:
+
+```bash
+cargo run --release \
+  --manifest-path native/fast-wallet-protocol/Cargo.toml \
+  --example provision_community_worker -- \
+  ./community-worker-material https://xmr.tex8.com mainnet
+```
+
+Keep `worker-root-signing.key` offline. Copy only the descriptor, online key,
+HPKE key and storage key to the Worker host. Public mode appears in the Wallet
+only after the TEX8 administrator approves its pending Directory entry.
+Private mode skips that approval and is selected by manually importing the
+pairing code; the Gateway gives such unlisted Workers a deliberately small
+assignment quota.
+
 The public V1 feature remains disabled until the Relay, signed receipts/wakes,
 provider Gateway and physical client acceptance are complete.
 

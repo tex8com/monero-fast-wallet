@@ -11,6 +11,8 @@ without changing the client protocol:
 - `notification-registration-adapter` verifies Firebase App Check and issues a
   short-lived, one-use provider-registration grant;
 - `notification-gateway` owns assignments and generic notification delivery.
+- `fast-wallet-directory` publishes only TEX8-approved Community Workers and
+  issues their short-lived, descriptor-bound admission certificates.
 
 The Worker root signing key is deliberately absent from the server. Generate
 the release material on an offline/admin Mac with
@@ -25,10 +27,13 @@ rotation.
 | Notification Gateway | `127.0.0.1:8090` | selected `/api/v1/*` routes |
 | Fast Wallet Relay | `127.0.0.1:8094` | `/v1/envelopes` and authenticated Worker pull/ACK |
 | Registration Adapter | `127.0.0.1:8095` | `/api/v1/provider-grants` |
+| Community Worker Directory | `127.0.0.1:8096` | approved list plus signed registration/heartbeat |
 | Fast Wallet Worker | outbound only | none |
 
 Port 8091 remains reserved for Monero News. The Relay's internal assignment
-routes and the Gateway's Worker-wake route are never exposed by Nginx.
+routes and the Directory's approval routes are never exposed by Nginx. The
+public Worker-wake route accepts only an assignment-bound Worker signature and
+fixed generic event data.
 
 ## Cuprate source gate
 
@@ -42,7 +47,7 @@ binary whose embedded commit does not match the lock.
 
 `config/v1-release-features.json` must keep `officialWorker` disabled until:
 
-1. all four services are active;
+1. Relay, Worker, Directory, Gateway and registration adapter are active;
 2. the signed ScanPack directory is healthy and current;
 3. the public descriptor and ciphertext-envelope routes pass the contract test;
 4. an actual client enrollment reaches the Worker and persists one encrypted

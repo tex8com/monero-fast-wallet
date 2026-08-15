@@ -27,6 +27,7 @@ install -d -o "$capture_owner" -g "$capture_owner" -m 0700 "$capture_dir"
 install -o "$capture_owner" -g "$capture_owner" -m 0600 /dev/null "$capture_log"
 
 nohup sh -c "journalctl --follow --lines=0 --output=short-iso --no-pager \
+  --unit fast-wallet-directory.service \
   --unit notification-registration-adapter.service \
   --unit notification-gateway.service \
   --unit fast-wallet-relay.service \

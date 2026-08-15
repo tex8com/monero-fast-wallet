@@ -468,22 +468,52 @@ impl GatewayState {
                 return Err(ApiError::Unauthorized);
             }
             if descriptor == official.as_ref() {
+                eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-admission.accepted tier=official worker={}",
+                    short_worker_id(descriptor)
+                );
                 return Ok(self.official_worker_maximum_assignments);
             }
         }
         let Some(directory) = &self.worker_directory else {
+            eprintln!(
+                "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-admission.accepted tier=private worker={}",
+                short_worker_id(descriptor)
+            );
             return Ok(self.private_worker_maximum_assignments);
         };
+        let worker_short_id = short_worker_id(descriptor);
         let directory = directory.clone();
         let descriptor = descriptor.clone();
-        let lookup = tokio::task::spawn_blocking(move || directory.lookup(&descriptor, now))
-            .await
-            .map_err(|_| ApiError::Unavailable)?
-            .map_err(|_| ApiError::Unavailable)?;
+        let lookup = tokio::task::spawn_blocking(move || directory.lookup(&descriptor, now)).await;
+        let lookup = match lookup {
+            Ok(Ok(lookup)) => lookup,
+            Ok(Err(_)) | Err(_) => {
+                eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-admission.deferred reason=directory-unavailable"
+                );
+                return Err(ApiError::Unavailable);
+            }
+        };
         match lookup {
-            WorkerAdmissionLookup::Approved(maximum) => Ok(maximum as usize),
-            WorkerAdmissionLookup::NotListed => Ok(self.private_worker_maximum_assignments),
-            WorkerAdmissionLookup::Denied => Err(ApiError::Unauthorized),
+            WorkerAdmissionLookup::Approved(maximum) => {
+                eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-admission.accepted tier=community worker={worker_short_id} maximumAssignments={maximum}"
+                );
+                Ok(maximum as usize)
+            }
+            WorkerAdmissionLookup::NotListed => {
+                eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-admission.accepted tier=private worker={worker_short_id}"
+                );
+                Ok(self.private_worker_maximum_assignments)
+            }
+            WorkerAdmissionLookup::Denied => {
+                eprintln!(
+                    "FAST_WALLET_DIAGNOSTICS service=notification-gateway event=worker-admission.rejected worker={worker_short_id} reason=directory-status"
+                );
+                Err(ApiError::Unauthorized)
+            }
         }
     }
 
@@ -2044,6 +2074,13 @@ fn decode_canonical_hex_string(value: &str, expected_bytes: usize) -> Result<Vec
 
 fn constant_hex_eq(left: &str, right: &str) -> bool {
     left.as_bytes().ct_eq(right.as_bytes()).into()
+}
+
+fn short_worker_id(descriptor: &WorkerDescriptor) -> String {
+    hex::encode(descriptor.worker_root_id())
+        .get(..8)
+        .unwrap_or("invalid")
+        .to_owned()
 }
 
 fn valid_event_id(value: &str) -> bool {

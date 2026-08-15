@@ -17,6 +17,7 @@ source_lock="$(cd "$script_dir/.." && pwd -P)/cuprate-source.lock"
 backup_dir="/root/monero-fast-wallet-stack-backups/$(date -u +%Y%m%dT%H%M%SZ)"
 
 required_binaries=(
+  fast-wallet-directory
   fast-wallet-relay
   fast-wallet-worker
   notification-gateway
@@ -24,6 +25,9 @@ required_binaries=(
   tex8-fastwallet-cuprate
 )
 required_material=(
+  worker-directory-admission-signing.key
+  worker-directory-admission-public.key
+  worker-directory-admin-token.key
   worker-online-signing.key
   worker-hpke.key
   worker-descriptor.hex
@@ -83,8 +87,10 @@ read_public_value() {
 
 scanpack_public_key="$(read_public_value FAST_WALLET_SCANPACK_PUBLIC_KEY)"
 registration_public_key="$(read_public_value FAST_WALLET_REGISTRATION_PUBLIC_KEY)"
+directory_public_key="$(read_public_value FAST_WALLET_DIRECTORY_ADMISSION_PUBLIC_KEY)"
 file_registration_public_key="$(tr -d '\n' < "$material_dir/notification-registration-public.key")"
 file_scanpack_public_key="$(tr -d '\n' < "$material_dir/scanpack-public.key")"
+file_directory_public_key="$(tr -d '\n' < "$material_dir/worker-directory-admission-public.key")"
 [[ "$registration_public_key" == "$file_registration_public_key" ]] || {
   echo 'Registration public-key files disagree.' >&2
   exit 1
@@ -93,8 +99,13 @@ file_scanpack_public_key="$(tr -d '\n' < "$material_dir/scanpack-public.key")"
   echo 'ScanPack public-key files disagree.' >&2
   exit 1
 }
+[[ "$directory_public_key" == "$file_directory_public_key" ]] || {
+  echo 'Worker Directory public-key files disagree.' >&2
+  exit 1
+}
 
 for pair in \
+  monero-fast-wallet-directory:monero-fast-wallet-directory \
   monero-fast-wallet-relay:monero-fast-wallet-relay \
   monero-notification-gateway:monero-notification-gateway \
   monero-notification-registration:monero-notification-registration; do
@@ -130,6 +141,7 @@ for path in \
   /etc/monero-fast-wallet \
   /etc/systemd/system/cuprate.service.d \
   /var/lib/monero-fast-wallet-relay \
+  /var/lib/monero-fast-wallet-directory \
   /var/lib/monero-fast-wallet-worker \
   /var/lib/monero-notification-gateway \
   /var/lib/cuprate/fast-wallet-scanpacks; do
@@ -139,19 +151,22 @@ for path in \
   /etc/nginx/snippets/notification-gateway.conf \
   /etc/nginx/conf.d/monero-fast-wallet-rate-limits.conf \
   /etc/systemd/system/fast-wallet-relay.service \
+  /etc/systemd/system/fast-wallet-directory.service \
   /etc/systemd/system/fast-wallet-worker.service \
   /etc/systemd/system/notification-gateway.service \
   /etc/systemd/system/notification-registration-adapter.service \
   /etc/systemd/system/cuprate.service.d/fast-wallet-scanpack.conf \
+  /usr/local/sbin/manage-community-worker \
   /opt/cuprate/tex8-fastwallet-cuprate; do
   [[ ! -e "$path" ]] || cp -a "$path" "$backup_dir/"
 done
 
 install -d -m 0755 /opt/monero-fast-wallet/bin
-for name in fast-wallet-relay fast-wallet-worker notification-gateway notification-registration-adapter; do
+for name in fast-wallet-directory fast-wallet-relay fast-wallet-worker notification-gateway notification-registration-adapter; do
   install -o root -g root -m 0755 "$release_dir/$name" "/opt/monero-fast-wallet/bin/$name"
 done
 install -o root -g root -m 0755 "$release_dir/tex8-fastwallet-cuprate" /opt/cuprate/tex8-fastwallet-cuprate
+install -o root -g root -m 0755 "$script_dir/manage-community-worker.sh" /usr/local/sbin/manage-community-worker
 
 install -d -o root -g root -m 0755 /etc/monero-fast-wallet
 install -o monero-fast-wallet-relay -g monero-fast-wallet-relay -m 0600 \
@@ -164,6 +179,12 @@ install -o monero-notification-gateway -g monero-notification-gateway -m 0644 \
   "$material_dir/notification-registration-public.key" /etc/monero-fast-wallet/notification-registration-public.key
 install -o monero-notification-gateway -g monero-notification-gateway -m 0644 \
   "$material_dir/worker-descriptor.hex" /etc/monero-fast-wallet/worker-descriptor.hex
+install -o monero-notification-gateway -g monero-notification-gateway -m 0644 \
+  "$material_dir/worker-directory-admission-public.key" /etc/monero-fast-wallet/worker-directory-admission-public-gateway.key
+install -o monero-fast-wallet-directory -g monero-fast-wallet-directory -m 0600 \
+  "$material_dir/worker-directory-admission-signing.key" /etc/monero-fast-wallet/worker-directory-admission-signing.key
+install -o monero-fast-wallet-directory -g monero-fast-wallet-directory -m 0600 \
+  "$material_dir/worker-directory-admin-token.key" /etc/monero-fast-wallet/worker-directory-admin-token.key
 install -o monero-notification-registration -g monero-notification-registration -m 0600 \
   "$material_dir/notification-registration-signing.key" /etc/monero-fast-wallet/notification-registration-signing.key
 for name in worker-online-signing.key worker-hpke.key worker-storage.key; do
@@ -175,6 +196,7 @@ install -o cuprate -g cuprate -m 0600 \
   "$material_dir/scanpack-signing.key" /etc/cuprate/scanpack-signing.key
 
 install -d -o monero-fast-wallet-relay -g monero-fast-wallet-relay -m 0700 /var/lib/monero-fast-wallet-relay
+install -d -o monero-fast-wallet-directory -g monero-fast-wallet-directory -m 0700 /var/lib/monero-fast-wallet-directory
 install -d -o cuprate -g cuprate -m 0700 /var/lib/monero-fast-wallet-worker
 install -d -o monero-notification-gateway -g monero-notification-gateway -m 0700 /var/lib/monero-notification-gateway
 install -d -o cuprate -g cuprate -m 0700 /var/lib/cuprate/fast-wallet-scanpacks
@@ -204,6 +226,16 @@ printf '%s\n' \
   'FAST_WALLET_RELAY_TRUSTED_WORKER_DESCRIPTOR_FILE=/etc/monero-fast-wallet/worker-descriptor.hex' \
   > /etc/monero-fast-wallet/fast-wallet-relay.env
 
+install -o root -g root -m 0600 /dev/null /etc/monero-fast-wallet/fast-wallet-directory.env
+printf '%s\n' \
+  'FAST_WALLET_DIRECTORY_BIND=127.0.0.1:8096' \
+  'FAST_WALLET_DIRECTORY_STATE=/var/lib/monero-fast-wallet-directory/directory.json' \
+  'FAST_WALLET_DIRECTORY_NETWORK=mainnet' \
+  'FAST_WALLET_DIRECTORY_RELAY_ORIGIN=https://xmr.tex8.com' \
+  'FAST_WALLET_DIRECTORY_ADMISSION_SIGNING_KEY_FILE=/etc/monero-fast-wallet/worker-directory-admission-signing.key' \
+  'FAST_WALLET_DIRECTORY_ADMIN_TOKEN_FILE=/etc/monero-fast-wallet/worker-directory-admin-token.key' \
+  > /etc/monero-fast-wallet/fast-wallet-directory.env
+
 install -o root -g root -m 0600 /dev/null /etc/monero-fast-wallet/notification-gateway.env
 printf '%s\n' \
   'NOTIFICATION_GATEWAY_BIND=127.0.0.1:8090' \
@@ -214,6 +246,9 @@ printf '%s\n' \
   'NOTIFICATION_GATEWAY_RELAY_INTERNAL_AUTH_FILE=/etc/monero-fast-wallet/relay-internal-auth-gateway.key' \
   'NOTIFICATION_GATEWAY_RELAY_ORIGIN=http://127.0.0.1:8094' \
   'NOTIFICATION_GATEWAY_OFFICIAL_WORKER_DESCRIPTOR_FILE=/etc/monero-fast-wallet/worker-descriptor.hex' \
+  'NOTIFICATION_GATEWAY_WORKER_DIRECTORY_ORIGIN=http://127.0.0.1:8096' \
+  'NOTIFICATION_GATEWAY_WORKER_DIRECTORY_PUBLIC_KEY_FILE=/etc/monero-fast-wallet/worker-directory-admission-public-gateway.key' \
+  'NOTIFICATION_GATEWAY_PRIVATE_WORKER_MAXIMUM_ASSIGNMENTS=8' \
   > /etc/monero-fast-wallet/notification-gateway.env
 
 # Do not create or overwrite notification-gateway-provider.env here. It holds
@@ -229,6 +264,7 @@ printf '%s\n' \
 
 install -o root -g root -m 0600 /dev/null /etc/monero-fast-wallet/fast-wallet-worker.env
 printf '%s\n' \
+  'FAST_WALLET_WORKER_MODE=private' \
   'FAST_WALLET_WORKER_DESCRIPTOR_FILE=/etc/monero-fast-wallet/worker-descriptor-worker.hex' \
   'FAST_WALLET_WORKER_HPKE_KEY_FILE=/etc/monero-fast-wallet/worker-hpke.key' \
   'FAST_WALLET_WORKER_ONLINE_SIGNING_KEY_FILE=/etc/monero-fast-wallet/worker-online-signing.key' \
@@ -241,6 +277,7 @@ printf '%s\n' \
   "FAST_WALLET_WORKER_DERIVATION_WORKERS=${FAST_WALLET_WORKER_DERIVATION_WORKERS:-12}" \
   > /etc/monero-fast-wallet/fast-wallet-worker.env
 
+install -o root -g root -m 0644 "$script_dir/fast-wallet-directory.service" /etc/systemd/system/fast-wallet-directory.service
 install -o root -g root -m 0644 "$script_dir/fast-wallet-relay.service" /etc/systemd/system/fast-wallet-relay.service
 install -o root -g root -m 0644 "$script_dir/fast-wallet-worker.service" /etc/systemd/system/fast-wallet-worker.service
 install -o root -g root -m 0644 "$script_dir/notification-gateway.service" /etc/systemd/system/notification-gateway.service
@@ -250,7 +287,8 @@ install -o root -g root -m 0644 "$script_dir/nginx-fast-wallet-stack.conf" /etc/
 install -o root -g root -m 0644 "$script_dir/nginx-fast-wallet-rate-limits.conf" /etc/nginx/conf.d/monero-fast-wallet-rate-limits.conf
 
 systemctl daemon-reload
-systemctl enable fast-wallet-relay.service notification-gateway.service notification-registration-adapter.service fast-wallet-worker.service
+systemctl enable fast-wallet-directory.service fast-wallet-relay.service notification-gateway.service notification-registration-adapter.service fast-wallet-worker.service
+systemctl restart fast-wallet-directory.service
 systemctl restart fast-wallet-relay.service
 systemctl restart notification-registration-adapter.service
 systemctl restart notification-gateway.service
@@ -258,6 +296,7 @@ systemctl restart cuprate.service
 systemctl restart fast-wallet-worker.service
 
 curl --fail --silent --show-error http://127.0.0.1:8094/healthz >/dev/null
+curl --fail --silent --show-error http://127.0.0.1:8096/healthz >/dev/null
 curl --fail --silent --show-error http://127.0.0.1:8095/healthz >/dev/null
 curl --fail --silent --show-error http://127.0.0.1:8090/healthz >/dev/null
 curl --fail --silent --show-error http://127.0.0.1:8090/api/v1/official-worker-descriptor >/dev/null

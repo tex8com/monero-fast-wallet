@@ -19,6 +19,7 @@ grep -q 'NOTIFICATION_GATEWAY_FCM_SERVICE_ACCOUNT_FILE=' \
   "$deploy/provision-notification-fcm-service-account.sh"
 
 for unit in \
+  fast-wallet-directory.service \
   fast-wallet-relay.service \
   fast-wallet-worker.service \
   notification-gateway.service \
@@ -32,11 +33,14 @@ grep -q '^User=cuprate$' "$deploy/fast-wallet-worker.service"
 grep -q '^LimitMEMLOCK=infinity$' "$deploy/fast-wallet-worker.service"
 grep -q '127.0.0.1:8094' "$repo_root/services/fast-wallet-stack/README.md"
 grep -q '127.0.0.1:8095' "$repo_root/services/fast-wallet-stack/README.md"
+grep -q '127.0.0.1:8096' "$repo_root/services/fast-wallet-stack/README.md"
 
 nginx="$deploy/nginx-fast-wallet-stack.conf"
 rate_limits="$deploy/nginx-fast-wallet-rate-limits.conf"
 for public_route in \
   '/api/v1/official-worker-descriptor' \
+  '/api/v1/community-workers' \
+  '/api/v1/workers/wake' \
   '/api/v1/installations/assignments' \
   '/api/v1/installations/desktop-provider' \
   '/api/v1/installations/test-push' \
@@ -54,10 +58,16 @@ grep -q '^location \^~ /v1/envelopes/ {' "$nginx"
 
 # Internal-only endpoints may be documented in comments, but must never be an
 # Nginx location.
-if grep -Eq '^location .*assignments/(sponsor|delete)|^location .*internal/worker-wake' "$nginx"; then
+if grep -Eq '^location .*assignments/(sponsor|delete)|^location .*internal/(worker-wake|community-workers)' "$nginx"; then
   echo 'internal Fast Wallet endpoint was exposed by Nginx' >&2
   exit 1
 fi
+
+grep -q 'NOTIFICATION_GATEWAY_WORKER_DIRECTORY_ORIGIN=http://127.0.0.1:8096' \
+  "$deploy/activate-staged-release.sh"
+grep -q 'FAST_WALLET_WORKER_MODE=private' "$deploy/activate-staged-release.sh"
+grep -q 'worker-directory-admission-signing.key' \
+  "$repo_root/native/fast-wallet-protocol/examples/provision_official_worker.rs"
 
 grep -q 'CUPRATE_SCANPACK_SIGNING_KEY_FILE=' "$deploy/cuprate-fast-wallet-scanpack.conf"
 grep -q 'event=grant.decode.error status=400' \
