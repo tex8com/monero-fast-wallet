@@ -77,13 +77,6 @@ type SeedRevealRequest = {
   nativeWalletId: string;
   wallet: RegisteredWallet;
 };
-type RecoverySeedScreen = {
-  kind: 'standard' | 'fast';
-  nativeWalletId: string;
-  registrationId: string;
-  label: string;
-  seed: string;
-};
 type NativeSubaddress = { accountIndex: number; addressIndex: number; address: string; label: string };
 type NativePreparedTransaction = { id: string; status: string; error: string; amountAtomic: string; dustAtomic: string; feeAtomic: string; txCount: string; txIds: string[]; subaddressAccounts: number[]; subaddressIndices: number[] };
 type NativeTransaction = { hash: string; paymentId: string; description: string; label: string; direction: string; pending: boolean; failed: boolean; coinbase: boolean; amountAtomic: string; feeAtomic: string; blockHeight: string; confirmations: string; unlockTime: string; timestamp: string; subaddressAccount: number; subaddressIndices: number[]; transfers: Array<{ amountAtomic: string; address: string }> };
@@ -363,7 +356,6 @@ export default function App() {
     ];
   }, [fastWallets, wallets]);
   const [seedRevealRequest, setSeedRevealRequest] = useState<SeedRevealRequest | null>(null);
-  const [recoverySeedScreen, setRecoverySeedScreen] = useState<RecoverySeedScreen | null>(null);
   const [fastWalletTransferStatus, setFastWalletTransferStatus] =
     useState<FastWalletTransferStatus>('idle');
   const [seedAuthorizationPassword, setSeedAuthorizationPassword] = useState('');
@@ -720,17 +712,40 @@ export default function App() {
         input: { identityId: created.id },
       });
       await reloadFastWallets();
-      const seed = await invoke<string>('present_fast_wallet_recovery_seed', {
+      const confirmed = await invoke<boolean>('present_fast_wallet_recovery_seed', {
         input: {
           walletId: opened.walletId,
           registrationId: created.id,
           appPassword: '',
         },
       });
-      setRecoverySeedScreen({ kind: 'fast', nativeWalletId: opened.walletId, registrationId: created.id, label: created.label, seed });
-      // Show the dedicated Fast Wallet card straight away; the in-app backup
-      // page stays in front until the words have been saved.
+      await reloadFastWallets();
       setSection('receive');
+      if (confirmed && v1ReleaseFeatures.officialWorker) {
+        try {
+          setFastWalletTransferStatus('transferring');
+          await invoke<FastWalletRecord>('enable_encrypted_fast_wallet_alerts', {
+            input: {
+              identityId: created.id,
+              worker: 'official',
+              appPassword: '',
+            },
+          });
+          setFastWalletTransferStatus('accepted');
+          fastWalletTransferTimerRef.current = window.setTimeout(() => {
+            setFastWalletTransferStatus('idle');
+            fastWalletTransferTimerRef.current = null;
+          }, 1800);
+        } catch (reason) {
+          setFastWalletTransferStatus('failed');
+          fastWalletTransferTimerRef.current = window.setTimeout(() => {
+            setFastWalletTransferStatus('idle');
+            fastWalletTransferTimerRef.current = null;
+          }, 2600);
+          setError(errorMessage(reason, t('error.fastWalletAlerts')));
+          setSection('wallets');
+        }
+      }
     } catch (reason) {
       setError(errorMessage(reason, t('error.fastWalletCreate')));
     }
@@ -740,7 +755,7 @@ export default function App() {
     seedRevealInFlightRef.current = true;
     setSeedRevealBusy(true);
     try {
-      const seed = await invoke<string>('present_recovery_seed', {
+      const confirmed = await invoke<boolean>('present_recovery_seed', {
         input: {
           walletId: request.nativeWalletId,
           registrationId: request.wallet.id,
@@ -749,8 +764,15 @@ export default function App() {
       });
       setSeedAuthorizationPassword('');
       setSeedRevealRequest(null);
-      setRecoverySeedScreen({ kind: 'standard', nativeWalletId: request.nativeWalletId, registrationId: request.wallet.id, label: walletDisplayName(request.wallet), seed });
-      return true;
+      if (!confirmed) {
+        pendingFastWalletSourceRef.current = null;
+        return false;
+      }
+      await Promise.all([reloadWallets(), reloadFastWallets()]);
+      const pendingFastWalletSource = pendingFastWalletSourceRef.current;
+      pendingFastWalletSourceRef.current = null;
+      if (pendingFastWalletSource) await createFastWalletAfterBackup(pendingFastWalletSource);
+      return confirmed;
     } catch (reason) {
       pendingFastWalletSourceRef.current = null;
       setSeedAuthorizationPassword('');
@@ -798,56 +820,6 @@ export default function App() {
   const presentRecoverySeed = async () => {
     if (!seedRevealRequest) return;
     await presentRecoverySeedRequest(seedRevealRequest, seedAuthorizationPassword);
-  };
-  const completeRecoverySeedBackup = async () => {
-    const screen = recoverySeedScreen;
-    if (!screen || seedRevealBusy) return;
-    setSeedRevealBusy(true);
-    try {
-      await invoke<void>(screen.kind === 'fast' ? 'confirm_fast_wallet_recovery_seed_backup' : 'confirm_recovery_seed_backup', {
-        input: { walletId: screen.nativeWalletId, registrationId: screen.registrationId },
-      });
-      // Do not keep recovery words resident once the user has finished the
-      // backup. Clearing this state also blanks the view before it unmounts.
-      setRecoverySeedScreen(null);
-      await Promise.all([reloadWallets(), reloadFastWallets()]);
-      if (screen.kind === 'standard') {
-        const pendingFastWalletSource = pendingFastWalletSourceRef.current;
-        pendingFastWalletSourceRef.current = null;
-        if (pendingFastWalletSource) await createFastWalletAfterBackup(pendingFastWalletSource);
-      } else if (v1ReleaseFeatures.officialWorker) {
-        try {
-          setFastWalletTransferStatus('transferring');
-          await invoke<FastWalletRecord>('enable_encrypted_fast_wallet_alerts', {
-            input: {
-              identityId: screen.registrationId,
-              worker: 'official',
-              appPassword: '',
-            },
-          });
-          setFastWalletTransferStatus('accepted');
-          fastWalletTransferTimerRef.current = window.setTimeout(() => {
-            setFastWalletTransferStatus('idle');
-            fastWalletTransferTimerRef.current = null;
-          }, 1800);
-        } catch (reason) {
-          setFastWalletTransferStatus('failed');
-          fastWalletTransferTimerRef.current = window.setTimeout(() => {
-            setFastWalletTransferStatus('idle');
-            fastWalletTransferTimerRef.current = null;
-          }, 2600);
-          setError(errorMessage(
-            reason,
-            t('error.fastWalletAlerts'),
-          ));
-          setSection('wallets');
-        }
-      }
-    } catch (reason) {
-      setError(errorMessage(reason, t('error.backupConfirm')));
-    } finally {
-      setSeedRevealBusy(false);
-    }
   };
   const closeActiveWallet = useCallback(async () => {
     if (!activeWalletId) return;
@@ -981,7 +953,6 @@ export default function App() {
       {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} onWalletsChanged={reloadWallets} autoLockSeconds={autoLockSeconds} onSetAutoLockSeconds={updateAutoLockTimeout} appProtection={appProtection} onSetAppProtectionMode={setAppProtectionMode} onLockApp={lockDesktopApp} />}
       {section === 'menu' && <DesktopMenu wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
       {seedRevealRequest && <SensitiveAuthorizationOverlay title={t('protection.showRecoveryWords')} description={activeProtectionMode === 'system' ? t('protection.showRecoveryWordsSystem', { system: appProtection.systemAuth.label }) : t('protection.showRecoveryWordsPassword')} password={seedAuthorizationPassword} mode={activeProtectionMode} systemLabel={appProtection.systemAuth.label} allowPasswordFallback={appProtection.passwordConfigured} busy={seedRevealBusy} onPasswordChange={setSeedAuthorizationPassword} onConfirm={() => void presentRecoverySeed()} onDismiss={() => { pendingFastWalletSourceRef.current = null; setSeedAuthorizationPassword(''); setSeedRevealRequest(null); }} />}
-      {recoverySeedScreen && <RecoverySeedBackupScreen label={recoverySeedScreen.label} seed={recoverySeedScreen.seed} fastWallet={recoverySeedScreen.kind === 'fast'} busy={seedRevealBusy} onConfirm={() => void completeRecoverySeedBackup()} onDismiss={() => setRecoverySeedScreen(null)} />}
       {fastWalletTransferStatus !== 'idle' && <FastWalletTransferOverlay status={fastWalletTransferStatus} />}
     </section>
   </main>;
@@ -1944,7 +1915,6 @@ function FastWallets({ linked, sourceWalletId, sourceWallet, appProtection }: { 
   const [restoreNetwork, setRestoreNetwork] = useState('mainnet');
   const [restoreHeight, setRestoreHeight] = useState('');
   const [backupPassword, setBackupPassword] = useState('');
-  const [backupSeedScreen, setBackupSeedScreen] = useState<{ walletId: string; registrationId: string; label: string; seed: string } | null>(null);
   const [removalCandidate, setRemovalCandidate] = useState<FastWalletRecord | null>(null);
   const [removalError, setRemovalError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2061,40 +2031,27 @@ function FastWallets({ linked, sourceWalletId, sourceWallet, appProtection }: { 
     }
     if (!walletId) return;
     setBusy(true); setMessage(null);
+    const appPassword = backupPassword;
     try {
-      const seed = await invoke<string>('present_fast_wallet_recovery_seed', {
+      const confirmed = await invoke<boolean>('present_fast_wallet_recovery_seed', {
         input: {
           walletId,
           registrationId: wallet.id,
-          appPassword: backupPassword,
+          appPassword,
         },
       });
       setBackupPassword('');
-      setBackupSeedScreen({ walletId, registrationId: wallet.id, label: wallet.label, seed });
-    } catch (reason) {
-      setBackupPassword('');
-      setMessage(errorMessage(reason, 'The recovery words could not be shown.'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const confirmBackupSeed = async () => {
-    const seedScreen = backupSeedScreen;
-    if (!seedScreen) return;
-    setBusy(true);
-    try {
-      await invoke<void>('confirm_fast_wallet_recovery_seed_backup', {
-        input: { walletId: seedScreen.walletId, registrationId: seedScreen.registrationId },
-      });
-      setBackupSeedScreen(null);
+      if (!confirmed) {
+        setMessage('Recovery-word backup remains pending.');
+        return;
+      }
       await load();
       try {
         const updated = await invoke<FastWalletRecord>('enable_encrypted_fast_wallet_alerts', {
           input: {
-            identityId: seedScreen.registrationId,
+            identityId: wallet.id,
             worker: 'official',
-            appPassword: backupPassword,
+            appPassword,
           },
         });
         setWallets(items => items.map(item => item.id === updated.id ? updated : item));
@@ -2108,7 +2065,8 @@ function FastWallets({ linked, sourceWalletId, sourceWallet, appProtection }: { 
         setBackupPassword('');
       }
     } catch (reason) {
-      setMessage(errorMessage(reason, 'The recovery-word backup could not be confirmed.'));
+      setBackupPassword('');
+      setMessage(errorMessage(reason, 'The recovery words could not be shown.'));
     } finally {
       setBusy(false);
     }
@@ -2380,7 +2338,6 @@ function FastWallets({ linked, sourceWalletId, sourceWallet, appProtection }: { 
     })}</section>
     {message && <p className="setup-message">{message}</p>}
     {removalCandidate && <div className="seed-overlay" role="dialog" aria-modal="true" aria-labelledby="remove-fast-wallet-title"><section className="seed-dialog wallet-remove-dialog"><p className="eyebrow">{removalCandidate.status === 'legacy-blocked' ? 'Remove old Fast Wallet' : 'Remove Fast Wallet'}</p><h2 id="remove-fast-wallet-title">Remove {removalCandidate.label}?</h2><p>{removalCandidate.status === 'legacy-blocked' ? 'This is an old disabled Fast Wallet from an earlier build. Remove it from this app’s list? Its encrypted wallet files are kept for recovery.' : removalCandidate.seedBackupStatus !== 'verified' ? 'The recovery words are not backed up yet. Remove this wallet from the app’s list? Its encrypted wallet file and recovery data will be kept, so no funds are deleted.' : 'This removes only the local wallet from this app. Its recovery words and any funds are not deleted. For safety, the wallet must be open, fully synchronized, and have a zero balance before it can be removed.'}</p>{removalError && <p className="setup-message wallet-list-message" role="alert">{removalError}</p>}<div className="dialog-actions"><button className="quiet-button" disabled={busy} onClick={() => { setRemovalCandidate(null); setRemovalError(null); }} type="button">Cancel</button><button className="danger-button" disabled={busy} onClick={() => void confirmRemoveLocal()} type="button">{busy ? 'Removing…' : removalCandidate.status === 'legacy-blocked' || removalCandidate.seedBackupStatus !== 'verified' ? 'Remove from list' : 'Remove wallet'}</button></div></section></div>}
-    {backupSeedScreen && <RecoverySeedBackupScreen label={backupSeedScreen.label} seed={backupSeedScreen.seed} fastWallet busy={busy} onConfirm={() => void confirmBackupSeed()} onDismiss={() => setBackupSeedScreen(null)} />}
   </section>;
 }
 
@@ -2714,7 +2671,6 @@ function FastWalletReceive({ appProtection }: { appProtection: AppProtectionStat
     status: 'transferring' | 'accepted' | 'failed';
   } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [seedScreen, setSeedScreen] = useState<{ walletId: string; registrationId: string; label: string; seed: string } | null>(null);
   const load = useCallback(async () => {
     try { setWallets(await invoke<FastWalletRecord[]>('list_fast_wallets')); }
     catch (reason) { setMessage(errorMessage(reason, t('fastReceive.loadFailed'))); }
@@ -2728,37 +2684,24 @@ function FastWalletReceive({ appProtection }: { appProtection: AppProtectionStat
     setBusyId(wallet.id); setMessage(null);
     try {
       const opened = await invoke<FastWalletOpenResponse>('open_fast_wallet', { input: { identityId: wallet.id } });
-      const seed = await invoke<string>('present_fast_wallet_recovery_seed', {
+      const confirmed = await invoke<boolean>('present_fast_wallet_recovery_seed', {
         input: { walletId: opened.walletId, registrationId: wallet.id, appPassword: '' },
       });
-      setSeedScreen({ walletId: opened.walletId, registrationId: wallet.id, label: wallet.label, seed });
-    } catch (reason) {
-      setMessage(errorMessage(reason, t('fastReceive.backupFailed', { name: wallet.label })));
-    } finally {
-      setBusyId(null);
-    }
-  };
-  const confirmBackup = async () => {
-    const current = seedScreen;
-    if (!current) return;
-    setBusyId(current.registrationId);
-    try {
-      await invoke<void>('confirm_fast_wallet_recovery_seed_backup', { input: { walletId: current.walletId, registrationId: current.registrationId } });
-      setSeedScreen(null);
-      setTransferStatus({ walletId: current.registrationId, status: 'transferring' });
+      if (!confirmed) return;
+      setTransferStatus({ walletId: wallet.id, status: 'transferring' });
       await invoke<FastWalletRecord>('enable_encrypted_fast_wallet_alerts', {
         input: {
-          identityId: current.registrationId,
+          identityId: wallet.id,
           worker: 'official',
           appPassword: '',
         },
       });
-      setTransferStatus({ walletId: current.registrationId, status: 'accepted' });
+      setTransferStatus({ walletId: wallet.id, status: 'accepted' });
       await load();
       setMessage(t('fastReceive.readyConfirmed'));
     } catch (reason) {
-      setTransferStatus({ walletId: current.registrationId, status: 'failed' });
-      setMessage(errorMessage(reason, t('fastReceive.backupConfirmFailed')));
+      setTransferStatus({ walletId: wallet.id, status: 'failed' });
+      setMessage(errorMessage(reason, t('fastReceive.backupFailed', { name: wallet.label })));
     } finally {
       setBusyId(null);
     }
@@ -2772,7 +2715,6 @@ function FastWalletReceive({ appProtection }: { appProtection: AppProtectionStat
       return <article key={wallet.id}><div><span className={ready ? 'wallet-chip' : 'wallet-chip warning'}>{ready ? t('fastReceive.ready') : t('fastReceive.oneStep')}</span><h3>{wallet.label}</h3><p>{ready ? t('fastReceive.readyText') : t('fastReceive.backupText')}</p>{transfer && <div className={`fast-wallet-inline-transfer ${transfer}`} role="status" aria-live="polite"><span aria-hidden="true" /><strong>{transfer === 'accepted' ? t('fastReceive.transferAccepted') : transfer === 'failed' ? t('fastReceive.transferFailed') : t('fastReceive.transferring')}</strong></div>}</div>{ready ? <div className="simple-address-row"><code title={wallet.address}>{shortHash(wallet.address)}</code><button className="copy-icon-button" aria-label={t('fastReceive.copy')} onClick={() => void copy(wallet.address)} title={t('receive.copyAddress')} type="button">⧉</button></div> : <button className="primary" disabled={busyId === wallet.id} onClick={() => void backUp(wallet)} type="button">{busyId === wallet.id ? t('fastReceive.opening') : t('fastReceive.backupWith', { method: appProtection.mode === 'system' ? appProtection.systemAuth.label : t('fastReceive.appPassword') })}</button>}</article>;
     })}</div>
     {message && <p className="setup-message">{message}</p>}
-    {seedScreen && <RecoverySeedBackupScreen label={seedScreen.label} seed={seedScreen.seed} fastWallet busy={busyId === seedScreen.registrationId} onConfirm={() => void confirmBackup()} onDismiss={() => setSeedScreen(null)} />}
   </section>;
 }
 
@@ -3536,22 +3478,6 @@ function SensitiveAuthorizationOverlay({ title, description, password, mode, sys
   const [usePasswordFallback, setUsePasswordFallback] = useState(false);
   const usesPassword = mode === 'password' || usePasswordFallback;
   return <div className="seed-overlay" role="dialog" aria-modal="true" aria-labelledby="sensitive-authorization-title"><section className="seed-dialog"><p className="eyebrow">{t('authorization.confirmIdentity')}</p><h2 id="sensitive-authorization-title">{title}</h2><p>{description}</p>{usesPassword && <input autoFocus value={password} onChange={(event) => onPasswordChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && password) onConfirm(); }} type="password" autoComplete="current-password" placeholder={mode === 'system' ? t('authorization.recoveryPassword') : t('authorization.appPassword')} />}{mode === 'system' && allowPasswordFallback && <button className="quiet-button protection-fallback" disabled={busy} onClick={() => { setUsePasswordFallback(value => !value); onPasswordChange(''); }} type="button">{usePasswordFallback ? t('settings.useSystem', { system: systemLabel }) : t('authorization.useRecoveryPassword')}</button>}<div className="dialog-actions"><button className="quiet-button" disabled={busy} onClick={onDismiss} type="button">{t('common.cancel')}</button><button className="primary" disabled={busy || (usesPassword && !password)} onClick={onConfirm} type="button">{busy ? t('authorization.confirming') : usesPassword ? t('authorization.continue') : t('authorization.confirmSystem', { system: systemLabel })}</button></div></section></div>;
-}
-
-function RecoverySeedBackupScreen({ label, seed, fastWallet = false, busy, onConfirm, onDismiss }: { label: string; seed: string; fastWallet?: boolean; busy: boolean; onConfirm: () => void; onDismiss: () => void }) {
-  const { t } = useI18n();
-  const [writtenDown, setWrittenDown] = useState(false);
-  const words = useMemo(() => seed.trim().split(/\s+/).filter(Boolean), [seed]);
-  return <div className="seed-overlay recovery-seed-overlay" role="dialog" aria-modal="true" aria-labelledby="recovery-seed-title">
-    <section className="recovery-seed-screen">
-      <header><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">{fastWallet ? t('backup.fastTitle') : t('backup.walletTitle')}</p><h2 id="recovery-seed-title">{t('backup.writeWords')}</h2></div></header>
-      <p className="recovery-seed-intro">{t('backup.intro', { name: label })}</p>
-      <section className="recovery-seed-warning"><span>!</span><div><strong>{t('backup.neverShare')}</strong><p>{t('backup.warning')}</p></div></section>
-      <ol className="recovery-seed-words" aria-label={t('backup.wordsLabel')}>{words.map((word, index) => <li key={`${index}-${word}`}><span>{index + 1}</span><b>{word}</b></li>)}</ol>
-      <label className="seed-confirm recovery-seed-check"><input checked={writtenDown} onChange={(event) => setWrittenDown(event.target.checked)} type="checkbox" />{t('backup.confirmWords', { count: words.length })}</label>
-      <div className="dialog-actions recovery-seed-actions"><button className="quiet-button" disabled={busy} onClick={onDismiss} type="button">{t('backup.later')}</button><button className="primary" disabled={busy || !writtenDown} onClick={onConfirm} type="button">{busy ? t('backup.saving') : t('backup.saved')}</button></div>
-    </section>
-  </div>;
 }
 
 function FastWalletTransferOverlay({ status }: { status: Exclude<FastWalletTransferStatus, 'idle'> }) {

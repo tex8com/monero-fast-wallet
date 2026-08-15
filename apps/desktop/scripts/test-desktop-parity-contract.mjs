@@ -554,15 +554,15 @@ test('desktop encrypted Worker enrollment stays native, pinned, and separately a
 });
 
 test('desktop shows orange transfer state before enrollment and green only after server acceptance', () => {
-  const flowStart = appSource.indexOf('const completeRecoverySeedBackup = async () =>');
-  const flowEnd = appSource.indexOf('const closeActiveWallet = useCallback', flowStart);
+  const flowStart = appSource.indexOf('const createFastWalletAfterBackup = useCallback');
+  const flowEnd = appSource.indexOf('const presentRecoverySeedRequest = async', flowStart);
   const flow = appSource.slice(flowStart, flowEnd);
   const transferring = flow.indexOf("setFastWalletTransferStatus('transferring')");
   const enrollment = flow.indexOf("invoke<FastWalletRecord>('enable_encrypted_fast_wallet_alerts'");
   const accepted = flow.indexOf("setFastWalletTransferStatus('accepted')");
 
   assert.ok(transferring >= 0 && enrollment > transferring && accepted > enrollment);
-  assert.match(flow, /else if \(v1ReleaseFeatures\.officialWorker\)/);
+  assert.match(flow, /confirmed && v1ReleaseFeatures\.officialWorker/);
   assert.match(appSource, /function FastWalletTransferOverlay/);
   assert.match(appSource, /fastTransfer\.accepted/);
   assert.match(i18nSource, /Monero Fast Node scan service accepted the encrypted view key/);
@@ -764,25 +764,32 @@ test('desktop recovery-seed authorization follows the protection method selected
   assert.doesNotMatch(fastUiSource, /App password \(only if/);
 });
 
-test('desktop shows recovery words in a deliberate in-app backup screen, never a system alert', () => {
+test('desktop keeps recovery words inside one trusted native backup operation', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const nativeBackupSource = rustFunction(hostSource, 'show_native_recovery_seed_backup');
   const standardSeedSource = rustFunction(hostSource, 'present_recovery_seed');
   const fastSeedSource = rustFunction(hostSource, 'present_fast_wallet_recovery_seed');
-  const standardConfirmSource = rustFunction(hostSource, 'confirm_recovery_seed_backup');
-  const fastConfirmSource = rustFunction(hostSource, 'confirm_fast_wallet_recovery_seed_backup');
-  assert.doesNotMatch(standardSeedSource, /MessageDialog/);
-  assert.doesNotMatch(fastSeedSource, /MessageDialog/);
-  assert.match(standardConfirmSource, /mark_seed_backed_up/);
-  assert.match(fastConfirmSource, /mark_seed_backed_up/);
-  assert.match(appSource, /function RecoverySeedBackupScreen/);
-  assert.match(appSource, /backup\.writeWords/);
-  assert.match(appSource, /backup\.confirmWords/);
-  assert.match(appSource, /backup\.saved/);
-  assert.match(i18nSource, /Write down your recovery words/);
-  assert.match(i18nSource, /I have written down all/);
-  assert.match(i18nSource, /I have saved my words/);
-  assert.match(appSource, /setRecoverySeedScreen\(null\)/);
-  assert.match(stylesSource, /\.recovery-seed-words/);
+  assert.match(nativeBackupSource, /MessageDialog::new\(\)/);
+  assert.match(nativeBackupSource, /MessageButtons::YesNo/);
+  assert.match(nativeBackupSource, /MessageDialogResult::Yes/);
+  assert.match(standardSeedSource, /Result<bool, String>/);
+  assert.match(fastSeedSource, /Result<bool, String>/);
+  assert.match(standardSeedSource, /Zeroizing::new/);
+  assert.match(fastSeedSource, /Zeroizing::new/);
+  assert.match(standardSeedSource, /show_native_recovery_seed_backup/);
+  assert.match(fastSeedSource, /show_native_recovery_seed_backup/);
+  assert.match(standardSeedSource, /mark_seed_backed_up/);
+  assert.match(fastSeedSource, /mark_seed_backed_up/);
+  assert.doesNotMatch(standardSeedSource, /Ok\(seed\)/);
+  assert.doesNotMatch(fastSeedSource, /Ok\(seed\)/);
+  assert.match(appSource, /invoke<boolean>\('present_recovery_seed'/);
+  assert.match(appSource, /invoke<boolean>\('present_fast_wallet_recovery_seed'/);
+  assert.doesNotMatch(appSource, /invoke<string>\('present_recovery_seed'/);
+  assert.doesNotMatch(appSource, /invoke<string>\('present_fast_wallet_recovery_seed'/);
+  assert.doesNotMatch(appSource, /RecoverySeedBackupScreen|confirm_recovery_seed_backup|confirm_fast_wallet_recovery_seed_backup/);
+  assert.doesNotMatch(hostSource, /fn confirm_recovery_seed_backup|fn confirm_fast_wallet_recovery_seed_backup/);
+  assert.doesNotMatch(tauriBuild, /confirm_recovery_seed_backup|confirm_fast_wallet_recovery_seed_backup/);
+  assert.doesNotMatch(tauriCapability, /confirm-recovery-seed-backup|confirm-fast-wallet-recovery-seed-backup/);
 });
 
 test('desktop Keychain failures cannot create a focus-loss prompt loop', () => {

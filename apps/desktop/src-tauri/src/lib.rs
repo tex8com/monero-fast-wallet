@@ -727,12 +727,6 @@ struct PresentRecoverySeedInput {
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ConfirmRecoverySeedBackupInput {
-    wallet_id: String,
-    registration_id: String,
-}
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct HardwareAddressInput {
     wallet_id: String,
     account_index: Option<u32>,
@@ -4565,6 +4559,31 @@ fn remove_fast_wallet_entry(
     Ok(())
 }
 
+fn show_native_recovery_seed_backup(wallet_label: &str, seed: &str, fast_wallet: bool) -> bool {
+    let numbered_words = Zeroizing::new(
+        seed.split_whitespace()
+            .enumerate()
+            .map(|(index, word)| format!("{}. {}", index + 1, word))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    let description = Zeroizing::new(format!(
+        "Wallet: {wallet_label}\n\n{}\n\nWrite down every recovery word in order and keep them offline. Never share these words.\n\nChoose Yes only after you have safely saved all words. Choose No to keep the backup pending.",
+        numbered_words.as_str(),
+    ));
+    MessageDialog::new()
+        .set_level(MessageLevel::Warning)
+        .set_title(if fast_wallet {
+            "Back up Fast Wallet recovery words"
+        } else {
+            "Back up wallet recovery words"
+        })
+        .set_description(description.as_str())
+        .set_buttons(MessageButtons::YesNo)
+        .show()
+        == MessageDialogResult::Yes
+}
+
 #[tauri::command]
 async fn present_fast_wallet_recovery_seed(
     app: AppHandle,
@@ -4572,7 +4591,7 @@ async fn present_fast_wallet_recovery_seed(
     sessions: State<'_, FastWalletSessionState>,
     protection: State<'_, AppProtectionState>,
     mut input: PresentRecoverySeedInput,
-) -> Result<String, String> {
+) -> Result<bool, String> {
     require_app_unlocked(&protection)?;
     diagnostics::record(&app, "wallet.seed-presentation-started", &[]);
     require_fresh_app_authorization(
@@ -4596,50 +4615,33 @@ async fn present_fast_wallet_recovery_seed(
         return Err("The recovery-seed request does not match the open Fast Wallet.".to_owned());
     }
 
-    // The seed is deliberately returned only after fresh OS/app authorization.
-    // The renderer immediately presents it in its own protected backup view; it
-    // is never written to diagnostics or a native system alert.
-    let seed = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .recovery_seed(&native_wallet_id)?;
+    // Recovery words must never cross Tauri IPC or enter renderer memory. Keep
+    // the secret in Rust and combine presentation with the user's backup
+    // confirmation in one trusted native operation.
+    let seed = Zeroizing::new(
+        state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .recovery_seed(&native_wallet_id)?,
+    );
+    let confirmed = show_native_recovery_seed_backup(&record.label, seed.as_str(), true);
     diagnostics::record(
         &app,
-        "wallet.seed-ready-for-in-app-backup",
-        &[("kind", "fast".to_owned())],
+        if confirmed {
+            "wallet.seed-backup-confirmed"
+        } else {
+            "wallet.seed-backup-deferred"
+        },
+        &[
+            ("kind", "fast".to_owned()),
+            ("boundary", "native".to_owned()),
+        ],
     );
-    Ok(seed)
-}
-
-#[tauri::command]
-fn confirm_fast_wallet_recovery_seed_backup(
-    app: AppHandle,
-    sessions: State<'_, FastWalletSessionState>,
-    protection: State<'_, AppProtectionState>,
-    input: ConfirmRecoverySeedBackupInput,
-) -> Result<(), String> {
-    require_app_unlocked(&protection)?;
-    let record = fast_wallet::get(&app, &input.registration_id)?;
-    fast_wallet::require_independent_software(&record)?;
-    let native_wallet_id = sessions
-        .0
-        .lock()
-        .map_err(|_| "Fast Wallet session state is busy.".to_owned())?
-        .get(&record.id)
-        .cloned()
-        .ok_or_else(|| "Open this Fast Wallet before completing its backup.".to_owned())?;
-    if native_wallet_id != input.wallet_id {
-        return Err(
-            "The recovery-seed confirmation does not match the open Fast Wallet.".to_owned(),
-        );
+    if confirmed {
+        fast_wallet::mark_seed_backed_up(&app, &record.id)?;
     }
-    diagnostics::record(
-        &app,
-        "wallet.seed-backup-confirmed",
-        &[("kind", "fast".to_owned())],
-    );
-    fast_wallet::mark_seed_backed_up(&app, &record.id).map(|_| ())
+    Ok(confirmed)
 }
 #[tauri::command]
 fn create_fast_wallet(
@@ -6510,7 +6512,7 @@ async fn present_recovery_seed(
     sessions: State<'_, WalletSessionState>,
     protection: State<'_, AppProtectionState>,
     mut input: PresentRecoverySeedInput,
-) -> Result<String, String> {
+) -> Result<bool, String> {
     require_app_unlocked(&protection)?;
     diagnostics::record(&app, "wallet.seed-presentation-started", &[]);
     require_fresh_app_authorization(
@@ -6547,62 +6549,39 @@ async fn present_recovery_seed(
         return Err("The recovery-seed request does not match the open wallet.".to_owned());
     }
 
-    let seed = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .recovery_seed(&native_wallet_id)?;
-    diagnostics::record(
-        &app,
-        "wallet.seed-ready-for-in-app-backup",
-        &[("kind", "standard".to_owned())],
-    );
-    Ok(seed)
-}
-
-#[tauri::command]
-fn confirm_recovery_seed_backup(
-    app: AppHandle,
-    sessions: State<'_, WalletSessionState>,
-    protection: State<'_, AppProtectionState>,
-    input: ConfirmRecoverySeedBackupInput,
-) -> Result<(), String> {
-    require_app_unlocked(&protection)?;
-    let registration = wallet_registry::list(&app)?
-        .wallets
-        .into_iter()
-        .find(|wallet| wallet.id == input.registration_id)
-        .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
-    if registration.kind != "software"
-        || registration.role.as_deref() == Some("fast")
-        || registration.id.starts_with("fast-")
-    {
-        return Err(
-            "Only standard software wallets can confirm this recovery-seed backup.".to_owned(),
-        );
-    }
     let sync_was_deferred_for_seed_backup = registration.seed_backup_status == "pending";
-    let native_wallet_id = sessions
-        .0
-        .lock()
-        .map_err(|_| "Wallet session state is busy.".to_owned())?
-        .get(&registration.id)
-        .cloned()
-        .ok_or_else(|| "Open this software wallet before completing its backup.".to_owned())?;
-    if native_wallet_id != input.wallet_id {
-        return Err("The recovery-seed confirmation does not match the open wallet.".to_owned());
-    }
-    wallet_registry::mark_seed_backed_up(&app, &registration.id)?;
+    let seed = Zeroizing::new(
+        state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .recovery_seed(&native_wallet_id)?,
+    );
+    let wallet_label = registration
+        .display_name
+        .as_deref()
+        .unwrap_or(&registration.wallet_name);
+    let confirmed = show_native_recovery_seed_backup(wallet_label, seed.as_str(), false);
     diagnostics::record(
         &app,
-        "wallet.seed-backup-confirmed",
-        &[("kind", "standard".to_owned())],
+        if confirmed {
+            "wallet.seed-backup-confirmed"
+        } else {
+            "wallet.seed-backup-deferred"
+        },
+        &[
+            ("kind", "standard".to_owned()),
+            ("boundary", "native".to_owned()),
+        ],
     );
-    if sync_was_deferred_for_seed_backup {
-        diagnostics::record(&app, "wallet.seed-backup-starting-sync", &[]);
-        schedule_wallet_sync(app, native_wallet_id, registration.network);
+    if confirmed {
+        wallet_registry::mark_seed_backed_up(&app, &registration.id)?;
+        if sync_was_deferred_for_seed_backup {
+            diagnostics::record(&app, "wallet.seed-backup-starting-sync", &[]);
+            schedule_wallet_sync(app, native_wallet_id, registration.network);
+        }
     }
-    Ok(())
+    Ok(confirmed)
 }
 fn snapshot_for_account(
     wallet: &native_wallet::NativeWallet,
@@ -8618,7 +8597,6 @@ pub fn run() {
             remove_fast_wallet,
             remove_fast_wallet_entry,
             present_fast_wallet_recovery_seed,
-            confirm_fast_wallet_recovery_seed_backup,
             create_fast_wallet,
             pair_private_fast_wallet_worker,
             enable_encrypted_fast_wallet_alerts,
@@ -8653,7 +8631,6 @@ pub fn run() {
             refresh_mfw_name,
             remove_mfw_name_local,
             present_recovery_seed,
-            confirm_recovery_seed_backup,
             wallet_snapshot,
             registered_wallet_snapshots,
             wallet_balance,
