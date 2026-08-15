@@ -44,8 +44,12 @@ const WATCH_PURPOSE: u8 = 1;
 const WATCH_AAD_SIZE: usize = 180;
 const HPKE_ENCAPSULATED_KEY_SIZE: usize = 32;
 pub const WORKER_AUTH_SIZE: usize = 204;
+pub const WORKER_ADMISSION_CERTIFICATE_SIZE: usize = 224;
 pub const MAX_WORKER_AUTH_LIFETIME_SECONDS: u64 = 60;
 pub const MAX_WORKER_RECEIPT_LIFETIME_SECONDS: u64 = MAX_DESCRIPTOR_LIFETIME_SECONDS;
+pub const MAX_WORKER_ADMISSION_LIFETIME_SECONDS: u64 = 31 * 24 * 60 * 60;
+
+const WORKER_ADMISSION_MAGIC: &[u8; 8] = b"TX8WC001";
 
 type Kem = X25519HkdfSha256;
 type Kdf = HkdfSha256;
@@ -274,6 +278,8 @@ pub enum WorkerAuthPurpose {
     Ack = 2,
     Receipt = 3,
     Wake = 4,
+    DirectoryRegister = 5,
+    DirectoryHeartbeat = 6,
 }
 
 impl WorkerAuthPurpose {
@@ -283,6 +289,8 @@ impl WorkerAuthPurpose {
             2 => Ok(Self::Ack),
             3 => Ok(Self::Receipt),
             4 => Ok(Self::Wake),
+            5 => Ok(Self::DirectoryRegister),
+            6 => Ok(Self::DirectoryHeartbeat),
             _ => Err(ProtocolError::WrongPurpose),
         }
     }
@@ -290,8 +298,148 @@ impl WorkerAuthPurpose {
     fn maximum_lifetime(self) -> u64 {
         match self {
             Self::Receipt => MAX_WORKER_RECEIPT_LIFETIME_SECONDS,
-            Self::Pull | Self::Ack | Self::Wake => MAX_WORKER_AUTH_LIFETIME_SECONDS,
+            Self::Pull
+            | Self::Ack
+            | Self::Wake
+            | Self::DirectoryRegister
+            | Self::DirectoryHeartbeat => MAX_WORKER_AUTH_LIFETIME_SECONDS,
         }
+    }
+}
+
+/// A short-lived certificate issued only after the Directory operator has
+/// approved a public Community Worker. The certificate is public routing and
+/// quota metadata; it never contains wallet or provider information.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkerAdmissionCertificate {
+    pub directory_public_key: [u8; 32],
+    pub worker_root_id: [u8; 32],
+    pub worker_online_key_id: [u8; 32],
+    pub hpke_key_id: [u8; 32],
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub maximum_assignments: u32,
+    pub signature: [u8; 64],
+}
+
+impl WorkerAdmissionCertificate {
+    pub fn sign(
+        descriptor: &WorkerDescriptor,
+        maximum_assignments: u32,
+        issued_at: u64,
+        expires_at: u64,
+        directory_key: &SigningKeyMaterial,
+    ) -> Result<Self, ProtocolError> {
+        descriptor.verify(descriptor.network, issued_at)?;
+        validate_time_window(issued_at, expires_at, MAX_WORKER_ADMISSION_LIFETIME_SECONDS)?;
+        if maximum_assignments == 0 {
+            return Err(ProtocolError::InvalidAssignment);
+        }
+        let mut certificate = Self {
+            directory_public_key: directory_key.public_key(),
+            worker_root_id: descriptor.worker_root_id(),
+            worker_online_key_id: descriptor.worker_online_key_id(),
+            hpke_key_id: descriptor.hpke_key_id(),
+            issued_at,
+            expires_at,
+            maximum_assignments,
+            signature: [0_u8; 64],
+        };
+        certificate.signature = directory_key.sign(&certificate.unsigned_bytes());
+        Ok(certificate)
+    }
+
+    pub fn verify(
+        &self,
+        descriptor: &WorkerDescriptor,
+        expected_directory_public_key: &[u8; 32],
+        now: u64,
+    ) -> Result<(), ProtocolError> {
+        descriptor.verify(descriptor.network, now)?;
+        validate_freshness(
+            self.issued_at,
+            self.expires_at,
+            now,
+            MAX_WORKER_ADMISSION_LIFETIME_SECONDS,
+        )?;
+        if self.maximum_assignments == 0 {
+            return Err(ProtocolError::InvalidAssignment);
+        }
+        if &self.directory_public_key != expected_directory_public_key {
+            return Err(ProtocolError::InvalidPublicKey);
+        }
+        if self.worker_root_id != descriptor.worker_root_id()
+            || self.worker_online_key_id != descriptor.worker_online_key_id()
+            || self.hpke_key_id != descriptor.hpke_key_id()
+        {
+            return Err(ProtocolError::WrongWorker);
+        }
+        let key = VerifyingKey::from_bytes(expected_directory_public_key)
+            .map_err(|_| ProtocolError::InvalidPublicKey)?;
+        key.verify_strict(
+            &self.unsigned_bytes(),
+            &Signature::from_bytes(&self.signature),
+        )
+        .map_err(|_| ProtocolError::InvalidSignature)
+    }
+
+    pub fn encode(&self) -> [u8; WORKER_ADMISSION_CERTIFICATE_SIZE] {
+        let unsigned = self.unsigned_bytes();
+        let mut encoded = [0_u8; WORKER_ADMISSION_CERTIFICATE_SIZE];
+        encoded[..unsigned.len()].copy_from_slice(&unsigned);
+        encoded[unsigned.len()..].copy_from_slice(&self.signature);
+        encoded
+    }
+
+    pub fn decode(encoded: &[u8]) -> Result<Self, ProtocolError> {
+        if encoded.len() != WORKER_ADMISSION_CERTIFICATE_SIZE {
+            return Err(ProtocolError::InvalidLength);
+        }
+        let mut cursor = Cursor::new(encoded);
+        cursor.expect(WORKER_ADMISSION_MAGIC)?;
+        if cursor.u16()? != PROTOCOL_VERSION || cursor.u8()? != 1 || cursor.u8()? != 0 {
+            return Err(ProtocolError::UnsupportedVersion);
+        }
+        let certificate = Self {
+            directory_public_key: cursor.array()?,
+            worker_root_id: cursor.array()?,
+            worker_online_key_id: cursor.array()?,
+            hpke_key_id: cursor.array()?,
+            issued_at: cursor.u64()?,
+            expires_at: cursor.u64()?,
+            maximum_assignments: u32::from_be_bytes(cursor.array()?),
+            signature: cursor.array()?,
+        };
+        cursor.finish()?;
+        validate_time_window(
+            certificate.issued_at,
+            certificate.expires_at,
+            MAX_WORKER_ADMISSION_LIFETIME_SECONDS,
+        )?;
+        if certificate.maximum_assignments == 0 || certificate.encode().as_slice() != encoded {
+            return Err(ProtocolError::NonCanonical);
+        }
+        Ok(certificate)
+    }
+
+    fn unsigned_bytes(&self) -> [u8; WORKER_ADMISSION_CERTIFICATE_SIZE - 64] {
+        let mut encoded = [0_u8; WORKER_ADMISSION_CERTIFICATE_SIZE - 64];
+        let mut offset = 0;
+        put(&mut encoded, &mut offset, WORKER_ADMISSION_MAGIC);
+        put(&mut encoded, &mut offset, &PROTOCOL_VERSION.to_be_bytes());
+        put(&mut encoded, &mut offset, &[1, 0]);
+        put(&mut encoded, &mut offset, &self.directory_public_key);
+        put(&mut encoded, &mut offset, &self.worker_root_id);
+        put(&mut encoded, &mut offset, &self.worker_online_key_id);
+        put(&mut encoded, &mut offset, &self.hpke_key_id);
+        put(&mut encoded, &mut offset, &self.issued_at.to_be_bytes());
+        put(&mut encoded, &mut offset, &self.expires_at.to_be_bytes());
+        put(
+            &mut encoded,
+            &mut offset,
+            &self.maximum_assignments.to_be_bytes(),
+        );
+        encoded
     }
 }
 
@@ -299,10 +447,7 @@ impl WorkerAuthPurpose {
 /// after the encrypted watch was durably accepted. The message identifier is
 /// the SHA-256 identifier of the fixed-size ciphertext envelope, so this body
 /// carries no wallet plaintext or routing capability.
-pub fn worker_receipt_body(
-    worker_root_id: &[u8; 32],
-    message_id: &[u8; 32],
-) -> [u8; 72] {
+pub fn worker_receipt_body(worker_root_id: &[u8; 32], message_id: &[u8; 32]) -> [u8; 72] {
     let mut body = [0_u8; 72];
     body[..8].copy_from_slice(b"TX8RCP01");
     body[8..40].copy_from_slice(worker_root_id);
@@ -421,7 +566,11 @@ impl WorkerRequestAuth {
             signature: cursor.array()?,
         };
         cursor.finish()?;
-        validate_time_window(auth.issued_at, auth.expires_at, auth.purpose.maximum_lifetime())?;
+        validate_time_window(
+            auth.issued_at,
+            auth.expires_at,
+            auth.purpose.maximum_lifetime(),
+        )?;
         if auth.encode().as_slice() != encoded {
             return Err(ProtocolError::NonCanonical);
         }
@@ -1213,8 +1362,7 @@ pub mod ffi {
             let Ok(network) = Network::decode(expected_network) else {
                 return INVALID_ARGUMENT;
             };
-            let Some(descriptor_bytes) = checked_input(descriptor, descriptor_len, 1, 4_096)
-            else {
+            let Some(descriptor_bytes) = checked_input(descriptor, descriptor_len, 1, 4_096) else {
                 return INVALID_ARGUMENT;
             };
             let Some(message_id_bytes) = checked_input(message_id, 32, 32, 32) else {
@@ -5285,6 +5433,36 @@ mod tests {
                 now + 31
             ),
             Err(ProtocolError::Expired)
+        );
+    }
+
+    #[test]
+    fn community_worker_admission_is_directory_signed_and_descriptor_bound() {
+        let now = 1_800_000_000;
+        let (_, _, descriptor) = fixture(now);
+        let directory = SigningKeyMaterial::from_bytes([41_u8; 32]);
+        let certificate =
+            WorkerAdmissionCertificate::sign(&descriptor, 250, now, now + 3_600, &directory)
+                .unwrap();
+        certificate
+            .verify(&descriptor, &directory.public_key(), now + 1)
+            .unwrap();
+        assert_eq!(
+            WorkerAdmissionCertificate::decode(&certificate.encode()).unwrap(),
+            certificate
+        );
+
+        let mut wrong_directory = directory.public_key();
+        wrong_directory[0] ^= 1;
+        assert_eq!(
+            certificate.verify(&descriptor, &wrong_directory, now + 1),
+            Err(ProtocolError::InvalidPublicKey)
+        );
+
+        let (_, _, other_descriptor) = fixture(now + 1);
+        assert_eq!(
+            certificate.verify(&other_descriptor, &directory.public_key(), now + 1),
+            Err(ProtocolError::WrongWorker)
         );
     }
 
