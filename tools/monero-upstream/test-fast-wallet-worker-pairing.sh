@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercises only the local Worker identity pin. The test vector is public and
+# Exercises only the local Worker identity pin. The descriptor fixture is public and
 # no Worker, gateway, relay, node, seed argument, or funds are contacted.
 set -euo pipefail
 
@@ -50,7 +50,7 @@ if "$cli" fast-wallet worker pair \
 fi
 
 "$cli" fast-wallet confirm-backup --wallet-file "$wallet_file" --json > /dev/null
-paired="$("$cli" fast-wallet worker pair \
+paired="$("$cli" fast-wallet worker add-private \
   --wallet-file "$wallet_file" \
   --descriptor-file "$descriptor_file" \
   --now 1800000100 --json)"
@@ -59,6 +59,16 @@ expected_root_id="fe812c12f3ab4ce6ac5db69ac352f906cb1b11ef43fb33e252ef7ff5522638
    "$paired" == *"\"worker_enrolled\":false"* &&
    "$paired" == *"\"worker_root_id\":\"${expected_root_id}\""* ]] || {
   echo "FAIL: valid public Worker descriptor was not pinned correctly" >&2
+  exit 1
+}
+
+# Keep the old low-level alias operational for scripts that already use it.
+alias_pair="$("$cli" fast-wallet worker pair \
+  --wallet-file "$wallet_file" \
+  --descriptor-file "$descriptor_file" \
+  --now 1800000100 --json)"
+[[ "$alias_pair" == *"\"worker_root_id\":\"${expected_root_id}\""* ]] || {
+  echo "FAIL: lower-level Worker pair alias no longer matches add-private" >&2
   exit 1
 }
 [[ "$(stat -f '%Lp' "${wallet_file}.mfw-fast-worker-v1")" == "600" ]] || {
@@ -92,6 +102,8 @@ status_after_failure="$("$cli" fast-wallet worker status --wallet-file "$wallet_
 printf '%s\n' \
   "PASS fast_wallet_worker_pairing" \
   "backup_gate=pass" \
+  "private_worker_add=pass" \
+  "pair_alias=pass" \
   "signed_descriptor=pass" \
   "descriptor_tamper_rejected=pass" \
   "worker_enrolled=false" \

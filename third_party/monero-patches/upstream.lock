@@ -51,11 +51,15 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # BlockStream payloads to an app-private bounded disk queue. Integrity failure,
 # missing storage, or a full quota falls back to the previous RAM backpressure
 # path; wallet scans, keys, ownership decisions, and ordering are unchanged.
+# Patch 0081 lets the product CLI verify and list Directory-approved public
+# Community Workers, pin one exact Worker ID, or add a non-public Worker from
+# its signed descriptor. Public enrollment refreshes its descriptor from the
+# Directory; private enrollment remains descriptor-file based.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=4543df86c9375dd43f95da82bb043892ea99234a
-previous_patch_count=79
-patched_tree=1bef2c97a28caac1df5f6723368914701851a680
+previous_patched_tree=1bef2c97a28caac1df5f6723368914701851a680
+previous_patch_count=80
+patched_tree=fcb64a7916c3f197715d835a1f2f9b8483e3016e
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

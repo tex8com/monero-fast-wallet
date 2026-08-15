@@ -82,9 +82,13 @@ hosted_view_policy="$(${short_cli} wallet policy convenience --fastwallet=true -
    "${fast_wallet_operation_help}" == *"restore --wallet-file <path> --password-file <0600-file> --seed-file <0600-file>"* &&
    "${fast_wallet_operation_help}" == *"adopt-view --wallet-file <existing-view-wallet> --password-file <0600-file>"* &&
    "${fast_wallet_operation_help}" == *"confirm-backup --wallet-file <path> [--json]"* &&
+   "${fast_wallet_operation_help}" == *"worker list --directory-origin <https-origin>"* &&
+   "${fast_wallet_operation_help}" == *"worker select --wallet-file <path> --directory-origin <https-origin> --worker-id <64-hex-id>"* &&
+   "${fast_wallet_operation_help}" == *"worker add-private --wallet-file <path> --descriptor-file <public-file>"* &&
    "${fast_wallet_operation_help}" == *"worker pair --wallet-file <path> --descriptor-file <public-file>"* &&
    "${fast_wallet_operation_help}" == *"worker seal-watch --wallet-file <path> --password-file <0600-file> --descriptor-file <public-file>"* &&
    "${fast_wallet_operation_help}" == *"--assignment-handle-file <0600-file> --assignment-epoch <positive-integer>"* &&
+   "${fast_wallet_operation_help}" == *"--descriptor-file <private-worker-public-file> | --directory-origin <https-origin>"* &&
    "${fast_wallet_operation_help}" == *"worker status --wallet-file <path> [--json]"* ]] || fail "Fast Wallet operation help is incomplete"
 [[ "${fast_wallet_create_plan}" == *'"operation_allowed":true'* &&
    "${fast_wallet_create_plan}" == *'"independent_seed":true'* &&

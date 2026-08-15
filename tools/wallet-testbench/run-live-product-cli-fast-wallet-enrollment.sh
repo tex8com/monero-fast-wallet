@@ -10,9 +10,12 @@ fi
 cli="${1:-}"
 origin="${2:-https://xmr.tex8.com}"
 worker_descriptor_source="${3:-}"
+worker_id="${MFW_LIVE_PRODUCT_CLI_WORKER_ID:-}"
 restore_height="${MFW_LIVE_PRODUCT_CLI_RESTORE_HEIGHT:-3577876}"
 if [[ ! -x "$cli" || ! "$origin" =~ ^https://[^/?#]+$ ||
       ( -n "$worker_descriptor_source" && ! -f "$worker_descriptor_source" ) ||
+      ( -n "$worker_descriptor_source" && -n "$worker_id" ) ||
+      ( -n "$worker_id" && ! "$worker_id" =~ ^[0-9a-f]{64}$ ) ||
       ! "$restore_height" =~ ^[0-9]+$ ]]; then
   echo 'Usage: run-live-product-cli-fast-wallet-enrollment.sh <fast-wallet-cli> [https-origin] [worker-descriptor-file]' >&2
   exit 2
@@ -120,9 +123,24 @@ openssl rand -hex 32 >"$password_file"
 chmod 600 "$password_file"
 
 descriptor_started="$(now_ns)"
-if [[ -n "$worker_descriptor_source" ]]; then
+if [[ -n "$worker_id" ]]; then
+  "$cli" fast-wallet worker list --directory-origin "$origin" --network mainnet --json \
+    2>"$volume/directory.stderr" |
+    node -e '
+      const expected=process.argv[1];
+      const chunks=[];
+      process.stdin.on("data", chunk => chunks.push(chunk));
+      process.stdin.on("end", () => {
+        const value=JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (!Array.isArray(value.workers) || !value.workers.some(worker => worker.worker_id === expected)) process.exit(1);
+        process.stdout.write("directory_worker_verified=true\n");
+      });
+    ' "$worker_id"
+  descriptor_kind=public-directory
+  descriptor_size=not-applicable
+elif [[ -n "$worker_descriptor_source" ]]; then
   install -m 0600 "$worker_descriptor_source" "$descriptor_file"
-  descriptor_kind=manual
+  descriptor_kind=private-descriptor
 else
   curl --fail --silent --show-error --max-time 12 \
     "$origin/api/v1/official-worker-descriptor" |
@@ -137,10 +155,12 @@ else
     ' >"$descriptor_file"
   descriptor_kind=official
 fi
-descriptor_size="$(stat -f '%z' "$descriptor_file")"
-if [[ "$descriptor_size" -lt 128 || "$descriptor_size" -gt 512 ]]; then
-  echo 'Worker descriptor failed its bounded public-file contract.' >&2
-  exit 1
+if [[ -z "$worker_id" ]]; then
+  descriptor_size="$(stat -f '%z' "$descriptor_file")"
+  if [[ "$descriptor_size" -lt 128 || "$descriptor_size" -gt 512 ]]; then
+    echo 'Worker descriptor failed its bounded public-file contract.' >&2
+    exit 1
+  fi
 fi
 descriptor_finished="$(now_ns)"
 
@@ -175,8 +195,17 @@ confirm_started="$(now_ns)"
 confirm_finished="$(now_ns)"
 
 pair_started="$(now_ns)"
-"$cli" fast-wallet worker pair --wallet-file "$wallet_file" \
-  --descriptor-file "$descriptor_file" --json 2>"$volume/pair.stderr" |
+if [[ -n "$worker_id" ]]; then
+  pair_command=("$cli" fast-wallet worker select --wallet-file "$wallet_file"
+    --directory-origin "$origin" --worker-id "$worker_id" --json)
+elif [[ -n "$worker_descriptor_source" ]]; then
+  pair_command=("$cli" fast-wallet worker add-private --wallet-file "$wallet_file"
+    --descriptor-file "$descriptor_file" --json)
+else
+  pair_command=("$cli" fast-wallet worker pair --wallet-file "$wallet_file"
+    --descriptor-file "$descriptor_file" --json)
+fi
+"${pair_command[@]}" 2>"$volume/pair.stderr" |
   node -e '
     const chunks=[];
     process.stdin.on("data", chunk => chunks.push(chunk));
@@ -189,8 +218,13 @@ pair_started="$(now_ns)"
 pair_finished="$(now_ns)"
 
 enroll_started="$(now_ns)"
+if [[ -n "$worker_id" ]]; then
+  enroll_descriptor=(--directory-origin "$origin")
+else
+  enroll_descriptor=(--descriptor-file "$descriptor_file")
+fi
 "$cli" fast-wallet worker enroll --wallet-file "$wallet_file" \
-  --password-file "$password_file" --descriptor-file "$descriptor_file" \
+  --password-file "$password_file" "${enroll_descriptor[@]}" \
   --gateway-origin "$origin" --json 2>"$volume/enroll.stderr" |
   node -e '
     const chunks=[];
@@ -225,15 +259,19 @@ import sys
 
 with open(sys.argv[1], "rb") as source:
     header = source.read(12)
-valid = len(header) == 12 and header[:8] == b"MFWHS1\0\0" and \
-    struct.unpack_from("<I", header, 8)[0] == 3
-print("true" if valid else header.hex())
+version = struct.unpack_from("<I", header, 8)[0] if len(header) == 12 else 0
+valid = len(header) == 12 and header[:8] == b"MFWHS1\0\0" and version in (2, 3)
+print(f"true:{version}" if valid else header.hex())
 PY
 )"
-# Version 3 is the canonical 753-byte state plus its 32-byte integrity hash.
-# `hosted-status` above has already made the Product CLI verify that hash.
-if [[ "$sidecar_mode" != 600 || "$sidecar_header" != true ||
-      "$sidecar_size" != 785 ]]; then
+# Version 2 is the canonical 728-byte state; version 3 extends it to 753
+# bytes. Both carry the same trailing 32-byte integrity hash. `hosted-status`
+# above has already made the Product CLI verify that hash.
+expected_sidecar_size=0
+[[ "$sidecar_header" == true:2 ]] && expected_sidecar_size=760
+[[ "$sidecar_header" == true:3 ]] && expected_sidecar_size=785
+if [[ "$sidecar_mode" != 600 || "$expected_sidecar_size" == 0 ||
+      "$sidecar_size" != "$expected_sidecar_size" ]]; then
   printf 'Hosted-watch sidecar failed its private-file contract (mode=%s bytes=%s header=%s).\n' \
     "$sidecar_mode" "$sidecar_size" "$sidecar_header" >&2
   exit 1

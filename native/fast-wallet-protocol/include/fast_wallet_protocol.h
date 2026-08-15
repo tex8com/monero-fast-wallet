@@ -64,6 +64,17 @@ int32_t tex8_fast_wallet_protocol_descriptor_worker_root_id_v1(
     uint8_t *output,
     size_t output_len);
 
+int32_t tex8_fast_wallet_protocol_verify_worker_admission_v1(
+    const uint8_t *descriptor,
+    size_t descriptor_len,
+    uint8_t expected_network,
+    uint64_t now,
+    const uint8_t *admission_certificate,
+    size_t admission_certificate_len,
+    const uint8_t expected_directory_public_key[32],
+    size_t expected_directory_public_key_len,
+    uint32_t *maximum_assignments_output);
+
 int32_t tex8_fast_wallet_protocol_verify_worker_receipt_v1(
     const uint8_t *descriptor,
     size_t descriptor_len,

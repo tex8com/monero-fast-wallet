@@ -1,0 +1,544 @@
+From 93938fd67094708aab793f699c7298ccb0f37ec5 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet Engineering <wallet@tex8.com>
+Date: Sat, 15 Aug 2026 13:26:04 -0500
+Subject: [PATCH] wallet-cli: select public and private Fast Wallet workers
+
+---
+ src/simplewallet/product_cli_debug.cpp       |  14 +-
+ src/simplewallet/product_cli_fast_wallet.cpp | 332 +++++++++++++++++--
+ 2 files changed, 321 insertions(+), 25 deletions(-)
+
+diff --git a/src/simplewallet/product_cli_debug.cpp b/src/simplewallet/product_cli_debug.cpp
+index 8542a52..8d00e8c 100644
+--- a/src/simplewallet/product_cli_debug.cpp
++++ b/src/simplewallet/product_cli_debug.cpp
+@@ -201,7 +201,7 @@ namespace
+       << "  Exercise the shared Fast Wallet coordinator without a worker, network,\n"
+       << "  wallet file, seed or funds: independent seed, mandatory backup, and\n"
+       << "  explicit worker detach and notification disable before removal.\n\n"
+-      << "fast-wallet create|restore|adopt-view|confirm-backup|status|worker pair|worker status\n"
++      << "fast-wallet create|restore|adopt-view|confirm-backup|status|worker list|worker select|worker add-private|worker status\n"
+       << "  Create or restore an independent Fast Wallet, or adopt an encrypted\n"
+       << "  watch-only cache, through the shared\n"
+       << "  lifecycle coordinator. Run: fast-wallet operation-help\n";
+@@ -696,13 +696,21 @@ namespace mfw_cli
+           << "  fast-wallet adopt-view --wallet-file <existing-view-wallet> --password-file <0600-file> --network <mainnet|testnet|stagenet> --restore-height <height>\n"
+           << "  fast-wallet confirm-backup --wallet-file <path> [--json]\n"
+           << "  fast-wallet status --wallet-file <path> [--json]\n"
++          << "  fast-wallet worker list --directory-origin <https-origin> [--network mainnet|testnet|stagenet] [--json]\n"
++          << "  fast-wallet worker select --wallet-file <path> --directory-origin <https-origin> --worker-id <64-hex-id> [--json]\n"
++          << "  fast-wallet worker add-private --wallet-file <path> --descriptor-file <public-file> [--now <unix-seconds>] [--json]\n"
+           << "  fast-wallet worker pair --wallet-file <path> --descriptor-file <public-file> [--now <unix-seconds>] [--json]\n"
+           << "  fast-wallet worker seal-watch --wallet-file <path> --password-file <0600-file> --descriptor-file <public-file>\n"
+           << "      --assignment-handle-file <0600-file> --assignment-epoch <positive-integer> --envelope-file <new-0600-file> [--json]\n"
++          << "  fast-wallet worker enroll --wallet-file <path> --password-file <0600-file>\n"
++          << "      (--descriptor-file <private-worker-public-file> | --directory-origin <https-origin>)\n"
++          << "      --gateway-origin <https-origin> [--now <unix-seconds>] [--json]\n"
++          << "  fast-wallet worker hosted-status --wallet-file <path> [--json]\n"
+           << "  fast-wallet worker status --wallet-file <path> [--json]\n"
+           << "\n"
+-          << "Worker pair verifies and pins only the public signed Worker root ID locally.\n"
+-          << "It does not upload a view key, contact a Worker, or enroll hosted scanning.\n"
++          << "Worker list verifies approved public Workers from the Directory; select pins one exact Worker ID.\n"
++          << "Worker add-private verifies and pins a signed descriptor without contacting a Directory.\n"
++          << "Worker pair is the lower-level alias for add-private. Neither uploads a view key or enrolls hosted scanning.\n"
+           << "worker seal-watch supplies a fresh signed descriptor and writes a fixed-size HPKE envelope for that exact pinned Worker.\n"
+           << "It reads the local Fast Wallet internally, never prints a View Key or envelope, and makes no network connection.\n";
+         exit_code = 0;
+diff --git a/src/simplewallet/product_cli_fast_wallet.cpp b/src/simplewallet/product_cli_fast_wallet.cpp
+index 4f05d8d..bd66204 100644
+--- a/src/simplewallet/product_cli_fast_wallet.cpp
++++ b/src/simplewallet/product_cli_fast_wallet.cpp
+@@ -14,14 +14,18 @@
+ #include <iterator>
+ #include <limits>
+ #include <mutex>
++#include <set>
++#include <sstream>
+ #include <stdexcept>
+ #include <string>
+ #include <thread>
++#include <utility>
+ #include <vector>
+ 
+ #include <boost/filesystem.hpp>
+ 
+ #include <curl/curl.h>
++#include <rapidjson/document.h>
+ 
+ #include "crypto/crypto.h"
+ #include "crypto/hash.h"
+@@ -51,6 +55,8 @@ namespace
+   constexpr std::uint64_t watch_lifetime_seconds = 10 * 60;
+   constexpr std::uint64_t assignment_lifetime_seconds = 30 * 24 * 60 * 60;
+   constexpr std::size_t maximum_gateway_response_bytes = 16 * 1024;
++  constexpr std::size_t maximum_directory_response_bytes = 16 * 1024 * 1024;
++  constexpr std::size_t maximum_directory_workers = 10'000;
+ 
+   // This deliberately contains no seed, password, key, address, worker token
+   // or node endpoint. It is only the durable Product-Core lifecycle state for
+@@ -178,6 +184,8 @@ namespace
+     boost::filesystem::path assignment_handle_file;
+     boost::filesystem::path envelope_file;
+     std::string gateway_origin;
++    std::string directory_origin;
++    std::string worker_id;
+     Monero::NetworkType network = Monero::MAINNET;
+     bool network_explicit = false;
+     std::uint64_t restore_height = 0;
+@@ -186,6 +194,17 @@ namespace
+     bool json = false;
+   };
+ 
++  struct directory_worker
++  {
++    std::string worker_id;
++    std::vector<unsigned char> descriptor;
++    std::string operator_label;
++    std::string region;
++    std::string policy_url;
++    std::uint32_t maximum_assignments = 0;
++    std::uint64_t last_seen_at = 0;
++  };
++
+   std::uint64_t unix_seconds()
+   {
+     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(
+@@ -815,15 +834,16 @@ namespace
+   {
+     long status = 0;
+     std::string body;
++    std::size_t maximum_body_bytes = maximum_gateway_response_bytes;
+   };
+ 
+   std::size_t bounded_curl_write(char* data, const std::size_t size,
+                                  const std::size_t count, void* context)
+   {
+-    if (count != 0 && size > maximum_gateway_response_bytes / count) return 0;
+-    const std::size_t length = size * count;
+     http_response* response = static_cast<http_response*>(context);
+-    if (length > maximum_gateway_response_bytes - response->body.size()) return 0;
++    if (count != 0 && size > response->maximum_body_bytes / count) return 0;
++    const std::size_t length = size * count;
++    if (length > response->maximum_body_bytes - response->body.size()) return 0;
+     response->body.append(data, length);
+     return length;
+   }
+@@ -838,7 +858,8 @@ namespace
+ 
+   http_response https_request(const std::string& origin, const char* method,
+                               const char* path, const std::string& body,
+-                              const persisted_hosted_watch* state)
++                              const persisted_hosted_watch* state,
++                              const std::size_t maximum_body_bytes = maximum_gateway_response_bytes)
+   {
+     require_curl_runtime();
+     const std::string safe_origin = require_https_origin(origin, "--gateway-origin");
+@@ -846,7 +867,10 @@ namespace
+       throw std::runtime_error("Fast Wallet HTTPS request path is invalid");
+     CURL* client = curl_easy_init();
+     if (client == nullptr) throw std::runtime_error("Fast Wallet HTTPS client is unavailable");
++    if (maximum_body_bytes == 0 || maximum_body_bytes > maximum_directory_response_bytes)
++      throw std::runtime_error("Fast Wallet HTTPS response limit is invalid");
+     http_response response;
++    response.maximum_body_bytes = maximum_body_bytes;
+     struct curl_slist* headers = nullptr;
+     headers = curl_slist_append(headers, "accept: application/json");
+     headers = curl_slist_append(headers, "content-type: application/json");
+@@ -885,8 +909,8 @@ namespace
+     if (result == CURLE_OK) curl_easy_getinfo(client, CURLINFO_RESPONSE_CODE, &response.status);
+     curl_slist_free_all(headers);
+     curl_easy_cleanup(client);
+-    if (result != CURLE_OK || response.body.size() > maximum_gateway_response_bytes)
+-      throw std::runtime_error("Fast Wallet Gateway or Relay request failed");
++    if (result != CURLE_OK || response.body.size() > maximum_body_bytes)
++      throw std::runtime_error("Fast Wallet HTTPS request failed");
+     return response;
+   }
+ 
+@@ -947,6 +971,168 @@ namespace
+     return body.substr(start, cursor - start);
+   }
+ 
++  std::string json_escape(const std::string& value)
++  {
++    std::ostringstream output;
++    for (const unsigned char byte : value)
++    {
++      switch (byte)
++      {
++        case '"': output << "\\\""; break;
++        case '\\': output << "\\\\"; break;
++        case '\b': output << "\\b"; break;
++        case '\f': output << "\\f"; break;
++        case '\n': output << "\\n"; break;
++        case '\r': output << "\\r"; break;
++        case '\t': output << "\\t"; break;
++        default:
++          if (byte < 0x20)
++          {
++            static constexpr char alphabet[] = "0123456789abcdef";
++            output << "\\u00" << alphabet[byte >> 4] << alphabet[byte & 0x0f];
++          }
++          else output << static_cast<char>(byte);
++      }
++    }
++    return output.str();
++  }
++
++  const rapidjson::Value& directory_member(const rapidjson::Value& object, const char* name)
++  {
++    if (!object.IsObject() || !object.HasMember(name))
++      throw std::runtime_error("Fast Wallet Worker Directory response was invalid");
++    return object[name];
++  }
++
++  std::string directory_string(const rapidjson::Value& object, const char* name,
++                               const std::size_t maximum_length, const bool allow_empty = false)
++  {
++    const rapidjson::Value& value = directory_member(object, name);
++    if (!value.IsString() || value.GetStringLength() > maximum_length ||
++        (!allow_empty && value.GetStringLength() == 0))
++      throw std::runtime_error("Fast Wallet Worker Directory response was invalid");
++    std::string output(value.GetString(), value.GetStringLength());
++    if (std::any_of(output.begin(), output.end(), [](const unsigned char byte) {
++          return byte == 0 || byte < 0x20;
++        }))
++      throw std::runtime_error("Fast Wallet Worker Directory response was invalid");
++    return output;
++  }
++
++  std::uint64_t directory_unsigned(const rapidjson::Value& object, const char* name)
++  {
++    const rapidjson::Value& value = directory_member(object, name);
++    if (!value.IsUint64())
++      throw std::runtime_error("Fast Wallet Worker Directory response was invalid");
++    return value.GetUint64();
++  }
++
++  std::vector<unsigned char> directory_hex(const std::string& value,
++                                           const std::size_t minimum_bytes,
++                                           const std::size_t maximum_bytes,
++                                           const char* description)
++  {
++    if (value.size() % 2 != 0 || value.size() < minimum_bytes * 2 ||
++        value.size() > maximum_bytes * 2)
++      throw std::runtime_error(std::string(description) + " is invalid");
++    return decode_lowercase_hex(value, value.size() / 2, description);
++  }
++
++  directory_worker parse_directory_worker(const rapidjson::Value& value,
++                                           const Monero::NetworkType network,
++                                           const std::uint64_t now,
++                                           const std::array<unsigned char, 32>& directory_public_key)
++  {
++    directory_worker worker;
++    worker.worker_id = directory_string(value, "workerId", 64);
++    const std::vector<unsigned char> expected_root = directory_hex(
++      worker.worker_id, 32, 32, "Worker Directory Worker ID");
++    worker.descriptor = directory_hex(
++      directory_string(value, "workerDescriptor", 8192), 1, 4096,
++      "Worker Directory descriptor");
++    const std::vector<unsigned char> certificate = directory_hex(
++      directory_string(value, "admissionCertificate", 8192), 1, 4096,
++      "Worker Directory admission certificate");
++    worker.operator_label = directory_string(value, "operatorLabel", 80);
++    worker.region = directory_string(value, "region", 80, true);
++    worker.policy_url = directory_string(value, "policyUrl", 256, true);
++    const std::uint64_t maximum_assignments = directory_unsigned(value, "maximumAssignments");
++    if (maximum_assignments == 0 || maximum_assignments > std::numeric_limits<std::uint32_t>::max())
++      throw std::runtime_error("Fast Wallet Worker Directory quota was invalid");
++    worker.maximum_assignments = static_cast<std::uint32_t>(maximum_assignments);
++    worker.last_seen_at = directory_unsigned(value, "lastSeenAt");
++
++    std::array<unsigned char, 32> verified_root{};
++    if (tex8_fast_wallet_protocol_descriptor_worker_root_id_v1(
++        worker.descriptor.data(), worker.descriptor.size(), static_cast<std::uint8_t>(network), now,
++        verified_root.data(), verified_root.size()) != TEX8_FAST_WALLET_PROTOCOL_OK ||
++        !std::equal(verified_root.begin(), verified_root.end(), expected_root.begin()))
++      throw std::runtime_error("Fast Wallet Worker Directory descriptor was invalid or mismatched");
++    std::uint32_t certified_maximum = 0;
++    if (tex8_fast_wallet_protocol_verify_worker_admission_v1(
++        worker.descriptor.data(), worker.descriptor.size(), static_cast<std::uint8_t>(network), now,
++        certificate.data(), certificate.size(), directory_public_key.data(),
++        directory_public_key.size(), &certified_maximum) != TEX8_FAST_WALLET_PROTOCOL_OK ||
++        certified_maximum != worker.maximum_assignments)
++      throw std::runtime_error("Fast Wallet Worker Directory admission certificate was invalid");
++    return worker;
++  }
++
++  std::vector<directory_worker> fetch_directory_workers(const options& input,
++                                                        const Monero::NetworkType network,
++                                                        const std::uint64_t now)
++  {
++    if (input.directory_origin.empty())
++      throw std::runtime_error("Worker Directory operation requires --directory-origin");
++    const std::string origin = require_https_origin(input.directory_origin, "--directory-origin");
++    const http_response response = https_request(origin, "GET", "/api/v1/community-workers", "",
++      nullptr, maximum_directory_response_bytes);
++    if (response.status != 200)
++      throw std::runtime_error("Fast Wallet Worker Directory request was rejected");
++    rapidjson::Document document;
++    document.Parse(response.body.data(), response.body.size());
++    if (document.HasParseError() || !document.IsObject() ||
++        directory_unsigned(document, "schemaVersion") != 1)
++      throw std::runtime_error("Fast Wallet Worker Directory response was invalid");
++    static_cast<void>(directory_unsigned(document, "sequence"));
++    static_cast<void>(directory_unsigned(document, "generatedAt"));
++    const std::vector<unsigned char> directory_key = directory_hex(
++      directory_string(document, "admissionPublicKey", 64), 32, 32,
++      "Worker Directory admission public key");
++    std::array<unsigned char, 32> directory_public_key{};
++    std::copy(directory_key.begin(), directory_key.end(), directory_public_key.begin());
++    const rapidjson::Value& workers = directory_member(document, "workers");
++    if (!workers.IsArray() || workers.Size() > maximum_directory_workers)
++      throw std::runtime_error("Fast Wallet Worker Directory response was invalid");
++    std::vector<directory_worker> output;
++    output.reserve(workers.Size());
++    std::set<std::string> unique_ids;
++    for (const rapidjson::Value& value : workers.GetArray())
++    {
++      directory_worker worker = parse_directory_worker(value, network, now, directory_public_key);
++      if (!unique_ids.insert(worker.worker_id).second)
++        throw std::runtime_error("Fast Wallet Worker Directory contained a duplicate Worker");
++      output.push_back(std::move(worker));
++    }
++    return output;
++  }
++
++  const directory_worker& selected_directory_worker(const options& input,
++                                                     const std::vector<directory_worker>& workers)
++  {
++    if (input.worker_id.empty())
++      throw std::runtime_error("public Worker selection requires --worker-id");
++    const std::vector<unsigned char> canonical_id = directory_hex(
++      input.worker_id, 32, 32, "public Worker ID");
++    static_cast<void>(canonical_id);
++    const auto found = std::find_if(workers.begin(), workers.end(), [&](const directory_worker& worker) {
++      return worker.worker_id == input.worker_id;
++    });
++    if (found == workers.end())
++      throw std::runtime_error("the selected public Worker is not currently approved and online");
++    return *found;
++  }
++
+   void register_desktop_installation(const options& input, const persisted_hosted_watch& state)
+   {
+     const http_response response = https_request(input.gateway_origin, "POST",
+@@ -1128,6 +1314,10 @@ namespace
+         output.envelope_file = argv[++index];
+       else if (token == "--gateway-origin" && index + 1 < argc)
+         output.gateway_origin = argv[++index];
++      else if (token == "--directory-origin" && index + 1 < argc)
++        output.directory_origin = argv[++index];
++      else if (token == "--worker-id" && index + 1 < argc)
++        output.worker_id = argv[++index];
+       else if (token == "--network" && index + 1 < argc)
+       {
+         output.network = parse_network(argv[++index]);
+@@ -1166,20 +1356,30 @@ namespace
+       << "          --network <mainnet|testnet|stagenet> --restore-height <height>\n"
+       << "  confirm-backup --wallet-file <path> [--json]\n"
+       << "  status --wallet-file <path> [--json]\n"
+-      << "  worker pair --wallet-file <path> --descriptor-file <public-file> [--now <unix-seconds>]\n"
++      << "  worker list --directory-origin <https-origin> [--network mainnet|testnet|stagenet] [--json]\n"
++      << "  worker select --wallet-file <path> --directory-origin <https-origin> --worker-id <64-hex-id>\n"
++      << "          [--now <unix-seconds>] [--json]\n"
++      << "  worker add-private --wallet-file <path> --descriptor-file <public-file>\n"
++      << "          [--now <unix-seconds>] [--json]\n"
++      << "  worker pair --wallet-file <path> --descriptor-file <public-file> [--now <unix-seconds>] [--json]\n"
+       << "  worker seal-watch --wallet-file <path> --password-file <0600-file> --descriptor-file <public-file>\n"
+       << "          --assignment-handle-file <0600-file> --assignment-epoch <positive-integer>\n"
+       << "          --envelope-file <new-0600-file> [--now <unix-seconds>] [--json]\n"
+-      << "  worker enroll --wallet-file <path> --password-file <0600-file> --descriptor-file <public-file>\n"
++      << "  worker enroll --wallet-file <path> --password-file <0600-file>\n"
++      << "          (--descriptor-file <private-worker-public-file> | --directory-origin <https-origin>)\n"
+       << "          --gateway-origin <https-origin> [--now <unix-seconds>] [--json]\n"
+       << "  worker hosted-status --wallet-file <path> [--json]\n"
+       << "  worker status --wallet-file <path> [--json]\n\n"
+       << "create and restore make a separate Monero wallet with its own seed and password.\n"
+       << "adopt-view accepts only an already encrypted software watch-only wallet and never imports a spend key.\n"
+-      << "worker pair verifies and pins only a signed public Worker identity; it does not upload a watch.\n"
++      << "worker list verifies the Directory response, every signed Worker descriptor, and its admission certificate.\n"
++      << "worker select pins one currently approved public Worker by its exact ID.\n"
++      << "worker add-private verifies and pins a non-public Worker's signed descriptor without contacting a Directory.\n"
++      << "worker pair remains a lower-level alias for worker add-private; neither command uploads a watch.\n"
+       << "worker seal-watch reads the local Fast Wallet internally and writes only a fixed-size encrypted HPKE envelope for a pre-authorized assignment.\n"
+       << "It requires a fresh signed descriptor whose root matches this pin, makes no network connection, and never prints a View Key or envelope.\n"
+-      << "worker enroll creates a protected installation capability, registers desktop delivery, sponsors the pinned Worker assignment, seals the watch locally, and submits only its encrypted envelope to the signed Relay.\n"
++      << "worker enroll refreshes a public Worker's descriptor from its Directory, or accepts a fresh private Worker descriptor.\n"
++      << "It creates a protected installation capability, registers desktop delivery, sponsors the pinned Worker assignment, seals the watch locally, and submits only its encrypted envelope to the signed Relay.\n"
+       << "It follows Product Core one durable step at a time; the Gateway capability is never sent to the Worker Relay.\n"
+       << "The lifecycle sidecar contains no seed, password, private key, address, worker token or node endpoint.\n"
+       << "Never pass a seed or password directly as a command argument.\n";
+@@ -1399,15 +1599,55 @@ namespace
+                 << "; signed Worker root: " << root_id << ".\n";
+   }
+ 
+-  void pair_worker(const options& input)
++  void print_directory_workers(const options& input)
++  {
++    const std::uint64_t now = input.now == 0 ? unix_seconds() : input.now;
++    const std::vector<directory_worker> workers = fetch_directory_workers(input, input.network, now);
++    if (input.json)
++    {
++      std::cout << "{\"schema_version\":1,\"network\":\"" << network_name(input.network)
++                << "\",\"directory_origin\":\"" << json_escape(require_https_origin(
++                     input.directory_origin, "--directory-origin")) << "\",\"workers\":[";
++      for (std::size_t index = 0; index < workers.size(); ++index)
++      {
++        if (index != 0) std::cout << ',';
++        const directory_worker& worker = workers[index];
++        std::cout << "{\"worker_id\":\"" << worker.worker_id
++                  << "\",\"operator_label\":\"" << json_escape(worker.operator_label)
++                  << "\",\"region\":\"" << json_escape(worker.region)
++                  << "\",\"policy_url\":\"" << json_escape(worker.policy_url)
++                  << "\",\"maximum_assignments\":" << worker.maximum_assignments
++                  << ",\"last_seen_at\":" << worker.last_seen_at << '}';
++      }
++      std::cout << "]}\n";
++      return;
++    }
++    std::cout << "Approved public Community Workers (" << network_name(input.network) << "):\n";
++    if (workers.empty())
++    {
++      std::cout << "  No approved online Community Worker is available.\n";
++      return;
++    }
++    for (std::size_t index = 0; index < workers.size(); ++index)
++    {
++      const directory_worker& worker = workers[index];
++      std::cout << "  " << index + 1 << ". " << worker.operator_label << "\n"
++                << "     Worker ID: " << worker.worker_id << "\n"
++                << "     Region: " << (worker.region.empty() ? "not specified" : worker.region)
++                << "; capacity: " << worker.maximum_assignments << " assignments\n";
++      if (!worker.policy_url.empty()) std::cout << "     Policy: " << worker.policy_url << "\n";
++    }
++    std::cout << "Select deterministically with: fast-wallet worker select --wallet-file <path> "
++                 "--directory-origin <https-origin> --worker-id <64-hex-id>\n";
++  }
++
++  void pair_worker_descriptor(const options& input, const persisted_fast_wallet& wallet,
++                              const std::vector<unsigned char>& descriptor)
+   {
+-    const persisted_fast_wallet wallet = read_metadata(input);
+     const Monero::NetworkType wallet_network = static_cast<Monero::NetworkType>(wallet.network);
+     if (input.network_explicit && input.network != wallet_network)
+       throw std::runtime_error("--network does not match the Fast Wallet network");
+     static_cast<void>(plan(MFW_FAST_WALLET_OPERATION_PAIR_WORKER, &wallet));
+-    const std::vector<unsigned char> descriptor = read_public_bounded_file(
+-      input.descriptor_file, "Worker descriptor file", 4096);
+     const std::uint64_t now = input.now == 0 ? unix_seconds() : input.now;
+     persisted_paired_worker paired{};
+     std::memcpy(paired.magic, paired_worker_magic, sizeof(paired_worker_magic));
+@@ -1425,6 +1665,28 @@ namespace
+     print_worker_status(input);
+   }
+ 
++  void pair_worker(const options& input)
++  {
++    if (input.descriptor_file.empty())
++      throw std::runtime_error("private Worker pairing requires --descriptor-file");
++    const persisted_fast_wallet wallet = read_metadata(input);
++    const std::vector<unsigned char> descriptor = read_public_bounded_file(
++      input.descriptor_file, "Worker descriptor file", 4096);
++    pair_worker_descriptor(input, wallet, descriptor);
++  }
++
++  void select_public_worker(const options& input)
++  {
++    const persisted_fast_wallet wallet = read_metadata(input);
++    const Monero::NetworkType network = static_cast<Monero::NetworkType>(wallet.network);
++    if (input.network_explicit && input.network != network)
++      throw std::runtime_error("--network does not match the Fast Wallet network");
++    const std::uint64_t now = input.now == 0 ? unix_seconds() : input.now;
++    const std::vector<directory_worker> workers = fetch_directory_workers(input, network, now);
++    const directory_worker& worker = selected_directory_worker(input, workers);
++    pair_worker_descriptor(input, wallet, worker.descriptor);
++  }
++
+   std::array<unsigned char, TEX8_FAST_WALLET_PROTOCOL_WATCH_ENVELOPE_SIZE> seal_hosted_watch(
+     const options& input, const persisted_fast_wallet& metadata,
+     const std::vector<unsigned char>& descriptor, const std::uint64_t now,
+@@ -1549,12 +1811,31 @@ namespace
+     const options& input, const persisted_fast_wallet& metadata,
+     const persisted_paired_worker& paired, const std::uint64_t now)
+   {
+-    if (input.descriptor_file.empty())
+-      throw std::runtime_error("worker enroll requires --descriptor-file");
+     if (paired.network != metadata.network)
+       throw std::runtime_error("Fast Wallet Worker pairing network does not match this wallet");
+-    std::vector<unsigned char> descriptor = read_public_bounded_file(
+-      input.descriptor_file, "Worker descriptor file", 4096);
++    if (!input.descriptor_file.empty() && !input.directory_origin.empty())
++      throw std::runtime_error("worker enroll accepts either --descriptor-file or --directory-origin, not both");
++    std::vector<unsigned char> descriptor;
++    if (!input.descriptor_file.empty())
++    {
++      descriptor = read_public_bounded_file(input.descriptor_file, "Worker descriptor file", 4096);
++    }
++    else if (!input.directory_origin.empty())
++    {
++      const Monero::NetworkType network = static_cast<Monero::NetworkType>(metadata.network);
++      const std::vector<directory_worker> workers = fetch_directory_workers(input, network, now);
++      const std::string paired_root = hex_encode(paired.worker_root_id.data(), paired.worker_root_id.size());
++      const auto found = std::find_if(workers.begin(), workers.end(), [&](const directory_worker& worker) {
++        return worker.worker_id == paired_root;
++      });
++      if (found == workers.end())
++        throw std::runtime_error("the paired public Worker is not currently approved and online");
++      descriptor = found->descriptor;
++    }
++    else
++    {
++      throw std::runtime_error("worker enroll requires --descriptor-file for a private Worker or --directory-origin for a public Worker");
++    }
+     std::array<unsigned char, 32> root{};
+     if (tex8_fast_wallet_protocol_descriptor_worker_root_id_v1(
+         descriptor.data(), descriptor.size(), static_cast<std::uint8_t>(metadata.network), now,
+@@ -1749,13 +2030,15 @@ namespace mfw_cli
+       operation += "-" + std::string(argv[3]);
+     }
+     if (operation != "create" && operation != "restore" && operation != "adopt-view" && operation != "confirm-backup" &&
+-        operation != "status" && operation != "worker-pair" && operation != "worker-seal-watch" &&
++        operation != "status" && operation != "worker-list" && operation != "worker-select" &&
++        operation != "worker-add-private" && operation != "worker-pair" && operation != "worker-seal-watch" &&
+         operation != "worker-enroll" && operation != "worker-hosted-status" && operation != "worker-status")
+       return false;
+     try
+     {
+       options input;
+-      if (operation == "worker-pair" || operation == "worker-seal-watch" || operation == "worker-enroll" ||
++      if (operation == "worker-list" || operation == "worker-select" || operation == "worker-add-private" ||
++          operation == "worker-pair" || operation == "worker-seal-watch" || operation == "worker-enroll" ||
+           operation == "worker-hosted-status" || operation == "worker-status")
+       {
+         // `pair`/`status` are a two-word Fast Wallet subcommand; their options
+@@ -1771,6 +2054,8 @@ namespace mfw_cli
+             input.assignment_handle_file = argv[++index];
+           else if (token == "--envelope-file" && index + 1 < argc) input.envelope_file = argv[++index];
+           else if (token == "--gateway-origin" && index + 1 < argc) input.gateway_origin = argv[++index];
++          else if (token == "--directory-origin" && index + 1 < argc) input.directory_origin = argv[++index];
++          else if (token == "--worker-id" && index + 1 < argc) input.worker_id = argv[++index];
+           else if (token == "--network" && index + 1 < argc)
+           {
+             input.network = parse_network(argv[++index]);
+@@ -1796,13 +2081,16 @@ namespace mfw_cli
+         }
+       }
+       else input = parse_options(argc, argv);
+-      if (input.wallet_path.empty()) throw std::runtime_error("--wallet-file is required");
++      if (operation != "worker-list" && input.wallet_path.empty())
++        throw std::runtime_error("--wallet-file is required");
+       if (operation == "create") create(input);
+       else if (operation == "restore") restore(input);
+       else if (operation == "adopt-view") adopt_view_cache(input);
+       else if (operation == "confirm-backup") confirm_backup(input);
+       else if (operation == "status") print_status(input, read_metadata(input));
+-      else if (operation == "worker-pair") pair_worker(input);
++      else if (operation == "worker-list") print_directory_workers(input);
++      else if (operation == "worker-select") select_public_worker(input);
++      else if (operation == "worker-add-private" || operation == "worker-pair") pair_worker(input);
+       else if (operation == "worker-seal-watch") seal_worker_watch(input);
+       else if (operation == "worker-enroll") enroll_hosted_watch(input);
+      else if (operation == "worker-hosted-status") print_hosted_watch_status(input, read_metadata(input));

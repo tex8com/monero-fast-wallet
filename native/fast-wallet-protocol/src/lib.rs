@@ -1404,6 +1404,62 @@ pub mod ffi {
     }
 
     #[no_mangle]
+    pub unsafe extern "C" fn tex8_fast_wallet_protocol_verify_worker_admission_v1(
+        descriptor: *const u8,
+        descriptor_len: usize,
+        expected_network: u8,
+        now: u64,
+        admission_certificate: *const u8,
+        admission_certificate_len: usize,
+        expected_directory_public_key: *const u8,
+        expected_directory_public_key_len: usize,
+        maximum_assignments_output: *mut u32,
+    ) -> i32 {
+        catch_unwind(|| {
+            let Ok(network) = Network::decode(expected_network) else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(descriptor_bytes) = checked_input(descriptor, descriptor_len, 1, 4_096) else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(certificate_bytes) = checked_input(
+                admission_certificate,
+                admission_certificate_len,
+                WORKER_ADMISSION_CERTIFICATE_SIZE,
+                WORKER_ADMISSION_CERTIFICATE_SIZE,
+            ) else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(directory_key_bytes) = checked_input(
+                expected_directory_public_key,
+                expected_directory_public_key_len,
+                32,
+                32,
+            ) else {
+                return INVALID_ARGUMENT;
+            };
+            if maximum_assignments_output.is_null() {
+                return INVALID_ARGUMENT;
+            }
+            let result = (|| {
+                let descriptor = WorkerDescriptor::decode(descriptor_bytes)?;
+                descriptor.verify(network, now)?;
+                let certificate = WorkerAdmissionCertificate::decode(certificate_bytes)?;
+                let directory_key = fixed_array(directory_key_bytes)?;
+                certificate.verify(&descriptor, &directory_key, now)?;
+                Ok::<_, ProtocolError>(certificate.maximum_assignments)
+            })();
+            let Ok(maximum_assignments) = result else {
+                return INVALID_DESCRIPTOR;
+            };
+            // SAFETY: the caller supplied a checked writable output pointer.
+            unsafe { *maximum_assignments_output = maximum_assignments };
+            OK
+        })
+        .unwrap_or(INVALID_DESCRIPTOR)
+    }
+
+    #[no_mangle]
     pub unsafe extern "C" fn tex8_fast_wallet_protocol_verify_worker_receipt_v1(
         descriptor: *const u8,
         descriptor_len: usize,
@@ -5518,6 +5574,55 @@ mod tests {
         assert_eq!(
             certificate.verify(&other_descriptor, &directory.public_key(), now + 1),
             Err(ProtocolError::WrongWorker)
+        );
+    }
+
+    #[test]
+    fn c_abi_verifies_directory_admission_and_returns_its_quota() {
+        let now = 1_800_000_000;
+        let (_, _, descriptor) = fixture(now);
+        let directory = SigningKeyMaterial::from_bytes([41_u8; 32]);
+        let certificate =
+            WorkerAdmissionCertificate::sign(&descriptor, 250, now, now + 3_600, &directory)
+                .unwrap();
+        let descriptor = descriptor.encode().unwrap();
+        let certificate = certificate.encode();
+        let directory_public_key = directory.public_key();
+        let mut maximum_assignments = 0_u32;
+        assert_eq!(
+            unsafe {
+                ffi::tex8_fast_wallet_protocol_verify_worker_admission_v1(
+                    descriptor.as_ptr(),
+                    descriptor.len(),
+                    Network::Stagenet as u8,
+                    now + 1,
+                    certificate.as_ptr(),
+                    certificate.len(),
+                    directory_public_key.as_ptr(),
+                    directory_public_key.len(),
+                    &mut maximum_assignments,
+                )
+            },
+            ffi::OK
+        );
+        assert_eq!(maximum_assignments, 250);
+
+        let wrong_directory = [42_u8; 32];
+        assert_eq!(
+            unsafe {
+                ffi::tex8_fast_wallet_protocol_verify_worker_admission_v1(
+                    descriptor.as_ptr(),
+                    descriptor.len(),
+                    Network::Stagenet as u8,
+                    now + 1,
+                    certificate.as_ptr(),
+                    certificate.len(),
+                    wrong_directory.as_ptr(),
+                    wrong_directory.len(),
+                    &mut maximum_assignments,
+                )
+            },
+            ffi::INVALID_DESCRIPTOR
         );
     }
 
