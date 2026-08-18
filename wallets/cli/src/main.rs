@@ -24,7 +24,7 @@ const DELETE_CONFIRMATION: &str = "DELETE MY COMMUNITY PROFILE";
 #[command(
     name = "monero-fast-wallet-community",
     version,
-    about = "Monero Enthusiast V1 automation and acceptance-test client"
+    about = "Monero Fast Wallet CLI — Community automation and acceptance-test client"
 )]
 struct Cli {
     /// Community V1 API origin. HTTPS is mandatory except for explicit loopback tests.
