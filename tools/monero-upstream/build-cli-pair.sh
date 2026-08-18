@@ -239,6 +239,13 @@ if [[ -n "${MONERO_GRPC_PKG_CONFIG_PATH}" ]]; then
     echo "Protobuf mismatch: pkg-config=${protobuf_pkg_version}, protoc=${protobuf_protoc_version}" >&2
     exit 65
   }
+
+  # The pinned SDK's pkg-config files can contain absolute library paths from
+  # the machine that produced them.  On macOS, put the local SDK and Monero
+  # depends directories first so the linker cannot select a stale gRPC copy.
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    product_args+=("-DCMAKE_EXE_LINKER_FLAGS=-L${grpcpp_sdk_prefix}/lib -L${depends_prefix}/lib")
+  fi
 fi
 [[ -z "${GRPC_CPP_PLUGIN_PATH:-}" ]] || product_args+=("-DGRPC_CPP_PLUGIN_PATH=${GRPC_CPP_PLUGIN_PATH}")
 [[ -z "${PROTOC_PATH:-}" ]] || product_args+=("-DPROTOC_PATH=${PROTOC_PATH}")
