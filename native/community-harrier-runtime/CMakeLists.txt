@@ -209,9 +209,26 @@ target_link_libraries(
 # page size at its final link step; static archives linked into the Monero JNI
 # boundary inherit that boundary's linker setting instead.
 if(ANDROID)
+  set(_tex8_harrier_android_exports
+    "${CMAKE_CURRENT_SOURCE_DIR}/cpp/CommunityHarrierRuntimeAndroid.map")
+  # This boundary intentionally contains a tokenizer RE2 revision different
+  # from the Monero/gRPC RE2 revision in the owning process.  A shared object
+  # alone does not isolate ELF C++ symbols: default-visible RE2 symbols remain
+  # preemptible and can make an object get destroyed by the wrong ABI.  Export
+  # only the stable C ABI and bind every implementation symbol locally.
+  set_target_properties(
+    tex8_community_harrier_runtime
+    PROPERTIES
+      CXX_VISIBILITY_PRESET hidden
+      VISIBILITY_INLINES_HIDDEN YES
+      LINK_DEPENDS "${_tex8_harrier_android_exports}"
+  )
   target_link_options(
     tex8_community_harrier_runtime
-    PRIVATE "-Wl,-z,max-page-size=16384"
+    PRIVATE
+      "-Wl,-z,max-page-size=16384"
+      "-Wl,--version-script=${_tex8_harrier_android_exports}"
+      "-Wl,-Bsymbolic"
   )
 endif()
 target_compile_options(

@@ -12,6 +12,7 @@ import {
   type AppUpdateOffer,
 } from '../../../../packages/app-update-core/src/index';
 import {logWalletEvent} from './WalletLogger';
+import {torFetch} from './TorHttp';
 
 // Manifest validation and endpoint/artifact host pinning are owned by the
 // shared fail-closed core; this adapter only supplies the mobile platform
@@ -98,7 +99,7 @@ async function check(): Promise<AppUpdateOffer | null> {
       updateConfig.mobile.manifestUrl,
       updateContext,
     );
-    const response = await fetch(requestUrl, {
+    const response = await torFetch(requestUrl, {
       headers: {
         Accept: 'application/json',
         'Cache-Control': 'no-cache',

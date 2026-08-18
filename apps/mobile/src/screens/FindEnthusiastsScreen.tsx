@@ -252,7 +252,7 @@ export default function FindEnthusiastsScreen({ navigation }: any) {
       <ScrollView
         contentContainerStyle={[
           s.scroll,
-          { paddingTop: insets.top + 14, paddingBottom: insets.bottom + 120 },
+          { paddingBottom: insets.bottom + 120 },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -513,7 +513,7 @@ function PersonRow({
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  scroll: { paddingHorizontal: spacing.lg },
+  scroll: { paddingHorizontal: spacing.lg, paddingTop: 12 },
   header: {
     flexDirection: 'row',
     alignItems: 'flex-start',

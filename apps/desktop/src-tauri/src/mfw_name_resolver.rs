@@ -5,7 +5,6 @@ use std::{io::Read, time::Duration};
 
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
 const MIN_CONFIRMATIONS: u64 = 15;
-const MAX_WALLET_TIP_DISTANCE_BLOCKS: u64 = 5;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -17,13 +16,16 @@ pub struct Resolution {
     pub confirmations: u64,
     pub expiry_height: u64,
     pub network: String,
+    #[serde(default)]
     pub owner_public_key_hex: String,
     pub public_spend_key_hex: String,
     pub public_view_key_hex: String,
     pub record_block_hash_hex: String,
     pub record_height: u64,
     pub record_payload_hex: String,
+    #[serde(default)]
     pub sequence: u64,
+    #[serde(default)]
     pub signing_owner_public_key_hex: String,
     pub source_txid_hex: String,
     pub status: String,
@@ -86,11 +88,7 @@ pub fn resolve_for_import(name: &str, network: &str) -> Result<(Resolution, Stri
     Ok((resolution, address))
 }
 
-pub fn availability(
-    name: &str,
-    network: &str,
-    wallet_chain_height: Option<u64>,
-) -> Result<Availability, String> {
+pub fn availability(name: &str, network: &str) -> Result<Availability, String> {
     release_features::require(
         "mfwNameRegistration",
         "MFW name availability is not enabled in this release.",
@@ -101,33 +99,18 @@ pub fn availability(
         return Err("MFW availability response is malformed or wrong-network.".to_owned());
     }
     validate_tip(&resolution)?;
-    if let Some(wallet_height) = wallet_chain_height {
-        let drift = resolution.chain_tip_height.abs_diff(wallet_height);
-        if drift > MAX_WALLET_TIP_DISTANCE_BLOCKS {
-            return Err("MFW availability response is stale relative to the wallet.".to_owned());
-        }
-    }
     let status = match resolution.status.as_str() {
         "not_found" => {
             require_empty_record(&resolution)?;
             "available"
         }
-        "expired" | "revoked" => {
-            require_owner_key(&resolution)?;
-            "available-again"
-        }
+        "expired" | "revoked" => "available-again",
         "reserved" => {
             require_empty_record(&resolution)?;
             "reserved"
         }
-        "provisional" => {
-            require_owner_key(&resolution)?;
-            "pending"
-        }
-        "finalized" => {
-            require_owner_key(&resolution)?;
-            "taken"
-        }
+        "provisional" => "pending",
+        "finalized" => "taken",
         _ => return Err("MFW availability response has an unsupported status.".to_owned()),
     };
     Ok(Availability {
@@ -172,12 +155,13 @@ pub fn verified_address(
 }
 
 fn resolve_with_origins(canonical_name: &str, origins: &[String]) -> Result<Resolution, String> {
-    if origins.len() < 2 || origins.len() > 4 {
-        return Err("MFW name resolution requires two to four resolvers.".to_owned());
+    if origins.is_empty() || origins.len() > 4 {
+        return Err("MFW name resolution requires one to four resolvers.".to_owned());
     }
     let client = Client::builder()
         .timeout(Duration::from_secs(8))
         .redirect(Policy::none())
+        .proxy(crate::tor_transport::proxy()?)
         .build()
         .map_err(|_| "MFW resolver transport is unavailable.".to_owned())?;
     let mut answers = Vec::with_capacity(origins.len());
@@ -225,8 +209,16 @@ fn resolve_with_origins(canonical_name: &str, origins: &[String]) -> Result<Reso
 
 fn validate_origin(value: &str) -> Result<String, String> {
     let url = Url::parse(value)
-        .map_err(|_| "MFW resolver origins must be bare HTTPS origins.".to_owned())?;
-    if url.scheme() != "https"
+        .map_err(|_| "MFW resolver origins must be bare private-service origins.".to_owned())?;
+    let onion = url.scheme() == "http"
+        && url.host_str().is_some_and(|host| {
+            host.len() == 62
+                && host.ends_with(".onion")
+                && host[..56]
+                    .bytes()
+                    .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
+        });
+    if (url.scheme() != "https" && !onion)
         || url.host_str().is_none()
         || !url.username().is_empty()
         || url.password().is_some()
@@ -234,7 +226,7 @@ fn validate_origin(value: &str) -> Result<String, String> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err("MFW resolver origins must be bare HTTPS origins.".to_owned());
+        return Err("MFW resolver origins must be bare HTTPS or Tor v3 Onion origins.".to_owned());
     }
     Ok(url.origin().ascii_serialization())
 }
@@ -284,15 +276,14 @@ fn validate_shape(resolution: &Resolution) -> Result<(), String> {
             return Err("MFW resolver response contains malformed binary data.".to_owned());
         }
     }
-    if !resolution.record_payload_hex.is_empty()
-        && (resolution.record_payload_hex.len() % 2 != 0
-            || resolution.record_payload_hex.len() < 378
-            || resolution.record_payload_hex.len() > 502
-            || !resolution
-                .record_payload_hex
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
-    {
+    let legacy_record = resolution.owner_public_key_hex.is_empty()
+        && resolution.signing_owner_public_key_hex.is_empty()
+        && resolution.sequence == 0
+        && is_bounded_hex(&resolution.record_payload_hex, 89, 152);
+    let current_record = is_hex(&resolution.owner_public_key_hex, 32)
+        && is_hex(&resolution.signing_owner_public_key_hex, 32)
+        && is_bounded_hex(&resolution.record_payload_hex, 189, 251);
+    if !resolution.record_payload_hex.is_empty() && !legacy_record && !current_record {
         return Err("MFW resolver response contains a malformed signed record.".to_owned());
     }
     Ok(())
@@ -332,12 +323,6 @@ fn require_empty_record(resolution: &Resolution) -> Result<(), String> {
     Ok(())
 }
 
-fn require_owner_key(resolution: &Resolution) -> Result<(), String> {
-    is_hex(&resolution.owner_public_key_hex, 32)
-        .then_some(())
-        .ok_or_else(|| "MFW availability response has no valid owner key.".to_owned())
-}
-
 fn verify_record_address(
     resolution: &Resolution,
     expected_name: &str,
@@ -345,8 +330,6 @@ fn verify_record_address(
 ) -> Result<String, String> {
     let record = hex::decode(&resolution.record_payload_hex)
         .map_err(|_| "MFW signed record is malformed.".to_owned())?;
-    let signer = hex::decode(&resolution.signing_owner_public_key_hex)
-        .map_err(|_| "MFW signing owner key is malformed.".to_owned())?;
     let network = match network {
         "mainnet" => 0,
         "testnet" => 1,
@@ -355,18 +338,34 @@ fn verify_record_address(
     };
     let canonical_name = mfw_names::canonical_name(expected_name)?;
     let mut output = [0_u8; fast_wallet_protocol::ffi::MFW_MONERO_ADDRESS_BYTES];
-    let status = unsafe {
-        fast_wallet_protocol::ffi::tex8_mfw_verify_and_encode_name_address_v1(
-            record.as_ptr(),
-            record.len(),
-            canonical_name.as_ptr(),
-            canonical_name.len(),
-            network,
-            signer.as_ptr(),
-            signer.len(),
-            output.as_mut_ptr(),
-            output.len(),
-        )
+    let status = if resolution.signing_owner_public_key_hex.is_empty() {
+        unsafe {
+            fast_wallet_protocol::ffi::tex8_mfw_verify_and_encode_legacy_name_address_v1(
+                record.as_ptr(),
+                record.len(),
+                canonical_name.as_ptr(),
+                canonical_name.len(),
+                network,
+                output.as_mut_ptr(),
+                output.len(),
+            )
+        }
+    } else {
+        let signer = hex::decode(&resolution.signing_owner_public_key_hex)
+            .map_err(|_| "MFW signing owner key is malformed.".to_owned())?;
+        unsafe {
+            fast_wallet_protocol::ffi::tex8_mfw_verify_and_encode_name_address_v1(
+                record.as_ptr(),
+                record.len(),
+                canonical_name.as_ptr(),
+                canonical_name.len(),
+                network,
+                signer.as_ptr(),
+                signer.len(),
+                output.as_mut_ptr(),
+                output.len(),
+            )
+        }
     };
     if status != fast_wallet_protocol::ffi::OK {
         return Err("MFW signed record failed native owner verification.".to_owned());
@@ -376,6 +375,15 @@ fn verify_record_address(
 
 fn is_hex(value: &str, bytes: usize) -> bool {
     value.len() == bytes * 2
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn is_bounded_hex(value: &str, minimum_bytes: usize, maximum_bytes: usize) -> bool {
+    value.len() % 2 == 0
+        && value.len() >= minimum_bytes * 2
+        && value.len() <= maximum_bytes * 2
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
@@ -423,6 +431,21 @@ mod tests {
         let mut value = serde_json::to_value(empty_resolution()).unwrap();
         value["unexpected"] = serde_json::json!(true);
         assert!(serde_json::from_value::<Resolution>(value).is_err());
+    }
+
+    #[test]
+    fn first_public_resolver_legacy_fields_default_only_for_availability() {
+        let mut value = serde_json::to_value(empty_resolution()).unwrap();
+        value.as_object_mut().unwrap().remove("ownerPublicKeyHex");
+        value.as_object_mut().unwrap().remove("sequence");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("signingOwnerPublicKeyHex");
+        let parsed = serde_json::from_value::<Resolution>(value).unwrap();
+        assert!(parsed.owner_public_key_hex.is_empty());
+        assert_eq!(parsed.sequence, 0);
+        assert!(parsed.signing_owner_public_key_hex.is_empty());
     }
 
     #[test]

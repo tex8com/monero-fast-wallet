@@ -3,7 +3,7 @@
 **A fast, self-custodial Monero wallet for iOS, Android, and desktop.**
 
 Monero Fast Wallet combines the official Monero wallet core with an optimized
-Cuprate data path, native CPU and Metal acceleration, and optional
+Monero Fast Node data path, native CPU and Metal acceleration, and optional
 privacy-preserving payment notifications. Your seed and spend key always remain
 under your control.
 
@@ -16,7 +16,8 @@ under your control.
 > [Security Audit](docs/SECURITY_AUDIT_2026-07-24.md) for details.
 >
 > **V1 scope:** The first public version is planned to include complete `.mfw`
-> registration and resolution plus the replacement Monero Enthusiast feature.
+> registration and resolution through the **Monero Fast Wallet Registry**, plus
+> the replacement Monero Enthusiast feature.
 > Both are required deliverables, but their production flags remain disabled
 > until their separate security, service, signed-artifact, physical-platform,
 > legal, and independent-review gates pass. The legacy non-E2EE Community is
@@ -57,6 +58,14 @@ React Native (iOS / Android)        React + Tauri 2 (desktop)
 The goal is a simple everyday wallet without changing Monero addresses,
 transactions, spending rules, or consensus.
 
+### Monero Fast Wallet Registry
+
+The public `.mfw` name layer is called the **Monero Fast Wallet Registry**. It
+maps a human-readable name such as `alice.mfw` to a Monero receive address
+through blockchain-anchored records that wallets verify before payment. It is
+an application naming protocol, not ICANN DNS, and remains release-gated until
+its production genesis parameters and independent review are complete.
+
 ## Key benefits
 
 | Benefit | What it means for users |
@@ -64,7 +73,7 @@ transactions, spending rules, or consensus.
 | **Much faster restore and synchronization** | In the current strictly comparable Mainnet matrix, the optimized wallet path was **3.49× faster** than the unchanged Monero wallet, while the ScanPack path reached **13.03×**. All three serial runs scanned the same 161,523 blocks to one frozen tip. |
 | **Automatic use of suitable hardware** | The wallet selects CPU, AVX2, AVX-512 IFMA, or Apple Metal according to the platform and batch size. Small Metal batches deliberately remain on the CPU because launching the GPU would be slower. |
 | **Self-custody by default** | The seed, spend key, primary private view key, and wallet files remain local or on the Ledger. The normal wallet mode never uploads a private view key to TEX8. |
-| **Standard Monero compatibility** | The wallet can use the fast Monero Fast Node (MFN) gRPC path, a standard Monero daemon, or your own compatible node. Addresses, transactions, and consensus remain standard Monero. MFN is powered by Cuprate. |
+| **Standard Monero compatibility** | The wallet can use the fast Monero Fast Node (MFN) gRPC path, a standard Monero daemon, or your own compatible node. Addresses, transactions, and consensus remain standard Monero. |
 | **Fast but optional payment signals** | Fast Receive uses a separate receiving identity. The server cannot spend funds and sends only an opaque signal; the amount and transaction details are verified locally. |
 | **Mobile and desktop in one product repository** | React Native for iOS and Android and Tauri 2 for macOS, Windows, and Linux share wallet rules, native-core contracts, services, tests, and release documentation. |
 | **Verifiable optimizations** | CPU, Metal, Vulkan, CUDA, transport, and mainnet synchronization testbenches plus **1,678 text-based raw artifacts** are stored in this repository. Successful and rejected experiments are both documented. |
@@ -86,9 +95,10 @@ transactions, spending rules, or consensus.
   and submit it
 - Use a local address book and the three most recently used recipients. The
   dormant configurable donation entry is not enabled in the production plan.
-- Claim/register, renew, owner-update or revoke a public `.mfw` name and resolve
+- Claim/register, renew, owner-update or revoke a public `.mfw` name through the
+  **Monero Fast Wallet Registry**, and resolve
   one into the exact selected Monero network before native Send review. This is
-  required V1 scope, but remains release-gated until the registry, payment,
+  required V1 scope, but remains release-gated until the Registry, payment,
   finality, expiry, recovery, reorganization, and physical-device tests pass.
 - Choose a restore date backed by a shared, deliberately conservative
   restore-height model
@@ -109,18 +119,21 @@ transactions, spending rules, or consensus.
   credentials
 - A native, single-use send confirmation bound to the recipient, amount, fee,
   wallet, and expiration time
-- Protection against screenshots, task-switcher previews, and sensitive
-  release logs
+- Screenshot capture remains available in development and release builds for
+  reproducible visual debugging; app locking, secure storage, and redacted
+  release logs remain the actual security boundaries
 
 These protection paths are implemented and covered by contract tests. Full
 physical validation on every platform remains a release gate.
 
 ### Nodes and synchronization
 
-- **Optimized:** Monero Fast Node (MFN), powered by Cuprate, with parallel hash prefetching, block streaming,
-  range reads, and chain-drift/split diagnostics
-- **Compatible:** the original Monero daemon RPC path
-- **Flexible:** your own node and separate profiles for each network
+- **Clearnet block route:** Monero Fast Node (MFN) gRPC, with parallel hash
+  prefetching, block streaming, range reads, and chain-drift/split diagnostics
+- **Tor wallet route:** an independently selected Onion daemon through Tor
+  integrated in the app
+- **Global configuration:** one automatically saved route pair per network,
+  shared by every wallet on the device
 - Speculative block prefetching and a gzip-compatible binary RPC path
 - Persistent MFN ScanPack cache for fast access to historical block ranges
 - Controlled gRPC queues, HTTP/2 windows, and optional independent TCP lanes
@@ -158,7 +171,7 @@ Fast Receive is an explicitly optional convenience mode:
 3. Native code encrypts that Fast Wallet's watch directly to the exact selected
    Worker. A separate mailbox Relay stores only HPKE ciphertext.
 4. The outbound-only Worker reads one shared block/mempool stream from
-   Cuprate/ScanPack for all watches and requests only a bounded generic wake for
+   Monero Fast Node/ScanPack for all watches and requests only a bounded generic wake for
    its exact active assignments.
 5. The Gateway alone holds provider delivery data. The application receives an
    “activity detected” signal and uses its local wallet core to determine the
@@ -457,7 +470,7 @@ automatically mean that an end-user artifact has been released.
 | macOS | Tauri 2 app with locally linked core; create/open/seed/subaddress tested; Metal backend packaged | Sign, notarize, staple, and repeat wallet, Ledger, and push validation for the exact app |
 | Windows | UI, Rust host, protection contracts, and notification-agent contracts are present | Build and load the native core as a DLL, then complete wallet, Ledger, push, and installer validation |
 | Linux | ARM64 AppImage assembled locally with the core; DBus agent contract is present | Clean-user, real-node, Ledger, notification, and package validation |
-| Services | Scanner, Gateway, Cuprate, and the replacement Monero Enthusiast V1 service stack exist as separate components; V1 API, private Synapse and signed sequence-1 catalogs are live and smoke-tested | Validate backups, rotation, restore, load, abuse operations, reorganization handling, provider delivery, and monitoring |
+| Services | Scanner, Gateway, Monero Fast Node, and the replacement Monero Enthusiast V1 service stack exist as separate components; V1 API, private Synapse and signed sequence-1 catalogs are live and smoke-tested | Validate backups, rotation, restore, load, abuse operations, reorganization handling, provider delivery, and monitoring |
 
 All five app targets are built from one authenticated Monero Core patch tree.
 Mobile link manifests carry the exact tree identity, Unix desktop builds verify
@@ -519,7 +532,10 @@ packages/
   wallet-shared/                  shared wallet and synchronization rules
 
 services/
-  notify-scanner/                 optional hosted-view-key scanner
+  fast-wallet-worker/             outbound encrypted hosted-view-key scanner
+  fast-wallet-scanner-core/       internal Worker scan engine; no server API
+  fast-wallet-relay/              ciphertext-only Worker mailbox
+  notification-registration-adapter/ attested provider registration
   notification-gateway/          opaque WSS/push delivery
   enthusiast-v1/                 replacement V1 publication/contact API
   enthusiast-moderation-console/ loopback-only moderation interface
@@ -528,11 +544,11 @@ services/
   monero-news/                    cache of official Monero news
 
 node/
-  cuprate/                        integrated Cuprate source snapshot
+  cuprate/                        integrated Monero Fast Node engine snapshot
 
 third_party/
   monero-patches/                 ordered Monero product patches
-  cuprate-patches/                ordered Cuprate product patches
+  cuprate-patches/                ordered Monero Fast Node engine patches
   curve25519-dalek-wallet-cpu/    reproducible CPU patches
   monero-experimental-patches/    separate research snapshots
 
@@ -548,13 +564,12 @@ tools/
 
 ops/
   cuprate-sync-benchmark/
-  notify-scanner/
 
 docs/
   product, architecture, security, release, and benchmark documents
 ```
 
-Monero and Cuprate also retain independently updateable forks:
+Monero and the Monero Fast Node engine also retain independently updateable forks:
 
 | Project | Remote | Documented product revision |
 | --- | --- | --- |
@@ -563,9 +578,9 @@ Monero and Cuprate also retain independently updateable forks:
 | Monero Core CPU | `tex8com/monero` | `382b8c06641c9e905a98dc4ac77c17f746aceb8c` |
 | Monero Core CPU + Metal | `tex8com/monero` | `cdcfa8151322a3fdd9306af97ab0c54092ac1e37` |
 | Monero CUDA research | `tex8com/monero` | `024224eb5cde9c8a243a152e3927399550479cd2` |
-| Cuprate production | `tex8com/cuprate` | `cd1ec57ab44301b93a21e9b504b9d913b88fc871` |
+| Monero Fast Node production | `tex8com/cuprate` | `cd1ec57ab44301b93a21e9b504b9d913b88fc871` |
 
-The **26 Monero product patches** and **41 Cuprate patches** are stored in order
+The **26 Monero product patches** and **41 Monero Fast Node engine patches** are stored in order
 inside the product repository. Patch reproduction verifies the expected final
 source tree before a core is built. Generated dependencies, wallet files,
 secrets, logs, and build outputs do not belong in Git.
@@ -627,7 +642,7 @@ npm run dev:wallet
 Each Rust service has its own `Cargo.toml` and lockfile. For example:
 
 ```bash
-cargo test --locked --manifest-path services/notify-scanner/Cargo.toml
+cargo test --locked --manifest-path services/fast-wallet-scanner-core/Cargo.toml
 cargo test --locked --manifest-path services/notification-gateway/Cargo.toml
 cargo test --locked --manifest-path services/enthusiast-v1/Cargo.toml
 cargo test --locked --manifest-path services/enthusiast-moderation-console/Cargo.toml
@@ -695,4 +710,4 @@ current state of a later modified working copy.
 
 **Repository:** <https://github.com/tex8com/monero-fast-wallet><br>
 **Monero fork:** <https://github.com/tex8com/monero><br>
-**Cuprate fork:** <https://github.com/tex8com/cuprate>
+**Monero Fast Node source:** <https://github.com/tex8com/cuprate>

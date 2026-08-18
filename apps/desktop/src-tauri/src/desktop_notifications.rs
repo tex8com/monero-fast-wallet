@@ -656,7 +656,7 @@ fn notification_service_url() -> String {
     let gateway = option_env!("TEX8_FAST_WALLET_GATEWAY_ORIGIN")
         .unwrap_or("")
         .trim_end_matches('/');
-    if gateway.starts_with("https://") {
+    if private_service_origin(gateway) {
         format!("{gateway}/api/v1/notifications")
     } else {
         // The feature gate prevents enrollment in an unconfigured release.
@@ -670,11 +670,25 @@ fn gateway_origin() -> Result<String, String> {
     let gateway = option_env!("TEX8_FAST_WALLET_GATEWAY_ORIGIN")
         .unwrap_or("")
         .trim_end_matches('/');
-    if gateway.starts_with("https://") {
+    if private_service_origin(gateway) {
         Ok(gateway.to_owned())
     } else {
         Err("The desktop notification service is not configured in this build.".to_owned())
     }
+}
+
+fn private_service_origin(value: &str) -> bool {
+    if value.starts_with("https://") {
+        return true;
+    }
+    let Some(host) = value.strip_prefix("http://") else {
+        return false;
+    };
+    host.len() == 62
+        && host.ends_with(".onion")
+        && host[..56]
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
 }
 
 fn desktop_http_client() -> Result<Client, String> {
@@ -682,6 +696,7 @@ fn desktop_http_client() -> Result<Client, String> {
         .redirect(Policy::none())
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(12))
+        .proxy(crate::tor_transport::proxy()?)
         .build()
         .map_err(|_| "The desktop notification client could not be created.".to_owned())
 }

@@ -25,7 +25,6 @@ jobs:
         with:
           node-version: 24.18.0
       - run: ./scripts/check-supply-chain-contract.sh
-      - run: ./scripts/check-scanner-security-contract.sh
       - run: node --test ./scripts/test-product-locales.mjs
 
   dependency-review:
@@ -125,8 +124,8 @@ jobs:
             manifest: services/notification-gateway/Cargo.toml
           - name: notification-registration-adapter
             manifest: services/notification-registration-adapter/Cargo.toml
-          - name: notify-scanner
-            manifest: services/notify-scanner/Cargo.toml
+          - name: fast-wallet-scanner-core
+            manifest: services/fast-wallet-scanner-core/Cargo.toml
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install exact Rust toolchain

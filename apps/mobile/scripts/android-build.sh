@@ -45,7 +45,8 @@ link_manifest_matches_common_core() {
 # A local override remains authoritative; this fallback only makes the standard
 # external build location work without requiring a long environment variable.
 if [ -z "${MONERO_WALLET_LINK_ROOT:-}" ] \
-  && [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ]; then
+  && ! link_manifest_matches_common_core \
+    "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake"; then
   for external_manifest_root in \
     "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-${MONERO_COMMON_CORE_TREE}" \
     "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-tex8-patched" \

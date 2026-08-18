@@ -30,6 +30,18 @@ is distributed under the Apache License 2.0. The exact locked version is
 recorded in `apps/mobile/ios/Podfile.lock`; the corresponding Apache-2.0 text is
 included in `LICENSES/Apache-2.0.txt`.
 
+### tor-android
+
+The Android wallet embeds Guardian Project's `tor-android` and `jtorctl` for
+app-private Onion connections. `tor-android` retains its BSD-3-Clause notice;
+the corresponding license text is included in `LICENSES/BSD-3-Clause.txt`.
+
+### Tor.framework
+
+The iOS wallet embeds the iCepa `Tor.framework` wrapper and its bundled Tor
+runtime for app-private Onion connections. The wrapper retains its MIT notice;
+the corresponding license text is included in `LICENSES/MIT.txt`.
+
 ## Generated and copied material
 
 Cryptographic test vectors, generated bindings, icons, fonts, and other assets

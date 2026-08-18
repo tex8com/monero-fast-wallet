@@ -63,6 +63,8 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.lang.ref.WeakReference
 import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.URI
 import java.net.URL
 import java.net.URLEncoder
@@ -128,11 +130,13 @@ class NativeMoneroWalletModule(
   private val walletAppVault by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
     MobileWalletAppVault(reactApplicationContext)
   }
+  private val ledgerBleJniTransportInstalled by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    NativeMoneroWalletJni.initializeLedgerBleTransport()
+  }
 
   init {
     activeInstance = WeakReference(this)
     LedgerBleTransport.initialize(reactContext)
-    NativeMoneroWalletJni.initializeLedgerBleTransport()
   }
 
   override fun getName(): String = NAME
@@ -149,7 +153,22 @@ class NativeMoneroWalletModule(
   }
 
   override fun linkedWithMonero(promise: Promise) {
-    promise.resolve(NativeMoneroWalletJni.linkedWithMonero())
+    // The first reference to NativeMoneroWalletJni loads the complete Monero
+    // core. Loading it while React constructs this TurboModule blocks the
+    // activity's first real frame for several seconds. Keep the lightweight
+    // app-security/status module usable immediately and probe the core on the
+    // dedicated native worker instead.
+    nativeWalletExecutor.execute {
+      runCatching { NativeMoneroWalletJni.linkedWithMonero() }
+        .onSuccess(promise::resolve)
+        .onFailure { error ->
+          promise.reject(
+            "monero_wallet_android_link_status_error",
+            error.message ?: "The native Monero core status is unavailable",
+            error,
+          )
+        }
+    }
   }
 
   override fun benchmarkDerivationPerformance(promise: Promise) {
@@ -161,12 +180,45 @@ class NativeMoneroWalletModule(
       return
     }
     nativeWalletExecutor.execute {
-      runCatching { NativeMoneroWalletJni.benchmarkDerivationPerformance() }
+      runCatching {
+        val benchmark = JSONObject(NativeMoneroWalletJni.benchmarkDerivationPerformance())
+        val primaryAbi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        benchmark.put("cpuArchitecture", primaryAbi)
+        // ARM64 mandates Advanced SIMD (NEON). This reports the hardware/ABI
+        // capability without pretending that NEON is a separate benchmark and
+        // without relabelling x86 Android emulators.
+        benchmark.put(
+          "neonCapable",
+          Build.SUPPORTED_ABIS.any { abi -> abi.equals("arm64-v8a", ignoreCase = true) },
+        )
+        benchmark.toString()
+      }
         .onSuccess(promise::resolve)
         .onFailure { error ->
           promise.reject(
             "monero_wallet_derivation_benchmark_failed",
             error.message ?: "The short device benchmark failed",
+            error,
+          )
+        }
+    }
+  }
+
+  override fun derivationBackendStatus(promise: Promise) {
+    if (!NativeAppAuthorization.isAuthorized()) {
+      promise.reject(
+        "monero_wallet_android_app_locked",
+        "The native app session is locked",
+      )
+      return
+    }
+    nativeWalletExecutor.execute {
+      runCatching { NativeMoneroWalletJni.derivationBackendStatus() }
+        .onSuccess(promise::resolve)
+        .onFailure { error ->
+          promise.reject(
+            "monero_wallet_derivation_backend_status_failed",
+            error.message ?: "The derivation backend status is unavailable",
             error,
           )
         }
@@ -213,12 +265,16 @@ class NativeMoneroWalletModule(
   }
 
   override fun logDiagnostics(message: String, promise: Promise) {
-    if (BuildConfig.WALLET_DIAGNOSTICS_ENABLED &&
-      message.startsWith("MONERO_WALLET_DIAGNOSTICS ") &&
+    val isStartupTrace = message.startsWith("MONERO_STARTUP ")
+    val isWalletDiagnostic = message.startsWith("MONERO_WALLET_DIAGNOSTICS ")
+    if ((isStartupTrace || BuildConfig.WALLET_DIAGNOSTICS_ENABLED) &&
+      (isStartupTrace || isWalletDiagnostic) &&
       message.length <= MAX_DIAGNOSTIC_LINE_CHARS
     ) {
-      Log.i(NAME, message)
-      persistDiagnosticLine(message)
+      Log.i(if (isStartupTrace) "MoneroStartup" else NAME, message)
+      if (isWalletDiagnostic && BuildConfig.WALLET_DIAGNOSTICS_ENABLED) {
+        persistDiagnosticLine(message)
+      }
     }
     promise.resolve(null)
   }
@@ -283,7 +339,7 @@ class NativeMoneroWalletModule(
     walletId: String,
     transactions: List<Map<String, Any>>,
   ) {
-    if (!BuildConfig.WALLET_DIAGNOSTICS_ENABLED) return
+    if (!BuildConfig.WALLET_TRANSACTION_AUDIT_ENABLED) return
 
     synchronized(transactionAuditLock) {
       runCatching {
@@ -1886,6 +1942,7 @@ class NativeMoneroWalletModule(
         "accountIndex" to accountIndex,
       ),
     ) {
+      ledgerBleJniTransportInstalled
       NativeMoneroWalletJni.createWalletFromDevice(
         path,
         password,
@@ -1919,6 +1976,7 @@ class NativeMoneroWalletModule(
         "accountIndex" to accountIndex,
       ),
     ) {
+      ledgerBleJniTransportInstalled
       NativeMoneroWalletJni.createWalletFromDevice(
         path,
         readRequiredSecretValueWithDiagnostics(
@@ -2537,11 +2595,12 @@ class NativeMoneroWalletModule(
         "workerDescriptor",
         maximumBytes = 512,
       )
-      val relayOrigin = requireTrustedFastWalletDescriptor(
+      val signedRelayOrigin = requireTrustedFastWalletDescriptor(
         checkedDescriptor,
         network,
         checkedNow,
       ).relayOrigin
+      val relayOrigin = fastWalletRelayTransportOrigin(signedRelayOrigin)
       val checkedEnvelope = checkedCanonicalHex(
         envelopeHex,
         "envelope",
@@ -2785,8 +2844,41 @@ class NativeMoneroWalletModule(
       "setGrpcEndpoint",
       mapOf("endpoint" to endpoint, "walletId" to maskIdentifier(walletId)),
     ) {
-      NativeMoneroWalletJni.setGrpcEndpoint(walletId, endpoint)
+      // grpc-cares cannot reliably discover Android's private DNS resolver
+      // configuration. Resolve with Android's network stack and give the
+      // native Core a numeric target while preserving the user-facing domain
+      // in settings. Resolution is repeated whenever a session is opened, so
+      // normal DNS address changes are still picked up.
+      val nativeEndpoint = resolveGrpcEndpointForNative(endpoint)
+      logNativeEvent(
+        "setGrpcEndpoint.resolved",
+        mapOf("usesNumericAddress" to (nativeEndpoint != endpoint.trim())),
+      )
+      NativeMoneroWalletJni.setGrpcEndpoint(walletId, nativeEndpoint)
     }
+  }
+
+  private fun resolveGrpcEndpointForNative(endpoint: String): String {
+    val label = endpoint.trim()
+      .replace(Regex("^[a-z][a-z0-9+.-]*://", RegexOption.IGNORE_CASE), "")
+      .substringBefore('/')
+    val separator = label.lastIndexOf(':')
+    require(separator in 1 until label.lastIndex) {
+      "gRPC endpoint must include a port"
+    }
+    val host = label.substring(0, separator).trim()
+    val port = label.substring(separator + 1).toIntOrNull()
+    require(port != null && port in 1..65535) { "gRPC endpoint is invalid" }
+
+    val addresses = InetAddress.getAllByName(host)
+    val resolved = addresses.firstOrNull { it is Inet4Address }
+      ?: addresses.firstOrNull()
+      ?: error("gRPC endpoint DNS resolution returned no addresses")
+    val numericHost = resolved.hostAddress
+      ?.substringBefore('%')
+      ?.takeIf { it.isNotBlank() }
+      ?: error("gRPC endpoint DNS resolution returned an invalid address")
+    return if (numericHost.contains(':')) "[$numericHost]:$port" else "$numericHost:$port"
   }
 
   override fun networkSyncStatus(network: String, promise: Promise) {
@@ -4308,7 +4400,6 @@ class NativeMoneroWalletModule(
     dialog.setContentView(root)
     dialog.window?.apply {
       setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-      addFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
     dialog.show()
     dialog.window?.setLayout(
@@ -6366,7 +6457,7 @@ class NativeMoneroWalletModule(
     ) {
       "Fast receive scanner credential is invalid"
     }
-    val connection = (URL("$baseUrl$route").openConnection() as HttpURLConnection).apply {
+    val connection = TorHttpConnection.open(reactApplicationContext, URL("$baseUrl$route")).apply {
       requestMethod = method
       connectTimeout = SCANNER_CONNECT_TIMEOUT_MS
       readTimeout = SCANNER_READ_TIMEOUT_MS
@@ -6464,7 +6555,7 @@ class NativeMoneroWalletModule(
       "Private phone request authentication is invalid"
     }
     val base = normalizeFastWalletOrigin(origin)
-    val connection = (URL("$base$route").openConnection() as HttpURLConnection).apply {
+    val connection = TorHttpConnection.open(reactApplicationContext, URL("$base$route")).apply {
       requestMethod = method
       connectTimeout = PRIVATE_PHONE_CONNECT_TIMEOUT_MS
       readTimeout = PRIVATE_PHONE_READ_TIMEOUT_MS
@@ -6529,7 +6620,7 @@ class NativeMoneroWalletModule(
         BuildConfig.PRIVATE_PHONE_VERIFICATION_ORIGIN,
       )
     val connection =
-      (URL("$base$route").openConnection() as HttpURLConnection).apply {
+      TorHttpConnection.open(reactApplicationContext, URL("$base$route")).apply {
         requestMethod = "POST"
         connectTimeout = PRIVATE_PHONE_CONNECT_TIMEOUT_MS
         readTimeout = PRIVATE_PHONE_READ_TIMEOUT_MS
@@ -6710,7 +6801,7 @@ class NativeMoneroWalletModule(
       "Fast Wallet request route is invalid"
     }
     val base = normalizeFastWalletOrigin(origin)
-    val connection = (URL("$base$route").openConnection() as HttpURLConnection).apply {
+    val connection = TorHttpConnection.open(reactApplicationContext, URL("$base$route")).apply {
       requestMethod = method
       connectTimeout = FAST_WALLET_CONNECT_TIMEOUT_MS
       readTimeout = FAST_WALLET_READ_TIMEOUT_MS
@@ -6789,8 +6880,11 @@ class NativeMoneroWalletModule(
       BuildConfig.DEBUG &&
         parsed.scheme == "http" &&
         parsed.host in setOf("127.0.0.1", "::1", "localhost")
+    val authenticatedOnion =
+      parsed.scheme == "http" &&
+        parsed.host?.lowercase()?.matches(Regex("^[a-z2-7]{56}\\.onion$")) == true
     require(
-      (parsed.scheme == "https" || loopbackDebug) &&
+      (parsed.scheme == "https" || authenticatedOnion || loopbackDebug) &&
         !parsed.host.isNullOrBlank() &&
         parsed.userInfo == null &&
         parsed.rawQuery == null &&
@@ -6808,6 +6902,21 @@ class NativeMoneroWalletModule(
       null,
       null,
     ).toString()
+  }
+
+  private fun fastWalletRelayTransportOrigin(signedOrigin: String): String {
+    if (signedOrigin == "https://xmr.tex8.com") {
+      return normalizeFastWalletOrigin(BuildConfig.FAST_WALLET_GATEWAY_ORIGIN)
+    }
+    val normalized = normalizeFastWalletOrigin(signedOrigin)
+    val parsed = URI(normalized)
+    require(
+      parsed.scheme == "http" &&
+        parsed.host?.lowercase()?.matches(Regex("^[a-z2-7]{56}\\.onion$")) == true
+    ) {
+      "This scan-service descriptor has no direct Onion transport"
+    }
+    return normalized
   }
 
   private fun fastWalletInstallationCredentials(
@@ -7056,15 +7165,18 @@ class NativeMoneroWalletModule(
   private fun normalizeScannerBaseUrl(scannerUrl: String): String {
     val trimmed = scannerUrl.trim().trimEnd('/')
     val parsed = java.net.URI(trimmed)
+    val authenticatedOnion =
+      parsed.scheme == "http" &&
+        parsed.host?.lowercase()?.matches(Regex("^[a-z2-7]{56}\\.onion$")) == true
     require(
-      parsed.scheme == "https" &&
+      (parsed.scheme == "https" || authenticatedOnion) &&
         !parsed.host.isNullOrBlank() &&
         parsed.userInfo == null &&
         parsed.rawQuery == null &&
         parsed.rawFragment == null &&
         (parsed.rawPath.isNullOrEmpty() || parsed.rawPath == "/")
     ) {
-      "scannerUrl must be an HTTPS origin without credentials, paths, queries, or fragments"
+      "scannerUrl must be an HTTPS or Tor v3 Onion origin without credentials, paths, queries, or fragments"
     }
     return java.net.URI(
       parsed.scheme,
@@ -7644,6 +7756,7 @@ class NativeMoneroWalletModule(
     Arguments.createMap().apply {
       putDouble("accountIndex", subaddress.numberValue("accountIndex"))
       putDouble("addressIndex", subaddress.numberValue("addressIndex"))
+      putString("balanceAtomic", subaddress.stringValue("balanceAtomic"))
       putString("address", subaddress.stringValue("address"))
       putString("label", subaddress.stringValue("label"))
     }
@@ -8320,6 +8433,9 @@ class NativeMoneroWalletModule(
             ),
           )
 
+          check(ledgerBleJniTransportInstalled) {
+            "The native Ledger BLE transport is unavailable"
+          }
           var attempt = 1
           var connected = NativeMoneroWalletJni.ledgerBleConnect()
           if (!connected) {
@@ -8771,6 +8887,7 @@ class NativeMoneroWalletModule(
         "totalDurationMs",
         "txCount",
         "transportReady",
+        "usesNumericAddress",
         "verificationDurationMs",
         "verifiedOutputCount",
       )

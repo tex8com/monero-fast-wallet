@@ -14,7 +14,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{DateTime, NaiveDate, Utc};
+use image::{
+    codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, GenericImageView, Rgb, RgbImage,
+};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -28,6 +32,11 @@ pub use ads::AdConfig;
 
 const SOURCE_URL: &str = "https://www.getmonero.org/blog/";
 const CACHE_FOR: Duration = Duration::from_secs(15 * 60);
+const NEWS_CATALOG_LIMIT: usize = 10;
+const NEWS_IMAGE_WIDTH: u32 = 960;
+const NEWS_IMAGE_HEIGHT: u32 = 540;
+const NEWS_IMAGE_SOURCE_LIMIT: usize = 4 * 1024 * 1024;
+const NEWS_IMAGE_JPEG_LIMIT: usize = 64 * 1024;
 const MARKET_QUOTE_CACHE_FOR: Duration = Duration::from_secs(60);
 const MARKET_CHART_CACHE_FOR: Duration = Duration::from_secs(5 * 60);
 const COINGECKO_BASE: &str = "https://api.coingecko.com/api/v3";
@@ -71,6 +80,7 @@ pub struct NewsItem {
     pub published_at: String,
     pub category: NewsCategory,
     pub url: String,
+    pub image_data_url: String,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -165,15 +175,45 @@ impl NewsState {
             .text()
             .await
             .map_err(|_| ApiError::Unavailable)?;
-        let items = parse_blog(&body);
+        let mut items = parse_blog(&body);
         if items.is_empty() {
             return Err(ApiError::Unavailable);
         }
+        items.truncate(NEWS_CATALOG_LIMIT);
+        self.load_catalog_images(&mut items).await;
         *self.cache.write().await = Some(CachedFeed {
             fetched_at: Instant::now(),
             items: items.clone(),
         });
         Ok(items)
+    }
+
+    async fn load_catalog_images(&self, items: &mut [NewsItem]) {
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, item) in items.iter().enumerate() {
+            let client = self.client.clone();
+            let article_url = item.url.clone();
+            let fallback = item.image_data_url.clone();
+            tasks.spawn(async move {
+                let image = tokio::time::timeout(
+                    Duration::from_secs(6),
+                    fetch_article_image(&client, &article_url),
+                )
+                .await
+                .ok()
+                .flatten()
+                .and_then(|bytes| normalise_news_image(&bytes))
+                .unwrap_or(fallback);
+                (index, image)
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            if let Ok((index, image)) = result {
+                if let Some(item) = items.get_mut(index) {
+                    item.image_data_url = image;
+                }
+            }
+        }
     }
 
     async fn market_quote(&self) -> Result<MarketQuote, ApiError> {
@@ -351,7 +391,10 @@ async fn news(
     State(state): State<NewsState>,
     Query(query): Query<NewsQuery>,
 ) -> Result<Json<NewsResponse>, ApiError> {
-    let limit = query.limit.unwrap_or(12).clamp(1, 30);
+    let limit = query
+        .limit
+        .unwrap_or(NEWS_CATALOG_LIMIT)
+        .clamp(1, NEWS_CATALOG_LIMIT);
     let mut items = state.feed().await?;
     if let Some(category) = query.category {
         items.retain(|item| item.category == category);
@@ -505,6 +548,7 @@ fn parse_blog(body: &str) -> Vec<NewsItem> {
                 .cloned()
                 .unwrap_or_else(|| title.clone());
             let url = format!("https://www.getmonero.org{relative_url}");
+            let image_data_url = fallback_news_image(&title, category);
             Some(NewsItem {
                 id: relative_url.trim_start_matches('/').replace('/', "-"),
                 title,
@@ -512,9 +556,106 @@ fn parse_blog(body: &str) -> Vec<NewsItem> {
                 published_at,
                 category,
                 url,
+                image_data_url,
             })
         })
         .collect()
+}
+
+async fn fetch_article_image(client: &reqwest::Client, article_url: &str) -> Option<Vec<u8>> {
+    let article = client
+        .get(article_url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    let image_url = parse_article_image_url(&article)?;
+    let response = client
+        .get(image_url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > NEWS_IMAGE_SOURCE_LIMIT as u64)
+    {
+        return None;
+    }
+    let bytes = response.bytes().await.ok()?;
+    (bytes.len() <= NEWS_IMAGE_SOURCE_LIMIT).then(|| bytes.to_vec())
+}
+
+fn parse_article_image_url(body: &str) -> Option<String> {
+    let document = Html::parse_document(body);
+    let selector = Selector::parse(r#"meta[property="og:image"]"#).ok()?;
+    let value = document
+        .select(&selector)
+        .find_map(|element| element.value().attr("content"))?;
+    let base = url::Url::parse(SOURCE_URL).ok()?;
+    let parsed = base.join(value).ok()?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("www.getmonero.org") {
+        return None;
+    }
+    Some(parsed.to_string())
+}
+
+fn normalise_news_image(bytes: &[u8]) -> Option<String> {
+    let image = image::load_from_memory(bytes).ok()?;
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 40_000_000 {
+        return None;
+    }
+    let resized = image
+        .resize_to_fill(NEWS_IMAGE_WIDTH, NEWS_IMAGE_HEIGHT, FilterType::Triangle)
+        .to_rgb8();
+    encode_catalog_jpeg(&resized)
+}
+
+fn fallback_news_image(title: &str, category: NewsCategory) -> String {
+    let seed = title.bytes().fold(0_u32, |value, byte| {
+        value.wrapping_mul(33).wrapping_add(u32::from(byte))
+    });
+    let accent = match category {
+        NewsCategory::Network => (242_u8, 104_u8, 34_u8),
+        NewsCategory::Wallet => (244_u8, 189_u8, 85_u8),
+        NewsCategory::Ecosystem => (0_u8, 214_u8, 143_u8),
+    };
+    let image = RgbImage::from_fn(NEWS_IMAGE_WIDTH, NEWS_IMAGE_HEIGHT, |x, y| {
+        let horizontal = x as f32 / NEWS_IMAGE_WIDTH as f32;
+        let vertical = y as f32 / NEWS_IMAGE_HEIGHT as f32;
+        let glow_x = ((seed % NEWS_IMAGE_WIDTH) as f32 - x as f32).abs() / NEWS_IMAGE_WIDTH as f32;
+        let glow = (1.0 - glow_x).max(0.0) * (1.0 - vertical * 0.55);
+        let stripe = if (x + y + seed) % 173 < 5 { 0.13 } else { 0.0 };
+        let mix = (horizontal * 0.18 + glow * 0.32 + stripe).clamp(0.0, 0.58);
+        Rgb([
+            (13.0 + f32::from(accent.0) * mix) as u8,
+            (10.0 + f32::from(accent.1) * mix) as u8,
+            (22.0 + f32::from(accent.2) * mix) as u8,
+        ])
+    });
+    encode_catalog_jpeg(&image).expect("generated news image is encodable")
+}
+
+fn encode_catalog_jpeg(image: &RgbImage) -> Option<String> {
+    for quality in [72_u8, 60, 48, 36] {
+        let mut encoded = Vec::new();
+        JpegEncoder::new_with_quality(&mut encoded, quality)
+            .encode_image(&DynamicImage::ImageRgb8(image.clone()))
+            .ok()?;
+        if encoded.len() <= NEWS_IMAGE_JPEG_LIMIT {
+            return Some(format!(
+                "data:image/jpeg;base64,{}",
+                STANDARD.encode(encoded)
+            ));
+        }
+    }
+    None
 }
 
 fn text(element: &scraper::ElementRef<'_>) -> String {
@@ -592,6 +733,32 @@ mod tests {
         assert!(news
             .iter()
             .all(|item| item.url.starts_with("https://www.getmonero.org/")));
+        assert!(news
+            .iter()
+            .all(|item| item.image_data_url.starts_with("data:image/jpeg;base64,")));
+    }
+
+    #[test]
+    fn catalog_images_have_a_fixed_private_payload() {
+        let data_url = fallback_news_image("Private Monero news", NewsCategory::Network);
+        let encoded = data_url
+            .strip_prefix("data:image/jpeg;base64,")
+            .expect("JPEG data URL");
+        let bytes = STANDARD.decode(encoded).expect("base64 image");
+        assert!(bytes.len() <= NEWS_IMAGE_JPEG_LIMIT);
+        let decoded = image::load_from_memory(&bytes).expect("catalog image");
+        assert_eq!(decoded.dimensions(), (NEWS_IMAGE_WIDTH, NEWS_IMAGE_HEIGHT));
+    }
+
+    #[test]
+    fn accepts_only_official_monero_article_images() {
+        let relative = r#"<meta property="og:image" content="/press-kit/images/monero-logo.png">"#;
+        assert_eq!(
+            parse_article_image_url(relative).as_deref(),
+            Some("https://www.getmonero.org/press-kit/images/monero-logo.png")
+        );
+        let external = r#"<meta property="og:image" content="https://tracker.example/image.jpg">"#;
+        assert!(parse_article_image_url(external).is_none());
     }
 
     #[test]

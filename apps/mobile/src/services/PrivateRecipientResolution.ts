@@ -69,6 +69,15 @@ export async function resolveMfwNameForPayment(
 ): Promise<ResolvedPaymentAddress> {
   const canonicalName = normalizeMfwName(input);
   const response = await transport.resolve(canonicalName);
+  const legacyImmutableClaim =
+    response.ownerPublicKeyHex === '' &&
+    response.signingOwnerPublicKeyHex === '' &&
+    response.sequence === 0 &&
+    isCanonicalHex(response.recordPayloadHex, 89, 152);
+  const currentSignedRecord =
+    HEX_32.test(response.ownerPublicKeyHex) &&
+    HEX_32.test(response.signingOwnerPublicKeyHex) &&
+    isCanonicalHex(response.recordPayloadHex, 189, 251);
   if (
     response.canonicalName !== canonicalName ||
     response.network !== expectedNetwork ||
@@ -83,12 +92,10 @@ export async function resolveMfwNameForPayment(
     response.sequence < 0 ||
     !HEX_32.test(response.publicSpendKeyHex) ||
     !HEX_32.test(response.publicViewKeyHex) ||
-    !HEX_32.test(response.ownerPublicKeyHex) ||
-    !HEX_32.test(response.signingOwnerPublicKeyHex) ||
+    (!legacyImmutableClaim && !currentSignedRecord) ||
     !HEX_32.test(response.sourceTxidHex) ||
     !HEX_32.test(response.recordBlockHashHex) ||
-    !HEX_32.test(response.chainTipHashHex) ||
-    !isCanonicalHex(response.recordPayloadHex, 189, 251)
+    !HEX_32.test(response.chainTipHashHex)
   ) {
     throw new Error('MFW name response is not safe for payment');
   }

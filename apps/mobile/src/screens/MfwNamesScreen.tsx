@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -12,6 +12,7 @@ import {
 import LinearGradient from 'react-native-linear-gradient';
 
 import { Icon } from '../components/Icon';
+import LedgerSigningModal from '../components/LedgerSigningModal';
 import WalletSelector, {
   type WalletOption,
 } from '../components/WalletSelector';
@@ -35,13 +36,19 @@ import {
 import {
   canonicalMfwName,
   createMfwNameRegistrationDraft,
+  MFW_NAME_MAX_TERM_YEARS,
   MFW_NAME_MIN_CONFIRMATIONS,
   MFW_NAME_PROTOCOL_YEAR_BLOCKS,
   mfwNameRegistrationFeeAtomic,
   type MfwNameSendPreset,
 } from '../services/MfwNameRegistration';
 import {
+  isLedgerSigningCancelledError,
+  type LedgerSigningProgress,
+} from '../services/LedgerSigningFlow';
+import {
   applyMfwNameBroadcast,
+  estimateMfwNameExpiryTimestampMs,
   effectiveMfwOwnedNameStage,
   loadMfwOwnedNames,
   mfwNameRemainingDays,
@@ -52,17 +59,19 @@ import {
 } from '../services/MfwNameRegistrationRegistry';
 import { walletDisplayName } from '../services/WalletRegistry';
 import { formatAtomicXmr } from '../services/WalletFormat';
-import { walletService } from '../services/WalletService';
+import { walletService, type WalletSession } from '../services/WalletService';
 import { useWalletState } from '../services/WalletState';
 import { colors, radius, spacing } from '../theme/colors';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 
-const TERM_OPTIONS = [1, 2, 3, 5, 10] as const;
+const TERM_OPTIONS = [1, 3, 5, 10] as const;
 const AVAILABILITY_DEBOUNCE_MS = 500;
+type AddressInputMode = 'wallet' | 'manual';
+type RegistrationStep = 1 | 2 | 3;
 
 type AvailabilityPresentation =
   | { state: 'idle' | 'checking' | 'invalid' | 'unavailable' }
-  | { state: 'ready'; value: MfwNameAvailability };
+  | { state: 'ready'; value: MfwNameAvailability; checkedAtMs: number };
 
 function shortAddress(value: string) {
   if (value.length <= 24) {
@@ -72,8 +81,9 @@ function shortAddress(value: string) {
 }
 
 export default function MfwNamesScreen({ navigation, route }: any) {
-  const { t } = useI18n();
+  const { dateLocale, t } = useI18n();
   const {
+    connectLedgerForSigning,
     isRegisteredWalletOpen,
     openRegisteredWalletById,
     registeredWallet,
@@ -84,14 +94,22 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     walletSnapshots,
   } = useWalletState();
   const [name, setName] = useState('');
-  const [years, setYears] = useState(1);
+  const [yearsInput, setYearsInput] = useState('1');
+  const [registrationStep, setRegistrationStep] = useState<RegistrationStep>(1);
   const [addresses, setAddresses] = useState<WalletAddressRecord[]>([]);
   const [selectedAddressId, setSelectedAddressId] = useState<
     string | undefined
   >();
+  const [addressInputMode, setAddressInputMode] =
+    useState<AddressInputMode>('wallet');
+  const [manualAddress, setManualAddress] = useState('');
   const [loadingAddresses, setLoadingAddresses] = useState(false);
   const [creatingAddress, setCreatingAddress] = useState(false);
   const [ownedNames, setOwnedNames] = useState<MfwOwnedNameRecord[]>([]);
+  const [showAllOwnedNames, setShowAllOwnedNames] = useState(false);
+  const [selectedOwnedNameId, setSelectedOwnedNameId] = useState<
+    string | undefined
+  >();
   const [loadingOwnedNames, setLoadingOwnedNames] = useState(true);
   const [renewingNameId, setRenewingNameId] = useState<string | undefined>();
   const [updatingNameId, setUpdatingNameId] = useState<string | undefined>();
@@ -103,6 +121,60 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     state: 'idle',
   });
   const [message, setMessage] = useState<string | undefined>();
+  const [ledgerSigningProgress, setLedgerSigningProgress] = useState<
+    LedgerSigningProgress | undefined
+  >();
+  const ledgerSigningCancelledRef = useRef(false);
+
+  useEffect(
+    () => () => {
+      ledgerSigningCancelledRef.current = true;
+    },
+    [],
+  );
+
+  const prepareWithSigningSession = async <T,>(
+    prepare: (signingSession: WalletSession) => Promise<T>,
+  ): Promise<T> => {
+    if (!session) {
+      throw new Error(t('mfwNames.openWalletFirst'));
+    }
+
+    let hardwareStatusTimer: ReturnType<typeof setInterval> | undefined;
+    try {
+      let signingSession: WalletSession | undefined = session;
+      if (session.readOnly) {
+        ledgerSigningCancelledRef.current = false;
+        setLedgerSigningProgress({ phase: 'searching' });
+        signingSession = await connectLedgerForSigning({
+          isCancelled: () => ledgerSigningCancelledRef.current,
+          onProgress: setLedgerSigningProgress,
+        });
+      }
+      if (!signingSession) {
+        throw new Error(t('mfwNames.openWalletFirst'));
+      }
+      if (signingSession.hardwareDevice) {
+        setLedgerSigningProgress({ phase: 'preparing-request' });
+        hardwareStatusTimer = setInterval(() => {
+          walletService
+            .getHardwareWalletStatus(signingSession)
+            .then(status => {
+              if (status.requiresUserAction) {
+                setLedgerSigningProgress({ phase: 'awaiting-confirmation' });
+              }
+            })
+            .catch(() => undefined);
+        }, 500);
+      }
+      return await prepare(signingSession);
+    } finally {
+      if (hardwareStatusTimer) {
+        clearInterval(hardwareStatusTimer);
+      }
+      setLedgerSigningProgress(undefined);
+    }
+  };
 
   const walletSnapshotMap = useMemo(
     () => ({
@@ -116,18 +188,67 @@ export default function MfwNamesScreen({ navigation, route }: any) {
   const genesis = registeredWallet
     ? configuredMfwNameGenesis(registeredWallet.network)
     : undefined;
-  const maxYears =
-    genesis?.maximumTermYears ?? TERM_OPTIONS[TERM_OPTIONS.length - 1];
+  const maxYears = genesis?.maximumTermYears ?? MFW_NAME_MAX_TERM_YEARS;
   const visibleTerms = TERM_OPTIONS.filter(term => term <= maxYears);
+  const years = Number(yearsInput);
+  const yearsValid =
+    /^\d+$/.test(yearsInput) &&
+    Number.isSafeInteger(years) &&
+    years >= 1 &&
+    years <= maxYears;
   const selectedAddress =
     addresses.find(address => address.id === selectedAddressId) ?? addresses[0];
+  const enteredAddress =
+    addressInputMode === 'manual'
+      ? manualAddress.trim()
+      : selectedAddress?.address ?? '';
   const renewingName = ownedNames.find(record => record.id === renewingNameId);
   const updatingName = ownedNames.find(record => record.id === updatingNameId);
-  const feeAtomic = mfwNameRegistrationFeeAtomic(years);
+  const selectedOwnedName = ownedNames.find(
+    record => record.id === selectedOwnedNameId,
+  );
+  const recentOwnedNames = useMemo(
+    () =>
+      [...ownedNames]
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, 3),
+    [ownedNames],
+  );
+  const visibleOwnedNames = showAllOwnedNames
+    ? [...ownedNames].sort((left, right) =>
+        right.updatedAt.localeCompare(left.updatedAt),
+      )
+    : recentOwnedNames;
+  const feeAtomic = yearsValid ? mfwNameRegistrationFeeAtomic(years) : 0n;
   const feeXmr = formatAtomicXmr(feeAtomic.toString(), {
     maxFractionDigits: 2,
     minFractionDigits: 2,
   });
+  const availabilityExpiryTimestampMs =
+    availability.state === 'ready'
+      ? estimateMfwNameExpiryTimestampMs(
+          availability.value.expiryHeight,
+          availability.value.chainTipHeight,
+          availability.checkedAtMs,
+        )
+      : undefined;
+  const availabilityHasExpiry =
+    availability.state === 'ready' &&
+    availability.value.expiryHeight !== undefined;
+  const availabilityIsExpired =
+    availability.state === 'ready' &&
+    availability.value.expiryHeight !== undefined &&
+    availability.value.expiryHeight <= availability.value.chainTipHeight;
+  const formatDateTime = (timestampMs: number) =>
+    new Intl.DateTimeFormat(dateLocale, {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(timestampMs));
+  const formatHeight = (height: number) =>
+    new Intl.NumberFormat(dateLocale).format(height);
   const stageLabel = (stage: MfwOwnedNameRecord['stage']) => {
     switch (stage) {
       case 'commit-pending':
@@ -152,6 +273,11 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         return t('mfwNames.statusFailed');
     }
   };
+
+  useEffect(() => {
+    setAddressInputMode('wallet');
+    setManualAddress('');
+  }, [registeredWallet?.id]);
 
   useEffect(() => {
     let mounted = true;
@@ -373,11 +499,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         active = false;
       };
     }
-    if (
-      !registeredWallet ||
-      !genesis ||
-      !v1ReleaseFeatures.mfwNameRegistration
-    ) {
+    if (!v1ReleaseFeatures.mfwNameRegistration) {
       setAvailability({ state: 'unavailable' });
       return () => {
         active = false;
@@ -388,15 +510,13 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     const timer = setTimeout(() => {
       checkConfiguredMfwNameAvailability({
         name,
-        network: registeredWallet.network,
-        walletChainHeight:
-          snapshot?.daemonHeight && snapshot.daemonHeight > 0
-            ? snapshot.daemonHeight
-            : undefined,
+        // Availability is public registry data. It must also work before a
+        // wallet is opened (or directly after a clean development install).
+        network: registeredWallet?.network ?? 'mainnet',
       })
         .then(value => {
           if (active) {
-            setAvailability({ state: 'ready', value });
+            setAvailability({ state: 'ready', value, checkedAtMs: Date.now() });
           }
         })
         .catch(() => {
@@ -410,14 +530,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       active = false;
       clearTimeout(timer);
     };
-  }, [
-    genesis,
-    name,
-    registeredWallet,
-    renewingName,
-    snapshot?.daemonHeight,
-    updatingName,
-  ]);
+  }, [name, registeredWallet?.network, renewingName, updatingName]);
 
   const selectWallet = async (wallet: WalletOption) => {
     setMessage(undefined);
@@ -471,8 +584,12 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       setMessage(t('mfwNames.openWalletFirst'));
       return;
     }
-    if (!selectedAddress) {
+    if (!enteredAddress) {
       setMessage(t('mfwNames.chooseAddress'));
+      return;
+    }
+    if (!yearsValid) {
+      setMessage(t('mfwNames.termRange', { max: maxYears }));
       return;
     }
     try {
@@ -495,31 +612,32 @@ export default function MfwNamesScreen({ navigation, route }: any) {
 
     setCreatingRegistration(true);
     try {
+      const validatedAddress = await walletService.validateRecipientAddress(
+        enteredAddress,
+        registeredWallet.network,
+      );
       const draft = createMfwNameRegistrationDraft({
         walletRegistrationId: registeredWallet.id,
-        walletAddressId: selectedAddress.id,
-        address: selectedAddress.address,
+        walletAddressId:
+          addressInputMode === 'manual'
+            ? `mfw-manual:${Date.now()}`
+            : selectedAddress!.id,
+        address: validatedAddress,
         network: registeredWallet.network,
         name,
         years,
         maximumTermYears: genesis.maximumTermYears,
       });
-      const prepared = await walletService.prepareMfwNameRegistration(session, {
-        registrationId: draft.id,
-        name: draft.name,
-        address: draft.address,
-        network: draft.network,
-        registryAddress: genesis.registryAddress,
-        priority: 'low',
-      });
-      const recoveryExported = await walletService.exportMfwNameRecovery(
-        draft.id,
-        draft.name,
-        draft.network,
+      const prepared = await prepareWithSigningSession(signingSession =>
+        walletService.prepareMfwNameRegistration(signingSession, {
+          registrationId: draft.id,
+          name: draft.name,
+          address: draft.address,
+          network: draft.network,
+          registryAddress: genesis.registryAddress,
+          priority: 'low',
+        }),
       );
-      if (!recoveryExported) {
-        throw new Error(t('mfwNames.recoveryRequired'));
-      }
       const record: MfwOwnedNameRecord = {
         version: 1,
         id: draft.id,
@@ -548,10 +666,58 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         preparedTransaction: prepared.preparedTransaction,
       });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      if (!isLedgerSigningCancelledError(error)) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setCreatingRegistration(false);
     }
+  };
+
+  const advanceRegistration = () => {
+    setMessage(undefined);
+    if (registrationStep === 1) {
+      try {
+        canonicalMfwName(name);
+      } catch {
+        setMessage(t('mfwNames.invalidName'));
+        return;
+      }
+      if (!genesis) {
+        setMessage(t('mfwNames.activationPending'));
+        return;
+      }
+      if (
+        availability.state !== 'ready' ||
+        availability.value.status !== 'available'
+      ) {
+        setMessage(t('mfwNames.availabilityRequired'));
+        return;
+      }
+      setRegistrationStep(2);
+      return;
+    }
+    if (registrationStep === 2) {
+      if (!registeredWallet || !session) {
+        setMessage(t('mfwNames.openWalletFirst'));
+        return;
+      }
+      if (session.registrationId !== registeredWallet.id) {
+        setMessage(t('mfwNames.openSelectedWallet'));
+        return;
+      }
+      if (!enteredAddress) {
+        setMessage(t('mfwNames.chooseAddress'));
+        return;
+      }
+      if (!yearsValid) {
+        setMessage(t('mfwNames.termRange', { max: maxYears }));
+        return;
+      }
+      setRegistrationStep(3);
+      return;
+    }
+    continueToRegistration();
   };
 
   const openMfwNameApproval = (preset: MfwNameSendPreset) => {
@@ -574,15 +740,17 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     setPreparingNameId(record.id);
     setMessage(undefined);
     try {
-      const prepared = await walletService.prepareMfwNameClaim(session, {
-        registrationId: record.id,
-        name: record.canonicalName,
-        address: record.address,
-        network: record.network,
-        registryAddress: genesis.registryAddress,
-        years: record.termYears,
-        priority: 'low',
-      });
+      const prepared = await prepareWithSigningSession(signingSession =>
+        walletService.prepareMfwNameClaim(signingSession, {
+          registrationId: record.id,
+          name: record.canonicalName,
+          address: record.address,
+          network: record.network,
+          registryAddress: genesis.registryAddress,
+          years: record.termYears,
+          priority: 'low',
+        }),
+      );
       openMfwNameApproval({
         version: 1,
         flowId: `${record.id}:claim:${prepared.preparedTransaction.id}`,
@@ -595,7 +763,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         preparedTransaction: prepared.preparedTransaction,
       });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      if (!isLedgerSigningCancelledError(error)) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setPreparingNameId(undefined);
     }
@@ -630,7 +800,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     }
     setUpdatingNameId(undefined);
     setRenewingNameId(record.id);
-    setYears(1);
+    setYearsInput('1');
     setMessage(undefined);
     if (!isRegisteredWalletOpen(record.walletRegistrationId)) {
       navigation.navigate('WalletSetup', {
@@ -658,6 +828,8 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         addresses.find(address => address.address !== record.address)?.id,
       );
     }
+    setAddressInputMode('wallet');
+    setManualAddress('');
     setRenewingNameId(undefined);
     setUpdatingNameId(record.id);
     setMessage(undefined);
@@ -684,7 +856,8 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     setRenewingNameId(undefined);
     setUpdatingNameId(undefined);
     setName(record.canonicalName.replace(/\.mfw$/i, ''));
-    setYears(1);
+    setYearsInput('1');
+    setRegistrationStep(1);
     setMessage(undefined);
   };
 
@@ -705,6 +878,10 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       setMessage(t('mfwNames.activationPending'));
       return;
     }
+    if (!yearsValid) {
+      setMessage(t('mfwNames.termRange', { max: maxYears }));
+      return;
+    }
     await prepareOwnedNameTransition(
       renewingName,
       'renew',
@@ -714,22 +891,42 @@ export default function MfwNamesScreen({ navigation, route }: any) {
   };
 
   const continueAddressUpdate = async () => {
+    if (!updatingName || !registeredWallet) {
+      setMessage(t('mfwNames.chooseNewAddress'));
+      return;
+    }
     if (
-      !updatingName ||
-      !selectedAddress ||
-      selectedAddress.walletId !== updatingName.walletRegistrationId
+      addressInputMode === 'wallet' &&
+      (!selectedAddress ||
+        selectedAddress.walletId !== updatingName.walletRegistrationId)
     ) {
       setMessage(t('mfwNames.chooseNewAddress'));
       return;
     }
-    if (selectedAddress.address === updatingName.address) {
+    if (!enteredAddress) {
+      setMessage(t('mfwNames.chooseNewAddress'));
+      return;
+    }
+    let validatedAddress: string;
+    try {
+      validatedAddress = await walletService.validateRecipientAddress(
+        enteredAddress,
+        updatingName.network,
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : t('mfwNames.invalidAddress'),
+      );
+      return;
+    }
+    if (validatedAddress === updatingName.address) {
       setMessage(t('mfwNames.chooseDifferentAddress'));
       return;
     }
     await prepareOwnedNameTransition(
       updatingName,
       'update',
-      selectedAddress.address,
+      validatedAddress,
       updatingName.termYears,
     );
   };
@@ -773,19 +970,21 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         network: record.network,
         expectedOwnerPublicKeyHex: record.ownerPublicKeyHex,
       });
-      const prepared = await walletService.prepareMfwNameTransition(session, {
-        registrationId: record.id,
-        operation,
-        name: record.canonicalName,
-        address: nextAddress,
-        network: record.network,
-        registryAddress: genesis.registryAddress,
-        years: operationYears,
-        predecessorRecordHex: predecessor.recordPayloadHex,
-        predecessorSigningOwnerPublicKeyHex:
-          predecessor.signingOwnerPublicKeyHex,
-        priority: 'low',
-      });
+      const prepared = await prepareWithSigningSession(signingSession =>
+        walletService.prepareMfwNameTransition(signingSession, {
+          registrationId: record.id,
+          operation,
+          name: record.canonicalName,
+          address: nextAddress,
+          network: record.network,
+          registryAddress: genesis.registryAddress,
+          years: operationYears,
+          predecessorRecordHex: predecessor.recordPayloadHex,
+          predecessorSigningOwnerPublicKeyHex:
+            predecessor.signingOwnerPublicKeyHex,
+          priority: 'low',
+        }),
+      );
       if (operation === 'update') {
         setOwnedNames(
           await upsertMfwOwnedName({
@@ -808,7 +1007,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         preparedTransaction: prepared.preparedTransaction,
       });
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      if (!isLedgerSigningCancelledError(error)) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setPreparingNameId(undefined);
     }
@@ -898,212 +1099,199 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         contentContainerStyle={s.scroll}
         showsVerticalScrollIndicator={false}
       >
-        <TouchableOpacity
-          accessibilityRole="button"
-          style={s.back}
-          onPress={() => navigation.goBack()}
-        >
-          <Icon name="arrow-left" size={20} color={colors.textSecondary} />
-          <Text style={s.backText}>{t('action.back')}</Text>
-        </TouchableOpacity>
+        {selectedOwnedName &&
+        !renewingName &&
+        !updatingName &&
+        !importingRecovery ? (
+          <>
+            <TouchableOpacity
+              accessibilityRole="button"
+              style={s.back}
+              onPress={() => {
+                setSelectedOwnedNameId(undefined);
+                setMessage(undefined);
+              }}
+            >
+              <Icon name="arrow-left" size={20} color={colors.textSecondary} />
+              <Text style={s.backText}>{t('action.back')}</Text>
+            </TouchableOpacity>
+            <View style={s.ownedNameList}>
+              {[selectedOwnedName].map(record => {
+                const chainTip =
+                  walletSnapshotMap[record.walletRegistrationId]
+                    ?.daemonHeight ?? record.lastChainTipHeight;
+                const stage = effectiveMfwOwnedNameStage({
+                  ...record,
+                  lastChainTipHeight: chainTip,
+                });
+                const remainingDays = mfwNameRemainingDays(
+                  record.expiryHeight,
+                  chainTip,
+                );
+                const wallet = registeredWallets.find(
+                  candidate => candidate.id === record.walletRegistrationId,
+                );
+                const renewable = stage === 'active';
+                const canClaim = stage === 'reveal-ready';
+                const canRestart = stage === 'expired' || stage === 'revoked';
 
-        <View style={s.hero}>
-          <View style={s.heroIcon}>
-            <Icon name="key" size={28} color={colors.orange} />
-          </View>
-          <View style={s.heroCopy}>
-            <Text style={s.title}>{t('mfwNames.title')}</Text>
-            <Text style={s.subtitle}>{t('mfwNames.subtitle')}</Text>
-          </View>
-        </View>
-
-        <View style={s.infoCard}>
-          <Icon name="info" size={18} color={colors.warning} />
-          <Text style={s.infoText}>{t('mfwNames.publicWarning')}</Text>
-        </View>
-
-        <Text style={s.sectionLabel}>{t('mfwNames.myNames')}</Text>
-        {loadingOwnedNames ? (
-          <ActivityIndicator color={colors.orange} style={s.loader} />
-        ) : ownedNames.length === 0 ? (
-          <View style={s.namesEmptyCard}>
-            <Icon name="key" size={18} color={colors.textMuted} />
-            <Text style={s.empty}>{t('mfwNames.noNames')}</Text>
-          </View>
-        ) : (
-          <View style={s.ownedNameList}>
-            {ownedNames.map(record => {
-              const chainTip =
-                walletSnapshotMap[record.walletRegistrationId]?.daemonHeight ??
-                record.lastChainTipHeight;
-              const stage = effectiveMfwOwnedNameStage({
-                ...record,
-                lastChainTipHeight: chainTip,
-              });
-              const remainingDays = mfwNameRemainingDays(
-                record.expiryHeight,
-                chainTip,
-              );
-              const wallet = registeredWallets.find(
-                candidate => candidate.id === record.walletRegistrationId,
-              );
-              const renewable = stage === 'active';
-              const canClaim = stage === 'reveal-ready';
-              const canRestart = stage === 'expired' || stage === 'revoked';
-
-              return (
-                <View key={record.id} style={s.ownedNameCard}>
-                  <View style={s.ownedNameHeader}>
-                    <View style={s.ownedNameCopy}>
-                      <Text style={s.ownedName}>{record.canonicalName}</Text>
-                      <Text style={s.ownedNameWallet}>
-                        {wallet
-                          ? walletDisplayName(wallet)
-                          : t('mfwNames.unknownWallet')}
-                        {' · '}
-                        {record.network}
-                      </Text>
-                    </View>
-                    <View
-                      style={[
-                        s.stageBadge,
-                        stage === 'active' && s.stageBadgeActive,
-                        (stage === 'expired' ||
-                          stage === 'revoked' ||
-                          stage === 'failed') &&
-                          s.stageBadgeProblem,
-                      ]}
-                    >
-                      <Text
+                return (
+                  <View key={record.id} style={s.ownedNameCard}>
+                    <View style={s.ownedNameHeader}>
+                      <View style={s.ownedNameCopy}>
+                        <Text style={s.ownedName}>{record.canonicalName}</Text>
+                        <Text style={s.ownedNameWallet}>
+                          {wallet
+                            ? walletDisplayName(wallet)
+                            : t('mfwNames.unknownWallet')}
+                          {' · '}
+                          {record.network}
+                        </Text>
+                      </View>
+                      <View
                         style={[
-                          s.stageText,
-                          stage === 'active' && s.stageTextActive,
+                          s.stageBadge,
+                          stage === 'active' && s.stageBadgeActive,
                           (stage === 'expired' ||
                             stage === 'revoked' ||
                             stage === 'failed') &&
-                            s.stageTextProblem,
+                            s.stageBadgeProblem,
                         ]}
                       >
-                        {stageLabel(stage)}
-                      </Text>
+                        <Text
+                          style={[
+                            s.stageText,
+                            stage === 'active' && s.stageTextActive,
+                            (stage === 'expired' ||
+                              stage === 'revoked' ||
+                              stage === 'failed') &&
+                              s.stageTextProblem,
+                          ]}
+                        >
+                          {stageLabel(stage)}
+                        </Text>
+                      </View>
                     </View>
-                  </View>
-                  <Text style={s.ownedNameAddress}>
-                    {shortAddress(record.address)}
-                  </Text>
-                  <View style={s.nameMetrics}>
-                    <View style={s.nameMetric}>
-                      <Text style={s.nameMetricLabel}>
-                        {t('mfwNames.registeredTerm')}
-                      </Text>
-                      <Text style={s.nameMetricValue}>
-                        {record.termYears}{' '}
-                        {record.termYears === 1
-                          ? t('mfwNames.year')
-                          : t('mfwNames.years')}
-                      </Text>
+                    <Text style={s.ownedNameAddress}>
+                      {shortAddress(record.address)}
+                    </Text>
+                    <View style={s.nameMetrics}>
+                      <View style={s.nameMetric}>
+                        <Text style={s.nameMetricLabel}>
+                          {t('mfwNames.registeredTerm')}
+                        </Text>
+                        <Text style={s.nameMetricValue}>
+                          {record.termYears}{' '}
+                          {record.termYears === 1
+                            ? t('mfwNames.year')
+                            : t('mfwNames.years')}
+                        </Text>
+                      </View>
+                      <View style={s.nameMetric}>
+                        <Text style={s.nameMetricLabel}>
+                          {t('mfwNames.expiresAtBlock')}
+                        </Text>
+                        <Text style={s.nameMetricValue}>
+                          {record.expiryHeight ?? '—'}
+                        </Text>
+                      </View>
+                      <View style={s.nameMetric}>
+                        <Text style={s.nameMetricLabel}>
+                          {t('mfwNames.daysRemaining')}
+                        </Text>
+                        <Text style={s.nameMetricValue}>
+                          {remainingDays === undefined
+                            ? '—'
+                            : t('mfwNames.daysValue', {
+                                count: remainingDays,
+                              })}
+                        </Text>
+                      </View>
                     </View>
-                    <View style={s.nameMetric}>
-                      <Text style={s.nameMetricLabel}>
-                        {t('mfwNames.expiresAtBlock')}
-                      </Text>
-                      <Text style={s.nameMetricValue}>
-                        {record.expiryHeight ?? '—'}
-                      </Text>
-                    </View>
-                    <View style={s.nameMetric}>
-                      <Text style={s.nameMetricLabel}>
-                        {t('mfwNames.daysRemaining')}
-                      </Text>
-                      <Text style={s.nameMetricValue}>
-                        {remainingDays === undefined
-                          ? '—'
-                          : t('mfwNames.daysValue', {
-                              count: remainingDays,
-                            })}
-                      </Text>
-                    </View>
-                  </View>
-                  <Text style={s.expiryHint}>
-                    {t('mfwNames.expiryEstimate')}
-                  </Text>
-                  {canClaim ? (
-                    <TouchableOpacity
-                      accessibilityRole="button"
-                      style={s.nameAction}
-                      disabled={preparingNameId === record.id}
-                      onPress={() => continueClaim(record)}
-                    >
-                      {preparingNameId === record.id ? (
-                        <ActivityIndicator size="small" color={colors.orange} />
-                      ) : (
+                    <Text style={s.expiryHint}>
+                      {t('mfwNames.expiryEstimate')}
+                    </Text>
+                    {canClaim ? (
+                      <TouchableOpacity
+                        accessibilityRole="button"
+                        style={s.nameAction}
+                        disabled={preparingNameId === record.id}
+                        onPress={() => continueClaim(record)}
+                      >
+                        {preparingNameId === record.id ? (
+                          <ActivityIndicator
+                            size="small"
+                            color={colors.orange}
+                          />
+                        ) : (
+                          <Icon
+                            name="arrow-right"
+                            size={16}
+                            color={colors.orange}
+                          />
+                        )}
+                        <Text style={s.nameActionText}>
+                          {t('mfwNames.claimTitle')}
+                        </Text>
+                      </TouchableOpacity>
+                    ) : renewable ? (
+                      <View style={s.nameActionRow}>
+                        <TouchableOpacity
+                          accessibilityRole="button"
+                          style={s.nameAction}
+                          onPress={() => beginAddressUpdate(record)}
+                        >
+                          <Icon name="edit" size={16} color={colors.orange} />
+                          <Text style={s.nameActionText}>
+                            {t('mfwNames.changeAddress')}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          accessibilityRole="button"
+                          style={s.nameAction}
+                          onPress={() => beginRenewal(record)}
+                        >
+                          <Icon name="clock" size={16} color={colors.orange} />
+                          <Text style={s.nameActionText}>
+                            {t('mfwNames.renew')}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          accessibilityRole="button"
+                          style={[s.nameAction, s.nameActionDanger]}
+                          disabled={preparingNameId === record.id}
+                          onPress={() => continueRevocation(record)}
+                        >
+                          <Icon name="trash" size={16} color={colors.error} />
+                          <Text
+                            style={[s.nameActionText, s.nameActionTextDanger]}
+                          >
+                            {t('mfwNames.revoke')}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : canRestart ? (
+                      <TouchableOpacity
+                        accessibilityRole="button"
+                        style={s.nameAction}
+                        onPress={() => restartRegistration(record)}
+                      >
                         <Icon
                           name="arrow-right"
                           size={16}
                           color={colors.orange}
                         />
-                      )}
-                      <Text style={s.nameActionText}>
-                        {t('mfwNames.claimTitle')}
-                      </Text>
-                    </TouchableOpacity>
-                  ) : renewable ? (
-                    <View style={s.nameActionRow}>
-                      <TouchableOpacity
-                        accessibilityRole="button"
-                        style={s.nameAction}
-                        onPress={() => beginAddressUpdate(record)}
-                      >
-                        <Icon name="edit" size={16} color={colors.orange} />
                         <Text style={s.nameActionText}>
-                          {t('mfwNames.changeAddress')}
+                          {t('mfwNames.registerAgain')}
                         </Text>
                       </TouchableOpacity>
-                      <TouchableOpacity
-                        accessibilityRole="button"
-                        style={s.nameAction}
-                        onPress={() => beginRenewal(record)}
-                      >
-                        <Icon name="clock" size={16} color={colors.orange} />
-                        <Text style={s.nameActionText}>
-                          {t('mfwNames.renew')}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        accessibilityRole="button"
-                        style={[s.nameAction, s.nameActionDanger]}
-                        disabled={preparingNameId === record.id}
-                        onPress={() => continueRevocation(record)}
-                      >
-                        <Icon name="trash" size={16} color={colors.error} />
-                        <Text
-                          style={[s.nameActionText, s.nameActionTextDanger]}
-                        >
-                          {t('mfwNames.revoke')}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : canRestart ? (
-                    <TouchableOpacity
-                      accessibilityRole="button"
-                      style={s.nameAction}
-                      onPress={() => restartRegistration(record)}
-                    >
-                      <Icon
-                        name="arrow-right"
-                        size={16}
-                        color={colors.orange}
-                      />
-                      <Text style={s.nameActionText}>
-                        {t('mfwNames.registerAgain')}
-                      </Text>
-                    </TouchableOpacity>
-                  ) : null}
-                </View>
-              );
-            })}
-          </View>
-        )}
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+          </>
+        ) : null}
 
         {importingRecovery ? (
           <View style={s.renewalCard}>
@@ -1167,7 +1355,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
               </View>
             </TouchableOpacity>
           </View>
-        ) : !renewingName && !updatingName ? (
+        ) : !renewingName && !updatingName && selectedOwnedName ? (
           <TouchableOpacity
             accessibilityRole="button"
             style={s.recoveryButton}
@@ -1238,7 +1426,66 @@ export default function MfwNamesScreen({ navigation, route }: any) {
               {shortAddress(updatingName.address)}
             </Text>
             <Text style={s.sectionLabel}>{t('mfwNames.newAddress')}</Text>
-            {loadingAddresses ? (
+            <View style={s.addressModeRow}>
+              <TouchableOpacity
+                accessibilityRole="radio"
+                accessibilityState={{ selected: addressInputMode === 'wallet' }}
+                style={[
+                  s.addressModeButton,
+                  addressInputMode === 'wallet' && s.addressModeButtonSelected,
+                ]}
+                onPress={() => {
+                  setAddressInputMode('wallet');
+                  setMessage(undefined);
+                }}
+              >
+                <Text
+                  style={[
+                    s.addressModeText,
+                    addressInputMode === 'wallet' && s.addressModeTextSelected,
+                  ]}
+                >
+                  {t('mfwNames.chooseWalletAddress')}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                accessibilityRole="radio"
+                accessibilityState={{ selected: addressInputMode === 'manual' }}
+                style={[
+                  s.addressModeButton,
+                  addressInputMode === 'manual' && s.addressModeButtonSelected,
+                ]}
+                onPress={() => {
+                  setAddressInputMode('manual');
+                  setMessage(undefined);
+                }}
+              >
+                <Text
+                  style={[
+                    s.addressModeText,
+                    addressInputMode === 'manual' && s.addressModeTextSelected,
+                  ]}
+                >
+                  {t('mfwNames.enterAddressManually')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {addressInputMode === 'manual' ? (
+              <TextInput
+                accessibilityLabel={t('mfwNames.manualAddress')}
+                style={s.manualAddressInput}
+                value={manualAddress}
+                onChangeText={value => {
+                  setManualAddress(value.trim());
+                  setMessage(undefined);
+                }}
+                autoCapitalize="none"
+                autoCorrect={false}
+                placeholder={t('mfwNames.manualAddressPlaceholder')}
+                placeholderTextColor={colors.textMuted}
+                spellCheck={false}
+              />
+            ) : loadingAddresses ? (
               <ActivityIndicator color={colors.orange} style={s.loader} />
             ) : (
               <View style={s.addressList}>
@@ -1274,178 +1521,356 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                   })}
               </View>
             )}
-            <TouchableOpacity
-              accessibilityRole="button"
-              style={s.secondaryButton}
-              disabled={creatingAddress}
-              onPress={createDedicatedAddress}
-            >
-              {creatingAddress ? (
-                <ActivityIndicator color={colors.orange} />
-              ) : (
-                <Icon name="plus" size={18} color={colors.orange} />
-              )}
-              <View style={s.secondaryCopy}>
-                <Text style={s.secondaryTitle}>
-                  {t('mfwNames.createDedicated')}
-                </Text>
-                <Text style={s.secondaryText}>
-                  {t('mfwNames.createDedicatedHint')}
-                </Text>
-              </View>
-            </TouchableOpacity>
+            {addressInputMode === 'wallet' ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                style={s.secondaryButton}
+                disabled={creatingAddress}
+                onPress={createDedicatedAddress}
+              >
+                {creatingAddress ? (
+                  <ActivityIndicator color={colors.orange} />
+                ) : (
+                  <Icon name="plus" size={18} color={colors.orange} />
+                )}
+                <View style={s.secondaryCopy}>
+                  <Text style={s.secondaryTitle}>
+                    {t('mfwNames.createDedicated')}
+                  </Text>
+                  <Text style={s.secondaryText}>
+                    {t('mfwNames.createDedicatedHint')}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ) : null}
           </View>
         ) : null}
 
-        {!renewingName && !updatingName && !importingRecovery ? (
+        {!renewingName &&
+        !updatingName &&
+        !importingRecovery &&
+        !selectedOwnedName ? (
           <>
-            <WalletSelector
-              activeWalletId={registeredWallet?.id}
-              snapshots={walletSnapshotMap}
-              titleKey="mfwNames.wallet"
-              wallets={registeredWallets}
-              onSelect={selectWallet}
-            />
+            {registrationStep === 1 ? (
+              <View style={s.hero}>
+                <View style={s.heroIcon}>
+                  <Icon name="key" size={25} color={colors.orange} />
+                </View>
+                <View style={s.heroCopy}>
+                  <Text style={s.title}>{t('mfwNames.title')}</Text>
+                  <Text style={s.subtitle}>{t('mfwNames.subtitle')}</Text>
+                </View>
+              </View>
+            ) : null}
 
-            <Text style={s.sectionLabel}>{t('mfwNames.address')}</Text>
-            {loadingAddresses ? (
-              <ActivityIndicator color={colors.orange} style={s.loader} />
-            ) : addresses.length > 0 ? (
-              <View style={s.addressList}>
-                {addresses.map(address => {
-                  const selected = address.id === selectedAddress?.id;
-                  return (
-                    <TouchableOpacity
-                      key={address.id}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected }}
-                      style={[s.addressCard, selected && s.addressCardSelected]}
-                      onPress={() => {
-                        setSelectedAddressId(address.id);
-                        setMessage(undefined);
-                      }}
+            {registrationStep === 2 ? (
+              <>
+                <WalletSelector
+                  activeWalletId={registeredWallet?.id}
+                  snapshots={walletSnapshotMap}
+                  titleKey="mfwNames.wallet"
+                  wallets={registeredWallets}
+                  onSelect={selectWallet}
+                />
+
+                <Text style={s.sectionLabel}>{t('mfwNames.address')}</Text>
+                <View style={s.addressModeRow}>
+                  <TouchableOpacity
+                    accessibilityRole="radio"
+                    accessibilityState={{
+                      selected: addressInputMode === 'wallet',
+                    }}
+                    style={[
+                      s.addressModeButton,
+                      addressInputMode === 'wallet' &&
+                        s.addressModeButtonSelected,
+                    ]}
+                    onPress={() => {
+                      setAddressInputMode('wallet');
+                      setMessage(undefined);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        s.addressModeText,
+                        addressInputMode === 'wallet' &&
+                          s.addressModeTextSelected,
+                      ]}
                     >
-                      <View style={s.radio}>
-                        {selected ? <View style={s.radioDot} /> : null}
-                      </View>
-                      <View style={s.addressCopy}>
-                        <Text style={s.addressLabel}>{address.label}</Text>
-                        <Text style={s.addressValue}>
-                          {shortAddress(address.address)}
+                      {t('mfwNames.chooseWalletAddress')}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    accessibilityRole="radio"
+                    accessibilityState={{
+                      selected: addressInputMode === 'manual',
+                    }}
+                    style={[
+                      s.addressModeButton,
+                      addressInputMode === 'manual' &&
+                        s.addressModeButtonSelected,
+                    ]}
+                    onPress={() => {
+                      setAddressInputMode('manual');
+                      setMessage(undefined);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        s.addressModeText,
+                        addressInputMode === 'manual' &&
+                          s.addressModeTextSelected,
+                      ]}
+                    >
+                      {t('mfwNames.enterAddressManually')}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                {addressInputMode === 'manual' ? (
+                  <TextInput
+                    accessibilityLabel={t('mfwNames.manualAddress')}
+                    style={s.manualAddressInput}
+                    value={manualAddress}
+                    onChangeText={value => {
+                      setManualAddress(value.trim());
+                      setMessage(undefined);
+                    }}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    placeholder={t('mfwNames.manualAddressPlaceholder')}
+                    placeholderTextColor={colors.textMuted}
+                    spellCheck={false}
+                  />
+                ) : loadingAddresses ? (
+                  <ActivityIndicator color={colors.orange} style={s.loader} />
+                ) : addresses.length > 0 ? (
+                  <View style={s.addressList}>
+                    {addresses.map(address => {
+                      const selected = address.id === selectedAddress?.id;
+                      return (
+                        <TouchableOpacity
+                          key={address.id}
+                          accessibilityRole="radio"
+                          accessibilityState={{ selected }}
+                          style={[
+                            s.addressCard,
+                            selected && s.addressCardSelected,
+                          ]}
+                          onPress={() => {
+                            setSelectedAddressId(address.id);
+                            setMessage(undefined);
+                          }}
+                        >
+                          <View style={s.radio}>
+                            {selected ? <View style={s.radioDot} /> : null}
+                          </View>
+                          <View style={s.addressCopy}>
+                            <Text style={s.addressLabel}>{address.label}</Text>
+                            <Text style={s.addressValue}>
+                              {shortAddress(address.address)}
+                            </Text>
+                          </View>
+                          {address.addressIndex > 0 ? (
+                            <Text style={s.recommended}>
+                              {t('mfwNames.dedicated')}
+                            </Text>
+                          ) : null}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ) : (
+                  <Text style={s.empty}>{t('mfwNames.noAddress')}</Text>
+                )}
+
+                {addressInputMode === 'wallet' ? (
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    style={s.secondaryButton}
+                    disabled={creatingAddress}
+                    onPress={createDedicatedAddress}
+                  >
+                    {creatingAddress ? (
+                      <ActivityIndicator color={colors.orange} />
+                    ) : (
+                      <Icon name="plus" size={18} color={colors.orange} />
+                    )}
+                    <View style={s.secondaryCopy}>
+                      <Text style={s.secondaryTitle}>
+                        {t('mfwNames.createDedicated')}
+                      </Text>
+                      <Text style={s.secondaryText}>
+                        {t('mfwNames.createDedicatedHint')}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                ) : null}
+              </>
+            ) : null}
+
+            {registrationStep === 1 ? (
+              <>
+                <View style={s.nameInputRow}>
+                  <TextInput
+                    accessibilityLabel={t('mfwNames.name')}
+                    style={s.nameInput}
+                    value={name}
+                    onChangeText={value => {
+                      setName(value.replace(/\.mfw$/i, ''));
+                      setMessage(undefined);
+                    }}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    maxLength={63}
+                    placeholder={t('mfwNames.namePlaceholder')}
+                    placeholderTextColor={colors.textMuted}
+                  />
+                  <Text style={s.suffix}>.mfw</Text>
+                </View>
+                {availability.state === 'checking' ? (
+                  <View style={s.availabilityRow}>
+                    <ActivityIndicator size="small" color={colors.orange} />
+                    <Text style={s.availabilityNeutral}>
+                      {t('mfwNames.availabilityChecking')}
+                    </Text>
+                  </View>
+                ) : availability.state === 'invalid' ? (
+                  <Text style={s.availabilityError}>
+                    {t('mfwNames.invalidName')}
+                  </Text>
+                ) : availability.state === 'unavailable' ? (
+                  <Text style={s.availabilityError}>
+                    {t('mfwNames.availabilityUnavailable')}
+                  </Text>
+                ) : availability.state === 'ready' ? (
+                  <View style={s.availabilityBlock}>
+                    <View style={[s.availabilityRow, s.availabilityBlockRow]}>
+                      <Icon
+                        name={
+                          availability.value.status === 'available'
+                            ? 'check'
+                            : availability.value.status === 'pending'
+                            ? 'clock'
+                            : 'lock'
+                        }
+                        size={16}
+                        color={
+                          availability.value.status === 'available'
+                            ? colors.success
+                            : availability.value.status === 'pending'
+                            ? colors.warning
+                            : colors.error
+                        }
+                      />
+                      <Text
+                        style={
+                          availability.value.status === 'available'
+                            ? s.availabilitySuccess
+                            : availability.value.status === 'pending'
+                            ? s.availabilityWarning
+                            : s.availabilityStatusError
+                        }
+                      >
+                        {availability.value.status === 'available'
+                          ? availability.value.previousStatus
+                            ? t('mfwNames.availabilityAvailableAgain')
+                            : t('mfwNames.availabilityAvailable')
+                          : availability.value.status === 'taken'
+                          ? t('mfwNames.availabilityTaken')
+                          : availability.value.status === 'pending'
+                          ? t('mfwNames.availabilityPending')
+                          : t('mfwNames.availabilityReserved')}
+                      </Text>
+                    </View>
+                    <View style={s.availabilityDetails}>
+                      {availabilityHasExpiry ? (
+                        <View style={s.availabilityDetailRow}>
+                          <Text style={s.availabilityDetailLabel}>
+                            {t('mfwNames.expiresAtBlock')}
+                          </Text>
+                          <Text style={s.availabilityDetailValue}>
+                            {formatHeight(availability.value.expiryHeight!)}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {availabilityExpiryTimestampMs !== undefined ? (
+                        <View style={s.availabilityDetailRow}>
+                          <Text style={s.availabilityDetailLabel}>
+                            {availabilityIsExpired
+                              ? t('mfwNames.estimatedExpiredAt')
+                              : t('mfwNames.estimatedValidUntil')}
+                          </Text>
+                          <Text style={s.availabilityDetailValue}>
+                            {formatDateTime(availabilityExpiryTimestampMs)}
+                          </Text>
+                        </View>
+                      ) : null}
+                      <View style={s.availabilityDetailRow}>
+                        <Text style={s.availabilityDetailLabel}>
+                          {t('mfwNames.checkedChainTip')}
+                        </Text>
+                        <Text style={s.availabilityDetailValue}>
+                          {formatHeight(availability.value.chainTipHeight)}
                         </Text>
                       </View>
-                      {address.addressIndex > 0 ? (
-                        <Text style={s.recommended}>
-                          {t('mfwNames.dedicated')}
+                      <View style={s.availabilityDetailRow}>
+                        <Text style={s.availabilityDetailLabel}>
+                          {t('mfwNames.checkedAt')}
+                        </Text>
+                        <Text style={s.availabilityDetailValue}>
+                          {formatDateTime(availability.checkedAtMs)}
+                        </Text>
+                      </View>
+                      {availabilityHasExpiry ? (
+                        <Text style={s.availabilityEstimateHint}>
+                          {t('mfwNames.expiryEstimate')}
                         </Text>
                       ) : null}
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            ) : (
-              <Text style={s.empty}>{t('mfwNames.noAddress')}</Text>
-            )}
+                    </View>
+                  </View>
+                ) : null}
+              </>
+            ) : null}
 
-            <TouchableOpacity
-              accessibilityRole="button"
-              style={s.secondaryButton}
-              disabled={creatingAddress}
-              onPress={createDedicatedAddress}
-            >
-              {creatingAddress ? (
-                <ActivityIndicator color={colors.orange} />
-              ) : (
-                <Icon name="plus" size={18} color={colors.orange} />
-              )}
-              <View style={s.secondaryCopy}>
-                <Text style={s.secondaryTitle}>
-                  {t('mfwNames.createDedicated')}
+            {registrationStep === 3 ? (
+              <View style={s.registrationReview}>
+                <View style={s.renewalHeader}>
+                  <View style={s.renewalCopy}>
+                    <Text style={s.renewalTitle}>
+                      {t('mfwNames.reviewTitle')}
+                    </Text>
+                    <Text style={s.renewalName}>{canonicalMfwName(name)}</Text>
+                  </View>
+                </View>
+                <View style={s.reviewLine}>
+                  <Text style={s.currentAddressLabel}>
+                    {t('mfwNames.term')}
+                  </Text>
+                  <Text style={s.reviewValue}>
+                    {years}{' '}
+                    {years === 1 ? t('mfwNames.year') : t('mfwNames.years')}
+                  </Text>
+                </View>
+                <View style={s.reviewLine}>
+                  <Text style={s.currentAddressLabel}>
+                    {t('mfwNames.registryPrice')}
+                  </Text>
+                  <Text style={s.reviewValue}>{feeXmr} XMR</Text>
+                </View>
+                <Text style={s.currentAddressLabel}>
+                  {t('mfwNames.address')}
                 </Text>
-                <Text style={s.secondaryText}>
-                  {t('mfwNames.createDedicatedHint')}
-                </Text>
-              </View>
-            </TouchableOpacity>
-
-            <Text style={s.sectionLabel}>{t('mfwNames.name')}</Text>
-            <View style={s.nameInputRow}>
-              <TextInput
-                accessibilityLabel={t('mfwNames.name')}
-                style={s.nameInput}
-                value={name}
-                onChangeText={value => {
-                  setName(value.replace(/\.mfw$/i, ''));
-                  setMessage(undefined);
-                }}
-                autoCapitalize="none"
-                autoCorrect={false}
-                maxLength={63}
-                placeholder={t('mfwNames.namePlaceholder')}
-                placeholderTextColor={colors.textMuted}
-              />
-              <Text style={s.suffix}>.mfw</Text>
-            </View>
-            <Text style={s.fieldHint}>{t('mfwNames.nameHint')}</Text>
-            {availability.state === 'checking' ? (
-              <View style={s.availabilityRow}>
-                <ActivityIndicator size="small" color={colors.orange} />
-                <Text style={s.availabilityNeutral}>
-                  {t('mfwNames.availabilityChecking')}
-                </Text>
-              </View>
-            ) : availability.state === 'invalid' ? (
-              <Text style={s.availabilityError}>
-                {t('mfwNames.invalidName')}
-              </Text>
-            ) : availability.state === 'unavailable' ? (
-              <Text style={s.availabilityError}>
-                {t('mfwNames.availabilityUnavailable')}
-              </Text>
-            ) : availability.state === 'ready' ? (
-              <View style={s.availabilityRow}>
-                <Icon
-                  name={
-                    availability.value.status === 'available'
-                      ? 'check'
-                      : availability.value.status === 'pending'
-                      ? 'clock'
-                      : 'lock'
-                  }
-                  size={16}
-                  color={
-                    availability.value.status === 'available'
-                      ? colors.success
-                      : availability.value.status === 'pending'
-                      ? colors.warning
-                      : colors.error
-                  }
-                />
-                <Text
-                  style={
-                    availability.value.status === 'available'
-                      ? s.availabilitySuccess
-                      : availability.value.status === 'pending'
-                      ? s.availabilityWarning
-                      : s.availabilityError
-                  }
-                >
-                  {availability.value.status === 'available'
-                    ? availability.value.previousStatus
-                      ? t('mfwNames.availabilityAvailableAgain')
-                      : t('mfwNames.availabilityAvailable')
-                    : availability.value.status === 'taken'
-                    ? t('mfwNames.availabilityTaken')
-                    : availability.value.status === 'pending'
-                    ? t('mfwNames.availabilityPending')
-                    : t('mfwNames.availabilityReserved')}
+                <Text style={s.ownedNameAddress}>
+                  {shortAddress(enteredAddress)}
                 </Text>
               </View>
             ) : null}
           </>
         ) : null}
 
-        {!updatingName && !importingRecovery ? (
+        {!updatingName &&
+        !importingRecovery &&
+        (Boolean(renewingName) || registrationStep === 2) ? (
           <>
             <Text style={s.sectionLabel}>{t('mfwNames.term')}</Text>
             <View style={s.termRow}>
@@ -1456,7 +1881,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                   accessibilityState={{ selected: years === term }}
                   style={[s.termButton, years === term && s.termButtonSelected]}
                   onPress={() => {
-                    setYears(term);
+                    setYearsInput(String(term));
                     setMessage(undefined);
                   }}
                 >
@@ -1473,6 +1898,29 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                 </TouchableOpacity>
               ))}
             </View>
+            <View style={s.customTermBlock}>
+              <Text style={s.customTermLabel}>{t('mfwNames.customTerm')}</Text>
+              <View style={s.customTermField}>
+                <TextInput
+                  accessibilityLabel={t('mfwNames.customTerm')}
+                  style={s.customTermInput}
+                  value={yearsInput}
+                  onChangeText={value => {
+                    setYearsInput(value.replace(/[^0-9]/g, ''));
+                    setMessage(undefined);
+                  }}
+                  keyboardType="number-pad"
+                  maxLength={4}
+                  selectTextOnFocus
+                />
+                <Text style={s.customTermUnit}>{t('mfwNames.years')}</Text>
+              </View>
+            </View>
+            {!yearsValid ? (
+              <Text style={s.availabilityError}>
+                {t('mfwNames.termRange', { max: maxYears })}
+              </Text>
+            ) : null}
 
             <View style={s.priceCard}>
               <View>
@@ -1499,7 +1947,10 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           </View>
         ) : null}
 
-        {!importingRecovery ? (
+        {!importingRecovery &&
+        (Boolean(renewingName) ||
+          Boolean(updatingName) ||
+          registrationStep === 3) ? (
           <View style={s.flowCard}>
             {renewingName ? (
               <>
@@ -1554,12 +2005,17 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           </View>
         ) : null}
 
-        <View style={s.securityCard}>
-          <Icon name="lock" size={18} color={colors.success} />
-          <Text style={s.securityText}>{t('mfwNames.ownerKeySecurity')}</Text>
-        </View>
+        {renewingName ||
+        updatingName ||
+        importingRecovery ||
+        registrationStep === 3 ? (
+          <View style={s.securityCard}>
+            <Icon name="lock" size={18} color={colors.success} />
+            <Text style={s.securityText}>{t('mfwNames.ownerKeySecurity')}</Text>
+          </View>
+        ) : null}
 
-        {!genesis ? (
+        {!genesis && registrationStep > 1 ? (
           <View style={s.pendingCard}>
             <Icon name="clock" size={18} color={colors.warning} />
             <Text style={s.pendingText}>{t('mfwNames.activationPending')}</Text>
@@ -1567,54 +2023,178 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         ) : null}
         {message ? <Text style={s.message}>{message}</Text> : null}
 
-        {!importingRecovery ? (
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel={
-              renewingName
-                ? t('mfwNames.prepareRenewal')
-                : updatingName
-                ? t('mfwNames.prepareUpdate')
-                : t('mfwNames.continue')
-            }
-            activeOpacity={0.85}
-            disabled={creatingRegistration || preparingNameId !== undefined}
-            onPress={
-              renewingName
-                ? continueRenewal
-                : updatingName
-                ? continueAddressUpdate
-                : continueToRegistration
-            }
-          >
-            <LinearGradient
-              colors={[colors.orange, colors.orangeDark]}
-              style={s.primaryButton}
-            >
-              {creatingRegistration || preparingNameId !== undefined ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <Icon name="arrow-right" size={20} color="#FFF" />
-              )}
-              <Text style={s.primaryButtonText}>
-                {renewingName
+        {!importingRecovery &&
+        (!selectedOwnedName ||
+          Boolean(renewingName) ||
+          Boolean(updatingName)) ? (
+          <>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={
+                renewingName
                   ? t('mfwNames.prepareRenewal')
                   : updatingName
                   ? t('mfwNames.prepareUpdate')
-                  : t('mfwNames.continue')}
-              </Text>
-            </LinearGradient>
-          </TouchableOpacity>
+                  : registrationStep === 3
+                  ? t('mfwNames.continue')
+                  : t('action.continue')
+              }
+              activeOpacity={0.85}
+              disabled={creatingRegistration || preparingNameId !== undefined}
+              onPress={
+                renewingName
+                  ? continueRenewal
+                  : updatingName
+                  ? continueAddressUpdate
+                  : advanceRegistration
+              }
+            >
+              <LinearGradient
+                colors={[colors.orange, colors.orangeDark]}
+                style={s.primaryButton}
+              >
+                {creatingRegistration || preparingNameId !== undefined ? (
+                  <ActivityIndicator color="#FFF" />
+                ) : (
+                  <Icon name="arrow-right" size={20} color="#FFF" />
+                )}
+                <Text style={s.primaryButtonText}>
+                  {renewingName
+                    ? t('mfwNames.prepareRenewal')
+                    : updatingName
+                    ? t('mfwNames.prepareUpdate')
+                    : registrationStep === 3
+                    ? t('mfwNames.continue')
+                    : t('action.continue')}
+                </Text>
+              </LinearGradient>
+            </TouchableOpacity>
+            {!renewingName && !updatingName && registrationStep > 1 ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                style={s.registrationBack}
+                onPress={() => {
+                  setRegistrationStep(current => (current === 3 ? 2 : 1));
+                  setMessage(undefined);
+                }}
+              >
+                <Icon
+                  name="arrow-left"
+                  size={18}
+                  color={colors.textSecondary}
+                />
+                <Text style={s.backText}>{t('action.back')}</Text>
+              </TouchableOpacity>
+            ) : null}
+          </>
         ) : null}
 
-        <Text style={s.walletName}>
-          {registeredWallet
-            ? t('mfwNames.selectedWallet', {
-                wallet: walletDisplayName(registeredWallet),
-              })
-            : t('mfwNames.noWallet')}
-        </Text>
+        {!loadingOwnedNames &&
+        !selectedOwnedName &&
+        !renewingName &&
+        !updatingName &&
+        !importingRecovery &&
+        registrationStep === 1 &&
+        ownedNames.length > 0 ? (
+          <View style={s.recentNames}>
+            <View style={s.recentNamesHeader}>
+              <View style={s.recentNamesHeadingCopy}>
+                <Text style={s.recentNamesTitle}>
+                  {t('mfwNames.registeredNames')}
+                </Text>
+                <Text style={s.recentNamesSubtitle}>
+                  {t('mfwNames.registeredNamesSubtitle')}
+                </Text>
+              </View>
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={s.recentNamesRow}
+            >
+              {visibleOwnedNames.map(record => {
+                const chainTip =
+                  walletSnapshotMap[record.walletRegistrationId]
+                    ?.daemonHeight ?? record.lastChainTipHeight;
+                const stage = effectiveMfwOwnedNameStage({
+                  ...record,
+                  lastChainTipHeight: chainTip,
+                });
+                const remainingDays = mfwNameRemainingDays(
+                  record.expiryHeight,
+                  chainTip,
+                );
+                return (
+                  <TouchableOpacity
+                    key={record.id}
+                    accessibilityRole="button"
+                    activeOpacity={0.76}
+                    style={s.recentNameCard}
+                    onPress={() => {
+                      setSelectedOwnedNameId(record.id);
+                      setMessage(undefined);
+                    }}
+                  >
+                    <View style={s.recentNameTop}>
+                      <Icon name="key" size={17} color={colors.orange} />
+                      <View
+                        style={[
+                          s.recentNameStatus,
+                          stage === 'active' && s.recentNameStatusActive,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            s.recentNameStatusText,
+                            stage === 'active' && s.recentNameStatusTextActive,
+                          ]}
+                        >
+                          {stageLabel(stage)}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={s.recentNameLabel} numberOfLines={1}>
+                      {record.canonicalName}
+                    </Text>
+                    <Text style={s.recentNameAddress} numberOfLines={1}>
+                      {shortAddress(record.address)}
+                    </Text>
+                    <Text style={s.recentNameMeta} numberOfLines={1}>
+                      {remainingDays === undefined
+                        ? record.network
+                        : t('mfwNames.daysValue', { count: remainingDays })}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            {ownedNames.length > recentOwnedNames.length ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                style={s.recentNamesMoreRow}
+                onPress={() => setShowAllOwnedNames(current => !current)}
+              >
+                <Text style={s.recentNamesMore}>
+                  {showAllOwnedNames
+                    ? t('mfwNames.showLess')
+                    : t('mfwNames.showMore')}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
       </ScrollView>
+      <LedgerSigningModal
+        canCancel={
+          ledgerSigningProgress?.phase === 'searching' ||
+          ledgerSigningProgress?.phase === 'connecting'
+        }
+        progress={ledgerSigningProgress}
+        onCancel={() => {
+          ledgerSigningCancelledRef.current = true;
+          setLedgerSigningProgress(undefined);
+        }}
+      />
     </View>
   );
 }
@@ -1648,6 +2228,7 @@ function parseMfwNameBroadcast(
     typeof candidate.years !== 'number' ||
     !Number.isSafeInteger(candidate.years) ||
     candidate.years < 1 ||
+    candidate.years > MFW_NAME_MAX_TERM_YEARS ||
     !Array.isArray(candidate.txIds) ||
     !candidate.txIds.every(txid => typeof txid === 'string')
   ) {
@@ -1665,7 +2246,7 @@ const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
   scroll: {
     paddingHorizontal: 20,
-    paddingTop: 54,
+    paddingTop: 12,
     paddingBottom: 120,
   },
   back: {
@@ -1720,6 +2301,81 @@ const s = StyleSheet.create({
     paddingHorizontal: 14,
   },
   ownedNameList: { gap: 10 },
+  recentNames: { marginTop: 34 },
+  recentNamesHeader: {
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  recentNamesHeadingCopy: { flex: 1 },
+  recentNamesTitle: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    marginBottom: 0,
+    textTransform: 'uppercase',
+  },
+  recentNamesSubtitle: {
+    color: colors.textMuted,
+    fontSize: 12,
+    marginTop: 3,
+  },
+  recentNamesMore: {
+    color: colors.orange,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  recentNamesMoreRow: {
+    alignItems: 'center',
+    paddingTop: 12,
+  },
+  recentNamesRow: { gap: 10, paddingRight: 20 },
+  recentNameCard: {
+    backgroundColor: colors.bgCard,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    minHeight: 122,
+    padding: 14,
+    width: 158,
+  },
+  recentNameTop: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  recentNameStatus: {
+    backgroundColor: `${colors.warning}18`,
+    borderRadius: radius.full,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+  },
+  recentNameStatusActive: { backgroundColor: `${colors.success}18` },
+  recentNameStatusText: {
+    color: colors.warning,
+    fontSize: 8,
+    fontWeight: '800',
+  },
+  recentNameStatusTextActive: { color: colors.success },
+  recentNameLabel: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 20,
+  },
+  recentNameAddress: {
+    color: colors.textSecondary,
+    fontFamily: 'monospace',
+    fontSize: 10,
+    marginTop: 5,
+  },
+  recentNameMeta: {
+    color: colors.textMuted,
+    fontSize: 11,
+    marginTop: 5,
+  },
   ownedNameCard: {
     borderRadius: radius.md,
     borderWidth: 1,
@@ -1817,6 +2473,61 @@ const s = StyleSheet.create({
     marginTop: 14,
     paddingVertical: 8,
   },
+  registrationSteps: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+    marginBottom: 6,
+    marginTop: 22,
+  },
+  registrationStep: {
+    alignItems: 'center',
+    backgroundColor: colors.bgCard,
+    borderColor: colors.border,
+    borderRadius: 16,
+    borderWidth: 1,
+    height: 32,
+    justifyContent: 'center',
+    width: 32,
+  },
+  registrationStepActive: {
+    backgroundColor: colors.orangeMuted,
+    borderColor: colors.orange,
+  },
+  registrationStepText: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  registrationStepTextActive: { color: colors.orange },
+  registrationReview: {
+    backgroundColor: colors.bgCard,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    marginTop: 18,
+    padding: 16,
+  },
+  reviewLine: {
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  reviewValue: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 12,
+  },
+  registrationBack: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    gap: 7,
+    marginTop: 18,
+    padding: 8,
+  },
   renewalCard: {
     borderRadius: radius.md,
     borderWidth: 1,
@@ -1862,6 +2573,45 @@ const s = StyleSheet.create({
     textTransform: 'uppercase',
   },
   loader: { marginVertical: 20 },
+  addressModeRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  addressModeButton: {
+    alignItems: 'center',
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 42,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  addressModeButtonSelected: {
+    backgroundColor: colors.orangeMuted,
+    borderColor: colors.orange,
+  },
+  addressModeText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  addressModeTextSelected: { color: colors.orange },
+  manualAddressInput: {
+    backgroundColor: colors.bgInput,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    color: colors.textPrimary,
+    fontFamily: 'monospace',
+    fontSize: 12,
+    minHeight: 52,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
   addressList: { gap: 8 },
   addressCard: {
     flexDirection: 'row',
@@ -1962,9 +2712,49 @@ const s = StyleSheet.create({
     gap: 7,
     marginTop: 9,
   },
+  availabilityBlock: { marginTop: 9 },
+  availabilityBlockRow: { marginTop: 0 },
+  availabilityDetails: {
+    gap: 5,
+    marginTop: 9,
+    padding: 11,
+    borderRadius: radius.sm,
+    backgroundColor: colors.bgInput,
+  },
+  availabilityDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  availabilityDetailLabel: {
+    color: colors.textMuted,
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  availabilityDetailValue: {
+    color: colors.textPrimary,
+    flexShrink: 1,
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 16,
+    textAlign: 'right',
+  },
+  availabilityEstimateHint: {
+    color: colors.textMuted,
+    fontSize: 10,
+    lineHeight: 14,
+    marginTop: 3,
+  },
   availabilityNeutral: { color: colors.textSecondary, fontSize: 12 },
   availabilitySuccess: { color: colors.success, fontSize: 12 },
   availabilityWarning: { color: colors.warning, fontSize: 12 },
+  availabilityStatusError: {
+    color: colors.error,
+    fontSize: 12,
+    lineHeight: 17,
+  },
   availabilityError: {
     color: colors.error,
     fontSize: 12,
@@ -1972,6 +2762,35 @@ const s = StyleSheet.create({
     marginTop: 9,
   },
   termRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  customTermBlock: { gap: 7, marginTop: 14 },
+  customTermLabel: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  customTermField: {
+    alignItems: 'center',
+    backgroundColor: colors.bgInput,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: 'row',
+    minHeight: 50,
+    overflow: 'hidden',
+  },
+  customTermInput: {
+    color: colors.textPrimary,
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '800',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  customTermUnit: {
+    color: colors.textMuted,
+    fontSize: 13,
+    paddingHorizontal: 16,
+  },
   termButton: {
     minWidth: 58,
     alignItems: 'center',

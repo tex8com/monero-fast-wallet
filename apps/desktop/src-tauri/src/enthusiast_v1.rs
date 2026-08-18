@@ -38,10 +38,10 @@ pub struct CommunityV1State {
 impl CommunityV1State {
     pub fn new() -> Result<Self, String> {
         let http = Client::builder()
-            .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15))
             .user_agent("TEX8-Monero-Enthusiast-Desktop/0.1")
+            .proxy(crate::tor_transport::proxy()?)
             .build()
             .map_err(|_| "The private Community network client could not be created.".to_owned())?;
         Ok(Self {
@@ -169,6 +169,7 @@ impl CommunityV1State {
         let client = MatrixE2eeClient::restore(
             MatrixClientConfig {
                 homeserver: &config.matrix_homeserver,
+                proxy: Some(crate::tor_transport::TOR_SOCKS_PROXY),
                 store_path: &store_path,
                 store_passphrase: store_key.as_str(),
                 allow_loopback_http_for_tests: false,
@@ -913,6 +914,7 @@ impl CommunityV1State {
         let login = MatrixE2eeClient::login(
             MatrixClientConfig {
                 homeserver: &config.matrix_homeserver,
+                proxy: Some(crate::tor_transport::TOR_SOCKS_PROXY),
                 store_path: &store_path,
                 store_passphrase: store_key.as_str(),
                 allow_loopback_http_for_tests: false,

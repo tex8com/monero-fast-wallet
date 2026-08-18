@@ -1439,7 +1439,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
       navigation.navigate('Home');
       // Registration and the selected session are already in WalletState.
       // Refreshing the complete list is useful but must not delay navigation.
-      void reloadRegisteredWallets().catch(error => {
+      reloadRegisteredWallets().catch(error => {
         setupLog('startCreateHardwareWallet.walletListRefreshDeferred', {
           error: errorMessage(error),
         });
@@ -1701,7 +1701,9 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         <TouchableOpacity
           accessibilityRole="link"
           accessibilityLabel={t('setup.footerAccessibility')}
-          onPress={() => void Linking.openURL('https://solutions.tex8.com/en')}
+          onPress={() => {
+            Linking.openURL('https://solutions.tex8.com/en');
+          }}
           activeOpacity={0.72}
         >
           <Text style={s.footer}>{t('setup.footer')}</Text>
@@ -1960,7 +1962,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
                     {t('setup.hardware.localViewDescription')}
                   </Text>
                 </View>
-                <Text style={{ color: colors.orange, fontSize: 20 }}>✓</Text>
+                <Text style={s.localViewCheck}>✓</Text>
               </View>
               <View style={s.fastReceiveRow}>
                 <View style={s.fastReceiveText}>
@@ -2451,6 +2453,7 @@ const s = StyleSheet.create({
     lineHeight: 17,
     marginTop: 3,
   },
+  localViewCheck: { color: colors.orange, fontSize: 20 },
   fastWalletSlotRow: {
     minHeight: 74,
     flexDirection: 'row',

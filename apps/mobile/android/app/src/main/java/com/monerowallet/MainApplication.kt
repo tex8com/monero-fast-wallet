@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
 import android.os.StatFs
+import android.os.SystemClock
 import android.util.Log
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
@@ -14,6 +15,8 @@ import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import java.io.File
 
 class MainApplication : Application(), ReactApplication {
+
+  private val startupStartedAtMs = SystemClock.elapsedRealtime()
 
   override val reactHost: ReactHost by lazy {
     getDefaultReactHost(
@@ -28,14 +31,26 @@ class MainApplication : Application(), ReactApplication {
   }
 
   override fun onCreate() {
+    startupLog("application.onCreate.begin")
     super.onCreate()
+    startupLog("application.onCreate.afterSuper")
     createTransactionNotificationChannel()
+    startupLog("application.notificationChannel.ready")
     loadReactNative(this)
+    startupLog("application.reactNative.loadRequested")
     // React Native/Fabric must own native-runtime initialization order. Loading
     // the large wallet JNI bridge before Fabric can make duplicate native
     // logging runtimes interpose during Scheduler construction on Android 16.
     // This still runs before JavaScript can open a wallet or start a sync.
     configurePublicBlockSpool()
+    startupLog("application.onCreate.complete")
+  }
+
+  private fun startupLog(event: String) {
+    Log.i(
+      STARTUP_LOG_TAG,
+      "MONERO_STARTUP native=android event=$event elapsed_ms=${SystemClock.elapsedRealtime() - startupStartedAtMs}",
+    )
   }
 
   private fun configurePublicBlockSpool() {
@@ -99,6 +114,7 @@ class MainApplication : Application(), ReactApplication {
 
   private companion object {
     const val LOG_TAG = "MoneroWallet"
+    const val STARTUP_LOG_TAG = "MoneroStartup"
     const val SPOOL_FILE_PREFIX = "mfw-public-block-spool-"
     const val SPOOL_FILE_SUFFIX = ".chunk"
     const val MIB = 1024L * 1024L

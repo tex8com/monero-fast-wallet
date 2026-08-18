@@ -48,19 +48,19 @@ for name in "${required_binaries[@]}"; do
   }
 done
 [[ -f "$source_lock" ]] || {
-  echo "Missing pinned Cuprate source lock: $source_lock" >&2
+  echo "Missing pinned Monero Fast Node source lock: $source_lock" >&2
   exit 1
 }
 expected_cuprate_commit="$(awk -F= '$1 == "commit" { print $2; exit }' "$source_lock")"
 [[ "$expected_cuprate_commit" =~ ^[0-9a-f]{40}$ ]] || {
-  echo 'Pinned Cuprate commit is invalid.' >&2
+  echo 'Pinned Monero Fast Node commit is invalid.' >&2
   exit 1
 }
 actual_cuprate_commit="$("$release_dir/tex8-fastwallet-cuprate" --version \
   | sed -n 's/.*"commit": "\([0-9a-f]\{40\}\)".*/\1/p' \
   | head -n 1)"
 [[ "$actual_cuprate_commit" == "$expected_cuprate_commit" ]] || {
-  echo "Cuprate release source mismatch: expected $expected_cuprate_commit, got ${actual_cuprate_commit:-unknown}." >&2
+  echo "Monero Fast Node release source mismatch: expected $expected_cuprate_commit, got ${actual_cuprate_commit:-unknown}." >&2
   exit 1
 }
 for name in "${required_material[@]}"; do
@@ -115,7 +115,7 @@ for pair in \
   id "$user" >/dev/null 2>&1 || useradd --system --gid "$group" --home-dir /nonexistent --shell /usr/sbin/nologin "$user"
 done
 id cuprate >/dev/null 2>&1 || {
-  echo 'The existing cuprate service account is required.' >&2
+  echo 'The existing Monero Fast Node service account is required.' >&2
   exit 1
 }
 
@@ -139,7 +139,7 @@ install -d -m 0700 "$backup_dir"
 for path in \
   /opt/monero-fast-wallet/bin \
   /etc/monero-fast-wallet \
-  /etc/systemd/system/cuprate.service.d \
+  /etc/systemd/system/monero-fast-node.service.d \
   /var/lib/monero-fast-wallet-relay \
   /var/lib/monero-fast-wallet-directory \
   /var/lib/monero-fast-wallet-worker \
@@ -149,13 +149,17 @@ for path in \
 done
 for path in \
   /etc/nginx/snippets/notification-gateway.conf \
+  /etc/nginx/snippets/mfw-onion-app-services.conf \
   /etc/nginx/conf.d/monero-fast-wallet-rate-limits.conf \
+  /etc/nginx/sites-available/mfw-resolver1.tex8.com \
   /etc/systemd/system/fast-wallet-relay.service \
   /etc/systemd/system/fast-wallet-directory.service \
   /etc/systemd/system/fast-wallet-worker.service \
   /etc/systemd/system/notification-gateway.service \
   /etc/systemd/system/notification-registration-adapter.service \
-  /etc/systemd/system/cuprate.service.d/fast-wallet-scanpack.conf \
+  /etc/systemd/system/monero-fast-node.service \
+  /etc/systemd/system/monero-fast-node.service.d/zz-product-identity.conf \
+  /etc/systemd/system/monero-fast-node.service.d/fast-wallet-scanpack.conf \
   /usr/local/sbin/manage-community-worker \
   /opt/cuprate/tex8-fastwallet-cuprate; do
   [[ ! -e "$path" ]] || cp -a "$path" "$backup_dir/"
@@ -282,17 +286,23 @@ install -o root -g root -m 0644 "$script_dir/fast-wallet-relay.service" /etc/sys
 install -o root -g root -m 0644 "$script_dir/fast-wallet-worker.service" /etc/systemd/system/fast-wallet-worker.service
 install -o root -g root -m 0644 "$script_dir/notification-gateway.service" /etc/systemd/system/notification-gateway.service
 install -o root -g root -m 0644 "$script_dir/notification-registration-adapter.service" /etc/systemd/system/notification-registration-adapter.service
-install -o root -g root -m 0644 "$script_dir/cuprate-fast-wallet-scanpack.conf" /etc/systemd/system/cuprate.service.d/fast-wallet-scanpack.conf
+install -d -o root -g root -m 0755 /etc/systemd/system/monero-fast-node.service.d
+install -o root -g root -m 0644 "$script_dir/monero-fast-node.service" /etc/systemd/system/monero-fast-node.service
+install -o root -g root -m 0644 "$script_dir/monero-fast-node-identity.conf" /etc/systemd/system/monero-fast-node.service.d/zz-product-identity.conf
+install -o root -g root -m 0644 "$script_dir/monero-fast-node-fast-wallet-scanpack.conf" /etc/systemd/system/monero-fast-node.service.d/fast-wallet-scanpack.conf
 install -o root -g root -m 0644 "$script_dir/nginx-fast-wallet-stack.conf" /etc/nginx/snippets/notification-gateway.conf
+install -o root -g root -m 0644 "$script_dir/nginx-mfw-onion-app-services.conf" /etc/nginx/snippets/mfw-onion-app-services.conf
 install -o root -g root -m 0644 "$script_dir/nginx-fast-wallet-rate-limits.conf" /etc/nginx/conf.d/monero-fast-wallet-rate-limits.conf
+install -o root -g root -m 0644 "$script_dir/nginx-mfw-resolver1.conf" /etc/nginx/sites-available/mfw-resolver1.tex8.com
+ln -sfn /etc/nginx/sites-available/mfw-resolver1.tex8.com /etc/nginx/sites-enabled/mfw-resolver1.tex8.com
 
 systemctl daemon-reload
-systemctl enable fast-wallet-directory.service fast-wallet-relay.service notification-gateway.service notification-registration-adapter.service fast-wallet-worker.service
+systemctl enable monero-fast-node.service fast-wallet-directory.service fast-wallet-relay.service notification-gateway.service notification-registration-adapter.service fast-wallet-worker.service
 systemctl restart fast-wallet-directory.service
 systemctl restart fast-wallet-relay.service
 systemctl restart notification-registration-adapter.service
 systemctl restart notification-gateway.service
-systemctl restart cuprate.service
+systemctl restart monero-fast-node.service
 systemctl restart fast-wallet-worker.service
 
 curl --fail --silent --show-error http://127.0.0.1:8094/healthz >/dev/null

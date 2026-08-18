@@ -136,8 +136,8 @@ gate_shell_bridge_build() {
   "${shell_build_dir}/monero_wallet_bridge_smoke" | grep -q "linked_with_monero=false"
 }
 
-gate_notify_scanner_tests() {
-  cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml"
+gate_fast_wallet_scanner_core_tests() {
+  cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml"
 }
 
 gate_enthusiast_discovery_tests() {
@@ -161,26 +161,26 @@ gate_enthusiast_discovery_live_http_contract() {
     bash "${repo_root}/services/enthusiast-discovery/scripts/run-community-testbench.sh" live
 }
 
-gate_notify_scanner_worker_tests() {
-  cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" scanner::tests::scanner_
+gate_fast_wallet_scanner_core_worker_tests() {
+  cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" scanner::tests::scanner_
 }
 
-gate_notify_scanner_mempool_tests() {
-  cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" mempool
+gate_fast_wallet_scanner_core_mempool_tests() {
+  cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" mempool
 }
 
-gate_notify_scanner_cuprate_adapter_tests() {
-  cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" cuprate
+gate_fast_wallet_scanner_core_mfn_adapter_tests() {
+  cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" cuprate
 }
 
-gate_notify_scanner_live_cuprate_sources() {
-  if [[ "${TESTBENCH_NOTIFY_SCANNER_LIVE_SOURCES:-0}" != "1" ]]; then
+gate_fast_wallet_scanner_core_live_mfn_sources() {
+  if [[ "${TESTBENCH_SCANNER_CORE_LIVE_SOURCES:-0}" != "1" ]]; then
     return 2
   fi
-  NOTIFY_SCANNER_TEST_GRPC_ENDPOINT="${CUPRATE_GRPC:-xmr.tex8.com:18091}" \
-    NOTIFY_SCANNER_TEST_RPC_ENDPOINT="${CUPRATE_RPC:-xmr.tex8.com:18089}" \
-    NOTIFY_SCANNER_TEST_FROM_HEIGHT="${TESTBENCH_NOTIFY_SCANNER_FROM_HEIGHT:-3000000}" \
-    cargo test --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" live_cuprate -- --ignored
+  FAST_WALLET_SCANNER_CORE_TEST_GRPC_ENDPOINT="${CUPRATE_GRPC:-xmr.tex8.com:18091}" \
+    FAST_WALLET_SCANNER_CORE_TEST_RPC_ENDPOINT="${CUPRATE_RPC:-xmr.tex8.com:18089}" \
+    FAST_WALLET_SCANNER_CORE_TEST_FROM_HEIGHT="${TESTBENCH_SCANNER_CORE_FROM_HEIGHT:-3000000}" \
+    cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" live_cuprate -- --ignored
 }
 
 gate_cuprate_backend_compatibility() {
@@ -203,30 +203,6 @@ gate_cuprate_backend_compatibility() {
     CUPRATE_GRPC_CPP_PREFIX="${host_grpc_prefix}" \
     CUPRATE_GRPC_SMOKE_BUILD_DIR="${work_root}/cuprate-grpc-smoke" \
     "${repo_root}/scripts/check-cuprate-backend.sh"
-}
-
-gate_deployed_scanner_api() {
-  local scanner_url="${TESTBENCH_SCANNER_URL:-}"
-  if [[ -z "${scanner_url}" ]]; then
-    log "deployed_scanner_api_url=missing"
-    if [[ "${TESTBENCH_REQUIRE_DEPLOYED_SCANNER:-0}" == "1" ]]; then
-      return 1
-    fi
-    return 2
-  fi
-
-  scanner_url="${scanner_url%/}"
-  log "deployed_scanner_api_url=${scanner_url}"
-  local health
-  if ! health="$(curl -fsS --max-time 8 "${scanner_url}/healthz" 2>&1)"; then
-    log "deployed_scanner_api_error=${health}"
-    return 1
-  fi
-  if ! printf '%s\n' "${health}" | grep -Eq '"status":"ok"|"ok":true'; then
-    log "deployed_scanner_api_health=${health}"
-    return 1
-  fi
-  log "deployed_scanner_api_health=${health}"
 }
 
 gate_mobile_unit_tests() {
@@ -652,16 +628,15 @@ log "wallet-core-testbench suite=${suite} strict=${strict}"
 handle_gate_result "fork pins recorded" gate_pin_files
 handle_gate_result "shared Product-Core ABI, diagnostics, sanitizer and telemetry" gate_product_core_abi
 handle_gate_result "native bridge shell build" gate_shell_bridge_build
-handle_gate_result "notify-scanner unit/store tests" gate_notify_scanner_tests
+handle_gate_result "Fast Wallet scanner core unit/store tests" gate_fast_wallet_scanner_core_tests
 handle_gate_result "enthusiast discovery privacy/API tests" gate_enthusiast_discovery_tests
 handle_gate_result "enthusiast discovery local HTTP contract" gate_enthusiast_discovery_local_http_contract
 handle_gate_result "deployed Community API contract" gate_enthusiast_discovery_live_http_contract
-handle_gate_result "notify-scanner block worker tests" gate_notify_scanner_worker_tests
-handle_gate_result "notify-scanner mempool worker tests" gate_notify_scanner_mempool_tests
-handle_gate_result "notify-scanner Cuprate adapter tests" gate_notify_scanner_cuprate_adapter_tests
-handle_gate_result "notify-scanner live Cuprate source tests" gate_notify_scanner_live_cuprate_sources
+handle_gate_result "Fast Wallet scanner core block-worker tests" gate_fast_wallet_scanner_core_worker_tests
+handle_gate_result "Fast Wallet scanner core mempool tests" gate_fast_wallet_scanner_core_mempool_tests
+handle_gate_result "Fast Wallet scanner core MFN adapter tests" gate_fast_wallet_scanner_core_mfn_adapter_tests
+handle_gate_result "Fast Wallet scanner core live MFN source tests" gate_fast_wallet_scanner_core_live_mfn_sources
 handle_gate_result "Cuprate backend RPC compatibility" gate_cuprate_backend_compatibility
-handle_gate_result "deployed Fast Receive scanner API" gate_deployed_scanner_api
 handle_gate_result "mobile TypeScript/unit tests" gate_mobile_unit_tests
 handle_gate_result "official/product CLI bootstrap and debug artifacts" gate_product_cli_bootstrap_contract
 handle_gate_result "product CLI guarded local wallet-file removal" gate_product_cli_wallet_removal

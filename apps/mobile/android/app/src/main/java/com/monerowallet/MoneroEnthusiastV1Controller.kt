@@ -340,11 +340,13 @@ internal class MoneroEnthusiastV1Controller(
     require(store.mkdirs() || store.isDirectory) {
       "Private chat storage is unavailable"
     }
+    val torProxy = "socks5h://${EmbeddedTorManager.ensureReady(context, 120_000L)}"
     try {
       NativeMoneroWalletJni.communityMatrixCreate(
         BuildConfig.MONERO_ENTHUSIAST_MATRIX_HOMESERVER,
         store.absolutePath,
         storeKey,
+        torProxy,
       )
     } finally {
       storeKey.fill(0)
@@ -756,7 +758,7 @@ internal class MoneroEnthusiastV1Controller(
     }
     require(route.matches(SAFE_ROUTE)) { "Community route is invalid" }
     val base = checkedHttpsRoot(BuildConfig.MONERO_ENTHUSIAST_API_ORIGIN)
-    val connection = (URL(base, route).openConnection() as HttpURLConnection).apply {
+    val connection = TorHttpConnection.open(context, URL(base, route)).apply {
       requestMethod = method
       instanceFollowRedirects = false
       connectTimeout = HTTP_TIMEOUT_MS
@@ -793,7 +795,7 @@ internal class MoneroEnthusiastV1Controller(
   private fun catalogRequest(route: String, maximumBytes: Int): ByteArray {
     require(route.matches(SAFE_ROUTE)) { "Community catalog route is invalid" }
     val base = checkedHttpsRoot(BuildConfig.MONERO_ENTHUSIAST_CATALOG_ORIGIN)
-    val connection = (URL(base, route).openConnection() as HttpURLConnection).apply {
+    val connection = TorHttpConnection.open(context, URL(base, route)).apply {
       requestMethod = "GET"
       instanceFollowRedirects = false
       connectTimeout = HTTP_TIMEOUT_MS
@@ -815,7 +817,7 @@ internal class MoneroEnthusiastV1Controller(
   private fun advertisingCatalogRequest(route: String, maximumBytes: Int): ByteArray {
     require(route.matches(SAFE_ROUTE)) { "Advertising catalog route is invalid" }
     val base = checkedHttpsRoot(BuildConfig.MONERO_ENTHUSIAST_ADVERTISING_ORIGIN)
-    val connection = (URL(base, route).openConnection() as HttpURLConnection).apply {
+    val connection = TorHttpConnection.open(context, URL(base, route)).apply {
       requestMethod = "GET"
       instanceFollowRedirects = false
       connectTimeout = HTTP_TIMEOUT_MS
@@ -1047,8 +1049,11 @@ internal class MoneroEnthusiastV1Controller(
 
   private fun checkedHttpsRoot(value: String): URL {
     val uri = URI(value)
+    val authenticatedOnion =
+      uri.scheme == "http" &&
+        uri.host?.lowercase()?.matches(Regex("^[a-z2-7]{56}\\.onion$")) == true
     require(
-      uri.scheme == "https" &&
+      (uri.scheme == "https" || authenticatedOnion) &&
         uri.host != null &&
         uri.userInfo == null &&
         (uri.path.isNullOrEmpty() || uri.path == "/") &&

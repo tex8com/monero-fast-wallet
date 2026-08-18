@@ -56,10 +56,13 @@ pub type Result<T> = std::result::Result<T, MatrixCoreError>;
 #[derive(Clone, Debug)]
 pub struct MatrixClientConfig<'a> {
     pub homeserver: &'a str,
+    /// SOCKS5h keeps the Onion hostname and destination inside Tor.
+    pub proxy: Option<&'a str>,
     pub store_path: &'a Path,
     /// Random text generated and retained in native OS secure storage.
     pub store_passphrase: &'a str,
-    /// HTTP is accepted only for explicit loopback test configurations.
+    /// HTTP is accepted only for Tor v3 Onion services or explicit loopback
+    /// test configurations.
     pub allow_loopback_http_for_tests: bool,
 }
 
@@ -390,7 +393,7 @@ impl MatrixE2eeClient {
 
 async fn build_client(config: &MatrixClientConfig<'_>) -> Result<Client> {
     let passphrase = Zeroizing::new(config.store_passphrase.to_owned());
-    Client::builder()
+    let mut builder = Client::builder()
         .homeserver_url(config.homeserver)
         .sqlite_store(config.store_path, Some(passphrase.as_str()))
         .with_encryption_settings(EncryptionSettings {
@@ -398,7 +401,20 @@ async fn build_client(config: &MatrixClientConfig<'_>) -> Result<Client> {
             auto_enable_backups: true,
             ..Default::default()
         })
-        .handle_refresh_tokens()
+        .handle_refresh_tokens();
+    if let Some(proxy) = config.proxy {
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .proxy(reqwest::Proxy::all(proxy).map_err(|_| MatrixCoreError::InvalidConfiguration(
+                "Tor proxy URL is invalid".to_owned(),
+            ))?)
+            .build()
+            .map_err(|_| MatrixCoreError::InvalidConfiguration(
+                "Tor proxy could not be created".to_owned(),
+            ))?;
+        builder = builder.http_client(http);
+    }
+    builder
         .build()
         .await
         .map_err(|_| MatrixCoreError::Matrix)
@@ -444,7 +460,14 @@ fn validate_config(config: &MatrixClientConfig<'_>) -> Result<()> {
     let homeserver = Url::parse(config.homeserver).map_err(|_| {
         MatrixCoreError::InvalidConfiguration("homeserver URL is invalid".to_owned())
     })?;
-    let secure = homeserver.scheme() == "https";
+    let onion = homeserver.scheme() == "http"
+        && homeserver.host_str().is_some_and(|host| {
+            host.len() == 62
+                && host.ends_with(".onion")
+                && host[..56].bytes().all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
+        })
+        && config.proxy.is_some();
+    let secure = homeserver.scheme() == "https" || onion;
     let loopback_test = config.allow_loopback_http_for_tests
         && homeserver.scheme() == "http"
         && homeserver
@@ -452,7 +475,7 @@ fn validate_config(config: &MatrixClientConfig<'_>) -> Result<()> {
             .is_some_and(|host| host == "localhost" || host == "127.0.0.1" || host == "::1");
     if !secure && !loopback_test {
         return Err(MatrixCoreError::InvalidConfiguration(
-            "production homeserver must use HTTPS".to_owned(),
+            "production homeserver must use HTTPS or Tor v3 Onion".to_owned(),
         ));
     }
     if homeserver.username() != ""
@@ -463,6 +486,24 @@ fn validate_config(config: &MatrixClientConfig<'_>) -> Result<()> {
         return Err(MatrixCoreError::InvalidConfiguration(
             "homeserver URL contains unsupported credentials or parameters".to_owned(),
         ));
+    }
+    if let Some(proxy) = config.proxy {
+        let proxy = Url::parse(proxy).map_err(|_| {
+            MatrixCoreError::InvalidConfiguration("Tor proxy URL is invalid".to_owned())
+        })?;
+        if proxy.scheme() != "socks5h"
+            || !matches!(proxy.host_str(), Some("127.0.0.1") | Some("::1") | Some("localhost"))
+            || proxy.port().is_none()
+            || proxy.username() != ""
+            || proxy.password().is_some()
+            || !matches!(proxy.path(), "" | "/")
+            || proxy.query().is_some()
+            || proxy.fragment().is_some()
+        {
+            return Err(MatrixCoreError::InvalidConfiguration(
+                "Tor proxy URL is invalid".to_owned(),
+            ));
+        }
     }
     if config.store_path.as_os_str().is_empty() || config.store_passphrase.chars().count() < 32 {
         return Err(MatrixCoreError::InvalidConfiguration(
@@ -569,6 +610,7 @@ mod ffi {
     pub struct tex8_community_matrix_handle {
         runtime: Runtime,
         homeserver: String,
+        proxy: Option<String>,
         store_path: PathBuf,
         store_passphrase: Zeroizing<String>,
         allow_loopback_http_for_tests: bool,
@@ -585,6 +627,8 @@ mod ffi {
         store_path_len: usize,
         store_passphrase: *const u8,
         store_passphrase_len: usize,
+        proxy: *const u8,
+        proxy_len: usize,
         allow_loopback_http_for_tests: bool,
         handle_output: *mut *mut tex8_community_matrix_handle,
         error_output: *mut u8,
@@ -613,8 +657,14 @@ mod ffi {
                 )?
                 .to_owned(),
             );
+            let proxy = if proxy_len == 0 {
+                None
+            } else {
+                Some(ffi_utf8(proxy, proxy_len, 256, "Tor proxy")?.to_owned())
+            };
             let config = MatrixClientConfig {
                 homeserver: &homeserver,
+                proxy: proxy.as_deref(),
                 store_path: &store_path,
                 store_passphrase: store_passphrase.as_str(),
                 allow_loopback_http_for_tests,
@@ -624,6 +674,7 @@ mod ffi {
             Ok::<_, MatrixCoreError>(Box::new(tex8_community_matrix_handle {
                 runtime,
                 homeserver,
+                proxy,
                 store_path,
                 store_passphrase,
                 allow_loopback_http_for_tests,
@@ -986,6 +1037,7 @@ mod ffi {
     fn config(handle: &tex8_community_matrix_handle) -> MatrixClientConfig<'_> {
         MatrixClientConfig {
             homeserver: &handle.homeserver,
+            proxy: handle.proxy.as_deref(),
             store_path: &handle.store_path,
             store_passphrase: handle.store_passphrase.as_str(),
             allow_loopback_http_for_tests: handle.allow_loopback_http_for_tests,
@@ -1177,6 +1229,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         let valid = MatrixClientConfig {
             homeserver: "https://matrix.example",
+            proxy: None,
             store_path: directory.path(),
             store_passphrase: "0123456789abcdef0123456789abcdef",
             allow_loopback_http_for_tests: false,
@@ -1199,11 +1252,31 @@ mod tests {
         let directory = tempfile::tempdir().expect("tempdir");
         let config = MatrixClientConfig {
             homeserver: "http://127.0.0.1:8008",
+            proxy: None,
             store_path: directory.path(),
             store_passphrase: "0123456789abcdef0123456789abcdef",
             allow_loopback_http_for_tests: true,
         };
         assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn onion_homeserver_requires_a_loopback_socks5h_proxy() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let onion = MatrixClientConfig {
+            homeserver:
+                "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
+            proxy: Some("socks5h://127.0.0.1:9050"),
+            store_path: directory.path(),
+            store_passphrase: "0123456789abcdef0123456789abcdef",
+            allow_loopback_http_for_tests: false,
+        };
+        assert!(validate_config(&onion).is_ok());
+        assert!(validate_config(&MatrixClientConfig {
+            proxy: None,
+            ..onion
+        })
+        .is_err());
     }
 
     #[test]
@@ -1241,6 +1314,8 @@ mod tests {
                 store.len(),
                 passphrase.as_ptr(),
                 passphrase.len(),
+                ptr::null(),
+                0,
                 false,
                 &mut handle,
                 ptr::null_mut(),
@@ -1265,6 +1340,8 @@ mod tests {
                 store.len(),
                 passphrase.as_ptr(),
                 passphrase.len(),
+                ptr::null(),
+                0,
                 false,
                 &mut handle,
                 ptr::null_mut(),

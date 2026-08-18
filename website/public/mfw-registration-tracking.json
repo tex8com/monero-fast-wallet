@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "registrations": [
+    {
+      "canonicalName": "tex8.mfw",
+      "commitTxidHex": "edd39ebca3bdd7d6dd4017064475bf646b4270cfe90dcc3c10c394a3e66bfd4c",
+      "commitHeight": 3740974,
+      "claimTxidHex": "19807de2aff8e88881eb4b7f13cb2b8eb59436e60778fc8087bd433528fa4301",
+      "minimumClaimConfirmations": 15,
+      "revealWindowConfirmations": 720
+    }
+  ]
+}

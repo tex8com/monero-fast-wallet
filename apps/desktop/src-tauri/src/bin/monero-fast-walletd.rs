@@ -10,6 +10,8 @@ use serde::Deserialize;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::{
     collections::VecDeque,
+    io::{Read, Write},
+    net::TcpStream,
     path::Path,
     process::Command,
     thread,
@@ -17,7 +19,7 @@ use std::{
 };
 use std::{env, fs};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-use tungstenite::{client::IntoClientRequest, connect, http::HeaderValue, Message};
+use tungstenite::{client::IntoClientRequest, client_tls, connect, http::HeaderValue, Message};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use zeroize::Zeroize;
 
@@ -124,6 +126,11 @@ fn read_config(path: &str) -> Result<AgentConfig, String> {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn run_agent(config_path: String, mut config: AgentConfig) -> Result<(), String> {
+    let app_data_dir = Path::new(&config_path)
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "notification app data directory is unavailable".to_owned())?;
+    monero_wallet_desktop::tor_transport::start_embedded_tor(app_data_dir.join("embedded-tor"));
     let mut reconnect_delay_secs = 1_u64;
     loop {
         config = read_config(&config_path)?;
@@ -166,8 +173,31 @@ fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool
         .headers_mut()
         .insert("x-fast-wallet-installation-auth", auth_header);
     auth.zeroize();
-    let (mut socket, _) =
-        connect(request).map_err(|_| "notification stream could not be connected".to_owned())?;
+    let host = request
+        .uri()
+        .host()
+        .ok_or_else(|| "notification stream host is invalid".to_owned())?
+        .to_owned();
+    let port = request.uri().port_u16().unwrap_or_else(|| {
+        if request.uri().scheme_str() == Some("wss") {
+            443
+        } else {
+            80
+        }
+    });
+    // The only direct socket permitted here is the loopback-only E2E harness
+    // in a debug build. Production notification streams are fail-closed Tor.
+    let local_test = cfg!(debug_assertions)
+        && env::var_os("MONERO_FAST_WALLETD_TEST_AUTH").is_some()
+        && matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1");
+    let (mut socket, _) = if local_test {
+        connect(request)
+            .map_err(|_| "local notification test stream could not be connected".to_owned())?
+    } else {
+        let transport = connect_through_tor(&host, port)?;
+        client_tls(request, transport)
+            .map_err(|_| "notification stream could not be connected through Tor".to_owned())?
+    };
     let mut recent_event_ids = VecDeque::with_capacity(64);
     loop {
         match socket.read() {
@@ -204,6 +234,69 @@ fn run_stream_connection(config_path: &str, config: &AgentConfig) -> Result<bool
             Err(_) => return Err("notification stream connection was interrupted".to_owned()),
         }
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn connect_through_tor(host: &str, port: u16) -> Result<TcpStream, String> {
+    if host.is_empty() || host.len() > 255 || !host.is_ascii() || port == 0 {
+        return Err("notification Tor destination is invalid".to_owned());
+    }
+    let timeout = Duration::from_secs(20);
+    let mut stream = TcpStream::connect_timeout(
+        &monero_wallet_desktop::tor_transport::TOR_SOCKS_ADDRESS
+            .parse()
+            .map_err(|_| "embedded Tor address is invalid".to_owned())?,
+        timeout,
+    )
+    .map_err(|_| "embedded Tor is not ready".to_owned())?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|_| "embedded Tor timeout could not be configured".to_owned())?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|_| "embedded Tor timeout could not be configured".to_owned())?;
+    stream
+        .write_all(&[5, 1, 0])
+        .map_err(|_| "embedded Tor handshake failed".to_owned())?;
+    let mut greeting = [0_u8; 2];
+    stream
+        .read_exact(&mut greeting)
+        .map_err(|_| "embedded Tor is still connecting".to_owned())?;
+    if greeting != [5, 0] {
+        return Err("embedded Tor rejected the connection".to_owned());
+    }
+    let host_bytes = host.as_bytes();
+    let mut request = Vec::with_capacity(host_bytes.len() + 7);
+    request.extend_from_slice(&[5, 1, 0, 3, host_bytes.len() as u8]);
+    request.extend_from_slice(host_bytes);
+    request.extend_from_slice(&port.to_be_bytes());
+    stream
+        .write_all(&request)
+        .map_err(|_| "embedded Tor request failed".to_owned())?;
+    let mut response = [0_u8; 4];
+    stream
+        .read_exact(&mut response)
+        .map_err(|_| "embedded Tor destination did not respond".to_owned())?;
+    if response[0] != 5 || response[1] != 0 {
+        return Err("embedded Tor could not open the notification route".to_owned());
+    }
+    let remaining = match response[3] {
+        1 => 6,
+        3 => {
+            let mut length = [0_u8; 1];
+            stream
+                .read_exact(&mut length)
+                .map_err(|_| "embedded Tor returned an invalid response".to_owned())?;
+            usize::from(length[0]) + 2
+        }
+        4 => 18,
+        _ => return Err("embedded Tor returned an invalid response".to_owned()),
+    };
+    let mut ignored = vec![0_u8; remaining];
+    stream
+        .read_exact(&mut ignored)
+        .map_err(|_| "embedded Tor returned an incomplete response".to_owned())?;
+    Ok(stream)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
@@ -366,7 +459,7 @@ mod tests {
             installation_id: "mwp_desktop_0123456789abcdef".to_owned(),
             platform: "windows".to_owned(),
             provider: "windows-agent".to_owned(),
-            service_url: "https://xmr.tex8.com/api/v1/notifications".to_owned(),
+            service_url: "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion/api/v1/notifications".to_owned(),
             app_command: None,
             enabled: true,
         };

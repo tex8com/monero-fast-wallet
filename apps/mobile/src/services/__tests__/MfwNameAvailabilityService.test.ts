@@ -3,6 +3,7 @@ import {
   inspectMfwNameAvailability,
 } from '../MfwNameAvailabilityService';
 import type { MfwNameResolution } from '../PrivateRecipientResolution';
+import {NativeModules} from 'react-native';
 
 const hex = (value: string) => value.repeat(64);
 
@@ -37,11 +38,26 @@ function lookup(value: MfwNameResolution) {
 }
 
 describe('MFW name availability', () => {
+  beforeEach(() => {
+    NativeModules.EmbeddedTor = {
+      request: jest.fn(async (url: string, method: string, headers: Record<string, string>, body: string | null) => {
+        const result = await globalThis.fetch(url, {method, headers, body: body ?? undefined});
+        const responseBody =
+          typeof (result as any).text === 'function'
+            ? await (result as any).text()
+            : typeof (result as any).json === 'function'
+              ? JSON.stringify(await (result as any).json())
+              : '';
+        return {status: result.status, body: responseBody};
+      }),
+    };
+  });
+
   it('accepts only quorum-confirmed fresh not-found responses', async () => {
     const transport = lookup(response('not_found'));
     await expect(
       inspectMfwNameAvailability(
-        { name: 'Alice', network: 'mainnet', walletChainHeight: 1_003 },
+        { name: 'Alice', network: 'mainnet' },
         transport,
       ),
     ).resolves.toMatchObject({
@@ -61,19 +77,13 @@ describe('MFW name availability', () => {
   ] as const)('maps %s to %s', async (recordStatus, expected) => {
     await expect(
       inspectMfwNameAvailability(
-        { name: 'alice.mfw', network: 'mainnet', walletChainHeight: 1_000 },
+        { name: 'alice.mfw', network: 'mainnet' },
         lookup(response(recordStatus)),
       ),
     ).resolves.toMatchObject({ status: expected });
   });
 
-  it('rejects stale and record-bearing not-found answers', async () => {
-    await expect(
-      inspectMfwNameAvailability(
-        { name: 'alice', network: 'mainnet', walletChainHeight: 1_100 },
-        lookup(response('not_found')),
-      ),
-    ).rejects.toThrow('stale');
+  it('rejects record-bearing not-found answers', async () => {
     await expect(
       inspectMfwNameAvailability(
         { name: 'alice', network: 'mainnet' },
@@ -91,12 +101,26 @@ describe('MFW name availability', () => {
     ).rejects.toThrow('contains a record');
   });
 
-  it('remains fail-closed while registration is disabled', async () => {
+  it('uses the pinned public resolver in the enabled development release', async () => {
+    const current = response('not_found') as unknown as Record<string, unknown>;
+    delete current.ownerPublicKeyHex;
+    delete current.sequence;
+    delete current.signingOwnerPublicKeyHex;
+    const fetcher = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(current),
+    } as Response);
     await expect(
       checkConfiguredMfwNameAvailability({
         name: 'alice',
         network: 'mainnet',
       }),
-    ).rejects.toThrow('not available');
+    ).resolves.toMatchObject({ status: 'available' });
+    expect(fetcher).toHaveBeenCalledWith(
+      'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion/v1/mfw/names/alice.mfw',
+      expect.any(Object),
+    );
+    fetcher.mockRestore();
   });
 });

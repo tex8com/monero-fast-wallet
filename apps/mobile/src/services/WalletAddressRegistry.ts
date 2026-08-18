@@ -11,6 +11,8 @@ export interface WalletAddressRecord {
   walletId: string;
   accountIndex: number;
   addressIndex: number;
+  /** Live Core value. Deliberately omitted from protected registry storage. */
+  balanceAtomic?: string;
   address: string;
   label: string;
   createdAt: string;

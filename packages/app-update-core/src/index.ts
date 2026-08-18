@@ -415,9 +415,15 @@ export function buildAppUpdateManifestUrl(
   >,
 ): string {
   const url = new URL(endpoint);
-  if (url.protocol !== 'https:' || url.username || url.password) {
+  const authenticatedOnion =
+    url.protocol === 'http:' && /^[a-z2-7]{56}\.onion$/u.test(url.hostname);
+  if (
+    (url.protocol !== 'https:' && !authenticatedOnion) ||
+    url.username ||
+    url.password
+  ) {
     throw new Error(
-      'Update manifest endpoint must use credential-free HTTPS',
+      'Update manifest endpoint must use credential-free HTTPS or Tor v3 Onion',
     );
   }
   if (!hostAllowed(url.toString(), context.allowedHosts)) {

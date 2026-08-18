@@ -1,10 +1,14 @@
 import { requireNativeMoneroWallet } from './NativeMoneroWallet';
 import type { DaemonConfig, MoneroNetwork } from './NativeMoneroWallet';
+import { NativeModules } from 'react-native';
 import {
   loadProtectedMetadata,
   storeProtectedMetadata,
 } from './ProtectedMetadataStorage';
-
+import {
+  fixedMainnetNodeConnection,
+  PRIMARY_PRIVATE_SERVICE_ORIGIN,
+} from '../../../../packages/wallet-shared/src/nodePresets';
 export type NodeConnectionMode = 'optimized-grpc' | 'original-rpc' | 'custom';
 
 export interface NodeConnectionSettings {
@@ -27,14 +31,14 @@ export interface NodeConnectionDraft {
   proxyAddress: string;
 }
 
-const CUPRATE_DEFAULT_HOST = 'xmr.tex8.com';
-const CUPRATE_SCANNER_DEFAULT_ORIGIN = 'https://xmr.tex8.com';
-const LEGACY_CUPRATE_DEFAULT_HOSTS = [
+const MFN_DEFAULT_HOST = 'xmr.tex8.com';
+const MFN_SCANNER_DEFAULT_ORIGIN = PRIMARY_PRIVATE_SERVICE_ORIGIN;
+const LEGACY_MFN_DEFAULT_HOSTS = [
   '152.53.133.188',
   'private-node-ip',
   'private-node-ip',
 ];
-const LEGACY_MONEROD_RPC_PORT_BY_CUPRATE_PORT: Record<string, string> = {
+const LEGACY_MONEROD_RPC_PORT_BY_MFN_PORT: Record<string, string> = {
   '18089': '18081',
   '28089': '28081',
   '38089': '38081',
@@ -56,7 +60,7 @@ const ORIGINAL_RPC_PORTS: Record<MoneroNetwork, number> = {
   stagenet: 38081,
 };
 
-const CUPRATE_GRPC_PORTS: Record<MoneroNetwork, number> = {
+const MFN_GRPC_PORTS: Record<MoneroNetwork, number> = {
   mainnet: 18091,
   testnet: 28091,
   stagenet: 38091,
@@ -69,16 +73,22 @@ let activeSettingsRevision = 0;
 
 export function createDefaultNodeConnectionSettings(
   network: MoneroNetwork,
-  mode: NodeConnectionMode = 'optimized-grpc',
+  _mode: NodeConnectionMode = 'optimized-grpc',
 ): NodeConnectionSettings {
-  const daemonAddress = `${CUPRATE_DEFAULT_HOST}:${defaultDaemonPortForMode(
-    network,
-    mode,
-  )}`;
+  const mode: NodeConnectionMode = 'optimized-grpc';
+  const mainnetClearnet =
+    network === 'mainnet'
+      ? fixedMainnetNodeConnection('tex8', 'clearnet')
+      : undefined;
+  const mainnetOnion = mainnetClearnet
+    ? fixedMainnetNodeConnection('tex8', 'onion')
+    : undefined;
+  const daemonAddress =
+    mainnetOnion?.daemonAddress ??
+    `${MFN_DEFAULT_HOST}:${defaultDaemonPortForMode(network, mode)}`;
   const grpcEndpoint =
-    mode === 'original-rpc'
-      ? ''
-      : `${CUPRATE_DEFAULT_HOST}:${CUPRATE_GRPC_PORTS[network]}`;
+    mainnetClearnet?.grpcEndpoint ??
+    `${MFN_DEFAULT_HOST}:${MFN_GRPC_PORTS[network]}`;
 
   return {
     mode,
@@ -89,7 +99,7 @@ export function createDefaultNodeConnectionSettings(
       useSsl: false,
       username: '',
       password: '',
-      proxyAddress: '',
+      proxyAddress: mainnetOnion?.proxyAddress ?? '127.0.0.1:9050',
     },
     grpcEndpoint,
   };
@@ -130,6 +140,18 @@ export async function saveActiveNodeConnectionSettings(
     NODE_CONNECTION_SETTINGS_STORAGE_KEY,
     JSON.stringify(toPersistedSettings(saved)),
   );
+  const connectivity = NativeModules.EmbeddedTor as
+    | {
+        configureConnectivity?(
+          torEndpoint: string,
+          clearnetEndpoint: string,
+        ): Promise<void>;
+      }
+    | undefined;
+  await connectivity?.configureConnectivity?.(
+    saved.daemon.address,
+    saved.grpcEndpoint,
+  );
   return saved;
 }
 
@@ -154,7 +176,7 @@ export function nodeConnectionDraftToSettings(
   draft: NodeConnectionDraft,
 ): NodeConnectionSettings {
   return normalizeNodeConnectionSettings({
-    mode: draft.mode,
+    mode: 'optimized-grpc',
     network: draft.network,
     daemon: {
       address: draft.daemonAddress,
@@ -163,13 +185,12 @@ export function nodeConnectionDraftToSettings(
       username: draft.username,
       password: draft.password,
       passwordSecretKey:
-        draft.mode === 'custom' &&
-        (draft.password.length > 0 || draft.passwordStored)
+        draft.password.length > 0 || draft.passwordStored
           ? NODE_DAEMON_PASSWORD_SECRET_KEY
           : undefined,
-      proxyAddress: draft.proxyAddress,
+      proxyAddress: '127.0.0.1:9050',
     },
-    grpcEndpoint: draft.mode === 'original-rpc' ? '' : draft.grpcEndpoint,
+    grpcEndpoint: draft.grpcEndpoint,
   });
 }
 
@@ -177,10 +198,12 @@ export function normalizeNodeConnectionSettings(
   settings: NodeConnectionSettings,
 ): NodeConnectionSettings {
   const daemon = settings.daemon;
-  const daemonPort = defaultDaemonPortForMode(settings.network, settings.mode);
+  const mode: NodeConnectionMode = 'optimized-grpc';
+  const daemonPort = defaultDaemonPortForMode(settings.network, mode);
+  const defaults = createDefaultNodeConnectionSettings(settings.network, mode);
 
   return {
-    mode: settings.mode,
+    mode,
     network: settings.network,
     daemon: {
       address: normalizeEndpointWithDefaultPort(daemon.address, daemonPort),
@@ -189,15 +212,12 @@ export function normalizeNodeConnectionSettings(
       username: (daemon.username ?? '').trim(),
       password: daemon.password ?? '',
       passwordSecretKey: normalizeSecretKey(daemon.passwordSecretKey),
-      proxyAddress: (daemon.proxyAddress ?? '').trim(),
+      proxyAddress: '127.0.0.1:9050',
     },
-    grpcEndpoint:
-      settings.mode === 'original-rpc'
-        ? ''
-        : normalizeEndpointWithDefaultPort(
-            settings.grpcEndpoint,
-            CUPRATE_GRPC_PORTS[settings.network],
-          ),
+    grpcEndpoint: normalizeEndpointWithDefaultPort(
+      settings.grpcEndpoint || defaults.grpcEndpoint,
+      MFN_GRPC_PORTS[settings.network],
+    ),
   };
 }
 
@@ -206,7 +226,7 @@ export function deriveOptimizedGrpcEndpointFromDaemonAddress(
   network: MoneroNetwork,
 ): string {
   const host = extractEndpointHost(daemonAddress);
-  return host ? `${host}:${CUPRATE_GRPC_PORTS[network]}` : '';
+  return host ? `${host}:${MFN_GRPC_PORTS[network]}` : '';
 }
 
 export function applyNodeModeDefaults(
@@ -263,12 +283,12 @@ export function fastReceiveScannerUrlForSettings(
     }
   }
 
-  const host = stripKnownCupratePort(trimmed);
+  const host = stripKnownMfnPort(trimmed);
   if (
-    host === CUPRATE_DEFAULT_HOST ||
-    LEGACY_CUPRATE_DEFAULT_HOSTS.includes(host)
+    host === MFN_DEFAULT_HOST ||
+    LEGACY_MFN_DEFAULT_HOSTS.includes(host)
   ) {
-    return CUPRATE_SCANNER_DEFAULT_ORIGIN;
+    return MFN_SCANNER_DEFAULT_ORIGIN;
   }
 
   return `https://${host}`;
@@ -364,16 +384,30 @@ function parsePersistedSettings(
       mode === 'original-rpc'
         ? ''
         : parseString(parsed.grpcEndpoint, defaults.grpcEndpoint);
+    const migratedDaemonAddress = migrateLegacyDefaultEndpoint(
+      daemonAddress,
+      defaults.daemon.address,
+    );
+    const migratedGrpcEndpoint =
+      mode === 'original-rpc'
+        ? ''
+        : migrateLegacyDefaultEndpoint(grpcEndpoint, defaults.grpcEndpoint);
+    const persistedProxyAddress = parseString(parsed.daemon.proxyAddress, '');
+    const proxyAddress =
+      mode === 'optimized-grpc' &&
+      network === 'mainnet' &&
+      migratedDaemonAddress === defaults.daemon.address &&
+      migratedGrpcEndpoint === defaults.grpcEndpoint &&
+      persistedProxyAddress.length === 0
+        ? defaults.daemon.proxyAddress ?? ''
+        : persistedProxyAddress;
 
     return normalizeNodeConnectionSettings({
       mode,
       network,
       daemon: {
         ...defaults.daemon,
-        address: migrateLegacyDefaultEndpoint(
-          daemonAddress,
-          defaults.daemon.address,
-        ),
+        address: migratedDaemonAddress,
         trusted: parseBoolean(parsed.daemon.trusted, defaults.daemon.trusted),
         useSsl: parseBoolean(
           parsed.daemon.useSsl,
@@ -382,12 +416,9 @@ function parsePersistedSettings(
         username: parseString(parsed.daemon.username, ''),
         password: '',
         passwordSecretKey: parseSecretKey(parsed.daemon.passwordSecretKey),
-        proxyAddress: parseString(parsed.daemon.proxyAddress, ''),
+        proxyAddress,
       },
-      grpcEndpoint:
-        mode === 'original-rpc'
-          ? ''
-          : migrateLegacyDefaultEndpoint(grpcEndpoint, defaults.grpcEndpoint),
+      grpcEndpoint: migratedGrpcEndpoint,
     });
   } catch {
     return undefined;
@@ -399,10 +430,17 @@ function migrateLegacyDefaultEndpoint(
   defaultEndpoint: string,
 ): string {
   const [host, port] = endpoint.split(':');
-  const [, defaultPort] = defaultEndpoint.split(':');
-  const legacyRpcPort = LEGACY_MONEROD_RPC_PORT_BY_CUPRATE_PORT[defaultPort];
+  const [defaultHost, defaultPort] = defaultEndpoint.split(':');
+  const legacyRpcPort = LEGACY_MONEROD_RPC_PORT_BY_MFN_PORT[defaultPort];
   if (
-    LEGACY_CUPRATE_DEFAULT_HOSTS.includes(host) &&
+    host === MFN_DEFAULT_HOST &&
+    defaultHost !== MFN_DEFAULT_HOST &&
+    (port === defaultPort || port === legacyRpcPort)
+  ) {
+    return defaultEndpoint;
+  }
+  if (
+    LEGACY_MFN_DEFAULT_HOSTS.includes(host) &&
     (port === defaultPort || port === legacyRpcPort)
   ) {
     return defaultEndpoint;
@@ -489,7 +527,7 @@ function extractEndpointHost(endpoint: string): string {
   return authority;
 }
 
-function stripKnownCupratePort(endpoint: string): string {
+function stripKnownMfnPort(endpoint: string): string {
   const slashIndex = endpoint.indexOf('/');
   const authority = slashIndex >= 0 ? endpoint.slice(0, slashIndex) : endpoint;
   const rest = slashIndex >= 0 ? endpoint.slice(slashIndex) : '';

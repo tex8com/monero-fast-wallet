@@ -37,13 +37,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       launchOptions: launchOptions
     )
 
-    NotificationCenter.default.addObserver(
-      self,
-      selector: #selector(screenCaptureStateChanged),
-      name: UIScreen.capturedDidChangeNotification,
-      object: nil
-    )
-
     return true
   }
 
@@ -52,11 +45,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
   }
 
   func applicationDidBecomeActive(_ application: UIApplication) {
-    if UIScreen.main.isCaptured {
-      showPrivacyShield()
-    } else {
-      hidePrivacyShield()
-    }
+    hidePrivacyShield()
   }
 
   func application(
@@ -77,14 +66,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       continue: userActivity,
       restorationHandler: restorationHandler
     )
-  }
-
-  @objc private func screenCaptureStateChanged() {
-    if UIScreen.main.isCaptured {
-      showPrivacyShield()
-    } else if UIApplication.shared.applicationState == .active {
-      hidePrivacyShield()
-    }
   }
 
   private func showPrivacyShield() {

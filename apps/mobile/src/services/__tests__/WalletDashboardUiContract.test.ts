@@ -15,6 +15,7 @@ describe('Wallet dashboard interaction contract', () => {
   const settings = source('src', 'screens', 'SettingsScreen.tsx');
   const send = source('src', 'screens', 'SendScreen.tsx');
   const syncStatus = source('src', 'components', 'SyncStatusBar.tsx');
+  const appTopBar = source('src', 'components', 'AppTopBar.tsx');
   const walletState = source('src', 'services', 'WalletState.tsx');
   const appSecurity = source('src', 'services', 'AppSecurity.tsx');
   const fastWalletPush = source('src', 'services', 'FastWalletPushService.ts');
@@ -113,18 +114,53 @@ describe('Wallet dashboard interaction contract', () => {
       send.indexOf('const validateRecipientAndContinue'),
     );
     expect(prepareFlow.indexOf('await reconcileLedgerBalance()')).toBeLessThan(
-      prepareFlow.indexOf('await connectLedgerForSigning()'),
+      prepareFlow.indexOf('await connectLedgerForSigning({'),
     );
-    expect(commitFlow.indexOf('await walletService.commitTransaction')).toBeLessThan(
-      commitFlow.indexOf('await reconcileLedgerBalance()'),
+    expect(prepareFlow).toContain(
+      "setLedgerSigningProgress({ phase: 'searching' })",
     );
+    expect(prepareFlow).toContain("phase: 'awaiting-confirmation'");
+    expect(send).toContain('<LedgerSigningModal');
+    expect(
+      commitFlow.indexOf('await walletService.commitTransaction'),
+    ).toBeLessThan(commitFlow.indexOf('await reconcileLedgerBalance()'));
     expect(commitFlow).toContain(
       "setSendStatus(t('send.transactionBroadcastRefreshPending'))",
     );
   });
 
+  it('connects the session-local transaction control plane before Core prepares a transfer', () => {
+    const prepareStart = walletEngine.indexOf(
+      'prepareTransaction(const PrepareTransactionRequest',
+    );
+    const prepareTransaction = walletEngine.slice(
+      prepareStart,
+      walletEngine.indexOf(
+        'PreparedTransaction commitTransaction(',
+        prepareStart,
+      ),
+    );
+    const controlPlane = walletEngine.slice(
+      walletEngine.indexOf('void initializeTransactionControlPlane('),
+      walletEngine.indexOf(
+        'LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet(',
+      ),
+    );
+
+    expect(controlPlane).toContain('session.wallet->init(');
+    expect(controlPlane).toContain('session.wallet->connectToDaemon()');
+    expect(controlPlane).toContain('networkInitializationGeneration');
+    expect(prepareTransaction).toContain('initializeTransactionControlPlane(');
+    expect(
+      prepareTransaction.indexOf('initializeTransactionControlPlane('),
+    ).toBeLessThan(prepareTransaction.indexOf('createTransaction'));
+    expect(prepareTransaction).toContain(
+      'transaction preparation requires configured network sync',
+    );
+  });
+
   it('selects a software wallet immediately while a cold local open finishes behind Home', () => {
-    expect(home).toContain('void openRegisteredWalletById(walletId)');
+    expect(home).toContain('openRegisteredWalletById(walletId)');
     expect(home).toContain("if (wallet.kind !== 'hardware')");
     expect(home).toContain('Do not manufacture a loading phase');
     expect(home).not.toContain(
@@ -201,13 +237,37 @@ describe('Wallet dashboard interaction contract', () => {
     expect(wallets).toContain('manageAddresses: true');
     expect(wallets).toContain("navigation.navigate('Receive'");
     expect(receive).toContain('route?.params?.manageAddresses === true');
-    expect(receive).toContain('walletService.listSubaddresses(session)');
+    expect(receive).toContain('walletService.listSubaddresses(');
+    expect(receive).toContain('receiveAccountIndexesKey');
+    expect(receive).toContain('transaction.subaddrAccount');
     expect(receive).toContain("t('receive.newAddressName')");
     expect(walletServiceSource).toContain("'listSubaddresses'");
     expect(walletServiceSource).toContain(
       'requireNativeMoneroWallet().listSubaddresses',
     );
     expect(nativeWallet).toContain('listSubaddresses(');
+  });
+
+  it('keeps receive addresses stable and shows exact address activity', () => {
+    expect(receive).toContain('walletAddresses.map(item =>');
+    expect(receive).not.toContain('otherWalletAddresses.map(item =>');
+    expect(receive).toContain('addressBalanceDetail(');
+    expect(receive).toContain('ledgerBalanceUnverified');
+    expect(receive).toContain('ledgerBalanceNeedsVerification(');
+    expect(receive).not.toContain('{item.accountIndex}.{item.addressIndex}');
+    expect(receive).toContain(
+      'transactionsForWalletAddress(transactions, selectedAddress)',
+    );
+    expect(receive).not.toContain("t('receive.privacyTitle')");
+    expect(receive).not.toContain("t('receive.stealthTitle')");
+    expect(walletServiceSource).toContain(
+      'nativeAddressById.get(address.id)!.balanceAtomic',
+    );
+    expect(nativeAndroidBridge).toContain('putString("balanceAtomic"');
+    expect(nativeAndroidJni).toContain('"balanceAtomic"');
+    expect(walletEngine).toContain(
+      'wallet->balancePerSubaddress(accountIndex)',
+    );
   });
 
   it('defers network refresh until the local open promise can release the UI', () => {
@@ -260,8 +320,10 @@ describe('Wallet dashboard interaction contract', () => {
   it('does not turn protected Fast Wallet metadata into a startup error', () => {
     expect(fastWalletPush).toContain('registration.refreshDeferred');
     expect(fastWalletPush).toContain('if (!protection || protection.locked)');
+    expect(fastWalletPush).not.toContain('Push diagnostics');
+    expect(fastWalletPush).not.toContain('Alert.alert');
     expect(appSecurity).toContain(
-      'void FastWalletPushService.refreshRegistrationQuietly(undefined, true)',
+      'FastWalletPushService.refreshRegistrationQuietly(undefined, true)',
     );
   });
 
@@ -286,8 +348,12 @@ describe('Wallet dashboard interaction contract', () => {
     expect(priceService).toContain('const REQUEST_TIMEOUT_MS = 6_000');
     expect(priceService).toContain('const PRICE_CACHE_KEY');
     expect(priceService).toContain(
-      "const TEX8_MARKET_BASE = 'https://xmr.tex8.com/api/v1/market'",
+      'const TEX8_MARKET_BASE = `${PRIMARY_PRIVATE_SERVICE_ORIGIN}/api/v1/market`',
     );
+    expect(priceService).toContain(
+      "import {torFetch} from '../services/TorHttp'",
+    );
+    expect(priceService).not.toContain('https://xmr.tex8.com/api/v1/market');
     expect(priceService).toContain('await fetchPriceFromTex8()');
     expect(priceService).toContain('await fetchTex8Chart(tf)');
     expect(priceService).not.toContain('api.coingecko.com');
@@ -301,14 +367,16 @@ describe('Wallet dashboard interaction contract', () => {
     expect(syncStatus).toContain('testID="wallet-progress"');
     expect(syncStatus).toContain('const blockchainProgress =');
     expect(syncStatus).toContain('const walletProgress =');
-    expect(syncStatus).not.toContain("presentation.phase === 'finalizing'\n    ? 99");
+    expect(syncStatus).not.toContain(
+      "presentation.phase === 'finalizing'\n    ? 99",
+    );
     expect(syncStatus).toContain('const blockchainCurrent =');
     expect(syncStatus).toContain('network.ready ? 100 : network.progress ?? 0');
     expect(syncStatus).toContain('network.downloadedHeight');
     expect(syncStatus).toContain(': network.chainHeight');
     expect(syncStatus).toContain('target={network.targetHeight}');
     expect(syncStatus).toContain('useAggregateNetworkRate(networkStatus)');
-    expect(syncStatus).toContain('networkSyncWindowMegabitsPerSecond(');
+    expect(syncStatus).toContain('updateMobileNetworkSyncRateWindow(');
     expect(syncStatus).toContain(
       'syncStartHeight ?? networkStatus?.downloadStartHeight',
     );
@@ -317,6 +385,10 @@ describe('Wallet dashboard interaction contract', () => {
     );
     expect(syncStatus).toContain("t('sync.networkRate'");
     expect(syncStatus).toContain("t('sync.derivationRate'");
+    expect(syncStatus).toContain('variant="blockchain"');
+    expect(syncStatus).toContain('variant="wallet"');
+    expect(syncStatus).toContain('s.fillBlockchain');
+    expect(syncStatus).toContain('s.fillWallet');
     expect(syncStatus).toContain('t("sync.startingConnectionElapsed"');
     expect(syncStatus).toContain('seconds: connectionElapsedSeconds');
     expect(syncStatus).toContain(
@@ -390,7 +462,14 @@ describe('Wallet dashboard interaction contract', () => {
     expect(syncStatus).toContain('testID="sync-status-toggle"');
     expect(syncStatus).toContain('accessibilityState={{ expanded }}');
     expect(syncStatus).toContain('testID="sync-status-details"');
-    expect(home).toContain('testID="header-sync-status-toggle"');
+    expect(appTopBar).toContain('useConnectivityState');
+    expect(appTopBar).toContain("{ label: 'Tor', route: connectivity.tor }");
+    expect(appTopBar).toContain(
+      "{ label: 'Sync', route: connectivity.clearnet }",
+    );
+    expect(appTopBar).toContain("stateLabel: 'connected'");
+    expect(appTopBar).toContain('<MoneroLogo size={27} />');
+    expect(home).not.toContain('testID="header-sync-status-toggle"');
     expect(home).toContain('expanded={syncStatusExpanded}');
     expect(home).toContain('onExpandedChange={setSyncStatusExpanded}');
   });
@@ -467,8 +546,12 @@ describe('Wallet dashboard interaction contract', () => {
   it('publishes mobile balance and history only from one bracketed native revision', () => {
     expect(walletState).toContain('snapshotPublicationToken(beforeHistory)');
     expect(walletState).toContain('snapshotPublicationToken(afterHistory)');
-    expect(walletState).toContain('walletStateSamplesByRegistrationRef.current.set(');
-    expect(walletState).toContain('const sample = walletStateSamplesByRegistrationRef.current.get(');
+    expect(walletState).toContain(
+      'walletStateSamplesByRegistrationRef.current.set(',
+    );
+    expect(walletState).toContain(
+      'const sample = walletStateSamplesByRegistrationRef.current.get(',
+    );
     expect(walletState).toContain('transactions: sample?.transactions ?? []');
   });
 
@@ -484,16 +567,16 @@ describe('Wallet dashboard interaction contract', () => {
   it('never wakes an inactive Ledger in the background and exposes an explicit settings action', () => {
     expect(walletState).toContain('ledgerReconciliationInFlightRef');
     expect(walletState).not.toContain("'ledgerBackgroundVerification.start'");
-    expect(walletState).not.toContain('setInterval(() => void attempt(), 15_000)');
+    expect(walletState).not.toContain(
+      'setInterval(() => void attempt(), 15_000)',
+    );
     expect(settings).toContain('recheckLedgerSpendOutputs');
     expect(settings).toContain('reconcileLedgerBalance()');
     expect(walletState).toContain(
       'await walletService.openRegisteredWalletRegistration(\n            activeRegistration,',
     );
     expect(walletServiceSource).toContain('preserveActiveSession?: boolean');
-    expect(walletServiceSource).toContain(
-      'viewSession !== leasedViewSession',
-    );
+    expect(walletServiceSource).toContain('viewSession !== leasedViewSession');
     expect(walletServiceSource).toContain(
       'this.activeSession = { ...previousSession }',
     );

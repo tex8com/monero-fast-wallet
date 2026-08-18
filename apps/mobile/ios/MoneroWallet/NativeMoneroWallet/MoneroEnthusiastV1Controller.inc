@@ -1127,6 +1127,12 @@ NSString *communityV1StringFromNativeBuffer(
   NSData *storePath = [[self communityStorageDirectory:@"matrix"].path
       dataUsingEncoding:NSUTF8StringEncoding];
   NSMutableData *storeKey = [[self matrixStoreKey] mutableCopy];
+  NSError *torError = nil;
+  NSString *socksAddress = MFWEmbeddedTorSocksAddress(120.0, &torError);
+  communityV1Require(socksAddress.length > 0,
+                     torError.localizedDescription ?: @"Embedded Tor is unavailable");
+  NSData *proxy = [[@"socks5h://" stringByAppendingString:socksAddress]
+      dataUsingEncoding:NSUTF8StringEncoding];
   uint8_t errorBuffer[1024] = {};
   size_t errorLength = sizeof(errorBuffer);
   int32_t status = tex8_community_matrix_create_v1(
@@ -1136,6 +1142,8 @@ NSString *communityV1StringFromNativeBuffer(
       storePath.length,
       static_cast<const uint8_t *>(storeKey.bytes),
       storeKey.length,
+      static_cast<const uint8_t *>(proxy.bytes),
+      proxy.length,
       false,
       &_matrix,
       errorBuffer,

@@ -12,8 +12,11 @@ import {
   isLanguageCode,
   languageDateLocales,
   languageNames,
+  getBaseTranslationCatalog,
+  getTranslation,
+  loadTranslationCatalog,
+  type ActiveTranslationCatalog,
   type LanguageCode,
-  translations,
   type TranslationKey,
 } from "./translations";
 import { matchProductLanguage, productLocaleByCode, type ProductTextDirection } from '../../../../config/productLocales';
@@ -26,6 +29,7 @@ type LanguageContextValue = {
   dateLocale: string;
   language: LanguageCode;
   languageLabel: string;
+  languageLoading: boolean;
   textDirection: ProductTextDirection;
   setLanguage: (language: LanguageCode) => Promise<void>;
   t: (key: TranslationKey, params?: TranslationParams) => string;
@@ -62,6 +66,11 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const [language, setLanguageState] = useState<LanguageCode>(() =>
     getDeviceLanguage(),
   );
+  const [activeCatalog, setActiveCatalog] =
+    useState<ActiveTranslationCatalog>();
+  const [languageLoading, setLanguageLoading] = useState(
+    () => !getBaseTranslationCatalog(getDeviceLanguage()),
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -79,6 +88,31 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    const baseCatalog = getBaseTranslationCatalog(language);
+    if (baseCatalog) {
+      setActiveCatalog(undefined);
+      setLanguageLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setActiveCatalog(undefined);
+    setLanguageLoading(true);
+    loadTranslationCatalog(language)
+      .then(catalog => {
+        if (!cancelled) setActiveCatalog(catalog);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setLanguageLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [language]);
+
   const setLanguage = useCallback(async (nextLanguage: LanguageCode) => {
     setLanguageState(nextLanguage);
     await AsyncStorage.setItem(LANGUAGE_STORAGE_KEY, nextLanguage);
@@ -86,10 +120,10 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
 
   const t = useCallback(
     (key: TranslationKey, params?: TranslationParams) => {
-      const translated = translations[language]?.[key] ?? translations.en[key];
+      const translated = getTranslation(language, key, activeCatalog);
       return interpolate(translated, params);
     },
-    [language],
+    [activeCatalog, language],
   );
 
   const value = useMemo<LanguageContextValue>(
@@ -97,11 +131,12 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
       dateLocale: languageDateLocales[language],
       language,
       languageLabel: languageNames[language],
+      languageLoading,
       textDirection: productLocaleByCode[language].direction,
       setLanguage,
       t,
     }),
-    [language, setLanguage, t],
+    [language, languageLoading, setLanguage, t],
   );
 
   return (

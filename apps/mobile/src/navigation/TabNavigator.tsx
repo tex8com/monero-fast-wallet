@@ -1,21 +1,24 @@
 import React, { useEffect, useRef } from "react";
-import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import {
+  createBottomTabNavigator,
+  type BottomTabBarProps,
+} from "@react-navigation/bottom-tabs";
 
 import HomeScreen from "../screens/HomeScreen";
 import SendScreen from "../screens/SendScreen";
 import ReceiveScreen from "../screens/ReceiveScreen";
 import MenuScreen from "../screens/MenuScreen";
-import FindEnthusiastsScreen from "../screens/FindEnthusiastsScreen";
-import EnthusiastChatScreen from "../screens/EnthusiastChatScreen";
 import SettingsScreen from "../screens/SettingsScreen";
+import NodeStatusScreen from "../screens/NodeStatusScreen";
 import Tex8AssistantScreen from "../screens/Tex8AssistantScreen";
 import WelcomeScreen from "../screens/WelcomeScreen";
 import WalletSetupScreen from "../screens/WalletSetupScreen";
 import WalletsScreen from "../screens/WalletsScreen";
 import MfwNamesScreen from "../screens/MfwNamesScreen";
-import MoneroEnthusiastScreen from "../screens/MoneroEnthusiastScreen";
+import CommunityComingSoonScreen from "../screens/CommunityComingSoonScreen";
 import TransactionsScreen from "../screens/TransactionsScreen";
 import TransactionDetailScreen from "../screens/TransactionDetailScreen";
+import ProjectPageScreen from "../screens/ProjectPageScreen";
 import CustomTabBar from "../components/CustomTabBar";
 import { useWalletState } from "../services/WalletState";
 import { useAppSecurity } from "../services/AppSecurity";
@@ -23,6 +26,10 @@ import { logWalletEvent } from "../services/WalletLogger";
 import { v1ReleaseFeatures } from "../../../../packages/wallet-shared/src/v1ReleaseFeatures";
 
 const Tab = createBottomTabNavigator();
+
+function renderTabBar(props: BottomTabBarProps) {
+  return <CustomTabBar {...props} />;
+}
 
 export default function TabNavigator() {
   const { status } = useWalletState();
@@ -81,7 +88,7 @@ export default function TabNavigator() {
   return (
     <Tab.Navigator
       initialRouteName={initialRouteName}
-      tabBar={(props) => <CustomTabBar {...props} />}
+      tabBar={renderTabBar}
       screenOptions={{ headerShown: false }}
     >
       {/* Visible tabs */}
@@ -89,15 +96,17 @@ export default function TabNavigator() {
       <Tab.Screen name="Send" component={SendScreen} />
       <Tab.Screen name="Receive" component={ReceiveScreen} />
       {v1ReleaseFeatures.legacyCommunity ? (
-        <Tab.Screen name="FindEnthusiasts" component={FindEnthusiastsScreen} />
+        <Tab.Screen name="FindEnthusiasts" component={CommunityComingSoonScreen} />
       ) : null}
-      <Tab.Screen name="MoneroEnthusiast" component={MoneroEnthusiastScreen} />
+      <Tab.Screen name="MoneroEnthusiast" component={CommunityComingSoonScreen} />
       <Tab.Screen name="Menu" component={MenuScreen} />
       {/* Hidden screens — accessible via Menu */}
       {v1ReleaseFeatures.legacyCommunity ? (
-        <Tab.Screen name="EnthusiastChat" component={EnthusiastChatScreen} />
+        <Tab.Screen name="EnthusiastChat" component={CommunityComingSoonScreen} />
       ) : null}
       <Tab.Screen name="Settings" component={SettingsScreen} />
+      <Tab.Screen name="NodeStatus" component={NodeStatusScreen} />
+      <Tab.Screen name="ProjectPage" component={ProjectPageScreen} />
       {v1ReleaseFeatures.assistant ? (
         <Tab.Screen name="Tex8Assistant" component={Tex8AssistantScreen} />
       ) : null}

@@ -1,6 +1,8 @@
-import { generatedLocaleMetadata, generatedTranslations } from './translations.generated';
-import { applyManualTranslationOverrides } from '../../../../packages/wallet-shared/src/manualTranslationOverrides';
 import { productLanguageCodes, productLocaleByCode, type ProductLanguageCode } from '../../../../config/productLocales';
+import {
+  generatedRuntimeCatalogLoaders,
+  type GeneratedRuntimeCatalog,
+} from './lazy.generated';
 
 const en = {
   'action.addWallet': 'Add Wallet',
@@ -59,8 +61,40 @@ const en = {
   'tabs.menu': 'Menu',
   'tabs.receive': 'Receive',
   'tabs.send': 'Send',
+  'topBar.connecting': 'Connecting',
+  'topBar.connectingBlocks': 'Connecting block sync',
+  'topBar.connectingTor': 'Connecting to Tor',
+  'topBar.offline': 'Offline',
+  'topBar.online': 'Online',
+  'topBar.ready': 'Ready',
   'communityV1.title': 'Monero Enthusiast',
-  'communityV1.menuDescription': 'Find people, ideas, and services privately',
+  'communityV1.menuDescription': 'Coming soon: connect, chat, and share services',
+  'communitySoon.eyebrow': 'Coming soon',
+  'communitySoon.title': 'Monero Community',
+  'communitySoon.subtitle':
+    'A private place to connect around Monero — without turning the wallet into a marketplace.',
+  'communitySoon.plannedFeatures': 'Planned features',
+  'communitySoon.bulletinTitle': 'Bulletin board',
+  'communitySoon.bulletinText':
+    'Share announcements, ideas, questions, and local meetups.',
+  'communitySoon.meetTitle': 'Meet people',
+  'communitySoon.meetText':
+    'Get to know people nearby, arrange a meeting, or connect online.',
+  'communitySoon.matrixTitle': 'Matrix chat',
+  'communitySoon.matrixText':
+    'Keep conversations in one integrated, private Matrix chat.',
+  'communitySoon.profilesTitle': 'Profiles and services',
+  'communitySoon.profilesText':
+    'Create a profile and describe services you offer. Direct contact stays between users.',
+  'communitySoon.verifiedTitle': 'Optional verification',
+  'communitySoon.verifiedText':
+    'Verified users receive a visible badge to help reduce impersonation and scam risk. Verification remains optional.',
+  'communitySoon.verifiedNote':
+    'The badge is a trust signal, not a guarantee.',
+  'communitySoon.verifiedBadge': 'Verified',
+  'communitySoon.noMarketplaceTitle': 'No marketplace',
+  'communitySoon.noMarketplaceText':
+    'For regulatory reasons, the app will not provide a marketplace, checkout, or intermediary trading. Users can still present their own services in their profiles.',
   'communityV1.optional': 'Optional community',
   'communityV1.subtitle':
     'Discover people and useful ideas without connecting them to your wallet.',
@@ -301,6 +335,17 @@ const en = {
   'notification.closesIn': 'Closes in {seconds}s',
   'notification.ok': 'OK',
   'send.checkingSpendOutputs': 'Checking spent outputs with Ledger…',
+  'ledgerSigning.connectTitle': 'Connect your Ledger',
+  'ledgerSigning.connectedTitle': 'Ledger connected',
+  'ledgerSigning.instructions':
+    'Unlock the Ledger and open the Monero app. The wallet keeps looking until you cancel.',
+  'ledgerSigning.searching': 'Looking for your Ledger…',
+  'ledgerSigning.connecting': 'Connecting securely to Ledger…',
+  'ledgerSigning.connected': 'Ledger is connected.',
+  'ledgerSigning.preparingRequest':
+    'Preparing the transaction request for Ledger…',
+  'ledgerSigning.awaitingConfirmation':
+    'Request sent. Confirm the transaction on your Ledger.',
   'send.transactionBroadcastRefreshPending':
     'Transaction broadcast. Recheck Ledger spend outputs later in Settings.',
   'walletSelector.active': 'Active',
@@ -540,6 +585,7 @@ const en = {
   'home.newsNetwork': 'Network',
   'home.newsWallet': 'Wallet',
   'home.newsEcosystem': 'Ecosystem',
+  'home.newsReadMore': 'Read article',
   'advertising.advertisement': 'Advertisement',
   'advertising.sponsored': 'Sponsored',
   'advertising.paidBy': 'Paid by {advertiser}',
@@ -621,6 +667,9 @@ const en = {
     'Open or create a wallet before preparing a transfer.',
   'send.openWalletBeforeSending': 'Open or create a wallet before sending.',
   'send.pasteAddress': 'Paste Monero address',
+  'send.resolvingMfwName': 'Looking up wallet name…',
+  'send.resolvedMfwAddress': 'Resolved Monero address',
+  'send.useMfwSuggestion': 'Use {name}',
   'send.manualRecipient': 'Enter address manually',
   'send.manualRecipientHint': 'Paste an address or choose a saved contact.',
   'send.or': 'or',
@@ -712,6 +761,7 @@ const en = {
   'transactions.wallet': 'Wallet',
   'receive.addressLabel': 'YOUR MONERO ADDRESS',
   'receive.addresses': 'Addresses',
+  'receive.amountOptional': 'Amount (optional)',
   'receive.checkDevice': 'Check device',
   'receive.connected': 'Connected',
   'receive.emptyText':
@@ -736,6 +786,10 @@ const en = {
     'Each address belongs to this wallet and is recovered by the same recovery words.',
   'receive.manageAddresses': 'Manage receiving addresses',
   'receive.otherAddresses': 'Other receiving addresses',
+  'receive.paymentLink': 'Monero payment link',
+  'receive.copyPaymentLink': 'Copy link',
+  'receive.paymentLinkCopied': 'Link copied',
+  'receive.sharePaymentLink': 'Share payment link',
   'receive.privacyText':
     'Every transaction is automatically private. Sender, recipient, and amount are never visible.',
   'receive.primaryAddress': 'Primary address',
@@ -745,6 +799,7 @@ const en = {
   'receive.stealthTitle': 'Stealth Addresses',
   'receive.subtitle': 'Share your address to receive XMR',
   'receive.title': 'Receive',
+  'receive.usdRateUnavailable': 'The XMR/USD rate is currently unavailable.',
   'receive.walletLocked': 'Wallet Locked',
   'receive.noWalletOpen': 'No Wallet Open',
   'enthusiasts.disabledText':
@@ -804,15 +859,20 @@ const en = {
     'Community is temporarily unavailable. Check your connection, then try again.',
   'enthusiasts.yourName': 'YOUR PUBLIC ALIAS',
   'mfwNames.activationPending':
-    'Name registration is not active in this release yet. The signed Registry address and protocol genesis parameters must be frozen first.',
+    'Name registration is not active in this release yet. The signed Monero Fast Wallet Registry address and protocol genesis parameters must be frozen first.',
   'mfwNames.address': 'Receive address',
   'mfwNames.addressLoadFailed': 'Wallet addresses could not be loaded.',
+  'mfwNames.chooseWalletAddress': 'Choose from wallet',
+  'mfwNames.enterAddressManually': 'Enter manually',
+  'mfwNames.manualAddress': 'Manual Monero address',
+  'mfwNames.manualAddressPlaceholder': 'Paste or type any Monero address',
+  'mfwNames.invalidAddress': 'Enter a valid Monero address for this network.',
   'mfwNames.availabilityAvailable':
     'Available at the current verified chain tip.',
   'mfwNames.availabilityAvailableAgain':
     'Available for a new claim because the previous record is no longer active.',
   'mfwNames.availabilityChecking':
-    'Checking availability with independent resolvers…',
+    'Checking availability with the public resolver…',
   'mfwNames.availabilityPending':
     'This name currently has a provisional registration.',
   'mfwNames.availabilityRequired':
@@ -822,9 +882,16 @@ const en = {
   'mfwNames.availabilityTaken': 'This name is already registered.',
   'mfwNames.availabilityUnavailable':
     'Availability cannot be verified safely right now. Registration remains blocked.',
+  'mfwNames.checkedAt': 'Checked at',
+  'mfwNames.checkedChainTip': 'Checked chain tip',
+  'mfwNames.estimatedExpiredAt': 'Estimated expired around',
+  'mfwNames.estimatedValidUntil': 'Estimated valid until',
   'mfwNames.cancelRenewal': 'Cancel',
   'mfwNames.chooseAddress': 'Choose a receive address for this name.',
   'mfwNames.claimYourAddress': 'Claim your address',
+  'mfwNames.ticker': 'Secure your .mfw name now',
+  'mfwNames.customTerm': 'Other duration',
+  'mfwNames.termRange': 'Enter a whole number from 1 to {max} years.',
   'mfwNames.claimText':
     'After the commit matures, review a second prefilled transaction that publishes the signed name and pays the selected term.',
   'mfwNames.claimTitle': 'Claim and pay',
@@ -849,10 +916,15 @@ const en = {
     'This name is no longer active and must be registered again with a new commit and claim.',
   'mfwNames.expiresAtBlock': 'Expiry block',
   'mfwNames.expiryEstimate':
-    'Days are an estimate at the two-minute block target; the expiry block is authoritative.',
+    'Times and days are estimates at the two-minute block target; the expiry block is authoritative.',
   'mfwNames.invalidName':
     'Use 1–63 lowercase letters, numbers or internal hyphens.',
+  'mfwNames.registeredNames': 'Already registered names',
+  'mfwNames.registeredNamesSubtitle':
+    'Names you have already registered on this device.',
   'mfwNames.myNames': 'Your names',
+  'mfwNames.showMore': 'Show more',
+  'mfwNames.showLess': 'Show less',
   'mfwNames.newAddress': 'New public address',
   'mfwNames.name': 'Address name',
   'mfwNames.nameHint':
@@ -870,14 +942,14 @@ const en = {
     'Open the selected wallet before creating a dedicated address.',
   'mfwNames.openWalletFirst': 'Open and sync a wallet first.',
   'mfwNames.ownerKeySecurity':
-    'A separate name-owner key is generated in device-protected native storage. Registration is blocked until its encrypted recovery export is confirmed.',
+    'A separate name-owner key is generated and kept in device-protected native storage. Development registration can continue immediately.',
   'mfwNames.primaryAddress': 'Primary address',
   'mfwNames.prepareRenewal': 'Prepare renewal',
   'mfwNames.prepareUpdate': 'Prepare address change',
   'mfwNames.operation': 'Protocol action',
   'mfwNames.publicWarning':
     'The name and receive address remain publicly visible in Monero blockchain history. The public address cannot spend funds or reveal your wallet balance.',
-  'mfwNames.registryPrice': 'Registry price',
+  'mfwNames.registryPrice': 'Monero Fast Wallet Registry price',
   'mfwNames.recoveryRequired':
     'Save the encrypted owner recovery before approving the registration.',
   'mfwNames.recoveryImported':
@@ -895,7 +967,7 @@ const en = {
   'mfwNames.renewTransactionText':
     'Review one prefilled owner-signed transaction that extends this active record.',
   'mfwNames.reviewSubtitle':
-    'The Registry destination, amount and signed protocol data are locked by the native wallet. Check them, then approve.',
+    'The Monero Fast Wallet Registry destination, amount and signed protocol data are locked by the native wallet. Check them, then approve.',
   'mfwNames.reviewTitle': 'Review name transaction',
   'mfwNames.restoreRecovery': 'Restore owner recovery',
   'mfwNames.restoreRecoveryDescription':
@@ -927,7 +999,8 @@ const en = {
   'mfwNames.oneUpdateApproval': 'One explicit approval is required',
   'mfwNames.updateDescription':
     'Choose the new public receive address. The protected name-owner key signs the change.',
-  'mfwNames.updateNetworkCost': 'No registry fee for an address change',
+  'mfwNames.updateNetworkCost':
+    'No Monero Fast Wallet Registry fee for an address change',
   'mfwNames.updateTitle': 'Change public address',
   'mfwNames.updateTransactionText':
     'Review one prefilled owner-signed transaction that replaces the public receive address.',
@@ -1027,6 +1100,26 @@ const en = {
   'menu.myWallet': 'My Wallet',
   'menu.noWalletOpen': 'No wallet open',
   'menu.nodeStatus': 'Node Status',
+  'nodeStatus.subtitle':
+    'Two global routes: fast block synchronization over Clearnet and every other wallet operation through Tor.',
+  'nodeStatus.diagnostics': 'Connection check',
+  'nodeStatus.diagnosticsHint':
+    'Checks Tor for wallet operations and Clearnet for fast blockchain synchronization separately.',
+  'nodeStatus.globalRoutes': 'Global node routes',
+  'nodeStatus.globalRoutesHint':
+    'These routes apply to every wallet on this device. Every change is saved automatically.',
+  'nodeStatus.torRoute': 'Tor connection',
+  'nodeStatus.torHint':
+    'Wallet operations and private services use the selected daemon through embedded Tor.',
+  'nodeStatus.clearnetRoute': 'Clearnet block sync',
+  'nodeStatus.clearnetHint':
+    'Only public blockchain blocks use the fast Clearnet gRPC route.',
+  'nodeStatus.connected': 'Connected',
+  'nodeStatus.notConnected': 'Error',
+  'nodeStatus.checking': 'Checking',
+  'nodeStatus.autoSaved': 'Saved automatically',
+  'nodeStatus.autoSaving': 'Saving…',
+  'nodeStatus.autoSaveError': 'Check entries',
   'menu.sharedAiModule': 'Tex8 Assistant',
   'assistant.kicker': 'Tex8 Shared',
   'assistant.title': 'AI Assistant',
@@ -1201,10 +1294,22 @@ const en = {
   'settings.scanPerformance': 'Scan performance',
   'settings.scanPerformanceHint':
     'A short one-time device test using public sample data. It never opens a wallet or uses wallet keys.',
+  'settings.performanceTestbenchHint':
+    'Manual testbench using public sample data. Each supported backend runs for 10 seconds, one after another. It never opens a wallet or uses wallet keys.',
+  'settings.runPerformanceTestbench': 'Run performance testbench',
+  'settings.performanceTestbenchRunning':
+    'Testbench running · measuring available backends…',
+  'settings.performanceMeasureFailed':
+    'The performance testbench could not be completed.',
   'settings.performanceMeasuring': 'Measuring once…',
   'settings.performanceMeasuringShort': 'Measuring…',
   'settings.performanceMeasured': 'Measured',
+  'settings.performanceNotMeasured': 'Not measured',
   'settings.performanceUnavailable': 'Not available',
+  'settings.cpuNeonBackend': 'CPU · NEON',
+  'settings.performanceBackendProgress': '{backend} · {current}/{total}',
+  'settings.performanceSeconds': '{elapsed} / {duration} s',
+  'settings.performanceOverallProgress': 'Overall {progress}%',
   'settings.derivationsPerSecond': '{rate} derivations/s',
   'settings.loading': 'Loading',
   'settings.mode': 'Mode',
@@ -1213,9 +1318,13 @@ const en = {
   'settings.nodeModeOriginal': 'Original Node',
   'settings.nodeModeTex8': 'Tex8 Node',
   'settings.nodeModeCustom': 'Custom',
-  'settings.availableNodeAddresses': 'Available node addresses',
+  'settings.availableNodeAddresses': 'Separate node routes',
   'settings.availableNodeAddressesHelp':
-    'Tap one address to use it. Onion connections use your local Tor proxy at 127.0.0.1:9050.',
+    'Choose both routes independently: blockchain blocks sync over Clearnet gRPC; all other daemon requests use the selected Onion address through Tor at 127.0.0.1:9050.',
+  'settings.clearnetSyncRoute': 'Blockchain sync · Clearnet',
+  'settings.onionDaemonRoute': 'Wallet operations · Tor',
+  'settings.clearnetGrpcEndpoint': 'Blockchain sync · Clearnet gRPC',
+  'settings.onionDaemonEndpoint': 'Wallet operations · Tor daemon',
   'settings.tex8Node': 'TEX8 Node',
   'settings.communityNode': 'Community Node',
   'settings.clearnetAddress': 'Clearnet',
@@ -1241,6 +1350,40 @@ const en = {
   'settings.mfwRegistry': 'Monero Name Registry',
   'settings.mfwRegistryHint':
     'Register and manage a simple public .mfw name for a receive address.',
+  'settings.projectPage': 'Project Page',
+  'settings.projectPageHint':
+    'Official Clearnet and Onion addresses, services, and self-hosting.',
+  'projectPage.eyebrow': 'Open project',
+  'projectPage.title': 'Project Page & Services',
+  'projectPage.subtitle':
+    'Inspect Monero Fast Wallet, its public services, and the open-source components behind them.',
+  'projectPage.addresses': 'Official addresses',
+  'projectPage.addressesHint':
+    'The same project page is available through the official and independent Community routes.',
+  'projectPage.clearnet': 'Clearnet',
+  'projectPage.onion': 'Onion',
+  'projectPage.copy': 'Copy',
+  'projectPage.copied': 'Copied',
+  'projectPage.open': 'Open',
+  'projectPage.onionHint':
+    'Onion links require a Tor-capable browser. Opening any link leaves the wallet app.',
+  'projectPage.selfHosting': 'Run it yourself',
+  'projectPage.ownNodeTitle': 'Your own Monero Fast Node',
+  'projectPage.ownNodeText':
+    'You can operate your own node and enter its Clearnet gRPC and Onion daemon routes under Node Status. The app keeps block sync and private wallet traffic separated.',
+  'projectPage.ownWorkerTitle': 'Your own Fast Wallet Worker',
+  'projectPage.ownWorkerText':
+    'You can run a private Worker and pair its signed descriptor under Settings → Fast Wallet Worker. Spending keys never leave your wallet.',
+  'projectPage.services': 'Services',
+  'projectPage.servicesHint':
+    'Short explanations and technical details are available on the project page.',
+  'projectPage.serviceWallet': 'Monero Fast Wallet',
+  'projectPage.serviceNode': 'Monero Fast Node',
+  'projectPage.serviceRelay': 'Relay Service',
+  'projectPage.serviceWorker': 'Fast Wallet Worker',
+  'projectPage.serviceRegistry': 'Monero Name Registry',
+  'projectPage.serviceAll': 'All services',
+  'projectPage.sourceCode': 'Source code',
   'settings.grpcEndpoint': 'gRPC endpoint',
   'settings.originalNodeAddress': 'Original node address',
   'settings.originalNodeHelp':
@@ -1278,7 +1421,7 @@ const en = {
   'settings.storedSecureStorage': 'Stored in device secure storage',
   'settings.fastWalletServerAddress': 'Fast Wallet server',
   'settings.tex8NodeHelp':
-    'Use the optimized Tex8 node with automatic Fast Wallet detection.',
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.',
   'settings.title': 'Settings',
   'settings.trustedDaemon': 'Trusted daemon',
   'settings.unsaved': 'Unsaved',
@@ -1391,8 +1534,40 @@ const de: Record<keyof typeof en, string> = {
   'tabs.menu': 'Menü',
   'tabs.receive': 'Empfangen',
   'tabs.send': 'Senden',
+  'topBar.connecting': 'Verbindet',
+  'topBar.connectingBlocks': 'Block-Sync verbindet',
+  'topBar.connectingTor': 'Verbindet mit Tor',
+  'topBar.offline': 'Offline',
+  'topBar.online': 'Online',
+  'topBar.ready': 'Bereit',
   'communityV1.title': 'Monero Enthusiast',
-  'communityV1.menuDescription': 'Menschen, Ideen und Angebote privat finden',
+  'communityV1.menuDescription': 'Demnächst: Kontakte, Chat und Dienstleistungen',
+  'communitySoon.eyebrow': 'Demnächst',
+  'communitySoon.title': 'Monero Community',
+  'communitySoon.subtitle':
+    'Ein privater Ort für Kontakte rund um Monero – ohne die Wallet in einen Marktplatz zu verwandeln.',
+  'communitySoon.plannedFeatures': 'Geplante Funktionen',
+  'communitySoon.bulletinTitle': 'Schwarzes Brett',
+  'communitySoon.bulletinText':
+    'Teile Hinweise, Ideen, Fragen und lokale Treffen.',
+  'communitySoon.meetTitle': 'Leute kennenlernen',
+  'communitySoon.meetText':
+    'Lerne Menschen in deiner Nähe kennen, verabrede dich oder tausche dich online aus.',
+  'communitySoon.matrixTitle': 'Matrix-Chat',
+  'communitySoon.matrixText':
+    'Führe Unterhaltungen direkt in einem integrierten, privaten Matrix-Chat.',
+  'communitySoon.profilesTitle': 'Profile und Dienstleistungen',
+  'communitySoon.profilesText':
+    'Erstelle ein Profil und beschreibe deine Dienstleistungen. Der direkte Austausch bleibt zwischen den Nutzern.',
+  'communitySoon.verifiedTitle': 'Optionale Verifizierung',
+  'communitySoon.verifiedText':
+    'Verifizierte Nutzer erhalten ein sichtbares Badge, um Identitätsmissbrauch und Betrugsrisiken zu verringern. Die Verifizierung bleibt freiwillig.',
+  'communitySoon.verifiedNote':
+    'Das Badge ist ein Vertrauenssignal, aber keine Garantie.',
+  'communitySoon.verifiedBadge': 'Verifiziert',
+  'communitySoon.noMarketplaceTitle': 'Kein Marktplatz',
+  'communitySoon.noMarketplaceText':
+    'Aus regulatorischen Gründen gibt es in der App keinen Marktplatz, Checkout oder vermittelten Handel. Nutzer können ihre eigenen Dienstleistungen weiterhin im Profil vorstellen.',
   'communityV1.optional': 'Optionale Community',
   'communityV1.subtitle':
     'Finde Menschen und hilfreiche Ideen, ohne sie mit deiner Wallet zu verbinden.',
@@ -1645,6 +1820,17 @@ const de: Record<keyof typeof en, string> = {
   'notification.closesIn': 'Schließt in {seconds} s',
   'notification.ok': 'OK',
   'send.checkingSpendOutputs': 'Ausgegebene Outputs werden mit Ledger geprüft…',
+  'ledgerSigning.connectTitle': 'Ledger verbinden',
+  'ledgerSigning.connectedTitle': 'Ledger verbunden',
+  'ledgerSigning.instructions':
+    'Entsperre den Ledger und öffne die Monero-App. Die Wallet sucht weiter, bis du abbrichst.',
+  'ledgerSigning.searching': 'Ledger wird gesucht…',
+  'ledgerSigning.connecting': 'Ledger wird sicher verbunden…',
+  'ledgerSigning.connected': 'Ledger ist verbunden.',
+  'ledgerSigning.preparingRequest':
+    'Transaktionsanfrage für Ledger wird vorbereitet…',
+  'ledgerSigning.awaitingConfirmation':
+    'Anfrage gesendet. Bestätige die Transaktion auf dem Ledger.',
   'send.transactionBroadcastRefreshPending':
     'Transaktion gesendet. Prüfe die Ledger-Spend-Outputs später erneut in den Einstellungen.',
   'walletSelector.active': 'Aktiv',
@@ -1889,6 +2075,7 @@ const de: Record<keyof typeof en, string> = {
   'home.newsNetwork': 'Netzwerk',
   'home.newsWallet': 'Wallet',
   'home.newsEcosystem': 'Ökosystem',
+  'home.newsReadMore': 'Artikel öffnen',
   'advertising.advertisement': 'Werbeanzeige',
   'advertising.sponsored': 'Gesponsert',
   'advertising.paidBy': 'Bezahlt von {advertiser}',
@@ -1975,6 +2162,9 @@ const de: Record<keyof typeof en, string> = {
   'send.openWalletBeforeSending':
     'Öffne oder erstelle eine Wallet, bevor du sendest.',
   'send.pasteAddress': 'Monero-Adresse einfügen',
+  'send.resolvingMfwName': 'Wallet-Name wird gesucht…',
+  'send.resolvedMfwAddress': 'Aufgelöste Monero-Adresse',
+  'send.useMfwSuggestion': '{name} verwenden',
   'send.manualRecipient': 'Adresse manuell eingeben',
   'send.manualRecipientHint':
     'Adresse einfügen oder gespeicherten Kontakt wählen.',
@@ -2073,6 +2263,7 @@ const de: Record<keyof typeof en, string> = {
   'transactions.wallet': 'Wallet',
   'receive.addressLabel': 'DEINE MONERO-ADRESSE',
   'receive.addresses': 'Adressen',
+  'receive.amountOptional': 'Betrag (optional)',
   'receive.checkDevice': 'Gerät prüfen',
   'receive.connected': 'Verbunden',
   'receive.emptyText':
@@ -2097,6 +2288,10 @@ const de: Record<keyof typeof en, string> = {
     'Jede Adresse gehört zu dieser Wallet und wird durch dieselben Wiederherstellungswörter wiederhergestellt.',
   'receive.manageAddresses': 'Empfangsadressen verwalten',
   'receive.otherAddresses': 'Weitere Empfangsadressen',
+  'receive.paymentLink': 'Monero-Payment-Link',
+  'receive.copyPaymentLink': 'Link kopieren',
+  'receive.paymentLinkCopied': 'Link kopiert',
+  'receive.sharePaymentLink': 'Payment-Link teilen',
   'receive.privacyText':
     'Jede Transaktion ist automatisch privat. Sender, Empfänger und Betrag sind nie sichtbar.',
   'receive.primaryAddress': 'Hauptadresse',
@@ -2106,6 +2301,7 @@ const de: Record<keyof typeof en, string> = {
   'receive.stealthTitle': 'Stealth-Adressen',
   'receive.subtitle': 'Teile deine Adresse, um XMR zu empfangen',
   'receive.title': 'Empfangen',
+  'receive.usdRateUnavailable': 'Der XMR/USD-Kurs ist derzeit nicht verfügbar.',
   'receive.walletLocked': 'Wallet gesperrt',
   'receive.noWalletOpen': 'Keine Wallet geöffnet',
   'enthusiasts.disabledText':
@@ -2166,16 +2362,23 @@ const de: Record<keyof typeof en, string> = {
     'Die Community ist vorübergehend nicht erreichbar. Prüfe die Verbindung und versuche es erneut.',
   'enthusiasts.yourName': 'DEIN ÖFFENTLICHER ALIAS',
   'mfwNames.activationPending':
-    'Die Namensregistrierung ist in dieser Version noch nicht aktiv. Zuerst müssen die signierte Registry-Adresse und alle Genesis-Parameter des Protokolls festgeschrieben werden.',
+    'Die Namensregistrierung ist in dieser Version noch nicht aktiv. Zuerst müssen die signierte Adresse der Monero Fast Wallet Registry und alle Genesis-Parameter des Protokolls festgeschrieben werden.',
   'mfwNames.address': 'Empfangsadresse',
   'mfwNames.addressLoadFailed':
     'Die Wallet-Adressen konnten nicht geladen werden.',
+  'mfwNames.chooseWalletAddress': 'Aus Wallet wählen',
+  'mfwNames.enterAddressManually': 'Manuell eingeben',
+  'mfwNames.manualAddress': 'Manuelle Monero-Adresse',
+  'mfwNames.manualAddressPlaceholder':
+    'Beliebige Monero-Adresse einfügen oder eingeben',
+  'mfwNames.invalidAddress':
+    'Gib eine gültige Monero-Adresse für dieses Netzwerk ein.',
   'mfwNames.availabilityAvailable':
     'Am aktuell verifizierten Chain-Tip verfügbar.',
   'mfwNames.availabilityAvailableAgain':
     'Für eine neue Registrierung verfügbar, weil der vorherige Eintrag nicht mehr aktiv ist.',
   'mfwNames.availabilityChecking':
-    'Verfügbarkeit wird bei unabhängigen Resolvern geprüft…',
+    'Verfügbarkeit wird beim öffentlichen Resolver geprüft…',
   'mfwNames.availabilityPending':
     'Für diesen Namen läuft derzeit eine vorläufige Registrierung.',
   'mfwNames.availabilityRequired':
@@ -2185,9 +2388,17 @@ const de: Record<keyof typeof en, string> = {
   'mfwNames.availabilityTaken': 'Dieser Name ist bereits registriert.',
   'mfwNames.availabilityUnavailable':
     'Die Verfügbarkeit kann derzeit nicht sicher verifiziert werden. Die Registrierung bleibt gesperrt.',
+  'mfwNames.checkedAt': 'Prüfzeitpunkt',
+  'mfwNames.checkedChainTip': 'Geprüfter Chain-Tip',
+  'mfwNames.estimatedExpiredAt': 'Voraussichtlich abgelaufen am',
+  'mfwNames.estimatedValidUntil': 'Voraussichtlich gültig bis',
   'mfwNames.cancelRenewal': 'Abbrechen',
   'mfwNames.chooseAddress': 'Wähle eine Empfangsadresse für diesen Namen aus.',
   'mfwNames.claimYourAddress': 'Deinen Adressnamen registrieren',
+  'mfwNames.ticker': 'Sichere dir jetzt deinen .mfw-Namen',
+  'mfwNames.customTerm': 'Andere Laufzeit',
+  'mfwNames.termRange':
+    'Gib eine ganze Zahl zwischen 1 und {max} Jahren ein.',
   'mfwNames.claimText':
     'Nach Ablauf der Commit-Reifezeit prüfst du eine zweite vorausgefüllte Transaktion. Sie veröffentlicht den signierten Namen und bezahlt die gewählte Laufzeit.',
   'mfwNames.claimTitle': 'Namen registrieren und bezahlen',
@@ -2212,10 +2423,15 @@ const de: Record<keyof typeof en, string> = {
     'Dieser Name ist nicht mehr aktiv und muss mit einem neuen Commit und Claim erneut registriert werden.',
   'mfwNames.expiresAtBlock': 'Ablaufblock',
   'mfwNames.expiryEstimate':
-    'Die Tage sind eine Schätzung mit zwei Minuten je Block; maßgeblich ist der Ablaufblock.',
+    'Zeit- und Tagesangaben sind Schätzungen mit zwei Minuten je Block; maßgeblich ist der Ablaufblock.',
   'mfwNames.invalidName':
     'Verwende 1–63 Kleinbuchstaben, Zahlen oder Bindestriche innerhalb des Namens.',
+  'mfwNames.registeredNames': 'Bereits registrierte Namen',
+  'mfwNames.registeredNamesSubtitle':
+    'Namen, die du bereits auf diesem Gerät registriert hast.',
   'mfwNames.myNames': 'Deine Namen',
+  'mfwNames.showMore': 'Mehr anzeigen',
+  'mfwNames.showLess': 'Weniger anzeigen',
   'mfwNames.newAddress': 'Neue öffentliche Adresse',
   'mfwNames.name': 'Adressname',
   'mfwNames.nameHint':
@@ -2236,14 +2452,14 @@ const de: Record<keyof typeof en, string> = {
     'Öffne die ausgewählte Wallet, bevor du eine eigene Adresse erstellst.',
   'mfwNames.openWalletFirst': 'Öffne und synchronisiere zuerst eine Wallet.',
   'mfwNames.ownerKeySecurity':
-    'Ein eigener Schlüssel für den Namensbesitz wird im geschützten nativen Gerätespeicher erzeugt. Die Registrierung bleibt gesperrt, bis der verschlüsselte Recovery-Export bestätigt wurde.',
+    'Ein eigener Schlüssel für den Namensbesitz wird im geschützten nativen Gerätespeicher erzeugt und gespeichert. Die Entwicklungsregistrierung kann sofort fortfahren.',
   'mfwNames.primaryAddress': 'Hauptadresse',
   'mfwNames.prepareRenewal': 'Verlängerung vorbereiten',
   'mfwNames.prepareUpdate': 'Adressänderung vorbereiten',
   'mfwNames.operation': 'Protokollaktion',
   'mfwNames.publicWarning':
     'Name und Empfangsadresse bleiben dauerhaft öffentlich in der Monero-Blockchain sichtbar. Mit der öffentlichen Adresse kann niemand Geld ausgeben oder dein Wallet-Guthaben sehen.',
-  'mfwNames.registryPrice': 'Registry-Preis',
+  'mfwNames.registryPrice': 'Preis der Monero Fast Wallet Registry',
   'mfwNames.recoveryRequired':
     'Speichere die verschlüsselte Owner-Wiederherstellung, bevor du die Registrierung bestätigst.',
   'mfwNames.recoveryImported':
@@ -2261,7 +2477,7 @@ const de: Record<keyof typeof en, string> = {
   'mfwNames.renewTransactionText':
     'Prüfe eine vorausgefüllte, vom Besitzer signierte Transaktion, die den aktiven Eintrag verlängert.',
   'mfwNames.reviewSubtitle':
-    'Registry-Ziel, Betrag und signierte Protokolldaten sind durch die native Wallet gesperrt. Prüfe sie und bestätige danach.',
+    'Ziel der Monero Fast Wallet Registry, Betrag und signierte Protokolldaten sind durch die native Wallet gesperrt. Prüfe sie und bestätige danach.',
   'mfwNames.reviewTitle': 'Namenstransaktion prüfen',
   'mfwNames.restoreRecovery': 'Owner-Recovery wiederherstellen',
   'mfwNames.restoreRecoveryDescription':
@@ -2294,7 +2510,8 @@ const de: Record<keyof typeof en, string> = {
     'Eine ausdrückliche Bestätigung ist erforderlich',
   'mfwNames.updateDescription':
     'Wähle die neue öffentliche Empfangsadresse. Der geschützte Namensbesitz-Schlüssel signiert die Änderung.',
-  'mfwNames.updateNetworkCost': 'Keine Registry-Gebühr für eine Adressänderung',
+  'mfwNames.updateNetworkCost':
+    'Keine Gebühr der Monero Fast Wallet Registry für eine Adressänderung',
   'mfwNames.updateTitle': 'Öffentliche Adresse ändern',
   'mfwNames.updateTransactionText':
     'Prüfe eine vorausgefüllte, vom Besitzer signierte Transaktion, die die öffentliche Empfangsadresse ersetzt.',
@@ -2395,6 +2612,26 @@ const de: Record<keyof typeof en, string> = {
   'menu.myWallet': 'Meine Wallet',
   'menu.noWalletOpen': 'Keine Wallet geöffnet',
   'menu.nodeStatus': 'Node-Status',
+  'nodeStatus.subtitle':
+    'Zwei globale Wege: schnelle Block-Synchronisierung über Clearnet und alle anderen Wallet-Vorgänge über Tor.',
+  'nodeStatus.diagnostics': 'Verbindung prüfen',
+  'nodeStatus.diagnosticsHint':
+    'Prüft Tor für Wallet-Vorgänge und Clearnet für den schnellen Blockchain-Sync getrennt.',
+  'nodeStatus.globalRoutes': 'Globale Node-Routen',
+  'nodeStatus.globalRoutesHint':
+    'Diese Wege gelten für alle Wallets auf diesem Gerät. Jede Änderung wird automatisch gespeichert.',
+  'nodeStatus.torRoute': 'Tor-Verbindung',
+  'nodeStatus.torHint':
+    'Wallet-Vorgänge und private Dienste verwenden den gewählten Daemon über integriertes Tor.',
+  'nodeStatus.clearnetRoute': 'Clearnet Block-Sync',
+  'nodeStatus.clearnetHint':
+    'Nur öffentliche Blockchain-Blöcke verwenden die schnelle Clearnet-gRPC-Route.',
+  'nodeStatus.connected': 'Verbunden',
+  'nodeStatus.notConnected': 'Fehler',
+  'nodeStatus.checking': 'Wird geprüft',
+  'nodeStatus.autoSaved': 'Automatisch gespeichert',
+  'nodeStatus.autoSaving': 'Wird gespeichert…',
+  'nodeStatus.autoSaveError': 'Eingaben prüfen',
   'menu.sharedAiModule': 'Tex8-Assistent',
   'assistant.kicker': 'Tex8 Shared',
   'assistant.title': 'KI-Assistent',
@@ -2570,10 +2807,22 @@ const de: Record<keyof typeof en, string> = {
   'settings.scanPerformance': 'Scan-Leistung',
   'settings.scanPerformanceHint':
     'Ein kurzer, einmaliger Gerätetest mit öffentlichen Beispieldaten. Dabei wird keine Wallet geöffnet und kein Wallet-Schlüssel verwendet.',
+  'settings.performanceTestbenchHint':
+    'Manueller Testbench mit öffentlichen Beispieldaten. Jedes unterstützte Backend läuft nacheinander genau 10 Sekunden. Dabei wird keine Wallet geöffnet und kein Wallet-Schlüssel verwendet.',
+  'settings.runPerformanceTestbench': 'Performance-Testbench starten',
+  'settings.performanceTestbenchRunning':
+    'Testbench läuft · verfügbare Backends werden gemessen…',
+  'settings.performanceMeasureFailed':
+    'Der Performance-Testbench konnte nicht abgeschlossen werden.',
   'settings.performanceMeasuring': 'Wird einmalig gemessen…',
   'settings.performanceMeasuringShort': 'Wird gemessen…',
   'settings.performanceMeasured': 'Gemessen',
+  'settings.performanceNotMeasured': 'Nicht gemessen',
   'settings.performanceUnavailable': 'Nicht verfügbar',
+  'settings.cpuNeonBackend': 'CPU · NEON',
+  'settings.performanceBackendProgress': '{backend} · {current}/{total}',
+  'settings.performanceSeconds': '{elapsed} / {duration} s',
+  'settings.performanceOverallProgress': 'Gesamt {progress}%',
   'settings.derivationsPerSecond': '{rate} Ableitungen/s',
   'settings.loading': 'Lädt',
   'settings.mode': 'Modus',
@@ -2582,9 +2831,13 @@ const de: Record<keyof typeof en, string> = {
   'settings.nodeModeOriginal': 'Original Node',
   'settings.nodeModeTex8': 'Tex8 Node',
   'settings.nodeModeCustom': 'Eigene',
-  'settings.availableNodeAddresses': 'Verfügbare Node-Adressen',
+  'settings.availableNodeAddresses': 'Getrennte Node-Routen',
   'settings.availableNodeAddressesHelp':
-    'Tippe eine Adresse an, um sie zu verwenden. Onion-Verbindungen nutzen deinen lokalen Tor-Proxy unter 127.0.0.1:9050.',
+    'Wähle beide Routen unabhängig: Blockchain-Blöcke synchronisieren über Clearnet-gRPC; alle anderen Daemon-Anfragen laufen über die gewählte Onion-Adresse und Tor unter 127.0.0.1:9050.',
+  'settings.clearnetSyncRoute': 'Blockchain-Sync · Clearnet',
+  'settings.onionDaemonRoute': 'Wallet-Vorgänge · Tor',
+  'settings.clearnetGrpcEndpoint': 'Blockchain-Sync · Clearnet-gRPC',
+  'settings.onionDaemonEndpoint': 'Wallet-Vorgänge · Tor-Daemon',
   'settings.tex8Node': 'TEX8-Node',
   'settings.communityNode': 'Community-Node',
   'settings.clearnetAddress': 'Clearnet',
@@ -2610,6 +2863,40 @@ const de: Record<keyof typeof en, string> = {
   'settings.mfwRegistry': 'Monero Name Registry',
   'settings.mfwRegistryHint':
     'Einen einfachen öffentlichen .mfw-Namen für eine Empfangsadresse registrieren und verwalten.',
+  'settings.projectPage': 'Projektseite',
+  'settings.projectPageHint':
+    'Offizielle Clearnet- und Onion-Adressen, Dienste und eigener Betrieb.',
+  'projectPage.eyebrow': 'Offenes Projekt',
+  'projectPage.title': 'Projektseite & Dienste',
+  'projectPage.subtitle':
+    'Sieh dir Monero Fast Wallet, die öffentlichen Dienste und die Open-Source-Bausteine dahinter an.',
+  'projectPage.addresses': 'Offizielle Adressen',
+  'projectPage.addressesHint':
+    'Dieselbe Projektseite ist über die offiziellen und unabhängigen Community-Routen erreichbar.',
+  'projectPage.clearnet': 'Clearnet',
+  'projectPage.onion': 'Onion',
+  'projectPage.copy': 'Kopieren',
+  'projectPage.copied': 'Kopiert',
+  'projectPage.open': 'Öffnen',
+  'projectPage.onionHint':
+    'Onion-Links benötigen einen Tor-fähigen Browser. Beim Öffnen eines Links verlässt du die Wallet-App.',
+  'projectPage.selfHosting': 'Selbst betreiben',
+  'projectPage.ownNodeTitle': 'Deine eigene Monero Fast Node',
+  'projectPage.ownNodeText':
+    'Du kannst eine eigene Node betreiben und ihre Clearnet-gRPC- und Onion-Daemon-Routen unter Node-Status eintragen. Die App hält Block-Sync und privaten Wallet-Verkehr getrennt.',
+  'projectPage.ownWorkerTitle': 'Dein eigener Fast Wallet Worker',
+  'projectPage.ownWorkerText':
+    'Du kannst einen privaten Worker betreiben und seinen signierten Descriptor unter Einstellungen → Fast Wallet Worker verbinden. Spending Keys verlassen deine Wallet nie.',
+  'projectPage.services': 'Dienste',
+  'projectPage.servicesHint':
+    'Kurze Erklärungen und technische Details findest du auf der Projektseite.',
+  'projectPage.serviceWallet': 'Monero Fast Wallet',
+  'projectPage.serviceNode': 'Monero Fast Node',
+  'projectPage.serviceRelay': 'Relay Service',
+  'projectPage.serviceWorker': 'Fast Wallet Worker',
+  'projectPage.serviceRegistry': 'Monero Name Registry',
+  'projectPage.serviceAll': 'Alle Dienste',
+  'projectPage.sourceCode': 'Quellcode',
   'settings.grpcEndpoint': 'gRPC-Endpunkt',
   'settings.originalNodeAddress': 'Original-Node-Adresse',
   'settings.originalNodeHelp':
@@ -2647,7 +2934,7 @@ const de: Record<keyof typeof en, string> = {
   'settings.storedSecureStorage': 'Im sicheren Gerätespeicher abgelegt',
   'settings.fastWalletServerAddress': 'Fast Wallet-Server',
   'settings.tex8NodeHelp':
-    'Optimierte Tex8-Node mit automatischer Fast Wallet-Erkennung verwenden.',
+    'Getrennte optimierte Routen verwenden: schneller Blockchain-Sync über Clearnet und der übrige Daemon-Verkehr über Onion.',
   'settings.title': 'Einstellungen',
   'settings.trustedDaemon': 'Vertrauenswürdiger Daemon',
   'settings.unsaved': 'Ungespeichert',
@@ -2707,25 +2994,46 @@ const de: Record<keyof typeof en, string> = {
 
 export type LanguageCode = ProductLanguageCode;
 export type TranslationKey = keyof typeof en;
+export type ActiveTranslationCatalog = Record<TranslationKey, string>;
 
-export const translations = {
-  en,
-  de,
-  ...Object.fromEntries(
-    Object.entries(generatedTranslations).map(([locale, catalog]) => [
-      locale,
-      applyManualTranslationOverrides(locale, en, catalog as Record<keyof typeof en, string>),
-    ]),
-  ),
-} as Record<LanguageCode, Record<TranslationKey, string>>;
+export function getBaseTranslationCatalog(
+  language: LanguageCode,
+): ActiveTranslationCatalog | undefined {
+  if (language === 'en') return en;
+  if (language === 'de') return de;
+  return undefined;
+}
+
+export function getTranslation(
+  language: LanguageCode,
+  key: TranslationKey,
+  activeCatalog?: ActiveTranslationCatalog,
+): string {
+  return getBaseTranslationCatalog(language)?.[key] ?? activeCatalog?.[key] ?? en[key];
+}
+
+export async function loadTranslationCatalog(
+  language: LanguageCode,
+): Promise<ActiveTranslationCatalog> {
+  const baseCatalog = getBaseTranslationCatalog(language);
+  if (baseCatalog) return baseCatalog;
+
+  const loaders = generatedRuntimeCatalogLoaders as Partial<
+    Record<LanguageCode, () => Promise<GeneratedRuntimeCatalog>>
+  >;
+  const catalog = await loaders[language]?.();
+  return (catalog as ActiveTranslationCatalog | undefined) ?? en;
+}
 
 export const supportedLanguages: LanguageCode[] = productLanguageCodes;
 
 export const languageNames = Object.fromEntries(supportedLanguages.map(code => [code, productLocaleByCode[code].nativeName])) as Record<LanguageCode, string>;
 
+export const languageFlags = Object.fromEntries(supportedLanguages.map(code => [code, productLocaleByCode[code].flag])) as Record<LanguageCode, string>;
+
 export const languageDateLocales = Object.fromEntries(supportedLanguages.map(code => [code, productLocaleByCode[code].tag])) as Record<LanguageCode, string>;
 
-export { generatedLocaleMetadata };
+export const generatedLocaleMetadata = productLocaleByCode;
 
 export function isLanguageCode(value: unknown): value is LanguageCode {
   return typeof value === 'string' && supportedLanguages.includes(value as LanguageCode);

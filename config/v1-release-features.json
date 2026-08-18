@@ -3,20 +3,35 @@
   "profile": "safe-wallet-v1",
   "parameters": {
     "fastWalletOfficialWorker": {
-      "gatewayOrigin": "https://xmr.tex8.com",
-      "registrationOrigin": "https://xmr.tex8.com",
+      "gatewayOrigin": "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
+      "registrationOrigin": "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
       "rootIdHex": "9fad63392b696d49bb5975024e1395ccddc4a2cae7a78f7eeb2c0fc94cb9f014"
     },
-    "mfwNameResolverOrigins": [],
-    "mfwNameGenesis": null,
+    "mfwNameResolverOrigins": [
+      "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
+      "http://quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion"
+    ],
+    "mfwNameSuggestionOnionOrigins": [
+      "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion"
+    ],
+    "mfwNameGenesis": {
+      "version": 1,
+      "network": "mainnet",
+      "registryAddress": "41ug1HP8xkQC8Xjveid2BuYVq2BhukF5R7ydb2zXuHgv4BJWFWnXMtf2iQCBEika9z9rETF8kmsj3bCrpZYav1BL9knRzSR",
+      "activationHeight": 3727097,
+      "maximumTermYears": 1000,
+      "commitMaturityBlocks": 15,
+      "commitRevealWindowBlocks": 720,
+      "reservedNameManifestHash": "341882e9f964bc103bf5172dbe689bf50e5f60c7529bf4c902803e445803e2d5"
+    },
     "privatePhoneDirectory": null,
     "moneroEnthusiastV1": {
-      "apiOrigin": "https://xmr.tex8.com",
-      "matrixHomeserver": "https://xmr.tex8.com",
-      "catalogOrigin": "https://xmr.tex8.com",
+      "apiOrigin": "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
+      "matrixHomeserver": "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
+      "catalogOrigin": "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
       "catalogScope": "global-v1",
       "catalogVerifyingKeyHex": "15b9aca4dbea7390793594ba7117dad0c3673cf12c6e1780f2eb7ab09c59c071",
-      "advertisingOrigin": "https://xmr.tex8.com",
+      "advertisingOrigin": "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
       "advertisingVerifyingKeyHex": "70f012dccf3cfae6e8746b3dec2f6a02e394a663157132a087860d0404647987",
       "advertisingCountry": "PA",
       "artifactVerifyingKeyHex": "3bf04038083505e086a280bbb3caacbf62c886ad4e113c312d5cf8c0674aea72",
@@ -36,11 +51,11 @@
     "privateWorkerPairing": true,
     "moneroEnthusiastV1": true,
     "legacyCommunity": false,
-    "news": false,
+    "news": true,
     "assistant": false,
     "marketplace": false,
-    "mfwNameResolution": false,
-    "mfwNameRegistration": false,
+    "mfwNameResolution": true,
+    "mfwNameRegistration": true,
     "deviceContactDiscovery": false,
     "publicLedger": false
   }

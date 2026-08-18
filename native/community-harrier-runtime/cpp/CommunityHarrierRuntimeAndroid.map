@@ -1,0 +1,12 @@
+TEX8_COMMUNITY_HARRIER_1.0 {
+  global:
+    tex8_community_harrier_android_install_java_vm_v1;
+    tex8_community_harrier_create_v1;
+    tex8_community_harrier_destroy_v1;
+    tex8_community_harrier_load_verified_v1;
+    tex8_community_harrier_embed_prepared_v1;
+    tex8_community_harrier_is_ready_v1;
+    tex8_community_harrier_last_error_v1;
+  local:
+    *;
+};

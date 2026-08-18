@@ -46,6 +46,6 @@ describe('Private local advertising boundary', () => {
     if (manifest.features.moneroEnthusiastV1) {
       expect(manifest.parameters.moneroEnthusiastV1).not.toBeNull();
     }
-    expect(manifest.features.news).toBe(false);
+    expect(manifest.features.news).toBe(true);
   });
 });

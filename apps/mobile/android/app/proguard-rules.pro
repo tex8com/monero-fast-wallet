@@ -19,3 +19,8 @@
     public static boolean ledgerBleConnected();
     public static byte[] ledgerBleExchange(byte[], boolean);
 }
+
+# tor-android's native libtor.so looks up TorService fields and native methods
+# by their exact JVM names. The published AAR does not provide consumer rules,
+# so keep this small JNI boundary intact in minified release builds.
+-keep class org.torproject.jni.TorService { *; }

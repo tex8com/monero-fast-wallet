@@ -6,4 +6,8 @@
     <string name="monero_sync_channel_description">Keeps active wallet history synchronization running</string>
     <string name="monero_sync_notification_title">Synchronizing wallet history</string>
     <string name="monero_sync_notification_description">Downloading and scanning public blockchain data</string>
+    <string name="monero_connectivity_channel_name">Wallet connectivity</string>
+    <string name="monero_connectivity_channel_description">Keeps Tor and blockchain connectivity available in the background</string>
+    <string name="monero_connectivity_notification_title">Monero Fast Wallet network</string>
+    <string name="monero_connectivity_notification_description">Maintaining Tor and block-sync connections</string>
 </resources>

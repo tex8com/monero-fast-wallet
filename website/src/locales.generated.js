@@ -174,7 +174,7 @@ export const generatedWebsiteCopy = {
           "Sincronización más rápida.",
           "Monero permanece Monero."
         ],
-        "body": "MFN acelera la ruta de datos con la infraestructura basada en Cuprate. Las direcciones, transacciones y consensos siguen siendo totalmente compatibles con Monero.",
+        "body": "MFN acelera la ruta de datos con la infraestructura basada en Monero Fast Node. Las direcciones, transacciones y consensos siguen siendo totalmente compatibles con Monero.",
         "primary": "Comprenda MFN",
         "secondary": "Revisar medidas"
       }
@@ -356,7 +356,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "Aún no se han aprobado artefactos de lanzamiento público.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "La ruta rápida hacia la red Monero.",
-    "nodeBody": "MFN es una infraestructura de nodo TEX8 construida sobre Cuprate. Entrega datos de blockchain de manera eficiente; El núcleo de su billetera nativa verifica localmente lo que le pertenece.",
+    "nodeBody": "MFN es una infraestructura de nodo TEX8 construida sobre Monero Fast Node. Entrega datos de blockchain de manera eficiente; El núcleo de su billetera nativa verifica localmente lo que le pertenece.",
     "nodeSteps": [
       [
         "1",
@@ -402,7 +402,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "¿Por qué el nodo se llama MFN?",
-        "Monero Fast Node es el nombre del producto para la infraestructura del nodo TEX8. Su motor técnico se basa en Cuprate y sigue siendo compatible con Monero."
+        "Monero Fast Node es el nombre del producto para la infraestructura del nodo TEX8. Su motor técnico se basa en Monero Fast Node y sigue siendo compatible con Monero."
       ],
       [
         "¿Las descargas están aprobadas públicamente?",
@@ -487,7 +487,7 @@ export const generatedWebsiteCopy = {
           "Sincronize mais rápido.",
           "Monero permanece Monero."
         ],
-        "body": "MFN acelera o caminho de dados com infraestrutura baseada em Cuprate. Endereços, transações e consenso permanecem totalmente compatíveis com Monero.",
+        "body": "MFN acelera o caminho de dados com infraestrutura baseada em Monero Fast Node. Endereços, transações e consenso permanecem totalmente compatíveis com Monero.",
         "primary": "Entenda MFN",
         "secondary": "Rever medições"
       }
@@ -669,7 +669,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "Nenhum artefato de lançamento público foi aprovado ainda.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "A rota rápida para a rede Monero.",
-    "nodeBody": "MFN é uma infraestrutura de nó TEX8 construída em Cuprate. Fornece dados blockchain de forma eficiente; o núcleo da sua carteira nativa verifica localmente o que pertence a você.",
+    "nodeBody": "MFN é uma infraestrutura de nó TEX8 construída em Monero Fast Node. Fornece dados blockchain de forma eficiente; o núcleo da sua carteira nativa verifica localmente o que pertence a você.",
     "nodeSteps": [
       [
         "1",
@@ -715,7 +715,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "Por que o nó é chamado MFN?",
-        "Monero Fast Node é o nome do produto para infraestrutura de nó TEX8. Seu mecanismo técnico é baseado em Cuprate e permanece compatível com Monero."
+        "Monero Fast Node é o nome do produto para infraestrutura de nó TEX8. Seu mecanismo técnico é baseado em Monero Fast Node e permanece compatível com Monero."
       ],
       [
         "Os downloads são aprovados publicamente?",
@@ -800,7 +800,7 @@ export const generatedWebsiteCopy = {
           "Синхронизируйте быстрее.",
           "Monero остается Monero."
         ],
-        "body": "MFN ускоряет путь передачи данных с помощью инфраструктуры на основе Cuprate. Адреса, транзакции и консенсус остаются полностью совместимыми с Monero.",
+        "body": "MFN ускоряет путь передачи данных с помощью инфраструктуры на основе Monero Fast Node. Адреса, транзакции и консенсус остаются полностью совместимыми с Monero.",
         "primary": "Понимание MFN",
         "secondary": "Просмотр измерений"
       }
@@ -982,7 +982,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "Ни один общедоступный продукт еще не одобрен.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Быстрый путь в сеть Monero.",
-    "nodeBody": "MFN — это инфраструктура узла TEX8, построенная на Cuprate. Он эффективно доставляет данные блокчейна; ядро вашего родного кошелька локально проверяет, что вам принадлежит.",
+    "nodeBody": "MFN — это инфраструктура узла TEX8, построенная на Monero Fast Node. Он эффективно доставляет данные блокчейна; ядро вашего родного кошелька локально проверяет, что вам принадлежит.",
     "nodeSteps": [
       [
         "1",
@@ -1028,7 +1028,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "Почему узел называется MFN?",
-        "Monero Fast Node — это название продукта для инфраструктуры узла TEX8. Его технический механизм основан на Cuprate и остается совместимым с Monero."
+        "Monero Fast Node — это название продукта для инфраструктуры узла TEX8. Его технический механизм основан на Monero Fast Node и остается совместимым с Monero."
       ],
       [
         "Одобряются ли загрузки публично?",
@@ -1113,7 +1113,7 @@ export const generatedWebsiteCopy = {
           "Đồng bộ hóa nhanh hơn.",
           "Monero ở lại Monero."
         ],
-        "body": "MFN tăng tốc đường dẫn dữ liệu với cơ sở hạ tầng dựa trên Cuprate. Địa chỉ, giao dịch và sự đồng thuận vẫn hoàn toàn tương thích với Monero.",
+        "body": "MFN tăng tốc đường dẫn dữ liệu với cơ sở hạ tầng dựa trên Monero Fast Node. Địa chỉ, giao dịch và sự đồng thuận vẫn hoàn toàn tương thích với Monero.",
         "primary": "Hiểu MFN",
         "secondary": "Xem lại số đo"
       }
@@ -1295,7 +1295,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "Chưa có tạo phẩm phát hành công khai nào được phê duyệt.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Tuyến đường nhanh vào mạng Monero.",
-    "nodeBody": "MFN là cơ sở hạ tầng nút TEX8 được xây dựng trên Cuprate. Nó cung cấp dữ liệu blockchain một cách hiệu quả; Lõi ví gốc của bạn sẽ kiểm tra cục bộ những gì thuộc về bạn.",
+    "nodeBody": "MFN là cơ sở hạ tầng nút TEX8 được xây dựng trên Monero Fast Node. Nó cung cấp dữ liệu blockchain một cách hiệu quả; Lõi ví gốc của bạn sẽ kiểm tra cục bộ những gì thuộc về bạn.",
     "nodeSteps": [
       [
         "1",
@@ -1341,7 +1341,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "Tại sao nút được gọi là MFN?",
-        "Monero Fast Node là tên sản phẩm dành cho cơ sở hạ tầng nút TEX8. Công cụ kỹ thuật của nó dựa trên Cuprate và vẫn tương thích với Monero."
+        "Monero Fast Node là tên sản phẩm dành cho cơ sở hạ tầng nút TEX8. Công cụ kỹ thuật của nó dựa trên Monero Fast Node và vẫn tương thích với Monero."
       ],
       [
         "Các nội dung tải xuống có được phê duyệt công khai không?",
@@ -1426,7 +1426,7 @@ export const generatedWebsiteCopy = {
           "Sinkronisasi lebih cepat.",
           "Monero tetap Monero."
         ],
-        "body": "MFN mempercepat jalur data dengan infrastruktur berbasis Cuprate. Alamat, transaksi, dan konsensus tetap sepenuhnya kompatibel dengan Monero.",
+        "body": "MFN mempercepat jalur data dengan infrastruktur berbasis Monero Fast Node. Alamat, transaksi, dan konsensus tetap sepenuhnya kompatibel dengan Monero.",
         "primary": "Memahami MFN",
         "secondary": "Tinjau pengukuran"
       }
@@ -1608,7 +1608,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "Belum ada artefak rilis publik yang disetujui.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Rute cepat ke jaringan Monero.",
-    "nodeBody": "MFN adalah infrastruktur node TEX8 yang dibangun di atas Cuprate. Ini mengirimkan data blockchain secara efisien; inti dompet asli Anda memeriksa secara lokal apa yang menjadi milik Anda.",
+    "nodeBody": "MFN adalah infrastruktur node TEX8 yang dibangun di atas Monero Fast Node. Ini mengirimkan data blockchain secara efisien; inti dompet asli Anda memeriksa secara lokal apa yang menjadi milik Anda.",
     "nodeSteps": [
       [
         "1",
@@ -1654,7 +1654,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "Mengapa simpulnya disebut MFN?",
-        "Monero Fast Node adalah nama produk untuk infrastruktur node TEX8. Mesin teknisnya didasarkan pada Cuprate dan tetap kompatibel dengan Monero."
+        "Monero Fast Node adalah nama produk untuk infrastruktur node TEX8. Mesin teknisnya didasarkan pada Monero Fast Node dan tetap kompatibel dengan Monero."
       ],
       [
         "Apakah unduhan disetujui secara publik?",
@@ -1739,7 +1739,7 @@ export const generatedWebsiteCopy = {
           "Швидша синхронізація.",
           "Monero залишається Monero."
         ],
-        "body": "MFN прискорює шлях даних за допомогою інфраструктури на основі Cuprate. Адреси, транзакції та консенсус залишаються повністю Monero сумісними.",
+        "body": "MFN прискорює шлях даних за допомогою інфраструктури на основі Monero Fast Node. Адреси, транзакції та консенсус залишаються повністю Monero сумісними.",
         "primary": "Зрозуміти MFN",
         "secondary": "Перегляньте вимірювання"
       }
@@ -1921,7 +1921,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "Ще не схвалено жодного публічного випуску артефактів.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Швидкий маршрут до мережі Monero.",
-    "nodeBody": "MFN — це інфраструктура вузла TEX8, побудована на Cuprate. Він ефективно передає дані блокчейну; ваше рідне ядро ​​гаманця перевіряє локально те, що вам належить.",
+    "nodeBody": "MFN — це інфраструктура вузла TEX8, побудована на Monero Fast Node. Він ефективно передає дані блокчейну; ваше рідне ядро ​​гаманця перевіряє локально те, що вам належить.",
     "nodeSteps": [
       [
         "1",
@@ -1967,7 +1967,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "Чому вузол називається MFN?",
-        "Monero Fast Node — це назва продукту для вузлової інфраструктури TEX8. Його технічний механізм базується на Cuprate і залишається сумісним з Monero."
+        "Monero Fast Node — це назва продукту для вузлової інфраструктури TEX8. Його технічний механізм базується на Monero Fast Node і залишається сумісним з Monero."
       ],
       [
         "Чи є завантаження загальнодоступними?",
@@ -2052,7 +2052,7 @@ export const generatedWebsiteCopy = {
           "Daha hızlı senkronize edin.",
           "Monero, Monero olarak kalır."
         ],
-        "body": "MFN, Cuprate tabanlı altyapıyla veri yolunu hızlandırır. Adresler, işlemler ve fikir birliği tamamen Monero uyumlu kalır.",
+        "body": "MFN, Monero Fast Node tabanlı altyapıyla veri yolunu hızlandırır. Adresler, işlemler ve fikir birliği tamamen Monero uyumlu kalır.",
         "primary": "Anlayın MFN",
         "secondary": "Ölçümleri gözden geçirin"
       }
@@ -2234,7 +2234,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "Henüz hiçbir genel yayın yapısı onaylanmadı.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero ağına hızlı yol.",
-    "nodeBody": "MFN, Cuprate üzerine kurulu TEX8 düğüm altyapısıdır. Blockchain verilerini verimli bir şekilde sunar; yerel cüzdan çekirdeğiniz size neyin ait olduğunu yerel olarak kontrol eder.",
+    "nodeBody": "MFN, Monero Fast Node üzerine kurulu TEX8 düğüm altyapısıdır. Blockchain verilerini verimli bir şekilde sunar; yerel cüzdan çekirdeğiniz size neyin ait olduğunu yerel olarak kontrol eder.",
     "nodeSteps": [
       [
         "1",
@@ -2280,7 +2280,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "Düğüme neden MFN adı veriliyor?",
-        "Monero Fast Node, TEX8 düğüm altyapısının ürün adıdır. Teknik motoru Cuprate tabanlıdır ve Monero uyumlu kalır."
+        "Monero Fast Node, TEX8 düğüm altyapısının ürün adıdır. Teknik motoru Monero Fast Node tabanlıdır ve Monero uyumlu kalır."
       ],
       [
         "İndirmeler genel olarak onaylanıyor mu?",
@@ -2365,7 +2365,7 @@ export const generatedWebsiteCopy = {
           "तेजी से सिंक करें।",
           "Monero Monero रहता है।"
         ],
-        "body": "MFN Cuprate-आधारित बुनियादी ढांचे के साथ डेटा पथ को तेज करता है। पते, लेन-देन और सर्वसम्मति पूरी तरह से Monero संगत रहते हैं।",
+        "body": "MFN Monero Fast Node-आधारित बुनियादी ढांचे के साथ डेटा पथ को तेज करता है। पते, लेन-देन और सर्वसम्मति पूरी तरह से Monero संगत रहते हैं।",
         "primary": "समझें MFN",
         "secondary": "माप की समीक्षा करें"
       }
@@ -2547,7 +2547,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "अभी तक किसी भी सार्वजनिक रिलीज़ कलाकृतियों को मंजूरी नहीं दी गई है।",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero नेटवर्क में तेज़ मार्ग।",
-    "nodeBody": "MFN TEX8 नोड इंफ्रास्ट्रक्चर है जो Cuprate पर बनाया गया है। यह ब्लॉकचेन डेटा कुशलतापूर्वक वितरित करता है; आपका मूल वॉलेट कोर स्थानीय स्तर पर जांच करता है कि आपका क्या है।",
+    "nodeBody": "MFN TEX8 नोड इंफ्रास्ट्रक्चर है जो Monero Fast Node पर बनाया गया है। यह ब्लॉकचेन डेटा कुशलतापूर्वक वितरित करता है; आपका मूल वॉलेट कोर स्थानीय स्तर पर जांच करता है कि आपका क्या है।",
     "nodeSteps": [
       [
         "1",
@@ -2593,7 +2593,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "नोड को MFN क्यों कहा जाता है?",
-        "Monero Fast Node TEX8 नोड इंफ्रास्ट्रक्चर के लिए उत्पाद का नाम है। इसका तकनीकी इंजन Cuprate पर आधारित है और Monero संगत रहता है।"
+        "Monero Fast Node TEX8 नोड इंफ्रास्ट्रक्चर के लिए उत्पाद का नाम है। इसका तकनीकी इंजन Monero Fast Node पर आधारित है और Monero संगत रहता है।"
       ],
       [
         "क्या डाउनलोड सार्वजनिक रूप से स्वीकृत हैं?",
@@ -2678,7 +2678,7 @@ export const generatedWebsiteCopy = {
           "تیزی سے مطابقت پذیری کریں۔",
           "Monero رہتا ہے Monero۔"
         ],
-        "body": "MFN ڈیٹا پاتھ کو Cuprate پر مبنی انفراسٹرکچر کے ساتھ تیز کرتا ہے۔ پتے، لین دین، اور اتفاق رائے پوری طرح سے Monero مطابقت رکھتا ہے۔",
+        "body": "MFN ڈیٹا پاتھ کو Monero Fast Node پر مبنی انفراسٹرکچر کے ساتھ تیز کرتا ہے۔ پتے، لین دین، اور اتفاق رائے پوری طرح سے Monero مطابقت رکھتا ہے۔",
         "primary": "سمجھیں MFN",
         "secondary": "پیمائش کا جائزہ لیں۔"
       }
@@ -2860,7 +2860,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "ابھی تک عوامی ریلیز کے کسی نمونے کو منظور نہیں کیا گیا ہے۔",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero نیٹ ورک میں تیز رفتار راستہ۔",
-    "nodeBody": "MFN TEX8 نوڈ انفراسٹرکچر ہے جو Cuprate پر بنایا گیا ہے۔ یہ مؤثر طریقے سے بلاکچین ڈیٹا فراہم کرتا ہے۔ آپ کا مقامی بٹوے کور مقامی طور پر چیک کرتا ہے کہ آپ کا کیا ہے۔",
+    "nodeBody": "MFN TEX8 نوڈ انفراسٹرکچر ہے جو Monero Fast Node پر بنایا گیا ہے۔ یہ مؤثر طریقے سے بلاکچین ڈیٹا فراہم کرتا ہے۔ آپ کا مقامی بٹوے کور مقامی طور پر چیک کرتا ہے کہ آپ کا کیا ہے۔",
     "nodeSteps": [
       [
         "1",
@@ -2906,7 +2906,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "نوڈ کو MFN کیوں کہا جاتا ہے؟",
-        "Monero Fast Node TEX8 نوڈ انفراسٹرکچر کے لئے پروڈکٹ کا نام ہے۔ اس کا تکنیکی انجن Cuprate پر مبنی ہے اور Monero مطابقت رکھتا ہے۔"
+        "Monero Fast Node TEX8 نوڈ انفراسٹرکچر کے لئے پروڈکٹ کا نام ہے۔ اس کا تکنیکی انجن Monero Fast Node پر مبنی ہے اور Monero مطابقت رکھتا ہے۔"
       ],
       [
         "کیا ڈاؤن لوڈ عوامی طور پر منظور شدہ ہیں؟",
@@ -2991,7 +2991,7 @@ export const generatedWebsiteCopy = {
           "Synchronisez plus rapidement.",
           "Monero reste Monero."
         ],
-        "body": "MFN accélère le chemin des données avec une infrastructure basée sur Cuprate. Les adresses, les transactions et le consensus restent entièrement compatibles Monero.",
+        "body": "MFN accélère le chemin des données avec une infrastructure basée sur Monero Fast Node. Les adresses, les transactions et le consensus restent entièrement compatibles Monero.",
         "primary": "Comprendre MFN",
         "secondary": "Vérifier les mesures"
       }
@@ -3173,7 +3173,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "Aucun artefact de diffusion publique n'a encore été approuvé.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "La voie rapide vers le réseau Monero.",
-    "nodeBody": "MFN est une infrastructure de nœuds TEX8 construite sur Cuprate. Il fournit efficacement des données blockchain; votre noyau de portefeuille natif vérifie localement ce qui vous appartient.",
+    "nodeBody": "MFN est une infrastructure de nœuds TEX8 construite sur Monero Fast Node. Il fournit efficacement des données blockchain; votre noyau de portefeuille natif vérifie localement ce qui vous appartient.",
     "nodeSteps": [
       [
         "1",
@@ -3219,7 +3219,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "Pourquoi le nœud est-il appelé MFN?",
-        "Monero Fast Node est le nom de produit pour l'infrastructure de nœuds TEX8. Son moteur technique est basé sur Cuprate et reste compatible Monero."
+        "Monero Fast Node est le nom de produit pour l'infrastructure de nœuds TEX8. Son moteur technique est basé sur Monero Fast Node et reste compatible Monero."
       ],
       [
         "Les téléchargements sont-ils approuvés publiquement?",
@@ -3486,7 +3486,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "Wala pang naaprubahan na public release artifacts.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Ang mabilis na ruta sa Monero network.",
-    "nodeBody": "MFN ay TEX8 node infrastructure na binuo sa Cuprate. Ito ay naghahatid ng blockchain data mahusay; ang iyong katutubong wallet core tseke lokal kung ano ang nabibilang sa iyo.",
+    "nodeBody": "MFN ay TEX8 node infrastructure na binuo sa Monero Fast Node. Ito ay naghahatid ng blockchain data mahusay; ang iyong katutubong wallet core tseke lokal kung ano ang nabibilang sa iyo.",
     "nodeSteps": [
       [
         "1",
@@ -3532,7 +3532,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "Bakit tinawag ang node na MFN?",
-        "Monero Fast Node ay ang pangalan ng produkto para sa imprastraktura ng TEX8 node. Ang teknikal na makina nito ay batay sa Cuprate at nananatiling Monero compatible."
+        "Monero Fast Node ay ang pangalan ng produkto para sa imprastraktura ng TEX8 node. Ang teknikal na makina nito ay batay sa Monero Fast Node at nananatiling Monero compatible."
       ],
       [
         "Inaprubahan ba ng publiko ang mga pag - download?",
@@ -3617,7 +3617,7 @@ export const generatedWebsiteCopy = {
           "同期が速くなります。",
           "Monero は Monero のままです。"
         ],
-        "body": "MFN は、Cuprate ベースのインフラストラクチャを使用してデータ パスを高速化します。アドレス、トランザクション、およびコンセンサスは、Monero と完全な互換性を維持します。",
+        "body": "MFN は、Monero Fast Node ベースのインフラストラクチャを使用してデータ パスを高速化します。アドレス、トランザクション、およびコンセンサスは、Monero と完全な互換性を維持します。",
         "primary": "MFN を理解する",
         "secondary": "測定値を確認する"
       }
@@ -3799,7 +3799,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "公開リリース アーティファクトはまだ承認されていません。",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero ネットワークへの高速ルート。",
-    "nodeBody": "MFN は、Cuprate 上に構築された TEX8 ノード インフラストラクチャです。ブロックチェーン データを効率的に配信します。ネイティブウォレットコアは、あなたのものをローカルにチェックします。",
+    "nodeBody": "MFN は、Monero Fast Node 上に構築された TEX8 ノード インフラストラクチャです。ブロックチェーン データを効率的に配信します。ネイティブウォレットコアは、あなたのものをローカルにチェックします。",
     "nodeSteps": [
       [
         "1",
@@ -3845,7 +3845,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "ノードが MFN と呼ばれるのはなぜですか?",
-        "Monero Fast Node は、TEX8 ノード インフラストラクチャの製品名です。その技術エンジンは Cuprate に基づいており、Monero との互換性が維持されています。"
+        "Monero Fast Node は、TEX8 ノード インフラストラクチャの製品名です。その技術エンジンは Monero Fast Node に基づいており、Monero との互換性が維持されています。"
       ],
       [
         "ダウンロードは公的に承認されていますか?",
@@ -3930,7 +3930,7 @@ export const generatedWebsiteCopy = {
           "더 빠르게 동기화됩니다.",
           "Monero은 Monero에 유지됩니다."
         ],
-        "body": "MFN는 Cuprate 기반 인프라를 사용하여 데이터 경로를 가속화합니다. 주소, 거래 및 합의는 완전히 Monero 호환됩니다.",
+        "body": "MFN는 Monero Fast Node 기반 인프라를 사용하여 데이터 경로를 가속화합니다. 주소, 거래 및 합의는 완전히 Monero 호환됩니다.",
         "primary": "MFN 이해",
         "secondary": "측정값 검토"
       }
@@ -4112,7 +4112,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "아직 공개 릴리스 아티팩트가 승인되지 않았습니다.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "Monero 네트워크로의 빠른 경로입니다.",
-    "nodeBody": "MFN은 Cuprate에 구축된 TEX8 노드 인프라입니다. 블록체인 데이터를 효율적으로 전달합니다. 귀하의 기본 지갑 코어는 귀하에게 속한 것이 무엇인지 로컬로 확인합니다.",
+    "nodeBody": "MFN은 Monero Fast Node에 구축된 TEX8 노드 인프라입니다. 블록체인 데이터를 효율적으로 전달합니다. 귀하의 기본 지갑 코어는 귀하에게 속한 것이 무엇인지 로컬로 확인합니다.",
     "nodeSteps": [
       [
         "1",
@@ -4158,7 +4158,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "노드 이름이 MFN인 이유는 무엇입니까?",
-        "Monero Fast Node은 TEX8 노드 인프라의 제품 이름입니다. 기술 엔진은 Cuprate을 기반으로 하며 Monero과의 호환성을 유지합니다."
+        "Monero Fast Node은 TEX8 노드 인프라의 제품 이름입니다. 기술 엔진은 Monero Fast Node을 기반으로 하며 Monero과의 호환성을 유지합니다."
       ],
       [
         "다운로드가 공개적으로 승인됩니까?",
@@ -4243,7 +4243,7 @@ export const generatedWebsiteCopy = {
           "مزامنة أسرع.",
           "Monero يبقى Monero.\nيعمل"
         ],
-        "body": "MFN على تسريع مسار البيانات باستخدام البنية الأساسية المستندة إلى Cuprate. تظل العناوين والمعاملات والإجماع متوافقة تمامًا مع Monero.",
+        "body": "MFN على تسريع مسار البيانات باستخدام البنية الأساسية المستندة إلى Monero Fast Node. تظل العناوين والمعاملات والإجماع متوافقة تمامًا مع Monero.",
         "primary": "فهم MFN",
         "secondary": "قياسات المراجعة"
       }
@@ -4425,7 +4425,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "لم تتم الموافقة على أية عناصر للإصدار العام حتى الآن.",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "المسار السريع إلى شبكة Monero.",
-    "nodeBody": "MFN عبارة عن بنية أساسية لعقدة TEX8 مبنية على Cuprate. فهو يقدم بيانات blockchain بكفاءة. يقوم جوهر محفظتك الأصلية بالتحقق محليًا مما يخصك.",
+    "nodeBody": "MFN عبارة عن بنية أساسية لعقدة TEX8 مبنية على Monero Fast Node. فهو يقدم بيانات blockchain بكفاءة. يقوم جوهر محفظتك الأصلية بالتحقق محليًا مما يخصك.",
     "nodeSteps": [
       [
         "1",
@@ -4471,7 +4471,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "لماذا تسمى العقدة MFN؟",
-        "Monero Fast Node هو اسم المنتج للبنية التحتية لعقدة TEX8. يعتمد محركها الفني على Cuprate ويظل متوافقًا مع Monero."
+        "Monero Fast Node هو اسم المنتج للبنية التحتية لعقدة TEX8. يعتمد محركها الفني على Monero Fast Node ويظل متوافقًا مع Monero."
       ],
       [
         "هل تمت الموافقة على التنزيلات بشكل علني؟",
@@ -4556,7 +4556,7 @@ export const generatedWebsiteCopy = {
           "同步速度更快。",
           "Monero 保留 Monero。"
         ],
-        "body": "MFN 通过基于 Cuprate 的基础架构加速数据路径。地址、交易和共识保持完全 Monero 兼容。",
+        "body": "MFN 通过基于 Monero Fast Node 的基础架构加速数据路径。地址、交易和共识保持完全 Monero 兼容。",
         "primary": "了解 MFN",
         "secondary": "检查测量结果"
       }
@@ -4738,7 +4738,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "尚未批准任何公开发布的工件。",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "进入 Monero 网络的快速路由。",
-    "nodeBody": "MFN 是构建在 Cuprate 上的 TEX8 节点基础结构。高效传递区块链数据；您的本机钱包核心会在本地检查属于您的内容。",
+    "nodeBody": "MFN 是构建在 Monero Fast Node 上的 TEX8 节点基础结构。高效传递区块链数据；您的本机钱包核心会在本地检查属于您的内容。",
     "nodeSteps": [
       [
         "1",
@@ -4784,7 +4784,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "为什么该节点名为 MFN？",
-        "Monero Fast Node 是 TEX8 节点基础设施的产品名称。其技术引擎基于 Cuprate 并保持 Monero 兼容。"
+        "Monero Fast Node 是 TEX8 节点基础设施的产品名称。其技术引擎基于 Monero Fast Node 并保持 Monero 兼容。"
       ],
       [
         "下载是否得到公开批准？",
@@ -4869,7 +4869,7 @@ export const generatedWebsiteCopy = {
           "同步速度較快。",
           "Monero 保留 Monero。"
         ],
-        "body": "MFN 透過基於 Cuprate 的基礎架構加速資料路徑。地址、交易和共識保持完全 Monero 相容。",
+        "body": "MFN 透過基於 Monero Fast Node 的基礎架構加速資料路徑。地址、交易和共識保持完全 Monero 相容。",
         "primary": "了解 MFN",
         "secondary": "檢查測量結果"
       }
@@ -5051,7 +5051,7 @@ export const generatedWebsiteCopy = {
     "releaseGate": "尚未批准任何公開發布的工件。",
     "nodeEyebrow": "Monero Fast Node · MFN",
     "nodeTitle": "進入 Monero 網路的快速路由。",
-    "nodeBody": "MFN 是建構在 Cuprate 上的 TEX8 節點基礎架構。高效傳遞區塊鏈資料；您的本機錢包核心會在本地檢查屬於您的內容。",
+    "nodeBody": "MFN 是建構在 Monero Fast Node 上的 TEX8 節點基礎架構。高效傳遞區塊鏈資料；您的本機錢包核心會在本地檢查屬於您的內容。",
     "nodeSteps": [
       [
         "1",
@@ -5097,7 +5097,7 @@ export const generatedWebsiteCopy = {
       ],
       [
         "為什麼節點名稱為 MFN？",
-        "Monero Fast Node 是 TEX8 節點基礎架構的產品名稱。其技術引擎基於 Cuprate 並保持 Monero 相容。"
+        "Monero Fast Node 是 TEX8 節點基礎架構的產品名稱。其技術引擎基於 Monero Fast Node 並保持 Monero 相容。"
       ],
       [
         "下載是否已公開核准？",

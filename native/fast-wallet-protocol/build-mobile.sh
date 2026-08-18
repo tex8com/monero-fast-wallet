@@ -108,6 +108,7 @@ build_target() {
     --features mobile-fast-crypto \
     --release \
     --locked \
+    --target-dir "${mobile_build_source}/target" \
     --target "${rust_target}"
 
   local target_dir="${output_dir}/${label}"

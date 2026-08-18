@@ -17,6 +17,9 @@ const additions = patch
 const gpuDispatchPatch = read(
   'third_party/monero-patches/0024-wallet-add-verified-automatic-GPU-derivation-dispat.patch',
 );
+const manualBenchmarkPatch = read(
+  'third_party/monero-patches/0082-wallet-run-manual-derivation-backends-for-ten-seconds.patch',
+);
 const desktopBridge = read('native/desktop-bridge/cpp/DesktopWalletCore.cpp');
 const walletEngine = read('native/monero-bridge/cpp/WalletEngine.cpp');
 const mobileService = read('apps/mobile/src/services/DerivationPerformance.ts');
@@ -39,6 +42,20 @@ test('only a verified faster GPU wins and CPU remains the fallback', () => {
   assert.match(additions, /automatic_gpu_selected\.store\(select_gpu/);
   assert.match(gpuDispatchPatch, /set_active_backend\("cpu-fallback"/);
   assert.match(gpuDispatchPatch, /return fast_generate_key_derivation_batch_same_scalar/);
+});
+
+test('manual testbench runs each supported backend sequentially for ten seconds', () => {
+  assert.match(
+    manualBenchmarkPatch,
+    /measurement_duration = std::chrono::milliseconds\(10000\)/,
+  );
+  assert.equal(
+    manualBenchmarkPatch.match(/measurement_duration, measurement_maximum_rounds/g)
+      ?.length,
+    3,
+  );
+  assert.match(mobileService, /DERIVATION_BACKEND_DURATION_MS = 10_000/);
+  assert.match(mobileService, /setInterval\(emitProgress, 100\)/);
 });
 
 test('every wallet scan reports the actual CPU, Metal, or CUDA backend', () => {

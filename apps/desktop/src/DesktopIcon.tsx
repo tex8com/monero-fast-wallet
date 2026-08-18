@@ -10,6 +10,11 @@ export type DesktopIconName =
   | 'settings'
   | 'sparkles'
   | 'globe'
+  | 'lock'
+  | 'file'
+  | 'message-circle'
+  | 'package'
+  | 'verified'
   | 'chevron-right';
 
 type DesktopIconProps = {
@@ -66,6 +71,21 @@ export default function DesktopIcon({ name, size = 22, className }: DesktopIconP
       break;
     case 'globe':
       content = <><circle {...common} cx="12" cy="12" r="9" /><path {...common} d="M3 12h18M12 3c2.5 3 4 6 4 9s-1.5 6-4 9c-2.5-3-4-6-4-9s1.5-6 4-9Z" /></>;
+      break;
+    case 'lock':
+      content = <><rect {...common} x="5" y="11" width="14" height="10" rx="2" /><path {...common} d="M8 11V7a4 4 0 0 1 8 0v4" /></>;
+      break;
+    case 'file':
+      content = <><path {...common} d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" /><path {...common} d="M14 3v5h5M8 13h8M8 17h6" /></>;
+      break;
+    case 'message-circle':
+      content = <path {...common} d="M21 11.5a8.5 8.5 0 0 1-13.8 6.7L3 20l1.8-4.2A8.5 8.5 0 1 1 21 11.5Z" />;
+      break;
+    case 'package':
+      content = <><path {...common} d="m3 7 9-4 9 4v10l-9 4-9-4V7Z" /><path {...common} d="m3 7 9 4 9-4M12 11v10" /></>;
+      break;
+    case 'verified':
+      content = <><circle {...common} cx="12" cy="12" r="9" /><path {...common} d="m7.5 12 3 3 6-7" /></>;
       break;
     case 'chevron-right':
       content = <path {...common} d="m9 5 7 7-7 7" />;

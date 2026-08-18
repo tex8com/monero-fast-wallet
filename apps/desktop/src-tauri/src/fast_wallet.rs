@@ -159,8 +159,16 @@ pub fn wallet_path(app: &AppHandle, identity_id: &str) -> Result<String, String>
 pub fn scanner_url(value: &str) -> Result<String, String> {
     let trimmed = value.trim().trim_end_matches('/');
     let parsed = reqwest::Url::parse(trimmed)
-        .map_err(|_| "Scanner URL must be a valid HTTPS origin.".to_owned())?;
-    if parsed.scheme() != "https"
+        .map_err(|_| "Scanner URL must be a valid private-service origin.".to_owned())?;
+    let onion = parsed.scheme() == "http"
+        && parsed.host_str().is_some_and(|host| {
+            host.len() == 62
+                && host.ends_with(".onion")
+                && host[..56]
+                    .bytes()
+                    .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
+        });
+    if (parsed.scheme() != "https" && !onion)
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
@@ -169,7 +177,7 @@ pub fn scanner_url(value: &str) -> Result<String, String> {
         || parsed.fragment().is_some()
     {
         return Err(
-            "Scanner URL must be an HTTPS origin without credentials, paths, queries, or fragments."
+            "Scanner URL must be an HTTPS or Tor v3 Onion origin without credentials, paths, queries, or fragments."
                 .to_owned(),
         );
     }

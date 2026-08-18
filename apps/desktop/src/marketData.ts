@@ -21,18 +21,9 @@ export type XmrChartData = {
   refresh: () => void;
 };
 
-const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
 const PRICE_TTL_MS = 60_000;
 const CHART_TTL_MS = PRICE_TTL_MS * 5;
 const PERSISTED_CHART_TTL_MS = 24 * 60 * 60 * 1_000;
-const REQUEST_TIMEOUT_MS = 12_000;
-const DAYS_BY_TIMEFRAME: Record<MarketTimeframe, string> = {
-  '24H': '1',
-  '7D': '7',
-  '1M': '30',
-  '1Y': '365',
-  Max: 'max',
-};
 
 type PriceCache = { change24h: number; price: number; updatedAt: number };
 type ChartCache = { points: MarketPoint[]; updatedAt: number };
@@ -44,31 +35,9 @@ function isFresh(updatedAt: number, ttl: number) {
   return Date.now() - updatedAt < ttl;
 }
 
-async function fetchJson(url: string): Promise<unknown> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
-    if (!response.ok) throw new Error(`Market data request failed (${response.status}).`);
-    return response.json();
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
 function validPoint(timestamp: unknown, price: unknown): MarketPoint | null {
   if (typeof timestamp !== 'number' || !Number.isFinite(timestamp) || typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return null;
   return { timestamp, price };
-}
-
-function pointsFromCoinGecko(value: unknown): MarketPoint[] {
-  if (!value || typeof value !== 'object' || !Array.isArray((value as { prices?: unknown }).prices)) return [];
-  return (value as { prices: unknown[] }).prices.flatMap((entry) => Array.isArray(entry) ? [validPoint(entry[0], entry[1])].filter((point): point is MarketPoint => point !== null) : []);
-}
-
-function pointsFromBitfinex(value: unknown): MarketPoint[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => Array.isArray(entry) ? [validPoint(entry[0], entry[2])].filter((point): point is MarketPoint => point !== null) : []).reverse();
 }
 
 function downsample(points: MarketPoint[], maximum = 120) {
@@ -106,42 +75,30 @@ function cachedChart(timeframe: MarketTimeframe) {
   return cached ?? null;
 }
 
-async function fetchPriceFromCoinGecko() {
-  const value = await fetchJson(`${COINGECKO_BASE}/simple/price?ids=monero&vs_currencies=usd&include_24hr_change=true`);
-  const monero = value && typeof value === 'object' ? (value as { monero?: { usd?: unknown; usd_24h_change?: unknown } }).monero : undefined;
-  if (typeof monero?.usd !== 'number' || !Number.isFinite(monero.usd)) throw new Error('Market data did not include an XMR/USD price.');
-  return { price: monero.usd, change24h: typeof monero.usd_24h_change === 'number' && Number.isFinite(monero.usd_24h_change) ? monero.usd_24h_change : 0 };
-}
-
-async function fetchPriceFromBitfinex() {
-  const value = JSON.parse(await invoke<string>('fetch_market_backup', { input: { kind: 'ticker' } })) as unknown;
-  if (!Array.isArray(value) || typeof value[6] !== 'number' || !Number.isFinite(value[6])) throw new Error('Backup market data did not include an XMR/USD price.');
-  return { price: value[6], change24h: typeof value[5] === 'number' && Number.isFinite(value[5]) ? value[5] * 100 : 0 };
+async function fetchPriceFromTex8() {
+  const value = JSON.parse(await invoke<string>('fetch_private_service', { input: { kind: 'quote' } })) as { price?: unknown; change24h?: unknown };
+  if (typeof value.price !== 'number' || !Number.isFinite(value.price) || typeof value.change24h !== 'number' || !Number.isFinite(value.change24h)) throw new Error('Market data did not include an XMR/USD price.');
+  return { price: value.price, change24h: value.change24h };
 }
 
 async function fetchPrice() {
   if (priceCache && isFresh(priceCache.updatedAt, PRICE_TTL_MS)) return priceCache;
-  const quote = await fetchPriceFromCoinGecko().catch(() => fetchPriceFromBitfinex());
+  const quote = await fetchPriceFromTex8();
   priceCache = { ...quote, updatedAt: Date.now() };
   return priceCache;
 }
 
-async function fetchChartFromCoinGecko(timeframe: MarketTimeframe) {
-  const points = downsample(pointsFromCoinGecko(await fetchJson(`${COINGECKO_BASE}/coins/monero/market_chart?vs_currency=usd&days=${DAYS_BY_TIMEFRAME[timeframe]}`)));
+async function fetchChartFromTex8(timeframe: MarketTimeframe) {
+  const value = JSON.parse(await invoke<string>('fetch_private_service', { input: { kind: 'chart', timeframe } })) as { points?: unknown };
+  const points = downsample(Array.isArray(value.points) ? value.points.flatMap((entry) => entry && typeof entry === 'object' ? [validPoint((entry as MarketPoint).timestamp, (entry as MarketPoint).price)].filter((point): point is MarketPoint => point !== null) : []) : []);
   if (points.length < 2) throw new Error('Primary market chart did not include enough price points.');
-  return points;
-}
-
-async function fetchChartFromBitfinex(timeframe: MarketTimeframe) {
-  const points = downsample(pointsFromBitfinex(JSON.parse(await invoke<string>('fetch_market_backup', { input: { kind: 'chart', timeframe } })) as unknown));
-  if (points.length < 2) throw new Error('Backup market chart did not include enough price points.');
   return points;
 }
 
 async function fetchChart(timeframe: MarketTimeframe, force = false) {
   const cached = cachedChart(timeframe);
   if (!force && cached && isFresh(cached.updatedAt, CHART_TTL_MS)) return cached.points;
-  const points = await fetchChartFromCoinGecko(timeframe).catch(() => fetchChartFromBitfinex(timeframe));
+  const points = await fetchChartFromTex8(timeframe);
   return rememberChart(timeframe, points).points;
 }
 

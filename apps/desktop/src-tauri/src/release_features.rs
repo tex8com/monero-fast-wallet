@@ -27,7 +27,6 @@ pub struct MfwNameGenesisConfig {
     pub version: u8,
     pub network: String,
     pub registry_address: String,
-    pub registry_private_view_key: String,
     pub activation_height: u64,
     pub maximum_term_years: u32,
     pub commit_maturity_blocks: u64,
@@ -102,7 +101,7 @@ pub fn mfw_name_genesis(network: &str) -> Option<MfwNameGenesisConfig> {
 }
 
 fn validate_mfw_resolver_origins(origins: &[String]) -> bool {
-    if origins.len() < 2 || origins.len() > 4 {
+    if origins.is_empty() || origins.len() > 4 {
         return false;
     }
     let mut normalized = std::collections::HashSet::new();
@@ -110,7 +109,7 @@ fn validate_mfw_resolver_origins(origins: &[String]) -> bool {
         let Ok(url) = Url::parse(origin) else {
             return false;
         };
-        let valid = url.scheme() == "https"
+        let valid = private_service_origin(&url)
             && url.host_str().is_some()
             && url.username().is_empty()
             && url.password().is_none()
@@ -130,9 +129,7 @@ fn validate_mfw_genesis(config: &MfwNameGenesisConfig) -> bool {
             .registry_address
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric())
-        && canonical_hex(&config.registry_private_view_key, 32)
-        && config.maximum_term_years > 0
-        && config.maximum_term_years <= 10
+        && config.maximum_term_years == crate::mfw_names::MAX_TERM_YEARS
         && config.commit_maturity_blocks > 0
         && config.commit_reveal_window_blocks > config.commit_maturity_blocks
         && canonical_hex(&config.reserved_name_manifest_hash, 32)
@@ -163,7 +160,7 @@ fn validate_enthusiast_config(config: &MoneroEnthusiastV1Config) -> bool {
         let Ok(url) = Url::parse(origin) else {
             return false;
         };
-        if url.scheme() != "https"
+        if !private_service_origin(&url)
             || url.host_str().is_none()
             || !url.username().is_empty()
             || url.password().is_some()
@@ -223,6 +220,18 @@ fn validate_enthusiast_config(config: &MoneroEnthusiastV1Config) -> bool {
     })
 }
 
+fn private_service_origin(url: &Url) -> bool {
+    url.scheme() == "https"
+        || (url.scheme() == "http"
+            && url.host_str().is_some_and(|host| {
+                host.len() == 62
+                    && host.ends_with(".onion")
+                    && host[..56]
+                        .bytes()
+                        .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
+            }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -239,10 +248,10 @@ mod tests {
         assert!(!enabled("ledgerFastWallet"));
         assert!(!enabled("scannerKeyImageSpendAuthority"));
         assert!(!enabled("legacyCommunity"));
-        assert!(!enabled("mfwNameResolution"));
-        assert!(!enabled("mfwNameRegistration"));
-        assert!(mfw_name_resolver_origins().is_none());
-        assert!(mfw_name_genesis("mainnet").is_none());
+        assert!(enabled("mfwNameResolution"));
+        assert!(enabled("mfwNameRegistration"));
+        assert_eq!(mfw_name_resolver_origins().unwrap().len(), 2);
+        assert!(mfw_name_genesis("mainnet").is_some());
         let community = monero_enthusiast_v1_config()
             .expect("the signed Community V1 test release must have a valid configuration");
         assert_eq!(community.api_origin, "https://xmr.tex8.com");
@@ -251,6 +260,9 @@ mod tests {
 
     #[test]
     fn mfw_release_configuration_is_strict_and_independent() {
+        assert!(validate_mfw_resolver_origins(&[
+            "https://mfw-a.example/".to_owned(),
+        ]));
         assert!(validate_mfw_resolver_origins(&[
             "https://mfw-a.example/".to_owned(),
             "https://mfw-b.example/".to_owned(),
@@ -268,9 +280,8 @@ mod tests {
             version: 1,
             network: "mainnet".to_owned(),
             registry_address: "4".repeat(95),
-            registry_private_view_key: "11".repeat(32),
             activation_height: 3_500_000,
-            maximum_term_years: 5,
+            maximum_term_years: crate::mfw_names::MAX_TERM_YEARS,
             commit_maturity_blocks: 10,
             commit_reveal_window_blocks: 720,
             reserved_name_manifest_hash: "22".repeat(32),

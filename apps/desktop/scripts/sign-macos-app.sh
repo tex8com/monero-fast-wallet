@@ -18,7 +18,20 @@ repo_dir="$(cd "${desktop_dir}/../.." && pwd)"
 # the Monero-core build. Development keeps the large native target cache on
 # the external build disk; silently signing src-tauri/target would otherwise
 # sign an older shell build instead.
-target_dir="${CARGO_TARGET_DIR:-${desktop_dir}/src-tauri/target}"
+if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+  target_dir="${CARGO_TARGET_DIR}"
+else
+  # Cargo can redirect its target through .cargo/config.toml without exporting
+  # CARGO_TARGET_DIR. Resolve the effective directory instead of signing a
+  # stale bundle from src-tauri/target.
+  target_dir="$(
+    cargo metadata \
+      --manifest-path "${desktop_dir}/src-tauri/Cargo.toml" \
+      --no-deps \
+      --format-version 1 \
+      | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));'
+  )"
+fi
 app_path="${MONERO_DESKTOP_APP_PATH:-${target_dir}/${build_kind}/bundle/macos/Monero Fast Wallet.app}"
 codesign_keychain_args=()
 temporary_signing_dir=""

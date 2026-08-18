@@ -15,6 +15,7 @@ import {
   storeProtectedMetadata,
 } from './ProtectedMetadataStorage';
 import { logWalletEvent } from './WalletLogger';
+import {torFetch} from './TorHttp';
 
 const STORAGE_KEY_PREFIX = 'monero-fast-wallet.worker-selection.v1';
 const DIRECTORY_TIMEOUT_MS = 8_000;
@@ -66,12 +67,13 @@ export async function loadCommunityFastWalletWorkers(): Promise<CommunityFastWal
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DIRECTORY_TIMEOUT_MS);
   try {
-    const response = await fetch(
+    const response = await torFetch(
       `${DEFAULT_FAST_WALLET_WORKER_DIRECTORY_ORIGIN}/api/v1/community-workers`,
       {
         headers: { Accept: 'application/json' },
         method: 'GET',
         signal: controller.signal,
+        timeoutMs: DIRECTORY_TIMEOUT_MS,
       },
     );
     if (!response.ok) throw new Error(`Worker Directory HTTP ${response.status}`);

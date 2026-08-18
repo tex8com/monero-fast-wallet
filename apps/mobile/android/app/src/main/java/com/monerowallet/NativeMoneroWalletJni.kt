@@ -45,6 +45,11 @@ internal object NativeMoneroWalletJni {
     return nativeBenchmarkDerivationPerformance()
   }
 
+  fun derivationBackendStatus(): String {
+    requireLoaded()
+    return nativeDerivationBackendStatus()
+  }
+
   fun drainEngineDiagnostics(): List<String> {
     if (loadError != null) return emptyList()
     return nativeDrainEngineDiagnostics()
@@ -68,6 +73,7 @@ internal object NativeMoneroWalletJni {
     homeserver: String,
     storePath: String,
     storePassphrase: ByteArray,
+    proxy: String,
     allowLoopbackHttpForTests: Boolean = false,
   ): Boolean {
     requireLoaded()
@@ -75,6 +81,7 @@ internal object NativeMoneroWalletJni {
       homeserver,
       storePath,
       storePassphrase,
+      proxy,
       allowLoopbackHttpForTests,
     )
   }
@@ -1388,6 +1395,7 @@ internal object NativeMoneroWalletJni {
     maxBytes: Long,
   ): Boolean
   @JvmStatic private external fun nativeDrainEngineDiagnostics(): List<String>
+  @JvmStatic private external fun nativeDerivationBackendStatus(): String
   @JvmStatic private external fun nativeBenchmarkDerivationPerformance(): String
   @JvmStatic private external fun nativeCommunityMatrixLinked(): Boolean
   @JvmStatic private external fun nativeCommunityRuntimeLinked(): Boolean
@@ -1395,6 +1403,7 @@ internal object NativeMoneroWalletJni {
     homeserver: String,
     storePath: String,
     storePassphrase: ByteArray,
+    proxy: String,
     allowLoopbackHttpForTests: Boolean,
   ): Boolean
   @JvmStatic private external fun nativeCommunityMatrixDestroy()

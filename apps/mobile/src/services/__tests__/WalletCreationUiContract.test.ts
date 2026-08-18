@@ -123,7 +123,7 @@ describe('Wallet creation and existing-wallet UI contract', () => {
 
   it('keeps fresh-wallet daemon initialization local and non-blocking', () => {
     const helperStart = walletCore.indexOf(
-      'void setEstimatedRefreshHeightForNewWallet',
+      'uint64_t setEstimatedRefreshHeightForNewWallet',
     );
     const helperEnd = walletCore.indexOf(
       'uint64_t fastReceiveDerivationIndexFromId',
@@ -232,7 +232,7 @@ describe('Wallet creation and existing-wallet UI contract', () => {
     expect(createFlow).toContain('startNetwork: false');
     expect(createFlow).toContain('startNetwork: true');
     expect(createFlow.indexOf("navigation.navigate('Home')")).toBeLessThan(
-      createFlow.indexOf('void reloadRegisteredWallets()'),
+      createFlow.indexOf('reloadRegisteredWallets()'),
     );
     expect(walletState).toContain("'ledgerAutoVerification.start'");
     expect(walletState).toContain('await reconcileLedgerBalance(true)');

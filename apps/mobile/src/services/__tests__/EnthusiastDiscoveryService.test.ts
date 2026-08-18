@@ -57,6 +57,18 @@ describe('EnthusiastDiscoveryService', () => {
         };
       },
     );
+    NativeModules.EmbeddedTor = {
+      request: jest.fn(async (url: string, method: string, headers: Record<string, string>, body: string | null) => {
+        const result = await globalThis.fetch(url, {method, headers, body: body ?? undefined});
+        const responseBody =
+          typeof (result as any).text === 'function'
+            ? await (result as any).text()
+            : typeof (result as any).json === 'function'
+              ? JSON.stringify(await (result as any).json())
+              : '';
+        return {status: result.status, body: responseBody};
+      }),
+    };
   });
 
   it('defaults to disabled while onboarding can explicitly opt in', async () => {

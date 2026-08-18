@@ -13,6 +13,7 @@ class NativeMoneroWalletPackage : BaseReactPackage() {
   ): NativeModule? =
     when (name) {
       NativeMoneroWalletModule.NAME -> NativeMoneroWalletModule(reactContext)
+      EmbeddedTorModule.NAME -> EmbeddedTorModule(reactContext)
       NearbyLocationModule.NAME -> NearbyLocationModule(reactContext)
       LocalPushNotificationModule.NAME -> LocalPushNotificationModule(reactContext)
       else -> null
@@ -28,6 +29,14 @@ class NativeMoneroWalletPackage : BaseReactPackage() {
           false,
           false,
           true,
+        ),
+        EmbeddedTorModule.NAME to ReactModuleInfo(
+          EmbeddedTorModule.NAME,
+          EmbeddedTorModule.NAME,
+          false,
+          false,
+          false,
+          false,
         ),
         NearbyLocationModule.NAME to ReactModuleInfo(
           NearbyLocationModule.NAME,

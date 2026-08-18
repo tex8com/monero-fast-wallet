@@ -309,6 +309,10 @@ async fn run_rpc_server(
         .with_state(rpc_handler);
     let resolver_router = Router::new()
         .route("/v1/mfw/names/{name}", get(resolve_mfw_name_http))
+        .route(
+            "/v1/mfw/name-suggestions/{prefix}",
+            get(suggest_mfw_names_http),
+        )
         .with_state(mfw_name_index);
     let router = router.merge(resolver_router);
 
@@ -350,6 +354,54 @@ struct MfwNameHttpResponse {
     signing_owner_public_key_hex: String,
     record_block_hash_hex: String,
     chain_tip_hash_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MfwNameSuggestionsHttpResponse {
+    prefix: String,
+    names: Vec<String>,
+}
+
+async fn suggest_mfw_names_http(
+    State(index): State<Option<SharedNameIndex>>,
+    Path(prefix): Path<String>,
+) -> Result<Response, (StatusCode, &'static str)> {
+    let index = index.ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "MFW name index is disabled",
+    ))?;
+    if !index.is_ready() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "MFW name index is restoring or catching up",
+        ));
+    }
+    let guard = index.read().await;
+    if !index.is_ready() {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "MFW name index changed while suggesting",
+        ));
+    }
+    let normalized = prefix.trim().to_ascii_lowercase();
+    let names = guard
+        .suggest_names(&normalized, 5)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "MFW name prefix is invalid"))?;
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok((
+        headers,
+        Json(MfwNameSuggestionsHttpResponse {
+            prefix: normalized,
+            names,
+        }),
+    )
+        .into_response())
 }
 
 async fn resolve_mfw_name_http(

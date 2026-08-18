@@ -9,6 +9,7 @@ import {
   Dimensions,
   Linking,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import Svg, {
   Path,
@@ -18,8 +19,6 @@ import Svg, {
   Circle,
 } from 'react-native-svg';
 import { colors } from '../theme/colors';
-import MoneroLogo from '../components/MoneroLogo';
-import { Icon } from '../components/Icon';
 import SyncStatusBar from '../components/SyncStatusBar';
 import TransactionRow, {
   transactionRowKey,
@@ -35,15 +34,11 @@ import {
   xmrToUsd,
 } from '../data/priceService';
 import { type MoneroNewsCategory, useMoneroNews } from '../data/moneroNews';
+import MoneroCoinBg from '../components/MoneroCoinBg';
 import { useLocalAdvertisement } from '../data/advertisements';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 import { useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
-import { presentNetworkSync } from '../../../../packages/wallet-shared/src/networkSync';
-import {
-  networkSyncFailureCode,
-  networkSyncFailureTranslationKey,
-} from '../services/NetworkSyncFailure';
 import {
   ledgerBalanceNeedsVerification,
   walletDisplayName,
@@ -61,6 +56,8 @@ import {
 const W = Dimensions.get('window').width;
 const CHART_W = W - 40;
 const CHART_H = 160;
+const NEWS_CARD_W = CHART_W - 32;
+const NEWS_CARD_GAP = 12;
 const TIMEFRAMES = ['24H', '7D', '1M', '1Y', 'Max'];
 
 /* ── SVG Chart ─────────────────────────────────────────────────────── */
@@ -278,6 +275,8 @@ export default function HomeScreen({ navigation }: any) {
   const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>(
     'all',
   );
+  const [newsSlideIndex, setNewsSlideIndex] = useState(0);
+  const newsSliderRef = useRef<ScrollView>(null);
   const { dateLocale, t } = useI18n();
   const {
     price,
@@ -306,7 +305,6 @@ export default function HomeScreen({ navigation }: any) {
     registeredWallets,
     isRegisteredWalletOpen,
     networkSyncStatus,
-    nodeConnectionStatus,
     openRegisteredWalletById,
     session,
     setActiveRegisteredWallet,
@@ -320,43 +318,6 @@ export default function HomeScreen({ navigation }: any) {
     walletSnapshots,
   } = useWalletState();
   const hasOpenWallet = Boolean(session);
-  const networkSync = presentNetworkSync(networkSyncStatus);
-  // The header reports the app-wide node transport. It must never change just
-  // because the owner selected another local wallet. Per-wallet scan progress
-  // remains in SyncStatusBar below.
-  const nodeColor =
-    networkSync.ready || networkSync.connected
-      ? colors.success
-      : (!networkSync.failed && networkSync.busy) ||
-          nodeConnectionStatus === 'connecting'
-        ? colors.warning
-        : colors.textSecondary;
-  const networkFailure = networkSyncFailureCode(networkSyncStatus);
-  const nodeText = networkSync.failed
-    ? t(networkSyncFailureTranslationKey(networkFailure))
-    : networkSync.phase === 'fetching-blocks' ||
-        networkSync.phase === 'waiting-next-batch'
-      ? t('sync.downloadingBlocks')
-      : networkSync.phase === 'scanning-wallets'
-        ? t('sync.scanningWallets')
-        : networkSync.phase === 'checking-mempool'
-          ? t('sync.checkingMempool')
-          : networkSync.phase === 'checkpointing-wallets'
-            ? t('sync.savingWallets')
-            : networkSync.phase === 'selecting-provider'
-              ? t('sync.selectingSource')
-            : networkSync.phase === 'initializing-transport'
-              ? t('sync.startingConnection')
-              : networkSync.phase === 'reconnecting'
-                ? t('sync.retryingNode')
-              : networkSync.ready || nodeConnectionStatus === 'connected'
-                  ? t('status.live')
-                  : nodeConnectionStatus === 'error'
-                    ? t('sync.error')
-                    : nodeConnectionStatus === 'connecting'
-                      ? t('sync.connectingNode')
-                      : t('status.setup');
-
   const positive =
     tf === '24H'
       ? change24h >= 0
@@ -430,6 +391,11 @@ export default function HomeScreen({ navigation }: any) {
         : newsItems.filter(item => item.category === newsCategory),
     [newsCategory, newsItems],
   );
+  const displayedNews = visibleNews.slice(0, 10);
+  useEffect(() => {
+    setNewsSlideIndex(0);
+    newsSliderRef.current?.scrollTo({ x: 0, animated: true });
+  }, [newsCategory]);
   const homeWalletOptions = useMemo<WalletSelectorItem[]>(
     () => registeredWallets,
     [registeredWallets],
@@ -458,7 +424,7 @@ export default function HomeScreen({ navigation }: any) {
       if (walletId !== registeredWallet?.id) {
         // The state provider commits the active cached snapshot before its
         // background registry write. Do not manufacture a loading phase.
-        void setActiveRegisteredWallet(walletId).catch(() => undefined);
+        setActiveRegisteredWallet(walletId).catch(() => undefined);
       }
       return;
     }
@@ -467,7 +433,7 @@ export default function HomeScreen({ navigation }: any) {
       // Software and Fast Wallet selection is optimistic: the cached snapshot
       // changes in this JavaScript turn while an uncommon cold local-file open
       // completes in the native worker. Sync is always deferred.
-      void openRegisteredWalletById(walletId)
+      openRegisteredWalletById(walletId)
         .then(opened => {
           if (!opened) {
             navigation.navigate('WalletSetup', {
@@ -482,7 +448,7 @@ export default function HomeScreen({ navigation }: any) {
 
     if (openingWalletId) return;
     setOpeningWalletId(walletId);
-    void openRegisteredWalletById(walletId)
+    openRegisteredWalletById(walletId)
       .then(opened => {
         if (!opened) {
           navigation.navigate('WalletSetup', {
@@ -498,38 +464,10 @@ export default function HomeScreen({ navigation }: any) {
   return (
     <View style={s.container}>
       <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
-      <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <View style={s.header}>
-          <View style={s.headerL}>
-            <MoneroLogo size={26} />
-            <Text style={s.headerT}>
-              Monero <Text style={s.headerTOrange}>Fast Wallet</Text>
-            </Text>
-          </View>
-          <TouchableOpacity
-            accessibilityLabel={`${nodeText}. ${
-              syncStatusExpanded ? t('sync.hideDetails') : t('sync.showDetails')
-            }`}
-            accessibilityRole="button"
-            accessibilityState={{ expanded: syncStatusExpanded }}
-            activeOpacity={0.7}
-            disabled={!registeredWallet}
-            onPress={() => setSyncStatusExpanded(current => !current)}
-            style={[
-              s.syncBadge,
-              s.syncBadgeLedOnly,
-              syncStatusExpanded && registeredWallet && s.syncBadgeExpanded,
-              {
-                backgroundColor: `${nodeColor}1A`,
-                borderColor: `${nodeColor}80`,
-              },
-            ]}
-            testID="header-sync-status-toggle"
-          >
-            <View style={[s.syncDot, { backgroundColor: nodeColor }]} />
-          </TouchableOpacity>
-        </View>
+      <ScrollView
+        contentContainerStyle={s.scroll}
+        showsVerticalScrollIndicator={false}
+      >
 
         {registeredWallet ? (
           <View style={s.syncStatusWrap}>
@@ -553,7 +491,7 @@ export default function HomeScreen({ navigation }: any) {
             <ActivityIndicator
               color={colors.orange}
               size="large"
-              style={{ marginVertical: 12 }}
+              style={s.priceLoadingIndicator}
             />
           ) : priceError || price <= 0 ? (
             <View style={s.priceUnavailable}>
@@ -602,13 +540,7 @@ export default function HomeScreen({ navigation }: any) {
         {/* Chart */}
         <View style={s.chartWrap}>
           {chartLoading && points.length < 2 ? (
-            <View
-              style={{
-                height: CHART_H,
-                justifyContent: 'center',
-                alignItems: 'center',
-              }}
-            >
+            <View style={s.chartLoading}>
               <ActivityIndicator color={colors.orange} />
             </View>
           ) : points.length >= 2 ? (
@@ -647,6 +579,38 @@ export default function HomeScreen({ navigation }: any) {
               </Text>
             </TouchableOpacity>
           ))}
+        </View>
+
+        {/* Balance Card */}
+        <View style={s.balCard}>
+          <Text style={s.balLabel}>{t('home.totalBalance')}</Text>
+          <View style={s.balRow}>
+            <Text style={s.balXmr}>
+              {registeredWallets.length > 0
+                ? `${totalBalanceXmr} XMR`
+                : t('home.noWallet')}
+            </Text>
+            <Text style={s.balUsd}>
+              {registeredWallets.length > 0 ? `$${totalBalanceUsd}` : ''}
+            </Text>
+          </View>
+          {showLocked && !hasUnverifiedLedgerBalance && (
+            <View style={s.pendRow}>
+              <View style={s.pendDot} />
+              <Text style={s.pendTxt}>
+                {t('home.lockedBalance', { amount: lockedXmr })}
+              </Text>
+            </View>
+          )}
+          {!hasOpenWallet ? (
+            <TouchableOpacity style={s.balOpenButton} onPress={openWalletSetup}>
+              <Text style={s.balOpenButtonText}>
+                {registeredWallet
+                  ? t('action.openWallet')
+                  : t('home.createOrImport')}
+              </Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         {v1ReleaseFeatures.news ? (
@@ -713,43 +677,91 @@ export default function HomeScreen({ navigation }: any) {
             ) : visibleNews.length === 0 ? (
               <Text style={s.newsStatus}>{t('home.newsEmpty')}</Text>
             ) : (
-              <ScrollView
+              <>
+                <ScrollView
                 horizontal
-                pagingEnabled
                 decelerationRate="fast"
+                snapToInterval={NEWS_CARD_W + NEWS_CARD_GAP}
+                snapToAlignment="start"
                 showsHorizontalScrollIndicator={false}
                 contentContainerStyle={s.newsPages}
+                ref={newsSliderRef}
+                onMomentumScrollEnd={event => {
+                  const index = Math.round(
+                    event.nativeEvent.contentOffset.x /
+                      (NEWS_CARD_W + NEWS_CARD_GAP),
+                  );
+                  setNewsSlideIndex(
+                    Math.max(0, Math.min(index, displayedNews.length - 1)),
+                  );
+                }}
               >
-                {visibleNews.slice(0, 8).map(item => (
-                  <TouchableOpacity
-                    key={item.id}
-                    style={s.newsPage}
-                    onPress={() =>
-                      Linking.openURL(item.url).catch(() => undefined)
-                    }
-                    activeOpacity={0.8}
-                  >
-                    <Text style={s.newsCategory}>
-                      {item.category === 'network'
-                        ? t('home.newsNetwork')
-                        : item.category === 'wallet'
-                          ? t('home.newsWallet')
-                          : t('home.newsEcosystem')}
-                    </Text>
-                    <Text numberOfLines={2} style={s.newsItemTitle}>
-                      {item.title}
-                    </Text>
-                    <Text numberOfLines={2} style={s.newsSummary}>
-                      {item.summary}
-                    </Text>
-                    <Text style={s.newsDate}>
-                      {new Intl.DateTimeFormat(dateLocale, {
-                        dateStyle: 'medium',
-                      }).format(new Date(item.publishedAt))}
-                    </Text>
-                  </TouchableOpacity>
+                {displayedNews.map(item => (
+                  <View key={item.id} style={s.newsPage}>
+                    <View style={s.newsImageFrame}>
+                      {item.imageDataUrl ? (
+                        <Image
+                          accessibilityLabel={item.title}
+                          resizeMode="cover"
+                          source={{ uri: item.imageDataUrl }}
+                          style={s.newsImage}
+                        />
+                      ) : (
+                        <View style={s.newsImageFallback}>
+                          <MoneroCoinBg size={92} />
+                        </View>
+                      )}
+                    </View>
+                    <View style={s.newsPageBody}>
+                      <Text style={s.newsCategory}>
+                        {item.category === 'network'
+                          ? t('home.newsNetwork')
+                          : item.category === 'wallet'
+                            ? t('home.newsWallet')
+                            : t('home.newsEcosystem')}
+                      </Text>
+                      <Text numberOfLines={2} style={s.newsItemTitle}>
+                        {item.title}
+                      </Text>
+                      <Text numberOfLines={3} style={s.newsSummary}>
+                        {item.summary}
+                      </Text>
+                      <View style={s.newsFooter}>
+                        <Text style={s.newsDate}>
+                          {new Intl.DateTimeFormat(dateLocale, {
+                            dateStyle: 'medium',
+                          }).format(new Date(item.publishedAt))}
+                        </Text>
+                        {item.url ? (
+                          <TouchableOpacity
+                            accessibilityRole="link"
+                            onPress={() =>
+                              Linking.openURL(item.url!).catch(() => undefined)
+                            }
+                            style={s.newsOpenButton}
+                          >
+                            <Text style={s.newsOpenButtonText}>
+                              {t('home.newsReadMore')} ↗
+                            </Text>
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+                    </View>
+                  </View>
                 ))}
-              </ScrollView>
+                </ScrollView>
+                <View style={s.newsDots}>
+                  {displayedNews.map((item, index) => (
+                    <View
+                      key={`news-dot-${item.id}`}
+                      style={[
+                        s.newsDot,
+                        index === newsSlideIndex && s.newsDotActive,
+                      ]}
+                    />
+                  ))}
+                </View>
+              </>
             )}
           </View>
         ) : null}
@@ -782,59 +794,6 @@ export default function HomeScreen({ navigation }: any) {
           </TouchableOpacity>
         </View>
 
-        {v1ReleaseFeatures.mfwNameRegistration ? (
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel={t('mfwNames.claimYourAddress')}
-            activeOpacity={0.78}
-            style={s.nameClaimCard}
-            onPress={() => openWalletRoute('MfwNames')}
-          >
-            <View style={s.nameClaimIcon}>
-              <Icon name="key" size={24} color={colors.orange} />
-            </View>
-            <View style={s.nameClaimCopy}>
-              <Text style={s.nameClaimTitle}>
-                {t('mfwNames.claimYourAddress')}
-              </Text>
-              <Text style={s.nameClaimText}>{t('mfwNames.subtitle')}</Text>
-            </View>
-            <Icon name="chevron-right" size={22} color={colors.orange} />
-          </TouchableOpacity>
-        ) : null}
-
-        {/* Balance Card */}
-        <View style={s.balCard}>
-          <Text style={s.balLabel}>{t('home.totalBalance')}</Text>
-          <View style={s.balRow}>
-            <Text style={s.balXmr}>
-              {registeredWallets.length > 0
-                ? `${totalBalanceXmr} XMR`
-                : t('home.noWallet')}
-            </Text>
-            <Text style={s.balUsd}>
-              {registeredWallets.length > 0 ? `$${totalBalanceUsd}` : ''}
-            </Text>
-          </View>
-          {showLocked && !hasUnverifiedLedgerBalance && (
-            <View style={s.pendRow}>
-              <View style={s.pendDot} />
-              <Text style={s.pendTxt}>
-                {t('home.lockedBalance', { amount: lockedXmr })}
-              </Text>
-            </View>
-          )}
-          {!hasOpenWallet ? (
-            <TouchableOpacity style={s.balOpenButton} onPress={openWalletSetup}>
-              <Text style={s.balOpenButtonText}>
-                {registeredWallet
-                  ? t('action.openWallet')
-                  : t('home.createOrImport')}
-              </Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-
         {homeWalletOptions.length > 0 ? (
           <View style={s.walletSelectorWrap}>
             <WalletSelector
@@ -856,7 +815,9 @@ export default function HomeScreen({ navigation }: any) {
           <TouchableOpacity
             accessibilityRole="button"
             activeOpacity={0.7}
-            onPress={() => navigation.navigate('Transactions')}
+            onPress={() =>
+              navigation.navigate('Transactions', { addressFilter: null })
+            }
           >
             <Text style={s.secLink}>{t('transactions.viewMore')}</Text>
           </TouchableOpacity>
@@ -894,7 +855,7 @@ export default function HomeScreen({ navigation }: any) {
             </Text>
           </View>
         )}
-        <View style={{ height: 150 }} />
+        <View style={s.bottomSpacer} />
       </ScrollView>
     </View>
   );
@@ -902,42 +863,7 @@ export default function HomeScreen({ navigation }: any) {
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 58,
-    marginBottom: 8,
-  },
-  headerL: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  headerT: { color: '#FFF', fontSize: 18, fontWeight: '700' },
-  headerTOrange: { color: '#F26822' },
-  syncBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,214,143,0.1)',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 50,
-    gap: 6,
-  },
-  syncBadgeLedOnly: {
-    width: 26,
-    height: 26,
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-    justifyContent: 'center',
-  },
-  syncBadgeExpanded: {
-    borderWidth: 1,
-  },
-  syncDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.success,
-  },
+  scroll: { paddingTop: 12 },
   syncStatusWrap: { paddingHorizontal: 20 },
   fastWalletStatusCard: {
     borderColor: colors.border,
@@ -972,6 +898,7 @@ const s = StyleSheet.create({
   },
 
   priceSection: { paddingHorizontal: 20, marginBottom: 8 },
+  priceLoadingIndicator: { marginVertical: 12 },
   priceUnavailable: {
     minHeight: 70,
     alignItems: 'flex-start',
@@ -1006,6 +933,11 @@ const s = StyleSheet.create({
   changeUsd: { fontSize: 15, fontWeight: '500' },
 
   chartWrap: { paddingHorizontal: 20, marginBottom: 4 },
+  chartLoading: {
+    height: CHART_H,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   chartInteractive: { height: CHART_H, position: 'relative' },
   chartTooltip: {
     position: 'absolute',
@@ -1122,16 +1054,30 @@ const s = StyleSheet.create({
     paddingRight: 16,
     paddingBottom: 16,
   },
-  newsPages: { paddingHorizontal: 16, paddingBottom: 16, gap: 12 },
+  newsPages: { paddingHorizontal: 16, gap: NEWS_CARD_GAP },
   newsPage: {
-    width: CHART_W - 32,
-    minHeight: 144,
+    width: NEWS_CARD_W,
     borderRadius: 13,
     borderWidth: 1,
     borderColor: '#332B45',
     backgroundColor: 'rgba(255,255,255,0.025)',
-    padding: 15,
+    overflow: 'hidden',
   },
+  newsImageFrame: {
+    aspectRatio: 16 / 9,
+    backgroundColor: '#171321',
+    overflow: 'hidden',
+    width: '100%',
+  },
+  newsImage: { height: '100%', width: '100%' },
+  newsImageFallback: {
+    alignItems: 'center',
+    backgroundColor: '#1C1426',
+    height: '100%',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  newsPageBody: { minHeight: 184, padding: 15 },
   newsCategory: {
     color: '#F4BD55',
     fontSize: 10,
@@ -1156,9 +1102,42 @@ const s = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 11,
     fontWeight: '700',
-    marginTop: 'auto',
-    paddingTop: 10,
   },
+  newsFooter: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 'auto',
+    paddingTop: 14,
+  },
+  newsOpenButton: {
+    backgroundColor: 'rgba(242,104,34,0.14)',
+    borderColor: 'rgba(242,104,34,0.42)',
+    borderRadius: 999,
+    borderWidth: 1,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+  },
+  newsOpenButtonText: {
+    color: '#F4A369',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  newsDots: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+    justifyContent: 'center',
+    paddingBottom: 15,
+    paddingTop: 12,
+  },
+  newsDot: {
+    backgroundColor: '#42384F',
+    borderRadius: 999,
+    height: 6,
+    width: 6,
+  },
+  newsDotActive: { backgroundColor: colors.orange, width: 18 },
   adCard: {
     marginHorizontal: 20,
     marginBottom: 24,
@@ -1237,34 +1216,6 @@ const s = StyleSheet.create({
     fontWeight: '600',
     marginTop: 10,
   },
-  nameClaimCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 13,
-    marginHorizontal: 20,
-    marginBottom: 20,
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: `${colors.orange}66`,
-    backgroundColor: colors.orangeMuted,
-  },
-  nameClaimIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.bgCard,
-  },
-  nameClaimCopy: { flex: 1, gap: 3 },
-  nameClaimTitle: { color: '#FFF', fontSize: 16, fontWeight: '800' },
-  nameClaimText: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-
   balCard: {
     marginHorizontal: 20,
     backgroundColor: colors.bgCard,
@@ -1398,4 +1349,5 @@ const s = StyleSheet.create({
     marginBottom: 4,
   },
   emptyTxText: { color: colors.textSecondary, fontSize: 12, lineHeight: 18 },
+  bottomSpacer: { height: 150 },
 });

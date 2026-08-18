@@ -72,7 +72,7 @@ trap stop_remote_monitor EXIT
   printf 'product_repo_commit=%s\n' "$(git -C "$repo_root" rev-parse HEAD)"
   printf 'client_tcp_sysctl:\n'; sysctl kern.ipc.maxsockbuf net.inet.tcp.recvspace net.inet.tcp.autorcvbufmax net.inet.tcp.sendspace net.inet.tcp.autosndbufmax net.inet.tcp.win_scale_factor
   printf 'server_preflight:\n'
-  ssh -n tex8 'date -Is; systemctl is-active cuprate.service; systemctl show -p MainPID --value cuprate.service; sha256sum /opt/cuprate/cuprated; sha256sum /etc/cuprate/cuprated.toml; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k'
+  ssh -n tex8 'date -Is; systemctl is-active monero-fast-node.service; systemctl show -p MainPID --value monero-fast-node.service; sha256sum /opt/cuprate/cuprated; sha256sum /etc/cuprate/cuprated.toml; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k'
 } >"$result_dir/preflight.txt"
 
 # Do not use ssh -n here: this command intentionally receives its monitor
@@ -89,7 +89,7 @@ mkdir -p "$r/system"
   while [ ! -e "$r/STOP" ]; do
     stamp="$(date +%s%N)"
     ss -tinm state established '( sport = :48091 )' >"$r/system/${i}-${stamp}.wallet-tcp" 2>&1 || true
-    pid="$(systemctl show -p MainPID --value cuprate.service 2>/dev/null || true)"
+    pid="$(systemctl show -p MainPID --value monero-fast-node.service 2>/dev/null || true)"
     ps -o pid=,ppid=,%cpu=,rss=,etime= -p "$pid" >"$r/system/${i}-${stamp}.process-and-memory" 2>&1 || true
     cat "/proc/$pid/stat" >"$r/system/${i}-${stamp}.process-stat" 2>&1 || true
     cat /proc/net/dev >"$r/system/${i}-${stamp}.netdev" 2>&1 || true
@@ -194,7 +194,7 @@ awk -F, -v elapsed_ms="$process_elapsed_ms" '
 
 {
   printf 'finished_utc=%s\nclient_exit_status=%s\nprocess_elapsed_ms=%s\nharness_elapsed_ms=%s\nserver_postflight:\n' "$(date -u +%FT%TZ)" "$client_status" "$process_elapsed_ms" "$harness_elapsed_ms"
-  ssh -n tex8 'date -Is; systemctl is-active cuprate.service; systemctl show -p MainPID --value cuprate.service; sha256sum /opt/cuprate/cuprated; sha256sum /etc/cuprate/cuprated.toml; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k'
+  ssh -n tex8 'date -Is; systemctl is-active monero-fast-node.service; systemctl show -p MainPID --value monero-fast-node.service; sha256sum /opt/cuprate/cuprated; sha256sum /etc/cuprate/cuprated.toml; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k'
 } >>"$result_dir/preflight.txt"
 
 # This finalizer also intentionally consumes the heredoc on stdin.
@@ -207,7 +207,7 @@ for _ in $(seq 1 20); do
   kill -0 "$pid" 2>/dev/null || break
   sleep 1
 done
-journalctl -u cuprate.service --since '20 minutes ago' --no-pager >"$r/service-journal.log" 2>&1 || true
+journalctl -u monero-fast-node.service --since '20 minutes ago' --no-pager >"$r/service-journal.log" 2>&1 || true
 tar -C "$r" -czf "$r/system.tar.gz" system
 sha256sum "$r/collector.log" "$r/service-journal.log" "$r/system.tar.gz" >"$r/artifact-sha256.txt"
 find "$r" -maxdepth 1 -type f -printf '%p\n' | sort
@@ -218,7 +218,7 @@ scp -q "tex8:${remote_dir}/service-journal.log" "$result_dir/server-service-jour
 scp -q "tex8:${remote_dir}/system.tar.gz" "$result_dir/server-system.tar.gz"
 scp -q "tex8:${remote_dir}/artifact-sha256.txt" "$result_dir/server-artifact-sha256.txt"
 if [[ "$capture_root" == 1 ]]; then
-  ssh -n tex8 "sudo -n /usr/bin/journalctl -u cuprate.service --since '20 minutes ago' --no-pager > '${remote_dir}/service-journal-root.log'"
+  ssh -n tex8 "sudo -n /usr/bin/journalctl -u monero-fast-node.service --since '20 minutes ago' --no-pager > '${remote_dir}/service-journal-root.log'"
   scp -q "tex8:${remote_dir}/service-journal-root.log" "$result_dir/server-root-journal.log"
 fi
 (

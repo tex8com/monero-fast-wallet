@@ -6,7 +6,9 @@ import React, {
   useState,
 } from 'react';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   ScrollView,
   StatusBar,
@@ -21,16 +23,15 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import LinearGradient from 'react-native-linear-gradient';
 import { colors, radius, spacing } from '../theme/colors';
 import { Icon } from '../components/Icon';
+import LedgerSigningModal from '../components/LedgerSigningModal';
 import RecipientQrScanner from '../components/RecipientQrScanner';
-import SyncStatusBar from '../components/SyncStatusBar';
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
-import {
+import WalletSelector, {
   type WalletOption,
   type WalletSelectorItem,
 } from '../components/WalletSelector';
-import WalletSwitcherPill from '../components/WalletSwitcherPill';
 import { useXmrPrice } from '../data/priceService';
 import { useI18n } from '../i18n';
 import type {
@@ -58,6 +59,21 @@ import {
   type MfwNameSendPreset,
 } from '../services/MfwNameRegistration';
 import {
+  convertPaymentAmount,
+  paymentXmrAmount,
+  sanitizePaymentAmountInput,
+  type PaymentAmountCurrency,
+} from '../services/PaymentRequest';
+import {
+  mfwNameAutocompletePrefix,
+  mfwNameAutocompleteSuggestions,
+} from '../services/MfwNameAutocomplete';
+import {
+  isLedgerSigningCancelledError,
+  type LedgerSigningProgress,
+} from '../services/LedgerSigningFlow';
+import {
+  fetchConfiguredMfwNameSuggestions,
   isMfwNameCandidate,
   resolveConfiguredMfwNameForPayment,
 } from '../services/MfwNameResolutionService';
@@ -92,6 +108,8 @@ function shortAddress(value: string, fallback: string) {
 export default function SendScreen({ navigation, route }: any) {
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
+  const [amountCurrency, setAmountCurrency] =
+    useState<PaymentAmountCurrency>('XMR');
   const [step, setStep] = useState<Step>('recipient-choice');
   // Keep the straightforward default. Advanced fee selection belongs in a
   // future optional details sheet, not in the primary send journey.
@@ -105,6 +123,10 @@ export default function SendScreen({ navigation, route }: any) {
     WalletSession | undefined
   >();
   const [sending, setSending] = useState(false);
+  const [ledgerSigningProgress, setLedgerSigningProgress] = useState<
+    LedgerSigningProgress | undefined
+  >();
+  const ledgerSigningCancelledRef = useRef(false);
   const [mfwNamePreset, setMfwNamePreset] = useState<
     MfwNameSendPreset | undefined
   >();
@@ -121,12 +143,19 @@ export default function SendScreen({ navigation, route }: any) {
   const [recentRecipients, setRecentRecipients] = useState<RecipientContact[]>(
     [],
   );
+  const [resolverMfwNames, setResolverMfwNames] = useState<string[]>([]);
+  const [resolvedMfwRecipient, setResolvedMfwRecipient] = useState<
+    { name: string; address: string } | undefined
+  >();
+  const [mfwLookupPending, setMfwLookupPending] = useState(false);
+  const [recipientValidationPending, setRecipientValidationPending] =
+    useState(false);
+  const mfwLookupGeneration = useRef(0);
   const [contactLabel, setContactLabel] = useState('');
   const [contactAddress, setContactAddress] = useState('');
   const { dateLocale, t } = useI18n();
   const { price } = useXmrPrice();
   const {
-    error: walletError,
     connectLedgerForSigning,
     isRegisteredWalletOpen,
     openRegisteredWalletById,
@@ -138,15 +167,20 @@ export default function SendScreen({ navigation, route }: any) {
     session,
     setActiveRegisteredWallet,
     snapshot,
-    status,
-    syncProgress,
-    syncStartHeight,
     transactions,
     walletSnapshots,
   } = useWalletState();
 
+  useEffect(
+    () => () => {
+      ledgerSigningCancelledRef.current = true;
+    },
+    [],
+  );
+
   const unlockedAtomic = toAtomicBigInt(snapshot?.unlockedBalanceAtomic);
-  const amountAtomic = parseXmrToAtomic(amount);
+  const enteredAmountXmr = paymentXmrAmount(amount, amountCurrency, price);
+  const amountAtomic = parseXmrToAtomic(enteredAmountXmr ?? '');
   const hasAmount = amountAtomic !== undefined && amountAtomic > 0n;
   const amountNumber = hasAmount ? atomicXmrToNumber(amountAtomic) : 0;
   const amountAvailable =
@@ -159,14 +193,6 @@ export default function SendScreen({ navigation, route }: any) {
     Boolean(snapshot?.synchronized && session) &&
     address.trim().length > 0 &&
     (sweepAll ? unlockedAtomic > 0n : amountAvailable);
-  const availableXmr = snapshot
-    ? formatAtomicXmr(snapshot.unlockedBalanceAtomic, {
-        maxFractionDigits: 4,
-        minFractionDigits: 2,
-      })
-    : status === 'locked'
-    ? t('status.locked')
-    : '0.00';
   const preparedFee = preparedTx
     ? formatAtomicXmr(preparedTx.feeAtomic, { maxFractionDigits: 12 })
     : undefined;
@@ -178,7 +204,7 @@ export default function SendScreen({ navigation, route }: any) {
         maxFractionDigits: 12,
         minFractionDigits: 2,
       })
-    : amount || '0';
+    : enteredAmountXmr || '0';
   const totalXmr =
     preparedAmountAtomic !== undefined && preparedTx
       ? formatAtomicXmr(
@@ -187,7 +213,15 @@ export default function SendScreen({ navigation, route }: any) {
             maxFractionDigits: 12,
           },
         )
-      : amount || '0';
+      : enteredAmountXmr || '0';
+  const amountEquivalent =
+    amountCurrency === 'XMR'
+      ? `≈ $${usd} USD`
+      : enteredAmountXmr
+        ? `≈ ${enteredAmountXmr} XMR`
+        : price > 0
+          ? '≈ 0.0000 XMR'
+          : t('receive.usdRateUnavailable');
   const walletSnapshotMap = useMemo(
     () => ({
       ...walletSnapshots,
@@ -198,14 +232,8 @@ export default function SendScreen({ navigation, route }: any) {
     [registeredWallet, snapshot, walletSnapshots],
   );
   const sendWalletOptions = useMemo<WalletSelectorItem[]>(
-    () =>
-      registeredWallets.filter(wallet => {
-        const candidate = walletSnapshotMap[wallet.id];
-        return (
-          candidate && toAtomicBigInt(candidate.unlockedBalanceAtomic) > 0n
-        );
-      }),
-    [registeredWallets, walletSnapshotMap],
+    () => registeredWallets,
+    [registeredWallets],
   );
   const routeMfwNamePreset = useMemo(
     () =>
@@ -219,6 +247,56 @@ export default function SendScreen({ navigation, route }: any) {
       ),
     [route?.params?.privatePhoneSendPreset],
   );
+  const mfwAutocomplete = useMemo(
+    () => mfwNameAutocompleteSuggestions(address, resolverMfwNames),
+    [address, resolverMfwNames],
+  );
+
+  useEffect(() => {
+    const generation = ++mfwLookupGeneration.current;
+    setResolverMfwNames([]);
+    setResolvedMfwRecipient(undefined);
+    setMfwLookupPending(false);
+    if (step !== 'manual-recipient') {
+      return;
+    }
+    const prefix = mfwNameAutocompletePrefix(address);
+    if (!prefix) {
+      return;
+    }
+    setMfwLookupPending(true);
+    const exactName = isMfwNameCandidate(address)
+      ? address.trim().toLowerCase()
+      : undefined;
+    const network = session?.network ?? registeredWallet?.network;
+    const timer = setTimeout(() => {
+      Promise.all([
+        fetchConfiguredMfwNameSuggestions(prefix).catch(() => []),
+        exactName && network
+          ? resolveConfiguredMfwNameForPayment(exactName, network).catch(
+              () => undefined,
+            )
+          : Promise.resolve(undefined),
+      ]).then(([names, resolvedAddress]) => {
+        if (mfwLookupGeneration.current !== generation) {
+          return;
+        }
+        setResolverMfwNames(names);
+        setResolvedMfwRecipient(
+          exactName && resolvedAddress
+            ? { name: exactName, address: resolvedAddress }
+            : undefined,
+        );
+        setMfwLookupPending(false);
+      });
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      if (mfwLookupGeneration.current === generation) {
+        mfwLookupGeneration.current += 1;
+      }
+    };
+  }, [address, registeredWallet?.network, session?.network, step]);
 
   useEffect(() => {
     const preset = routeMfwNamePreset;
@@ -239,6 +317,7 @@ export default function SendScreen({ navigation, route }: any) {
     consumedMfwFlowId.current = preset.flowId;
     setMfwNamePreset(preset);
     setAddress(preset.destinationAddress);
+    setAmountCurrency('XMR');
     setAmount(
       formatAtomicXmr(preset.preparedTransaction.amountAtomic, {
         maxFractionDigits: 12,
@@ -358,12 +437,24 @@ export default function SendScreen({ navigation, route }: any) {
     } else {
       next = `${amount}${key}`;
     }
-    const [, fraction = ''] = next.split('.');
-    if (fraction.length > 12 || next.length > 24) {
+    next = sanitizePaymentAmountInput(next, amountCurrency);
+    if (next.length > 24) {
       return;
     }
     setAmount(next);
     setSweepAll(false);
+    setSendError(undefined);
+    clearPreparedTransaction();
+  };
+
+  const changeAmountCurrency = (next: PaymentAmountCurrency) => {
+    if (next === amountCurrency) {
+      return;
+    }
+    setAmount(current =>
+      convertPaymentAmount(current, amountCurrency, next, price),
+    );
+    setAmountCurrency(next);
     setSendError(undefined);
     clearPreparedTransaction();
   };
@@ -425,6 +516,8 @@ export default function SendScreen({ navigation, route }: any) {
 
     setSending(true);
     setSendError(undefined);
+    setSendStatus(undefined);
+    let hardwareStatusTimer: ReturnType<typeof setInterval> | undefined;
     try {
       if (
         registeredWallet?.kind === 'hardware' &&
@@ -433,11 +526,30 @@ export default function SendScreen({ navigation, route }: any) {
         setSendStatus(t('send.checkingSpendOutputs'));
         await reconcileLedgerBalance();
       }
-      const signingSession = session.readOnly
-        ? await connectLedgerForSigning()
-        : session;
+      let signingSession: WalletSession | undefined = session;
+      if (session.readOnly) {
+        ledgerSigningCancelledRef.current = false;
+        setLedgerSigningProgress({ phase: 'searching' });
+        signingSession = await connectLedgerForSigning({
+          isCancelled: () => ledgerSigningCancelledRef.current,
+          onProgress: setLedgerSigningProgress,
+        });
+      }
       if (!signingSession) {
         throw new Error(t('send.openWalletBeforeSending'));
+      }
+      if (signingSession.hardwareDevice) {
+        setLedgerSigningProgress({ phase: 'preparing-request' });
+        hardwareStatusTimer = setInterval(() => {
+          walletService
+            .getHardwareWalletStatus(signingSession)
+            .then(status => {
+              if (status.requiresUserAction) {
+                setLedgerSigningProgress({ phase: 'awaiting-confirmation' });
+              }
+            })
+            .catch(() => undefined);
+        }, 500);
       }
       const nextTransaction = await walletService.prepareTransaction(
         signingSession,
@@ -456,7 +568,9 @@ export default function SendScreen({ navigation, route }: any) {
       setPreparedTx(nextTransaction);
       setPreparedSession(signingSession);
       setSendStatus(undefined);
+      setLedgerSigningProgress(undefined);
       if (sweepAll) {
+        setAmountCurrency('XMR');
         setAmount(
           formatAtomicXmr(nextTransaction.amountAtomic, {
             maxFractionDigits: 12,
@@ -465,8 +579,15 @@ export default function SendScreen({ navigation, route }: any) {
       }
       setStep('confirm');
     } catch (error) {
-      setSendError(error instanceof Error ? error.message : String(error));
+      setSendStatus(undefined);
+      setLedgerSigningProgress(undefined);
+      if (!isLedgerSigningCancelledError(error)) {
+        setSendError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
+      if (hardwareStatusTimer) {
+        clearInterval(hardwareStatusTimer);
+      }
       setSending(false);
     }
   };
@@ -548,6 +669,7 @@ export default function SendScreen({ navigation, route }: any) {
       return;
     }
     const isMfwName = isMfwNameCandidate(candidate);
+    setRecipientValidationPending(true);
     try {
       const validated = isMfwName
         ? await resolveConfiguredMfwNameForPayment(candidate, network)
@@ -570,6 +692,8 @@ export default function SendScreen({ navigation, route }: any) {
           isMfwName ? 'send.mfwUnavailable' : 'send.invalidRecipientForNetwork',
         ),
       );
+    } finally {
+      setRecipientValidationPending(false);
     }
   };
 
@@ -669,12 +793,12 @@ export default function SendScreen({ navigation, route }: any) {
                     mfwNamePreset.kind === 'commit'
                       ? t('mfwNames.commitTitle')
                       : mfwNamePreset.kind === 'update'
-                      ? t('mfwNames.updateTitle')
-                      : mfwNamePreset.kind === 'renew'
-                      ? t('mfwNames.renewTitle')
-                      : mfwNamePreset.kind === 'revoke'
-                      ? t('mfwNames.revokeTitle')
-                      : t('mfwNames.claimTitle')
+                        ? t('mfwNames.updateTitle')
+                        : mfwNamePreset.kind === 'renew'
+                          ? t('mfwNames.renewTitle')
+                          : mfwNamePreset.kind === 'revoke'
+                            ? t('mfwNames.revokeTitle')
+                            : t('mfwNames.claimTitle')
                   }
                 />
                 {mfwNamePreset.kind === 'commit' ||
@@ -757,16 +881,16 @@ export default function SendScreen({ navigation, route }: any) {
                 {sending
                   ? t('action.working')
                   : mfwNamePreset?.kind === 'commit'
-                  ? t('mfwNames.confirmCommit')
-                  : mfwNamePreset?.kind === 'claim'
-                  ? t('mfwNames.confirmClaim')
-                  : mfwNamePreset?.kind === 'renew'
-                  ? t('mfwNames.confirmRenew')
-                  : mfwNamePreset?.kind === 'update'
-                  ? t('mfwNames.confirmUpdate')
-                  : mfwNamePreset?.kind === 'revoke'
-                  ? t('mfwNames.confirmRevoke')
-                  : t('action.sendNow')}
+                    ? t('mfwNames.confirmCommit')
+                    : mfwNamePreset?.kind === 'claim'
+                      ? t('mfwNames.confirmClaim')
+                      : mfwNamePreset?.kind === 'renew'
+                        ? t('mfwNames.confirmRenew')
+                        : mfwNamePreset?.kind === 'update'
+                          ? t('mfwNames.confirmUpdate')
+                          : mfwNamePreset?.kind === 'revoke'
+                            ? t('mfwNames.confirmRevoke')
+                            : t('action.sendNow')}
               </Text>
             </LinearGradient>
           </TouchableOpacity>
@@ -894,12 +1018,45 @@ export default function SendScreen({ navigation, route }: any) {
     step === 'manual-recipient' ||
     step === 'address-book'
   ) {
+    const recipientLookupPending =
+      mfwLookupPending ||
+      (recipientValidationPending && isMfwNameCandidate(address));
+    const recipientContinueDisabled =
+      mfwLookupPending || recipientValidationPending;
     const continueWithRecipient = () => {
-      if (!address.trim()) {
+      if (recipientContinueDisabled) {
+        return;
+      }
+      const candidate = address.trim();
+      if (!candidate) {
         setSendError(t('send.noRecipient'));
         return;
       }
-      validateRecipientAndContinue(address).catch(() => undefined);
+      const normalizedName = candidate.toLowerCase();
+      if (
+        isMfwNameCandidate(candidate) &&
+        resolvedMfwRecipient?.name === normalizedName
+      ) {
+        const network = session?.network ?? registeredWallet?.network;
+        if (!network) {
+          setSendError(t('send.openWalletBeforeSending'));
+          return;
+        }
+        setAddress(resolvedMfwRecipient.address);
+        setRecipientReview(
+          createRecipientReview({
+            source: 'mfw-name',
+            network,
+            address: resolvedMfwRecipient.address,
+            displayName: normalizedName,
+          }),
+        );
+        setSendError(undefined);
+        clearPreparedTransaction();
+        setStep('recipient-review');
+        return;
+      }
+      validateRecipientAndContinue(candidate).catch(() => undefined);
     };
 
     return (
@@ -1038,6 +1195,10 @@ export default function SendScreen({ navigation, route }: any) {
                   placeholderTextColor={colors.textMuted}
                   value={address}
                   onChangeText={value => {
+                    mfwLookupGeneration.current += 1;
+                    setMfwLookupPending(
+                      Boolean(mfwNameAutocompletePrefix(value)),
+                    );
                     setAddress(value);
                     setRecipientReview(undefined);
                     setSendError(undefined);
@@ -1055,6 +1216,10 @@ export default function SendScreen({ navigation, route }: any) {
                     Clipboard.getString()
                       .then(value => {
                         if (value.trim()) {
+                          mfwLookupGeneration.current += 1;
+                          setMfwLookupPending(
+                            Boolean(mfwNameAutocompletePrefix(value)),
+                          );
                           setAddress(value.trim());
                           setRecipientReview(undefined);
                           setSendError(undefined);
@@ -1067,6 +1232,72 @@ export default function SendScreen({ navigation, route }: any) {
                   <Text style={s.pasteButtonText}>{t('action.paste')}</Text>
                 </TouchableOpacity>
               </View>
+
+              {mfwAutocomplete.length > 0 ? (
+                <View style={s.mfwAutocompleteRow}>
+                  {mfwAutocomplete.map(suggestion => (
+                    <TouchableOpacity
+                      key={suggestion}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('send.useMfwSuggestion', {
+                        name: suggestion,
+                      })}
+                      style={s.mfwAutocompleteChip}
+                      onPress={() => {
+                        Keyboard.dismiss();
+                        mfwLookupGeneration.current += 1;
+                        setMfwLookupPending(true);
+                        setAddress(suggestion);
+                        setRecipientReview(undefined);
+                        setSendError(undefined);
+                        clearPreparedTransaction();
+                      }}
+                    >
+                      <Icon name="key" size={16} color={colors.orange} />
+                      <Text style={s.mfwAutocompleteText}>{suggestion}</Text>
+                      <Icon
+                        name="arrow-right"
+                        size={15}
+                        color={colors.orange}
+                      />
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : null}
+
+              {recipientLookupPending ? (
+                <View
+                  accessibilityLabel={t('send.resolvingMfwName')}
+                  accessibilityLiveRegion="polite"
+                  accessibilityRole="progressbar"
+                  style={s.mfwLookupRow}
+                >
+                  <ActivityIndicator
+                    color={colors.orange}
+                    size="small"
+                    testID="mfw-name-lookup-spinner"
+                  />
+                  <Text style={s.mfwLookupText}>
+                    {t('send.resolvingMfwName')}
+                  </Text>
+                </View>
+              ) : resolvedMfwRecipient ? (
+                <View style={s.resolvedMfwAddressRow}>
+                  <Icon name="check" size={15} color={colors.textMuted} />
+                  <View style={s.resolvedMfwAddressCopy}>
+                    <Text style={s.resolvedMfwAddressLabel}>
+                      {t('send.resolvedMfwAddress')}
+                    </Text>
+                    <Text
+                      selectable
+                      numberOfLines={1}
+                      style={s.resolvedMfwAddress}
+                    >
+                      {resolvedMfwRecipient.address}
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
 
               {recipientContacts.length > 0 || recentRecipients.length > 0 ? (
                 <View style={s.contactsCompact}>
@@ -1129,12 +1360,17 @@ export default function SendScreen({ navigation, route }: any) {
               <TouchableOpacity
                 accessibilityRole="button"
                 accessibilityLabel={t('action.continue')}
+                accessibilityState={{ disabled: recipientContinueDisabled }}
+                disabled={recipientContinueDisabled}
                 onPress={continueWithRecipient}
                 style={s.formCta}
               >
                 <LinearGradient
                   colors={[colors.orange, colors.orangeDark]}
-                  style={s.primaryBtn}
+                  style={[
+                    s.primaryBtn,
+                    recipientContinueDisabled && s.primaryBtnDisabled,
+                  ]}
                 >
                   <Text style={s.primaryBtnText}>{t('action.continue')}</Text>
                 </LinearGradient>
@@ -1279,35 +1515,19 @@ export default function SendScreen({ navigation, route }: any) {
         showsVerticalScrollIndicator={false}
       >
         <View style={s.header}>
-          <View style={s.headerCopy}>
-            <Text style={s.title}>{t('send.title')}</Text>
-            <Text style={s.subtitle}>{t('send.subtitle')}</Text>
-          </View>
-          <WalletSwitcherPill
+          <Text style={s.title}>{t('send.title')}</Text>
+          <Text style={s.subtitle}>{t('send.subtitle')}</Text>
+        </View>
+
+        {sendWalletOptions.length > 0 ? (
+          <WalletSelector
             activeWalletId={registeredWallet?.id}
-            detail={snapshot ? `${availableXmr} XMR` : availableXmr}
             snapshots={walletSnapshotMap}
             titleKey="walletSelector.sendFrom"
             wallets={sendWalletOptions}
+            onAdd={() => navigation.navigate('WalletSetup')}
             onManage={() => navigation.navigate('Wallets')}
             onSelect={selectWallet}
-          />
-        </View>
-
-        {registeredWallet ? (
-          <SyncStatusBar
-            compact
-            error={walletError}
-            progress={syncProgress}
-            snapshot={snapshot}
-            syncStartHeight={syncStartHeight}
-            status={status}
-            subtitle={
-              snapshot && !snapshot.synchronized
-                ? t('sync.sendBalanceNotice')
-                : undefined
-            }
-            walletName={walletDisplayName(registeredWallet)}
           />
         ) : null}
 
@@ -1344,22 +1564,54 @@ export default function SendScreen({ navigation, route }: any) {
         <View style={s.amountCard}>
           <View style={s.cardHeader}>
             <Text style={s.fieldLabel}>{t('send.amount')}</Text>
-            <TouchableOpacity
-              accessibilityLabel={t('send.all')}
-              accessibilityRole="button"
-              onPress={() => {
-                setAmount('');
-                setSweepAll(true);
-                setSendError(undefined);
-                clearPreparedTransaction();
-              }}
-            >
-              <Text style={s.maxText}>{t('send.all')}</Text>
-            </TouchableOpacity>
+            <View style={s.amountHeaderActions}>
+              <View style={s.amountCurrencyToggle}>
+                {(['XMR', 'USD'] as const).map(currency => (
+                  <TouchableOpacity
+                    accessibilityRole="radio"
+                    accessibilityState={{
+                      selected: amountCurrency === currency,
+                    }}
+                    activeOpacity={0.75}
+                    key={currency}
+                    onPress={() => changeAmountCurrency(currency)}
+                    style={[
+                      s.amountCurrencyToggleButton,
+                      amountCurrency === currency &&
+                        s.amountCurrencyToggleButtonActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        s.amountCurrencyToggleText,
+                        amountCurrency === currency &&
+                          s.amountCurrencyToggleTextActive,
+                      ]}
+                    >
+                      {currency}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <TouchableOpacity
+                accessibilityLabel={t('send.all')}
+                accessibilityRole="button"
+                onPress={() => {
+                  setAmount('');
+                  setSweepAll(true);
+                  setSendError(undefined);
+                  clearPreparedTransaction();
+                }}
+              >
+                <Text style={s.maxText}>{t('send.all')}</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-          <Text style={s.amountInput}>{amount || '0.0000'}</Text>
-          <Text style={s.xmrLabel}>XMR</Text>
-          <Text style={s.usdLabel}>≈ ${usd} USD</Text>
+          <Text style={s.amountInput}>
+            {amount || (amountCurrency === 'XMR' ? '0.0000' : '0.00')}
+          </Text>
+          <Text style={s.xmrLabel}>{amountCurrency}</Text>
+          <Text style={s.usdLabel}>{amountEquivalent}</Text>
 
           <View style={s.keypad}>
             {[
@@ -1379,7 +1631,9 @@ export default function SendScreen({ navigation, route }: any) {
               <TouchableOpacity
                 key={key}
                 accessibilityRole="button"
-                accessibilityLabel={key === 'backspace' ? t('action.delete') : key}
+                accessibilityLabel={
+                  key === 'backspace' ? t('action.delete') : key
+                }
                 style={s.keypadKey}
                 onPress={() => enterAmountKey(key)}
                 activeOpacity={0.72}
@@ -1433,7 +1687,9 @@ export default function SendScreen({ navigation, route }: any) {
           <TouchableOpacity
             accessibilityRole="button"
             activeOpacity={0.7}
-            onPress={() => navigation.navigate('Transactions')}
+            onPress={() =>
+              navigation.navigate('Transactions', { addressFilter: null })
+            }
           >
             <Text style={s.viewMore}>{t('transactions.viewMore')}</Text>
           </TouchableOpacity>
@@ -1471,6 +1727,18 @@ export default function SendScreen({ navigation, route }: any) {
           validateRecipientAndContinue(scannedAddress, 'qr-code').catch(
             () => undefined,
           );
+        }}
+      />
+      <LedgerSigningModal
+        canCancel={
+          ledgerSigningProgress?.phase === 'searching' ||
+          ledgerSigningProgress?.phase === 'connecting'
+        }
+        progress={ledgerSigningProgress}
+        onCancel={() => {
+          ledgerSigningCancelledRef.current = true;
+          setLedgerSigningProgress(undefined);
+          setSendStatus(undefined);
         }}
       />
     </KeyboardAvoidingView>
@@ -1528,21 +1796,16 @@ function Divider() {
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  scroll: { paddingHorizontal: spacing.lg, paddingTop: 56, paddingBottom: 132 },
+  scroll: { paddingHorizontal: spacing.lg, paddingTop: 12, paddingBottom: 132 },
   confirmScroll: {
     paddingHorizontal: spacing.lg,
-    paddingTop: 60,
+    paddingTop: 12,
     paddingBottom: 120,
   },
 
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
     marginBottom: 24,
-    gap: 14,
   },
-  headerCopy: { flex: 1, minWidth: 0 },
   title: {
     color: colors.textPrimary,
     fontSize: 30,
@@ -1609,9 +1872,12 @@ const s = StyleSheet.create({
   },
   pasteButton: {
     alignSelf: 'stretch',
+    alignItems: 'center',
+    borderLeftColor: colors.border,
+    borderLeftWidth: 1,
     justifyContent: 'center',
-    paddingHorizontal: 13,
-    borderRadius: radius.sm,
+    minWidth: 70,
+    paddingHorizontal: 12,
     backgroundColor: 'rgba(242,104,34,0.12)',
   },
   pasteButtonText: { color: colors.orange, fontSize: 14, fontWeight: '900' },
@@ -1821,6 +2087,33 @@ const s = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
+  amountHeaderActions: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+  },
+  amountCurrencyToggle: {
+    backgroundColor: colors.bg,
+    borderColor: colors.border,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    flexDirection: 'row',
+    padding: 3,
+  },
+  amountCurrencyToggleButton: {
+    alignItems: 'center',
+    borderRadius: radius.full,
+    justifyContent: 'center',
+    minHeight: 30,
+    paddingHorizontal: 13,
+  },
+  amountCurrencyToggleButtonActive: { backgroundColor: colors.orange },
+  amountCurrencyToggleText: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  amountCurrencyToggleTextActive: { color: '#FFF' },
   fieldLabel: {
     color: colors.textSecondary,
     fontSize: 12,
@@ -1836,17 +2129,77 @@ const s = StyleSheet.create({
   },
   addressInput: {
     flex: 1,
-    minHeight: 54,
+    minHeight: 58,
     color: colors.textPrimary,
     fontSize: 15,
     lineHeight: 21,
-    padding: 0,
-    textAlignVertical: 'top',
+    paddingHorizontal: 13,
+    paddingVertical: 14,
+    textAlignVertical: 'center',
   },
   addressInputRow: {
+    backgroundColor: 'rgba(7,5,12,0.34)',
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    borderWidth: 1,
     alignItems: 'center',
     flexDirection: 'row',
-    gap: spacing.sm,
+    marginTop: 8,
+    overflow: 'hidden',
+  },
+  mfwAutocompleteRow: {
+    alignItems: 'stretch',
+    gap: 8,
+    marginTop: 12,
+  },
+  mfwAutocompleteChip: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(242,104,34,0.10)',
+    borderColor: 'rgba(242,104,34,0.52)',
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 7,
+    width: '100%',
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  mfwAutocompleteText: {
+    color: colors.textPrimary,
+    flexShrink: 1,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  mfwLookupRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    paddingHorizontal: 2,
+  },
+  mfwLookupText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  resolvedMfwAddressRow: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+    paddingHorizontal: 2,
+  },
+  resolvedMfwAddressCopy: { flex: 1, minWidth: 0 },
+  resolvedMfwAddressLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  resolvedMfwAddress: {
+    color: 'rgba(255,255,255,0.52)',
+    fontFamily: 'monospace',
+    fontSize: 11,
+    marginTop: 3,
   },
   scanButton: {
     alignItems: 'center',
@@ -2043,7 +2396,7 @@ const s = StyleSheet.create({
     textTransform: 'capitalize',
   },
 
-  formCta: { marginBottom: 22 },
+  formCta: { marginBottom: 22, marginTop: 18 },
   primaryBtn: {
     height: 54,
     borderRadius: radius.md,

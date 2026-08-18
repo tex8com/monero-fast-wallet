@@ -133,7 +133,7 @@ started_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'product_repo_commit=%s\n' "$(git -C "$REPO_ROOT" rev-parse HEAD)"
   printf 'cuprate_preflight:\n'
   ssh -n "$ssh_target" \
-    'date -u +%Y-%m-%dT%H:%M:%SZ; systemctl is-active cuprate.service; systemctl show cuprate.service -p MainPID -p MemoryCurrent -p CPUUsageNSec --no-pager; sha256sum /opt/cuprate/cuprated; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k'
+    'date -u +%Y-%m-%dT%H:%M:%SZ; systemctl is-active monero-fast-node.service; systemctl show monero-fast-node.service -p MainPID -p MemoryCurrent -p CPUUsageNSec --no-pager; sha256sum /opt/cuprate/cuprated; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k'
 } >"${result_dir}/preflight.txt"
 
 server_monitor_started=0
@@ -163,7 +163,7 @@ mkdir -p "$r/system"
   i=0
   while [[ ! -e "$r/STOP" ]]; do
     stamp="$(date +%s%N)"
-    pid="$(systemctl show -p MainPID --value cuprate.service 2>/dev/null || true)"
+    pid="$(systemctl show -p MainPID --value monero-fast-node.service 2>/dev/null || true)"
     {
       date -u +%Y-%m-%dT%H:%M:%S.%NZ
       cat "/proc/$pid/stat" 2>/dev/null || true
@@ -232,7 +232,7 @@ ssh "$ssh_target" bash -s -- "$remote_dir" "$started_utc" <<'REMOTE' >"${result_
 set -u
 r="$1"
 started="$2"
-sudo -n /usr/bin/journalctl -u cuprate.service --since "$started" --no-pager \
+sudo -n /usr/bin/journalctl -u monero-fast-node.service --since "$started" --no-pager \
   >"$r/service-journal.log" 2>&1 || true
 tar -C "$r" -czf "$r/system.tar.gz" system
 sha256sum "$r/collector.log" "$r/service-journal.log" "$r/system.tar.gz" \

@@ -8,6 +8,8 @@ without changing the client protocol:
   assignment metadata only;
 - `fast-wallet-worker` alone holds the HPKE private key, decrypts the private
   view key, and stores the resulting watch registration encrypted at rest;
+- `fast-wallet-scanner-core` is its internal scan engine and has no listener or
+  standalone server binary;
 - `notification-registration-adapter` verifies Firebase App Check and issues a
   short-lived, one-use provider-registration grant;
 - `notification-gateway` owns assignments and generic notification delivery.
@@ -34,8 +36,9 @@ Port 8091 remains reserved for Monero News. The Relay's internal assignment
 routes and the Directory's approval routes are never exposed by Nginx. The
 public Worker-wake route accepts only an assignment-bound Worker signature and
 fixed generic event data.
+The retired Notify Scanner and its plaintext `/v1/fast-receive` API are absent.
 
-## Cuprate source gate
+## Monero Fast Node source gate
 
 The node binary must be built from the exact commit in `cuprate-source.lock`.
 That combined source contains all three required capabilities: the existing

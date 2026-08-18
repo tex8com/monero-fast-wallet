@@ -113,6 +113,25 @@ test('the address benchmark measures the same Core as the applications', () => {
   assert.match(sharedEngine, /kWarningBudgetMs = 500/);
 });
 
+test('new wallet creation is network-free and starts near an authenticated tip', () => {
+  const sharedEngine = read('native/monero-bridge/cpp/WalletEngine.cpp');
+  const helperStart = sharedEngine.indexOf(
+    'uint64_t setEstimatedRefreshHeightForNewWallet(',
+  );
+  const helperEnd = sharedEngine.indexOf(
+    'uint64_t fastReceiveDerivationIndexFromId(',
+    helperStart,
+  );
+  assert.ok(helperStart >= 0 && helperEnd > helperStart);
+  const helper = sharedEngine.slice(helperStart, helperEnd);
+
+  assert.match(helper, /authenticatedTargetHeight/);
+  assert.match(helper, /kAuthenticatedTipSafetyBlocks = 60/);
+  assert.match(helper, /approximateBlockChainHeight\(\)/);
+  assert.match(helper, /kOfflineEstimateSafetyBlocks = 7 \* 24 \* 30/);
+  assert.doesNotMatch(helper, /wallet->estimateBlockChainHeight\(\)/);
+});
+
 test('the authenticated Core series includes the shared provider implementation', () => {
   assert.match(expectedTree, /^[0-9a-f]{40}$/);
   assert.match(

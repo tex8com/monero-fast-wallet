@@ -1,4 +1,5 @@
 #import "RCTNativeMoneroWallet.h"
+#import "../EmbeddedTorModule.h"
 
 #import "../../../../../native/monero-bridge/cpp/WalletEngine.h"
 #import "../../../../../native/monero-bridge/cpp/WalletEngineTypes.h"
@@ -63,6 +64,9 @@ static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
 #include <vector>
 
 namespace {
+
+constexpr uint32_t kMfwNameMaximumTermYears = 1000;
+constexpr uint64_t kMfwNameAnnualFeeAtomic = 10000000000ULL;
 
 void configurePublicBlockSpool() {
   constexpr unsigned long long kMiB = 1024ULL * 1024ULL;
@@ -1005,7 +1009,6 @@ NSDictionary *diagnosticFields(NSDictionary *fields, NSDictionary *extra) {
 }
 
 void logNativeEvent(NSString *event, NSDictionary *fields) {
-#if DEBUG
   static NSSet<NSString *> *allowedFields;
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
@@ -1030,10 +1033,6 @@ void logNativeEvent(NSString *event, NSDictionary *fields) {
   NSLog(@"MONERO_WALLET_DIAGNOSTICS native=ios event=%@ fields=%@",
         event ?: @"",
         safeFields);
-#else
-  (void)event;
-  (void)fields;
-#endif
 }
 
 NetworkType toNetworkType(NSString *network) {
@@ -2581,6 +2580,7 @@ NSDictionary *toDictionary(const WalletSubaddress &subaddress) {
   return @{
     @"accountIndex": toNSNumber(subaddress.accountIndex),
     @"addressIndex": toNSNumber(subaddress.addressIndex),
+    @"balanceAtomic": toNSString(std::to_string(subaddress.balanceAtomic)),
     @"address": toNSString(subaddress.address),
     @"label": toNSString(subaddress.label),
   };
@@ -5236,6 +5236,18 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
   }];
 }
 
+- (void)derivationBackendStatus:(RCTPromiseResolveBlock)resolve
+                         reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"derivation_backend_status"
+                  fields:nil
+                    work:^id(__unused WalletEngine &engine) {
+    return toNSString(WalletEngine::derivationBackendStatus());
+  }];
+}
+
 - (void)getMoneroEnthusiastV1Status:(RCTPromiseResolveBlock)resolve
                              reject:(RCTPromiseRejectBlock)reject
 {
@@ -5266,12 +5278,10 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
                 reject:(RCTPromiseRejectBlock)reject
 {
   (void)reject;
-#if DEBUG
   if ([message hasPrefix:@"MONERO_WALLET_DIAGNOSTICS "] &&
       message.length <= 2048) {
     NSLog(@"%@", message);
   }
-#endif
   resolve([NSNull null]);
 }
 
@@ -9472,9 +9482,9 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
                   }
                     work:^id(WalletEngine &engine) {
     const uint32_t termYears = toIndex(years, "years");
-    if (termYears < 1 || termYears > 10) {
+    if (termYears < 1 || termYears > kMfwNameMaximumTermYears) {
       throw WalletEngineError(
-          "MFW name term must be between 1 and 10 years");
+          "MFW name term must be between 1 and 1000 years");
     }
     NSDictionary *state =
         readMfwNameState(registrationId, name, address, network);
@@ -9496,7 +9506,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     request.walletId = toStdString(walletId);
     request.address = toStdString(registryAddress);
     request.amountAtomic =
-        std::to_string(10000000000ULL * static_cast<uint64_t>(termYears));
+        std::to_string(kMfwNameAnnualFeeAtomic * static_cast<uint64_t>(termYears));
     request.priority = toStdString(priority);
     request.accountIndex = toIndex(accountIndex, "accountIndex");
     request.mfwNameExtraNonce = record.extraNonce;
@@ -9564,9 +9574,9 @@ predecessorSigningOwnerPublicKeyHex:
       throw WalletEngineError("MFW name transition operation is invalid");
     }
     const uint32_t termYears = toIndex(years, "years");
-    if (termYears < 1 || termYears > 10) {
+    if (termYears < 1 || termYears > kMfwNameMaximumTermYears) {
       throw WalletEngineError(
-          "MFW name term must be between 1 and 10 years");
+          "MFW name term must be between 1 and 1000 years");
     }
     NSString *checkedPredecessor = checkedFastWalletHex(
         predecessorRecordHex, @"MFW predecessor record", 0, 251);
@@ -9602,7 +9612,7 @@ predecessorSigningOwnerPublicKeyHex:
     request.amountAtomic =
         operationCode == 4
             ? std::to_string(
-                  10000000000ULL * static_cast<uint64_t>(termYears))
+                  kMfwNameAnnualFeeAtomic * static_cast<uint64_t>(termYears))
             : "1";
     request.priority = toStdString(priority);
     request.accountIndex = toIndex(accountIndex, "accountIndex");

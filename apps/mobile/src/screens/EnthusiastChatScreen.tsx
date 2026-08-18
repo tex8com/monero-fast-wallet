@@ -91,7 +91,7 @@ export default function EnthusiastChatScreen({navigation, route}: any) {
       style={s.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
-      <View style={[s.header, {paddingTop: insets.top + 10}]}>
+      <View style={s.header}>
         <TouchableOpacity style={s.iconButton} onPress={() => navigation.goBack()}>
           <Icon name="arrow-left" size={21} color={colors.textSecondary} />
         </TouchableOpacity>
@@ -144,7 +144,7 @@ export default function EnthusiastChatScreen({navigation, route}: any) {
 
 const s = StyleSheet.create({
   container: {flex: 1, backgroundColor: colors.bg},
-  header: {minHeight: 76, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: spacing.lg, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: colors.border},
+  header: {minHeight: 76, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: spacing.lg, paddingBottom: 10, paddingTop: 10, borderBottomWidth: 1, borderBottomColor: colors.border},
   iconButton: {width: 40, height: 40, alignItems: 'center', justifyContent: 'center'},
   headerText: {flex: 1},
   title: {color: colors.textPrimary, fontSize: 18, fontWeight: '800'},

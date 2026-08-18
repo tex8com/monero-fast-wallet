@@ -256,6 +256,7 @@ export type FastWalletAssignment = {
 export type WalletSubaddress = {
   accountIndex: number;
   addressIndex: number;
+  balanceAtomic: string;
   address: string;
   label: string;
 };
@@ -310,6 +311,7 @@ export type PrivatePhoneDeviceContact = {
 };
 
 export interface Spec extends TurboModule {
+  derivationBackendStatus(): Promise<string>;
   benchmarkDerivationPerformance(): Promise<string>;
   linkedWithMonero(): Promise<boolean>;
 

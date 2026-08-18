@@ -40,7 +40,7 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
   if (!transaction) {
     return (
       <View style={s.container}>
-        <View style={[s.header, { paddingTop: Math.max(insets.top + 12, 54) }]}>
+        <View style={s.header}>
           <BackButton navigation={navigation} label={t('action.back')} />
           <Text style={s.headerTitle}>{t('transactions.details')}</Text>
         </View>
@@ -85,7 +85,7 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
 
   return (
     <View style={s.container}>
-      <View style={[s.header, { paddingTop: Math.max(insets.top + 12, 54) }]}>
+      <View style={s.header}>
         <BackButton navigation={navigation} label={t('action.back')} />
         <Text style={s.headerTitle}>{t('transactions.details')}</Text>
       </View>
@@ -353,6 +353,7 @@ const s = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: spacing.lg,
     paddingBottom: 18,
+    paddingTop: 12,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },

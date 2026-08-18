@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {PRIMARY_PRIVATE_SERVICE_ORIGIN} from '../../../../packages/wallet-shared/src/nodePresets';
+import {torFetch} from '../services/TorHttp';
 
 export type MoneroNewsCategory = 'network' | 'wallet' | 'ecosystem';
 
@@ -9,7 +11,8 @@ export type MoneroNewsItem = {
   summary: string;
   publishedAt: string;
   category: MoneroNewsCategory;
-  url: string;
+  url?: string;
+  imageDataUrl?: string;
 };
 
 type Cache = { items: MoneroNewsItem[]; updatedAt: number };
@@ -17,8 +20,8 @@ type Cache = { items: MoneroNewsItem[]; updatedAt: number };
 // The phone only talks to the TEX8 feed.  The server normalises and caches
 // official Monero sources, so a provider change never requires a mobile app
 // release and the app does not expose a third-party API integration.
-const API_URL = 'https://xmr.tex8.com/news/v1/news?limit=18';
-const CACHE_KEY = '@tex8/monero/news-v1';
+const API_URL = `${PRIMARY_PRIVATE_SERVICE_ORIGIN}/news/v1/news?limit=10`;
+const CACHE_KEY = '@tex8/monero/news-v2';
 const CACHE_TTL_MS = 30 * 60 * 1_000;
 const RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 5 * 60_000];
 let memoryCache: Cache | null = null;
@@ -42,13 +45,23 @@ function parseNews(value: unknown): MoneroNewsItem[] {
       typeof candidate.title !== 'string' ||
       typeof candidate.summary !== 'string' ||
       typeof candidate.publishedAt !== 'string' ||
-      typeof candidate.url !== 'string' ||
       !isNewsCategory(candidate.category) ||
-      !Number.isFinite(Date.parse(candidate.publishedAt)) ||
-      !candidate.url.startsWith('https://www.getmonero.org/')
+      !Number.isFinite(Date.parse(candidate.publishedAt))
     ) {
       return [];
     }
+
+    const url =
+      typeof candidate.url === 'string' &&
+      candidate.url.startsWith('https://www.getmonero.org/')
+        ? candidate.url
+        : undefined;
+    const imageDataUrl =
+      typeof candidate.imageDataUrl === 'string' &&
+      candidate.imageDataUrl.startsWith('data:image/jpeg;base64,') &&
+      candidate.imageDataUrl.length <= 100_000
+        ? candidate.imageDataUrl
+        : undefined;
 
     return [{
       id: candidate.id,
@@ -56,9 +69,10 @@ function parseNews(value: unknown): MoneroNewsItem[] {
       summary: candidate.summary.trim(),
       publishedAt: candidate.publishedAt,
       category: candidate.category,
-      url: candidate.url,
+      url,
+      imageDataUrl,
     }];
-  });
+  }).slice(0, 10);
 }
 
 async function loadCache(): Promise<Cache | null> {
@@ -93,9 +107,13 @@ async function fetchNews(force = false) {
   if (!force && cached && isFresh(cached)) return cached.items;
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
+  const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
-    const response = await fetch(API_URL, { signal: controller.signal });
+    const response = await torFetch(API_URL, {
+      signal: controller.signal,
+      timeoutMs: 20_000,
+      maximumResponseBytes: 1_048_576,
+    });
     if (!response.ok) throw new Error(`News feed unavailable (${response.status}).`);
     const payload = (await response.json()) as { items?: unknown };
     const items = parseNews(payload.items);

@@ -40,23 +40,23 @@ describe('FastReceiveScannerClient', () => {
 
     await expect(
       verifyFastReceiveScannerCapability('http://xmr.tex8.com', fetchImpl),
-    ).rejects.toThrow('HTTPS origin');
+    ).rejects.toThrow('HTTPS or Tor v3 Onion origin');
     await expect(
       verifyFastReceiveScannerCapability(
         'https://xmr.tex8.com/scanner?tenant=wallet',
         fetchImpl,
       ),
-    ).rejects.toThrow('HTTPS origin');
+    ).rejects.toThrow('HTTPS or Tor v3 Onion origin');
 
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('normalizes only clean HTTPS scanner origins', () => {
+  it('normalizes only clean authenticated scanner origins', () => {
     expect(normalizeScannerUrl('https://xmr.tex8.com/')).toBe(
       'https://xmr.tex8.com',
     );
     expect(() => normalizeScannerUrl('https://user@xmr.tex8.com')).toThrow(
-      'HTTPS origin',
+      'HTTPS or Tor v3 Onion origin',
     );
   });
 

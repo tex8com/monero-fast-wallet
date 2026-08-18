@@ -10,6 +10,8 @@ type Network = 'mainnet' | 'testnet' | 'stagenet';
 type WalletRef = {
   id: string;
   network: Network;
+  kind?: string;
+  role?: string;
   accountIndex?: number;
   addressIndex?: number;
 };
@@ -72,18 +74,18 @@ type Availability = {
   status: 'available' | 'available-again' | 'taken' | 'pending' | 'reserved';
   chainTipHeight: number;
   expiryHeight?: number;
+  checkedAtMs: number;
 };
+type NativeAvailability = Omit<Availability, 'checkedAtMs'>;
 type NativeSubaddress = {
   accountIndex: number;
   addressIndex: number;
   address: string;
   label: string;
 };
-type NativeWalletSnapshot = {
-  walletHeight: string;
-  synchronized: boolean;
-};
-
+const MFW_NAME_MAX_TERM_YEARS = 1_000;
+const MONERO_TARGET_BLOCK_TIME_MS = 2 * 60 * 1000;
+const TERM_OPTIONS = [1, 3, 5, 10] as const;
 function messageOf(reason: unknown, fallback: string) {
   if (reason instanceof Error && reason.message.trim()) return reason.message;
   if (typeof reason === 'string' && reason.trim()) return reason;
@@ -92,7 +94,9 @@ function messageOf(reason: unknown, fallback: string) {
 
 function short(value: string | undefined) {
   if (!value) return 'Not available';
-  return value.length > 24 ? `${value.slice(0, 12)}…${value.slice(-10)}` : value;
+  return value.length > 24
+    ? `${value.slice(0, 12)}…${value.slice(-10)}`
+    : value;
 }
 
 function formatAtomic(value: string) {
@@ -118,9 +122,38 @@ function remainingDays(record: OwnedName) {
   }
   return String(
     Math.ceil(
-      Math.max(0, record.expiryHeight - record.lastChainTipHeight) / 720,
-    ),
+      Math.max(0, record.expiryHeight - record.lastChainTipHeight) / 720
+    )
   );
+}
+
+function estimatedExpiryTimestampMs(availability: Availability) {
+  if (
+    availability.expiryHeight === undefined ||
+    !Number.isSafeInteger(availability.expiryHeight) ||
+    !Number.isSafeInteger(availability.chainTipHeight)
+  ) {
+    return undefined;
+  }
+  const value =
+    availability.checkedAtMs +
+    (availability.expiryHeight - availability.chainTipHeight) *
+      MONERO_TARGET_BLOCK_TIME_MS;
+  return Number.isFinite(value) &&
+    value >= -8_640_000_000_000_000 &&
+    value <= 8_640_000_000_000_000
+    ? value
+    : undefined;
+}
+
+function formatTimestamp(timestampMs: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(timestampMs));
 }
 
 export default function MfwNames({
@@ -139,19 +172,47 @@ export default function MfwNames({
     DesktopWalletAddressRecord[]
   >([]);
   const [selectedAddressId, setSelectedAddressId] = useState('');
+  const [addressInputMode, setAddressInputMode] = useState<'wallet' | 'manual'>(
+    'wallet'
+  );
+  const [manualAddress, setManualAddress] = useState('');
   const [newAddressLabel, setNewAddressLabel] = useState('');
   const [name, setName] = useState('');
   const [years, setYears] = useState(1);
+  const [registrationStep, setRegistrationStep] = useState<1 | 2 | 3>(1);
+  const [showAllNames, setShowAllNames] = useState(false);
+  const [selectedNameId, setSelectedNameId] = useState<string | null>(null);
+  const [nameActionMode, setNameActionMode] = useState<
+    'renew' | 'update' | 'recovery' | null
+  >(null);
   const [availability, setAvailability] = useState<Availability | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [prepared, setPrepared] = useState<PreparedMfw | null>(null);
   const [recoveryPassword, setRecoveryPassword] = useState('');
   const [authorizationPassword, setAuthorizationPassword] = useState('');
-  const [updateAddresses, setUpdateAddresses] = useState<Record<string, string>>({});
+  const [updateAddresses, setUpdateAddresses] = useState<
+    Record<string, string>
+  >({});
   const [importName, setImportName] = useState('');
   const [importPassword, setImportPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [ledgerPreparationActive, setLedgerPreparationActive] =
+    useState(false);
+
+  const invokeMfwPreparation = async <T,>(
+    command: string,
+    input: Record<string, unknown>
+  ): Promise<T> => {
+    const usesLedger =
+      wallet?.kind === 'hardware' && (wallet.role ?? 'standard') === 'standard';
+    if (usesLedger) setLedgerPreparationActive(true);
+    try {
+      return await invoke<T>(command, { input });
+    } finally {
+      if (usesLedger) setLedgerPreparationActive(false);
+    }
+  };
 
   const load = useCallback(async () => {
     const result = await invoke<OwnedName[]>('list_mfw_names');
@@ -160,8 +221,8 @@ export default function MfwNames({
 
   useEffect(() => {
     if (!linked) return;
-    void load().catch(reason =>
-      setMessage(messageOf(reason, 'MFW names could not be loaded.')),
+    void load().catch((reason) =>
+      setMessage(messageOf(reason, 'MFW names could not be loaded.'))
     );
   }, [linked, load]);
 
@@ -181,15 +242,15 @@ export default function MfwNames({
     if (existing.length > 0) {
       const preferred = `${walletId}:${accountIndex}:${addressIndex}`;
       setSelectedAddressId(
-        existing.some(address => address.id === preferred)
+        existing.some((address) => address.id === preferred)
           ? preferred
-          : existing[0].id,
+          : existing[0].id
       );
     }
     void invoke<string>('wallet_address', {
       input: { walletId, accountIndex, addressIndex },
     })
-      .then(value => {
+      .then((value) => {
         if (!active) return;
         const stored = upsertDesktopWalletAddress({
           walletId,
@@ -203,13 +264,11 @@ export default function MfwNames({
         });
         setWalletAddresses(stored);
         const preferred = `${walletId}:${accountIndex}:${addressIndex}`;
-        setSelectedAddressId(current =>
-          stored.some(address => address.id === current)
-            ? current
-            : preferred,
+        setSelectedAddressId((current) =>
+          stored.some((address) => address.id === current) ? current : preferred
         );
       })
-      .catch(reason => {
+      .catch((reason) => {
         if (active)
           setMessage(messageOf(reason, 'The wallet address is unavailable.'));
       });
@@ -220,32 +279,35 @@ export default function MfwNames({
 
   const selectedAddress = useMemo(
     () =>
-      walletAddresses.find(address => address.id === selectedAddressId) ??
+      walletAddresses.find((address) => address.id === selectedAddressId) ??
       walletAddresses[0],
-    [selectedAddressId, walletAddresses],
+    [selectedAddressId, walletAddresses]
   );
+  const receiveAddress =
+    addressInputMode === 'manual'
+      ? manualAddress.trim()
+      : selectedAddress?.address ?? '';
 
   const fetchAvailability = useCallback(
-    async (candidate: string, activeWalletId: string, network: Network) => {
-      const snapshotRaw = await invoke<string>('wallet_snapshot', {
-        input: { walletId: activeWalletId },
-      });
-      const snapshot = JSON.parse(snapshotRaw) as NativeWalletSnapshot;
-      if (!snapshot.synchronized)
-        throw new Error('Synchronize the owner wallet before checking a name.');
-      const walletChainHeight = Number(snapshot.walletHeight);
-      if (!Number.isSafeInteger(walletChainHeight) || walletChainHeight < 1)
-        throw new Error('The local wallet height is unavailable.');
-      return invoke<Availability>('check_mfw_name_availability', {
-        input: { name: candidate, network, walletChainHeight },
-      });
+    async (candidate: string, network: Network) => {
+      const result = await invoke<NativeAvailability>(
+        'check_mfw_name_availability',
+        {
+          input: { name: candidate, network },
+        }
+      );
+      return { ...result, checkedAtMs: Date.now() };
     },
-    [],
+    []
   );
+
+  const availabilityExpiryTimestampMs = availability
+    ? estimatedExpiryTimestampMs(availability)
+    : undefined;
 
   useEffect(() => {
     const candidate = name.trim();
-    if (!candidate || !wallet || !walletId) {
+    if (!candidate) {
       setAvailability(null);
       setAvailabilityLoading(false);
       return;
@@ -253,8 +315,8 @@ export default function MfwNames({
     let active = true;
     const timer = window.setTimeout(() => {
       setAvailabilityLoading(true);
-      void fetchAvailability(candidate, walletId, wallet.network)
-        .then(result => {
+      void fetchAvailability(candidate, wallet?.network ?? 'mainnet')
+        .then((result) => {
           if (active) setAvailability(result);
         })
         .catch(() => {
@@ -268,7 +330,7 @@ export default function MfwNames({
       active = false;
       window.clearTimeout(timer);
     };
-  }, [fetchAvailability, name, wallet, walletId]);
+  }, [fetchAvailability, name, wallet?.network]);
 
   const run = async (operation: () => Promise<void>, fallback: string) => {
     setBusy(true);
@@ -282,47 +344,80 @@ export default function MfwNames({
     }
   };
 
-  const checkAvailability = () =>
-    run(async () => {
-      if (!wallet) throw new Error('Open a wallet first.');
-      if (!walletId) throw new Error('Open a wallet first.');
-      const result = await fetchAvailability(name, walletId, wallet.network);
-      setAvailability(result);
-      setMessage(
-        result.status === 'available' || result.status === 'available-again'
-          ? `${result.canonicalName} is available.`
-          : `${result.canonicalName} is ${result.status}.`,
-      );
-    }, 'Name availability could not be checked.');
-
   const prepareRegistration = () =>
     run(async () => {
-      if (!walletId || !wallet || !selectedAddress)
+      if (!walletId || !wallet)
         throw new Error('Open and synchronize the owner wallet first.');
-      const result = await invoke<PreparedMfw>(
+      if (
+        !Number.isSafeInteger(years) ||
+        years < 1 ||
+        years > MFW_NAME_MAX_TERM_YEARS
+      )
+        throw new Error(
+          `Enter a whole registration term from 1 to ${MFW_NAME_MAX_TERM_YEARS.toLocaleString()} years.`
+        );
+      if (!receiveAddress)
+        throw new Error('Choose or enter a Monero receive address.');
+      const validatedAddress = await invoke<string>(
+        'validate_recipient_address',
+        { input: { address: receiveAddress, network: wallet.network } }
+      );
+      const result = await invokeMfwPreparation<PreparedMfw>(
         'prepare_mfw_name_registration',
         {
-          input: {
-            walletId,
-            walletRegistrationId: wallet.id,
-            name,
-            address: selectedAddress.address,
-            network: wallet.network,
-            years,
-            priority: 'low',
-            accountIndex: selectedAddress.accountIndex,
-            addressIndex: selectedAddress.addressIndex,
-          },
-        },
+          walletId,
+          walletRegistrationId: wallet.id,
+          name,
+          address: validatedAddress,
+          network: wallet.network,
+          years,
+          priority: 'low',
+          accountIndex:
+            selectedAddress?.accountIndex ?? wallet.accountIndex ?? 0,
+          addressIndex:
+            selectedAddress?.addressIndex ?? wallet.addressIndex ?? 0,
+        }
       );
       setPrepared(result);
       setRecoveryPassword('');
       setAuthorizationPassword('');
       await load();
       setMessage(
-        'Commit prepared. Export the encrypted owner recovery before approval.',
+        'Commit prepared. You can approve it now; the encrypted owner recovery export is optional in this development build.'
       );
     }, 'MFW registration could not be prepared.');
+
+  const advanceRegistration = () => {
+    setMessage(null);
+    if (registrationStep === 1) {
+      if (
+        !availability ||
+        !['available', 'available-again'].includes(availability.status)
+      ) {
+        setMessage('Wait for an available name before continuing.');
+        return;
+      }
+      setRegistrationStep(2);
+      return;
+    }
+    if (registrationStep === 2) {
+      if (
+        !Number.isSafeInteger(years) ||
+        years < 1 ||
+        years > MFW_NAME_MAX_TERM_YEARS
+      ) {
+        setMessage('Enter a whole registration term from 1 to 1,000 years.');
+        return;
+      }
+      if (!receiveAddress) {
+        setMessage('Choose or enter a Monero receive address.');
+        return;
+      }
+      setRegistrationStep(3);
+      return;
+    }
+    void prepareRegistration();
+  };
 
   const createDedicatedAddress = () =>
     run(async () => {
@@ -351,11 +446,11 @@ export default function MfwNames({
       });
       setWalletAddresses(stored);
       setSelectedAddressId(
-        `${walletId}:${created.accountIndex}:${created.addressIndex}`,
+        `${walletId}:${created.accountIndex}:${created.addressIndex}`
       );
       setNewAddressLabel('');
       setMessage(
-        'Dedicated subaddress created and selected. The name-to-address link will still be public.',
+        'Dedicated subaddress created and selected. The name-to-address link will still be public.'
       );
     }, 'A dedicated MFW subaddress could not be created.');
 
@@ -373,15 +468,18 @@ export default function MfwNames({
       setRecoveryPassword('');
       setAuthorizationPassword('');
       await load();
-      setMessage('Encrypted owner recovery saved. Keep it offline and private.');
+      setMessage(
+        'Encrypted owner recovery saved. Keep it offline and private.'
+      );
     }, 'MFW recovery could not be exported.');
 
   const commitPrepared = () =>
     run(async () => {
-      if (!walletId || !prepared) return;
+      if (!walletId || !wallet || !prepared) return;
       const result = await invoke<string>('commit_transaction', {
         input: {
           walletId,
+          registrationId: wallet.id,
           pendingId: prepared.preparedTransaction.id,
           appPassword: authorizationPassword,
         },
@@ -394,49 +492,50 @@ export default function MfwNames({
       setRecoveryPassword('');
       await load();
       setMessage(
-        `${prepared.kind} broadcast as ${short(broadcast.txIds[0])}. Refresh after confirmation.`,
+        `${prepared.kind} broadcast as ${short(
+          broadcast.txIds[0]
+        )}. Refresh after confirmation.`
       );
     }, 'MFW transaction could not be sent.');
 
   const prepareClaim = (record: OwnedName) =>
     run(async () => {
       if (!walletId || !wallet) throw new Error('Open the owner wallet first.');
-      const result = await invoke<PreparedMfw>('prepare_mfw_name_claim', {
-        input: {
+      const result = await invokeMfwPreparation<PreparedMfw>(
+        'prepare_mfw_name_claim',
+        {
           walletId,
           walletRegistrationId: wallet.id,
           nameId: record.id,
           priority: 'low',
           accountIndex: wallet.accountIndex ?? 0,
-        },
-      });
+        }
+      );
       setPrepared(result);
       setAuthorizationPassword('');
     }, 'MFW claim could not be prepared.');
 
   const prepareTransition = (
     record: OwnedName,
-    operation: 'update' | 'renew' | 'revoke',
+    operation: 'update' | 'renew' | 'revoke'
   ) =>
     run(async () => {
       if (!walletId || !wallet) throw new Error('Open the owner wallet first.');
-      const result = await invoke<PreparedMfw>(
+      const result = await invokeMfwPreparation<PreparedMfw>(
         'prepare_mfw_name_transition',
         {
-          input: {
-            walletId,
-            walletRegistrationId: wallet.id,
-            nameId: record.id,
-            operation,
-            address:
-              operation === 'update'
-                ? updateAddresses[record.id]?.trim()
-                : undefined,
-            years: operation === 'renew' ? years : record.termYears,
-            priority: 'low',
-            accountIndex: wallet.accountIndex ?? 0,
-          },
-        },
+          walletId,
+          walletRegistrationId: wallet.id,
+          nameId: record.id,
+          operation,
+          address:
+            operation === 'update'
+              ? updateAddresses[record.id]?.trim()
+              : undefined,
+          years: operation === 'renew' ? years : record.termYears,
+          priority: 'low',
+          accountIndex: wallet.accountIndex ?? 0,
+        }
       );
       setPrepared(result);
       setAuthorizationPassword('');
@@ -453,7 +552,8 @@ export default function MfwNames({
 
   const importRecovery = () =>
     run(async () => {
-      if (!wallet) throw new Error('Open the wallet that should manage this name.');
+      if (!wallet)
+        throw new Error('Open the wallet that should manage this name.');
       if (importPassword.length < 12)
         throw new Error('Enter the recovery password.');
       await invoke<OwnedName>('import_mfw_name_recovery', {
@@ -469,7 +569,9 @@ export default function MfwNames({
       setImportPassword('');
       setAuthorizationPassword('');
       await load();
-      setMessage('MFW owner recovery authenticated against the finalized chain record.');
+      setMessage(
+        'MFW owner recovery authenticated against the finalized chain record.'
+      );
     }, 'MFW owner recovery could not be imported.');
 
   if (!linked || !walletId || !wallet) {
@@ -484,83 +586,141 @@ export default function MfwNames({
 
   const systemAuthorization = appProtection.mode === 'system';
   const passwordAuthorization = appProtection.mode === 'password';
+  const recentNames = [...names].sort(
+    (left, right) => right.updatedAt - left.updatedAt
+  );
+  const visibleNames = showAllNames ? recentNames : recentNames.slice(0, 3);
+  const selectedName = names.find((record) => record.id === selectedNameId);
   return (
     <section className="mfw-names-page">
-      <header>
-        <p className="eyebrow">Public recipient names</p>
-        <h2>Monero names</h2>
+      {ledgerPreparationActive && (
+        <div
+          className="seed-overlay ledger-view-key-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="mfw-ledger-title"
+        >
+          <section className="seed-dialog ledger-view-key-dialog">
+            <img src="/monero-mark.png" alt="" />
+            <p className="eyebrow">Ledger Nano</p>
+            <h2 id="mfw-ledger-title">Connect your Ledger</h2>
+            <p>
+              Unlock it and open the Monero app. Keep it connected and confirm
+              the name transaction when the request appears on the Ledger.
+            </p>
+            <div className="ledger-view-key-wait">
+              <span aria-hidden="true" />
+              <strong>Connecting and preparing the Ledger request…</strong>
+            </div>
+          </section>
+        </div>
+      )}
+      {!selectedName && <header>
+        <p className="eyebrow">Monero names</p>
+        <h2>Your Address Names</h2>
         <p>
-          Register a memorable <b>.mfw</b> name for a Monero address. Names and
-          addresses are public; the owner key stays in this device’s protected
-          credential store.
+          Claim a memorable public <b>.mfw</b> name for one of your Monero
+          receive addresses.
         </p>
-      </header>
+      </header>}
 
-      {names.length > 0 && (
-        <section className="mfw-name-list">
-          <h3>My names</h3>
-          {names.map(record => (
-            <article className="mfw-name-card" key={record.id}>
-              <div className="mfw-name-heading">
-                <div>
-                  <strong>{record.canonicalName}</strong>
-                  <small>
-                    {record.network} · sequence {record.sequence} · wallet{' '}
-                    {short(record.walletRegistrationId)}
-                  </small>
-                </div>
-                <span className={`mfw-stage ${record.stage}`}>
-                  {record.stage.replace('-', ' ')}
-                </span>
+      {selectedName && (
+        <section className="mfw-name-detail">
+          <button
+            className="mfw-back-link"
+            onClick={() => {
+              setSelectedNameId(null);
+              setNameActionMode(null);
+              setMessage(null);
+            }}
+            type="button"
+          >
+            ← Back
+          </button>
+          <article className="mfw-name-card">
+            <div className="mfw-name-heading">
+              <div>
+                <strong>{selectedName.canonicalName}</strong>
+                <small>
+                  {selectedName.network} · wallet{' '}
+                  {short(selectedName.walletRegistrationId)}
+                </small>
               </div>
-              <code>{short(record.address)}</code>
-              <dl>
-                <div>
-                  <dt>Term</dt>
-                  <dd>{record.termYears} year(s)</dd>
-                </div>
-                <div>
-                  <dt>Expiry block</dt>
-                  <dd>{record.expiryHeight ?? 'Pending'}</dd>
-                </div>
-                <div>
-                  <dt>Estimated days remaining</dt>
-                  <dd>{remainingDays(record)}</dd>
-                </div>
-                <div>
-                  <dt>Owner recovery</dt>
-                  <dd>{record.recoveryExportedAt ? 'Exported' : 'Required'}</dd>
-                </div>
-              </dl>
-              <div className="mfw-name-actions">
-                <button
-                  className="quiet-button"
-                  disabled={
-                    busy || record.walletRegistrationId !== wallet.id
-                  }
-                  onClick={() => void refresh(record)}
-                  type="button"
-                >
-                  Refresh
-                </button>
-                {record.stage === 'reveal-ready' &&
-                  record.walletRegistrationId === wallet.id && (
+              <span className={`mfw-stage ${selectedName.stage}`}>
+                {selectedName.stage.replace('-', ' ')}
+              </span>
+            </div>
+            <code>{short(selectedName.address)}</code>
+            <dl>
+              <div>
+                <dt>Registered term</dt>
+                <dd>{selectedName.termYears.toLocaleString()} year(s)</dd>
+              </div>
+              <div>
+                <dt>Expiry block</dt>
+                <dd>
+                  {selectedName.expiryHeight?.toLocaleString() ?? 'Pending'}
+                </dd>
+              </div>
+              <div>
+                <dt>Days remaining</dt>
+                <dd>{remainingDays(selectedName)}</dd>
+              </div>
+            </dl>
+            <p className="transaction-note">
+              Dates are estimates. The expiry block recorded on Monero is
+              authoritative.
+            </p>
+            <div className="mfw-name-actions">
+              <button
+                className="quiet-button"
+                disabled={busy || selectedName.walletRegistrationId !== wallet.id}
+                onClick={() => void refresh(selectedName)}
+                type="button"
+              >
+                Refresh
+              </button>
+              {selectedName.stage === 'reveal-ready' &&
+                selectedName.walletRegistrationId === wallet.id && (
                   <button
                     className="primary"
                     disabled={busy}
-                    onClick={() => void prepareClaim(record)}
+                    onClick={() => void prepareClaim(selectedName)}
                     type="button"
                   >
                     Prepare claim
                   </button>
                 )}
-                {record.stage === 'active' &&
-                  record.walletRegistrationId === wallet.id && (
+              {selectedName.stage === 'active' &&
+                selectedName.walletRegistrationId === wallet.id && (
                   <>
                     <button
                       className="secondary"
                       disabled={busy}
-                      onClick={() => void prepareTransition(record, 'renew')}
+                      onClick={() => {
+                        const next = walletAddresses.find(
+                          (entry) => entry.address !== selectedName.address
+                        );
+                        if (next) {
+                          setSelectedAddressId(next.id);
+                          setUpdateAddresses((current) => ({
+                            ...current,
+                            [selectedName.id]: next.address,
+                          }));
+                        }
+                        setNameActionMode('update');
+                      }}
+                      type="button"
+                    >
+                      Change address
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() => {
+                        setYears(selectedName.termYears);
+                        setNameActionMode('renew');
+                      }}
                       type="button"
                     >
                       Renew
@@ -568,170 +728,558 @@ export default function MfwNames({
                     <button
                       className="danger-button"
                       disabled={busy}
-                      onClick={() => void prepareTransition(record, 'revoke')}
+                      onClick={() =>
+                        void prepareTransition(selectedName, 'revoke')
+                      }
                       type="button"
                     >
                       Revoke
                     </button>
                   </>
                 )}
-                {['expired', 'revoked', 'failed'].includes(record.stage) &&
-                  record.walletRegistrationId === wallet.id && (
-                    <button
-                      className="secondary"
-                      disabled={busy}
-                      onClick={() => {
-                        setName(record.canonicalName);
-                        setYears(record.termYears);
-                        setAvailability(null);
-                        setMessage(
-                          'Name copied into a fresh availability check. A new registration always starts with COMMIT.',
-                        );
-                      }}
-                      type="button"
-                    >
-                      Register again
-                    </button>
-                  )}
-              </div>
-              {record.stage === 'active' &&
-                record.walletRegistrationId === wallet.id && (
-                <div className="mfw-update-row">
-                  <input
-                    value={updateAddresses[record.id] ?? ''}
-                    onChange={event =>
-                      setUpdateAddresses(current => ({
-                        ...current,
-                        [record.id]: event.target.value,
-                      }))
-                    }
-                    placeholder="New Monero address"
-                    spellCheck="false"
-                  />
+              {['expired', 'revoked', 'failed'].includes(selectedName.stage) &&
+                selectedName.walletRegistrationId === wallet.id && (
                   <button
                     className="secondary"
-                    disabled={!updateAddresses[record.id]?.trim() || busy}
-                    onClick={() => void prepareTransition(record, 'update')}
+                    disabled={busy}
+                    onClick={() => {
+                      setName(
+                        selectedName.canonicalName.replace(/\.mfw$/i, '')
+                      );
+                      setYears(selectedName.termYears);
+                      setRegistrationStep(1);
+                      setSelectedNameId(null);
+                      setAvailability(null);
+                      setMessage(null);
+                    }}
                     type="button"
                   >
-                    Change address
+                    Register again
                   </button>
+                )}
+            </div>
+          </article>
+
+          {nameActionMode === 'update' && (
+            <section className="mfw-register-card mfw-action-card">
+              <div className="mfw-inline-heading">
+                <div>
+                  <h3>Change address</h3>
+                  <p>Enter the new Monero receive address.</p>
                 </div>
+                <button
+                  className="quiet-button"
+                  onClick={() => setNameActionMode(null)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              </div>
+              <div
+                className="mfw-address-mode"
+                role="radiogroup"
+                aria-label="New receive address source"
+              >
+                <button
+                  className={addressInputMode === 'wallet' ? 'selected' : ''}
+                  onClick={() => setAddressInputMode('wallet')}
+                  role="radio"
+                  aria-checked={addressInputMode === 'wallet'}
+                  type="button"
+                >
+                  Choose from wallet
+                </button>
+                <button
+                  className={addressInputMode === 'manual' ? 'selected' : ''}
+                  onClick={() => setAddressInputMode('manual')}
+                  role="radio"
+                  aria-checked={addressInputMode === 'manual'}
+                  type="button"
+                >
+                  Enter manually
+                </button>
+              </div>
+              {addressInputMode === 'wallet' ? (
+                <select
+                  aria-label="New receive address"
+                  value={selectedAddress?.id ?? ''}
+                  onChange={(event) => {
+                    setSelectedAddressId(event.target.value);
+                    const next = walletAddresses.find(
+                      (entry) => entry.id === event.target.value
+                    );
+                    setUpdateAddresses((current) => ({
+                      ...current,
+                      [selectedName.id]: next?.address ?? '',
+                    }));
+                  }}
+                >
+                  {walletAddresses
+                    .filter((entry) => entry.address !== selectedName.address)
+                    .map((entry) => (
+                      <option value={entry.id} key={entry.id}>
+                        {entry.label} · {short(entry.address)}
+                      </option>
+                    ))}
+                </select>
+              ) : (
+                <input
+                  value={updateAddresses[selectedName.id] ?? ''}
+                  onChange={(event) =>
+                    setUpdateAddresses((current) => ({
+                      ...current,
+                      [selectedName.id]: event.target.value.trim(),
+                    }))
+                  }
+                  placeholder="Paste or type a Monero address"
+                  spellCheck="false"
+                />
               )}
-            </article>
-          ))}
+              <button
+                className="primary"
+                disabled={!updateAddresses[selectedName.id]?.trim() || busy}
+                onClick={() => void prepareTransition(selectedName, 'update')}
+                type="button"
+              >
+                Prepare update
+              </button>
+            </section>
+          )}
+
+          {nameActionMode === 'renew' && (
+            <section className="mfw-register-card mfw-action-card">
+              <div className="mfw-inline-heading">
+                <div>
+                  <h3>Renew name</h3>
+                  <p>Choose how many additional years to register.</p>
+                </div>
+                <button
+                  className="quiet-button"
+                  onClick={() => setNameActionMode(null)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              </div>
+              <fieldset className="mfw-term-selector">
+                <legend>Registration term</legend>
+                <div className="mfw-term-options">
+                  {TERM_OPTIONS.map((term) => (
+                    <button
+                      aria-checked={years === term}
+                      className={years === term ? 'selected' : ''}
+                      key={term}
+                      onClick={() => setYears(term)}
+                      role="radio"
+                      type="button"
+                    >
+                      <strong>{term}</strong>
+                      <small>{term === 1 ? 'year' : 'years'}</small>
+                    </button>
+                  ))}
+                </div>
+                <label className="mfw-custom-term">
+                  Other duration
+                  <span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={MFW_NAME_MAX_TERM_YEARS}
+                      step={1}
+                      value={Number.isFinite(years) ? years : ''}
+                      onChange={(event) => setYears(Number(event.target.value))}
+                    />
+                    <b>years</b>
+                  </span>
+                </label>
+              </fieldset>
+              <button
+                className="primary"
+                disabled={
+                  !Number.isSafeInteger(years) ||
+                  years < 1 ||
+                  years > MFW_NAME_MAX_TERM_YEARS ||
+                  busy
+                }
+                onClick={() => void prepareTransition(selectedName, 'renew')}
+                type="button"
+              >
+                Prepare renewal
+              </button>
+            </section>
+          )}
+
+          {nameActionMode !== 'recovery' && (
+            <button
+              className="mfw-recovery-link"
+              onClick={() => {
+                setImportName(
+                  selectedName.canonicalName.replace(/\.mfw$/i, '')
+                );
+                setNameActionMode('recovery');
+              }}
+              type="button"
+            >
+              ⌁ Restore owner recovery
+            </button>
+          )}
         </section>
       )}
 
+      {!selectedName && (
       <section className="mfw-register-card">
-        <h3>Register a name</h3>
-        <div className="mfw-form-grid">
-          <label>
-            Name
-            <input
-              value={name}
-              onChange={event => {
-                setName(event.target.value);
-                setAvailability(null);
-              }}
-              placeholder="alice.mfw"
-              maxLength={67}
-              spellCheck="false"
-            />
-          </label>
-          <label>
-            Term
-            <select
-              value={years}
-              onChange={event => setYears(Number(event.target.value))}
-            >
-              {Array.from({ length: 10 }, (_, index) => index + 1).map(value => (
-                <option value={value} key={value}>
-                  {value} year{value === 1 ? '' : 's'}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Receive address
-            <select
-              value={selectedAddress?.id ?? ''}
-              onChange={event => setSelectedAddressId(event.target.value)}
-            >
-              {walletAddresses.map(address => (
-                <option value={address.id} key={address.id}>
-                  {address.label} · {short(address.address)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            New dedicated subaddress label
-            <input
-              value={newAddressLabel}
-              onChange={event => setNewAddressLabel(event.target.value)}
-              placeholder="Public MFW name"
-              maxLength={80}
-            />
-          </label>
-        </div>
-        {selectedAddress && (
-          <code className="mfw-selected-address">
-            {selectedAddress.address}
-          </code>
-        )}
-        <button
-          className="quiet-button"
-          disabled={busy}
-          onClick={() => void createDedicatedAddress()}
-          type="button"
-        >
-          Create & select dedicated subaddress
-        </button>
-        <p className="transaction-note">
-          The selected name and receive address remain publicly linked in
-          Monero history. A dedicated subaddress reduces address reuse.{' '}
-          Registry fee: {years * 0.01} XMR plus normal Monero network fees.
-          Registration uses two separately approved transactions.
-        </p>
-        <div className="mfw-name-actions">
-          <button
-            className="secondary"
-            disabled={!name.trim() || busy || availabilityLoading}
-            onClick={() => void checkAvailability()}
-            type="button"
-          >
-            {availabilityLoading ? 'Checking…' : 'Check availability'}
-          </button>
-          <button
-            className="primary"
-            disabled={
-              !availability ||
-              !['available', 'available-again'].includes(availability.status) ||
-              !selectedAddress ||
-              busy
-            }
-            onClick={() => void prepareRegistration()}
-            type="button"
-          >
-            Prepare commit
-          </button>
-        </div>
-      </section>
+        {registrationStep > 1 && <h3>Register a name</h3>}
 
-      <section className="mfw-register-card">
+        {registrationStep === 1 && (
+          <>
+            <div className="mfw-form-grid mfw-name-field-grid">
+              <label>
+                Choose your name
+                <span className="mfw-name-input">
+                  <input
+                    autoFocus
+                    value={name}
+                    onChange={(event) => {
+                      setName(event.target.value.replace(/\.mfw$/i, ''));
+                      setAvailability(null);
+                    }}
+                    placeholder="alice"
+                    maxLength={63}
+                    spellCheck="false"
+                  />
+                  <b>.mfw</b>
+                </span>
+              </label>
+            </div>
+            <p className={`mfw-availability ${availability?.status ?? ''}`}>
+              {availabilityLoading
+                ? 'Checking availability…'
+                : availability
+                ? `${availability.canonicalName} is ${availability.status}.`
+                : 'Enter a name. Availability is checked automatically.'}
+            </p>
+            {availability && (
+              <div className="mfw-availability-details">
+                {availability.expiryHeight !== undefined && (
+                  <div>
+                    <span>Expiry block</span>
+                    <strong>{availability.expiryHeight.toLocaleString()}</strong>
+                  </div>
+                )}
+                {availabilityExpiryTimestampMs !== undefined && (
+                  <div>
+                    <span>
+                      {availability.expiryHeight! <= availability.chainTipHeight
+                        ? 'Estimated expired around'
+                        : 'Estimated valid until'}
+                    </span>
+                    <strong>
+                      {formatTimestamp(availabilityExpiryTimestampMs)}
+                    </strong>
+                  </div>
+                )}
+                <div>
+                  <span>Checked chain tip</span>
+                  <strong>{availability.chainTipHeight.toLocaleString()}</strong>
+                </div>
+                <div>
+                  <span>Checked at</span>
+                  <strong>{formatTimestamp(availability.checkedAtMs)}</strong>
+                </div>
+                {availability.expiryHeight !== undefined && (
+                  <small>
+                    Times are estimates at the two-minute block target; the
+                    expiry block is authoritative.
+                  </small>
+                )}
+              </div>
+            )}
+            <div className="mfw-name-actions">
+              <button
+                className="primary"
+                disabled={
+                  !availability ||
+                  !['available', 'available-again'].includes(
+                    availability.status
+                  ) ||
+                  busy ||
+                  availabilityLoading
+                }
+                onClick={advanceRegistration}
+                type="button"
+              >
+                Continue
+              </button>
+            </div>
+          </>
+        )}
+
+        {registrationStep === 2 && (
+          <>
+            <p className="mfw-step-summary">
+              <b>{availability?.canonicalName}</b>
+            </p>
+            <div
+              className="mfw-address-mode"
+              role="radiogroup"
+              aria-label="Receive address source"
+            >
+              <button
+                className={addressInputMode === 'wallet' ? 'selected' : ''}
+                onClick={() => setAddressInputMode('wallet')}
+                role="radio"
+                aria-checked={addressInputMode === 'wallet'}
+                type="button"
+              >
+                Choose from wallet
+              </button>
+              <button
+                className={addressInputMode === 'manual' ? 'selected' : ''}
+                onClick={() => setAddressInputMode('manual')}
+                role="radio"
+                aria-checked={addressInputMode === 'manual'}
+                type="button"
+              >
+                Enter manually
+              </button>
+            </div>
+            {addressInputMode === 'wallet' ? (
+              <>
+                <label>
+                  Receive address
+                  <select
+                    value={selectedAddress?.id ?? ''}
+                    onChange={(event) =>
+                      setSelectedAddressId(event.target.value)
+                    }
+                  >
+                    {walletAddresses.map((address) => (
+                      <option value={address.id} key={address.id}>
+                        {address.label} · {short(address.address)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Dedicated subaddress label
+                  <input
+                    value={newAddressLabel}
+                    onChange={(event) => setNewAddressLabel(event.target.value)}
+                    placeholder="Public MFW name"
+                    maxLength={80}
+                  />
+                </label>
+                <button
+                  className="quiet-button"
+                  disabled={busy}
+                  onClick={() => void createDedicatedAddress()}
+                  type="button"
+                >
+                  Create & select dedicated subaddress
+                </button>
+              </>
+            ) : (
+              <label>
+                Any Monero receive address
+                <input
+                  value={manualAddress}
+                  onChange={(event) =>
+                    setManualAddress(event.target.value.trim())
+                  }
+                  placeholder="Paste or type a Monero address"
+                  spellCheck="false"
+                  autoComplete="off"
+                />
+              </label>
+            )}
+            <fieldset className="mfw-term-selector">
+              <legend>Registration term</legend>
+              <div className="mfw-term-options">
+                {TERM_OPTIONS.map((term) => (
+                  <button
+                    aria-checked={years === term}
+                    className={years === term ? 'selected' : ''}
+                    key={term}
+                    onClick={() => setYears(term)}
+                    role="radio"
+                    type="button"
+                  >
+                    <strong>{term}</strong>
+                    <small>{term === 1 ? 'year' : 'years'}</small>
+                  </button>
+                ))}
+              </div>
+              <label className="mfw-custom-term">
+                Other duration (maximum 1,000 years)
+                <span>
+                  <input
+                    aria-label="Other registration duration"
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={MFW_NAME_MAX_TERM_YEARS}
+                    step={1}
+                    value={Number.isFinite(years) ? years : ''}
+                    onChange={(event) => setYears(Number(event.target.value))}
+                  />
+                  <b>years</b>
+                </span>
+              </label>
+            </fieldset>
+            <div className="mfw-price-line">
+              <span>Registry price</span>
+              <strong>
+                {years >= 1 && years <= MFW_NAME_MAX_TERM_YEARS
+                  ? (years * 0.01).toFixed(2)
+                  : '—'}{' '}
+                XMR
+              </strong>
+            </div>
+            <div className="mfw-name-actions">
+              <button
+                className="primary"
+                disabled={!receiveAddress || busy}
+                onClick={advanceRegistration}
+                type="button"
+              >
+                Review
+              </button>
+              <button
+                className="quiet-button"
+                onClick={() => setRegistrationStep(1)}
+                type="button"
+              >
+                Back
+              </button>
+            </div>
+          </>
+        )}
+
+        {registrationStep === 3 && (
+          <>
+            <dl className="mfw-registration-review">
+              <div>
+                <dt>Name</dt>
+                <dd>{availability?.canonicalName}</dd>
+              </div>
+              <div>
+                <dt>Term</dt>
+                <dd>{years.toLocaleString()} years</dd>
+              </div>
+              <div>
+                <dt>Registry price</dt>
+                <dd>{(years * 0.01).toFixed(2)} XMR</dd>
+              </div>
+              <div>
+                <dt>Receive address</dt>
+                <dd>
+                  <code>{short(receiveAddress)}</code>
+                </dd>
+              </div>
+            </dl>
+            <p className="transaction-note">
+              The name and receive address are public. Registration uses two
+              separately approved Monero transactions; normal network fees are
+              additional.
+            </p>
+            <div className="mfw-name-actions">
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={advanceRegistration}
+                type="button"
+              >
+                Prepare first approval
+              </button>
+              <button
+                className="quiet-button"
+                onClick={() => setRegistrationStep(2)}
+                type="button"
+              >
+                Back
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+      )}
+
+      {!selectedName && registrationStep === 1 && names.length > 0 && (
+        <section className="mfw-recent-names">
+          <div className="mfw-recent-heading">
+            <div>
+              <h3>Registered names</h3>
+              <p>Select a name to view and manage it.</p>
+            </div>
+          </div>
+          <div className="mfw-recent-track">
+            {visibleNames.map((record) => (
+              <button
+                className="mfw-recent-card"
+                key={record.id}
+                onClick={() => {
+                  setSelectedNameId(record.id);
+                  setNameActionMode(null);
+                  setMessage(null);
+                }}
+                type="button"
+              >
+                <span className="mfw-recent-card-top">
+                  <b>⌁</b>
+                  <span className={`mfw-stage ${record.stage}`}>
+                    {record.stage.replace('-', ' ')}
+                  </span>
+                </span>
+                <strong>{record.canonicalName}</strong>
+                <code>{short(record.address)}</code>
+                <small>
+                  {remainingDays(record) === 'Pending'
+                    ? record.network
+                    : `${remainingDays(record)} days remaining`}
+                </small>
+              </button>
+            ))}
+          </div>
+          {names.length > 3 && (
+            <button
+              className="mfw-show-more"
+              onClick={() => setShowAllNames((current) => !current)}
+              type="button"
+            >
+              {showAllNames ? 'Show less' : 'Show more'}
+            </button>
+          )}
+        </section>
+      )}
+
+      {selectedName && nameActionMode === 'recovery' && (
+      <section className="mfw-register-card mfw-action-card">
+        <div className="mfw-inline-heading">
+          <div>
         <h3>Restore owner recovery</h3>
         <p>
           The desktop host opens the file picker and checks the decrypted owner
           key against the finalized resolver quorum before saving it.
         </p>
+          </div>
+          <button
+            className="quiet-button"
+            onClick={() => setNameActionMode(null)}
+            type="button"
+          >
+            Cancel
+          </button>
+        </div>
         <div className="mfw-form-grid">
           <label>
             Name
             <input
               value={importName}
-              onChange={event => setImportName(event.target.value)}
-              placeholder="alice.mfw"
+              onChange={(event) =>
+                setImportName(event.target.value.replace(/\.mfw$/i, ''))
+              }
+              placeholder="alice"
               spellCheck="false"
             />
           </label>
@@ -739,7 +1287,7 @@ export default function MfwNames({
             Recovery password
             <input
               value={importPassword}
-              onChange={event => setImportPassword(event.target.value)}
+              onChange={(event) => setImportPassword(event.target.value)}
               type="password"
               autoComplete="off"
             />
@@ -750,7 +1298,7 @@ export default function MfwNames({
             App password
             <input
               value={authorizationPassword}
-              onChange={event => setAuthorizationPassword(event.target.value)}
+              onChange={(event) => setAuthorizationPassword(event.target.value)}
               type="password"
               autoComplete="current-password"
             />
@@ -770,6 +1318,7 @@ export default function MfwNames({
           Choose & authenticate recovery file
         </button>
       </section>
+      )}
 
       {prepared && (
         <div
@@ -785,14 +1334,16 @@ export default function MfwNames({
             </h2>
             <dl className="review-details">
               <div>
-                <dt>Registry amount</dt>
+                <dt>Monero Fast Wallet Registry amount</dt>
                 <dd>
                   {formatAtomic(prepared.preparedTransaction.amountAtomic)} XMR
                 </dd>
               </div>
               <div>
                 <dt>Network fee</dt>
-                <dd>{formatAtomic(prepared.preparedTransaction.feeAtomic)} XMR</dd>
+                <dd>
+                  {formatAtomic(prepared.preparedTransaction.feeAtomic)} XMR
+                </dd>
               </div>
               <div>
                 <dt>Transactions</dt>
@@ -801,10 +1352,10 @@ export default function MfwNames({
             </dl>
             {prepared.recoveryExportRequired && (
               <label>
-                New recovery password (12+ characters)
+                Optional recovery password (12+ characters)
                 <input
                   value={recoveryPassword}
-                  onChange={event => setRecoveryPassword(event.target.value)}
+                  onChange={(event) => setRecoveryPassword(event.target.value)}
                   type="password"
                   autoComplete="new-password"
                 />
@@ -815,7 +1366,7 @@ export default function MfwNames({
                 App password
                 <input
                   value={authorizationPassword}
-                  onChange={event =>
+                  onChange={(event) =>
                     setAuthorizationPassword(event.target.value)
                   }
                   type="password"
@@ -834,7 +1385,7 @@ export default function MfwNames({
                 onClick={() => void exportRecovery(prepared.nameId)}
                 type="button"
               >
-                Export encrypted recovery first
+                Export encrypted recovery (optional)
               </button>
             )}
             <p className="transaction-note">
@@ -857,11 +1408,7 @@ export default function MfwNames({
               <button
                 className="primary"
                 disabled={
-                  busy ||
-                  (prepared.recoveryExportRequired &&
-                    !names.find(record => record.id === prepared.nameId)
-                      ?.recoveryExportedAt) ||
-                  (passwordAuthorization && !authorizationPassword)
+                  busy || (passwordAuthorization && !authorizationPassword)
                 }
                 onClick={() => void commitPrepared()}
                 type="button"

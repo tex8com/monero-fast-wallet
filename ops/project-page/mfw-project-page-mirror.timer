@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll Server 1 for project-page and release mirrors
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+RandomizedDelaySec=20s
+Persistent=true
+Unit=mfw-project-page-mirror.service
+
+[Install]
+WantedBy=timers.target

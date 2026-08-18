@@ -406,14 +406,36 @@ std::string legacyFastReceiveDisabledMessage() {
          "use the guarded recovery/migration flow";
 }
 
-void setEstimatedRefreshHeightForNewWallet(Monero::Wallet* wallet) {
+uint64_t setEstimatedRefreshHeightForNewWallet(
+    Monero::Wallet* wallet,
+    uint64_t authenticatedTargetHeight) {
   if (wallet == nullptr) {
-    return;
+    return 0;
   }
+
+  // A newly generated wallet cannot contain payments from before its keys
+  // existed. Prefer the last height authenticated by the shared Clearnet
+  // transport and retain only a small reorg/race window. If this is the very
+  // first wallet and no transport tip has been observed yet, use Core's local
+  // clock estimate with a conservative one-week buffer. Crucially, do not use
+  // estimateBlockChainHeight() here: that API performs two daemon requests
+  // and can spend roughly 40 seconds waiting for a daemon that has not been
+  // attached to the new wallet yet. Its offline fallback also scans roughly a
+  // month of history for a wallet that was created just now.
+  constexpr uint64_t kAuthenticatedTipSafetyBlocks = 60;
+  constexpr uint64_t kOfflineEstimateSafetyBlocks = 7 * 24 * 30;
 
   uint64_t refreshHeight = wallet->getRefreshFromBlockHeight();
   if (refreshHeight <= 1) {
-    refreshHeight = wallet->estimateBlockChainHeight();
+    if (authenticatedTargetHeight > kAuthenticatedTipSafetyBlocks + 1) {
+      refreshHeight =
+          authenticatedTargetHeight - kAuthenticatedTipSafetyBlocks;
+    } else {
+      const uint64_t approximateHeight = wallet->approximateBlockChainHeight();
+      refreshHeight = approximateHeight > kOfflineEstimateSafetyBlocks + 1
+          ? approximateHeight - kOfflineEstimateSafetyBlocks
+          : 0;
+    }
     if (refreshHeight > 1) {
       wallet->setRefreshFromBlockHeight(refreshHeight);
     }
@@ -425,11 +447,13 @@ void setEstimatedRefreshHeightForNewWallet(Monero::Wallet* wallet) {
     // refresh height.  That path synchronously calls connected() with the
     // upstream 20-second timeout and then queries the daemon height multiple
     // times.  Marking this one initialization as recovery preserves the
-    // already selected, one-month-safety-margin height and makes init a local
-    // configuration operation.  The real node connection and refresh still
-    // start immediately afterwards on the background sync path.
+    // already selected local height and makes init a local configuration
+    // operation. The real node connection and refresh still start immediately
+    // afterwards on the background sync path.
     wallet->setRecoveringFromSeed(true);
   }
+
+  return refreshHeight;
 }
 
 uint64_t fastReceiveDerivationIndexFromId(const std::string& identityId) {
@@ -683,6 +707,7 @@ class WalletEngine::Impl {
     std::unique_ptr<HardwareWalletListener> hardwareListener;
     bool recoverySeedAllowed{false};
     bool networkInitialized{false};
+    uint64_t networkInitializationGeneration{0};
     // The shared coordinator owns the only public block transport.  A Ledger
     // spent-status check is a separate, tiny Core control-plane request made
     // by the encrypted view wallet.  Remember its configuration
@@ -1125,6 +1150,16 @@ class WalletEngine::Impl {
     }
   }
 
+  uint64_t latestAuthenticatedTargetHeight(NetworkType network) const {
+    auto* coordinator = findCoordinator(network);
+    if (coordinator == nullptr) {
+      return 0;
+    }
+
+    std::lock_guard<std::mutex> lock(coordinator->mutex);
+    return coordinator->status.targetHeight;
+  }
+
   WalletId createWallet(const CreateWalletRequest& request) {
     constexpr int64_t kReferenceP95Ms = 194;
     constexpr int64_t kWarningBudgetMs = 500;
@@ -1158,7 +1193,21 @@ class WalletEngine::Impl {
       wallet->setRecoveringFromSeed(true);
       throwIfWalletFailed(wallet, "createWallet.setRefreshFromBlockHeight");
     } else {
-      setEstimatedRefreshHeightForNewWallet(wallet);
+      const uint64_t authenticatedTargetHeight =
+          latestAuthenticatedTargetHeight(request.network);
+      const uint64_t refreshHeight = setEstimatedRefreshHeightForNewWallet(
+          wallet,
+          authenticatedTargetHeight);
+      throwIfWalletFailed(wallet, "createWallet.setEstimatedRefreshHeight");
+      logEngineDiagnostic(
+          "createWallet.refreshHeightSelected",
+          {
+              {"targetHeight", std::to_string(authenticatedTargetHeight)},
+              {"refreshFromHeight", std::to_string(refreshHeight)},
+              {"reason", authenticatedTargetHeight > 1
+                   ? "authenticated-tip"
+                   : "offline-clock-estimate"},
+          });
     }
     const auto walletId =
         addWallet("createWallet", request.path, request.network, wallet);
@@ -1829,6 +1878,7 @@ class WalletEngine::Impl {
       for (auto& item : wallets_) {
         if (item.second->network == network) {
           item.second->networkInitialized = false;
+          item.second->networkInitializationGeneration = 0;
           item.second->ledgerPostScanControlPlaneInitialized = false;
           item.second->ledgerPostScanControlPlaneGeneration = 0;
         }
@@ -2463,12 +2513,16 @@ class WalletEngine::Impl {
       }
 
       const auto count = wallet->numSubaddresses(accountIndex);
+      const auto balances = wallet->balancePerSubaddress(accountIndex);
       std::vector<WalletSubaddress> result;
       result.reserve(count);
       for (size_t addressIndex = 0; addressIndex < count; ++addressIndex) {
         WalletSubaddress address;
         address.accountIndex = accountIndex;
         address.addressIndex = static_cast<uint32_t>(addressIndex);
+        const auto balance = balances.find(address.addressIndex);
+        address.balanceAtomic =
+            balance == balances.end() ? 0 : balance->second;
         address.address = wallet->address(accountIndex, address.addressIndex);
         address.label = wallet->getSubaddressLabel(accountIndex, address.addressIndex);
         result.push_back(std::move(address));
@@ -2750,27 +2804,79 @@ class WalletEngine::Impl {
     // correctly refuses the privacy-sensitive spent-status request below.
     destinationSession.wallet->setTrustedDaemon(true);
     if (!destinationSession.wallet->connectToDaemon()) {
-      throwIfWalletFailed(
-          destinationSession.wallet, "ledgerPostScanControlPlane.connectToDaemon");
+      throwIfWalletFailed(destinationSession.wallet,
+                          "ledgerPostScanControlPlane.connectToDaemon");
       throw WalletEngineError("Ledger spent-status RPC connection failed");
     }
-    throwIfWalletFailed(
-        destinationSession.wallet, "ledgerPostScanControlPlane.connectToDaemon");
+    throwIfWalletFailed(destinationSession.wallet,
+                        "ledgerPostScanControlPlane.connectToDaemon");
 
     destinationSession.ledgerPostScanControlPlaneInitialized = true;
-    destinationSession.ledgerPostScanControlPlaneGeneration = configurationGeneration;
+    destinationSession.ledgerPostScanControlPlaneGeneration =
+        configurationGeneration;
+    destinationSession.networkInitialized = true;
+    destinationSession.networkInitializationGeneration =
+        configurationGeneration;
     logEngineDiagnostic(
         "ledgerPostScanControlPlane.ready",
-        {{"network", std::to_string(static_cast<int>(destinationSession.network))},
+        {{"network",
+          std::to_string(static_cast<int>(destinationSession.network))},
          {"configurationGeneration", std::to_string(configurationGeneration)},
          {"elapsedMs", std::to_string(elapsedMilliseconds(startedAt))},
          {"trusted", "true"},
          {"useSsl", config.useSsl ? "true" : "false"}});
   }
 
-  LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet(
-      const WalletId& hardwareWalletId,
-      const WalletId& viewOnlyWalletId) {
+  void initializeTransactionControlPlane(WalletSession &session,
+                                         const DaemonConfig &config,
+                                         uint64_t configurationGeneration) {
+    if (session.networkInitialized &&
+        session.networkInitializationGeneration == configurationGeneration) {
+      logEngineDiagnostic(
+          "transactionControlPlane.reused",
+          {{"network", std::to_string(static_cast<int>(session.network))},
+           {"configurationGeneration",
+            std::to_string(configurationGeneration)}});
+      return;
+    }
+    if (session.wallet == nullptr) {
+      throw WalletEngineError("transaction wallet is not open");
+    }
+
+    const auto startedAt = std::chrono::steady_clock::now();
+    const bool initialized = session.wallet->init(
+        config.address, 0, config.username, config.password, config.useSsl,
+        false, config.proxyAddress);
+    if (!initialized) {
+      throwIfWalletFailed(session.wallet, "transactionControlPlane.init");
+      throw WalletEngineError("transaction RPC initialization failed");
+    }
+    // Wallet::init() clears the remote-daemon trust flag. Restore exactly the
+    // user's configured choice before transaction construction performs its
+    // small control-plane queries for height, fees, decoys and spent state.
+    session.wallet->setTrustedDaemon(config.trusted);
+    if (!session.wallet->connectToDaemon()) {
+      throwIfWalletFailed(session.wallet,
+                          "transactionControlPlane.connectToDaemon");
+      throw WalletEngineError("transaction RPC connection failed");
+    }
+    throwIfWalletFailed(session.wallet,
+                        "transactionControlPlane.connectToDaemon");
+
+    session.networkInitialized = true;
+    session.networkInitializationGeneration = configurationGeneration;
+    logEngineDiagnostic(
+        "transactionControlPlane.ready",
+        {{"network", std::to_string(static_cast<int>(session.network))},
+         {"configurationGeneration", std::to_string(configurationGeneration)},
+         {"elapsedMs", std::to_string(elapsedMilliseconds(startedAt))},
+         {"trusted", config.trusted ? "true" : "false"},
+         {"useSsl", config.useSsl ? "true" : "false"}});
+  }
+
+  LedgerKeyImageSyncResult
+  syncLedgerKeyImagesToViewWallet(const WalletId &hardwareWalletId,
+                                  const WalletId &viewOnlyWalletId) {
 #if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
     if (hardwareWalletId == viewOnlyWalletId) {
       throw WalletEngineError(
@@ -2935,8 +3041,8 @@ class WalletEngine::Impl {
 #endif
   }
 
-  PreparedTransaction prepareTransaction(
-      const PrepareTransactionRequest& request) {
+  PreparedTransaction
+  prepareTransaction(const PrepareTransactionRequest &request) {
     if (request.walletId.empty()) {
       throw WalletEngineError("wallet id must not be empty");
     }
@@ -2944,85 +3050,107 @@ class WalletEngine::Impl {
       throw WalletEngineError("recipient address must not be empty");
     }
 
-    return withSession(request.walletId, [&](WalletSession& session) {
-      Monero::optional<uint64_t> optionalAmount;
-      if (!request.amountAtomic.empty()) {
-        optionalAmount = parseAtomicAmount(request.amountAtomic);
-      }
-      Monero::PendingTransaction* pending = nullptr;
-      if (request.mfwNameExtraNonce.empty()) {
-        pending = session.wallet->createTransaction(
-            request.address,
-            request.paymentId,
-            optionalAmount,
-            request.mixinCount,
-            parseTransactionPriority(request.priority),
-            request.accountIndex,
-            std::set<uint32_t>{});
-      } else {
-#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
-        if (!request.paymentId.empty() ||
-            !isCanonicalMfwNameExtraNonce(request.mfwNameExtraNonce)) {
-          throw WalletEngineError("MFW name transaction nonce is invalid");
-        }
-        const std::string nonce(
-            reinterpret_cast<const char*>(request.mfwNameExtraNonce.data()),
-            request.mfwNameExtraNonce.size());
-        pending = session.wallet->createTransactionWithExtraNonce(
-            request.address,
-            optionalAmount,
-            nonce,
-            request.mixinCount,
-            parseTransactionPriority(request.priority),
-            request.accountIndex,
-            std::set<uint32_t>{});
-#else
+    // The shared block coordinator deliberately owns the only public sync
+    // transport. A freshly opened signing wallet therefore has no local RPC
+    // client until a transaction needs its small private control plane. Copy
+    // the current configuration before taking the session lock, matching the
+    // coordinator -> session lock order used by Ledger reconciliation.
+    std::shared_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession *session = nullptr;
+    NetworkType network = NetworkType::Mainnet;
+    {
+      std::lock_guard<std::mutex> registryLock(mutex_);
+      session = &getLocked(request.walletId);
+      network = session->network;
+    }
+    auto *coordinator = findCoordinator(network);
+    if (coordinator == nullptr) {
+      throw WalletEngineError(
+          "transaction preparation requires configured network sync");
+    }
+    DaemonConfig controlPlaneConfig;
+    uint64_t configurationGeneration = 0;
+    {
+      std::lock_guard<std::mutex> coordinatorLock(coordinator->mutex);
+      if (!coordinator->configured) {
         throw WalletEngineError(
-            "MFW name transactions require the TEX8 Monero Core extension");
+            "transaction preparation requires configured network sync");
+      }
+      controlPlaneConfig = coordinator->config;
+      configurationGeneration = coordinator->configurationGeneration;
+    }
+    std::unique_lock<std::mutex> sessionLock(session->mutationMutex);
+    initializeTransactionControlPlane(*session, controlPlaneConfig,
+                                      configurationGeneration);
+
+    Monero::optional<uint64_t> optionalAmount;
+    if (!request.amountAtomic.empty()) {
+      optionalAmount = parseAtomicAmount(request.amountAtomic);
+    }
+    Monero::PendingTransaction *pending = nullptr;
+    if (request.mfwNameExtraNonce.empty()) {
+      pending = session->wallet->createTransaction(
+          request.address, request.paymentId, optionalAmount,
+          request.mixinCount, parseTransactionPriority(request.priority),
+          request.accountIndex, std::set<uint32_t>{});
+    } else {
+#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
+      if (!request.paymentId.empty() ||
+          !isCanonicalMfwNameExtraNonce(request.mfwNameExtraNonce)) {
+        throw WalletEngineError("MFW name transaction nonce is invalid");
+      }
+      const std::string nonce(
+          reinterpret_cast<const char *>(request.mfwNameExtraNonce.data()),
+          request.mfwNameExtraNonce.size());
+      pending = session->wallet->createTransactionWithExtraNonce(
+          request.address, optionalAmount, nonce, request.mixinCount,
+          parseTransactionPriority(request.priority), request.accountIndex,
+          std::set<uint32_t>{});
+#else
+      throw WalletEngineError(
+          "MFW name transactions require the TEX8 Monero Core extension");
 #endif
-      }
-      if (pending == nullptr) {
-        throw WalletEngineError("Monero returned a null pending transaction");
-      }
+    }
+    if (pending == nullptr) {
+      throw WalletEngineError("Monero returned a null pending transaction");
+    }
 
-      const auto pendingId = nextPendingTransactionId();
-      auto result = toPreparedTransaction(pendingId, *pending);
-      if (pending->status() != Monero::PendingTransaction::Status_Ok ||
-          pending->txCount() == 0) {
-        if (result.error.empty()) {
-          result.error = "transaction preparation failed";
-        }
-        result.id.clear();
-        session.wallet->disposeTransaction(pending);
-        return result;
+    const auto pendingId = nextPendingTransactionId();
+    auto result = toPreparedTransaction(pendingId, *pending);
+    if (pending->status() != Monero::PendingTransaction::Status_Ok ||
+        pending->txCount() == 0) {
+      if (result.error.empty()) {
+        result.error = "transaction preparation failed";
       }
-      if (!request.mfwNameExtraNonce.empty() && pending->txCount() != 1) {
-        result.error =
-            "MFW name operation must fit in exactly one transaction";
-        result.id.clear();
-        session.wallet->disposeTransaction(pending);
-        return result;
-      }
-
-      session.pendingTransactions.emplace(pendingId, pending);
+      result.id.clear();
+      session->wallet->disposeTransaction(pending);
       return result;
-    });
+    }
+    if (!request.mfwNameExtraNonce.empty() && pending->txCount() != 1) {
+      result.error = "MFW name operation must fit in exactly one transaction";
+      result.id.clear();
+      session->wallet->disposeTransaction(pending);
+      return result;
+    }
+
+    session->pendingTransactions.emplace(pendingId, pending);
+    return result;
   }
 
-  PreparedTransaction commitTransaction(
-      const WalletId& walletId,
-      const std::string& pendingId) {
+  PreparedTransaction commitTransaction(const WalletId &walletId,
+                                        const std::string &pendingId) {
     if (pendingId.empty()) {
       throw WalletEngineError("pending transaction id must not be empty");
     }
 
-    return withSession(walletId, [&](WalletSession& session) {
+    return withSession(walletId, [&](WalletSession &session) {
       auto it = session.pendingTransactions.find(pendingId);
       if (it == session.pendingTransactions.end()) {
         throw WalletEngineError("unknown pending transaction id: " + pendingId);
       }
 
-      auto* pending = it->second;
+      auto *pending = it->second;
       auto result = toPreparedTransaction(pendingId, *pending);
       const bool committed = pending->commit();
       result.status = pendingTransactionStatusName(pending->status());
@@ -3033,15 +3161,13 @@ class WalletEngine::Impl {
 
       session.wallet->disposeTransaction(pending);
       session.pendingTransactions.erase(it);
-      updateCachedSnapshot(
-          session, session.cachedSnapshot.daemonTargetHeight);
+      updateCachedSnapshot(session, session.cachedSnapshot.daemonTargetHeight);
       return result;
     });
   }
 
-  HardwareWalletStatus getHardwareWalletStatus(
-      const WalletId& walletId) const {
-    return withSession(walletId, [&](WalletSession& session) {
+  HardwareWalletStatus getHardwareWalletStatus(const WalletId &walletId) const {
+    return withSession(walletId, [&](WalletSession &session) {
       updateHardwareStatusFromWallet(session);
       return session.hardwareStatus;
     });

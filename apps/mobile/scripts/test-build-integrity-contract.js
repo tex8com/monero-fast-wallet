@@ -37,12 +37,26 @@ assert.doesNotMatch(appGradle, /jsc-android:[^'"\n]*\+/);
 assert.match(appGradle, /jsc-android:2026004\.0\.1/);
 assert.match(appGradle, /def enableProguardInReleaseBuilds = true/);
 assert.match(appGradle, /shrinkResources enableProguardInReleaseBuilds/);
+assert.match(appGradle, /info\.guardianproject:tor-android:0\.4\.9\.11/);
 assert.match(appGradle, /Release signing is required/);
+assert.match(
+  appGradle,
+  /Product builds require android\/app\/google-services\.json; without it Firebase App Check crashes during startup\./,
+);
 assert.match(appGradle, /config\/mobile-app-version\.json/);
 assert.match(
   appGradle,
   /versionCode mobileAppVersionManifest\.androidVersionCode as int/,
 );
+assert.match(
+  appGradle,
+  /System\.getenv\("MONERO_WALLET_DIAGNOSTICS"\)[\s\S]*\?: "true"/,
+);
+assert.match(
+  appGradle,
+  /System\.getenv\("MONERO_WALLET_TRANSACTION_AUDIT"\)[\s\S]*\?: "false"/,
+);
+assert.match(appGradle, /WALLET_TRANSACTION_AUDIT_ENABLED/);
 
 const iosBuildInstall = read('scripts/ios-build-install.sh');
 assert.match(iosBuildInstall, /config\/mobile-app-version\.json/);
@@ -57,29 +71,55 @@ assert.match(
   appGradle,
   /versionName mobileAppVersionManifest\.versionName/,
 );
-assert.match(
-  appGradle,
-  /MONERO_WALLET_ALLOW_SCREEN_CAPTURE[\s\S]*\?: "false"/,
-);
-assert.match(
-  appGradle,
-  /buildConfigField "boolean", "ALLOW_SCREEN_CAPTURE"/,
-);
+assert.doesNotMatch(appGradle, /MONERO_WALLET_ALLOW_SCREEN_CAPTURE/);
+assert.doesNotMatch(appGradle, /ALLOW_SCREEN_CAPTURE/);
 
 const mainActivity = read(
   'android/app/src/main/java/com/monerowallet/MainActivity.kt',
 );
+const nativeWalletModule = read(
+  'android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
+);
+const embeddedTorManager = read(
+  'android/app/src/main/java/com/monerowallet/EmbeddedTorManager.kt',
+);
+const proguardRules = read('android/app/proguard-rules.pro');
+const launchTheme = read('android/app/src/main/res/values/styles.xml');
+const launchScreen = read('android/app/src/main/res/drawable/launch_screen.xml');
+const launchMark = read('android/app/src/main/res/drawable/launch_monero_mark.xml');
+const launchColors = read('android/app/src/main/res/values/colors.xml');
+const fastWalletProtocolBridge = read(
+  '../../native/monero-bridge/cpp/FastWalletProtocolBridge.h',
+);
 assert.match(
   mainActivity,
-  /if \(BuildConfig\.ALLOW_SCREEN_CAPTURE\)[\s\S]*clearFlags\([\s\S]*FLAG_SECURE[\s\S]*else[\s\S]*setFlags\(/,
+  /applyScreenCapturePolicy\(\)[\s\S]*clearFlags\(WindowManager\.LayoutParams\.FLAG_SECURE\)/,
 );
+assert.doesNotMatch(mainActivity, /setFlags\([\s\S]*FLAG_SECURE/);
+assert.doesNotMatch(nativeWalletModule, /FLAG_SECURE/);
+assert.match(
+  proguardRules,
+  /-keep class org\.torproject\.jni\.TorService \{ \*; \}/,
+  'R8 must preserve TorService JNI fields and methods in every release APK',
+);
+assert.match(embeddedTorManager, /socksProxyAcceptsHandshake/);
+assert.match(embeddedTorManager, /nativeRuntimeStartCommitted/);
+assert.match(embeddedTorManager, /duplicate_start_blocked=true/);
+assert.doesNotMatch(embeddedTorManager, /unbindService/);
+assert.doesNotMatch(embeddedTorManager, /restartUnhealthyBinding/);
 assert.match(mainActivity, /onPostResume\(\)[\s\S]*applyScreenCapturePolicy\(\)/);
+assert.match(launchTheme, /android:windowBackground">@drawable\/launch_screen/);
+assert.match(launchScreen, /android:drawable="@color\/launch_background"/);
+assert.match(launchScreen, /android:drawable="@drawable\/launch_monero_mark"/);
+assert.match(launchMark, /android:fillColor="#F26822"/);
+assert.match(launchMark, /android:fillColor="#4D4D4D"/);
+assert.match(launchColors, /<color name="launch_background">#0A0A18<\/color>/);
+assert.match(fastWalletProtocolBridge, /extractCanonicalExtraNonceField/);
+assert.match(fastWalletProtocolBridge, /field\[0\] != 0x02/);
+assert.match(fastWalletProtocolBridge, /std::move\(commitExtraNonce\)/);
 
 const androidPlayBundle = read('scripts/android-play-bundle.sh');
-assert.match(
-  androidPlayBundle,
-  /MONERO_WALLET_DIAGNOSTICS:-false[\s\S]*MONERO_WALLET_ALLOW_SCREEN_CAPTURE:-[\s\S]*export MONERO_WALLET_ALLOW_SCREEN_CAPTURE=true/,
-);
+assert.doesNotMatch(androidPlayBundle, /MONERO_WALLET_ALLOW_SCREEN_CAPTURE/);
 
 const walletSetup = read('src/screens/WalletSetupScreen.tsx');
 assert.match(walletSetup, /config\/mobile-app-version\.json/);
@@ -91,6 +131,21 @@ assert.match(
 const androidCommon = read('scripts/android-common.sh');
 const androidBuild = read('scripts/android-build.sh');
 const androidBuildInstall = read('scripts/android-build-install.sh');
+assert.match(
+  androidBuildInstall,
+  /MONERO_WALLET_ANDROID_CLEAR_APP_DATA:-1/,
+);
+assert.match(
+  androidBuildInstall,
+  /MONERO_WALLET_ANDROID_VARIANT:-release/,
+  'Pixel installs must use the release variant unless explicitly overridden',
+);
+assert.doesNotMatch(
+  androidBuildInstall,
+  /shell am start -W/,
+  'Installing or diagnosing the app must not force it into the foreground',
+);
+assert.match(androidBuildInstall, /shell pm clear "\$APP_ID"/);
 const androidMainnetBenchmark = read(
   'scripts/android-mainnet-scanpack-benchmark.sh',
 );
@@ -154,9 +209,26 @@ const androidNativeJni = read(
 );
 assert.match(androidNativeModule, /persistEngineDiagnosticLines\(\)/);
 assert.match(androidNativeModule, /MONERO_WALLET_DIAGNOSTICS native=cpp/);
+assert.match(androidNativeModule, /InetAddress\.getAllByName\(host\)/);
+assert.match(androidNativeModule, /setGrpcEndpoint\.resolved/);
+assert.match(
+  androidNativeModule,
+  /NativeMoneroWalletJni\.setGrpcEndpoint\(walletId, nativeEndpoint\)/,
+);
+assert.match(
+  androidNativeModule,
+  /if \(!BuildConfig\.WALLET_TRANSACTION_AUDIT_ENABLED\) return/,
+);
 assert.match(androidNativeJni, /nativeDrainEngineDiagnostics/);
 assert.match(androidCmake, /MONERO_WALLET_API_HEADER_SHA256/);
 assert.match(androidCmake, /MONERO_WALLET_API_LIBRARY_SHA256/);
+assert.match(androidCmake, /BOOST_NO_CXX98_FUNCTION_BASE=1/);
+assert.match(
+  androidCmake,
+  /_LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION=1/,
+);
+assert.match(androidCmake, /\$\{MONERO_SOURCE_DIR\}\/contrib\/epee\/include/);
+assert.match(androidCmake, /\$\{MONERO_SOURCE_DIR\}\/external\/rapidjson\/include/);
 assert.match(
   androidCmake,
   /wallet2_api\.h does not match[\s\S]*libwallet_api\.a/,

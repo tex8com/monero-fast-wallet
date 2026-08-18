@@ -27,7 +27,7 @@ option(
 option(
   MONERO_WALLET_DIAGNOSTICS
   "Emit privacy-filtered wallet lifecycle diagnostics"
-  OFF
+  ON
 )
 
 set(
@@ -333,6 +333,8 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
     PRIVATE
       TEX8_WALLET_BRIDGE_WITH_MONERO=1
       "TEX8_MONERO_CORE_TREE=\"${MONERO_PATCHED_SOURCE_TREE}\""
+      BOOST_NO_CXX98_FUNCTION_BASE=1
+      _LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION=1
   )
 
   if(MONERO_WALLET_BRIDGE_WITH_GRPC_STREAM)
@@ -357,7 +359,11 @@ if(MONERO_WALLET_BRIDGE_WITH_MONERO)
 
   target_include_directories(monero_wallet_bridge_jni
     PRIVATE
+      "${MONERO_SOURCE_DIR}/src"
       "${MONERO_SOURCE_DIR}/src/wallet/api"
+      "${MONERO_SOURCE_DIR}/contrib/epee/include"
+      "${MONERO_SOURCE_DIR}/external/easylogging++"
+      "${MONERO_SOURCE_DIR}/external/rapidjson/include"
   )
 
   if(MONERO_WALLET_DEPENDENCY_INCLUDE_DIR)

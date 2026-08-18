@@ -6,7 +6,7 @@ normalised XMR/USD market data, then exposes a deliberately small,
 wallet-independent client contract:
 
 - `GET /healthz`
-- `GET /v1/news?limit=18&category=network|wallet|ecosystem`
+- `GET /v1/news?limit=10&category=network|wallet|ecosystem`
 - `GET /v1/market/quote`
 - `GET /v1/market/chart?timeframe=24H|7D|1M|1Y|Max`
 - `GET /v1/ads/catalog?country=US&placement=news|community|catalog`
@@ -23,6 +23,12 @@ mobile release and app usage never directly exposes third-party API
 integrations. The client keeps the last valid response locally for offline
 startup and shows an explicit unavailable state if neither backend nor cache is
 available.
+
+The news response is a small catalog of at most ten entries. Every entry has a
+title, summary, publication date, category, optional official article URL, and
+an embedded 960 × 540 JPEG `imageDataUrl`. Embedding the normalized image keeps
+the clients from contacting article hosts directly. If an official title image
+cannot be loaded, the server generates a deterministic Monero-coloured fallback.
 
 The service has no wallet, account, identifier, address, or notification data.
 Future public product-catalog and common query-embedding snapshots use the same

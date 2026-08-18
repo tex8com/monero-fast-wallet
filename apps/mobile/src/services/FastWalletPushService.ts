@@ -1,4 +1,4 @@
-import { Alert, NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import { checkNotifications, RESULTS } from 'react-native-permissions';
 
 import {
@@ -6,7 +6,7 @@ import {
   loadProtectedMetadata,
   storeProtectedMetadata,
 } from './ProtectedMetadataStorage';
-import { classifyDiagnosticFailure, logWalletEvent } from './WalletLogger';
+import { logWalletEvent } from './WalletLogger';
 import { requireNativeMoneroWallet } from './NativeMoneroWallet';
 import { withSystemUiInterruption } from './SystemUiInterruption';
 
@@ -191,7 +191,7 @@ function scheduleRegistrationRetry(nextRetryAt: number): void {
   );
   registrationRetryTimer = setTimeout(() => {
     registrationRetryTimer = undefined;
-    void refreshRegistrationQuietly();
+    refreshRegistrationQuietly();
   }, delay);
   // Node/Jest timers expose `unref`; React Native timers do not. Background
   // retry must never keep a test process (or a headless JS runtime) alive.
@@ -431,7 +431,7 @@ export async function requestMobilePushProviderToken(): Promise<MobilePushProvid
 
 async function performRegistrationRefresh(
   token?: string,
-  announceDiagnostic = false,
+  forceRefresh = false,
 ): Promise<void> {
   const startedAt = Date.now();
   logWalletEvent('FastWalletPush', 'registration.refresh.start', {
@@ -448,12 +448,6 @@ async function performRegistrationRefresh(
     logWalletEvent('FastWalletPush', 'registration.refreshDeferred', {
       reason: protection ? 'appLocked' : 'protectionStatusUnavailable',
     });
-    if (announceDiagnostic) {
-      Alert.alert(
-        'Push diagnostics',
-        'Push registration waits for the app to be unlocked.',
-      );
-    }
     return;
   }
   const state = await loadRegistrationState();
@@ -471,7 +465,7 @@ async function performRegistrationRefresh(
   }
   const now = Date.now();
   if (
-    !announceDiagnostic &&
+    !forceRefresh &&
     !token &&
     state?.nextRetryAt &&
     state.nextRetryAt > now
@@ -480,7 +474,7 @@ async function performRegistrationRefresh(
     return;
   }
   if (
-    !announceDiagnostic &&
+    !forceRefresh &&
     !token &&
     state?.status === 'active' &&
     state.lastSuccessAt &&
@@ -500,18 +494,12 @@ async function performRegistrationRefresh(
       elapsedMs: Date.now() - startedAt,
       success: true,
     });
-    if (announceDiagnostic) {
-      Alert.alert(
-        'Push diagnostics',
-        `FCM token created (${nextToken.length} characters). App Check and Gateway registration accepted.`,
-      );
-    }
   }
 }
 
 async function refreshRegistrationQuietly(
   token?: string,
-  announceDiagnostic = false,
+  forceRefresh = false,
 ): Promise<void> {
   if (registrationInFlight) {
     // Token rotations may race an ordinary lease refresh. Keep only the most
@@ -524,7 +512,7 @@ async function refreshRegistrationQuietly(
   registrationInFlight = (async () => {
     let nextToken = token;
     do {
-      await performRegistrationRefresh(nextToken, announceDiagnostic);
+      await performRegistrationRefresh(nextToken, forceRefresh);
       nextToken = pendingRegistrationToken;
       pendingRegistrationToken = undefined;
     } while (nextToken);
@@ -548,13 +536,6 @@ async function refreshRegistrationQuietly(
         retryCount,
         nextRetryAt,
       });
-      if (announceDiagnostic) {
-        const failureCode = classifyDiagnosticFailure(error);
-        Alert.alert(
-          'Push diagnostics',
-          `Push registration failed: ${failureCode}.`,
-        );
-      }
     })
     .finally(() => {
       pendingRegistrationToken = undefined;
@@ -712,7 +693,7 @@ function startLifecycle(): () => void {
   if (instance.onTokenRefresh) {
     unsubscribers.push(
       instance.onTokenRefresh((token: string) => {
-        void refreshRegistrationQuietly(token);
+        refreshRegistrationQuietly(token);
       }),
     );
   }
@@ -727,18 +708,17 @@ function startLifecycle(): () => void {
     unsubscribers.push(instance.onNotificationOpenedApp(handleRemoteMessage));
   }
   if (instance.getInitialNotification) {
-    void instance
+    instance
       .getInitialNotification()
       .then((message: any) =>
         message ? handleRemoteMessage(message) : undefined,
       )
       .catch(() => undefined);
   }
-  // This internal release is intentionally diagnostic: every cold app start
-  // validates the current FCM token through App Check and the Gateway and
-  // reports only token length plus the safe result. Raw provider/App Check
-  // tokens are never persisted or displayed.
-  void refreshRegistrationQuietly(undefined, true);
+  // Every cold app start quietly validates the current FCM token through App
+  // Check and the Gateway. Raw provider/App Check tokens are never persisted,
+  // displayed, or announced through diagnostic alerts.
+  refreshRegistrationQuietly(undefined, true);
 
   return () => {
     unsubscribers.forEach(unsubscribe => unsubscribe());

@@ -4,7 +4,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-const COMMUNITY_API_BASE_URL: &str = "https://xmr.tex8.com/community";
+const COMMUNITY_API_BASE_URL: &str =
+    "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion/community";
 const GEOHASH_ALPHABET: &str = "0123456789bcdefghjkmnpqrstuvwxyz";
 
 pub struct CommunityState {
@@ -16,6 +17,7 @@ impl CommunityState {
         let client = Client::builder()
             .timeout(Duration::from_secs(12))
             .user_agent("Monero-Fast-Wallet-Desktop/0.1")
+            .proxy(crate::tor_transport::proxy()?)
             .build()
             .map_err(|_| "The Community client could not be initialized.".to_owned())?;
         Ok(Self { client })

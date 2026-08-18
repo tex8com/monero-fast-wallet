@@ -233,10 +233,10 @@ function isMoneroEnthusiastV1Config(
     resource.split("/").every(part => part.length > 0 && part !== "..") &&
     /^[A-Za-z0-9._/-]+$/.test(resource);
   return (
-    isHttpsOrigin(config.apiOrigin) &&
-    isHttpsOrigin(config.matrixHomeserver) &&
-    isHttpsOrigin(config.catalogOrigin) &&
-    isHttpsOrigin(config.advertisingOrigin) &&
+    isPrivateServiceOrigin(config.apiOrigin) &&
+    isPrivateServiceOrigin(config.matrixHomeserver) &&
+    isPrivateServiceOrigin(config.catalogOrigin) &&
+    isPrivateServiceOrigin(config.advertisingOrigin) &&
     typeof config.catalogScope === "string" &&
     /^[A-Za-z0-9_-]{1,128}$/.test(config.catalogScope) &&
     typeof config.catalogVerifyingKeyHex === "string" &&
@@ -252,6 +252,28 @@ function isMoneroEnthusiastV1Config(
     safeResource(config.tokenizerResource) &&
     safeResource(config.conformanceResource)
   );
+}
+
+function isPrivateServiceOrigin(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 200) return false;
+  try {
+    const parsed = new URL(value);
+    const authenticatedOnion =
+      parsed.protocol === "http:" &&
+      /^[a-z2-7]{56}\.onion$/.test(parsed.hostname.toLowerCase());
+    return (
+      (parsed.protocol === "https:" || authenticatedOnion) &&
+      Boolean(parsed.hostname) &&
+      !parsed.username &&
+      !parsed.password &&
+      parsed.pathname === "/" &&
+      !parsed.search &&
+      !parsed.hash &&
+      value === parsed.origin
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isHttpsOrigin(value: unknown): value is string {

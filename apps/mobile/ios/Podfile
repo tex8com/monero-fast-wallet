@@ -26,6 +26,9 @@ $RNFirebaseAsStaticFramework = linkage == 'static'
 target 'MoneroWallet' do
   config = use_native_modules!
   pod 'libPhoneNumber-iOS', '~> 1.7.3'
+  # App-private Tor 0.4.9.11 for the same direct-Onion service transport used
+  # by Android and Tauri. The MFN gRPC block stream remains separate.
+  pod 'Tor', '409.11.1'
 
   use_react_native!(
     :path => config[:reactNativePath],
@@ -40,5 +43,26 @@ target 'MoneroWallet' do
       :mac_catalyst_enabled => false,
       # :ccache_enabled => true
     )
+
+    # The pod ships an Objective-C wrapper named `Tor` plus the actual C
+    # runtime as `tor.framework`. Framework names are case-insensitive at link
+    # time, so the second framework can otherwise be treated as a duplicate.
+    # Force-load the vendored runtime without changing the pod's public module.
+    installer.aggregate_targets.map(&:user_project).uniq.each do |user_project|
+      user_project.native_targets.each do |target|
+        next unless target.name == 'MoneroWallet'
+
+        target.build_configurations.each do |build_config|
+          flags = Array(build_config.build_settings['OTHER_LDFLAGS'])
+          flags.unshift('$(inherited)') unless flags.include?('$(inherited)')
+          runtime = '$(PODS_XCFRAMEWORKS_BUILD_DIR)/Tor/CTor/tor.framework/tor'
+          unless flags.include?(runtime)
+            flags.concat(['-force_load', runtime])
+          end
+          build_config.build_settings['OTHER_LDFLAGS'] = flags
+        end
+      end
+      user_project.save
+    end
   end
 end

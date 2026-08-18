@@ -1,6 +1,7 @@
 import { requireNativeMoneroWallet } from './NativeMoneroWallet';
 
 export const WALLET_DIAGNOSTIC_LOG_PREFIX = 'MONERO_WALLET_DIAGNOSTICS';
+export const STARTUP_LOG_PREFIX = 'MONERO_STARTUP';
 
 type DiagnosticFields = Record<string, unknown>;
 
@@ -230,6 +231,38 @@ export function logWalletEvent(
   emitWalletDiagnosticsLine(formatWalletLogLine(scope, event, fields)).catch(
     () => undefined,
   );
+}
+
+/**
+ * Startup tracing is deliberately separate from the wallet diagnostic ring.
+ * It contains only sanitized lifecycle/timing fields and remains visible in
+ * release Logcat so a release APK can be diagnosed without enabling the
+ * wallet's persistent diagnostic export.
+ */
+export function logStartupEvent(
+  scope: string,
+  event: string,
+  fields: DiagnosticFields = {},
+) {
+  if (!diagnosticsLoggingEnabled()) {
+    return;
+  }
+  const walletLine = formatWalletLogLine(scope, event, fields);
+  const line = walletLine.replace(
+    `${WALLET_DIAGNOSTIC_LOG_PREFIX} `,
+    `${STARTUP_LOG_PREFIX} `,
+  );
+  if (__DEV__) {
+    console.log(line);
+  }
+  try {
+    requireNativeMoneroWallet()
+      .logDiagnostics(line)
+      .catch(() => undefined);
+  } catch {
+    // Startup tracing must never prevent the app from rendering if the
+    // bridge is not ready yet. Native Activity markers still remain visible.
+  }
 }
 
 export function formatWalletLogLine(

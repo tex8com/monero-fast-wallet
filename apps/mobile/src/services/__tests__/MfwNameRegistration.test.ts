@@ -1,5 +1,6 @@
 import {
   MFW_NAME_ANNUAL_FEE_ATOMIC,
+  MFW_NAME_MAX_TERM_YEARS,
   canonicalMfwName,
   createMfwNameRegistrationDraft,
   mfwNameRegistrationFeeAtomic,
@@ -18,8 +19,14 @@ describe('MFW name registration UI boundary', () => {
   it('prices only identical whole protocol years', () => {
     expect(mfwNameRegistrationFeeAtomic(1)).toBe(MFW_NAME_ANNUAL_FEE_ATOMIC);
     expect(mfwNameRegistrationFeeAtomic(5)).toBe(50_000_000_000n);
+    expect(mfwNameRegistrationFeeAtomic(MFW_NAME_MAX_TERM_YEARS)).toBe(
+      10_000_000_000_000n,
+    );
     expect(() => mfwNameRegistrationFeeAtomic(0)).toThrow();
     expect(() => mfwNameRegistrationFeeAtomic(1.5)).toThrow();
+    expect(() =>
+      mfwNameRegistrationFeeAtomic(MFW_NAME_MAX_TERM_YEARS + 1),
+    ).toThrow();
   });
 
   it('creates a public draft without owner secret, salt or tx_extra', () => {
@@ -30,7 +37,7 @@ describe('MFW name registration UI boundary', () => {
       network: 'mainnet',
       name: 'Alice',
       years: 3,
-      maximumTermYears: 5,
+      maximumTermYears: MFW_NAME_MAX_TERM_YEARS,
       now: '2026-07-26T00:00:00.000Z',
     });
 

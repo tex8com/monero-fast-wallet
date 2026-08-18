@@ -6,4 +6,8 @@
     <string name="monero_sync_channel_description">Hält die Verlaufs-Synchronisierung aktiver Wallets aufrecht</string>
     <string name="monero_sync_notification_title">Wallet-Verlauf wird synchronisiert</string>
     <string name="monero_sync_notification_description">Öffentliche Blockchain-Daten werden geladen und gescannt</string>
+    <string name="monero_connectivity_channel_name">Wallet-Verbindungen</string>
+    <string name="monero_connectivity_channel_description">Hält Tor und die Blockchain-Verbindung im Hintergrund verfügbar</string>
+    <string name="monero_connectivity_notification_title">Monero Fast Wallet Netzwerk</string>
+    <string name="monero_connectivity_notification_description">Tor- und Block-Sync-Verbindungen bleiben aktiv</string>
 </resources>

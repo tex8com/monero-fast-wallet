@@ -60,6 +60,18 @@ export function fixedNodeOnionAuthority(node: FixedNodeId): string {
 }
 
 /**
+ * Hidden-service origin for bounded app traffic. Block payloads deliberately
+ * keep using the separate Clearnet gRPC authority above.
+ */
+export function fixedNodeOnionOrigin(node: FixedNodeId): string {
+  return `http://${FIXED_MAINNET_NODES[node].onionHost}`;
+}
+
+export const PRIMARY_PRIVATE_SERVICE_ORIGIN = fixedNodeOnionOrigin('tex8');
+export const SECONDARY_PRIVATE_SERVICE_ORIGIN =
+  fixedNodeOnionOrigin('community');
+
+/**
  * One product-level preset used by both wallet frontends. Onion endpoints use
  * the original daemon RPC through the user's local Tor SOCKS5 proxy; clearnet
  * endpoints use the MFN gRPC acceleration path.

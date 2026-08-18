@@ -8,10 +8,13 @@ import {
   requireNativeMoneroWallet,
   type NativeMoneroWalletModule,
 } from './NativeMoneroWallet';
+import {torFetch} from './TorHttp';
 
 const MAX_RESPONSE_BYTES = 16 * 1024;
+const MAX_SUGGESTION_RESPONSE_BYTES = 4 * 1024;
 const DEFAULT_TIMEOUT_MS = 8_000;
 const CONSENSUS_LIFETIME_MS = 15_000;
+const MAX_NAME_SUGGESTIONS = 5;
 
 type FetchResponse = {
   ok: boolean;
@@ -29,10 +32,15 @@ interface ConsensusEntry {
   checkedAt: number;
 }
 
+export interface MfwNameSuggestionResponse {
+  prefix: string;
+  names: string[];
+}
+
 /**
- * Queries at least two independently configured HTTPS resolvers and accepts
- * only a byte-equivalent parsed answer. The signed record is still verified
- * in native code; quorum is the stale/canonical-chain safety layer.
+ * Queries every configured resolver origin and accepts only a byte-equivalent
+ * parsed answer. Origins may be HTTPS or direct Tor v3 Onion identities; an
+ * Onion destination is always carried by the app-private Tor transport.
  */
 export class MfwNameResolverQuorum
   implements MfwNameTransport, MfwCanonicalChainVerifier
@@ -42,7 +50,7 @@ export class MfwNameResolverQuorum
 
   constructor(
     origins: readonly string[],
-    private readonly fetcher: FetchLike = globalThis.fetch as FetchLike,
+    private readonly fetcher: FetchLike = torFetch as FetchLike,
     private readonly now: () => number = Date.now,
     private readonly timeoutMs = DEFAULT_TIMEOUT_MS,
   ) {
@@ -71,6 +79,20 @@ export class MfwNameResolverQuorum
       canonical,
       checkedAt: this.now(),
     });
+    return responses[0];
+  }
+
+  async suggest(prefix: string): Promise<MfwNameSuggestionResponse> {
+    const normalizedPrefix = normalizeSuggestionPrefix(prefix);
+    const responses = await Promise.all(
+      this.origins.map(origin =>
+        this.fetchSuggestions(origin, normalizedPrefix),
+      ),
+    );
+    const canonical = stableJson(responses[0]);
+    if (responses.some(response => stableJson(response) !== canonical)) {
+      throw new Error('Independent MFW resolvers disagree');
+    }
     return responses[0];
   }
 
@@ -126,6 +148,39 @@ export class MfwNameResolverQuorum
       clearTimeout(timer);
     }
   }
+
+  private async fetchSuggestions(
+    origin: string,
+    prefix: string,
+  ): Promise<MfwNameSuggestionResponse> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetcher(
+        `${origin}/v1/mfw/name-suggestions/${encodeURIComponent(prefix)}`,
+        {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) {
+        throw new Error(
+          `MFW suggestion resolver returned HTTP ${response.status}`,
+        );
+      }
+      const body = await response.text();
+      if (
+        body.length === 0 ||
+        !hasUtf8SizeAtMost(body, MAX_SUGGESTION_RESPONSE_BYTES)
+      ) {
+        throw new Error('MFW suggestion response has an invalid size');
+      }
+      return parseMfwNameSuggestionResponse(JSON.parse(body), prefix);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
 
 export function createMfwNameNativeCrypto(
@@ -143,20 +198,25 @@ export function createMfwNameNativeCrypto(
 }
 
 function normalizeIndependentOrigins(origins: readonly string[]): string[] {
-  if (origins.length < 2 || origins.length > 4) {
-    throw new Error('MFW name resolution requires two to four resolvers');
+  if (origins.length < 1 || origins.length > 4) {
+    throw new Error('MFW name resolution requires one to four resolvers');
   }
   const normalized = origins.map(value => {
     const url = new URL(value);
+    const onionHttp =
+      url.protocol === 'http:' &&
+      /^[a-z2-7]{56}\.onion$/u.test(url.hostname.toLowerCase());
     if (
-      url.protocol !== 'https:' ||
+      (url.protocol !== 'https:' && !onionHttp) ||
       url.username ||
       url.password ||
       url.pathname !== '/' ||
       url.search ||
       url.hash
     ) {
-      throw new Error('MFW resolver origins must be bare HTTPS origins');
+      throw new Error(
+        'MFW resolver origins must be bare HTTPS or Tor v3 Onion origins',
+      );
     }
     return url.origin;
   });
@@ -164,6 +224,51 @@ function normalizeIndependentOrigins(origins: readonly string[]): string[] {
     throw new Error('MFW name resolvers must be independent origins');
   }
   return normalized;
+}
+
+function normalizeSuggestionPrefix(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized.length < 3 ||
+    normalized.length > 63 ||
+    normalized.startsWith('-') ||
+    normalized.endsWith('-') ||
+    !/^[a-z0-9-]+$/.test(normalized)
+  ) {
+    throw new Error('MFW suggestion prefix is invalid');
+  }
+  return normalized;
+}
+
+function parseMfwNameSuggestionResponse(
+  value: unknown,
+  expectedPrefix: string,
+): MfwNameSuggestionResponse {
+  if (
+    !isPlainObject(value) ||
+    Object.keys(value).sort().join(',') !== 'names,prefix' ||
+    value.prefix !== expectedPrefix ||
+    !Array.isArray(value.names) ||
+    value.names.length > MAX_NAME_SUGGESTIONS
+  ) {
+    throw new Error('MFW suggestion response is malformed');
+  }
+  const names: string[] = [];
+  for (const candidate of value.names) {
+    if (
+      typeof candidate !== 'string' ||
+      candidate !== candidate.toLowerCase() ||
+      !candidate.endsWith('.mfw') ||
+      candidate.length > 67 ||
+      !candidate.startsWith(expectedPrefix) ||
+      !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.mfw$/.test(candidate) ||
+      names.includes(candidate)
+    ) {
+      throw new Error('MFW suggestion response is malformed');
+    }
+    names.push(candidate);
+  }
+  return { prefix: expectedPrefix, names };
 }
 
 function stableJson(value: unknown): string {
@@ -226,45 +331,63 @@ const MFW_RESOLUTION_KEYS = [
   'status',
 ] as const;
 
+const LEGACY_MFW_RESOLUTION_KEYS = MFW_RESOLUTION_KEYS.filter(
+  key =>
+    key !== 'ownerPublicKeyHex' &&
+    key !== 'sequence' &&
+    key !== 'signingOwnerPublicKeyHex',
+);
+
 function parseMfwNameResolution(
   value: Record<string, unknown>,
 ): MfwNameResolution {
   const keys = Object.keys(value).sort();
+  const isCurrentShape =
+    keys.length === MFW_RESOLUTION_KEYS.length &&
+    keys.every((key, index) => key === MFW_RESOLUTION_KEYS[index]);
+  const isLegacyPublicShape =
+    keys.length === LEGACY_MFW_RESOLUTION_KEYS.length &&
+    keys.every((key, index) => key === LEGACY_MFW_RESOLUTION_KEYS[index]);
+  if (!isCurrentShape && !isLegacyPublicShape) {
+    throw new Error('MFW resolver response is malformed');
+  }
+  const normalized: Record<string, unknown> = isLegacyPublicShape
+    ? {
+        ...value,
+        ownerPublicKeyHex: '',
+        sequence: 0,
+        signingOwnerPublicKeyHex: '',
+      }
+    : value;
   if (
-    keys.length !== MFW_RESOLUTION_KEYS.length ||
-    keys.some((key, index) => key !== MFW_RESOLUTION_KEYS[index])
+    typeof normalized.canonicalName !== 'string' ||
+    (normalized.status !== 'not_found' &&
+      normalized.status !== 'reserved' &&
+      normalized.status !== 'provisional' &&
+      normalized.status !== 'finalized' &&
+      normalized.status !== 'expired' &&
+      normalized.status !== 'revoked') ||
+    (normalized.network !== 'mainnet' &&
+      normalized.network !== 'testnet' &&
+      normalized.network !== 'stagenet') ||
+    (normalized.addressKind !== 0 && normalized.addressKind !== 1) ||
+    !isString(normalized.publicSpendKeyHex) ||
+    !isString(normalized.publicViewKeyHex) ||
+    !isString(normalized.ownerPublicKeyHex) ||
+    !isSafeUnsignedInteger(normalized.sequence) ||
+    !isSafeUnsignedInteger(normalized.recordHeight) ||
+    !isString(normalized.sourceTxidHex) ||
+    !isSafeUnsignedInteger(normalized.expiryHeight) ||
+    !isSafeUnsignedInteger(normalized.chainTipHeight) ||
+    !isSafeUnsignedInteger(normalized.confirmations) ||
+    !isString(normalized.recordPayloadHex) ||
+    !isString(normalized.signingOwnerPublicKeyHex) ||
+    !isString(normalized.recordBlockHashHex) ||
+    !isString(normalized.chainTipHashHex)
   ) {
     throw new Error('MFW resolver response is malformed');
   }
-  if (
-    typeof value.canonicalName !== 'string' ||
-    (value.status !== 'not_found' &&
-      value.status !== 'reserved' &&
-      value.status !== 'provisional' &&
-      value.status !== 'finalized' &&
-      value.status !== 'expired' &&
-      value.status !== 'revoked') ||
-    (value.network !== 'mainnet' &&
-      value.network !== 'testnet' &&
-      value.network !== 'stagenet') ||
-    (value.addressKind !== 0 && value.addressKind !== 1) ||
-    !isString(value.publicSpendKeyHex) ||
-    !isString(value.publicViewKeyHex) ||
-    !isString(value.ownerPublicKeyHex) ||
-    !isSafeUnsignedInteger(value.sequence) ||
-    !isSafeUnsignedInteger(value.recordHeight) ||
-    !isString(value.sourceTxidHex) ||
-    !isSafeUnsignedInteger(value.expiryHeight) ||
-    !isSafeUnsignedInteger(value.chainTipHeight) ||
-    !isSafeUnsignedInteger(value.confirmations) ||
-    !isString(value.recordPayloadHex) ||
-    !isString(value.signingOwnerPublicKeyHex) ||
-    !isString(value.recordBlockHashHex) ||
-    !isString(value.chainTipHashHex)
-  ) {
-    throw new Error('MFW resolver response is malformed');
-  }
-  return value as unknown as MfwNameResolution;
+  return normalized as unknown as MfwNameResolution;
 }
 
 function isString(value: unknown): value is string {

@@ -8,7 +8,20 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 desktop_dir="$(cd "${script_dir}/.." && pwd)"
-target_dir="${CARGO_TARGET_DIR:-${desktop_dir}/src-tauri/target}"
+if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+  target_dir="${CARGO_TARGET_DIR}"
+else
+  # Cargo can redirect its target through .cargo/config.toml without exporting
+  # CARGO_TARGET_DIR. Ask Cargo for the effective directory so signing always
+  # operates on the bundle produced by the build immediately below.
+  target_dir="$(
+    cargo metadata \
+      --manifest-path "${desktop_dir}/src-tauri/Cargo.toml" \
+      --no-deps \
+      --format-version 1 \
+      | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));'
+  )"
+fi
 app_path="${target_dir}/release/bundle/macos/Monero Fast Wallet.app"
 product_version="$(node -p "require('${desktop_dir}/package.json').version")"
 output_dmg="${target_dir}/release/bundle/dmg/Monero Fast Wallet_${product_version}_aarch64.dmg"

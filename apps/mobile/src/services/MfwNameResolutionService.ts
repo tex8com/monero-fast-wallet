@@ -29,7 +29,7 @@ export async function resolveConfiguredMfwNameForPayment(
   requireV1ReleaseFeature('mfwNameResolution');
 
   const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
-  if (!v1ReleaseFeatures.mfwNameResolution || origins.length < 2) {
+  if (!v1ReleaseFeatures.mfwNameResolution || origins.length < 1) {
     throw new Error('MFW name resolution is not configured for this release');
   }
 
@@ -47,6 +47,26 @@ export async function resolveConfiguredMfwNameForPayment(
   return walletService.validateRecipientAddress(resolved.address, network);
 }
 
+export async function fetchConfiguredMfwNameSuggestions(
+  prefix: string,
+): Promise<string[]> {
+  requireV1ReleaseFeature('mfwNameResolution');
+  const suggestionOrigins: readonly string[] =
+    manifest.parameters.mfwNameSuggestionOnionOrigins;
+  if (!v1ReleaseFeatures.mfwNameResolution || suggestionOrigins.length < 1) {
+    throw new Error('MFW name resolution is not configured for this release');
+  }
+
+  // Suggestions are display-only discovery data, but the entered prefix is
+  // still private. Query the Registry's Onion origins directly through the
+  // embedded Tor transport; never tunnel this lookup to a Clearnet hostname.
+  // Exact payment resolution below retains its independent quorum and native
+  // validation boundary.
+  return (
+    await new MfwNameResolverQuorum(suggestionOrigins).suggest(prefix)
+  ).names;
+}
+
 export function isMfwNameCandidate(value: string): boolean {
   return value.trim().toLowerCase().endsWith('.mfw');
 }
@@ -57,7 +77,7 @@ export async function resolveConfiguredMfwOwnedNameForImport(input: {
 }): Promise<{ resolution: MfwNameResolution; address: string }> {
   requireV1ReleaseFeature('mfwNameRegistration');
   const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
-  if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 2) {
+  if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 1) {
     throw new Error('MFW name registration is not configured for this release');
   }
   const canonicalName = canonicalMfwName(input.name);
@@ -99,7 +119,7 @@ export async function resolveConfiguredMfwNameTransitionPredecessor(input: {
 }): Promise<MfwNameResolution> {
   requireV1ReleaseFeature('mfwNameRegistration');
   const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
-  if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 2) {
+  if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 1) {
     throw new Error('MFW name registration is not configured for this release');
   }
   const canonicalName = canonicalMfwName(input.name);
@@ -132,7 +152,7 @@ export async function resolveConfiguredMfwOwnedNameFinalization(input: {
 }): Promise<MfwNameResolution> {
   requireV1ReleaseFeature('mfwNameRegistration');
   const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
-  if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 2) {
+  if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 1) {
     throw new Error('MFW name registration is not configured for this release');
   }
   const canonicalName = canonicalMfwName(input.name);

@@ -11,14 +11,14 @@ describe('MfwNameResolutionService', () => {
     expect(isMfwNameCandidate('alice')).toBe(false);
   });
 
-  it('fails closed before network access in the safe V1 release', async () => {
+  it('requires the native record verifier before resolver network access', async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = jest.fn();
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
     try {
       await expect(
         resolveConfiguredMfwNameForPayment('alice.mfw', 'mainnet'),
-      ).rejects.toThrow('not available');
+      ).rejects.toThrow('NativeMoneroWallet is not linked yet');
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = originalFetch;

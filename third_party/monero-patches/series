@@ -80,3 +80,5 @@
 0079-wallet-use-six-persistent-grpc-lanes.patch
 0080-wallet-spill-public-blockstream-overflow-to-bounded-disk.patch
 0081-wallet-cli-select-public-and-private-Fast-Wallet-wor.patch
+0082-wallet-run-manual-derivation-backends-for-ten-seconds.patch
+0083-wallet-expose-exact-per-subaddress-balances.patch

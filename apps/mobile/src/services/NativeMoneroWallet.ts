@@ -92,6 +92,7 @@ export interface CreateViewOnlyWalletFromHardwareWithStoredSecretInput {
 export interface WalletSubaddress {
   accountIndex: number;
   addressIndex: number;
+  balanceAtomic: string;
   address: string;
   label: string;
 }
@@ -261,6 +262,7 @@ export type {
 };
 
 export interface NativeMoneroWalletModule {
+  derivationBackendStatus(): Promise<string>;
   benchmarkDerivationPerformance(): Promise<string>;
   linkedWithMonero(): Promise<boolean>;
   getMoneroEnthusiastV1Status(): Promise<MoneroEnthusiastV1Status>;
@@ -507,6 +509,7 @@ const turboModule = NativeMoneroWalletTurbo;
 
 const nativeModule: NativeMoneroWalletModule | undefined = turboModule
   ? {
+      derivationBackendStatus: () => turboModule.derivationBackendStatus(),
       benchmarkDerivationPerformance: () =>
         turboModule.benchmarkDerivationPerformance(),
       linkedWithMonero: () => turboModule.linkedWithMonero(),

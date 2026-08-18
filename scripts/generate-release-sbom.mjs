@@ -27,7 +27,7 @@ const cargoManifests = [
   'services/monero-news/Cargo.toml',
   'services/notification-gateway/Cargo.toml',
   'services/notification-registration-adapter/Cargo.toml',
-  'services/notify-scanner/Cargo.toml',
+  'services/fast-wallet-scanner-core/Cargo.toml',
 ];
 
 const packages = new Map();

@@ -27,6 +27,7 @@ jest.mock("../NativeMoneroWallet", () => ({
 }));
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { fixedMainnetNodeConnection } from "../../../../../packages/wallet-shared/src/nodePresets";
 
 import {
   applyNodeModeDefaults,
@@ -48,17 +49,18 @@ describe("NodeConnectionSettings", () => {
     mockDeleteDaemonPassword.mockClear();
   });
 
-  it("defaults to optimized Cuprate gRPC ports", () => {
+  it("defaults to optimized Monero Fast Node gRPC ports", () => {
+    const onion = fixedMainnetNodeConnection("tex8", "onion");
     expect(createDefaultNodeConnectionSettings("mainnet")).toEqual({
       mode: "optimized-grpc",
       network: "mainnet",
       daemon: {
-        address: "xmr.tex8.com:18089",
+        address: onion.daemonAddress,
         trusted: true,
         useSsl: false,
         username: "",
         password: "",
-        proxyAddress: "",
+        proxyAddress: onion.proxyAddress,
       },
       grpcEndpoint: "xmr.tex8.com:18091",
     });
@@ -68,14 +70,16 @@ describe("NodeConnectionSettings", () => {
     ).toBe("xmr.tex8.com:38091");
   });
 
-  it("disables gRPC for original Monero RPC mode", () => {
+  it("keeps the global Tor/Clearnet split when a legacy original mode is requested", () => {
     const original = createDefaultNodeConnectionSettings(
       "testnet",
       "original-rpc",
     );
 
-    expect(original.daemon.address).toBe("xmr.tex8.com:28081");
-    expect(original.grpcEndpoint).toBe("");
+    expect(original.mode).toBe("optimized-grpc");
+    expect(original.daemon.address).toBe("xmr.tex8.com:28089");
+    expect(original.daemon.proxyAddress).toBe("127.0.0.1:9050");
+    expect(original.grpcEndpoint).toBe("xmr.tex8.com:28091");
   });
 
   it("migrates persisted VPN defaults to the fast wallet server domain", async () => {
@@ -97,7 +101,10 @@ describe("NodeConnectionSettings", () => {
 
     const settings = await loadActiveNodeConnectionSettings();
 
-    expect(settings.daemon.address).toBe("xmr.tex8.com:18089");
+    expect(settings.daemon.address).toBe(
+      fixedMainnetNodeConnection("tex8", "onion").daemonAddress,
+    );
+    expect(settings.daemon.proxyAddress).toBe("127.0.0.1:9050");
     expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
   });
 
@@ -120,7 +127,10 @@ describe("NodeConnectionSettings", () => {
 
     const settings = await loadActiveNodeConnectionSettings();
 
-    expect(settings.daemon.address).toBe("xmr.tex8.com:18089");
+    expect(settings.daemon.address).toBe(
+      fixedMainnetNodeConnection("tex8", "onion").daemonAddress,
+    );
+    expect(settings.daemon.proxyAddress).toBe("127.0.0.1:9050");
     expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
   });
 
@@ -143,11 +153,14 @@ describe("NodeConnectionSettings", () => {
 
     const settings = await loadActiveNodeConnectionSettings();
 
-    expect(settings.daemon.address).toBe("xmr.tex8.com:18089");
+    expect(settings.daemon.address).toBe(
+      fixedMainnetNodeConnection("tex8", "onion").daemonAddress,
+    );
+    expect(settings.daemon.proxyAddress).toBe("127.0.0.1:9050");
     expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
   });
 
-  it("clears gRPC when a draft is saved as original RPC", () => {
+  it("retains Clearnet gRPC when a legacy draft requests original RPC", () => {
     const draft = nodeConnectionSettingsToDraft(
       createDefaultNodeConnectionSettings("mainnet"),
     );
@@ -155,10 +168,13 @@ describe("NodeConnectionSettings", () => {
     draft.mode = "original-rpc";
     draft.grpcEndpoint = "fast.example.test:18091";
 
-    expect(nodeConnectionDraftToSettings(draft).grpcEndpoint).toBe("");
+    const settings = nodeConnectionDraftToSettings(draft);
+    expect(settings.mode).toBe("optimized-grpc");
+    expect(settings.grpcEndpoint).toBe("fast.example.test:18091");
+    expect(settings.daemon.proxyAddress).toBe("127.0.0.1:9050");
   });
 
-  it("adds optimized Cuprate ports when a bare host is saved", () => {
+  it("adds optimized Monero Fast Node ports when a bare host is saved", () => {
     const draft = nodeConnectionSettingsToDraft(
       createDefaultNodeConnectionSettings("mainnet"),
     );
@@ -172,7 +188,7 @@ describe("NodeConnectionSettings", () => {
     expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
   });
 
-  it("adds original Monero RPC ports when a bare IP is saved in original mode", () => {
+  it("migrates a legacy original-mode draft to the global split routes", () => {
     const draft = nodeConnectionSettingsToDraft(
       createDefaultNodeConnectionSettings("mainnet", "original-rpc"),
     );
@@ -181,8 +197,10 @@ describe("NodeConnectionSettings", () => {
 
     const settings = nodeConnectionDraftToSettings(draft);
 
-    expect(settings.daemon.address).toBe("node.example.test:18081");
-    expect(settings.grpcEndpoint).toBe("");
+    expect(settings.mode).toBe("optimized-grpc");
+    expect(settings.daemon.address).toBe("node.example.test:18089");
+    expect(settings.daemon.proxyAddress).toBe("127.0.0.1:9050");
+    expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
   });
 
   it("derives the optimized gRPC endpoint from the daemon host", () => {
@@ -222,7 +240,9 @@ describe("NodeConnectionSettings", () => {
         },
         grpcEndpoint: "152.53.133.188:18091",
       }),
-    ).toBe("https://xmr.tex8.com");
+    ).toBe(
+      "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
+    );
 
     expect(
       fastReceiveScannerUrlForSettings({
@@ -239,7 +259,7 @@ describe("NodeConnectionSettings", () => {
 
   it("persists node settings without the daemon password", async () => {
     const settings = nodeConnectionDraftToSettings({
-      mode: "custom",
+      mode: "optimized-grpc",
       network: "mainnet",
       daemonAddress: "node.example.test:18089",
       grpcEndpoint: "fast.example.test:18091",
@@ -261,7 +281,7 @@ describe("NodeConnectionSettings", () => {
     expect(persisted).not.toContain("wallet-password");
     expect(mockStoreDaemonPassword).toHaveBeenCalledWith("wallet-password");
     expect(JSON.parse(persisted ?? "{}")).toEqual({
-      mode: "custom",
+      mode: "optimized-grpc",
       network: "mainnet",
       daemon: {
         address: "node.example.test:18089",

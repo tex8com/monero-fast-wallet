@@ -19,6 +19,7 @@
 		B4D87E00000000000000000C /* DisableDevLoadingView.m in Sources */ = {isa = PBXBuildFile; fileRef = B4D87E00000000000000000B /* DisableDevLoadingView.m */; };
 		B4D87E00000000000000000E /* CoreLocation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B4D87E00000000000000000D /* CoreLocation.framework */; };
 		B4D87E000000000000000010 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = B4D87E000000000000000011 /* InfoPlist.xcstrings */; };
+		B4D87E000000000000000012 /* EmbeddedTorModule.m in Sources */ = {isa = PBXBuildFile; fileRef = B4D87E000000000000000014 /* EmbeddedTorModule.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +40,8 @@
 		B4D87E00000000000000000B /* DisableDevLoadingView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = DisableDevLoadingView.m; path = MoneroWallet/DisableDevLoadingView.m; sourceTree = "<group>"; };
 		B4D87E00000000000000000D /* CoreLocation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreLocation.framework; path = System/Library/Frameworks/CoreLocation.framework; sourceTree = SDKROOT; };
 		B4D87E000000000000000011 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; name = InfoPlist.xcstrings; path = MoneroWallet/InfoPlist.xcstrings; sourceTree = "<group>"; };
+		B4D87E000000000000000013 /* EmbeddedTorModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = EmbeddedTorModule.h; path = MoneroWallet/EmbeddedTorModule.h; sourceTree = "<group>"; };
+		B4D87E000000000000000014 /* EmbeddedTorModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; name = EmbeddedTorModule.m; path = MoneroWallet/EmbeddedTorModule.m; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -62,6 +65,8 @@
 			children = (
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
+				B4D87E000000000000000013 /* EmbeddedTorModule.h */,
+				B4D87E000000000000000014 /* EmbeddedTorModule.m */,
 				B4D87E00000000000000000B /* DisableDevLoadingView.m */,
 				B4D87E000000000000000006 /* NativeMoneroWallet */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
@@ -369,6 +374,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				B4D87E000000000000000012 /* EmbeddedTorModule.m in Sources */,
 				B4D87E00000000000000000C /* DisableDevLoadingView.m in Sources */,
 				B4D87E000000000000000001 /* RCTNativeMoneroWallet.mm in Sources */,
 				B4D87E000000000000000002 /* WalletEngine.cpp in Sources */,
@@ -400,6 +406,7 @@
 					"TEX8_WALLET_BRIDGE_WITH_MONERO=$(TEX8_WALLET_BRIDGE_WITH_MONERO)",
 					"TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=$(TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM)",
 					"TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=$(TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS)",
+					"TEX8_WALLET_DIAGNOSTICS=1",
 					"TEX8_COMMUNITY_MATRIX_LINKED=$(TEX8_COMMUNITY_MATRIX_LINKED)",
 					"TEX8_COMMUNITY_RUNTIME_LINKED=$(TEX8_COMMUNITY_RUNTIME_LINKED)",
 				);
@@ -442,6 +449,8 @@
 					"-lsqlite3",
 					"-lz",
 					"-lresolv",
+					"-force_load",
+					"$(PODS_XCFRAMEWORKS_BUILD_DIR)/Tor/CTor/tor.framework/tor",
 				);
 				PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED = NO;
 				PRIVATE_PHONE_DIRECTORY_ORIGIN = "";
@@ -491,6 +500,7 @@
 					"TEX8_WALLET_BRIDGE_WITH_MONERO=$(TEX8_WALLET_BRIDGE_WITH_MONERO)",
 					"TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=$(TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM)",
 					"TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=$(TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS)",
+					"TEX8_WALLET_DIAGNOSTICS=1",
 					"TEX8_COMMUNITY_MATRIX_LINKED=$(TEX8_COMMUNITY_MATRIX_LINKED)",
 					"TEX8_COMMUNITY_RUNTIME_LINKED=$(TEX8_COMMUNITY_RUNTIME_LINKED)",
 				);
@@ -533,6 +543,8 @@
 					"-lsqlite3",
 					"-lz",
 					"-lresolv",
+					"-force_load",
+					"$(PODS_XCFRAMEWORKS_BUILD_DIR)/Tor/CTor/tor.framework/tor",
 				);
 				PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED = NO;
 				PRIVATE_PHONE_DIRECTORY_ORIGIN = "";

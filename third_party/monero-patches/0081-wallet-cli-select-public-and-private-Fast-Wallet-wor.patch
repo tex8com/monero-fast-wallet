@@ -541,4 +541,4 @@ index 4f05d8d..bd66204 100644
 +      else if (operation == "worker-add-private" || operation == "worker-pair") pair_worker(input);
        else if (operation == "worker-seal-watch") seal_worker_watch(input);
        else if (operation == "worker-enroll") enroll_hosted_watch(input);
-      else if (operation == "worker-hosted-status") print_hosted_watch_status(input, read_metadata(input));
+       else if (operation == "worker-hosted-status") print_hosted_watch_status(input, read_metadata(input));

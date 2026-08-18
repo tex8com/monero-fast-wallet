@@ -154,6 +154,15 @@ test('builds a credential-free HTTPS manifest request', () => {
   assert.throws(() =>
     buildAppUpdateManifestUrl('http://tex8.com/update.json', androidContext),
   );
+  const onionHost = `${'a'.repeat(56)}.onion`;
+  const onionUrl = new URL(
+    buildAppUpdateManifestUrl(`http://${onionHost}/update.json`, {
+      ...androidContext,
+      allowedHosts: [onionHost],
+    }),
+  );
+  assert.equal(onionUrl.protocol, 'http:');
+  assert.equal(onionUrl.hostname, onionHost);
   assert.throws(() =>
     buildAppUpdateManifestUrl(
       'https://user:secret@tex8.com/update.json',

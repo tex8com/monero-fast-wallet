@@ -121,8 +121,12 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
     const official = releaseManifest.parameters.fastWalletOfficialWorker;
 
     expect(releaseManifest.features.officialWorker).toBe(true);
-    expect(official.gatewayOrigin).toBe('https://xmr.tex8.com');
-    expect(official.registrationOrigin).toBe('https://xmr.tex8.com');
+    expect(official.gatewayOrigin).toBe(
+      'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
+    );
+    expect(official.registrationOrigin).toBe(
+      'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
+    );
     expect(official.rootIdHex).toMatch(/^[0-9a-f]{64}$/);
     expect(androidBuild).toContain('officialWorkerParameters.gatewayOrigin');
     expect(androidBuild).toContain('officialWorkerParameters.rootIdHex');

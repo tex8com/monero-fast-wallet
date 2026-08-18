@@ -1,15 +1,15 @@
 use anyhow::{bail, Context, Result};
 use ed25519_dalek::VerifyingKey;
 use fast_wallet_protocol::{HpkePrivateKey, Network as ProtocolNetwork, SigningKeyMaterial};
+use fast_wallet_scanner_core::{
+    dispatch_pending_notifications, BlockSource, CuprateHttpMempoolSource, EncryptedJsonFileStore,
+    HardwareHostedViewKeyMatcher, MempoolScannerWorker, Network, ScanPackBlockSource, ScannedBlock,
+    ScannerWorker, WatchStore,
+};
 use fast_wallet_worker::{
     harden_worker_process, load_secret_file, load_worker_descriptor_file, CommunityDirectoryClient,
     CommunityWorkerMetadata, GatewayWakeNotificationSink, HttpRelayClient, OutboundRelayWorker,
     WorkerAdmissionGate, WorkerWatchAcceptor,
-};
-use notify_scanner::{
-    dispatch_pending_notifications, BlockSource, CuprateHttpMempoolSource, EncryptedJsonFileStore,
-    HardwareHostedViewKeyMatcher, MempoolScannerWorker, Network, ScanPackBlockSource, ScannedBlock,
-    ScannerWorker, WatchStore,
 };
 use std::{
     env,

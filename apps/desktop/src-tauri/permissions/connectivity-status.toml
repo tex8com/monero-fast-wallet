@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-connectivity-status"
+description = "Allows the app to read the independent Tor and Clearnet route status."
+commands.allow = ["connectivity_status"]
+
+[[permission]]
+identifier = "deny-connectivity-status"
+description = "Denies access to the independent Tor and Clearnet route status."
+commands.deny = ["connectivity_status"]

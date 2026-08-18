@@ -134,8 +134,8 @@ export function ledgerBalanceNeedsVerification(
     | 'ledgerKeyImagesVerifiedAt'
     | 'ledgerKeyImagesVerifiedHeight'
   >,
-  pendingOutputKeyImageCount?: number,
-  knownTransactionCount = 0,
+  _pendingOutputKeyImageCount?: number,
+  _knownTransactionCount = 0,
 ): boolean {
   if (wallet.kind !== 'hardware') {
     return false;
@@ -153,8 +153,6 @@ export function ledgerBalanceNeedsVerification(
   // otherwise its first later receive would incorrectly wake Ledger again.
   // Keep the two counters in the public signature for callers and diagnostics,
   // but never use them to postpone this one-time verification.
-  void pendingOutputKeyImageCount;
-  void knownTransactionCount;
   return Boolean(wallet.viewOnlyPath);
 }
 
@@ -781,7 +779,11 @@ function normalizeOptionalUnsignedInteger(
 
 function normalizeDisplayName(value: string | undefined): string | undefined {
   const name = value?.trim();
-  if (!name || name.length > 64 || /[\u0000-\u001f\u007f]/.test(name)) {
+  const hasControlCharacter = Array.from(name ?? '').some(character => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
+  if (!name || name.length > 64 || hasControlCharacter) {
     return undefined;
   }
   return name;

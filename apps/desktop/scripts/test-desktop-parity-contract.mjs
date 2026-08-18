@@ -32,6 +32,8 @@ const desktopDiagnosticsSource = readFileSync(resolve(desktopRoot, 'src-tauri', 
 const desktopTestbenchSource = readFileSync(resolve(desktopRoot, 'src', 'walletDiagnosticTestbench.ts'), 'utf8');
 const desktopLedgerBleSource = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopLedgerBleMac.mm'), 'utf8');
 const windowsExports = readFileSync(resolve(desktopRoot, 'windows', 'tex8_wallet_core.def'), 'utf8');
+const projectServicesSource = readFileSync(resolve(repoRoot, 'packages', 'wallet-shared', 'src', 'projectServices.ts'), 'utf8');
+const websiteSource = readFileSync(resolve(repoRoot, 'website', 'src', 'App.jsx'), 'utf8');
 
 function rustFunction(source, name) {
   const start = source.indexOf(`fn ${name}(`);
@@ -50,10 +52,33 @@ test('desktop primary navigation matches the mobile bottom menu contract', () =>
   assert.deepEqual(icons, ['home', 'send', 'receive', 'community-tab', 'menu']);
   assert.doesNotMatch(primaryMatch[1], /[⌂↑↓◎☰]/, 'platform-dependent text glyphs are not navigation icons');
   assert.match(appSource, /active=\{primaryNavigationSection\(section\)\}/);
-  assert.match(appSource, /new Set\(\['wallets', 'mfw', 'assistant', 'settings'\]\)/);
+  assert.match(appSource, /new Set\(\['wallets', 'mfw', 'assistant', 'settings', 'project', 'node'\]\)/);
   for (const icon of ['home', 'send', 'receive', 'community-tab', 'menu']) {
     assert.match(desktopIconSource, new RegExp(`case '${icon}'`));
   }
+});
+
+test('desktop Project Page mirrors mobile project routes and self-hosting links', () => {
+  assert.match(appSource, /PROJECT_PAGE_ADDRESSES/);
+  assert.match(appSource, /PROJECT_SERVICE_LINKS/);
+  assert.match(appSource, /section === 'project' && <DesktopProjectPage/);
+  assert.match(appSource, /onOpenProjectPage=\{\(\) => setSection\('project'\)\}/);
+  assert.match(appSource, /function DesktopProjectPage/);
+  assert.match(appSource, /projectPage\.ownNodeText/);
+  assert.match(appSource, /projectPage\.ownWorkerText/);
+  assert.match(stylesSource, /\.project-address-grid/);
+  assert.match(stylesSource, /\.settings-project-addresses/);
+
+  for (const address of [
+    'xmr.tex8.com',
+    'mfw-resolver2.tex8.com',
+    'fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
+    'quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion',
+  ]) {
+    assert.match(websiteSource, new RegExp(address.replaceAll('.', '\\.')));
+  }
+  assert.match(projectServicesSource, /PROJECT_PAGE_ADDRESSES/);
+  assert.match(projectServicesSource, /PROJECT_SERVICE_LINKS/);
 });
 
 test('desktop counts complete wallet balances once and delays wallet scan UI until ready', () => {
@@ -76,9 +101,11 @@ test('desktop publishes only terminal wallet state and retains it during recover
 });
 
 test('key-image reconciliation refreshes the authoritative native snapshot before success', () => {
+  const reconciliationStart = walletEngineSource.indexOf('syncLedgerKeyImagesToViewWallet(');
+  assert.notEqual(reconciliationStart, -1);
   const reconciliation = walletEngineSource.slice(
-    walletEngineSource.indexOf('LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet('),
-    walletEngineSource.indexOf('#else', walletEngineSource.indexOf('LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet(')),
+    reconciliationStart,
+    walletEngineSource.indexOf('#else', reconciliationStart),
   );
   assert.match(reconciliation, /updateCachedSnapshot\(\*destinationSession/);
   assert.match(reconciliation, /result\.snapshotRevision/);
@@ -137,7 +164,8 @@ test('desktop Menu exposes release-ready destinations and gates unfinished modul
   for (const destination of ['wallets', 'enthusiast', 'settings']) {
     assert.match(menuSource, new RegExp(`section: '${destination}'`));
   }
-  assert.match(menuSource, /section: 'settings', icon: 'globe'/, 'Node status must remain available');
+  assert.match(menuSource, /section: 'node', icon: 'globe'/, 'Node status must have its own screen');
+  assert.match(appSource, /section === 'node' && <DesktopNodeStatus/);
   for (const icon of ['wallet', 'key', 'community-menu', 'settings', 'sparkles', 'globe']) {
     assert.match(menuSource, new RegExp(`icon: '${icon}'`));
   }
@@ -158,6 +186,28 @@ test('desktop Monero Enthusiast publishes and searches in the selected app langu
   assert.doesNotMatch(enthusiastSource, /languages: \[['"]en['"]\]/);
   assert.match(enthusiastSource, /input: \{ prefix, language, limit: 6 \}/);
   assert.match(enthusiastSource, /enthusiast_v1_contribute_query', \{ query, language \}/);
+});
+
+test('desktop Community is locked behind the shared coming-soon preview', () => {
+  assert.match(appSource, /section === 'enthusiast' && <CommunityComingSoon \/>/);
+  assert.doesNotMatch(appSource, /section === 'enthusiast' && <MoneroEnthusiastV1 \/>/);
+  const preview = appSource.slice(
+    appSource.indexOf('function CommunityComingSoon()'),
+    appSource.indexOf('function MoneroEnthusiastV1()'),
+  );
+  for (const key of [
+    'communitySoon.bulletinTitle',
+    'communitySoon.meetTitle',
+    'communitySoon.matrixTitle',
+    'communitySoon.profilesTitle',
+    'communitySoon.verifiedTitle',
+    'communitySoon.noMarketplaceTitle',
+  ]) {
+    assert.match(preview, new RegExp(key.replace('.', '\\.')));
+    assert.match(i18nSource, new RegExp(key.replace('.', '\\.')));
+  }
+  assert.doesNotMatch(preview, /invoke\(|useEffect\(/);
+  assert.match(stylesSource, /\.community-coming-soon/);
 });
 
 test('narrow desktop windows keep the same bottom-navigation behavior as mobile', () => {
@@ -289,11 +339,24 @@ test('desktop computes sync percentage from the wallet restore range, never the 
 
 test('desktop news uses the same TEX8 feed and categories as mobile', () => {
   const newsSource = readFileSync(resolve(desktopRoot, 'src', 'moneroNews.ts'), 'utf8');
-  assert.match(newsSource, /https:\/\/xmr\.tex8\.com\/news\/v1\/news\?limit=18/);
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  assert.match(newsSource, /invoke<string>\('fetch_private_service'/);
+  assert.match(newsSource, /kind: 'news'/);
+  assert.match(hostSource, /\.onion";/);
+  assert.match(hostSource, /news\/v1\/news\?limit=10/);
+  assert.doesNotMatch(newsSource, /https:\/\/xmr\.tex8\.com/);
   assert.match(newsSource, /'network' \| 'wallet' \| 'ecosystem'/);
+  assert.match(newsSource, /imageDataUrl\?: string/);
+  assert.match(newsSource, /tex8-monero-news-v2/);
   assert.doesNotMatch(appSource, /api\.github\.com\/repos\/monero-project/);
   assert.match(appSource, /const \[newsCategory, setNewsCategory\]/);
   assert.match(appSource, /home\.newsSource/);
+  assert.match(appSource, /official-news-slider/);
+  assert.match(appSource, /displayedNews = visibleNews\.slice\(0, 10\)/);
+  assert.match(appSource, /item\.imageDataUrl/);
+  assert.match(appSource, /home\.newsReadMore/);
+  assert.match(stylesSource, /aspect-ratio: 16 \/ 9/);
+  assert.match(stylesSource, /scroll-snap-type: x mandatory/);
 });
 
 test('desktop Community mirrors mobile automatic coarse-location loading without a retry control', () => {
@@ -804,7 +867,15 @@ test('desktop Keychain failures cannot create a focus-loss prompt loop', () => {
   assert.match(appSource, /'retry_app_protection_status'/);
   assert.match(appSource, /status-retry-requested/);
   assert.doesNotMatch(appSource, /window\.location\.reload\(\)/);
-  assert.doesNotMatch(appSource, /visibilitychange/);
+  const connectivityVisibilityHandler = appSource.slice(
+    appSource.indexOf('const pollOnVisibility'),
+    appSource.indexOf('const reloadFastWallets'),
+  );
+  assert.match(connectivityVisibilityHandler, /document\.addEventListener\('visibilitychange', pollOnVisibility\)/);
+  assert.doesNotMatch(
+    connectivityVisibilityHandler,
+    /loadAppProtection|lock_app|retry_app_protection_status|verify_system_auth/,
+  );
   assert.doesNotMatch(lockSource, /app_protection_configured|load_app_protection_mode|load_secret/);
   assert.match(lockSource, /clear_session_secret_cache/);
   assert.doesNotMatch(lockSource, /note_session_lock/);
@@ -1016,23 +1087,22 @@ test('optimized desktop sync passes the configured gRPC endpoint into Monero Cor
   assert.match(hostSource, /wallet\.grpc-configured/);
 });
 
-test('the first-party node survives a broken local DNS resolver without changing custom nodes', () => {
+test('the Clearnet gRPC route survives broken DNS without resolving the Tor daemon locally', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
   assert.match(hostSource, /fn first_party_endpoint_with_dns_fallback\(/);
   assert.match(hostSource, /endpoint\.strip_prefix\("xmr\.tex8\.com:"\)/);
   assert.match(hostSource, /152\.53\.133\.188:\{port\}/);
   assert.match(hostSource, /wallet\.node-dns-fallback/);
+  assert.doesNotMatch(hostSource, /first_party_endpoint_with_dns_fallback\(&profile\.daemon_address\)/);
   assert.match(hostSource, /address: &daemon_address/);
   assert.match(hostSource, /set_grpc_endpoint\(&wallet_id, &grpc_endpoint\)/);
 });
 
-test('desktop diagnostic builds allow screenshots while production stays protected', () => {
+test('desktop screenshots remain available in every build', () => {
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
-  assert.match(hostSource, /fn desktop_screen_capture_protection_enabled\(\)/);
-  assert.match(hostSource, /cfg!\(debug_assertions\)/);
-  assert.match(hostSource, /MONERO_DESKTOP_PROTECT_SCREEN_CAPTURE/);
-  assert.match(hostSource, /\.set_content_protected\(protected\)/);
-  assert.match(hostSource, /MONERO_DESKTOP_SCREEN_CAPTURE protected=/);
+  assert.match(hostSource, /\.set_content_protected\(false\)/);
+  assert.doesNotMatch(hostSource, /MONERO_DESKTOP_PROTECT_SCREEN_CAPTURE/);
+  assert.match(hostSource, /MONERO_DESKTOP_SCREEN_CAPTURE protected=false/);
 });
 
 test('the isolated diagnostic secure store is debug-only and cannot affect production', () => {

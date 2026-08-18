@@ -119,7 +119,11 @@ for (const target of ['mobile', 'desktop']) {
     assert.deepEqual(Object.keys(result.generated).sort(), generatedLocales.map(({ code }) => code).sort());
     for (const locale of generatedLocales) {
       for (const [key, source] of Object.entries(result.en)) {
-        if (!isGeneratedTranslationCriticallyUnsafe(source, result.generated[locale.code][key])) continue;
+        const translated = result.generated[locale.code][key];
+        // A newly added source phrase may intentionally fall back to English
+        // until the next translation pass. Runtime catalogs are completed and
+        // reviewed below before they are shipped.
+        if (typeof translated !== 'string' || !isGeneratedTranslationCriticallyUnsafe(source, translated)) continue;
         assert.ok(
           manualTranslationOverrides[locale.code]?.[source],
           `${target}/${locale.code}/${key}: unsafe generated text must have a manual translation`,
@@ -127,6 +131,15 @@ for (const target of ['mobile', 'desktop']) {
       }
       const reviewed = applyManualTranslationOverrides(locale.code, result.en, result.generated[locale.code]);
       verifyCatalog(target, locale.code, result.en, reviewed);
+      const runtimePath = resolve(
+        root,
+        target === 'mobile'
+          ? `apps/mobile/src/i18n/lazy/${locale.code}.generated.ts`
+          : `apps/desktop/src/i18n.lazy/${locale.code}.generated.ts`,
+      );
+      const runtimeSource = await readFile(runtimePath, 'utf8');
+      const runtimeCatalog = readObject(runtimeSource, 'const createCatalog =');
+      assert.deepEqual(runtimeCatalog, reviewed, `${target}/${locale.code}: lazy runtime catalog differs from reviewed source`);
     }
   });
 }

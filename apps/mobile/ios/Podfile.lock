@@ -2050,6 +2050,11 @@ PODS:
     - ReactCommon/turbomodule/core
     - ReactNativeDependencies
     - Yoga
+  - Tor (409.11.1):
+    - Tor/CTor (= 409.11.1)
+  - Tor/Core (409.11.1)
+  - Tor/CTor (409.11.1):
+    - Tor/Core
   - Yoga (0.0.0)
 
 DEPENDENCIES:
@@ -2138,6 +2143,7 @@ DEPENDENCIES:
   - RNPermissions (from `../node_modules/react-native-permissions`)
   - RNScreens (from `../node_modules/react-native-screens`)
   - RNSVG (from `../node_modules/react-native-svg`)
+  - Tor (= 409.11.1)
   - Yoga (from `../node_modules/react-native/ReactCommon/yoga`)
 
 SPEC REPOS:
@@ -2158,6 +2164,7 @@ SPEC REPOS:
     - PromisesObjC
     - PromisesSwift
     - RecaptchaInterop
+    - Tor
 
 EXTERNAL SOURCES:
   AsyncStorage:
@@ -2345,7 +2352,7 @@ SPEC CHECKSUMS:
   FirebaseMessaging: ed18fb50634e6e85b5d3e77e628c21e2c928cc53
   GoogleDataTransport: aae35b7ea0c09004c3797d53c8c41f66f219d6a7
   GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
-  hermes-engine: e26032a8466805d91cf637e67e38bb4de1405f3e
+  hermes-engine: 4eed61a97d2f8b12c32d00cf51af3e8826befe54
   libPhoneNumber-iOS: 0cb19dfbf1882c8d4012f13cd7478d2f8fb994f0
   nanopb: fad817b59e0457d11a5dfbde799381cd727c1275
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
@@ -2420,7 +2427,7 @@ SPEC CHECKSUMS:
   ReactCodegen: f8ffd35f7e87c2cc24f6763327ff5b7bfd6d25b9
   ReactCommon: ce3c6336172042036b937beb24456b599909be00
   ReactNativeCameraKit: 5f1a284b85ee8bbba789984149a88945f2e86bd4
-  ReactNativeDependencies: 992ca1e80f43997bda46968e3471acf4b0ffd190
+  ReactNativeDependencies: 209e0c54227d9af7eca3a9c66020ad38737a537f
   RecaptchaInterop: 11e0b637842dfb48308d242afc3f448062325aba
   RNCClipboard: 26237d7fcfc6359e674655b02d03d6178d63d085
   RNFBApp: 0b6a22fb66b5eb9309d58a09fe732c4862d77927
@@ -2430,8 +2437,9 @@ SPEC CHECKSUMS:
   RNPermissions: 4edc5e7c7d39fb12e56d5bd8f3b22328274d2bf9
   RNScreens: 4f8237da8f9f7aaac0f375bb61efe6011f5cd13b
   RNSVG: 76acf4b6471079641921f01bdbf6860057ae946a
+  Tor: 7f368b43e0664b8e347460f37de5797492f93e14
   Yoga: 41392d69c9cf6874d370cae9eeca71af6c2ee28a
 
-PODFILE CHECKSUM: 6cd48db20dcd5b625d67490ba77d0357915a8eb4
+PODFILE CHECKSUM: c119fffe01b4d8a6d4544206997e9ccf87ce5f98
 
 COCOAPODS: 1.15.2

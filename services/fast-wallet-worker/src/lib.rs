@@ -12,7 +12,7 @@ use fast_wallet_protocol::{
 use fast_wallet_relay::{
     ack_auth_body, pull_auth_body, RelayAcceptanceReceipt, RelayMailbox, RelayPullBatch,
 };
-use notify_scanner::{
+use fast_wallet_scanner_core::{
     MatchedOutput, Network, NotificationSink, RegisterWatchRequest, WatchRegistration, WatchStore,
 };
 use serde::{Deserialize, Serialize};
@@ -125,7 +125,7 @@ impl RelayClient for RelayMailbox {
             include_envelopes,
             now,
         )
-            .map_err(|error| anyhow::anyhow!("Relay pull failed: {error}"))
+        .map_err(|error| anyhow::anyhow!("Relay pull failed: {error}"))
     }
 
     fn ack(
@@ -144,7 +144,7 @@ impl RelayClient for RelayMailbox {
             acceptance_receipts,
             now,
         )
-            .map_err(|error| anyhow::anyhow!("Relay ACK failed: {error}"))
+        .map_err(|error| anyhow::anyhow!("Relay ACK failed: {error}"))
     }
 }
 
@@ -412,7 +412,12 @@ impl RelayClient for HttpRelayClient {
                 include_envelopes,
             },
         )?;
-        if response.deliveries.len().saturating_add(response.deletions.len()) > 100 {
+        if response
+            .deliveries
+            .len()
+            .saturating_add(response.deletions.len())
+            > 100
+        {
             anyhow::bail!("Relay returned too many deliveries");
         }
         let deliveries = response
@@ -539,10 +544,9 @@ impl OutboundRelayWorker {
         for deletion in batch.deletions {
             let assignment_id = assignment_id_from_handle(&deletion.assignment_handle);
             let existing = self.acceptor.store.get(&assignment_id)?;
-            if existing
-                .as_ref()
-                .is_some_and(|watch| watch.worker_assignment_epoch != Some(deletion.assignment_epoch))
-            {
+            if existing.as_ref().is_some_and(|watch| {
+                watch.worker_assignment_epoch != Some(deletion.assignment_epoch)
+            }) {
                 result.rejected += 1;
                 continue;
             }
@@ -982,7 +986,7 @@ mod tests {
         WatchSecret, WorkerDescriptorInput,
     };
     use fast_wallet_relay::{AssignmentPermit, SubmitDisposition};
-    use notify_scanner::InMemoryWatchStore;
+    use fast_wallet_scanner_core::InMemoryWatchStore;
 
     fn fixture(
         now: u64,
@@ -1237,10 +1241,7 @@ mod tests {
             .unwrap();
         relay.submit(&encoded, now).unwrap();
         let worker = OutboundRelayWorker::new(acceptor, descriptor, online, now).unwrap();
-        assert_eq!(
-            worker.poll_relay_once(&relay, 10, now).unwrap().accepted,
-            1
-        );
+        assert_eq!(worker.poll_relay_once(&relay, 10, now).unwrap().accepted, 1);
         let assignment_id = assignment_id_from_handle(&handle);
         let watch = worker.acceptor.store.get(&assignment_id).unwrap().unwrap();
         worker
@@ -1250,8 +1251,8 @@ mod tests {
                 id: format!("evt_{}", "a".repeat(64)),
                 notification_group_id: format!("evt_{}", "b".repeat(64)),
                 identity_id: watch.identity_id.clone(),
-                detection_status: notify_scanner::DetectionStatus::PendingMempool,
-                notification_status: notify_scanner::NotificationStatus::Pending,
+                detection_status: fast_wallet_scanner_core::DetectionStatus::PendingMempool,
+                notification_status: fast_wallet_scanner_core::NotificationStatus::Pending,
                 created_at_ms: now * 1_000,
                 updated_at_ms: now * 1_000,
                 mempool_first_seen_ms: Some(now * 1_000),

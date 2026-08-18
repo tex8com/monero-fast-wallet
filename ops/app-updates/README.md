@@ -13,6 +13,11 @@ Before publishing `mfw-mobile-stable.json`, verify the artifact byte size and
 SHA-256 against the final hosted file. A release is offered only when its
 semantic version is newer than the embedded app version.
 
+The publication script installs the same signed manifest on the primary Tor
+v3 hidden service. Wallet clients check that Onion URL through their embedded
+Tor transport; only the platform's final artifact handoff may open the public
+download or store URL selected from the signed manifest.
+
 Desktop uses the official Tauri v2 updater format instead of this manifest.
 Its updater stays disabled until the offline private updater key is backed up,
 the public key is embedded, and a signed artifact exists for every advertised

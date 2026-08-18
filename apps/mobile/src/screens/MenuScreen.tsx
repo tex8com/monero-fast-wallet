@@ -42,7 +42,7 @@ const MENU_ITEMS: ReadonlyArray<MenuItem> = [
   menuItem("communityV1.title", "communityV1.menuDescription", "MoneroEnthusiast", IcoCommunity),
   menuItem("settings.title", "menu.configureWallet", "Settings", IcoGear),
   ...(v1ReleaseFeatures.assistant ? [menuItem("assistant.title", "menu.sharedAiModule", "Tex8Assistant", IcoSpark)] : []),
-  menuItem("menu.nodeStatus", "menu.connectionStatus", "Settings", IcoGlobe),
+  menuItem("menu.nodeStatus", "menu.connectionStatus", "NodeStatus", IcoGlobe),
 ];
 
 export default function MenuScreen({ navigation }: any) {
@@ -105,7 +105,9 @@ export default function MenuScreen({ navigation }: any) {
         <TouchableOpacity
           accessibilityRole="link"
           accessibilityLabel={t('menu.footerAccessibility')}
-          onPress={() => void Linking.openURL("https://solutions.tex8.com/en")}
+          onPress={() => {
+            Linking.openURL("https://solutions.tex8.com/en");
+          }}
           activeOpacity={0.72}
         >
           <Text style={s.footer}>{t('menu.footerPrefix')} <Text style={s.heart}>❤️</Text> {t('menu.footerBy')} <Text style={s.tex8}>TEX8</Text></Text>
@@ -118,7 +120,7 @@ export default function MenuScreen({ navigation }: any) {
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  scroll: { paddingHorizontal: 20, paddingTop: 60 },
+  scroll: { paddingHorizontal: 20, paddingTop: 12 },
   profileCard: { flexDirection: "row", alignItems: "center", backgroundColor: colors.bgCard, borderRadius: 20, padding: 20, marginBottom: 24, gap: 16, borderWidth: 1, borderColor: colors.border },
   profileInfo: { flex: 1, gap: 4 },
   profileName: { color: "#FFF", fontSize: 20, fontWeight: "700" },

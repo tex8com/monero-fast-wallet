@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 
 export type MoneroNewsCategory = 'network' | 'wallet' | 'ecosystem';
 
@@ -8,15 +9,16 @@ export type MoneroNewsItem = {
   summary: string;
   publishedAt: string;
   category: MoneroNewsCategory;
-  url: string;
+  url?: string;
+  imageDataUrl?: string;
 };
 
 type Cache = { items: MoneroNewsItem[]; updatedAt: number };
 
 // Keep desktop on the same TEX8-owned, normalized feed as mobile. The client
 // never presents a third-party market/news provider as a wallet authority.
-const API_URL = 'https://xmr.tex8.com/news/v1/news?limit=18';
-const CACHE_KEY = 'tex8-monero-news-v1';
+const API_URL = 'Monero Fast Wallet Onion news service';
+const CACHE_KEY = 'tex8-monero-news-v2';
 const CACHE_TTL_MS = 30 * 60 * 1_000;
 const RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 5 * 60_000];
 let memoryCache: Cache | null = null;
@@ -39,20 +41,28 @@ function parseNews(value: unknown): MoneroNewsItem[] {
       typeof candidate.title !== 'string' ||
       typeof candidate.summary !== 'string' ||
       typeof candidate.publishedAt !== 'string' ||
-      typeof candidate.url !== 'string' ||
       !isNewsCategory(candidate.category) ||
-      !Number.isFinite(Date.parse(candidate.publishedAt)) ||
-      !candidate.url.startsWith('https://www.getmonero.org/')
+      !Number.isFinite(Date.parse(candidate.publishedAt))
     ) return [];
+    const url = typeof candidate.url === 'string'
+      && candidate.url.startsWith('https://www.getmonero.org/')
+      ? candidate.url
+      : undefined;
+    const imageDataUrl = typeof candidate.imageDataUrl === 'string'
+      && candidate.imageDataUrl.startsWith('data:image/jpeg;base64,')
+      && candidate.imageDataUrl.length <= 100_000
+      ? candidate.imageDataUrl
+      : undefined;
     return [{
       id: candidate.id,
       title: candidate.title.trim(),
       summary: candidate.summary.trim(),
       publishedAt: candidate.publishedAt,
       category: candidate.category,
-      url: candidate.url,
+      url,
+      imageDataUrl,
     }];
-  });
+  }).slice(0, 10);
 }
 
 function loadCache(): Cache | null {
@@ -81,17 +91,15 @@ function saveCache(items: MoneroNewsItem[]) {
 async function fetchNews(force = false) {
   const cached = loadCache();
   if (!force && cached && isFresh(cached)) return cached.items;
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 12_000);
   try {
-    const response = await fetch(API_URL, { signal: controller.signal });
-    if (!response.ok) throw new Error(`TEX8 news feed unavailable (${response.status}).`);
-    const payload = await response.json() as { items?: unknown };
+    const payload = JSON.parse(await invoke<string>('fetch_private_service', {
+      input: { kind: 'news' },
+    })) as { items?: unknown };
     const items = parseNews(payload.items);
-    if (items.length === 0) throw new Error('TEX8 news feed did not include articles.');
+    if (items.length === 0) throw new Error(`${API_URL} did not include articles.`);
     return saveCache(items).items;
-  } finally {
-    window.clearTimeout(timer);
+  } catch (error) {
+    throw error;
   }
 }
 

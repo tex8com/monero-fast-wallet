@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   RefreshControl,
   ScrollView,
@@ -18,10 +18,11 @@ import { useI18n } from '../i18n';
 import type { WalletTransaction } from '../services/NativeMoneroWallet';
 import { useWalletState } from '../services/WalletState';
 import { walletDisplayName } from '../services/WalletRegistry';
+import { transactionsForWalletAddress } from '../services/WalletAddressActivity';
 import { walletService } from '../services/WalletService';
 import { colors, spacing } from '../theme/colors';
 
-export default function TransactionsScreen({ navigation }: any) {
+export default function TransactionsScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const { t } = useI18n();
   const {
@@ -34,10 +35,40 @@ export default function TransactionsScreen({ navigation }: any) {
   const [allTransactions, setAllTransactions] = useState<WalletTransaction[]>(
     transactions,
   );
+  const routeAddressFilter = route?.params?.addressFilter;
+  const addressFilter = useMemo(
+    () =>
+      Number.isInteger(routeAddressFilter?.accountIndex) &&
+      routeAddressFilter.accountIndex >= 0 &&
+      Number.isInteger(routeAddressFilter?.addressIndex) &&
+      routeAddressFilter.addressIndex >= 0
+        ? {
+            accountIndex: routeAddressFilter.accountIndex as number,
+            addressIndex: routeAddressFilter.addressIndex as number,
+            label:
+              typeof routeAddressFilter.label === 'string'
+                ? routeAddressFilter.label
+                : undefined,
+          }
+        : undefined,
+    [
+      routeAddressFilter?.accountIndex,
+      routeAddressFilter?.addressIndex,
+      routeAddressFilter?.label,
+    ],
+  );
+  const visibleTransactions = useMemo(
+    () => transactionsForWalletAddress(allTransactions, addressFilter),
+    [addressFilter, allTransactions],
+  );
 
   useEffect(() => {
     setAllTransactions([]);
-  }, [session?.walletId]);
+  }, [
+    addressFilter?.accountIndex,
+    addressFilter?.addressIndex,
+    session?.walletId,
+  ]);
 
   const refresh = useCallback(async () => {
     if (!session) {
@@ -76,7 +107,7 @@ export default function TransactionsScreen({ navigation }: any) {
 
   return (
     <View style={s.container}>
-      <View style={[s.header, { paddingTop: Math.max(insets.top + 12, 54) }]}>
+      <View style={s.header}>
         <TouchableOpacity
           accessibilityLabel={t('action.back')}
           accessibilityRole="button"
@@ -89,9 +120,9 @@ export default function TransactionsScreen({ navigation }: any) {
         <View style={s.headerCopy}>
           <Text style={s.title}>{t('transactions.title')}</Text>
           <Text style={s.subtitle} numberOfLines={1}>
-            {registeredWallet
+            {addressFilter?.label || (registeredWallet
               ? walletDisplayName(registeredWallet)
-              : t('common.wallet')}
+              : t('common.wallet'))}
           </Text>
         </View>
       </View>
@@ -109,8 +140,8 @@ export default function TransactionsScreen({ navigation }: any) {
           />
         }
       >
-        {allTransactions.length > 0 ? (
-          allTransactions.map(transaction => (
+        {visibleTransactions.length > 0 ? (
+          visibleTransactions.map(transaction => (
             <TransactionRow
               key={transactionRowKey(transaction)}
               transaction={transaction}
@@ -146,6 +177,7 @@ const s = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: spacing.lg,
     paddingBottom: 18,
+    paddingTop: 12,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },

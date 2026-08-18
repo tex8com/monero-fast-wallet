@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -8,47 +8,24 @@ import {
   TouchableOpacity,
   Switch,
   TextInput,
+  Platform,
 } from 'react-native';
 import { colors, spacing, radius } from '../theme/colors';
-import MoneroLogo from '../components/MoneroLogo';
 import { Icon } from '../components/Icon';
 import {
   languageNames,
   supportedLanguages,
-  type TranslationKey,
   useI18n,
 } from '../i18n';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { MoneroNetwork } from '../services/NativeMoneroWallet';
 import {
-  applyNodeModeDefaults,
-  applyNodeNetworkDefaults,
-  createDefaultNodeConnectionSettings,
-  deriveOptimizedGrpcEndpointFromDaemonAddress,
   getActiveNodeConnectionSettings,
   loadActiveNodeConnectionSettings,
-  nodeConnectionDraftToSettings,
-  nodeConnectionSettingsToDraft,
-  saveActiveNodeConnectionSettings,
 } from '../services/NodeConnectionSettings';
-import type {
-  NodeConnectionDraft,
-  NodeConnectionMode,
-} from '../services/NodeConnectionSettings';
-import {
-  fixedMainnetNodeConnection,
-  type FixedNodeId,
-} from '../../../../packages/wallet-shared/src/nodePresets';
 import type {
   CommunityFastWalletWorker,
   FastWalletWorkerSelection,
 } from '../../../../packages/wallet-shared/src/fastWalletWorkerDirectory';
-import {
-  runWalletDiagnosticTestbench,
-  type DiagnosticProgress,
-} from '../services/WalletDiagnosticTestbench';
-import type { DiagnosticTestbenchReport } from '../../../../packages/wallet-shared/src/diagnosticTestbench';
-import { localizeDiagnosticText } from '../../../../packages/wallet-shared/src/diagnosticLocalization';
 import { walletService } from '../services/WalletService';
 import { useWalletState } from '../services/WalletState';
 import {
@@ -63,10 +40,11 @@ import {
   setCommunityQueryContributionEnabled,
 } from '../services/CommunityQueryContribution';
 import {
-  loadDerivationPerformance,
+  loadCachedDerivationPerformance,
+  measureDerivationPerformance,
   type DerivationPerformance,
+  type DerivationPerformanceProgress,
 } from '../services/DerivationPerformance';
-import { FastWalletPushService } from '../services/FastWalletPushService';
 import {
   loadCommunityFastWalletWorkers,
   loadFastWalletWorkerSelection,
@@ -75,28 +53,7 @@ import {
   selectRecommendedFastWalletWorker,
 } from '../services/FastWalletWorkerSettings';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
-
-const NODE_MODES: { value: NodeConnectionMode; labelKey: TranslationKey }[] = [
-  { value: 'optimized-grpc', labelKey: 'settings.nodeModeTex8' },
-  { value: 'original-rpc', labelKey: 'settings.nodeModeOriginal' },
-  { value: 'custom', labelKey: 'settings.nodeModeCustom' },
-];
-
-const NETWORKS: { value: MoneroNetwork; label: string }[] = [
-  { value: 'mainnet', label: 'Mainnet' },
-  { value: 'testnet', label: 'Testnet' },
-  { value: 'stagenet', label: 'Stagenet' },
-];
-
-const KNOWN_NODE_PRESETS: readonly {
-  node: FixedNodeId;
-  transport: 'clearnet' | 'onion';
-}[] = [
-  { node: 'tex8', transport: 'clearnet' },
-  { node: 'community', transport: 'clearnet' },
-  { node: 'tex8', transport: 'onion' },
-  { node: 'community', transport: 'onion' },
-];
+import { PROJECT_PAGE_ADDRESSES } from '../../../../packages/wallet-shared/src/projectServices';
 
 export default function SettingsScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
@@ -109,22 +66,10 @@ export default function SettingsScreen({ navigation }: any) {
     setAutoLockSeconds,
   } = useAppSecurity();
   const bottomPadding = Math.max(180, insets.bottom + 150);
-  const [draft, setDraft] = useState<NodeConnectionDraft>(() =>
-    nodeConnectionSettingsToDraft(getActiveNodeConnectionSettings()),
+  const [nodeNetwork, setNodeNetwork] = useState(
+    () => getActiveNodeConnectionSettings().network,
   );
-  const [savedSettings, setSavedSettings] = useState(() =>
-    getActiveNodeConnectionSettings(),
-  );
-  const [isLoadingNodeSettings, setIsLoadingNodeSettings] = useState(true);
-  const [isSavingNodeSettings, setIsSavingNodeSettings] = useState(false);
-  const [nodeStatusText, setNodeStatusText] = useState('Loading');
-  const [diagnosticsStatusText, setDiagnosticsStatusText] = useState('Ready');
-  const [diagnosticReport, setDiagnosticReport] =
-    useState<DiagnosticTestbenchReport | null>(null);
-  const [diagnosticProgress, setDiagnosticProgress] =
-    useState<DiagnosticProgress | null>(null);
-  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
-  const [isSendingTestPush, setIsSendingTestPush] = useState(false);
+  const [isLanguageMenuOpen, setIsLanguageMenuOpen] = useState(false);
   const [isRevealingSeed, setIsRevealingSeed] = useState(false);
   const [isRecheckingLedger, setIsRecheckingLedger] = useState(false);
   const [protectionMode, setProtectionMode] =
@@ -137,7 +82,9 @@ export default function SettingsScreen({ navigation }: any) {
   const [shareCommunitySearches, setShareCommunitySearches] = useState(true);
   const [derivationPerformance, setDerivationPerformance] =
     useState<DerivationPerformance | null>(null);
-  const [isMeasuringPerformance, setIsMeasuringPerformance] = useState(true);
+  const [isMeasuringPerformance, setIsMeasuringPerformance] = useState(false);
+  const [performanceProgress, setPerformanceProgress] =
+    useState<DerivationPerformanceProgress | null>(null);
   const [workerSelection, setWorkerSelection] =
     useState<FastWalletWorkerSelection>({
       kind: 'recommended',
@@ -172,14 +119,11 @@ export default function SettingsScreen({ navigation }: any) {
 
   useEffect(() => {
     let mounted = true;
-    loadDerivationPerformance()
+    loadCachedDerivationPerformance()
       .then(result => {
         if (mounted) setDerivationPerformance(result);
       })
-      .catch(() => undefined)
-      .finally(() => {
-        if (mounted) setIsMeasuringPerformance(false);
-      });
+      .catch(() => undefined);
     return () => {
       mounted = false;
     };
@@ -187,23 +131,23 @@ export default function SettingsScreen({ navigation }: any) {
 
   useEffect(() => {
     let mounted = true;
-    loadFastWalletWorkerSelection(draft.network)
+    loadFastWalletWorkerSelection(nodeNetwork)
       .then(selection => {
         if (mounted) setWorkerSelection(selection);
       })
       .catch(() => {
         if (mounted) {
-          setWorkerSelection({ kind: 'recommended', network: draft.network });
+          setWorkerSelection({ kind: 'recommended', network: nodeNetwork });
         }
       });
     return () => {
       mounted = false;
     };
-  }, [draft.network]);
+  }, [nodeNetwork]);
 
   useEffect(() => {
     if (
-      draft.network !== 'mainnet' ||
+      nodeNetwork !== 'mainnet' ||
       !v1ReleaseFeatures.privateWorkerPairing
     ) {
       setCommunityWorkers([]);
@@ -232,7 +176,26 @@ export default function SettingsScreen({ navigation }: any) {
     return () => {
       mounted = false;
     };
-  }, [draft.network]);
+  }, [nodeNetwork]);
+
+  async function runPerformanceTestbench() {
+    if (isMeasuringPerformance) return;
+    setIsMeasuringPerformance(true);
+    setPerformanceProgress(null);
+    try {
+      setDerivationPerformance(
+        await measureDerivationPerformance(setPerformanceProgress),
+      );
+    } catch (error) {
+      Alert.alert(
+        t('settings.scanPerformance'),
+        `${t('settings.performanceMeasureFailed')} ${errorMessage(error)}`,
+      );
+    } finally {
+      setIsMeasuringPerformance(false);
+      setPerformanceProgress(null);
+    }
+  }
 
   async function updateSearchSharing(enabled: boolean) {
     setShareCommunitySearches(enabled);
@@ -257,107 +220,14 @@ export default function SettingsScreen({ navigation }: any) {
           return;
         }
 
-        setSavedSettings(settings);
-        setDraft(nodeConnectionSettingsToDraft(settings));
-        setNodeStatusText('Saved');
+        setNodeNetwork(settings.network);
       })
-      .catch(() => {
-        if (mounted) {
-          setNodeStatusText('Default');
-        }
-      })
-      .finally(() => {
-        if (mounted) {
-          setIsLoadingNodeSettings(false);
-        }
-      });
+      .catch(() => undefined);
 
     return () => {
       mounted = false;
     };
   }, []);
-
-  const resolvedSettings = useMemo(
-    () => nodeConnectionDraftToSettings(draft),
-    [draft],
-  );
-
-  const canSave =
-    resolvedSettings.daemon.address.length > 0 &&
-    (draft.mode !== 'optimized-grpc' ||
-      resolvedSettings.grpcEndpoint.length > 0);
-  const hasChanges =
-    JSON.stringify(resolvedSettings) !== JSON.stringify(savedSettings);
-  const isOriginalRpc = draft.mode === 'original-rpc';
-  const isCustomNode = draft.mode === 'custom';
-  const nodeStatus =
-    hasChanges && !isLoadingNodeSettings ? 'Unsaved' : nodeStatusText;
-  const displayedNodeStatus = translateStatusText(nodeStatus, t);
-  const displayedDiagnosticsStatus = translateStatusText(
-    diagnosticsStatusText,
-    t,
-  );
-
-  function updateDraft<K extends keyof NodeConnectionDraft>(
-    key: K,
-    value: NodeConnectionDraft[K],
-  ) {
-    setDraft(current => ({
-      ...current,
-      [key]: value,
-    }));
-  }
-
-  function updateFastWalletServerAddress(value: string) {
-    setDraft(current => {
-      const currentDerivedGrpc = deriveOptimizedGrpcEndpointFromDaemonAddress(
-        current.daemonAddress,
-        current.network,
-      );
-      const shouldFollowDaemon =
-        current.grpcEndpoint.trim().length === 0 ||
-        current.grpcEndpoint.trim() === currentDerivedGrpc;
-
-      return {
-        ...current,
-        daemonAddress: value,
-        grpcEndpoint: shouldFollowDaemon
-          ? deriveOptimizedGrpcEndpointFromDaemonAddress(value, current.network)
-          : current.grpcEndpoint,
-      };
-    });
-  }
-
-  function setMode(mode: NodeConnectionMode) {
-    setDraft(current => applyNodeModeDefaults(current, mode));
-  }
-
-  function setNetwork(network: MoneroNetwork) {
-    setDraft(current => applyNodeNetworkDefaults(current, network));
-  }
-
-  function selectNodePreset(
-    node: FixedNodeId,
-    transport: 'clearnet' | 'onion',
-  ) {
-    const preset = fixedMainnetNodeConnection(node, transport);
-    const settings = createDefaultNodeConnectionSettings(
-      'mainnet',
-      preset.mode,
-    );
-    setDraft(
-      nodeConnectionSettingsToDraft({
-        ...settings,
-        daemon: {
-          ...settings.daemon,
-          address: preset.daemonAddress,
-          proxyAddress: preset.proxyAddress,
-          trusted: true,
-        },
-        grpcEndpoint: preset.grpcEndpoint,
-      }),
-    );
-  }
 
   async function refreshCommunityWorkers() {
     if (workerDirectoryLoading) return;
@@ -380,7 +250,7 @@ export default function SettingsScreen({ navigation }: any) {
     setWorkerSettingsBusy(true);
     try {
       setWorkerSelection(
-        await selectRecommendedFastWalletWorker(draft.network),
+        await selectRecommendedFastWalletWorker(nodeNetwork),
       );
     } catch (error) {
       Alert.alert(t('settings.worker'), errorMessage(error));
@@ -394,7 +264,7 @@ export default function SettingsScreen({ navigation }: any) {
     setWorkerSettingsBusy(true);
     try {
       setWorkerSelection(
-        await selectCommunityFastWalletWorker(draft.network, worker),
+        await selectCommunityFastWalletWorker(nodeNetwork, worker),
       );
     } catch (error) {
       Alert.alert(t('settings.worker'), errorMessage(error));
@@ -408,7 +278,7 @@ export default function SettingsScreen({ navigation }: any) {
     setWorkerSettingsBusy(true);
     try {
       const selected = await selectPrivateFastWalletWorker(
-        draft.network,
+        nodeNetwork,
         privateWorkerDescriptor,
       );
       setWorkerSelection(selected);
@@ -418,98 +288,6 @@ export default function SettingsScreen({ navigation }: any) {
       Alert.alert(t('settings.worker'), errorMessage(error));
     } finally {
       setWorkerSettingsBusy(false);
-    }
-  }
-
-  function resetNodeDefaults() {
-    setDraft(
-      nodeConnectionSettingsToDraft(
-        createDefaultNodeConnectionSettings(draft.network, draft.mode),
-      ),
-    );
-  }
-
-  async function saveNodeSettings() {
-    if (!canSave || isSavingNodeSettings) {
-      return;
-    }
-
-    setIsSavingNodeSettings(true);
-    setNodeStatusText('Saving');
-
-    try {
-      const saved = await saveActiveNodeConnectionSettings(resolvedSettings);
-      const applied = await walletService.applyNodeConnectionToActive(saved);
-      await walletService.refreshFastReceiveRegistrationStatusesForSettings(
-        saved,
-      );
-
-      setSavedSettings(saved);
-      setDraft(nodeConnectionSettingsToDraft(saved));
-      setNodeStatusText(applied ? 'Applied' : 'Saved');
-    } catch {
-      setNodeStatusText('Error');
-    } finally {
-      setIsSavingNodeSettings(false);
-    }
-  }
-
-  async function runSettingsDiagnostics() {
-    if (isRunningDiagnostics) {
-      return;
-    }
-
-    setIsRunningDiagnostics(true);
-    setDiagnosticsStatusText('Running');
-
-    try {
-      const diagnostics = await runWalletDiagnosticTestbench(progress => {
-        setDiagnosticProgress({
-          ...progress,
-          label: localizeDiagnosticText(
-            progress.label,
-            (key, params) => t(key as TranslationKey, params),
-          ),
-        });
-      });
-      setDiagnosticReport(diagnostics);
-      setDiagnosticsStatusText(
-        diagnostics.failed > 0
-          ? 'Error'
-          : diagnostics.warnings > 0
-            ? 'Warnings'
-            : 'Ready',
-      );
-    } catch (error) {
-      console.warn('MONERO_MOBILE_DIAGNOSTICS_FAILED', errorMessage(error));
-      setDiagnosticReport(null);
-      setDiagnosticsStatusText('Error');
-      Alert.alert(t('settings.diagnostics'), t('settings.diagnosticRunFailed'));
-    } finally {
-      setDiagnosticProgress(null);
-      setIsRunningDiagnostics(false);
-    }
-  }
-
-  async function sendTestPush() {
-    if (isSendingTestPush) return;
-    setIsSendingTestPush(true);
-    try {
-      const registration = await FastWalletPushService.sendTestNotification();
-      Alert.alert(
-        t('settings.testNotificationSentTitle'),
-        t('settings.testNotificationSentBody', {
-          count: registration.providerTokenLength,
-        }),
-      );
-    } catch (error) {
-      console.warn('MONERO_MOBILE_TEST_NOTIFICATION_FAILED', errorMessage(error));
-      Alert.alert(
-        t('settings.testNotificationTitle'),
-        t('settings.testNotificationFailed'),
-      );
-    } finally {
-      setIsSendingTestPush(false);
     }
   }
 
@@ -609,13 +387,22 @@ export default function SettingsScreen({ navigation }: any) {
     }
   }
 
+  const performanceBackendLabel = performanceProgress
+    ? performanceProgress.backend === 'cpu'
+      ? derivationPerformance?.neonCapable === true || Platform.OS === 'android'
+        ? t('settings.cpuNeonBackend')
+        : 'CPU'
+      : performanceProgress.backend === 'metal'
+        ? 'Metal'
+        : 'CUDA'
+    : '';
+
   return (
     <View style={s.container}>
       <ScrollView
         contentContainerStyle={[s.scroll, { paddingBottom: bottomPadding }]}
       >
         <View style={s.header}>
-          <MoneroLogo size={44} />
           <Text style={s.title}>{t('settings.title')}</Text>
           <Text style={s.version}>
             {t('settings.version', { version: mobileAppVersion.versionName })}
@@ -664,7 +451,7 @@ export default function SettingsScreen({ navigation }: any) {
             </TouchableOpacity>
 
             {v1ReleaseFeatures.privateWorkerPairing &&
-            draft.network === 'mainnet' ? (
+            nodeNetwork === 'mainnet' ? (
               <View style={s.workerGroup}>
                 <View style={s.sectionHeaderRow}>
                   <Text style={s.fieldLabel}>
@@ -789,6 +576,54 @@ export default function SettingsScreen({ navigation }: any) {
           </View>
         </View>
 
+        <View style={s.section}>
+          <Text style={s.sectionTitle}>{t('settings.projectPage')}</Text>
+          <TouchableOpacity
+            accessibilityRole="button"
+            activeOpacity={0.75}
+            onPress={() => navigation.navigate('ProjectPage')}
+            style={s.sectionCard}
+          >
+            <View style={s.row}>
+              <View style={s.rowIconWrap}>
+                <Icon name="globe" size={20} color={colors.orange} />
+              </View>
+              <View style={s.rowCopy}>
+                <Text style={s.rowLabel}>{t('settings.projectPage')}</Text>
+                <Text style={s.rowHint}>{t('settings.projectPageHint')}</Text>
+                <View style={s.projectPageAddressList}>
+                  {PROJECT_PAGE_ADDRESSES.map(address => (
+                    <View key={address.id} style={s.projectPageAddressRow}>
+                      <Text
+                        style={[
+                          s.projectPageTransport,
+                          address.transport === 'onion' &&
+                            s.projectPageTransportOnion,
+                        ]}
+                      >
+                        {address.transport === 'onion'
+                          ? t('projectPage.onion')
+                          : t('projectPage.clearnet')}
+                      </Text>
+                      <Text
+                        numberOfLines={1}
+                        style={s.projectPageAddressPreview}
+                      >
+                        {address.address}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+              <Icon
+                name="chevron-right"
+                size={18}
+                color={colors.textMuted}
+              />
+            </View>
+          </TouchableOpacity>
+        </View>
+
         {v1ReleaseFeatures.mfwNameRegistration ? (
           <View style={s.section}>
             <Text style={s.sectionTitle}>{t('settings.mfwRegistry')}</Text>
@@ -819,7 +654,7 @@ export default function SettingsScreen({ navigation }: any) {
         <View style={s.section}>
           <Text style={s.sectionTitle}>{t('communityV1.privacySettings')}</Text>
           <View style={s.nodePanel}>
-            <View style={s.switchRow}>
+            <View style={s.privacySwitchRow}>
               <View style={s.switchText}>
                 <Text style={s.switchTitle}>
                   {t('communityV1.shareSearches')}
@@ -846,29 +681,66 @@ export default function SettingsScreen({ navigation }: any) {
           </View>
           <View style={s.nodePanel}>
             <Text style={s.languageHelp}>{t('settings.languageSubtitle')}</Text>
-            <View style={s.languageGrid}>
-              {supportedLanguages.map(code => (
-                <TouchableOpacity
-                  key={code}
-                  style={[s.languageOption, language === code && s.segmentActive]}
-                  activeOpacity={0.75}
-                  onPress={() => {
-                    setLanguage(code).catch(() => undefined);
-                  }}
-                >
-                  <Text
+            <TouchableOpacity
+              accessibilityLabel={t('settings.languageCurrent', {
+                language: languageNames[language],
+              })}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: isLanguageMenuOpen }}
+              activeOpacity={0.75}
+              onPress={() => setIsLanguageMenuOpen(open => !open)}
+              style={s.languageSelectButton}
+            >
+              <View style={s.languageSelectLabel}>
+                <Icon name="language" size={20} color={colors.orange} />
+                <Text style={s.languageSelectValue} numberOfLines={1}>
+                  {languageNames[language]}
+                </Text>
+              </View>
+              <View
+                style={[
+                  s.languageChevron,
+                  isLanguageMenuOpen && s.languageChevronOpen,
+                ]}
+              >
+                <Icon
+                  name="chevron-right"
+                  size={18}
+                  color={colors.textMuted}
+                />
+              </View>
+            </TouchableOpacity>
+            {isLanguageMenuOpen ? (
+              <View style={s.languageGrid}>
+                {supportedLanguages.map(code => (
+                  <TouchableOpacity
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: language === code }}
+                    key={code}
                     style={[
-                      s.segmentText,
-                      language === code && s.segmentTextActive,
+                      s.languageOption,
+                      language === code && s.segmentActive,
                     ]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
+                    activeOpacity={0.75}
+                    onPress={() => {
+                      setIsLanguageMenuOpen(false);
+                      setLanguage(code).catch(() => undefined);
+                    }}
                   >
-                    {languageNames[code]}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+                    <Text
+                      style={[
+                        s.segmentText,
+                        language === code && s.segmentTextActive,
+                      ]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                    >
+                      {languageNames[code]}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
           </View>
         </View>
 
@@ -880,17 +752,23 @@ export default function SettingsScreen({ navigation }: any) {
                 ? t('settings.performanceMeasuring')
                 : derivationPerformance
                   ? t('settings.performanceMeasured')
-                  : t('settings.performanceUnavailable')}
+                  : t('settings.performanceNotMeasured')}
             </Text>
           </View>
           <View style={s.nodePanel}>
             <Text style={s.languageHelp}>
-              {t('settings.scanPerformanceHint')}
+              {t('settings.performanceTestbenchHint')}
             </Text>
             <View style={s.diagnosticList}>
               {(
                 [
-                  ['CPU', derivationPerformance?.cpu],
+                  [
+                    derivationPerformance?.neonCapable === true ||
+                    (!derivationPerformance && Platform.OS === 'android')
+                      ? t('settings.cpuNeonBackend')
+                      : 'CPU',
+                    derivationPerformance?.cpu,
+                  ],
                   ['Metal', derivationPerformance?.metal],
                   ['CUDA', derivationPerformance?.cuda],
                 ] as const
@@ -909,6 +787,57 @@ export default function SettingsScreen({ navigation }: any) {
                 </View>
               ))}
             </View>
+            {isMeasuringPerformance && performanceProgress ? (
+              <View
+                style={s.diagnosticProgress}
+                testID="derivation-testbench-progress"
+              >
+                <Text style={s.diagnosticProgressTitle}>
+                  {t('settings.performanceBackendProgress', {
+                    backend: performanceBackendLabel,
+                    current: performanceProgress.backendIndex,
+                    total: performanceProgress.backendCount,
+                  })}
+                </Text>
+                <Text style={s.diagnosticProgressValue}>
+                  {t('settings.performanceSeconds', {
+                    elapsed: (
+                      performanceProgress.backendElapsedMs / 1000
+                    ).toFixed(1),
+                    duration: performanceProgress.backendDurationMs / 1000,
+                  })}
+                </Text>
+                <View style={s.diagnosticProgressTrack}>
+                  <View
+                    style={[
+                      s.diagnosticProgressFill,
+                      { width: `${performanceProgress.backendProgress}%` },
+                    ]}
+                  />
+                </View>
+                <Text style={s.performanceOverallProgress}>
+                  {t('settings.performanceOverallProgress', {
+                    progress: Math.round(performanceProgress.totalProgress),
+                  })}
+                </Text>
+              </View>
+            ) : null}
+            <TouchableOpacity
+              accessibilityRole="button"
+              disabled={isMeasuringPerformance}
+              onPress={runPerformanceTestbench}
+              style={[
+                s.secondaryButton,
+                isMeasuringPerformance && s.primaryButtonDisabled,
+              ]}
+              testID="manual-derivation-testbench"
+            >
+              <Text style={s.secondaryButtonText}>
+                {isMeasuringPerformance
+                  ? t('settings.performanceTestbenchRunning')
+                  : t('settings.runPerformanceTestbench')}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -1046,7 +975,9 @@ export default function SettingsScreen({ navigation }: any) {
               accessibilityRole="button"
               activeOpacity={0.7}
               disabled={!session || isRevealingSeed}
-              onPress={() => void revealRecoverySeed()}
+              onPress={() => {
+                revealRecoverySeed();
+              }}
               style={[s.row, (!session || isRevealingSeed) && s.rowDisabled]}
             >
               <View style={s.rowIconWrap}>
@@ -1066,7 +997,9 @@ export default function SettingsScreen({ navigation }: any) {
                 accessibilityRole="button"
                 activeOpacity={0.7}
                 disabled={!session || isRecheckingLedger}
-                onPress={() => void recheckLedgerSpendOutputs()}
+                onPress={() => {
+                  recheckLedgerSpendOutputs();
+                }}
                 style={[
                   s.row,
                   (!session || isRecheckingLedger) && s.rowDisabled,
@@ -1091,359 +1024,6 @@ export default function SettingsScreen({ navigation }: any) {
           </View>
         </View>
 
-        <View style={s.section}>
-          <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>{t('settings.node')}</Text>
-            <Text style={[s.nodeStatus, hasChanges && s.nodeStatusDirty]}>
-              {displayedNodeStatus}
-            </Text>
-          </View>
-          <View style={s.nodePanel}>
-            <Text style={s.fieldLabel}>{t('settings.mode')}</Text>
-            <View style={s.segmented}>
-              {NODE_MODES.map(mode => (
-                <TouchableOpacity
-                  key={mode.value}
-                  style={[
-                    s.segment,
-                    draft.mode === mode.value && s.segmentActive,
-                  ]}
-                  activeOpacity={0.75}
-                  onPress={() => setMode(mode.value)}
-                >
-                  <Text
-                    style={[
-                      s.segmentText,
-                      draft.mode === mode.value && s.segmentTextActive,
-                    ]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                  >
-                    {t(mode.labelKey)}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <Text style={s.fieldLabel}>{t('settings.network')}</Text>
-            <View style={s.segmented}>
-              {NETWORKS.map(network => (
-                <TouchableOpacity
-                  key={network.value}
-                  style={[
-                    s.segment,
-                    draft.network === network.value && s.segmentActive,
-                  ]}
-                  activeOpacity={0.75}
-                  onPress={() => setNetwork(network.value)}
-                >
-                  <Text
-                    style={[
-                      s.segmentText,
-                      draft.network === network.value && s.segmentTextActive,
-                    ]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                  >
-                    {network.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <View style={s.nodeHintBox}>
-              <Icon
-                name="info"
-                size={16}
-                color={isOriginalRpc ? colors.warning : colors.orange}
-              />
-              <Text style={s.nodeHintText}>
-                {isOriginalRpc
-                  ? t('settings.originalNodeHelp')
-                  : isCustomNode
-                  ? t('settings.customNodeHelp')
-                  : t('settings.tex8NodeHelp')}
-              </Text>
-            </View>
-
-            {draft.network === 'mainnet' ? (
-              <View style={s.nodePresetSection}>
-                <Text style={s.fieldLabel}>
-                  {t('settings.availableNodeAddresses')}
-                </Text>
-                <View style={s.nodePresetList}>
-                  {KNOWN_NODE_PRESETS.map(({ node, transport }) => {
-                    const preset = fixedMainnetNodeConnection(node, transport);
-                    const address = preset.daemonAddress;
-                    const selected =
-                      draft.mode === preset.mode &&
-                      draft.daemonAddress.trim() === preset.daemonAddress &&
-                      draft.grpcEndpoint.trim() === preset.grpcEndpoint &&
-                      draft.proxyAddress.trim() === preset.proxyAddress;
-                    return (
-                      <TouchableOpacity
-                        accessibilityLabel={`${
-                          node === 'tex8'
-                            ? t('settings.tex8Node')
-                            : t('settings.communityNode')
-                        }, ${
-                          transport === 'onion'
-                            ? t('settings.onionAddress')
-                            : t('settings.clearnetAddress')
-                        }, ${address}`}
-                        key={`${node}-${transport}`}
-                        accessibilityRole="button"
-                        activeOpacity={0.75}
-                        onPress={() => selectNodePreset(node, transport)}
-                        style={[
-                          s.nodePresetCard,
-                          selected && s.nodePresetCardSelected,
-                        ]}
-                      >
-                        <View style={s.nodePresetIcon}>
-                          <Icon
-                            name={transport === 'onion' ? 'onion' : 'globe'}
-                            size={18}
-                            color={selected ? colors.orange : colors.textMuted}
-                          />
-                        </View>
-                        <View style={s.nodePresetCopy}>
-                          <View style={s.nodePresetHeading}>
-                            <Text style={s.nodePresetName}>
-                              {node === 'tex8'
-                                ? t('settings.tex8Node')
-                                : t('settings.communityNode')}
-                            </Text>
-                            <Text
-                              style={[
-                                s.nodePresetTransport,
-                                transport === 'onion' &&
-                                  s.nodePresetTransportOnion,
-                              ]}
-                            >
-                              {transport === 'onion'
-                                ? t('settings.onionAddress')
-                                : t('settings.clearnetAddress')}
-                            </Text>
-                          </View>
-                          <Text selectable style={s.nodePresetAddress}>
-                            {address}
-                          </Text>
-                        </View>
-                        {selected ? (
-                          <Icon name="check" size={18} color={colors.orange} />
-                        ) : null}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-                <Text style={s.nodePresetHelp}>
-                  {t('settings.availableNodeAddressesHelp')}
-                </Text>
-              </View>
-            ) : null}
-
-            {isOriginalRpc ? (
-              <NodeInput
-                label={t('settings.originalNodeAddress')}
-                value={draft.daemonAddress}
-                onChangeText={value => updateDraft('daemonAddress', value)}
-                placeholder="host:port"
-              />
-            ) : (
-              <>
-                <NodeInput
-                  label={t('settings.fastWalletServerAddress')}
-                  value={draft.daemonAddress}
-                  onChangeText={updateFastWalletServerAddress}
-                  placeholder="xmr.tex8.com:18089"
-                />
-                <NodeInput
-                  label={t('settings.grpcEndpoint')}
-                  value={draft.grpcEndpoint}
-                  onChangeText={value => updateDraft('grpcEndpoint', value)}
-                  placeholder="xmr.tex8.com:18091"
-                />
-              </>
-            )}
-
-            <View style={s.switchRow}>
-              <View style={s.switchText}>
-                <Text style={s.switchTitle}>{t('settings.trustedDaemon')}</Text>
-                <Text style={s.switchValue}>
-                  {draft.trusted ? t('common.on') : t('common.off')}
-                </Text>
-              </View>
-              <Switch
-                value={draft.trusted}
-                onValueChange={value => updateDraft('trusted', value)}
-                trackColor={{ false: colors.surface, true: colors.orange }}
-                thumbColor="#FFF"
-              />
-            </View>
-
-            <View style={s.switchRow}>
-              <View style={s.switchText}>
-                <Text style={s.switchTitle}>{t('settings.daemonTls')}</Text>
-                <Text style={s.switchValue}>
-                  {draft.useSsl ? t('common.on') : t('common.off')}
-                </Text>
-              </View>
-              <Switch
-                value={draft.useSsl}
-                onValueChange={value => updateDraft('useSsl', value)}
-                trackColor={{ false: colors.surface, true: colors.orange }}
-                thumbColor="#FFF"
-              />
-            </View>
-
-            <View style={s.nodeActions}>
-              <TouchableOpacity
-                style={s.secondaryButton}
-                activeOpacity={0.75}
-                onPress={resetNodeDefaults}
-              >
-                <Text style={s.secondaryButtonText}>{t('action.reset')}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  s.primaryButton,
-                  (!canSave || !hasChanges || isSavingNodeSettings) &&
-                    s.primaryButtonDisabled,
-                ]}
-                activeOpacity={0.8}
-                disabled={!canSave || !hasChanges || isSavingNodeSettings}
-                onPress={saveNodeSettings}
-              >
-                <Icon name="check" size={18} color="#FFF" />
-                <Text style={s.primaryButtonText}>
-                  {isSavingNodeSettings ? t('action.saving') : t('action.save')}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-
-        <View style={s.section}>
-          <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>{t('settings.diagnostics')}</Text>
-            <Text
-              style={[
-                s.nodeStatus,
-                diagnosticsStatusText !== 'Ready' && s.nodeStatusDirty,
-              ]}
-            >
-              {displayedDiagnosticsStatus}
-            </Text>
-          </View>
-          <View style={s.nodePanel}>
-            {isRunningDiagnostics && diagnosticProgress ? (
-              <View style={s.diagnosticProgress}>
-                <Text style={s.diagnosticProgressTitle}>
-                  {diagnosticProgress.label}
-                </Text>
-                <Text style={s.diagnosticProgressValue}>
-                  {diagnosticProgress.completed}/{diagnosticProgress.total}
-                </Text>
-                <View style={s.diagnosticProgressTrack}>
-                  <View
-                    style={[
-                      s.diagnosticProgressFill,
-                      {
-                        width: `${Math.round(
-                          (diagnosticProgress.completed /
-                            Math.max(1, diagnosticProgress.total)) *
-                            100,
-                        )}%`,
-                      },
-                    ]}
-                  />
-                </View>
-              </View>
-            ) : null}
-
-            {diagnosticReport ? (
-              <View style={s.diagnosticList}>
-                <View style={s.diagnosticSummary}>
-                  <DiagnosticCount label={t('settings.diagnosticPassed')} value={diagnosticReport.passed} tone="pass" />
-                  <DiagnosticCount label={t('settings.diagnosticWarnings')} value={diagnosticReport.warnings} tone="warning" />
-                  <DiagnosticCount label={t('settings.diagnosticFailed')} value={diagnosticReport.failed} tone="fail" />
-                  <DiagnosticCount label={t('settings.diagnosticSkipped')} value={diagnosticReport.skipped} tone="skipped" />
-                </View>
-                {diagnosticReport.tests.map(test => (
-                  <View key={test.id} style={s.diagnosticTest}>
-                    <View style={s.diagnosticTestHeader}>
-                      <View style={s.diagnosticTestHeading}>
-                        <Text style={s.diagnosticCategory}>{localizeDiagnosticText(test.category, key => t(key as TranslationKey))}</Text>
-                        <Text style={s.diagnosticTestTitle}>{localizeDiagnosticText(test.label, key => t(key as TranslationKey))}</Text>
-                      </View>
-                      <Text
-                        style={[
-                          s.diagnosticBadge,
-                          diagnosticStatusStyle(test.status),
-                        ]}
-                      >
-                        {translateStatusText(test.status === 'pass' ? 'Passed' : test.status === 'warning' ? 'Warnings' : test.status === 'fail' ? 'Failed' : 'Skipped', t).toUpperCase()}
-                      </Text>
-                    </View>
-                    <Text style={s.diagnosticSummaryText}>{localizeDiagnosticText(test.summary, (key, params) => t(key as TranslationKey, params))}</Text>
-                    {test.metrics.length > 0 ? (
-                      <View style={s.diagnosticMetrics}>
-                        {test.metrics.map(metric => (
-                          <View key={`${test.id}-${metric.label}`} style={s.diagnosticMetric}>
-                            <Text style={s.diagnosticMetricLabel}>{localizeDiagnosticText(metric.label, key => t(key as TranslationKey))}</Text>
-                            <Text style={s.diagnosticMetricValue}>
-                              {localizeDiagnosticText(metric.value, key => t(key as TranslationKey))}{metric.unit ? ` ${metric.unit}` : ''}
-                            </Text>
-                          </View>
-                        ))}
-                      </View>
-                    ) : null}
-                    <Text style={s.diagnosticDuration}>{test.durationMs} ms</Text>
-                  </View>
-                ))}
-                <Text style={s.diagnosticRunDuration}>
-                  {t('settings.diagnosticTotal', {
-                    duration: diagnosticReport.durationMs,
-                  })}
-                </Text>
-              </View>
-            ) : null}
-
-            <TouchableOpacity
-              style={[
-                s.primaryButton,
-                isRunningDiagnostics && s.primaryButtonDisabled,
-              ]}
-              activeOpacity={0.8}
-              disabled={isRunningDiagnostics}
-              onPress={runSettingsDiagnostics}
-            >
-              <Icon name="info" size={18} color="#FFF" />
-              <Text style={s.primaryButtonText}>
-                {isRunningDiagnostics
-                  ? t('status.running')
-                  : t('action.runDiagnostics')}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                s.secondaryButton,
-                isSendingTestPush && s.primaryButtonDisabled,
-              ]}
-              activeOpacity={0.8}
-              disabled={isSendingTestPush}
-              onPress={sendTestPush}
-            >
-              <Text style={s.secondaryButtonText}>
-                {isSendingTestPush
-                  ? t('settings.sendingTestNotification')
-                  : t('settings.sendTestNotification')}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
         <Text
           style={s.bottomVersion}
         >{`Monero Fast Wallet · v${mobileAppVersion.versionName}`}</Text>
@@ -1453,128 +1033,18 @@ export default function SettingsScreen({ navigation }: any) {
   );
 }
 
-type Translator = (
-  key: TranslationKey,
-  params?: Record<string, string | number>,
-) => string;
-
-function translateStatusText(value: string, t: Translator): string {
-  switch (value) {
-    case 'Applied':
-      return t('status.applied');
-    case 'Passed':
-      return t('settings.diagnosticPassed');
-    case 'Creating':
-      return t('status.creating');
-    case 'Default':
-      return t('settings.default');
-    case 'Error':
-      return t('status.error');
-    case 'Loading':
-      return t('settings.loading');
-    case 'Off':
-      return t('common.off');
-    case 'Ready':
-      return t('status.ready');
-    case 'Running':
-      return t('status.running');
-    case 'Saved':
-      return t('status.saved');
-    case 'Failed':
-      return t('settings.diagnosticFailed');
-    case 'Skipped':
-      return t('settings.diagnosticSkipped');
-    case 'Saving':
-      return t('action.saving');
-    case 'Unsaved':
-      return t('settings.unsaved');
-    case 'Warnings':
-      return t('status.warnings');
-    default:
-      return value;
-  }
-}
-
-function NodeInput({
-  label,
-  value,
-  onChangeText,
-  placeholder,
-  editable = true,
-  secureTextEntry = false,
-}: {
-  label: string;
-  value: string;
-  onChangeText: (value: string) => void;
-  placeholder: string;
-  editable?: boolean;
-  secureTextEntry?: boolean;
-}) {
-  return (
-    <View style={s.inputGroup}>
-      <Text style={s.fieldLabel}>{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder}
-        placeholderTextColor={colors.textMuted}
-        editable={editable}
-        secureTextEntry={secureTextEntry}
-        autoCapitalize="none"
-        autoCorrect={false}
-        style={[s.input, !editable && s.inputDisabled]}
-      />
-    </View>
-  );
-}
-
-function DiagnosticCount({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone: 'pass' | 'warning' | 'fail' | 'skipped';
-}) {
-  return (
-    <View style={s.diagnosticCount}>
-      <Text style={[s.diagnosticCountValue, diagnosticStatusStyle(tone)]}>
-        {value}
-      </Text>
-      <Text style={s.diagnosticCountLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function diagnosticStatusStyle(
-  status: 'pass' | 'warning' | 'fail' | 'skipped',
-) {
-  switch (status) {
-    case 'pass':
-      return { color: colors.success };
-    case 'warning':
-      return { color: colors.warning };
-    case 'fail':
-      return { color: colors.error };
-    default:
-      return { color: colors.textMuted };
-  }
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  scroll: { paddingHorizontal: spacing.lg, paddingTop: 60 },
-  header: { alignItems: 'center', marginBottom: 32, gap: 8 },
+  scroll: { paddingHorizontal: spacing.lg, paddingTop: 12 },
+  header: { alignItems: 'flex-start', marginBottom: 28, gap: 5 },
   title: {
     color: colors.textPrimary,
-    fontSize: 22,
-    fontWeight: '700',
-    marginTop: 8,
+    fontSize: 28,
+    fontWeight: '800',
   },
   version: { color: colors.textMuted, fontSize: 13 },
   section: { marginBottom: 24 },
@@ -1617,6 +1087,13 @@ const s = StyleSheet.create({
   },
   nodePresetSection: { gap: 8 },
   nodePresetList: { gap: 8 },
+  nodeRouteLabel: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '800',
+    marginTop: 6,
+    textTransform: 'uppercase',
+  },
   nodePresetCard: {
     alignItems: 'center',
     backgroundColor: colors.bgInput,
@@ -1703,6 +1180,26 @@ const s = StyleSheet.create({
   rowDisabled: { opacity: 0.5 },
   rowCopy: { flex: 1, gap: 3 },
   rowHint: { color: colors.textMuted, fontSize: 12, lineHeight: 17 },
+  projectPageAddressList: { gap: 5, marginTop: 5 },
+  projectPageAddressRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 7,
+  },
+  projectPageTransport: {
+    color: colors.success,
+    fontSize: 8,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    width: 42,
+  },
+  projectPageTransportOnion: { color: colors.orangeLight },
+  projectPageAddressPreview: {
+    color: colors.orangeLight,
+    flex: 1,
+    fontFamily: 'monospace',
+    fontSize: 10,
+  },
   passwordPanel: {
     borderTopWidth: 1,
     borderTopColor: colors.border,
@@ -1723,6 +1220,31 @@ const s = StyleSheet.create({
     padding: 12,
   },
   languageHelp: { color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
+  languageSelectButton: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+    paddingHorizontal: 14,
+  },
+  languageSelectLabel: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  languageSelectValue: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  languageChevron: { transform: [{ rotate: '90deg' }] },
+  languageChevronOpen: { transform: [{ rotate: '-90deg' }] },
   languageGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1810,6 +1332,12 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     paddingHorizontal: 14,
+  },
+  privacySwitchRow: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   switchText: { flex: 1, paddingRight: 12 },
   switchTitle: { color: colors.textPrimary, fontSize: 14, fontWeight: '600' },
@@ -1951,6 +1479,12 @@ const s = StyleSheet.create({
     height: '100%',
     borderRadius: radius.full,
     backgroundColor: colors.orange,
+  },
+  performanceOverallProgress: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'right',
   },
   diagnosticSummary: {
     flexDirection: 'row',

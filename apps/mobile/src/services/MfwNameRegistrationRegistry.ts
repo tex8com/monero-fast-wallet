@@ -12,6 +12,7 @@ import {
 export const MFW_NAME_REGISTRATION_STORAGE_KEY =
   'monero-fast-wallet.mfw-name-registrations.v1';
 export const MFW_TARGET_BLOCKS_PER_DAY = 720;
+export const MFW_TARGET_BLOCK_TIME_MS = 2 * 60 * 1000;
 
 export type MfwOwnedNameStage =
   | 'commit-pending'
@@ -236,6 +237,36 @@ export function mfwNameRemainingDays(
   return blocks === undefined
     ? undefined
     : Math.ceil(blocks / MFW_TARGET_BLOCKS_PER_DAY);
+}
+
+/**
+ * Estimates the wall-clock time of a Registry expiry height from the chain tip
+ * observed during the lookup. The protocol remains strictly block-height
+ * based; this value is only for a clearly labelled human-readable timestamp.
+ */
+export function estimateMfwNameExpiryTimestampMs(
+  expiryHeight: number | undefined,
+  chainTipHeight: number | undefined,
+  observedAtMs = Date.now(),
+): number | undefined {
+  if (
+    expiryHeight === undefined ||
+    expiryHeight === 0 ||
+    chainTipHeight === undefined ||
+    !validHeight(expiryHeight) ||
+    !validHeight(chainTipHeight) ||
+    !Number.isFinite(observedAtMs)
+  ) {
+    return undefined;
+  }
+  const estimatedAtMs =
+    observedAtMs +
+    (expiryHeight - chainTipHeight) * MFW_TARGET_BLOCK_TIME_MS;
+  return Number.isFinite(estimatedAtMs) &&
+    estimatedAtMs >= -8_640_000_000_000_000 &&
+    estimatedAtMs <= 8_640_000_000_000_000
+    ? estimatedAtMs
+    : undefined;
 }
 
 export function effectiveMfwOwnedNameStage(

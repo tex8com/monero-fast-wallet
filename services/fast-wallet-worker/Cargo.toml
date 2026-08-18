@@ -15,7 +15,7 @@ fast-wallet-relay = { path = "../fast-wallet-relay" }
 hex = "0.4"
 libc = "0.2"
 monero-address = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
-notify-scanner = { path = "../notify-scanner", features = ["epyc"] }
+fast-wallet-scanner-core = { path = "../fast-wallet-scanner-core", features = ["epyc"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }

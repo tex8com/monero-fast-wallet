@@ -6,7 +6,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 
 /**
- * Shared with the mobile FastWalletPushService and notify-scanner. A signal is
+ * Shared with the mobile FastWalletPushService and Fast Wallet Worker. A signal is
  * deliberately insufficient to reveal a payment: the wallet refreshes its
  * own local core before displaying any wallet data.
  */

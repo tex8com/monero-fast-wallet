@@ -11,7 +11,7 @@ grep -Eq '^commit=[0-9a-f]{40}$' "$source_lock"
 grep -q '^legacy_scanpack_cache=true$' "$source_lock"
 grep -q '^mfw_name_index=true$' "$source_lock"
 grep -q '^signed_worker_scanpacks=true$' "$source_lock"
-grep -q 'Cuprate release source mismatch' "$deploy/activate-staged-release.sh"
+grep -q 'Monero Fast Node release source mismatch' "$deploy/activate-staged-release.sh"
 grep -q 'FAST_WALLET_RELAY_TRUSTED_WORKER_DESCRIPTOR_FILE=/etc/monero-fast-wallet/worker-descriptor.hex' \
   "$deploy/activate-staged-release.sh"
 test -x "$deploy/provision-notification-fcm-service-account.sh"
@@ -19,6 +19,7 @@ grep -q 'NOTIFICATION_GATEWAY_FCM_SERVICE_ACCOUNT_FILE=' \
   "$deploy/provision-notification-fcm-service-account.sh"
 
 for unit in \
+  monero-fast-node.service \
   fast-wallet-directory.service \
   fast-wallet-relay.service \
   fast-wallet-worker.service \
@@ -36,6 +37,8 @@ grep -q '127.0.0.1:8095' "$repo_root/services/fast-wallet-stack/README.md"
 grep -q '127.0.0.1:8096' "$repo_root/services/fast-wallet-stack/README.md"
 
 nginx="$deploy/nginx-fast-wallet-stack.conf"
+resolver_nginx="$deploy/nginx-mfw-resolver1.conf"
+onion_services_nginx="$deploy/nginx-mfw-onion-app-services.conf"
 rate_limits="$deploy/nginx-fast-wallet-rate-limits.conf"
 for public_route in \
   '/api/v1/official-worker-descriptor' \
@@ -55,6 +58,17 @@ grep -q 'limit_req zone=fast_wallet_desktop_bootstrap' "$nginx"
 grep -q 'limit_req_zone .*fast_wallet_desktop_bootstrap' "$rate_limits"
 grep -q '^location \^~ /api/v1/installations/assignments/ {' "$nginx"
 grep -q '^location \^~ /v1/envelopes/ {' "$nginx"
+grep -q '^location \^~ /v1/mfw/name-suggestions/ {' "$nginx"
+grep -Eq '^[[:space:]]*location \^~ /v1/mfw/name-suggestions/ \{' "$resolver_nginx"
+grep -q 'nginx-mfw-resolver1.conf' "$deploy/activate-staged-release.sh"
+grep -q 'nginx-mfw-onion-app-services.conf' "$deploy/activate-staged-release.sh"
+for onion_route in \
+  '/api/v1/community-workers' \
+  '/v2/' \
+  '/_matrix/' \
+  '/xmr/update.json'; do
+  grep -q "$onion_route" "$onion_services_nginx"
+done
 
 # Internal-only endpoints may be documented in comments, but must never be an
 # Nginx location.
@@ -69,7 +83,14 @@ grep -q 'FAST_WALLET_WORKER_MODE=private' "$deploy/activate-staged-release.sh"
 grep -q 'worker-directory-admission-signing.key' \
   "$repo_root/native/fast-wallet-protocol/examples/provision_official_worker.rs"
 
-grep -q 'CUPRATE_SCANPACK_SIGNING_KEY_FILE=' "$deploy/cuprate-fast-wallet-scanpack.conf"
+grep -q '^Description=Monero Fast Node (MFN)$' "$deploy/monero-fast-node.service"
+grep -q '^SyslogIdentifier=monero-fast-node$' "$deploy/monero-fast-node-identity.conf"
+grep -q 'monero-fast-node.service' "$deploy/fast-wallet-worker.service"
+if grep -q 'cuprate\.service' "$deploy/fast-wallet-worker.service"; then
+  echo 'legacy product service name remains in the Worker unit' >&2
+  exit 1
+fi
+grep -q 'CUPRATE_SCANPACK_SIGNING_KEY_FILE=' "$deploy/monero-fast-node-fast-wallet-scanpack.conf"
 grep -q 'event=grant.decode.error status=400' \
   "$repo_root/services/notification-registration-adapter/src/lib.rs"
 grep -q 'event=provider-registration.rejected' \

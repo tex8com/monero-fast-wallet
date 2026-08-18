@@ -25,6 +25,7 @@ done
 grep -q 'NOTIFICATION_GATEWAY_WORKER_DIRECTORY_ORIGIN=http://127.0.0.1:8096' "$upgrade"
 grep -q 'NOTIFICATION_GATEWAY_PRIVATE_WORKER_MAXIMUM_ASSIGNMENTS=8' "$upgrade"
 grep -q '^location \^~ /v1/mfw/names/ {' "$nginx"
+grep -q '^location \^~ /v1/mfw/name-suggestions/ {' "$nginx"
 grep -q 'limit_req zone=mfw_name_resolver' "$nginx"
 grep -q 'limit_req_zone .*mfw_name_resolver' "$rates"
 grep -q '^location = /api/v1/community-workers {' "$nginx"

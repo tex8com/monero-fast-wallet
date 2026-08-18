@@ -19,6 +19,7 @@ const INDEX_CHECKSUM_DOMAIN: &[u8] = b"TEX8/MFW/name-index-file/v1";
 const RESERVED_MANIFEST_DOMAIN: &[u8] = b"TEX8/MFW/reserved-name-manifest/v1";
 const REGISTRY_DESCRIPTOR_DOMAIN: &[u8] = b"TEX8/MFW/registry-descriptor/v1";
 const MAX_INDEX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_TERM_YEARS: u64 = 1_000;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProtocolParameters {
@@ -54,7 +55,7 @@ impl ProtocolParameters {
             final_confirmations: 15,
             commit_min_confirmations: 15,
             commit_reveal_window: 720,
-            max_term_years: 10,
+            max_term_years: MAX_TERM_YEARS,
             reserved_names,
             reserved_name_manifest_hash,
         }
@@ -66,7 +67,7 @@ impl ProtocolParameters {
             || self.final_confirmations == 0
             || self.commit_min_confirmations == 0
             || self.commit_reveal_window < self.commit_min_confirmations
-            || self.max_term_years == 0
+            || self.max_term_years != MAX_TERM_YEARS
             || self.registry_descriptor_hash == [0; 32]
             || self.reserved_name_manifest_hash != reserved_manifest_hash(&self.reserved_names)
         {
@@ -319,6 +320,41 @@ impl NameIndex {
             confirmations,
             status,
         })
+    }
+
+    /// Returns only active, finalized public names whose canonical label
+    /// starts with `prefix`. Suggestions intentionally contain no address or
+    /// ownership metadata; payment still requires a separate exact resolve.
+    pub fn suggest_names(
+        &self,
+        prefix: &str,
+        maximum: usize,
+    ) -> Result<Vec<String>, NameIndexError> {
+        let normalized = prefix.trim().to_ascii_lowercase();
+        if normalized.len() < 3
+            || normalized.len() > 63
+            || normalized.starts_with('-')
+            || normalized.ends_with('-')
+            || !normalized
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            || maximum == 0
+            || maximum > 10
+        {
+            return Err(NameIndexError::InvalidSuggestionQuery);
+        }
+        let mut names = Vec::with_capacity(maximum.min(self.replay.names.len()));
+        for name in self.replay.names.keys() {
+            if name.as_str().starts_with(&normalized)
+                && self.resolve(name.as_str())?.is_safe_for_payment()
+            {
+                names.push(name.display_name());
+                if names.len() == maximum {
+                    break;
+                }
+            }
+        }
+        Ok(names)
     }
 
     pub fn save_atomic(&self, path: impl AsRef<Path>) -> Result<(), NameIndexError> {
@@ -715,6 +751,8 @@ pub enum NameIndexError {
     InvalidRegistryPayment,
     #[error("unexpected Registry payment")]
     UnexpectedRegistryPayment,
+    #[error("invalid name suggestion query")]
+    InvalidSuggestionQuery,
     #[error("integer overflow")]
     Overflow,
     #[error("invalid persistence path")]
@@ -766,7 +804,7 @@ mod tests {
             final_confirmations: 15,
             commit_min_confirmations: 3,
             commit_reveal_window: 20,
-            max_term_years: 10,
+            max_term_years: MAX_TERM_YEARS,
             reserved_name_manifest_hash: reserved_manifest_hash(&reserved_names),
             reserved_names,
         }
@@ -832,6 +870,11 @@ mod tests {
         assert_eq!(resolution.status, ResolutionStatus::Finalized);
         assert_eq!(resolution.expiry_height, Some(303));
         assert!(resolution.is_safe_for_payment());
+        assert_eq!(index.suggest_names("ali", 5).unwrap(), vec!["alice.mfw"]);
+        assert!(matches!(
+            index.suggest_names("al", 5),
+            Err(NameIndexError::InvalidSuggestionQuery)
+        ));
 
         let mut unpaid = NameIndex::new(parameters()).unwrap();
         unpaid

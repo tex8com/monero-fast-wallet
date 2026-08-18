@@ -1,5 +1,8 @@
 # MFW recipient protocol
 
+The public product name for the chain-backed `.mfw` name registry and its
+designated payment destination is **Monero Fast Wallet Registry**.
+
 Security-critical Rust protocol core shared by:
 
 - the Cuprate-derived `.mfw` name index;

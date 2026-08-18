@@ -37,6 +37,22 @@ function fetchJson(values: unknown[]) {
 }
 
 describe('MFW resolver quorum client', () => {
+  it('accepts the first public resolver and its legacy availability shape', async () => {
+    const legacy = { ...resolution } as Record<string, unknown>;
+    delete legacy.ownerPublicKeyHex;
+    delete legacy.sequence;
+    delete legacy.signingOwnerPublicKeyHex;
+    const quorum = new MfwNameResolverQuorum(
+      ['https://resolver-a.example'],
+      fetchJson([legacy]),
+    );
+    await expect(quorum.resolve('alice.mfw')).resolves.toMatchObject({
+      ownerPublicKeyHex: '',
+      sequence: 0,
+      signingOwnerPublicKeyHex: '',
+    });
+  });
+
   it('accepts matching independent HTTPS responses once', async () => {
     let now = 1_000;
     const fetcher = fetchJson([
@@ -56,7 +72,38 @@ describe('MFW resolver quorum client', () => {
     now += 1;
   });
 
-  it('rejects resolver disagreement, duplicates and non-HTTPS origins', async () => {
+  it('accepts only byte-equivalent Registry suggestions for a three-character prefix', async () => {
+    const suggestions = {
+      prefix: 'ali',
+      names: ['alice.mfw', 'alicia.mfw'],
+    };
+    const fetcher = fetchJson([suggestions, suggestions]);
+    const quorum = new MfwNameResolverQuorum(
+      ['https://resolver-a.example', 'https://resolver-b.example'],
+      fetcher,
+    );
+    await expect(quorum.suggest('Ali')).resolves.toEqual(suggestions);
+    expect(fetcher.mock.calls[0][0]).toContain('/v1/mfw/name-suggestions/ali');
+    await expect(quorum.suggest('al')).rejects.toThrow('prefix is invalid');
+  });
+
+  it('rejects invented, duplicate, or unrelated Registry suggestions', async () => {
+    for (const malformed of [
+      { prefix: 'ali', names: ['bob.mfw'] },
+      { prefix: 'ali', names: ['alice.mfw', 'alice.mfw'] },
+      { prefix: 'ali', names: ['Alice.mfw'] },
+      { prefix: 'ali', names: ['ali'] },
+      { prefix: 'ali', names: ['alice.mfw'], extra: true },
+    ]) {
+      const quorum = new MfwNameResolverQuorum(
+        ['https://resolver.example'],
+        fetchJson([malformed]),
+      );
+      await expect(quorum.suggest('ali')).rejects.toThrow('malformed');
+    }
+  });
+
+  it('rejects resolver disagreement, duplicates and insecure Clearnet origins', async () => {
     const fetcher = fetchJson([
       resolution,
       { ...resolution, sourceTxidHex: h32('9') },
@@ -80,6 +127,20 @@ describe('MFW resolver quorum client', () => {
           fetcher,
         ),
     ).toThrow('HTTPS');
+  });
+
+  it('accepts HTTP only for Tor v3 Onion resolver origins', async () => {
+    const onionOrigin = `http://${'a'.repeat(56)}.onion`;
+    const suggestions = { prefix: 'ali', names: ['alice.mfw'] };
+    const fetcher = fetchJson([suggestions]);
+    const quorum = new MfwNameResolverQuorum([onionOrigin], fetcher);
+    await expect(quorum.suggest('ali')).resolves.toEqual(suggestions);
+    expect(fetcher.mock.calls[0][0]).toBe(
+      `${onionOrigin}/v1/mfw/name-suggestions/ali`,
+    );
+    expect(
+      () => new MfwNameResolverQuorum(['http://resolver.example'], fetcher),
+    ).toThrow('Tor v3 Onion');
   });
 
   it('rejects oversized JSON before parsing', async () => {

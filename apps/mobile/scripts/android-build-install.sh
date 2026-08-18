@@ -5,10 +5,14 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/android-common.sh"
 
 ADB_BIN="$(resolve_adb)"
 APP_ID="${MONERO_WALLET_ANDROID_APP_ID:-com.tex8.monerowallet}"
-VARIANT="${MONERO_WALLET_ANDROID_VARIANT:-debug}"
+# Pixel installs must exercise the same release artifact that is shared for
+# testing. A debug build can still be requested explicitly for local React
+# Native work, but it is never the implicit device path.
+VARIANT="${MONERO_WALLET_ANDROID_VARIANT:-release}"
 VARIANT_CAPITALIZED="$(capitalize_variant "$VARIANT")"
 ARCHITECTURES="${MONERO_WALLET_ANDROID_ARCHITECTURES:-arm64-v8a}"
 DISABLE_COMMUNITY_V1="${MONERO_WALLET_SIMULATOR_DISABLE_COMMUNITY_V1:-0}"
+CLEAR_APP_DATA="${MONERO_WALLET_ANDROID_CLEAR_APP_DATA:-1}"
 SKIP_GOOGLE_SERVICES="${MONERO_WALLET_SKIP_GOOGLE_SERVICES:-}"
 if [ -z "${SKIP_GOOGLE_SERVICES}" ]; then
   if [ "${APP_ID}" = "com.tex8.monerowallet" ]; then
@@ -51,7 +55,8 @@ link_manifest_matches_common_core() {
 }
 
 if [ -z "${MONERO_WALLET_LINK_ROOT:-}" ] \
-  && [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ]; then
+  && ! link_manifest_matches_common_core \
+    "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake"; then
   for external_manifest_root in \
     "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-${MONERO_COMMON_CORE_TREE}" \
     "${EXTERNAL_BUILD_ROOT}/android-monero-link-manifests-tex8-patched" \
@@ -72,6 +77,10 @@ GRADLE_ARGS=(
 if [ "${DISABLE_COMMUNITY_V1}" != "0" ] &&
    [ "${DISABLE_COMMUNITY_V1}" != "1" ]; then
   echo "MONERO_WALLET_SIMULATOR_DISABLE_COMMUNITY_V1 must be 0 or 1." >&2
+  exit 1
+fi
+if [ "${CLEAR_APP_DATA}" != "0" ] && [ "${CLEAR_APP_DATA}" != "1" ]; then
+  echo "MONERO_WALLET_ANDROID_CLEAR_APP_DATA must be 0 or 1." >&2
   exit 1
 fi
 if [ "${DISABLE_COMMUNITY_V1}" = "1" ]; then
@@ -186,11 +195,14 @@ APK_PATH="${APP_BUILD_DIR:-${ANDROID_DIR}/app/build}/outputs/apk/${VARIANT}/app-
 "${REPO_ROOT}/apps/mobile/scripts/verify-android-16kb-elf.sh" "${APK_PATH}"
 echo "Installing verified ${APP_ID} ${VARIANT} on ${DEVICE}..."
 "$ADB_BIN" -s "$DEVICE" install -r "${APK_PATH}" >/dev/null
-# Android may retain the previous process across an in-place APK update.  That
-# process keeps the old JavaScript and native wallet sessions in memory, so it
-# cannot be used to verify the newly installed wallet build.  Stop it without
-# clearing application data, then start the newly installed process.  The
-# normal app-wide protection is still enforced on the next launch.
+if [ "${CLEAR_APP_DATA}" = "1" ]; then
+  # This is the local development installer. The current Pixel workflow uses
+  # disposable wallets, so every install starts without registrations, wallet
+  # files, cached sessions, or Android-restored application state.
+  "$ADB_BIN" -s "$DEVICE" shell pm clear "$APP_ID" >/dev/null
+fi
+# Android may retain the previous process across an in-place APK update. Stop
+# it before handing the device back to the user. Installation and diagnostics
+# must not change the foreground activity; callers can inspect or launch it
+# explicitly when they choose.
 "$ADB_BIN" -s "$DEVICE" shell am force-stop "$APP_ID" >/dev/null
-"$ADB_BIN" -s "$DEVICE" shell am start -W \
-  -n "${APP_ID}/com.monerowallet.MainActivity" >/dev/null

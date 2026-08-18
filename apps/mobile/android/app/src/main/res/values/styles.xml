@@ -2,8 +2,18 @@
 
     <!-- Base application theme. -->
     <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+        <item name="android:windowBackground">@color/launch_background</item>
+        <item name="android:statusBarColor">#0A0A18</item>
+        <item name="android:navigationBarColor">#0A0A18</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
+    <!-- Used only by Android's short-lived starting window. MainActivity
+         switches back to AppTheme before constructing the React root. -->
+    <style name="AppLaunchTheme" parent="AppTheme">
+        <item name="android:windowBackground">@drawable/launch_screen</item>
     </style>
 
 </resources>

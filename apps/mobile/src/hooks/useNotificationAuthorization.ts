@@ -18,10 +18,10 @@ export function useNotificationAuthorization() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    refresh();
     const subscription = AppState.addEventListener('change', nextState => {
       if (nextState === 'active') {
-        void refresh();
+        refresh();
       }
     });
     return () => subscription.remove();

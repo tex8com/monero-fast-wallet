@@ -10,8 +10,9 @@ pub mod phone;
 pub mod recipient;
 
 pub use name::{
-    extract_mfw_payloads, AddressKind, CanonicalName, CommitRecord, NameOperation, NameRecord,
-    NameSigningKey, Network, PublicAddress, MFW_ARBITRARY_DATA_MARKER, MFW_MAX_NONCE_BYTES,
+    extract_mfw_payloads, AddressKind, CanonicalName, CommitRecord, LegacyNameRecord,
+    NameOperation, NameRecord, NameSigningKey, Network, PublicAddress, MFW_ARBITRARY_DATA_MARKER,
+    MFW_MAX_NONCE_BYTES,
 };
 pub use name_index::{
     registry_descriptor_hash, BlockInput, IndexedTransaction, NameIndex, NameIndexError,

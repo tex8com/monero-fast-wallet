@@ -12,7 +12,7 @@
 ## <https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html>
 
 [Unit]
-Description=Cuprate Monero Node
+Description=Monero Fast Node (MFN)
 StartLimitIntervalSec=300
 StartLimitBurst=5
 

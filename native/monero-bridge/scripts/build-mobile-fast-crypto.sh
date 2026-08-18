@@ -83,6 +83,7 @@ build_target() {
 
   cargo --config "$(wallet_cpu_cargo_config)" build \
     --manifest-path "${fast_crypto_dir}/Cargo.toml" \
+    --target-dir "${fast_crypto_dir}/target" \
     --release \
     --locked \
     --target "${rust_target}"

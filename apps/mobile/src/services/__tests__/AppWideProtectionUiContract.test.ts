@@ -170,13 +170,9 @@ describe('app-wide protection UI contract', () => {
     );
     expect(appSecuritySource).toContain("presentation === 'welcome'");
     expect(appSecuritySource).toContain('<InitialProtectionWelcome');
-    expect(appSecuritySource).toContain(
-      'ready && configured && !locked',
-    );
+    expect(appSecuritySource).toContain('ready && configured && !locked');
     expect(appSecuritySource).not.toContain('securityResetInProgress');
-    expect(appSecuritySource).toContain(
-      '{canMountProtectedContent ? (',
-    );
+    expect(appSecuritySource).toContain('{canMountProtectedContent ? (');
     expect(tabNavigatorSource).toContain(
       'status === "empty" || status === "error"',
     );
@@ -186,12 +182,11 @@ describe('app-wide protection UI contract', () => {
     expect(walletStateSource).toContain(
       "'appBackground.sessionRetainedUntilTimeout'",
     );
+    expect(walletStateSource).toContain("'unmount.nativeLockOwnsPersistence'");
     expect(walletStateSource).toContain(
-      "'unmount.nativeLockOwnsPersistence'",
+      'walletService.clearSessionReferencesAfterAppLock()',
     );
-    expect(walletStateSource).toContain(
-      'getAppProtectionStatus()',
-    );
+    expect(walletStateSource).not.toContain('closeSessionsInOrder');
     expect(walletStateSource).toContain(
       'if (!appSecurityReady || appSecurityLocked)',
     );
@@ -209,12 +204,16 @@ describe('app-wide protection UI contract', () => {
     expect(appSecuritySource).toContain(
       "protectedContentHidden: { display: 'none' }",
     );
+    expect(appSecuritySource).toContain('visible={securityModalVisible}');
+    expect(appSecuritySource).toContain('{inlineSecuritySurfaceVisible ? (');
+    expect(appSecuritySource).toContain('<View style={styles.securityRoot}>');
     expect(appSecuritySource).toContain(
-      'visible={securityModalVisible}',
+      '<View style={styles.inlineSecuritySurface}>{securitySurface}</View>',
     );
     expect(appSecuritySource).toContain(
-      'onRequestClose={() => undefined}',
+      'protectedContentEverMountedRef.current',
     );
+    expect(appSecuritySource).toContain('onRequestClose={() => undefined}');
     expect(appSecuritySource).toContain(
       'securityModal: { flex: 1, backgroundColor: colors.bg }',
     );
@@ -226,9 +225,7 @@ describe('app-wide protection UI contract', () => {
     expect(androidNativeSource).toContain(
       'activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)',
     );
-    expect(androidNativeSource).toContain(
-      'activity.window.decorView.isShown',
-    );
+    expect(androidNativeSource).toContain('activity.window.decorView.isShown');
     expect(androidNativeSource).not.toContain(
       'Lifecycle.State.RESUMED) && activity.hasWindowFocus()',
     );
@@ -256,25 +253,27 @@ describe('app-wide protection UI contract', () => {
     );
     expect(iosNativeSource).not.toContain('scheduleApplicationDataReset');
     expect(iosNativeSource).not.toContain('markAppSecurityResetRequired');
-    expect(iosNativeSource).not.toContain('deleteKeychainSecretsWithPrefixes(@[@""])');
+    expect(iosNativeSource).not.toContain(
+      'deleteKeychainSecretsWithPrefixes(@[@""])',
+    );
     expect(iosNativeSource).toContain('crypto_pwhash_argon2id_str');
     expect(iosNativeSource).toContain('CCKeyDerivationPBKDF');
   });
 
-  it('does not force a credential-backed wallet through Wallet Setup after app unlock', () => {
-    const redirectPredicate =
-      appSource.match(/const requiresVisibleUnlock =([\s\S]+?);\n/)?.[1] ?? '';
-    expect(redirectPredicate).toContain(
-      "registeredWallet.kind === 'hardware'",
+  it('reopens a Ledger view companion without forcing the hardware setup flow', () => {
+    expect(appSource).toContain('hardwareNeedsVisibleUnlock');
+    expect(appSource).toContain('!registeredWallet.viewOnlyPath');
+    expect(appSource).toContain('!registeredWallet.viewOnlyCredentialKey');
+    expect(appSource).toContain('softwareNeedsVisibleUnlock');
+    expect(appSource).toContain("status === 'error'");
+    expect(walletStateSource).toContain('const maxAttempts = isActive ? 3 : 2');
+    expect(walletStateSource).toContain(
+      'autoOpenAttemptedWalletIdsRef.current.delete(registration.id)',
     );
-    expect(redirectPredicate).toContain('!registeredWallet.credentialKey');
-    expect(redirectPredicate).not.toContain('unlockRequestId');
   });
 
   it('does not mistake bounded operating-system permission sheets for leaving the wallet', () => {
-    expect(appSecuritySource).toContain(
-      'activeSystemUiInterruptionDeadlineMs',
-    );
+    expect(appSecuritySource).toContain('activeSystemUiInterruptionDeadlineMs');
     expect(appSecuritySource).toContain('appState.lockDeferred');
     expect(appSecuritySource).toContain('appState.alreadyLocked');
     expect(appSecuritySource).toContain('if (locked)');
@@ -314,9 +313,7 @@ describe('app-wide protection UI contract', () => {
     expect(androidActivitySource).toContain(
       'NativeSystemUiInterruption.remainingMs()',
     );
-    expect(androidActivitySource).toContain(
-      'activityPause.systemUiDeferred',
-    );
+    expect(androidActivitySource).toContain('activityPause.systemUiDeferred');
     expect(androidActivitySource).toContain(
       'NativeMoneroWalletModule.notifyAppBackgrounded()',
     );
@@ -329,17 +326,13 @@ describe('app-wide protection UI contract', () => {
     expect(androidSystemUiSource).toContain(
       'private const val MAX_TIMEOUT_MS = 45_000L',
     );
-    expect(androidSystemUiSource).toContain(
-      'val token = "sui_${nextToken++}"',
-    );
+    expect(androidSystemUiSource).toContain('val token = "sui_${nextToken++}"');
     expect(iosNativeSource).toContain(
       '- (void)beginSystemUiInterruption:(NSString *)reason',
     );
     expect(iosNativeSource).toContain(
       '- (void)endSystemUiInterruption:(NSString *)token',
     );
-    expect(iosNativeSource).toContain(
-      'MIN(45000.0, MAX(1.0, timeoutMs))',
-    );
+    expect(iosNativeSource).toContain('MIN(45000.0, MAX(1.0, timeoutMs))');
   });
 });

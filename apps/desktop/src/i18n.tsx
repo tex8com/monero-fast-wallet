@@ -6,9 +6,11 @@ import {
   useMemo,
   useState,
 } from "react";
-import { generatedLocaleMetadata, generatedMessages } from './i18n.generated';
-import { applyManualTranslationOverrides } from '../../../packages/wallet-shared/src/manualTranslationOverrides';
 import { matchProductLanguage, productLanguageCodes, productLocaleByCode, type ProductLanguageCode, type ProductTextDirection } from '../../../config/productLocales';
+import {
+  generatedRuntimeCatalogLoaders,
+  type GeneratedRuntimeCatalog,
+} from './i18n.lazy.generated';
 
 const languageStorageKey = "tex8-monero-language";
 
@@ -46,6 +48,7 @@ const baseMessages = {
     "common.required": "Required",
     "common.mainnet": "Mainnet",
     "common.ledger": "Ledger",
+    "mfwNames.ticker": "Secure your .mfw name now",
     "error.walletList": "The local wallet list could not be loaded.",
     "error.protectionStorage": "App protection could not read secure storage.",
     "error.coreStatus": "The desktop host could not verify the native wallet core.",
@@ -151,6 +154,12 @@ const baseMessages = {
     "receive.title": "Receive Monero",
     "receive.subtitle":
       "This address and QR code are read from the local native wallet.",
+    "receive.amountOptional": "Amount (optional)",
+    "receive.usdRateUnavailable": "The current XMR/USD rate is unavailable.",
+    "receive.paymentLink": "Monero payment link",
+    "receive.copyPaymentLink": "Copy payment link",
+    "receive.paymentLinkCopied": "Payment link copied",
+    "receive.sharePaymentLink": "Share payment link",
     "receive.manageAddresses": "Manage receiving addresses",
     "receive.hideAddressTools": "Hide address tools",
     "receive.showAddress": "Show address",
@@ -309,7 +318,7 @@ const baseMessages = {
     "settings.custom": "Custom",
     "settings.availableNodeAddresses": "Available node addresses",
     "settings.availableNodeAddressesHelp":
-      "Choose one address. Onion connections use your local Tor proxy at 127.0.0.1:9050.",
+      "Choose one address. Onion connections use Tor integrated in the app.",
     "settings.tex8Node": "TEX8 Node",
     "settings.communityNode": "Community Node",
     "settings.clearnetAddress": "Clearnet",
@@ -358,6 +367,40 @@ const baseMessages = {
     "settings.mfwRegistryHint":
       "Register and manage a simple public .mfw name for a receive address.",
     "settings.openMfwRegistry": "Open name registry",
+    "settings.projectPage": "Project Page",
+    "settings.projectPageHint":
+      "Official Clearnet and Onion addresses, services, and self-hosting.",
+    "projectPage.eyebrow": "Open project",
+    "projectPage.title": "Project Page & Services",
+    "projectPage.subtitle":
+      "Inspect Monero Fast Wallet, its public services, and the open-source components behind them.",
+    "projectPage.addresses": "Official addresses",
+    "projectPage.addressesHint":
+      "The same project page is available through the official and independent Community routes.",
+    "projectPage.clearnet": "Clearnet",
+    "projectPage.onion": "Onion",
+    "projectPage.copy": "Copy",
+    "projectPage.copied": "Copied",
+    "projectPage.open": "Open",
+    "projectPage.onionHint":
+      "Onion links require a Tor-capable browser. Opening any link leaves the wallet app.",
+    "projectPage.selfHosting": "Run it yourself",
+    "projectPage.ownNodeTitle": "Your own Monero Fast Node",
+    "projectPage.ownNodeText":
+      "You can operate your own node and enter its Clearnet gRPC and Onion daemon routes under Node Status. The app keeps block sync and private wallet traffic separated.",
+    "projectPage.ownWorkerTitle": "Your own Fast Wallet Worker",
+    "projectPage.ownWorkerText":
+      "You can run a private Worker and pair its signed descriptor under Settings → Fast Wallet Worker. Spending keys never leave your wallet.",
+    "projectPage.services": "Services",
+    "projectPage.servicesHint":
+      "Short explanations and technical details are available on the project page.",
+    "projectPage.serviceWallet": "Monero Fast Wallet",
+    "projectPage.serviceNode": "Monero Fast Node",
+    "projectPage.serviceRelay": "Relay Service",
+    "projectPage.serviceWorker": "Fast Wallet Worker",
+    "projectPage.serviceRegistry": "Monero Name Registry",
+    "projectPage.serviceAll": "All services",
+    "projectPage.sourceCode": "Source code",
     "settings.about": "About",
     "settings.localDesktop": "Local desktop wallet",
     "settings.privacyByDesign": "Privacy by design",
@@ -389,6 +432,9 @@ const baseMessages = {
     "home.newsNetwork": "Network",
     "home.newsWallet": "Wallet",
     "home.newsEcosystem": "Ecosystem",
+    "home.newsReadMore": "Read article",
+    "home.newsPrevious": "Previous article",
+    "home.newsNext": "Next article",
     "home.totalBalance": "Total balance",
     "home.openWallet": "Open a wallet",
     "home.nativeBalance": "Balance from the local native wallet",
@@ -565,15 +611,57 @@ const baseMessages = {
     "menu.community": "Monero Enthusiasts",
     "menu.communityHint": "Discover people nearby with a broad area only.",
     "menu.settings": "Settings",
-    "menu.settingsHint": "Security, language, and node connection.",
+    "menu.settingsHint": "Security, language, and performance.",
     "menu.assistant": "Tex8 Assistant",
     "menu.assistantHint": "Private local navigation help.",
     "menu.node": "Node status",
     "menu.nodeHint": "View and change the local node connection.",
+    "nodeStatus.subtitle": "Two global routes: fast block synchronization over Clearnet and every other wallet operation through Tor.",
+    "nodeStatus.diagnostics": "Connection check",
+    "nodeStatus.twoRoutes": "Tor and Clearnet",
+    "nodeStatus.torRoute": "Tor connection",
+    "nodeStatus.torHint": "Wallet operations use the selected daemon through Tor integrated in the app.",
+    "nodeStatus.clearnetRoute": "Clearnet connection",
+    "nodeStatus.clearnetHint": "Only blockchain blocks are synchronized directly over the selected gRPC endpoint.",
+    "nodeStatus.connected": "Connected",
+    "nodeStatus.failed": "Failed",
+    "nodeStatus.notChecked": "Not checked",
+    "nodeStatus.checking": "Checking…",
+    "nodeStatus.runDiagnostics": "Check both connections",
+    "nodeStatus.diagnosticFailed": "The connection check could not be completed.",
+    "nodeStatus.globalRoutes": "Global node routes",
+    "nodeStatus.globalRoutesHint": "These routes apply globally on this device, not separately to each wallet. Every change is saved automatically.",
+    "nodeStatus.clearnetSync": "Blockchain sync · Clearnet",
+    "nodeStatus.torOperations": "Wallet operations · Tor",
+    "nodeStatus.grpcEndpoint": "Clearnet gRPC endpoint",
+    "nodeStatus.daemonEndpoint": "Tor daemon endpoint",
+    "nodeStatus.autoSave": "Automatic saving",
+    "nodeStatus.autoSaving": "Saving…",
+    "nodeStatus.autoSaved": "Saved automatically",
+    "nodeStatus.autoSaveError": "Check the entered endpoints",
     "menu.noWallet": "No wallet open",
     "menu.openWallet": "Open a wallet to see its local address.",
     "communityV1.title": "Monero Enthusiast",
-    "communityV1.menuHint": "Find people, ideas, and services privately.",
+    "communityV1.menuHint": "Coming soon: connect, chat, and share services.",
+    "communitySoon.eyebrow": "Coming soon",
+    "communitySoon.title": "Monero Community",
+    "communitySoon.subtitle":
+      "A private place to connect around Monero — without turning the wallet into a marketplace.",
+    "communitySoon.plannedFeatures": "Planned features",
+    "communitySoon.bulletinTitle": "Bulletin board",
+    "communitySoon.bulletinText": "Share announcements, ideas, questions, and local meetups.",
+    "communitySoon.meetTitle": "Meet people",
+    "communitySoon.meetText": "Get to know people nearby, arrange a meeting, or connect online.",
+    "communitySoon.matrixTitle": "Matrix chat",
+    "communitySoon.matrixText": "Keep conversations in one integrated, private Matrix chat.",
+    "communitySoon.profilesTitle": "Profiles and services",
+    "communitySoon.profilesText": "Create a profile and describe services you offer. Direct contact stays between users.",
+    "communitySoon.verifiedTitle": "Optional verification",
+    "communitySoon.verifiedText": "Verified users receive a visible badge to help reduce impersonation and scam risk. Verification remains optional.",
+    "communitySoon.verifiedNote": "The badge is a trust signal, not a guarantee.",
+    "communitySoon.verifiedBadge": "Verified",
+    "communitySoon.noMarketplaceTitle": "No marketplace",
+    "communitySoon.noMarketplaceText": "For regulatory reasons, the app will not provide a marketplace, checkout, or intermediary trading. Users can still present their own services in their profiles.",
     "communityV1.optional": "Optional community",
     "communityV1.subtitle":
       "Discover people and useful ideas without connecting them to your wallet.",
@@ -753,16 +841,16 @@ const baseMessages = {
     "fastReceive.oneStep": "One step left",
     "fastReceive.readyText": "This separate address is ready to receive Monero.",
     "fastReceive.backupText": "First, safely write down the recovery words.",
-    "fastReceive.transferAccepted": "Cuprate accepted the encrypted view key.",
-    "fastReceive.transferFailed": "Cuprate did not accept the encrypted view key.",
-    "fastReceive.transferring": "Sending encrypted view key to Cuprate…",
+    "fastReceive.transferAccepted": "Monero Fast Node accepted the encrypted view key.",
+    "fastReceive.transferFailed": "Monero Fast Node did not accept the encrypted view key.",
+    "fastReceive.transferring": "Sending encrypted view key to Monero Fast Node…",
     "fastReceive.copy": "Copy Fast Wallet address",
     "fastReceive.opening": "Opening…",
     "fastReceive.backupWith": "Back up with {method}",
     "fastReceive.appPassword": "app password",
     "fastReceive.loadFailed": "Fast Wallets could not be loaded.",
     "fastReceive.backupFailed": "Could not back up {name}.",
-    "fastReceive.readyConfirmed": "Your Fast Wallet is ready to receive. Cuprate accepted its encrypted viewing data.",
+    "fastReceive.readyConfirmed": "Your Fast Wallet is ready to receive. Monero Fast Node accepted its encrypted viewing data.",
     "fastReceive.backupConfirmFailed": "The recovery-word backup could not be confirmed.",
     "settings.appLock": "App lock",
     "settings.appLockHint": "Choose one secure way to unlock this app before selecting saved wallets.",
@@ -954,6 +1042,7 @@ const baseMessages = {
     "setup.dateInvalid": "Choose a valid date that is not in the future.",
   },
   de: {
+    "mfwNames.ticker": "Sichere dir jetzt deinen .mfw-Namen",
     "nav.home": "Start",
     "nav.wallets": "Wallets",
     "nav.send": "Senden",
@@ -1090,6 +1179,12 @@ const baseMessages = {
     "receive.title": "Monero empfangen",
     "receive.subtitle":
       "Adresse und QR-Code werden direkt aus der lokalen nativen Wallet gelesen.",
+    "receive.amountOptional": "Betrag (optional)",
+    "receive.usdRateUnavailable": "Der aktuelle XMR/USD-Kurs ist nicht verfügbar.",
+    "receive.paymentLink": "Monero-Zahlungslink",
+    "receive.copyPaymentLink": "Zahlungslink kopieren",
+    "receive.paymentLinkCopied": "Zahlungslink kopiert",
+    "receive.sharePaymentLink": "Zahlungslink teilen",
     "receive.manageAddresses": "Empfangsadressen verwalten",
     "receive.hideAddressTools": "Adresswerkzeuge ausblenden",
     "receive.showAddress": "Adresse anzeigen",
@@ -1253,7 +1348,7 @@ const baseMessages = {
     "settings.custom": "Benutzerdefiniert",
     "settings.availableNodeAddresses": "Verfügbare Node-Adressen",
     "settings.availableNodeAddressesHelp":
-      "Wähle eine Adresse. Onion-Verbindungen nutzen deinen lokalen Tor-Proxy unter 127.0.0.1:9050.",
+      "Wähle eine Adresse. Onion-Verbindungen nutzen das in die App integrierte Tor.",
     "settings.tex8Node": "TEX8-Node",
     "settings.communityNode": "Community-Node",
     "settings.clearnetAddress": "Clearnet",
@@ -1304,6 +1399,40 @@ const baseMessages = {
     "settings.mfwRegistryHint":
       "Einen einfachen öffentlichen .mfw-Namen für eine Empfangsadresse registrieren und verwalten.",
     "settings.openMfwRegistry": "Namensregister öffnen",
+    "settings.projectPage": "Projektseite",
+    "settings.projectPageHint":
+      "Offizielle Clearnet- und Onion-Adressen, Dienste und eigener Betrieb.",
+    "projectPage.eyebrow": "Offenes Projekt",
+    "projectPage.title": "Projektseite & Dienste",
+    "projectPage.subtitle":
+      "Sieh dir Monero Fast Wallet, die öffentlichen Dienste und die Open-Source-Bausteine dahinter an.",
+    "projectPage.addresses": "Offizielle Adressen",
+    "projectPage.addressesHint":
+      "Dieselbe Projektseite ist über die offiziellen und unabhängigen Community-Routen erreichbar.",
+    "projectPage.clearnet": "Clearnet",
+    "projectPage.onion": "Onion",
+    "projectPage.copy": "Kopieren",
+    "projectPage.copied": "Kopiert",
+    "projectPage.open": "Öffnen",
+    "projectPage.onionHint":
+      "Onion-Links benötigen einen Tor-fähigen Browser. Beim Öffnen eines Links verlässt du die Wallet-App.",
+    "projectPage.selfHosting": "Selbst betreiben",
+    "projectPage.ownNodeTitle": "Deine eigene Monero Fast Node",
+    "projectPage.ownNodeText":
+      "Du kannst eine eigene Node betreiben und ihre Clearnet-gRPC- und Onion-Daemon-Routen unter Node-Status eintragen. Die App hält Block-Sync und privaten Wallet-Verkehr getrennt.",
+    "projectPage.ownWorkerTitle": "Dein eigener Fast Wallet Worker",
+    "projectPage.ownWorkerText":
+      "Du kannst einen privaten Worker betreiben und seinen signierten Descriptor unter Einstellungen → Fast Wallet Worker verbinden. Spending Keys verlassen deine Wallet nie.",
+    "projectPage.services": "Dienste",
+    "projectPage.servicesHint":
+      "Kurze Erklärungen und technische Details findest du auf der Projektseite.",
+    "projectPage.serviceWallet": "Monero Fast Wallet",
+    "projectPage.serviceNode": "Monero Fast Node",
+    "projectPage.serviceRelay": "Relay Service",
+    "projectPage.serviceWorker": "Fast Wallet Worker",
+    "projectPage.serviceRegistry": "Monero Name Registry",
+    "projectPage.serviceAll": "Alle Dienste",
+    "projectPage.sourceCode": "Quellcode",
     "settings.about": "Über",
     "settings.localDesktop": "Lokale Desktop-Wallet",
     "settings.privacyByDesign": "Privat von Grund auf",
@@ -1336,6 +1465,9 @@ const baseMessages = {
     "home.newsNetwork": "Netzwerk",
     "home.newsWallet": "Wallet",
     "home.newsEcosystem": "Ökosystem",
+    "home.newsReadMore": "Artikel öffnen",
+    "home.newsPrevious": "Vorheriger Artikel",
+    "home.newsNext": "Nächster Artikel",
     "home.totalBalance": "Gesamtguthaben",
     "home.openWallet": "Wallet öffnen",
     "home.nativeBalance": "Guthaben aus der lokalen nativen Wallet",
@@ -1517,15 +1649,57 @@ const baseMessages = {
     "menu.communityHint":
       "Menschen in der Nähe nur über ein grobes Gebiet entdecken.",
     "menu.settings": "Einstellungen",
-    "menu.settingsHint": "Sicherheit, Sprache und Node-Verbindung.",
+    "menu.settingsHint": "Sicherheit, Sprache und Leistung.",
     "menu.assistant": "Tex8-Assistent",
     "menu.assistantHint": "Private lokale Navigationshilfe.",
     "menu.node": "Node-Status",
     "menu.nodeHint": "Die lokale Node-Verbindung ansehen und ändern.",
+    "nodeStatus.subtitle": "Zwei globale Wege: schnelle Block-Synchronisierung über Clearnet und alle anderen Wallet-Vorgänge über Tor.",
+    "nodeStatus.diagnostics": "Verbindung prüfen",
+    "nodeStatus.twoRoutes": "Tor und Clearnet",
+    "nodeStatus.torRoute": "Tor-Verbindung",
+    "nodeStatus.torHint": "Wallet-Vorgänge verwenden den gewählten Daemon über das in die App integrierte Tor.",
+    "nodeStatus.clearnetRoute": "Clearnet-Verbindung",
+    "nodeStatus.clearnetHint": "Nur Blockchain-Blöcke werden direkt über den gewählten gRPC-Endpunkt synchronisiert.",
+    "nodeStatus.connected": "Verbunden",
+    "nodeStatus.failed": "Fehler",
+    "nodeStatus.notChecked": "Nicht geprüft",
+    "nodeStatus.checking": "Wird geprüft…",
+    "nodeStatus.runDiagnostics": "Beide Verbindungen prüfen",
+    "nodeStatus.diagnosticFailed": "Die Verbindungen konnten nicht geprüft werden.",
+    "nodeStatus.globalRoutes": "Globale Node-Wege",
+    "nodeStatus.globalRoutesHint": "Diese Wege gelten global auf diesem Gerät und nicht einzeln pro Wallet. Jede Änderung wird automatisch gespeichert.",
+    "nodeStatus.clearnetSync": "Blockchain-Sync · Clearnet",
+    "nodeStatus.torOperations": "Wallet-Vorgänge · Tor",
+    "nodeStatus.grpcEndpoint": "Clearnet-gRPC-Endpunkt",
+    "nodeStatus.daemonEndpoint": "Tor-Daemon-Endpunkt",
+    "nodeStatus.autoSave": "Automatisch speichern",
+    "nodeStatus.autoSaving": "Wird gespeichert…",
+    "nodeStatus.autoSaved": "Automatisch gespeichert",
+    "nodeStatus.autoSaveError": "Eingegebene Endpunkte prüfen",
     "menu.noWallet": "Keine Wallet geöffnet",
     "menu.openWallet": "Öffne eine Wallet, um ihre lokale Adresse zu sehen.",
     "communityV1.title": "Monero Enthusiast",
-    "communityV1.menuHint": "Menschen, Ideen und Angebote privat finden.",
+    "communityV1.menuHint": "Demnächst: Kontakte, Chat und Dienstleistungen.",
+    "communitySoon.eyebrow": "Demnächst",
+    "communitySoon.title": "Monero Community",
+    "communitySoon.subtitle":
+      "Ein privater Ort für Kontakte rund um Monero – ohne die Wallet in einen Marktplatz zu verwandeln.",
+    "communitySoon.plannedFeatures": "Geplante Funktionen",
+    "communitySoon.bulletinTitle": "Schwarzes Brett",
+    "communitySoon.bulletinText": "Teile Hinweise, Ideen, Fragen und lokale Treffen.",
+    "communitySoon.meetTitle": "Leute kennenlernen",
+    "communitySoon.meetText": "Lerne Menschen in deiner Nähe kennen, verabrede dich oder tausche dich online aus.",
+    "communitySoon.matrixTitle": "Matrix-Chat",
+    "communitySoon.matrixText": "Führe Unterhaltungen direkt in einem integrierten, privaten Matrix-Chat.",
+    "communitySoon.profilesTitle": "Profile und Dienstleistungen",
+    "communitySoon.profilesText": "Erstelle ein Profil und beschreibe deine Dienstleistungen. Der direkte Austausch bleibt zwischen den Nutzern.",
+    "communitySoon.verifiedTitle": "Optionale Verifizierung",
+    "communitySoon.verifiedText": "Verifizierte Nutzer erhalten ein sichtbares Badge, um Identitätsmissbrauch und Betrugsrisiken zu verringern. Die Verifizierung bleibt freiwillig.",
+    "communitySoon.verifiedNote": "Das Badge ist ein Vertrauenssignal, aber keine Garantie.",
+    "communitySoon.verifiedBadge": "Verifiziert",
+    "communitySoon.noMarketplaceTitle": "Kein Marktplatz",
+    "communitySoon.noMarketplaceText": "Aus regulatorischen Gründen gibt es in der App keinen Marktplatz, Checkout oder vermittelten Handel. Nutzer können ihre eigenen Dienstleistungen weiterhin im Profil vorstellen.",
     "communityV1.optional": "Optionale Community",
     "communityV1.subtitle":
       "Finde Menschen und hilfreiche Ideen, ohne sie mit deiner Wallet zu verbinden.",
@@ -1705,16 +1879,16 @@ const baseMessages = {
     "fastReceive.oneStep": "Noch ein Schritt",
     "fastReceive.readyText": "Diese getrennte Adresse ist bereit, Monero zu empfangen.",
     "fastReceive.backupText": "Schreibe zuerst die Wiederherstellungswörter sicher auf.",
-    "fastReceive.transferAccepted": "Cuprate hat den verschlüsselten View Key angenommen.",
-    "fastReceive.transferFailed": "Cuprate hat den verschlüsselten View Key nicht angenommen.",
-    "fastReceive.transferring": "Verschlüsselter View Key wird an Cuprate gesendet…",
+    "fastReceive.transferAccepted": "Monero Fast Node hat den verschlüsselten View Key angenommen.",
+    "fastReceive.transferFailed": "Monero Fast Node hat den verschlüsselten View Key nicht angenommen.",
+    "fastReceive.transferring": "Verschlüsselter View Key wird an Monero Fast Node gesendet…",
     "fastReceive.copy": "Fast Wallet-Adresse kopieren",
     "fastReceive.opening": "Wird geöffnet…",
     "fastReceive.backupWith": "Mit {method} sichern",
     "fastReceive.appPassword": "App-Passwort",
     "fastReceive.loadFailed": "Fast Wallets konnten nicht geladen werden.",
     "fastReceive.backupFailed": "{name} konnte nicht gesichert werden.",
-    "fastReceive.readyConfirmed": "Deine Fast Wallet ist empfangsbereit. Cuprate hat ihre verschlüsselten Anzeigedaten angenommen.",
+    "fastReceive.readyConfirmed": "Deine Fast Wallet ist empfangsbereit. Monero Fast Node hat ihre verschlüsselten Anzeigedaten angenommen.",
     "fastReceive.backupConfirmFailed": "Die Sicherung der Wiederherstellungswörter konnte nicht bestätigt werden.",
     "settings.appLock": "App-Sperre",
     "settings.appLockHint": "Wähle eine sichere Methode, um diese App vor der Auswahl gespeicherter Wallets zu entsperren.",
@@ -1909,23 +2083,40 @@ const baseMessages = {
 } as const;
 
 export type TranslationKey = keyof typeof baseMessages.en;
-const messages = {
-  ...baseMessages,
-  ...Object.fromEntries(
-    Object.entries(generatedMessages).map(([locale, catalog]) => [
-      locale,
-      applyManualTranslationOverrides(locale, baseMessages.en, catalog as Record<TranslationKey, string>),
-    ]),
-  ),
-} as Record<LanguageCode, Record<TranslationKey, string>>;
+type ActiveMessageCatalog = Record<TranslationKey, string>;
+
+function getBaseMessageCatalog(
+  language: LanguageCode,
+): ActiveMessageCatalog | undefined {
+  if (language === 'en') return baseMessages.en as ActiveMessageCatalog;
+  if (language === 'de') return baseMessages.de as ActiveMessageCatalog;
+  return undefined;
+}
+
+async function loadMessageCatalog(
+  language: LanguageCode,
+): Promise<ActiveMessageCatalog> {
+  const baseCatalog = getBaseMessageCatalog(language);
+  if (baseCatalog) return baseCatalog;
+
+  const loaders = generatedRuntimeCatalogLoaders as Partial<
+    Record<LanguageCode, () => Promise<GeneratedRuntimeCatalog>>
+  >;
+  const catalog = await loaders[language]?.();
+  return (catalog as ActiveMessageCatalog | undefined) ??
+    (baseMessages.en as ActiveMessageCatalog);
+}
+
 export const supportedLanguages: LanguageCode[] = productLanguageCodes;
 export const languageNames = Object.fromEntries(supportedLanguages.map(code => [code, productLocaleByCode[code].nativeName])) as Record<LanguageCode, string>;
-export { generatedLocaleMetadata };
+export const languageFlags = Object.fromEntries(supportedLanguages.map(code => [code, productLocaleByCode[code].flag])) as Record<LanguageCode, string>;
+export const generatedLocaleMetadata = productLocaleByCode;
 
 type I18nContextValue = {
   dateLocale: string;
   language: LanguageCode;
   languageLabel: string;
+  languageLoading: boolean;
   setLanguage: (language: LanguageCode) => void;
   textDirection: ProductTextDirection;
   t: (key: TranslationKey, params?: TranslationParams) => string;
@@ -1945,6 +2136,10 @@ function initialLanguage(): LanguageCode {
 
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
   const [language, setLanguageState] = useState<LanguageCode>(initialLanguage);
+  const [activeCatalog, setActiveCatalog] = useState<ActiveMessageCatalog>();
+  const [languageLoading, setLanguageLoading] = useState(
+    () => !getBaseMessageCatalog(initialLanguage()),
+  );
   const setLanguage = useCallback(
     (next: LanguageCode) => setLanguageState(next),
     [],
@@ -1958,18 +2153,44 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     document.documentElement.lang = productLocaleByCode[language].tag;
     document.documentElement.dir = productLocaleByCode[language].direction;
   }, [language]);
+  useEffect(() => {
+    const baseCatalog = getBaseMessageCatalog(language);
+    if (baseCatalog) {
+      setActiveCatalog(undefined);
+      setLanguageLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setActiveCatalog(undefined);
+    setLanguageLoading(true);
+    loadMessageCatalog(language)
+      .then(catalog => {
+        if (!cancelled) setActiveCatalog(catalog);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setLanguageLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [language]);
   const t = useCallback(
     (key: TranslationKey, params: TranslationParams = {}) => {
-      const text = messages[language]?.[key] ?? messages.en[key];
+      const text =
+        getBaseMessageCatalog(language)?.[key] ??
+        activeCatalog?.[key] ??
+        baseMessages.en[key];
       return text.replace(/\{(\w+)\}/g, (_, name: string) =>
         String(params[name] ?? `{${name}}`),
       );
     },
-    [language],
+    [activeCatalog, language],
   );
   const value = useMemo(
-    () => ({ dateLocale: productLocaleByCode[language].tag, language, languageLabel: languageNames[language], setLanguage, textDirection: productLocaleByCode[language].direction, t }),
-    [language, setLanguage, t],
+    () => ({ dateLocale: productLocaleByCode[language].tag, language, languageLabel: languageNames[language], languageLoading, setLanguage, textDirection: productLocaleByCode[language].direction, t }),
+    [language, languageLoading, setLanguage, t],
   );
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

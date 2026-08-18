@@ -90,6 +90,7 @@ struct CreateWalletFromDeviceRequest {
 struct WalletSubaddress {
   uint32_t accountIndex{0};
   uint32_t addressIndex{0};
+  uint64_t balanceAtomic{0};
   std::string address;
   std::string label;
 };

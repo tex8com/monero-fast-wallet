@@ -6,6 +6,19 @@ const androidManifest = readFileSync(
   resolve(mobileRoot, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'),
   'utf8',
 );
+const androidNetworkSecurity = readFileSync(
+  resolve(
+    mobileRoot,
+    'android',
+    'app',
+    'src',
+    'main',
+    'res',
+    'xml',
+    'network_security_config.xml',
+  ),
+  'utf8',
+);
 const androidWalletModule = readFileSync(
   resolve(
     mobileRoot,
@@ -51,6 +64,18 @@ describe('mobile transport security contract', () => {
   it('disables platform-wide cleartext network access', () => {
     expect(androidManifest).toContain('android:usesCleartextTraffic="false"');
     expect(androidManifest).not.toContain('android:usesCleartextTraffic="true"');
+    expect(androidManifest).toContain(
+      'android:networkSecurityConfig="@xml/network_security_config"',
+    );
+    expect(androidNetworkSecurity).toContain(
+      '<base-config cleartextTrafficPermitted="false" />',
+    );
+    expect(androidNetworkSecurity).toContain(
+      'fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
+    );
+    expect(androidNetworkSecurity).toContain(
+      'quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion',
+    );
     expect(iosInfoPlist).toMatch(
       /<key>NSAllowsArbitraryLoads<\/key>\s*<false\/>/,
     );

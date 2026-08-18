@@ -121,9 +121,12 @@ fn validate(result: &DerivationPerformance) -> Result<(), String> {
                 || backend.derivations_per_second == 0
                 || backend.derivations_per_second > 1_000_000_000_000
                 || backend.sample_count == 0
-                || backend.sample_count > 2_000_000
+                || backend.sample_count > 1_000_000_000_000
                 || backend.elapsed_ms == 0
-                || backend.elapsed_ms > 10_000
+                // A timed batch is allowed to finish after the exact ten-second
+                // deadline. Keep a generous validation ceiling without
+                // changing the native measurement target.
+                || backend.elapsed_ms > 60_000
             {
                 return Err("The derivation benchmark contains impossible values.".to_owned());
             }

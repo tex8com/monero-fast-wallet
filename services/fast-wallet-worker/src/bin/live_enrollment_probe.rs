@@ -264,8 +264,8 @@ fn main() -> Result<()> {
             }
             let receipt_hex = body.receipt.context("Worker receipt is missing")?;
             let receipt_bytes = decode_lower_hex_array::<WORKER_AUTH_SIZE>(&receipt_hex)?;
-            let receipt = WorkerRequestAuth::decode(&receipt_bytes)
-                .context("Worker receipt is invalid")?;
+            let receipt =
+                WorkerRequestAuth::decode(&receipt_bytes).context("Worker receipt is invalid")?;
             let receipt_body = worker_receipt_body(&descriptor.worker_root_id(), &message_id);
             receipt
                 .verify(

@@ -438,8 +438,9 @@ pub async fn submit_watch(worker: &TrustedWorker, envelope_hex: &str) -> Result<
     if !canonical_hex(envelope_hex, WATCH_ENVELOPE_SIZE) {
         return Err("The encrypted Fast Wallet watch was invalid.".to_owned());
     }
+    let relay_origin = relay_transport_origin(&worker.descriptor.relay_origin)?;
     let response = client()?
-        .post(route(&worker.descriptor.relay_origin, "/v1/envelopes"))
+        .post(route(&relay_origin, "/v1/envelopes"))
         .header(header::ACCEPT, "application/json")
         .json(&RelayRequest {
             envelope: envelope_hex,
@@ -589,8 +590,20 @@ fn checked_descriptor_hex(value: &str) -> Result<String, String> {
 }
 
 fn gateway_origin() -> Result<String, String> {
-    fixed_https_origin(option_env!("TEX8_FAST_WALLET_GATEWAY_ORIGIN").unwrap_or(""))
+    fixed_private_origin(option_env!("TEX8_FAST_WALLET_GATEWAY_ORIGIN").unwrap_or(""))
         .map_err(|_| "This signed app has no payment-alert Gateway configured.".to_owned())
+}
+
+fn relay_transport_origin(signed_origin: &str) -> Result<String, String> {
+    if signed_origin == "https://xmr.tex8.com" {
+        return gateway_origin();
+    }
+    let origin = fixed_private_origin(signed_origin)?;
+    if origin.starts_with("http://") && origin.ends_with(".onion") {
+        Ok(origin)
+    } else {
+        Err("This scan-service descriptor has no direct Onion transport.".to_owned())
+    }
 }
 
 fn compiled_official_root() -> Result<String, String> {
@@ -604,10 +617,18 @@ fn compiled_official_root() -> Result<String, String> {
     }
 }
 
-fn fixed_https_origin(value: &str) -> Result<String, String> {
+fn fixed_private_origin(value: &str) -> Result<String, String> {
     let checked = value.trim().trim_end_matches('/');
     let parsed = Url::parse(checked).map_err(|_| "invalid origin".to_owned())?;
-    if parsed.scheme() != "https"
+    let onion = parsed.scheme() == "http"
+        && parsed.host_str().is_some_and(|host| {
+            host.len() == 62
+                && host.ends_with(".onion")
+                && host[..56]
+                    .bytes()
+                    .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
+        });
+    if (parsed.scheme() != "https" && !onion)
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
@@ -629,6 +650,7 @@ fn client() -> Result<Client, String> {
         .timeout(Duration::from_secs(12))
         .redirect(Policy::none())
         .user_agent("Monero-Fast-Wallet-Desktop/0.1")
+        .proxy(crate::tor_transport::proxy()?)
         .build()
         .map_err(|_| "The payment-alert network client could not be initialized.".to_owned())
 }
@@ -696,17 +718,21 @@ fn fingerprint(root: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_hex, constant_hex_eq, fixed_https_origin, protocol_network};
+    use super::{canonical_hex, constant_hex_eq, fixed_private_origin, protocol_network};
 
     #[test]
-    fn gateway_origin_is_an_exact_https_origin() {
+    fn gateway_origin_is_an_exact_private_service_origin() {
         assert_eq!(
-            fixed_https_origin("https://alerts.example/").unwrap(),
+            fixed_private_origin("https://alerts.example/").unwrap(),
             "https://alerts.example"
         );
-        assert!(fixed_https_origin("http://alerts.example").is_err());
-        assert!(fixed_https_origin("https://alerts.example/path").is_err());
-        assert!(fixed_https_origin("https://name@alerts.example").is_err());
+        assert!(fixed_private_origin(
+            "http://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwxyz23.onion"
+        )
+        .is_ok());
+        assert!(fixed_private_origin("http://alerts.example").is_err());
+        assert!(fixed_private_origin("https://alerts.example/path").is_err());
+        assert!(fixed_private_origin("https://name@alerts.example").is_err());
     }
 
     #[test]

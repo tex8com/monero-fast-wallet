@@ -4,6 +4,7 @@ export const MFW_NAME_SUFFIX = '.mfw';
 export const MFW_NAME_ANNUAL_FEE_ATOMIC = 10_000_000_000n;
 export const MFW_NAME_PROTOCOL_YEAR_BLOCKS = 262_800;
 export const MFW_NAME_MIN_CONFIRMATIONS = 15;
+export const MFW_NAME_MAX_TERM_YEARS = 1_000;
 
 export type MfwNameTransactionKind =
   | 'commit'
@@ -48,7 +49,6 @@ export interface MfwNameGenesisParameters {
   version: 1;
   network: MoneroNetwork;
   registryAddress: string;
-  registryPrivateViewKey: string;
   activationHeight: number;
   maximumTermYears: number;
   commitMaturityBlocks: number;
@@ -75,8 +75,14 @@ export function canonicalMfwName(input: string): string {
 }
 
 export function mfwNameRegistrationFeeAtomic(years: number): bigint {
-  if (!Number.isSafeInteger(years) || years < 1) {
-    throw new Error('The registration term must contain whole years.');
+  if (
+    !Number.isSafeInteger(years) ||
+    years < 1 ||
+    years > MFW_NAME_MAX_TERM_YEARS
+  ) {
+    throw new Error(
+      `The registration term must contain 1–${MFW_NAME_MAX_TERM_YEARS} whole years.`,
+    );
   }
   return MFW_NAME_ANNUAL_FEE_ATOMIC * BigInt(years);
 }
@@ -94,7 +100,8 @@ export function createMfwNameRegistrationDraft(input: {
   const name = canonicalMfwName(input.name);
   if (
     !Number.isSafeInteger(input.maximumTermYears) ||
-    input.maximumTermYears < 1 ||
+    input.maximumTermYears !== MFW_NAME_MAX_TERM_YEARS ||
+    input.years < 1 ||
     input.years > input.maximumTermYears
   ) {
     throw new Error('The selected registration term is not supported.');
@@ -126,11 +133,10 @@ export function validateMfwNameGenesisParameters(
   if (
     input.version !== 1 ||
     !input.registryAddress.trim() ||
-    !/^[0-9a-f]{64}$/.test(input.registryPrivateViewKey) ||
     !Number.isSafeInteger(input.activationHeight) ||
     input.activationHeight < 0 ||
     !Number.isSafeInteger(input.maximumTermYears) ||
-    input.maximumTermYears < 1 ||
+    input.maximumTermYears !== MFW_NAME_MAX_TERM_YEARS ||
     !Number.isSafeInteger(input.commitMaturityBlocks) ||
     input.commitMaturityBlocks < 1 ||
     !Number.isSafeInteger(input.commitRevealWindowBlocks) ||
@@ -180,7 +186,7 @@ export function validateMfwNameSendPreset(
       kind: value.kind,
       destinationAddress: required(
         value.destinationAddress,
-        'Registry address',
+        'Monero Fast Wallet Registry address',
       ),
       preparedTransaction: value.preparedTransaction,
     };

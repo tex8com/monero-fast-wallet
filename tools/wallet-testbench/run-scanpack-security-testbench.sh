@@ -17,12 +17,12 @@ run_gate \
 
 run_gate \
   "read-only ScanPack generation, freshness and manipulation contract" \
-  cargo test --locked --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" \
+  cargo test --locked --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" \
   scanpack::tests:: --lib
 
 run_gate \
   "cursor gap, source-failure and reorg convergence contract" \
-  cargo test --locked --manifest-path "${repo_root}/services/notify-scanner/Cargo.toml" \
+  cargo test --locked --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" \
   scanner::tests:: --lib
 
 run_gate \

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
 import com.facebook.react.ReactActivity
@@ -13,6 +14,7 @@ import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnable
 import com.facebook.react.defaults.DefaultReactActivityDelegate
 
 class MainActivity : ReactActivity() {
+  private val activityStartedAtMs = SystemClock.elapsedRealtime()
   private val lifecycleHandler = Handler(Looper.getMainLooper())
   private var nativeDeviceLockCommitted = false
   private var systemUiPauseDeferred = false
@@ -21,13 +23,26 @@ class MainActivity : ReactActivity() {
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    startupLog("activity.onCreate.begin")
+    // The manifest launch theme supplies Android's starting window. Do not
+    // retain its logo as the real Activity background after the first draw.
+    setTheme(R.style.AppTheme)
+    startupLog("activity.theme.applied")
     super.onCreate(savedInstanceState)
+    startupLog("activity.onCreate.afterSuper")
     currentActivity = this
     applyScreenCapturePolicy()
+    startupLog("activity.onCreate.complete")
   }
 
   override fun onPostResume() {
+    startupLog("activity.onPostResume.begin")
     super.onPostResume()
+    // Android only permits a new foreground service while the Activity is
+    // visibly resumed. Starting this from Application.onCreate races that
+    // eligibility window and is rejected on current Pixel releases.
+    ConnectivityForegroundService.start(this)
+    startupLog("activity.connectivityService.requested")
     lifecycleHandler.removeCallbacks(systemUiTimeoutRunnable)
     if (systemUiPauseDeferred) {
       logLifecycleDiagnostic("activityPause.systemUiResumed")
@@ -38,23 +53,16 @@ class MainActivity : ReactActivity() {
     // wallet sessions warm until the configured inactivity deadline. Enforce
     // that monotonic deadline before React can submit any new wallet work.
     NativeMoneroWalletModule.notifyAppForegrounded()
+    startupLog("activity.foregroundNotification.complete")
     // Re-apply after the complete Android/React lifecycle in case a framework
     // or restored window state changed the flag while the app was backgrounded.
     applyScreenCapturePolicy()
   }
 
   private fun applyScreenCapturePolicy() {
-    // Wallet balances, addresses, QR codes and recovery material must not be
-    // copied into screenshots, recordings, or Android's recent-app preview.
-    // Screen capture is only enabled by an explicit diagnostics build flag.
-    if (BuildConfig.ALLOW_SCREEN_CAPTURE) {
-      window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-    } else {
-      window.setFlags(
-        WindowManager.LayoutParams.FLAG_SECURE,
-        WindowManager.LayoutParams.FLAG_SECURE,
-      )
-    }
+    // Screenshots are deliberately available in every build so testers can
+    // document any screen without installing a separate diagnostic artifact.
+    window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
   }
 
   /**
@@ -71,11 +79,18 @@ class MainActivity : ReactActivity() {
       DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
 
   override fun onNewIntent(intent: Intent) {
+    startupLog("activity.onNewIntent")
     super.onNewIntent(intent)
     setIntent(intent)
   }
 
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    startupLog("activity.windowFocusChanged", "has_focus=$hasFocus")
+    super.onWindowFocusChanged(hasFocus)
+  }
+
   override fun onPause() {
+    startupLog("activity.onPause.begin")
     val interruptionRemainingMs = NativeSystemUiInterruption.remainingMs()
     if (interruptionRemainingMs != null) {
       systemUiPauseDeferred = true
@@ -89,10 +104,12 @@ class MainActivity : ReactActivity() {
     }
 
     NativeMoneroWalletModule.notifyAppBackgrounded()
+    startupLog("activity.backgroundNotification.complete")
     super.onPause()
   }
 
   override fun onStop() {
+    startupLog("activity.onStop.begin")
     val interruptionActive = NativeSystemUiInterruption.remainingMs() != null
     val keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
     if (!interruptionActive &&
@@ -101,14 +118,25 @@ class MainActivity : ReactActivity() {
       commitNativeDeviceLock("device-lock")
     }
     super.onStop()
+    startupLog("activity.onStop.complete")
   }
 
   override fun onDestroy() {
+    startupLog("activity.onDestroy.begin")
     lifecycleHandler.removeCallbacks(systemUiTimeoutRunnable)
     if (currentActivity === this) {
       currentActivity = null
     }
     super.onDestroy()
+    startupLog("activity.onDestroy.complete")
+  }
+
+  private fun startupLog(event: String, fields: String = "") {
+    val suffix = if (fields.isBlank()) "" else " $fields"
+    Log.i(
+      STARTUP_LOG_TAG,
+      "MONERO_STARTUP native=android event=$event elapsed_ms=${SystemClock.elapsedRealtime() - activityStartedAtMs}$suffix",
+    )
   }
 
   private fun handleSystemUiInterruptionChanged() {
@@ -169,6 +197,7 @@ class MainActivity : ReactActivity() {
 
   companion object {
     const val TAG = "MoneroWalletActivity"
+    private const val STARTUP_LOG_TAG = "MoneroStartup"
     private const val SYSTEM_UI_RESUME_GRACE_MS = 1_000L
 
     @Volatile

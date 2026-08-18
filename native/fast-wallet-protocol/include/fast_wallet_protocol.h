@@ -128,6 +128,15 @@ int32_t tex8_mfw_verify_and_encode_name_address_v1(
     uint8_t output[TEX8_MFW_MONERO_ADDRESS_SIZE],
     size_t output_len);
 
+int32_t tex8_mfw_verify_and_encode_legacy_name_address_v1(
+    const uint8_t *record,
+    size_t record_len,
+    const uint8_t *expected_name,
+    size_t expected_name_len,
+    uint8_t expected_network,
+    uint8_t output[TEX8_MFW_MONERO_ADDRESS_SIZE],
+    size_t output_len);
+
 int32_t tex8_mfw_decode_monero_address_v1(
     const uint8_t address[TEX8_MFW_MONERO_ADDRESS_SIZE],
     size_t address_len,

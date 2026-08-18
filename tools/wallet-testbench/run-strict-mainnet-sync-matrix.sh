@@ -84,7 +84,7 @@ while sudo -n /usr/sbin/iptables -C OUTPUT \
     -j REJECT
 done
 if [[ "$config_restored" == "1" ]]; then
-  sudo -n systemctl restart cuprate.service
+  sudo -n systemctl restart monero-fast-node.service
 fi
 REMOTE
   restored=1
@@ -154,7 +154,7 @@ awk -v cache_enabled="$cache_enabled" '
 ' "$source_config" >"$tmp"
 sudo -n /usr/bin/tee "$target_config" <"$tmp" >/dev/null
 rm -f "$tmp"
-sudo -n systemctl restart cuprate.service
+sudo -n systemctl restart monero-fast-node.service
 REMOTE
   wait_for_rpc
 }

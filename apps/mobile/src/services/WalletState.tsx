@@ -27,12 +27,18 @@ import {
   type RegisteredWalletSessionRecovery,
   type WalletSession,
 } from './WalletService';
+import {
+  LedgerSigningCancelledError,
+  isLedgerSigningCancelledError,
+  waitForLedgerTransport,
+  type LedgerSigningControl,
+} from './LedgerSigningFlow';
 import { activeSystemUiInterruptionDeadlineMs } from './SystemUiInterruption';
 import {
   FastWalletPushService,
   type FastWalletPushEvent,
 } from './FastWalletPushService';
-import { logWalletEvent } from './WalletLogger';
+import { logStartupEvent, logWalletEvent } from './WalletLogger';
 import { networkSyncFailureCode } from './NetworkSyncFailure';
 import {
   loadWalletSnapshotCache,
@@ -81,6 +87,8 @@ export type NodeConnectionStatus =
   | 'connected'
   | 'error';
 
+export type NodeConnectionPhase = 'tor' | 'block-sync';
+
 interface WalletStateValue {
   error: string | undefined;
   registeredWallet: RegisteredWallet | undefined;
@@ -94,6 +102,7 @@ interface WalletStateValue {
   transactions: WalletTransaction[];
   incomingTransactionNotice: IncomingTransactionNotice | undefined;
   nodeConnectionStatus: NodeConnectionStatus;
+  nodeConnectionPhase: NodeConnectionPhase | undefined;
   networkSyncStatus: NetworkSyncStatus | undefined;
   ledgerReconciliationProgress: LedgerReconciliationProgress | undefined;
   status: WalletRuntimeStatus;
@@ -127,7 +136,9 @@ interface WalletStateValue {
   refreshTransactions: () => Promise<WalletTransaction[]>;
   refreshHardwareWalletStatus: () => Promise<HardwareWalletStatus | undefined>;
   reconnectHardwareWallet: () => Promise<HardwareWalletStatus | undefined>;
-  connectLedgerForSigning: () => Promise<WalletSession | undefined>;
+  connectLedgerForSigning: (
+    control?: LedgerSigningControl,
+  ) => Promise<WalletSession | undefined>;
   reconcileLedgerBalance: () => Promise<boolean>;
   showHardwareWalletAddress: (
     accountIndex?: number,
@@ -203,14 +214,9 @@ export function WalletStateProvider({
   );
   const [publicationTick, setPublicationTick] = useState(0);
   const publicationsByRegistrationRef = useRef(
-    new Map<
-      string,
-      WalletPublication<WalletSnapshot, WalletTransaction>
-    >(),
+    new Map<string, WalletPublication<WalletSnapshot, WalletTransaction>>(),
   );
-  const sessionGenerationsByRegistrationRef = useRef(
-    new Map<string, number>(),
-  );
+  const sessionGenerationsByRegistrationRef = useRef(new Map<string, number>());
   const [incomingTransactionNotice, setIncomingTransactionNotice] = useState<
     IncomingTransactionNotice | undefined
   >();
@@ -218,6 +224,9 @@ export function WalletStateProvider({
   const [error, setError] = useState<string | undefined>();
   const [nodeConnections, setNodeConnections] = useState<
     Record<string, NodeConnectionStatus>
+  >({});
+  const [nodeConnectionPhases, setNodeConnectionPhases] = useState<
+    Record<string, NodeConnectionPhase>
   >({});
   const [networkSyncStatuses, setNetworkSyncStatuses] = useState<
     Record<string, NetworkSyncStatus>
@@ -283,6 +292,20 @@ export function WalletStateProvider({
   // deliberately application-wide rather than tied to the selected card or
   // reconciliation origin (automatic, background, or a legacy caller).
   const ledgerReconciliationInFlightRef = useRef(false);
+  const startupStateRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    const transitionKey = `${appSecurityReady}:${appSecurityLocked}:${loadingRegistry}`;
+    if (startupStateRef.current === transitionKey) {
+      return;
+    }
+    startupStateRef.current = transitionKey;
+    logStartupEvent('AppStartup', 'walletState.lifecycle', {
+      appSecurityLocked,
+      appSecurityReady,
+      loadingRegistry,
+    });
+  }, [appSecurityLocked, appSecurityReady, loadingRegistry]);
 
   const updateNodeConnection = useCallback(
     (network: string, next: NodeConnectionStatus) => {
@@ -298,6 +321,19 @@ export function WalletStateProvider({
         ) {
           return previous;
         }
+        if (current === next) {
+          return previous;
+        }
+        return { ...previous, [network]: next };
+      });
+    },
+    [],
+  );
+
+  const updateNodeConnectionPhase = useCallback(
+    (network: string, next: NodeConnectionPhase) => {
+      setNodeConnectionPhases(previous => {
+        const current = previous[network];
         if (current === next) {
           return previous;
         }
@@ -598,7 +634,7 @@ export function WalletStateProvider({
         () => undefined,
         () => undefined,
       );
-      void persistSelection.catch(reason => {
+      persistSelection.catch(reason => {
         logWalletEvent('WalletState', 'activateRegisteredWallet.persistError', {
           elapsedMs: Date.now() - startedAt,
           error: errorMessage(reason),
@@ -947,10 +983,7 @@ export function WalletStateProvider({
         return nextSnapshot;
       } catch (reason) {
         if (isWalletSessionStaleError(reason)) {
-          await recoverStaleSessionRef.current?.(
-            registration,
-            openedSession,
-          );
+          await recoverStaleSessionRef.current?.(registration, openedSession);
           return walletSnapshotsRef.current[registration.id];
         }
         // Snapshot polling reads the last sanitized native cache. A delayed
@@ -1023,10 +1056,7 @@ export function WalletStateProvider({
         return nextTransactions;
       } catch (reason) {
         if (isWalletSessionStaleError(reason)) {
-          await recoverStaleSessionRef.current?.(
-            registration,
-            openedSession,
-          );
+          await recoverStaleSessionRef.current?.(registration, openedSession);
           return cached;
         }
         logWalletEvent('WalletState', 'refreshTransactions.error', {
@@ -1073,10 +1103,7 @@ export function WalletStateProvider({
         snapshot: afterHistory,
         transactions: nextTransactions,
       };
-      walletStateSamplesByRegistrationRef.current.set(
-        registration.id,
-        sample,
-      );
+      walletStateSamplesByRegistrationRef.current.set(registration.id, sample);
       setPublicationTick(current => current + 1);
       return sample;
     },
@@ -1323,7 +1350,9 @@ export function WalletStateProvider({
       updateNodeConnection(registration.network, 'connecting');
 
       walletService
-        .startRefresh(openedSession)
+        .startRefresh(openedSession, phase => {
+          updateNodeConnectionPhase(registration.network, phase);
+        })
         .then(() => {
           if (
             sessionsByRegistrationRef.current.get(registrationId) !==
@@ -1350,14 +1379,10 @@ export function WalletStateProvider({
           });
           refreshSessionState(registration, openedSession).catch(
             refreshError => {
-              logWalletEvent(
-                'WalletState',
-                'startNativeRefresh.stateError',
-                {
-                  error: errorMessage(refreshError),
-                  registrationId,
-                },
-              );
+              logWalletEvent('WalletState', 'startNativeRefresh.stateError', {
+                error: errorMessage(refreshError),
+                registrationId,
+              });
             },
           );
           if (
@@ -1435,6 +1460,7 @@ export function WalletStateProvider({
       refreshHardwareWalletStatus,
       refreshSessionState,
       updateNodeConnection,
+      updateNodeConnectionPhase,
     ],
   );
 
@@ -1500,35 +1526,20 @@ export function WalletStateProvider({
         clearTimeout(timeout);
       }
       nativeRefreshRetryTimeoutsRef.current.clear();
-      const openSessions = Array.from(
-        sessionsByRegistrationRef.current.values(),
-      );
-      // React cannot await an effect cleanup, but preserve the native ordering
-      // nevertheless: a Core refresh must be stopped before its cache is
-      // persisted and the wallet is closed. Starting both promises at once can
-      // save the cache before the refresh thread has committed its last height.
-      const closeSessionsInOrder = async () => {
-        const protectionStatus = await walletService
-          .getAppProtectionStatus()
-          .catch(() => undefined);
-        if (protectionStatus?.locked) {
-          // The native lifecycle boundary already persisted and closed every
-          // wallet before revoking authorization. Do not issue redundant
-          // renderer cleanup requests after that security boundary.
-          logWalletEvent('WalletState', 'unmount.nativeLockOwnsPersistence', {
-            walletCount: openSessions.length,
-          });
-          return;
-        }
-        for (const openedSession of openSessions) {
-          await stopNativeRefresh(openedSession, 'unmount');
-          await walletService.closeWallet(openedSession).catch(() => undefined);
-        }
-      };
-      closeSessionsInOrder().catch(() => undefined);
+      const walletCount = sessionsByRegistrationRef.current.size;
+      // AppSecurity deliberately unmounts this provider as soon as the app is
+      // locked. Native lockApp() is the single owner of stop -> persist ->
+      // close ordering. Starting another asynchronous close here can arrive
+      // after biometric unlock and close the freshly reopened wallet.
+      globallyLockedRef.current = true;
       sessionsByRegistrationRef.current.clear();
+      walletOpenInFlightRef.current.clear();
+      walletService.clearSessionReferencesAfterAppLock();
+      logWalletEvent('WalletState', 'unmount.nativeLockOwnsPersistence', {
+        walletCount,
+      });
     },
-    [stopNativeRefresh],
+    [],
   );
 
   const showHardwareWalletAddress = useCallback(
@@ -1725,7 +1736,8 @@ export function WalletStateProvider({
           nativeRefreshRetryAttemptsRef.current.delete(registrationId);
           snapshotRefreshInFlightIdsRef.current.delete(registrationId);
           transactionRefreshInFlightIdsRef.current.delete(registrationId);
-          const retry = nativeRefreshRetryTimeoutsRef.current.get(registrationId);
+          const retry =
+            nativeRefreshRetryTimeoutsRef.current.get(registrationId);
           if (retry) clearTimeout(retry);
           nativeRefreshRetryTimeoutsRef.current.delete(registrationId);
           const deferred =
@@ -1827,7 +1839,15 @@ export function WalletStateProvider({
         opening.then(clearOpening, clearOpening);
       }
 
-      await opening;
+      try {
+        await opening;
+      } catch (reason) {
+        // A native lock can still be finishing while the protected React tree
+        // is mounted again. Do not turn that transient overlap into a
+        // permanent "attempted" state that leaves the wallet closed forever.
+        autoOpenAttemptedWalletIdsRef.current.delete(registration.id);
+        throw reason;
+      }
       if (
         selectAfterOpen &&
         registeredWalletRef.current?.id === registration.id
@@ -1897,20 +1917,37 @@ export function WalletStateProvider({
           active: isActive,
           registrationId: registration.id,
         });
-        try {
-          await ensureRegisteredWalletOpen(registration, isActive, true);
-          logWalletEvent('WalletState', 'warmWallet.success', {
-            active: isActive,
-            elapsedMs: Date.now() - startedAt,
-            registrationId: registration.id,
-          });
-        } catch (reason) {
-          logWalletEvent('WalletState', 'warmWallet.error', {
-            active: isActive,
-            elapsedMs: Date.now() - startedAt,
-            error: errorMessage(reason),
-            registrationId: registration.id,
-          });
+        const maxAttempts = isActive ? 3 : 2;
+        for (
+          let attempt = 1;
+          attempt <= maxAttempts && !cancelled;
+          attempt += 1
+        ) {
+          try {
+            await ensureRegisteredWalletOpen(registration, isActive, true);
+            logWalletEvent('WalletState', 'warmWallet.success', {
+              active: isActive,
+              attempt,
+              elapsedMs: Date.now() - startedAt,
+              registrationId: registration.id,
+            });
+            break;
+          } catch (reason) {
+            logWalletEvent('WalletState', 'warmWallet.error', {
+              active: isActive,
+              attempt,
+              elapsedMs: Date.now() - startedAt,
+              error: errorMessage(reason),
+              registrationId: registration.id,
+              retrying: attempt < maxAttempts,
+            });
+            if (isActive && attempt === maxAttempts && !cancelled) {
+              setError(errorMessage(reason));
+            }
+            if (attempt < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, attempt * 250));
+            }
+          }
         }
       }
     };
@@ -1919,7 +1956,7 @@ export function WalletStateProvider({
       concurrency: Math.min(2, candidates.length),
       walletCount: candidates.length,
     });
-    void Promise.all(
+    Promise.all(
       Array.from({ length: Math.min(2, candidates.length) }, () =>
         warmWorker(),
       ),
@@ -1974,6 +2011,14 @@ export function WalletStateProvider({
                 ? previous
                 : { ...previous, [network]: connection },
             );
+            if (connection !== 'connecting') {
+              setNodeConnectionPhases(previous => {
+                if (!(network in previous)) return previous;
+                const next = { ...previous };
+                delete next[network];
+                return next;
+              });
+            }
             const failureCode = networkSyncFailureCode(nativeStatus);
             const phaseKey = `${nativeStatus.state}:${nativeStatus.phase}:${
               nativeStatus.phaseSequence
@@ -2010,8 +2055,10 @@ export function WalletStateProvider({
       );
     };
 
-    void poll();
-    const interval = setInterval(() => void poll(), 750);
+    poll();
+    const interval = setInterval(() => {
+      poll();
+    }, 750);
     return () => {
       cancelled = true;
       clearInterval(interval);
@@ -2077,91 +2124,137 @@ export function WalletStateProvider({
     [activateRegisteredWallet, ensureRegisteredWalletOpen],
   );
 
-  const connectLedgerForSigning = useCallback(async () => {
-    const activeSession = sessionRef.current;
-    const activeRegistration = registeredWalletRef.current;
-    if (!activeSession || !activeRegistration) {
-      return undefined;
-    }
-    if (!activeSession.readOnly) {
-      return activeSession;
-    }
-    if (activeRegistration.kind !== 'hardware') {
-      throw new Error('The active wallet is not a Ledger wallet');
-    }
+  const connectLedgerForSigning = useCallback(
+    async (control?: LedgerSigningControl) => {
+      const activeSession = sessionRef.current;
+      const activeRegistration = registeredWalletRef.current;
+      if (!activeSession || !activeRegistration) {
+        return undefined;
+      }
+      if (!activeSession.readOnly) {
+        control?.onProgress?.({ phase: 'connected' });
+        return activeSession;
+      }
+      if (activeRegistration.kind !== 'hardware') {
+        throw new Error('The active wallet is not a Ledger wallet');
+      }
 
-    logWalletEvent('WalletState', 'connectLedgerForSigning.start', {
-      walletId: activeSession.walletId,
-      registrationId: activeRegistration.id,
-    });
-    await stopNativeRefresh(activeSession, 'ledgerSigningRequested');
-    await walletService.closeWallet(activeSession);
-    sessionsByRegistrationRef.current.delete(activeRegistration.id);
-    sessionRef.current = undefined;
-    setSession(undefined);
-    setSnapshot(undefined);
-    setTransactions([]);
-    setHardwareStatus(undefined);
-
-    try {
-      const signingSession = await walletService.openHardwareWalletForSigning(
-        activeRegistration,
-      );
-      const registeredSigningSession = {
-        ...signingSession,
-        registrationId: activeRegistration.id,
-      };
-      sessionsByRegistrationRef.current.set(
-        activeRegistration.id,
-        registeredSigningSession,
-      );
-      walletService.activateSession(registeredSigningSession);
-      sessionRef.current = registeredSigningSession;
-      setSession(registeredSigningSession);
-      setError(undefined);
-      startNativeRefresh(registeredSigningSession, 'ledgerSigningConnected');
-      logWalletEvent('WalletState', 'connectLedgerForSigning.success', {
-        walletId: registeredSigningSession.walletId,
+      logWalletEvent('WalletState', 'connectLedgerForSigning.start', {
+        walletId: activeSession.walletId,
         registrationId: activeRegistration.id,
       });
-      return registeredSigningSession;
-    } catch (reason) {
-      const message = errorMessage(reason);
-      setError(message);
-      logWalletEvent('WalletState', 'connectLedgerForSigning.error', {
-        error: message,
-        registrationId: activeRegistration.id,
+      const transport = await waitForLedgerTransport({
+        getStatus: () => walletService.getLedgerTransportStatus(),
+        requestAccess: () => walletService.requestLedgerTransportAccess(),
+        control,
       });
+      if (control?.isCancelled?.()) {
+        throw new LedgerSigningCancelledError();
+      }
+      control?.onProgress?.({ phase: 'connecting', transport });
 
-      // A cancelled or unavailable Ledger must not destroy the useful local
-      // read-only session. Reopen it so balances and incoming transfers remain
-      // available without requiring another user action.
+      // Keep the useful read-only companion open while Android/iOS discovers the
+      // Ledger. Only replace it after a real device transport is available.
+      await stopNativeRefresh(activeSession, 'ledgerSigningRequested');
+      await walletService.closeWallet(activeSession);
+      sessionsByRegistrationRef.current.delete(activeRegistration.id);
+      sessionRef.current = undefined;
+      setSession(undefined);
+      setSnapshot(undefined);
+      setTransactions([]);
+      setHardwareStatus(undefined);
+
+      let openedSigningSession: WalletSession | undefined;
       try {
-        const readOnlySession =
-          await walletService.openRegisteredWalletRegistration(
-            activeRegistration,
-          );
-        const registeredReadOnlySession = {
-          ...readOnlySession,
+        const signingSession = await walletService.openHardwareWalletForSigning(
+          activeRegistration,
+        );
+        const registeredSigningSession = {
+          ...signingSession,
           registrationId: activeRegistration.id,
         };
+        openedSigningSession = registeredSigningSession;
+        if (control?.isCancelled?.()) {
+          throw new LedgerSigningCancelledError();
+        }
+
+        // Transaction preparation uses a session-local Monero RPC control plane.
+        // Apply the current Onion daemon settings and await them before exposing
+        // this signing session to Send or the name registry. The native shared
+        // Clearnet block downloader remains process-wide and is not duplicated.
+        await walletService.applyNodeConnection(registeredSigningSession);
+        if (control?.isCancelled?.()) {
+          throw new LedgerSigningCancelledError();
+        }
         sessionsByRegistrationRef.current.set(
           activeRegistration.id,
-          registeredReadOnlySession,
+          registeredSigningSession,
         );
-        walletService.activateSession(registeredReadOnlySession);
-        sessionRef.current = registeredReadOnlySession;
-        setSession(registeredReadOnlySession);
-        startNativeRefresh(registeredReadOnlySession, 'ledgerSigningCancelled');
-      } catch (restoreError) {
-        logWalletEvent('WalletState', 'connectLedgerForSigning.restoreError', {
-          error: errorMessage(restoreError),
+        walletService.activateSession(registeredSigningSession);
+        sessionRef.current = registeredSigningSession;
+        setSession(registeredSigningSession);
+        setError(undefined);
+        startNativeRefresh(registeredSigningSession, 'ledgerSigningConnected');
+        control?.onProgress?.({ phase: 'connected', transport });
+        logWalletEvent('WalletState', 'connectLedgerForSigning.success', {
+          walletId: registeredSigningSession.walletId,
           registrationId: activeRegistration.id,
         });
+        openedSigningSession = undefined;
+        return registeredSigningSession;
+      } catch (reason) {
+        const message = errorMessage(reason);
+        if (openedSigningSession) {
+          await walletService
+            .closeWallet(openedSigningSession, false)
+            .catch(() => undefined);
+        }
+        if (!isLedgerSigningCancelledError(reason)) {
+          setError(message);
+        }
+        logWalletEvent('WalletState', 'connectLedgerForSigning.error', {
+          error: message,
+          registrationId: activeRegistration.id,
+        });
+
+        // A cancelled or unavailable Ledger must not destroy the useful local
+        // read-only session. Reopen it so balances and incoming transfers remain
+        // available without requiring another user action.
+        try {
+          const readOnlySession =
+            await walletService.openRegisteredWalletRegistration(
+              activeRegistration,
+            );
+          const registeredReadOnlySession = {
+            ...readOnlySession,
+            registrationId: activeRegistration.id,
+          };
+          sessionsByRegistrationRef.current.set(
+            activeRegistration.id,
+            registeredReadOnlySession,
+          );
+          walletService.activateSession(registeredReadOnlySession);
+          sessionRef.current = registeredReadOnlySession;
+          setSession(registeredReadOnlySession);
+          startNativeRefresh(
+            registeredReadOnlySession,
+            'ledgerSigningCancelled',
+          );
+        } catch (restoreError) {
+          logWalletEvent(
+            'WalletState',
+            'connectLedgerForSigning.restoreError',
+            {
+              error: errorMessage(restoreError),
+              registrationId: activeRegistration.id,
+            },
+          );
+        }
+        throw reason;
       }
-      throw reason;
-    }
-  }, [startNativeRefresh, stopNativeRefresh]);
+    },
+    [startNativeRefresh, stopNativeRefresh],
+  );
 
   const reconcileLedgerBalance = useCallback(
     async (singleFlightAlreadyHeld = false): Promise<boolean> => {
@@ -2612,9 +2705,12 @@ export function WalletStateProvider({
     registeredWallets,
     sessionRecovering,
   ]);
-  const publishedSnapshot = publicationState.activePublication?.publishedSnapshot;
+  const publishedSnapshot =
+    publicationState.activePublication?.publishedSnapshot;
   const publishedTransactions = useMemo(
-    () => [...(publicationState.activePublication?.publishedTransactions ?? [])],
+    () => [
+      ...(publicationState.activePublication?.publishedTransactions ?? []),
+    ],
     [publicationState.activePublication],
   );
   const visibleTransactions = useMemo(() => {
@@ -2672,6 +2768,9 @@ export function WalletStateProvider({
     registeredWallet === undefined
       ? 'idle'
       : nodeConnections[registeredWallet.network] ?? 'idle';
+  const nodeConnectionPhase = registeredWallet
+    ? nodeConnectionPhases[registeredWallet.network]
+    : undefined;
   const networkSyncStatus = registeredWallet
     ? networkSyncStatuses[registeredWallet.network]
     : undefined;
@@ -2695,6 +2794,7 @@ export function WalletStateProvider({
       transactions: [...visibleTransactions],
       incomingTransactionNotice,
       nodeConnectionStatus,
+      nodeConnectionPhase,
       networkSyncStatus,
       ledgerReconciliationProgress,
       status,
@@ -2725,6 +2825,7 @@ export function WalletStateProvider({
       hardwareStatus,
       incomingTransactionNotice,
       nodeConnectionStatus,
+      nodeConnectionPhase,
       networkSyncStatus,
       ledgerReconciliationProgress,
       isRegisteredWalletOpen,

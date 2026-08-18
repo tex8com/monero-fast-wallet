@@ -1,6 +1,7 @@
 import { loadActiveNodeConnectionSettings } from './NodeConnectionSettings';
 import { walletService } from './WalletService';
 import { emitWalletDiagnosticsLine, logWalletEvent } from './WalletLogger';
+import {torFetch} from './TorHttp';
 import {
   MFW_DIAGNOSTIC_REGISTRY_SHA256,
   MFW_PRODUCT_CORE_ABI_VERSION,
@@ -210,7 +211,12 @@ async function fetchJsonWithTimeout(
       timeoutMs,
     );
   });
-  const fetchPromise = fetch(url, init)
+  const fetchPromise = torFetch(url, {
+    body: typeof init?.body === 'string' ? init.body : undefined,
+    headers: init?.headers as Record<string, string> | undefined,
+    method: init?.method,
+    timeoutMs,
+  })
     .then(async response => ({
       json: parseJson(await response.text()),
       ok: response.ok,

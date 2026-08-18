@@ -38,6 +38,9 @@ static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
 
 namespace {
 
+constexpr uint32_t kMfwNameMaximumTermYears = 1000;
+constexpr uint64_t kMfwNameAnnualFeeAtomic = 10000000000ULL;
+
 using tex8::wallet::CreateWalletRequest;
 using tex8::wallet::CreateWalletFromDeviceRequest;
 using tex8::wallet::CreateViewOnlyWalletRequest;
@@ -949,6 +952,12 @@ jobject toJavaMap(JNIEnv* env, const WalletSubaddress& subaddress) {
   jobject map = env->NewObject(hashMapClass, constructor);
   putMapDouble(env, map, putMethod, "accountIndex", subaddress.accountIndex);
   putMapDouble(env, map, putMethod, "addressIndex", subaddress.addressIndex);
+  putMapString(
+      env,
+      map,
+      putMethod,
+      "balanceAtomic",
+      std::to_string(subaddress.balanceAtomic));
   putMapString(env, map, putMethod, "address", subaddress.address);
   putMapString(env, map, putMethod, "label", subaddress.label);
   return map;
@@ -1034,6 +1043,18 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeDrainEngineDiagnostics(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeDerivationBackendStatus(
+    JNIEnv* env,
+    jclass) {
+  try {
+    return toJavaString(env, WalletEngine::derivationBackendStatus());
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_com_monerowallet_NativeMoneroWalletJni_nativeBenchmarkDerivationPerformance(
     JNIEnv* env,
     jclass) {
@@ -1074,11 +1095,13 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixCreate(
     jstring homeserverValue,
     jstring storePathValue,
     jbyteArray storePassphraseValue,
+    jstring proxyValue,
     jboolean allowLoopbackHttpForTests) {
 #if TEX8_COMMUNITY_MATRIX_LINKED
   try {
     auto homeserver = toStdString(env, homeserverValue);
     auto storePath = toStdString(env, storePathValue);
+    auto proxy = toStdString(env, proxyValue);
     auto storePassphrase =
         toByteVector(env, storePassphraseValue, 32, 256);
     std::lock_guard<std::mutex> lock(communityMatrixMutex);
@@ -1095,6 +1118,8 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixCreate(
         storePath.size(),
         storePassphrase.data(),
         storePassphrase.size(),
+        reinterpret_cast<const uint8_t*>(proxy.data()),
+        proxy.size(),
         allowLoopbackHttpForTests == JNI_TRUE,
         &communityMatrixHandle,
         error.data(),
@@ -1118,6 +1143,7 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCommunityMatrixCreate(
   (void)homeserverValue;
   (void)storePathValue;
   (void)storePassphraseValue;
+  (void)proxyValue;
   (void)allowLoopbackHttpForTests;
   return JNI_FALSE;
 #endif
@@ -3333,8 +3359,8 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameClaim(
     tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
         commitSaltGuard(commitSaltValue);
     const uint32_t termYears = toUInt32(years, "years");
-    if (termYears < 1 || termYears > 10) {
-      throw WalletEngineError("MFW name term must be between 1 and 10 years");
+    if (termYears < 1 || termYears > kMfwNameMaximumTermYears) {
+      throw WalletEngineError("MFW name term must be between 1 and 1000 years");
     }
     auto record =
         tex8::wallet::fast_wallet_protocol_bridge::prepareMfwNameClaimRecord(
@@ -3349,7 +3375,7 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameClaim(
     request.walletId = toStdString(env, walletId);
     request.address = toStdString(env, registryAddress);
     request.amountAtomic =
-        std::to_string(10000000000ULL * static_cast<uint64_t>(termYears));
+        std::to_string(kMfwNameAnnualFeeAtomic * static_cast<uint64_t>(termYears));
     request.priority = toStdString(env, priority);
     request.accountIndex = toUInt32(accountIndex, "accountIndex");
     request.mfwNameExtraNonce = record.extraNonce;
@@ -3397,8 +3423,8 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameTransition(
       throw WalletEngineError("MFW name transition operation is invalid");
     }
     const uint32_t termYears = toUInt32(years, "years");
-    if (termYears < 1 || termYears > 10) {
-      throw WalletEngineError("MFW name term must be between 1 and 10 years");
+    if (termYears < 1 || termYears > kMfwNameMaximumTermYears) {
+      throw WalletEngineError("MFW name term must be between 1 and 1000 years");
     }
     auto ownerPrivateKeyValue = toStdString(env, ownerPrivateKeyHex);
     tex8::wallet::fast_wallet_protocol_bridge::SecretStringGuard
@@ -3422,7 +3448,7 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativePrepareMfwNameTransition(
     request.amountAtomic =
         operationCode == 4
             ? std::to_string(
-                  10000000000ULL * static_cast<uint64_t>(termYears))
+                  kMfwNameAnnualFeeAtomic * static_cast<uint64_t>(termYears))
             : "1";
     request.priority = toStdString(env, priority);
     request.accountIndex = toUInt32(accountIndex, "accountIndex");

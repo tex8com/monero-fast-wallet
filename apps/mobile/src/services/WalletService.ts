@@ -1,4 +1,8 @@
 import { requireNativeMoneroWallet } from './NativeMoneroWallet';
+import {
+  daemonRequiresEmbeddedTor,
+  prepareDaemonForConnection,
+} from './EmbeddedTor';
 import { withSystemUiInterruption } from './SystemUiInterruption';
 import {
   applyGlobalFastWalletDeliveryState,
@@ -104,6 +108,8 @@ export interface WalletSession {
   };
 }
 
+export type WalletConnectionStartPhase = 'tor' | 'block-sync';
+
 type RegisteredContainerLease = {
   session: WalletSession;
   registrationIds: Set<string>;
@@ -118,9 +124,7 @@ export type RegisteredWalletSessionRecovery = {
 
 export function isWalletSessionStaleError(error: unknown): boolean {
   if (error && typeof error === 'object' && 'code' in error) {
-    return (
-      (error as { code?: unknown }).code === 'monero_wallet_session_stale'
-    );
+    return (error as { code?: unknown }).code === 'monero_wallet_session_stale';
   }
   const message =
     error instanceof Error
@@ -280,6 +284,7 @@ export interface FastWalletSignalRefreshResult {
 }
 
 const NODE_APPLY_TIMEOUT_MS = 30_000;
+const EMBEDDED_TOR_NODE_APPLY_TIMEOUT_MS = 150_000;
 const WALLET_READ_TIMEOUT_MS = 12_000;
 const FAST_WALLET_ASSIGNMENT_RENEWAL_WINDOW_SECONDS = 7 * 24 * 60 * 60;
 export type DeviceSecretAuthenticationMode =
@@ -1421,8 +1426,7 @@ export class WalletService {
         : [registration.id];
       const ownerCount = invalidatedRegistrationIds.length;
       const sessionGeneration =
-        (this.registeredContainerSessionGenerations.get(containerKey) ?? 0) +
-        1;
+        (this.registeredContainerSessionGenerations.get(containerKey) ?? 0) + 1;
       const reopenAttempt =
         (this.registeredContainerReopenAttempts.get(containerKey) ?? 0) + 1;
       this.registeredContainerSessionGenerations.set(
@@ -2233,10 +2237,7 @@ export class WalletService {
           addressIndex: registration.addressIndex,
         });
         if (input.enableLocalViewOnly) {
-          this.pendingInitialLedgerSessions.set(
-            registration.id,
-            deviceSession,
-          );
+          this.pendingInitialLedgerSessions.set(registration.id, deviceSession);
           logWalletEvent(
             'WalletService',
             'createNamedWalletFromDevice.initialLedgerSessionRetained',
@@ -2554,8 +2555,10 @@ export class WalletService {
         }
 
         const normalized = normalizeNodeConnectionSettings(resolvedSettings);
+        const daemon = await prepareDaemonForConnection(normalized.daemon);
         logWalletEvent('WalletService', 'applyNodeConnection.resolved', {
-          daemonAddress: normalized.daemon.address,
+          daemonAddress: daemon.address,
+          embeddedTor: daemonRequiresEmbeddedTor(normalized.daemon),
           grpcEndpoint: normalized.grpcEndpoint,
           mode: resolvedSettings.mode,
           network: resolvedSettings.network,
@@ -2563,7 +2566,7 @@ export class WalletService {
           useSsl: normalized.daemon.useSsl,
           ...sessionLogFields(session),
         });
-        await this.setDaemon(session, normalized.daemon);
+        await this.setDaemon(session, daemon);
         await this.setGrpcEndpoint(session, normalized.grpcEndpoint);
       },
     );
@@ -3269,7 +3272,7 @@ export class WalletService {
             credentialKey: identity.credentialKey!,
             network: identity.network,
             restoreHeight: identity.restoreHeight,
-          workerDescriptorHex:
+            workerDescriptorHex:
               identity.workerKind && identity.workerKind !== 'official'
                 ? identity.workerDescriptorHex
                 : undefined,
@@ -3395,7 +3398,10 @@ export class WalletService {
     this.clearRegisteredContainerReferences();
   }
 
-  async startRefresh(session: WalletSession): Promise<void> {
+  async startRefresh(
+    session: WalletSession,
+    onConnectionPhase?: (phase: WalletConnectionStartPhase) => void,
+  ): Promise<void> {
     if (this.nativeRefreshWalletIds.has(session.walletId)) {
       logWalletEvent('WalletService', 'startRefresh.containerReused', {
         ...sessionLogFields(session),
@@ -3413,11 +3419,23 @@ export class WalletService {
       'startRefresh',
       sessionLogFields(session),
       async () => {
+        const nodeSettings = await loadActiveNodeConnectionSettings(
+          session.network,
+        );
+        const nodeApplyTimeoutMs = daemonRequiresEmbeddedTor(
+          nodeSettings.daemon,
+        )
+          ? EMBEDDED_TOR_NODE_APPLY_TIMEOUT_MS
+          : NODE_APPLY_TIMEOUT_MS;
+        onConnectionPhase?.(
+          daemonRequiresEmbeddedTor(nodeSettings.daemon) ? 'tor' : 'block-sync',
+        );
         await withTimeout(
-          this.applyNodeConnection(session),
-          NODE_APPLY_TIMEOUT_MS,
+          this.applyNodeConnection(session, nodeSettings),
+          nodeApplyTimeoutMs,
           'Node connection timed out while starting wallet sync',
         );
+        onConnectionPhase?.('block-sync');
         await requireNativeMoneroWallet().startRefresh(session.walletId);
       },
     );
@@ -3958,12 +3976,13 @@ export class WalletService {
   async createSubaddress(
     session: WalletSession,
     label?: string,
+    requestedAccountIndex?: number,
   ): Promise<WalletAddressRecord> {
     const registrationId = session.registrationId;
     if (!registrationId) {
       throw new Error('Open a registered wallet before creating an address');
     }
-    const accountIndex = session.accountIndex ?? 0;
+    const accountIndex = requestedAccountIndex ?? session.accountIndex ?? 0;
     const subaddress = await traceWalletOperation(
       'createSubaddress',
       { accountIndex, ...sessionLogFields(session) },
@@ -3987,31 +4006,46 @@ export class WalletService {
 
   async listSubaddresses(
     session: WalletSession,
+    requestedAccountIndexes?: readonly number[],
   ): Promise<WalletAddressRecord[]> {
     const registrationId = session.registrationId;
     if (!registrationId) {
       throw new Error('Open a registered wallet before listing addresses');
     }
-    const accountIndex = session.accountIndex ?? 0;
-    const [nativeAddresses, storedAddresses] = await Promise.all([
-      traceWalletOperation(
-        'listSubaddresses',
-        { accountIndex, ...sessionLogFields(session) },
-        () =>
-          requireNativeMoneroWallet().listSubaddresses(
-            session.walletId,
-            accountIndex,
+    const accountIndexes = Array.from(
+      new Set(
+        (requestedAccountIndexes?.length
+          ? requestedAccountIndexes
+          : [session.accountIndex ?? 0]
+        ).filter(
+          accountIndex =>
+            Number.isSafeInteger(accountIndex) && accountIndex >= 0,
+        ),
+      ),
+    ).sort((left, right) => left - right);
+    const [nativeAddressGroups, storedAddresses] = await Promise.all([
+      Promise.all(
+        accountIndexes.map(accountIndex =>
+          traceWalletOperation(
+            'listSubaddresses',
+            { accountIndex, ...sessionLogFields(session) },
+            () =>
+              requireNativeMoneroWallet().listSubaddresses(
+                session.walletId,
+                accountIndex,
+              ),
           ),
+        ),
       ),
       loadWalletAddresses(registrationId),
     ]);
+    const nativeAddresses = nativeAddressGroups.flat();
     const storedById = new Map(
       storedAddresses.map(address => [address.id, address]),
     );
-    let reconciled: WalletAddressRecord[] = [];
     for (const address of nativeAddresses) {
       const id = `${registrationId}:${address.accountIndex}:${address.addressIndex}`;
-      reconciled = await upsertWalletAddress(
+      await upsertWalletAddress(
         createWalletAddressRecord({
           walletId: registrationId,
           accountIndex: address.accountIndex,
@@ -4020,12 +4054,28 @@ export class WalletService {
           label:
             address.label ||
             storedById.get(id)?.label ||
-            (address.addressIndex === 0 ? 'Primary address' : undefined),
+            (address.addressIndex === 0
+              ? address.accountIndex === 0
+                ? 'Primary account'
+                : `Account ${address.accountIndex}`
+              : undefined),
           createdAt: storedById.get(id)?.createdAt,
         }),
       );
     }
-    return reconciled;
+    const nativeAddressById = new Map(
+      nativeAddresses.map(address => [
+        `${registrationId}:${address.accountIndex}:${address.addressIndex}`,
+        address,
+      ]),
+    );
+    const reconciled = await loadWalletAddresses(registrationId);
+    return reconciled
+      .filter(address => nativeAddressById.has(address.id))
+      .map(address => ({
+        ...address,
+        balanceAtomic: nativeAddressById.get(address.id)!.balanceAtomic,
+      }));
   }
 
   private async repairFastReceiveIdentity(

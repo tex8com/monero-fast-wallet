@@ -102,7 +102,7 @@ umask 077
   printf 'client_tcp_sysctl:\n'
   sysctl kern.ipc.maxsockbuf net.inet.tcp.recvspace net.inet.tcp.autorcvbufmax net.inet.tcp.sendspace net.inet.tcp.autosndbufmax net.inet.tcp.win_scale_factor
   printf 'server_preflight:\n'
-  ssh -n tex8 'date -Is; systemctl is-active cuprate.service; systemctl show -p MainPID --value cuprate.service; sha256sum /opt/cuprate/tex8-fastwallet-cuprate /opt/cuprate/cuprated /etc/cuprate/cuprated.toml; grep -A8 -B1 "\[rpc.wallet_scan_cache\]" /etc/cuprate/cuprated.toml; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k; df -B1 /var/lib/cuprate | tail -1'
+  ssh -n tex8 'date -Is; systemctl is-active monero-fast-node.service; systemctl show -p MainPID --value monero-fast-node.service; sha256sum /opt/cuprate/tex8-fastwallet-cuprate /opt/cuprate/cuprated /etc/cuprate/cuprated.toml; grep -A8 -B1 "\[rpc.wallet_scan_cache\]" /etc/cuprate/cuprated.toml; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k; df -B1 /var/lib/cuprate | tail -1'
 } >"${result_dir}/preflight.txt"
 
 ssh -o BatchMode=yes tex8 bash -s -- "${remote_dir}" <<'REMOTE' >"${result_dir}/remote-monitor-start.txt"
@@ -111,7 +111,7 @@ r="$1"
 mkdir -p "$r/system"
 : >"$r/collector.log"
 date '+%Y-%m-%d %H:%M:%S' >"$r/start-time.txt"
-sudo -n /usr/bin/journalctl -u cuprate.service -n 0 --show-cursor --no-pager 2>/dev/null |
+sudo -n /usr/bin/journalctl -u monero-fast-node.service -n 0 --show-cursor --no-pager 2>/dev/null |
   sed -n 's/^-- cursor: //p' >"$r/start-cursor.txt"
 (
   i=0
@@ -122,7 +122,7 @@ sudo -n /usr/bin/journalctl -u cuprate.service -n 0 --show-cursor --no-pager 2>/
     # loopback gRPC backend accepts 48091. Omitting 18091 would incorrectly
     # report the backend congestion control as the WAN algorithm.
     ss -tinm state established '( sport = :18089 or sport = :18091 or sport = :48091 )' >"$r/system/${i}-${stamp}.wallet-tcp" 2>&1 || true
-    pid="$(systemctl show -p MainPID --value cuprate.service 2>/dev/null || true)"
+    pid="$(systemctl show -p MainPID --value monero-fast-node.service 2>/dev/null || true)"
     ps -o pid=,ppid=,%cpu=,rss=,etime= -p "$pid" >"$r/system/${i}-${stamp}.process-and-memory" 2>&1 || true
     cat "/proc/$pid/stat" >"$r/system/${i}-${stamp}.process-stat" 2>&1 || true
     cat /proc/net/dev >"$r/system/${i}-${stamp}.netdev" 2>&1 || true
@@ -259,7 +259,7 @@ awk -F '\t' '
 {
   printf 'finished_utc=%s\nclient_exit_status=%s\nprocess_elapsed_ms=%s\nharness_elapsed_ms=%s\nserver_postflight:\n' \
     "$(date -u +%FT%TZ)" "${client_status}" "${process_elapsed_ms}" "${harness_elapsed_ms}"
-  ssh -n tex8 'date -Is; systemctl is-active cuprate.service; systemctl show -p MainPID --value cuprate.service; sha256sum /opt/cuprate/tex8-fastwallet-cuprate /opt/cuprate/cuprated /etc/cuprate/cuprated.toml; grep -A8 -B1 "\[rpc.wallet_scan_cache\]" /etc/cuprate/cuprated.toml; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k; df -B1 /var/lib/cuprate | tail -1'
+  ssh -n tex8 'date -Is; systemctl is-active monero-fast-node.service; systemctl show -p MainPID --value monero-fast-node.service; sha256sum /opt/cuprate/tex8-fastwallet-cuprate /opt/cuprate/cuprated /etc/cuprate/cuprated.toml; grep -A8 -B1 "\[rpc.wallet_scan_cache\]" /etc/cuprate/cuprated.toml; find /var/lib/cuprate/wallet-scan-cache-100k -maxdepth 1 -type f -name "*.mwsp" | wc -l; du -sb /var/lib/cuprate/wallet-scan-cache-100k; df -B1 /var/lib/cuprate | tail -1'
 } >>"${result_dir}/preflight.txt"
 
 ssh -o BatchMode=yes tex8 bash -s -- "${remote_dir}" "${journal_minutes}" <<'REMOTE' >"${result_dir}/server-artifacts.txt"
@@ -271,11 +271,11 @@ sleep 2
 since="$(cat "$r/start-time.txt" 2>/dev/null || true)"
 cursor="$(cat "$r/start-cursor.txt" 2>/dev/null || true)"
 if [ -n "$cursor" ]; then
-  sudo -n /usr/bin/journalctl -u cuprate.service --after-cursor "$cursor" --no-pager >"$r/service-journal.log" 2>&1 || true
+  sudo -n /usr/bin/journalctl -u monero-fast-node.service --after-cursor "$cursor" --no-pager >"$r/service-journal.log" 2>&1 || true
 elif [ -n "$since" ]; then
-  sudo -n /usr/bin/journalctl -u cuprate.service --since "$since" --no-pager >"$r/service-journal.log" 2>&1 || true
+  sudo -n /usr/bin/journalctl -u monero-fast-node.service --since "$since" --no-pager >"$r/service-journal.log" 2>&1 || true
 else
-  sudo -n /usr/bin/journalctl -u cuprate.service --since "${minutes} minutes ago" --no-pager >"$r/service-journal.log" 2>&1 || true
+  sudo -n /usr/bin/journalctl -u monero-fast-node.service --since "${minutes} minutes ago" --no-pager >"$r/service-journal.log" 2>&1 || true
 fi
 tar -C "$r" -czf "$r/system.tar.gz" system
 sha256sum "$r/collector.log" "$r/service-journal.log" "$r/system.tar.gz" >"$r/artifact-sha256.txt"

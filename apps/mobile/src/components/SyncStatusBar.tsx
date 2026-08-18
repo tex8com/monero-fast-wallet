@@ -19,16 +19,17 @@ import {
   type WalletSyncEtaState,
 } from '../../../../packages/wallet-shared/src/walletSync';
 import {
-  formatNetworkSyncRate,
   formatSyncPercent,
   formatWalletDerivationRate,
-  networkSyncByteSample,
-  networkSyncMegabitsPerSecond,
-  networkSyncWindowMegabitsPerSecond,
   normalizeSyncPercent,
   presentNetworkSync,
   walletSyncDerivationsPerSecond,
 } from '../../../../packages/wallet-shared/src/networkSync';
+import {
+  formatMobileNetworkSyncRate,
+  updateMobileNetworkSyncRateWindow,
+  type MobileNetworkSyncRateWindow,
+} from '../services/MobileNetworkSyncRate';
 
 type SyncStatusBarProps = {
   compact?: boolean;
@@ -238,10 +239,11 @@ export default function SyncStatusBar({
             label={t('sync.blockchainData')}
             percent={blockchainProgress}
             rate={networkRate === undefined ? undefined : t('sync.networkRate', {
-              rate: formatNetworkSyncRate(networkRate, dateLocale),
+              rate: formatMobileNetworkSyncRate(networkRate, dateLocale),
             })}
             target={network.targetHeight}
             testID="blockchain-progress"
+            variant="blockchain"
           />
           {showWalletSync ? (
             <>
@@ -265,6 +267,7 @@ export default function SyncStatusBar({
                 })}
                 target={presentation.targetHeight}
                 testID="wallet-progress"
+                variant="wallet"
               />
             </>
           ) : null}
@@ -323,6 +326,7 @@ function SyncProgressRow({
   rate,
   target,
   testID,
+  variant,
 }: {
   current?: number;
   detail: string;
@@ -332,6 +336,7 @@ function SyncProgressRow({
   rate?: string;
   target?: number;
   testID: string;
+  variant: 'blockchain' | 'wallet';
 }) {
   const { t } = useI18n();
   const normalizedPercent =
@@ -358,7 +363,7 @@ function SyncProgressRow({
         <View
           style={[
             s.fill,
-            normalizedPercent === 100 && s.fillReady,
+            variant === 'blockchain' ? s.fillBlockchain : s.fillWallet,
             { width: fillWidth },
           ]}
         />
@@ -484,37 +489,19 @@ function useElapsedSeconds(active: boolean) {
 
 /** Aggregate every completed transport lane over a short rolling window. */
 function useAggregateNetworkRate(status?: NetworkSyncStatus) {
-  const samplesRef = React.useRef<
-    NonNullable<ReturnType<typeof networkSyncByteSample>>[]
-  >([]);
+  const windowRef = React.useRef<MobileNetworkSyncRateWindow>({ samples: [] });
   const [rate, setRate] = React.useState<number | undefined>();
 
   React.useEffect(() => {
-    const sample = networkSyncByteSample(status, Date.now());
-    if (!sample) return;
-    const prior = samplesRef.current.at(-1);
-    if (
-      prior &&
-      (prior.source !== sample.source || prior.totalBytes > sample.totalBytes)
-    ) {
-      samplesRef.current = [];
-    }
-    samplesRef.current.push(sample);
-    const cutoff = sample.observedAt - 3_000;
-    while (
-      samplesRef.current.length > 2 &&
-      samplesRef.current[1].observedAt <= cutoff
-    ) {
-      samplesRef.current.shift();
-    }
-    const aggregate = networkSyncWindowMegabitsPerSecond(
-      samplesRef.current[0],
-      sample,
+    windowRef.current = updateMobileNetworkSyncRateWindow(
+      windowRef.current,
+      status,
+      Date.now(),
     );
-    if (aggregate !== undefined) setRate(aggregate);
+    setRate(windowRef.current.rate);
   }, [status]);
 
-  return rate ?? networkSyncMegabitsPerSecond(status);
+  return rate;
 }
 
 function formatBlockCount(value?: number) {
@@ -747,7 +734,12 @@ const s = StyleSheet.create({
   fill: {
     height: '100%',
     borderRadius: radius.full,
-    backgroundColor: colors.warning,
+  },
+  fillBlockchain: {
+    backgroundColor: colors.orange,
+  },
+  fillWallet: {
+    backgroundColor: '#737381',
   },
   fillReady: {
     backgroundColor: colors.success,

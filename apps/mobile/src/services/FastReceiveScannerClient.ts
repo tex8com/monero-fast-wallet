@@ -85,10 +85,13 @@ export function normalizeScannerUrl(value: string): string {
   try {
     parsed = new URL(trimmed);
   } catch {
-    throw new Error("scannerUrl must be a valid HTTPS origin");
+    throw new Error("scannerUrl must be a valid private-service origin");
   }
+  const authenticatedOnion =
+    parsed.protocol === 'http:' &&
+    /^[a-z2-7]{56}\.onion$/.test(parsed.hostname.toLowerCase());
   if (
-    parsed.protocol !== 'https:' ||
+    (parsed.protocol !== 'https:' && !authenticatedOnion) ||
     !parsed.hostname ||
     parsed.username ||
     parsed.password ||
@@ -97,7 +100,7 @@ export function normalizeScannerUrl(value: string): string {
     (parsed.pathname !== '' && parsed.pathname !== '/')
   ) {
     throw new Error(
-      'scannerUrl must be an HTTPS origin without credentials, paths, queries, or fragments',
+      'scannerUrl must be an HTTPS or Tor v3 Onion origin without credentials, paths, queries, or fragments',
     );
   }
   return parsed.origin;

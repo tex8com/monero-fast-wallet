@@ -1075,7 +1075,7 @@ type ButtonProps = {
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  scroll: { paddingHorizontal: 20, paddingBottom: 132, paddingTop: 52 },
+  scroll: { paddingHorizontal: 20, paddingBottom: 132, paddingTop: 12 },
   header: { flexDirection: 'row', alignItems: 'flex-start', gap: 16 },
   headerText: { flex: 1 },
   eyebrow: {

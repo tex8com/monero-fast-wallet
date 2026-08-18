@@ -11,6 +11,7 @@ pub const MFW_ARBITRARY_DATA_MARKER: u8 = 0x7f;
 pub const MFW_MAX_NONCE_BYTES: usize = 255;
 pub const MAX_NAME_BYTES: usize = 63;
 pub const MAX_NAME_RECORD_BYTES: usize = 251;
+pub const MAX_LEGACY_NAME_RECORD_BYTES: usize = 152;
 pub const COMMIT_RECORD_BYTES: usize = 38;
 pub const MFW_MAGIC: &[u8; 4] = b"MFWN";
 pub const MFW_VERSION: u8 = 1;
@@ -253,6 +254,93 @@ pub struct NameRecord {
     /// Claim salt for `CLAIM`; predecessor fingerprint for later operations.
     pub binding: [u8; 16],
     pub signature: [u8; 64],
+}
+
+/**
+ * Immutable Registry-v1 claim emitted before owner-signed transitions were
+ * introduced. It is accepted only by the explicit legacy verification ABI;
+ * new claims, renewals and updates must use `NameRecord` above.
+ */
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyNameRecord {
+    pub network: Network,
+    pub name: CanonicalName,
+    pub address: PublicAddress,
+    pub claim_salt: [u8; 16],
+}
+
+impl LegacyNameRecord {
+    pub fn decode(encoded: &[u8]) -> Result<Self, NameProtocolError> {
+        if encoded.len() < 4 + 1 + 1 + 1 + 1 + 1 + 32 + 32 + 16
+            || encoded.len() > MAX_LEGACY_NAME_RECORD_BYTES
+        {
+            return Err(NameProtocolError::InvalidLength);
+        }
+        let mut cursor = Cursor::new(encoded);
+        cursor.expect(MFW_MAGIC)?;
+        if cursor.u8()? != MFW_VERSION {
+            return Err(NameProtocolError::UnsupportedVersion);
+        }
+        if NameOperation::decode(cursor.u8()?)? != NameOperation::Claim {
+            return Err(NameProtocolError::WrongOperation);
+        }
+        let network = Network::decode(cursor.u8()?)?;
+        let name_len = usize::from(cursor.u8()?);
+        if name_len == 0 || name_len > MAX_NAME_BYTES {
+            return Err(NameProtocolError::InvalidNameLength);
+        }
+        let name = CanonicalName::from_canonical_bytes(cursor.take(name_len)?)?;
+        let kind = AddressKind::decode(cursor.u8()?)?;
+        let public_spend_key = cursor.array()?;
+        let public_view_key = cursor.array()?;
+        let address = PublicAddress::new(kind, public_spend_key, public_view_key)?;
+        let claim_salt = cursor.array()?;
+        cursor.finish()?;
+        let record = Self {
+            network,
+            name,
+            address,
+            claim_salt,
+        };
+        if record.encode()?.as_slice() != encoded {
+            return Err(NameProtocolError::NonCanonical);
+        }
+        Ok(record)
+    }
+
+    pub fn verify(
+        &self,
+        expected_name: &CanonicalName,
+        expected_network: Network,
+    ) -> Result<(), NameProtocolError> {
+        if &self.name != expected_name {
+            return Err(NameProtocolError::InvalidTransition);
+        }
+        if self.network != expected_network {
+            return Err(NameProtocolError::WrongNetwork);
+        }
+        self.address.validate()
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, NameProtocolError> {
+        CanonicalName::from_canonical_bytes(self.name.as_str().as_bytes())?;
+        self.address.validate()?;
+        let mut encoded = Vec::with_capacity(MAX_LEGACY_NAME_RECORD_BYTES);
+        encoded.extend_from_slice(MFW_MAGIC);
+        encoded.push(MFW_VERSION);
+        encoded.push(NameOperation::Claim as u8);
+        encoded.push(self.network as u8);
+        encoded.push(
+            u8::try_from(self.name.as_str().len())
+                .map_err(|_| NameProtocolError::InvalidNameLength)?,
+        );
+        encoded.extend_from_slice(self.name.as_str().as_bytes());
+        encoded.push(self.address.kind as u8);
+        encoded.extend_from_slice(&self.address.public_spend_key);
+        encoded.extend_from_slice(&self.address.public_view_key);
+        encoded.extend_from_slice(&self.claim_salt);
+        Ok(encoded)
+    }
 }
 
 impl NameRecord {
@@ -670,6 +758,8 @@ pub enum NameProtocolError {
     NonCanonical,
     #[error("unknown network")]
     UnknownNetwork,
+    #[error("wrong network")]
+    WrongNetwork,
     #[error("unknown address kind")]
     UnknownAddressKind,
     #[error("invalid Monero public key")]
@@ -832,6 +922,26 @@ mod tests {
     }
 
     #[test]
+    fn immutable_registry_v1_live_record_is_canonical_and_network_bound() {
+        let encoded = hex::decode(
+            "4d46574e010200047465783800d5b0c70a320e1994e0c2099c203496f51fa771db6f771fed1697756034e645c443edc33ddde609782fb5e14a4fe600ff3cef0f862b0c27f9e8e314e556f3ac08375d17430161c44634bece4fffc2bd48",
+        )
+        .unwrap();
+        let record = LegacyNameRecord::decode(&encoded).unwrap();
+        assert_eq!(record.name.display_name(), "tex8.mfw");
+        assert_eq!(record.network, Network::Mainnet);
+        record
+            .verify(&CanonicalName::parse("TEX8.MFW").unwrap(), Network::Mainnet)
+            .unwrap();
+        assert!(record
+            .verify(&CanonicalName::parse("tex8.mfw").unwrap(), Network::Testnet)
+            .is_err());
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(LegacyNameRecord::decode(&trailing).is_err());
+    }
+
+    #[test]
     fn extracts_mfw_after_standard_public_key() {
         let commit = CommitRecord {
             commitment: [8; 32],
@@ -850,6 +960,7 @@ mod tests {
         #[test]
         fn name_decoder_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..400)) {
             let _ = NameRecord::decode(&bytes);
+            let _ = LegacyNameRecord::decode(&bytes);
             let _ = CommitRecord::decode(&bytes);
             let _ = extract_mfw_payloads(&bytes);
         }

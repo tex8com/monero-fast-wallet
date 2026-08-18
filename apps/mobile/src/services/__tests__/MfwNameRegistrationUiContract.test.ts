@@ -8,6 +8,7 @@ const source = (...parts: string[]) =>
 
 describe('MFW name registration UI contract', () => {
   const home = source('src', 'screens', 'HomeScreen.tsx');
+  const ticker = source('src', 'components', 'MfwNameTicker.tsx');
   const menu = source('src', 'screens', 'MenuScreen.tsx');
   const names = source('src', 'screens', 'MfwNamesScreen.tsx');
   const send = source('src', 'screens', 'SendScreen.tsx');
@@ -20,23 +21,32 @@ describe('MFW name registration UI contract', () => {
     ),
   );
 
-  it('keeps the discovery screen explicitly release-gated with transaction activation', () => {
-    expect(home).toMatch(
-      /v1ReleaseFeatures\.mfwNameRegistration[\s\S]+mfwNames\.claimYourAddress/,
-    );
+  it('ships the explicitly release-gated registration screen with frozen parameters', () => {
+    expect(ticker).toContain("t('mfwNames.claimYourAddress')");
+    expect(home).not.toContain('nameClaimCard');
     expect(menu).toContain('v1ReleaseFeatures.mfwNameRegistration');
     expect(menu).toContain('"MfwNames", IcoKey');
     expect(navigation).toContain('name="MfwNames"');
-    expect(manifest.features.mfwNameRegistration).toBe(false);
-    expect(manifest.parameters.mfwNameGenesis).toBeNull();
+    expect(manifest.features.mfwNameRegistration).toBe(true);
+    expect(manifest.parameters.mfwNameGenesis.network).toBe('mainnet');
+    expect(manifest.parameters.mfwNameGenesis.maximumTermYears).toBe(1_000);
+    expect(manifest.parameters.mfwNameResolverOrigins).toEqual([
+      'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
+      'http://quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion',
+    ]);
+    expect(manifest.parameters.mfwNameSuggestionOnionOrigins).toEqual([
+      'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
+    ]);
     expect(names).toContain('!v1ReleaseFeatures.mfwNameRegistration');
   });
 
   it('offers every stored wallet address and a dedicated privacy subaddress', () => {
     expect(names).toContain('loadWalletAddresses');
     expect(names).toContain('walletService.createSubaddress');
-    expect(names).toContain("t('mfwNames.publicWarning')");
+    expect(names).not.toContain("t('mfwNames.publicWarning')");
     expect(names).toContain("t('mfwNames.createDedicated')");
+    expect(names).toContain("addressInputMode === 'manual'");
+    expect(names).toContain('walletService.validateRecipientAddress');
   });
 
   it('documents and enforces the two-approval commit/reveal journey', () => {
@@ -49,9 +59,44 @@ describe('MFW name registration UI contract', () => {
     expect(send).toContain("mfwNamePreset?.kind === 'claim'");
   });
 
-  it('lists every locally tracked name with exact expiry and estimated days', () => {
+  it('opens the shared Ledger signing flow before native name preparation', () => {
+    const firstPreparation = names.indexOf(
+      'walletService.prepareMfwNameRegistration(signingSession',
+    );
+    expect(names).toContain('prepareWithSigningSession');
+    expect(names).toContain('await connectLedgerForSigning({');
+    expect(names).toContain('<LedgerSigningModal');
+    expect(firstPreparation).toBeGreaterThan(
+      names.indexOf('const prepareWithSigningSession'),
+    );
+    expect(names).not.toContain(
+      'walletService.prepareMfwNameRegistration(session,',
+    );
+    expect(names).not.toContain('walletService.prepareMfwNameClaim(session,');
+    expect(names).not.toContain(
+      'walletService.prepareMfwNameTransition(session,',
+    );
+  });
+
+  it('keeps new registration lean and enforces the 1,000-year hard cap', () => {
+    expect(names).toContain('type RegistrationStep = 1 | 2 | 3');
+    expect(names).toContain('setRegistrationStep(2)');
+    expect(names).toContain('setRegistrationStep(3)');
+    expect(names).not.toContain('style={s.registrationSteps}');
+    expect(names).not.toContain("t('mfwNames.selectedWallet'");
+    expect(names).toContain('maxLength={4}');
+    expect(registration).toContain(
+      'export const MFW_NAME_MAX_TERM_YEARS = 1_000',
+    );
+  });
+
+  it('shows at most three recent names and opens full details only on demand', () => {
     expect(names).toContain('loadMfwOwnedNames');
-    expect(names).toContain('ownedNames.map');
+    expect(names).toContain('.slice(0, 3)');
+    expect(names).toContain('visibleOwnedNames.map');
+    expect(names).toContain("t('mfwNames.showMore')");
+    expect(names).toContain('setSelectedOwnedNameId(record.id)');
+    expect(names).toContain('[selectedOwnedName].map');
     expect(names).toContain('record.expiryHeight');
     expect(names).toContain('mfwNameRemainingDays');
     expect(names).toContain("t('mfwNames.expiryEstimate')");
@@ -59,6 +104,14 @@ describe('MFW name registration UI contract', () => {
 
   it('requires quorum availability and offers complete active-name management', () => {
     expect(names).toContain('checkConfiguredMfwNameAvailability');
+    expect(names).toContain('estimateMfwNameExpiryTimestampMs');
+    expect(names).toContain("t('mfwNames.estimatedValidUntil')");
+    expect(names).toContain("t('mfwNames.checkedChainTip')");
+    expect(names).toContain("t('mfwNames.checkedAt')");
+    expect(names).toContain("registeredWallet?.network ?? 'mainnet'");
+    expect(names).not.toMatch(
+      /!registeredWallet\s*\|\|[\s\S]{0,80}!v1ReleaseFeatures\.mfwNameRegistration/,
+    );
     expect(names).toContain("availability.value.status !== 'available'");
     expect(names).toContain("const renewable = stage === 'active'");
     expect(names).toContain('beginRenewal(record)');

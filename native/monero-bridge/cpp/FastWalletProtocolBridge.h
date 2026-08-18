@@ -64,6 +64,42 @@ inline std::string encodeHex(const unsigned char* bytes, std::size_t length) {
   return output;
 }
 
+// The Rust protocol API emits one complete Monero tx_extra nonce field:
+// tag 0x02, canonical varint length, then the nonce. Monero's wallet API
+// expects only the inner nonce, so mobile and desktop normalize it here.
+inline bool extractCanonicalExtraNonceField(
+    const unsigned char* field,
+    std::size_t fieldLength,
+    std::vector<unsigned char>& nonce) {
+  nonce.clear();
+  if (field == nullptr || fieldLength < 3 || field[0] != 0x02) {
+    return false;
+  }
+  std::size_t cursor = 1;
+  const unsigned char firstLengthByte = field[cursor++];
+  std::size_t nonceLength = 0;
+  if ((firstLengthByte & 0x80) == 0) {
+    nonceLength = firstLengthByte;
+  } else {
+    if (cursor >= fieldLength) {
+      return false;
+    }
+    const unsigned char secondLengthByte = field[cursor++];
+    nonceLength = static_cast<std::size_t>(firstLengthByte & 0x7f) |
+        (static_cast<std::size_t>(secondLengthByte & 0x7f) << 7);
+    if ((secondLengthByte & 0x80) != 0 || secondLengthByte == 0 ||
+        nonceLength < 128) {
+      return false;
+    }
+  }
+  if (nonceLength == 0 || nonceLength > 255 ||
+      cursor + nonceLength != fieldLength) {
+    return false;
+  }
+  nonce.assign(field + cursor, field + fieldLength);
+  return true;
+}
+
 class SecretStringGuard {
  public:
   explicit SecretStringGuard(std::string& value) : value_(value) {}
@@ -313,14 +349,24 @@ inline std::string verifiedNameAddress(
     const std::string& expectedName,
     NetworkType network,
     const std::string& signingOwnerPublicKeyHex) {
-  auto record = decodeHex(recordPayloadHex, 189, 251);
-  auto ownerPublicKey = decodeHex(signingOwnerPublicKeyHex, 32, 32);
   std::array<unsigned char, TEX8_MFW_MONERO_ADDRESS_SIZE> output{};
-  const auto status = tex8_mfw_verify_and_encode_name_address_v1(
-      record.data(), record.size(),
-      reinterpret_cast<const unsigned char*>(expectedName.data()),
-      expectedName.size(), networkCode(network), ownerPublicKey.data(),
-      ownerPublicKey.size(), output.data(), output.size());
+  int32_t status = TEX8_FAST_WALLET_PROTOCOL_INVALID_ARGUMENT;
+  if (signingOwnerPublicKeyHex.empty()) {
+    const auto record = decodeHex(recordPayloadHex, 89, 152);
+    status = tex8_mfw_verify_and_encode_legacy_name_address_v1(
+        record.data(), record.size(),
+        reinterpret_cast<const unsigned char*>(expectedName.data()),
+        expectedName.size(), networkCode(network), output.data(), output.size());
+  } else {
+    const auto record = decodeHex(recordPayloadHex, 189, 251);
+    const auto ownerPublicKey =
+        decodeHex(signingOwnerPublicKeyHex, 32, 32);
+    status = tex8_mfw_verify_and_encode_name_address_v1(
+        record.data(), record.size(),
+        reinterpret_cast<const unsigned char*>(expectedName.data()),
+        expectedName.size(), networkCode(network), ownerPublicKey.data(),
+        ownerPublicKey.size(), output.data(), output.size());
+  }
   if (status != TEX8_FAST_WALLET_PROTOCOL_OK) {
     throw WalletEngineError("MFW name record is invalid");
   }
@@ -385,10 +431,13 @@ inline MfwNameRegistrationMaterial generateMfwNameRegistrationMaterial(
   std::fill(spendKey.begin(), spendKey.end(), 0);
   std::fill(viewKey.begin(), viewKey.end(), 0);
   std::fill(claimExtra.begin(), claimExtra.end(), 0);
+  std::vector<unsigned char> commitExtraNonce;
   if (status != TEX8_FAST_WALLET_PROTOCOL_OK ||
       commitExtraLength == 0 || commitExtraLength > commitExtra.size() ||
       claimRecordLength == 0 || claimRecordLength > claimRecord.size() ||
-      claimExtraLength == 0 || claimExtraLength > claimExtra.size()) {
+      claimExtraLength == 0 || claimExtraLength > claimExtra.size() ||
+      !extractCanonicalExtraNonceField(
+          commitExtra.data(), commitExtraLength, commitExtraNonce)) {
     std::fill(ownerPrivateKey.begin(), ownerPrivateKey.end(), 0);
     std::fill(ownerPublicKey.begin(), ownerPublicKey.end(), 0);
     std::fill(commitSalt.begin(), commitSalt.end(), 0);
@@ -401,10 +450,7 @@ inline MfwNameRegistrationMaterial generateMfwNameRegistrationMaterial(
       encodeHex(ownerPrivateKey.data(), ownerPrivateKey.size()),
       encodeHex(ownerPublicKey.data(), ownerPublicKey.size()),
       encodeHex(commitSalt.data(), commitSalt.size()),
-      std::vector<unsigned char>(
-          commitExtra.begin(),
-          std::next(commitExtra.begin(),
-                    static_cast<std::ptrdiff_t>(commitExtraLength))),
+      std::move(commitExtraNonce),
       encodeHex(claimRecord.data(), claimRecordLength),
   };
   std::fill(ownerPrivateKey.begin(), ownerPrivateKey.end(), 0);
@@ -446,9 +492,12 @@ inline MfwNamePreparedRecord prepareMfwNameClaimRecord(
   std::fill(viewKey.begin(), viewKey.end(), 0);
   std::fill(ownerPrivateKey.begin(), ownerPrivateKey.end(), 0);
   std::fill(commitSalt.begin(), commitSalt.end(), 0);
+  std::vector<unsigned char> claimExtraNonce;
   if (status != TEX8_FAST_WALLET_PROTOCOL_OK ||
       claimRecordLength == 0 || claimRecordLength > claimRecord.size() ||
-      claimExtraLength == 0 || claimExtraLength > claimExtra.size()) {
+      claimExtraLength == 0 || claimExtraLength > claimExtra.size() ||
+      !extractCanonicalExtraNonceField(
+          claimExtra.data(), claimExtraLength, claimExtraNonce)) {
     std::fill(ownerPublicKey.begin(), ownerPublicKey.end(), 0);
     std::fill(claimRecord.begin(), claimRecord.end(), 0);
     std::fill(claimExtra.begin(), claimExtra.end(), 0);
@@ -457,10 +506,7 @@ inline MfwNamePreparedRecord prepareMfwNameClaimRecord(
   MfwNamePreparedRecord result{
       encodeHex(ownerPublicKey.data(), ownerPublicKey.size()),
       encodeHex(claimRecord.data(), claimRecordLength),
-      std::vector<unsigned char>(
-          claimExtra.begin(),
-          std::next(claimExtra.begin(),
-                    static_cast<std::ptrdiff_t>(claimExtraLength))),
+      std::move(claimExtraNonce),
   };
   std::fill(ownerPublicKey.begin(), ownerPublicKey.end(), 0);
   std::fill(claimRecord.begin(), claimRecord.end(), 0);
@@ -504,11 +550,15 @@ inline MfwNamePreparedRecord prepareMfwNameTransitionRecord(
   std::fill(ownerPrivateKey.begin(), ownerPrivateKey.end(), 0);
   std::fill(predecessorRecord.begin(), predecessorRecord.end(), 0);
   std::fill(predecessorSigner.begin(), predecessorSigner.end(), 0);
+  std::vector<unsigned char> transitionExtraNonce;
   if (status != TEX8_FAST_WALLET_PROTOCOL_OK ||
       transitionRecordLength == 0 ||
       transitionRecordLength > transitionRecord.size() ||
       transitionExtraLength == 0 ||
-      transitionExtraLength > transitionExtra.size()) {
+      transitionExtraLength > transitionExtra.size() ||
+      !extractCanonicalExtraNonceField(
+          transitionExtra.data(), transitionExtraLength,
+          transitionExtraNonce)) {
     std::fill(transitionRecord.begin(), transitionRecord.end(), 0);
     std::fill(transitionExtra.begin(), transitionExtra.end(), 0);
     throw WalletEngineError("MFW name transition material is invalid");
@@ -516,10 +566,7 @@ inline MfwNamePreparedRecord prepareMfwNameTransitionRecord(
   MfwNamePreparedRecord result{
       "",
       encodeHex(transitionRecord.data(), transitionRecordLength),
-      std::vector<unsigned char>(
-          transitionExtra.begin(),
-          std::next(transitionExtra.begin(),
-                    static_cast<std::ptrdiff_t>(transitionExtraLength))),
+      std::move(transitionExtraNonce),
   };
   std::fill(transitionRecord.begin(), transitionRecord.end(), 0);
   std::fill(transitionExtra.begin(), transitionExtra.end(), 0);

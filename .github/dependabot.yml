@@ -58,6 +58,6 @@ updates:
       interval: weekly
 
   - package-ecosystem: cargo
-    directory: /services/notify-scanner
+    directory: /services/fast-wallet-scanner-core
     schedule:
       interval: weekly

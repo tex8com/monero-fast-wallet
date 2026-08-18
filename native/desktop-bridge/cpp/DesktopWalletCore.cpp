@@ -74,6 +74,9 @@ struct Tex8DesktopWalletCore {
 
 namespace {
 
+constexpr unsigned int kMfwNameMaximumTermYears = 1000;
+constexpr uint64_t kMfwNameAnnualFeeAtomic = 10000000000ULL;
+
 char* copyString(const std::string& value) noexcept {
   auto* output = static_cast<char*>(std::malloc(value.size() + 1));
   if (output == nullptr) return nullptr;
@@ -905,8 +908,8 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_claim(
     unsigned int years, const char* priority, unsigned int account_index,
     const char* owner_private_key_hex, const char* commit_salt_hex) noexcept {
   return invoke(core, [&] {
-    if (years < 1 || years > 10) {
-      throw std::runtime_error("MFW name term must be between 1 and 10 years");
+    if (years < 1 || years > kMfwNameMaximumTermYears) {
+      throw std::runtime_error("MFW name term must be between 1 and 1000 years");
     }
     auto record = tex8::wallet::fast_wallet_protocol_bridge::
         prepareMfwNameClaimRecord(
@@ -916,7 +919,7 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_claim(
     request.walletId = input(wallet_id);
     request.address = input(registry_address);
     request.amountAtomic =
-        std::to_string(10000000000ULL * static_cast<uint64_t>(years));
+        std::to_string(kMfwNameAnnualFeeAtomic * static_cast<uint64_t>(years));
     request.priority = input(priority);
     request.accountIndex = account_index;
     request.mfwNameExtraNonce = record.extraNonce;
@@ -934,8 +937,8 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_transition(
     const char* predecessor_record_hex,
     const char* predecessor_signing_owner_public_key_hex) noexcept {
   return invoke(core, [&] {
-    if (years < 1 || years > 10) {
-      throw std::runtime_error("MFW name term must be between 1 and 10 years");
+    if (years < 1 || years > kMfwNameMaximumTermYears) {
+      throw std::runtime_error("MFW name term must be between 1 and 1000 years");
     }
     const std::string operationValue = input(operation);
     const unsigned char operationCode =
@@ -959,7 +962,7 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_prepare_mfw_name_transition(
     request.amountAtomic =
         operationCode == 4
             ? std::to_string(
-                  10000000000ULL * static_cast<uint64_t>(years))
+                  kMfwNameAnnualFeeAtomic * static_cast<uint64_t>(years))
             : "1";
     request.priority = input(priority);
     request.accountIndex = account_index;

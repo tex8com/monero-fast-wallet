@@ -994,7 +994,13 @@ fn validate_relay_origin(origin: &str) -> Result<(), ProtocolError> {
         return Err(ProtocolError::InvalidRelayOrigin);
     }
     let parsed = Url::parse(origin).map_err(|_| ProtocolError::InvalidRelayOrigin)?;
-    if parsed.scheme() != "https"
+    let onion = parsed.scheme() == "http"
+        && parsed.host_str().is_some_and(|host| {
+            host.len() == 62
+                && host.ends_with(".onion")
+                && host[..56].bytes().all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
+        });
+    if (parsed.scheme() != "https" && !onion)
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
@@ -1191,12 +1197,13 @@ pub mod ffi {
         AskRequest, AskResponse, CanonicalName as MfwCanonicalName,
         CommitRecord as MfwCommitRecord, ContactCard as MfwContactCard, ContactEnvelope,
         ContactPolicy, ContactRevocation, ContactSigningKey, HpkePrivateKey as MfwHpkePrivateKey,
-        NameOperation as MfwNameOperation, NameRecord as MfwNameRecord,
-        NameSigningKey as MfwNameSigningKey, Network as MfwNameNetwork, OprfClientSession,
-        OprfEvaluation, PairId, ParticipantRecord, ParticipantRevocation, PermitRefreshRequest,
-        PhoneToken, PublicAddress as MfwPublicAddress, SignedDirectorySnapshot, ASK_ENVELOPE_BYTES,
-        ASK_MAILBOX_POLL_BYTES, PERMIT_REFRESH_REQUEST_BYTES, VOPRF_CLIENT_STATE_BYTES,
-        VOPRF_EVALUATION_BYTES, VOPRF_REQUEST_BYTES,
+        LegacyNameRecord as MfwLegacyNameRecord, NameOperation as MfwNameOperation,
+        NameRecord as MfwNameRecord, NameSigningKey as MfwNameSigningKey,
+        Network as MfwNameNetwork, OprfClientSession, OprfEvaluation, PairId, ParticipantRecord,
+        ParticipantRevocation, PermitRefreshRequest, PhoneToken, PublicAddress as MfwPublicAddress,
+        SignedDirectorySnapshot, ASK_ENVELOPE_BYTES, ASK_MAILBOX_POLL_BYTES,
+        PERMIT_REFRESH_REQUEST_BYTES, VOPRF_CLIENT_STATE_BYTES, VOPRF_EVALUATION_BYTES,
+        VOPRF_REQUEST_BYTES,
     };
     use monero_address::{
         AddressType as MoneroAddressType, MoneroAddress, Network as MoneroAddressNetwork,
@@ -1270,6 +1277,24 @@ pub mod ffi {
                 .try_into()
                 .map_err(|_| mfw_recipient_protocol::name::NameProtocolError::InvalidLength)?,
         )?;
+        Ok((record, network))
+    }
+
+    fn verify_legacy_mfw_name_record(
+        record: &[u8],
+        expected_name: &[u8],
+        expected_network: u8,
+    ) -> Result<
+        (MfwLegacyNameRecord, MfwNameNetwork),
+        mfw_recipient_protocol::name::NameProtocolError,
+    > {
+        let network = MfwNameNetwork::decode(expected_network)?;
+        let expected_name = MfwCanonicalName::parse(
+            std::str::from_utf8(expected_name)
+                .map_err(|_| mfw_recipient_protocol::name::NameProtocolError::InvalidName)?,
+        )?;
+        let record = MfwLegacyNameRecord::decode(record)?;
+        record.verify(&expected_name, network)?;
         Ok((record, network))
     }
 
@@ -1720,6 +1745,48 @@ pub mod ffi {
                 return PRIVATE_DIRECTORY_FAILED;
             };
             let Ok(address) = encode_mfw_monero_address(&record, network) else {
+                return PRIVATE_DIRECTORY_FAILED;
+            };
+            if address.len() != MFW_MONERO_ADDRESS_BYTES {
+                return PRIVATE_DIRECTORY_FAILED;
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(address.as_ptr(), output, address.len());
+            }
+            OK
+        })
+        .unwrap_or(PRIVATE_DIRECTORY_FAILED)
+    }
+
+    /// Verifies and encodes an immutable pre-owner Registry-v1 claim. This is
+    /// deliberately a separate ABI so current signed records can never
+    /// silently downgrade to the legacy format.
+    #[no_mangle]
+    pub unsafe extern "C" fn tex8_mfw_verify_and_encode_legacy_name_address_v1(
+        record: *const u8,
+        record_len: usize,
+        expected_name: *const u8,
+        expected_name_len: usize,
+        expected_network: u8,
+        output: *mut u8,
+        output_len: usize,
+    ) -> i32 {
+        catch_unwind(|| {
+            let Some(record) = checked_input(record, record_len, 89, 152) else {
+                return INVALID_ARGUMENT;
+            };
+            let Some(expected_name) = checked_input(expected_name, expected_name_len, 1, 67) else {
+                return INVALID_ARGUMENT;
+            };
+            if output.is_null() || output_len != MFW_MONERO_ADDRESS_BYTES {
+                return INVALID_ARGUMENT;
+            }
+            let Ok((record, network)) =
+                verify_legacy_mfw_name_record(record, expected_name, expected_network)
+            else {
+                return PRIVATE_DIRECTORY_FAILED;
+            };
+            let Ok(address) = encode_mfw_public_address(&record.address, network) else {
                 return PRIVATE_DIRECTORY_FAILED;
             };
             if address.len() != MFW_MONERO_ADDRESS_BYTES {
@@ -5181,6 +5248,61 @@ mod tests {
                 )
             },
             ffi::PRIVATE_DIRECTORY_FAILED
+        );
+    }
+
+    #[test]
+    fn c_abi_verifies_live_immutable_registry_v1_record_without_downgrade() {
+        let encoded = hex::decode(
+            "4d46574e010200047465783800d5b0c70a320e1994e0c2099c203496f51fa771db6f771fed1697756034e645c443edc33ddde609782fb5e14a4fe600ff3cef0f862b0c27f9e8e314e556f3ac08375d17430161c44634bece4fffc2bd48",
+        )
+        .unwrap();
+        let mut output = [0_u8; ffi::MFW_MONERO_ADDRESS_BYTES];
+        assert_eq!(
+            unsafe {
+                ffi::tex8_mfw_verify_and_encode_legacy_name_address_v1(
+                    encoded.as_ptr(),
+                    encoded.len(),
+                    b"TEX8.MFW".as_ptr(),
+                    b"TEX8.MFW".len(),
+                    0,
+                    output.as_mut_ptr(),
+                    output.len(),
+                )
+            },
+            ffi::OK
+        );
+        assert_eq!(std::str::from_utf8(&output).unwrap().len(), 95);
+        assert_ne!(output, [0; ffi::MFW_MONERO_ADDRESS_BYTES]);
+        assert_eq!(
+            unsafe {
+                ffi::tex8_mfw_verify_and_encode_legacy_name_address_v1(
+                    encoded.as_ptr(),
+                    encoded.len(),
+                    b"tex8.mfw".as_ptr(),
+                    b"tex8.mfw".len(),
+                    1,
+                    output.as_mut_ptr(),
+                    output.len(),
+                )
+            },
+            ffi::PRIVATE_DIRECTORY_FAILED
+        );
+        assert_eq!(
+            unsafe {
+                ffi::tex8_mfw_verify_and_encode_name_address_v1(
+                    encoded.as_ptr(),
+                    encoded.len(),
+                    b"tex8.mfw".as_ptr(),
+                    b"tex8.mfw".len(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    output.as_mut_ptr(),
+                    output.len(),
+                )
+            },
+            ffi::INVALID_ARGUMENT
         );
     }
 

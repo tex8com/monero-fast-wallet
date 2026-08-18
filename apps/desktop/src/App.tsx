@@ -22,7 +22,7 @@ import {
   presentNetworkSync,
   walletSyncDerivationsPerSecond,
 } from '../../../packages/wallet-shared/src/networkSync';
-import { languageNames, supportedLanguages, useI18n } from './i18n';
+import { languageFlags, languageNames, supportedLanguages, useI18n } from './i18n';
 import { type MarketPoint, type MarketTimeframe, useXmrChart, useXmrPrice } from './marketData';
 import { type MoneroNewsCategory, useMoneroNews } from './moneroNews';
 import { restoreHeightFromStartDate, todayRestoreDate } from './restoreStart';
@@ -33,15 +33,6 @@ import { v1ReleaseFeatures } from '../../../packages/wallet-shared/src/v1Release
 import { DesktopAppUpdateService } from './appUpdate';
 import MfwNames from './MfwNames';
 import { loadFastWalletPreference, saveFastWalletPreference } from './fastWalletPreference';
-import {
-  runDesktopWalletDiagnosticTestbench,
-  type DesktopDiagnosticProgress,
-} from './walletDiagnosticTestbench';
-import type {
-  DiagnosticTestStatus,
-  DiagnosticTestbenchReport,
-} from '../../../packages/wallet-shared/src/diagnosticTestbench';
-import { localizeDiagnosticText } from '../../../packages/wallet-shared/src/diagnosticLocalization';
 import DesktopIcon, { type DesktopIconName } from './DesktopIcon';
 import {
   deriveAppVaultPresentation,
@@ -56,8 +47,14 @@ import type {
   CommunityFastWalletWorker,
   FastWalletWorkerSelection,
 } from '../../../packages/wallet-shared/src/fastWalletWorkerDirectory';
+import {
+  PROJECT_PAGE_ADDRESSES,
+  PROJECT_SERVICE_LINKS,
+  PROJECT_SOURCE_URL,
+  type ProjectServiceId,
+} from '../../../packages/wallet-shared/src/projectServices';
 
-type Section = 'home' | 'wallets' | 'setup' | 'onboarding' | 'send' | 'receive' | 'activity' | 'mfw' | 'enthusiast' | 'community' | 'assistant' | 'settings' | 'menu';
+type Section = 'home' | 'wallets' | 'setup' | 'onboarding' | 'send' | 'receive' | 'activity' | 'mfw' | 'enthusiast' | 'community' | 'assistant' | 'settings' | 'project' | 'node' | 'menu';
 type Network = 'mainnet' | 'testnet' | 'stagenet';
 type SetupMode = 'create' | 'restore' | 'ledger';
 type WalletCoreStatus = { linked: boolean; releaseReady: boolean; coreTree: string; backend: string; message: string; productCoreAbi: number; productCoreSchemaSha256: string; diagnosticRegistrySha256: string; appVaultStateSchemaSha256: string };
@@ -126,7 +123,10 @@ type CommunityV1SearchResult = {
 type FastWalletRecord = { id: string; label: string; address: string; network: Network; sourceRegistrationId: string; restoreHeight: number; derivationIndex: number; seedBackupStatus: 'pending' | 'verified'; seedBackedUpAt?: number; status: 'local-only' | 'enabled' | 'disabled' | 'registration-error' | 'server-mismatch' | 'legacy-blocked'; scannerStatus: string; scannerUrl: string; scannerCheckedAt?: number; lastScannedHeight?: number; notificationsEnabled: boolean; alertStatus: 'off' | 'setting-up' | 'on' | 'needs-attention'; assignmentHandle?: string; assignmentEpoch?: number; assignmentExpiresAt?: number; watchMessageId?: string; createdAt: number; updatedAt: number };
 type FastWalletOpenResponse = { walletId: string; wallet: FastWalletRecord };
 type NodeProfile = { mode: 'optimized-grpc' | 'original-rpc' | 'custom'; network: Network; daemonAddress: string; grpcEndpoint: string; trusted: boolean; useSsl: boolean; username: string; proxyAddress: string; passwordStored: boolean; updatedAt: number };
-type SettingsDiagnostic = { label: string; value: string; tone?: 'good' | 'warning' | 'neutral' };
+type ConnectionRouteProbe = { connected: boolean; endpoint: string; elapsedMs?: number; error?: string };
+type ConnectionRoutesDiagnostic = { tor: ConnectionRouteProbe; clearnet: ConnectionRouteProbe };
+type ConnectivityRouteState = { phase: 'starting' | 'checking' | 'connected' | 'error' | 'idle'; connected: boolean; endpoint: string; checkedAtMs: number; elapsedMs?: number; error?: string };
+type ConnectivityStatus = { tor: ConnectivityRouteState; clearnet: ConnectivityRouteState };
 
 type NavigationItem = { id: Section; label: string; icon: DesktopIconName };
 
@@ -139,7 +139,7 @@ function primarySections(t: ReturnType<typeof useI18n>['t']): NavigationItem[] {
 ]; }
 function secondarySections(_t: ReturnType<typeof useI18n>['t']): NavigationItem[] { return []; }
 
-const menuChildSections: ReadonlySet<Section> = new Set(['wallets', 'mfw', 'assistant', 'settings']);
+const menuChildSections: ReadonlySet<Section> = new Set(['wallets', 'mfw', 'assistant', 'settings', 'project', 'node']);
 function primaryNavigationSection(section: Section): Section {
   return menuChildSections.has(section) ? 'menu' : section;
 }
@@ -182,6 +182,7 @@ function recordWalletUiDiagnostic(event: WalletUiDiagnosticEvent, startedAt?: nu
   });
 }
 function networkLabel(network: Network) { return network === 'mainnet' ? 'Mainnet' : network === 'testnet' ? 'Testnet' : 'Stagenet'; }
+function connectivityTone(route: ConnectivityRouteState | undefined) { return route?.connected ? 'ready' : route?.phase === 'error' ? 'offline' : 'connecting'; }
 function walletDisplayName(wallet: Pick<RegisteredWallet, 'displayName' | 'walletName'>) { return wallet.displayName?.trim() || wallet.walletName; }
 function isFastWalletRegistration(wallet: Pick<RegisteredWallet, 'kind' | 'role'> | null | undefined) { return wallet?.role === 'fast' || wallet?.kind === 'fast'; }
 function fastWalletAsRegistration(wallet: FastWalletRecord): RegisteredWallet {
@@ -299,6 +300,41 @@ function FixedAtomicXmr({ value }: { value: string | undefined }) {
 function parseXmrToAtomic(value: string) { const normalized = value.trim().replace(',', '.'); if (!/^(?:0|[1-9]\d*)(?:\.\d{1,12})?$/.test(normalized)) return null; const [whole, fraction = ''] = normalized.split('.'); return (BigInt(whole) * ATOMIC_XMR + BigInt(fraction.padEnd(12, '0'))).toString(); }
 function atomicXmrNumber(value: string | undefined) { return Number(atomicValue(value)) / Number(ATOMIC_XMR); }
 function formatUsd(value: number) { return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value); }
+type PaymentAmountCurrency = 'XMR' | 'USD';
+function sanitizePaymentAmountInput(value: string, currency: PaymentAmountCurrency) {
+  const normalized = value.replace(',', '.').replace(/[^\d.]/g, '');
+  const dotIndex = normalized.indexOf('.');
+  const whole = (dotIndex >= 0 ? normalized.slice(0, dotIndex) : normalized).replace(/^0+(?=\d)/, '');
+  const fraction = dotIndex >= 0 ? normalized.slice(dotIndex + 1).replace(/\./g, '').slice(0, currency === 'XMR' ? 12 : 2) : undefined;
+  const prefix = whole || (dotIndex >= 0 ? '0' : '');
+  return fraction === undefined ? prefix : `${prefix}.${fraction}`;
+}
+function paymentXmrAmount(input: string, currency: PaymentAmountCurrency, xmrUsdPrice: number) {
+  if (currency === 'XMR') {
+    const atomic = parseXmrToAtomic(input);
+    if (atomic === null || atomicValue(atomic) <= 0n) return undefined;
+    return formatAtomicXmr(atomic, 12);
+  }
+  const usd = Number(input);
+  if (!Number.isFinite(usd) || usd <= 0 || !Number.isFinite(xmrUsdPrice) || xmrUsdPrice <= 0) return undefined;
+  return (usd / xmrUsdPrice).toFixed(12).replace(/\.?0+$/, '');
+}
+function convertPaymentAmount(input: string, from: PaymentAmountCurrency, to: PaymentAmountCurrency, xmrUsdPrice: number) {
+  if (from === to || input.trim().length === 0) return input;
+  if (!Number.isFinite(xmrUsdPrice) || xmrUsdPrice <= 0) return '';
+  if (from === 'XMR') {
+    const atomic = parseXmrToAtomic(input);
+    if (atomic === null || atomicValue(atomic) <= 0n) return '';
+    return (atomicXmrNumber(atomic) * xmrUsdPrice).toFixed(2);
+  }
+  return paymentXmrAmount(input, 'USD', xmrUsdPrice) ?? '';
+}
+function buildMoneroPaymentUri(address: string, xmrAmount?: string) {
+  const trimmedAddress = address.trim();
+  if (!trimmedAddress) return '';
+  const base = `monero:${trimmedAddress}`;
+  return xmrAmount ? `${base}?tx_amount=${encodeURIComponent(xmrAmount)}` : base;
+}
 function formatSyncBlockCount(value: number | undefined, locale?: string) {
   return new Intl.NumberFormat(locale).format(Math.max(0, Math.floor(value ?? 0)));
 }
@@ -343,6 +379,7 @@ function communityTimestamp(value: number) { return Number.isFinite(value) && va
 export default function App() {
   const { t } = useI18n();
   const [section, setSection] = useState<Section>('home');
+  const [mfwTickerVisible, setMfwTickerVisible] = useState(true);
   const [addressManagementRequest, setAddressManagementRequest] = useState<{ walletId: string; nonce: number } | null>(null);
   const [activeWalletId, setActiveWalletId] = useState<string | null>(null);
   const [activeWallet, setActiveWallet] = useState<RegisteredWallet | null>(null);
@@ -379,6 +416,7 @@ export default function App() {
   const pendingFastWalletSourceRef = useRef<WalletOperationResponse | null>(null);
   const [status, setStatus] = useState<WalletCoreStatus | null>(null);
   const [networkSync, setNetworkSync] = useState<NetworkSyncStatus | null>(null);
+  const [connectivity, setConnectivity] = useState<ConnectivityStatus | null>(null);
   const [appProtection, setAppProtection] = useState<AppProtectionStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [appProtectionRetrying, setAppProtectionRetrying] = useState(false);
@@ -388,6 +426,35 @@ export default function App() {
   const active = useMemo(() => [...primaryNavigation, ...secondaryNavigation].find((item) => item.id === section), [primaryNavigation, secondaryNavigation, section]);
 
   useEffect(() => DesktopAppUpdateService.initialize(), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const network = activeWallet?.network ?? 'mainnet';
+    const poll = () => {
+      void invoke<ConnectivityStatus>('connectivity_status', { input: { network } })
+        .then(next => { if (!cancelled) setConnectivity(next); })
+        .catch(reason => {
+          if (!cancelled) console.warn('MONERO_DESKTOP_CONNECTIVITY_STATUS_FAILED', reason);
+        });
+    };
+    poll();
+    const timer = window.setInterval(poll, 1_500);
+    const pollOnFocus = () => poll();
+    const pollOnVisibility = () => {
+      if (document.visibilityState === 'visible') poll();
+    };
+    // The Rust connectivity owner keeps running while the WebView is hidden.
+    // Read its retained snapshot immediately when the window is shown again;
+    // never manufacture a disconnected state in the renderer.
+    window.addEventListener('focus', pollOnFocus);
+    document.addEventListener('visibilitychange', pollOnVisibility);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', pollOnFocus);
+      document.removeEventListener('visibilitychange', pollOnVisibility);
+    };
+  }, [activeWallet?.network]);
 
   const reloadFastWallets = useCallback(async () => {
     try {
@@ -895,28 +962,6 @@ export default function App() {
     }
   }, [activeWallet?.id, fastWallets, reloadFastWallets, reloadWallets, t]);
   const linked = Boolean(status?.linked);
-  const nodeConnected = networkSyncConnected(networkSync);
-  const nodeFailed = networkSyncFailed(networkSync);
-  const networkPresentation = presentNetworkSync(networkSync);
-  const connectionText = !activeWallet
-    ? linked ? t('shell.coreOnline') : status ? t('shell.coreRequired') : t('shell.coreChecking')
-    : networkSync
-      ? networkSyncPhaseLabel(networkSync, t)
-      : nodeConnected
-        ? t('shell.nodeLive')
-        : nodeFailed
-          ? t('shell.nodeRetrying')
-          : t('home.syncConnecting');
-  const connectionTitle = activeWallet
-    ? `${networkLabel(activeWallet.network)} · ${connectionText}`
-    : statusLabel(status, t);
-  const connectionTone =
-    networkPresentation.ready || networkPresentation.connected || (!activeWallet && linked)
-      ? 'ready'
-      : !nodeFailed && (networkPresentation.busy || Boolean(activeWallet))
-        ? 'connecting'
-        : 'offline';
-
   if (!appProtection) return <main className="app-shell app-protection-loading">
     <section className="app-protection-card" role={error ? 'alert' : 'status'}>
       <img src="/monero-mark.png" alt="" />
@@ -946,7 +991,8 @@ export default function App() {
       <p className="sidebar-note">{t('shell.developedWith')} <span aria-label={t('shell.love')}>❤️</span> {t('shell.by')} <a href="https://solutions.tex8.com/en" target="_blank" rel="noreferrer">TEX8</a></p>
     </aside>
     <section className="content">
-      {section !== 'setup' && section !== 'onboarding' && <header className="topbar"><div><p className="eyebrow">{active?.label ?? t('common.wallet')}</p><h1>{section === 'home' ? t('shell.homeTitle') : active?.label}</h1></div><div className="topbar-actions"><DesktopWalletSwitcher wallets={managedWallets} activeWallet={activeWallet} onSelect={openSavedWallet} onManage={() => setSection('wallets')} /><div className="topbar-connection" title={connectionTitle}><div aria-label={connectionText} className={`core-status ${connectionTone}`}><span /></div></div></div></header>}
+      {v1ReleaseFeatures.mfwNameRegistration && mfwTickerVisible && <div aria-label={t('mfwNames.ticker')} className="mfw-name-ticker" role="region"><button className="mfw-name-ticker-link" onClick={() => setSection('mfw')} type="button"><span aria-hidden="true">◆</span><span className="mfw-name-ticker-lane"><b>{t('mfwNames.ticker')} · {t('mfwNames.ticker')} · {t('mfwNames.ticker')} · {t('mfwNames.ticker')} · </b></span><strong aria-hidden="true">›</strong></button><button aria-label={t('common.close')} className="mfw-name-ticker-close" onClick={() => setMfwTickerVisible(false)} type="button">×</button></div>}
+      {section !== 'setup' && section !== 'onboarding' && <header className="topbar"><div><p className="eyebrow">{section === 'project' ? t('settings.projectPage') : active?.label ?? t('common.wallet')}</p><h1>{section === 'project' ? t('projectPage.title') : section === 'home' ? t('shell.homeTitle') : active?.label}</h1></div><div className="topbar-actions"><DesktopWalletSwitcher wallets={managedWallets} activeWallet={activeWallet} onSelect={openSavedWallet} onManage={() => setSection('wallets')} /><button aria-label="Open connection status" className="topbar-connection" onClick={() => setSection('node')} type="button"><span className={`route-status ${connectivityTone(connectivity?.tor)}`}><i />Tor</span><span className={`route-status ${connectivityTone(connectivity?.clearnet)}`}><i />Sync</span></button></div></header>}
       {!linked && <section className="notice" role="status"><div className="notice-icon"><img src="/monero-mark.png" alt="" /></div><div><h2>{t('shell.noticeEngineTitle')}</h2><p>{error ?? status?.message ?? t('shell.noticeEngineVerifying')}</p></div></section>}
       {linked && error && <section className="notice compact-notice" role="alert"><div><h2>{t('shell.noticeActionNeeded')}</h2><p>{error}</p></div></section>}
       {section === 'home' && <Home linked={linked} walletId={activeWalletId} wallet={activeWallet} savedWallets={managedWallets} networkSync={networkSync} onSetup={startSetup} onWallets={() => setSection('wallets')} onSelectWallet={openSavedWallet} onBackup={() => void revealRecoverySeed()} onLock={() => void closeActiveWallet()} onSend={() => setSection('send')} onReceive={() => setSection('receive')} onActivity={() => setSection('activity')} onWalletsChanged={reloadWallets} onRecoverSession={recoverWalletSession} />}
@@ -956,10 +1002,12 @@ export default function App() {
       {section === 'receive' && <><Receive linked={linked} walletId={activeWalletId} wallet={activeWallet} wallets={managedWallets} manageAddressesRequest={addressManagementRequest} onSelectWallet={(wallet) => openSavedWallet(wallet, 'receive')} onSetup={startSetup} onActivity={() => setSection('activity')} /><FastWalletReceive appProtection={appProtection} /></>}
       {section === 'activity' && <Activity linked={linked} walletId={activeWalletId} wallet={activeWallet} />}
       {section === 'mfw' && v1ReleaseFeatures.mfwNameRegistration && <MfwNames linked={linked} walletId={activeWalletId} wallet={activeWallet} appProtection={appProtection} />}
-      {section === 'community' && v1ReleaseFeatures.legacyCommunity && <Community />}
-      {section === 'enthusiast' && <MoneroEnthusiastV1 />}
+      {section === 'community' && v1ReleaseFeatures.legacyCommunity && <CommunityComingSoon />}
+      {section === 'enthusiast' && <CommunityComingSoon />}
       {section === 'assistant' && v1ReleaseFeatures.assistant && <Assistant wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
-      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} onWalletsChanged={reloadWallets} autoLockSeconds={autoLockSeconds} onSetAutoLockSeconds={updateAutoLockTimeout} appProtection={appProtection} onSetAppProtectionMode={setAppProtectionMode} onLockApp={lockDesktopApp} onOpenMfwNames={() => setSection('mfw')} />}
+      {section === 'settings' && <LeanSettings status={status} walletId={activeWalletId} wallet={activeWallet} onRevealSeed={() => void revealRecoverySeed()} onCloseWallet={() => void closeActiveWallet()} onWalletsChanged={reloadWallets} autoLockSeconds={autoLockSeconds} onSetAutoLockSeconds={updateAutoLockTimeout} appProtection={appProtection} onSetAppProtectionMode={setAppProtectionMode} onLockApp={lockDesktopApp} onOpenMfwNames={() => setSection('mfw')} onOpenProjectPage={() => setSection('project')} />}
+      {section === 'project' && <DesktopProjectPage onBack={() => setSection('settings')} />}
+      {section === 'node' && <DesktopNodeStatus walletId={activeWalletId} wallet={activeWallet} />}
       {section === 'menu' && <DesktopMenu wallet={activeWallet} walletId={activeWalletId} onNavigate={setSection} />}
       {seedRevealRequest && <SensitiveAuthorizationOverlay title={t('protection.showRecoveryWords')} description={activeProtectionMode === 'system' ? t('protection.showRecoveryWordsSystem', { system: appProtection.systemAuth.label }) : t('protection.showRecoveryWordsPassword')} password={seedAuthorizationPassword} mode={activeProtectionMode} systemLabel={appProtection.systemAuth.label} allowPasswordFallback={appProtection.passwordConfigured} busy={seedRevealBusy} onPasswordChange={setSeedAuthorizationPassword} onConfirm={() => void presentRecoverySeed()} onDismiss={() => { pendingFastWalletSourceRef.current = null; setSeedAuthorizationPassword(''); setSeedRevealRequest(null); }} />}
       {fastWalletTransferStatus !== 'idle' && <FastWalletTransferOverlay status={fastWalletTransferStatus} />}
@@ -970,8 +1018,11 @@ export default function App() {
 function NavItem({ item, active, onSelect }: { item: NavigationItem; active: Section; onSelect: (section: Section) => void }) { return <button className={item.id === active ? 'nav-item active' : 'nav-item'} onClick={() => onSelect(item.id)} type="button"><span><DesktopIcon name={item.icon} /></span>{item.label}</button>; }
 
 function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus; onUnlocked: (status: AppProtectionStatus) => void }) {
-  const { t } = useI18n();
+  const { language, languageLoading, setLanguage, t } = useI18n();
   const setup = !status.configured;
+  const welcomeLanguageStripRef = useRef<HTMLDivElement>(null);
+  const welcomeLanguageDragStartRef = useRef({ left: 0, x: 0 });
+  const welcomeLanguageDragMovedRef = useRef(false);
   const [welcomeAcknowledged, setWelcomeAcknowledged] = useState(!setup);
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -1049,14 +1100,76 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
     : setup
       ? mode === 'system' ? t('protection.setUpSystem', { system: status.systemAuth.label }) : t('protection.usePassword')
       : status.mode === 'system' && !useRecoveryPassword ? `${t('protection.unlock')} · ${status.systemAuth.label}` : t('protection.unlock');
-  if (presentation === 'welcome') return <main className="app-protection-gate">
-    <section className="app-protection-card" role="dialog" aria-modal="true" aria-labelledby="app-welcome-title">
-      <img src="/monero-mark.png" alt="" />
-      <p className="eyebrow">Monero Fast Wallet</p>
+  const selectedLanguageIndex = Math.max(0, supportedLanguages.indexOf(language));
+  const chooseWelcomeLanguage = (index: number) => {
+    const normalizedIndex = (index + supportedLanguages.length) % supportedLanguages.length;
+    setLanguage(supportedLanguages[normalizedIndex]);
+    welcomeLanguageStripRef.current?.scrollTo({
+      behavior: 'smooth',
+      left: Math.max(0, normalizedIndex * 138 - 28),
+    });
+  };
+  if (presentation === 'welcome') return <main className="app-protection-gate app-welcome-gate">
+    <section className="app-protection-card app-welcome-card" role="dialog" aria-modal="true" aria-labelledby="app-welcome-title">
+      <div className="app-welcome-brand">
+        <span className="app-welcome-logo"><img src="/monero-mark.png" alt="" /></span>
+        <p className="eyebrow">Monero <b>Fast Wallet</b></p>
+      </div>
       <h1 id="app-welcome-title">{t('protection.welcomeTitle')}</h1>
-      <p>{t('protection.welcomeBody')}</p>
-      <button className="primary" onClick={() => setWelcomeAcknowledged(true)} type="button">{t('protection.getStarted')}</button>
-      <small>{t('protection.welcomePrivacy')}</small>
+      <p className="app-welcome-copy">{t('protection.welcomeBody')}</p>
+      <section className="app-welcome-language" aria-label={t('settings.language')}>
+        <header>
+          <strong>{t('settings.language')}</strong>
+          <span>{languageFlags[language]} {languageNames[language]}</span>
+        </header>
+        <div className="app-welcome-carousel">
+          <button aria-label="Previous language" className="app-welcome-language-arrow" onClick={() => chooseWelcomeLanguage(selectedLanguageIndex - 1)} type="button">‹</button>
+          <div
+            className="app-welcome-language-strip"
+            onPointerDown={(event) => {
+              const strip = welcomeLanguageStripRef.current;
+              if (!strip) return;
+              welcomeLanguageDragMovedRef.current = false;
+              welcomeLanguageDragStartRef.current = { left: strip.scrollLeft, x: event.clientX };
+              strip.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              const strip = welcomeLanguageStripRef.current;
+              if (!strip || !strip.hasPointerCapture(event.pointerId)) return;
+              const delta = event.clientX - welcomeLanguageDragStartRef.current.x;
+              if (Math.abs(delta) > 5) welcomeLanguageDragMovedRef.current = true;
+              strip.scrollLeft = welcomeLanguageDragStartRef.current.left - delta;
+            }}
+            onPointerUp={(event) => {
+              welcomeLanguageStripRef.current?.releasePointerCapture(event.pointerId);
+            }}
+            ref={welcomeLanguageStripRef}
+            role="list"
+          >
+            {supportedLanguages.map((code, index) => <button
+              aria-pressed={language === code}
+              className={language === code ? 'selected' : ''}
+              key={code}
+              lang={code}
+              onClick={() => {
+                if (welcomeLanguageDragMovedRef.current) {
+                  welcomeLanguageDragMovedRef.current = false;
+                  return;
+                }
+                chooseWelcomeLanguage(index);
+              }}
+              role="listitem"
+              type="button"
+            >
+              <span>{languageFlags[code]}</span>
+              <strong>{languageNames[code]}</strong>
+            </button>)}
+          </div>
+          <button aria-label="Next language" className="app-welcome-language-arrow" onClick={() => chooseWelcomeLanguage(selectedLanguageIndex + 1)} type="button">›</button>
+        </div>
+      </section>
+      <button className="primary app-welcome-start" disabled={languageLoading} onClick={() => setWelcomeAcknowledged(true)} type="button">{languageLoading ? t('common.loading') : t('protection.getStarted')}</button>
+      <small className="app-welcome-privacy">{t('protection.welcomePrivacy')}</small>
     </section>
   </main>;
   return <main className="app-protection-gate">
@@ -1161,10 +1274,145 @@ function DesktopMenu({ wallet, walletId, onNavigate }: { wallet: RegisteredWalle
     { section: 'enthusiast', icon: 'community-menu', title: t('communityV1.title'), hint: t('communityV1.menuHint') },
     { section: 'settings', icon: 'settings', title: t('menu.settings'), hint: t('menu.settingsHint') },
     ...(v1ReleaseFeatures.assistant ? [{ section: 'assistant' as Section, icon: 'sparkles' as DesktopIconName, title: t('menu.assistant'), hint: t('menu.assistantHint') }] : []),
-    { section: 'settings', icon: 'globe', title: t('menu.node'), hint: t('menu.nodeHint') },
+    { section: 'node', icon: 'globe', title: t('menu.node'), hint: t('menu.nodeHint') },
   ];
   const addressLabel = address ? `${address.slice(0, 6)}…${address.slice(-5)}` : wallet ? t('menu.openWallet') : t('menu.noWallet');
   return <section className="desktop-menu-page"><header className="desktop-menu-profile"><img src="/monero-mark.png" alt="" /><div><h2>{wallet ? walletDisplayName(wallet) : t('menu.title')}</h2><code>{addressLabel}</code></div></header><div className="desktop-menu-list">{items.map((item, index) => <button key={`${item.section}-${index}`} onClick={() => onNavigate(item.section)} type="button"><span className="desktop-menu-icon"><DesktopIcon name={item.icon} size={20} /></span><span><strong>{item.title}</strong><small>{item.hint}</small></span><em><DesktopIcon name="chevron-right" size={19} /></em></button>)}</div><a className="desktop-menu-footer" href="https://solutions.tex8.com/en" target="_blank" rel="noreferrer">{t('shell.developedWith')} <span aria-label={t('shell.love')}>❤️</span> {t('shell.by')} <strong>TEX8</strong></a></section>;
+}
+
+function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wallet: RegisteredWallet | null }) {
+  const { t } = useI18n();
+  const [network, setNetwork] = useState<Network>(wallet?.network ?? 'mainnet');
+  const [profile, setProfile] = useState<NodeProfile | null>(null);
+  const [savedProfile, setSavedProfile] = useState<NodeProfile | null>(null);
+  const [saveState, setSaveState] = useState<'loading' | 'saving' | 'saved' | 'error'>('loading');
+  const [diagnostics, setDiagnostics] = useState<ConnectionRoutesDiagnostic | null>(null);
+  const [diagnosing, setDiagnosing] = useState(false);
+  const editRevision = useRef(0);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+
+  const runDiagnostics = useCallback(async () => {
+    setDiagnosing(true);
+    try {
+      setDiagnostics(await invoke<ConnectionRoutesDiagnostic>('diagnose_connection_routes', { input: { network } }));
+    } catch (reason) {
+      const error = errorMessage(reason, t('nodeStatus.diagnosticFailed'));
+      setDiagnostics({
+        tor: { connected: false, endpoint: profile?.daemonAddress ?? '', elapsedMs: 0, error },
+        clearnet: { connected: false, endpoint: profile?.grpcEndpoint ?? '', elapsedMs: 0, error },
+      });
+    } finally {
+      setDiagnosing(false);
+    }
+  }, [network, profile?.daemonAddress, profile?.grpcEndpoint, t]);
+
+  useEffect(() => {
+    let mounted = true;
+    editRevision.current += 1;
+    setProfile(null);
+    setSavedProfile(null);
+    setSaveState('loading');
+    setDiagnostics(null);
+    void invoke<NodeProfile>('load_node_settings', { network })
+      .then(loaded => {
+        if (!mounted) return;
+        const defaults = defaultNodeProfile(network);
+        const splitProfile: NodeProfile = {
+          ...loaded,
+          mode: 'optimized-grpc',
+          grpcEndpoint: loaded.grpcEndpoint || defaults.grpcEndpoint,
+          proxyAddress: '127.0.0.1:9050',
+        };
+        setProfile(splitProfile);
+        setSavedProfile(loaded);
+        setSaveState(settingsProfileSignature(splitProfile) === settingsProfileSignature(loaded) ? 'saved' : 'saving');
+      })
+      .catch(() => { if (mounted) setSaveState('error'); });
+    return () => { mounted = false; };
+  }, [network]);
+
+  useEffect(() => {
+    if (!profile || !savedProfile || settingsProfileSignature(profile) === settingsProfileSignature(savedProfile)) return;
+    if (!profile.daemonAddress.trim() || !profile.grpcEndpoint.trim()) {
+      setSaveState('error');
+      return;
+    }
+    const revision = ++editRevision.current;
+    setSaveState('saving');
+    setDiagnostics(null);
+    const timeout = window.setTimeout(() => {
+      const profileToSave = profile;
+      saveQueue.current = saveQueue.current.then(async () => {
+        if (revision !== editRevision.current) return;
+        const saved = await invoke<NodeProfile>('save_node_settings', { input: {
+          walletId: wallet?.network === profileToSave.network ? walletId : null,
+          mode: 'optimized-grpc',
+          network: profileToSave.network,
+          daemonAddress: profileToSave.daemonAddress,
+          grpcEndpoint: profileToSave.grpcEndpoint,
+          trusted: profileToSave.trusted,
+          useSsl: profileToSave.useSsl,
+          username: profileToSave.username,
+          password: '',
+          proxyAddress: '127.0.0.1:9050',
+          clearPassword: false,
+        } });
+        if (revision !== editRevision.current) return;
+        setProfile(saved);
+        setSavedProfile(saved);
+        setSaveState('saved');
+      }).catch(() => {
+        if (revision === editRevision.current) setSaveState('error');
+      });
+    }, 550);
+    return () => window.clearTimeout(timeout);
+  }, [profile, savedProfile, wallet?.network, walletId]);
+
+  useEffect(() => {
+    if (saveState === 'saved' && profile && !diagnostics && !diagnosing) {
+      void runDiagnostics();
+    }
+  }, [diagnostics, diagnosing, profile, runDiagnostics, saveState]);
+
+  const choosePreset = (node: FixedNodeId, transport: FixedNodeTransport) => {
+    if (!profile) return;
+    const preset = fixedMainnetNodeConnection(node, transport);
+    setProfile({
+      ...profile,
+      mode: 'optimized-grpc',
+      ...(transport === 'clearnet'
+        ? { grpcEndpoint: preset.grpcEndpoint }
+        : { daemonAddress: preset.daemonAddress, proxyAddress: '127.0.0.1:9050' }),
+    });
+  };
+
+  const routeCard = (kind: 'tor' | 'clearnet', icon: DesktopIconName, title: string, hint: string) => {
+    const result = diagnostics?.[kind];
+    return <article className={`node-route-card ${result?.connected ? 'connected' : result ? 'failed' : ''}`}>
+      <span className="settings-choice-icon"><DesktopIcon name={icon} size={20} /></span>
+      <div><strong>{title}</strong><p>{result?.error || hint}</p><code>{result?.endpoint || (kind === 'tor' ? profile?.daemonAddress : profile?.grpcEndpoint) || '—'}</code></div>
+      <span className="node-route-state">{diagnosing ? t('nodeStatus.checking') : result?.connected ? t('nodeStatus.connected') : result ? t('nodeStatus.failed') : t('nodeStatus.notChecked')}</span>
+    </article>;
+  };
+
+  const saveLabel = saveState === 'loading' ? t('settings.loading') : saveState === 'saving' ? t('nodeStatus.autoSaving') : saveState === 'saved' ? t('nodeStatus.autoSaved') : t('nodeStatus.autoSaveError');
+  return <section className="settings-page node-status-page">
+    <header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>{t('menu.node')}</h2><p>{t('nodeStatus.subtitle')}</p></div><span className={`node-save-state ${saveState}`}>{saveLabel}</span></header>
+    <section className="settings-section"><header><h3>{t('nodeStatus.diagnostics')}</h3><small>{diagnosing ? t('nodeStatus.checking') : t('nodeStatus.twoRoutes')}</small></header><article className="settings-panel node-route-diagnostics">
+      {routeCard('tor', 'key', t('nodeStatus.torRoute'), t('nodeStatus.torHint'))}
+      {routeCard('clearnet', 'globe', t('nodeStatus.clearnetRoute'), t('nodeStatus.clearnetHint'))}
+      <button className="secondary" disabled={diagnosing || saveState === 'loading' || saveState === 'saving'} onClick={() => void saveQueue.current.then(runDiagnostics)} type="button">{diagnosing ? t('nodeStatus.checking') : t('nodeStatus.runDiagnostics')}</button>
+    </article></section>
+    <section className="settings-section"><header><h3>{t('nodeStatus.globalRoutes')}</h3><small>{t('nodeStatus.autoSave')}</small></header><article className="settings-panel node-settings">
+      <p>{t('nodeStatus.globalRoutesHint')}</p>
+      <div className="settings-field"><span>{t('settings.network')}</span><div className="node-mode">{(['mainnet', 'testnet', 'stagenet'] as Network[]).map(item => <button className={network === item ? 'selected' : ''} onClick={() => setNetwork(item)} key={item} type="button">{networkLabel(item)}</button>)}</div></div>
+      {profile && <>
+        <div className="settings-field"><span>{t('nodeStatus.clearnetSync')}</span><small className="settings-field-help">{t('nodeStatus.clearnetHint')}</small>{network === 'mainnet' && <div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).map(node => { const preset = fixedMainnetNodeConnection(node, 'clearnet'); const selected = profile.grpcEndpoint === preset.grpcEndpoint; return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`clearnet-${node}`} onClick={() => choosePreset(node, 'clearnet')} type="button"><span className="settings-choice-icon"><DesktopIcon name="globe" size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{preset.grpcEndpoint}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>; })}</div>}<div className="settings-form-grid single"><label>{t('nodeStatus.grpcEndpoint')}<input value={profile.grpcEndpoint} onChange={event => setProfile({ ...profile, mode: 'optimized-grpc', grpcEndpoint: event.target.value })} autoComplete="off" /></label></div></div>
+        <div className="settings-field"><span>{t('nodeStatus.torOperations')}</span><small className="settings-field-help">{t('nodeStatus.torHint')}</small>{network === 'mainnet' && <div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).map(node => { const preset = fixedMainnetNodeConnection(node, 'onion'); const selected = profile.daemonAddress === preset.daemonAddress; return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`onion-${node}`} onClick={() => choosePreset(node, 'onion')} type="button"><span className="settings-choice-icon"><DesktopIcon name="key" size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{preset.daemonAddress}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>; })}</div>}<div className="settings-form-grid single"><label>{t('nodeStatus.daemonEndpoint')}<input value={profile.daemonAddress} onChange={event => setProfile({ ...profile, mode: 'optimized-grpc', daemonAddress: event.target.value, proxyAddress: '127.0.0.1:9050' })} autoComplete="off" /></label></div></div>
+        <div className="settings-actions"><button className="secondary" onClick={() => setProfile(defaultNodeProfile(network))} type="button">{t('settings.resetDefaults')}</button></div>
+      </>}
+    </article></section>
+  </section>;
 }
 
 function marketChartTimestamp(timestamp: number) {
@@ -1340,6 +1588,8 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
   const { dateLocale: locale, t } = useI18n();
   const [timeframe, setTimeframe] = useState<MarketTimeframe>('24H');
   const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>('all');
+  const [newsSlideIndex, setNewsSlideIndex] = useState(0);
+  const newsSliderRef = useRef<HTMLDivElement>(null);
   const [snapshot, setSnapshot] = useState<NativeWalletSnapshot | null>(null);
   const [registeredSnapshots, setRegisteredSnapshots] = useState<RegisteredWalletSnapshot[]>([]);
   const [transactions, setTransactions] = useState<NativeTransaction[]>([]);
@@ -1617,6 +1867,18 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
   const visibleNews = newsCategory === 'all'
     ? newsItems
     : newsItems.filter((item) => item.category === newsCategory);
+  const displayedNews = visibleNews.slice(0, 10);
+  const moveNewsSlider = (nextIndex: number) => {
+    const normalizedIndex = Math.max(0, Math.min(displayedNews.length - 1, nextIndex));
+    setNewsSlideIndex(normalizedIndex);
+    const slider = newsSliderRef.current;
+    if (slider) slider.scrollTo({ left: slider.clientWidth * normalizedIndex, behavior: 'smooth' });
+  };
+  const selectNewsCategory = (category: 'all' | MoneroNewsCategory) => {
+    setNewsCategory(category);
+    setNewsSlideIndex(0);
+    newsSliderRef.current?.scrollTo({ left: 0, behavior: 'smooth' });
+  };
   const routeToWalletAction = (action: () => void) => {
     if (walletId && linked) { action(); return; }
     if (savedWallets.length) { onWallets(); return; }
@@ -1751,8 +2013,25 @@ function Home({ linked, walletId, wallet, savedWallets, networkSync, onSetup, on
 
     {v1ReleaseFeatures.news && <section className="official-updates" aria-label={t('home.newsTitle')}>
       <header><div><p className="eyebrow">{t('home.newsSource')}</p><h2>{t('home.newsTitle')}</h2></div><a href="https://www.getmonero.org/blog/" target="_blank" rel="noreferrer">{t('home.newsSourceLink')} ↗</a></header>
-      <div className="news-filters" aria-label={t('home.newsTitle')}>{(['all', 'network', 'wallet', 'ecosystem'] as const).map((category) => <button className={newsCategory === category ? 'selected' : ''} key={category} onClick={() => setNewsCategory(category)} type="button">{category === 'all' ? t('home.newsAll') : category === 'network' ? t('home.newsNetwork') : category === 'wallet' ? t('home.newsWallet') : t('home.newsEcosystem')}</button>)}</div>
-      {newsLoading && newsItems.length === 0 ? <p className="official-updates-status">{t('home.newsLoading')}</p> : newsUnavailable && newsItems.length === 0 ? <div className="official-updates-status"><span>{t('home.newsUnavailable')}</span><button className="quiet-button" onClick={refreshNews} type="button">{t('home.chartRetry')}</button></div> : visibleNews.length === 0 ? <p className="official-updates-status">{t('home.newsEmpty')}</p> : <div className="official-updates-list">{visibleNews.slice(0, 8).map((item) => <a href={item.url} key={item.id} target="_blank" rel="noreferrer"><span><b>{item.category === 'network' ? t('home.newsNetwork') : item.category === 'wallet' ? t('home.newsWallet') : t('home.newsEcosystem')}</b><strong>{item.title}</strong><small>{item.summary}</small></span><time>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.publishedAt))}</time><em>›</em></a>)}</div>}
+      <div className="news-filters" aria-label={t('home.newsTitle')}>{(['all', 'network', 'wallet', 'ecosystem'] as const).map((category) => <button className={newsCategory === category ? 'selected' : ''} key={category} onClick={() => selectNewsCategory(category)} type="button">{category === 'all' ? t('home.newsAll') : category === 'network' ? t('home.newsNetwork') : category === 'wallet' ? t('home.newsWallet') : t('home.newsEcosystem')}</button>)}</div>
+      {newsLoading && newsItems.length === 0 ? <p className="official-updates-status">{t('home.newsLoading')}</p> : newsUnavailable && newsItems.length === 0 ? <div className="official-updates-status"><span>{t('home.newsUnavailable')}</span><button className="quiet-button" onClick={refreshNews} type="button">{t('home.chartRetry')}</button></div> : displayedNews.length === 0 ? <p className="official-updates-status">{t('home.newsEmpty')}</p> : <div className="official-news-catalog">
+        <div className="official-news-stage">
+          <button aria-label={t('home.newsPrevious')} className="official-news-arrow" disabled={newsSlideIndex === 0} onClick={() => moveNewsSlider(newsSlideIndex - 1)} type="button">‹</button>
+          <div className="official-news-slider" onScroll={(event) => { const width = event.currentTarget.clientWidth; if (width > 0) setNewsSlideIndex(Math.round(event.currentTarget.scrollLeft / width)); }} ref={newsSliderRef}>
+            {displayedNews.map((item) => <article className="official-news-slide" key={item.id}>
+              <div className={item.imageDataUrl ? 'official-news-image' : 'official-news-image fallback'}>{item.imageDataUrl ? <img alt={item.title} src={item.imageDataUrl} /> : <img alt="" aria-hidden="true" src="/monero-mark.png" />}</div>
+              <div className="official-news-copy">
+                <b>{item.category === 'network' ? t('home.newsNetwork') : item.category === 'wallet' ? t('home.newsWallet') : t('home.newsEcosystem')}</b>
+                <h3>{item.title}</h3>
+                <p>{item.summary}</p>
+                <footer><time>{new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.publishedAt))}</time>{item.url && <a href={item.url} target="_blank" rel="noreferrer">{t('home.newsReadMore')} ↗</a>}</footer>
+              </div>
+            </article>)}
+          </div>
+          <button aria-label={t('home.newsNext')} className="official-news-arrow" disabled={newsSlideIndex === displayedNews.length - 1} onClick={() => moveNewsSlider(newsSlideIndex + 1)} type="button">›</button>
+        </div>
+        <div className="official-news-dots" aria-label={`${newsSlideIndex + 1} / ${displayedNews.length}`}>{displayedNews.map((item, index) => <button aria-label={`${index + 1}`} className={index === newsSlideIndex ? 'selected' : ''} key={`news-dot-${item.id}`} onClick={() => moveNewsSlider(index)} type="button" />)}</div>
+      </div>}
     </section>}
 
     <section className="home-quick-actions" aria-label={t('wallets.actions')}><button onClick={() => routeToWalletAction(onSend)} type="button"><span>↑</span><strong>{t('nav.send')}</strong><small>{t('home.sendDetail')}</small></button><button onClick={() => routeToWalletAction(onReceive)} type="button"><span>↓</span><strong>{t('nav.receive')}</strong><small>{t('home.receiveDetail')}</small></button></section>
@@ -2562,6 +2841,7 @@ function Send({ linked, walletId, wallet, appProtection, onWalletsChanged }: { l
 
 function Receive({ linked, walletId, wallet, wallets, manageAddressesRequest, onSelectWallet, onSetup, onActivity }: { linked: boolean; walletId: string | null; wallet: RegisteredWallet | null; wallets: RegisteredWallet[]; manageAddressesRequest: { walletId: string; nonce: number } | null; onSelectWallet: (wallet: RegisteredWallet) => void; onSetup: () => void; onActivity: () => void }) {
   const { t } = useI18n();
+  const { price: xmrUsdPrice } = useXmrPrice();
   const [address, setAddress] = useState<string | null>(null);
   const [addressIndex, setAddressIndex] = useState(wallet?.addressIndex ?? 0);
   const [label, setLabel] = useState('');
@@ -2569,9 +2849,17 @@ function Receive({ linked, walletId, wallet, wallets, manageAddressesRequest, on
   const [transactions, setTransactions] = useState<NativeTransaction[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [qrCode, setQrCode] = useState<string | null>(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentAmountCurrency, setPaymentAmountCurrency] = useState<PaymentAmountCurrency>('XMR');
+  const [paymentLinkCopied, setPaymentLinkCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [showAddressTools, setShowAddressTools] = useState(false);
   const accountIndex = wallet?.accountIndex ?? 0;
+  const paymentAmountXmr = paymentXmrAmount(paymentAmount, paymentAmountCurrency, xmrUsdPrice);
+  const paymentUri = buildMoneroPaymentUri(address ?? '', paymentAmountXmr);
+  const paymentAmountEquivalent = paymentAmountCurrency === 'XMR'
+    ? paymentAmountXmr && xmrUsdPrice > 0 ? `≈ ${formatUsd(Number(paymentAmountXmr) * xmrUsdPrice)} USD` : null
+    : paymentAmountXmr ? `≈ ${paymentAmountXmr} XMR` : null;
 
   useEffect(() => {
     if (manageAddressesRequest?.walletId === wallet?.id) setShowAddressTools(true);
@@ -2610,12 +2898,18 @@ function Receive({ linked, walletId, wallet, wallets, manageAddressesRequest, on
   }, [linked, loadTransactions, t, walletId]);
   useEffect(() => {
     let mounted = true;
-    if (!address) { setQrCode(null); return () => { mounted = false; }; }
-    QRCode.toDataURL(address, { errorCorrectionLevel: 'M', margin: 2, width: 300, color: { dark: '#08070d', light: '#ffffff' } })
+    if (!paymentUri) { setQrCode(null); return () => { mounted = false; }; }
+    QRCode.toDataURL(paymentUri, { errorCorrectionLevel: 'M', margin: 2, width: 300, color: { dark: '#08070d', light: '#ffffff' } })
       .then((image) => { if (mounted) setQrCode(image); })
       .catch(() => { if (mounted) setMessage(t('receive.addressUnavailable')); });
     return () => { mounted = false; };
-  }, [address, t]);
+  }, [paymentUri, t]);
+
+  const changePaymentCurrency = (next: PaymentAmountCurrency) => {
+    if (next === paymentAmountCurrency) return;
+    setPaymentAmount((current) => convertPaymentAmount(current, paymentAmountCurrency, next, xmrUsdPrice));
+    setPaymentAmountCurrency(next);
+  };
 
   const copy = async () => {
     if (!address) return;
@@ -2631,6 +2925,31 @@ function Receive({ linked, walletId, wallet, wallets, manageAddressesRequest, on
       } else {
         await navigator.clipboard.writeText(address);
         setMessage(t('receive.copied'));
+      }
+    } catch (reason) {
+      if (reason instanceof DOMException && reason.name === 'AbortError') return;
+      setMessage(t('receive.shareFailed'));
+    }
+  };
+  const copyPaymentLink = async () => {
+    if (!paymentUri) return;
+    try {
+      await navigator.clipboard.writeText(paymentUri);
+      setPaymentLinkCopied(true);
+      window.setTimeout(() => setPaymentLinkCopied(false), 2_000);
+    } catch {
+      setMessage(t('receive.copyFailed'));
+    }
+  };
+  const sharePaymentLink = async () => {
+    if (!paymentUri) return;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: t('receive.paymentLink'), text: paymentUri });
+      } else {
+        await navigator.clipboard.writeText(paymentUri);
+        setPaymentLinkCopied(true);
+        window.setTimeout(() => setPaymentLinkCopied(false), 2_000);
       }
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'AbortError') return;
@@ -2666,7 +2985,33 @@ function Receive({ linked, walletId, wallet, wallets, manageAddressesRequest, on
   return <section className="transaction-form transaction-page receive-page">
     <header><p className="eyebrow">{wallet ? walletDisplayName(wallet) : t('common.wallet')}</p><h2>{t('receive.title')}</h2><p>{t('receive.subtitle')}</p></header>
     <div className="wallet-strip receive-wallet-strip">{wallets.map((item) => <button className={`${item.id === wallet?.id ? 'wallet-mini-card active' : 'wallet-mini-card'}${isFastWalletRegistration(item) ? ' fast' : ''}`} key={item.id} onClick={() => onSelectWallet(item)} type="button"><span>{walletDisplayName(item)}</span><small>{isFastWalletRegistration(item) ? t('setup.fastWallet').toUpperCase() : item.kind === 'hardware' ? t('common.ledger').toUpperCase() : networkLabel(item.network).toUpperCase()}</small><strong>{item.id === wallet?.id && walletId ? t('wallets.use') : item.isOpen ? t('home.openLocal') : t('home.openToCheck')}</strong></button>)}<button className="wallet-mini-card add" onClick={onSetup} type="button"><span>＋</span><strong>{t('home.addWallet')}</strong></button></div>
-    {!linked || !walletId ? <WalletFeature linked={linked} title={t('receive.title')} text={t('send.openWallet')} /> : !address ? <button className="primary" disabled={busy} onClick={() => void load()} type="button">{busy ? t('common.loading') : t('receive.showAddress')}</button> : <><section className="receive-simple-card"><div className="receive-qr"><div>{qrCode ? <img src={qrCode} alt={t('receive.qrAlt')} /> : <span>{t('common.loading')}</span>}</div></div><div className="simple-address-row"><code title={address}>{shortHash(address)}</code><button className="copy-icon-button" aria-label={t('receive.copyAddress')} onClick={() => void copy()} title={t('receive.copyAddress')} type="button">⧉</button></div><p>{wallet?.kind === 'hardware' ? t('receive.ledgerHint') : t('receive.qrHint')}</p></section><RecentTransactions hasOpenWallet items={transactions} onActivity={onActivity} /><button className="quiet-button address-tools-toggle" onClick={() => setShowAddressTools((visible) => !visible)} type="button">{showAddressTools ? t('receive.hideAddressTools') : t('receive.manageAddresses')}</button>{showAddressTools && <section className="address-tools"><div className="receive-actions"><button className="secondary" onClick={() => void share()} type="button">{t('receive.shareAddress')}</button>{wallet?.kind === 'hardware' && <button className="secondary" disabled={busy} onClick={() => void showOnLedger()} type="button">{t('receive.verifyLedger')}</button>}</div><section className="subaddress-section"><div><strong>{t('receive.newSubaddress')}</strong><p>{t('receive.qrHint')}</p></div><label>{t('receive.subaddressLabel')}<input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('receive.subaddressPlaceholder')} maxLength={80} /></label><button className="secondary" disabled={busy} onClick={() => void subaddress()} type="button">{t('receive.createSubaddress')}</button></section>{subaddresses.some((item) => item.address !== address) && <section className="subaddress-list">{subaddresses.filter((item) => item.address !== address).map((item) => <button key={`${item.accountIndex}-${item.addressIndex}`} onClick={() => { setAddress(item.address); setAddressIndex(item.addressIndex); setMessage(null); }} type="button"><span><strong>{item.label || `${t('receive.primaryAddress')} ${item.accountIndex}/${item.addressIndex}`}</strong><small>{shortHash(item.address)}</small></span><em>{item.accountIndex}/{item.addressIndex}</em></button>)}</section>}</section>}</>}
+    {!linked || !walletId ? <WalletFeature linked={linked} title={t('receive.title')} text={t('send.openWallet')} /> : !address ? <button className="primary" disabled={busy} onClick={() => void load()} type="button">{busy ? t('common.loading') : t('receive.showAddress')}</button> : <>
+      <section className="receive-simple-card">
+        <div className="receive-payment-composer">
+          <header>
+            <strong>{t('receive.amountOptional')}</strong>
+            <div className="receive-currency-toggle" role="radiogroup" aria-label={t('receive.amountOptional')}>
+              {(['XMR', 'USD'] as const).map((currency) => <button aria-checked={paymentAmountCurrency === currency} className={paymentAmountCurrency === currency ? 'active' : ''} key={currency} onClick={() => changePaymentCurrency(currency)} role="radio" type="button">{currency}</button>)}
+            </div>
+          </header>
+          <label className="receive-amount-field">
+            <input aria-label={t('receive.amountOptional')} autoComplete="off" inputMode="decimal" maxLength={24} onChange={(event) => setPaymentAmount(sanitizePaymentAmountInput(event.target.value, paymentAmountCurrency))} placeholder="0" value={paymentAmount} />
+            <span>{paymentAmountCurrency}</span>
+          </label>
+          {paymentAmountEquivalent ? <small>{paymentAmountEquivalent}</small> : paymentAmountCurrency === 'USD' && xmrUsdPrice <= 0 ? <small className="unavailable">{t('receive.usdRateUnavailable')}</small> : null}
+        </div>
+        <div className="receive-qr"><div>{qrCode ? <img src={qrCode} alt={t('receive.qrAlt')} /> : <span>{t('common.loading')}</span>}</div></div>
+        <div className="simple-address-row"><code title={address}>{shortHash(address)}</code><button className="copy-icon-button" aria-label={t('receive.copyAddress')} onClick={() => void copy()} title={t('receive.copyAddress')} type="button">⧉</button></div>
+        <div className="receive-payment-actions">
+          <button className="secondary" onClick={() => void copyPaymentLink()} type="button">{paymentLinkCopied ? t('receive.paymentLinkCopied') : t('receive.copyPaymentLink')}</button>
+          <button className="primary" onClick={() => void sharePaymentLink()} type="button">{t('receive.sharePaymentLink')}</button>
+        </div>
+        <p>{wallet?.kind === 'hardware' ? t('receive.ledgerHint') : t('receive.qrHint')}</p>
+      </section>
+      <RecentTransactions hasOpenWallet items={transactions} onActivity={onActivity} />
+      <button className="quiet-button address-tools-toggle" onClick={() => setShowAddressTools((visible) => !visible)} type="button">{showAddressTools ? t('receive.hideAddressTools') : t('receive.manageAddresses')}</button>
+      {showAddressTools && <section className="address-tools"><div className="receive-actions"><button className="secondary" onClick={() => void share()} type="button">{t('receive.shareAddress')}</button>{wallet?.kind === 'hardware' && <button className="secondary" disabled={busy} onClick={() => void showOnLedger()} type="button">{t('receive.verifyLedger')}</button>}</div><section className="subaddress-section"><div><strong>{t('receive.newSubaddress')}</strong><p>{t('receive.qrHint')}</p></div><label>{t('receive.subaddressLabel')}<input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('receive.subaddressPlaceholder')} maxLength={80} /></label><button className="secondary" disabled={busy} onClick={() => void subaddress()} type="button">{t('receive.createSubaddress')}</button></section>{subaddresses.some((item) => item.address !== address) && <section className="subaddress-list">{subaddresses.filter((item) => item.address !== address).map((item) => <button key={`${item.accountIndex}-${item.addressIndex}`} onClick={() => { setAddress(item.address); setAddressIndex(item.addressIndex); setMessage(null); }} type="button"><span><strong>{item.label || `${t('receive.primaryAddress')} ${item.accountIndex}/${item.addressIndex}`}</strong><small>{shortHash(item.address)}</small></span><em>{item.accountIndex}/{item.addressIndex}</em></button>)}</section>}</section>}
+    </>}
     {message && <p className="setup-message">{message}</p>}
   </section>;
 }
@@ -2775,6 +3120,70 @@ function Assistant({ wallet, walletId, onNavigate }: { wallet: RegisteredWallet 
  * New V1 surface. It is deliberately independent of the legacy Community
  * renderer and receives public readiness flags only.
  */
+function CommunityComingSoon() {
+  const { t } = useI18n();
+  const features: Array<{
+    icon: DesktopIconName;
+    title: string;
+    text: string;
+  }> = [
+    {
+      icon: 'file',
+      title: t('communitySoon.bulletinTitle'),
+      text: t('communitySoon.bulletinText'),
+    },
+    {
+      icon: 'community-menu',
+      title: t('communitySoon.meetTitle'),
+      text: t('communitySoon.meetText'),
+    },
+    {
+      icon: 'message-circle',
+      title: t('communitySoon.matrixTitle'),
+      text: t('communitySoon.matrixText'),
+    },
+    {
+      icon: 'package',
+      title: t('communitySoon.profilesTitle'),
+      text: t('communitySoon.profilesText'),
+    },
+  ];
+
+  return <section className="community-coming-soon">
+    <header className="community-coming-hero">
+      <span className="community-coming-lock"><DesktopIcon name="lock" size={29} /></span>
+      <span className="community-coming-status"><i />{t('communitySoon.eyebrow')}</span>
+      <h2>{t('communitySoon.title')}</h2>
+      <p>{t('communitySoon.subtitle')}</p>
+    </header>
+
+    <section aria-labelledby="community-coming-features" className="community-coming-features">
+      <h3 id="community-coming-features">{t('communitySoon.plannedFeatures')}</h3>
+      <div>
+        {features.map((feature) => <article key={feature.title}>
+          <span><DesktopIcon name={feature.icon} size={21} /></span>
+          <div><strong>{feature.title}</strong><p>{feature.text}</p></div>
+        </article>)}
+      </div>
+    </section>
+
+    <article className="community-coming-verification">
+      <header>
+        <span><DesktopIcon name="verified" size={22} /></span>
+        <strong>{t('communitySoon.verifiedTitle')}</strong>
+        <em>{t('communitySoon.verifiedBadge')}</em>
+      </header>
+      <p>{t('communitySoon.verifiedText')}</p>
+      <small>{t('communitySoon.verifiedNote')}</small>
+    </article>
+
+    <article className="community-coming-policy">
+      <span><DesktopIcon name="lock" size={20} /></span>
+      <div><strong>{t('communitySoon.noMarketplaceTitle')}</strong><p>{t('communitySoon.noMarketplaceText')}</p></div>
+    </article>
+  </section>;
+}
+
 function MoneroEnthusiastV1() {
   const { language, t } = useI18n();
   const [status, setStatus] = useState<MoneroEnthusiastV1Status | null>(null);
@@ -3215,7 +3624,7 @@ function Community() {
 }
 
 function settingsProfileSignature(profile: NodeProfile | null) { return profile ? JSON.stringify({ mode: profile.mode, network: profile.network, daemonAddress: profile.daemonAddress, grpcEndpoint: profile.grpcEndpoint, trusted: profile.trusted, useSsl: profile.useSsl, username: profile.username, proxyAddress: profile.proxyAddress, passwordStored: profile.passwordStored }) : ''; }
-function defaultNodeProfile(network: Network, mode: NodeProfile['mode'] = 'optimized-grpc'): NodeProfile { const ports: Record<Network, { daemon: number; rpc: number; grpc: number }> = { mainnet: { daemon: 18089, rpc: 18081, grpc: 18091 }, testnet: { daemon: 28089, rpc: 28081, grpc: 28091 }, stagenet: { daemon: 38089, rpc: 38081, grpc: 38091 } }; const values = ports[network]; return { mode, network, daemonAddress: `xmr.tex8.com:${mode === 'original-rpc' ? values.rpc : values.daemon}`, grpcEndpoint: mode === 'original-rpc' ? '' : `xmr.tex8.com:${values.grpc}`, trusted: true, useSsl: false, username: '', proxyAddress: '', passwordStored: false, updatedAt: 0 }; }
+function defaultNodeProfile(network: Network, mode: NodeProfile['mode'] = 'optimized-grpc'): NodeProfile { const ports: Record<Network, { daemon: number; rpc: number; grpc: number }> = { mainnet: { daemon: 18089, rpc: 18081, grpc: 18091 }, testnet: { daemon: 28089, rpc: 28081, grpc: 28091 }, stagenet: { daemon: 38089, rpc: 38081, grpc: 38091 } }; const values = ports[network]; const splitMainnet = network === 'mainnet' && mode === 'optimized-grpc'; return { mode, network, daemonAddress: splitMainnet ? 'fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion:18089' : `xmr.tex8.com:${mode === 'original-rpc' ? values.rpc : values.daemon}`, grpcEndpoint: mode === 'original-rpc' ? '' : `xmr.tex8.com:${values.grpc}`, trusted: true, useSsl: false, username: '', proxyAddress: '127.0.0.1:9050', passwordStored: false, updatedAt: 0 }; }
 const FAST_WALLET_WORKER_SELECTION_KEY = 'monero-fast-wallet.worker-selection.v1';
 function loadDesktopFastWalletWorkerSelection(network: Network): FastWalletWorkerSelection {
   try {
@@ -3238,6 +3647,10 @@ function saveDesktopFastWalletWorkerSelection(selection: FastWalletWorkerSelecti
 function selectedDesktopEnrollmentWorker(network: Network): 'official' | 'private' {
   return loadDesktopFastWalletWorkerSelection(network).kind === 'recommended' ? 'official' : 'private';
 }
+/* Removed from the application: this legacy Settings implementation kept the
+   old manual node editor and diagnostics on the Settings page. Node routing is
+   now owned exclusively by DesktopNodeStatus below, with automatic saving. */
+/*
 function Settings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoLockEnabled, onAutoLockChange }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; autoLockEnabled: boolean; onAutoLockChange: (value: boolean) => void }) {
   const [network, setNetwork] = useState<Network>(wallet?.network ?? 'mainnet'); const [profile, setProfile] = useState<NodeProfile | null>(null); const [savedProfile, setSavedProfile] = useState<NodeProfile | null>(null); const [password, setPassword] = useState(''); const [clearPassword, setClearPassword] = useState(false); const [message, setMessage] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [diagnostics, setDiagnostics] = useState<SettingsDiagnostic[]>([]); const [diagnosing, setDiagnosing] = useState(false); const [newPassword, setNewPassword] = useState(''); const [confirmPassword, setConfirmPassword] = useState(''); const [changingPassword, setChangingPassword] = useState(false);
   useEffect(() => { if (wallet?.network) setNetwork(wallet.network); }, [wallet?.network]);
@@ -3252,16 +3665,71 @@ function Settings({ status, walletId, wallet, onRevealSeed, onCloseWallet, autoL
   const torEnabled = profile?.proxyAddress === '127.0.0.1:9050';
   return <section className="settings-page"><header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>Settings</h2><p>Desktop wallet controls mirror the mobile app while keeping keys and credentials local.</p></div><span>Desktop</span></header><section className="settings-section"><header><h3>Wallet</h3><small>{wallet ? `${wallet.walletName} · ${networkLabel(wallet.network)} · ${wallet.kind}` : 'No wallet open'}</small></header><article className="settings-panel settings-wallet-actions"><div><div><strong>Recovery seed</strong><p>{wallet?.kind === 'hardware' ? 'The recovery seed remains on the Ledger device.' : 'Reveal only while this local wallet is open.'}</p></div></div><button className="secondary" disabled={!walletId || wallet?.kind === 'hardware'} onClick={onRevealSeed} type="button">Show recovery seed</button></article><article className="settings-panel password-change"><div><strong>Change wallet password</strong><p>Changing the password requires the wallet to be open. The new password is never saved by this app.</p></div><div className="password-fields"><input value={newPassword} onChange={(event) => setNewPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="New wallet password" /><input value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} type="password" autoComplete="new-password" placeholder="Confirm new password" /><button className="secondary" disabled={!walletId || changingPassword || !newPassword || !confirmPassword} onClick={() => void saveNewPassword()} type="button">{changingPassword ? 'Changing…' : 'Change password'}</button></div></article></section><section className="settings-section"><header><h3>Security</h3><small>Local controls</small></header><article className="settings-panel settings-toggle-row"><div><strong>Auto-lock after 5 minutes</strong><p>Locks the open wallet after the desktop app has been in the background for five minutes.</p></div><label className="toggle"><input checked={autoLockEnabled} onChange={(event) => onAutoLockChange(event.target.checked)} type="checkbox" /><span /></label></article><article className="settings-panel settings-info-row"><div><strong>Secure storage</strong><p>Node credentials and Fast Wallet scanner credentials stay in macOS Keychain. Recovery seeds and spend keys are never stored in this settings view.</p></div><span className="status-good">Keychain</span></article></section><section className="settings-section"><header><h3>Node</h3><small>{changed ? 'Unsaved changes' : savedProfile ? 'Saved' : 'Loading'}</small></header><article className="settings-panel node-settings"><p>{wallet ? `${wallet.walletName} uses its ${networkLabel(wallet.network)} profile when you save that network.` : 'Configure a network profile before opening a wallet.'}</p>{profile && <><div className="settings-field"><span>Network</span><div className="node-mode">{(['mainnet', 'testnet', 'stagenet'] as Network[]).map((item) => <button className={network === item ? 'selected' : ''} onClick={() => setNetwork(item)} key={item} type="button">{networkLabel(item)}</button>)}</div></div><div className="settings-field"><span>Connection</span><div className="node-mode">{([['optimized-grpc', 'Optimized'], ['original-rpc', 'Original RPC'], ['custom', 'Custom']] as const).map(([mode, label]) => <button className={profile.mode === mode ? 'selected' : ''} onClick={() => changeMode(mode)} key={mode} type="button">{label}</button>)}</div></div><div className="node-hint">{profile.mode === 'original-rpc' ? 'Original Monero daemon RPC. gRPC is disabled for this profile.' : profile.mode === 'optimized-grpc' ? 'Optimized Monero Fast Node (MFN) gRPC profile, matching the mobile default.' : 'Custom node endpoints remain local to this device.'}</div><div className="settings-form-grid"><label>Daemon address<input value={profile.daemonAddress} onChange={(event) => setProfile({ ...profile, daemonAddress: event.target.value })} placeholder="node.example:18089" autoComplete="off" /></label>{profile.mode !== 'original-rpc' && <label>Monero Fast Node (MFN) gRPC endpoint<input value={profile.grpcEndpoint} onChange={(event) => setProfile({ ...profile, grpcEndpoint: event.target.value })} placeholder="node.example:18091" autoComplete="off" /></label>}<label>Node username <small>Optional</small><input value={profile.username} onChange={(event) => setProfile({ ...profile, username: event.target.value })} autoComplete="off" /></label><label>Node password <small>Optional · Keychain only</small><input value={password} onChange={(event) => { setPassword(event.target.value); setClearPassword(false); }} type="password" autoComplete="new-password" placeholder={profile.passwordStored ? 'Password stored in Keychain' : 'Stored only in Keychain'} /></label><label>SOCKS5 proxy <small>Optional</small><input value={profile.proxyAddress} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.value })} placeholder="127.0.0.1:9050" autoComplete="off" /></label></div><div className="settings-checkboxes"><label className="checkbox"><input checked={profile.trusted} onChange={(event) => setProfile({ ...profile, trusted: event.target.checked })} type="checkbox" />Trusted node</label><label className="checkbox"><input checked={profile.useSsl} onChange={(event) => setProfile({ ...profile, useSsl: event.target.checked })} type="checkbox" />Use SSL/TLS for daemon RPC</label><label className="checkbox"><input checked={torEnabled} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.checked ? '127.0.0.1:9050' : '' })} type="checkbox" />Use Tor via local SOCKS5</label>{profile.passwordStored && <label className="checkbox"><input checked={clearPassword} onChange={(event) => setClearPassword(event.target.checked)} type="checkbox" />Forget stored node password</label>}</div><div className="settings-actions"><button className="secondary" onClick={reset} type="button">Reset defaults</button><button className="primary" disabled={busy || !changed} onClick={() => void save()} type="button">{busy ? 'Saving…' : wallet?.network === profile.network && walletId ? 'Save & apply node' : 'Save node profile'}</button></div></>}</article></section><section className="settings-section"><header><h3>Diagnostics</h3><small>{diagnosing ? 'Running…' : diagnostics.length ? 'Updated' : 'Ready'}</small></header><article className="settings-panel">{diagnostics.length > 0 && <div className="settings-diagnostics">{diagnostics.map((item) => <div key={item.label}><span>{item.label}</span><strong className={item.tone ?? 'neutral'}>{item.value}</strong></div>)}</div>}<button className="primary" disabled={diagnosing} onClick={() => void runDiagnostics()} type="button">{diagnosing ? 'Running diagnostics…' : 'Run diagnostics'}</button></article></section><section className="settings-section settings-about"><header><h3>About</h3><small>Local desktop build</small></header><article className="settings-panel"><div><strong>Privacy by design</strong><p>The packaged interface contains no remote web content. Wallet keys, passwords, transaction signing, and recovery seeds remain in the native Monero core.</p></div><div><strong>Market display</strong><p>Dashboard values use XMR/USD, the same default display as the mobile wallet.</p></div><div><strong>Open-source components</strong><p>Built with Tauri, React, Rust, and the pinned fork of Monero libwallet_api.</p></div></article></section><button className="danger-button settings-lock" disabled={!walletId} onClick={onCloseWallet} type="button">Close wallet</button>{message && <p className="setup-message">{message}</p>}</section>;
 }
+*/
 
-function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, onWalletsChanged, autoLockSeconds, onSetAutoLockSeconds, appProtection, onSetAppProtectionMode, onLockApp, onOpenMfwNames }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; onWalletsChanged: () => Promise<void>; autoLockSeconds: number; onSetAutoLockSeconds: (seconds: number) => Promise<void>; appProtection: AppProtectionStatus; onSetAppProtectionMode: (mode: AppProtectionMode, password?: string, currentPassword?: string) => Promise<void>; onLockApp: () => Promise<void>; onOpenMfwNames: () => void }) {
+function projectServiceLabel(
+  id: ProjectServiceId,
+  t: ReturnType<typeof useI18n>['t'],
+) {
+  switch (id) {
+    case 'wallet': return t('projectPage.serviceWallet');
+    case 'node': return t('projectPage.serviceNode');
+    case 'relay': return t('projectPage.serviceRelay');
+    case 'worker': return t('projectPage.serviceWorker');
+    case 'registry': return t('projectPage.serviceRegistry');
+    case 'all': return t('projectPage.serviceAll');
+  }
+}
+
+function DesktopProjectPage({ onBack }: { onBack: () => void }) {
+  const { t } = useI18n();
+  const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
+
+  const copyAddress = async (address: string) => {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopiedAddress(address);
+    } catch {
+      setCopiedAddress(null);
+    }
+  };
+
+  return <section className="project-page">
+    <button className="quiet-button project-page-back" onClick={onBack} type="button">← {t('common.back')}</button>
+    <header className="project-page-hero">
+      <span className="project-page-hero-icon"><DesktopIcon name="globe" size={28} /></span>
+      <div><p className="eyebrow">{t('projectPage.eyebrow')}</p><h2>{t('projectPage.title')}</h2><p>{t('projectPage.subtitle')}</p></div>
+    </header>
+
+    <section className="project-page-section">
+      <header><div><h3>{t('projectPage.addresses')}</h3><p>{t('projectPage.addressesHint')}</p></div></header>
+      <div className="project-address-grid">{PROJECT_PAGE_ADDRESSES.map(address => <article className="project-address-card" key={address.id}>
+        <header><span className="settings-choice-icon"><DesktopIcon name="globe" size={18} /></span><div><strong>{address.label}</strong><small className={address.transport === 'onion' ? 'onion' : 'clearnet'}>{address.transport === 'onion' ? t('projectPage.onion') : t('projectPage.clearnet')}</small></div></header>
+        <code>{address.address}</code>
+        <div className="project-address-actions"><button className="secondary" onClick={() => void copyAddress(address.address)} type="button">{copiedAddress === address.address ? t('projectPage.copied') : t('projectPage.copy')}</button><a className="secondary" href={address.url} target="_blank" rel="noreferrer">{t('projectPage.open')} ↗</a></div>
+      </article>)}</div>
+      <p className="project-onion-hint">{t('projectPage.onionHint')}</p>
+    </section>
+
+    <section className="project-page-section">
+      <header><div><h3>{t('projectPage.selfHosting')}</h3></div></header>
+      <div className="project-host-grid">
+        <article><span className="settings-choice-icon"><DesktopIcon name="globe" size={20} /></span><div><strong>{t('projectPage.ownNodeTitle')}</strong><p>{t('projectPage.ownNodeText')}</p></div></article>
+        <article><span className="settings-choice-icon"><DesktopIcon name="settings" size={20} /></span><div><strong>{t('projectPage.ownWorkerTitle')}</strong><p>{t('projectPage.ownWorkerText')}</p></div></article>
+      </div>
+    </section>
+
+    <section className="project-page-section">
+      <header><div><h3>{t('projectPage.services')}</h3><p>{t('projectPage.servicesHint')}</p></div></header>
+      <div className="project-service-grid">{PROJECT_SERVICE_LINKS.map(link => <a href={link.url} key={link.id} target="_blank" rel="noreferrer"><span>{projectServiceLabel(link.id, t)}</span><DesktopIcon name="chevron-right" size={17} /></a>)}<a href={PROJECT_SOURCE_URL} target="_blank" rel="noreferrer"><span>{t('projectPage.sourceCode')}</span><DesktopIcon name="chevron-right" size={17} /></a></div>
+    </section>
+  </section>;
+}
+
+function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, onWalletsChanged, autoLockSeconds, onSetAutoLockSeconds, appProtection, onSetAppProtectionMode, onLockApp, onOpenMfwNames, onOpenProjectPage }: { status: WalletCoreStatus | null; walletId: string | null; wallet: RegisteredWallet | null; onRevealSeed: () => void; onCloseWallet: () => void; onWalletsChanged: () => Promise<void>; autoLockSeconds: number; onSetAutoLockSeconds: (seconds: number) => Promise<void>; appProtection: AppProtectionStatus; onSetAppProtectionMode: (mode: AppProtectionMode, password?: string, currentPassword?: string) => Promise<void>; onLockApp: () => Promise<void>; onOpenMfwNames: () => void; onOpenProjectPage: () => void }) {
   const { dateLocale, language, setLanguage, t } = useI18n();
   const [network, setNetwork] = useState<Network>(wallet?.network ?? 'mainnet');
-  const [profile, setProfile] = useState<NodeProfile | null>(null);
-  const [savedProfile, setSavedProfile] = useState<NodeProfile | null>(null);
-  const [nodePassword, setNodePassword] = useState('');
-  const [clearPassword, setClearPassword] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [appPassword, setAppPassword] = useState('');
   const [appPasswordConfirm, setAppPasswordConfirm] = useState('');
   const [currentAppPassword, setCurrentAppPassword] = useState('');
@@ -3275,9 +3743,6 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
   const [computeBusy, setComputeBusy] = useState(false);
   const [derivationPerformance, setDerivationPerformance] = useState<DerivationPerformance | null>(null);
   const [performanceMeasuring, setPerformanceMeasuring] = useState(true);
-  const [diagnosticReport, setDiagnosticReport] = useState<DiagnosticTestbenchReport | null>(null);
-  const [diagnosticProgress, setDiagnosticProgress] = useState<DesktopDiagnosticProgress | null>(null);
-  const [diagnosing, setDiagnosing] = useState(false);
   const [ledgerRechecking, setLedgerRechecking] = useState(false);
   const [workerSelection, setWorkerSelection] = useState<FastWalletWorkerSelection>(() => loadDesktopFastWalletWorkerSelection(wallet?.network ?? 'mainnet'));
   const [communityWorkers, setCommunityWorkers] = useState<CommunityFastWalletWorker[]>([]);
@@ -3294,13 +3759,6 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
       setProtectionMode(appProtection.mode);
     }
   }, [appProtection.mode]);
-  const load = useCallback(async () => {
-    try {
-      const loaded = await invoke<NodeProfile>('load_node_settings', { network });
-      setProfile(loaded); setSavedProfile(loaded); setNodePassword(''); setClearPassword(false);
-    } catch (reason) { setMessage(errorMessage(reason, t('settings.nodeLoadFailed'))); }
-  }, [network, t]);
-  useEffect(() => { void load(); }, [load]);
   const loadCommunityWorkers = useCallback(async () => {
     if (network !== 'mainnet' || !v1ReleaseFeatures.privateWorkerPairing) {
       setCommunityWorkers([]);
@@ -3346,31 +3804,6 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
     return () => { mounted = false; };
   }, []);
 
-  const changed = profile ? settingsProfileSignature(profile) !== settingsProfileSignature(savedProfile) || Boolean(nodePassword) || clearPassword : false;
-  const useMode = (mode: NodeProfile['mode']) => {
-    if (!profile) return;
-    if (mode === 'custom') { setProfile({ ...profile, mode }); return; }
-    const defaults = defaultNodeProfile(profile.network, mode);
-    setProfile({ ...profile, ...defaults, username: profile.username, proxyAddress: profile.proxyAddress, passwordStored: profile.passwordStored });
-  };
-  const useFixedNode = (node: FixedNodeId, transport: FixedNodeTransport) => {
-    const preset = fixedMainnetNodeConnection(node, transport);
-    setNetwork('mainnet');
-    setProfile({
-      mode: preset.mode,
-      network: 'mainnet',
-      daemonAddress: preset.daemonAddress,
-      grpcEndpoint: preset.grpcEndpoint,
-      trusted: true,
-      useSsl: false,
-      username: '',
-      proxyAddress: preset.proxyAddress,
-      passwordStored: false,
-      updatedAt: 0,
-    });
-    setNodePassword('');
-    setClearPassword(false);
-  };
   const chooseRecommendedWorker = () => {
     const selection: FastWalletWorkerSelection = { kind: 'recommended', network };
     saveDesktopFastWalletWorkerSelection(selection);
@@ -3411,21 +3844,6 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
       setMessage(errorMessage(reason, t('settings.workerSelectFailed')));
     } finally { setWorkerBusy(false); }
   };
-  const save = async () => {
-    if (!profile) return;
-    setBusy(true); setMessage(null);
-    try {
-      const saved = await invoke<NodeProfile>('save_node_settings', { input: {
-        walletId: wallet?.network === profile.network ? walletId : null,
-        mode: profile.mode, network: profile.network, daemonAddress: profile.daemonAddress,
-        grpcEndpoint: profile.grpcEndpoint, trusted: profile.trusted, useSsl: profile.useSsl,
-        username: profile.username, password: nodePassword, proxyAddress: profile.proxyAddress, clearPassword,
-      } });
-      setProfile(saved); setSavedProfile(saved); setNodePassword(''); setClearPassword(false);
-      setMessage(wallet?.network === saved.network && walletId ? t('settings.nodeApplied') : t('settings.nodeSaved', { network: networkLabel(saved.network) }));
-    } catch (reason) { setNodePassword(''); setMessage(errorMessage(reason, t('settings.nodeSaveFailed'))); }
-    finally { setBusy(false); }
-  };
   const saveAppProtection = async () => {
     const needsPassword = protectionMode === 'password';
     if (needsPassword && appPassword !== appPasswordConfirm) { setMessage(t('settings.appPasswordMismatch')); return; }
@@ -3464,34 +3882,6 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
       setMessage(errorMessage(reason, t('settings.autoLockFailed')));
     } finally {
       setAutoLockBusy(false);
-    }
-  };
-  const runDiagnosticTestbench = async () => {
-    setDiagnosing(true);
-    setDiagnosticReport(null);
-    setDiagnosticProgress({ completed: 0, total: 12, label: t('settings.diagnosticStarting') });
-    setMessage(null);
-    try {
-      const report = await runDesktopWalletDiagnosticTestbench({
-        network,
-        walletId,
-        onProgress: progress => setDiagnosticProgress({
-          ...progress,
-          label: localizeDiagnosticText(
-            progress.label,
-            (key, params) => t(key as import('./i18n').TranslationKey, params),
-          ),
-        }),
-      });
-      setDiagnosticReport(report);
-      setMessage(report.failed > 0
-        ? t('settings.diagnosticFailures', { count: report.failed })
-        : t('settings.diagnosticFinished'));
-    } catch (reason) {
-      setMessage(errorMessage(reason, t('settings.diagnosticRunFailed')));
-    } finally {
-      setDiagnosing(false);
-      setDiagnosticProgress(null);
     }
   };
   const recheckLedgerSpendOutputs = async () => {
@@ -3548,11 +3938,18 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
         </div>}
       </article>
     </section>
+    <section className="settings-section"><header><h3>{t('settings.projectPage')}</h3><small>{t('projectPage.clearnet')} · {t('projectPage.onion')}</small></header>
+      <article className="settings-panel settings-project-card">
+        <span className="settings-choice-icon"><DesktopIcon name="globe" size={20} /></span>
+        <div className="settings-project-copy"><strong>{t('settings.projectPage')}</strong><p>{t('settings.projectPageHint')}</p><div className="settings-project-addresses">{PROJECT_PAGE_ADDRESSES.map(address => <div key={address.id}><small className={address.transport === 'onion' ? 'onion' : 'clearnet'}>{address.transport === 'onion' ? t('projectPage.onion') : t('projectPage.clearnet')}</small><code title={address.address}>{address.address}</code></div>)}</div></div>
+        <button className="secondary" onClick={onOpenProjectPage} type="button">{t('projectPage.open')}</button>
+      </article>
+    </section>
     {v1ReleaseFeatures.mfwNameRegistration && <section className="settings-section"><header><h3>{t('settings.mfwRegistry')}</h3><small>.mfw</small></header>
       <article className="settings-panel settings-registry-card"><span className="settings-choice-icon"><DesktopIcon name="key" size={20} /></span><div><strong>{t('settings.mfwRegistry')}</strong><p>{t('settings.mfwRegistryHint')}</p></div><button className="secondary" onClick={onOpenMfwNames} type="button">{t('settings.openMfwRegistry')}</button></article>
     </section>}
     <section className="settings-section"><header><h3>{t('settings.language')}</h3><small>{t('settings.languageHint')}</small></header>
-      <article className="settings-panel settings-language">{supportedLanguages.map(code => <button className={language === code ? 'selected' : ''} onClick={() => setLanguage(code)} key={code} lang={code} type="button">{languageNames[code]}</button>)}</article>
+      <article className="settings-panel settings-language"><label htmlFor="settings-language"><span>{t('settings.language')}</span><select id="settings-language" onChange={(event) => setLanguage(event.target.value as typeof language)} value={language}>{supportedLanguages.map(code => <option key={code} lang={code} value={code}>{languageNames[code]}</option>)}</select></label></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.performance')}</h3><small>{computeBusy ? t('settings.computeChecking') : computeStatus?.gpuAvailable ? t('settings.computeGpuReady') : t('settings.computeCpuReady')}</small></header>
       <article className="settings-panel"><div><strong>{t('settings.computeBackend')}</strong><p>{t('settings.computeHint')}</p></div><div className="node-mode">{([['auto', t('settings.computeAuto')], ['cpu', t('settings.computeCpu')], ['gpu', t('settings.computeGpu')]] as const).map(([preference, label]) => <button className={computeStatus?.preference === preference ? 'selected' : ''} disabled={computeBusy} onClick={() => void updateComputeBackend(preference)} key={preference} type="button">{label}</button>)}</div><p>{computeStatus?.gpuAvailable ? t('settings.computeDevice', { device: computeStatus.deviceName || computeStatus.gpuKind.toUpperCase() }) : t('settings.computeFallback')}</p></article>
@@ -3582,58 +3979,10 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onCloseWallet, o
       </article>
       <article className="settings-panel settings-toggle-row"><div><strong>{t('settings.autoLock')}</strong><p>{appProtection.mode === 'none' ? t('settings.autoLockNeedsProtection') : t('settings.autoLockDetail')}</p></div><label><span className="sr-only">{t('settings.inactivityTimeout')}</span><select value={autoLockSeconds} disabled={autoLockBusy || appProtection.mode === 'none'} onChange={(event) => void updateAutoLock(Number(event.target.value))}><option value={60}>{t('settings.timeout1Minute')}</option><option value={300}>{t('settings.timeout5Minutes')}</option><option value={900}>{t('settings.timeout15Minutes')}</option><option value={1800}>{t('settings.timeout30Minutes')}</option><option value={3600}>{t('settings.timeout1Hour')}</option><option value={0}>{t('settings.timeoutNever')}</option></select></label></article>
     </section>
-    <section className="settings-section"><header><h3>{t('settings.node')}</h3><small>{changed ? t('settings.unsaved') : savedProfile ? t('settings.saved') : t('settings.loading')}</small></header>
-      <article className="settings-panel node-settings">{profile && <>
-        <p>{wallet ? t('settings.nodeForWallet', { name: walletDisplayName(wallet), network: networkLabel(profile.network) }) : t('settings.nodeChoose')}</p>
-        <div className="settings-field"><span>{t('settings.network')}</span><div className="node-mode">{(['mainnet', 'testnet', 'stagenet'] as Network[]).map((item) => <button className={network === item ? 'selected' : ''} onClick={() => setNetwork(item)} key={item} type="button">{networkLabel(item)}</button>)}</div></div>
-        {profile.network === 'mainnet' && <div className="settings-field"><span>{t('settings.availableNodeAddresses')}</span><div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).flatMap(node => (['clearnet', 'onion'] as FixedNodeTransport[]).map(transport => {
-          const preset = fixedMainnetNodeConnection(node, transport);
-          const selected = profile.mode === preset.mode && profile.daemonAddress === preset.daemonAddress && profile.grpcEndpoint === preset.grpcEndpoint && profile.proxyAddress === preset.proxyAddress;
-          return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`${node}-${transport}`} onClick={() => useFixedNode(node, transport)} type="button"><span className="settings-choice-icon"><DesktopIcon name={transport === 'onion' ? 'key' : 'globe'} size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{transport === 'onion' ? t('settings.onionAddress') : t('settings.clearnetAddress')} · {preset.daemonAddress}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>;
-        }))}</div><small className="settings-field-help">{t('settings.availableNodeAddressesHelp')}</small></div>}
-        <div className="settings-field"><span>{t('settings.connection')}</span><div className="node-mode">{([['optimized-grpc', t('settings.optimized')], ['original-rpc', t('settings.originalRpc')], ['custom', t('settings.custom')]] as const).map(([mode, title]) => <button className={profile.mode === mode ? 'selected' : ''} onClick={() => useMode(mode)} key={mode} type="button">{title}</button>)}</div></div>
-        <div className="settings-form-grid"><label>{t('settings.daemonAddress')}<input value={profile.daemonAddress} onChange={(event) => setProfile({ ...profile, daemonAddress: event.target.value })} autoComplete="off" /></label>{profile.mode !== 'original-rpc' && <label>{t('settings.grpcEndpoint')}<input value={profile.grpcEndpoint} onChange={(event) => setProfile({ ...profile, grpcEndpoint: event.target.value })} autoComplete="off" /></label>}<label>{t('settings.nodeUsername')} <small>{t('common.optional')}</small><input value={profile.username} onChange={(event) => setProfile({ ...profile, username: event.target.value })} autoComplete="off" /></label><label>{t('settings.nodePassword')} <small>{t('settings.optionalKeychain')}</small><input value={nodePassword} onChange={(event) => { setNodePassword(event.target.value); setClearPassword(false); }} type="password" autoComplete="new-password" placeholder={profile.passwordStored ? t('settings.passwordStored') : t('settings.passwordKeychain')} /></label><label>{t('settings.socks5Proxy')} <small>{t('common.optional')}</small><input value={profile.proxyAddress} onChange={(event) => setProfile({ ...profile, proxyAddress: event.target.value })} placeholder="127.0.0.1:9050" autoComplete="off" /></label></div>
-        <div className="settings-checkboxes"><label className="checkbox"><input checked={profile.trusted} onChange={(event) => setProfile({ ...profile, trusted: event.target.checked })} type="checkbox" />{t('settings.trustedNode')}</label><label className="checkbox"><input checked={profile.useSsl} onChange={(event) => setProfile({ ...profile, useSsl: event.target.checked })} type="checkbox" />{t('settings.tls')}</label>{profile.passwordStored && <label className="checkbox"><input checked={clearPassword} onChange={(event) => setClearPassword(event.target.checked)} type="checkbox" />{t('settings.forgetNodePassword')}</label>}</div>
-        <div className="settings-actions"><button className="secondary" onClick={() => { setProfile(defaultNodeProfile(network)); setNodePassword(''); setClearPassword(false); }} type="button">{t('settings.resetDefaults')}</button><button className="primary" disabled={busy || !changed} onClick={() => void save()} type="button">{busy ? t('settings.saving') : t('settings.saveNode')}</button></div>
-      </>}</article>
-    </section>
-    <section className="settings-section"><header><h3>{t('settings.diagnosticTestbench')}</h3><small>{diagnosing ? t('settings.diagnosticsRunning') : diagnosticReport ? t('settings.diagnosticsComplete') : t('settings.diagnosticsReady')}</small></header>
-      <article className="settings-panel diagnostic-testbench">
-        <div><strong>{t('settings.safeChecks')}</strong><p>{t('settings.safeChecksText')}</p></div>
-        {diagnosing && diagnosticProgress && <div className="diagnostic-progress" role="status" aria-live="polite"><div><span>{diagnosticProgress.label}</span><strong>{diagnosticProgress.completed}/{diagnosticProgress.total}</strong></div><progress value={diagnosticProgress.completed} max={diagnosticProgress.total} /></div>}
-        {diagnosticReport && <>
-          <div className="diagnostic-summary" aria-label={t('settings.diagnosticSummary')}>
-            <DiagnosticCount label={t('settings.diagnosticPassed')} value={diagnosticReport.passed} status="pass" />
-            <DiagnosticCount label={t('settings.diagnosticWarnings')} value={diagnosticReport.warnings} status="warning" />
-            <DiagnosticCount label={t('settings.diagnosticFailed')} value={diagnosticReport.failed} status="fail" />
-            <DiagnosticCount label={t('settings.diagnosticSkipped')} value={diagnosticReport.skipped} status="skipped" />
-          </div>
-          <div className="diagnostic-results">{diagnosticReport.tests.map(test => <article className="diagnostic-test" key={test.id}>
-            <header><div><small>{localizeDiagnosticText(test.category, key => t(key as import('./i18n').TranslationKey))}</small><strong>{localizeDiagnosticText(test.label, key => t(key as import('./i18n').TranslationKey))}</strong></div><span className={`diagnostic-badge ${test.status}`}>{diagnosticStatusLabel(test.status, t)}</span></header>
-            <p>{localizeDiagnosticText(test.summary, (key, params) => t(key as import('./i18n').TranslationKey, params))}</p>
-            {test.metrics.length > 0 && <dl>{test.metrics.map(metric => <div key={`${test.id}-${metric.label}`}><dt>{localizeDiagnosticText(metric.label, key => t(key as import('./i18n').TranslationKey))}</dt><dd>{localizeDiagnosticText(metric.value, key => t(key as import('./i18n').TranslationKey))}{metric.unit ? ` ${metric.unit}` : ''}</dd></div>)}</dl>}
-            <small className="diagnostic-duration">{test.durationMs} ms</small>
-          </article>)}</div>
-          <p className="diagnostic-total">{t('settings.diagnosticTotal', { duration: diagnosticReport.durationMs })}</p>
-        </>}
-        <button className="primary" disabled={diagnosing} onClick={() => void runDiagnosticTestbench()} type="button">{diagnosing ? t('settings.runningTestbench') : t('settings.runTestbench')}</button>
-      </article>
-    </section>
     <section className="settings-section settings-about"><header><h3>{t('settings.about')}</h3><small>{t('settings.localDesktop')}</small></header><article className="settings-panel"><div><strong>{t('settings.privacyByDesign')}</strong><p>{t('settings.privacyText')}</p></div><div><strong>{t('settings.marketDisplay')}</strong><p>{t('settings.marketText')}</p></div></article></section>
     <button className="danger-button settings-lock" disabled={!walletId} onClick={onCloseWallet} type="button">{t('settings.closeWallet')}</button>
     {message && <p className="setup-message">{message}</p>}
   </section>;
-}
-
-function DiagnosticCount({ label, value, status }: { label: string; value: number; status: DiagnosticTestStatus }) {
-  return <div className={`diagnostic-count ${status}`}><strong>{value}</strong><span>{label}</span></div>;
-}
-
-function diagnosticStatusLabel(status: DiagnosticTestStatus, t: ReturnType<typeof useI18n>['t']): string {
-  if (status === 'pass') return t('settings.diagnosticPassed');
-  if (status === 'warning') return t('settings.diagnosticWarnings');
-  if (status === 'fail') return t('settings.diagnosticFailed');
-  return t('settings.diagnosticSkipped');
 }
 
 function SensitiveAuthorizationOverlay({ title, description, password, mode, systemLabel, allowPasswordFallback, busy, onPasswordChange, onConfirm, onDismiss }: { title: string; description: string; password: string; mode: AppProtectionMode; systemLabel: string; allowPasswordFallback: boolean; busy: boolean; onPasswordChange: (value: string) => void; onConfirm: () => void; onDismiss: () => void }) {

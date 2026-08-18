@@ -34,7 +34,13 @@ async function checkDesktopUpdate(): Promise<AppUpdateOffer | null> {
   if (!updateConfig.desktop.enabled) {
     return null;
   }
-  const update = await check({timeout: 30_000});
+  const update = await check({
+    timeout: 30_000,
+    // Update metadata and artifacts follow the same fail-closed Tor route as
+    // every other desktop service request. Block synchronization is the sole
+    // Clearnet exception.
+    proxy: 'socks5h://127.0.0.1:9050',
+  });
   pendingUpdate = update;
   if (!update) {
     return null;

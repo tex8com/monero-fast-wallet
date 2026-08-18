@@ -5,6 +5,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  Share,
   TextInput,
   TouchableOpacity,
 } from 'react-native';
@@ -23,6 +24,7 @@ import { type TranslationKey, useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
 import {
   isFastWalletRegistration,
+  ledgerBalanceNeedsVerification,
   walletDisplayName,
 } from '../services/WalletRegistry';
 import type {
@@ -35,19 +37,19 @@ import {
   loadWalletAddresses,
   type WalletAddressRecord,
 } from '../services/WalletAddressRegistry';
+import { transactionsForWalletAddress } from '../services/WalletAddressActivity';
+import { useXmrPrice } from '../data/priceService';
+import {
+  buildMoneroPaymentUri,
+  convertPaymentAmount,
+  paymentXmrAmount,
+  sanitizePaymentAmountInput,
+  type PaymentAmountCurrency,
+} from '../services/PaymentRequest';
 
 function QrCode({ value, size }: { value: string; size: number }) {
   return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        backgroundColor: '#FFF',
-        borderRadius: radius.lg,
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
+    <View style={[s.qrCode, { width: size, height: size }]}>
       <QRCode
         backgroundColor="#FFF"
         color="#1A1A2E"
@@ -56,14 +58,7 @@ function QrCode({ value, size }: { value: string; size: number }) {
         size={size}
         value={value}
       />
-      <View
-        style={{
-          position: 'absolute',
-          backgroundColor: '#FFF',
-          borderRadius: 8,
-          padding: 4,
-        }}
-      >
+      <View style={s.qrLogo}>
         <MoneroLogo size={28} />
       </View>
     </View>
@@ -114,8 +109,26 @@ function shortAddress(address: string): string {
     : address;
 }
 
+function addressBalanceDetail(
+  address: WalletAddressRecord,
+  hideBalance: boolean,
+): string {
+  if (hideBalance || address.balanceAtomic === undefined) {
+    return '—';
+  }
+
+  return `${formatAtomicXmr(address.balanceAtomic, {
+    maxFractionDigits: 6,
+    minFractionDigits: 2,
+  })} XMR`;
+}
+
 export default function ReceiveScreen({ navigation, route }: any) {
   const [copied, setCopied] = useState(false);
+  const [paymentLinkCopied, setPaymentLinkCopied] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentAmountCurrency, setPaymentAmountCurrency] =
+    useState<PaymentAmountCurrency>('XMR');
   const [hardwareBusy, setHardwareBusy] = useState(false);
   const [hardwareMessage, setHardwareMessage] = useState<string | undefined>();
   const [walletAddresses, setWalletAddresses] = useState<WalletAddressRecord[]>(
@@ -138,6 +151,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
     string | undefined
   >();
   const { t } = useI18n();
+  const { price: xmrUsdPrice } = useXmrPrice();
   const routeWalletId =
     typeof route?.params?.walletId === 'string'
       ? route.params.walletId
@@ -180,8 +194,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
         .map(wallet => resolveWalletOption(wallet, walletSnapshotMap, t)),
     [registeredWallets, t, walletSnapshotMap],
   );
-  const activeReceiveWalletId =
-    selectedReceiveWalletId ?? registeredWallet?.id;
+  const activeReceiveWalletId = selectedReceiveWalletId ?? registeredWallet?.id;
   const selectedRegisteredWallet = registeredWallets.find(
     wallet => wallet.id === activeReceiveWalletId,
   );
@@ -193,39 +206,85 @@ export default function ReceiveScreen({ navigation, route }: any) {
   const selectedAddress =
     walletAddresses.find(item => item.id === selectedAddressId) ??
     walletAddresses[0];
-  // The selected address is already presented in full above the QR code. Keep
-  // the selector focused on the alternatives so the same address is never
-  // rendered twice on this screen.
-  const otherWalletAddresses = walletAddresses.filter(
-    item => item.id !== selectedAddress?.id,
-  );
   const selectedSnapshot =
     activeReceiveWalletId === registeredWallet?.id
       ? snapshot
       : activeReceiveWalletId
-        ? walletSnapshotMap[activeReceiveWalletId]
-        : undefined;
-  const address =
-    selectedFastBackupPending
-      ? ''
-      : (activeReceiveWalletId === registeredWallet?.id
-          ? selectedAddress?.address
-          : undefined) ??
-        selectedSnapshot?.primaryAddress ??
-        '';
+      ? walletSnapshotMap[activeReceiveWalletId]
+      : undefined;
+  const address = selectedFastBackupPending
+    ? ''
+    : (activeReceiveWalletId === registeredWallet?.id
+        ? selectedAddress?.address
+        : undefined) ??
+      selectedSnapshot?.primaryAddress ??
+      '';
   const isHardwareWallet = Boolean(
     selectedRegisteredWallet?.kind === 'hardware' &&
-    selectedRegisteredWallet.id === registeredWallet?.id &&
-    session?.hardwareDevice,
+      selectedRegisteredWallet.id === registeredWallet?.id &&
+      session?.hardwareDevice,
   );
   const hardwareConnected = hardwareStatus?.connected ?? false;
   const activeWalletDetail = selectedRegisteredWallet
-    ? (balanceDetail(selectedSnapshot) ??
-      walletDisplayName(selectedRegisteredWallet))
+    ? balanceDetail(selectedSnapshot) ??
+      walletDisplayName(selectedRegisteredWallet)
     : undefined;
   const showsActiveWalletHistory = Boolean(
     session && activeReceiveWalletId === registeredWallet?.id,
   );
+  const ledgerBalanceUnverified = Boolean(
+    selectedRegisteredWallet &&
+      ledgerBalanceNeedsVerification(
+        selectedRegisteredWallet,
+        selectedSnapshot?.pendingOutputKeyImageCount,
+        transactions.length,
+      ),
+  );
+  const receiveAccountIndexesKey = useMemo(() => {
+    const accountIndexes = new Set<number>();
+    const isLegacyAccountRegistration =
+      selectedRegisteredWallet?.kind === 'hardware' &&
+      selectedRegisteredWallet.role === 'fast';
+    if (isLegacyAccountRegistration) {
+      accountIndexes.add(session?.accountIndex ?? 0);
+    } else {
+      accountIndexes.add(0);
+      transactions.forEach(transaction => {
+        if (
+          Number.isSafeInteger(transaction.subaddrAccount) &&
+          transaction.subaddrAccount >= 0
+        ) {
+          accountIndexes.add(transaction.subaddrAccount);
+        }
+      });
+    }
+    return Array.from(accountIndexes)
+      .sort((left, right) => left - right)
+      .join(',');
+  }, [
+    selectedRegisteredWallet?.kind,
+    selectedRegisteredWallet?.role,
+    session?.accountIndex,
+    transactions,
+  ]);
+  const selectedAddressTransactions = useMemo(
+    () => transactionsForWalletAddress(transactions, selectedAddress),
+    [selectedAddress, transactions],
+  );
+  const paymentAmountXmr = paymentXmrAmount(
+    paymentAmount,
+    paymentAmountCurrency,
+    xmrUsdPrice,
+  );
+  const paymentUri = buildMoneroPaymentUri(address, paymentAmountXmr);
+  const paymentAmountEquivalent =
+    paymentAmountCurrency === 'XMR'
+      ? paymentAmountXmr && xmrUsdPrice > 0
+        ? `≈ $${(Number(paymentAmountXmr) * xmrUsdPrice).toFixed(2)} USD`
+        : undefined
+      : paymentAmountXmr
+      ? `≈ ${paymentAmountXmr} XMR`
+      : undefined;
 
   useEffect(() => {
     if (routeWalletId) {
@@ -253,7 +312,14 @@ export default function ReceiveScreen({ navigation, route }: any) {
     }
 
     const load = async () => {
-      const addresses = await walletService.listSubaddresses(session);
+      const accountIndexes = receiveAccountIndexesKey
+        .split(',')
+        .map(value => Number(value))
+        .filter(value => Number.isSafeInteger(value) && value >= 0);
+      const addresses = await walletService.listSubaddresses(
+        session,
+        accountIndexes,
+      );
       if (!mounted) {
         return;
       }
@@ -280,9 +346,9 @@ export default function ReceiveScreen({ navigation, route }: any) {
     };
   }, [
     activeReceiveWalletId,
+    receiveAccountIndexesKey,
     registeredWallet,
     session,
-    t,
   ]);
 
   useFocusEffect(
@@ -314,20 +380,44 @@ export default function ReceiveScreen({ navigation, route }: any) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handlePaymentCurrencyChange = (next: PaymentAmountCurrency) => {
+    if (next === paymentAmountCurrency) return;
+    setPaymentAmount(current =>
+      convertPaymentAmount(current, paymentAmountCurrency, next, xmrUsdPrice),
+    );
+    setPaymentAmountCurrency(next);
+  };
+
+  const handleCopyPaymentLink = () => {
+    if (!paymentUri) return;
+    Clipboard.setString(paymentUri);
+    setPaymentLinkCopied(true);
+    setTimeout(() => setPaymentLinkCopied(false), 2000);
+  };
+
+  const handleSharePaymentLink = async () => {
+    if (!paymentUri) return;
+    await Share.share({
+      message: paymentUri,
+      title: t('receive.paymentLink'),
+    });
+  };
+
   const handleSelectWallet = async (wallet: WalletOption) => {
     if (openingReceiveWalletId) {
       return;
     }
 
+    const previousWalletId = activeReceiveWalletId;
+    const walletId = wallet.id;
+    setSelectedReceiveWalletId(walletId);
     setReceiveWalletError(undefined);
     setSelectedAddressId(undefined);
     setHardwareMessage(undefined);
     setShowAddressTools(false);
     setShowHardwareTools(false);
 
-    const walletId = wallet.id;
     if (walletId === registeredWallet?.id && isRegisteredWalletOpen(walletId)) {
-      setSelectedReceiveWalletId(walletId);
       return;
     }
 
@@ -339,6 +429,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
       }
       setSelectedReceiveWalletId(walletId);
     } catch (error) {
+      setSelectedReceiveWalletId(previousWalletId);
       setReceiveWalletError(
         error instanceof Error ? error.message : t('wallets.openFailed'),
       );
@@ -386,8 +477,15 @@ export default function ReceiveScreen({ navigation, route }: any) {
         session,
         newAddressLabel.trim() ||
           t('receive.newAddressLabel', { count: walletAddresses.length + 1 }),
+        selectedAddress?.accountIndex,
       );
-      const addresses = await walletService.listSubaddresses(session);
+      const addresses = await walletService.listSubaddresses(
+        session,
+        receiveAccountIndexesKey
+          .split(',')
+          .map(value => Number(value))
+          .filter(value => Number.isSafeInteger(value) && value >= 0),
+      );
       setWalletAddresses(addresses);
       setSelectedAddressId(newAddress.id);
       setNewAddressLabel('');
@@ -462,8 +560,70 @@ export default function ReceiveScreen({ navigation, route }: any) {
 
         {address ? (
           <View style={s.card}>
+            <View style={s.paymentAmountComposer}>
+              <View style={s.paymentAmountHeader}>
+                <Text style={s.paymentAmountLabel}>
+                  {t('receive.amountOptional')}
+                </Text>
+                <View style={s.currencyToggle}>
+                  {(['XMR', 'USD'] as const).map(currency => (
+                    <TouchableOpacity
+                      accessibilityRole="radio"
+                      accessibilityState={{
+                        selected: paymentAmountCurrency === currency,
+                      }}
+                      activeOpacity={0.75}
+                      key={currency}
+                      onPress={() => handlePaymentCurrencyChange(currency)}
+                      style={[
+                        s.currencyToggleButton,
+                        paymentAmountCurrency === currency &&
+                          s.currencyToggleButtonActive,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          s.currencyToggleText,
+                          paymentAmountCurrency === currency &&
+                            s.currencyToggleTextActive,
+                        ]}
+                      >
+                        {currency}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+              <View style={s.paymentAmountInputRow}>
+                <TextInput
+                  accessibilityLabel={t('receive.amountOptional')}
+                  keyboardType="decimal-pad"
+                  maxLength={24}
+                  onChangeText={value =>
+                    setPaymentAmount(
+                      sanitizePaymentAmountInput(value, paymentAmountCurrency),
+                    )
+                  }
+                  placeholder="0"
+                  placeholderTextColor={colors.textMuted}
+                  selectionColor={colors.orange}
+                  style={s.paymentAmountInput}
+                  value={paymentAmount}
+                />
+                <Text style={s.paymentAmountUnit}>{paymentAmountCurrency}</Text>
+              </View>
+              {paymentAmountEquivalent ? (
+                <Text style={s.paymentAmountEquivalent}>
+                  {paymentAmountEquivalent}
+                </Text>
+              ) : paymentAmountCurrency === 'USD' && xmrUsdPrice <= 0 ? (
+                <Text style={s.paymentAmountUnavailable}>
+                  {t('receive.usdRateUnavailable')}
+                </Text>
+              ) : null}
+            </View>
             <View style={s.qrBox}>
-              <QrCode value={address} size={252} />
+              <QrCode value={paymentUri} size={252} />
             </View>
 
             <View style={s.simpleAddressRow}>
@@ -483,8 +643,37 @@ export default function ReceiveScreen({ navigation, route }: any) {
                 />
               </TouchableOpacity>
             </View>
-            {activeReceiveWalletId === registeredWallet?.id &&
-            session ? (
+            <View style={s.paymentLinkActions}>
+              <TouchableOpacity
+                accessibilityRole="button"
+                activeOpacity={0.78}
+                onPress={handleCopyPaymentLink}
+                style={s.paymentLinkSecondary}
+              >
+                <Icon
+                  name={paymentLinkCopied ? 'check' : 'copy'}
+                  size={17}
+                  color={paymentLinkCopied ? colors.success : colors.orange}
+                />
+                <Text style={s.paymentLinkSecondaryText} numberOfLines={1}>
+                  {paymentLinkCopied
+                    ? t('receive.paymentLinkCopied')
+                    : t('receive.copyPaymentLink')}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                accessibilityRole="button"
+                activeOpacity={0.82}
+                onPress={handleSharePaymentLink}
+                style={s.paymentLinkPrimary}
+              >
+                <Icon name="send" size={17} color="#FFF" />
+                <Text style={s.paymentLinkPrimaryText} numberOfLines={1}>
+                  {t('receive.sharePaymentLink')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {activeReceiveWalletId === registeredWallet?.id && session ? (
               <View style={s.addressToolsContainer}>
                 <TouchableOpacity
                   accessibilityRole="button"
@@ -536,26 +725,46 @@ export default function ReceiveScreen({ navigation, route }: any) {
                     <Text style={s.addressPrivacyHint}>
                       {t('receive.subaddressPrivacyHint')}
                     </Text>
-                    {otherWalletAddresses.map(item => (
-                      <TouchableOpacity
-                        activeOpacity={0.75}
-                        key={item.id}
-                        onPress={() => setSelectedAddressId(item.id)}
-                        style={[s.addressRow]}
-                      >
-                        <View style={s.addressRowCopy}>
-                          <Text style={s.addressRowLabel} numberOfLines={1}>
-                            {item.label}
-                          </Text>
-                          <Text style={s.addressRowValue} numberOfLines={1}>
-                            {shortAddress(item.address)}
-                          </Text>
-                        </View>
-                        <Text style={s.addressRowIndex}>
-                          {item.accountIndex}.{item.addressIndex}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
+                    {walletAddresses.map(item => {
+                      const selected = item.id === selectedAddress?.id;
+                      return (
+                        <TouchableOpacity
+                          accessibilityRole="radio"
+                          accessibilityState={{ selected }}
+                          activeOpacity={0.75}
+                          key={item.id}
+                          onPress={() => setSelectedAddressId(item.id)}
+                          style={[
+                            s.addressRow,
+                            selected && s.addressRowSelected,
+                          ]}
+                        >
+                          <View style={s.addressRowCopy}>
+                            <Text style={s.addressRowLabel} numberOfLines={1}>
+                              {item.label}
+                            </Text>
+                            <Text style={s.addressRowValue} numberOfLines={1}>
+                              {shortAddress(item.address)}
+                            </Text>
+                          </View>
+                          <View style={s.addressRowBalanceGroup}>
+                            <Text style={s.addressRowBalance} numberOfLines={1}>
+                              {addressBalanceDetail(
+                                item,
+                                ledgerBalanceUnverified,
+                              )}
+                            </Text>
+                            {selected ? (
+                              <Icon
+                                name="check"
+                                size={16}
+                                color={colors.orange}
+                              />
+                            ) : null}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
                 ) : null}
               </View>
@@ -584,11 +793,9 @@ export default function ReceiveScreen({ navigation, route }: any) {
                       <View
                         style={[
                           s.hardwarePill,
-                          {
-                            backgroundColor: hardwareConnected
-                              ? 'rgba(0,214,143,0.12)'
-                              : 'rgba(255,184,0,0.12)',
-                          },
+                          hardwareConnected
+                            ? s.hardwarePillConnected
+                            : s.hardwarePillDisconnected,
                         ]}
                       >
                         <Text
@@ -692,7 +899,17 @@ export default function ReceiveScreen({ navigation, route }: any) {
             <TouchableOpacity
               accessibilityRole="button"
               activeOpacity={0.7}
-              onPress={() => navigation.navigate('Transactions')}
+              onPress={() =>
+                navigation.navigate('Transactions', {
+                  addressFilter: selectedAddress
+                    ? {
+                        accountIndex: selectedAddress.accountIndex,
+                        addressIndex: selectedAddress.addressIndex,
+                        label: selectedAddress.label,
+                      }
+                    : undefined,
+                })
+              }
             >
               <Text style={s.transactionsLink}>
                 {t('transactions.viewMore')}
@@ -701,8 +918,8 @@ export default function ReceiveScreen({ navigation, route }: any) {
           ) : null}
         </View>
 
-        {showsActiveWalletHistory && transactions.length > 0 ? (
-          transactions.slice(0, 3).map(transaction => (
+        {showsActiveWalletHistory && selectedAddressTransactions.length > 0 ? (
+          selectedAddressTransactions.slice(0, 3).map(transaction => (
             <TransactionRow
               key={transactionRowKey(transaction)}
               transaction={transaction}
@@ -732,21 +949,6 @@ export default function ReceiveScreen({ navigation, route }: any) {
             </Text>
           </View>
         )}
-
-        <View style={s.infoCard}>
-          <View style={s.infoTitleRow}>
-            <Icon name="lock" size={16} color={colors.textPrimary} />
-            <Text style={s.infoTitle}>{t('receive.privacyTitle')}</Text>
-          </View>
-          <Text style={s.infoText}>{t('receive.privacyText')}</Text>
-        </View>
-        <View style={s.infoCard}>
-          <View style={s.infoTitleRow}>
-            <Icon name="lightbulb" size={16} color={colors.textPrimary} />
-            <Text style={s.infoTitle}>{t('receive.stealthTitle')}</Text>
-          </View>
-          <Text style={s.infoText}>{t('receive.stealthText')}</Text>
-        </View>
       </ScrollView>
     </View>
   );
@@ -754,7 +956,7 @@ export default function ReceiveScreen({ navigation, route }: any) {
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  scroll: { paddingHorizontal: spacing.lg, paddingTop: 60, paddingBottom: 100 },
+  scroll: { paddingHorizontal: spacing.lg, paddingTop: 12, paddingBottom: 100 },
   header: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -832,6 +1034,89 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
+  paymentAmountComposer: {
+    marginBottom: 18,
+    width: '100%',
+  },
+  paymentAmountHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  paymentAmountLabel: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  currencyToggle: {
+    backgroundColor: colors.bg,
+    borderColor: colors.border,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    flexDirection: 'row',
+    padding: 3,
+  },
+  currencyToggleButton: {
+    alignItems: 'center',
+    borderRadius: radius.full,
+    justifyContent: 'center',
+    minHeight: 30,
+    paddingHorizontal: 13,
+  },
+  currencyToggleButtonActive: { backgroundColor: colors.orange },
+  currencyToggleText: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  currencyToggleTextActive: { color: '#FFF' },
+  paymentAmountInputRow: {
+    alignItems: 'center',
+    backgroundColor: colors.bgInput,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    minHeight: 58,
+    paddingHorizontal: 14,
+  },
+  paymentAmountInput: {
+    color: colors.textPrimary,
+    flex: 1,
+    fontSize: 24,
+    fontWeight: '700',
+    paddingVertical: 10,
+  },
+  paymentAmountUnit: {
+    color: colors.orange,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  paymentAmountEquivalent: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    marginTop: 7,
+    paddingHorizontal: 2,
+  },
+  paymentAmountUnavailable: {
+    color: colors.warning,
+    fontSize: 12,
+    marginTop: 7,
+    paddingHorizontal: 2,
+  },
+  qrCode: {
+    backgroundColor: '#FFF',
+    borderRadius: radius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  qrLogo: {
+    position: 'absolute',
+    backgroundColor: '#FFF',
+    borderRadius: 8,
+    padding: 4,
+  },
   fastStatus: {
     width: '100%',
     minHeight: 72,
@@ -893,6 +1178,48 @@ const s = StyleSheet.create({
     color: colors.textSecondary,
     fontFamily: 'monospace',
     fontSize: 13,
+  },
+  paymentLinkActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+    width: '100%',
+  },
+  paymentLinkSecondary: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.borderLight,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: 10,
+  },
+  paymentLinkSecondaryText: {
+    color: colors.textSecondary,
+    flexShrink: 1,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  paymentLinkPrimary: {
+    alignItems: 'center',
+    backgroundColor: colors.orange,
+    borderRadius: radius.md,
+    flex: 1.25,
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: 10,
+  },
+  paymentLinkPrimaryText: {
+    color: '#FFF',
+    flexShrink: 1,
+    fontSize: 12,
+    fontWeight: '900',
   },
   copyIconButton: {
     width: 42,
@@ -1003,6 +1330,9 @@ const s = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.border,
   },
+  addressRowSelected: {
+    backgroundColor: 'rgba(242,104,34,0.08)',
+  },
   addressRowCopy: { flex: 1, minWidth: 0 },
   addressRowLabel: {
     color: colors.textPrimary,
@@ -1015,10 +1345,18 @@ const s = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
   },
-  addressRowIndex: {
-    color: colors.textMuted,
-    fontFamily: 'monospace',
+  addressRowBalanceGroup: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'flex-end',
+    minWidth: 92,
+  },
+  addressRowBalance: {
+    color: colors.textSecondary,
     fontSize: 11,
+    fontWeight: '800',
+    textAlign: 'right',
   },
   btnRow: { flexDirection: 'row', gap: 12, width: '100%' },
   copyBtn: {
@@ -1071,6 +1409,8 @@ const s = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: radius.full,
   },
+  hardwarePillConnected: { backgroundColor: 'rgba(0,214,143,0.12)' },
+  hardwarePillDisconnected: { backgroundColor: 'rgba(255,184,0,0.12)' },
   hardwarePillText: { fontSize: 11, fontWeight: '800' },
   hardwareText: {
     color: colors.textSecondary,
@@ -1165,20 +1505,4 @@ const s = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
-  infoCard: {
-    backgroundColor: colors.bgCard,
-    borderRadius: radius.md,
-    padding: spacing.lg,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  infoTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  infoTitle: { color: colors.textPrimary, fontSize: 15, fontWeight: '700' },
-  infoText: { color: colors.textSecondary, fontSize: 14, lineHeight: 21 },
 });

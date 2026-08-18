@@ -12,15 +12,6 @@ required_variables=(
   MONERO_UPLOAD_KEY_PASSWORD
 )
 
-# Diagnostic releases are installed specifically so testers can capture and
-# report the UI state around failures. Keep normal production releases secure
-# by default, while allowing an explicit caller value to override this policy.
-# Seed/recovery-secret dialogs keep their own unconditional FLAG_SECURE guard.
-if [[ "${MONERO_WALLET_DIAGNOSTICS:-false}" =~ ^(1|true|yes)$ ]] &&
-   [[ -z "${MONERO_WALLET_ALLOW_SCREEN_CAPTURE:-}" ]]; then
-  export MONERO_WALLET_ALLOW_SCREEN_CAPTURE=true
-fi
-
 # CI, Windows, and Linux must be able to provide the upload key through their
 # protected environment/secret manager. Do not silently replace a partial
 # release configuration with a local macOS credential.

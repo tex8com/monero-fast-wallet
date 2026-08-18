@@ -35,3 +35,13 @@ jest.mock('react-native-permissions', () => ({
     BLOCKED: 'blocked',
   },
 }));
+
+// Wallet tests use the production Onion daemon preset. Model the native Tor
+// bootstrap that exists in signed Android and iOS builds so those tests do not
+// silently fall back to a Clearnet daemon.
+const { NativeModules } = require('react-native');
+NativeModules.EmbeddedTor = {
+  ensureReady: jest.fn(() => Promise.resolve('127.0.0.1:19050')),
+  probeTcp: jest.fn(() => Promise.resolve({ connected: true, elapsedMs: 1 })),
+  request: jest.fn(() => Promise.reject(new Error('No Tor HTTP fixture configured.'))),
+};

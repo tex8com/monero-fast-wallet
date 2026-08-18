@@ -1,9 +1,19 @@
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
+def moneroWalletApplicationId =
+        (findProperty("moneroWalletApplicationId") ?: "com.tex8.monerowallet").toString()
 def moneroSkipGoogleServices =
         (findProperty("moneroSkipGoogleServices") ?: "false").toString().toBoolean()
-if (file("google-services.json").exists() && !moneroSkipGoogleServices) {
+def googleServicesFile = file("google-services.json")
+if (!moneroSkipGoogleServices &&
+        moneroWalletApplicationId == "com.tex8.monerowallet" &&
+        !googleServicesFile.exists()) {
+    throw new GradleException(
+            "Product builds require android/app/google-services.json; without it Firebase App Check crashes during startup."
+    )
+}
+if (googleServicesFile.exists() && !moneroSkipGoogleServices) {
     apply plugin: "com.google.gms.google-services"
 }
 
@@ -76,8 +86,6 @@ def enableProguardInReleaseBuilds = true
  * this variant is about 6MiB larger per architecture than default.
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.0.1'
-def moneroWalletApplicationId =
-        (findProperty("moneroWalletApplicationId") ?: "com.tex8.monerowallet").toString()
 def moneroWalletBridgeWithMonero =
         (findProperty("moneroWalletBridgeWithMonero") ?: "false").toString().toBoolean()
 def moneroSourceDir = (findProperty("moneroSourceDir") ?: "").toString()
@@ -129,11 +137,30 @@ def fastWalletOfficialWorkerRootId = (
                 ?: officialWorkerParameters.rootIdHex
                 ?: ""
 ).toString().trim()
+def privateServiceOrigin = { value ->
+    if (!(value instanceof String) || value.length() > 200) {
+        return false
+    }
+    try {
+        def uri = new URI(value)
+        def onion = uri.scheme == "http" &&
+                uri.host != null &&
+                uri.host.toLowerCase() ==~ /^[a-z2-7]{56}\.onion$/
+        return (uri.scheme == "https" || onion) &&
+                uri.host != null &&
+                uri.rawUserInfo == null &&
+                (uri.rawPath == null || uri.rawPath == "" || uri.rawPath == "/") &&
+                uri.rawQuery == null &&
+                uri.rawFragment == null
+    } catch (Exception ignored) {
+        return false
+    }
+}
 if (fastWalletOfficialWorkerEnabled) {
-    if (!(fastWalletGatewayOrigin ==~ /^https:\/\/[^\/?#@\s]+$/) ||
-            !(fastWalletRegistrationOrigin ==~ /^https:\/\/[^\/?#@\s]+$/)) {
+    if (!privateServiceOrigin(fastWalletGatewayOrigin) ||
+            !privateServiceOrigin(fastWalletRegistrationOrigin)) {
         throw new GradleException(
-                "officialWorker requires exact HTTPS gateway and registration origins")
+                "officialWorker requires exact HTTPS or Tor v3 Onion origins")
     }
     if (!(fastWalletOfficialWorkerRootId ==~ /^[0-9a-f]{64}$/)) {
         throw new GradleException(
@@ -158,22 +185,6 @@ def moneroEnthusiastV1Enabled =
                 !moneroEnthusiastV1DevelopmentDisabled
 def moneroEnthusiastConfig =
         v1ReleaseFeatureManifest.parameters.moneroEnthusiastV1
-def communityHttpsOrigin = { value ->
-    if (!(value instanceof String) || value.length() > 200) {
-        return false
-    }
-    try {
-        def uri = new URI(value)
-        return uri.scheme == "https" &&
-                uri.host != null &&
-                uri.rawUserInfo == null &&
-                (uri.rawPath == null || uri.rawPath == "" || uri.rawPath == "/") &&
-                uri.rawQuery == null &&
-                uri.rawFragment == null
-    } catch (Exception ignored) {
-        return false
-    }
-}
 def communitySafeResource = { value ->
     value instanceof String &&
             !value.isEmpty() &&
@@ -184,10 +195,10 @@ def communitySafeResource = { value ->
 }
 if (moneroEnthusiastV1Enabled) {
     if (!(moneroEnthusiastConfig instanceof Map) ||
-            !communityHttpsOrigin(moneroEnthusiastConfig.apiOrigin) ||
-            !communityHttpsOrigin(moneroEnthusiastConfig.matrixHomeserver) ||
-            !communityHttpsOrigin(moneroEnthusiastConfig.catalogOrigin) ||
-            !communityHttpsOrigin(moneroEnthusiastConfig.advertisingOrigin) ||
+            !privateServiceOrigin(moneroEnthusiastConfig.apiOrigin) ||
+            !privateServiceOrigin(moneroEnthusiastConfig.matrixHomeserver) ||
+            !privateServiceOrigin(moneroEnthusiastConfig.catalogOrigin) ||
+            !privateServiceOrigin(moneroEnthusiastConfig.advertisingOrigin) ||
             !(moneroEnthusiastConfig.catalogScope instanceof String) ||
             !(moneroEnthusiastConfig.catalogScope ==~ /^[A-Za-z0-9_-]{1,128}$/) ||
             !(moneroEnthusiastConfig.catalogVerifyingKeyHex ==~ /^[0-9a-f]{64}$/) ||
@@ -199,7 +210,7 @@ if (moneroEnthusiastV1Enabled) {
             !communitySafeResource(moneroEnthusiastConfig.tokenizerResource) ||
             !communitySafeResource(moneroEnthusiastConfig.conformanceResource)) {
         throw new GradleException(
-                "moneroEnthusiastV1 requires a complete pinned HTTPS release configuration"
+                "moneroEnthusiastV1 requires a complete pinned private-service release configuration"
         )
     }
     if (moneroCommunityAssetRoot.isEmpty() || !file(moneroCommunityAssetRoot).isDirectory()) {
@@ -258,14 +269,14 @@ def moneroWalletExtraLibraries = (findProperty("moneroWalletExtraLibraries") ?: 
 def moneroWalletExtraLibraryDirs = (findProperty("moneroWalletExtraLibraryDirs") ?: "").toString()
 def moneroWalletExtraLinkOptions = (findProperty("moneroWalletExtraLinkOptions") ?: "").toString()
 def moneroWalletExternalBuildDir = (findProperty("moneroWalletExternalBuildDir") ?: System.getenv("MONERO_WALLET_ANDROID_BUILD_DIR") ?: "").toString().trim()
-def moneroWalletAllowScreenCapture = (
-        findProperty("moneroWalletAllowScreenCapture")
-                ?: System.getenv("MONERO_WALLET_ALLOW_SCREEN_CAPTURE")
-                ?: "false"
-).toString().trim().toBoolean()
 def moneroWalletDiagnosticsEnabled = (
         findProperty("moneroWalletDiagnosticsEnabled")
                 ?: System.getenv("MONERO_WALLET_DIAGNOSTICS")
+                ?: "true"
+).toString().trim().toBoolean()
+def moneroWalletTransactionAuditEnabled = (
+        findProperty("moneroWalletTransactionAuditEnabled")
+                ?: System.getenv("MONERO_WALLET_TRANSACTION_AUDIT")
                 ?: "false"
 ).toString().trim().toBoolean()
 def uploadStoreFile = (System.getenv("MONERO_UPLOAD_STORE_FILE") ?: "").trim()
@@ -301,14 +312,13 @@ android {
         // over the previous locally installed release.
         versionCode mobileAppVersionManifest.androidVersionCode as int
         versionName mobileAppVersionManifest.versionName
-        // Production builds stay protected by default. A deliberate local
-        // diagnostics build may opt in so bug screenshots can be captured.
-        buildConfigField "boolean", "ALLOW_SCREEN_CAPTURE",
-                moneroWalletAllowScreenCapture.toString()
-        // Structured diagnostics are a separate, fail-closed capability.
-        // Production releases neither persist nor emit wallet lifecycle logs.
+        // Privacy-filtered lifecycle diagnostics remain available in release
+        // builds so field failures can be diagnosed. The separate transaction
+        // audit can contain linkable wallet data and stays explicit opt-in.
         buildConfigField "boolean", "WALLET_DIAGNOSTICS_ENABLED",
                 moneroWalletDiagnosticsEnabled.toString()
+        buildConfigField "boolean", "WALLET_TRANSACTION_AUDIT_ENABLED",
+                moneroWalletTransactionAuditEnabled.toString()
         buildConfigField "String", "FAST_WALLET_GATEWAY_ORIGIN",
                 groovy.json.JsonOutput.toJson(fastWalletGatewayOrigin)
         buildConfigField "String", "FAST_WALLET_REGISTRATION_ORIGIN",
@@ -472,6 +482,9 @@ dependencies {
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("com.lambdapioneer.argon2kt:argon2kt:1.6.0")
+    // Start Tor only when an Onion daemon is selected. The service is bound
+    // lazily from React Native, so loading libtor never delays app startup.
+    implementation("info.guardianproject:tor-android:0.4.9.11")
     if (moneroEnthusiastV1Enabled) {
         // Version pinned in native/community-harrier-runtime/upstream.lock.
         implementation("org.pytorch:executorch-android:1.3.1")

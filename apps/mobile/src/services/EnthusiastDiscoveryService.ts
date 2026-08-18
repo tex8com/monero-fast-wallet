@@ -6,10 +6,12 @@ import {
 } from './ProtectedMetadataStorage';
 import { withSystemUiInterruption } from './SystemUiInterruption';
 import { logWalletEvent } from './WalletLogger';
+import {torFetch} from './TorHttp';
+import {PRIMARY_PRIVATE_SERVICE_ORIGIN} from '../../../../packages/wallet-shared/src/nodePresets';
 
 const STORAGE_KEY = 'monero-wallet.enthusiast-discovery.v1';
 const ACCOUNT_STORAGE_KEY = 'monero-wallet.enthusiast-account.v1';
-const COMMUNITY_API_BASE_URL = 'https://xmr.tex8.com/community';
+const COMMUNITY_API_BASE_URL = `${PRIMARY_PRIVATE_SERVICE_ORIGIN}/community`;
 const GEOHASH_ALPHABET = '0123456789bcdefghjkmnpqrstuvwxyz';
 const LOCATION_REQUEST_TIMEOUT_MS = 12_000;
 
@@ -152,14 +154,16 @@ async function communityRequest<T>(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
-    const response = await fetch(`${COMMUNITY_API_BASE_URL}${path}`, {
-      ...options,
+    const response = await torFetch(`${COMMUNITY_API_BASE_URL}${path}`, {
+      body: typeof options.body === 'string' ? options.body : undefined,
+      method: options.method,
       signal: controller.signal,
+      timeoutMs: 12_000,
       headers: {
         Accept: 'application/json',
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
         ...(account ? { Authorization: `Bearer ${account.accessToken}` } : {}),
-        ...options.headers,
+        ...(options.headers as Record<string, string> | undefined),
       },
     });
     if (!response.ok) {

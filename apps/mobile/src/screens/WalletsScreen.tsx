@@ -455,7 +455,9 @@ export default function WalletsScreen({ navigation }: any) {
             <TouchableOpacity
               accessibilityRole="button"
               activeOpacity={0.7}
-              onPress={() => navigation.navigate('Transactions')}
+              onPress={() =>
+                navigation.navigate('Transactions', { addressFilter: null })
+              }
             >
               <Text style={s.recentLink}>{t('transactions.viewMore')}</Text>
             </TouchableOpacity>
@@ -662,7 +664,7 @@ function shortAddress(address: string): string {
 
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  scroll: { paddingHorizontal: spacing.lg, paddingTop: 60, paddingBottom: 140 },
+  scroll: { paddingHorizontal: spacing.lg, paddingTop: 12, paddingBottom: 140 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

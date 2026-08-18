@@ -95,7 +95,7 @@ export default function Tex8AssistantScreen({ navigation }: any) {
       id: "welcome",
       sender: "assistant",
       text:
-        "Tex8 shared assistant is connected to the Monero app-control contract. Ask about Ledger, hosted scan, Cuprate, sending, receiving, or privacy.",
+        "Tex8 shared assistant is connected to the Monero app-control contract. Ask about Ledger, hosted scan, Monero Fast Node, sending, receiving, or privacy.",
     },
   ]);
 
@@ -190,7 +190,7 @@ export default function Tex8AssistantScreen({ navigation }: any) {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
-      <View style={[s.header, { paddingTop: insets.top + 16 }]}>
+      <View style={s.header}>
         <TouchableOpacity
           style={s.backButton}
           onPress={() => navigation.navigate("Menu")}
@@ -293,6 +293,7 @@ const s = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: spacing.lg,
     paddingBottom: 14,
+    paddingTop: 12,
     gap: 12,
   },
   backButton: {

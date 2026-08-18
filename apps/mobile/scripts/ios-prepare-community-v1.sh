@@ -20,11 +20,13 @@ ruby -rjson -rfileutils -ruri -e '
   enabled = manifest.dig("features", "moneroEnthusiastV1") == true
   config = manifest.dig("parameters", "moneroEnthusiastV1")
 
-  https_root = lambda do |value|
+  private_service_root = lambda do |value|
     begin
       uri = URI(value)
+      onion = uri.scheme == "http" &&
+        uri.host&.match?(/\A[a-z2-7]{56}\.onion\z/)
       value.is_a?(String) && value.bytesize <= 200 &&
-        uri.scheme == "https" && uri.host && !uri.userinfo &&
+        (uri.scheme == "https" || onion) && uri.host && !uri.userinfo &&
         (uri.path.empty? || uri.path == "/") && !uri.query && !uri.fragment
     rescue StandardError
       false
@@ -40,10 +42,10 @@ ruby -rjson -rfileutils -ruri -e '
   resources = []
   if enabled
     unless config.is_a?(Hash) &&
-      https_root.call(config["apiOrigin"]) &&
-      https_root.call(config["matrixHomeserver"]) &&
-      https_root.call(config["catalogOrigin"]) &&
-      https_root.call(config["advertisingOrigin"]) &&
+      private_service_root.call(config["apiOrigin"]) &&
+      private_service_root.call(config["matrixHomeserver"]) &&
+      private_service_root.call(config["catalogOrigin"]) &&
+      private_service_root.call(config["advertisingOrigin"]) &&
       config["catalogScope"].is_a?(String) &&
       config["catalogScope"].match?(/\A[A-Za-z0-9_-]{1,128}\z/) &&
       config["catalogVerifyingKeyHex"].is_a?(String) &&
@@ -54,7 +56,7 @@ ruby -rjson -rfileutils -ruri -e '
       config["advertisingCountry"].match?(/\A[A-Z]{2}\z/) &&
       config["artifactVerifyingKeyHex"].is_a?(String) &&
       config["artifactVerifyingKeyHex"].match?(/\A[0-9a-f]{64}\z/)
-      abort "error: moneroEnthusiastV1 requires a complete pinned HTTPS release configuration"
+      abort "error: moneroEnthusiastV1 requires a complete pinned private-service release configuration"
     end
     resources = %w[
       artifactManifestResource

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 const assistantEndpoint = "/api/assistant/stream";
 const assistantModuleVersion = "1.5.0";
+let ephemeralDeviceId = null;
 
 function SendIcon() {
   return <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 3-7.5 18-3.8-7.7L2 9.5 21 3Z" /><path d="m9.7 13.3 4.6-4.6" /></svg>;
@@ -16,12 +17,10 @@ function AssistantLogo({ className }) {
 }
 
 function deviceId() {
-  const key = "mfw.website.assistant.device.v1";
-  const saved = window.localStorage.getItem(key);
-  if (saved) return saved;
-  const value = window.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  window.localStorage.setItem(key, value);
-  return value;
+  if (!ephemeralDeviceId) {
+    ephemeralDeviceId = window.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+  return ephemeralDeviceId;
 }
 
 function parseSseBlock(block) {

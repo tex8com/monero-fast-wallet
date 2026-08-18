@@ -1,5 +1,6 @@
 import {
   applyMfwNameBroadcast,
+  estimateMfwNameExpiryTimestampMs,
   effectiveMfwOwnedNameStage,
   loadMfwOwnedNames,
   mfwNameRemainingBlocks,
@@ -74,6 +75,16 @@ describe('MFW owned name registry', () => {
     expect(mfwNameRemainingBlocks(2_000, 1_000)).toBe(1_000);
     expect(mfwNameRemainingDays(2_000, 1_000)).toBe(2);
     expect(mfwNameRemainingDays(1_000, 1_000)).toBe(0);
+    const observedAtMs = Date.UTC(2026, 7, 15, 12, 0, 0);
+    expect(
+      estimateMfwNameExpiryTimestampMs(1_030, 1_000, observedAtMs),
+    ).toBe(observedAtMs + 30 * 2 * 60 * 1000);
+    expect(
+      estimateMfwNameExpiryTimestampMs(970, 1_000, observedAtMs),
+    ).toBe(observedAtMs - 30 * 2 * 60 * 1000);
+    expect(
+      estimateMfwNameExpiryTimestampMs(0, 1_000, observedAtMs),
+    ).toBeUndefined();
     expect(
       effectiveMfwOwnedNameStage({
         ...record,

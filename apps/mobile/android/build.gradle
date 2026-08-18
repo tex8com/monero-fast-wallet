@@ -2,7 +2,10 @@ buildscript {
     ext {
         buildToolsVersion = "36.0.0"
         minSdkVersion = 24
-        compileSdkVersion = 36
+        // tor-android 0.4.9.11 is compiled against API 37. This changes only
+        // which APIs the compiler can see; targetSdk and runtime behavior stay
+        // on API 36 until that migration is tested separately.
+        compileSdkVersion = 37
         targetSdkVersion = 36
         ndkVersion = "27.1.12297006"
         kotlinVersion = "2.1.20"

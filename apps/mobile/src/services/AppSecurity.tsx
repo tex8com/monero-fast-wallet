@@ -26,9 +26,14 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MoneroCoin from '../components/MoneroCoin';
 import MoneroCoinGhost from '../components/MoneroCoinGhost';
-import { useI18n } from '../i18n';
+import {
+  languageFlags,
+  languageNames,
+  supportedLanguages,
+  useI18n,
+} from '../i18n';
 import { colors, radius, spacing } from '../theme/colors';
-import { logWalletEvent } from './WalletLogger';
+import { logStartupEvent, logWalletEvent } from './WalletLogger';
 import {
   activeSystemUiInterruptionDeadlineMs,
   recentlyCompletedSystemUiInterruption,
@@ -102,8 +107,13 @@ export function AppSecurityProvider({
   );
   const lastUserActivityAtMsRef = useRef(Date.now());
   const lastNativeActivityReportAtMsRef = useRef(0);
+  const protectedContentEverMountedRef = useRef(false);
+  const startupPresentationRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
+    logStartupEvent('AppStartup', 'security.providerMounted', {
+      platform: 'android',
+    });
     loadAutoLockSeconds()
       .then(async seconds => {
         await walletService.setAppAutoLockSeconds(seconds);
@@ -151,6 +161,7 @@ export function AppSecurityProvider({
 
   const loadProtectionStatus = useCallback(async (): Promise<boolean> => {
     statusLoadStartedAtMsRef.current = Date.now();
+    logStartupEvent('AppStartup', 'security.protectionStatus.start');
     try {
       const status = await walletService.getAppProtectionStatus();
         logWalletEvent('AppSecurity', 'protectionStatus.loaded', {
@@ -186,7 +197,7 @@ export function AppSecurityProvider({
 
   useEffect(() => {
     let active = true;
-    void loadProtectionStatus().then(loaded => {
+    loadProtectionStatus().then(loaded => {
       if (active && loaded) {
         setReady(true);
       }
@@ -204,7 +215,7 @@ export function AppSecurityProvider({
       ) {
         return;
       }
-      void loadProtectionStatus().then(loaded => {
+      loadProtectionStatus().then(loaded => {
         if (loaded) {
           setReady(true);
         }
@@ -432,6 +443,18 @@ export function AppSecurityProvider({
     },
     Math.floor(Date.now() / 1000),
   );
+  useEffect(() => {
+    const transitionKey = `${presentation}:${ready}:${configured}:${locked}`;
+    if (startupPresentationRef.current === transitionKey) {
+      return;
+    }
+    startupPresentationRef.current = transitionKey;
+    logStartupEvent('AppStartup', `security.presentation.${presentation}`, {
+      configured,
+      locked,
+      ready,
+    });
+  }, [configured, locked, presentation, ready]);
   const protectedContentHidden = presentation !== 'content';
   // React Native presents <Modal> children in independent native windows.
   // Hiding the protected root view is therefore insufficient: an already
@@ -440,7 +463,20 @@ export function AppSecurityProvider({
   // every native modal is dismissed before the security surface is shown.
   const canMountProtectedContent =
     ready && configured && !locked;
-  const securityModalVisible = protectedContentHidden;
+  if (canMountProtectedContent) {
+    protectedContentEverMountedRef.current = true;
+  }
+  // A React Native Modal lives in a second Android window. If it is the only
+  // rendered child during a cold start, Android keeps showing the launch
+  // window even though React is already running. Render the initial security
+  // surface in the activity's root window so the first real frame replaces
+  // the splash immediately. After protected content has existed, retain the
+  // independent modal window to cover and dismiss any child native modals on
+  // a later lock.
+  const securityModalVisible =
+    protectedContentHidden && protectedContentEverMountedRef.current;
+  const inlineSecuritySurfaceVisible =
+    protectedContentHidden && !securityModalVisible;
   const securitySurface =
     presentation === 'preparing' ? (
       <View
@@ -478,8 +514,8 @@ export function AppSecurityProvider({
           // app-wide lock is closed. Resume it once after the one valid
           // unlock instead of accessing protected Fast-Wallet metadata at
           // launch.
-          void FastWalletPushService.refreshRegistrationQuietly(undefined, true);
-          void walletService.renewExpiringFastWalletAssignmentsQuietly();
+          FastWalletPushService.refreshRegistrationQuietly(undefined, true);
+          walletService.renewExpiringFastWalletAssignmentsQuietly();
         }}
         screenTransitionStartedAtMs={screenTransitionStartedAtMs}
       />
@@ -487,23 +523,28 @@ export function AppSecurityProvider({
 
   return (
     <AppSecurityContext.Provider value={value}>
-      {canMountProtectedContent ? (
-        <View
-          accessibilityElementsHidden={protectedContentHidden}
-          importantForAccessibility={
-            protectedContentHidden ? 'no-hide-descendants' : 'auto'
-          }
-          pointerEvents={protectedContentHidden ? 'none' : 'auto'}
-          style={[
-            styles.protectedContent,
-            protectedContentHidden && styles.protectedContentHidden,
-          ]}
-          onTouchStart={recordUserActivity}
-          onTouchMove={recordUserActivity}
-        >
-          {children}
-        </View>
-      ) : null}
+      <View style={styles.securityRoot}>
+        {canMountProtectedContent ? (
+          <View
+            accessibilityElementsHidden={protectedContentHidden}
+            importantForAccessibility={
+              protectedContentHidden ? 'no-hide-descendants' : 'auto'
+            }
+            pointerEvents={protectedContentHidden ? 'none' : 'auto'}
+            style={[
+              styles.protectedContent,
+              protectedContentHidden && styles.protectedContentHidden,
+            ]}
+            onTouchStart={recordUserActivity}
+            onTouchMove={recordUserActivity}
+          >
+            {children}
+          </View>
+        ) : null}
+        {inlineSecuritySurfaceVisible ? (
+          <View style={styles.inlineSecuritySurface}>{securitySurface}</View>
+        ) : null}
+      </View>
       <Modal
         animationType="none"
         hardwareAccelerated
@@ -529,7 +570,26 @@ function InitialProtectionWelcome({
   screenTransitionStartedAtMs: number;
 }) {
   const insets = useSafeAreaInsets();
-  const { t } = useI18n();
+  const languageScrollRef = useRef<ScrollView>(null);
+  const { language, languageLoading, setLanguage, t } = useI18n();
+  const selectedLanguageIndex = Math.max(
+    0,
+    supportedLanguages.indexOf(language),
+  );
+
+  const chooseLanguage = useCallback(
+    (index: number) => {
+      const normalizedIndex =
+        (index + supportedLanguages.length) % supportedLanguages.length;
+      const nextLanguage = supportedLanguages[normalizedIndex];
+      setLanguage(nextLanguage).catch(() => undefined);
+      languageScrollRef.current?.scrollTo({
+        animated: true,
+        x: Math.max(0, normalizedIndex * 126 - 22),
+      });
+    },
+    [setLanguage],
+  );
 
   useEffect(() => {
     logWalletEvent('AppSecurity', 'onboardingWelcome.presented', {
@@ -546,11 +606,11 @@ function InitialProtectionWelcome({
     >
       <StatusBar barStyle="light-content" backgroundColor="#12082A" />
       <View pointerEvents="none" style={styles.welcomeGhost}>
-        <MoneroCoinGhost size={340} color="rgba(255,255,255,0.026)" />
+        <MoneroCoinGhost size={300} color="rgba(255,255,255,0.024)" />
       </View>
       <View style={styles.welcomeCenter}>
         <View style={styles.welcomeLogo}>
-          <MoneroCoin size={116} />
+          <MoneroCoin size={88} />
         </View>
         <View style={styles.welcomeTitleRow}>
           <Text style={[styles.welcomeTitle, styles.welcomeTitleWhite]}>
@@ -561,6 +621,78 @@ function InitialProtectionWelcome({
           </Text>
         </View>
         <Text style={styles.welcomeSubtitle}>{t('welcome.subtitle')}</Text>
+        <View style={styles.welcomeLanguagePanel}>
+          <View style={styles.welcomeLanguageHeader}>
+            <Text style={styles.welcomeLanguageLabel}>
+              {t('settings.language')}
+            </Text>
+            <Text style={styles.welcomeLanguageCurrent}>
+              {languageFlags[language]} {languageNames[language]}
+            </Text>
+          </View>
+          <View style={styles.welcomeLanguageCarousel}>
+            <TouchableOpacity
+              accessibilityLabel="Previous language"
+              accessibilityRole="button"
+              activeOpacity={0.75}
+              onPress={() => chooseLanguage(selectedLanguageIndex - 1)}
+              style={styles.welcomeLanguageArrow}
+            >
+              <Text style={styles.welcomeLanguageArrowText}>‹</Text>
+            </TouchableOpacity>
+            <ScrollView
+              contentContainerStyle={styles.welcomeLanguageList}
+              contentOffset={{
+                x: Math.max(0, selectedLanguageIndex * 126 - 22),
+                y: 0,
+              }}
+              horizontal
+              ref={languageScrollRef}
+              showsHorizontalScrollIndicator={false}
+              style={styles.welcomeLanguageScroll}
+            >
+              {supportedLanguages.map((code, index) => {
+                const selected = code === language;
+                return (
+                  <TouchableOpacity
+                    accessibilityLabel={languageNames[code]}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    activeOpacity={0.8}
+                    key={code}
+                    onPress={() => chooseLanguage(index)}
+                    style={[
+                      styles.welcomeLanguageCard,
+                      selected && styles.welcomeLanguageCardSelected,
+                    ]}
+                  >
+                    <Text style={styles.welcomeLanguageFlag}>
+                      {languageFlags[code]}
+                    </Text>
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.welcomeLanguageName,
+                        selected && styles.welcomeLanguageNameSelected,
+                      ]}
+                    >
+                      {languageNames[code]}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            <TouchableOpacity
+              accessibilityLabel="Next language"
+              accessibilityRole="button"
+              activeOpacity={0.75}
+              onPress={() => chooseLanguage(selectedLanguageIndex + 1)}
+              style={styles.welcomeLanguageArrow}
+            >
+              <Text style={styles.welcomeLanguageArrowText}>›</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </View>
       <View
         style={[
@@ -571,8 +703,9 @@ function InitialProtectionWelcome({
         <TouchableOpacity
           accessibilityRole="button"
           activeOpacity={0.85}
+          disabled={languageLoading}
           onPress={() => onContinue(Date.now())}
-          style={styles.welcomeButton}
+          style={[styles.welcomeButton, languageLoading && styles.disabled]}
         >
           <LinearGradient
             colors={['#F26822', '#D4551A']}
@@ -581,7 +714,7 @@ function InitialProtectionWelcome({
             style={styles.welcomeButtonGradient}
           >
             <Text style={styles.welcomeButtonText}>
-              {t('action.getStarted')}
+              {languageLoading ? t('action.working') : t('action.getStarted')}
             </Text>
           </LinearGradient>
         </TouchableOpacity>
@@ -661,8 +794,10 @@ function AppSecurityLockScreen({
         setBiometricsAvailable(available);
         setSetupMode(available ? 'biometric' : 'password');
       })
-      .catch(error => {
-        logWalletEvent('AppSecurity', 'biometricStatus.error', { error });
+      .catch(biometricError => {
+        logWalletEvent('AppSecurity', 'biometricStatus.error', {
+          error: biometricError,
+        });
         setSetupMode('password');
       })
       .finally(() => {
@@ -826,7 +961,7 @@ function AppSecurityLockScreen({
         if (!active) {
           return;
         }
-        void unlock().then(success => {
+        unlock().then(success => {
           if (active && !success) {
             // Only expose the manual retry card after Android explicitly
             // cancelled or rejected the automatic biometric prompt.
@@ -1040,7 +1175,9 @@ function AppSecurityLockScreen({
               <TouchableOpacity
                 accessibilityRole="button"
                 disabled={working}
-                onPress={() => void skipProtection()}
+                onPress={() => {
+                  skipProtection();
+                }}
                 style={styles.skipButton}
                 testID="app-security-skip"
               >
@@ -1066,9 +1203,14 @@ export function useAppSecurity() {
 }
 
 const styles = StyleSheet.create({
+  securityRoot: { flex: 1, backgroundColor: colors.bg },
   protectedContent: { flex: 1 },
   protectedContentHidden: { display: 'none' },
   securityModal: { flex: 1, backgroundColor: colors.bg },
+  inlineSecuritySurface: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: colors.bg,
+  },
   welcomeContainer: {
     ...StyleSheet.absoluteFill,
     zIndex: 100,
@@ -1078,21 +1220,23 @@ const styles = StyleSheet.create({
     left: 0,
     position: 'absolute',
     right: 0,
-    top: '30%',
+    top: '20%',
   },
   welcomeCenter: {
     alignItems: 'center',
     flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: 24,
+    paddingBottom: 146,
+    paddingHorizontal: 20,
+    paddingTop: 24,
   },
   welcomeLogo: {
     alignItems: 'center',
-    borderRadius: 72,
-    height: 144,
+    borderRadius: 52,
+    height: 104,
     justifyContent: 'center',
-    marginBottom: 30,
-    width: 144,
+    marginBottom: 16,
+    width: 104,
   },
   welcomeTitleRow: {
     alignItems: 'center',
@@ -1102,7 +1246,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   welcomeTitle: {
-    fontSize: 30,
+    fontSize: 29,
     fontWeight: '800',
     letterSpacing: 0,
     lineHeight: 38,
@@ -1111,10 +1255,83 @@ const styles = StyleSheet.create({
   welcomeTitleOrange: { color: '#F26822' },
   welcomeSubtitle: {
     color: 'rgba(255,255,255,0.45)',
-    fontSize: 16,
-    lineHeight: 24,
+    fontSize: 15,
+    lineHeight: 22,
+    maxWidth: 360,
     textAlign: 'center',
   },
+  welcomeLanguagePanel: {
+    backgroundColor: 'rgba(17,16,40,0.86)',
+    borderColor: 'rgba(255,255,255,0.10)',
+    borderRadius: 22,
+    borderWidth: 1,
+    marginTop: 28,
+    maxWidth: 430,
+    paddingBottom: 14,
+    paddingTop: 14,
+    width: '100%',
+  },
+  welcomeLanguageHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+  },
+  welcomeLanguageLabel: {
+    color: 'rgba(255,255,255,0.58)',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  welcomeLanguageCurrent: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  welcomeLanguageCarousel: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    marginTop: 12,
+  },
+  welcomeLanguageArrow: {
+    alignItems: 'center',
+    height: 72,
+    justifyContent: 'center',
+    width: 32,
+  },
+  welcomeLanguageArrowText: {
+    color: '#F26822',
+    fontSize: 34,
+    fontWeight: '300',
+    lineHeight: 38,
+  },
+  welcomeLanguageScroll: { flex: 1 },
+  welcomeLanguageList: { gap: 8, paddingHorizontal: 2 },
+  welcomeLanguageCard: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.035)',
+    borderColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 14,
+    borderWidth: 1,
+    height: 72,
+    justifyContent: 'center',
+    paddingHorizontal: 9,
+    width: 118,
+  },
+  welcomeLanguageCardSelected: {
+    backgroundColor: 'rgba(242,104,34,0.13)',
+    borderColor: '#F26822',
+  },
+  welcomeLanguageFlag: { fontSize: 24, lineHeight: 30 },
+  welcomeLanguageName: {
+    color: 'rgba(255,255,255,0.62)',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 3,
+    maxWidth: 100,
+  },
+  welcomeLanguageNameSelected: { color: '#FFFFFF' },
   welcomeBottom: {
     bottom: 0,
     left: 0,

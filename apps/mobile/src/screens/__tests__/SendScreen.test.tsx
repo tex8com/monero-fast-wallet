@@ -64,6 +64,62 @@ const mockedUseWalletState = useWalletState as jest.MockedFunction<
 const mockedWalletService = walletService as jest.Mocked<typeof walletService>;
 
 describe('SendScreen', () => {
+  it('shows name lookup progress and disables Continue while resolving', async () => {
+    mockedUseWalletState.mockReturnValue({
+      error: undefined,
+      registeredWallet: {
+        id: 'primary',
+        kind: 'software',
+        walletName: 'primary',
+        network: 'mainnet',
+      },
+      registeredWallets: [],
+      session: { walletId: 'wallet-1', network: 'mainnet' },
+      setActiveRegisteredWallet: jest.fn(),
+      snapshot: {
+        balanceAtomic: '0',
+        unlockedBalanceAtomic: '0',
+        synchronized: true,
+      },
+      status: 'open',
+      syncProgress: 100,
+      transactions: [],
+      walletSnapshots: {},
+    } as unknown as ReturnType<typeof useWalletState>);
+
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <SendScreen navigation={{ navigate: jest.fn() }} />,
+      );
+    });
+
+    const manualRecipientButton = renderer!.root
+      .findAllByType(TouchableOpacity)
+      .find(node => node.props.accessibilityLabel === 'send.manualRecipient');
+    await ReactTestRenderer.act(async () =>
+      manualRecipientButton!.props.onPress(),
+    );
+
+    const recipientInput = renderer!.root.findAllByType(TextInput)[0];
+    await ReactTestRenderer.act(async () => {
+      recipientInput.props.onChangeText('tex8.mfw');
+    });
+
+    expect(
+      renderer!.root.findByProps({ testID: 'mfw-name-lookup-spinner' }),
+    ).toBeDefined();
+    const continueButton = renderer!.root
+      .findAllByType(TouchableOpacity)
+      .find(node => node.props.accessibilityLabel === 'action.continue');
+    expect(continueButton!.props.disabled).toBe(true);
+    expect(continueButton!.props.accessibilityState).toEqual({
+      disabled: true,
+    });
+
+    await ReactTestRenderer.act(async () => renderer!.unmount());
+  });
+
   it('prepares MAX as sweep-all and commits with one review tap', async () => {
     const recipientAddress = `4${'1'.repeat(94)}`;
     const refreshSnapshot = jest.fn(async () => undefined);

@@ -238,6 +238,10 @@ fi
   -U 'PROTOBUF_*' \
   -U 'pkgcfg_lib_PROTOBUF_*' \
   -U '__pkg_config*PROTOBUF*' \
+  -U 'OPENSSL_*' \
+  -U 'HIDAPI_*' \
+  -U 'Iconv_*' \
+  -U 'SODIUM_*' \
   -DCMAKE_MAKE_PROGRAM="${ninja_bin}" \
   -DCMAKE_TOOLCHAIN_FILE="${toolchain_file}" \
   -DCMAKE_PREFIX_PATH="${grpc_sdk_prefix}" \

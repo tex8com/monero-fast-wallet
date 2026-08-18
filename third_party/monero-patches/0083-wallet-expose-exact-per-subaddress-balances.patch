@@ -1,0 +1,61 @@
+From a5762a9b80bd50e0d755b1d5b80abded41d4bfc4 Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet <engineering@tex8.app>
+Date: Sat, 15 Aug 2026 22:30:06 -0500
+Subject: [PATCH 83/83] wallet: expose exact per-subaddress balances
+
+---
+ src/wallet/api/wallet.cpp    | 5 +++++
+ src/wallet/api/wallet.h      | 1 +
+ src/wallet/api/wallet2_api.h | 2 ++
+ 3 files changed, 8 insertions(+)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index e76463e..0bf22fb 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1316,6 +1316,11 @@ uint64_t WalletImpl::balance(uint32_t accountIndex) const
+     return m_wallet->balance(accountIndex, false);
+ }
+ 
++std::map<uint32_t, uint64_t> WalletImpl::balancePerSubaddress(uint32_t accountIndex) const
++{
++    return m_wallet->balance_per_subaddress(accountIndex, false);
++}
++
+ uint64_t WalletImpl::unlockedBalance(uint32_t accountIndex) const
+ {
+     return m_wallet->unlocked_balance(accountIndex, false);
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index c73b97d..7c62f82 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -126,6 +126,7 @@ public:
+     bool trustedDaemon() const override;
+     bool setProxy(const std::string &address) override;
+     uint64_t balance(uint32_t accountIndex = 0) const override;
++    std::map<uint32_t, uint64_t> balancePerSubaddress(uint32_t accountIndex = 0) const override;
+     uint64_t unlockedBalance(uint32_t accountIndex = 0) const override;
+     uint64_t blockChainHeight() const override;
+     uint64_t approximateBlockChainHeight() const override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 9d28cca..f482ac3 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -38,6 +38,7 @@
+ #include <memory>
+ #include <stdexcept>
+ #include <cstdint>
++#include <map>
+ 
+ //  Public interface for libwallet library
+ namespace Monero {
+@@ -697,6 +697,7 @@ struct Wallet
+     virtual bool trustedDaemon() const = 0;
+     virtual bool setProxy(const std::string &address) = 0;
+     virtual uint64_t balance(uint32_t accountIndex = 0) const = 0;
++    virtual std::map<uint32_t, uint64_t> balancePerSubaddress(uint32_t accountIndex = 0) const = 0;
+     uint64_t balanceAll() const {
+         uint64_t result = 0;
+         for (uint32_t i = 0; i < numSubaddressAccounts(); ++i)
+-- 
+2.50.1 (Apple Git-155)

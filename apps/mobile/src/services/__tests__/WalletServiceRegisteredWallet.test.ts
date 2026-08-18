@@ -104,6 +104,22 @@ const mockNativeWallet = {
   getAddress: jest.fn(async () => '8'.repeat(95)),
   getBalance: jest.fn(async () => '0'),
   getUnlockedBalance: jest.fn(async () => '0'),
+  createSubaddress: jest.fn(async () => ({
+    accountIndex: 0,
+    addressIndex: 1,
+    balanceAtomic: '0',
+    address: '8'.repeat(95),
+    label: 'Address 2',
+  })),
+  listSubaddresses: jest.fn(async (_walletId: string, accountIndex: number) => [
+    {
+      accountIndex,
+      addressIndex: 0,
+      balanceAtomic: '0',
+      address: String(accountIndex + 4).repeat(95),
+      label: '',
+    },
+  ]),
   getTransactions: jest.fn(
     async (): Promise<Array<{ hash: string; subaddrAccount: number }>> => [],
   ),
@@ -266,6 +282,54 @@ describe('WalletService registered wallet opening', () => {
     expect(transactions.map(transaction => transaction.subaddrAccount)).toEqual(
       [0, 1, 1],
     );
+  });
+
+  it('returns exact native address balances from every requested account', async () => {
+    mockNativeWallet.listSubaddresses.mockImplementation(
+      async (_walletId: string, accountIndex: number) => [
+        {
+          accountIndex,
+          addressIndex: 0,
+          balanceAtomic: accountIndex === 0 ? '468656220000' : '443766869810',
+          address: (accountIndex === 0 ? '4' : '8').repeat(95),
+          label: '',
+        },
+      ],
+    );
+
+    const addresses = await new WalletService().listSubaddresses(
+      {
+        walletId: 'wallet-ledger-view',
+        registrationId: 'ledger-registration',
+        network: 'mainnet',
+      },
+      [0, 1],
+    );
+
+    expect(mockNativeWallet.listSubaddresses).toHaveBeenNthCalledWith(
+      1,
+      'wallet-ledger-view',
+      0,
+    );
+    expect(mockNativeWallet.listSubaddresses).toHaveBeenNthCalledWith(
+      2,
+      'wallet-ledger-view',
+      1,
+    );
+    expect(addresses).toMatchObject([
+      {
+        accountIndex: 0,
+        addressIndex: 0,
+        balanceAtomic: '468656220000',
+        label: 'Primary account',
+      },
+      {
+        accountIndex: 1,
+        addressIndex: 0,
+        balanceAtomic: '443766869810',
+        label: 'Account 1',
+      },
+    ]);
   });
 
   it('keeps the app session alive for the fresh credential check before seed display', async () => {

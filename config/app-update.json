@@ -5,8 +5,9 @@
   "checkDelayMs": 12000,
   "mobile": {
     "enabled": true,
-    "manifestUrl": "https://tex8.com/xmr/update.json",
+    "manifestUrl": "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion/xmr/update.json",
     "allowedHosts": [
+      "fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
       "tex8.com",
       "apps.apple.com",
       "play.google.com"

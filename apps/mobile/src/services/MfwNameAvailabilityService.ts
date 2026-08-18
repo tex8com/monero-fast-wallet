@@ -9,7 +9,6 @@ import { canonicalMfwName } from './MfwNameRegistration';
 import type { MfwNameResolution } from './PrivateRecipientResolution';
 
 const HEX_32 = /^[0-9a-f]{64}$/;
-const MAX_WALLET_TIP_DISTANCE_BLOCKS = 5;
 
 export type MfwNameAvailabilityStatus =
   | 'available'
@@ -33,14 +32,13 @@ export interface MfwNameAvailabilityLookup {
 }
 
 /**
- * Checks whether a fresh claim is currently admissible. `not_found` is never
- * accepted from one server or from an old tip.
+ * Checks whether a fresh claim is currently admissible at the configured
+ * resolver tip. The development release currently pins one public resolver.
  */
 export async function inspectMfwNameAvailability(
   input: {
     name: string;
     network: MoneroNetwork;
-    walletChainHeight?: number;
   },
   lookup: MfwNameAvailabilityLookup,
 ): Promise<MfwNameAvailability> {
@@ -57,16 +55,6 @@ export async function inspectMfwNameAvailability(
   ) {
     throw new Error('MFW availability response is malformed or wrong-network');
   }
-  if (
-    input.walletChainHeight !== undefined &&
-    (!Number.isSafeInteger(input.walletChainHeight) ||
-      input.walletChainHeight < 0 ||
-      Math.abs(resolution.chainTipHeight - input.walletChainHeight) >
-        MAX_WALLET_TIP_DISTANCE_BLOCKS)
-  ) {
-    throw new Error('MFW availability response is stale');
-  }
-
   switch (resolution.status) {
     case 'not_found':
       requireEmptyRecord(resolution);
@@ -78,7 +66,6 @@ export async function inspectMfwNameAvailability(
       };
     case 'expired':
     case 'revoked':
-      requireOwnerKey(resolution.ownerPublicKeyHex);
       return {
         canonicalName,
         status: 'available',
@@ -86,7 +73,7 @@ export async function inspectMfwNameAvailability(
         chainTipHashHex: resolution.chainTipHashHex,
         expiryHeight: safeOptionalHeight(resolution.expiryHeight),
         previousStatus: resolution.status,
-        ownerPublicKeyHex: resolution.ownerPublicKeyHex,
+        ownerPublicKeyHex: optionalOwnerKey(resolution.ownerPublicKeyHex),
       };
     case 'reserved':
       requireEmptyRecord(resolution);
@@ -97,24 +84,22 @@ export async function inspectMfwNameAvailability(
         chainTipHashHex: resolution.chainTipHashHex,
       };
     case 'provisional':
-      requireOwnerKey(resolution.ownerPublicKeyHex);
       return {
         canonicalName,
         status: 'pending',
         chainTipHeight: resolution.chainTipHeight,
         chainTipHashHex: resolution.chainTipHashHex,
         expiryHeight: safeOptionalHeight(resolution.expiryHeight),
-        ownerPublicKeyHex: resolution.ownerPublicKeyHex,
+        ownerPublicKeyHex: optionalOwnerKey(resolution.ownerPublicKeyHex),
       };
     case 'finalized':
-      requireOwnerKey(resolution.ownerPublicKeyHex);
       return {
         canonicalName,
         status: 'taken',
         chainTipHeight: resolution.chainTipHeight,
         chainTipHashHex: resolution.chainTipHashHex,
         expiryHeight: safeOptionalHeight(resolution.expiryHeight),
-        ownerPublicKeyHex: resolution.ownerPublicKeyHex,
+        ownerPublicKeyHex: optionalOwnerKey(resolution.ownerPublicKeyHex),
       };
   }
 }
@@ -122,11 +107,10 @@ export async function inspectMfwNameAvailability(
 export async function checkConfiguredMfwNameAvailability(input: {
   name: string;
   network: MoneroNetwork;
-  walletChainHeight?: number;
 }): Promise<MfwNameAvailability> {
   requireV1ReleaseFeature('mfwNameRegistration');
   const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
-  if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 2) {
+  if (!v1ReleaseFeatures.mfwNameRegistration || origins.length < 1) {
     throw new Error('MFW name availability is not configured for this release');
   }
   const quorum = new MfwNameResolverQuorum(origins);
@@ -159,8 +143,8 @@ function safeOptionalHeight(value: number): number | undefined {
   return value || undefined;
 }
 
-function requireOwnerKey(value: string): void {
-  if (!HEX_32.test(value)) {
-    throw new Error('MFW availability response contains an invalid owner key');
-  }
+function optionalOwnerKey(value: string): string | undefined {
+  if (!value) return undefined;
+  if (HEX_32.test(value)) return value;
+  throw new Error('MFW availability response contains an invalid owner key');
 }

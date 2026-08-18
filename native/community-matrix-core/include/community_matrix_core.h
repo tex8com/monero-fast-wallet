@@ -35,6 +35,8 @@ int32_t tex8_community_matrix_create_v1(
     size_t store_path_len,
     const uint8_t *store_passphrase,
     size_t store_passphrase_len,
+    const uint8_t *proxy,
+    size_t proxy_len,
     bool allow_loopback_http_for_tests,
     tex8_community_matrix_handle **handle_output,
     uint8_t *error_output,

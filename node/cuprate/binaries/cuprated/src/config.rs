@@ -255,7 +255,8 @@ impl Config {
         let tor_p2p_port = p2p_port(self.p2p.tor_net.p2p_port, self.network);
 
         let our_onion_address = match ctx.mode {
-            TorMode::Daemon => inbound_enabled.then(||
+            TorMode::Daemon => (inbound_enabled
+                && !self.tor.daemon.anonymous_inbound.trim().is_empty()).then(||
                 OnionAddr::new(
                     &self.tor.daemon.anonymous_inbound,
                     tor_p2p_port

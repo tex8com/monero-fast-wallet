@@ -1,4 +1,5 @@
 import React from "react";
+import { StyleSheet } from "react-native";
 import Svg, { Path, Defs, LinearGradient, Stop } from "react-native-svg";
 
 interface Props {
@@ -43,7 +44,7 @@ export default function MiniChart({ width, height, color = "#FF6600" }: Props) {
   areaPath += `L${padding + (points.length - 1) * stepX},${height}Z`;
 
   return (
-    <Svg width={width} height={height} style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}>
+    <Svg width={width} height={height} style={styles.chart}>
       <Defs>
         <LinearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
           <Stop offset="0" stopColor={color} stopOpacity="0.15" />
@@ -55,3 +56,12 @@ export default function MiniChart({ width, height, color = "#FF6600" }: Props) {
     </Svg>
   );
 }
+
+const styles = StyleSheet.create({
+  chart: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+  },
+});

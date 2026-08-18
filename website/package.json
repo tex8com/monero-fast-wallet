@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build && node scripts/postbuild.mjs",
-    "test": "node --test test/*.test.mjs",
+    "test": "python3 ../ops/project-page/test_download_gateway.py && node --test test/*.test.mjs",
     "check": "npm run test && npm run build"
   },
   "dependencies": {

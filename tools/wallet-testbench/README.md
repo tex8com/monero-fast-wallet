@@ -236,18 +236,15 @@ outputs through Cuprate. It verifies the exact destination amount and fee
 returned by `libwallet_api`, then disposes the pending transaction with
 `broadcast=false`.
 
-Backend acceptance with live Cuprate sources and deployed Fast Receive
-required:
+Scanner-core acceptance with live MFN sources:
 
 ```sh
-TESTBENCH_NOTIFY_SCANNER_LIVE_SOURCES=1 \
-TESTBENCH_REQUIRE_DEPLOYED_SCANNER=1 \
-TESTBENCH_SCANNER_URL=https://xmr.tex8.com \
+TESTBENCH_SCANNER_CORE_LIVE_SOURCES=1 \
 tools/wallet-testbench/run-wallet-core-testbench.sh local
 ```
 
-That command is expected to fail until the public notify-scanner service is
-deployed and `/healthz` returns a healthy JSON body such as `{"ok":true}`.
+The retired plaintext scanner API is deliberately not part of this test. Live
+hosted enrollment uses the ciphertext Relay and outbound Fast Wallet Worker.
 
 Community Discovery has its own full API contract runner. It starts an
 isolated encrypted service locally, tests every public endpoint with two fresh
@@ -329,9 +326,7 @@ CUPRATE_RPC=xmr.tex8.com:18089
 CUPRATE_GRPC=xmr.tex8.com:18091
 OFFICIAL_MONERO_RPC=<host:port>
 
-TESTBENCH_NOTIFY_SCANNER_LIVE_SOURCES=1
-TESTBENCH_SCANNER_URL=https://xmr.tex8.com
-TESTBENCH_REQUIRE_DEPLOYED_SCANNER=1
+TESTBENCH_SCANNER_CORE_LIVE_SOURCES=1
 
 TESTBENCH_SEND_SOURCE_WALLET=<wallet path>
 TESTBENCH_SEND_PASSWORD_FILE=<wallet password file>
@@ -366,9 +361,9 @@ Use `xmr.tex8.com` for node tests. Its DNS record is deliberately DNS-only, so
 raw Monero RPC `:18089` and gRPC `:18091` do not pass through Cloudflare's HTTP
 proxy. Do not use the general `tex8.com` host for these ports.
 
-Fast Receive is different from raw Monero RPC/gRPC. It needs the separate
-notify-scanner HTTPS API, currently planned as `https://xmr.tex8.com`.
-A raw IP URL is not acceptable for HTTPS unless a matching certificate exists.
+Fast Receive is different from raw Monero RPC/gRPC. Hosted enrollment uploads
+only a fixed-size ciphertext envelope to the Relay at `https://xmr.tex8.com`.
+The outbound Worker decrypts and scans it; there is no plaintext scanner API.
 
 Current funded wallet inventory:
 

@@ -16,6 +16,7 @@ const COMMANDS: &[&str] = &[
     "auto_lock_settings",
     "set_auto_lock_timeout",
     "fetch_market_backup",
+    "fetch_private_service",
     "ledger_transport_status",
     "store_wallet_password",
     "delete_wallet_password",
@@ -59,6 +60,7 @@ const COMMANDS: &[&str] = &[
     "disable_fast_wallet",
     "load_node_settings",
     "save_node_settings",
+    "diagnose_connection_routes",
     "set_daemon",
     "network_sync_status",
     "start_wallet_refresh",
@@ -573,10 +575,8 @@ fn configure_fast_wallet_release(manifest_dir: &std::path::Path) {
         .unwrap_or_else(|_| configured_gateway_origin.to_owned());
     let official_root = env::var("FAST_WALLET_OFFICIAL_WORKER_ROOT_ID")
         .unwrap_or_else(|_| configured_official_root.to_owned());
-    if (official_enabled || private_enabled) && !valid_https_origin(&gateway_origin) {
-        panic!(
-            "remote Fast Wallet alerts require FAST_WALLET_GATEWAY_ORIGIN as an exact HTTPS origin"
-        );
+    if (official_enabled || private_enabled) && !valid_private_service_origin(&gateway_origin) {
+        panic!("remote Fast Wallet alerts require an exact HTTPS or Tor v3 Onion origin");
     }
     if official_enabled && !canonical_hex_32(&official_root) {
         panic!(
@@ -593,14 +593,28 @@ fn configure_fast_wallet_release(manifest_dir: &std::path::Path) {
     );
 }
 
-fn valid_https_origin(value: &str) -> bool {
+fn valid_private_service_origin(value: &str) -> bool {
     let value = value.trim().trim_end_matches('/');
-    let Some(authority) = value.strip_prefix("https://") else {
-        return false;
-    };
+    let authority = value
+        .strip_prefix("https://")
+        .or_else(|| {
+            value
+                .strip_prefix("http://")
+                .filter(|host| valid_v3_onion_host(host))
+        })
+        .unwrap_or_default();
     !authority.is_empty()
         && !authority.contains(['/', '?', '#', '@'])
         && !authority.chars().any(char::is_whitespace)
+}
+
+fn valid_v3_onion_host(value: &str) -> bool {
+    let host = value.split(':').next().unwrap_or_default();
+    host.len() == 62
+        && host.ends_with(".onion")
+        && host[..56]
+            .bytes()
+            .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7'))
 }
 
 fn canonical_hex_32(value: &str) -> bool {

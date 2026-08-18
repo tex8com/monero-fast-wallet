@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -138,16 +139,18 @@ test('safe V1 feature manifest enables verified local surfaces and fails closed 
     'ledgerFastWallet',
     'scannerKeyImageSpendAuthority',
     'legacyCommunity',
-    'news',
     'assistant',
     'marketplace',
-    'mfwNameResolution',
-    'mfwNameRegistration',
     'deviceContactDiscovery',
     'publicLedger',
   ]) {
     assert.equal(manifest.features[feature], false, `${feature} must remain disabled`);
   }
+  assert.equal(
+    manifest.features.mfwNameRegistration,
+    true,
+    'the pinned development MFW registration flow must be enabled',
+  );
   assert.equal(typeof manifest.features.moneroEnthusiastV1, 'boolean');
   if (manifest.features.moneroEnthusiastV1) {
     assertCompleteCommunityReleaseConfiguration(
@@ -375,7 +378,12 @@ function assertCompleteCommunityReleaseConfiguration(config) {
     config.advertisingOrigin,
   ]) {
     const parsed = new URL(origin);
-    assert.equal(parsed.protocol, 'https:');
+    assert.ok(
+      parsed.protocol === 'https:' ||
+        (parsed.protocol === 'http:' &&
+          /^[a-z2-7]{56}\.onion$/u.test(parsed.hostname)),
+      'Community origins must use HTTPS or a Tor v3 Onion service',
+    );
     assert.equal(origin, parsed.origin);
     assert.equal(parsed.username, '');
     assert.equal(parsed.password, '');
@@ -498,9 +506,16 @@ test('MFW clients remain release-gated behind purpose-bound native preparation',
     'native/desktop-bridge/cpp/DesktopWalletCore.cpp',
   );
 
-  assert.equal(manifest.features.mfwNameResolution, false);
-  assert.equal(manifest.features.mfwNameRegistration, false);
-  assert.equal(manifest.parameters.mfwNameGenesis, null);
+  assert.equal(manifest.features.mfwNameResolution, true);
+  assert.equal(manifest.features.mfwNameRegistration, true);
+  assert.equal(manifest.parameters.mfwNameGenesis.network, 'mainnet');
+  assert.deepEqual(manifest.parameters.mfwNameResolverOrigins, [
+    'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
+    'http://quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion',
+  ]);
+  assert.deepEqual(manifest.parameters.mfwNameSuggestionOnionOrigins, [
+    'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
+  ]);
   assert.equal(manifest.parameters.privatePhoneDirectory, null);
   assert.match(nativeSpec, /verifyMfwNameRecordAddress/);
   assert.match(nativeService, /verifyMfwNameRecordAddress/);
@@ -532,8 +547,8 @@ test('MFW clients remain release-gated behind purpose-bound native preparation',
   assert.match(nativeService, /\bimportMfwNameRecovery\s*\(/);
   assert.match(android, /\bimportMfwNameRecovery\s*\(/);
   assert.match(ios, /\bimportMfwNameRecovery:/);
-  assert.match(nameScreen, /await walletService\.exportMfwNameRecovery\(/);
-  assert.match(nameScreen, /if \(!recoveryExported\)/);
+  assert.doesNotMatch(nameScreen, /await walletService\.exportMfwNameRecovery\(/);
+  assert.doesNotMatch(nameScreen, /if \(!recoveryExported\)/);
   assert.match(nameScreen, /await walletService\.importMfwNameRecovery\(/);
   assert.match(nameScreen, /resolveConfiguredMfwOwnedNameForImport/);
   for (const operation of ['update', 'renew', 'revoke']) {
@@ -546,20 +561,21 @@ test('MFW clients remain release-gated behind purpose-bound native preparation',
   assert.match(nameRegistry, /stage: 'update-pending'/);
   assert.match(nameRegistry, /stage: 'revoke-pending'/);
   assert.match(cuprateRpc, /"\/v1\/mfw\/names\/\{name\}"/);
+  assert.match(cuprateRpc, /"\/v1\/mfw\/name-suggestions\/\{prefix\}"/);
   assert.match(cuprateRpc, /mfw_http_response/);
   assert.match(resolverClient, /MFW_RESOLUTION_KEYS/);
   assert.match(resolverClient, /parseMfwNameResolution/);
   assert.match(android, /storeDurableSecretValue\(mfwNameStateSecretKey/);
   assert.match(ios, /storeKeychainSecret\(mfwNameStateKey/);
   assert.match(desktopHost, /store_mfw_name_owner_state/);
-  assert.match(desktopHost, /record\.recovery_exported_at\.is_none\(\)/);
+  assert.doesNotMatch(desktopHost, /record\.recovery_exported_at\.is_none\(\)/);
   assert.match(desktopRegistry, /tex8_mfw_export_name_recovery_v1/);
   assert.match(desktopRegistry, /tex8_mfw_import_name_recovery_v1/);
   assert.match(
     desktopHost,
     /estimated_term_years\(resolution\.record_height, resolution\.expiry_height\)/,
   );
-  assert.match(desktopResolver, /origins\.len\(\) < 2 \|\| origins\.len\(\) > 4/);
+  assert.match(desktopResolver, /origins\.is_empty\(\) \|\| origins\.len\(\) > 4/);
   assert.match(desktopResolver, /Policy::none\(\)/);
   assert.match(desktopResolver, /deny_unknown_fields/);
   assert.match(
@@ -950,12 +966,10 @@ test('desktop enforces recovery and security gates below the renderer', () => {
   assert.match(renderer, /complete balance and history are rebuilt and verified on this device/);
 });
 
-test('legacy scanner cannot accept a V1 plaintext watch or key-image query', () => {
-  const api = read('services/notify-scanner/src/api.rs');
-  const runtime = read('services/notify-scanner/src/main.rs');
-  const scannerModel = read('services/notify-scanner/src/model.rs');
-  const scannerStore = read('services/notify-scanner/src/store.rs');
-  const scannerReadme = read('services/notify-scanner/README.md');
+test('retired legacy scanner has no server runtime or plaintext API', () => {
+  const scannerModel = read('services/fast-wallet-scanner-core/src/model.rs');
+  const scannerStore = read('services/fast-wallet-scanner-core/src/store.rs');
+  const scannerLibrary = read('services/fast-wallet-scanner-core/src/lib.rs');
   const mobileSpec = read('apps/mobile/specs/NativeMoneroWallet.ts');
   const androidBridge = read(
     'apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
@@ -964,12 +978,9 @@ test('legacy scanner cannot accept a V1 plaintext watch or key-image query', () 
     'apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm',
   );
 
-  assert.match(api, /allow_legacy_plaintext_registration/);
-  assert.match(api, /StatusCode::GONE/);
-  assert.doesNotMatch(api, /\/v1\/fast-receive\/key-images\/status/);
-  assert.doesNotMatch(runtime, /CuprateHttpKeyImageStatusSource/);
-  assert.doesNotMatch(scannerReadme, /\/v1\/fast-receive\/key-images\/status/);
-  assert.match(scannerReadme, /Spend state is deliberately outside this service/);
+  assert.doesNotMatch(scannerLibrary, /pub mod api|router_with_runtime|ApiState/);
+  assert.equal(existsSync(new URL('services/notify-scanner/Cargo.toml', repo)), false);
+  assert.equal(existsSync(new URL('ops/notify-scanner/notify-scanner.service', repo)), false);
   for (const source of [
     scannerModel,
     scannerStore,

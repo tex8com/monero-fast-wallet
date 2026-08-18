@@ -5,6 +5,7 @@ export type ManualTranslationLocale =
 type TranslationMap = Readonly<Record<string, string>>;
 
 const es: TranslationMap = {
+  'Monero Fast Wallet Registry price': 'Precio del registro de Monero Fast Wallet',
   '{amount} XMR incoming': '{amount} XMR recibidos',
   '{amount} XMR spent': '{amount} XMR gastados',
   '{count} conf.': '{count} conf.',
@@ -497,6 +498,7 @@ const es: TranslationMap = {
 };
 
 const ptBR: TranslationMap = {
+  'Monero Fast Wallet Registry price': 'Preço do registro de Monero Fast Wallet',
   Back: 'Voltar',
   Cancel: 'Cancelar',
   Delete: 'Excluir',
@@ -2204,6 +2206,7 @@ const ko: TranslationMap = {
 };
 
 const ja: TranslationMap = {
+  'Monero Fast Wallet Registry price': 'Monero Fast Wallet レジストリの価格',
   Import: 'インポート',
   Reset: 'リセット',
   Share: '共有',
@@ -2505,6 +2508,7 @@ const ur: TranslationMap = {
 };
 
 const hi: TranslationMap = {
+  'Monero Fast Wallet Registry price': 'Monero Fast Wallet रजिस्ट्री मूल्य',
   Cancel: 'रद्द करें',
   Clear: 'साफ़ करें',
   Import: 'आयात करें',
@@ -3410,18 +3414,65 @@ export function applyManualTranslationOverrides<T extends Record<string, string>
   english: T,
   translated: T,
 ): T {
-  const overrides = manualTranslationOverrides[locale as ManualTranslationLocale];
   return Object.fromEntries(
     Object.entries(english).map(([key, source]) => {
-      const reviewed = overrides?.[source];
-      if (reviewed) return [key, reviewed];
-      const generated = translated[key];
-      return [
-        key,
-        typeof generated === 'string' && isGeneratedTranslationSafe(source, generated)
-          ? generated
-          : source,
-      ];
+      return [key, resolveManualTranslation(locale, source, translated[key])];
     }),
   ) as T;
+}
+
+const protectedProductTerms = [
+  'Monero Fast Wallet',
+  'Monero Fast Node',
+  'Monero Enthusiast',
+  'Fast Wallet',
+  'React Native',
+  'Tauri 2',
+  'AppVault',
+  'ScanPack',
+  'LEDGER',
+  'Ledger',
+  'Matrix',
+  'Mainnet',
+  'Monero',
+  'GitHub',
+  'Android',
+  'iOS',
+  'macOS',
+  'Windows',
+  'Linux',
+  'CUDA',
+  'Metal',
+  'NEON',
+  'XMR',
+  'MFN',
+  'Open Source Initiative',
+] as const;
+
+function preservesProtectedProductTerms(source: string, translated: string): boolean {
+  return protectedProductTerms.every(term =>
+    translated.split(term).length === source.split(term).length,
+  );
+}
+
+/**
+ * Resolve one translated value without rebuilding an entire locale catalog.
+ * Mobile startup uses this per-key path so adding product languages cannot
+ * turn first paint into a synchronous multi-catalog validation pass.
+ */
+export function resolveManualTranslation(
+  locale: string,
+  source: string,
+  translated: string | undefined,
+): string {
+  const reviewed =
+    manualTranslationOverrides[locale as ManualTranslationLocale]?.[source];
+  if (reviewed) {
+    return preservesProtectedProductTerms(source, reviewed) ? reviewed : source;
+  }
+  return typeof translated === 'string' &&
+    isGeneratedTranslationSafe(source, translated) &&
+    preservesProtectedProductTerms(source, translated)
+    ? translated
+    : source;
 }

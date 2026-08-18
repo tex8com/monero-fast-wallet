@@ -172,7 +172,9 @@ export default function WelcomeScreen({ navigation }: any) {
                     style={s.savedWalletCard}
                     activeOpacity={0.76}
                     disabled={Boolean(openingWalletId)}
-                    onPress={() => void openSavedWallet(wallet.id)}
+                    onPress={() => {
+                      openSavedWallet(wallet.id);
+                    }}
                   >
                     <MoneroCoin size={30} />
                     <View style={s.savedWalletCopy}>
@@ -244,7 +246,9 @@ export default function WelcomeScreen({ navigation }: any) {
             <TouchableOpacity
               style={s.choiceOption}
               activeOpacity={0.8}
-              onPress={() => void continueToSetup(false)}
+              onPress={() => {
+                continueToSetup(false);
+              }}
             >
               <Text style={s.choiceOptionTitle}>{t('welcome.privacyOnly')}</Text>
               <Text style={s.choiceOptionText}>{t('welcome.privacyOnlyDescription')}</Text>
@@ -252,7 +256,9 @@ export default function WelcomeScreen({ navigation }: any) {
             <TouchableOpacity
               style={[s.choiceOption, s.choiceOptionRecommended]}
               activeOpacity={0.8}
-              onPress={() => void continueToSetup(true)}
+              onPress={() => {
+                continueToSetup(true);
+              }}
             >
               <Text style={s.choiceOptionTitle}>{t('welcome.privacyComfort')}</Text>
               <Text style={s.choiceOptionText}>{t('welcome.privacyComfortDescription')}</Text>

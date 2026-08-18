@@ -17,6 +17,7 @@ mod platform_auth;
 mod release_features;
 mod secure_store;
 mod security_settings;
+pub mod tor_transport;
 mod wallet_core;
 mod wallet_registry;
 mod windows_notification_agent;
@@ -27,8 +28,9 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
-    net::ToSocketAddrs,
-    sync::{Condvar, Mutex, MutexGuard, TryLockError},
+    io::{Read, Write},
+    net::{TcpStream, ToSocketAddrs},
+    sync::{Condvar, Mutex, MutexGuard, OnceLock, TryLockError},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -593,7 +595,6 @@ struct ResolveMfwNameInput {
 struct CheckMfwNameAvailabilityInput {
     name: String,
     network: String,
-    wallet_chain_height: Option<u64>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -741,7 +742,8 @@ struct DaemonInput {
     use_ssl: bool,
     username: Option<String>,
     password: String,
-    proxy_address: Option<String>,
+    #[serde(rename = "proxyAddress")]
+    _proxy_address: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -758,6 +760,49 @@ struct NodeSettingsInput {
     proxy_address: String,
     clear_password: bool,
 }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionDiagnosticsInput {
+    network: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectivityStatusInput {
+    network: String,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionRouteProbe {
+    connected: bool,
+    endpoint: String,
+    elapsed_ms: Option<u128>,
+    error: Option<String>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionRoutesDiagnostic {
+    tor: ConnectionRouteProbe,
+    clearnet: ConnectionRouteProbe,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectivityRouteState {
+    phase: String,
+    connected: bool,
+    endpoint: String,
+    checked_at_ms: u64,
+    elapsed_ms: Option<u128>,
+    error: Option<String>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectivityStatus {
+    tor: ConnectivityRouteState,
+    clearnet: ConnectivityRouteState,
+}
+static CLEARNET_CONNECTIVITY: OnceLock<Mutex<HashMap<String, ConnectivityRouteState>>> =
+    OnceLock::new();
+static TOR_CONNECTIVITY: OnceLock<Mutex<HashMap<String, ConnectivityRouteState>>> = OnceLock::new();
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateFastWalletInput {
@@ -1137,28 +1182,30 @@ async fn diagnostic_fast_wallet_worker(
 }
 
 #[tauri::command]
-async fn fetch_market_backup(input: MarketBackupInput) -> Result<String, String> {
-    let url = market_backup_url(&input.kind, input.timeframe.as_deref())?;
+async fn fetch_private_service(input: MarketBackupInput) -> Result<String, String> {
+    let url = private_service_url(&input.kind, input.timeframe.as_deref())?;
+    let timeout = if input.kind == "news" { 20 } else { 12 };
     let response = reqwest::Client::builder()
-        .timeout(Duration::from_secs(12))
+        .timeout(Duration::from_secs(timeout))
         .user_agent("Monero-Fast-Wallet-Desktop/0.1")
+        .proxy(tor_transport::proxy()?)
         .build()
-        .map_err(|_| "Market backup client could not be initialized.".to_owned())?
+        .map_err(|_| "Private service client could not be initialized.".to_owned())?
         .get(url)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await
-        .map_err(|_| "Backup market source could not be reached.".to_owned())?;
+        .map_err(|_| "Private service could not be reached through Tor.".to_owned())?;
     if !response.status().is_success() {
         return Err(format!(
-            "Backup market source returned HTTP {}.",
+            "Private service returned HTTP {}.",
             response.status().as_u16()
         ));
     }
     response
         .text()
         .await
-        .map_err(|_| "Backup market source returned an invalid response.".to_owned())
+        .map_err(|_| "Private service returned an invalid response.".to_owned())
 }
 
 /// Persist only fixed, privacy-safe renderer lifecycle markers.  Wallet names,
@@ -5538,6 +5585,7 @@ fn fast_scanner_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
         .user_agent("Monero-Fast-Wallet-Desktop/0.1")
+        .proxy(tor_transport::proxy()?)
         .build()
         .map_err(|_| "Fast Wallet scanner client could not be initialized.".to_owned())
 }
@@ -5643,6 +5691,11 @@ fn save_node_settings(
     }
     let profile = node_settings::save(&app, profile)?;
     if let Some(wallet_id) = input.wallet_id {
+        // Never resolve the wallet-operation daemon locally. Monero Core sends
+        // the unchanged hostname through SOCKS4a, so .onion resolution stays
+        // inside the app's embedded Tor transport.
+        let daemon_address = profile.daemon_address.clone();
+        let (grpc_endpoint, _) = first_party_endpoint_with_dns_fallback(&profile.grpc_endpoint);
         let mut password = if profile.password_stored {
             secure_store::load_node_daemon_password(&profile.network)?.unwrap_or_default()
         } else {
@@ -5651,20 +5704,470 @@ fn save_node_settings(
         let applied = state
             .0
             .lock()
-            .map_err(|_| "Native wallet is busy.".to_owned())?
-            .set_daemon(native_wallet::DaemonConfig {
-                wallet_id: &wallet_id,
-                address: &profile.daemon_address,
-                trusted: profile.trusted,
-                use_ssl: profile.use_ssl,
-                username: &profile.username,
-                password: &password,
-                proxy_address: &profile.proxy_address,
+            .map_err(|_| "Native wallet is busy.".to_owned())
+            .and_then(|native| {
+                native.set_daemon(native_wallet::DaemonConfig {
+                    wallet_id: &wallet_id,
+                    address: &daemon_address,
+                    trusted: profile.trusted,
+                    use_ssl: profile.use_ssl,
+                    username: &profile.username,
+                    password: &password,
+                    proxy_address: &profile.proxy_address,
+                })?;
+                native.set_grpc_endpoint(&wallet_id, &grpc_endpoint)
             });
         password.zeroize();
         applied?;
     }
     Ok(profile)
+}
+
+#[tauri::command]
+async fn diagnose_connection_routes(
+    app: AppHandle,
+    protection: State<'_, AppProtectionState>,
+    input: ConnectionDiagnosticsInput,
+) -> Result<ConnectionRoutesDiagnostic, String> {
+    require_app_unlocked(&protection)?;
+    let profile = node_settings::load(&app, &input.network)?;
+    let tor_endpoint = profile.daemon_address.clone();
+    let clearnet_endpoint = profile.grpc_endpoint.clone();
+    let tor_task = tauri::async_runtime::spawn_blocking(move || probe_tor_route(&tor_endpoint));
+    let clearnet_task =
+        tauri::async_runtime::spawn_blocking(move || probe_clearnet_route(&clearnet_endpoint));
+    let tor = tor_task
+        .await
+        .map_err(|_| "The Tor connection check ended unexpectedly.".to_owned())?;
+    let clearnet = clearnet_task
+        .await
+        .map_err(|_| "The Clearnet connection check ended unexpectedly.".to_owned())?;
+    Ok(ConnectionRoutesDiagnostic { tor, clearnet })
+}
+
+fn probe_tor_route(endpoint: &str) -> ConnectionRouteProbe {
+    probe_route(endpoint, |host, port, timeout| {
+        let mut stream = TcpStream::connect_timeout(
+            &tor_transport::TOR_SOCKS_ADDRESS
+                .parse()
+                .map_err(|_| "The local Tor proxy address is invalid.".to_owned())?,
+            timeout,
+        )
+        .map_err(|error| format!("{} ({error})", tor_transport::diagnostic_status()))?;
+        stream
+            .set_read_timeout(Some(timeout))
+            .map_err(|error| error.to_string())?;
+        stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|error| error.to_string())?;
+        stream
+            .write_all(&[5, 1, 0])
+            .map_err(|error| error.to_string())?;
+        let mut greeting = [0_u8; 2];
+        stream
+            .read_exact(&mut greeting)
+            .map_err(|error| format!("{} ({error})", tor_transport::diagnostic_status()))?;
+        if greeting != [5, 0] {
+            return Err("Tor SOCKS proxy rejected anonymous authentication.".to_owned());
+        }
+        let host_bytes = host.as_bytes();
+        if host_bytes.is_empty() || host_bytes.len() > 255 || !host_bytes.is_ascii() {
+            return Err("The Tor destination host is invalid.".to_owned());
+        }
+        let mut request = Vec::with_capacity(host_bytes.len() + 7);
+        request.extend_from_slice(&[5, 1, 0, 3, host_bytes.len() as u8]);
+        request.extend_from_slice(host_bytes);
+        request.extend_from_slice(&port.to_be_bytes());
+        stream
+            .write_all(&request)
+            .map_err(|error| error.to_string())?;
+        let mut response = [0_u8; 4];
+        stream
+            .read_exact(&mut response)
+            .map_err(|error| error.to_string())?;
+        if response[0] != 5 || response[1] != 0 {
+            return Err(format!(
+                "Tor could not open the selected route (SOCKS {}).",
+                response[1]
+            ));
+        }
+        let remaining = match response[3] {
+            1 => 4 + 2,
+            3 => {
+                let mut length = [0_u8; 1];
+                stream
+                    .read_exact(&mut length)
+                    .map_err(|error| error.to_string())?;
+                usize::from(length[0]) + 2
+            }
+            4 => 16 + 2,
+            _ => return Err("Tor returned an invalid SOCKS response.".to_owned()),
+        };
+        let mut ignored = vec![0_u8; remaining];
+        stream
+            .read_exact(&mut ignored)
+            .map_err(|error| error.to_string())?;
+        probe_monero_daemon_api(&mut stream, host)
+    })
+}
+
+fn probe_clearnet_route(endpoint: &str) -> ConnectionRouteProbe {
+    probe_route(endpoint, |host, port, timeout| {
+        let addresses = (host, port)
+            .to_socket_addrs()
+            .map_err(|error| format!("DNS: {error}"))?;
+        let mut last_error = None;
+        for address in addresses {
+            match TcpStream::connect_timeout(&address, timeout) {
+                Ok(mut stream) => {
+                    stream
+                        .set_read_timeout(Some(timeout))
+                        .map_err(|error| error.to_string())?;
+                    stream
+                        .set_write_timeout(Some(timeout))
+                        .map_err(|error| error.to_string())?;
+                    return probe_grpc_transport(&mut stream);
+                }
+                Err(error) => last_error = Some(error.to_string()),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "The endpoint has no usable address.".to_owned()))
+    })
+}
+
+fn probe_monero_daemon_api(stream: &mut TcpStream, host: &str) -> Result<(), String> {
+    let request = format!(
+        "GET /get_height HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("Tor daemon health request: {error}"))?;
+    let response = read_bounded_response(stream, 32 * 1024)?;
+    let text = String::from_utf8_lossy(&response);
+    let status_ok = text.starts_with("HTTP/1.1 200 ") || text.starts_with("HTTP/1.0 200 ");
+    if !status_ok || !text.contains("\"height\"") {
+        return Err(
+            "The selected Onion daemon did not return a valid /get_height response.".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn read_bounded_response(stream: &mut TcpStream, limit: usize) -> Result<Vec<u8>, String> {
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 2048];
+    while response.len() < limit {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(bytes) => {
+                response.extend_from_slice(&chunk[..bytes]);
+                if response.windows(8).any(|window| window == b"\"height\"") {
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && !response.is_empty() =>
+            {
+                break;
+            }
+            Err(error) => return Err(format!("Health response: {error}")),
+        }
+    }
+    if response.is_empty() {
+        return Err("The health endpoint returned no response.".to_owned());
+    }
+    Ok(response)
+}
+
+fn probe_grpc_transport(stream: &mut TcpStream) -> Result<(), String> {
+    // A gRPC server is HTTP/2. Send the mandatory client connection preface
+    // plus an empty SETTINGS frame and require the server's SETTINGS frame.
+    // This distinguishes a functioning ScanPack API from a merely open port.
+    const PREFACE_AND_SETTINGS: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\0\0\0\x04\0\0\0\0\0";
+    stream
+        .write_all(PREFACE_AND_SETTINGS)
+        .map_err(|error| format!("gRPC health request: {error}"))?;
+    let mut header = [0_u8; 9];
+    stream
+        .read_exact(&mut header)
+        .map_err(|error| format!("gRPC health response: {error}"))?;
+    let length =
+        (usize::from(header[0]) << 16) | (usize::from(header[1]) << 8) | usize::from(header[2]);
+    let stream_id = u32::from_be_bytes([header[5], header[6], header[7], header[8]]) & 0x7fff_ffff;
+    if header[3] != 4 || stream_id != 0 || length > 65_535 {
+        return Err("The Clearnet endpoint did not answer as a gRPC/HTTP2 service.".to_owned());
+    }
+    let mut settings = vec![0_u8; length];
+    stream
+        .read_exact(&mut settings)
+        .map_err(|error| format!("gRPC SETTINGS response: {error}"))?;
+    Ok(())
+}
+
+fn connectivity_routes() -> &'static Mutex<HashMap<String, ConnectivityRouteState>> {
+    CLEARNET_CONNECTIVITY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn tor_connectivity_routes() -> &'static Mutex<HashMap<String, ConnectivityRouteState>> {
+    TOR_CONNECTIVITY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn set_clearnet_connectivity(network: &str, state: ConnectivityRouteState) {
+    if let Ok(mut routes) = connectivity_routes().lock() {
+        routes.insert(network.to_owned(), state);
+    }
+}
+
+fn set_tor_connectivity(network: &str, state: ConnectivityRouteState) {
+    if let Ok(mut routes) = tor_connectivity_routes().lock() {
+        routes.insert(network.to_owned(), state);
+    }
+}
+
+/// Keep the last service-level success visible while the next periodic probe
+/// runs. A health check is not a disconnect: only a failed Onion daemon or
+/// gRPC protocol response may replace a confirmed green route with an error.
+/// A changed endpoint starts in checking state because the previous result no
+/// longer describes the configured route.
+fn mark_connectivity_checking(
+    routes: &Mutex<HashMap<String, ConnectivityRouteState>>,
+    network: &str,
+    endpoint: &str,
+) {
+    if let Ok(mut routes) = routes.lock() {
+        let preserve_confirmed = routes
+            .get(network)
+            .is_some_and(|state| state.connected && state.endpoint == endpoint);
+        if !preserve_confirmed {
+            routes.insert(
+                network.to_owned(),
+                ConnectivityRouteState {
+                    phase: "checking".to_owned(),
+                    connected: false,
+                    endpoint: endpoint.to_owned(),
+                    checked_at_ms: connectivity_now_ms(),
+                    elapsed_ms: None,
+                    error: None,
+                },
+            );
+        }
+    }
+}
+
+fn start_desktop_connectivity_monitor(app: AppHandle) {
+    for network in ["mainnet", "testnet", "stagenet"] {
+        let tor_app = app.clone();
+        let tor_network = network.to_owned();
+        let tor_error_network = tor_network.clone();
+        let tor_thread_name = format!("mfw-tor-health-{network}");
+        if let Err(error) = std::thread::Builder::new()
+            .name(tor_thread_name)
+            .spawn(move || loop {
+                match node_settings::load(&tor_app, &tor_network) {
+                    Ok(profile) => {
+                        mark_connectivity_checking(
+                            tor_connectivity_routes(),
+                            &tor_network,
+                            &profile.daemon_address,
+                        );
+                        let probe = probe_tor_route(&profile.daemon_address);
+                        set_tor_connectivity(
+                            &tor_network,
+                            ConnectivityRouteState {
+                                phase: if probe.connected {
+                                    "connected"
+                                } else {
+                                    "error"
+                                }
+                                .to_owned(),
+                                connected: probe.connected,
+                                endpoint: probe.endpoint,
+                                checked_at_ms: connectivity_now_ms(),
+                                elapsed_ms: probe.elapsed_ms,
+                                error: probe.error,
+                            },
+                        );
+                    }
+                    Err(error) => set_tor_connectivity(
+                        &tor_network,
+                        ConnectivityRouteState {
+                            phase: "error".to_owned(),
+                            connected: false,
+                            endpoint: String::new(),
+                            checked_at_ms: connectivity_now_ms(),
+                            elapsed_ms: None,
+                            error: Some(error),
+                        },
+                    ),
+                }
+                std::thread::sleep(Duration::from_secs(15));
+            })
+        {
+            eprintln!(
+                "MONERO_DESKTOP_CONNECTIVITY tor-monitor-start-failed network={tor_error_network} error={error}"
+            );
+        }
+
+        let app = app.clone();
+        let network = network.to_owned();
+        let error_network = network.clone();
+        let thread_name = format!("mfw-clearnet-{network}");
+        if let Err(error) = std::thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || loop {
+                let profile = node_settings::load(&app, &network);
+                match profile {
+                    Ok(profile) => {
+                        mark_connectivity_checking(
+                            connectivity_routes(),
+                            &network,
+                            &profile.grpc_endpoint,
+                        );
+                        let probe = probe_clearnet_route(&profile.grpc_endpoint);
+                        set_clearnet_connectivity(
+                            &network,
+                            ConnectivityRouteState {
+                                phase: if probe.connected {
+                                    "connected"
+                                } else {
+                                    "error"
+                                }
+                                .to_owned(),
+                                connected: probe.connected,
+                                endpoint: probe.endpoint,
+                                checked_at_ms: connectivity_now_ms(),
+                                elapsed_ms: probe.elapsed_ms,
+                                error: probe.error,
+                            },
+                        );
+                    }
+                    Err(error) => set_clearnet_connectivity(
+                        &network,
+                        ConnectivityRouteState {
+                            phase: "error".to_owned(),
+                            connected: false,
+                            endpoint: String::new(),
+                            checked_at_ms: connectivity_now_ms(),
+                            elapsed_ms: None,
+                            error: Some(error),
+                        },
+                    ),
+                }
+                std::thread::sleep(Duration::from_secs(15));
+            })
+        {
+            eprintln!(
+                "MONERO_DESKTOP_CONNECTIVITY monitor-start-failed network={error_network} error={error}"
+            );
+        }
+    }
+}
+
+#[tauri::command]
+fn connectivity_status(
+    app: AppHandle,
+    input: ConnectivityStatusInput,
+) -> Result<ConnectivityStatus, String> {
+    let profile = node_settings::load(&app, &input.network)?;
+    let tor_runtime = tor_transport::status_snapshot();
+    let tor_state = tor_connectivity_routes()
+        .lock()
+        .ok()
+        .and_then(|routes| routes.get(&input.network).cloned())
+        .unwrap_or(ConnectivityRouteState {
+            phase: tor_runtime.phase,
+            connected: false,
+            endpoint: profile.daemon_address,
+            checked_at_ms: tor_runtime.checked_at_ms,
+            elapsed_ms: None,
+            error: if tor_runtime.worker_alive {
+                tor_runtime.error
+            } else {
+                Some("Embedded Tor worker is not running.".to_owned())
+            },
+        });
+    let clearnet = connectivity_routes()
+        .lock()
+        .ok()
+        .and_then(|routes| routes.get(&input.network).cloned())
+        .unwrap_or(ConnectivityRouteState {
+            phase: "starting".to_owned(),
+            connected: false,
+            endpoint: profile.grpc_endpoint,
+            checked_at_ms: 0,
+            elapsed_ms: None,
+            error: None,
+        });
+    Ok(ConnectivityStatus {
+        tor: tor_state,
+        clearnet,
+    })
+}
+
+fn connectivity_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn probe_route<F>(endpoint: &str, connect: F) -> ConnectionRouteProbe
+where
+    F: FnOnce(&str, u16, Duration) -> Result<(), String>,
+{
+    let label = endpoint.trim().to_owned();
+    let started = Instant::now();
+    let result = parse_connection_endpoint(&label)
+        .and_then(|(host, port)| connect(&host, port, Duration::from_secs(8)));
+    match result {
+        Ok(()) => ConnectionRouteProbe {
+            connected: true,
+            endpoint: label,
+            elapsed_ms: Some(started.elapsed().as_millis()),
+            error: None,
+        },
+        Err(error) => ConnectionRouteProbe {
+            connected: false,
+            endpoint: label,
+            elapsed_ms: None,
+            error: Some(error),
+        },
+    }
+}
+
+fn parse_connection_endpoint(endpoint: &str) -> Result<(String, u16), String> {
+    let without_scheme = endpoint
+        .split_once("://")
+        .map(|(_, value)| value)
+        .unwrap_or(endpoint);
+    let authority = without_scheme.split('/').next().unwrap_or_default();
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| "The endpoint must include a port.".to_owned())?;
+    let checked_host = host.trim().to_ascii_lowercase();
+    if checked_host.is_empty()
+        || checked_host.len() > 253
+        || checked_host.starts_with('.')
+        || checked_host.ends_with('.')
+        || checked_host.contains("..")
+        || !checked_host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
+    {
+        return Err("The endpoint host is invalid.".to_owned());
+    }
+    let checked_port = port
+        .parse::<u16>()
+        .map_err(|_| "The endpoint port is invalid.".to_owned())?;
+    if checked_port == 0 {
+        return Err("The endpoint port is invalid.".to_owned());
+    }
+    Ok((checked_host, checked_port))
 }
 #[tauri::command]
 fn set_daemon(
@@ -5687,7 +6190,9 @@ fn set_daemon(
             use_ssl: input.use_ssl,
             username: input.username.as_deref().unwrap_or(""),
             password: &input.password,
-            proxy_address: input.proxy_address.as_deref().unwrap_or(""),
+            // This legacy command is still permissioned for compatibility,
+            // but it may never create a direct daemon route.
+            proxy_address: tor_transport::TOR_SOCKS_ADDRESS,
         });
     input.password.zeroize();
     result
@@ -5776,26 +6281,41 @@ fn verify_mfw_name_record_address(
     if expected_name.is_empty() || expected_name.len() > 67 {
         return Err("MFW name is invalid.".to_owned());
     }
-    let record = decode_bounded_hex(&input.record_payload_hex, 189, 251, "MFW record")?;
-    let signing_owner = decode_bounded_hex(
-        &input.signing_owner_public_key_hex,
-        32,
-        32,
-        "MFW signing owner key",
-    )?;
     let mut address = [0_u8; fast_wallet_protocol::ffi::MFW_MONERO_ADDRESS_BYTES];
-    let status = unsafe {
-        fast_wallet_protocol::ffi::tex8_mfw_verify_and_encode_name_address_v1(
-            record.as_ptr(),
-            record.len(),
-            expected_name.as_ptr(),
-            expected_name.len(),
-            network,
-            signing_owner.as_ptr(),
-            signing_owner.len(),
-            address.as_mut_ptr(),
-            address.len(),
-        )
+    let status = if input.signing_owner_public_key_hex.is_empty() {
+        let record = decode_bounded_hex(&input.record_payload_hex, 89, 152, "MFW record")?;
+        unsafe {
+            fast_wallet_protocol::ffi::tex8_mfw_verify_and_encode_legacy_name_address_v1(
+                record.as_ptr(),
+                record.len(),
+                expected_name.as_ptr(),
+                expected_name.len(),
+                network,
+                address.as_mut_ptr(),
+                address.len(),
+            )
+        }
+    } else {
+        let record = decode_bounded_hex(&input.record_payload_hex, 189, 251, "MFW record")?;
+        let signing_owner = decode_bounded_hex(
+            &input.signing_owner_public_key_hex,
+            32,
+            32,
+            "MFW signing owner key",
+        )?;
+        unsafe {
+            fast_wallet_protocol::ffi::tex8_mfw_verify_and_encode_name_address_v1(
+                record.as_ptr(),
+                record.len(),
+                expected_name.as_ptr(),
+                expected_name.len(),
+                network,
+                signing_owner.as_ptr(),
+                signing_owner.len(),
+                address.as_mut_ptr(),
+                address.len(),
+            )
+        }
     };
     if status != fast_wallet_protocol::ffi::OK {
         return Err("MFW name record could not be verified.".to_owned());
@@ -5841,7 +6361,32 @@ fn check_mfw_name_availability(
 ) -> Result<mfw_name_resolver::Availability, String> {
     require_app_unlocked(&protection)?;
     network(&input.network)?;
-    mfw_name_resolver::availability(&input.name, &input.network, input.wallet_chain_height)
+    mfw_name_resolver::availability(&input.name, &input.network)
+}
+
+fn mfw_transaction_wallet_id(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    sessions: &WalletSessionState,
+    wallet_registration_id: &str,
+    current_wallet_id: &str,
+    diagnostic_flow: &str,
+) -> Result<String, String> {
+    require_wallet_session(sessions, wallet_registration_id, current_wallet_id)?;
+    let registry = wallet_registry::list(app)?;
+    let registration = registry
+        .wallets
+        .iter()
+        .find(|wallet| wallet.id == wallet_registration_id)
+        .cloned()
+        .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
+    if registration.kind == "hardware"
+        && registration.role.as_deref().unwrap_or("standard") == "standard"
+    {
+        ensure_ledger_hardware_session(app, state, sessions, &registration, diagnostic_flow)
+    } else {
+        Ok(current_wallet_id.to_owned())
+    }
 }
 
 #[tauri::command]
@@ -5879,9 +6424,7 @@ fn prepare_mfw_name_registration(
     {
         return Err("Synchronize the owner wallet before registering an MFW name.".to_owned());
     }
-    let wallet_height = json_u64_string(&snapshot, "walletHeight")?;
-    let availability =
-        mfw_name_resolver::availability(&canonical_name, &input.network, Some(wallet_height))?;
+    let availability = mfw_name_resolver::availability(&canonical_name, &input.network)?;
     if !matches!(
         availability.status.as_str(),
         "available" | "available-again"
@@ -5895,28 +6438,28 @@ fn prepare_mfw_name_registration(
     let network_code = network(&input.network)?;
     let account_index = checked_account_index(input.account_index)?;
     let address_index = checked_account_index(input.address_index)?;
-    let wallet_address = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .address(&input.wallet_id, account_index, address_index)?;
-    if wallet_address != input.address.trim() {
-        return Err(
-            "The selected MFW receive address does not belong to the selected wallet index."
-                .to_owned(),
-        );
-    }
+    // The open wallet owns and pays for the name. Its published receive
+    // address may deliberately point to any valid Monero address, including
+    // one held on another device or in another wallet.
     let address = state
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
         .validate_recipient_address(input.address.trim(), network_code)?;
+    let transaction_wallet_id = mfw_transaction_wallet_id(
+        &app,
+        &state,
+        &sessions,
+        &input.wallet_registration_id,
+        &input.wallet_id,
+        "mfw-name-registration",
+    )?;
     let mut raw = state
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
         .prepare_mfw_name_registration(
-            &input.wallet_id,
+            &transaction_wallet_id,
             &canonical_name,
             &address,
             network_code,
@@ -5958,7 +6501,7 @@ fn prepare_mfw_name_registration(
         }
         if let Err(error) = register_mfw_approval(
             &approvals,
-            &input.wallet_id,
+            &transaction_wallet_id,
             &genesis.registry_address,
             &prepared.prepared_transaction,
             MfwPendingApproval {
@@ -6003,24 +6546,28 @@ fn prepare_mfw_name_claim(
     let record = mfw_names::get(&app, &input.name_id)?;
     if record.wallet_registration_id != input.wallet_registration_id
         || record.stage != "reveal-ready"
-        || record.recovery_exported_at.is_none()
     {
-        return Err(
-            "This MFW name is not ready to reveal, or its recovery file was not exported."
-                .to_owned(),
-        );
+        return Err("This MFW name is not ready to reveal.".to_owned());
     }
     let genesis = release_features::mfw_name_genesis(&record.network)
         .ok_or_else(|| "MFW genesis parameters are not configured for this network.".to_owned())?;
     require_mfw_commit_window(&state, &input.wallet_id, &record, &genesis)?;
-    let mut owner = load_mfw_owner_state(&record)?;
     let network_code = network(&record.network)?;
+    let transaction_wallet_id = mfw_transaction_wallet_id(
+        &app,
+        &state,
+        &sessions,
+        &input.wallet_registration_id,
+        &input.wallet_id,
+        "mfw-name-claim",
+    )?;
+    let mut owner = load_mfw_owner_state(&record)?;
     let raw = state
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
         .prepare_mfw_name_claim(
-            &input.wallet_id,
+            &transaction_wallet_id,
             &record.canonical_name,
             &record.address,
             network_code,
@@ -6035,7 +6582,7 @@ fn prepare_mfw_name_claim(
     prepare_existing_mfw_response(
         raw?,
         &approvals,
-        &input.wallet_id,
+        &transaction_wallet_id,
         &genesis.registry_address,
         &record,
         "claim",
@@ -6102,12 +6649,26 @@ fn prepare_mfw_name_transition(
     } else {
         address.clone()
     };
+    let transaction_wallet_id = match mfw_transaction_wallet_id(
+        &app,
+        &state,
+        &sessions,
+        &input.wallet_registration_id,
+        &input.wallet_id,
+        "mfw-name-transition",
+    ) {
+        Ok(wallet_id) => wallet_id,
+        Err(error) => {
+            owner.zeroize();
+            return Err(error);
+        }
+    };
     let raw = state
         .0
         .lock()
         .map_err(|_| "Native wallet is busy.".to_owned())?
         .prepare_mfw_name_transition(
-            &input.wallet_id,
+            &transaction_wallet_id,
             &input.operation,
             &record.canonical_name,
             &address,
@@ -6128,7 +6689,7 @@ fn prepare_mfw_name_transition(
     let result = prepare_existing_mfw_response(
         raw,
         &approvals,
-        &input.wallet_id,
+        &transaction_wallet_id,
         &destination,
         &record,
         &input.operation,
@@ -7088,20 +7649,6 @@ async fn commit_transaction(
     if approval.expires_at <= now() {
         return Err("The transaction review expired. Prepare it again.".to_owned());
     }
-    if let Some(mfw) = approval.mfw.as_ref() {
-        let record = mfw_names::get(&app, &mfw.record_id)?;
-        if mfw.kind == "commit" && record.recovery_exported_at.is_none() {
-            approvals
-                .0
-                .lock()
-                .map_err(|_| "Transaction approval state is busy.".to_owned())?
-                .insert(input.pending_id.clone(), approval.clone());
-            return Err(
-                "Export and safely store the encrypted MFW recovery file before approving the commit."
-                    .to_owned(),
-            );
-        }
-    }
     let operation = approval
         .mfw
         .as_ref()
@@ -7710,24 +8257,15 @@ fn require_legacy_community_release() -> Result<(), String> {
         "The legacy Community service is disabled in this release.",
     )
 }
-fn market_backup_url(kind: &str, timeframe: Option<&str>) -> Result<String, String> {
-    const BASE: &str = "https://api-pub.bitfinex.com/v2";
-    match kind {
-        "ticker" if timeframe.is_none() => Ok(format!("{BASE}/ticker/tXMRUSD")),
-        "chart" => {
-            let (interval, limit) = match timeframe {
-                Some("24H") => ("1h", 25),
-                Some("7D") => ("6h", 29),
-                Some("1M") => ("12h", 61),
-                Some("1Y") => ("1D", 366),
-                Some("Max") => ("1D", 10_000),
-                _ => return Err("Unknown market chart timeframe.".to_owned()),
-            };
-            Ok(format!(
-                "{BASE}/candles/trade:{interval}:tXMRUSD/hist?limit={limit}&sort=-1"
-            ))
+fn private_service_url(kind: &str, timeframe: Option<&str>) -> Result<String, String> {
+    const BASE: &str = "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion";
+    match (kind, timeframe) {
+        ("news", None) => Ok(format!("{BASE}/news/v1/news?limit=10")),
+        ("quote", None) => Ok(format!("{BASE}/api/v1/market/quote")),
+        ("chart", Some(value)) if matches!(value, "24H" | "7D" | "1M" | "1Y" | "Max") => {
+            Ok(format!("{BASE}/api/v1/market/chart?timeframe={value}"))
         }
-        _ => Err("Unknown market backup request.".to_owned()),
+        _ => Err("Unknown private service request.".to_owned()),
     }
 }
 fn network(value: &str) -> Result<u8, String> {
@@ -8125,17 +8663,17 @@ fn schedule_wallet_sync(app: AppHandle, wallet_id: String, network_name: String)
                 return;
             }
         };
-        let (daemon_address, daemon_dns_fallback) =
-            first_party_endpoint_with_dns_fallback(&profile.daemon_address);
+        // Wallet-operation hostnames must never reach the operating-system
+        // resolver. Only the Clearnet gRPC block route may use DNS fallback.
+        let daemon_address = profile.daemon_address.clone();
         let (grpc_endpoint, grpc_dns_fallback) =
             first_party_endpoint_with_dns_fallback(&profile.grpc_endpoint);
-        if daemon_dns_fallback || grpc_dns_fallback {
+        if grpc_dns_fallback {
             diagnostics::record(
                 &app,
                 "wallet.node-dns-fallback",
                 &[
                     ("network", profile.network.clone()),
-                    ("daemonFallback", daemon_dns_fallback.to_string()),
                     ("grpcFallback", grpc_dns_fallback.to_string()),
                 ],
             );
@@ -8392,6 +8930,16 @@ fn finish_wallet_operation(
 }
 
 pub fn run() {
+    // Arti and Matrix currently bring different rustls providers into the
+    // desktop binary. Rustls deliberately refuses to guess in that case, so
+    // select one before any plugin, HTTP client, or Tor runtime can use TLS.
+    // This is process-wide and keeps the embedded Tor bootstrap deterministic.
+    if rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_ok()
+    {
+        eprintln!("MONERO_DESKTOP_TLS provider=ring");
+    }
     // This must remain the first plugin. A second launch focuses the existing
     // wallet window and exits before it can initialize Keychain, native wallet,
     // or biometric state a second time.
@@ -8438,6 +8986,15 @@ pub fn run() {
         )
         .manage(community::CommunityState::new().expect("Community client initialization"))
         .setup(|app| {
+            // Tor initializes on its own runtime. Bootstrapping must never
+            // delay the first desktop frame or opening a saved wallet.
+            tor_transport::start_embedded_tor(
+                app.path()
+                    .app_data_dir()
+                    .map_err(|error| format!("App data directory is unavailable: {error}"))?
+                    .join("embedded-tor"),
+            );
+            start_desktop_connectivity_monitor(app.handle().clone());
             app_vault::initialize(app.handle())?;
             let main_window = app
                 .get_webview_window("main")
@@ -8462,18 +9019,10 @@ pub fn run() {
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             {
-                let protected = desktop_screen_capture_protection_enabled();
                 main_window
-                    .set_content_protected(protected)
-                    .map_err(|error| format!("Screen-capture protection failed: {error}"))?;
-                eprintln!(
-                    "MONERO_DESKTOP_SCREEN_CAPTURE protected={protected} build={}",
-                    if cfg!(debug_assertions) {
-                        "debug"
-                    } else {
-                        "production"
-                    }
-                );
+                    .set_content_protected(false)
+                    .map_err(|error| format!("Screen-capture policy failed: {error}"))?;
+                eprintln!("MONERO_DESKTOP_SCREEN_CAPTURE protected=false");
             }
 
             let security_app = app.handle().clone();
@@ -8646,7 +9195,7 @@ pub fn run() {
             record_app_user_activity,
             auto_lock_settings,
             set_auto_lock_timeout,
-            fetch_market_backup,
+            fetch_private_service,
             wallet_ui_diagnostic,
             ledger_transport_status,
             store_wallet_password,
@@ -8691,6 +9240,8 @@ pub fn run() {
             disable_fast_wallet,
             load_node_settings,
             save_node_settings,
+            connectivity_status,
+            diagnose_connection_routes,
             set_daemon,
             network_sync_status,
             start_wallet_refresh,
@@ -8775,34 +9326,14 @@ fn desktop_updates_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Production artifacts always protect wallet windows from screen capture.
-/// Local diagnostic builds default to visible screenshots so UI failures can
-/// be reproduced and documented. Developers can opt back into production
-/// behavior with `MONERO_DESKTOP_PROTECT_SCREEN_CAPTURE=1`.
-fn desktop_screen_capture_protection_enabled() -> bool {
-    desktop_screen_capture_protection_enabled_for(
-        cfg!(debug_assertions),
-        std::env::var("MONERO_DESKTOP_PROTECT_SCREEN_CAPTURE")
-            .ok()
-            .as_deref(),
-    )
-}
-
-fn desktop_screen_capture_protection_enabled_for(
-    diagnostic_build: bool,
-    debug_override: Option<&str>,
-) -> bool {
-    !diagnostic_build || debug_override == Some("1")
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_ledger_session_ids, desktop_screen_capture_protection_enabled_for,
-        ledger_hardware_session_key, market_backup_url, require_app_unlocked,
-        serialized_transactions_for_account, shared_native_session_for_physical_registration,
-        validate_fast_wallet_removal_snapshot, wallet_file_path_is_available, wallet_session_id,
-        AppProtectionState, WalletSessionRecoveryClaim, WalletSessionRecoveryState,
+        bind_ledger_session_ids, ledger_hardware_session_key, mark_connectivity_checking,
+        require_app_unlocked, serialized_transactions_for_account,
+        shared_native_session_for_physical_registration, validate_fast_wallet_removal_snapshot,
+        wallet_file_path_is_available, wallet_session_id, AppProtectionState,
+        ConnectivityRouteState, WalletSessionRecoveryClaim, WalletSessionRecoveryState,
         WalletSessionState,
     };
     use std::{
@@ -8811,6 +9342,33 @@ mod tests {
         sync::{Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    #[test]
+    fn connectivity_recheck_preserves_last_confirmed_route() {
+        let routes = Mutex::new(HashMap::from([(
+            "mainnet".to_owned(),
+            ConnectivityRouteState {
+                phase: "connected".to_owned(),
+                connected: true,
+                endpoint: "route.example:18091".to_owned(),
+                checked_at_ms: 42,
+                elapsed_ms: Some(7),
+                error: None,
+            },
+        )]));
+
+        mark_connectivity_checking(&routes, "mainnet", "route.example:18091");
+        let retained = routes.lock().unwrap()["mainnet"].clone();
+        assert!(retained.connected);
+        assert_eq!(retained.phase, "connected");
+        assert_eq!(retained.checked_at_ms, 42);
+
+        mark_connectivity_checking(&routes, "mainnet", "replacement.example:18091");
+        let changed = routes.lock().unwrap()["mainnet"].clone();
+        assert!(!changed.connected);
+        assert_eq!(changed.phase, "checking");
+        assert_eq!(changed.endpoint, "replacement.example:18091");
+    }
 
     #[test]
     fn parallel_stale_polls_share_exactly_one_reopen_attempt() {
@@ -9055,34 +9613,6 @@ mod tests {
 
         let unlocked = AppProtectionState(Mutex::new(false));
         assert!(require_app_unlocked(&unlocked).is_ok());
-    }
-
-    #[test]
-    fn screen_capture_policy_separates_diagnostics_from_production() {
-        assert!(!desktop_screen_capture_protection_enabled_for(true, None));
-        assert!(desktop_screen_capture_protection_enabled_for(
-            true,
-            Some("1")
-        ));
-        assert!(desktop_screen_capture_protection_enabled_for(false, None));
-        assert!(desktop_screen_capture_protection_enabled_for(
-            false,
-            Some("0")
-        ));
-    }
-
-    #[test]
-    fn market_backup_only_allows_expected_bitfinex_routes() {
-        assert_eq!(
-            market_backup_url("ticker", None).unwrap(),
-            "https://api-pub.bitfinex.com/v2/ticker/tXMRUSD"
-        );
-        assert_eq!(
-            market_backup_url("chart", Some("7D")).unwrap(),
-            "https://api-pub.bitfinex.com/v2/candles/trade:6h:tXMRUSD/hist?limit=29&sort=-1"
-        );
-        assert!(market_backup_url("chart", Some("other")).is_err());
-        assert!(market_backup_url("other", None).is_err());
     }
 
     #[test]

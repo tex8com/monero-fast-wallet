@@ -6,6 +6,7 @@ import { LanguageProvider } from '../../i18n';
 import { AppSecurityProvider } from '../../services/AppSecurity';
 import { walletService } from '../../services/WalletService';
 import SettingsScreen from '../SettingsScreen';
+import NodeStatusScreen from '../NodeStatusScreen';
 import mobileAppVersion from '../../../../../config/mobile-app-version.json';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
@@ -49,9 +50,11 @@ jest.mock('../../services/WalletDiagnostics', () => ({
   })),
 }));
 
-jest.mock('../../services/DerivationPerformance', () => ({
-  loadDerivationPerformance: jest.fn(async () => ({
+jest.mock('../../services/DerivationPerformance', () => {
+  const cachedResult = {
     schemaVersion: 1,
+    cpuArchitecture: 'arm64-v8a',
+    neonCapable: true,
     cpuWorkers: 9,
     cpu: {
       available: true,
@@ -77,8 +80,17 @@ jest.mock('../../services/DerivationPerformance', () => ({
       elapsedMs: 0,
       error: 'unavailable',
     },
-  })),
-}));
+  };
+  const measuredResult = {
+    ...cachedResult,
+    cpu: { ...cachedResult.cpu, sampleCount: 779620, elapsedMs: 10000 },
+  };
+  return {
+    loadCachedDerivationPerformance: jest.fn(async () => cachedResult),
+    loadDerivationPerformance: jest.fn(async () => cachedResult),
+    measureDerivationPerformance: jest.fn(async () => measuredResult),
+  };
+});
 
 jest.mock('../../services/WalletService', () => ({
   walletService: {
@@ -115,8 +127,17 @@ jest.mock('../../services/WalletState', () => ({
 }));
 
 describe('SettingsScreen', () => {
+  const renderers: ReactTestRenderer.ReactTestRenderer[] = [];
+
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await ReactTestRenderer.act(async () => {
+      renderers.splice(0).forEach(renderer => renderer.unmount());
+    });
+    jest.restoreAllMocks();
   });
 
   function buttonWithText(
@@ -147,18 +168,74 @@ describe('SettingsScreen', () => {
         </LanguageProvider>,
       );
     });
+    renderers.push(renderer!);
     return renderer!;
   }
 
-  it('shows editable Tex8 daemon and gRPC endpoint fields', async () => {
-    const renderer = await renderSettings();
+  async function renderNodeStatus() {
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <LanguageProvider>
+          <NodeStatusScreen navigation={{goBack: jest.fn()}} />
+        </LanguageProvider>,
+      );
+    });
+    renderers.push(renderer!);
+    return renderer!;
+  }
+
+  it('shows separate editable Tor daemon and Clearnet sync fields on Node Status', async () => {
+    const renderer = await renderNodeStatus();
 
     const placeholders = renderer.root
       .findAllByType(TextInput)
       .map(input => input.props.placeholder);
 
-    expect(placeholders).toContain('xmr.tex8.com:18089');
+    expect(placeholders).toContain('node-address.onion:18089');
     expect(placeholders).toContain('xmr.tex8.com:18091');
+  });
+
+  it('shows both Clearnet and both Onion node addresses on Node Status', async () => {
+    const renderer = await renderNodeStatus();
+    const labels = renderer.root
+      .findAllByType(Text)
+      .map(node => node.props.children?.toString());
+
+    expect(labels).toContain('xmr.tex8.com:18091');
+    expect(labels).toContain('199.30.65.42:18091');
+    expect(labels).toContain(
+      'fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion:18089',
+    );
+    expect(labels).toContain(
+      'quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion:18089',
+    );
+  });
+
+  it('selects global Clearnet sync and Tor daemon routes independently', async () => {
+    const renderer = await renderNodeStatus();
+    const nodeChoices = () => renderer.root.findAllByType(TouchableOpacity);
+    const choice = (labelPart: string) => {
+      const result = nodeChoices().find(node =>
+        node.props.accessibilityLabel?.includes(labelPart),
+      );
+      expect(result).toBeDefined();
+      return result!;
+    };
+
+    await ReactTestRenderer.act(async () => {
+      choice('Community Node, Clearnet').props.onPress();
+    });
+
+    expect(
+      choice('Community Node, Clearnet').props.accessibilityState.selected,
+    ).toBe(true);
+    expect(
+      choice('TEX8 Node, Onion').props.accessibilityState.selected,
+    ).toBe(true);
+    expect(
+      choice('Community Node, Onion').props.accessibilityState.selected,
+    ).toBe(false);
   });
 
   it('shows the shared app version in the settings footer', async () => {
@@ -177,6 +254,7 @@ describe('SettingsScreen', () => {
       .findAllByType(Text)
       .map(node => node.props.children?.toString());
     expect(labels).toContain('77,962 derivations/s');
+    expect(labels).toContain('CPU · NEON');
     expect(labels).toContain('Metal');
     expect(labels).toContain('CUDA');
   });

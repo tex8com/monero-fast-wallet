@@ -12,6 +12,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 const REGISTRY_FILE: &str = "mfw-name-registry.json";
 const REGISTRY_VERSION: u8 = 1;
 const PROTOCOL_YEAR_BLOCKS: u64 = 262_800;
+pub const MAX_TERM_YEARS: u32 = 1_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,8 +115,8 @@ pub fn estimated_term_years(record_height: u64, expiry_height: u64) -> Result<u3
     let years = term_blocks.div_ceil(PROTOCOL_YEAR_BLOCKS);
     u32::try_from(years)
         .ok()
-        .filter(|years| (1..=10).contains(years))
-        .ok_or_else(|| "MFW recovery record exceeds the ten-year protocol limit.".to_owned())
+        .filter(|years| (1..=MAX_TERM_YEARS).contains(years))
+        .ok_or_else(|| "MFW recovery record exceeds the 1,000-year protocol limit.".to_owned())
 }
 
 pub fn new_record(
@@ -451,7 +452,7 @@ fn normalize_record(mut record: OwnedNameRecord) -> Result<OwnedNameRecord, Stri
     record.network = validate_network(&record.network)?.to_owned();
     record.address = validate_address(&record.address)?.to_owned();
     if record.term_years == 0
-        || record.term_years > 10
+        || record.term_years > MAX_TERM_YEARS
         || !matches!(
             record.stage.as_str(),
             "commit-pending"
@@ -551,7 +552,8 @@ fn now() -> u64 {
 mod tests {
     use super::{
         apply_broadcast, canonical_name, encode_owner_state, estimated_term_years, export_recovery,
-        identity_id, import_recovery, new_record, reconcile_finalized, OwnerState,
+        identity_id, import_recovery, new_record, reconcile_finalized, OwnerState, MAX_TERM_YEARS,
+        PROTOCOL_YEAR_BLOCKS,
     };
 
     #[test]
@@ -569,8 +571,13 @@ mod tests {
         assert_eq!(estimated_term_years(100, 262_900).unwrap(), 1);
         assert_eq!(estimated_term_years(100, 262_901).unwrap(), 2);
         assert_eq!(estimated_term_years(100, 2_628_100).unwrap(), 10);
+        let maximum_expiry = 100 + PROTOCOL_YEAR_BLOCKS * u64::from(MAX_TERM_YEARS);
+        assert_eq!(
+            estimated_term_years(100, maximum_expiry).unwrap(),
+            MAX_TERM_YEARS,
+        );
         assert!(estimated_term_years(101, 100).is_err());
-        assert!(estimated_term_years(100, 2_628_101).is_err());
+        assert!(estimated_term_years(100, maximum_expiry + 1).is_err());
     }
 
     #[test]

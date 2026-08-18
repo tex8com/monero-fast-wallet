@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useState } from 'react';
+import {torFetch} from '../services/TorHttp';
 
 export type MoneroUpdate = {
   id: string;
@@ -60,7 +61,7 @@ async function fetchUpdates(force = false) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12_000);
   try {
-    const response = await fetch(API_URL, {headers: {Accept: 'application/vnd.github+json'}, signal: controller.signal});
+    const response = await torFetch(API_URL, {headers: {Accept: 'application/vnd.github+json'}, signal: controller.signal, timeoutMs: 12_000});
     if (!response.ok) throw new Error(`Official update feed unavailable (${response.status}).`);
     const items = parseUpdates(await response.json());
     if (items.length === 0) throw new Error('Official update feed did not include releases.');
@@ -77,7 +78,7 @@ export function useMoneroUpdates() {
   const refresh = useCallback((force = false) => {
     setLoading(true);
     setUnavailable(false);
-    void fetchUpdates(force)
+    fetchUpdates(force)
       .then(setItems)
       .catch(() => setUnavailable(true))
       .finally(() => setLoading(false));

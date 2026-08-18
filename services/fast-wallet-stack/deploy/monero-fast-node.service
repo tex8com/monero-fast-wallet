@@ -1,0 +1,38 @@
+[Unit]
+Description=Monero Fast Node (MFN)
+Documentation=https://xmr.tex8.com/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cuprate
+Group=cuprate
+WorkingDirectory=/var/lib/cuprate
+Environment=HOME=/var/lib/cuprate
+ExecStart=/opt/cuprate/tex8-fastwallet-cuprate --config-file /etc/cuprate/cuprated.toml --skip-config-warning
+SyslogIdentifier=monero-fast-node
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=90
+KillSignal=SIGTERM
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cuprate
+ReadOnlyPaths=/etc/cuprate /opt/cuprate
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -4,14 +4,14 @@ use fast_wallet_protocol::{
     WorkerDescriptor, WorkerDescriptorInput, WorkerRequestAuth,
 };
 use fast_wallet_relay::{router as relay_router, AssignmentPermit, RelayApiState, RelayMailbox};
+use fast_wallet_scanner_core::{
+    DetectionStatus, InMemoryWatchStore, MatchedOutput, Network, NotificationSink,
+    NotificationStatus, RegisterWatchRequest, WatchRegistration,
+};
 use fast_wallet_worker::{
     GatewayWakeNotificationSink, HttpRelayClient, OutboundRelayWorker, WorkerWatchAcceptor,
 };
 use notification_gateway::{router as gateway_router, GatewayState};
-use notify_scanner::{
-    DetectionStatus, InMemoryWatchStore, MatchedOutput, Network, NotificationSink,
-    NotificationStatus, RegisterWatchRequest, WatchRegistration,
-};
 use std::{
     fs,
     sync::Arc,

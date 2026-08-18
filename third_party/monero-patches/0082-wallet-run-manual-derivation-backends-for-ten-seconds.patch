@@ -1,0 +1,52 @@
+From 5173665830c45287c23681642d4344fa53a33a4d Mon Sep 17 00:00:00 2001
+From: TEX8 Wallet <engineering@tex8.app>
+Date: Sat, 15 Aug 2026 20:35:00 -0500
+Subject: [PATCH] wallet: run manual derivation backends for ten seconds
+
+The Settings performance testbench is user-triggered and must produce a
+sustained measurement rather than the short automatic-selection probe. Run
+each available implementation sequentially for ten seconds while preserving
+the short, once-per-process automatic backend benchmark used during normal
+wallet scanning.
+---
+ src/crypto/crypto.cpp | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/src/crypto/crypto.cpp b/src/crypto/crypto.cpp
+index 4222d50..d8682ab 100644
+--- a/src/crypto/crypto.cpp
++++ b/src/crypto/crypto.cpp
+@@ -674,10 +674,12 @@ extern "C" const char *monero_fast_derivation_benchmark_json(void)
+   static std::mutex benchmark_mutex;
+   std::lock_guard<std::mutex> lock(benchmark_mutex);
+   thread_local std::string result;
++  constexpr auto measurement_duration = std::chrono::milliseconds(10000);
++  constexpr size_t measurement_maximum_rounds = 1000000;
+ 
+   const size_t cpu_workers = benchmark_cpu_workers();
+   const auto cpu = run_short_derivation_benchmark(
+-    4096, std::chrono::milliseconds(100), 8,
++    4096, measurement_duration, measurement_maximum_rounds,
+     [cpu_workers](uint8_t *results, const uint8_t *scalar,
+       const uint8_t *points, uint8_t *valid, size_t count) {
+       return static_cast<int64_t>(fast_generate_key_derivation_batch_same_scalar(
+@@ -690,7 +692,7 @@ extern "C" const char *monero_fast_derivation_benchmark_json(void)
+   if (verified_metal_available())
+   {
+     metal = run_short_derivation_benchmark(
+-      16384, std::chrono::milliseconds(60), 32,
++      16384, measurement_duration, measurement_maximum_rounds,
+       [](uint8_t *results, const uint8_t *scalar,
+         const uint8_t *points, uint8_t *valid, size_t count) {
+         return fast_metal_generate_key_derivation_batch_same_scalar(
+@@ -709,7 +711,7 @@ extern "C" const char *monero_fast_derivation_benchmark_json(void)
+   if (cuda_backend().available())
+   {
+     cuda = run_short_derivation_benchmark(
+-      16384, std::chrono::milliseconds(60), 32,
++      16384, measurement_duration, measurement_maximum_rounds,
+       [](uint8_t *results, const uint8_t *scalar,
+         const uint8_t *points, uint8_t *valid, size_t count) {
+         return cuda_backend().derive(results, scalar, points, valid, count);
+-- 
+2.50.1

@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Linking, Platform } from 'react-native';
+import { Linking, NativeModules, Platform } from 'react-native';
 import mobileAppVersion from '../../../../../config/mobile-app-version.json';
 import { AppUpdateService } from '../AppUpdateService';
 
@@ -40,9 +40,21 @@ describe('AppUpdateService', () => {
     });
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue('installation-test');
     (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+    NativeModules.EmbeddedTor = {
+      request: jest.fn(async (url: string, method: string, headers: Record<string, string>, body: string | null) => {
+        const result = await globalThis.fetch(url, {method, headers, body: body ?? undefined});
+        const responseBody =
+          typeof (result as any).text === 'function'
+            ? await (result as any).text()
+            : typeof (result as any).json === 'function'
+              ? JSON.stringify(await (result as any).json())
+              : '';
+        return {status: result.status, body: responseBody};
+      }),
+    };
   });
 
-  it('checks the pinned HTTPS manifest and selects a newer Android APK', async () => {
+  it('checks the pinned Onion manifest and selects a newer Android APK', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -55,7 +67,8 @@ describe('AppUpdateService', () => {
     expect(offer?.version).toBe('99.0.0');
     expect(offer?.artifact.url).toBe('https://tex8.com/xmr.apk?v=99.0.0-test');
     const requested = new URL(fetchMock.mock.calls[0][0]);
-    expect(requested.protocol).toBe('https:');
+    expect(requested.protocol).toBe('http:');
+    expect(requested.hostname).toMatch(/^[a-z2-7]{56}\.onion$/u);
     expect(requested.searchParams.get('currentVersion')).toBe(
       mobileAppVersion.versionName,
     );

@@ -55,6 +55,40 @@ describe('private recipient resolution', () => {
     expect(chain.verifyFinalizedRecord).toHaveBeenCalledWith(response);
   });
 
+  it('accepts only the explicit immutable Registry-v1 shape through native verification', async () => {
+    const response = {
+      ...finalName(),
+      ownerPublicKeyHex: '',
+      sequence: 0,
+      signingOwnerPublicKeyHex: '',
+      recordPayloadHex: 'ab'.repeat(90),
+    };
+    const crypto = { verifyRecordAddress: jest.fn(async () => address) };
+    const chain = { verifyFinalizedRecord: jest.fn(async () => undefined) };
+    await expect(
+      resolveMfwNameForPayment(
+        'alice.mfw',
+        'mainnet',
+        { resolve: async () => response },
+        crypto,
+        chain,
+      ),
+    ).resolves.toMatchObject({address});
+    expect(crypto.verifyRecordAddress).toHaveBeenCalledWith(
+      expect.objectContaining({signingOwnerPublicKeyHex: ''}),
+    );
+
+    await expect(
+      resolveMfwNameForPayment(
+        'alice.mfw',
+        'mainnet',
+        { resolve: async () => ({...response, ownerPublicKeyHex: h32('3')}) },
+        crypto,
+        chain,
+      ),
+    ).rejects.toThrow('not safe');
+  });
+
   it('rejects provisional, cross-network and resolver-substituted name data', async () => {
     const crypto = {
       verifyRecordAddress: jest.fn(async () => 'not-an-address'),
