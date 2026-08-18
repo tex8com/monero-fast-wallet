@@ -138,3 +138,32 @@ fast_wallet_protocol_artifact_needs_rebuild() {
 
   return 1
 }
+
+ensure_android_monero_link_root() {
+  local requested_root="$1"
+  local target="$2"
+  local expected_tree="$3"
+  local external_build_root="$4"
+  local manifest="${requested_root}/${target}/link.cmake"
+
+  if [ -f "${manifest}" ] && \
+     grep -Fq "set(MONERO_PATCHED_SOURCE_TREE \"${expected_tree}\")" "${manifest}"; then
+    printf '%s' "${requested_root}"
+    return 0
+  fi
+
+  echo "Preparing the pinned Android Monero core because its link manifest is unavailable." >&2
+  mkdir -p "${external_build_root}"
+  MONERO_ANDROID_EXTERNAL_BUILD_ROOT="${external_build_root}" \
+    MONERO_WALLET_ANDROID_TARGET="${target}" \
+    "${REPO_ROOT}/native/monero-bridge/scripts/build-android-monero-core-external.sh" >&2
+
+  local generated_root="${external_build_root}/android-monero-link-manifests-${expected_tree}"
+  manifest="${generated_root}/${target}/link.cmake"
+  if [ ! -f "${manifest}" ] || \
+     ! grep -Fq "set(MONERO_PATCHED_SOURCE_TREE \"${expected_tree}\")" "${manifest}"; then
+    echo "Pinned Android Monero core did not produce the expected link manifest: ${manifest}" >&2
+    return 1
+  fi
+  printf '%s' "${generated_root}"
+}

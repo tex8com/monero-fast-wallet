@@ -8,10 +8,10 @@ Build the app locally. Never edit mobile source files on a server.
 
 ```bash
 cd wallets/mobile
-npm install
+npm ci
 npm run ios:build-install
-# or, with an Android device/emulator connected:
-npm run android:build-install
+# or, with an unlocked Pixel / Android device connected:
+npm run android:release-install
 ```
 
 For a fast JavaScript development loop, use `npm start` in one terminal and
@@ -206,11 +206,30 @@ wallet-core sync keeps it live. The hosted scanner provides early mempool/block
 notifications; it does not replace local spend-state verification before send.
 
 `android:build` and `android:build-install` default to the `release` variant so
-the APK contains the JavaScript bundle. They expect
-`build/android-monero-link-manifests/android-arm64/link.cmake`; build the
-Android Monero artifacts first if that file is missing. `android:build` only
-builds the APK and works without a connected device. `android:build-install`
-also installs and launches on a connected Android device/emulator.
+the APK contains the JavaScript bundle. If the authenticated Android Monero
+link manifest is missing, the scripts build the pinned core and dependencies on
+the configured external build volume automatically. `android:build` only builds
+the APK and works without a connected device. `android:build-install` also
+installs and launches on a connected Android device/emulator.
+
+### Pixel release APK — one command
+
+Connect and unlock the Pixel with USB debugging enabled, then run from
+`wallets/mobile`:
+
+```bash
+npm run android:release-install
+```
+
+Before the first product release, place the Firebase configuration downloaded
+for exactly `com.tex8.monerowallet` at `android/app/google-services.json`.
+It is a local secret and must never be committed. The command loads the release
+signing credential from the macOS Keychain, builds missing native dependencies
+when necessary, verifies the signed arm64 APK, installs it, and preserves
+existing device data. It checks the Firebase file before costly native work. Set
+`MONERO_WALLET_ANDROID_CLEAR_APP_DATA=1` only for a deliberately disposable
+test installation. Use `npm run android:release` to build the same signed APK
+without requiring a connected device.
 
 For this Mac, the supported full-core command is
 `native/monero-bridge/scripts/build-android-monero-core-external.sh`. It keeps

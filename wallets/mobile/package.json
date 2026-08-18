@@ -5,9 +5,11 @@
   "private": true,
   "packageManager": "npm@11.16.0",
   "scripts": {
-    "android": "bash scripts/android-build-install.sh",
+    "android": "bash scripts/android-release-install.sh",
     "android:build": "bash scripts/android-build.sh",
-    "android:build-install": "bash scripts/android-build-install.sh",
+    "android:build-install": "bash scripts/android-release-install.sh",
+    "android:release": "bash scripts/android-release-build.sh",
+    "android:release-install": "bash scripts/android-release-install.sh",
     "android:diagnostics": "bash scripts/android-diagnostics.sh",
     "android:fast-wallet-trace": "bash scripts/android-fast-wallet-trace.sh",
     "android:logs": "bash scripts/android-logs.sh",

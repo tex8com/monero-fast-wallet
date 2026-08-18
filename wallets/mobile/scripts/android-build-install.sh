@@ -163,15 +163,8 @@ if [ -d "${EXTERNAL_BUILD_ROOT}" ]; then
 fi
 
 if [ "$REQUIRE_MONERO" = "1" ]; then
-  if [ ! -f "${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" ]; then
-    echo "Missing Android Monero link manifest: ${MONERO_LINK_ROOT}/${MONERO_TARGET}/link.cmake" >&2
-    echo "Build Android Monero artifacts first:" >&2
-    echo "  cd ${REPO_ROOT}" >&2
-    echo "  native/monero-bridge/scripts/build-host-protobuf-tools.sh" >&2
-    echo "  TARGETS=${MONERO_TARGET} native/monero-bridge/scripts/build-android-monero-deps.sh" >&2
-    echo "  TARGETS=${MONERO_TARGET} SKIP_FAST_CRYPTO=1 native/monero-bridge/scripts/build-android-monero-wallet-api.sh" >&2
-    exit 1
-  fi
+  MONERO_LINK_ROOT="$(ensure_android_monero_link_root \
+    "${MONERO_LINK_ROOT}" "${MONERO_TARGET}" "${MONERO_COMMON_CORE_TREE}" "${EXTERNAL_BUILD_ROOT}")"
 
   GRADLE_ARGS+=(
     "-PmoneroWalletBridgeWithMonero=true"
