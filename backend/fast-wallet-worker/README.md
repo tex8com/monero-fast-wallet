@@ -22,6 +22,13 @@ To run it, provision its secret files outside the repository and use the
 systemd unit in `../fast-wallet-stack/deploy/fast-wallet-worker.service`.
 Do not put keys, generated state, logs or build output under version control.
 
+For an existing host that used the former configuration, run the versioned
+migration after pulling the release and before restarting services:
+
+```bash
+sudo backend/fast-wallet-stack/deploy/migrate-legacy-wallet-scan-cache.sh
+```
+
 - accepts only the fixed-size `watch-envelope.v1`;
 - decrypts only envelopes bound to its signed descriptor and HPKE key;
 - signs every outbound Relay pull and acknowledges only after durable local
