@@ -18,12 +18,15 @@ worker_env=/etc/monero-fast-wallet/fast-wallet-worker.env
 if grep -q '^\[rpc\.wallet_scan_cache\]$' "$node_config"; then
   temporary="$(mktemp "${node_config}.XXXXXX")"
   trap 'rm -f "$temporary"' EXIT
+  owner="$(stat -c '%u' "$node_config")"
+  group="$(stat -c '%g' "$node_config")"
+  mode="$(stat -c '%a' "$node_config")"
   awk '
     /^\[rpc\.wallet_scan_cache\]$/ { skipping = 1; next }
     skipping && /^\[/ { skipping = 0 }
     !skipping { print }
   ' "$node_config" > "$temporary"
-  install -o root -g root -m 0600 "$temporary" "$node_config"
+  install -o "$owner" -g "$group" -m "$mode" "$temporary" "$node_config"
   rm -f "$temporary"
   trap - EXIT
 fi
