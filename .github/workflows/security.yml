@@ -158,7 +158,7 @@ jobs:
       - name: Exercise disposable live identities and Matrix E2EE
         env:
           MFW_LIVE_COMMUNITY_MATRIX_TEST: RUN_DISPOSABLE_COMMUNITY_MATRIX_E2E
-          MFW_COMMUNITY_CLI_BIN: ${{ github.workspace }}/wallets/cli/target/release/monero-enthusiast-cli
+          MFW_COMMUNITY_CLI_BIN: ${{ github.workspace }}/wallets/cli/target/release/monero-fast-wallet-community
         run: ./wallets/cli/test-live-matrix.sh
 
   cuprate:

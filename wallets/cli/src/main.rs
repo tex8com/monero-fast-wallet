@@ -22,7 +22,7 @@ const DELETE_CONFIRMATION: &str = "DELETE MY COMMUNITY PROFILE";
 
 #[derive(Parser)]
 #[command(
-    name = "monero-enthusiast-cli",
+    name = "monero-fast-wallet-community",
     version,
     about = "Monero Enthusiast V1 automation and acceptance-test client"
 )]
@@ -1188,6 +1188,7 @@ fn matrix_config<'a>(
     validate_origin(homeserver, cli.allow_loopback_http, false)?;
     Ok(MatrixClientConfig {
         homeserver,
+        proxy: None,
         store_path: store,
         store_passphrase: store_key,
         allow_loopback_http_for_tests: cli.allow_loopback_http,
@@ -1274,7 +1275,7 @@ fn http_client() -> Result<Client> {
     Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(20))
-        .user_agent("TEX8-Monero-Enthusiast-CLI/0.1")
+        .user_agent("TEX8-Monero-Fast-Wallet-CLI/0.1")
         .build()
         .map_err(|_| CliError::Message("HTTP client could not be created".to_owned()))
 }

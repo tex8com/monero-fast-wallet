@@ -68,7 +68,7 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # apply the complete series and reach `patched_tree` below.
 previous_patched_tree=88fad90f683f587b7d3cc2d494d3408a780b95c5
 previous_patch_count=83
-patched_tree=2890c6c73272100f878e2e90bc2987f1a99645d1
+patched_tree=9d44cc4f95de03b6b9bfe5111a9e6cada0e79510
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

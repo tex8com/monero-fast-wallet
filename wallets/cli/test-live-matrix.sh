@@ -10,7 +10,7 @@ fi
 cli="${MFW_COMMUNITY_CLI_BIN:-}"
 api_origin="${MFW_COMMUNITY_API_ORIGIN:-https://xmr.tex8.com}"
 if [[ -z "$cli" || ! -x "$cli" ]]; then
-  echo "MFW_COMMUNITY_CLI_BIN must name an executable monero-enthusiast-cli" >&2
+  echo "MFW_COMMUNITY_CLI_BIN must name an executable monero-fast-wallet-community" >&2
   exit 64
 fi
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 69; }

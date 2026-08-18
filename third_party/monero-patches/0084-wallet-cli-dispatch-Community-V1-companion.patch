@@ -117,14 +117,14 @@ index 0000000..9633e9f
 +
 +    const boost::filesystem::path current = executable_path();
 +#if defined(_WIN32)
-+    const char* companion_name = "monero-enthusiast-cli.exe";
++    const char* companion_name = "monero-fast-wallet-community.exe";
 +#else
-+    const char* companion_name = "monero-enthusiast-cli";
++    const char* companion_name = "monero-fast-wallet-community";
 +#endif
 +    const boost::filesystem::path companion = current.parent_path() / companion_name;
 +    if (current.empty() || !boost::filesystem::is_regular_file(companion))
 +    {
-+      std::cerr << "The packaged Monero Enthusiast CLI companion is missing next to this executable.\n";
++      std::cerr << "The packaged Monero Fast Wallet CLI companion is missing next to this executable.\n";
 +      exit_code = 69;
 +      return true;
 +    }
@@ -137,7 +137,7 @@ index 0000000..9633e9f
 +    const int result = run_companion(companion, arguments);
 +    if (result < 0)
 +    {
-+      std::cerr << "Could not start the packaged Monero Enthusiast CLI: "
++      std::cerr << "Could not start the packaged Monero Fast Wallet CLI: "
 +                << std::strerror(errno) << "\n";
 +      exit_code = 69;
 +    }

@@ -114,7 +114,7 @@ impl Harness {
             command.arg("community");
             command
         } else {
-            Command::new(env!("CARGO_BIN_EXE_monero-enthusiast-cli"))
+            Command::new(env!("CARGO_BIN_EXE_monero-fast-wallet-community"))
         }
     }
 

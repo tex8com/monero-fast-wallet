@@ -1,7 +1,7 @@
 //! Native Matrix E2EE boundary for Monero Enthusiast V1.
 
 use matrix_sdk::{
-    config::SyncSettings,
+    config::{RequestConfig, SyncSettings},
     encryption::{recovery::RecoveryState, EncryptionSettings},
     room::MessagesOptions,
     ruma::{
@@ -32,6 +32,7 @@ const SHORT_RATE_LIMIT: usize = 5;
 const LONG_RATE_LIMIT: usize = 60;
 const MAX_PAGE_SIZE: usize = 100;
 const MAX_PAGINATION_TOKEN_BYTES: usize = 4_096;
+const MATRIX_NETWORK_OPERATION_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Error)]
 pub enum MatrixCoreError {
@@ -47,6 +48,8 @@ pub enum MatrixCoreError {
     RateLimited,
     #[error("Matrix operation failed")]
     Matrix,
+    #[error("Matrix operation failed during {0}")]
+    MatrixStage(&'static str),
     #[error("Matrix local state is unavailable")]
     LockUnavailable,
 }
@@ -185,6 +188,18 @@ impl MatrixE2eeClient {
                 .await
                 .map_err(|_| MatrixCoreError::Matrix)?
         };
+        self.require_safe_direct_room(&room).await?;
+        Ok(room.room_id().to_owned())
+    }
+
+    pub async fn join_direct_room(&self, room_id: &str) -> Result<OwnedRoomId> {
+        let room_id = RoomId::parse(room_id)
+            .map_err(|_| MatrixCoreError::InvalidInput("room ID is invalid".to_owned()))?;
+        let room = self
+            .client
+            .join_room_by_id(&room_id)
+            .await
+            .map_err(|_| MatrixCoreError::Matrix)?;
         self.require_safe_direct_room(&room).await?;
         Ok(room.room_id().to_owned())
     }
@@ -1192,7 +1207,9 @@ mod ffi {
             MatrixCoreError::SessionUnavailable => STATUS_SESSION_UNAVAILABLE,
             MatrixCoreError::UnsafeRoom => STATUS_UNSAFE_ROOM,
             MatrixCoreError::RateLimited => STATUS_RATE_LIMITED,
-            MatrixCoreError::Matrix | MatrixCoreError::LockUnavailable => STATUS_OPERATION_FAILED,
+            MatrixCoreError::Matrix
+            | MatrixCoreError::MatrixStage(_)
+            | MatrixCoreError::LockUnavailable => STATUS_OPERATION_FAILED,
         }
     }
 

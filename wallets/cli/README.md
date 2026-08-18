@@ -1,8 +1,8 @@
-# Monero Enthusiast CLI
+# Monero Fast Wallet CLI
 
-`monero-enthusiast-cli` exposes the Monero Enthusiast V1 automation surface as
-JSON commands. Product builds package it beside `monero-fast-wallet-cli`; the
-user-facing entry point is:
+The internal `monero-fast-wallet-community` companion exposes the Community V1
+automation surface as JSON commands. Product builds package it beside
+`monero-fast-wallet-cli`; the user-facing entry point is:
 
 ```sh
 monero-fast-wallet-cli community --state-dir /private/path identity create
@@ -144,7 +144,7 @@ identities. It refuses to run without an exact mutation gate:
 ```sh
 cargo build --locked --release --manifest-path wallets/cli/Cargo.toml
 MFW_LIVE_COMMUNITY_MATRIX_TEST=RUN_DISPOSABLE_COMMUNITY_MATRIX_E2E \
-MFW_COMMUNITY_CLI_BIN="$PWD/wallets/cli/target/release/monero-enthusiast-cli" \
+MFW_COMMUNITY_CLI_BIN="$PWD/wallets/cli/target/release/monero-fast-wallet-community" \
 ./wallets/cli/test-live-matrix.sh
 ```
 

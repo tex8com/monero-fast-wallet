@@ -136,7 +136,7 @@ product_core_library="${product_core_target_dir}/release/${product_core_runtime_
 cargo build --release --locked \
   --manifest-path "${community_cli_root}/Cargo.toml" \
   --target-dir "${community_cli_target_dir}"
-community_cli_binary="${community_cli_target_dir}/release/monero-enthusiast-cli"
+community_cli_binary="${community_cli_target_dir}/release/monero-fast-wallet-community"
 [[ -f "${community_cli_binary}" ]] || {
   echo "Community CLI companion is missing: ${community_cli_binary}" >&2
   exit 65
@@ -295,7 +295,7 @@ mkdir -p "${output_dir}"
 install -m 0755 "${official_build}/bin/monero-wallet-cli" "${output_dir}/monero-wallet-cli-original"
 install -m 0755 "${patched_build}/bin/monero-fast-wallet-cli" "${output_dir}/monero-fast-wallet-cli"
 install -m 0755 "${patched_build}/bin/monero-fast-wallet-cli" "${output_dir}/fast-wallet-cli"
-install -m 0755 "${community_cli_binary}" "${output_dir}/monero-enthusiast-cli"
+install -m 0755 "${community_cli_binary}" "${output_dir}/monero-fast-wallet-community"
 install -m 0755 "${product_core_library}" "${output_dir}/${product_core_runtime_name}"
 if [[ "$(uname -s)" == "Darwin" ]]; then
   zlib_runtime_source="$(find "${zlib_sdk_libdir}" -maxdepth 1 -type f -name 'libz.*.dylib' -print -quit)"
@@ -312,7 +312,7 @@ fi
 official_sha="$(shasum -a 256 "${output_dir}/monero-wallet-cli-original" | awk '{print $1}')"
 product_sha="$(shasum -a 256 "${output_dir}/monero-fast-wallet-cli" | awk '{print $1}')"
 shortcut_sha="$(shasum -a 256 "${output_dir}/fast-wallet-cli" | awk '{print $1}')"
-community_cli_sha="$(shasum -a 256 "${output_dir}/monero-enthusiast-cli" | awk '{print $1}')"
+community_cli_sha="$(shasum -a 256 "${output_dir}/monero-fast-wallet-community" | awk '{print $1}')"
 [[ "${shortcut_sha}" == "${product_sha}" ]] || {
   echo "Short CLI launcher differs from the authenticated product binary" >&2
   exit 65
