@@ -5,7 +5,7 @@
   "surfaces": [
     {
       "id": "mobile-screens",
-      "root": "apps/mobile/src/screens",
+      "root": "wallets/mobile/src/screens",
       "kind": "file",
       "match": "Screen\\.tsx$",
       "entries": [
@@ -31,7 +31,7 @@
     },
     {
       "id": "desktop-renderer",
-      "root": "apps/desktop/src",
+      "root": "wallets/desktop/src",
       "kind": "file",
       "match": "\\.(ts|tsx)$",
       "entries": [
@@ -167,17 +167,17 @@
     {
       "id": "app-protection-and-vault",
       "targetV1": true,
-      "sources": ["packages/wallet-shared", "apps/mobile/src/backend/AppSecurity.tsx", "apps/desktop/src/App.tsx"]
+      "sources": ["packages/wallet-shared", "wallets/mobile/src/backend/AppSecurity.tsx", "wallets/desktop/src/App.tsx"]
     },
     {
       "id": "wallet-lifecycle-and-payments",
       "targetV1": true,
-      "sources": ["native/monero-bridge", "third_party/monero-patches", "apps/mobile/src/backend/WalletService.ts"]
+      "sources": ["native/monero-bridge", "third_party/monero-patches", "wallets/mobile/src/backend/WalletService.ts"]
     },
     {
       "id": "accounts-subaddresses-receive",
       "targetV1": true,
-      "sources": ["native/monero-bridge", "apps/mobile/src/screens/ReceiveScreen.tsx", "apps/mobile/src/screens/WalletsScreen.tsx"]
+      "sources": ["native/monero-bridge", "wallets/mobile/src/screens/ReceiveScreen.tsx", "wallets/mobile/src/screens/WalletsScreen.tsx"]
     },
     {
       "id": "global-sync-and-scanpack",
@@ -197,7 +197,7 @@
     {
       "id": "mfw-names",
       "targetV1": true,
-      "sources": ["native/mfw-recipient-protocol", "apps/mobile/src/screens/MfwNamesScreen.tsx"]
+      "sources": ["native/mfw-recipient-protocol", "wallets/mobile/src/screens/MfwNamesScreen.tsx"]
     },
     {
       "id": "community-profiles-and-publication",
@@ -222,7 +222,7 @@
     {
       "id": "media-news-and-market-data",
       "targetV1": true,
-      "sources": ["backend/monero-news", "apps/mobile/src/screens/HomeScreen.tsx", "apps/desktop/src/marketData.ts"]
+      "sources": ["backend/monero-news", "wallets/mobile/src/screens/HomeScreen.tsx", "wallets/desktop/src/marketData.ts"]
     },
     {
       "id": "advertising",
@@ -232,7 +232,7 @@
     {
       "id": "signed-updates",
       "targetV1": true,
-      "sources": ["packages/app-update-core", "apps/mobile/src/backend/AppUpdateService.ts", "apps/desktop/src/appUpdate.ts"]
+      "sources": ["packages/app-update-core", "wallets/mobile/src/backend/AppUpdateService.ts", "wallets/desktop/src/appUpdate.ts"]
     },
     {
       "id": "hardware-acceleration",
@@ -242,29 +242,29 @@
     {
       "id": "diagnostics-testbench-and-observability",
       "targetV1": true,
-      "sources": ["tools/wallet-testbench", "packages/wallet-shared/src/diagnosticTestbench.ts", "apps/mobile/src/backend/WalletDiagnostics.ts"]
+      "sources": ["tools/wallet-testbench", "packages/wallet-shared/src/diagnosticTestbench.ts", "wallets/mobile/src/backend/WalletDiagnostics.ts"]
     },
     {
       "id": "platform-packaging",
       "targetV1": true,
-      "sources": ["apps/mobile/android", "apps/mobile/ios", "apps/desktop/src-tauri", "native/desktop-bridge"]
+      "sources": ["wallets/mobile/android", "wallets/mobile/ios", "wallets/desktop/src-tauri", "native/desktop-bridge"]
     }
   ],
   "apiContracts": [
-    {"id": "mobile-codegen", "source": "apps/mobile/specs/NativeMoneroWallet.ts"},
-    {"id": "android-native-adapter", "source": "apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt"},
-    {"id": "ios-native-adapter", "source": "apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm"},
-    {"id": "desktop-tauri-adapter", "source": "apps/desktop/src-tauri/src/lib.rs"},
-    {"id": "desktop-native-wallet", "source": "apps/desktop/src-tauri/src/native_wallet.rs"},
+    {"id": "mobile-codegen", "source": "wallets/mobile/specs/NativeMoneroWallet.ts"},
+    {"id": "android-native-adapter", "source": "wallets/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt"},
+    {"id": "ios-native-adapter", "source": "wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm"},
+    {"id": "desktop-tauri-adapter", "source": "wallets/desktop/src-tauri/src/lib.rs"},
+    {"id": "desktop-native-wallet", "source": "wallets/desktop/src-tauri/src/native_wallet.rs"},
     {"id": "shared-wallet-contracts", "source": "packages/wallet-shared/src"},
     {"id": "shared-product-core-abi", "source": "native/product-core/include/mfw_product_core.h"},
     {"id": "monero-wallet-engine", "source": "native/monero-bridge/cpp/WalletEngine.h"}
   ],
   "storageAuthorities": [
-    {"id": "mobile-wallet-registry", "source": "apps/mobile/src/backend/WalletRegistry.ts"},
-    {"id": "mobile-fast-receive-registry", "source": "apps/mobile/src/backend/FastReceiveRegistry.ts"},
-    {"id": "desktop-wallet-registry", "source": "apps/desktop/src-tauri/src/wallet_registry.rs"},
-    {"id": "desktop-secure-store", "source": "apps/desktop/src-tauri/src/secure_store.rs"},
+    {"id": "mobile-wallet-registry", "source": "wallets/mobile/src/backend/WalletRegistry.ts"},
+    {"id": "mobile-fast-receive-registry", "source": "wallets/mobile/src/backend/FastReceiveRegistry.ts"},
+    {"id": "desktop-wallet-registry", "source": "wallets/desktop/src-tauri/src/wallet_registry.rs"},
+    {"id": "desktop-secure-store", "source": "wallets/desktop/src-tauri/src/secure_store.rs"},
     {"id": "community-catalog-store", "source": "native/community-runtime-core"},
     {"id": "community-search-index", "source": "packages/community-search-core"}
   ],

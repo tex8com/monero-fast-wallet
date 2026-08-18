@@ -10,8 +10,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-typescript_compiler="${repo_root}/apps/mobile/node_modules/.bin/tsc"
-typescript_fallback="${repo_root}/apps/desktop/.node_modules-root-owned-backup/typescript/bin/tsc"
+typescript_compiler="${repo_root}/wallets/mobile/node_modules/.bin/tsc"
+typescript_fallback="${repo_root}/wallets/desktop/.node_modules-root-owned-backup/typescript/bin/tsc"
 if [[ -x "${typescript_compiler}" ]]; then
   typescript_command=("${typescript_compiler}")
 elif [[ -f "${typescript_fallback}" ]]; then

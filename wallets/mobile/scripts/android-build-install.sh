@@ -192,7 +192,7 @@ cd "$ANDROID_DIR"
 # resulting APK for 16-KB-page compatibility, and only then install it.
 "${ANDROID_DIR}/gradlew" "${GRADLE_ARGS[@]}"
 APK_PATH="${APP_BUILD_DIR:-${ANDROID_DIR}/app/build}/outputs/apk/${VARIANT}/app-${VARIANT}.apk"
-"${REPO_ROOT}/apps/mobile/scripts/verify-android-16kb-elf.sh" "${APK_PATH}"
+"${REPO_ROOT}/wallets/mobile/scripts/verify-android-16kb-elf.sh" "${APK_PATH}"
 echo "Installing verified ${APP_ID} ${VARIANT} on ${DEVICE}..."
 "$ADB_BIN" -s "$DEVICE" install -r "${APK_PATH}" >/dev/null
 if [ "${CLEAR_APP_DATA}" = "1" ]; then

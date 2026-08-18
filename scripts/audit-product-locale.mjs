@@ -44,8 +44,8 @@ function readObject(source, marker, nestedKey) {
 }
 
 async function readCatalogs(target) {
-  const sourcePath = resolve(root, target === 'mobile' ? 'apps/mobile/src/i18n/translations.ts' : 'apps/desktop/src/i18n.tsx');
-  const generatedPath = resolve(root, target === 'mobile' ? 'apps/mobile/src/i18n/translations.generated.ts' : 'apps/desktop/src/i18n.generated.ts');
+  const sourcePath = resolve(root, target === 'mobile' ? 'wallets/mobile/src/i18n/translations.ts' : 'wallets/desktop/src/i18n.tsx');
+  const generatedPath = resolve(root, target === 'mobile' ? 'wallets/mobile/src/i18n/translations.generated.ts' : 'wallets/desktop/src/i18n.generated.ts');
   const sourceText = await readFile(sourcePath, 'utf8');
   const generatedText = await readFile(generatedPath, 'utf8');
   const english = target === 'mobile'

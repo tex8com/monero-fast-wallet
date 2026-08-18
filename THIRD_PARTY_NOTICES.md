@@ -27,7 +27,7 @@ substitute for the artifact-specific SBOM and complete license report.
 
 The iOS contact-number normalization boundary uses `libPhoneNumber-iOS`, which
 is distributed under the Apache License 2.0. The exact locked version is
-recorded in `apps/mobile/ios/Podfile.lock`; the corresponding Apache-2.0 text is
+recorded in `wallets/mobile/ios/Podfile.lock`; the corresponding Apache-2.0 text is
 included in `LICENSES/Apache-2.0.txt`.
 
 ### tor-android

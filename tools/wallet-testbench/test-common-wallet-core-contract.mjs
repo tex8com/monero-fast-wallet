@@ -26,12 +26,12 @@ test('one authenticated Monero source tree is authoritative for every app', () =
   assert.match(common, /tex8_require_common_core_stamp/);
 
   for (const script of [
-    'apps/desktop/scripts/prepare-macos-monero-core.sh',
-    'apps/desktop/scripts/prepare-linux-monero-core.sh',
-    'apps/mobile/scripts/android-build.sh',
-    'apps/mobile/scripts/android-build-install.sh',
-    'apps/mobile/scripts/ios-build-simulator-core.sh',
-    'apps/mobile/scripts/ios-build-install.sh',
+    'wallets/desktop/scripts/prepare-macos-monero-core.sh',
+    'wallets/desktop/scripts/prepare-linux-monero-core.sh',
+    'wallets/mobile/scripts/android-build.sh',
+    'wallets/mobile/scripts/android-build-install.sh',
+    'wallets/mobile/scripts/ios-build-simulator-core.sh',
+    'wallets/mobile/scripts/ios-build-install.sh',
     'native/monero-bridge/scripts/build-android-monero-core-external.sh',
     'native/monero-bridge/scripts/build-android-monero-wallet-api.sh',
     'native/monero-bridge/scripts/build-ios-monero-wallet-api.sh',
@@ -55,9 +55,9 @@ test('mobile artifacts carry and verify the exact common-Core identity', () => {
     'native/monero-bridge/scripts/generate-ios-monero-link-manifests.sh',
   );
   const androidCmake = read(
-    'apps/mobile/android/app/src/main/cpp/CMakeLists.txt',
+    'wallets/mobile/android/app/src/main/cpp/CMakeLists.txt',
   );
-  const iosBuild = read('apps/mobile/scripts/ios-build-install.sh');
+  const iosBuild = read('wallets/mobile/scripts/ios-build-install.sh');
   const androidExternalBuild = read(
     'native/monero-bridge/scripts/build-android-monero-core-external.sh',
   );
@@ -89,8 +89,8 @@ test('local wallet-api builds use the authenticated Dalek and pinned gRPC toolch
 });
 
 test('desktop refuses arbitrary Unix sources and unversioned Windows DLLs', () => {
-  const build = read('apps/desktop/src-tauri/build.rs');
-  const windows = read('apps/desktop/scripts/tauri-dev-windows.ps1');
+  const build = read('wallets/desktop/src-tauri/build.rs');
+  const windows = read('wallets/desktop/scripts/tauri-dev-windows.ps1');
 
   assert.match(build, /verify_monero_source_tree/);
   assert.match(build, /DESKTOP_WINDOWS_MONERO_CORE_TREE/);
@@ -276,7 +276,7 @@ test('product CLI adopts only an encrypted software view cache through the share
 });
 
 test('macOS filters only Boost 1.69 legacy Clang arguments outside the authenticated Core', () => {
-  const prepareMac = read('apps/desktop/scripts/prepare-macos-monero-core.sh');
+  const prepareMac = read('wallets/desktop/scripts/prepare-macos-monero-core.sh');
   const compilerAdapter = read(
     'native/monero-bridge/scripts/apple-clang-legacy-boost-cxx.sh',
   );

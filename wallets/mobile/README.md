@@ -7,7 +7,7 @@ React Native shell for the Monero Fast Wallet.
 Build the app locally. Never edit mobile source files on a server.
 
 ```bash
-cd apps/mobile
+cd wallets/mobile
 npm install
 npm run ios:build-install
 # or, with an Android device/emulator connected:
@@ -322,14 +322,14 @@ TARGETS=android-arm64 \
 TARGETS=android-arm64 SKIP_FAST_CRYPTO=1 \
   native/monero-bridge/scripts/build-android-monero-wallet-api.sh
 
-cd apps/mobile
+cd wallets/mobile
 npm run android:build
 ```
 
 Build the Android runtime smoke APKs:
 
 ```bash
-cd apps/mobile/android
+cd wallets/mobile/android
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest \
   -PreactNativeArchitectures=arm64-v8a \
   -PmoneroWalletBridgeWithMonero=true \
@@ -340,7 +340,7 @@ cd apps/mobile/android
 Run it on a connected arm64 device/emulator:
 
 ```bash
-cd apps/mobile/android
+cd wallets/mobile/android
 PATH=/opt/homebrew/share/android-commandlinetools/platform-tools:$PATH \
   ./gradlew :app:connectedDebugAndroidTest \
     -PreactNativeArchitectures=arm64-v8a \

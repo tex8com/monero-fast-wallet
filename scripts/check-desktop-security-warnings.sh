@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-lockfile="${repo_root}/apps/desktop/src-tauri/Cargo.lock"
+lockfile="${repo_root}/wallets/desktop/src-tauri/Cargo.lock"
 expires_on="2026-10-24"
 today="${SECURITY_EXCEPTION_DATE_OVERRIDE:-$(date -u +%F)}"
 audit_json="$(mktemp)"

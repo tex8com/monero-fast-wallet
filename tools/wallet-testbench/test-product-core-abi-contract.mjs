@@ -28,12 +28,12 @@ const outputs = [
   'test-vectors/abi-event-v1.json',
 ];
 const generatedMirrors = [
-  ['generated/typescript/mfwProductCoreContract.ts', 'apps/mobile/src/generated/mfwProductCoreContract.ts'],
-  ['generated/typescript/mfwProductCoreContract.ts', 'apps/desktop/src/generated/mfwProductCoreContract.ts'],
-  ['generated/kotlin/MfwProductCoreContract.kt', 'apps/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwProductCoreContract.kt'],
+  ['generated/typescript/mfwProductCoreContract.ts', 'wallets/mobile/src/generated/mfwProductCoreContract.ts'],
+  ['generated/typescript/mfwProductCoreContract.ts', 'wallets/desktop/src/generated/mfwProductCoreContract.ts'],
+  ['generated/kotlin/MfwProductCoreContract.kt', 'wallets/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwProductCoreContract.kt'],
   ['generated/typescript/mfwDiagnosticRegistry.ts', 'packages/wallet-shared/src/generated/mfwDiagnosticRegistry.ts'],
   ['generated/typescript/mfwAppVaultContract.ts', 'packages/wallet-shared/src/generated/mfwAppVaultContract.ts'],
-  ['generated/kotlin/MfwAppVaultContract.kt', 'apps/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwAppVaultContract.kt'],
+  ['generated/kotlin/MfwAppVaultContract.kt', 'wallets/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwAppVaultContract.kt'],
 ];
 const contractBindings = [
   'generated/c/mfw_product_core_contract.h',
@@ -126,8 +126,8 @@ for (const required of [
 ]) assert(sharedDiagnostics.includes(required), `shared diagnostic adapter omits ${required}`);
 
 for (const relative of [
-  'apps/mobile/src/backend/WalletDiagnosticTestbench.ts',
-  'apps/desktop/src/walletDiagnosticTestbench.ts',
+  'wallets/mobile/src/services/WalletDiagnosticTestbench.ts',
+  'wallets/desktop/src/walletDiagnosticTestbench.ts',
 ]) {
   const source = readFileSync(join(repositoryRoot, relative), 'utf8');
   assert(source.includes('validateLegacyQuickDiagnosticProbes'), `${relative} bypasses the shared registry adapter`);
@@ -182,9 +182,9 @@ for (const symbol of [
 ]) assert(header.includes(symbol), `C ABI omits ${symbol}`);
 
 const rendererRoots = [
-  join(repositoryRoot, 'apps', 'mobile', 'src'),
-  join(repositoryRoot, 'apps', 'desktop', 'src'),
-  join(repositoryRoot, 'apps', 'desktop', 'src-tauri', 'src'),
+  join(repositoryRoot, 'wallets', 'mobile', 'src'),
+  join(repositoryRoot, 'wallets', 'desktop', 'src'),
+  join(repositoryRoot, 'wallets', 'desktop', 'src-tauri', 'src'),
 ];
 const riskyImports = /(?:@noble\/curves|tweetnacl|curve25519|monero-javascript|crypto_scalarmult|generate_key_derivation|derive_subaddress_public_key|ge_scalarmult)/i;
 const rg = spawnSync('rg', ['-n', '--hidden', '--glob', '!**/node_modules/**', riskyImports.source, ...rendererRoots], {

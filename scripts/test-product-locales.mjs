@@ -86,8 +86,8 @@ function verifyTranslationQuality(target, language, key, source, value) {
 }
 
 async function catalogs(target) {
-  const sourcePath = resolve(root, target === 'mobile' ? 'apps/mobile/src/i18n/translations.ts' : 'apps/desktop/src/i18n.tsx');
-  const generatedPath = resolve(root, target === 'mobile' ? 'apps/mobile/src/i18n/translations.generated.ts' : 'apps/desktop/src/i18n.generated.ts');
+  const sourcePath = resolve(root, target === 'mobile' ? 'wallets/mobile/src/i18n/translations.ts' : 'wallets/desktop/src/i18n.tsx');
+  const generatedPath = resolve(root, target === 'mobile' ? 'wallets/mobile/src/i18n/translations.generated.ts' : 'wallets/desktop/src/i18n.generated.ts');
   const source = await readFile(sourcePath, 'utf8');
   const generated = await readFile(generatedPath, 'utf8');
   return {
@@ -134,8 +134,8 @@ for (const target of ['mobile', 'desktop']) {
       const runtimePath = resolve(
         root,
         target === 'mobile'
-          ? `apps/mobile/src/i18n/lazy/${locale.code}.generated.ts`
-          : `apps/desktop/src/i18n.lazy/${locale.code}.generated.ts`,
+          ? `wallets/mobile/src/i18n/lazy/${locale.code}.generated.ts`
+          : `wallets/desktop/src/i18n.lazy/${locale.code}.generated.ts`,
       );
       const runtimeSource = await readFile(runtimePath, 'utf8');
       const runtimeCatalog = readObject(runtimeSource, 'const createCatalog =');
@@ -168,7 +168,7 @@ test('mobile native resources contain every product language', async () => {
       : locale.code === 'pt-BR' ? '-pt-rBR'
         : locale.code === 'zh-CN' ? '-zh-rCN'
           : locale.code === 'zh-TW' ? '-zh-rTW' : `-${locale.code}`;
-    const xml = await readFile(resolve(root, `apps/mobile/android/app/src/main/res/values${qualifier}/strings.xml`), 'utf8');
+    const xml = await readFile(resolve(root, `wallets/mobile/android/app/src/main/res/values${qualifier}/strings.xml`), 'utf8');
     for (const [name, catalogKey] of Object.entries(androidResources)) {
       const match = xml.match(new RegExp(`<string name="${name}">([^<]+)</string>`));
       assert.ok(match, `Android ${locale.code} misses ${name}`);
@@ -177,7 +177,7 @@ test('mobile native resources contain every product language', async () => {
     }
   }
 
-  const apple = JSON.parse(await readFile(resolve(root, 'apps/mobile/ios/MoneroWallet/InfoPlist.xcstrings'), 'utf8'));
+  const apple = JSON.parse(await readFile(resolve(root, 'wallets/mobile/ios/MoneroWallet/InfoPlist.xcstrings'), 'utf8'));
   const appleKeys = {
     NSLocationWhenInUseUsageDescription: 'native.permission.location',
     NSBluetoothAlwaysUsageDescription: 'native.permission.bluetooth',

@@ -4,7 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 protocol_dir="$repo_root/native/mfw-recipient-protocol"
 cuprate_dir="$repo_root/node/mfn-monero-fast-node"
-mobile_dir="$repo_root/apps/mobile"
+mobile_dir="$repo_root/wallets/mobile"
 result_dir="${MFW_SECURITY_RESULT_DIR:-$repo_root/test-results/mfw-recipient-security}"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)"
 run_dir="$result_dir/$run_id"

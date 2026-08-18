@@ -37,7 +37,7 @@ const config = {
     },
     // Shared monorepo sources live above the React Native app. Without an
     // explicit app dependency root Metro walks upward from those files and
-    // never reaches apps/mobile/node_modules.
+    // never reaches wallets/mobile/node_modules.
     nodeModulesPaths: [appNodeModules],
     sourceExts: [...sourceExts, "svg"],
   },

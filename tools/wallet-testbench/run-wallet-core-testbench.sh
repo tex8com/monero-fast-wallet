@@ -206,10 +206,10 @@ gate_cuprate_backend_compatibility() {
 }
 
 gate_mobile_unit_tests() {
-  if [[ ! -d "${repo_root}/apps/mobile/node_modules" ]]; then
+  if [[ ! -d "${repo_root}/wallets/mobile/node_modules" ]]; then
     return 2
   fi
-  (cd "${repo_root}/apps/mobile" && npm test -- --runInBand)
+  (cd "${repo_root}/wallets/mobile" && npm test -- --runInBand)
 }
 
 gate_product_cli_bootstrap_contract() {
@@ -588,7 +588,7 @@ gate_android_runtime() {
         -f "/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests/android-arm64/link.cmake" ]]; then
     link_root="/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests"
   fi
-  (cd "${repo_root}/apps/mobile/android" &&
+  (cd "${repo_root}/wallets/mobile/android" &&
     ./gradlew :app:connectedDebugAndroidTest \
       -PreactNativeArchitectures=arm64-v8a \
       -PmoneroWalletBridgeWithMonero=true \
@@ -600,7 +600,7 @@ gate_ios_runtime() {
   if [[ "${TESTBENCH_IOS_SIMULATOR:-0}" != "1" ]]; then
     return 2
   fi
-  (cd "${repo_root}/apps/mobile" && npm run ios:diagnostics)
+  (cd "${repo_root}/wallets/mobile" && npm run ios:diagnostics)
 }
 
 handle_gate_result() {

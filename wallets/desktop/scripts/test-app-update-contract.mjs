@@ -11,10 +11,10 @@ const read = relative =>
   fs.readFileSync(path.join(repositoryRoot, relative), 'utf8');
 
 test('desktop uses the shared update lifecycle and official Tauri verifier', () => {
-  const adapter = read('apps/desktop/src/appUpdate.ts');
-  const host = read('apps/desktop/src-tauri/src/lib.rs');
+  const adapter = read('wallets/desktop/src/appUpdate.ts');
+  const host = read('wallets/desktop/src-tauri/src/lib.rs');
   const capabilities = read(
-    'apps/desktop/src-tauri/capabilities/main.json',
+    'wallets/desktop/src-tauri/capabilities/main.json',
   );
   assert.match(adapter, /packages\/app-update-core\/src\/index/);
   assert.match(adapter, /@tauri-apps\/plugin-updater/);
@@ -29,7 +29,7 @@ test('desktop uses the shared update lifecycle and official Tauri verifier', () 
 test('desktop updater cannot be enabled accidentally without release keys', () => {
   const config = JSON.parse(read('config/app-update.json'));
   const releaseTemplate = JSON.parse(
-    read('apps/desktop/src-tauri/tauri.updater.example.conf.json'),
+    read('wallets/desktop/src-tauri/tauri.updater.example.conf.json'),
   );
   assert.equal(config.desktop.enabled, false);
   assert.equal(releaseTemplate.bundle.createUpdaterArtifacts, true);

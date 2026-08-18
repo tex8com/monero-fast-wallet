@@ -12,7 +12,7 @@ runner="${bridge_build_dir}/monero_wallet_bridge_smoke"
 # The benchmark is a product-Core measurement, not a neighbouring-checkout
 # experiment. Build and authenticate exactly the same common Core selected by
 # every app before compiling the runner.
-source "${repo_root}/apps/desktop/scripts/prepare-macos-monero-core.sh"
+source "${repo_root}/wallets/desktop/scripts/prepare-macos-monero-core.sh"
 export MONERO_BUILD_DIR="${MONERO_DESKTOP_BUILD_DIR}"
 tex8_require_common_core_stamp "${MONERO_BUILD_DIR}/.tex8-monero-core-tree"
 export BRIDGE_BUILD_DIR="${bridge_build_dir}"

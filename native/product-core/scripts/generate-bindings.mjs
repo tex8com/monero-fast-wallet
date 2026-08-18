@@ -522,25 +522,25 @@ write('generated/kotlin/MfwWalletLifecycleContract.kt', walletLifecycleKotlinLin
 write('generated/swift/MfwProductCoreContract.swift', swiftLines.join('\n'));
 write('generated/swift/MfwAppVaultContract.swift', appVaultSwiftLines.join('\n'));
 write('generated/swift/MfwWalletLifecycleContract.swift', walletLifecycleSwiftLines.join('\n'));
-write('../../apps/mobile/src/generated/mfwProductCoreContract.ts', tsLines.join('\n'));
-write('../../apps/desktop/src/generated/mfwProductCoreContract.ts', tsLines.join('\n'));
-write('../../apps/mobile/src/generated/mfwAppVaultContract.ts', appVaultTsLines.join('\n'));
-write('../../apps/desktop/src/generated/mfwAppVaultContract.ts', appVaultTsLines.join('\n'));
-write('../../apps/mobile/src/generated/mfwWalletLifecycleContract.ts', walletLifecycleTsLines.join('\n'));
-write('../../apps/desktop/src/generated/mfwWalletLifecycleContract.ts', walletLifecycleTsLines.join('\n'));
+write('../../wallets/mobile/src/generated/mfwProductCoreContract.ts', tsLines.join('\n'));
+write('../../wallets/desktop/src/generated/mfwProductCoreContract.ts', tsLines.join('\n'));
+write('../../wallets/mobile/src/generated/mfwAppVaultContract.ts', appVaultTsLines.join('\n'));
+write('../../wallets/desktop/src/generated/mfwAppVaultContract.ts', appVaultTsLines.join('\n'));
+write('../../wallets/mobile/src/generated/mfwWalletLifecycleContract.ts', walletLifecycleTsLines.join('\n'));
+write('../../wallets/desktop/src/generated/mfwWalletLifecycleContract.ts', walletLifecycleTsLines.join('\n'));
 write('../../packages/wallet-shared/src/generated/mfwDiagnosticRegistry.ts', diagnosticRegistryTsLines.join('\n'));
 write('../../packages/wallet-shared/src/generated/mfwAppVaultContract.ts', appVaultTsLines.join('\n'));
 write('../../packages/wallet-shared/src/generated/mfwWalletLifecycleContract.ts', walletLifecycleTsLines.join('\n'));
 write(
-  '../../apps/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwProductCoreContract.kt',
+  '../../wallets/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwProductCoreContract.kt',
   kotlinLines.join('\n'),
 );
 write(
-  '../../apps/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwAppVaultContract.kt',
+  '../../wallets/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwAppVaultContract.kt',
   appVaultKotlinLines.join('\n'),
 );
 write(
-  '../../apps/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwWalletLifecycleContract.kt',
+  '../../wallets/mobile/android/app/src/main/java/com/monerowallet/productcore/MfwWalletLifecycleContract.kt',
   walletLifecycleKotlinLines.join('\n'),
 );
 write('test-vectors/abi-event-v1.json', JSON.stringify(vector, null, 2));

@@ -12,7 +12,7 @@ The Monero process resolves the companion only beside its own executable. It
 never searches `PATH`. The standalone binary is useful for development:
 
 ```sh
-cargo run --locked --manifest-path tools/community-cli/Cargo.toml -- \
+cargo run --locked --manifest-path wallets/cli/Cargo.toml -- \
   --state-dir /private/path identity create
 ```
 
@@ -80,7 +80,7 @@ to the Community service.
 Run the complete local acceptance flow:
 
 ```sh
-cargo test --locked --manifest-path tools/community-cli/Cargo.toml \
+cargo test --locked --manifest-path wallets/cli/Cargo.toml \
   --test full_testbench -- --nocapture
 ```
 
@@ -104,7 +104,7 @@ product executable:
 
 ```sh
 MFW_COMMUNITY_CLI_LAUNCHER=/path/to/monero-fast-wallet-cli \
-cargo test --locked --manifest-path tools/community-cli/Cargo.toml \
+cargo test --locked --manifest-path wallets/cli/Cargo.toml \
   --test full_testbench -- --nocapture
 ```
 
@@ -121,10 +121,10 @@ a decrypted message and recovery setup, then logs out and deletes both
 identities. It refuses to run without an exact mutation gate:
 
 ```sh
-cargo build --locked --release --manifest-path tools/community-cli/Cargo.toml
+cargo build --locked --release --manifest-path wallets/cli/Cargo.toml
 MFW_LIVE_COMMUNITY_MATRIX_TEST=RUN_DISPOSABLE_COMMUNITY_MATRIX_E2E \
-MFW_COMMUNITY_CLI_BIN="$PWD/tools/community-cli/target/release/monero-enthusiast-cli" \
-./tools/community-cli/test-live-matrix.sh
+MFW_COMMUNITY_CLI_BIN="$PWD/wallets/cli/target/release/monero-enthusiast-cli" \
+./wallets/cli/test-live-matrix.sh
 ```
 
 GitHub Actions exposes the same gate only as the manually selected

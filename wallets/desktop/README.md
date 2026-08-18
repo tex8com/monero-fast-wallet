@@ -6,7 +6,7 @@ not edit it on a server.
 ## Quick start (macOS)
 
 ```bash
-cd apps/desktop
+cd wallets/desktop
 npm install
 npm run dev:wallet
 ```

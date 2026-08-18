@@ -15,8 +15,8 @@ function cargoLicense(path) {
 test('root multi-license grant includes every complete standard text', () => {
   const license = read('LICENSE');
   const map = read('LICENSES/README.md');
-  assert.match(license, /apps\/` and `packages\/`: Mozilla Public License 2\.0/);
-  assert.match(license, /services\/`: GNU Affero General Public License version 3 only/);
+  assert.match(license, /wallets\/` and `packages\/`: Mozilla Public License 2\.0/);
+  assert.match(license, /backend\/`: GNU Affero General Public License version 3 only/);
   assert.match(license, /Apache-2\.0 OR MIT/);
   assert.match(map, /upstream Monero or Cuprate/);
 
@@ -38,7 +38,7 @@ test('root multi-license grant includes every complete standard text', () => {
 });
 
 test('every project-authored hosted service is AGPL-3.0-only', () => {
-  const services = readdirSync(resolve(root, 'services'), { withFileTypes: true })
+  const services = readdirSync(resolve(root, 'backend'), { withFileTypes: true })
     .filter(entry => entry.isDirectory())
     .map(entry => `backend/${entry.name}/Cargo.toml`)
     .filter(path => existsSync(resolve(root, path)));
@@ -56,9 +56,9 @@ test('project protocol crates and user apps declare their intended grants', () =
   ]) {
     assert.equal(cargoLicense(manifest), 'MIT OR Apache-2.0', manifest);
   }
-  assert.equal(cargoLicense('apps/desktop/src-tauri/Cargo.toml'), 'MPL-2.0');
-  assert.equal(JSON.parse(read('apps/mobile/package.json')).license, 'MPL-2.0');
-  assert.equal(JSON.parse(read('apps/desktop/package.json')).license, 'MPL-2.0');
+  assert.equal(cargoLicense('wallets/desktop/src-tauri/Cargo.toml'), 'MPL-2.0');
+  assert.equal(JSON.parse(read('wallets/mobile/package.json')).license, 'MPL-2.0');
+  assert.equal(JSON.parse(read('wallets/desktop/package.json')).license, 'MPL-2.0');
 });
 
 test('upstream license boundaries remain present and explicit', () => {

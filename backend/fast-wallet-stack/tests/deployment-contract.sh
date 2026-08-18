@@ -102,5 +102,5 @@ grep -q 'event=worker-pull.rejected' \
 grep -q 'event=relay-http.rejected' \
   "$repo_root/backend/fast-wallet-worker/src/lib.rs"
 grep -q '"httpStatus" to fastWalletHttpStatus(error)' \
-  "$repo_root/apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt"
+  "$repo_root/wallets/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt"
 echo 'Fast Wallet co-located deployment contract passed.'

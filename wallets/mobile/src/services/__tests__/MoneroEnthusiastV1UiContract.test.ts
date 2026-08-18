@@ -7,12 +7,12 @@ const read = (path: string) =>
 
 describe('Monero Enthusiast V1 app boundary', () => {
   it('uses a separate discoverable route and never imports the legacy chat client', () => {
-    const navigation = read('apps/mobile/src/navigation/TabNavigator.tsx');
-    const menu = read('apps/mobile/src/screens/MenuScreen.tsx');
-    const tabs = read('apps/mobile/src/components/CustomTabBar.tsx');
-    const screen = read('apps/mobile/src/screens/MoneroEnthusiastScreen.tsx');
+    const navigation = read('wallets/mobile/src/navigation/TabNavigator.tsx');
+    const menu = read('wallets/mobile/src/screens/MenuScreen.tsx');
+    const tabs = read('wallets/mobile/src/components/CustomTabBar.tsx');
+    const screen = read('wallets/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const service = read(
-      'apps/mobile/src/backend/MoneroEnthusiastV1Service.ts',
+      'wallets/mobile/src/backend/MoneroEnthusiastV1Service.ts',
     );
 
     expect(navigation).toContain('name="MoneroEnthusiast"');
@@ -36,23 +36,23 @@ describe('Monero Enthusiast V1 app boundary', () => {
 
   it('fails closed until the verified native packages are present', () => {
     const android = read(
-      'apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
+      'wallets/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
     );
     const ios = read(
-      'apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm',
+      'wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm',
     );
     const iosController = read(
-      'apps/mobile/ios/MoneroWallet/NativeMoneroWallet/MoneroEnthusiastV1Controller.inc',
+      'wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/MoneroEnthusiastV1Controller.inc',
     );
-    const androidBuild = read('apps/mobile/android/app/build.gradle');
+    const androidBuild = read('wallets/mobile/android/app/build.gradle');
     const androidCmake = read(
-      'apps/mobile/android/app/src/main/cpp/CMakeLists.txt',
+      'wallets/mobile/android/app/src/main/cpp/CMakeLists.txt',
     );
     const androidJni = read(
-      'apps/mobile/android/app/src/main/cpp/NativeMoneroWalletJni.cpp',
+      'wallets/mobile/android/app/src/main/cpp/NativeMoneroWalletJni.cpp',
     );
     const iosProject = read(
-      'apps/mobile/ios/MoneroWallet.xcodeproj/project.pbxproj',
+      'wallets/mobile/ios/MoneroWallet.xcodeproj/project.pbxproj',
     );
     const manifest = JSON.parse(read('config/v1-release-features.json')) as {
       parameters: { moneroEnthusiastV1: unknown };
@@ -88,15 +88,15 @@ describe('Monero Enthusiast V1 app boundary', () => {
   it('keeps entered-query caching encrypted native bounded and user-clearable', () => {
     const core = read('packages/community-search-core/src/local_query.rs');
     const runtime = read('native/community-runtime-core/src/lib.rs');
-    const screen = read('apps/mobile/src/screens/MoneroEnthusiastScreen.tsx');
+    const screen = read('wallets/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const service = read(
-      'apps/mobile/src/backend/MoneroEnthusiastV1Service.ts',
+      'wallets/mobile/src/backend/MoneroEnthusiastV1Service.ts',
     );
     const android = read(
-      'apps/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
+      'wallets/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
     );
     const ios = read(
-      'apps/mobile/ios/MoneroWallet/NativeMoneroWallet/MoneroEnthusiastV1Controller.inc',
+      'wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/MoneroEnthusiastV1Controller.inc',
     );
 
     expect(core).toContain('DEFAULT_LOCAL_QUERY_CACHE_CAPACITY: usize = 512');
@@ -123,15 +123,15 @@ describe('Monero Enthusiast V1 app boundary', () => {
   it('learns from bounded UI events only inside encrypted native storage', () => {
     const runtime = read('native/community-runtime-core/src/lib.rs');
     const core = read('packages/community-search-core/src/store.rs');
-    const screen = read('apps/mobile/src/screens/MoneroEnthusiastScreen.tsx');
+    const screen = read('wallets/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const service = read(
-      'apps/mobile/src/backend/MoneroEnthusiastV1Service.ts',
+      'wallets/mobile/src/backend/MoneroEnthusiastV1Service.ts',
     );
     const android = read(
-      'apps/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
+      'wallets/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
     );
     const ios = read(
-      'apps/mobile/ios/MoneroWallet/NativeMoneroWallet/MoneroEnthusiastV1Controller.inc',
+      'wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/MoneroEnthusiastV1Controller.inc',
     );
 
     expect(runtime).toContain('search_personalized');
@@ -149,16 +149,16 @@ describe('Monero Enthusiast V1 app boundary', () => {
 
   it('shares completed search terms by default with visible Welcome and Settings controls', () => {
     const contribution = read(
-      'apps/mobile/src/backend/CommunityQueryContribution.ts',
+      'wallets/mobile/src/backend/CommunityQueryContribution.ts',
     );
-    const screen = read('apps/mobile/src/screens/MoneroEnthusiastScreen.tsx');
-    const welcome = read('apps/mobile/src/screens/WelcomeScreen.tsx');
-    const settings = read('apps/mobile/src/screens/SettingsScreen.tsx');
+    const screen = read('wallets/mobile/src/screens/MoneroEnthusiastScreen.tsx');
+    const welcome = read('wallets/mobile/src/screens/WelcomeScreen.tsx');
+    const settings = read('wallets/mobile/src/screens/SettingsScreen.tsx');
     const android = read(
-      'apps/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
+      'wallets/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
     );
     const ios = read(
-      'apps/mobile/ios/MoneroWallet/NativeMoneroWallet/MoneroEnthusiastV1Controller.inc',
+      'wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/MoneroEnthusiastV1Controller.inc',
     );
 
     expect(contribution).toContain('enabled: true');

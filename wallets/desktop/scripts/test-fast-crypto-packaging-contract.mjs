@@ -46,12 +46,12 @@ const fastWalletProtocolCargo = read(repoRoot, 'native', 'fast-wallet-protocol',
 const desktopBridge = read(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopWalletCore.cpp');
 const tauriHost = read(desktopRoot, 'src-tauri', 'src', 'lib.rs');
 const desktopUi = read(desktopRoot, 'src', 'App.tsx');
-const mobileSpec = read(repoRoot, 'apps', 'mobile', 'specs', 'NativeMoneroWallet.ts');
-const mobilePerformance = read(repoRoot, 'apps', 'mobile', 'src', 'services', 'DerivationPerformance.ts');
-const mobileSettings = read(repoRoot, 'apps', 'mobile', 'src', 'screens', 'SettingsScreen.tsx');
+const mobileSpec = read(repoRoot, 'wallets', 'mobile', 'specs', 'NativeMoneroWallet.ts');
+const mobilePerformance = read(repoRoot, 'wallets', 'mobile', 'src', 'services', 'DerivationPerformance.ts');
+const mobileSettings = read(repoRoot, 'wallets', 'mobile', 'src', 'screens', 'SettingsScreen.tsx');
 const mobileAndroidModule = read(
   repoRoot,
-  'apps',
+  'wallets',
   'mobile',
   'android',
   'app',

@@ -21,7 +21,7 @@ describe('bounded public BlockStream spool', () => {
 
   test('Android uses no-backup private storage with a hard free-space reserve', () => {
     const application = read(
-      'apps/mobile/android/app/src/main/java/com/monerowallet/MainApplication.kt',
+      'wallets/mobile/android/app/src/main/java/com/monerowallet/MainApplication.kt',
     );
     expect(application).toContain('File(noBackupFilesDir, "public-block-spool")');
     expect(application).toContain('SPOOL_MAX_BYTES = 8L * GIB');
@@ -35,10 +35,10 @@ describe('bounded public BlockStream spool', () => {
 
   test('Android keeps active data sync alive without bypassing app lock', () => {
     const manifest = read(
-      'apps/mobile/android/app/src/main/AndroidManifest.xml',
+      'wallets/mobile/android/app/src/main/AndroidManifest.xml',
     );
     const service = read(
-      'apps/mobile/android/app/src/main/java/com/monerowallet/WalletSyncForegroundService.kt',
+      'wallets/mobile/android/app/src/main/java/com/monerowallet/WalletSyncForegroundService.kt',
     );
     expect(manifest).toContain('android.permission.FOREGROUND_SERVICE_DATA_SYNC');
     expect(manifest).toContain('android:foregroundServiceType="dataSync"');
@@ -50,7 +50,7 @@ describe('bounded public BlockStream spool', () => {
 
   test('iOS and desktop configure the same bounded common-Core feature', () => {
     const ios = read(
-      'apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm',
+      'wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm',
     );
     const desktop = read(
       'native/desktop-bridge/cpp/DesktopWalletCore.cpp',

@@ -5,7 +5,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
 source_file="${repo_root}/native/monero-bridge/proof/fast_crypto_product_benchmark.cpp"
-library="${WALLET_FAST_CRYPTO_PRODUCT_LIBRARY:-${repo_root}/apps/desktop/native-libs/libmonero_fast_crypto.dylib}"
+library="${WALLET_FAST_CRYPTO_PRODUCT_LIBRARY:-${repo_root}/wallets/desktop/native-libs/libmonero_fast_crypto.dylib}"
 vector_file="${WALLET_FAST_CRYPTO_PRODUCT_VECTOR_FILE:-}"
 results_root="${WALLET_FAST_CRYPTO_PRODUCT_RESULTS_DIR:-${repo_root}/build/wallet-fast-crypto-product-benchmark}"
 run_id="${WALLET_FAST_CRYPTO_PRODUCT_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$(hostname -s)}"

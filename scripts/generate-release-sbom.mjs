@@ -19,7 +19,7 @@ const created = new Date(
 ).toISOString();
 
 const cargoManifests = [
-  'apps/desktop/src-tauri/Cargo.toml',
+  'wallets/desktop/src-tauri/Cargo.toml',
   'backend/enthusiast-discovery/Cargo.toml',
   'backend/fast-wallet-relay/Cargo.toml',
   'backend/fast-wallet-worker/Cargo.toml',
@@ -66,8 +66,8 @@ for (const manifest of cargoManifests) {
 }
 
 for (const lockPath of [
-  'apps/mobile/package-lock.json',
-  'apps/desktop/package-lock.json',
+  'wallets/mobile/package-lock.json',
+  'wallets/desktop/package-lock.json',
 ]) {
   const lock = JSON.parse(readFileSync(resolve(root, lockPath), 'utf8'));
   for (const [path, pkg] of Object.entries(lock.packages ?? {})) {
@@ -92,7 +92,7 @@ for (const lockPath of [
 }
 
 for (const pod of cocoaPodsFromLock(
-  readFileSync(resolve(root, 'apps/mobile/ios/Podfile.lock'), 'utf8'),
+  readFileSync(resolve(root, 'wallets/mobile/ios/Podfile.lock'), 'utf8'),
 )) {
   const key = `cocoapods:${pod.name}@${pod.version}`;
   packages.set(key, {
@@ -152,7 +152,7 @@ function cocoaPodsFromLock(lock) {
   const podsStart = lock.indexOf('PODS:\n');
   const dependenciesStart = lock.indexOf('\nDEPENDENCIES:\n');
   if (podsStart !== 0 || dependenciesStart < 0) {
-    throw new Error('apps/mobile/ios/Podfile.lock has no bounded PODS section');
+    throw new Error('wallets/mobile/ios/Podfile.lock has no bounded PODS section');
   }
 
   const pods = [];
@@ -170,7 +170,7 @@ function cocoaPodsFromLock(lock) {
     pods.push({ name: match[1], version: match[2] });
   }
   if (pods.length === 0) {
-    throw new Error('apps/mobile/ios/Podfile.lock has no locked CocoaPods');
+    throw new Error('wallets/mobile/ios/Podfile.lock has no locked CocoaPods');
   }
   return pods;
 }

@@ -279,12 +279,12 @@ async function writeMobileNativeLocales(catalogs) {
     if (!catalog) throw new Error(`mobile native locales: missing ${locale.code}`);
     const androidLocale = locale.code === "pt-BR" ? "pt-rBR" : locale.code === "zh-CN" ? "zh-rCN" : locale.code === "zh-TW" ? "zh-rTW" : locale.code;
     const android = `<resources>\n    <string name="app_name">Monero Fast Wallet</string>\n${Object.entries(androidKeys).map(([key, name]) => `    <string name="${name}">${escapeAndroidXml(catalog[key])}</string>`).join("\n")}\n</resources>\n`;
-    const androidDirectory = resolve(root, "apps/mobile/android/app/src/main/res", locale.code === "en" ? "values" : `values-${androidLocale}`);
+    const androidDirectory = resolve(root, "wallets/mobile/android/app/src/main/res", locale.code === "en" ? "values" : `values-${androidLocale}`);
     await mkdir(androidDirectory, { recursive: true });
     await writeFile(resolve(androidDirectory, "strings.xml"), android);
   }
   await writeFile(
-    resolve(root, "apps/mobile/ios/MoneroWallet/InfoPlist.xcstrings"),
+    resolve(root, "wallets/mobile/ios/MoneroWallet/InfoPlist.xcstrings"),
     `${JSON.stringify({ sourceLanguage: "en", strings: appleCatalog, version: "1.0" }, null, 2)}\n`,
   );
 }
@@ -297,11 +297,11 @@ async function writeGenerated(path, content) {
 
 async function writeLazyRuntimeCatalogs(target, source, generated) {
   const directory = target === "mobile"
-    ? resolve(root, "apps/mobile/src/i18n/lazy")
-    : resolve(root, "apps/desktop/src/i18n.lazy");
+    ? resolve(root, "wallets/mobile/src/i18n/lazy")
+    : resolve(root, "wallets/desktop/src/i18n.lazy");
   const loaderPath = target === "mobile"
-    ? resolve(root, "apps/mobile/src/i18n/lazy.generated.ts")
-    : resolve(root, "apps/desktop/src/i18n.lazy.generated.ts");
+    ? resolve(root, "wallets/mobile/src/i18n/lazy.generated.ts")
+    : resolve(root, "wallets/desktop/src/i18n.lazy.generated.ts");
   const importPrefix = target === "mobile" ? "./lazy" : "./i18n.lazy";
   await mkdir(directory, { recursive: true });
 
@@ -330,8 +330,8 @@ const metadata = Object.fromEntries(localeConfig.map(({ code, tag, route, native
 
 async function sourceCatalog(target) {
   const sourcePath = target === "mobile"
-    ? resolve(root, "apps/mobile/src/i18n/translations.ts")
-    : resolve(root, "apps/desktop/src/i18n.tsx");
+    ? resolve(root, "wallets/mobile/src/i18n/translations.ts")
+    : resolve(root, "wallets/desktop/src/i18n.tsx");
   const source = await readFile(sourcePath, "utf8");
   const english = target === "mobile"
     ? readObject(source, "const en =")
@@ -401,8 +401,8 @@ if (importOutputDirectory) {
     const imported = JSON.parse(await readFile(resolve(inputDirectory, `${target}.json`), "utf8"));
     validateImportedCatalog(target, source, imported);
     const path = target === "mobile"
-      ? resolve(root, "apps/mobile/src/i18n/translations.generated.ts")
-      : resolve(root, "apps/desktop/src/i18n.generated.ts");
+      ? resolve(root, "wallets/mobile/src/i18n/translations.generated.ts")
+      : resolve(root, "wallets/desktop/src/i18n.generated.ts");
     const exportName = target === "mobile" ? "generatedTranslations" : "generatedMessages";
     await writeGenerated(path, `${typescriptExport(exportName, imported)}\n${typescriptExport("generatedLocaleMetadata", metadata)}`);
     await writeLazyRuntimeCatalogs(target, source, imported);
@@ -410,7 +410,7 @@ if (importOutputDirectory) {
   }
   if (targets.has("mobile")) {
     const mobileSource = await sourceCatalog("mobile");
-    const sourceText = await readFile(resolve(root, "apps/mobile/src/i18n/translations.ts"), "utf8");
+    const sourceText = await readFile(resolve(root, "wallets/mobile/src/i18n/translations.ts"), "utf8");
     const german = readObject(sourceText, "const de:");
     await writeMobileNativeLocales({ en: mobileSource, de: german, ...mobileCatalogs });
   }
@@ -421,8 +421,8 @@ if (targets.has("lazy-existing")) {
   for (const target of ["mobile", "desktop"]) {
     const source = await sourceCatalog(target);
     const generatedPath = target === "mobile"
-      ? resolve(root, "apps/mobile/src/i18n/translations.generated.ts")
-      : resolve(root, "apps/desktop/src/i18n.generated.ts");
+      ? resolve(root, "wallets/mobile/src/i18n/translations.generated.ts")
+      : resolve(root, "wallets/desktop/src/i18n.generated.ts");
     const marker = target === "mobile"
       ? "export const generatedTranslations ="
       : "export const generatedMessages =";
@@ -433,8 +433,8 @@ if (targets.has("lazy-existing")) {
 }
 
 if (targets.has("native-existing")) {
-  const sourceText = await readFile(resolve(root, "apps/mobile/src/i18n/translations.ts"), "utf8");
-  const generatedText = await readFile(resolve(root, "apps/mobile/src/i18n/translations.generated.ts"), "utf8");
+  const sourceText = await readFile(resolve(root, "wallets/mobile/src/i18n/translations.ts"), "utf8");
+  const generatedText = await readFile(resolve(root, "wallets/mobile/src/i18n/translations.generated.ts"), "utf8");
   const english = readObject(sourceText, "const en =");
   const german = readObject(sourceText, "const de:");
   const generated = readObject(generatedText, "export const generatedTranslations =");
@@ -454,9 +454,9 @@ if (targets.has("mobile")) {
   const english = await sourceCatalog("mobile");
   const translations = await mapWithConcurrency(generatedLocales, Number(process.env.MFW_TRANSLATION_CONCURRENCY ?? 1), async language => [language.code, await translateObject("mobile", english, language)]);
   const generated = Object.fromEntries(translations);
-  await writeGenerated(resolve(root, "apps/mobile/src/i18n/translations.generated.ts"), `${typescriptExport("generatedTranslations", generated)}\n${typescriptExport("generatedLocaleMetadata", metadata)}`);
+  await writeGenerated(resolve(root, "wallets/mobile/src/i18n/translations.generated.ts"), `${typescriptExport("generatedTranslations", generated)}\n${typescriptExport("generatedLocaleMetadata", metadata)}`);
   await writeLazyRuntimeCatalogs("mobile", english, generated);
-  const sourceText = await readFile(resolve(root, "apps/mobile/src/i18n/translations.ts"), "utf8");
+  const sourceText = await readFile(resolve(root, "wallets/mobile/src/i18n/translations.ts"), "utf8");
   const german = readObject(sourceText, "const de:");
   await writeMobileNativeLocales({ en: english, de: german, ...generated });
 }
@@ -465,6 +465,6 @@ if (targets.has("desktop")) {
   const english = await sourceCatalog("desktop");
   const translations = await mapWithConcurrency(generatedLocales, Number(process.env.MFW_TRANSLATION_CONCURRENCY ?? 1), async language => [language.code, await translateObject("desktop", english, language)]);
   const generated = Object.fromEntries(translations);
-  await writeGenerated(resolve(root, "apps/desktop/src/i18n.generated.ts"), `${typescriptExport("generatedMessages", generated)}\n${typescriptExport("generatedLocaleMetadata", metadata)}`);
+  await writeGenerated(resolve(root, "wallets/desktop/src/i18n.generated.ts"), `${typescriptExport("generatedMessages", generated)}\n${typescriptExport("generatedLocaleMetadata", metadata)}`);
   await writeLazyRuntimeCatalogs("desktop", english, generated);
 }

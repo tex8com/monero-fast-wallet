@@ -5,7 +5,7 @@ This directory is the app-facing native wallet boundary.
 React Native should talk to platform modules only:
 
 ```text
-apps/mobile
+wallets/mobile
   -> iOS Swift / Objective-C++
   -> Android Kotlin / JNI
   -> cpp/WalletEngine
@@ -44,11 +44,11 @@ broadcasts and disposes the pending object.
 
 ## Platform Bindings
 
-- iOS: `apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm`
+- iOS: `wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm`
   calls `WalletEngine` through a TurboModule.
 - Android:
-  `apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt`
-  calls `apps/mobile/android/app/src/main/cpp/NativeMoneroWalletJni.cpp`
+  `wallets/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt`
+  calls `wallets/mobile/android/app/src/main/cpp/NativeMoneroWalletJni.cpp`
   through JNI.
 
 The Android JNI library can build the same C++ facade in shell mode with
@@ -184,7 +184,7 @@ native/monero-bridge/scripts/build-android-monero-core-external.sh
 
 It stores dependencies, fast crypto, `wallet_api`, and generated link manifests
 under `/Volumes/4TB/monero-fast-wallet-build`. Once complete,
-`apps/mobile/scripts/android-build.sh` discovers that manifest automatically;
+`wallets/mobile/scripts/android-build.sh` discovers that manifest automatically;
 `MONERO_WALLET_LINK_ROOT` still overrides the location for CI and other hosts.
 
 The Android builder passes the target-specific `MONERO_FAST_CRYPTO_LIBRARY` into
@@ -259,7 +259,7 @@ TARGETS=android-arm64 \
 TARGETS=android-arm64 SKIP_FAST_CRYPTO=1 \
   native/monero-bridge/scripts/build-android-monero-wallet-api.sh
 
-cd apps/mobile/android
+cd wallets/mobile/android
 ./gradlew :app:externalNativeBuildDebug \
   -PreactNativeArchitectures=arm64-v8a \
   -PmoneroWalletBridgeWithMonero=true \
@@ -270,7 +270,7 @@ cd apps/mobile/android
 Verified Android runtime-smoke APK build:
 
 ```bash
-cd apps/mobile/android
+cd wallets/mobile/android
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest \
   -PreactNativeArchitectures=arm64-v8a \
   -PmoneroWalletBridgeWithMonero=true \
@@ -281,7 +281,7 @@ cd apps/mobile/android
 Run it on a connected arm64 device/emulator:
 
 ```bash
-cd apps/mobile/android
+cd wallets/mobile/android
 PATH=/opt/homebrew/share/android-commandlinetools/platform-tools:$PATH \
   ./gradlew :app:connectedDebugAndroidTest \
     -PreactNativeArchitectures=arm64-v8a \

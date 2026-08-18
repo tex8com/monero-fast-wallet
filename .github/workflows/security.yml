@@ -59,14 +59,14 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: apps/mobile
+        working-directory: wallets/mobile
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.18.0
           cache: npm
-          cache-dependency-path: apps/mobile/package-lock.json
+          cache-dependency-path: wallets/mobile/package-lock.json
       - name: Install exact npm
         run: npm install --global npm@11.16.0
       - run: npm ci
@@ -78,14 +78,14 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: apps/desktop
+        working-directory: wallets/desktop
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.18.0
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: wallets/desktop/package-lock.json
       - name: Install exact npm
         run: npm install --global npm@11.16.0
       - run: npm ci
@@ -125,7 +125,7 @@ jobs:
           - name: community-runtime-core
             manifest: native/community-runtime-core/Cargo.toml
           - name: community-cli-full-testbench
-            manifest: tools/community-cli/Cargo.toml
+            manifest: wallets/cli/Cargo.toml
           - name: monero-news
             manifest: services/monero-news/Cargo.toml
           - name: notification-gateway
@@ -154,12 +154,12 @@ jobs:
           rustup toolchain install 1.97.0 --profile minimal
           rustup default 1.97.0
       - name: Build the locked Community CLI
-        run: cargo build --locked --release --manifest-path tools/community-cli/Cargo.toml
+        run: cargo build --locked --release --manifest-path wallets/cli/Cargo.toml
       - name: Exercise disposable live identities and Matrix E2EE
         env:
           MFW_LIVE_COMMUNITY_MATRIX_TEST: RUN_DISPOSABLE_COMMUNITY_MATRIX_E2E
-          MFW_COMMUNITY_CLI_BIN: ${{ github.workspace }}/tools/community-cli/target/release/monero-enthusiast-cli
-        run: ./tools/community-cli/test-live-matrix.sh
+          MFW_COMMUNITY_CLI_BIN: ${{ github.workspace }}/wallets/cli/target/release/monero-enthusiast-cli
+        run: ./wallets/cli/test-live-matrix.sh
 
   cuprate:
     name: Cuprate locked compile
@@ -182,14 +182,14 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        working-directory: apps/mobile
+        working-directory: wallets/mobile
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.18.0
           cache: npm
-          cache-dependency-path: apps/mobile/package-lock.json
+          cache-dependency-path: wallets/mobile/package-lock.json
       - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
         with:
           distribution: temurin
@@ -200,7 +200,7 @@ jobs:
       - run: npm ci
       - run: npm run test:build-integrity
       - run: ./gradlew --no-daemon compileDebugKotlin compileReleaseKotlin
-        working-directory: apps/mobile/android
+        working-directory: wallets/mobile/android
 
   native-bridge:
     name: Native boundary ASan/UBSan tests

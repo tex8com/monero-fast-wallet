@@ -4,7 +4,7 @@ Copyright (c) 2026 TEX8 LLP and contributors.
 
 Project-authored source is licensed by directory as follows:
 
-* `apps/` and `packages/`: Mozilla Public License 2.0 (`MPL-2.0`).
+* `wallets/` and `packages/`: Mozilla Public License 2.0 (`MPL-2.0`).
 * `backend/`: GNU Affero General Public License version 3 only
   (`AGPL-3.0-only`).
 * Project-authored protocol, format, bridge, configuration, script, tool, and

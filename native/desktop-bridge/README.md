@@ -1,6 +1,6 @@
 # Desktop Native Bridge
 
-This directory defines the Rust-to-C++ boundary for `apps/desktop`.
+This directory defines the Rust-to-C++ boundary for `wallets/desktop`.
 
 ```text
 React desktop UI -> Tauri command permissions -> Rust host

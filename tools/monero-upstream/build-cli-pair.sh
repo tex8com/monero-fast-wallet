@@ -36,7 +36,7 @@ feature_manifest_hash="$(shasum -a 256 "${repo_root}/config/v1-release-features.
 product_core_root="${repo_root}/native/product-core"
 product_core_target_dir="${MFW_PRODUCT_CORE_TARGET_DIR:-${product_core_root}/target}"
 fast_wallet_protocol_root="${repo_root}/native/fast-wallet-protocol"
-community_cli_root="${repo_root}/tools/community-cli"
+community_cli_root="${repo_root}/wallets/cli"
 community_cli_target_dir="${MFW_COMMUNITY_CLI_TARGET_DIR:-${patched_build}/community-cli-target}"
 
 for source in "${official_source}" "${patched_source}"; do

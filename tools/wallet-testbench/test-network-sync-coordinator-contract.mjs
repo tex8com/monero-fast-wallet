@@ -9,20 +9,20 @@ const repoRoot = resolve(here, '..', '..');
 const read = path => readFileSync(resolve(repoRoot, path), 'utf8');
 
 const plan = read('docs/V1_EXECUTION_PLAN.md');
-const mobileState = read('apps/mobile/src/backend/WalletState.tsx');
-const mobileService = read('apps/mobile/src/backend/WalletService.ts');
-const mobileHome = read('apps/mobile/src/screens/HomeScreen.tsx');
-const mobileSelector = read('apps/mobile/src/components/WalletSelector.tsx');
-const mobileSyncStatus = read('apps/mobile/src/components/SyncStatusBar.tsx');
-const mobileSpec = read('apps/mobile/specs/NativeMoneroWallet.ts');
-const androidJni = read('apps/mobile/android/app/src/main/cpp/NativeMoneroWalletJni.cpp');
+const mobileState = read('wallets/mobile/src/backend/WalletState.tsx');
+const mobileService = read('wallets/mobile/src/backend/WalletService.ts');
+const mobileHome = read('wallets/mobile/src/screens/HomeScreen.tsx');
+const mobileSelector = read('wallets/mobile/src/components/WalletSelector.tsx');
+const mobileSyncStatus = read('wallets/mobile/src/components/SyncStatusBar.tsx');
+const mobileSpec = read('wallets/mobile/specs/NativeMoneroWallet.ts');
+const androidJni = read('wallets/mobile/android/app/src/main/cpp/NativeMoneroWalletJni.cpp');
 const androidModule = read(
-  'apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
+  'wallets/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
 );
-const iosBridge = read('apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm');
-const desktopUi = read('apps/desktop/src/App.tsx');
+const iosBridge = read('wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm');
+const desktopUi = read('wallets/desktop/src/App.tsx');
 const desktopBridge = read('native/desktop-bridge/cpp/DesktopWalletCore.cpp');
-const desktopHost = read('apps/desktop/src-tauri/src/lib.rs');
+const desktopHost = read('wallets/desktop/src-tauri/src/lib.rs');
 const walletEngine = read('native/monero-bridge/cpp/WalletEngine.cpp');
 const walletEngineHeader = read('native/monero-bridge/cpp/WalletEngine.h');
 const walletEngineTypes = read('native/monero-bridge/cpp/WalletEngineTypes.h');

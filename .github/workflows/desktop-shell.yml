@@ -3,7 +3,7 @@ name: Desktop shell verification
 on:
   pull_request:
     paths:
-      - 'apps/desktop/**'
+      - 'wallets/desktop/**'
       - 'config/v1-release-features.json'
       - 'packages/community-search-core/**'
       - 'packages/wallet-shared/**'
@@ -16,7 +16,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'apps/desktop/**'
+      - 'wallets/desktop/**'
       - 'config/v1-release-features.json'
       - 'packages/community-search-core/**'
       - 'packages/wallet-shared/**'
@@ -46,14 +46,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     defaults:
       run:
-        working-directory: apps/desktop
+        working-directory: wallets/desktop
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.18.0
           cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
+          cache-dependency-path: wallets/desktop/package-lock.json
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install 1.97.0 --profile minimal
@@ -68,6 +68,6 @@ jobs:
       - run: npm run desktop:test
 
 # Release packaging is intentionally separate: it must call
-# apps/desktop/scripts/build-bundle.sh on its native operating-system runner
+# wallets/desktop/scripts/build-bundle.sh on its native operating-system runner
 # with a pinned, built libwallet_api archive. The script refuses shell-only
 # packages, so no unsigned/pre-production shell can be published as a wallet.

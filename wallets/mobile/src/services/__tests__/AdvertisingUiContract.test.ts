@@ -6,11 +6,11 @@ const read = (path: string) =>
   readFileSync(resolve(repositoryRoot, path), 'utf8');
 
 describe('Private local advertising boundary', () => {
-  const home = read('apps/mobile/src/screens/HomeScreen.tsx');
-  const hook = read('apps/mobile/src/data/advertisements.ts');
-  const service = read('apps/mobile/src/backend/MoneroEnthusiastV1Service.ts');
+  const home = read('wallets/mobile/src/screens/HomeScreen.tsx');
+  const hook = read('wallets/mobile/src/data/advertisements.ts');
+  const service = read('wallets/mobile/src/backend/MoneroEnthusiastV1Service.ts');
   const android = read(
-    'apps/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
+    'wallets/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
   );
   const backend = read('backend/monero-news/src/lib.rs');
 

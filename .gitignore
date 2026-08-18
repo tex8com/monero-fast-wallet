@@ -18,7 +18,7 @@ tools/transport-protocol-bench/transport-protocol-bench-linux-amd64
 # Local runtime state and recovery artefacts. These can contain encrypted
 # wallet-watch registrations and must never become part of project history.
 notify-scanner-watch.json.enc
-apps/desktop/.node_modules-root-owned-backup/
+wallets/desktop/.node_modules-root-owned-backup/
 
 # Wallet material must never be committed.
 *.keys
@@ -43,4 +43,4 @@ DerivedData/
 Pods/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
-apps/desktop/.node_modules-root-owned-backup/
+wallets/desktop/.node_modules-root-owned-backup/

@@ -25,15 +25,15 @@ const mobileFastCryptoBuild = read(
   'scripts',
   'build-mobile-fast-crypto.sh',
 );
-const androidBuild = read('apps', 'mobile', 'scripts', 'android-build.sh');
+const androidBuild = read('wallets', 'mobile', 'scripts', 'android-build.sh');
 const androidInstall = read(
-  'apps',
+  'wallets',
   'mobile',
   'scripts',
   'android-build-install.sh',
 );
 const androidCmake = read(
-  'apps',
+  'wallets',
   'mobile',
   'android',
   'app',
@@ -43,19 +43,19 @@ const androidCmake = read(
   'CMakeLists.txt',
 );
 const iosCoreBuild = read(
-  'apps',
+  'wallets',
   'mobile',
   'scripts',
   'ios-build-simulator-core.sh',
 );
 const iosBuildInstall = read(
-  'apps',
+  'wallets',
   'mobile',
   'scripts',
   'ios-build-install.sh',
 );
 const iosProject = read(
-  'apps',
+  'wallets',
   'mobile',
   'ios',
   'MoneroWallet.xcodeproj',

@@ -564,7 +564,7 @@ Documents:
 This repository is the product and integration monorepo:
 
 ```text
-apps/
+wallets/
   mobile/                         React Native for iOS and Android
   desktop/                        React + Tauri 2 for desktop
 
@@ -645,7 +645,7 @@ Learn more:
 ### Mobile
 
 ```bash
-cd apps/mobile
+cd wallets/mobile
 npm ci
 npm run lint
 npm test -- --runInBand
@@ -661,7 +661,7 @@ npm run android:build
 ### Desktop
 
 ```bash
-cd apps/desktop
+cd wallets/desktop
 npm ci
 npm run build
 npm run test:parity-contract

@@ -54,15 +54,15 @@ for (const contract of [
   /step_up_grant_is_short_exact_and_single_use/,
 ]) assert.match(rust, contract);
 
-const mobileUi = read('apps/mobile/src/backend/AppSecurity.tsx');
-const desktopUi = read('apps/desktop/src/App.tsx');
+const mobileUi = read('wallets/mobile/src/backend/AppSecurity.tsx');
+const desktopUi = read('wallets/desktop/src/App.tsx');
 for (const [name, source] of [['mobile', mobileUi], ['desktop', desktopUi]]) {
   assert.match(source, /deriveAppVaultPresentation/, `${name} bypasses the shared presentation state machine`);
   assert.match(source, /validateRecoveryPassword/, `${name} bypasses the shared recovery-password contract`);
 }
 
-const android = read('apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt');
-const androidVault = read('apps/mobile/android/app/src/main/java/com/monerowallet/MobileWalletAppVault.kt');
+const android = read('wallets/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt');
+const androidVault = read('wallets/mobile/android/app/src/main/java/com/monerowallet/MobileWalletAppVault.kt');
 assert.match(android, /MfwAppVaultContract\.unlockDelaySeconds/);
 assert.match(android, /MfwAppVaultContract\.AUTO_LOCK_SECONDS/);
 assert.doesNotMatch(android, /remainingPasswordAttempts\s*=\s*0[^\n]*resetTriggered\s*=\s*true/s);
@@ -75,12 +75,12 @@ for (const contract of [
   /MfwAppVaultContract\.PASSWORD_KDF_PARALLELISM/,
 ]) assert.match(androidVault, contract);
 
-const desktopNative = read('apps/desktop/src-tauri/src/lib.rs');
+const desktopNative = read('wallets/desktop/src-tauri/src/lib.rs');
 assert.match(desktopNative, /mfw_product_core::app_vault::unlock_delay_seconds/);
 assert.match(desktopNative, /warm_registered_wallet_sessions_after_unlock/);
-const desktopSettings = read('apps/desktop/src-tauri/src/security_settings.rs');
+const desktopSettings = read('wallets/desktop/src-tauri/src/security_settings.rs');
 assert.match(desktopSettings, /mfw_product_core::app_vault::auto_lock_seconds_allowed/);
-const desktopVault = read('apps/desktop/src-tauri/src/app_vault.rs');
+const desktopVault = read('wallets/desktop/src-tauri/src/app_vault.rs');
 for (const contract of [
   /mfw_product_core::app_vault::PASSWORD_MINIMUM_CHARACTERS/,
   /mfw_product_core::app_vault::PASSWORD_MAXIMUM_CHARACTERS/,
@@ -89,7 +89,7 @@ for (const contract of [
   /mfw_product_core::app_vault::PASSWORD_KDF_PARALLELISM/,
 ]) assert.match(desktopVault, contract);
 
-const iosVault = read('apps/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm');
+const iosVault = read('wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm');
 for (const contract of [
   /MFW_APP_VAULT_PASSWORD_MINIMUM_CHARACTERS/,
   /MFW_APP_VAULT_PASSWORD_MAXIMUM_CHARACTERS/,
