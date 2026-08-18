@@ -225,6 +225,26 @@ std::string networkSyncErrorFingerprint(const std::string& error) {
   return std::to_string(hash);
 }
 
+std::string networkSyncErrorReason(const std::string& error) {
+  std::string normalized = error;
+  std::transform(
+      normalized.begin(), normalized.end(), normalized.begin(),
+      [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+  if (normalized.find("no connection to daemon") != std::string::npos) {
+    return "no-daemon-connection";
+  }
+  if (normalized.find("connect() not called") != std::string::npos) {
+    return "grpc-connect-not-called";
+  }
+  if (normalized.find("stream already open") != std::string::npos) {
+    return "grpc-stream-already-open";
+  }
+  if (normalized.find("returned a null wallet") != std::string::npos) {
+    return "null-public-transport";
+  }
+  return "unclassified";
+}
+
 bool isTransientNetworkTransportFailure(const std::string& failureCode) {
   return failureCode == "node-timeout" ||
       failureCode == "node-unreachable" ||
@@ -264,6 +284,7 @@ void logEngineDiagnostic(
       "errorFamily",
       "errorFingerprint",
       "errorLength",
+      "errorReason",
       "failureCode",
       "failedAttempts",
       "generation",
@@ -4760,6 +4781,7 @@ class WalletEngine::Impl {
         const std::string errorFamily = networkSyncErrorFamily(error.what());
         const std::string errorFingerprint =
             networkSyncErrorFingerprint(error.what());
+        const std::string errorReason = networkSyncErrorReason(error.what());
         uint64_t failedChainHeight = 0;
         uint64_t failedDownloadedHeight = 0;
         uint64_t failedTargetHeight = 0;
@@ -4786,6 +4808,7 @@ class WalletEngine::Impl {
                 {"errorFingerprint", errorFingerprint},
                 {"errorLength", std::to_string(error.what() ?
                     std::char_traits<char>::length(error.what()) : 0)},
+                {"errorReason", errorReason},
                 {"stage", failureStage},
                 {"requestedCursor", std::to_string(requestedDownloadCursor)},
                 {"chainHeight", std::to_string(failedChainHeight)},
