@@ -8,7 +8,7 @@ const read = (path: string) =>
 describe('Private local advertising boundary', () => {
   const home = read('wallets/mobile/src/screens/HomeScreen.tsx');
   const hook = read('wallets/mobile/src/data/advertisements.ts');
-  const service = read('wallets/mobile/src/backend/MoneroEnthusiastV1Service.ts');
+  const service = read('wallets/mobile/src/services/MoneroEnthusiastV1Service.ts');
   const android = read(
     'wallets/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
   );

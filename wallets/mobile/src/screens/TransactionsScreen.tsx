@@ -15,11 +15,11 @@ import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
 import { useI18n } from '../i18n';
-import type { WalletTransaction } from '../backend/NativeMoneroWallet';
-import { useWalletState } from '../backend/WalletState';
-import { walletDisplayName } from '../backend/WalletRegistry';
-import { transactionsForWalletAddress } from '../backend/WalletAddressActivity';
-import { walletService } from '../backend/WalletService';
+import type { WalletTransaction } from '../services/NativeMoneroWallet';
+import { useWalletState } from '../services/WalletState';
+import { walletDisplayName } from '../services/WalletRegistry';
+import { transactionsForWalletAddress } from '../services/WalletAddressActivity';
+import { walletService } from '../services/WalletService';
 import { colors, spacing } from '../theme/colors';
 
 export default function TransactionsScreen({ navigation, route }: any) {

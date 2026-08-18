@@ -5,12 +5,12 @@ import { useI18n } from '../i18n';
 import type {
   NetworkSyncStatus,
   WalletSnapshot,
-} from '../backend/NativeMoneroWallet';
-import type { WalletRuntimeStatus } from '../backend/WalletState';
+} from '../services/NativeMoneroWallet';
+import type { WalletRuntimeStatus } from '../services/WalletState';
 import {
   networkSyncFailureCode,
   networkSyncFailureTranslationKey,
-} from '../backend/NetworkSyncFailure';
+} from '../services/NetworkSyncFailure';
 import { colors, radius } from '../theme/colors';
 import {
   presentWalletSync,
@@ -32,7 +32,7 @@ import {
   formatMobileNetworkSyncRate,
   updateMobileNetworkSyncRateWindow,
   type MobileNetworkSyncRateWindow,
-} from '../backend/MobileNetworkSyncRate';
+} from '../services/MobileNetworkSyncRate';
 
 type SyncStatusBarProps = {
   compact?: boolean;

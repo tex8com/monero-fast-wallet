@@ -3,8 +3,8 @@ import ReactTestRenderer from 'react-test-renderer';
 import { Alert, Text, TextInput, TouchableOpacity } from 'react-native';
 
 import { LanguageProvider } from '../../i18n';
-import { AppSecurityProvider } from '../../backend/AppSecurity';
-import { walletService } from '../../backend/WalletService';
+import { AppSecurityProvider } from '../../services/AppSecurity';
+import { walletService } from '../../services/WalletService';
 import SettingsScreen from '../SettingsScreen';
 import NodeStatusScreen from '../NodeStatusScreen';
 import mobileAppVersion from '../../../../../config/mobile-app-version.json';
@@ -30,14 +30,14 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ bottom: 0, left: 0, right: 0, top: 0 }),
 }));
 
-jest.mock('../../backend/NativeMoneroWallet', () => ({
+jest.mock('../../services/NativeMoneroWallet', () => ({
   requireNativeMoneroWallet: () => ({
     deleteDaemonPassword: jest.fn(async () => undefined),
     storeDaemonPassword: jest.fn(async () => undefined),
   }),
 }));
 
-jest.mock('../../backend/WalletDiagnostics', () => ({
+jest.mock('../../services/WalletDiagnostics', () => ({
   runWalletDiagnostics: jest.fn(async () => ({
     daemon: {
       getInfo: { ok: true, height: 1 },
@@ -50,7 +50,7 @@ jest.mock('../../backend/WalletDiagnostics', () => ({
   })),
 }));
 
-jest.mock('../../backend/DerivationPerformance', () => {
+jest.mock('../../services/DerivationPerformance', () => {
   const cachedResult = {
     schemaVersion: 1,
     cpuArchitecture: 'arm64-v8a',
@@ -92,7 +92,7 @@ jest.mock('../../backend/DerivationPerformance', () => {
   };
 });
 
-jest.mock('../../backend/WalletService', () => ({
+jest.mock('../../services/WalletService', () => ({
   walletService: {
     applyNodeConnectionToActive: jest.fn(async () => true),
     configureAppProtection: jest.fn(async () => undefined),
@@ -119,7 +119,7 @@ jest.mock('../../backend/WalletService', () => ({
 
 const mockedWalletService = walletService as jest.Mocked<typeof walletService>;
 
-jest.mock('../../backend/WalletState', () => ({
+jest.mock('../../services/WalletState', () => ({
   useWalletState: () => ({
     lockWallet: jest.fn(async () => undefined),
     session: undefined,

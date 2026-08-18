@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   type CommunityV1Advertisement,
   MoneroEnthusiastV1Service,
-} from '../backend/MoneroEnthusiastV1Service';
+} from '../services/MoneroEnthusiastV1Service';
 
 function isRenderableAdvertisement(value: CommunityV1Advertisement): boolean {
   return (

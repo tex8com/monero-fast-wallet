@@ -11,7 +11,7 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {Icon} from '../components/Icon';
 import {useI18n} from '../i18n';
 import {colors, radius, spacing} from '../theme/colors';
-import type {MoneroNetwork} from '../backend/NativeMoneroWallet';
+import type {MoneroNetwork} from '../services/NativeMoneroWallet';
 import {
   createDefaultNodeConnectionSettings,
   getActiveNodeConnectionSettings,
@@ -20,7 +20,7 @@ import {
   nodeConnectionSettingsToDraft,
   saveActiveNodeConnectionSettings,
   type NodeConnectionDraft,
-} from '../backend/NodeConnectionSettings';
+} from '../services/NodeConnectionSettings';
 import {
   fixedMainnetNodeConnection,
   type FixedNodeId,
@@ -29,8 +29,8 @@ import {
   diagnoseConnectionRoutes,
   type ConnectionDiagnosticsResult,
   type ConnectionRouteResult,
-} from '../backend/ConnectionDiagnostics';
-import {walletService} from '../backend/WalletService';
+} from '../services/ConnectionDiagnostics';
+import {walletService} from '../services/WalletService';
 
 const NETWORKS: ReadonlyArray<{value: MoneroNetwork; label: string}> = [
   {value: 'mainnet', label: 'Mainnet'},

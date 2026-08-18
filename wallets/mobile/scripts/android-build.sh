@@ -28,6 +28,8 @@ else
   mkdir -p "${TMPDIR}"
 fi
 
+COMMUNITY_ASSET_ROOT="$(resolve_community_asset_root "${COMMUNITY_ASSET_ROOT}")"
+
 if [ "$REQUIRE_MONERO" = "1" ]; then
   MONERO_COMMON_CORE_BUILD_ROOT="$EXTERNAL_BUILD_ROOT" \
     source "$REPO_ROOT/native/monero-bridge/scripts/prepare-common-monero-core.sh"

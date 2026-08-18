@@ -3,7 +3,7 @@ import { TouchableOpacity } from 'react-native';
 import ReactTestRenderer from 'react-test-renderer';
 
 import IncomingPaymentNotice from '../IncomingPaymentNotice';
-import { useWalletState } from '../../backend/WalletState';
+import { useWalletState } from '../../services/WalletState';
 
 jest.mock('../../i18n', () => ({
   useI18n: () => ({
@@ -25,7 +25,7 @@ jest.mock('../../i18n', () => ({
   }),
 }));
 
-jest.mock('../../backend/WalletState', () => ({
+jest.mock('../../services/WalletState', () => ({
   useWalletState: jest.fn(),
 }));
 

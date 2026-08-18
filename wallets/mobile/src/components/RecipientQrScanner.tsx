@@ -19,8 +19,8 @@ import {
   RESULTS,
 } from 'react-native-permissions';
 import {useI18n} from '../i18n';
-import {extractMoneroAddressFromQr} from '../backend/RecipientQrCode';
-import {withSystemUiInterruption} from '../backend/SystemUiInterruption';
+import {extractMoneroAddressFromQr} from '../services/RecipientQrCode';
+import {withSystemUiInterruption} from '../services/SystemUiInterruption';
 import {colors, radius, spacing} from '../theme/colors';
 import {Icon} from './Icon';
 

@@ -21,23 +21,23 @@ import TransactionRow, {
 import type { WalletOption } from '../components/WalletSelector';
 import { resolveWalletOption } from '../components/WalletSelector';
 import { type TranslationKey, useI18n } from '../i18n';
-import { useWalletState } from '../backend/WalletState';
+import { useWalletState } from '../services/WalletState';
 import {
   isFastWalletRegistration,
   ledgerBalanceNeedsVerification,
   walletDisplayName,
-} from '../backend/WalletRegistry';
+} from '../services/WalletRegistry';
 import type {
   HardwareWalletStatus,
   WalletSnapshot,
-} from '../backend/NativeMoneroWallet';
-import { formatAtomicXmr } from '../backend/WalletFormat';
-import { walletService } from '../backend/WalletService';
+} from '../services/NativeMoneroWallet';
+import { formatAtomicXmr } from '../services/WalletFormat';
+import { walletService } from '../services/WalletService';
 import {
   loadWalletAddresses,
   type WalletAddressRecord,
-} from '../backend/WalletAddressRegistry';
-import { transactionsForWalletAddress } from '../backend/WalletAddressActivity';
+} from '../services/WalletAddressRegistry';
+import { transactionsForWalletAddress } from '../services/WalletAddressActivity';
 import { useXmrPrice } from '../data/priceService';
 import {
   buildMoneroPaymentUri,
@@ -45,7 +45,7 @@ import {
   paymentXmrAmount,
   sanitizePaymentAmountInput,
   type PaymentAmountCurrency,
-} from '../backend/PaymentRequest';
+} from '../services/PaymentRequest';
 
 function QrCode({ value, size }: { value: string; size: number }) {
   return (

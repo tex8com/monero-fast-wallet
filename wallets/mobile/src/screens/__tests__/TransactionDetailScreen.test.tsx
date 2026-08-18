@@ -3,8 +3,8 @@ import { Text, TouchableOpacity } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import ReactTestRenderer from 'react-test-renderer';
 
-import type { WalletTransaction } from '../../backend/NativeMoneroWallet';
-import { useWalletState } from '../../backend/WalletState';
+import type { WalletTransaction } from '../../services/NativeMoneroWallet';
+import { useWalletState } from '../../services/WalletState';
 import TransactionDetailScreen from '../TransactionDetailScreen';
 
 jest.mock('@react-native-clipboard/clipboard', () => ({
@@ -58,7 +58,7 @@ jest.mock('../../i18n', () => ({
   }),
 }));
 
-jest.mock('../../backend/WalletState', () => ({
+jest.mock('../../services/WalletState', () => ({
   useWalletState: jest.fn(),
 }));
 

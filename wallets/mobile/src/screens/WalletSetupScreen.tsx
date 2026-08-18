@@ -27,40 +27,40 @@ import MoneroCoin from '../components/MoneroCoin';
 import {
   walletService,
   type LedgerReconciliationProgress,
-} from '../backend/WalletService';
-import { withSystemUiInterruption } from '../backend/SystemUiInterruption';
+} from '../services/WalletService';
+import { withSystemUiInterruption } from '../services/SystemUiInterruption';
 import { type TranslationKey, useI18n } from '../i18n';
-import { useWalletState } from '../backend/WalletState';
+import { useWalletState } from '../services/WalletState';
 import {
   classifyDiagnosticFailure,
   logWalletEvent,
-} from '../backend/WalletLogger';
-import { loadActiveNodeConnectionSettings } from '../backend/NodeConnectionSettings';
+} from '../services/WalletLogger';
+import { loadActiveNodeConnectionSettings } from '../services/NodeConnectionSettings';
 import type {
   BiometricAuthStatus,
   LedgerTransportStatus,
-} from '../backend/NativeMoneroWallet';
+} from '../services/NativeMoneroWallet';
 import {
   isFastWalletRegistration,
   walletDisplayName,
-} from '../backend/WalletRegistry';
+} from '../services/WalletRegistry';
 import {
   isFastWalletEnabled,
   loadFastWalletPreference,
   saveFastWalletPreference,
-} from '../backend/FastWalletPreference';
+} from '../services/FastWalletPreference';
 import {
   loadFastReceiveIdentities,
   loadRetiredFastWalletSlots,
   nextFastReceiveDerivationIndex,
-} from '../backend/FastReceiveRegistry';
+} from '../services/FastReceiveRegistry';
 import {
   dateInputValue,
   isRestoreStartDateValid,
   parseRestoreStartDate,
   restoreHeightFromStartDate,
   todayRestoreDate,
-} from '../backend/RestoreStart';
+} from '../services/RestoreStart';
 import mobileAppVersion from '../../../../config/mobile-app-version.json';
 
 const { width: SW, height: SH } = Dimensions.get('window');

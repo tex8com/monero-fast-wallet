@@ -167,3 +167,29 @@ ensure_android_monero_link_root() {
   fi
   printf '%s' "${generated_root}"
 }
+
+resolve_community_asset_root() {
+  local requested_root="$1"
+  local candidate
+  local required=(artifact-manifest.json harrier-v1.pte tokenizer.json conformance.json)
+
+  for candidate in \
+    "${requested_root}" \
+    "/Volumes/4TB/07_Monero/01_Build/monero-fast-wallet-build-current/community-v1-release-assets"; do
+    local asset
+    local complete=1
+    for asset in "${required[@]}"; do
+      if [ ! -f "${candidate}/${asset}" ]; then
+        complete=0
+        break
+      fi
+    done
+    if [ "${complete}" = "1" ]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+
+  echo "Missing verified Community V1 release assets. Set MONERO_COMMUNITY_ASSET_ROOT or run scripts/prepare-community-v1-release-assets.sh." >&2
+  return 1
+}

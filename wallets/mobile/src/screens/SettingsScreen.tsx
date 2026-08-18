@@ -21,37 +21,37 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   getActiveNodeConnectionSettings,
   loadActiveNodeConnectionSettings,
-} from '../backend/NodeConnectionSettings';
+} from '../services/NodeConnectionSettings';
 import type {
   CommunityFastWalletWorker,
   FastWalletWorkerSelection,
 } from '../../../../packages/wallet-shared/src/fastWalletWorkerDirectory';
-import { walletService } from '../backend/WalletService';
-import { useWalletState } from '../backend/WalletState';
+import { walletService } from '../services/WalletService';
+import { useWalletState } from '../services/WalletState';
 import {
   type AppProtectionMode,
   useAppSecurity,
-} from '../backend/AppSecurity';
+} from '../services/AppSecurity';
 
 type ConfigurableAppProtectionMode = Exclude<AppProtectionMode, 'none'>;
 import mobileAppVersion from '../../../../config/mobile-app-version.json';
 import {
   loadCommunityQueryContributionState,
   setCommunityQueryContributionEnabled,
-} from '../backend/CommunityQueryContribution';
+} from '../services/CommunityQueryContribution';
 import {
   loadCachedDerivationPerformance,
   measureDerivationPerformance,
   type DerivationPerformance,
   type DerivationPerformanceProgress,
-} from '../backend/DerivationPerformance';
+} from '../services/DerivationPerformance';
 import {
   loadCommunityFastWalletWorkers,
   loadFastWalletWorkerSelection,
   selectCommunityFastWalletWorker,
   selectPrivateFastWalletWorker,
   selectRecommendedFastWalletWorker,
-} from '../backend/FastWalletWorkerSettings';
+} from '../services/FastWalletWorkerSettings';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 import { PROJECT_PAGE_ADDRESSES } from '../../../../packages/wallet-shared/src/projectServices';
 

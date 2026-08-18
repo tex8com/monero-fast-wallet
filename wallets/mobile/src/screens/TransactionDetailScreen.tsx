@@ -11,10 +11,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon } from '../components/Icon';
 import { useI18n } from '../i18n';
-import type { WalletTransaction } from '../backend/NativeMoneroWallet';
-import { formatAtomicXmr } from '../backend/WalletFormat';
-import { useWalletState } from '../backend/WalletState';
-import { walletDisplayName } from '../backend/WalletRegistry';
+import type { WalletTransaction } from '../services/NativeMoneroWallet';
+import { formatAtomicXmr } from '../services/WalletFormat';
+import { useWalletState } from '../services/WalletState';
+import { walletDisplayName } from '../services/WalletRegistry';
 import { colors, radius, spacing } from '../theme/colors';
 
 type DetailRouteParams = {

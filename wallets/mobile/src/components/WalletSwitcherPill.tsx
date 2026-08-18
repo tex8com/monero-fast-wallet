@@ -8,7 +8,7 @@ import {
 } from "react-native";
 
 import { useI18n, type TranslationKey } from "../i18n";
-import type { WalletSnapshotCache } from "../backend/WalletSnapshotCache";
+import type { WalletSnapshotCache } from "../services/WalletSnapshotCache";
 import { colors, radius, spacing } from "../theme/colors";
 import { Icon } from "./Icon";
 import WalletSelector, {

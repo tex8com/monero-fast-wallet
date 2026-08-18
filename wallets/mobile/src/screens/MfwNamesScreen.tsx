@@ -20,19 +20,19 @@ import { useI18n } from '../i18n';
 import {
   checkConfiguredMfwNameAvailability,
   type MfwNameAvailability,
-} from '../backend/MfwNameAvailabilityService';
+} from '../services/MfwNameAvailabilityService';
 import {
   createWalletAddressRecord,
   loadWalletAddresses,
   upsertWalletAddress,
   type WalletAddressRecord,
-} from '../backend/WalletAddressRegistry';
-import { configuredMfwNameGenesis } from '../backend/MfwNameGenesisConfig';
+} from '../services/WalletAddressRegistry';
+import { configuredMfwNameGenesis } from '../services/MfwNameGenesisConfig';
 import {
   resolveConfiguredMfwOwnedNameForImport,
   resolveConfiguredMfwNameTransitionPredecessor,
   resolveConfiguredMfwOwnedNameFinalization,
-} from '../backend/MfwNameResolutionService';
+} from '../services/MfwNameResolutionService';
 import {
   canonicalMfwName,
   createMfwNameRegistrationDraft,
@@ -41,11 +41,11 @@ import {
   MFW_NAME_PROTOCOL_YEAR_BLOCKS,
   mfwNameRegistrationFeeAtomic,
   type MfwNameSendPreset,
-} from '../backend/MfwNameRegistration';
+} from '../services/MfwNameRegistration';
 import {
   isLedgerSigningCancelledError,
   type LedgerSigningProgress,
-} from '../backend/LedgerSigningFlow';
+} from '../services/LedgerSigningFlow';
 import {
   applyMfwNameBroadcast,
   estimateMfwNameExpiryTimestampMs,
@@ -56,11 +56,11 @@ import {
   upsertMfwOwnedName,
   type MfwNameBroadcastResult,
   type MfwOwnedNameRecord,
-} from '../backend/MfwNameRegistrationRegistry';
-import { walletDisplayName } from '../backend/WalletRegistry';
-import { formatAtomicXmr } from '../backend/WalletFormat';
-import { walletService, type WalletSession } from '../backend/WalletService';
-import { useWalletState } from '../backend/WalletState';
+} from '../services/MfwNameRegistrationRegistry';
+import { walletDisplayName } from '../services/WalletRegistry';
+import { formatAtomicXmr } from '../services/WalletFormat';
+import { walletService, type WalletSession } from '../services/WalletService';
+import { useWalletState } from '../services/WalletState';
 import { colors, radius, spacing } from '../theme/colors';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 

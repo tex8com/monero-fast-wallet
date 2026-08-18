@@ -2,8 +2,8 @@ import React from 'react';
 import { TextInput, TouchableOpacity } from 'react-native';
 import ReactTestRenderer from 'react-test-renderer';
 
-import { useWalletState } from '../../backend/WalletState';
-import { walletService } from '../../backend/WalletService';
+import { useWalletState } from '../../services/WalletState';
+import { walletService } from '../../services/WalletService';
 import SendScreen from '../SendScreen';
 
 jest.mock('@react-navigation/native', () => ({
@@ -38,18 +38,18 @@ jest.mock('../../i18n', () => ({
   }),
 }));
 
-jest.mock('../../backend/NodeConnectionSettings', () => ({
+jest.mock('../../services/NodeConnectionSettings', () => ({
   getActiveNodeConnectionSettings: () => ({ mode: 'optimized-grpc' }),
   loadActiveNodeConnectionSettings: jest.fn(async () => ({
     mode: 'optimized-grpc',
   })),
 }));
 
-jest.mock('../../backend/WalletState', () => ({
+jest.mock('../../services/WalletState', () => ({
   useWalletState: jest.fn(),
 }));
 
-jest.mock('../../backend/WalletService', () => ({
+jest.mock('../../services/WalletService', () => ({
   walletService: {
     commitTransaction: jest.fn(),
     loadFastReceiveIdentitiesForActiveNode: jest.fn(async () => []),

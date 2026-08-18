@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useState } from 'react';
-import {torFetch} from '../backend/TorHttp';
+import {torFetch} from '../services/TorHttp';
 
 export type MoneroUpdate = {
   id: string;

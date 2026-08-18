@@ -38,20 +38,20 @@ import MoneroCoinBg from '../components/MoneroCoinBg';
 import { useLocalAdvertisement } from '../data/advertisements';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 import { useI18n } from '../i18n';
-import { useWalletState } from '../backend/WalletState';
+import { useWalletState } from '../services/WalletState';
 import {
   ledgerBalanceNeedsVerification,
   walletDisplayName,
-} from '../backend/WalletRegistry';
+} from '../services/WalletRegistry';
 import {
   atomicXmrToNumber,
   formatAtomicXmr,
   toAtomicBigInt,
-} from '../backend/WalletFormat';
+} from '../services/WalletFormat';
 import {
   type CommunityV1Advertisement,
   MoneroEnthusiastV1Service,
-} from '../backend/MoneroEnthusiastV1Service';
+} from '../services/MoneroEnthusiastV1Service';
 
 const W = Dimensions.get('window').width;
 const CHART_W = W - 40;

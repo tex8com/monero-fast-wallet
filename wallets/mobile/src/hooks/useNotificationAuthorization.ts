@@ -4,7 +4,7 @@ import { AppState } from 'react-native';
 import {
   FastWalletPushService,
   type NotificationAuthorizationStatus,
-} from '../backend/FastWalletPushService';
+} from '../services/FastWalletPushService';
 
 export function useNotificationAuthorization() {
   const [status, setStatus] =

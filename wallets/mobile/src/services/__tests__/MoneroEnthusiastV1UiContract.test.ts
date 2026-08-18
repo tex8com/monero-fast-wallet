@@ -12,7 +12,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
     const tabs = read('wallets/mobile/src/components/CustomTabBar.tsx');
     const screen = read('wallets/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const service = read(
-      'wallets/mobile/src/backend/MoneroEnthusiastV1Service.ts',
+      'wallets/mobile/src/services/MoneroEnthusiastV1Service.ts',
     );
 
     expect(navigation).toContain('name="MoneroEnthusiast"');
@@ -90,7 +90,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
     const runtime = read('native/community-runtime-core/src/lib.rs');
     const screen = read('wallets/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const service = read(
-      'wallets/mobile/src/backend/MoneroEnthusiastV1Service.ts',
+      'wallets/mobile/src/services/MoneroEnthusiastV1Service.ts',
     );
     const android = read(
       'wallets/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
@@ -125,7 +125,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
     const core = read('packages/community-search-core/src/store.rs');
     const screen = read('wallets/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const service = read(
-      'wallets/mobile/src/backend/MoneroEnthusiastV1Service.ts',
+      'wallets/mobile/src/services/MoneroEnthusiastV1Service.ts',
     );
     const android = read(
       'wallets/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
@@ -144,12 +144,15 @@ describe('Monero Enthusiast V1 app boundary', () => {
     expect(screen).toContain("'contact_requested'");
     expect(android).toContain('"recordInterest" -> recordInterest(input)');
     expect(ios).toContain('isEqualToString:@"recordInterest"');
-    expect(screen).not.toMatch(/embedding|fetch\(|axios|XMLHttpRequest/);
+    // UI status labels may mention an upstream moderation state such as
+    // "approved awaiting embedding". The React Native screen must not itself
+    // perform embeddings or direct network requests.
+    expect(screen).not.toMatch(/createEmbedding|embed\(|fetch\(|axios|XMLHttpRequest/);
   });
 
   it('shares completed search terms by default with visible Welcome and Settings controls', () => {
     const contribution = read(
-      'wallets/mobile/src/backend/CommunityQueryContribution.ts',
+      'wallets/mobile/src/services/CommunityQueryContribution.ts',
     );
     const screen = read('wallets/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const welcome = read('wallets/mobile/src/screens/WelcomeScreen.tsx');

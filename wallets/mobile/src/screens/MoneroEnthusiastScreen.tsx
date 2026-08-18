@@ -13,7 +13,7 @@ import {
 
 import MoneroLogo from '../components/MoneroLogo';
 import { useI18n } from '../i18n';
-import { requestMobilePushProviderToken } from '../backend/FastWalletPushService';
+import { requestMobilePushProviderToken } from '../services/FastWalletPushService';
 import {
   type CommunityV1AccountStatus,
   type CommunityV1Chat,
@@ -29,15 +29,15 @@ import {
   type CommunityV1SelectedMessage,
   MoneroEnthusiastV1Service,
   runCommunityV1,
-} from '../backend/MoneroEnthusiastV1Service';
+} from '../services/MoneroEnthusiastV1Service';
 import {
   contributeSuccessfulCommunityQuery,
   retryPendingCommunityQueryContributions,
-} from '../backend/CommunityQueryContribution';
+} from '../services/CommunityQueryContribution';
 import {
   requireNativeMoneroWallet,
   type MoneroEnthusiastV1Status,
-} from '../backend/NativeMoneroWallet';
+} from '../services/NativeMoneroWallet';
 import { colors } from '../theme/colors';
 
 const EMPTY_STATUS: MoneroEnthusiastV1Status = {

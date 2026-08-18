@@ -2,7 +2,7 @@ import React from 'react';
 import { Text, TouchableOpacity } from 'react-native';
 import ReactTestRenderer from 'react-test-renderer';
 
-import type { WalletTransaction } from '../../backend/NativeMoneroWallet';
+import type { WalletTransaction } from '../../services/NativeMoneroWallet';
 import TransactionRow, { transactionRowKey } from '../TransactionRow';
 
 jest.mock('../../i18n', () => ({

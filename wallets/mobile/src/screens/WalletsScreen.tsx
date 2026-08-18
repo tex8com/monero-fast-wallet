@@ -14,16 +14,16 @@ import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
 import { useI18n } from '../i18n';
-import type { FastWalletStatusTone } from '../backend/FastWalletStatus';
+import type { FastWalletStatusTone } from '../services/FastWalletStatus';
 import {
   isFastWalletRegistration,
   walletRegistrationIsRemovedWithTarget,
   walletRequiresRecoverySeedBackup,
   walletDisplayName,
   type RegisteredWallet,
-} from '../backend/WalletRegistry';
-import { walletService } from '../backend/WalletService';
-import { useWalletState } from '../backend/WalletState';
+} from '../services/WalletRegistry';
+import { walletService } from '../services/WalletService';
+import { useWalletState } from '../services/WalletState';
 import { colors, radius, spacing } from '../theme/colors';
 
 export default function WalletsScreen({ navigation }: any) {

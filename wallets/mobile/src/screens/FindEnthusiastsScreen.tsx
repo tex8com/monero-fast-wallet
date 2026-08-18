@@ -35,7 +35,7 @@ import {
   type EnthusiastLocationDebug,
   type EnthusiastRadiusKm,
   type NearbyEnthusiast,
-} from '../backend/EnthusiastDiscoveryService';
+} from '../services/EnthusiastDiscoveryService';
 import { colors, spacing } from '../theme/colors';
 
 const RADII: EnthusiastRadiusKm[] = [5, 10, 25];
