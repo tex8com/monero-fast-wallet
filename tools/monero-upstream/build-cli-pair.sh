@@ -246,6 +246,7 @@ if [[ -n "${MONERO_GRPC_PKG_CONFIG_PATH}" ]]; then
   if [[ "$(uname -s)" == "Darwin" ]]; then
     grpc_pkgconfig_dir="${MONERO_GRPC_PKG_CONFIG_PATH%%:*}"
     grpc_sdk_libdir="$(cd "${grpc_pkgconfig_dir}/.." && pwd)"
+    zlib_sdk_libdir="${grpc_sdk_libdir}"
     product_args+=("-DCMAKE_EXE_LINKER_FLAGS=-L${grpc_sdk_libdir} -L${depends_prefix}/lib")
   fi
 fi
