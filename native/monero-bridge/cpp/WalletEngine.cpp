@@ -183,6 +183,48 @@ std::string networkSyncSafeStatus(const std::string& failureCode) {
   return "sync retry required";
 }
 
+// Keep the original Core error out of Logcat: it can include a daemon
+// authority, proxy address or other transport detail.  These two values make
+// every distinct failure correlateable without disclosing that data.  The
+// family is deliberately broad enough to explain the retry decision; the
+// fingerprint distinguishes two errors in the same family during diagnosis.
+std::string networkSyncErrorFamily(const std::string& error) {
+  std::string normalized = error;
+  std::transform(
+      normalized.begin(), normalized.end(), normalized.begin(),
+      [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+  if (normalized.empty()) return "empty";
+  if (normalized.find("grpc") != std::string::npos) return "grpc";
+  if (normalized.find("scanpack") != std::string::npos) return "scanpack";
+  if (normalized.find("timeout") != std::string::npos ||
+      normalized.find("deadline") != std::string::npos) return "timeout";
+  if (normalized.find("refused") != std::string::npos) return "refused";
+  if (normalized.find("resolve") != std::string::npos ||
+      normalized.find("host not found") != std::string::npos ||
+      normalized.find("dns") != std::string::npos) return "dns";
+  if (normalized.find("eof") != std::string::npos ||
+      normalized.find("closed") != std::string::npos ||
+      normalized.find("reset") != std::string::npos) return "peer-closed";
+  if (normalized.find("socket") != std::string::npos ||
+      normalized.find("connect") != std::string::npos ||
+      normalized.find("network") != std::string::npos) return "socket";
+  if (normalized.find("invalid") != std::string::npos ||
+      normalized.find("malformed") != std::string::npos ||
+      normalized.find("decode") != std::string::npos) return "invalid-data";
+  return "other";
+}
+
+std::string networkSyncErrorFingerprint(const std::string& error) {
+  // FNV-1a is not used as a security primitive. It is a stable, opaque Logcat
+  // correlation token for the exact Core error text.
+  uint64_t hash = 1469598103934665603ULL;
+  for (const unsigned char byte : error) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  return std::to_string(hash);
+}
+
 bool isTransientNetworkTransportFailure(const std::string& failureCode) {
   return failureCode == "node-timeout" ||
       failureCode == "node-unreachable" ||
@@ -199,6 +241,7 @@ void logEngineDiagnostic(
   static const std::set<std::string> safeFields = {
       "accountIndex",
       "cacheResetHeight",
+      "chainHeight",
       "changed",
       "checkedHeight",
       "configurationChanged",
@@ -217,6 +260,10 @@ void logEngineDiagnostic(
       "deliveries",
       "elapsedMs",
       "endHeight",
+      "emptyBatch",
+      "errorFamily",
+      "errorFingerprint",
+      "errorLength",
       "failureCode",
       "failedAttempts",
       "generation",
@@ -241,6 +288,9 @@ void logEngineDiagnostic(
       "derivationCount",
       "endToEndMbps",
       "grpcEnabled",
+      "grpcConfigured",
+      "grpcEndpointAction",
+      "grpcEndpointApplied",
       "network",
       "networkBytesReceived",
       "payloadBytesReceived",
@@ -262,6 +312,7 @@ void logEngineDiagnostic(
       "prefetchedPayloadBytes",
       "queueDepth",
       "reason",
+      "requestedCursor",
       "retryCount",
       "retryWaitUs",
       "replayCacheCapacity",
@@ -279,6 +330,7 @@ void logEngineDiagnostic(
       "synchronized",
       "transactionCount",
       "transport",
+      "transportStarts",
       "targetHeight",
       "totalDurationMs",
       "totalUs",
@@ -3977,6 +4029,32 @@ class WalletEngine::Impl {
         bool usedPrefetch = false;
         bool usedReplayCache = false;
         std::shared_ptr<const Monero::Wallet::SharedBlockBatch> nativeBatch;
+        uint64_t requestedTargetHeight = 0;
+        uint64_t requestedDownloadedHeight = 0;
+        uint64_t requestedTransportStarts = 0;
+        bool grpcConfigured = !grpcEndpoint.empty();
+        bool grpcEndpointApplied = false;
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          requestedTargetHeight = coordinator.status.targetHeight;
+          requestedDownloadedHeight = coordinator.status.downloadedHeight;
+          requestedTransportStarts = coordinator.status.transportStarts;
+          grpcEndpointApplied =
+              coordinator.publicTransportGrpcEndpointApplied;
+        }
+        logEngineDiagnostic(
+            "networkSync.batchRequest",
+            {
+                {"network", std::to_string(
+                    static_cast<int>(coordinator.network))},
+                {"requestedCursor", std::to_string(requestedDownloadCursor)},
+                {"targetHeight", std::to_string(requestedTargetHeight)},
+                {"downloadedHeight", std::to_string(requestedDownloadedHeight)},
+                {"transportStarts", std::to_string(requestedTransportStarts)},
+                {"grpcConfigured", grpcConfigured ? "true" : "false"},
+                {"grpcEndpointApplied", grpcEndpointApplied ? "true" : "false"},
+                {"prefetched", prefetchedBatch ? "true" : "false"},
+            });
         const bool prefetchMatchesStream = prefetchedBatch &&
             prefetchedProviderId == providerId &&
             prefetchedConfigurationGeneration == configurationGeneration;
@@ -4129,6 +4207,25 @@ class WalletEngine::Impl {
             coordinator.status.state = "fanout";
             setNetworkPhaseLocked(coordinator, "scanning-wallets");
           }
+        }
+        if (batch.blockCount == 0 && batch.currentHeight == 0 &&
+            authenticatedTargetHeight > requestedDownloadCursor) {
+          // This is the exact inconsistency currently observed in the field:
+          // RPC has authenticated a tip ahead of the wallet, but the next
+          // optimized block request returns an empty, tip-less response.
+          // Preserve the existing retry behaviour while making the condition
+          // impossible to confuse with a healthy at-tip poll in Logcat.
+          logEngineDiagnostic(
+              "networkSync.emptyBatchBelowKnownTip",
+              {
+                  {"requestedCursor", std::to_string(requestedDownloadCursor)},
+                  {"downloadedHeight", std::to_string(downloadedHeight)},
+                  {"targetHeight", std::to_string(authenticatedTargetHeight)},
+                  {"blockCount", "0"},
+                  {"emptyBatch", "true"},
+                  {"grpcConfigured", grpcConfigured ? "true" : "false"},
+                  {"grpcEndpointApplied", grpcEndpointApplied ? "true" : "false"},
+              });
         }
         logEngineDiagnostic(
             "networkSync.batchFetched",
@@ -4660,12 +4757,44 @@ class WalletEngine::Impl {
         }
       } catch (const std::exception& error) {
         const std::string failureCode = networkSyncFailureCode(error.what());
+        const std::string errorFamily = networkSyncErrorFamily(error.what());
+        const std::string errorFingerprint =
+            networkSyncErrorFingerprint(error.what());
+        uint64_t failedChainHeight = 0;
+        uint64_t failedDownloadedHeight = 0;
+        uint64_t failedTargetHeight = 0;
+        uint64_t failedTransportStarts = 0;
+        bool failedGrpcConfigured = !grpcEndpoint.empty();
+        bool failedGrpcEndpointApplied = false;
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          failedChainHeight = coordinator.status.chainHeight;
+          failedDownloadedHeight = coordinator.status.downloadedHeight;
+          failedTargetHeight = coordinator.status.targetHeight;
+          failedTransportStarts = coordinator.status.transportStarts;
+          failedGrpcEndpointApplied =
+              coordinator.publicTransportGrpcEndpointApplied;
+        }
         prefetchedBatch.reset();
         prefetchedProviderId.clear();
         prefetchedFetchMs = 0;
         logEngineDiagnostic(
             "networkSync.iterationFailed",
-            {{"failureCode", failureCode}, {"stage", failureStage}});
+            {
+                {"failureCode", failureCode},
+                {"errorFamily", errorFamily},
+                {"errorFingerprint", errorFingerprint},
+                {"errorLength", std::to_string(error.what() ?
+                    std::char_traits<char>::length(error.what()) : 0)},
+                {"stage", failureStage},
+                {"requestedCursor", std::to_string(requestedDownloadCursor)},
+                {"chainHeight", std::to_string(failedChainHeight)},
+                {"downloadedHeight", std::to_string(failedDownloadedHeight)},
+                {"targetHeight", std::to_string(failedTargetHeight)},
+                {"transportStarts", std::to_string(failedTransportStarts)},
+                {"grpcConfigured", failedGrpcConfigured ? "true" : "false"},
+                {"grpcEndpointApplied", failedGrpcEndpointApplied ? "true" : "false"},
+            });
         Monero::Wallet* stalePublicTransport = nullptr;
         {
           std::lock_guard<std::mutex> lock(coordinator.mutex);
