@@ -754,6 +754,26 @@ jobject toJavaMap(JNIEnv* env, const NetworkSyncStatus& status) {
   putMapDouble(env, map, putMethod, "prefetchQueueCapacity", status.prefetchQueueCapacity);
   putMapDouble(env, map, putMethod, "replayCacheEntries", status.replayCacheEntries);
   putMapDouble(env, map, putMethod, "replayCacheCapacity", status.replayCacheCapacity);
+  putMapString(
+      env,
+      map,
+      putMethod,
+      "fullScanMetricsState",
+      status.fullScanMetrics.state);
+  putMapDouble(env, map, putMethod, "fullScanMetricsGeneration", status.fullScanMetrics.generation);
+  putMapDouble(env, map, putMethod, "fullScanStartHeight", status.fullScanMetrics.startHeight);
+  putMapDouble(env, map, putMethod, "fullScanEndHeight", status.fullScanMetrics.endHeight);
+  putMapDouble(env, map, putMethod, "fullScanPayloadBytes", status.fullScanMetrics.payloadBytes);
+  putMapDouble(env, map, putMethod, "fullScanActiveTransportUs", status.fullScanMetrics.activeTransportUs);
+  putMapDouble(env, map, putMethod, "fullScanDerivationCount", status.fullScanMetrics.derivationCount);
+  putMapDouble(env, map, putMethod, "fullScanActiveDerivationUs", status.fullScanMetrics.activeDerivationUs);
+  putMapDouble(env, map, putMethod, "fullScanRetryCount", status.fullScanMetrics.retryCount);
+  putMapDouble(env, map, putMethod, "fullScanRetryWaitUs", status.fullScanMetrics.retryWaitUs);
+  putMapDouble(env, map, putMethod, "fullScanBackpressureUs", status.fullScanMetrics.backpressureUs);
+  putMapDouble(env, map, putMethod, "fullScanTotalUs", status.fullScanMetrics.totalUs);
+  putMapDouble(env, map, putMethod, "fullScanAverageNetworkMbps", status.fullScanMetrics.averageNetworkMbps);
+  putMapDouble(env, map, putMethod, "fullScanAverageDerivationsPerSecond", status.fullScanMetrics.averageDerivationsPerSecond);
+  putMapDouble(env, map, putMethod, "fullScanEndToEndMbps", status.fullScanMetrics.endToEndMbps);
   return map;
 }
 

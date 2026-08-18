@@ -105,6 +105,21 @@ export type NetworkSyncStatus = {
   prefetchQueueCapacity: number;
   replayCacheEntries: number;
   replayCacheCapacity: number;
+  fullScanMetricsState: 'idle' | 'running' | 'complete' | 'aborted';
+  fullScanMetricsGeneration: number;
+  fullScanStartHeight: number;
+  fullScanEndHeight: number;
+  fullScanPayloadBytes: number;
+  fullScanActiveTransportUs: number;
+  fullScanDerivationCount: number;
+  fullScanActiveDerivationUs: number;
+  fullScanRetryCount: number;
+  fullScanRetryWaitUs: number;
+  fullScanBackpressureUs: number;
+  fullScanTotalUs: number;
+  fullScanAverageNetworkMbps: number;
+  fullScanAverageDerivationsPerSecond: number;
+  fullScanEndToEndMbps: number;
 };
 
 export type WalletTransactionTransfer = {

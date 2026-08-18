@@ -285,6 +285,14 @@ target_include_directories(monero_wallet_network_fanout
 )
 target_compile_features(monero_wallet_network_fanout PRIVATE cxx_std_17)
 
+add_executable(monero_wallet_network_scan_metrics
+  proof/network_scan_metrics.cpp
+)
+target_include_directories(monero_wallet_network_scan_metrics
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cpp
+)
+target_compile_features(monero_wallet_network_scan_metrics PRIVATE cxx_std_17)
+
 if(MONERO_WALLET_BRIDGE_WITH_MONERO)
   add_executable(monero_wallet_multiwallet_acceptance
     proof/multiwallet_acceptance.cpp
@@ -300,6 +308,7 @@ if(MONERO_WALLET_BRIDGE_ENABLE_SANITIZERS)
       monero_wallet_bridge
       monero_wallet_bridge_smoke
       monero_wallet_network_fanout
+      monero_wallet_network_scan_metrics
     )
     if(NOT MONERO_WALLET_BRIDGE_WITH_MONERO)
       list(APPEND sanitizer_targets monero_wallet_bridge_security_boundary)
@@ -328,3 +337,7 @@ if(NOT MONERO_WALLET_BRIDGE_WITH_MONERO)
   )
 endif()
 add_test(NAME monero_wallet_network_fanout COMMAND monero_wallet_network_fanout)
+add_test(
+  NAME monero_wallet_network_scan_metrics
+  COMMAND monero_wallet_network_scan_metrics
+)

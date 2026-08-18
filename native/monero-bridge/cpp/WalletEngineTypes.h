@@ -168,6 +168,28 @@ struct LedgerKeyImageSyncResult {
   uint64_t snapshotRevision{0};
 };
 
+// One immutable result for a completed historical wallet scan. All source
+// counters are monotonic and measured in the common native Core; graphical
+// clients only format these values. A successful result remains unchanged
+// through routine tip polling until another historical scan starts.
+struct FullScanMetrics {
+  std::string state{"idle"};
+  uint64_t generation{0};
+  uint64_t startHeight{0};
+  uint64_t endHeight{0};
+  uint64_t payloadBytes{0};
+  uint64_t activeTransportUs{0};
+  uint64_t derivationCount{0};
+  uint64_t activeDerivationUs{0};
+  uint64_t retryCount{0};
+  uint64_t retryWaitUs{0};
+  uint64_t backpressureUs{0};
+  uint64_t totalUs{0};
+  double averageNetworkMbps{0.0};
+  double averageDerivationsPerSecond{0.0};
+  double endToEndMbps{0.0};
+};
+
 struct NetworkSyncStatus {
   NetworkType network{NetworkType::Mainnet};
   std::string state{"idle"};
@@ -244,6 +266,7 @@ struct NetworkSyncStatus {
   size_t prefetchQueueCapacity{1};
   size_t replayCacheEntries{0};
   size_t replayCacheCapacity{128};
+  FullScanMetrics fullScanMetrics;
 };
 
 struct SharedBlockBatchHandle {

@@ -19,6 +19,9 @@ import {
   type WalletSyncEtaState,
 } from '../../../../packages/wallet-shared/src/walletSync';
 import {
+  completedFullScanMetrics,
+  formatFullScanDuration,
+  formatNetworkSyncRate,
   formatSyncPercent,
   formatWalletDerivationRate,
   normalizeSyncPercent,

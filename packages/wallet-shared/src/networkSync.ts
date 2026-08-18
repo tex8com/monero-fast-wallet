@@ -22,7 +22,94 @@ export type NetworkSyncSource = {
   lastNonEmptyWalletDerivationUs?: number;
   networkBytesReceived?: number;
   payloadBytesReceived?: number;
+  fullScanMetricsState?: "idle" | "running" | "complete" | "aborted";
+  fullScanMetricsGeneration?: number;
+  fullScanStartHeight?: number;
+  fullScanEndHeight?: number;
+  fullScanPayloadBytes?: number;
+  fullScanActiveTransportUs?: number;
+  fullScanDerivationCount?: number;
+  fullScanActiveDerivationUs?: number;
+  fullScanRetryCount?: number;
+  fullScanRetryWaitUs?: number;
+  fullScanBackpressureUs?: number;
+  fullScanTotalUs?: number;
+  fullScanAverageNetworkMbps?: number;
+  fullScanAverageDerivationsPerSecond?: number;
+  fullScanEndToEndMbps?: number;
 };
+
+export type CompletedFullScanMetrics = {
+  generation: number;
+  startHeight: number;
+  endHeight: number;
+  payloadBytes: number;
+  activeTransportUs: number;
+  derivationCount: number;
+  activeDerivationUs: number;
+  retryCount: number;
+  retryWaitUs: number;
+  backpressureUs: number;
+  totalUs: number;
+  averageNetworkMbps: number;
+  averageDerivationsPerSecond: number;
+  endToEndMbps: number;
+};
+
+function finiteNonNegative(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value) && value >= 0;
+}
+
+/** Returns only a native Core-confirmed result; running/aborted data is hidden. */
+export function completedFullScanMetrics(
+  status: NetworkSyncSource | null | undefined,
+): CompletedFullScanMetrics | undefined {
+  if (status?.fullScanMetricsState !== "complete") return undefined;
+  const values = [
+    status.fullScanMetricsGeneration,
+    status.fullScanStartHeight,
+    status.fullScanEndHeight,
+    status.fullScanPayloadBytes,
+    status.fullScanActiveTransportUs,
+    status.fullScanDerivationCount,
+    status.fullScanActiveDerivationUs,
+    status.fullScanRetryCount,
+    status.fullScanRetryWaitUs,
+    status.fullScanBackpressureUs,
+    status.fullScanTotalUs,
+    status.fullScanAverageNetworkMbps,
+    status.fullScanAverageDerivationsPerSecond,
+    status.fullScanEndToEndMbps,
+  ];
+  if (!values.every(finiteNonNegative)) return undefined;
+  return {
+    generation: status.fullScanMetricsGeneration!,
+    startHeight: status.fullScanStartHeight!,
+    endHeight: status.fullScanEndHeight!,
+    payloadBytes: status.fullScanPayloadBytes!,
+    activeTransportUs: status.fullScanActiveTransportUs!,
+    derivationCount: status.fullScanDerivationCount!,
+    activeDerivationUs: status.fullScanActiveDerivationUs!,
+    retryCount: status.fullScanRetryCount!,
+    retryWaitUs: status.fullScanRetryWaitUs!,
+    backpressureUs: status.fullScanBackpressureUs!,
+    totalUs: status.fullScanTotalUs!,
+    averageNetworkMbps: status.fullScanAverageNetworkMbps!,
+    averageDerivationsPerSecond:
+      status.fullScanAverageDerivationsPerSecond!,
+    endToEndMbps: status.fullScanEndToEndMbps!,
+  };
+}
+
+export function formatFullScanDuration(totalUs: number): string {
+  const totalSeconds = Math.max(0, Math.round(totalUs / 1_000_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
 
 export type NetworkSyncByteSample = {
   observedAt: number;

@@ -397,6 +397,36 @@ std::string networkSyncStatusJson(
          << ",\"prefetchQueueCapacity\":" << status.prefetchQueueCapacity
          << ",\"replayCacheEntries\":" << status.replayCacheEntries
          << ",\"replayCacheCapacity\":" << status.replayCacheCapacity
+         << ",\"fullScanMetricsState\":"
+         << jsonString(status.fullScanMetrics.state)
+         << ",\"fullScanMetricsGeneration\":"
+         << status.fullScanMetrics.generation
+         << ",\"fullScanStartHeight\":"
+         << status.fullScanMetrics.startHeight
+         << ",\"fullScanEndHeight\":"
+         << status.fullScanMetrics.endHeight
+         << ",\"fullScanPayloadBytes\":"
+         << status.fullScanMetrics.payloadBytes
+         << ",\"fullScanActiveTransportUs\":"
+         << status.fullScanMetrics.activeTransportUs
+         << ",\"fullScanDerivationCount\":"
+         << status.fullScanMetrics.derivationCount
+         << ",\"fullScanActiveDerivationUs\":"
+         << status.fullScanMetrics.activeDerivationUs
+         << ",\"fullScanRetryCount\":"
+         << status.fullScanMetrics.retryCount
+         << ",\"fullScanRetryWaitUs\":"
+         << status.fullScanMetrics.retryWaitUs
+         << ",\"fullScanBackpressureUs\":"
+         << status.fullScanMetrics.backpressureUs
+         << ",\"fullScanTotalUs\":"
+         << status.fullScanMetrics.totalUs
+         << ",\"fullScanAverageNetworkMbps\":"
+         << status.fullScanMetrics.averageNetworkMbps
+         << ",\"fullScanAverageDerivationsPerSecond\":"
+         << status.fullScanMetrics.averageDerivationsPerSecond
+         << ",\"fullScanEndToEndMbps\":"
+         << status.fullScanMetrics.endToEndMbps
          << '}';
   return output.str();
 }

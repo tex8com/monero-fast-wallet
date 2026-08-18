@@ -270,6 +270,13 @@ const en = {
   'sync.blockHeight': 'Block {current} of {target}',
   'sync.networkRate': '{rate} Mbit/s',
   'sync.derivationRate': '{rate} derivations/s',
+  'sync.fullScanResult': 'Completed full scan',
+  'sync.fullScanAverageNetwork': 'Average network: {rate} Mbit/s',
+  'sync.fullScanAverageDerivations': 'Average scan: {rate} derivations/s',
+  'sync.fullScanTotalTime': 'Total scan time: {duration}',
+  'sync.fullScanEndToEnd': 'End-to-end throughput: {rate} Mbit/s',
+  'sync.fullScanWaits':
+    '{retries} retries · retry/offline {retry} · backpressure {backpressure}',
   'sync.blocksRemaining': '{count} blocks remaining',
   'sync.etaCalculating': 'Calculating time remaining',
   'sync.etaSeconds': 'About {count}s remaining',
@@ -1752,6 +1759,14 @@ const de: Record<keyof typeof en, string> = {
   'sync.blockHeight': 'Block {current} von {target}',
   'sync.networkRate': '{rate} Mbit/s',
   'sync.derivationRate': '{rate} Ableitungen/s',
+  'sync.fullScanResult': 'Abgeschlossener Vollscan',
+  'sync.fullScanAverageNetwork': 'Netzwerk-Durchschnitt: {rate} Mbit/s',
+  'sync.fullScanAverageDerivations':
+    'Scan-Durchschnitt: {rate} Ableitungen/s',
+  'sync.fullScanTotalTime': 'Gesamte Scan-Zeit: {duration}',
+  'sync.fullScanEndToEnd': 'End-to-End-Durchsatz: {rate} Mbit/s',
+  'sync.fullScanWaits':
+    '{retries} Neuversuche · Retry/Offline {retry} · Backpressure {backpressure}',
   'sync.blocksRemaining': '{count} Blöcke verbleibend',
   'sync.etaCalculating': 'Restzeit wird berechnet',
   'sync.etaSeconds': 'Noch etwa {count} Sek.',

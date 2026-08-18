@@ -1,4 +1,6 @@
 import {
+  completedFullScanMetrics,
+  formatFullScanDuration,
   formatNetworkSyncRate,
   formatWalletDerivationRate,
   networkSyncByteSample,
@@ -61,6 +63,46 @@ describe('presentNetworkSync', () => {
     expect(formatNetworkSyncRate(12.3456, 'de-DE')).toBe('12,35');
     expect(formatWalletDerivationRate(120_000.4, 'en-US')).toBe('120,000');
     expect(formatWalletDerivationRate(68_558, 'de-DE')).toBe('68.558');
+  });
+
+  it('publishes only a complete native full-scan result', () => {
+    const completed = status({
+      fullScanMetricsState: 'complete',
+      fullScanMetricsGeneration: 2,
+      fullScanStartHeight: 3_600_000,
+      fullScanEndHeight: 3_733_700,
+      fullScanPayloadBytes: 90_000_000,
+      fullScanActiveTransportUs: 12_000_000,
+      fullScanDerivationCount: 1_200_000,
+      fullScanActiveDerivationUs: 8_000_000,
+      fullScanRetryCount: 1,
+      fullScanRetryWaitUs: 5_000_000,
+      fullScanBackpressureUs: 2_000_000,
+      fullScanTotalUs: 30_000_000,
+      fullScanAverageNetworkMbps: 60,
+      fullScanAverageDerivationsPerSecond: 150_000,
+      fullScanEndToEndMbps: 24,
+    });
+    expect(completedFullScanMetrics(completed)).toMatchObject({
+      generation: 2,
+      averageNetworkMbps: 60,
+      averageDerivationsPerSecond: 150_000,
+      totalUs: 30_000_000,
+      endToEndMbps: 24,
+    });
+    expect(completedFullScanMetrics({
+      ...completed,
+      fullScanMetricsState: 'running',
+    })).toBeUndefined();
+    expect(completedFullScanMetrics({
+      ...completed,
+      fullScanMetricsState: 'aborted',
+    })).toBeUndefined();
+  });
+
+  it('formats final wall-clock time without recomputing native averages', () => {
+    expect(formatFullScanDuration(125_400_000)).toBe('2:05');
+    expect(formatFullScanDuration(3_725_000_000)).toBe('1:02:05');
   });
 
   it('reports the shared downloader independently of a selected wallet', () => {

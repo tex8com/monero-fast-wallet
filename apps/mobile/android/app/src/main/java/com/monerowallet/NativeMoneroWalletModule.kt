@@ -7723,6 +7723,24 @@ class NativeMoneroWalletModule(
       putDouble("prefetchQueueCapacity", status.numberValue("prefetchQueueCapacity"))
       putDouble("replayCacheEntries", status.numberValue("replayCacheEntries"))
       putDouble("replayCacheCapacity", status.numberValue("replayCacheCapacity"))
+      putString("fullScanMetricsState", status.stringValue("fullScanMetricsState"))
+      putDouble("fullScanMetricsGeneration", status.numberValue("fullScanMetricsGeneration"))
+      putDouble("fullScanStartHeight", status.numberValue("fullScanStartHeight"))
+      putDouble("fullScanEndHeight", status.numberValue("fullScanEndHeight"))
+      putDouble("fullScanPayloadBytes", status.numberValue("fullScanPayloadBytes"))
+      putDouble("fullScanActiveTransportUs", status.numberValue("fullScanActiveTransportUs"))
+      putDouble("fullScanDerivationCount", status.numberValue("fullScanDerivationCount"))
+      putDouble("fullScanActiveDerivationUs", status.numberValue("fullScanActiveDerivationUs"))
+      putDouble("fullScanRetryCount", status.numberValue("fullScanRetryCount"))
+      putDouble("fullScanRetryWaitUs", status.numberValue("fullScanRetryWaitUs"))
+      putDouble("fullScanBackpressureUs", status.numberValue("fullScanBackpressureUs"))
+      putDouble("fullScanTotalUs", status.numberValue("fullScanTotalUs"))
+      putDouble("fullScanAverageNetworkMbps", status.numberValue("fullScanAverageNetworkMbps"))
+      putDouble(
+        "fullScanAverageDerivationsPerSecond",
+        status.numberValue("fullScanAverageDerivationsPerSecond"),
+      )
+      putDouble("fullScanEndToEndMbps", status.numberValue("fullScanEndToEndMbps"))
     }
 
   private fun hardwareWalletStatusToWritableMap(status: Map<String, Any>): WritableMap =

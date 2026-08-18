@@ -1183,6 +1183,9 @@ html[dir="rtl"] textarea { text-align: right; }
 .sync-toggle-chevron { width: 13px; color: #aaa2b5; font-size: 15px; font-weight: 900; line-height: 1; text-align: center; }
 .desktop-sync-status-card .primary-wallet-sync { grid-template-columns: 1fr; align-items: start; gap: 0; }
 .desktop-sync-status-card .desktop-sync-progress + .desktop-sync-progress { padding-left: 0; border-top: 1px solid #332b45; border-left: 0; }
+.desktop-full-scan-metrics { display: grid; gap: 5px; padding-top: 12px; border-top: 1px solid #332b45; color: #f7f3fa; font-size: 12px; }
+.desktop-full-scan-metrics strong { font-size: 13px; }
+.desktop-full-scan-metrics small { color: #948aa2; font-weight: 600; }
 .wallet-overview-card { background: linear-gradient(125deg, #1d172a, #12101d 66%); }
 .wallet-overview-heading,
 .wallet-sync-heading,

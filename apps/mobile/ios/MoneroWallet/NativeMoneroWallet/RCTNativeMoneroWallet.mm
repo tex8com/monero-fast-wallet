@@ -2546,6 +2546,21 @@ NSDictionary *toDictionary(const NetworkSyncStatus &status) {
     @"prefetchQueueCapacity": toNSNumber(status.prefetchQueueCapacity),
     @"replayCacheEntries": toNSNumber(status.replayCacheEntries),
     @"replayCacheCapacity": toNSNumber(status.replayCacheCapacity),
+    @"fullScanMetricsState": toNSString(status.fullScanMetrics.state),
+    @"fullScanMetricsGeneration": toNSNumber(status.fullScanMetrics.generation),
+    @"fullScanStartHeight": toNSNumber(status.fullScanMetrics.startHeight),
+    @"fullScanEndHeight": toNSNumber(status.fullScanMetrics.endHeight),
+    @"fullScanPayloadBytes": toNSNumber(status.fullScanMetrics.payloadBytes),
+    @"fullScanActiveTransportUs": toNSNumber(status.fullScanMetrics.activeTransportUs),
+    @"fullScanDerivationCount": toNSNumber(status.fullScanMetrics.derivationCount),
+    @"fullScanActiveDerivationUs": toNSNumber(status.fullScanMetrics.activeDerivationUs),
+    @"fullScanRetryCount": toNSNumber(status.fullScanMetrics.retryCount),
+    @"fullScanRetryWaitUs": toNSNumber(status.fullScanMetrics.retryWaitUs),
+    @"fullScanBackpressureUs": toNSNumber(status.fullScanMetrics.backpressureUs),
+    @"fullScanTotalUs": toNSNumber(status.fullScanMetrics.totalUs),
+    @"fullScanAverageNetworkMbps": @(status.fullScanMetrics.averageNetworkMbps),
+    @"fullScanAverageDerivationsPerSecond": @(status.fullScanMetrics.averageDerivationsPerSecond),
+    @"fullScanEndToEndMbps": @(status.fullScanMetrics.endToEndMbps),
   };
 }
 

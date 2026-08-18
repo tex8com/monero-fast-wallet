@@ -1,5 +1,6 @@
 #include "WalletEngine.h"
 #include "NetworkFanout.h"
+#include "NetworkScanMetrics.h"
 
 #include <atomic>
 #include <algorithm>
@@ -218,6 +219,7 @@ void logEngineDiagnostic(
       "endHeight",
       "failureCode",
       "failedAttempts",
+      "generation",
       "referenceP95Ms",
       "warningBudgetMs",
       "warningBudgetExceeded",
@@ -230,11 +232,19 @@ void logEngineDiagnostic(
       "lastNonEmptyBlockFetchMs",
       "lastNonEmptyNetworkBytes",
       "lastNonEmptyPayloadBytes",
+      "activeDerivationUs",
+      "activeTransportUs",
+      "averageDerivationsPerSecond",
+      "averageNetworkMbps",
+      "backpressureUs",
       "blockCount",
+      "derivationCount",
+      "endToEndMbps",
       "grpcEnabled",
       "network",
       "networkBytesReceived",
       "payloadBytesReceived",
+      "payloadBytes",
       "grpcFramedBytesReceived",
       "spoolBytesBuffered",
       "spoolPeakBytes",
@@ -252,6 +262,8 @@ void logEngineDiagnostic(
       "prefetchedPayloadBytes",
       "queueDepth",
       "reason",
+      "retryCount",
+      "retryWaitUs",
       "replayCacheCapacity",
       "replayCacheEntries",
       "replayCachePayloadBytes",
@@ -269,6 +281,7 @@ void logEngineDiagnostic(
       "transport",
       "targetHeight",
       "totalDurationMs",
+      "totalUs",
       "derivedOutputCount",
       "importedOutputCount",
       "derivationDurationMs",
@@ -811,6 +824,7 @@ class WalletEngine::Impl {
     // error must not tear down and recreate the one global downloader while
     // that private operation is in flight.
     uint64_t privateReconciliationsInFlight{0};
+    NetworkScanMetrics fullScanMetrics;
     std::chrono::steady_clock::time_point phaseStarted{
         std::chrono::steady_clock::now()};
   };
@@ -846,6 +860,29 @@ class WalletEngine::Impl {
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started)
             .count());
+  }
+
+  static uint64_t monotonicMicroseconds() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+  }
+
+  static void publishFullScanMetricsLocked(
+      NetworkSyncCoordinator& coordinator) {
+    coordinator.status.fullScanMetrics =
+        coordinator.fullScanMetrics.snapshot();
+  }
+
+  static bool abortFullScanMetricsLocked(
+      NetworkSyncCoordinator& coordinator) {
+    const bool aborted = coordinator.fullScanMetrics.abort(
+        monotonicMicroseconds());
+    if (aborted) {
+      publishFullScanMetricsLocked(coordinator);
+    }
+    return aborted;
   }
 
   static void setNetworkPhaseLocked(
@@ -985,6 +1022,41 @@ class WalletEngine::Impl {
         coordinator.replayCachePayloadBytes);
   }
 
+  std::shared_ptr<const Monero::Wallet::SharedBlockBatch>
+  fetchSharedBlockBatchMeasured(
+      NetworkSyncCoordinator& coordinator,
+      Monero::Wallet* provider,
+      uint64_t cursor) {
+    const uint64_t startedUs = monotonicMicroseconds();
+    {
+      std::lock_guard<std::mutex> lock(coordinator.mutex);
+      // A retry interval ends when the next real public fetch begins. The
+      // fetch duration itself belongs only to active transport time.
+      coordinator.fullScanMetrics.endRetry(startedUs);
+      publishFullScanMetricsLocked(coordinator);
+    }
+    try {
+      auto batch = provider->fetchSharedBlockBatchFrom(cursor);
+      const uint64_t endedUs = monotonicMicroseconds();
+      {
+        std::lock_guard<std::mutex> lock(coordinator.mutex);
+        coordinator.fullScanMetrics.recordTransport(
+            endedUs >= startedUs ? endedUs - startedUs : 0);
+        publishFullScanMetricsLocked(coordinator);
+      }
+      return batch;
+    } catch (...) {
+      const uint64_t endedUs = monotonicMicroseconds();
+      {
+        std::lock_guard<std::mutex> lock(coordinator.mutex);
+        coordinator.fullScanMetrics.recordTransport(
+            endedUs >= startedUs ? endedUs - startedUs : 0);
+        publishFullScanMetricsLocked(coordinator);
+      }
+      throw;
+    }
+  }
+
   void executeAsyncWalletScan(
       NetworkSyncCoordinator& coordinator,
       const WalletId& walletId,
@@ -1082,6 +1154,10 @@ class WalletEngine::Impl {
           result->derivationCount;
       coordinator.status.totalWalletDerivationUs +=
           result->derivationDurationUs;
+      coordinator.fullScanMetrics.recordDerivations(
+          result->derivationCount,
+          result->derivationDurationUs);
+      publishFullScanMetricsLocked(coordinator);
       if (result->derivationCount > 0 &&
           result->derivationDurationUs > 0) {
         coordinator.status.lastNonEmptyWalletDerivationCount =
@@ -1847,6 +1923,7 @@ class WalletEngine::Impl {
       coordinator->wake = true;
       coordinator->status.state = "ready";
       if (configurationChanged) {
+        const bool measurementAborted = abortFullScanMetricsLocked(*coordinator);
         stalePublicTransport = coordinator->publicTransport;
         coordinator->publicTransport = nullptr;
         coordinator->publicTransportInitialized = false;
@@ -1861,6 +1938,11 @@ class WalletEngine::Impl {
         coordinator->downloadRangeInitialized = false;
         coordinator->status.downloadStartHeight = 0;
         coordinator->status.downloadedHeight = 0;
+        if (measurementAborted) {
+          logEngineDiagnostic(
+              "networkSync.fullScanMetricsAborted",
+              {{"reason", "configuration-changed"}});
+        }
       }
       if (!coordinator->worker.joinable()) {
         coordinator->worker = std::thread(
@@ -1993,10 +2075,16 @@ class WalletEngine::Impl {
       coordinator->status.joinedWallets = coordinator->wallets.size();
       coordinator->status.queueDepth = coordinator->wallets.size();
       if (coordinator->wallets.empty()) {
+        const bool measurementAborted = abortFullScanMetricsLocked(*coordinator);
         resetReplayCacheLocked(*coordinator);
         coordinator->downloadRangeInitialized = false;
         coordinator->status.downloadStartHeight = 0;
         coordinator->status.downloadedHeight = 0;
+        if (measurementAborted) {
+          logEngineDiagnostic(
+              "networkSync.fullScanMetricsAborted",
+              {{"reason", "no-wallets"}});
+        }
       }
     }
   }
@@ -3646,6 +3734,13 @@ class WalletEngine::Impl {
           busyScannerDownloadCursor > minimumRetainedTarget;
       const bool replayRingBackpressure =
           !replayRingHasCapacity && downloaderAheadOfScanners;
+      {
+        std::lock_guard<std::mutex> lock(coordinator.mutex);
+        coordinator.fullScanMetrics.setBackpressure(
+            replayRingBackpressure,
+            monotonicMicroseconds());
+        publishFullScanMetricsLocked(coordinator);
+      }
       // Once the downloader has reached its authenticated public target, any
       // lag belongs exclusively to local CPU/Metal scanners. Feed those
       // consumers from the retained ring instead of issuing empty tip ranges
@@ -3845,6 +3940,38 @@ class WalletEngine::Impl {
           coordinator.status.state = "fetching-blocks";
           setNetworkPhaseLocked(coordinator, "fetching-blocks");
         }
+        bool fullScanMeasurementStarted = false;
+        uint64_t fullScanMeasurementTarget = 0;
+        uint64_t fullScanMeasurementGeneration = 0;
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          // Existing synced wallets perform routine tip polls forever. Start a
+          // new immutable result only when a wallet cursor is historically
+          // behind an already authenticated target (including a late join or
+          // explicit rescan), never for the ordinary next-block poll.
+          if (!coordinator.fullScanMetrics.running() &&
+              coordinator.status.targetHeight > requestedDownloadCursor) {
+            coordinator.fullScanMetrics.begin(
+                requestedDownloadCursor,
+                coordinator.status.payloadBytesReceived,
+                monotonicMicroseconds());
+            publishFullScanMetricsLocked(coordinator);
+            fullScanMeasurementStarted = true;
+            fullScanMeasurementTarget = coordinator.status.targetHeight;
+            fullScanMeasurementGeneration =
+                coordinator.status.fullScanMetrics.generation;
+          }
+        }
+        if (fullScanMeasurementStarted) {
+          logEngineDiagnostic(
+              "networkSync.fullScanMetricsStarted",
+              {
+                  {"generation", std::to_string(
+                      fullScanMeasurementGeneration)},
+                  {"startHeight", std::to_string(requestedDownloadCursor)},
+                  {"targetHeight", std::to_string(fullScanMeasurementTarget)},
+              });
+        }
         const auto blockFetchStarted = std::chrono::steady_clock::now();
         failureStage = "fetching-blocks";
         bool usedPrefetch = false;
@@ -3876,7 +4003,9 @@ class WalletEngine::Impl {
           }
           usedReplayCache = nativeBatch != nullptr;
           if (!usedReplayCache) {
-            nativeBatch = provider->fetchSharedBlockBatchFrom(
+            nativeBatch = fetchSharedBlockBatchMeasured(
+                coordinator,
+                provider,
                 requestedDownloadCursor);
             throwIfWalletFailed(provider, "fetchSharedBlockBatchFrom");
           }
@@ -4107,8 +4236,11 @@ class WalletEngine::Impl {
           prefetchStarted = std::chrono::steady_clock::now();
           prefetchFuture = std::async(
               std::launch::async,
-              [provider, nextCursor]() {
-                return provider->fetchSharedBlockBatchFrom(nextCursor);
+              [this, &coordinator, provider, nextCursor]() {
+                return fetchSharedBlockBatchMeasured(
+                    coordinator,
+                    provider,
+                    nextCursor);
               });
         }
 
@@ -4229,6 +4361,10 @@ class WalletEngine::Impl {
             prefetchedFetchMs = 0;
             {
               std::lock_guard<std::mutex> lock(coordinator.mutex);
+              const uint64_t retryObservedUs = monotonicMicroseconds();
+              coordinator.fullScanMetrics.beginRetry(retryObservedUs);
+              coordinator.fullScanMetrics.endRetry(retryObservedUs);
+              publishFullScanMetricsLocked(coordinator);
               coordinator.status.prefetchQueueDepth = 0;
               coordinator.status.prefetchedPayloadBytes = 0;
             }
@@ -4410,6 +4546,7 @@ class WalletEngine::Impl {
         }
 
         bool checkpoint = atTip;
+        bool checkpointSucceeded = true;
         {
           std::lock_guard<std::mutex> lock(coordinator.mutex);
           checkpoint = checkpoint || coordinator.batchesSinceCheckpoint >= 16;
@@ -4434,6 +4571,7 @@ class WalletEngine::Impl {
               throwIfWalletFailed(
                   item.second->wallet, "checkpointWalletScan");
             } catch (const std::exception& error) {
+              checkpointSucceeded = false;
               logEngineDiagnostic(
                   "networkSync.checkpointFailed",
                   {{"status", error.what()}});
@@ -4445,6 +4583,55 @@ class WalletEngine::Impl {
           coordinator.status.totalCheckpointMs +=
               coordinator.status.lastCheckpointMs;
           coordinator.batchesSinceCheckpoint = 0;
+        }
+        bool fullScanMeasurementCompleted = false;
+        FullScanMetrics completedFullScanMetrics;
+        {
+          std::lock_guard<std::mutex> lock(coordinator.mutex);
+          if (atTip && stalledWallets == 0 && checkpointSucceeded &&
+              coordinator.fullScanMetrics.complete(
+                  authenticatedTargetHeight,
+                  coordinator.status.payloadBytesReceived,
+                  monotonicMicroseconds())) {
+            publishFullScanMetricsLocked(coordinator);
+            completedFullScanMetrics = coordinator.status.fullScanMetrics;
+            fullScanMeasurementCompleted = true;
+          }
+        }
+        if (fullScanMeasurementCompleted) {
+          logEngineDiagnostic(
+              "networkSync.fullScanMetricsCompleted",
+              {
+                  {"generation", std::to_string(
+                      completedFullScanMetrics.generation)},
+                  {"startHeight", std::to_string(
+                      completedFullScanMetrics.startHeight)},
+                  {"endHeight", std::to_string(
+                      completedFullScanMetrics.endHeight)},
+                  {"payloadBytes", std::to_string(
+                      completedFullScanMetrics.payloadBytes)},
+                  {"activeTransportUs", std::to_string(
+                      completedFullScanMetrics.activeTransportUs)},
+                  {"averageNetworkMbps", std::to_string(
+                      completedFullScanMetrics.averageNetworkMbps)},
+                  {"derivationCount", std::to_string(
+                      completedFullScanMetrics.derivationCount)},
+                  {"activeDerivationUs", std::to_string(
+                      completedFullScanMetrics.activeDerivationUs)},
+                  {"averageDerivationsPerSecond", std::to_string(
+                      completedFullScanMetrics
+                          .averageDerivationsPerSecond)},
+                  {"totalUs", std::to_string(
+                      completedFullScanMetrics.totalUs)},
+                  {"endToEndMbps", std::to_string(
+                      completedFullScanMetrics.endToEndMbps)},
+                  {"retryCount", std::to_string(
+                      completedFullScanMetrics.retryCount)},
+                  {"retryWaitUs", std::to_string(
+                      completedFullScanMetrics.retryWaitUs)},
+                  {"backpressureUs", std::to_string(
+                      completedFullScanMetrics.backpressureUs)},
+              });
         }
         {
           std::lock_guard<std::mutex> lock(coordinator.mutex);
@@ -4482,6 +4669,8 @@ class WalletEngine::Impl {
         Monero::Wallet* stalePublicTransport = nullptr;
         {
           std::lock_guard<std::mutex> lock(coordinator.mutex);
+          coordinator.fullScanMetrics.beginRetry(monotonicMicroseconds());
+          publishFullScanMetricsLocked(coordinator);
           const uint64_t nextFailureCount =
               coordinator.status.consecutiveFailures + 1;
           const bool publicDownloadAtConfirmedTip =
@@ -4583,8 +4772,14 @@ class WalletEngine::Impl {
     for (auto* coordinator : coordinators) {
       {
         std::lock_guard<std::mutex> lock(coordinator->mutex);
+        const bool measurementAborted = abortFullScanMetricsLocked(*coordinator);
         coordinator->stop = true;
         coordinator->wake = true;
+        if (measurementAborted) {
+          logEngineDiagnostic(
+              "networkSync.fullScanMetricsAborted",
+              {{"reason", "coordinator-stopped"}});
+        }
       }
       coordinator->condition.notify_all();
     }
