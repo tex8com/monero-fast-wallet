@@ -22,7 +22,7 @@
       "maximumTermYears": 1000,
       "commitMaturityBlocks": 15,
       "commitRevealWindowBlocks": 720,
-      "reservedNameManifestHash": "341882e9f964bc103bf5172dbe689bf50e5f60c7529bf4c902803e445803e2d5"
+      "reservedNameManifestHash": "f2ebb548b0aba7a4ad42868ddb78a373e5a4f7f82ca8df5156185b5089609521"
     },
     "privatePhoneDirectory": null,
     "moneroEnthusiastV1": {

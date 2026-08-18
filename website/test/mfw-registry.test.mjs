@@ -114,6 +114,31 @@ test("resolver responses fail closed on extended JSON and inconsistent confirmat
   assert.throws(() => parseMfwResolution(emptyResolution({ canonicalName: "mallory.mfw" }), "alice.mfw"), /invalid_response/);
 });
 
+test("resolver accepts only the complete owner-transition extension", () => {
+  const extended = finalizedResolution({
+    ownerPublicKeyHex: "f".repeat(64),
+    sequence: 3,
+    signingOwnerPublicKeyHex: "e".repeat(64),
+  });
+  assert.equal(parseMfwResolution(extended, "alice.mfw").status, "finalized");
+  assert.equal(
+    parseMfwResolution({
+      ...emptyResolution({ status: "reserved" }),
+      ownerPublicKeyHex: "",
+      sequence: 0,
+      signingOwnerPublicKeyHex: "",
+    }, "alice.mfw").status,
+    "reserved",
+  );
+  const incomplete = { ...extended };
+  delete incomplete.sequence;
+  assert.throws(() => parseMfwResolution(incomplete, "alice.mfw"), /invalid_response/);
+  assert.throws(
+    () => parseMfwResolution({ ...extended, ownerPublicKeyHex: "not-a-key" }, "alice.mfw"),
+    /invalid_record/,
+  );
+});
+
 test("live lookup uses the versioned same-origin GET contract", async () => {
   let request;
   const fetcher = async (url, options) => {

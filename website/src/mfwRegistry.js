@@ -270,7 +270,20 @@ export function parseMfwResolution(value, expectedName) {
     "sourceTxidHex",
     "status",
   ];
-  if (!isPlainObject(value) || !sameKeys(value, keys)) throw new Error("invalid_response");
+  // Resolver deployments may expose the owner-transition fields introduced
+  // after the immutable Registry-v1 records. Accept exactly the base V1
+  // contract or exactly that complete extension; anything else still fails
+  // closed. Availability needs neither owner material nor a sequence, while
+  // wallet clients use the extension to verify owner-signed transitions.
+  const ownerTransitionKeys = [
+    "ownerPublicKeyHex",
+    "sequence",
+    "signingOwnerPublicKeyHex",
+  ];
+  const hasOwnerTransition = sameKeys(value, [...keys, ...ownerTransitionKeys]);
+  if (!isPlainObject(value) || (!sameKeys(value, keys) && !hasOwnerTransition)) {
+    throw new Error("invalid_response");
+  }
   if (
     value.canonicalName !== expectedName ||
     value.network !== "mainnet" ||
@@ -297,6 +310,11 @@ export function parseMfwResolution(value, expectedName) {
       value.confirmations !== 0 ||
       value.recordPayloadHex !== "" ||
       value.recordBlockHashHex !== ""
+      || (hasOwnerTransition && (
+        value.ownerPublicKeyHex !== "" ||
+        value.sequence !== 0 ||
+        value.signingOwnerPublicKeyHex !== ""
+      ))
     ) {
       throw new Error("invalid_empty_record");
     }
@@ -313,10 +331,19 @@ export function parseMfwResolution(value, expectedName) {
     value.recordHeight < 1 ||
     value.recordHeight > value.chainTipHeight ||
     value.confirmations !== value.chainTipHeight - value.recordHeight + 1
+    || (hasOwnerTransition && (
+      !isOptionalHex32(value.ownerPublicKeyHex) ||
+      !safeHeight(value.sequence) ||
+      !isOptionalHex32(value.signingOwnerPublicKeyHex)
+    ))
   ) {
     throw new Error("invalid_record");
   }
   return value;
+}
+
+function isOptionalHex32(value) {
+  return value === "" || (typeof value === "string" && HEX_32.test(value));
 }
 
 function sameKeys(value, expected) {
