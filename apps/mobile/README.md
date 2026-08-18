@@ -61,9 +61,12 @@ explicitly documented.
 - Uses CoinGecko for public XMR price/chart data.
 - Has a typed `WalletService` / `NativeMoneroWallet` contract.
 - Has typed node connection profiles in Settings. The default profile points at
-  the deployed server-side Monero Fast Node (MFN), powered by Cuprate, and uses its optimized gRPC
-  stream plus normal daemon RPC, while the original Monero profile clears the
-  gRPC endpoint and uses daemon RPC only. Node profile settings persist across
+  the deployed Monero Fast Node (MFN). On mainnet, normal daemon RPC uses the
+  selected Tor v3 Onion endpoint through the embedded SOCKS proxy; only the
+  high-volume gRPC/ScanPack block stream uses the separate Clearnet `:18091`
+  endpoint. First-party service origins use Onion by default. This is the
+  default privacy/performance split, not a guarantee for user-selected custom
+  nodes or explicit HTTPS scanner origins. Node profile settings persist across
   app restarts; daemon passwords are stored through native secure storage and
   are not persisted in JavaScript storage.
 - The native bridge exposes only purpose-bound secret operations:
@@ -186,9 +189,11 @@ it, and launches it. Use `ios:build-install-debug` before `ios:diagnostics`,
 because diagnostics are deliberately compiled out of Release builds.
 `ios:diagnostics` restarts the Debug app and reads only
 `MONERO_WALLET_DIAGNOSTICS` JSON lines from the iOS system log.
-The current simulator gate confirms the app can reach the live Cuprate daemon
-at `xmr.tex8.com:18089` through both `/get_info` and `/json_rpc`; optimized
-wallet refresh uses `xmr.tex8.com:18091` for gRPC block streaming.
+The simulator diagnostic gate separately confirms that the live MFN RPC is
+compatible at `xmr.tex8.com:18089` through both `/get_info` and `/json_rpc`;
+this direct diagnostic check does not describe the privacy-preserving mainnet
+default. Optimized wallet refresh uses `xmr.tex8.com:18091` for gRPC block
+streaming.
 
 Fast Wallet is a separate spendable software wallet, not a receive-only
 address. New software Fast Wallets use fresh random entropy and their own

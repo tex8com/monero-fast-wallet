@@ -36,6 +36,16 @@ prefetching and platform-selected acceleration), platform integration and
 wallet usability. They do not introduce a hosted spending path or replace
 local final wallet verification.
 
+For the first-party mainnet preset, the wallet deliberately splits its network
+routes: daemon RPC and first-party application-service requests use the chosen
+Tor v3 Onion origin through the embedded SOCKS proxy; the high-volume MFN
+gRPC/ScanPack block stream uses the separate Clearnet `:18091` endpoint. This
+keeps ordinary wallet/service requests off Clearnet while retaining practical
+block-sync throughput. A Clearnet block stream still reveals a network
+connection to its provider, so users needing a different privacy/performance
+trade-off can choose their own node and route. Custom scanner origins may also
+be HTTPS or Onion by explicit user choice.
+
 This is a risk-reduction approach, not a claim that a patch is automatically
 safe: every core-adjacent change remains security-sensitive, is kept narrow and
 versioned, and must pass the applicable build, compatibility and security
