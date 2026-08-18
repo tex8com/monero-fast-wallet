@@ -7,6 +7,40 @@ Monero Fast Node data path, native CPU and Metal acceleration, and optional
 privacy-preserving payment notifications. Your seed and spend key always remain
 under your control.
 
+## Product components
+
+This monorepo contains the complete Monero Fast Wallet product. Its main
+components are deliberately kept separate while sharing the same versioned
+contracts:
+
+| Component | Purpose |
+| --- | --- |
+| **Monero Fast Wallet (MFW)** | Self-custodial mobile and desktop wallets. Seeds, spend keys, primary view keys, transaction construction and final payment verification stay local or on a Ledger. |
+| **MFN — Monero Fast Node** | The integrated, upstream-derived node under `node/mfn-monero-fast-node/`. It supplies compatible RPC, wallet gRPC streaming and signed ScanPacks. It is the one MFN source and deployment path for this product. |
+| **Fast Wallet Worker** | An optional outbound-only scanner for an isolated Fast Wallet view key. It reads the shared MFN/ScanPack stream, stores encrypted watch state locally and can request only an opaque notification wake-up. |
+| **MFM — Monero Fast Miner** | The separate, performance-focused RandomX miner and benchmark suite under `tools/mfw-miner/`. It is based on XMRig and is not part of wallet key custody, transaction signing, or the MFN node runtime. |
+| **Monero Fast Wallet Registry** | The release-gated `.mfw` naming service. It resolves blockchain-anchored name records to a receive address that the wallet verifies before a payment is prepared. It is application naming, not ICANN DNS. |
+
+### Upstream-derived core and security boundary
+
+MFW intentionally extends proven implementations instead of rewriting the
+security-critical Monero wallet and node foundations. The wallet bridge uses
+the established Monero `wallet2` / `libwallet_api` implementation; MFN is the
+integrated Cuprate-derived node implementation. Both are materialized from
+pinned upstream revisions with ordered, reviewable patch series.
+
+The product keeps Monero consensus validation, wallet-file semantics, key
+custody, transaction construction and signing on those established core paths.
+Our additions focus on transport and throughput (gRPC, ScanPacks, bounded
+prefetching and platform-selected acceleration), platform integration and
+wallet usability. They do not introduce a hosted spending path or replace
+local final wallet verification.
+
+This is a risk-reduction approach, not a claim that a patch is automatically
+safe: every core-adjacent change remains security-sensitive, is kept narrow and
+versioned, and must pass the applicable build, compatibility and security
+gates before release.
+
 > **Development status:** The source code is advanced, but it is **not yet
 > approved for a public mainnet release**. Signed release artifacts, physical
 > platform and Ledger validation, an independent security review, and several
@@ -532,9 +566,12 @@ packages/
   wallet-shared/                  shared wallet and synchronization rules
 
 backend/
+  fast-wallet-stack/              versioned build, migration, and deployment contracts
   fast-wallet-worker/             outbound encrypted hosted-view-key scanner
     scanner-core/                 internal Worker scan engine; no server API
+  fast-wallet-directory/          public Worker admission and descriptor directory
   fast-wallet-relay/              ciphertext-only Worker mailbox
+  mfw-private-directory/          release-gated private contact-directory components
   notification-registration-adapter/ attested provider registration
   notification-gateway/          opaque WSS/push delivery
   enthusiast-v1/                 replacement V1 publication/contact API
@@ -553,6 +590,7 @@ third_party/
   monero-experimental-patches/    separate research snapshots
 
 tools/
+  mfw-miner/                      MFM: Monero Fast Miner and RandomX benchmark suite
   wallet-original-crypto-testbench/
   wallet-crypto-testbench/
   wallet-derivation-cpu-testbench/
@@ -569,21 +607,13 @@ docs/
   product, architecture, security, release, and benchmark documents
 ```
 
-Monero and the Monero Fast Node engine also retain independently updateable forks:
-
-| Project | Remote | Documented product revision |
-| --- | --- | --- |
-| Product | `tex8com/monero-fast-wallet` | This branch / commit |
-| Common wallet Core | ordered product patch series | tree `dec8ca7c99efcb92fb45a4736b1361a2f1c711e4` |
-| Monero Core CPU | `tex8com/monero` | `382b8c06641c9e905a98dc4ac77c17f746aceb8c` |
-| Monero Core CPU + Metal | `tex8com/monero` | `cdcfa8151322a3fdd9306af97ab0c54092ac1e37` |
-| Monero CUDA research | `tex8com/monero` | `024224eb5cde9c8a243a152e3927399550479cd2` |
-| Monero Fast Node production | `tex8com/cuprate` | `cd1ec57ab44301b93a21e9b504b9d913b88fc871` |
-
-The **26 Monero product patches** and **41 Monero Fast Node engine patches** are stored in order
-inside the product repository. Patch reproduction verifies the expected final
-source tree before a core is built. Generated dependencies, wallet files,
-secrets, logs, and build outputs do not belong in Git.
+The upstream provenance and reproducibility metadata are kept inside this
+repository. `third_party/monero-patches/` and
+`third_party/cuprate-patches/` contain ordered patch series and pinned base
+revisions; `node/mfn-monero-fast-node/` is the only MFN source tree used by
+this product. Patch reproduction verifies the expected source tree before a
+core is built. Generated dependencies, wallet files, secrets, logs, and build
+outputs do not belong in Git.
 
 Learn more:
 [Sources](docs/SOURCES.md) ·
@@ -710,4 +740,5 @@ current state of a later modified working copy.
 
 **Repository:** <https://github.com/tex8com/monero-fast-wallet><br>
 **Monero fork:** <https://github.com/tex8com/monero><br>
-**Monero Fast Node source:** <https://github.com/tex8com/cuprate>
+**MFN source:** [`node/mfn-monero-fast-node/`](node/mfn-monero-fast-node/)<br>
+**MFM source:** [`tools/mfw-miner/`](tools/mfw-miner/)
