@@ -12,7 +12,7 @@ its name does not imply endorsement of TEX8 or Monero Fast Wallet.
 
 ## Cuprate
 
-The node implementation under `node/cuprate/` retains Cuprate's upstream
+The node implementation under `node/mfn-monero-fast-node/` retains Cuprate's upstream
 multi-license files (`LICENSE`, `LICENSE-AGPL`, and `LICENSE-MIT`). Modified
 network-service deployments must satisfy the applicable AGPL source-offer
 obligations.

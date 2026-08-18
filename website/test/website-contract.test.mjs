@@ -122,7 +122,7 @@ test("the architecture overview still links the five real building blocks", () =
     assert.match(app, new RegExp(service.replaceAll(".", "\\.")));
   }
   for (const target of ["wallet", "mfn", "relay", "worker", "registry"]) assert.match(app, new RegExp(`\\["${target}"`));
-  assert.doesNotMatch(app, /Sieben Dienste|Seven services/);
+  assert.doesNotMatch(app, /Sieben Dienste|Seven backend/);
   assert.doesNotMatch(app, /className="service-tor-note" href="#privacy-tor"/);
   assert.match(styles, /\.service-overview-grid \{[^}]*repeat\(5,minmax\(0,1fr\)\)/);
 });

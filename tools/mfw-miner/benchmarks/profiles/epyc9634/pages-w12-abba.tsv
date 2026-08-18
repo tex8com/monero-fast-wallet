@@ -1,0 +1,5 @@
+order	phase	variant	binary_role	benchmark	worker_cpus	process_cpus	init_threads	page_mode	numa_mode	msr_mode	estimated_seconds
+1	pages	no-pages-vs-2m-a1	mfw-mode0	100K	0,1,2,3,4,5,6,7,8,9,10,11	0,1,2,3,4,5,6,7,8,9,10,11	8	none	off	off	57
+2	pages	no-pages-vs-2m-b1	mfw-mode0	100K	0,1,2,3,4,5,6,7,8,9,10,11	0,1,2,3,4,5,6,7,8,9,10,11	8	2m	off	off	57
+3	pages	no-pages-vs-2m-b2	mfw-mode0	100K	0,1,2,3,4,5,6,7,8,9,10,11	0,1,2,3,4,5,6,7,8,9,10,11	8	2m	off	off	57
+4	pages	no-pages-vs-2m-a2	mfw-mode0	100K	0,1,2,3,4,5,6,7,8,9,10,11	0,1,2,3,4,5,6,7,8,9,10,11	8	none	off	off	57

@@ -8,17 +8,17 @@ import {
 } from '@react-navigation/native';
 import TabNavigator from './src/navigation/TabNavigator';
 import { LanguageProvider } from './src/i18n';
-import { WalletDiagnosticsController } from './src/services/WalletDiagnosticsController';
-import { FastWalletPushService } from './src/services/FastWalletPushService';
-import { AppSecurityProvider } from './src/services/AppSecurity';
-import { WalletStateProvider } from './src/services/WalletState';
-import { useWalletState } from './src/services/WalletState';
+import { WalletDiagnosticsController } from './src/backend/WalletDiagnosticsController';
+import { FastWalletPushService } from './src/backend/FastWalletPushService';
+import { AppSecurityProvider } from './src/backend/AppSecurity';
+import { WalletStateProvider } from './src/backend/WalletState';
+import { useWalletState } from './src/backend/WalletState';
 import IncomingPaymentNotice from './src/components/IncomingPaymentNotice';
 import AppTopBar from './src/components/AppTopBar';
 import MfwNameTicker from './src/components/MfwNameTicker';
-import { logStartupEvent } from './src/services/WalletLogger';
+import { logStartupEvent } from './src/backend/WalletLogger';
 import { v1ReleaseFeatures } from '../../packages/wallet-shared/src/v1ReleaseFeatures';
-import { ConnectivityProvider } from './src/services/ConnectivityState';
+import { ConnectivityProvider } from './src/backend/ConnectivityState';
 
 const navigationRef = createNavigationContainerRef<any>();
 const jsModuleLoadedAtMs = Date.now();

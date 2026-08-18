@@ -12,7 +12,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
     const tabs = read('apps/mobile/src/components/CustomTabBar.tsx');
     const screen = read('apps/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const service = read(
-      'apps/mobile/src/services/MoneroEnthusiastV1Service.ts',
+      'apps/mobile/src/backend/MoneroEnthusiastV1Service.ts',
     );
 
     expect(navigation).toContain('name="MoneroEnthusiast"');
@@ -90,7 +90,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
     const runtime = read('native/community-runtime-core/src/lib.rs');
     const screen = read('apps/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const service = read(
-      'apps/mobile/src/services/MoneroEnthusiastV1Service.ts',
+      'apps/mobile/src/backend/MoneroEnthusiastV1Service.ts',
     );
     const android = read(
       'apps/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
@@ -125,7 +125,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
     const core = read('packages/community-search-core/src/store.rs');
     const screen = read('apps/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const service = read(
-      'apps/mobile/src/services/MoneroEnthusiastV1Service.ts',
+      'apps/mobile/src/backend/MoneroEnthusiastV1Service.ts',
     );
     const android = read(
       'apps/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
@@ -149,7 +149,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
 
   it('shares completed search terms by default with visible Welcome and Settings controls', () => {
     const contribution = read(
-      'apps/mobile/src/services/CommunityQueryContribution.ts',
+      'apps/mobile/src/backend/CommunityQueryContribution.ts',
     );
     const screen = read('apps/mobile/src/screens/MoneroEnthusiastScreen.tsx');
     const welcome = read('apps/mobile/src/screens/WelcomeScreen.tsx');

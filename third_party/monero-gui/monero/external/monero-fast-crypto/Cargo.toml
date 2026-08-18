@@ -1,0 +1,19 @@
+[package]
+name = "monero-fast-crypto"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+curve25519-dalek = { version = "4", features = ["alloc"] }
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = true
+# This archive is called from C++ and linked into another Rust host.  Aborting
+# on an impossible internal panic prevents a Rust unwind from crossing the FFI
+# boundary and avoids exporting a second Rust exception personality symbol.
+panic = "abort"

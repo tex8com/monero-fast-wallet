@@ -1,0 +1,21 @@
+[package]
+name = "mfw-donation-gateway"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Pool-independent Stratum donation gateway for MFW-Miner"
+publish = false
+
+[dependencies]
+anyhow = "1.0.104"
+axum = { version = "0.8.9", features = ["json", "tokio"] }
+clap = { version = "4.6.6", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+webpki-roots = "1.0.9"

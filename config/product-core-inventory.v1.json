@@ -167,12 +167,12 @@
     {
       "id": "app-protection-and-vault",
       "targetV1": true,
-      "sources": ["packages/wallet-shared", "apps/mobile/src/services/AppSecurity.tsx", "apps/desktop/src/App.tsx"]
+      "sources": ["packages/wallet-shared", "apps/mobile/src/backend/AppSecurity.tsx", "apps/desktop/src/App.tsx"]
     },
     {
       "id": "wallet-lifecycle-and-payments",
       "targetV1": true,
-      "sources": ["native/monero-bridge", "third_party/monero-patches", "apps/mobile/src/services/WalletService.ts"]
+      "sources": ["native/monero-bridge", "third_party/monero-patches", "apps/mobile/src/backend/WalletService.ts"]
     },
     {
       "id": "accounts-subaddresses-receive",
@@ -192,7 +192,7 @@
     {
       "id": "fast-wallet-and-private-wake",
       "targetV1": true,
-      "sources": ["native/fast-wallet-protocol", "services/fast-wallet-worker", "services/fast-wallet-relay", "services/notification-gateway"]
+      "sources": ["native/fast-wallet-protocol", "backend/fast-wallet-worker", "backend/fast-wallet-relay", "backend/notification-gateway"]
     },
     {
       "id": "mfw-names",
@@ -202,12 +202,12 @@
     {
       "id": "community-profiles-and-publication",
       "targetV1": true,
-      "sources": ["native/community-runtime-core", "packages/community-publication-core", "services/enthusiast-v1"]
+      "sources": ["native/community-runtime-core", "packages/community-publication-core", "backend/enthusiast-v1"]
     },
     {
       "id": "listings-moderation-and-expiry",
       "targetV1": true,
-      "sources": ["packages/community-publication-core", "services/enthusiast-operations", "services/enthusiast-moderation-console"]
+      "sources": ["packages/community-publication-core", "backend/enthusiast-operations", "backend/enthusiast-moderation-console"]
     },
     {
       "id": "offline-semantic-search-and-interest",
@@ -222,7 +222,7 @@
     {
       "id": "media-news-and-market-data",
       "targetV1": true,
-      "sources": ["services/monero-news", "apps/mobile/src/screens/HomeScreen.tsx", "apps/desktop/src/marketData.ts"]
+      "sources": ["backend/monero-news", "apps/mobile/src/screens/HomeScreen.tsx", "apps/desktop/src/marketData.ts"]
     },
     {
       "id": "advertising",
@@ -232,7 +232,7 @@
     {
       "id": "signed-updates",
       "targetV1": true,
-      "sources": ["packages/app-update-core", "apps/mobile/src/services/AppUpdateService.ts", "apps/desktop/src/appUpdate.ts"]
+      "sources": ["packages/app-update-core", "apps/mobile/src/backend/AppUpdateService.ts", "apps/desktop/src/appUpdate.ts"]
     },
     {
       "id": "hardware-acceleration",
@@ -242,7 +242,7 @@
     {
       "id": "diagnostics-testbench-and-observability",
       "targetV1": true,
-      "sources": ["tools/wallet-testbench", "packages/wallet-shared/src/diagnosticTestbench.ts", "apps/mobile/src/services/WalletDiagnostics.ts"]
+      "sources": ["tools/wallet-testbench", "packages/wallet-shared/src/diagnosticTestbench.ts", "apps/mobile/src/backend/WalletDiagnostics.ts"]
     },
     {
       "id": "platform-packaging",
@@ -261,8 +261,8 @@
     {"id": "monero-wallet-engine", "source": "native/monero-bridge/cpp/WalletEngine.h"}
   ],
   "storageAuthorities": [
-    {"id": "mobile-wallet-registry", "source": "apps/mobile/src/services/WalletRegistry.ts"},
-    {"id": "mobile-fast-receive-registry", "source": "apps/mobile/src/services/FastReceiveRegistry.ts"},
+    {"id": "mobile-wallet-registry", "source": "apps/mobile/src/backend/WalletRegistry.ts"},
+    {"id": "mobile-fast-receive-registry", "source": "apps/mobile/src/backend/FastReceiveRegistry.ts"},
     {"id": "desktop-wallet-registry", "source": "apps/desktop/src-tauri/src/wallet_registry.rs"},
     {"id": "desktop-secure-store", "source": "apps/desktop/src-tauri/src/secure_store.rs"},
     {"id": "community-catalog-store", "source": "native/community-runtime-core"},

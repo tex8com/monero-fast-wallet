@@ -9,8 +9,8 @@ const repoRoot = resolve(here, '..', '..');
 const read = path => readFileSync(resolve(repoRoot, path), 'utf8');
 
 const plan = read('docs/V1_EXECUTION_PLAN.md');
-const mobileState = read('apps/mobile/src/services/WalletState.tsx');
-const mobileService = read('apps/mobile/src/services/WalletService.ts');
+const mobileState = read('apps/mobile/src/backend/WalletState.tsx');
+const mobileService = read('apps/mobile/src/backend/WalletService.ts');
 const mobileHome = read('apps/mobile/src/screens/HomeScreen.tsx');
 const mobileSelector = read('apps/mobile/src/components/WalletSelector.tsx');
 const mobileSyncStatus = read('apps/mobile/src/components/SyncStatusBar.tsx');

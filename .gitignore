@@ -26,3 +26,21 @@ apps/desktop/.node_modules-root-owned-backup/
 *.wallet
 *.wallet.*
 *.address.txt
+
+# Generated dependencies, build products, caches and benchmark evidence.
+# These patterns intentionally apply throughout the monorepo.
+.work/
+.cache/
+coverage/
+.nyc_output/
+benchmark-results/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.dSYM/
+DerivedData/
+Pods/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+apps/desktop/.node_modules-root-owned-backup/

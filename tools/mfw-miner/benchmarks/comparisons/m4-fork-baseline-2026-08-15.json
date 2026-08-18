@@ -1,0 +1,55 @@
+{
+  "schema": "mfw.miner.comparison/v1",
+  "comparisonId": "m4-upstream-vs-mfw-fork-baseline-2026-08-15",
+  "recordedAt": "2026-08-15",
+  "eligibility": "exploratory",
+  "decision": "exclude-from-performance-claims",
+  "exclusionReasons": [
+    "the four-run sequence drifted from 3930.0 H/s to 3382.7 H/s",
+    "macOS exposed no quantitative package temperature or power telemetry",
+    "the MFW candidate changes donation/configuration only and does not yet change the RandomX engine",
+    "additional thermally stabilized repetitions are required"
+  ],
+  "platform": {
+    "cpu": "Apple M4",
+    "architecture": "aarch64",
+    "logicalCpus": 10,
+    "operatingSystem": "macOS 26.5.2",
+    "powerSource": "AC Power"
+  },
+  "matchedSettings": {
+    "order": "B/A/A/B",
+    "randomxVariant": "rx/0",
+    "randomxMode": "fast",
+    "threads": 10,
+    "benchmarkHashes": 250000,
+    "expectedHash": "7D6054757BB08A63",
+    "network": "denied-by-sandbox"
+  },
+  "upstream": {
+    "name": "XMRig",
+    "version": "6.26.0",
+    "sourceRevision": "b2ca72480c58d197e18c885d9fc1a0c8d517e60a",
+    "binarySha256": "f2c80d8b67b5fb08c11075a54befd33e5633a0ddb797ddf44478944cc3a89eb8",
+    "hashesPerSecond": [3930.0, 3471.2],
+    "medianHashesPerSecond": 3700.6
+  },
+  "mfwFork": {
+    "name": "MFW-Miner fork baseline",
+    "baseRevision": "b2ca72480c58d197e18c885d9fc1a0c8d517e60a",
+    "changes": [
+      "MFW donation hard-disabled until configured",
+      "safe disabled local default pool",
+      "documentation and roadmap"
+    ],
+    "binarySha256": "15555f58aefcbaae6bcca86ad05af07b5d9802a1822eab14d2abca04758190b3",
+    "hashesPerSecond": [3833.4, 3382.7],
+    "medianHashesPerSecond": 3608.05
+  },
+  "observedButNotPromotable": {
+    "mfwOverUpstreamFactor": 0.974991,
+    "mfwDifferencePercent": -2.501,
+    "interpretation": "The drift is much larger than any plausible effect from the non-engine fork changes, so this sequence establishes correctness and the need for stronger thermal gating, not a performance regression."
+  },
+  "evidenceRoot": "../../benchmark-results/mfw-fork-evidence"
+}

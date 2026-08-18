@@ -3,8 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/.." && pwd)"
-manifest="${repo_root}/node/cuprate/Cargo.toml"
-lockfile="${repo_root}/node/cuprate/Cargo.lock"
+manifest="${repo_root}/node/mfn-monero-fast-node/Cargo.toml"
+lockfile="${repo_root}/node/mfn-monero-fast-node/Cargo.lock"
 exception_id="RUSTSEC-2023-0071"
 expires_on="2026-10-24"
 today="${SECURITY_EXCEPTION_DATE_OVERRIDE:-$(date -u +%F)}"
@@ -43,7 +43,7 @@ if rg -n \
   --glob '*.rs' \
   --glob '!target/**' \
   'rsa::(KeyPair|RsaPrivateKey)|RsaPrivateKey|KeyPair::generate' \
-  "${repo_root}/node/cuprate" >/dev/null; then
+  "${repo_root}/node/mfn-monero-fast-node" >/dev/null; then
   echo "${exception_id} private RSA use appeared in Cuprate workspace code" >&2
   exit 1
 fi

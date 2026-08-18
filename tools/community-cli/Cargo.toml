@@ -32,6 +32,6 @@ community-contact-core = { path = "../../packages/community-contact-core" }
 community-notification-core = { path = "../../packages/community-notification-core" }
 community-publication-core = { path = "../../packages/community-publication-core" }
 community-query-contribution-core = { path = "../../packages/community-query-contribution-core" }
-enthusiast-v1 = { path = "../../services/enthusiast-v1" }
+enthusiast-v1 = { path = "../../backend/enthusiast-v1" }
 rand = "0.8"
 tempfile = "3"

@@ -1,0 +1,33 @@
+{
+  "schema": "mfw_hardware_comparison_v1",
+  "recorded_utc_date": "2026-08-16",
+  "host": {
+    "label": "fork-new",
+    "cpu": "Intel Xeon E3-1585L v5",
+    "cores": 4,
+    "threads": 8
+  },
+  "algorithm": "rx/0",
+  "randomx_mode": "fast",
+  "benchmark": "250K",
+  "workers": 7,
+  "worker_cpus": "0-6",
+  "mode0_hps": [2187.1, 2260.1, 2388.1, 2398.2],
+  "mode1_iswap_hps": [2379.8, 2398.6, 2307.9, 2412.9],
+  "mode0_mean_hps": 2308.375,
+  "mode1_mean_hps": 2374.8,
+  "delta_percent": 2.8775653869063778,
+  "geometric_delta_percent": 2.939036563628619,
+  "mode0_range_percent": 9.14496128228732,
+  "mode1_range_percent": 4.421424962102071,
+  "abba_delta_percent": 7.447382622773868,
+  "baab_delta_percent": -1.3684892296763507,
+  "promotion_eligible": false,
+  "decision": "retain-mode0-iswap-default-off",
+  "correctness_hash": "7D6054757BB08A63",
+  "network_fallback_detected": false,
+  "evidence": {
+    "path": "benchmark-results/hosts/fork-new-skylake-iswap-quiet-20260816T0220Z",
+    "full_manifest_sha256": "7d4e506e01e78efc30cb1282cf8f9f4a920325c4945389a27102ed3205299e74"
+  }
+}

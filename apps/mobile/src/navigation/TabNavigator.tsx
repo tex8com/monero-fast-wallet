@@ -20,9 +20,9 @@ import TransactionsScreen from "../screens/TransactionsScreen";
 import TransactionDetailScreen from "../screens/TransactionDetailScreen";
 import ProjectPageScreen from "../screens/ProjectPageScreen";
 import CustomTabBar from "../components/CustomTabBar";
-import { useWalletState } from "../services/WalletState";
-import { useAppSecurity } from "../services/AppSecurity";
-import { logWalletEvent } from "../services/WalletLogger";
+import { useWalletState } from "../backend/WalletState";
+import { useAppSecurity } from "../backend/AppSecurity";
+import { logWalletEvent } from "../backend/WalletLogger";
 import { v1ReleaseFeatures } from "../../../../packages/wallet-shared/src/v1ReleaseFeatures";
 
 const Tab = createBottomTabNavigator();

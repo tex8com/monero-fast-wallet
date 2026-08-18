@@ -1,0 +1,112 @@
+diff --git a/src/crypto/randomx/vm_compiled.cpp b/src/crypto/randomx/vm_compiled.cpp
+--- a/src/crypto/randomx/vm_compiled.cpp
++++ b/src/crypto/randomx/vm_compiled.cpp
+@@ -31,10 +31,26 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ #include "crypto/randomx/common.hpp"
+ #include "crypto/rx/Profiler.h"
+ 
++#ifndef XMRIG_DATASET_PREFETCH_MODE
++#define XMRIG_DATASET_PREFETCH_MODE 2
++#endif
++
+ namespace randomx {
+ 
+ 	static_assert(sizeof(MemoryRegisters) == 2 * sizeof(addr_t) + sizeof(uintptr_t), "Invalid alignment of struct randomx::MemoryRegisters");
+ 	static_assert(sizeof(RegisterFile) == 256, "Invalid alignment of struct randomx::RegisterFile");
++	static_assert(XMRIG_DATASET_PREFETCH_MODE >= 0 && XMRIG_DATASET_PREFETCH_MODE <= 2,
++		"XMRIG_DATASET_PREFETCH_MODE must be 0 (off), 1 (T0), or 2 (NTA)");
++
++	static inline void prefetchDataset(const void* address) {
++#if XMRIG_DATASET_PREFETCH_MODE == 1
++		rx_prefetch_t0(address);
++#elif XMRIG_DATASET_PREFETCH_MODE == 2
++		rx_prefetch_nta(address);
++#else
++		(void) address;
++#endif
++	}
+ 
+ 	template<int softAes>
+ 	void CompiledVm<softAes>::setDataset(randomx_dataset* dataset) {
+@@ -64,11 +80,11 @@ namespace randomx {
+ 		const uint8_t* p = mem.memory;
+ 
+ 		// dataset prefetch for the first iteration of the main loop
+-		rx_prefetch_nta(p + (mem.ma & (RandomX_ConfigurationBase::DatasetBaseSize - 64)));
++		prefetchDataset(p + (mem.ma & (RandomX_ConfigurationBase::DatasetBaseSize - 64)));
+ 
+ 		// dataset prefetch for the second iteration of the main loop (RandomX v2)
+ 		if (RandomX_CurrentConfig.Tweak_V2_PREFETCH) {
+-			rx_prefetch_nta(p + (mem.mx & (RandomX_ConfigurationBase::DatasetBaseSize - 64)));
++			prefetchDataset(p + (mem.mx & (RandomX_ConfigurationBase::DatasetBaseSize - 64)));
+ 		}
+ 
+ 		compiler.getProgramFunc()(reg, mem, scratchpad, RandomX_CurrentConfig.ProgramIterations);
+diff --git a/src/crypto/randomx/jit_compiler_x86_static.S b/src/crypto/randomx/jit_compiler_x86_static.S
+--- a/src/crypto/randomx/jit_compiler_x86_static.S
++++ b/src/crypto/randomx/jit_compiler_x86_static.S
+@@ -74,6 +74,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+ #define db .byte
+ 
++#ifndef XMRIG_DATASET_PREFETCH_MODE
++#define XMRIG_DATASET_PREFETCH_MODE 2
++#endif
++
+ DECL(randomx_prefetch_scratchpad):
+ 	mov rdx, rax
+ 	and eax, RANDOMX_SCRATCHPAD_MASK
+@@ -147,7 +151,13 @@ DECL(randomx_program_read_dataset):
+ 	#include "asm/program_read_dataset.inc"
+ 
+ DECL(randomx_program_read_dataset_v2):
++#if XMRIG_DATASET_PREFETCH_MODE == 0
++	#include "asm/program_read_dataset_v2_none.inc"
++#elif XMRIG_DATASET_PREFETCH_MODE == 1
++	#include "asm/program_read_dataset_v2_t0.inc"
++#else
+ 	#include "asm/program_read_dataset_v2.inc"
++#endif
+ 
+ DECL(randomx_program_read_dataset_sshash_init):
+ 	#include "asm/program_read_dataset_sshash_init.inc"
+diff --git a/src/crypto/randomx/asm/program_read_dataset_v2_none.inc b/src/crypto/randomx/asm/program_read_dataset_v2_none.inc
+new file mode 100644
+--- /dev/null
++++ b/src/crypto/randomx/asm/program_read_dataset_v2_none.inc
+@@ -0,0 +1,15 @@
++	mov ecx, ebp                       ;# ecx = ma
++	and ecx, RANDOMX_DATASET_BASE_MASK
++	xor r8, qword ptr [rdi+rcx]
++	xor rbp, rax                       ;# modify "ma"
++	mov edx, ebp                       ;# edx = "ma"
++	ror rbp, 32                        ;# swap "ma" and "mx"
++	and edx, RANDOMX_DATASET_BASE_MASK
++	.byte 0x0f, 0x1f, 0x40, 0x00       ;# 4-byte nop replaces prefetch
++	xor r9,  qword ptr [rdi+rcx+8]
++	xor r10, qword ptr [rdi+rcx+16]
++	xor r11, qword ptr [rdi+rcx+24]
++	xor r12, qword ptr [rdi+rcx+32]
++	xor r13, qword ptr [rdi+rcx+40]
++	xor r14, qword ptr [rdi+rcx+48]
++	xor r15, qword ptr [rdi+rcx+56]
+diff --git a/src/crypto/randomx/asm/program_read_dataset_v2_t0.inc b/src/crypto/randomx/asm/program_read_dataset_v2_t0.inc
+new file mode 100644
+--- /dev/null
++++ b/src/crypto/randomx/asm/program_read_dataset_v2_t0.inc
+@@ -0,0 +1,15 @@
++	mov ecx, ebp                       ;# ecx = ma
++	and ecx, RANDOMX_DATASET_BASE_MASK
++	xor r8, qword ptr [rdi+rcx]
++	xor rbp, rax                       ;# modify "ma"
++	mov edx, ebp                       ;# edx = "ma"
++	ror rbp, 32                        ;# swap "ma" and "mx"
++	and edx, RANDOMX_DATASET_BASE_MASK
++	prefetcht0 byte ptr [rdi+rdx]
++	xor r9,  qword ptr [rdi+rcx+8]
++	xor r10, qword ptr [rdi+rcx+16]
++	xor r11, qword ptr [rdi+rcx+24]
++	xor r12, qword ptr [rdi+rcx+32]
++	xor r13, qword ptr [rdi+rcx+40]
++	xor r14, qword ptr [rdi+rcx+48]
++	xor r15, qword ptr [rdi+rcx+56]

@@ -5,10 +5,10 @@ This directory makes the root multi-license grant explicit and reviewable.
 | Repository scope | SPDX expression | Local license text |
 | --- | --- | --- |
 | `apps/**`, `packages/**` | `MPL-2.0` | `MPL-2.0.txt` |
-| `services/**` | `AGPL-3.0-only` | `AGPL-3.0-only.txt` |
+| `backend/**` | `AGPL-3.0-only` | `AGPL-3.0-only.txt` |
 | Project-authored `native/**`, `config/**`, `scripts/**`, `tools/**`, `docs/**`, and root support files | `Apache-2.0 OR MIT` | `Apache-2.0.txt`, `MIT.txt` |
 | Project-authored Monero-derived patches | `BSD-3-Clause` | `BSD-3-Clause.txt` |
-| `node/cuprate/**` | Upstream Cuprate map | `../node/cuprate/LICENSE*` |
+| `node/mfn-monero-fast-node/**` | Upstream Cuprate map | `../node/mfn-monero-fast-node/LICENSE*` |
 | `third_party/**`, vendored/generated upstream files | Component notice | Component-local notice and generated release report |
 
 Exceptions:

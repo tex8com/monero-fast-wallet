@@ -17,17 +17,17 @@ run_gate \
 
 run_gate \
   "read-only ScanPack generation, freshness and manipulation contract" \
-  cargo test --locked --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" \
+  cargo test --locked --manifest-path "${repo_root}/backend/fast-wallet-worker/scanner-core/Cargo.toml" \
   scanpack::tests:: --lib
 
 run_gate \
   "cursor gap, source-failure and reorg convergence contract" \
-  cargo test --locked --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" \
+  cargo test --locked --manifest-path "${repo_root}/backend/fast-wallet-worker/scanner-core/Cargo.toml" \
   scanner::tests:: --lib
 
 run_gate \
   "Cuprate writer append, reorg and crash-window contract" \
-  cargo test --locked --manifest-path "${repo_root}/node/cuprate/Cargo.toml" \
+  cargo test --locked --manifest-path "${repo_root}/node/mfn-monero-fast-node/Cargo.toml" \
   -p cuprated scanpack_writer::tests:: --no-default-features
 
 printf '%s\n' "ScanPack security testbench passed."

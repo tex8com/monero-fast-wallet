@@ -1,0 +1,98 @@
+# Apple M4 offline RandomX profiling provenance, 2026-08-15
+
+SCOPE
+- Read-only source profiling; no source edits by this task.
+- No pool or daemon endpoint was configured.
+- Miner network access was denied by sandbox-exec.
+- No foreign process was stopped and no privileged command was used.
+- All performance values are exploratory because the desktop was active and
+  no matched upstream-XMRig A/B/B/A reference was interleaved in this window.
+
+PROFILED ARTIFACT
+product=MFW-Miner 0.1.0
+engine=XMRig 6.26.0
+upstream_commit=b2ca72480c58d197e18c885d9fc1a0c8d517e60a
+binary_sha256=b10a09a88dfcfc9710bde1f8954ad63dbb34c4deb82f6726caed68a64e5833bb
+binary_format=Mach-O ARM64
+build=Release -O3 -DNDEBUG; ASM=ON; hwloc=ON; secure-JIT=OFF
+worker_policy=MFW_APPLE_WORKER_QOS=0
+compiler=Apple clang 21.0.0
+libraries=libuv 1.52.1; OpenSSL 3.6.3; hwloc 2.14.0
+
+The build path was mutable and was rebuilt by a concurrent repository task
+after profiling. The SHA-256 above is the authoritative profiled identity.
+
+HOST
+cpu=Apple M4
+architecture=arm64
+physical_cores=10
+logical_cores=10
+smt=no
+performance_cluster=4 cores; shared 16 MiB L2; 192 KiB L1I; 128 KiB L1D
+efficiency_cluster=6 cores; shared 4 MiB L2; 128 KiB L1I; 64 KiB L1D
+cache_line_bytes=128
+installed_memory=16 GiB
+os=macOS 26.5.2 (25F84)
+kernel=Darwin 25.5.0 arm64
+power=AC; battery 100 percent
+thermal_state=no warning through available API; no quantitative package power
+preflight_load_average=approximately 2.85 2.51 4.36
+
+Ordinary GUI and development workloads, including WindowServer and Codex,
+were active. They were not modified. Postflight load was higher because other
+repository tasks were also running.
+
+TOPOLOGY COMMANDS
+uname -a
+sw_vers
+sysctl -n machdep.cpu.brand_string hw.physicalcpu hw.logicalcpu hw.cachelinesize
+sysctl hw.perflevel0 hw.perflevel1
+system_profiler SPHardwareDataType SPPowerDataType
+pmset -g batt
+
+OFFLINE MINER COMMAND
+sandbox-exec -p '(version 1)(allow default)(deny network*)' \
+  ./build-mfw-m4/mfw-miner --bench=100K -a rx/0 \
+  --randomx-mode=fast --threads=THREADS --no-color
+
+PROFILE COMMANDS
+sample PID 10 20 -fullPaths -file /dev/stdout   # four workers
+sample PID 8 50 -fullPaths -file /dev/stdout    # ten workers
+ps -M -p PID -o pid,%cpu,state,pri,nice,time,comm
+
+taskinfo was attempted read-only, reported that root is required, and was not
+used. No sudo or privilege escalation was attempted.
+
+RANDOMX MODE
+algorithm=rx/0
+mode=Fast
+work=100K
+expected_hash=BC4EF98B60B98579
+allocation=2336 MiB (2080+256)
+jit=yes
+huge_pages=no
+dataset_init_threads=10
+scratchpad_per_worker=2 MiB
+
+CORRECTNESS AND EXPLORATORY OUTPUT
+initial 10-thread profile: hash=BC4EF98B60B98579; time=29.563 s; 3382.6 H/s
+saved 10-thread profile:   hash=BC4EF98B60B98579; time=29.477 s; 3392.5 H/s
+saved 4-thread profile:    hash=BC4EF98B60B98579; time=44.239 s; 2260.4 H/s
+
+All three hashes match the official 100K rx/0 vector. These rates are not
+promotable benchmark results: sample adds overhead, the host was not quiet,
+and this profile window lacks the mandatory matched XMRig reference.
+
+SAVED PROFILE WINDOWS
+four workers: PID 95096; launched 2026-08-15 16:31:33.699 -0500;
+  sampled 10 s at 20 ms beginning 16:31:49.254 -0500
+ten workers: PID 95187; launched 2026-08-15 16:32:32.878 -0500;
+  sampled 8 s at 50 ms beginning 16:32:52.123 -0500
+
+PROMOTION GATE
+- exact 100K hash, then exact 250K hash 7D6054757BB08A63;
+- pinned upstream XMRig reference with identical thread count, duration/work,
+  rx/0 Fast mode, sandbox and host state;
+- cooldown and interleaved A/B/B/A order;
+- reject noisy runs or drift larger than the candidate effect;
+- repeat on 4 and 10 workers.

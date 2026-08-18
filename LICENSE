@@ -5,7 +5,7 @@ Copyright (c) 2026 TEX8 LLP and contributors.
 Project-authored source is licensed by directory as follows:
 
 * `apps/` and `packages/`: Mozilla Public License 2.0 (`MPL-2.0`).
-* `services/`: GNU Affero General Public License version 3 only
+* `backend/`: GNU Affero General Public License version 3 only
   (`AGPL-3.0-only`).
 * Project-authored protocol, format, bridge, configuration, script, tool, and
   documentation files outside those directories: your choice of the Apache
@@ -15,9 +15,9 @@ Project-authored source is licensed by directory as follows:
 The following source keeps its upstream license and is not relicensed by the
 grant above:
 
-* `node/cuprate/`: Cuprate's upstream license map, including
-  `node/cuprate/LICENSE`, `node/cuprate/LICENSE-AGPL`, and
-  `node/cuprate/LICENSE-MIT`.
+* `node/mfn-monero-fast-node/`: Cuprate's upstream license map, including
+  `node/mfn-monero-fast-node/LICENSE`, `node/mfn-monero-fast-node/LICENSE-AGPL`, and
+  `node/mfn-monero-fast-node/LICENSE-MIT`.
 * Monero source, generated link artifacts, and patches that are derivative of
   Monero source: Monero's upstream BSD-3-Clause license and retained notices.
 * `third_party/`, vendored dependencies, generated dependency code, test

@@ -9,8 +9,8 @@ import {
 } from 'react-native';
 
 import { useI18n } from '../i18n';
-import type { WalletTransaction } from '../services/NativeMoneroWallet';
-import { formatAtomicXmr } from '../services/WalletFormat';
+import type { WalletTransaction } from '../backend/NativeMoneroWallet';
+import { formatAtomicXmr } from '../backend/WalletFormat';
 import { colors, radius } from '../theme/colors';
 import { Icon } from './Icon';
 

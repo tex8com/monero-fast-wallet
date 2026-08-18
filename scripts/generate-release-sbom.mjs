@@ -20,14 +20,14 @@ const created = new Date(
 
 const cargoManifests = [
   'apps/desktop/src-tauri/Cargo.toml',
-  'services/enthusiast-discovery/Cargo.toml',
-  'services/fast-wallet-relay/Cargo.toml',
-  'services/fast-wallet-worker/Cargo.toml',
-  'services/mfw-private-directory/Cargo.toml',
-  'services/monero-news/Cargo.toml',
-  'services/notification-gateway/Cargo.toml',
-  'services/notification-registration-adapter/Cargo.toml',
-  'services/fast-wallet-scanner-core/Cargo.toml',
+  'backend/enthusiast-discovery/Cargo.toml',
+  'backend/fast-wallet-relay/Cargo.toml',
+  'backend/fast-wallet-worker/Cargo.toml',
+  'backend/mfw-private-directory/Cargo.toml',
+  'backend/monero-news/Cargo.toml',
+  'backend/notification-gateway/Cargo.toml',
+  'backend/notification-registration-adapter/Cargo.toml',
+  'backend/fast-wallet-worker/scanner-core/Cargo.toml',
 ];
 
 const packages = new Map();

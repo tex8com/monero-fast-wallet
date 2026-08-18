@@ -1,0 +1,45 @@
+{
+  "schema": "mfw.miner.comparison/v1",
+  "comparisonId": "m4-worker-qos-screen-2026-08-15",
+  "recordedAt": "2026-08-15",
+  "eligibility": "screening",
+  "decision": "reject-as-default",
+  "reason": "The interactive-QoS candidate lost the interleaved four-run screen by 1.655%; it does not advance to 250K validation.",
+  "platform": {
+    "cpu": "Apple M4",
+    "architecture": "aarch64",
+    "logicalCpus": 10,
+    "operatingSystem": "macOS 26.5.2",
+    "powerSource": "AC Power"
+  },
+  "matchedSettings": {
+    "order": "B/A/A/B",
+    "randomxVariant": "rx/0",
+    "randomxMode": "fast",
+    "threads": 4,
+    "benchmarkHashes": 100000,
+    "expectedAndActualHash": "BC4EF98B60B98579",
+    "network": "denied-by-sandbox"
+  },
+  "upstream": {
+    "name": "XMRig 6.26.0 plus local 100K parser allowance",
+    "sourceRevision": "b2ca72480c58d197e18c885d9fc1a0c8d517e60a",
+    "appleWorkerQos": 0,
+    "binarySha256": "c4a5e12678707fdc120b247707e4397c96032e6579728e56bf84bef8a370aaa5",
+    "hashesPerSecond": [2537.9, 2489.4],
+    "medianHashesPerSecond": 2513.65
+  },
+  "candidate": {
+    "name": "MFW-Miner 0.1.0 interactive-QoS candidate",
+    "appleWorkerQos": 1,
+    "binarySha256": "4a2426a5ab973636d52d1fe580fd305751eb8c5fefe0f3633cf10be88037a3cb",
+    "hashesPerSecond": [2497.8, 2446.3],
+    "medianHashesPerSecond": 2472.05
+  },
+  "observed": {
+    "candidateOverUpstreamFactor": 0.98345,
+    "candidateDifferencePercent": -1.655,
+    "interpretation": "Earlier isolated QoS wins did not reproduce in this sustained interleaved window. Keep the build option for future topology-specific testing, but retain upstream scheduling by default."
+  },
+  "evidenceRoot": "../../benchmark-results/mfw-fork-evidence"
+}

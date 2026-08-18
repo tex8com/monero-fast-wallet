@@ -12,7 +12,7 @@ const read = relative => readFileSync(path.join(root, relative), 'utf8');
 const moneroPatch = read(
   'third_party/monero-patches/0031-wallet-derive-Ledger-key-images-only-for-owned-outputs.patch',
 );
-const mobile = read('apps/mobile/src/services/WalletService.ts');
+const mobile = read('apps/mobile/src/backend/WalletService.ts');
 const desktop = read('apps/desktop/src-tauri/src/lib.rs');
 const bridge = read('native/monero-bridge/cpp/WalletEngine.cpp');
 const moneroAdditions = moneroPatch

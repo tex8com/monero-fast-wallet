@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   useConnectivityState,
   type ConnectivityRouteState,
-} from '../services/ConnectivityState';
+} from '../backend/ConnectivityState';
 import { colors } from '../theme/colors';
 import MoneroLogo from './MoneroLogo';
 

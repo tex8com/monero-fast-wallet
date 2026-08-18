@@ -59,7 +59,7 @@ process.stdin.on("end", () => {
 });
 '
 
-SMOKE_SRC="$REPO_ROOT/node/cuprate/tools/grpc-smoke"
+SMOKE_SRC="$REPO_ROOT/node/mfn-monero-fast-node/tools/grpc-smoke"
 SMOKE_BIN="$REPO_ROOT/build/cuprate-grpc-smoke/smoke"
 if [ -d "$SMOKE_SRC" ]; then
   cmake -S "$SMOKE_SRC" -B "$REPO_ROOT/build/cuprate-grpc-smoke" -G Ninja >/dev/null

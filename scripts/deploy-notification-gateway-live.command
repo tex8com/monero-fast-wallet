@@ -5,5 +5,5 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 NOTIFICATION_GATEWAY_PROBE_INSTALLATION_ID=mwp_linux_e2e_20260719_a1b2c3d4 \
 WNS_SECRETS_FILE=secrets/wns-server.env \
-bash services/notification-gateway/deploy/deploy-live-from-macos.sh
+bash backend/notification-gateway/deploy/deploy-live-from-macos.sh
 printf '\nDeployment finished. You may close this window.\n'

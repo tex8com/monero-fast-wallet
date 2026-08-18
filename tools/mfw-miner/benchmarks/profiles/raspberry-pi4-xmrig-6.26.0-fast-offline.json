@@ -1,0 +1,55 @@
+{
+    "api": {
+        "id": null,
+        "worker-id": null
+    },
+    "http": {
+        "enabled": false,
+        "host": "127.0.0.1",
+        "port": 0,
+        "access-token": null,
+        "restricted": true
+    },
+    "autosave": false,
+    "background": false,
+    "colors": false,
+    "title": false,
+    "randomx": {
+        "init": 2,
+        "mode": "fast",
+        "1gb-pages": false,
+        "rdmsr": false,
+        "wrmsr": false,
+        "numa": false
+    },
+    "cpu": {
+        "enabled": true,
+        "huge-pages": false,
+        "huge-pages-jit": false,
+        "hw-aes": null,
+        "priority": null,
+        "memory-pool": false,
+        "yield": true,
+        "asm": true
+    },
+    "donate-level": 0,
+    "donate-over-proxy": 0,
+    "log-file": null,
+    "pools": [],
+    "benchmark": {
+        "size": "250K",
+        "algo": "rx/0",
+        "submit": false,
+        "verify": null,
+        "token": null,
+        "seed": null,
+        "user": null,
+        "hash": "7D6054757BB08A63"
+    },
+    "print-time": 1,
+    "health-print-time": 1,
+    "syslog": false,
+    "watch": false,
+    "pause-on-battery": false,
+    "pause-on-active": false
+}

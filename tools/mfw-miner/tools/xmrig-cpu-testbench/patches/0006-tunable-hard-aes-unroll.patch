@@ -1,0 +1,67 @@
+diff --git a/src/crypto/randomx/aes_hash.cpp b/src/crypto/randomx/aes_hash.cpp
+--- a/src/crypto/randomx/aes_hash.cpp
++++ b/src/crypto/randomx/aes_hash.cpp
+@@ -44,6 +44,10 @@
+ #define XMRIG_AES_PREFETCH_DISTANCE 7168
+ #endif
+ 
++#ifndef XMRIG_AES_HARD_UNROLL
++#define XMRIG_AES_HARD_UNROLL 2
++#endif
++
+ #ifdef XMRIG_RISCV
+ #include "crypto/randomx/aes_hash_rv64_vector.hpp"
+ #include "crypto/randomx/aes_hash_rv64_zvkned.hpp"
+@@ -335,6 +339,10 @@ void hashAndFillAes1Rx4(void *scratchpad, size_t scratchpadSize, void *hash, void
+ 	constexpr int PREFETCH_DISTANCE = XMRIG_AES_PREFETCH_DISTANCE;
+ 	static_assert(PREFETCH_DISTANCE > 0 && PREFETCH_DISTANCE % 128 == 0,
+ 		"XMRIG_AES_PREFETCH_DISTANCE must be a positive multiple of 128");
++	static_assert(XMRIG_AES_HARD_UNROLL == 1 || XMRIG_AES_HARD_UNROLL == 2 || XMRIG_AES_HARD_UNROLL == 4,
++		"XMRIG_AES_HARD_UNROLL must be 1, 2, or 4");
++	static_assert(PREFETCH_DISTANCE % (XMRIG_AES_HARD_UNROLL * 64) == 0,
++		"XMRIG_AES_PREFETCH_DISTANCE must be divisible by the hard-AES unroll span");
+ 	const char* prefetchPtr = ((const char*)scratchpad) + PREFETCH_DISTANCE;
+ 	scratchpadEnd -= PREFETCH_DISTANCE;
+ 
+@@ -358,6 +366,33 @@ void hashAndFillAes1Rx4(void *scratchpad, size_t scratchpadSize, void *hash, void
+ 
+ 			switch (softAes) {
+ 				case 0:
++#if XMRIG_AES_HARD_UNROLL == 1
++					HASH_STATE(0);
++					FILL_STATE(0);
++
++					rx_prefetch_t0(prefetchPtr);
++
++					scratchpadPtr += 64;
++					prefetchPtr += 64;
++#elif XMRIG_AES_HARD_UNROLL == 4
++					HASH_STATE(0);
++					HASH_STATE(1);
++					HASH_STATE(2);
++					HASH_STATE(3);
++
++					FILL_STATE(0);
++					FILL_STATE(1);
++					FILL_STATE(2);
++					FILL_STATE(3);
++
++					rx_prefetch_t0(prefetchPtr);
++					rx_prefetch_t0(prefetchPtr + 64);
++					rx_prefetch_t0(prefetchPtr + 128);
++					rx_prefetch_t0(prefetchPtr + 192);
++
++					scratchpadPtr += 256;
++					prefetchPtr += 256;
++#else
+ 					HASH_STATE(0);
+ 					HASH_STATE(1);
+ 
+@@ -369,6 +404,7 @@ void hashAndFillAes1Rx4(void *scratchpad, size_t scratchpadSize, void *hash, void
+ 
+ 					scratchpadPtr += 128;
+ 					prefetchPtr += 128;
++#endif
+ 
+ 					break;
+ 

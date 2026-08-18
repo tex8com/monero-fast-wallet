@@ -213,7 +213,7 @@ if [ "$CHECK_SEND_RAW" = "1" ]; then
   echo "ok sendrawtransaction alias invalid-tx compatibility"
 fi
 
-if [ "$CHECK_GRPC" = "1" ] && [ -d "$REPO_ROOT/node/cuprate/tools/grpc-smoke" ]; then
+if [ "$CHECK_GRPC" = "1" ] && [ -d "$REPO_ROOT/node/mfn-monero-fast-node/tools/grpc-smoke" ]; then
   if [ -z "$cmake_bin" ] || [ ! -x "$cmake_bin" ]; then
     fail "missing required command: cmake"
   fi
@@ -221,7 +221,7 @@ if [ "$CHECK_GRPC" = "1" ] && [ -d "$REPO_ROOT/node/cuprate/tools/grpc-smoke" ];
   grpc_cpp_prefix="${CUPRATE_GRPC_CPP_PREFIX:-}"
   grpc_configure_command=(
     "$cmake_bin"
-    -S "$REPO_ROOT/node/cuprate/tools/grpc-smoke"
+    -S "$REPO_ROOT/node/mfn-monero-fast-node/tools/grpc-smoke"
     -B "$grpc_smoke_build_dir"
     -G Ninja
   )

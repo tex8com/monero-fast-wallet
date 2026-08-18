@@ -138,7 +138,7 @@ source native/monero-bridge/scripts/prepare-wallet-crypto-cpu-backend.sh
 MFW_LIVE_ENROLLMENT_TEST=TEMPORARY_CIPHERTEXT_ENROLLMENT \
   cargo run --locked \
   --config "$(wallet_cpu_cargo_config)" \
-  --manifest-path services/fast-wallet-worker/Cargo.toml \
+  --manifest-path backend/fast-wallet-worker/Cargo.toml \
   --bin live_enrollment_probe -- https://xmr.tex8.com
 ```
 
@@ -252,7 +252,7 @@ anonymous identities, and removes all generated contacts, messages, blocks,
 reports, and identities afterwards:
 
 ```sh
-bash services/enthusiast-discovery/scripts/run-community-testbench.sh full
+bash backend/enthusiast-discovery/scripts/run-community-testbench.sh full
 ```
 
 After the live Community service is deployed, the same privacy-scoped contract

@@ -23,7 +23,7 @@ import {
   sendCommunityMessage,
   type CommunityMessage,
   type CommunityProfile,
-} from '../services/EnthusiastDiscoveryService';
+} from '../backend/EnthusiastDiscoveryService';
 import {colors, spacing} from '../theme/colors';
 
 export default function EnthusiastChatScreen({navigation, route}: any) {

@@ -20,14 +20,14 @@ import {
   MONERO_SHARED_ELEMENTS,
   createMoneroAssistantReply,
   createTex8SharedManifestSnapshot,
-} from "../services/Tex8SharedAssistant";
-import type { Tex8AssistantContext } from "../services/Tex8SharedAssistant";
-import { loadFastReceiveIdentities } from "../services/FastReceiveRegistry";
-import type { FastReceiveIdentityRecord } from "../services/FastReceiveRegistry";
-import { getActiveNodeConnectionSettings } from "../services/NodeConnectionSettings";
-import { formatAtomicXmr } from "../services/WalletFormat";
-import { useWalletState } from "../services/WalletState";
-import { walletDisplayName } from "../services/WalletRegistry";
+} from "../backend/Tex8SharedAssistant";
+import type { Tex8AssistantContext } from "../backend/Tex8SharedAssistant";
+import { loadFastReceiveIdentities } from "../backend/FastReceiveRegistry";
+import type { FastReceiveIdentityRecord } from "../backend/FastReceiveRegistry";
+import { getActiveNodeConnectionSettings } from "../backend/NodeConnectionSettings";
+import { formatAtomicXmr } from "../backend/WalletFormat";
+import { useWalletState } from "../backend/WalletState";
+import { walletDisplayName } from "../backend/WalletRegistry";
 import type { AppControlCommand } from "../../../../../tex8/products/mobile-platform/shared-app/src/core/chat/appControlCommands";
 
 type ChatMessage = {

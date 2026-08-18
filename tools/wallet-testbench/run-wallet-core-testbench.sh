@@ -137,15 +137,15 @@ gate_shell_bridge_build() {
 }
 
 gate_fast_wallet_scanner_core_tests() {
-  cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml"
+  cargo test --manifest-path "${repo_root}/backend/fast-wallet-worker/scanner-core/Cargo.toml"
 }
 
 gate_enthusiast_discovery_tests() {
-  cargo test --release --manifest-path "${repo_root}/services/enthusiast-discovery/Cargo.toml"
+  cargo test --release --manifest-path "${repo_root}/backend/enthusiast-discovery/Cargo.toml"
 }
 
 gate_enthusiast_discovery_local_http_contract() {
-  bash "${repo_root}/services/enthusiast-discovery/scripts/run-community-testbench.sh" local
+  bash "${repo_root}/backend/enthusiast-discovery/scripts/run-community-testbench.sh" local
 }
 
 gate_enthusiast_discovery_live_http_contract() {
@@ -158,19 +158,19 @@ gate_enthusiast_discovery_live_http_contract() {
 
   TESTBENCH_COMMUNITY_URL="${TESTBENCH_COMMUNITY_URL:-https://xmr.tex8.com/community}" \
     TESTBENCH_ALLOW_COMMUNITY_LIVE=1 \
-    bash "${repo_root}/services/enthusiast-discovery/scripts/run-community-testbench.sh" live
+    bash "${repo_root}/backend/enthusiast-discovery/scripts/run-community-testbench.sh" live
 }
 
 gate_fast_wallet_scanner_core_worker_tests() {
-  cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" scanner::tests::scanner_
+  cargo test --manifest-path "${repo_root}/backend/fast-wallet-worker/scanner-core/Cargo.toml" scanner::tests::scanner_
 }
 
 gate_fast_wallet_scanner_core_mempool_tests() {
-  cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" mempool
+  cargo test --manifest-path "${repo_root}/backend/fast-wallet-worker/scanner-core/Cargo.toml" mempool
 }
 
 gate_fast_wallet_scanner_core_mfn_adapter_tests() {
-  cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" cuprate
+  cargo test --manifest-path "${repo_root}/backend/fast-wallet-worker/scanner-core/Cargo.toml" cuprate
 }
 
 gate_fast_wallet_scanner_core_live_mfn_sources() {
@@ -180,7 +180,7 @@ gate_fast_wallet_scanner_core_live_mfn_sources() {
   FAST_WALLET_SCANNER_CORE_TEST_GRPC_ENDPOINT="${CUPRATE_GRPC:-xmr.tex8.com:18091}" \
     FAST_WALLET_SCANNER_CORE_TEST_RPC_ENDPOINT="${CUPRATE_RPC:-xmr.tex8.com:18089}" \
     FAST_WALLET_SCANNER_CORE_TEST_FROM_HEIGHT="${TESTBENCH_SCANNER_CORE_FROM_HEIGHT:-3000000}" \
-    cargo test --manifest-path "${repo_root}/services/fast-wallet-scanner-core/Cargo.toml" live_cuprate -- --ignored
+    cargo test --manifest-path "${repo_root}/backend/fast-wallet-worker/scanner-core/Cargo.toml" live_cuprate -- --ignored
 }
 
 gate_cuprate_backend_compatibility() {

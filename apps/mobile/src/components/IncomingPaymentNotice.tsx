@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { useI18n } from '../i18n';
-import { formatAtomicXmr } from '../services/WalletFormat';
-import { useWalletState } from '../services/WalletState';
+import { formatAtomicXmr } from '../backend/WalletFormat';
+import { useWalletState } from '../backend/WalletState';
 import { colors } from '../theme/colors';
 import { Icon } from './Icon';
 

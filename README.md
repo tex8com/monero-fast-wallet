@@ -531,9 +531,9 @@ native/
 packages/
   wallet-shared/                  shared wallet and synchronization rules
 
-services/
+backend/
   fast-wallet-worker/             outbound encrypted hosted-view-key scanner
-  fast-wallet-scanner-core/       internal Worker scan engine; no server API
+    scanner-core/                 internal Worker scan engine; no server API
   fast-wallet-relay/              ciphertext-only Worker mailbox
   notification-registration-adapter/ attested provider registration
   notification-gateway/          opaque WSS/push delivery
@@ -544,7 +544,7 @@ services/
   monero-news/                    cache of official Monero news
 
 node/
-  cuprate/                        integrated Monero Fast Node engine snapshot
+  mfn-monero-fast-node/           integrated Monero Fast Node engine snapshot
 
 third_party/
   monero-patches/                 ordered Monero product patches
@@ -642,12 +642,12 @@ npm run dev:wallet
 Each Rust service has its own `Cargo.toml` and lockfile. For example:
 
 ```bash
-cargo test --locked --manifest-path services/fast-wallet-scanner-core/Cargo.toml
-cargo test --locked --manifest-path services/notification-gateway/Cargo.toml
-cargo test --locked --manifest-path services/enthusiast-v1/Cargo.toml
-cargo test --locked --manifest-path services/enthusiast-moderation-console/Cargo.toml
-cargo test --locked --manifest-path services/enthusiast-operations/Cargo.toml
-cargo test --locked --manifest-path services/monero-news/Cargo.toml
+cargo test --locked --manifest-path backend/fast-wallet-worker/scanner-core/Cargo.toml
+cargo test --locked --manifest-path backend/notification-gateway/Cargo.toml
+cargo test --locked --manifest-path backend/enthusiast-v1/Cargo.toml
+cargo test --locked --manifest-path backend/enthusiast-moderation-console/Cargo.toml
+cargo test --locked --manifest-path backend/enthusiast-operations/Cargo.toml
+cargo test --locked --manifest-path backend/monero-news/Cargo.toml
 ```
 
 Never use a real wallet, seed, or production key in a testbench, log, or issue.

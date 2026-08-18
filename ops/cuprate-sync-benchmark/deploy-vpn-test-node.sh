@@ -15,7 +15,7 @@ bind_address="private-node-ip"
 
 command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 127; }
 command -v rsync >/dev/null || { echo "rsync is required" >&2; exit 127; }
-test -f "${repo_root}/node/cuprate/Cargo.toml" || {
+test -f "${repo_root}/node/mfn-monero-fast-node/Cargo.toml" || {
   echo "run from monero-fast-wallet checkout" >&2; exit 2;
 }
 
@@ -41,7 +41,7 @@ ssh -o BatchMode=yes "${remote_host}" "set -euo pipefail
   fi"
 
 rsync -a --delete --exclude target --exclude .git \
-  "${repo_root}/node/cuprate/" "${remote_host}:${remote_source}/"
+  "${repo_root}/node/mfn-monero-fast-node/" "${remote_host}:${remote_source}/"
 rsync -a "${repo_root}/ops/cuprate-sync-benchmark/Cuprated.toml" \
   "${remote_host}:${remote_config}"
 

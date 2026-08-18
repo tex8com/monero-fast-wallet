@@ -1,0 +1,6 @@
+--- boost_1_69_0/boost/mpl/aux_/integral_wrapper.hpp.O	2019-12-11 10:20:00.000000000 +0000
++++ boost_1_69_0/boost/mpl/aux_/integral_wrapper.hpp	2026-07-15 22:55:00.000000000 +0000
+@@ -59 +59,2 @@
+-#if BOOST_WORKAROUND(__EDG_VERSION__, <= 243)
++#if BOOST_WORKAROUND(__EDG_VERSION__, <= 243) \
++    || __cplusplus >= 201103L

@@ -1,0 +1,26 @@
+diff --git a/src/base/net/stratum/benchmark/BenchConfig.cpp b/src/base/net/stratum/benchmark/BenchConfig.cpp
+index 1ec93dc9..fd4ee2f1 100644
+--- a/src/base/net/stratum/benchmark/BenchConfig.cpp
++++ b/src/base/net/stratum/benchmark/BenchConfig.cpp
+@@ -146,7 +146,7 @@ uint32_t xmrig::BenchConfig::getSize(const char *benchmark)
+         return strcasecmp(benchmark, fmt::format("{}M", size).c_str()) == 0 ? size * 1000000 : 0;
+     }
+ 
+-    if (size == 250 || size == 500) {
++    if (size == 100 || size == 250 || size == 500) {
+         return strcasecmp(benchmark, fmt::format("{}K", size).c_str()) == 0 ? size * 1000 : 0;
+     }
+ 
+diff --git a/src/core/config/usage.h b/src/core/config/usage.h
+index 71786e31..b73d79a8 100644
+--- a/src/core/config/usage.h
++++ b/src/core/config/usage.h
+@@ -187,7 +187,7 @@ static inline const std::string &usage()
+ 
+ #   ifdef XMRIG_FEATURE_BENCHMARK
+     u += "      --stress                  run continuous stress test to check system stability\n";
+-    u += "      --bench=N                 run benchmark, N can be between 1M and 10M\n";
++    u += "      --bench=N                 run offline benchmark: 100K, 250K, 500K, or 1M through 10M\n";
+ #   ifdef XMRIG_FEATURE_HTTP
+     u += "      --submit                  perform an online benchmark and submit result for sharing\n";
+     u += "      --verify=ID               verify submitted benchmark by ID\n";

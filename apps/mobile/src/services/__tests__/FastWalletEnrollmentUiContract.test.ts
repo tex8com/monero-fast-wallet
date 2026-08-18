@@ -9,7 +9,7 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
     'utf8',
   );
   const walletService = readFileSync(
-    join(mobileRoot, 'src/services/WalletService.ts'),
+    join(mobileRoot, 'src/backend/WalletService.ts'),
     'utf8',
   );
   const walletSetup = readFileSync(
@@ -17,7 +17,7 @@ describe('Fast Wallet encrypted-alert UI contract', () => {
     'utf8',
   );
   const walletState = readFileSync(
-    join(mobileRoot, 'src/services/WalletState.tsx'),
+    join(mobileRoot, 'src/backend/WalletState.tsx'),
     'utf8',
   );
   const releaseManifest = JSON.parse(

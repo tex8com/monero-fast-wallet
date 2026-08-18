@@ -1,0 +1,88 @@
+diff --git a/src/backend/cpu/CpuWorker.cpp b/src/backend/cpu/CpuWorker.cpp
+index eb426032..7201e850 100644
+--- a/src/backend/cpu/CpuWorker.cpp
++++ b/src/backend/cpu/CpuWorker.cpp
+@@ -277,6 +277,11 @@ void xmrig::CpuWorker<N>::start()
+ #           ifdef XMRIG_FEATURE_BENCHMARK
+             if (m_benchSize) {
+                 if (current_job_nonces[0] >= m_benchSize) {
++#                   if XMRIG_FAST_OFFLINE_BENCHMARK
++                    if (m_threads > 1) {
++                        BenchState::add(m_benchHash);
++                    }
++#                   endif
+                     return BenchState::done();
+                 }
+ 
+@@ -358,6 +363,12 @@ void xmrig::CpuWorker<N>::start()
+ #                   ifdef XMRIG_FEATURE_BENCHMARK
+                     if (m_benchSize) {
+                         if (current_job_nonces[i] < m_benchSize) {
++#                           if XMRIG_FAST_OFFLINE_BENCHMARK
++                            if (m_threads > 1) {
++                                m_benchHash ^= value;
++                            }
++                            else
++#                           endif
+                             BenchState::add(value);
+                         }
+                     }
+@@ -398,7 +409,13 @@ template<size_t N>
+ bool xmrig::CpuWorker<N>::nextRound()
+ {
+ #   ifdef XMRIG_FEATURE_BENCHMARK
+-    const uint32_t count = m_benchSize ? 1U : kReserveCount;
++    const uint32_t count = m_benchSize
++#       if XMRIG_FAST_OFFLINE_BENCHMARK
++        ? (m_threads > 1 ? XMRIG_FAST_OFFLINE_BENCHMARK_RESERVE : 1U)
++#       else
++        ? 1U
++#       endif
++        : kReserveCount;
+ #   else
+     constexpr uint32_t count = kReserveCount;
+ #   endif
+@@ -537,7 +554,13 @@ void xmrig::CpuWorker<N>::consumeJob()
+ 
+ #   ifdef XMRIG_FEATURE_BENCHMARK
+     m_benchSize          = job.benchSize();
+-    const uint32_t count = m_benchSize ? 1U : kReserveCount;
++    const uint32_t count = m_benchSize
++#       if XMRIG_FAST_OFFLINE_BENCHMARK
++        ? (m_threads > 1 ? XMRIG_FAST_OFFLINE_BENCHMARK_RESERVE : 1U)
++#       else
++        ? 1U
++#       endif
++        : kReserveCount;
+ #   else
+     constexpr uint32_t count = kReserveCount;
+ #   endif
+diff --git a/src/backend/cpu/CpuWorker.h b/src/backend/cpu/CpuWorker.h
+index 1cd32ee1..20f93a20 100644
+--- a/src/backend/cpu/CpuWorker.h
++++ b/src/backend/cpu/CpuWorker.h
+@@ -31,6 +31,14 @@
+ class randomx_vm;
+ #endif
+ 
++#ifndef XMRIG_FAST_OFFLINE_BENCHMARK
++#define XMRIG_FAST_OFFLINE_BENCHMARK 0
++#endif
++
++#ifndef XMRIG_FAST_OFFLINE_BENCHMARK_RESERVE
++#define XMRIG_FAST_OFFLINE_BENCHMARK_RESERVE 64
++#endif
++
+ 
+ namespace xmrig {
+ 
+@@ -107,6 +115,9 @@ private:
+ 
+ #   ifdef XMRIG_FEATURE_BENCHMARK
+     uint32_t m_benchSize    = 0;
++#       if XMRIG_FAST_OFFLINE_BENCHMARK
++    uint64_t m_benchHash    = 0;
++#       endif
+ #   endif
+ };
+ 

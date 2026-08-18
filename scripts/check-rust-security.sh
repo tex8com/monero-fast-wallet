@@ -10,11 +10,11 @@ if [[ "$(cargo audit --version)" != "cargo-audit-audit 0.22.2" ]]; then
 fi
 
 clean_lockfiles=(
-  "${repo_root}/services/enthusiast-discovery/Cargo.lock"
-  "${repo_root}/services/monero-news/Cargo.lock"
-  "${repo_root}/services/notification-gateway/Cargo.lock"
-  "${repo_root}/services/notification-registration-adapter/Cargo.lock"
-  "${repo_root}/services/fast-wallet-scanner-core/Cargo.lock"
+  "${repo_root}/backend/enthusiast-discovery/Cargo.lock"
+  "${repo_root}/backend/monero-news/Cargo.lock"
+  "${repo_root}/backend/notification-gateway/Cargo.lock"
+  "${repo_root}/backend/notification-registration-adapter/Cargo.lock"
+  "${repo_root}/backend/fast-wallet-worker/scanner-core/Cargo.lock"
 )
 
 audit_output="$(mktemp)"

@@ -9,16 +9,16 @@ import {
 } from 'react-native';
 
 import { useI18n, type TranslationKey } from '../i18n';
-import type { WalletSnapshot } from '../services/NativeMoneroWallet';
+import type { WalletSnapshot } from '../backend/NativeMoneroWallet';
 import {
   isFastWalletRegistration,
   isLegacyLedgerAccountRegistration,
   ledgerBalanceNeedsVerification,
   walletDisplayName,
   type RegisteredWallet,
-} from '../services/WalletRegistry';
-import { formatAtomicXmr } from '../services/WalletFormat';
-import type { WalletSnapshotCache } from '../services/WalletSnapshotCache';
+} from '../backend/WalletRegistry';
+import { formatAtomicXmr } from '../backend/WalletFormat';
+import type { WalletSnapshotCache } from '../backend/WalletSnapshotCache';
 import { colors, radius } from '../theme/colors';
 import { presentWalletSync } from '../../../../packages/wallet-shared/src/walletSync';
 

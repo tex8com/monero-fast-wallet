@@ -1,0 +1,58 @@
+{
+  "schema": "mfw.miner.comparison/v1",
+  "comparisonId": "m4-light-interpreter-vs-xmrig-2026-08-15",
+  "recordedAt": "2026-08-15",
+  "eligibility": "exploratory",
+  "exclusionReasons": [
+    "measurement durations differ: MFW-Miner 10.427 seconds versus XMRig 511.985 seconds",
+    "MFW-Miner source revision is an uncommitted working tree",
+    "the pair was not executed in interleaved A/B/B/A order",
+    "the long XMRig run shows thermal/time drift"
+  ],
+  "platform": {
+    "cpu": "Apple M4",
+    "architecture": "aarch64",
+    "logicalCpus": 10,
+    "operatingSystem": "macOS 26.5.2",
+    "powerSource": "AC Power"
+  },
+  "matchedSettings": {
+    "randomxVariant": "rx/0",
+    "randomxMode": "light",
+    "threads": 10,
+    "hugePages": false
+  },
+  "mfwMiner": {
+    "version": "0.1.0",
+    "sourceRevision": "working-tree",
+    "backend": "rust-interpreter",
+    "jit": false,
+    "cacheInitializationMs": 449,
+    "measurementDurationSeconds": 10.426985958,
+    "totalHashes": 175,
+    "hashesPerSecond": 16.783373517994722,
+    "checksum": "cf7e8aac6568d7e9",
+    "binarySha256": "aa03a393173d17766ba6c5282f1dd101d256c60598ef5d966e9d279399c36438",
+    "resultPath": "../../benchmark-results/mfw-miner-1786826088-aarch64-10t.json",
+    "resultSha256": "76fdaa7bacac27bbe4a229b7e1e5ab686ebc11b06ee3b92cf092f17ad826fbb6"
+  },
+  "xmrig": {
+    "version": "6.26.0",
+    "sourceRevision": "b2ca72480c58d197e18c885d9fc1a0c8d517e60a",
+    "variant": "user-interactive-qos",
+    "benchmarkHashes": 100000,
+    "measurementDurationSeconds": 511.985,
+    "hashesPerSecond": 195.3,
+    "expectedHash": "BC4EF98B60B98579",
+    "actualHash": "BC4EF98B60B98579",
+    "binarySha256": "3c36c5c7c07aaa530323583d707b441dd8e967742c36061b9b016e7645b3b08f",
+    "evidencePath": "../../benchmark-results/xmrig-evidence/20260815T203520Z-mfw-reference-light-t10-100k",
+    "metadataSha256": "f8118740a7048607ce4d994793047544fafd43f9bd95498d6eec4de1cd702840",
+    "logSha256": "2d644b5b516935d9dc09e0fe243ab49a00926f97ab4edb43c8d20d76cc05fe14"
+  },
+  "observedGap": {
+    "xmrigOverMfwFactor": 11.636516,
+    "mfwBehindPercent": 91.406,
+    "interpretation": "The Rust interpreter is a correctness baseline. Closing this gap requires a full-memory dataset and AArch64 JIT before micro-optimizing the interpreter."
+  }
+}

@@ -8,11 +8,11 @@ const read = (path: string) =>
 describe('Private local advertising boundary', () => {
   const home = read('apps/mobile/src/screens/HomeScreen.tsx');
   const hook = read('apps/mobile/src/data/advertisements.ts');
-  const service = read('apps/mobile/src/services/MoneroEnthusiastV1Service.ts');
+  const service = read('apps/mobile/src/backend/MoneroEnthusiastV1Service.ts');
   const android = read(
     'apps/mobile/android/app/src/main/java/com/monerowallet/MoneroEnthusiastV1Controller.kt',
   );
-  const backend = read('services/monero-news/src/lib.rs');
+  const backend = read('backend/monero-news/src/lib.rs');
 
   it('renders an explicit payer label and a local-selection explanation', () => {
     expect(home).toContain('advertisement.sponsorshipLabel');

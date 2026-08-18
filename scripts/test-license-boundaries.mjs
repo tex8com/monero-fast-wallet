@@ -40,7 +40,7 @@ test('root multi-license grant includes every complete standard text', () => {
 test('every project-authored hosted service is AGPL-3.0-only', () => {
   const services = readdirSync(resolve(root, 'services'), { withFileTypes: true })
     .filter(entry => entry.isDirectory())
-    .map(entry => `services/${entry.name}/Cargo.toml`)
+    .map(entry => `backend/${entry.name}/Cargo.toml`)
     .filter(path => existsSync(resolve(root, path)));
   assert.ok(services.length >= 8);
   for (const manifest of services) {
@@ -63,9 +63,9 @@ test('project protocol crates and user apps declare their intended grants', () =
 
 test('upstream license boundaries remain present and explicit', () => {
   for (const path of [
-    'node/cuprate/LICENSE',
-    'node/cuprate/LICENSE-AGPL',
-    'node/cuprate/LICENSE-MIT',
+    'node/mfn-monero-fast-node/LICENSE',
+    'node/mfn-monero-fast-node/LICENSE-AGPL',
+    'node/mfn-monero-fast-node/LICENSE-MIT',
   ]) {
     assert.ok(existsSync(resolve(root, path)), `${path} is missing`);
   }

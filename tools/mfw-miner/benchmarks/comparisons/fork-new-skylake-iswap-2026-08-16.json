@@ -1,0 +1,84 @@
+{
+  "schema": "mfw_randomx_jit_ab_v1",
+  "recordedUtc": "2026-08-16T00:59:59Z",
+  "hostAlias": "fork-new",
+  "cpu": "Intel Xeon E3-1585L v5",
+  "cpuFamily": 6,
+  "cpuModelHex": "0x5e",
+  "status": "correct-load-contaminated-not-promotable",
+  "candidate": {
+    "name": "skylake-iswap-three-movs",
+    "cmakeOption": "MFW_X86_SKYLAKE_ISWAP_MODE",
+    "controlValue": 0,
+    "candidateValue": 1,
+    "default": 0,
+    "runtimeMarker": "MFW_X86_SKYLAKE_ISWAP_ACTIVE=1"
+  },
+  "build": {
+    "engineCommit": "b2ca72480c58d197e18c885d9fc1a0c8d517e60a",
+    "compiler": "clang 21.1.8",
+    "libuv": "1.51.0",
+    "openssl": "3.5.5",
+    "groupEMode": 0,
+    "controlSha256": "2dcd27b0d71186695402c7ebf05d6f37dcef955ecea9e05b47a85a880c66925b",
+    "candidateSha256": "5d74231738749756f518c15b288643569ff24e5f1c7b9028a4b3fc25a5ec7e08"
+  },
+  "benchmark": {
+    "algorithm": "rx/0",
+    "mode": "fast",
+    "work": "250K",
+    "threads": 7,
+    "cpuSet": "0-6",
+    "hugePages": false,
+    "msrRead": false,
+    "msrWrite": false,
+    "expectedHash": "7D6054757BB08A63",
+    "allHashesCorrect": true,
+    "allExitStatusZero": true,
+    "allTimeoutZero": true,
+    "allNetworkFallbackZero": true
+  },
+  "correctnessGate": {
+    "mode": 1,
+    "seconds": 130.774,
+    "hashrateHs": 1911.7,
+    "hash": "7D6054757BB08A63"
+  },
+  "runs": [
+    { "order": 1, "block": "ABBA", "label": "A1", "mode": 0, "seconds": 129.038, "hashrateHs": 1937.4, "hash": "7D6054757BB08A63" },
+    { "order": 2, "block": "ABBA", "label": "B1", "mode": 1, "seconds": 129.623, "hashrateHs": 1928.7, "hash": "7D6054757BB08A63" },
+    { "order": 3, "block": "ABBA", "label": "B2", "mode": 1, "seconds": 128.502, "hashrateHs": 1945.5, "hash": "7D6054757BB08A63" },
+    { "order": 4, "block": "ABBA", "label": "A2", "mode": 0, "seconds": 131.019, "hashrateHs": 1908.1, "hash": "7D6054757BB08A63" },
+    { "order": 5, "block": "BAAB", "label": "B3", "mode": 1, "seconds": 128.536, "hashrateHs": 1945.0, "hash": "7D6054757BB08A63" },
+    { "order": 6, "block": "BAAB", "label": "A3", "mode": 0, "seconds": 129.346, "hashrateHs": 1932.8, "hash": "7D6054757BB08A63" },
+    { "order": 7, "block": "BAAB", "label": "A4", "mode": 0, "seconds": 128.941, "hashrateHs": 1938.9, "hash": "7D6054757BB08A63" },
+    { "order": 8, "block": "BAAB", "label": "B4", "mode": 1, "seconds": 124.120, "hashrateHs": 2014.2, "hash": "7D6054757BB08A63" }
+  ],
+  "summary": {
+    "abbaControlMeanHs": 1922.75,
+    "abbaCandidateMeanHs": 1937.10,
+    "abbaDeltaPercent": 0.7463268756,
+    "baabControlMeanHs": 1935.85,
+    "baabCandidateMeanHs": 1979.60,
+    "baabDeltaPercent": 2.2599891521,
+    "allControlMeanHs": 1929.30,
+    "allCandidateMeanHs": 1958.35,
+    "allDeltaPercent": 1.5057274659,
+    "geometricBlockDeltaPercent": 1.5003364202,
+    "candidateFirstToLastDriftPercent": 4.4330377975,
+    "performanceClaim": false
+  },
+  "contamination": {
+    "productiveProcessPresent": true,
+    "productiveProcessApproxCpuPercentRange": [92.6, 96.6],
+    "loadAverageOneMinuteBeforeRunRange": [6.51, 10.99],
+    "instantVmstatIowaitPercentRange": [16, 36],
+    "reason": "productive foreign CPU, memory and I/O load plus large candidate drift"
+  },
+  "evidence": {
+    "directory": "benchmark-results/hosts/fork-new-intel-skylake-iswap-20260816T003500Z",
+    "copiedFileCount": 130,
+    "totalFileCountIncludingLocalManifest": 131,
+    "manifestSha256": "38fb5b16e9b772681b5a99810ad462c5d5bf8d39498b196b60c62d669771ebc7"
+  }
+}

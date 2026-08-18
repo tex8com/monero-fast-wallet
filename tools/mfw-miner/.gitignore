@@ -1,0 +1,13 @@
+/build
+/build-mfw-*
+scripts/build
+scripts/deps
+/CMakeLists.txt.user
+/.idea
+/src/backend/opencl/cl/cn/cryptonight_gen.cl
+.vscode
+/.qtcreator
+
+# MFW Donation Gateway local runtime configuration and secrets.
+/services/mfw-donation-gateway/gateway.toml
+/services/mfw-donation-gateway/.env

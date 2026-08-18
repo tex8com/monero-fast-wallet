@@ -17,16 +17,16 @@ import { colors } from '../theme/colors';
 import MoneroCoinGhost from '../components/MoneroCoinGhost';
 import MoneroCoin from '../components/MoneroCoin';
 import { useI18n } from '../i18n';
-import { useWalletState } from '../services/WalletState';
+import { useWalletState } from '../backend/WalletState';
 import {
   isFastWalletRegistration,
   walletDisplayName,
-} from '../services/WalletRegistry';
-import { saveFastWalletPreference } from '../services/FastWalletPreference';
+} from '../backend/WalletRegistry';
+import { saveFastWalletPreference } from '../backend/FastWalletPreference';
 import {
   loadCommunityQueryContributionState,
   setCommunityQueryContributionEnabled,
-} from '../services/CommunityQueryContribution';
+} from '../backend/CommunityQueryContribution';
 
 const IS_TEST = typeof jest !== 'undefined';
 

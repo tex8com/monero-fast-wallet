@@ -37,46 +37,46 @@ import { useI18n } from '../i18n';
 import type {
   PreparedTransaction,
   TransactionPriority,
-} from '../services/NativeMoneroWallet';
+} from '../backend/NativeMoneroWallet';
 import {
   atomicXmrToNumber,
   formatAtomicXmr,
   parseXmrToAtomic,
   toAtomicBigInt,
-} from '../services/WalletFormat';
-import { useWalletState } from '../services/WalletState';
-import { walletDisplayName } from '../services/WalletRegistry';
-import { walletService, type WalletSession } from '../services/WalletService';
+} from '../backend/WalletFormat';
+import { useWalletState } from '../backend/WalletState';
+import { walletDisplayName } from '../backend/WalletRegistry';
+import { walletService, type WalletSession } from '../backend/WalletService';
 import {
   loadRecentRecipients,
   loadRecipientContacts,
   rememberRecipient,
   saveRecipientContacts,
   type RecipientContact,
-} from '../services/RecipientAddressBook';
+} from '../backend/RecipientAddressBook';
 import {
   validateMfwNameSendPreset,
   type MfwNameSendPreset,
-} from '../services/MfwNameRegistration';
+} from '../backend/MfwNameRegistration';
 import {
   convertPaymentAmount,
   paymentXmrAmount,
   sanitizePaymentAmountInput,
   type PaymentAmountCurrency,
-} from '../services/PaymentRequest';
+} from '../backend/PaymentRequest';
 import {
   mfwNameAutocompletePrefix,
   mfwNameAutocompleteSuggestions,
-} from '../services/MfwNameAutocomplete';
+} from '../backend/MfwNameAutocomplete';
 import {
   isLedgerSigningCancelledError,
   type LedgerSigningProgress,
-} from '../services/LedgerSigningFlow';
+} from '../backend/LedgerSigningFlow';
 import {
   fetchConfiguredMfwNameSuggestions,
   isMfwNameCandidate,
   resolveConfiguredMfwNameForPayment,
-} from '../services/MfwNameResolutionService';
+} from '../backend/MfwNameResolutionService';
 import {
   acceptRecipientReview,
   createPrivatePhoneSendPreset,
@@ -85,7 +85,7 @@ import {
   recipientFingerprint,
   validatePrivatePhoneSendPreset,
   type RecipientReview,
-} from '../services/RecipientReview';
+} from '../backend/RecipientReview';
 
 type Step =
   | 'recipient-choice'

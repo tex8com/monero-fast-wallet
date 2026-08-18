@@ -54,7 +54,7 @@ for (const contract of [
   /step_up_grant_is_short_exact_and_single_use/,
 ]) assert.match(rust, contract);
 
-const mobileUi = read('apps/mobile/src/services/AppSecurity.tsx');
+const mobileUi = read('apps/mobile/src/backend/AppSecurity.tsx');
 const desktopUi = read('apps/desktop/src/App.tsx');
 for (const [name, source] of [['mobile', mobileUi], ['desktop', desktopUi]]) {
   assert.match(source, /deriveAppVaultPresentation/, `${name} bypasses the shared presentation state machine`);

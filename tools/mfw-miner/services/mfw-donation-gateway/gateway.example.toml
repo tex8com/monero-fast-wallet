@@ -1,0 +1,47 @@
+# The public listener used by MFW-Miner during its disclosed 1% window.
+listen = "127.0.0.1:3333"
+
+# Public address only. Never place a seed or private key in this file.
+donation_address = "49aaK7WgMCQABhjHt1UyXijKRwbjjbtSq2xbDbB4AgYLGqtXpudonJq58aM4j7fhTWdph4LD7VxjpEwEzBXBdzK2K9vybrL"
+active_backend = "local-mock"
+fallback_backends = []
+max_line_bytes = 65536
+connect_timeout_secs = 10
+
+[admin]
+enabled = false
+listen = "127.0.0.1:18088"
+token_env = "MFW_GATEWAY_ADMIN_TOKEN"
+
+# Safe development default: no public pool is contacted by this example.
+[[backends]]
+name = "local-mock"
+mode = "pool"
+host = "127.0.0.1"
+port = 43333
+tls = false
+password = "mfw~rx/0"
+enabled = true
+
+# Production examples remain disabled until the operator approves the traffic.
+[[backends]]
+name = "moneroocean"
+mode = "pool"
+host = "gulf.moneroocean.stream"
+port = 20128
+tls = true
+tls_server_name = "gulf.moneroocean.stream"
+password = "mfw~rx/0"
+enabled = false
+
+# A solo coordinator must expose Stratum. Direct monerod JSON-RPC is not a
+# Stratum endpoint and is intentionally not accepted by this relay.
+[[backends]]
+name = "mfw-solo"
+mode = "solo"
+host = "127.0.0.1"
+port = 43334
+tls = false
+password = "x"
+enabled = false
+

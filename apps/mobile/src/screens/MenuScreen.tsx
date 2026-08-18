@@ -5,8 +5,8 @@ import { colors } from "../theme/colors";
 import MoneroLogo from "../components/MoneroLogo";
 import { Icon } from "../components/Icon";
 import { useI18n, type TranslationKey } from "../i18n";
-import { useWalletState } from "../services/WalletState";
-import { walletDisplayName } from "../services/WalletRegistry";
+import { useWalletState } from "../backend/WalletState";
+import { walletDisplayName } from "../backend/WalletRegistry";
 import { v1ReleaseFeatures } from "../../../../packages/wallet-shared/src/v1ReleaseFeatures";
 
 /* ── SVG Icons ────────────────────────────────────────────────────── */

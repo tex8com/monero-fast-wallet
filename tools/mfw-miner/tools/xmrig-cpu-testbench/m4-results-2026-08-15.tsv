@@ -1,0 +1,12 @@
+classification	variant	threads	size	hashrate_hs	hash_sum	exit_status	network	decision
+promoted_screen	xmrig-stock-scheduling	4	100K	2538.3	BC4EF98B60B98579	0	denied	control
+promoted_screen	xmrig-user-interactive-qos	4	100K	2596.5	BC4EF98B60B98579	0	denied	candidate
+promoted_screen	xmrig-user-interactive-qos	6	100K	3212.1	BC4EF98B60B98579	0	denied	background-candidate
+promoted_screen	xmrig-user-interactive-qos	8	100K	3676.6	BC4EF98B60B98579	0	denied	balanced-candidate
+promoted_screen	xmrig-user-interactive-qos	10	100K	3920.8	BC4EF98B60B98579	0	denied	fast-candidate
+promoted_validation	xmrig-user-interactive-qos	10	250K	3846.7	7D6054757BB08A63	0	denied	fast-candidate
+functional_only	xmrig-apple-m4-codegen	10	100K	3314.3	BC4EF98B60B98579	0	denied	non-interleaved-thermal-state
+functional_only	moneroocean-stock	10	250K	3382.3	7D6054757BB08A63	0	denied	non-interleaved-thermal-state
+invalid_performance	moneroocean-user-interactive-qos	10	250K	1933.3	7D6054757BB08A63	0	denied	started-hot
+functional_validation	xmrig-qos-file-log-fix	4	100K	2401.1	BC4EF98B60B98579	0	denied	logger-lifetime-fix-passed
+functional_validation	xmrig-final-patched-artifact	10	250K	1441.6	7D6054757BB08A63	0	denied	started-hot-and-concurrently-loaded

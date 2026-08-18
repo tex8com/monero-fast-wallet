@@ -1,0 +1,75 @@
+{
+  "schema": "mfw_hardware_comparison_v1",
+  "recorded_utc_date": "2026-08-16",
+  "host": {
+    "label": "TEX8",
+    "cpu": "AMD EPYC 9634",
+    "environment": "KVM guest",
+    "visible_cpus": 12,
+    "guest_numa_nodes": 1
+  },
+  "algorithm": "rx/0",
+  "randomx_mode": "fast",
+  "retained_profile": {
+    "workers": 12,
+    "worker_cpus": "0-11",
+    "hugetlb": "none",
+    "numa": "off",
+    "msr": "off",
+    "mfw_x86_group_e_mode": 0
+  },
+  "worker_screen_100k": [
+    {"workers": 4, "hps": [1704.3, 1666.1], "mean_hps": 1685.2},
+    {"workers": 6, "hps": [2509.2, 2481.3], "mean_hps": 2495.25},
+    {"workers": 8, "hps": [3461.8, 3405.9], "mean_hps": 3433.85},
+    {"workers": 10, "hps": [4341.4, 4384.6], "mean_hps": 4363.0},
+    {"workers": 12, "hps": [5074.3, 5252.9], "mean_hps": 5163.6}
+  ],
+  "validation_250k": [
+    {
+      "comparison": "official-xmrig-vs-mfw-mode0",
+      "control_hps": [5249.2, 5084.0],
+      "contender_hps": [5151.9, 5163.4],
+      "delta_percent": -0.17322804165216255,
+      "control_drift_percent": 3.197460612394995,
+      "contender_drift_percent": 0.2229697633612207,
+      "promotion_eligible": false
+    },
+    {
+      "comparison": "official-xmrig-vs-mfw-avx512vl-mode1",
+      "control_hps": [5094.8, 5206.5],
+      "contender_hps": [5235.7, 5174.1],
+      "delta_percent": 1.0532651218778222,
+      "control_drift_percent": 2.1686583246774647,
+      "contender_drift_percent": 1.183500163307642,
+      "promotion_eligible": false
+    },
+    {
+      "comparison": "mfw-mode0-vs-mfw-avx512vl-mode1",
+      "control_hps": [4973.5, 5128.8],
+      "contender_hps": [5014.0, 4780.6],
+      "delta_percent": -3.0458410460984076,
+      "control_drift_percent": 3.0745473802995393,
+      "contender_drift_percent": 4.765891409552195,
+      "promotion_eligible": false
+    }
+  ],
+  "hugetlb_2m_100k": {
+    "control_no_pages_hps": [5130.0, 4909.9],
+    "contender_2m_hps": [4916.2, 5028.4],
+    "delta_percent": -0.949212641560182,
+    "control_drift_percent": 4.384505821771141,
+    "contender_drift_percent": 2.2565010156265677,
+    "promotion_eligible": false
+  },
+  "correctness": {
+    "all_retained_100k_hashes": "BC4EF98B60B98579",
+    "all_retained_250k_hashes": "7D6054757BB08A63",
+    "network_fallback_detected": false
+  },
+  "decision": "retain-mode0-12-workers-no-hugetlb",
+  "evidence": {
+    "path": "benchmark-results/hosts/tex8-epyc9634-autotune-20260816T013108Z",
+    "full_manifest_sha256": "b7d71284dc21137e45f101adf543fa4eac177c2260d96771f3e8ab0a0cdfae15"
+  }
+}

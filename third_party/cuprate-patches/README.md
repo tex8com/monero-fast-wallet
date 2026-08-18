@@ -16,6 +16,6 @@ The series includes wallet-compatible RPC, gRPC block streaming, range reads,
 the persistent scan-pack cache and the final production scan-pack node. Apply
 the numbered patches in lexical order to the recorded upstream base.
 
-The product snapshot under `node/cuprate` may contain additional integration
+The product snapshot under `node/mfn-monero-fast-node` may contain additional integration
 work. Do not overwrite that snapshot blindly with this series; reconcile it
 through Git and validate the combined node.

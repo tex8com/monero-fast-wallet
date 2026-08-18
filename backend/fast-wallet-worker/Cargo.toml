@@ -1,0 +1,29 @@
+[package]
+name = "fast-wallet-worker"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+
+[dependencies]
+anyhow = "1"
+ctrlc = "3"
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc", "zeroize"] }
+ed25519-dalek = "2"
+fast-wallet-protocol = { path = "../../native/fast-wallet-protocol" }
+fast-wallet-relay = { path = "../fast-wallet-relay" }
+hex = "0.4"
+libc = "0.2"
+monero-address = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
+fast-wallet-scanner-core = { path = "scanner-core", features = ["epyc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+url = "2"
+zeroize = "1"
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["http1", "tokio"], default-features = false }
+notification-gateway = { path = "../notification-gateway" }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"], default-features = false }

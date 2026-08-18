@@ -1,0 +1,70 @@
+{
+  "schema": "mfw_hardware_comparison_v1",
+  "date": "2026-08-16",
+  "algorithm": "rx/0",
+  "mode": "fast",
+  "network": "denied",
+  "rows": [
+    {
+      "hardware": "Apple M4",
+      "threads": 10,
+      "hashes": 100000,
+      "order": "ABBA",
+      "xmrig_hps": [4119.1, 4116.1],
+      "mfw_hps": [4123.2, 4117.9],
+      "xmrig_mean_hps": 4117.6,
+      "mfw_mean_hps": 4120.55,
+      "delta_percent": 0.071644,
+      "validity": "matched_valid_parity",
+      "evidence": "benchmark-results/m4-final-xmrig-vs-mfw-w32-10t-20260816"
+    },
+    {
+      "hardware": "Apple M1 MacBook Air",
+      "threads": 8,
+      "hashes": 100000,
+      "order": "ABBA",
+      "xmrig_hps": [1014.9, 1009.7],
+      "mfw_hps": [1013.3, 1012.0],
+      "xmrig_mean_hps": 1012.3,
+      "mfw_mean_hps": 1012.65,
+      "delta_percent": 0.034575,
+      "validity": "matched_valid_parity",
+      "evidence": "benchmark-results/m1-final-xmrig-vs-mfw-8t-20260816"
+    },
+    {
+      "hardware": "Intel Xeon E3-1585L v5",
+      "threads": 7,
+      "hashes": 250000,
+      "order": "ABBA",
+      "xmrig_hps": [2390.3, 2347.4],
+      "mfw_hps": [2357.4, 2357.3],
+      "xmrig_mean_hps": 2368.85,
+      "mfw_mean_hps": 2357.35,
+      "delta_percent": -0.485468,
+      "validity": "matched_valid_xmrig_faster",
+      "evidence": "benchmark-results/hosts/fork-new-skylake-final-20260816/xmrig-vs-mfw-mode0-warm-abba-20260816T0556Z"
+    },
+    {
+      "hardware": "AMD EPYC 9634 KVM",
+      "threads": 12,
+      "hashes": 250000,
+      "order": "ABBA",
+      "xmrig_hps": [5249.2, 5084.0],
+      "mfw_hps": [5151.9, 5163.4],
+      "xmrig_mean_hps": 5166.6,
+      "mfw_mean_hps": 5157.65,
+      "delta_percent": -0.173228,
+      "validity": "provisional_xmrig_drift_3_20_percent",
+      "evidence": "benchmarks/hosts/TEX8_EPYC9634_AUTOTUNE_PLAN_2026-08-16.md"
+    }
+  ],
+  "excluded": [
+    {
+      "hardware": "AMD EPYC 9634 KVM",
+      "xmrig_hps": [2732.4, 2691.0],
+      "mfw_hps": [3245.5, 2677.8],
+      "reason": "productive VM load rose to 12.87-13.39; MFW drift 19.17 percent",
+      "evidence": "benchmark-results/hosts/tex8-epyc9634-final-20260816"
+    }
+  ]
+}

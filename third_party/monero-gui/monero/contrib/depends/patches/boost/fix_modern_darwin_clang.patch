@@ -1,0 +1,22 @@
+--- boost_1_69_0/tools/build/src/tools/darwin.jam.O	2019-12-11 10:20:00.000000000 +0000
++++ boost_1_69_0/tools/build/src/tools/darwin.jam	2026-07-15 22:30:00.000000000 +0000
+@@ -137,11 +137,6 @@
+     # - Set the toolset generic common options.
+     common.handle-options darwin : $(condition) : $(command) : $(options) ;
+     
+-    # - GCC 4.0 and higher in Darwin does not have -fcoalesce-templates.
+-    if $(real-version) < "4.0.0"
+-    {
+-        flags darwin.compile.c++ OPTIONS $(condition) : -fcoalesce-templates ;
+-    }
+     # - GCC 4.2 and higher in Darwin does not have -Wno-long-double.
+     if $(real-version) < "4.2.0"
+     {
+--- boost_1_69_0/tools/build/src/tools/darwin.py.O	2019-12-11 10:20:00.000000000 +0000
++++ boost_1_69_0/tools/build/src/tools/darwin.py	2026-07-15 22:30:00.000000000 +0000
+@@ -38,7 +38,6 @@
+ toolset.flags ('darwin.compile', 'OPTIONS', '<link>shared', ['-dynamic'])
+ toolset.flags ('darwin.compile', 'OPTIONS', None, ['-Wno-long-double', '-no-cpp-precomp'])
+-toolset.flags ('darwin.compile.c++', 'OPTIONS', None, ['-fcoalesce-templates'])
+ 
+ toolset.flags ('darwin.link', 'FRAMEWORK', '<framework>')

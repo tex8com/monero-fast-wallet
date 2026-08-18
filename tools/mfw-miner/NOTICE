@@ -1,0 +1,14 @@
+MFW-Miner
+Copyright (c) 2026 TEX8 LLP and MFW-Miner contributors
+
+MFW-Miner is a derivative of XMRig:
+  https://github.com/xmrig/xmrig
+  pinned baseline v6.26.0
+  commit b2ca72480c58d197e18c885d9fc1a0c8d517e60a
+
+XMRig copyright and license notices are retained in the source files and
+LICENSE. MFW-Miner and TEX8 LLP are independent from XMRig and Monero; no
+upstream endorsement is implied.
+
+The archived pure-Rust prototype derived from Mithril is not part of this
+active source tree or production engine.

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useState } from 'react';
 import {PRIMARY_PRIVATE_SERVICE_ORIGIN} from '../../../../packages/wallet-shared/src/nodePresets';
-import {torFetch} from '../services/TorHttp';
+import {torFetch} from '../backend/TorHttp';
 
 const TEX8_MARKET_BASE = `${PRIMARY_PRIVATE_SERVICE_ORIGIN}/api/v1/market`;
 const CACHE_TTL = 60_000;

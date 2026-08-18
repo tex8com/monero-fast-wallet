@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 protocol_dir="$repo_root/native/mfw-recipient-protocol"
-cuprate_dir="$repo_root/node/cuprate"
+cuprate_dir="$repo_root/node/mfn-monero-fast-node"
 mobile_dir="$repo_root/apps/mobile"
 result_dir="${MFW_SECURITY_RESULT_DIR:-$repo_root/test-results/mfw-recipient-security}"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -33,15 +33,15 @@ mkdir -p "$run_dir"
   find \
     "$protocol_dir" \
     "$repo_root/native/fast-wallet-protocol" \
-    "$repo_root/services/mfw-private-directory" \
-    "$repo_root/node/cuprate/binaries/cuprated/src/mfw_name_index.rs" \
-    "$repo_root/node/cuprate/binaries/cuprated/proto/cuprate_stream.proto" \
-    "$mobile_dir/src/services/PrivateRecipientResolution.ts" \
-    "$mobile_dir/src/services/MfwNameResolverClient.ts" \
-    "$mobile_dir/src/services/MfwNameResolutionService.ts" \
-    "$mobile_dir/src/services/PrivatePhoneDirectoryClient.ts" \
-    "$mobile_dir/src/services/PrivatePhoneConsentRegistry.ts" \
-    "$mobile_dir/src/services/PrivatePhoneDeviceContacts.ts" \
+    "$repo_root/backend/mfw-private-directory" \
+    "$repo_root/node/mfn-monero-fast-node/binaries/cuprated/src/mfw_name_index.rs" \
+    "$repo_root/node/mfn-monero-fast-node/binaries/cuprated/proto/cuprate_stream.proto" \
+    "$mobile_dir/src/backend/PrivateRecipientResolution.ts" \
+    "$mobile_dir/src/backend/MfwNameResolverClient.ts" \
+    "$mobile_dir/src/backend/MfwNameResolutionService.ts" \
+    "$mobile_dir/src/backend/PrivatePhoneDirectoryClient.ts" \
+    "$mobile_dir/src/backend/PrivatePhoneConsentRegistry.ts" \
+    "$mobile_dir/src/backend/PrivatePhoneDeviceContacts.ts" \
     "$repo_root/config/v1-release-features.json" \
     "$repo_root/scripts/test-v1-release-contract.mjs" \
     "$repo_root/packages/wallet-shared/src/v1ReleaseFeatures.ts" \
@@ -58,12 +58,12 @@ mkdir -p "$run_dir"
     "$repo_root/native/fast-wallet-protocol/include/fast_wallet_protocol.h" \
     "$repo_root/native/fast-wallet-protocol/src/lib.rs" \
     "$repo_root/native/monero-bridge/cpp/FastWalletProtocolBridge.h" \
-    "$mobile_dir/src/services/__tests__/PrivateRecipientResolution.test.ts" \
-    "$mobile_dir/src/services/__tests__/MfwNameResolverClient.test.ts" \
-    "$mobile_dir/src/services/__tests__/MfwNameResolutionService.test.ts" \
-    "$mobile_dir/src/services/__tests__/PrivatePhoneDirectoryClient.test.ts" \
-    "$mobile_dir/src/services/__tests__/PrivatePhoneConsentRegistry.test.ts" \
-    "$mobile_dir/src/services/__tests__/PrivatePhoneDeviceContacts.test.ts" \
+    "$mobile_dir/src/backend/__tests__/PrivateRecipientResolution.test.ts" \
+    "$mobile_dir/src/backend/__tests__/MfwNameResolverClient.test.ts" \
+    "$mobile_dir/src/backend/__tests__/MfwNameResolutionService.test.ts" \
+    "$mobile_dir/src/backend/__tests__/PrivatePhoneDirectoryClient.test.ts" \
+    "$mobile_dir/src/backend/__tests__/PrivatePhoneConsentRegistry.test.ts" \
+    "$mobile_dir/src/backend/__tests__/PrivatePhoneDeviceContacts.test.ts" \
     -type f ! -path '*/target/*' -print0 |
     sort -z |
     xargs -0 shasum -a 256
@@ -107,14 +107,14 @@ run_timed native_ffi_clippy cargo clippy --locked --offline --manifest-path "$re
 if [[ "${MFW_SECURITY_CLEAN_TARGETS:-1}" == "1" ]]; then
   cargo clean --manifest-path "$repo_root/native/fast-wallet-protocol/Cargo.toml" >>"$run_dir/cleanup.log" 2>&1
 fi
-run_timed private_service_tests cargo test --locked --offline --manifest-path "$repo_root/services/mfw-private-directory/Cargo.toml" --all-targets
-run_timed private_service_clippy cargo clippy --locked --offline --manifest-path "$repo_root/services/mfw-private-directory/Cargo.toml" --all-targets -- -D warnings
+run_timed private_service_tests cargo test --locked --offline --manifest-path "$repo_root/backend/mfw-private-directory/Cargo.toml" --all-targets
+run_timed private_service_clippy cargo clippy --locked --offline --manifest-path "$repo_root/backend/mfw-private-directory/Cargo.toml" --all-targets -- -D warnings
 if [[ "${MFW_SECURITY_CLEAN_TARGETS:-1}" == "1" ]]; then
-  cargo clean --manifest-path "$repo_root/services/mfw-private-directory/Cargo.toml" >>"$run_dir/cleanup.log" 2>&1
+  cargo clean --manifest-path "$repo_root/backend/mfw-private-directory/Cargo.toml" >>"$run_dir/cleanup.log" 2>&1
 fi
 run_timed release_contract node --test "$repo_root/scripts/test-v1-release-contract.mjs"
-run_timed mobile_recipient_tests npm --prefix "$mobile_dir" test -- --runInBand src/services/__tests__/PrivateRecipientResolution.test.ts src/services/__tests__/MfwNameResolverClient.test.ts src/services/__tests__/MfwNameResolutionService.test.ts src/services/__tests__/PrivatePhoneDirectoryClient.test.ts src/services/__tests__/PrivatePhoneConsentRegistry.test.ts src/services/__tests__/PrivatePhoneDeviceContacts.test.ts
-run_timed mobile_recipient_lint npm --prefix "$mobile_dir" exec -- eslint "$mobile_dir/src/services/PrivateRecipientResolution.ts" "$mobile_dir/src/services/MfwNameResolverClient.ts" "$mobile_dir/src/services/MfwNameResolutionService.ts" "$mobile_dir/src/services/PrivatePhoneDirectoryClient.ts" "$mobile_dir/src/services/PrivatePhoneConsentRegistry.ts" "$mobile_dir/src/services/PrivatePhoneDeviceContacts.ts" "$mobile_dir/src/services/__tests__/PrivateRecipientResolution.test.ts" "$mobile_dir/src/services/__tests__/MfwNameResolverClient.test.ts" "$mobile_dir/src/services/__tests__/MfwNameResolutionService.test.ts" "$mobile_dir/src/services/__tests__/PrivatePhoneDirectoryClient.test.ts" "$mobile_dir/src/services/__tests__/PrivatePhoneConsentRegistry.test.ts" "$mobile_dir/src/services/__tests__/PrivatePhoneDeviceContacts.test.ts"
+run_timed mobile_recipient_tests npm --prefix "$mobile_dir" test -- --runInBand src/backend/__tests__/PrivateRecipientResolution.test.ts src/backend/__tests__/MfwNameResolverClient.test.ts src/backend/__tests__/MfwNameResolutionService.test.ts src/backend/__tests__/PrivatePhoneDirectoryClient.test.ts src/backend/__tests__/PrivatePhoneConsentRegistry.test.ts src/backend/__tests__/PrivatePhoneDeviceContacts.test.ts
+run_timed mobile_recipient_lint npm --prefix "$mobile_dir" exec -- eslint "$mobile_dir/src/backend/PrivateRecipientResolution.ts" "$mobile_dir/src/backend/MfwNameResolverClient.ts" "$mobile_dir/src/backend/MfwNameResolutionService.ts" "$mobile_dir/src/backend/PrivatePhoneDirectoryClient.ts" "$mobile_dir/src/backend/PrivatePhoneConsentRegistry.ts" "$mobile_dir/src/backend/PrivatePhoneDeviceContacts.ts" "$mobile_dir/src/backend/__tests__/PrivateRecipientResolution.test.ts" "$mobile_dir/src/backend/__tests__/MfwNameResolverClient.test.ts" "$mobile_dir/src/backend/__tests__/MfwNameResolutionService.test.ts" "$mobile_dir/src/backend/__tests__/PrivatePhoneDirectoryClient.test.ts" "$mobile_dir/src/backend/__tests__/PrivatePhoneConsentRegistry.test.ts" "$mobile_dir/src/backend/__tests__/PrivatePhoneDeviceContacts.test.ts"
 run_timed cuprate_compile cargo check --locked --offline --manifest-path "$cuprate_dir/Cargo.toml" -p cuprated
 if [[ "${MFW_SECURITY_CLEAN_TARGETS:-1}" == "1" ]]; then
   cargo clean --manifest-path "$cuprate_dir/Cargo.toml" >>"$run_dir/cleanup.log" 2>&1

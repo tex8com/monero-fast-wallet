@@ -126,7 +126,7 @@ for (const required of [
 ]) assert(sharedDiagnostics.includes(required), `shared diagnostic adapter omits ${required}`);
 
 for (const relative of [
-  'apps/mobile/src/services/WalletDiagnosticTestbench.ts',
+  'apps/mobile/src/backend/WalletDiagnosticTestbench.ts',
   'apps/desktop/src/walletDiagnosticTestbench.ts',
 ]) {
   const source = readFileSync(join(repositoryRoot, relative), 'utf8');

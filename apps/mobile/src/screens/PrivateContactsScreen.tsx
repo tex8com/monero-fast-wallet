@@ -15,34 +15,34 @@ import {
   loadPrivatePhoneDeviceContacts,
   requestPrivatePhoneDiscoveryConsent,
   revokePrivatePhoneDiscoveryConsent,
-} from '../services/PrivatePhoneDeviceContacts';
+} from '../backend/PrivatePhoneDeviceContacts';
 import {
   loadPrivatePhoneConsent,
   type PrivatePhoneConsentState,
   type PrivatePhoneSharingPolicy,
-} from '../services/PrivatePhoneConsentRegistry';
+} from '../backend/PrivatePhoneConsentRegistry';
 import {
   removePrivatePhoneParticipant,
   revokePrivatePhoneContact,
   sharePrivatePhoneContact,
   type PrivatePhoneSharingWallet,
-} from '../services/PrivatePhoneSharingService';
+} from '../backend/PrivatePhoneSharingService';
 import {
   createPrivatePhoneDirectoryClient,
   type PrivatePhoneContactInspection,
-} from '../services/PrivatePhoneDirectoryClient';
+} from '../backend/PrivatePhoneDirectoryClient';
 import {
   requireNativeMoneroWallet,
   type PrivatePhoneDeviceContact,
   type PrivatePhoneIncomingAddressRequest,
   type PrivatePhoneParticipantStatus,
-} from '../services/NativeMoneroWallet';
+} from '../backend/NativeMoneroWallet';
 import {
   createPrivatePhoneAddressRequestService,
   type CheckedPrivatePhoneAddressRequest,
-} from '../services/PrivatePhoneAddressRequests';
-import { createPrivatePhoneSendPreset } from '../services/RecipientReview';
-import { useWalletState } from '../services/WalletState';
+} from '../backend/PrivatePhoneAddressRequests';
+import { createPrivatePhoneSendPreset } from '../backend/RecipientReview';
+import { useWalletState } from '../backend/WalletState';
 
 type ContactChoice = Readonly<{
   id: string;

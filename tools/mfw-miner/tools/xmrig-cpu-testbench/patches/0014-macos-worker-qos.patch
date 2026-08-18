@@ -1,0 +1,45 @@
+diff --git a/src/backend/common/Thread.h b/src/backend/common/Thread.h
+index 348345e7..2a066f03 100644
+--- a/src/backend/common/Thread.h
++++ b/src/backend/common/Thread.h
+@@ -29,6 +29,9 @@
+ #ifdef XMRIG_OS_APPLE
+ #   include <pthread.h>
+ #   include <mach/thread_act.h>
++#   ifdef XMRIG_APPLE_WORKER_QOS
++#       include <pthread/qos.h>
++#   endif
+ #endif
+ 
+ 
+@@ -48,6 +51,22 @@ public:
+ 
+     inline void start(void *(*callback)(void *))
+     {
++#       ifdef XMRIG_APPLE_WORKER_QOS
++        const qos_class_t qos = XMRIG_APPLE_WORKER_QOS == 1
++            ? QOS_CLASS_USER_INTERACTIVE
++            : QOS_CLASS_USER_INITIATED;
++        pthread_attr_t attributes;
++        pthread_attr_init(&attributes);
++        pthread_attr_set_qos_class_np(&attributes, qos, 0);
++        pthread_create_suspended_np(&m_thread, &attributes, callback, this);
++        pthread_attr_destroy(&attributes);
++        if (m_config.affinity >= 0) {
++            mach_port_t mach_thread              = pthread_mach_thread_np(m_thread);
++            thread_affinity_policy_data_t policy = { static_cast<integer_t>(m_config.affinity + 1) };
++            thread_policy_set(mach_thread, THREAD_AFFINITY_POLICY, reinterpret_cast<thread_policy_t>(&policy), THREAD_AFFINITY_POLICY_COUNT);
++        }
++        thread_resume(pthread_mach_thread_np(m_thread));
++#       else
+         if (m_config.affinity >= 0) {
+             pthread_create_suspended_np(&m_thread, nullptr, callback, this);
+ 
+@@ -62,6 +78,7 @@ public:
+         else {
+             pthread_create(&m_thread, nullptr, callback, this);
+         }
++#       endif
+     }
+ #   else
+     inline ~Thread() { m_thread.join(); delete m_worker; }

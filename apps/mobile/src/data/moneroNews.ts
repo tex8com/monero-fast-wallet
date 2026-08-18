@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {PRIMARY_PRIVATE_SERVICE_ORIGIN} from '../../../../packages/wallet-shared/src/nodePresets';
-import {torFetch} from '../services/TorHttp';
+import {torFetch} from '../backend/TorHttp';
 
 export type MoneroNewsCategory = 'network' | 'wallet' | 'ecosystem';
 

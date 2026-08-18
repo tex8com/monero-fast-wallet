@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 
 import { useI18n } from '../i18n';
-import type { LedgerSigningProgress } from '../services/LedgerSigningFlow';
+import type { LedgerSigningProgress } from '../backend/LedgerSigningFlow';
 import { colors, radius, spacing } from '../theme/colors';
 import { Icon } from './Icon';
 

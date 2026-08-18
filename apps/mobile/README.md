@@ -16,7 +16,7 @@ permission. Exact coordinates are discarded immediately after deriving a
 five-character approximate area; they are neither persisted nor uploaded. The
 app can publish an anonymous profile, discover approximate nearby profiles,
 request/accept contacts, chat after mutual approval, block, report, and delete
-the identity through `services/enthusiast-discovery`. The production reverse
+the identity through `backend/enthusiast-discovery`. The production reverse
 proxy for `https://xmr.tex8.com/community/` remains a deployment gate; the app
 does not replace unavailable server data with mock people.
 

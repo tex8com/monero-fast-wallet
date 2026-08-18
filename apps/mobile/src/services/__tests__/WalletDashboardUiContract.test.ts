@@ -351,7 +351,7 @@ describe('Wallet dashboard interaction contract', () => {
       'const TEX8_MARKET_BASE = `${PRIMARY_PRIVATE_SERVICE_ORIGIN}/api/v1/market`',
     );
     expect(priceService).toContain(
-      "import {torFetch} from '../services/TorHttp'",
+      "import {torFetch} from '../backend/TorHttp'",
     );
     expect(priceService).not.toContain('https://xmr.tex8.com/api/v1/market');
     expect(priceService).toContain('await fetchPriceFromTex8()');

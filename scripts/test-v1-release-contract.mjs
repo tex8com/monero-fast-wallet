@@ -44,7 +44,7 @@ test('Community V1 production signing trust anchors are valid and independent', 
 
 test('completed search-term contribution is default-on, user-disableable and privacy filtered', () => {
   const mobileContribution = read(
-    'apps/mobile/src/services/CommunityQueryContribution.ts',
+    'apps/mobile/src/backend/CommunityQueryContribution.ts',
   );
   const mobileWelcome = read('apps/mobile/src/screens/WelcomeScreen.tsx');
   const mobileSettings = read('apps/mobile/src/screens/SettingsScreen.tsx');
@@ -60,7 +60,7 @@ test('completed search-term contribution is default-on, user-disableable and pri
   const aggregator = read(
     'packages/community-query-contribution-core/src/lib.rs',
   );
-  const service = read('services/enthusiast-v1/src/lib.rs');
+  const service = read('backend/enthusiast-v1/src/lib.rs');
   const desktop = read('apps/desktop/src/App.tsx');
   const desktopHost = read('apps/desktop/src-tauri/src/lib.rs');
   const desktopPreferences = read(
@@ -223,7 +223,7 @@ test('Monero Enthusiast V1 cannot fall back to the legacy plaintext Community pa
   );
   const communityRuntime = read('native/community-runtime-core/src/lib.rs');
   const mobileCommunityService = read(
-    'apps/mobile/src/services/MoneroEnthusiastV1Service.ts',
+    'apps/mobile/src/backend/MoneroEnthusiastV1Service.ts',
   );
   const commonQueryPublisher = read(
     'packages/community-search-core/src/bin/publish_query_catalog.rs',
@@ -231,8 +231,8 @@ test('Monero Enthusiast V1 cannot fall back to the legacy plaintext Community pa
   const harrierArtifact = read('packages/community-search-core/src/artifact.rs');
   const searchCargo = read('packages/community-search-core/Cargo.toml');
   const publicationCore = read('packages/community-publication-core/src/lib.rs');
-  const v1Api = read('services/enthusiast-v1/src/lib.rs');
-  const v1Runtime = read('services/enthusiast-v1/src/main.rs');
+  const v1Api = read('backend/enthusiast-v1/src/lib.rs');
+  const v1Runtime = read('backend/enthusiast-v1/src/main.rs');
 
   assert.equal(typeof manifest.features.moneroEnthusiastV1, 'boolean');
   assert.equal(manifest.features.legacyCommunity, false);
@@ -480,7 +480,7 @@ test('Harrier release evidence accepts only the pinned A8W8 result', () => {
 
 test('MFW clients remain release-gated behind purpose-bound native preparation', () => {
   const nativeSpec = read('apps/mobile/specs/NativeMoneroWallet.ts');
-  const nativeService = read('apps/mobile/src/services/NativeMoneroWallet.ts');
+  const nativeService = read('apps/mobile/src/backend/NativeMoneroWallet.ts');
   const bridge = read('native/monero-bridge/cpp/FastWalletProtocolBridge.h');
   const protocol = read('native/fast-wallet-protocol/src/lib.rs');
   const android = read(
@@ -491,14 +491,14 @@ test('MFW clients remain release-gated behind purpose-bound native preparation',
   );
   const nameScreen = read('apps/mobile/src/screens/MfwNamesScreen.tsx');
   const nameRegistry = read(
-    'apps/mobile/src/services/MfwNameRegistrationRegistry.ts',
+    'apps/mobile/src/backend/MfwNameRegistrationRegistry.ts',
   );
   const sendScreen = read('apps/mobile/src/screens/SendScreen.tsx');
   const resolverClient = read(
-    'apps/mobile/src/services/MfwNameResolverClient.ts',
+    'apps/mobile/src/backend/MfwNameResolverClient.ts',
   );
   const cuprateRpc = read(
-    'node/cuprate/binaries/cuprated/src/rpc/server.rs',
+    'node/mfn-monero-fast-node/binaries/cuprated/src/rpc/server.rs',
   );
   const desktopApp = read('apps/desktop/src/App.tsx');
   const desktopHost = read('apps/desktop/src-tauri/src/lib.rs');
@@ -616,9 +616,9 @@ test('MFW clients remain release-gated behind purpose-bound native preparation',
 
 test('private phone discovery keeps cryptographic state and identity below React', () => {
   const nativeSpec = read('apps/mobile/specs/NativeMoneroWallet.ts');
-  const nativeService = read('apps/mobile/src/services/NativeMoneroWallet.ts');
+  const nativeService = read('apps/mobile/src/backend/NativeMoneroWallet.ts');
   const packagedClient = read(
-    'apps/mobile/src/services/PrivatePhoneDirectoryClient.ts',
+    'apps/mobile/src/backend/PrivatePhoneDirectoryClient.ts',
   );
   const bridge = read('native/monero-bridge/cpp/FastWalletProtocolBridge.h');
   const protocolHeader = read(
@@ -671,16 +671,16 @@ test('private phone discovery keeps cryptographic state and identity below React
 test('private phone network trust and complete snapshots remain below React', () => {
   const nativeSpec = read('apps/mobile/specs/NativeMoneroWallet.ts');
   const packagedClient = read(
-    'apps/mobile/src/services/PrivatePhoneDirectoryClient.ts',
+    'apps/mobile/src/backend/PrivatePhoneDirectoryClient.ts',
   );
   const consent = read(
-    'apps/mobile/src/services/PrivatePhoneConsentRegistry.ts',
+    'apps/mobile/src/backend/PrivatePhoneConsentRegistry.ts',
   );
   const deviceContacts = read(
-    'apps/mobile/src/services/PrivatePhoneDeviceContacts.ts',
+    'apps/mobile/src/backend/PrivatePhoneDeviceContacts.ts',
   );
   const resolver = read(
-    'apps/mobile/src/services/PrivateRecipientResolution.ts',
+    'apps/mobile/src/backend/PrivateRecipientResolution.ts',
   );
   const androidBuild = read('apps/mobile/android/app/build.gradle');
   const android = read(
@@ -743,10 +743,10 @@ test('private phone publication is signed monotone durable and has no lookup ora
   const protocolHeader = read(
     'native/fast-wallet-protocol/include/fast_wallet_protocol.h',
   );
-  const service = read('services/mfw-private-directory/src/lib.rs');
-  const runtime = read('services/mfw-private-directory/src/main.rs');
+  const service = read('backend/mfw-private-directory/src/lib.rs');
+  const runtime = read('backend/mfw-private-directory/src/main.rs');
   const publisher = read(
-    'services/mfw-private-directory/src/bin/mfw-directory-publisher.rs',
+    'backend/mfw-private-directory/src/bin/mfw-directory-publisher.rs',
   );
   const nativeSpec = read('apps/mobile/specs/NativeMoneroWallet.ts');
   const android = read(
@@ -797,14 +797,14 @@ test('private phone publication is signed monotone durable and has no lookup ora
 
 test('wallet-side private contact sharing is purpose-bound durable and gated', () => {
   const nativeSpec = read('apps/mobile/specs/NativeMoneroWallet.ts');
-  const nativeService = read('apps/mobile/src/services/NativeMoneroWallet.ts');
+  const nativeService = read('apps/mobile/src/backend/NativeMoneroWallet.ts');
   const sharing = read(
-    'apps/mobile/src/services/PrivatePhoneSharingService.ts',
+    'apps/mobile/src/backend/PrivatePhoneSharingService.ts',
   );
   const screen = read('apps/mobile/src/screens/PrivateContactsScreen.tsx');
   const send = read('apps/mobile/src/screens/SendScreen.tsx');
   const recipientReview = read(
-    'apps/mobile/src/services/RecipientReview.ts',
+    'apps/mobile/src/backend/RecipientReview.ts',
   );
   const navigation = read('apps/mobile/src/navigation/TabNavigator.tsx');
   const android = read(
@@ -889,7 +889,7 @@ test('wallet-side private contact sharing is purpose-bound durable and gated', (
 test('retired device-contact discovery is unrouted, permissionless, and fail-closed', () => {
   const nativeSpec = read('apps/mobile/specs/NativeMoneroWallet.ts');
   const packagedProvider = read(
-    'apps/mobile/src/services/PrivatePhoneDeviceContacts.ts',
+    'apps/mobile/src/backend/PrivatePhoneDeviceContacts.ts',
   );
   const androidManifest = read(
     'apps/mobile/android/app/src/main/AndroidManifest.xml',
@@ -942,9 +942,9 @@ test('retired device-contact discovery is unrouted, permissionless, and fail-clo
 
 test('mobile treats Fast Wallet as a recoverable local wallet', () => {
   const preference = read('packages/wallet-shared/src/fastWalletPreference.ts');
-  const service = read('apps/mobile/src/services/WalletService.ts');
-  const registry = read('apps/mobile/src/services/WalletRegistry.ts');
-  const state = read('apps/mobile/src/services/WalletState.tsx');
+  const service = read('apps/mobile/src/backend/WalletService.ts');
+  const registry = read('apps/mobile/src/backend/WalletRegistry.ts');
+  const state = read('apps/mobile/src/backend/WalletState.tsx');
 
   assert.match(preference, /defaultFastWalletPreference[^=]*=\s*'disabled'/);
   assert.match(service, /restoreFastReceiveIdentityWithNativeSeed/);
@@ -978,9 +978,9 @@ test('desktop enforces recovery and security gates below the renderer', () => {
 });
 
 test('retired legacy scanner has no server runtime or plaintext API', () => {
-  const scannerModel = read('services/fast-wallet-scanner-core/src/model.rs');
-  const scannerStore = read('services/fast-wallet-scanner-core/src/store.rs');
-  const scannerLibrary = read('services/fast-wallet-scanner-core/src/lib.rs');
+  const scannerModel = read('backend/fast-wallet-worker/scanner-core/src/model.rs');
+  const scannerStore = read('backend/fast-wallet-worker/scanner-core/src/store.rs');
+  const scannerLibrary = read('backend/fast-wallet-worker/scanner-core/src/lib.rs');
   const mobileSpec = read('apps/mobile/specs/NativeMoneroWallet.ts');
   const androidBridge = read(
     'apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
@@ -990,7 +990,7 @@ test('retired legacy scanner has no server runtime or plaintext API', () => {
   );
 
   assert.doesNotMatch(scannerLibrary, /pub mod api|router_with_runtime|ApiState/);
-  assert.equal(existsSync(new URL('services/notify-scanner/Cargo.toml', repo)), false);
+  assert.equal(existsSync(new URL('backend/notify-scanner/Cargo.toml', repo)), false);
   assert.equal(existsSync(new URL('ops/notify-scanner/notify-scanner.service', repo)), false);
   for (const source of [
     scannerModel,
@@ -1013,10 +1013,10 @@ test('V1 documents local sync as the only spend-state authority', () => {
 });
 
 test('notification gateway rejects the legacy shared-token trust boundary', () => {
-  const gateway = read('services/notification-gateway/src/lib.rs');
+  const gateway = read('backend/notification-gateway/src/lib.rs');
   const agent = read('apps/desktop/src-tauri/src/bin/monero-fast-walletd.rs');
   const deploy = read(
-    'services/notification-gateway/deploy/deploy-live-from-macos.sh',
+    'backend/notification-gateway/deploy/deploy-live-from-macos.sh',
   );
 
   assert.doesNotMatch(
@@ -1032,10 +1032,10 @@ test('notification gateway rejects the legacy shared-token trust boundary', () =
 
 test('Community V1 deployment protects Synapse token per file without locking sibling services out', () => {
   const deploy = read(
-    'services/enthusiast-v1/deploy/deploy-live-from-macos.sh',
+    'backend/enthusiast-v1/deploy/deploy-live-from-macos.sh',
   );
   const unit = read(
-    'services/enthusiast-v1/deploy/enthusiast-v1.service',
+    'backend/enthusiast-v1/deploy/enthusiast-v1.service',
   );
 
   assert.match(
@@ -1077,7 +1077,7 @@ test('Community V1 Nginx installer inserts exactly one validated HTTPS include',
       'python3',
       [
         new URL(
-          'services/enthusiast-v1/deploy/install-nginx-include.py',
+          'backend/enthusiast-v1/deploy/install-nginx-include.py',
           repo,
         ).pathname,
         '--site',
@@ -1110,7 +1110,7 @@ test('Community V1 Nginx installer inserts exactly one validated HTTPS include',
 });
 
 test('mobile installation identifiers come only from native secure randomness', () => {
-  const push = read('apps/mobile/src/services/FastWalletPushService.ts');
+  const push = read('apps/mobile/src/backend/FastWalletPushService.ts');
   const android = read(
     'apps/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
   );

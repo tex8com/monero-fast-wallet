@@ -1,0 +1,201 @@
+{
+  "schema": "mfw_miner_comparison_v1",
+  "date": "2026-08-15",
+  "host": {
+    "cpu": "Apple M4",
+    "physical_cores": 10,
+    "performance_cores": 4,
+    "efficiency_cores": 6,
+    "memory_gib": 16,
+    "cache_line_bytes": 128
+  },
+  "algorithm": "rx/0",
+  "network": "denied-by-macos-sandbox",
+  "expected_hashes": {
+    "100K": "BC4EF98B60B98579",
+    "250K": "7D6054757BB08A63"
+  },
+  "profiles": {
+    "jit_worker_sample_percent_4_threads": 94.15,
+    "jit_worker_sample_percent_10_threads": 93.14
+  },
+  "experiments": [
+    {
+      "name": "a64-jit-prefetch-screen",
+      "status": "exploratory",
+      "threads": 10,
+      "size": "100K",
+      "control": { "mode": "upstream", "hashrate_hs": 3367.9 },
+      "candidates": [
+        { "mode": "off", "hashrate_hs": 2257.2, "delta_percent": -32.9796, "decision": "rejected" },
+        { "mode": "l1-keep", "hashrate_hs": 3026.5, "delta_percent": -10.1369, "decision": "rejected" },
+        { "mode": "l2-keep", "hashrate_hs": 2798.5, "delta_percent": -16.9073, "decision": "rejected" },
+        { "mode": "l2-stream-in-wrapper-and-jit", "hashrate_hs": 1450.1, "decision": "excluded-thermal-drift" }
+      ],
+      "note": "Correct hashes, but the screen was sequential rather than interleaved. Only the large negative candidates are rejected; no faster-than-XMRig claim is made."
+    },
+    {
+      "name": "compact-group-e-bif",
+      "status": "rejected",
+      "order": "A-B-B-A",
+      "threads": 4,
+      "size": "100K",
+      "control_binary_sha256": "b10a09a88dfcfc9710bde1f8954ad63dbb34c4deb82f6726caed68a64e5833bb",
+      "candidate_binary_sha256": "87689fb898c0eed24eba844bddfa4172022ef7e8bc2546c5215f42eddd20e281",
+      "control_runs_hs": [2101.5, 2265.1],
+      "candidate_runs_hs": [1865.5, 1942.1],
+      "control_median_hs": 2183.3,
+      "candidate_median_hs": 1903.8,
+      "delta_percent": -12.8017,
+      "hashes_correct": true,
+      "decision": "rejected-on-apple-m4"
+    },
+    {
+      "name": "group-e-bif-with-legacy-vm-code-offset",
+      "status": "invalidated-offset-model",
+      "order": "C-A-A-C",
+      "threads": 4,
+      "size": "100K",
+      "control_binary_sha256": "c8a7a80bbd12e07226cb9d24e4da58bd7f958a7704950f16cb5fbba2d3836a3f",
+      "candidate_binary_sha256": "e54e3f9ac2e8f2f9062c97761acb8ca830e6bac5ef1abdb557e174892cd3bb09",
+      "control_runs_hs": [2497.8, 2360.3],
+      "candidate_runs_hs": [2512.4, 2427.5],
+      "control_median_hs": 2429.05,
+      "candidate_median_hs": 2469.95,
+      "delta_percent": 1.6838,
+      "hashes_correct": true,
+      "decision": "historical-only-do-not-promote",
+      "note": "The candidate used four prologue NOPs. Together with the extra mov+dup mask instruction this moved the initial generated VM-code start by four bytes; the apparent gain is not evidence for the corrected layout."
+    },
+    {
+      "name": "group-e-bif-corrected-legacy-vm-code-start-cold-screen",
+      "status": "slower-pending-opposite-order-confirmation",
+      "order": "A-B-B-A",
+      "threads": 4,
+      "size": "100K",
+      "control_binary_sha256": "3c36c5c7c07aaa530323583d707b441dd8e967742c36061b9b016e7645b3b08f",
+      "candidate_binary_sha256": "9ebe64c0c9b3ea0a948b8390805ceda2cfda144f63aef7fd32e8730f39cfe9b7",
+      "control_runs_hs": [
+        2590.5,
+        2553.9
+      ],
+      "candidate_runs_hs": [
+        2545.6,
+        2525.3
+      ],
+      "control_mean_hs": 2572.2,
+      "candidate_mean_hs": 2535.45,
+      "delta_percent": -1.4287,
+      "paired_geometric_delta_percent": -1.427,
+      "control_drift_percent": -1.4129,
+      "initial_vm_code_start_control": "0x170",
+      "initial_vm_code_start_candidate": "0x170",
+      "hashes_correct": true,
+      "actual_hash": "BC4EF98B60B98579",
+      "network": "denied-by-macos-sandbox",
+      "decision": "do-not-promote; run a cold B-A-A-B confirmation before final rejection"
+    },
+    {
+      "name": "group-e-bif-with-legacy-vm-code-offset-250k",
+      "status": "correctness-validation-only",
+      "threads": 4,
+      "size": "250K",
+      "candidate_binary_sha256": "e54e3f9ac2e8f2f9062c97761acb8ca830e6bac5ef1abdb557e174892cd3bb09",
+      "hashrate_hs": 1576.9,
+      "actual_hash": "7D6054757BB08A63",
+      "exit_status": 0,
+      "performance_excluded": true,
+      "exclusion_reason": "Severe sustained thermal drift on the fanless M4 after the screening series."
+    },
+    {
+      "name": "group-e-bif-with-legacy-vm-code-offset-10-thread",
+      "status": "neutral-thermal-drift-limited",
+      "orders": ["A-B-B-A", "B-A-A-B"],
+      "threads": 10,
+      "size": "100K",
+      "control_binary_sha256": "c8a7a80bbd12e07226cb9d24e4da58bd7f958a7704950f16cb5fbba2d3836a3f",
+      "candidate_binary_sha256": "e54e3f9ac2e8f2f9062c97761acb8ca830e6bac5ef1abdb557e174892cd3bb09",
+      "abba": {
+        "control_runs_hs": [3948.5, 3533.2],
+        "candidate_runs_hs": [3929.3, 3776.0],
+        "control_mean_hs": 3740.85,
+        "candidate_mean_hs": 3852.65,
+        "delta_percent": 2.988626
+      },
+      "baab": {
+        "control_runs_hs": [3833.8, 3885.5],
+        "candidate_runs_hs": [3819.6, 3696.9],
+        "control_mean_hs": 3859.65,
+        "candidate_mean_hs": 3758.25,
+        "delta_percent": -2.627181
+      },
+      "all_run_mean": {
+        "control_hs": 3800.25,
+        "candidate_hs": 3805.45,
+        "delta_percent": 0.136833
+      },
+      "symmetric_geometric_delta_percent": 0.141364,
+      "hashes_correct": true,
+      "network": "denied-by-macos-sandbox",
+      "decision": "do-not-enable-for-10-thread-profile; retain only as a four-performance-core candidate pending a cooled sustained confirmation",
+      "note": "The opposite-order blocks disagree by 5.62 percentage points and individual rates span severe fanless-host drift. The symmetric estimate is effectively neutral and is not a release performance claim."
+    },
+    {
+      "name": "group-e-bif-exact-hot-code-layout",
+      "status": "rejected",
+      "order": "A-C-C-A",
+      "threads": 4,
+      "size": "100K",
+      "control_binary_sha256": "c8a7a80bbd12e07226cb9d24e4da58bd7f958a7704950f16cb5fbba2d3836a3f",
+      "candidate_binary_sha256": "0475277ed5a4046d9277d5124505579798dbd9e2118d436bc02f34ecaae6d0e8",
+      "control_runs_hs": [2376.4, 2511.7],
+      "candidate_runs_hs": [2198.2, 2458.1],
+      "control_mean_hs": 2444.05,
+      "candidate_mean_hs": 2328.15,
+      "delta_percent": -4.742129,
+      "paired_geometric_delta_percent": -4.854178,
+      "hashes_correct": true,
+      "actual_hash": "BC4EF98B60B98579",
+      "network": "denied-by-macos-sandbox",
+      "decision": "rejected-on-apple-m4",
+      "note": "BIF plus one hot NOP after every generated FDIV retained the exact reference instruction layout. Both paired candidate runs were slower, so executed padding is rejected for runtime profiles."
+    },
+    {
+      "name": "group-e-bif-legacy-offset-250k-sustained-first-block",
+      "status": "excluded-thermal-collapse",
+      "order": "A-B-B-A",
+      "threads": 4,
+      "size": "250K",
+      "control_binary_sha256": "c8a7a80bbd12e07226cb9d24e4da58bd7f958a7704950f16cb5fbba2d3836a3f",
+      "candidate_binary_sha256": "e54e3f9ac2e8f2f9062c97761acb8ca830e6bac5ef1abdb557e174892cd3bb09",
+      "control_runs_hs": [2526.0, 1709.7],
+      "candidate_runs_hs": [2358.3, 2295.2],
+      "control_mean_hs": 2117.85,
+      "candidate_mean_hs": 2326.75,
+      "naive_delta_percent": 9.863777,
+      "control_first_to_last_delta_percent": -32.315914,
+      "hashes_correct": true,
+      "actual_hash": "7D6054757BB08A63",
+      "network": "denied-by-macos-sandbox",
+      "performance_excluded": true,
+      "exclusion_reason": "The fanless host's control throughput collapsed 32.32% between A1 and A2, making the apparent candidate advantage an order/thermal artifact.",
+      "next_gate": "Repeat from a cold state in opposite B-A-A-B order."
+    },
+    {
+      "name": "group-e-bif-legacy-offset-250k-opposite-order-cooldown-probe",
+      "status": "excluded-cooldown-insufficient",
+      "intended_order": "B-A-A-B",
+      "completed_runs": 1,
+      "threads": 4,
+      "size": "250K",
+      "candidate_binary_sha256": "e54e3f9ac2e8f2f9062c97761acb8ca830e6bac5ef1abdb557e174892cd3bb09",
+      "candidate_hashrate_hs": 2213.0,
+      "hashes_correct": true,
+      "actual_hash": "7D6054757BB08A63",
+      "network": "denied-by-macos-sandbox",
+      "performance_excluded": true,
+      "exclusion_reason": "After roughly seven minutes of passive cooldown, the opening B run was still slower than B2 of the prior hot block. The opposite-order sequence was stopped after the correct first hash.",
+      "next_gate": "Use a substantially longer passive cooldown before restarting the full B-A-A-B sequence."
+    }
+  ]
+}
