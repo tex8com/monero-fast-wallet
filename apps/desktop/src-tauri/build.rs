@@ -109,6 +109,7 @@ const COMMANDS: &[&str] = &[
     "enthusiast_v1_contribute_query",
     "enthusiast_v1_search",
     "enthusiast_v1_suggestions",
+    "enthusiast_v1_record_interest",
     "enthusiast_v1_clear_search_history",
     "enthusiast_v1_enable_notifications",
     "enthusiast_v1_initialize",

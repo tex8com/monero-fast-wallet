@@ -395,10 +395,19 @@ async fn build_client(config: &MatrixClientConfig<'_>) -> Result<Client> {
     let passphrase = Zeroizing::new(config.store_passphrase.to_owned());
     let mut builder = Client::builder()
         .homeserver_url(config.homeserver)
+        // SDK defaults retry transient failures without a total limit. Wallet
+        // UI and CI must fail visibly instead of waiting forever.
+        .request_config(
+            RequestConfig::new()
+                .timeout(Duration::from_secs(20))
+                .max_retry_time(Duration::from_secs(30)),
+        )
         .sqlite_store(config.store_path, Some(passphrase.as_str()))
         .with_encryption_settings(EncryptionSettings {
-            auto_enable_cross_signing: true,
-            auto_enable_backups: true,
+            // Login must remain a bounded authentication operation. Recovery
+            // and cross-signing are explicitly enabled by the user later.
+            auto_enable_cross_signing: false,
+            auto_enable_backups: false,
             ..Default::default()
         })
         .handle_refresh_tokens();
@@ -414,10 +423,11 @@ async fn build_client(config: &MatrixClientConfig<'_>) -> Result<Client> {
             ))?;
         builder = builder.http_client(http);
     }
-    builder
-        .build()
+    let build = builder.build();
+    tokio::time::timeout(MATRIX_NETWORK_OPERATION_TIMEOUT, build)
         .await
-        .map_err(|_| MatrixCoreError::Matrix)
+        .map_err(|_| MatrixCoreError::MatrixStage("client initialization timeout"))?
+        .map_err(|_| MatrixCoreError::MatrixStage("client initialization"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

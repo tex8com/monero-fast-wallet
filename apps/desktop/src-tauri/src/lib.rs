@@ -7924,6 +7924,17 @@ async fn enthusiast_v1_suggestions(
 }
 
 #[tauri::command]
+async fn enthusiast_v1_record_interest(
+    app: AppHandle,
+    state: State<'_, enthusiast_v1::CommunityV1State>,
+    protection: State<'_, AppProtectionState>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    require_app_unlocked(&protection)?;
+    state.record_interest(&app, input).await
+}
+
+#[tauri::command]
 fn enthusiast_v1_clear_search_history(
     state: State<'_, enthusiast_v1::CommunityV1State>,
     protection: State<'_, AppProtectionState>,
@@ -9290,6 +9301,7 @@ pub fn run() {
             enthusiast_v1_contribute_query,
             enthusiast_v1_search,
             enthusiast_v1_suggestions,
+            enthusiast_v1_record_interest,
             enthusiast_v1_clear_search_history,
             enthusiast_v1_enable_notifications,
             enthusiast_v1_initialize,

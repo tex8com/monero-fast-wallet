@@ -218,6 +218,11 @@ internal object NativeMoneroWalletJni {
     return nativeCommunityRuntimeSearch(request, nowMs)
   }
 
+  fun communityRuntimeRecordInterest(request: String, nowMs: Double): String {
+    requireLoaded()
+    return nativeCommunityRuntimeRecordInterest(request, nowMs)
+  }
+
   fun communityRuntimeClearQueryCache() {
     requireLoaded()
     nativeCommunityRuntimeClearQueryCache()
@@ -1471,6 +1476,10 @@ internal object NativeMoneroWalletJni {
     nowMs: Double,
   ): String
   @JvmStatic private external fun nativeCommunityRuntimeSearch(
+    request: String,
+    nowMs: Double,
+  ): String
+  @JvmStatic private external fun nativeCommunityRuntimeRecordInterest(
     request: String,
     nowMs: Double,
   ): String

@@ -301,6 +301,41 @@ impl CommunitySearchCore {
         Ok(candidates)
     }
 
+    /// Resolves a verified catalog item for an on-device interest event.
+    ///
+    /// Callers expose only `public_id` across the UI boundary. The signed
+    /// embedding stays inside the native runtime and is never accepted from
+    /// renderer or server event payloads.
+    pub fn interest_item(&self, public_id: &str, now_ms: u64) -> Result<CatalogItem> {
+        crate::model::validate_identifier("public item id", public_id, 128)?;
+        let generation = self.active_generation(now_ms)?;
+        let directory = self.generation_directory(generation.sequence);
+        let connection = open_read_only_database(
+            &directory.join(DATABASE_FILE),
+            "open active catalog for local interest event",
+        )?;
+        let item_json: Option<String> = connection
+            .query_row(
+                "SELECT item_json FROM catalog_item
+                 WHERE public_id = ?1 AND deleted = 0
+                   AND (expires_at_ms IS NULL OR expires_at_ms > ?2)",
+                params![public_id, to_sql_i64(now_ms, "interest event time")?],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| storage("load catalog item for local interest event", error))?;
+        let item_json = item_json.ok_or_else(|| {
+            CommunitySearchError::InvalidCatalog(
+                "local interest event references an unknown catalog item".to_owned(),
+            )
+        })?;
+        serde_json::from_str(&item_json).map_err(|error| {
+            CommunitySearchError::Storage(format!(
+                "stored catalog item for local interest event is invalid: {error}"
+            ))
+        })
+    }
+
     fn validate_package_consistency(
         &self,
         manifest: &CatalogManifest,

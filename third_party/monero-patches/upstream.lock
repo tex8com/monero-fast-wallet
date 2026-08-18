@@ -61,11 +61,14 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # Patch 0083 exposes Core's existing exact per-subaddress balance map through
 # the public Wallet API so product clients never estimate address balances
 # from incomplete transaction history.
+# Patch 0084 adds the product `community` command and dispatches it only to the
+# packaged Rust Community V1 companion beside the current executable. It never
+# resolves a companion through PATH and does not alter upstream wallet flows.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=c90e4dd9972b4ef5d6ae0bda84625486b80cf8a3
-previous_patch_count=82
-patched_tree=88fad90f683f587b7d3cc2d494d3408a780b95c5
+previous_patched_tree=88fad90f683f587b7d3cc2d494d3408a780b95c5
+previous_patch_count=83
+patched_tree=2890c6c73272100f878e2e90bc2987f1a99645d1
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

@@ -97,7 +97,10 @@ done
 id "$service_user" >/dev/null 2>&1 ||
   sudo useradd --system --user-group --home-dir /var/lib/monero-enthusiast \
     --shell /usr/sbin/nologin "$service_user"
-sudo install -d -o root -g "$service_user" -m 0750 /etc/monero-fast-wallet
+# This directory is shared by independently sandboxed wallet services. Keep
+# traversal public and protect every credential with its own owner/group mode;
+# assigning the directory to one service group locks all other services out.
+sudo install -d -o root -g root -m 0755 /etc/monero-fast-wallet
 sudo install -d -o "$service_user" -g "$service_user" -m 0700 /var/lib/monero-enthusiast
 sudo install -d -o 991 -g 991 -m 0700 "$synapse_root"
 sudo install -d -o root -g root -m 0755 "$public_root"

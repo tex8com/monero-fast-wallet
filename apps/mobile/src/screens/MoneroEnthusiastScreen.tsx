@@ -94,6 +94,7 @@ export default function MoneroEnthusiastScreen() {
   );
   const [results, setResults] = useState<CommunityV1SearchResult[]>([]);
   const [searched, setSearched] = useState(false);
+  const [openedResultId, setOpenedResultId] = useState<string | null>(null);
   const [contentOutcomes, setContentOutcomes] = useState<
     CommunityV1ContentModerationOutcome[]
   >([]);
@@ -327,10 +328,37 @@ export default function MoneroEnthusiastScreen() {
     }
   };
 
-  const requestContact = async (peerId: string) => {
+  const openSearchResult = (publicId: string) => {
+    setOpenedResultId(publicId);
+    MoneroEnthusiastV1Service.recordInterest(
+      publicId,
+      'content_opened',
+    ).catch(() => undefined);
+  };
+
+  useEffect(() => {
+    if (!openedResultId) {
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      MoneroEnthusiastV1Service.recordInterest(
+        openedResultId,
+        'longer_local_view',
+      ).catch(() => undefined);
+    }, 6_000);
+    return () => clearTimeout(timer);
+  }, [openedResultId]);
+
+  const requestContact = async (peerId: string, publicId?: string) => {
     setBusy(true);
     try {
       await MoneroEnthusiastV1Service.requestContact(peerId);
+      if (publicId) {
+        MoneroEnthusiastV1Service.recordInterest(
+          publicId,
+          'contact_requested',
+        ).catch(() => undefined);
+      }
       setNotice(t('communityV1.requestSent'));
     } catch {
       setNotice(t('communityV1.contactFailed'));
@@ -802,13 +830,30 @@ export default function MoneroEnthusiastScreen() {
               ) : null}
               {results.map(result => (
                 <View key={result.item.publicId} style={s.resultCard}>
-                  <Text style={s.resultTitle}>{result.item.title}</Text>
-                  <Text style={s.cardText}>{result.item.summary}</Text>
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    onPress={() => openSearchResult(result.item.publicId)}
+                  >
+                    <Text style={s.resultTitle}>{result.item.title}</Text>
+                    <Text
+                      numberOfLines={
+                        openedResultId === result.item.publicId ? undefined : 2
+                      }
+                      style={s.cardText}
+                    >
+                      {result.item.summary}
+                    </Text>
+                  </TouchableOpacity>
                   {result.item.ownerPublicId !== account?.identityId ? (
                     <QuietButton
                       disabled={busy}
                       label={t('communityV1.requestContact')}
-                      onPress={() => requestContact(result.item.ownerPublicId)}
+                      onPress={() =>
+                        requestContact(
+                          result.item.ownerPublicId,
+                          result.item.publicId,
+                        )
+                      }
                     />
                   ) : null}
                 </View>

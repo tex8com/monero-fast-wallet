@@ -36,6 +36,8 @@ feature_manifest_hash="$(shasum -a 256 "${repo_root}/config/v1-release-features.
 product_core_root="${repo_root}/native/product-core"
 product_core_target_dir="${MFW_PRODUCT_CORE_TARGET_DIR:-${product_core_root}/target}"
 fast_wallet_protocol_root="${repo_root}/native/fast-wallet-protocol"
+community_cli_root="${repo_root}/tools/community-cli"
+community_cli_target_dir="${MFW_COMMUNITY_CLI_TARGET_DIR:-${patched_build}/community-cli-target}"
 
 for source in "${official_source}" "${patched_source}"; do
   git -C "${source}" rev-parse --git-dir >/dev/null 2>&1 || {
@@ -125,6 +127,18 @@ RUSTFLAGS="${product_core_rustflags# }" \
 product_core_library="${product_core_target_dir}/release/${product_core_runtime_name}"
 [[ -f "${product_core_library}" ]] || {
   echo "Product Core runtime library is missing: ${product_core_library}" >&2
+  exit 65
+}
+
+# Community is implemented in the shared Rust V1 cores and shipped beside the
+# Monero CLI. The product CLI dispatches `community ...` only to this sibling,
+# resolved from its own executable directory rather than PATH.
+cargo build --release --locked \
+  --manifest-path "${community_cli_root}/Cargo.toml" \
+  --target-dir "${community_cli_target_dir}"
+community_cli_binary="${community_cli_target_dir}/release/monero-enthusiast-cli"
+[[ -f "${community_cli_binary}" ]] || {
+  echo "Community CLI companion is missing: ${community_cli_binary}" >&2
   exit 65
 }
 
@@ -281,6 +295,7 @@ mkdir -p "${output_dir}"
 install -m 0755 "${official_build}/bin/monero-wallet-cli" "${output_dir}/monero-wallet-cli-original"
 install -m 0755 "${patched_build}/bin/monero-fast-wallet-cli" "${output_dir}/monero-fast-wallet-cli"
 install -m 0755 "${patched_build}/bin/monero-fast-wallet-cli" "${output_dir}/fast-wallet-cli"
+install -m 0755 "${community_cli_binary}" "${output_dir}/monero-enthusiast-cli"
 install -m 0755 "${product_core_library}" "${output_dir}/${product_core_runtime_name}"
 if [[ "$(uname -s)" == "Darwin" ]]; then
   zlib_runtime_source="$(find "${zlib_sdk_libdir}" -maxdepth 1 -type f -name 'libz.*.dylib' -print -quit)"
@@ -297,6 +312,7 @@ fi
 official_sha="$(shasum -a 256 "${output_dir}/monero-wallet-cli-original" | awk '{print $1}')"
 product_sha="$(shasum -a 256 "${output_dir}/monero-fast-wallet-cli" | awk '{print $1}')"
 shortcut_sha="$(shasum -a 256 "${output_dir}/fast-wallet-cli" | awk '{print $1}')"
+community_cli_sha="$(shasum -a 256 "${output_dir}/monero-enthusiast-cli" | awk '{print $1}')"
 [[ "${shortcut_sha}" == "${product_sha}" ]] || {
   echo "Short CLI launcher differs from the authenticated product binary" >&2
   exit 65
@@ -304,9 +320,10 @@ shortcut_sha="$(shasum -a 256 "${output_dir}/fast-wallet-cli" | awk '{print $1}'
 product_core_runtime_sha="$(shasum -a 256 "${output_dir}/${product_core_runtime_name}" | awk '{print $1}')"
 fast_wallet_protocol_sha="$(shasum -a 256 "${fast_wallet_protocol_library}" | awk '{print $1}')"
 printf '%s\n' \
-  "{\"schema_version\":1,\"official_monero_upstream_commit\":\"${official_commit}\",\"official_monero_upstream_tree\":\"${official_tree}\",\"patched_monero_tree\":\"${patched_tree}\",\"patch_count\":${patch_count},\"product_commit\":\"${product_commit}\",\"product_dirty\":${product_dirty},\"feature_manifest_hash\":\"${feature_manifest_hash}\",\"official_binary_sha256\":\"${official_sha}\",\"product_binary_sha256\":\"${product_sha}\",\"product_core_runtime\":\"${product_core_runtime_name}\",\"product_core_runtime_sha256\":\"${product_core_runtime_sha}\",\"fast_crypto_and_protocol_static_sha256\":\"${fast_wallet_protocol_sha}\",\"grpc_cpp_pkg_version\":\"${grpcpp_pkg_version}\",\"grpc_pkg_version\":\"${grpc_pkg_version}\",\"protobuf_pkg_version\":\"${protobuf_pkg_version}\",\"protobuf_protoc_version\":\"${protobuf_protoc_version}\",\"openssl_pkg_version\":\"${openssl_pkg_version}\",\"zlib_pkg_version\":\"${zlib_pkg_version}\",\"zlib_runtime_sha256\":\"${zlib_runtime_sha}\",\"grpc_toolchain_coherent\":true}" \
+  "{\"schema_version\":1,\"official_monero_upstream_commit\":\"${official_commit}\",\"official_monero_upstream_tree\":\"${official_tree}\",\"patched_monero_tree\":\"${patched_tree}\",\"patch_count\":${patch_count},\"product_commit\":\"${product_commit}\",\"product_dirty\":${product_dirty},\"feature_manifest_hash\":\"${feature_manifest_hash}\",\"official_binary_sha256\":\"${official_sha}\",\"product_binary_sha256\":\"${product_sha}\",\"community_cli_sha256\":\"${community_cli_sha}\",\"product_core_runtime\":\"${product_core_runtime_name}\",\"product_core_runtime_sha256\":\"${product_core_runtime_sha}\",\"fast_crypto_and_protocol_static_sha256\":\"${fast_wallet_protocol_sha}\",\"grpc_cpp_pkg_version\":\"${grpcpp_pkg_version}\",\"grpc_pkg_version\":\"${grpc_pkg_version}\",\"protobuf_pkg_version\":\"${protobuf_pkg_version}\",\"protobuf_protoc_version\":\"${protobuf_protoc_version}\",\"openssl_pkg_version\":\"${openssl_pkg_version}\",\"zlib_pkg_version\":\"${zlib_pkg_version}\",\"zlib_runtime_sha256\":\"${zlib_runtime_sha}\",\"grpc_toolchain_coherent\":true}" \
   > "${output_dir}/cli-build-manifest.json"
 
 "${output_dir}/monero-wallet-cli-original" --version
 "${output_dir}/monero-fast-wallet-cli" version --json
+"${output_dir}/monero-fast-wallet-cli" community --help >/dev/null
 printf 'cli_pair_output=%s\n' "${output_dir}"

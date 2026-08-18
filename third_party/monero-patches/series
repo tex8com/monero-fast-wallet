@@ -82,3 +82,4 @@
 0081-wallet-cli-select-public-and-private-Fast-Wallet-wor.patch
 0082-wallet-run-manual-derivation-backends-for-ten-seconds.patch
 0083-wallet-expose-exact-per-subaddress-balances.patch
+0084-wallet-cli-dispatch-Community-V1-companion.patch

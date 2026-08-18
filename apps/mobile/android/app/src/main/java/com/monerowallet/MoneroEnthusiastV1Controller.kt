@@ -2,6 +2,7 @@ package com.monerowallet
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.WritableMap
 import java.io.ByteArrayOutputStream
@@ -88,6 +89,7 @@ internal class MoneroEnthusiastV1Controller(
         statusJson()
       }
       "search" -> search(input)
+      "recordInterest" -> recordInterest(input)
       "suggestions" -> suggestions(input)
       "clearSearchHistory" -> {
         requireOnly(input)
@@ -398,6 +400,24 @@ internal class MoneroEnthusiastV1Controller(
       request.toString(),
       System.currentTimeMillis().toDouble(),
     )
+  }
+
+  private fun recordInterest(input: JSONObject): String {
+    requireOnly(input, "publicId", "signal")
+    initializeRuntime()
+    val signal = input.requiredString("signal")
+    require(signal in INTEREST_SIGNALS) { "Local interest signal is invalid" }
+    val request = JSONObject()
+      .put("publicId", checkedIdentifier(input.requiredString("publicId"), "public entry"))
+      .put("signal", signal)
+    val response = NativeMoneroWalletJni.communityRuntimeRecordInterest(
+      request.toString(),
+      System.currentTimeMillis().toDouble(),
+    )
+    if (BuildConfig.DEBUG) {
+      Log.d(LOG_TAG, "local-interest signal=$signal status=${JSONObject(response).optString("status")}")
+    }
+    return response
   }
 
   private fun contributeQuery(input: JSONObject): String {
@@ -1250,6 +1270,7 @@ internal class MoneroEnthusiastV1Controller(
   )
 
   companion object {
+    private const val LOG_TAG = "MoneroCommunityV1"
     private const val ACCOUNT_KEY = "monero.community.v1.account"
     private const val MATRIX_SESSION_KEY = "monero.community.v1.matrix.session"
     private const val MATRIX_STORE_KEY = "monero.community.v1.matrix.store-key"
@@ -1280,6 +1301,15 @@ internal class MoneroEnthusiastV1Controller(
     private val LANGUAGE = Regex("^[A-Za-z0-9-]{1,16}$")
     private val COARSE_REGION = Regex("^[0-9bcdefghjkmnpqrstuvwxyz]{5}$")
     private val COUNTRY = Regex("^[A-Z]{2}$")
+    private val INTEREST_SIGNALS = setOf(
+      "content_opened",
+      "longer_local_view",
+      "contact_requested",
+      "saved_locally",
+      "more_like_this",
+      "less_like_this",
+      "hidden",
+    )
     private val CONTRIBUTION_TOKEN_PUNCTUATION =
       setOf(',', '.', ';', ':', '!', '?', '(', ')', '[', ']', '{', '}', '"', '\'')
     private const val COMMUNITY_QUERY_MODEL_ID =

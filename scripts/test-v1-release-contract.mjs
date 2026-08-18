@@ -1019,7 +1019,7 @@ test('notification gateway rejects the legacy shared-token trust boundary', () =
   assert.match(deploy, /Refusing live deployment/);
 });
 
-test('Community V1 deployment keeps its private Synapse token readable only by the service group', () => {
+test('Community V1 deployment protects Synapse token per file without locking sibling services out', () => {
   const deploy = read(
     'services/enthusiast-v1/deploy/deploy-live-from-macos.sh',
   );
@@ -1029,7 +1029,7 @@ test('Community V1 deployment keeps its private Synapse token readable only by t
 
   assert.match(
     deploy,
-    /install -d -o root -g "\$service_user" -m 0750 \/etc\/monero-fast-wallet/,
+    /install -d -o root -g root -m 0755 \/etc\/monero-fast-wallet/,
   );
   assert.match(
     deploy,

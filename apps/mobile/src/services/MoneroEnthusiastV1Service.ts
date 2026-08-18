@@ -111,6 +111,15 @@ export type CommunityV1QuerySuggestion = {
   weight: number;
 };
 
+export type CommunityV1InterestSignal =
+  | 'content_opened'
+  | 'longer_local_view'
+  | 'contact_requested'
+  | 'saved_locally'
+  | 'more_like_this'
+  | 'less_like_this'
+  | 'hidden';
+
 export type CommunityV1Advertisement = {
   campaignId: string;
   contentRevision: number;
@@ -242,6 +251,11 @@ export const MoneroEnthusiastV1Service = {
       limit: 8,
     }),
   clearSearchHistory: () => runCommunityV1('clearSearchHistory'),
+  recordInterest: (publicId: string, signal: CommunityV1InterestSignal) =>
+    runCommunityV1<{ status: string }>('recordInterest', {
+      publicId,
+      signal,
+    }),
   contributeQuery: (input: {
     submissionId: string;
     query: string;
