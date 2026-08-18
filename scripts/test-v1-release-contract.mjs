@@ -124,6 +124,11 @@ test('safe V1 feature manifest enables verified local surfaces and fails closed 
   assert.equal(manifest.profile, 'safe-wallet-v1');
   assert.equal(manifest.features.localFastWallet, true);
   assert.equal(
+    manifest.features.ledgerFastWallet,
+    false,
+    'legacy Ledger account hosting must stay disabled; Ledger setup creates an independent Fast Wallet',
+  );
+  assert.equal(
     manifest.features.officialWorker,
     true,
     'the deployed encrypted official Worker must be enabled',
@@ -962,7 +967,13 @@ test('desktop enforces recovery and security gates below the renderer', () => {
   assert.match(native, /require_legacy_community_release/);
   assert.match(release, /unwrap_or\(false\)/);
   assert.doesNotMatch(notifications, /fallback\s*=\s*now\(\)/);
-  assert.doesNotMatch(renderer, /ExperienceModeOnboarding|Fast Wallet hosting/);
+  // The renderer may explain onboarding and diagnostics, but it must never
+  // receive or invoke the raw Ledger private-view-key export boundary.
+  assert.match(renderer, /Fast Wallet hosting/);
+  assert.doesNotMatch(
+    renderer,
+    /export_hardware_private_view_key|private_view_key|privateViewKey/,
+  );
   assert.match(renderer, /complete balance and history are rebuilt and verified on this device/);
 });
 
