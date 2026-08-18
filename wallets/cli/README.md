@@ -16,6 +16,27 @@ cargo run --locked --manifest-path wallets/cli/Cargo.toml -- \
   --state-dir /private/path identity create
 ```
 
+## Three quick testbenches
+
+The complete CLI check is intentionally split into three scripts under
+`wallets/cli/testbench/`:
+
+| Script | Scope | Safety boundary |
+| --- | --- | --- |
+| `01-ledger-nano-readonly.sh` | Connected Ledger Nano and a dedicated test wallet | Read-only: status, balance and history; it cannot send or relay. |
+| `02-spend-regtest.sh` | Full wallet payment and history parity | Starts a private offline Regtest chain; no public network or real funds. |
+| `03-system-smoke.sh` | Product CLI, Fast Wallet lifecycle and Worker safety paths | Local-only; no node calls and no funds. |
+
+Run the local smoke test after each new CLI build:
+
+```sh
+./wallets/cli/testbench/03-system-smoke.sh /path/to/monero-fast-wallet-cli
+```
+
+The Ledger script requires an unlocked Nano, a dedicated test wallet and the
+explicit `MFW_LEDGER_NANO_CONFIRM=YES` guard. The Regtest script requires the
+CLI pair directory plus a local `monerod` binary.
+
 ## Command groups
 
 - `identity`: create, inspect and permanently delete the pseudonymous account.
