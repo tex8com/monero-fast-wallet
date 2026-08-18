@@ -2,6 +2,26 @@
 
 Outbound-only V1 Worker building blocks.
 
+## Quick start
+
+Build and test locally. The production host must receive only committed source
+through the normal pull, build and deploy flow.
+
+```bash
+# from the repository root
+backend/fast-wallet-stack/deploy/build-fast-wallet-worker-epyc.sh
+backend/fast-wallet-worker/test-authenticated.sh
+```
+
+The first command creates an authenticated local release binary at
+`build/fast-wallet-worker-epyc/cargo-target/release/fast-wallet-worker`.
+It needs the pinned Curve25519 dependency and must not be replaced by a plain
+`cargo build`.
+
+To run it, provision its secret files outside the repository and use the
+systemd unit in `../fast-wallet-stack/deploy/fast-wallet-worker.service`.
+Do not put keys, generated state, logs or build output under version control.
+
 - accepts only the fixed-size `watch-envelope.v1`;
 - decrypts only envelopes bound to its signed descriptor and HPKE key;
 - signs every outbound Relay pull and acknowledges only after durable local

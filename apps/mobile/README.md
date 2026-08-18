@@ -2,6 +2,21 @@
 
 React Native shell for the Monero Fast Wallet.
 
+## Quick start
+
+Build the app locally. Never edit mobile source files on a server.
+
+```bash
+cd apps/mobile
+npm install
+npm run ios:build-install
+# or, with an Android device/emulator connected:
+npm run android:build-install
+```
+
+For a fast JavaScript development loop, use `npm start` in one terminal and
+`npm run ios` in another. Before committing, run `npm test` and `npm run lint`.
+
 ## Role
 
 This app owns the user experience: onboarding, wallet setup screens, sync
