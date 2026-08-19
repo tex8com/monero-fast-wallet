@@ -4626,18 +4626,32 @@ class WalletEngine::Impl {
 
         if (atTip) {
           const auto mempoolStarted = std::chrono::steady_clock::now();
+          failureStage = "checking-mempool";
           if (!routineTipCheck || batch.blockCount > 0) {
             std::lock_guard<std::mutex> lock(coordinator.mutex);
             setNetworkPhaseLocked(coordinator, "checking-mempool");
           }
+          logEngineDiagnostic(
+              "networkSync.poolSnapshotRequest",
+              {
+                  {"network", std::to_string(
+                      static_cast<int>(coordinator.network))},
+                  {"targetHeight", std::to_string(
+                      authenticatedTargetHeight)},
+                  {"walletCount", std::to_string(
+                      availableSessions.size())},
+              });
           const auto nativePool = provider->fetchSharedPoolSnapshot();
           throwIfWalletFailed(provider, "fetchSharedPoolSnapshot");
+          uint64_t consumedPoolSnapshots = 0;
+          uint64_t deferredPoolSnapshots = 0;
           if (nativePool) {
             for (const auto& item : availableSessions) {
               try {
                 std::unique_lock<std::mutex> sessionLock(
                     item.second->mutationMutex, std::try_to_lock);
                 if (!sessionLock.owns_lock()) {
+                  ++deferredPoolSnapshots;
                   continue;
                 }
                 item.second->wallet->consumeSharedPoolSnapshot(*nativePool);
@@ -4645,6 +4659,7 @@ class WalletEngine::Impl {
                     item.second->wallet, "consumeSharedPoolSnapshot");
                 updateCachedSnapshot(
                     *item.second, authenticatedTargetHeight);
+                ++consumedPoolSnapshots;
               } catch (const std::exception& error) {
                 logEngineDiagnostic(
                     "networkSync.poolWalletStalled",
@@ -4661,6 +4676,19 @@ class WalletEngine::Impl {
             coordinator.status.totalMempoolMs +=
                 coordinator.status.lastMempoolMs;
           }
+          logEngineDiagnostic(
+              "networkSync.poolSnapshotCompleted",
+              {
+                  {"status", nativePool ? "available" : "empty"},
+                  {"walletCount", std::to_string(
+                      availableSessions.size())},
+                  {"deliveries", std::to_string(
+                      consumedPoolSnapshots)},
+                  {"queueDepth", std::to_string(
+                      deferredPoolSnapshots)},
+                  {"elapsedMs", std::to_string(
+                      elapsedMilliseconds(mempoolStarted))},
+              });
         }
 
         bool checkpoint = atTip;
@@ -4673,6 +4701,7 @@ class WalletEngine::Impl {
               : (indeterminateEmptyBatch ? "waiting-tip" : "scanning");
         }
         if (checkpoint) {
+          failureStage = "checkpointing-wallets";
           const auto checkpointStarted = std::chrono::steady_clock::now();
           if (!routineTipCheck || batch.blockCount > 0) {
             std::lock_guard<std::mutex> lock(coordinator.mutex);

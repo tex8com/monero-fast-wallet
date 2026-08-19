@@ -207,6 +207,7 @@ const androidNativeModule = read(
 const androidNativeJni = read(
   'android/app/src/main/cpp/NativeMoneroWalletJni.cpp',
 );
+const walletEngine = read('../../native/monero-bridge/cpp/WalletEngine.cpp');
 assert.match(androidNativeModule, /persistEngineDiagnosticLines\(\)/);
 assert.match(androidNativeModule, /MONERO_WALLET_DIAGNOSTICS native=cpp/);
 assert.match(androidNativeModule, /InetAddress\.getAllByName\(host\)/);
@@ -220,6 +221,14 @@ assert.match(
   /if \(!BuildConfig\.WALLET_TRANSACTION_AUDIT_ENABLED\) return/,
 );
 assert.match(androidNativeJni, /nativeDrainEngineDiagnostics/);
+assert.match(
+  walletEngine,
+  /failureStage = "checking-mempool";[\s\S]*networkSync\.poolSnapshotRequest[\s\S]*fetchSharedPoolSnapshot[\s\S]*networkSync\.poolSnapshotCompleted/,
+);
+assert.match(
+  walletEngine,
+  /if \(checkpoint\) \{\s*failureStage = "checkpointing-wallets";/,
+);
 assert.match(androidCmake, /MONERO_WALLET_API_HEADER_SHA256/);
 assert.match(androidCmake, /MONERO_WALLET_API_LIBRARY_SHA256/);
 assert.match(androidCmake, /BOOST_NO_CXX98_FUNCTION_BASE=1/);
