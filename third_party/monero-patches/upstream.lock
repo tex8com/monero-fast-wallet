@@ -64,11 +64,15 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # Patch 0084 adds the product `community` command and dispatches it only to the
 # packaged Rust Community V1 companion beside the current executable. It never
 # resolves a companion through PATH and does not alter upstream wallet flows.
+# Patch 0085 seeds the keyless shared provider with canonical public genesis
+# while keeping its account uninitialised. Shared gRPC ranges use their exact
+# explicit cursor without a synthetic locator; authenticated bin-RPC fallback
+# retains the valid genesis locator.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=88fad90f683f587b7d3cc2d494d3408a780b95c5
-previous_patch_count=83
-patched_tree=9d44cc4f95de03b6b9bfe5111a9e6cada0e79510
+previous_patched_tree=9d44cc4f95de03b6b9bfe5111a9e6cada0e79510
+previous_patch_count=84
+patched_tree=8cf1df4314408a9062a2b1bacd3cf2490ff7a3ff
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

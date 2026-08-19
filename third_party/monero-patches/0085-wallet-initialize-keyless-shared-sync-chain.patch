@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Tue, 18 Aug 2026 19:05:00 -0500
+Subject: [PATCH] wallet: initialize keyless shared sync chain
+
+---
+ src/wallet/api/wallet.cpp         |  5 +++++
+ src/wallet/api/wallet.h           |  1 +
+ src/wallet/api/wallet_manager.cpp | 10 +++++++---
+ src/wallet/wallet2.cpp            | 40 +++++++++++++++++++++++++++------------
+ src/wallet/wallet2.h              |  2 ++
+ 5 files changed, 43 insertions(+), 15 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 0bf22fb..7fca7ac 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -551,6 +551,11 @@ WalletImpl::WalletImpl(NetworkType nettype, uint64_t kdf_rounds)
+ 
+ }
+ 
++void WalletImpl::initializeSharedSyncProvider()
++{
++    m_wallet->initialize_shared_sync_provider();
++}
++
+ WalletImpl::~WalletImpl()
+ {
+ 
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 7c62f82..f7c45f8 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -54,6 +54,7 @@ class WalletImpl : public Wallet
+ public:
+     WalletImpl(NetworkType nettype = MAINNET, uint64_t kdf_rounds = 1);
+     ~WalletImpl();
++    void initializeSharedSyncProvider();
+     bool create(const std::string &path, const std::string &password,
+                 const std::string &language);
+     bool createWatchOnly(const std::string &path, const std::string &password,
+diff --git a/src/wallet/api/wallet_manager.cpp b/src/wallet/api/wallet_manager.cpp
+index 40c8f10..845132e 100644
+--- a/src/wallet/api/wallet_manager.cpp
++++ b/src/wallet/api/wallet_manager.cpp
+@@ -58,9 +58,13 @@ Wallet *WalletManagerImpl::createSharedSyncProvider(
+     NetworkType nettype, uint64_t kdf_rounds)
+ {
+     // WalletImpl already owns the authenticated RPC/gRPC transport and the
+-    // public block parser. Leaving the account uninitialised is intentional:
+-    // this object must never own keys, scan ownership, or persist a wallet.
+-    return new WalletImpl(nettype, kdf_rounds);
++    // public block parser. The canonical genesis is public network identity,
++    // not account material; seeding only that hash gives every RPC fallback a
++    // valid chain locator while the provider still owns no keys, scan
++    // ownership, or wallet file.
++    WalletImpl *provider = new WalletImpl(nettype, kdf_rounds);
++    provider->initializeSharedSyncProvider();
++    return provider;
+ }
+ 
+ Wallet *WalletManagerImpl::createWallet(const std::string &path, const std::string &password,
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 4027ed5..0853b1c 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -3429,18 +3429,26 @@ bool wallet2::try_pull_blocks_grpc(bool first, uint64_t start_height,
+     m_grpc_stream_session_id = sid.str();
+     std::vector<std::string> chain_locator;
+     chain_locator.reserve(std::min<size_t>(short_chain_history.size(), 256));
+-    for (const crypto::hash& block_id : short_chain_history)
+-    {
+-      if (chain_locator.size() == 255)
+-        break;
+-      chain_locator.emplace_back(
+-          reinterpret_cast<const char*>(&block_id), sizeof(block_id));
+-    }
+-    if (short_chain_history.size() > 255)
++    // The keyless app-wide provider has no private, advancing hash chain.
++    // Its explicit shared cursor is already the authenticated public range
++    // boundary, so an empty gRPC locator preserves that exact start. The
++    // provider still retains canonical genesis locally for safe bin-RPC
++    // fallback. Normal wallets continue to send their compact reorg locator.
++    if (!(shared_range && m_shared_sync_provider))
+     {
+-      const crypto::hash& genesis_or_oldest = short_chain_history.back();
+-      chain_locator.emplace_back(
+-          reinterpret_cast<const char*>(&genesis_or_oldest), sizeof(genesis_or_oldest));
++      for (const crypto::hash& block_id : short_chain_history)
++      {
++        if (chain_locator.size() == 255)
++          break;
++        chain_locator.emplace_back(
++            reinterpret_cast<const char*>(&block_id), sizeof(block_id));
++      }
++      if (short_chain_history.size() > 255)
++      {
++        const crypto::hash& genesis_or_oldest = short_chain_history.back();
++        chain_locator.emplace_back(
++            reinterpret_cast<const char*>(&genesis_or_oldest), sizeof(genesis_or_oldest));
++      }
+     }
+     if (!m_grpc_stream_client->open(m_grpc_stream_endpoint, effective_start, stream_stop_height,
+         stream_chunk_hint, stream_channels, m_grpc_stream_session_id, chain_locator))
+@@ -4244,6 +4252,14 @@ uint64_t wallet2::wallet_sync_derivation_duration_us() const
+   return m_sync_derivation_duration_us.load(std::memory_order_relaxed);
+ }
+ //----------------------------------------------------------------------------------------------------
++void wallet2::initialize_shared_sync_provider()
++{
++  THROW_WALLET_EXCEPTION_IF(!m_blockchain.empty(), error::wallet_internal_error,
++    "shared sync provider blockchain is already initialized");
++  clear_soft();
++  m_shared_sync_provider = true;
++}
++//----------------------------------------------------------------------------------------------------
+ std::shared_ptr<const wallet2::shared_block_batch> wallet2::fetch_shared_block_batch()
+ {
+   return fetch_shared_block_batch_from(wallet_sync_target_cursor());
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index c23df66..09deec4 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1209,6 +1209,7 @@ private:
+     uint64_t wallet_sync_transport_bytes_received() const;
+     uint64_t wallet_sync_derivation_count() const;
+     uint64_t wallet_sync_derivation_duration_us() const;
++    void initialize_shared_sync_provider();
+     std::shared_ptr<const shared_block_batch> fetch_shared_block_batch();
+     std::shared_ptr<const shared_block_batch> fetch_shared_block_batch_from(uint64_t requested_cursor);
+     uint64_t consume_shared_block_batch(const shared_block_batch &batch);
+@@ -2073,6 +2074,7 @@ private:
+     std::atomic<uint64_t> m_sync_transport_bytes_received{0};
+     std::atomic<uint64_t> m_sync_derivation_count{0};
+     std::atomic<uint64_t> m_sync_derivation_duration_us{0};
++    bool m_shared_sync_provider = false;
+ #ifdef MONERO_GRPC_STREAM
+     std::unique_ptr<cuprate_grpc_stream::cuprate_grpc_block_range_pool> m_grpc_stream_client;
+     std::string  m_grpc_stream_endpoint;
+-- 
+2.50.1 (Apple Git-155)
+

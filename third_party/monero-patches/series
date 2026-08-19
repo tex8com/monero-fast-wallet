@@ -83,3 +83,4 @@
 0082-wallet-run-manual-derivation-backends-for-ten-seconds.patch
 0083-wallet-expose-exact-per-subaddress-balances.patch
 0084-wallet-cli-dispatch-Community-V1-companion.patch
+0085-wallet-initialize-keyless-shared-sync-chain.patch

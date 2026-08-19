@@ -1,8 +1,12 @@
-# Cuprate live deployment overlays
+# Historical Cuprate deployment overlays
 
-These overlays are separate from the historical 41-patch production series.
-They apply to the exact, already deployed source ancestry recorded here and
-must not be applied directly to the older series head.
+These files preserve the provenance of the four emergency fixes that were
+first applied to the former standalone production checkout. They are retained
+for audit and comparison only. **Do not apply them during a deployment.**
+
+The maintained implementation now lives directly in the monorepo under
+`node/mfn-monero-fast-node/`. That directory is the only Monero Fast Node
+source and the only source from which a new MFN binary may be built.
 
 - base commit: `8185b337ab5e26d93a61f2c231d52a573ae97bc1`
 - pre-overlay production binary SHA-256:
@@ -13,10 +17,12 @@ must not be applied directly to the older series head.
   3. `0003-wallet-sync-release-active-stream-count-on-all-exits.patch`
   4. `0004-wallet-sync-allow-six-persistent-lanes.patch`
 
-The overlay keeps the legacy `StreamBlocks` method and adds the capability-safe
-`StreamBlockLane` method. Build it natively on the server with Cargo's locked
-dependency graph. Deploy only after source hashes, tests and the release binary
-hash are recorded; retain an atomic rollback copy of the prior binary.
+The integrated implementation keeps the legacy `StreamBlocks` method and adds
+the capability-safe `StreamBlockLane` method. Build it natively on the server
+with Cargo's locked dependency graph after the reviewed monorepo commit has
+been pushed and pulled. Never edit or patch source code on the server. Deploy
+only after source hashes, tests and the release binary hash are recorded;
+retain an atomic rollback copy of the prior binary.
 
 The second overlay keeps the 32-MiB per-lane memory bound. If exact EPEE
 encoding exceeds it, the producer cancels the speculative next fetch, halves

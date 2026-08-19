@@ -61,46 +61,40 @@ const sixLaneAdditions = sixLanePatch
   .split(/\r?\n/)
   .filter(line => line.startsWith('+') && !line.startsWith('+++'))
   .join('\n');
+const serverProto = read(
+  'node/mfn-monero-fast-node/binaries/cuprated/proto/cuprate_stream.proto',
+);
+const serverGrpc = read(
+  'node/mfn-monero-fast-node/binaries/cuprated/src/rpc/grpc.rs',
+);
 
 test('the authenticated Core retains the measured production patch sequence', () => {
-  assert.equal(series.length, 81);
-  assert.equal(series.at(-11), patchName);
-  assert.equal(series.at(-10), spanPatchName);
-  assert.equal(
-    series.at(-9),
+  assert.equal(series.length, 85);
+  assert.deepEqual(series.slice(-15), [
+    patchName,
+    spanPatchName,
     '0073-wallet-benchmark-and-report-automatic-derivation-backend.patch',
-  );
-  assert.equal(
-    series.at(-8),
     '0074-wallet-remove-hot-path-diagnostic-clocks.patch',
-  );
-  assert.equal(series.at(-7), persistentLanePatchName);
-  assert.equal(
-    series.at(-6),
+    persistentLanePatchName,
     '0076-ledger-hid-read-timeout-fail-closed.patch',
-  );
-  assert.equal(
-    series.at(-5),
     '0077-wallet-expose-live-sync-throughput-in-every-client.patch',
-  );
-  assert.equal(series.at(-4), cleanLaneTipPatchName);
-  assert.equal(series.at(-3), sixLanePatchName);
-  assert.equal(
-    series.at(-2),
+    cleanLaneTipPatchName,
+    sixLanePatchName,
     '0080-wallet-spill-public-blockstream-overflow-to-bounded-disk.patch',
-  );
-  assert.equal(
-    series.at(-1),
-    '0081-wallet-cli-dispatch-Community-V1-companion.patch',
-  );
-  assert.match(lock, /^previous_patch_count=80$/m);
+    '0081-wallet-cli-select-public-and-private-Fast-Wallet-wor.patch',
+    '0082-wallet-run-manual-derivation-backends-for-ten-seconds.patch',
+    '0083-wallet-expose-exact-per-subaddress-balances.patch',
+    '0084-wallet-cli-dispatch-Community-V1-companion.patch',
+    '0085-wallet-initialize-keyless-shared-sync-chain.patch',
+  ]);
+  assert.match(lock, /^previous_patch_count=84$/m);
   assert.match(
     lock,
-    /^previous_patched_tree=1bef2c97a28caac1df5f6723368914701851a680$/m,
+    /^previous_patched_tree=9d44cc4f95de03b6b9bfe5111a9e6cada0e79510$/m,
   );
   assert.match(
     lock,
-    /^patched_tree=8dbadc9008e196279bf657fc6eb2ce9aead2b355$/m,
+    /^patched_tree=8cf1df4314408a9062a2b1bacd3cf2490ff7a3ff$/m,
   );
   assert.match(hotPathPatch, /^-.*process_new_transaction SLOW txid=/m);
   assert.match(hotPathPatch, /^-.*SLOW_TX[^\n]*\n-.*txid=/m);
@@ -215,6 +209,29 @@ test('the server validates up to the same measured six-lane ceiling', () => {
   assert.doesNotMatch(
     serverSixLanePatch,
     /view_key|spend_key|private_key|mnemonic|seed|derivation/,
+  );
+});
+
+test('the one MFN source tree implements the persistent-lane protocol', () => {
+  assert.match(
+    serverProto,
+    /rpc StreamBlockLane\(StreamBlocksRequest\) returns \(stream BlockChunk\)/,
+  );
+  assert.match(serverProto, /stripe_span_blocks = 8/);
+  assert.match(serverProto, /lane_index = 9/);
+  assert.match(serverProto, /lane_count = 10/);
+  assert.match(serverGrpc, /const MAX_LANE_COUNT: u32 = 6/);
+  assert.match(serverGrpc, /struct LanePlan/);
+  assert.match(serverGrpc, /fn reduced_chunk_blocks/);
+  assert.match(serverGrpc, /SPLIT_OVERSIZED/);
+  assert.match(serverGrpc, /struct ActiveStreamPermit/);
+  assert.match(serverGrpc, /impl Drop for ActiveStreamPermit/);
+  assert.match(serverGrpc, /let active_permit = try_acquire_stream\(\)\?/);
+  assert.match(serverGrpc, /select_stream_start\(requested_start/);
+  assert.match(serverGrpc, /if requested_start > 0/);
+  assert.doesNotMatch(
+    serverGrpc,
+    /private_view_key|private_spend_key|private_key|mnemonic|seed_phrase/,
   );
 });
 

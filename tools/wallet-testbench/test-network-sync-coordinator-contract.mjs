@@ -9,8 +9,8 @@ const repoRoot = resolve(here, '..', '..');
 const read = path => readFileSync(resolve(repoRoot, path), 'utf8');
 
 const plan = read('docs/V1_EXECUTION_PLAN.md');
-const mobileState = read('wallets/mobile/src/backend/WalletState.tsx');
-const mobileService = read('wallets/mobile/src/backend/WalletService.ts');
+const mobileState = read('wallets/mobile/src/services/WalletState.tsx');
+const mobileService = read('wallets/mobile/src/services/WalletService.ts');
 const mobileHome = read('wallets/mobile/src/screens/HomeScreen.tsx');
 const mobileSelector = read('wallets/mobile/src/components/WalletSelector.tsx');
 const mobileSyncStatus = read('wallets/mobile/src/components/SyncStatusBar.tsx');
@@ -52,6 +52,9 @@ const noCopyPatch = read(
 const publicTransportPatch = read(
   'third_party/monero-patches/0045-wallet-sync-add-keyless-public-transport-provider.patch',
 );
+const keylessChainPatch = read(
+  'third_party/monero-patches/0085-wallet-initialize-keyless-shared-sync-chain.patch',
+);
 const finalBoundaryPatch = read(
   'third_party/monero-patches/0046-wallet-sync-include-final-gRPC-height-boundary.patch',
 );
@@ -75,7 +78,7 @@ test('mobile selection is UI-only once a native refresh has joined', () => {
   assert.match(mobileState, /nativeRefreshWalletIdsRef\.current\.has\(registrationId\)/);
   assert.match(mobileState, /reason: 'alreadyStarted'/);
   assert.match(mobileState, /ensureRegisteredWalletOpen\(registration, isActive, true\)/);
-  assert.match(mobileHome, /nodeConnectionStatus/);
+  assert.match(mobileHome, /networkSyncStatus/);
 });
 
 test('desktop retains every warmed wallet instead of replacing pending work', () => {
@@ -154,10 +157,19 @@ test('the public downloader is keyless and independent of every wallet scanner',
     patchSeries,
     /0046-wallet-sync-include-final-gRPC-height-boundary\.patch/,
   );
+  assert.match(
+    patchSeries,
+    /0085-wallet-initialize-keyless-shared-sync-chain\.patch/,
+  );
   assert.match(publicTransportPatch, /createSharedSyncProvider/);
   assert.match(publicTransportPatch, /never creates wallet files/);
-  assert.match(publicTransportPatch, /Leaving the account uninitialised is intentional/);
   assert.match(publicTransportPatch, /direct_shared_grpc/);
+  assert.match(keylessChainPatch, /initializeSharedSyncProvider/);
+  assert.match(keylessChainPatch, /clear_soft\(\)/);
+  assert.match(keylessChainPatch, /m_shared_sync_provider = true/);
+  assert.match(keylessChainPatch, /shared_range && m_shared_sync_provider/);
+  assert.match(keylessChainPatch, /empty gRPC locator preserves that exact start/);
+  assert.match(keylessChainPatch, /provider still owns no keys/);
   assert.match(walletEngine, /Monero::Wallet\* publicTransport\{nullptr\}/);
   assert.match(walletEngine, /manager_->createSharedSyncProvider/);
   assert.match(walletEngine, /publicTransportInitialized/);
@@ -187,7 +199,14 @@ test('one coordinator fetches and decodes once before wallet-private fan-out', (
   // One synchronous call obtains the current immutable public batch and one
   // asynchronous call may prefetch exactly the next batch.  More call sites
   // would make it too easy to accidentally create per-wallet downloaders.
-  assert.equal((worker.match(/fetchSharedBlockBatchFrom\(/g) || []).length, 2);
+  assert.equal(
+    (walletEngine.match(/provider->fetchSharedBlockBatchFrom\(/g) || []).length,
+    1,
+  );
+  assert.equal(
+    (worker.match(/fetchSharedBlockBatchMeasured\(/g) || []).length,
+    2,
+  );
   assert.equal((worker.match(/fetchSharedPoolSnapshot\(/g) || []).length, 1);
   assert.match(walletEngine, /executeAsyncWalletScan/);
   assert.match(walletEngine, /consumeSharedBlockBatch\(\*batch\)/);
@@ -470,7 +489,7 @@ test('legacy platform calls now configure and join the process-wide coordinator'
 
   // Mobile/Desktop can retain their stable ABI. These calls are no longer
   // wallet-owned transports because WalletEngine routes them by network.
-  assert.match(mobileService, /applyNodeConnection\(session\)/);
+  assert.match(mobileService, /applyNodeConnection\(session, nodeSettings\)/);
   assert.match(desktopHost, /native\.set_daemon/);
   assert.match(providerPatch, /acquire_process_channel/);
   assert.match(providerPatch, /static std::unordered_map<std::string, std::weak_ptr<grpc::Channel>> channels/);
@@ -549,7 +568,7 @@ test('download progress is distinct from the slowest wallet scan cursor on every
 });
 
 test('connection state is global while wallet cards describe private scanning', () => {
-  assert.match(mobileHome, /nodeConnectionStatus/);
+  assert.match(mobileHome, /networkSyncStatus/);
   const selectorStatus = mobileSelector.slice(
     mobileSelector.indexOf('export function walletSnapshotStatusLabel'),
     mobileSelector.indexOf('function balanceLabel'),
@@ -565,7 +584,10 @@ test('connection state is global while wallet cards describe private scanning', 
     desktopUi.indexOf('function networkSyncConnected'),
   );
   assert.doesNotMatch(desktopSyncLabel, /home\.syncConnecting/);
-  assert.match(desktopUi, /networkSyncConnected\(networkSync\)/);
+  assert.match(
+    desktopUi,
+    /function networkSyncConnected[\s\S]*status\.transportStarts > 0/,
+  );
 });
 
 test('slow provider initialization never owns the wallet registry mutex', () => {
@@ -617,7 +639,10 @@ test('startup coalesces wallet joins and retains one initialized keyless provide
   assert.match(worker, /provider = coordinator\.publicTransport/);
   assert.match(worker, /initializeProvider = !coordinator\.publicTransportInitialized/);
   assert.match(worker, /minimumTarget = std::min\(minimumTarget, target\)/);
-  assert.match(worker, /fetchSharedBlockBatchFrom\([\s\S]*requestedDownloadCursor\)/);
+  assert.match(
+    worker,
+    /fetchSharedBlockBatchMeasured\([\s\S]*requestedDownloadCursor\)/,
+  );
   assert.doesNotMatch(worker, /target < minimumTarget/);
   assert.equal((worker.match(/\+\+coordinator\.status\.transportStarts/g) || []).length, 1);
 });
@@ -692,9 +717,9 @@ test('the keyless public transport connects once before fetching public blocks',
   const start = walletEngine.indexOf('void runNetworkCoordinator(');
   const end = walletEngine.indexOf('void stopAllNetworkCoordinators()', start);
   const worker = walletEngine.slice(start, end);
-  const initialized = worker.indexOf('publicSyncTransport.init');
+  const initialized = worker.indexOf('provider->init(');
   const connected = worker.indexOf('provider->connectToDaemon()');
-  const fetch = worker.indexOf('provider->fetchSharedBlockBatchFrom(\n                requestedDownloadCursor)');
+  const fetch = worker.indexOf('fetchSharedBlockBatchMeasured(');
   assert.ok(initialized >= 0 && connected > initialized && fetch > connected,
     'the only public provider must connect after init and before its first fetch');
   assert.match(worker, /publicSyncTransport\.connectToDaemon/);
