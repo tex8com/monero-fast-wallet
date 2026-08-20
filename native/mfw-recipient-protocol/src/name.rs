@@ -217,6 +217,29 @@ impl CommitRecord {
         }
     }
 
+    /// Derives the commitment used by immutable Registry-v1 claims created
+    /// before owner signing keys were introduced. Keeping this separate from
+    /// `for_claim` prevents current callers from silently downgrading.
+    pub fn for_legacy_claim(
+        network: Network,
+        name: &CanonicalName,
+        address: &PublicAddress,
+        salt: &[u8; 16],
+    ) -> Self {
+        let mut hash = Sha256::new();
+        hash.update(COMMIT_DOMAIN);
+        hash.update([network as u8]);
+        hash.update([u8::try_from(name.as_str().len()).expect("name length is bounded")]);
+        hash.update(name.as_str().as_bytes());
+        hash.update([address.kind as u8]);
+        hash.update(address.public_spend_key);
+        hash.update(address.public_view_key);
+        hash.update(salt);
+        Self {
+            commitment: hash.finalize().into(),
+        }
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut encoded = Vec::with_capacity(COMMIT_RECORD_BYTES);
         encoded.extend_from_slice(MFW_MAGIC);
@@ -320,6 +343,19 @@ impl LegacyNameRecord {
             return Err(NameProtocolError::WrongNetwork);
         }
         self.address.validate()
+    }
+
+    pub fn claim_commitment(
+        &self,
+        expected_network: Network,
+    ) -> Result<CommitRecord, NameProtocolError> {
+        self.verify(&self.name, expected_network)?;
+        Ok(CommitRecord::for_legacy_claim(
+            expected_network,
+            &self.name,
+            &self.address,
+            &self.claim_salt,
+        ))
     }
 
     fn encode(&self) -> Result<Vec<u8>, NameProtocolError> {

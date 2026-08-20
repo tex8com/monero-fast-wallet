@@ -10,8 +10,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::name::{
-    CanonicalName, CommitRecord, NameOperation, NameProtocolError, NameRecord, Network,
-    PublicAddress,
+    CanonicalName, CommitRecord, LegacyNameRecord, NameOperation, NameProtocolError, NameRecord,
+    Network, PublicAddress,
 };
 
 const INDEX_FILE_VERSION: u8 = 1;
@@ -19,6 +19,8 @@ const INDEX_CHECKSUM_DOMAIN: &[u8] = b"TEX8/MFW/name-index-file/v1";
 const RESERVED_MANIFEST_DOMAIN: &[u8] = b"TEX8/MFW/reserved-name-manifest/v1";
 const REGISTRY_DESCRIPTOR_DOMAIN: &[u8] = b"TEX8/MFW/registry-descriptor/v1";
 const MAX_INDEX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const LEGACY_MAINNET_CLAIM_CUTOFF_HEIGHT: u64 = 3_741_022;
+const LEGACY_COMMIT_PAYMENT_ATOMIC: u64 = 1;
 pub const MAX_TERM_YEARS: u64 = 1_000;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -149,12 +151,43 @@ impl Resolution {
 struct CommitEvidence {
     height: u64,
     txid: [u8; 32],
+    registry_received_atomic: u64,
+}
+
+#[derive(Clone, Debug)]
+enum IndexedNameRecord {
+    Signed(NameRecord),
+    Legacy(LegacyNameRecord),
+}
+
+impl IndexedNameRecord {
+    fn address(&self) -> PublicAddress {
+        match self {
+            Self::Signed(record) => record.address,
+            Self::Legacy(record) => record.address,
+        }
+    }
+
+    fn owner_public_key(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::Signed(record) => Some(record.owner_public_key),
+            Self::Legacy(_) => None,
+        }
+    }
+
+    fn sequence(&self) -> Option<u32> {
+        match self {
+            Self::Signed(record) => Some(record.sequence),
+            Self::Legacy(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 struct NameState {
-    record: NameRecord,
-    signing_owner_public_key: [u8; 32],
+    record: IndexedNameRecord,
+    record_payload: Vec<u8>,
+    signing_owner_public_key: Option<[u8; 32]>,
     record_height: u64,
     source_txid: [u8; 32],
     expiry_height: u64,
@@ -306,13 +339,13 @@ impl NameIndex {
         );
         Ok(Resolution {
             name,
-            address: resolving.then_some(full_state.record.address),
-            owner_public_key: Some(full_state.record.owner_public_key),
-            sequence: Some(full_state.record.sequence),
+            address: resolving.then_some(full_state.record.address()),
+            owner_public_key: full_state.record.owner_public_key(),
+            sequence: full_state.record.sequence(),
             record_height: Some(full_state.record_height),
             source_txid: Some(full_state.source_txid),
-            record_payload: Some(full_state.record.encode()?),
-            signing_owner_public_key: Some(full_state.signing_owner_public_key),
+            record_payload: Some(full_state.record_payload.clone()),
+            signing_owner_public_key: full_state.signing_owner_public_key,
             record_block_hash: self.block_hash(full_state.record_height),
             chain_tip_hash: self.tip_hash(),
             expiry_height: Some(full_state.expiry_height),
@@ -475,17 +508,32 @@ fn replay_block(
                 .push(CommitEvidence {
                     height: block.height,
                     txid: transaction.txid,
+                    registry_received_atomic: transaction.registry_received_atomic,
                 });
             continue;
         }
-        let Ok(record) = NameRecord::decode(payload) else {
-            state.rejected_records = state
-                .rejected_records
-                .checked_add(1)
-                .ok_or(NameIndexError::Overflow)?;
-            continue;
+        let result = if let Ok(record) = NameRecord::decode(payload) {
+            apply_record(
+                parameters,
+                state,
+                block.height,
+                transaction,
+                record,
+                payload.clone(),
+            )
+        } else if let Ok(record) = LegacyNameRecord::decode(payload) {
+            apply_legacy_claim(
+                parameters,
+                state,
+                block.height,
+                transaction,
+                record,
+                payload.clone(),
+            )
+        } else {
+            Err(NameIndexError::Protocol(NameProtocolError::InvalidLength))
         };
-        if apply_record(parameters, state, block.height, transaction, record).is_err() {
+        if result.is_err() {
             state.rejected_records = state
                 .rejected_records
                 .checked_add(1)
@@ -526,6 +574,7 @@ fn apply_record(
     height: u64,
     transaction: &IndexedTransaction,
     record: NameRecord,
+    record_payload: Vec<u8>,
 ) -> Result<(), NameIndexError> {
     match record.operation {
         NameOperation::Claim => {
@@ -571,8 +620,9 @@ fn apply_record(
             state.names.insert(
                 record.name.clone(),
                 NameState {
-                    signing_owner_public_key: record.owner_public_key,
-                    record,
+                    signing_owner_public_key: Some(record.owner_public_key),
+                    record: IndexedNameRecord::Signed(record),
+                    record_payload,
                     record_height: height,
                     source_txid: transaction.txid,
                     expiry_height,
@@ -589,10 +639,13 @@ fn apply_record(
             if predecessor.revoked || height >= predecessor.expiry_height {
                 return Err(NameIndexError::NameNotOwned);
             }
-            record.verify_transition(parameters.network, &predecessor.record)?;
+            let IndexedNameRecord::Signed(predecessor_record) = &predecessor.record else {
+                return Err(NameIndexError::LegacyRecordImmutable);
+            };
+            record.verify_transition(parameters.network, predecessor_record)?;
             if record.operation != NameOperation::Update
-                && (record.owner_public_key != predecessor.record.owner_public_key
-                    || record.address != predecessor.record.address)
+                && (record.owner_public_key != predecessor_record.owner_public_key
+                    || record.address != predecessor_record.address)
             {
                 return Err(NameIndexError::Protocol(
                     NameProtocolError::InvalidTransition,
@@ -625,8 +678,9 @@ fn apply_record(
             state.names.insert(
                 record.name.clone(),
                 NameState {
-                    signing_owner_public_key: predecessor.record.owner_public_key,
-                    record,
+                    signing_owner_public_key: Some(predecessor_record.owner_public_key),
+                    record: IndexedNameRecord::Signed(record),
+                    record_payload,
                     record_height: height,
                     source_txid: transaction.txid,
                     expiry_height,
@@ -635,6 +689,72 @@ fn apply_record(
             );
         }
     }
+    Ok(())
+}
+
+fn apply_legacy_claim(
+    parameters: &ProtocolParameters,
+    state: &mut ReplayState,
+    height: u64,
+    transaction: &IndexedTransaction,
+    record: LegacyNameRecord,
+    record_payload: Vec<u8>,
+) -> Result<(), NameIndexError> {
+    if parameters.network != Network::Mainnet || height > LEGACY_MAINNET_CLAIM_CUTOFF_HEIGHT {
+        return Err(NameIndexError::LegacyClaimAfterCutoff);
+    }
+    record.verify(&record.name, parameters.network)?;
+    if parameters.reserved_names.contains(&record.name) {
+        return Err(NameIndexError::ReservedName);
+    }
+    let commitment = record.claim_commitment(parameters.network)?.commitment;
+    let commit = state
+        .commits
+        .get(&commitment)
+        .and_then(|candidates| {
+            candidates.iter().rev().find(|candidate| {
+                let age = height.saturating_sub(candidate.height);
+                candidate.height < height
+                    && age >= parameters.commit_min_confirmations
+                    && age <= parameters.commit_reveal_window
+                    && candidate.registry_received_atomic == LEGACY_COMMIT_PAYMENT_ATOMIC
+                    && !state.consumed_commits.contains(&(
+                        commitment,
+                        candidate.height,
+                        candidate.txid,
+                    ))
+            })
+        })
+        .cloned()
+        .ok_or(NameIndexError::MissingMatureCommit)?;
+    if let Some(existing) = state.names.get(&record.name) {
+        if !existing.revoked && height < existing.expiry_height {
+            return Err(NameIndexError::NameAlreadyOwned);
+        }
+    }
+    let years = paid_years(parameters, transaction.registry_received_atomic)?;
+    let expiry_height = height
+        .checked_add(
+            years
+                .checked_mul(parameters.blocks_per_year)
+                .ok_or(NameIndexError::Overflow)?,
+        )
+        .ok_or(NameIndexError::Overflow)?;
+    state
+        .consumed_commits
+        .insert((commitment, commit.height, commit.txid));
+    state.names.insert(
+        record.name.clone(),
+        NameState {
+            record: IndexedNameRecord::Legacy(record),
+            record_payload,
+            signing_owner_public_key: None,
+            record_height: height,
+            source_txid: transaction.txid,
+            expiry_height,
+            revoked: false,
+        },
+    );
     Ok(())
 }
 
@@ -747,6 +867,10 @@ pub enum NameIndexError {
     ReservedName,
     #[error("name is not currently owned")]
     NameNotOwned,
+    #[error("immutable legacy claim does not support owner transitions")]
+    LegacyRecordImmutable,
+    #[error("legacy claim is after the frozen Mainnet compatibility cutoff")]
+    LegacyClaimAfterCutoff,
     #[error("invalid Registry payment")]
     InvalidRegistryPayment,
     #[error("unexpected Registry payment")]
@@ -831,6 +955,10 @@ mod tests {
         }
     }
 
+    fn hex32(value: &str) -> [u8; 32] {
+        hex::decode(value).unwrap().try_into().unwrap()
+    }
+
     fn apply_empty_until(index: &mut NameIndex, height: u64) {
         let start = index
             .tip_height()
@@ -892,6 +1020,117 @@ mod tests {
         assert_eq!(missing.chain_tip_height, Some(103));
         assert_eq!(missing.chain_tip_hash, Some(block(103, vec![]).hash));
         assert_eq!(unpaid.rejected_record_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn live_immutable_registry_v1_claim_remains_resolvable() {
+        const COMMIT_HEIGHT: u64 = 3_740_974;
+        const CLAIM_HEIGHT: u64 = 3_741_022;
+        let commit_payload = hex::decode(
+            "4d46574e01015c3536d631cc4b83bd4c43975b68897e48bf5f5af37d9ce7c42cf85abc3d5580",
+        )
+        .unwrap();
+        let claim_payload = hex::decode(
+            "4d46574e010200047465783800d5b0c70a320e1994e0c2099c203496f51fa771db6f771fed1697756034e645c443edc33ddde609782fb5e14a4fe600ff3cef0f862b0c27f9e8e314e556f3ac08375d17430161c44634bece4fffc2bd48",
+        )
+        .unwrap();
+        let mut live_parameters = parameters();
+        live_parameters.activation_height = COMMIT_HEIGHT;
+        live_parameters.annual_fee_atomic = 10_000_000_000;
+        live_parameters.blocks_per_year = 262_800;
+        live_parameters.commit_min_confirmations = 15;
+        live_parameters.commit_reveal_window = 720;
+        let mut index = NameIndex::new(live_parameters).unwrap();
+        index
+            .apply_block(block(
+                COMMIT_HEIGHT,
+                vec![IndexedTransaction {
+                    txid: hex32("edd39ebca3bdd7d6dd4017064475bf646b4270cfe90dcc3c10c394a3e66bfd4c"),
+                    payloads: vec![commit_payload],
+                    registry_received_atomic: LEGACY_COMMIT_PAYMENT_ATOMIC,
+                }],
+            ))
+            .unwrap();
+        apply_empty_until(&mut index, CLAIM_HEIGHT - 1);
+        index
+            .apply_block(block(
+                CLAIM_HEIGHT,
+                vec![IndexedTransaction {
+                    txid: hex32("19807de2aff8e88881eb4b7f13cb2b8eb59436e60778fc8087bd433528fa4301"),
+                    payloads: vec![claim_payload.clone()],
+                    registry_received_atomic: 10_000_000_000,
+                }],
+            ))
+            .unwrap();
+        apply_empty_until(&mut index, CLAIM_HEIGHT + 14);
+
+        let resolution = index.resolve("tex8.mfw").unwrap();
+        assert_eq!(resolution.status, ResolutionStatus::Finalized);
+        assert_eq!(resolution.record_height, Some(CLAIM_HEIGHT));
+        assert_eq!(resolution.expiry_height, Some(4_003_822));
+        assert_eq!(
+            resolution.source_txid,
+            Some(hex32(
+                "19807de2aff8e88881eb4b7f13cb2b8eb59436e60778fc8087bd433528fa4301"
+            ))
+        );
+        assert_eq!(resolution.record_payload, Some(claim_payload));
+        assert_eq!(resolution.owner_public_key, None);
+        assert_eq!(resolution.sequence, None);
+        assert_eq!(resolution.signing_owner_public_key, None);
+        let resolved_address = resolution.address.unwrap();
+        assert_eq!(
+            resolved_address.public_spend_key,
+            hex32("d5b0c70a320e1994e0c2099c203496f51fa771db6f771fed1697756034e645c4")
+        );
+        assert_eq!(
+            resolved_address.public_view_key,
+            hex32("43edc33ddde609782fb5e14a4fe600ff3cef0f862b0c27f9e8e314e556f3ac08")
+        );
+        assert_eq!(index.suggest_names("tex", 5).unwrap(), vec!["tex8.mfw"]);
+        assert_eq!(
+            index.resolve("test.mfw").unwrap().status,
+            ResolutionStatus::NotFound
+        );
+        assert_eq!(index.rejected_record_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn immutable_registry_v1_claims_after_the_cutoff_are_rejected() {
+        let commit_height = LEGACY_MAINNET_CLAIM_CUTOFF_HEIGHT - 15;
+        let claim_height = LEGACY_MAINNET_CLAIM_CUTOFF_HEIGHT + 1;
+        let commit_payload = hex::decode(
+            "4d46574e01015c3536d631cc4b83bd4c43975b68897e48bf5f5af37d9ce7c42cf85abc3d5580",
+        )
+        .unwrap();
+        let claim_payload = hex::decode(
+            "4d46574e010200047465783800d5b0c70a320e1994e0c2099c203496f51fa771db6f771fed1697756034e645c443edc33ddde609782fb5e14a4fe600ff3cef0f862b0c27f9e8e314e556f3ac08375d17430161c44634bece4fffc2bd48",
+        )
+        .unwrap();
+        let mut live_parameters = parameters();
+        live_parameters.activation_height = commit_height;
+        live_parameters.annual_fee_atomic = 10_000_000_000;
+        live_parameters.commit_min_confirmations = 15;
+        live_parameters.commit_reveal_window = 720;
+        let mut index = NameIndex::new(live_parameters).unwrap();
+        index
+            .apply_block(block(
+                commit_height,
+                vec![transaction(1, commit_payload, LEGACY_COMMIT_PAYMENT_ATOMIC)],
+            ))
+            .unwrap();
+        apply_empty_until(&mut index, claim_height - 1);
+        index
+            .apply_block(block(
+                claim_height,
+                vec![transaction(2, claim_payload, 10_000_000_000)],
+            ))
+            .unwrap();
+        assert_eq!(
+            index.resolve("tex8.mfw").unwrap().status,
+            ResolutionStatus::NotFound
+        );
+        assert_eq!(index.rejected_record_count().unwrap(), 1);
     }
 
     #[test]
