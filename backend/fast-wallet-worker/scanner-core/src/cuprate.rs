@@ -100,6 +100,12 @@ impl CuprateGrpcBlockSource {
             no_miner_tx: false,
             client_request_id: format!("fast-wallet-worker-{start_height}-{stop_height}"),
             chain_locator: Vec::new(),
+            // The sequential StreamBlocks RPC ignores lane fields. Keep
+            // their explicit protobuf defaults so this client remains
+            // source-compatible with the shared lane-capable request.
+            stripe_span_blocks: 0,
+            lane_index: 0,
+            lane_count: 0,
         };
         let mut stream = client.stream_blocks(request).await?.into_inner();
         let mut blocks = Vec::with_capacity(max_blocks);
