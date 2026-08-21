@@ -47,6 +47,8 @@ pub struct FastWalletRecord {
     pub assignment_expires_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watch_message_id: Option<String>,
+    #[serde(default)]
+    pub worker_receipt_verified: bool,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -215,6 +217,7 @@ pub fn new_record(
         assignment_epoch: None,
         assignment_expires_at: None,
         watch_message_id: None,
+        worker_receipt_verified: false,
         created_at: timestamp,
         updated_at: timestamp,
     };
@@ -400,6 +403,7 @@ fn normalize_record(mut record: FastWalletRecord) -> Result<FastWalletRecord, St
         record.assignment_epoch = None;
         record.assignment_expires_at = None;
         record.watch_message_id = None;
+        record.worker_receipt_verified = false;
     }
     validate_record(&record)?;
     Ok(record)
@@ -467,6 +471,28 @@ mod tests {
         assert!(!encoded.contains("password"));
         assert!(!encoded.contains("privateViewKey"));
         assert!(!encoded.contains("path"));
+    }
+
+    #[test]
+    fn legacy_record_requires_one_receipt_verified_renewal() {
+        let record = new_record(
+            "fast-receive-v2-0-legacy-receipt".to_owned(),
+            "Fast Wallet".to_owned(),
+            "4".repeat(95),
+            "mainnet".to_owned(),
+            "software-mainnet-primary".to_owned(),
+            123,
+            0,
+        )
+        .expect("valid record");
+        let mut encoded = serde_json::to_value(record).expect("encode");
+        encoded
+            .as_object_mut()
+            .expect("record object")
+            .remove("workerReceiptVerified");
+        let decoded: super::FastWalletRecord =
+            serde_json::from_value(encoded).expect("decode legacy record");
+        assert!(!decoded.worker_receipt_verified);
     }
 
     #[test]

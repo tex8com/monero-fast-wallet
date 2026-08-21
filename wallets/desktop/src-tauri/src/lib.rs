@@ -1149,7 +1149,8 @@ fn diagnostic_fast_wallet_integrity(
             && record
                 .watch_message_id
                 .as_ref()
-                .is_some_and(|value| !value.is_empty());
+                .is_some_and(|value| !value.is_empty())
+            && record.worker_receipt_verified;
         let secure_state_matches = local_assignment.as_ref().is_some_and(|assignment| {
             assignment.assignment_handle == handle
                 && Some(assignment.assignment_epoch) == record.assignment_epoch
@@ -4260,9 +4261,10 @@ async fn renew_expiring_fast_wallet_assignments(app: &AppHandle) -> Result<(), S
     let records = fast_wallet::list(app)?;
     for mut record in records.into_iter().filter(|record| {
         record.notifications_enabled
-            && record
-                .assignment_expires_at
-                .is_some_and(|expires_at| expires_at <= renewal_deadline)
+            && (!record.worker_receipt_verified
+                || record
+                    .assignment_expires_at
+                    .is_some_and(|expires_at| expires_at <= renewal_deadline))
     }) {
         let result = async {
             let previous = fast_wallet_enrollment::load_assignment(&record.id)?
@@ -4318,6 +4320,7 @@ async fn renew_expiring_fast_wallet_assignments(app: &AppHandle) -> Result<(), S
                 record.assignment_epoch = Some(assignment.assignment_epoch);
                 record.assignment_expires_at = Some(assignment.expires_at);
                 record.watch_message_id = Some(message_id);
+                record.worker_receipt_verified = true;
                 fast_wallet::update(app, record.clone())?;
                 diagnostics::record(
                     app,
@@ -5134,6 +5137,7 @@ async fn enable_encrypted_fast_wallet_alerts(
             record.assignment_epoch = Some(assignment.assignment_epoch);
             record.assignment_expires_at = Some(assignment.expires_at);
             record.watch_message_id = Some(message_id);
+            record.worker_receipt_verified = true;
             let record = fast_wallet::update(&app, record)?;
             diagnostics::record(
                 &app,
@@ -5221,6 +5225,7 @@ async fn delete_hosted_fast_wallet_data(
     record.assignment_epoch = None;
     record.assignment_expires_at = None;
     record.watch_message_id = None;
+    record.worker_receipt_verified = false;
     fast_wallet::update(&app, record)
 }
 

@@ -193,7 +193,7 @@ describe('WalletService fast receive scanner flow', () => {
     );
   });
 
-  it('renews an expiring assignment once without blocking duplicate callers', async () => {
+  it('repairs a legacy assignment without a verified Worker receipt once', async () => {
     const now = Math.floor(Date.now() / 1_000);
     await upsertFastReceiveIdentity({
       ...createFastReceiveIdentityRecord(
@@ -214,7 +214,9 @@ describe('WalletService fast receive scanner flow', () => {
       notificationsEnabled: true,
       assignmentHandle: '11'.repeat(32),
       assignmentEpoch: 1,
-      assignmentExpiresAt: now + 60,
+      // This is deliberately far outside the normal renewal window. Records
+      // written before receipt verification existed must still self-heal.
+      assignmentExpiresAt: now + 30 * 24 * 60 * 60,
       workerKind: 'official',
       watchMessageId: '55'.repeat(32),
     });
@@ -234,6 +236,7 @@ describe('WalletService fast receive scanner flow', () => {
         assignmentEpoch: 2,
         notificationsEnabled: true,
         scannerStatus: 'enabled',
+        workerReceiptVerified: true,
       }),
     ]);
   });

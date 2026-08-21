@@ -1,10 +1,11 @@
 use fast_wallet_protocol::{
-    Network, WorkerAdmissionCertificate, WorkerDescriptor, WATCH_ENVELOPE_SIZE,
+    worker_receipt_body, Network, WorkerAdmissionCertificate, WorkerAuthPurpose,
+    WorkerDescriptor, WorkerRequestAuth, WATCH_ENVELOPE_SIZE, WORKER_AUTH_SIZE,
 };
 use reqwest::{header, redirect::Policy, Client, Response, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 use zeroize::Zeroize;
 
@@ -13,6 +14,8 @@ const MAX_DESCRIPTOR_BYTES: usize = 512;
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
 const ASSIGNMENT_LIFETIME_SECONDS: u64 = 30 * 24 * 60 * 60;
 pub const WATCH_LIFETIME_SECONDS: u64 = 10 * 60;
+const WORKER_RECEIPT_TIMEOUT: Duration = Duration::from_secs(15);
+const WORKER_RECEIPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const COMMUNITY_WORKER_DIRECTORY_KEY_HEX: &str =
     "69a0559931de88f8cbd42220f753981fe01ae663f174df2933a90deadabf5551";
 const MAX_DIRECTORY_WORKERS: usize = 10_000;
@@ -96,6 +99,13 @@ struct AcceptedResponse {
 struct RelayResponse {
     message_id: String,
     already_queued: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReceiptResponse {
+    status: String,
+    receipt: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -457,6 +467,57 @@ pub async fn submit_watch(worker: &TrustedWorker, envelope_hex: &str) -> Result<
     if !canonical_hex(&response.message_id, 32) {
         return Err("The scan-service Relay returned an invalid message ID.".to_owned());
     }
+    let message_id = hex::decode(&response.message_id)
+        .map_err(|_| "The scan-service Relay returned an invalid message ID.".to_owned())?;
+    let message_id: [u8; 32] = message_id
+        .try_into()
+        .map_err(|_| "The scan-service Relay returned an invalid message ID.".to_owned())?;
+    let deadline = tokio::time::Instant::now() + WORKER_RECEIPT_TIMEOUT;
+    loop {
+        let receipt_response = client()?
+            .get(route(
+                &relay_origin,
+                &format!("/v1/envelopes/{}/receipt", response.message_id),
+            ))
+            .header(header::ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(|_| "The scan-service Worker receipt could not be reached.".to_owned())?;
+        let receipt: ReceiptResponse = bounded_json(
+            receipt_response,
+            "The scan-service Worker returned an invalid receipt.",
+        )
+        .await?;
+        if receipt.status == "accepted" {
+            let receipt_hex = receipt.receipt.ok_or_else(|| {
+                "The scan-service Worker returned an invalid receipt.".to_owned()
+            })?;
+            if !canonical_hex(&receipt_hex, WORKER_AUTH_SIZE) {
+                return Err("The scan-service Worker returned an invalid receipt.".to_owned());
+            }
+            let receipt_bytes = hex::decode(receipt_hex)
+                .map_err(|_| "The scan-service Worker returned an invalid receipt.".to_owned())?;
+            let receipt = WorkerRequestAuth::decode(&receipt_bytes)
+                .map_err(|_| "The scan-service Worker returned an invalid receipt.".to_owned())?;
+            let receipt_body = worker_receipt_body(&worker.descriptor.worker_root_id(), &message_id);
+            receipt
+                .verify(
+                    &worker.descriptor,
+                    WorkerAuthPurpose::Receipt,
+                    &receipt_body,
+                    unix_seconds(),
+                )
+                .map_err(|_| "The scan-service Worker receipt signature is invalid.".to_owned())?;
+            break;
+        }
+        if receipt.status != "pending" || receipt.receipt.is_some() {
+            return Err("The scan-service Worker returned an invalid receipt.".to_owned());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("The scan-service Worker acceptance timed out.".to_owned());
+        }
+        tokio::time::sleep(WORKER_RECEIPT_POLL_INTERVAL).await;
+    }
     Ok(response.message_id)
 }
 
@@ -694,6 +755,13 @@ fn canonical_hex(value: &str, bytes: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn constant_hex_eq(left: &str, right: &str) -> bool {

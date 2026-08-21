@@ -53,6 +53,8 @@ export interface FastReceiveIdentityRecord {
   workerDescriptorHex?: string;
   /** Public opaque Relay receipt identifier, never a transaction identifier. */
   watchMessageId?: string;
+  /** Set only after the native Core verifies the Worker's signed receipt. */
+  workerReceiptVerified?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -212,6 +214,7 @@ export function createFastReceiveIdentityRecord(
     workerKind: undefined,
     workerDescriptorHex: undefined,
     watchMessageId: undefined,
+    workerReceiptVerified: false,
     createdAt: now,
     updatedAt: now,
   });
@@ -300,6 +303,7 @@ function normalizeFastReceiveIdentity(
       512,
     ),
     watchMessageId: cleanOptionalHex(identity.watchMessageId, 32),
+    workerReceiptVerified: identity.workerReceiptVerified === true,
     createdAt: cleanRequired(identity.createdAt, 'createdAt'),
     updatedAt: cleanRequired(identity.updatedAt, 'updatedAt'),
   };
@@ -354,6 +358,7 @@ function parseFastReceiveIdentity(
   const workerKind = parseWorkerKind(value.workerKind);
   const workerDescriptorHex = parseString(value.workerDescriptorHex);
   const watchMessageId = parseString(value.watchMessageId);
+  const workerReceiptVerified = value.workerReceiptVerified === true;
   const createdAt = parseString(value.createdAt);
   const updatedAt = parseString(value.updatedAt);
 
@@ -393,6 +398,7 @@ function parseFastReceiveIdentity(
     workerKind,
     workerDescriptorHex,
     watchMessageId,
+    workerReceiptVerified,
     createdAt,
     updatedAt,
   });

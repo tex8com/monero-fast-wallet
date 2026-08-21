@@ -236,6 +236,52 @@ test('product CLI activates hosted scanning only after an exact signed Worker re
     hostingCore,
     /STAGE_WORKER_CONFIRMED[\s\S]*plan\.worker_enrolled = 1/,
   );
+
+  const protocolBridge = read(
+    'native/monero-bridge/cpp/FastWalletProtocolBridge.h',
+  );
+  assert.match(
+    protocolBridge,
+    /verifyWorkerReceipt[\s\S]*tex8_fast_wallet_protocol_verify_worker_receipt_v1/,
+  );
+
+  const android = read(
+    'wallets/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
+  );
+  assert.match(android, /\/v1\/envelopes\/\$messageId\/receipt/);
+  assert.match(android, /verifyFastWalletWorkerReceipt/);
+  assert.match(android, /Fast Wallet Worker acceptance timed out/);
+
+  const mobileRegistry = read(
+    'wallets/mobile/src/services/FastReceiveRegistry.ts',
+  );
+  const mobileWalletService = read(
+    'wallets/mobile/src/services/WalletService.ts',
+  );
+  assert.match(mobileRegistry, /workerReceiptVerified\?: boolean/);
+  assert.match(
+    mobileWalletService,
+    /workerReceiptVerified !== true[\s\S]*FAST_WALLET_ASSIGNMENT_RENEWAL_WINDOW_SECONDS/,
+  );
+
+  const ios = read(
+    'wallets/mobile/ios/MoneroWallet/NativeMoneroWallet/RCTNativeMoneroWallet.mm',
+  );
+  assert.match(ios, /\/v1\/envelopes\/%@\/receipt/);
+  assert.match(ios, /verifyWorkerReceipt/);
+  assert.match(ios, /Fast Wallet Worker acceptance timed out/);
+
+  const desktop = read(
+    'wallets/desktop/src-tauri/src/fast_wallet_enrollment.rs',
+  );
+  assert.match(desktop, /\/v1\/envelopes\/\{\}\/receipt/);
+  assert.match(desktop, /WorkerRequestAuth::decode/);
+  assert.match(desktop, /WorkerAuthPurpose::Receipt/);
+  assert.match(desktop, /Worker acceptance timed out/);
+  const desktopRegistry = read(
+    'wallets/desktop/src-tauri/src/fast_wallet.rs',
+  );
+  assert.match(desktopRegistry, /worker_receipt_verified: bool/);
 });
 
 test('live Product-CLI enrollment keeps its disposable wallet on a RAM volume and revokes it', () => {

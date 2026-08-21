@@ -468,6 +468,23 @@ internal object NativeMoneroWalletJni {
     )
   }
 
+  fun verifyFastWalletWorkerReceipt(
+    workerDescriptorHex: String,
+    network: String,
+    now: Double,
+    messageIdHex: String,
+    receiptHex: String,
+  ) {
+    requireLoaded()
+    nativeVerifyFastWalletWorkerReceipt(
+      workerDescriptorHex,
+      network,
+      now,
+      messageIdHex,
+      receiptHex,
+    )
+  }
+
   fun closeWallet(walletId: String, store: Boolean) {
     requireLoaded()
     nativeCloseWallet(walletId, store)
@@ -1610,6 +1627,14 @@ internal object NativeMoneroWalletJni {
     network: String,
     now: Double,
   ): Double
+
+  @JvmStatic private external fun nativeVerifyFastWalletWorkerReceipt(
+    workerDescriptorHex: String,
+    network: String,
+    now: Double,
+    messageIdHex: String,
+    receiptHex: String,
+  )
 
   @JvmStatic private external fun nativeCloseWallet(walletId: String, store: Boolean)
 

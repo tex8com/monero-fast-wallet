@@ -2916,6 +2916,9 @@ NSString *const kFastWalletPrivateWorkerRootKey =
 NSString *const kFastWalletDirectoryAdmissionPublicKey =
     @"69a0559931de88f8cbd42220f753981fe01ae663f174df2933a90deadabf5551";
 constexpr NSUInteger kFastWalletWatchEnvelopeBytes = 484;
+constexpr NSUInteger kFastWalletWorkerReceiptBytes = 204;
+constexpr NSTimeInterval kFastWalletReceiptTimeoutSeconds = 15.0;
+constexpr NSTimeInterval kFastWalletReceiptPollSeconds = 0.1;
 constexpr NSUInteger kFastWalletMaximumRequestBytes = 24 * 1024;
 constexpr NSUInteger kFastWalletMaximumResponseBytes = 24 * 1024;
 constexpr double kJavaScriptMaximumSafeInteger = 9007199254740991.0;
@@ -7294,8 +7297,40 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
         @"/v1/envelopes",
         @{},
         @{@"envelope": checkedEnvelope});
-    return checkedFastWalletHex(
+    NSString *messageId = checkedFastWalletHex(
         response[@"messageId"], @"messageId", 32, 0);
+    const NSTimeInterval receiptDeadline =
+        NSProcessInfo.processInfo.systemUptime +
+        kFastWalletReceiptTimeoutSeconds;
+    while (true) {
+      NSDictionary *receiptResponse = fixedFastWalletJsonRequest(
+          @"GET",
+          toNSString(relay),
+          [NSString stringWithFormat:@"/v1/envelopes/%@/receipt", messageId],
+          @{},
+          nil);
+      NSString *status = receiptResponse[@"status"];
+      if ([status isEqualToString:@"accepted"]) {
+        NSString *receipt = checkedFastWalletHex(
+            receiptResponse[@"receipt"], @"workerReceipt",
+            kFastWalletWorkerReceiptBytes, 0);
+        tex8::wallet::fast_wallet_protocol_bridge::verifyWorkerReceipt(
+            toStdString(checkedDescriptor), toNetworkType(network),
+            static_cast<uint64_t>(NSDate.date.timeIntervalSince1970),
+            toStdString(messageId), toStdString(receipt));
+        return messageId;
+      }
+      if (![status isEqualToString:@"pending"] ||
+          (receiptResponse[@"receipt"] != nil &&
+           receiptResponse[@"receipt"] != NSNull.null)) {
+        throw WalletEngineError(
+            "Fast Wallet Worker receipt response is invalid");
+      }
+      if (NSProcessInfo.processInfo.systemUptime >= receiptDeadline) {
+        throw WalletEngineError("Fast Wallet Worker acceptance timed out");
+      }
+      [NSThread sleepForTimeInterval:kFastWalletReceiptPollSeconds];
+    }
   }];
 }
 

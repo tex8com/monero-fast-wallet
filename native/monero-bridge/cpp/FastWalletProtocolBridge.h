@@ -343,6 +343,23 @@ inline uint32_t verifiedWorkerAdmission(
   return maximumAssignments;
 }
 
+inline void verifyWorkerReceipt(
+    const std::string& workerDescriptorHex,
+    NetworkType network,
+    uint64_t now,
+    const std::string& messageIdHex,
+    const std::string& receiptHex) {
+  auto descriptor = decodeHex(workerDescriptorHex, 1, 4096);
+  auto messageId = decodeHex(messageIdHex, 32, 32);
+  auto receipt = decodeHex(receiptHex, 204, 204);
+  const auto status = tex8_fast_wallet_protocol_verify_worker_receipt_v1(
+      descriptor.data(), descriptor.size(), networkCode(network), now,
+      messageId.data(), receipt.data(), receipt.size());
+  if (status != TEX8_FAST_WALLET_PROTOCOL_OK) {
+    throw WalletEngineError("Fast Wallet Worker receipt is invalid");
+  }
+}
+
 inline std::string verifiedNameAddress(
     WalletEngine& engine,
     const std::string& recordPayloadHex,

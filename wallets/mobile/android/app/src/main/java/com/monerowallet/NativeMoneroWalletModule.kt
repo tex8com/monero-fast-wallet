@@ -2613,11 +2613,42 @@ class NativeMoneroWalletModule(
         headers = emptyMap(),
         body = JSONObject().put("envelope", checkedEnvelope),
       )
-      checkedCanonicalHex(
+      val messageId = checkedCanonicalHex(
         response.getString("messageId"),
         "messageId",
         exactBytes = 32,
       )
+      val receiptDeadline = SystemClock.elapsedRealtime() + FAST_WALLET_RECEIPT_TIMEOUT_MS
+      while (SystemClock.elapsedRealtime() < receiptDeadline) {
+        val receiptResponse = fixedOriginJsonRequest(
+          method = "GET",
+          origin = relayOrigin,
+          route = "/v1/envelopes/$messageId/receipt",
+          headers = emptyMap(),
+          body = null,
+        )
+        val status = receiptResponse.optString("status", "")
+        if (status == "accepted") {
+          val receipt = checkedCanonicalHex(
+            receiptResponse.getString("receipt"),
+            "workerReceipt",
+            exactBytes = FAST_WALLET_WORKER_RECEIPT_BYTES,
+          )
+          NativeMoneroWalletJni.verifyFastWalletWorkerReceipt(
+            checkedDescriptor,
+            network,
+            Math.floor(System.currentTimeMillis() / 1_000.0),
+            messageId,
+            receipt,
+          )
+          return@resolveNativeString messageId
+        }
+        require(status == "pending" && receiptResponse.isNull("receipt")) {
+          "Fast Wallet Worker receipt response is invalid"
+        }
+        SystemClock.sleep(FAST_WALLET_RECEIPT_POLL_INTERVAL_MS)
+      }
+      error("Fast Wallet Worker acceptance timed out")
     }
   }
 
@@ -8840,6 +8871,9 @@ class NativeMoneroWalletModule(
     private const val FAST_WALLET_MAX_HEADER_BYTES = 12 * 1024
     private val FAST_WALLET_HTTP_STATUS_PATTERN = Regex("\\bHTTP ([1-5][0-9]{2})\\b")
     private const val FAST_WALLET_WATCH_ENVELOPE_BYTES = 484
+    private const val FAST_WALLET_WORKER_RECEIPT_BYTES = 204
+    private const val FAST_WALLET_RECEIPT_TIMEOUT_MS = 15_000L
+    private const val FAST_WALLET_RECEIPT_POLL_INTERVAL_MS = 100L
     private const val JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991.0
     private val FAST_WALLET_ALLOWED_HEADERS = setOf(
       "X-Firebase-AppCheck",

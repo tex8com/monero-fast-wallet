@@ -3048,6 +3048,7 @@ export class WalletService {
               ? selectedWorkerDescriptor
               : undefined,
             watchMessageId: enrolled.messageId,
+            workerReceiptVerified: true,
             updatedAt: checkedAt,
           };
           const next = await saveFastReceiveIdentities(
@@ -3258,8 +3259,9 @@ export class WalletService {
         Boolean(identity.assignmentHandle) &&
         Boolean(identity.credentialKey) &&
         Boolean(identity.assignmentExpiresAt) &&
-        identity.assignmentExpiresAt! <=
-          now + FAST_WALLET_ASSIGNMENT_RENEWAL_WINDOW_SECONDS,
+        (identity.workerReceiptVerified !== true ||
+          identity.assignmentExpiresAt! <=
+            now + FAST_WALLET_ASSIGNMENT_RENEWAL_WINDOW_SECONDS),
     );
 
     for (const identity of due) {
@@ -3288,6 +3290,7 @@ export class WalletService {
           assignmentEpoch: enrolled.assignment.assignmentEpoch,
           assignmentExpiresAt: enrolled.assignment.expiresAt,
           watchMessageId: enrolled.messageId,
+          workerReceiptVerified: true,
           updatedAt,
         });
         logWalletEvent('WalletService', 'fastWalletAssignment.renewed', {
@@ -3365,6 +3368,7 @@ export class WalletService {
       workerKind: undefined,
       workerDescriptorHex: undefined,
       watchMessageId: undefined,
+      workerReceiptVerified: false,
       updatedAt,
     };
     const next = await upsertFastReceiveIdentity(identity);
