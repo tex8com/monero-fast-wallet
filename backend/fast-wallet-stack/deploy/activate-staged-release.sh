@@ -124,7 +124,7 @@ id cuprate >/dev/null 2>&1 || {
 # cannot hold that copy plus enough space for the restarted unprivileged
 # services to write leases, state and logs.  A full root filesystem otherwise
 # causes misleading downstream 5xx and worker failures.
-scanpack_directory=/var/lib/cuprate/fast-wallet-scanpacks
+scanpack_directory=/var/lib/cuprate/fast-wallet-scanpacks-v2
 if [[ -d "$scanpack_directory" ]]; then
   scanpack_kib="$(du -sk -- "$scanpack_directory" | awk '{print $1}')"
   available_kib="$(df -Pk "$scanpack_directory" | awk 'NR == 2 {print $4}')"
@@ -144,7 +144,7 @@ for path in \
   /var/lib/monero-fast-wallet-directory \
   /var/lib/monero-fast-wallet-worker \
   /var/lib/monero-notification-gateway \
-  /var/lib/cuprate/fast-wallet-scanpacks; do
+  "$scanpack_directory"; do
   [[ ! -e "$path" ]] || cp -a "$path" "$backup_dir/" 2>/dev/null || true
 done
 for path in \
@@ -203,7 +203,7 @@ install -d -o monero-fast-wallet-relay -g monero-fast-wallet-relay -m 0700 /var/
 install -d -o monero-fast-wallet-directory -g monero-fast-wallet-directory -m 0700 /var/lib/monero-fast-wallet-directory
 install -d -o cuprate -g cuprate -m 0700 /var/lib/monero-fast-wallet-worker
 install -d -o monero-notification-gateway -g monero-notification-gateway -m 0700 /var/lib/monero-notification-gateway
-install -d -o cuprate -g cuprate -m 0700 /var/lib/cuprate/fast-wallet-scanpacks
+install -d -o cuprate -g cuprate -m 0700 "$scanpack_directory"
 
 # Earlier gateway releases created these encrypted local provider files with
 # permissive modes.  The current gateway correctly refuses to read them.  Keep
@@ -274,7 +274,7 @@ printf '%s\n' \
   'FAST_WALLET_WORKER_ONLINE_SIGNING_KEY_FILE=/etc/monero-fast-wallet/worker-online-signing.key' \
   'FAST_WALLET_WORKER_STORAGE_KEY_FILE=/etc/monero-fast-wallet/worker-storage.key' \
   'FAST_WALLET_WORKER_WATCH_DB=/var/lib/monero-fast-wallet-worker/watches.json.enc' \
-  'FAST_WALLET_WORKER_SCANPACK_DIRECTORY=/var/lib/cuprate/fast-wallet-scanpacks' \
+  "FAST_WALLET_WORKER_SCANPACK_DIRECTORY=$scanpack_directory" \
   "FAST_WALLET_WORKER_SCANPACK_PUBLIC_KEY=$scanpack_public_key" \
   'FAST_WALLET_WORKER_GATEWAY_ORIGIN=http://127.0.0.1:8090' \
   'FAST_WALLET_WORKER_CUPRATE_RPC_ENDPOINT=http://127.0.0.1:18081' \
