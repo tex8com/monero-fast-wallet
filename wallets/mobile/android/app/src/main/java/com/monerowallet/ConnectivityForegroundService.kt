@@ -99,7 +99,11 @@ class ConnectivityForegroundService : Service() {
 
   private fun checkTorRoute() {
     if (!torCheckRunning.compareAndSet(false, true)) return
-    val endpoint = configuration.get().tor
+    val endpoint = configuration.get().tor ?: run {
+      torStatus.set(RouteSnapshot.idle())
+      torCheckRunning.set(false)
+      return
+    }
     markCheckingUnlessConnected(torStatus, endpoint.label, "Connecting to Tor")
     routeExecutor.execute {
       val startedAt = SystemClock.elapsedRealtime()
@@ -137,7 +141,11 @@ class ConnectivityForegroundService : Service() {
 
   private fun checkClearnetRoute() {
     if (!clearnetCheckRunning.compareAndSet(false, true)) return
-    val endpoint = configuration.get().clearnet
+    val endpoint = configuration.get().clearnet ?: run {
+      clearnetStatus.set(RouteSnapshot.idle())
+      clearnetCheckRunning.set(false)
+      return
+    }
     markCheckingUnlessConnected(clearnetStatus, endpoint.label, "Checking block sync")
     routeExecutor.execute {
       val startedAt = SystemClock.elapsedRealtime()
@@ -331,14 +339,14 @@ class ConnectivityForegroundService : Service() {
 
     internal fun configure(context: Context, torEndpoint: String, clearnetEndpoint: String) {
       val checked = RouteConfiguration(
-        parseEndpoint(torEndpoint),
-        parseEndpoint(clearnetEndpoint),
+        parseOptionalEndpoint(torEndpoint),
+        parseOptionalEndpoint(clearnetEndpoint),
       )
       configuration.set(checked)
       context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
         .edit()
-        .putString(PREF_TOR_ENDPOINT, checked.tor.label)
-        .putString(PREF_CLEARNET_ENDPOINT, checked.clearnet.label)
+        .putString(PREF_TOR_ENDPOINT, checked.tor?.label.orEmpty())
+        .putString(PREF_CLEARNET_ENDPOINT, checked.clearnet?.label.orEmpty())
         .apply()
       start(context)
     }
@@ -363,10 +371,9 @@ class ConnectivityForegroundService : Service() {
     private fun loadConfiguration(context: Context) {
       val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
       val tor = preferences.getString(PREF_TOR_ENDPOINT, null) ?: DEFAULT_TOR_ENDPOINT
-      val clearnet =
-        preferences.getString(PREF_CLEARNET_ENDPOINT, null) ?: DEFAULT_CLEARNET_ENDPOINT
+      val clearnet = preferences.getString(PREF_CLEARNET_ENDPOINT, null) ?: DEFAULT_CLEARNET_ENDPOINT
       runCatching {
-        RouteConfiguration(parseEndpoint(tor), parseEndpoint(clearnet))
+        RouteConfiguration(parseOptionalEndpoint(tor), parseOptionalEndpoint(clearnet))
       }.onSuccess(configuration::set)
     }
 
@@ -385,12 +392,15 @@ class ConnectivityForegroundService : Service() {
       ) { "Connection endpoint is invalid" }
       return Endpoint(host, port, "$host:$port")
     }
+
+    private fun parseOptionalEndpoint(value: String): Endpoint? =
+      value.trim().takeIf { it.isNotEmpty() }?.let(::parseEndpoint)
   }
 }
 
 internal data class Endpoint(val host: String, val port: Int, val label: String)
 
-internal data class RouteConfiguration(val tor: Endpoint, val clearnet: Endpoint)
+internal data class RouteConfiguration(val tor: Endpoint?, val clearnet: Endpoint?)
 
 internal data class ConnectivitySnapshot(
   val tor: RouteSnapshot,
@@ -408,6 +418,8 @@ internal data class RouteSnapshot(
   companion object {
     fun starting(endpoint: String) =
       RouteSnapshot("starting", false, endpoint, 0L, null, null)
+
+    fun idle() = RouteSnapshot("idle", false, "", System.currentTimeMillis(), null, null)
 
     fun checking(endpoint: String, detail: String) =
       RouteSnapshot("checking", false, endpoint, System.currentTimeMillis(), null, detail)

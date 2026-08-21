@@ -128,7 +128,7 @@ type NodeProfile = { mode: 'optimized-grpc' | 'original-rpc' | 'custom'; network
 type ConnectionRouteProbe = { connected: boolean; endpoint: string; elapsedMs?: number; error?: string };
 type ConnectionRoutesDiagnostic = { tor: ConnectionRouteProbe; clearnet: ConnectionRouteProbe };
 type ConnectivityRouteState = { phase: 'starting' | 'checking' | 'connected' | 'error' | 'idle'; connected: boolean; endpoint: string; checkedAtMs: number; elapsedMs?: number; error?: string };
-type ConnectivityStatus = { tor: ConnectivityRouteState; clearnet: ConnectivityRouteState };
+type ConnectivityStatus = { tor: ConnectivityRouteState; clearnet: ConnectivityRouteState; daemonUsesTor: boolean; mfnGrpcEnabled: boolean };
 
 type NavigationItem = { id: Section; label: string; icon: DesktopIconName };
 
@@ -994,7 +994,7 @@ export default function App() {
     </aside>
     <section className="content">
       {v1ReleaseFeatures.mfwNameRegistration && mfwTickerVisible && <div aria-label={t('mfwNames.ticker')} className="mfw-name-ticker" role="region"><button className="mfw-name-ticker-link" onClick={() => setSection('mfw')} type="button"><span aria-hidden="true">◆</span><span className="mfw-name-ticker-lane"><b>{t('mfwNames.ticker')} · {t('mfwNames.ticker')} · {t('mfwNames.ticker')} · {t('mfwNames.ticker')} · </b></span><strong aria-hidden="true">›</strong></button><button aria-label={t('common.close')} className="mfw-name-ticker-close" onClick={() => setMfwTickerVisible(false)} type="button">×</button></div>}
-      {section !== 'setup' && section !== 'onboarding' && <header className="topbar"><div><p className="eyebrow">{section === 'project' ? t('settings.projectPage') : active?.label ?? t('common.wallet')}</p><h1>{section === 'project' ? t('projectPage.title') : section === 'home' ? t('shell.homeTitle') : active?.label}</h1></div><div className="topbar-actions"><DesktopWalletSwitcher wallets={managedWallets} activeWallet={activeWallet} onSelect={openSavedWallet} onManage={() => setSection('wallets')} /><button aria-label="Open connection status" className="topbar-connection" onClick={() => setSection('node')} type="button"><span className={`route-status ${connectivityTone(connectivity?.tor)}`}><i />Tor</span><span className={`route-status ${connectivityTone(connectivity?.clearnet)}`}><i />Sync</span></button></div></header>}
+      {section !== 'setup' && section !== 'onboarding' && <header className="topbar"><div><p className="eyebrow">{section === 'project' ? t('settings.projectPage') : active?.label ?? t('common.wallet')}</p><h1>{section === 'project' ? t('projectPage.title') : section === 'home' ? t('shell.homeTitle') : active?.label}</h1></div><div className="topbar-actions"><DesktopWalletSwitcher wallets={managedWallets} activeWallet={activeWallet} onSelect={openSavedWallet} onManage={() => setSection('wallets')} /><button aria-label="Open connection status" className="topbar-connection" onClick={() => setSection('node')} type="button"><span className={`route-status ${connectivityTone(connectivity?.tor)}`}><i />{connectivity?.daemonUsesTor ? 'Tor' : 'Node'}</span>{connectivity?.mfnGrpcEnabled && <span className={`route-status ${connectivityTone(connectivity?.clearnet)}`}><i />MFN</span>}</button></div></header>}
       {!linked && <section className="notice" role="status"><div className="notice-icon"><img src="/monero-mark.png" alt="" /></div><div><h2>{t('shell.noticeEngineTitle')}</h2><p>{error ?? status?.message ?? t('shell.noticeEngineVerifying')}</p></div></section>}
       {linked && error && <section className="notice compact-notice" role="alert"><div><h2>{t('shell.noticeActionNeeded')}</h2><p>{error}</p></div></section>}
       {section === 'home' && <Home linked={linked} walletId={activeWalletId} wallet={activeWallet} savedWallets={managedWallets} networkSync={networkSync} onSetup={startSetup} onWallets={() => setSection('wallets')} onSelectWallet={openSavedWallet} onBackup={() => void revealRecoverySeed()} onLock={() => void closeActiveWallet()} onSend={() => setSection('send')} onReceive={() => setSection('receive')} onActivity={() => setSection('activity')} onWalletsChanged={reloadWallets} onRecoverSession={recoverWalletSession} />}
@@ -1318,16 +1318,9 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
     void invoke<NodeProfile>('load_node_settings', { network })
       .then(loaded => {
         if (!mounted) return;
-        const defaults = defaultNodeProfile(network);
-        const splitProfile: NodeProfile = {
-          ...loaded,
-          mode: 'optimized-grpc',
-          grpcEndpoint: loaded.grpcEndpoint || defaults.grpcEndpoint,
-          proxyAddress: '127.0.0.1:9050',
-        };
-        setProfile(splitProfile);
+        setProfile(loaded);
         setSavedProfile(loaded);
-        setSaveState(settingsProfileSignature(splitProfile) === settingsProfileSignature(loaded) ? 'saved' : 'saving');
+        setSaveState('saved');
       })
       .catch(() => { if (mounted) setSaveState('error'); });
     return () => { mounted = false; };
@@ -1335,7 +1328,7 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
 
   useEffect(() => {
     if (!profile || !savedProfile || settingsProfileSignature(profile) === settingsProfileSignature(savedProfile)) return;
-    if (!profile.daemonAddress.trim() || !profile.grpcEndpoint.trim()) {
+    if (!profile.daemonAddress.trim() || (profile.mode === 'optimized-grpc' && !profile.grpcEndpoint.trim())) {
       setSaveState('error');
       return;
     }
@@ -1348,7 +1341,7 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
         if (revision !== editRevision.current) return;
         const saved = await invoke<NodeProfile>('save_node_settings', { input: {
           walletId: wallet?.network === profileToSave.network ? walletId : null,
-          mode: 'optimized-grpc',
+          mode: profileToSave.mode,
           network: profileToSave.network,
           daemonAddress: profileToSave.daemonAddress,
           grpcEndpoint: profileToSave.grpcEndpoint,
@@ -1356,7 +1349,7 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
           useSsl: profileToSave.useSsl,
           username: profileToSave.username,
           password: '',
-          proxyAddress: '127.0.0.1:9050',
+          proxyAddress: profileToSave.proxyAddress,
           clearPassword: false,
         } });
         if (revision !== editRevision.current) return;
@@ -1388,6 +1381,20 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
     });
   };
 
+  const chooseMode = (mode: NodeProfile['mode']) => {
+    if (!profile) return;
+    if (mode === 'custom') {
+      setProfile({ ...profile, mode, grpcEndpoint: '' });
+      return;
+    }
+    const defaults = defaultNodeProfile(profile.network, mode);
+    setProfile({
+      ...defaults,
+      username: profile.username,
+      passwordStored: profile.passwordStored,
+    });
+  };
+
   const routeCard = (kind: 'tor' | 'clearnet', icon: DesktopIconName, title: string, hint: string) => {
     const result = diagnostics?.[kind];
     return <article className={`node-route-card ${result?.connected ? 'connected' : result ? 'failed' : ''}`}>
@@ -1400,18 +1407,18 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
   const saveLabel = saveState === 'loading' ? t('settings.loading') : saveState === 'saving' ? t('nodeStatus.autoSaving') : saveState === 'saved' ? t('nodeStatus.autoSaved') : t('nodeStatus.autoSaveError');
   return <section className="settings-page node-status-page">
     <header className="settings-header"><img src="/monero-mark.png" alt="" /><div><p className="eyebrow">Monero Fast Wallet</p><h2>{t('menu.node')}</h2><p>{t('nodeStatus.subtitle')}</p></div><span className={`node-save-state ${saveState}`}>{saveLabel}</span></header>
-    <section className="settings-section"><header><h3>{t('nodeStatus.diagnostics')}</h3><small>{diagnosing ? t('nodeStatus.checking') : t('nodeStatus.twoRoutes')}</small></header><article className="settings-panel node-route-diagnostics">
-      {routeCard('tor', 'key', t('nodeStatus.torRoute'), t('nodeStatus.torHint'))}
-      {routeCard('clearnet', 'globe', t('nodeStatus.clearnetRoute'), t('nodeStatus.clearnetHint'))}
+    <section className="settings-section"><header><h3>{t('nodeStatus.diagnostics')}</h3><small>{diagnosing ? t('nodeStatus.checking') : profile?.mode === 'optimized-grpc' ? t('nodeStatus.twoRoutes') : 'Monero RPC'}</small></header><article className="settings-panel node-route-diagnostics">
+      {routeCard('tor', profile?.mode === 'optimized-grpc' ? 'key' : 'globe', profile?.mode === 'optimized-grpc' ? t('nodeStatus.torRoute') : 'Monero daemon', profile?.mode === 'optimized-grpc' ? t('nodeStatus.torHint') : 'Standard Monero RPC. gRPC is disabled.')}
+      {profile?.mode === 'optimized-grpc' && routeCard('clearnet', 'globe', t('nodeStatus.clearnetRoute'), t('nodeStatus.clearnetHint'))}
       <button className="secondary" disabled={diagnosing || saveState === 'loading' || saveState === 'saving'} onClick={() => void saveQueue.current.then(runDiagnostics)} type="button">{diagnosing ? t('nodeStatus.checking') : t('nodeStatus.runDiagnostics')}</button>
     </article></section>
     <section className="settings-section"><header><h3>{t('nodeStatus.globalRoutes')}</h3><small>{t('nodeStatus.autoSave')}</small></header><article className="settings-panel node-settings">
       <p>{t('nodeStatus.globalRoutesHint')}</p>
       <div className="settings-field"><span>{t('settings.network')}</span><div className="node-mode">{(['mainnet', 'testnet', 'stagenet'] as Network[]).map(item => <button className={network === item ? 'selected' : ''} onClick={() => setNetwork(item)} key={item} type="button">{networkLabel(item)}</button>)}</div></div>
       {profile && <>
-        <div className="settings-field"><span>{t('nodeStatus.clearnetSync')}</span><small className="settings-field-help">{t('nodeStatus.clearnetHint')}</small>{network === 'mainnet' && <div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).map(node => { const preset = fixedMainnetNodeConnection(node, 'clearnet'); const selected = profile.grpcEndpoint === preset.grpcEndpoint; return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`clearnet-${node}`} onClick={() => choosePreset(node, 'clearnet')} type="button"><span className="settings-choice-icon"><DesktopIcon name="globe" size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{preset.grpcEndpoint}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>; })}</div>}<div className="settings-form-grid single"><label>{t('nodeStatus.grpcEndpoint')}<input value={profile.grpcEndpoint} onChange={event => setProfile({ ...profile, mode: 'optimized-grpc', grpcEndpoint: event.target.value })} autoComplete="off" /></label></div></div>
-        <div className="settings-field"><span>{t('nodeStatus.torOperations')}</span><small className="settings-field-help">{t('nodeStatus.torHint')}</small>{network === 'mainnet' && <div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).map(node => { const preset = fixedMainnetNodeConnection(node, 'onion'); const selected = profile.daemonAddress === preset.daemonAddress; return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`onion-${node}`} onClick={() => choosePreset(node, 'onion')} type="button"><span className="settings-choice-icon"><DesktopIcon name="key" size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{preset.daemonAddress}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>; })}</div>}<div className="settings-form-grid single"><label>{t('nodeStatus.daemonEndpoint')}<input value={profile.daemonAddress} onChange={event => setProfile({ ...profile, mode: 'optimized-grpc', daemonAddress: event.target.value, proxyAddress: '127.0.0.1:9050' })} autoComplete="off" /></label></div></div>
-        <div className="settings-actions"><button className="secondary" onClick={() => setProfile(defaultNodeProfile(network))} type="button">{t('settings.resetDefaults')}</button></div>
+        <div className="settings-field"><span>Connection</span><div className="node-mode">{([['optimized-grpc', 'MFN fast sync'], ['original-rpc', 'Original RPC'], ['custom', 'Custom RPC']] as const).map(([mode, label]) => <button className={profile.mode === mode ? 'selected' : ''} onClick={() => chooseMode(mode)} key={mode} type="button">{label}</button>)}</div></div>
+        {profile.mode === 'optimized-grpc' ? <><div className="settings-field"><span>{t('nodeStatus.clearnetSync')}</span><small className="settings-field-help">{t('nodeStatus.clearnetHint')}</small>{network === 'mainnet' && <div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).map(node => { const preset = fixedMainnetNodeConnection(node, 'clearnet'); const selected = profile.grpcEndpoint === preset.grpcEndpoint; return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`clearnet-${node}`} onClick={() => choosePreset(node, 'clearnet')} type="button"><span className="settings-choice-icon"><DesktopIcon name="globe" size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{preset.grpcEndpoint}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>; })}</div>}<div className="settings-form-grid single"><label>{t('nodeStatus.grpcEndpoint')}<input value={profile.grpcEndpoint} onChange={event => setProfile({ ...profile, grpcEndpoint: event.target.value })} autoComplete="off" /></label></div></div><div className="settings-field"><span>{t('nodeStatus.torOperations')}</span><small className="settings-field-help">{t('nodeStatus.torHint')}</small>{network === 'mainnet' && <div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).map(node => { const preset = fixedMainnetNodeConnection(node, 'onion'); const selected = profile.daemonAddress === preset.daemonAddress; return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`onion-${node}`} onClick={() => choosePreset(node, 'onion')} type="button"><span className="settings-choice-icon"><DesktopIcon name="key" size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{preset.daemonAddress}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>; })}</div>}<div className="settings-form-grid single"><label>{t('nodeStatus.daemonEndpoint')}<input value={profile.daemonAddress} onChange={event => setProfile({ ...profile, daemonAddress: event.target.value })} autoComplete="off" /></label></div></div></> : <div className="settings-form-grid"><label>Monero daemon RPC<input value={profile.daemonAddress} onChange={event => setProfile({ ...profile, daemonAddress: event.target.value })} placeholder="node.example:18081" autoComplete="off" /></label><label>SOCKS5 proxy <small>Optional for Onion</small><input value={profile.proxyAddress} onChange={event => setProfile({ ...profile, proxyAddress: event.target.value })} placeholder="127.0.0.1:9050" autoComplete="off" /></label></div>}
+        <div className="settings-actions"><button className="secondary" onClick={() => setProfile(defaultNodeProfile(network, profile.mode))} type="button">{t('settings.resetDefaults')}</button></div>
       </>}
     </article></section>
   </section>;
@@ -3660,7 +3667,7 @@ function Community() {
 }
 
 function settingsProfileSignature(profile: NodeProfile | null) { return profile ? JSON.stringify({ mode: profile.mode, network: profile.network, daemonAddress: profile.daemonAddress, grpcEndpoint: profile.grpcEndpoint, trusted: profile.trusted, useSsl: profile.useSsl, username: profile.username, proxyAddress: profile.proxyAddress, passwordStored: profile.passwordStored }) : ''; }
-function defaultNodeProfile(network: Network, mode: NodeProfile['mode'] = 'optimized-grpc'): NodeProfile { const ports: Record<Network, { daemon: number; rpc: number; grpc: number }> = { mainnet: { daemon: 18089, rpc: 18081, grpc: 18091 }, testnet: { daemon: 28089, rpc: 28081, grpc: 28091 }, stagenet: { daemon: 38089, rpc: 38081, grpc: 38091 } }; const values = ports[network]; const splitMainnet = network === 'mainnet' && mode === 'optimized-grpc'; return { mode, network, daemonAddress: splitMainnet ? 'fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion:18089' : `xmr.tex8.com:${mode === 'original-rpc' ? values.rpc : values.daemon}`, grpcEndpoint: mode === 'original-rpc' ? '' : `xmr.tex8.com:${values.grpc}`, trusted: true, useSsl: false, username: '', proxyAddress: '127.0.0.1:9050', passwordStored: false, updatedAt: 0 }; }
+function defaultNodeProfile(network: Network, mode: NodeProfile['mode'] = 'optimized-grpc'): NodeProfile { const ports: Record<Network, { daemon: number; rpc: number; grpc: number }> = { mainnet: { daemon: 18089, rpc: 18081, grpc: 18091 }, testnet: { daemon: 28089, rpc: 28081, grpc: 28091 }, stagenet: { daemon: 38089, rpc: 38081, grpc: 38091 } }; const values = ports[network]; const usesMfnGrpc = mode === 'optimized-grpc'; const splitMainnet = network === 'mainnet' && usesMfnGrpc; return { mode, network, daemonAddress: splitMainnet ? 'fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion:18089' : `xmr.tex8.com:${usesMfnGrpc ? values.daemon : values.rpc}`, grpcEndpoint: usesMfnGrpc ? `xmr.tex8.com:${values.grpc}` : '', trusted: true, useSsl: false, username: '', proxyAddress: usesMfnGrpc ? '127.0.0.1:9050' : '', passwordStored: false, updatedAt: 0 }; }
 const FAST_WALLET_WORKER_SELECTION_KEY = 'monero-fast-wallet.worker-selection.v1';
 function loadDesktopFastWalletWorkerSelection(network: Network): FastWalletWorkerSelection {
   try {

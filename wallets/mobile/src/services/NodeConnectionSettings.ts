@@ -73,11 +73,11 @@ let activeSettingsRevision = 0;
 
 export function createDefaultNodeConnectionSettings(
   network: MoneroNetwork,
-  _mode: NodeConnectionMode = 'optimized-grpc',
+  mode: NodeConnectionMode = 'optimized-grpc',
 ): NodeConnectionSettings {
-  const mode: NodeConnectionMode = 'optimized-grpc';
+  const usesMfnGrpc = mode === 'optimized-grpc';
   const mainnetClearnet =
-    network === 'mainnet'
+    usesMfnGrpc && network === 'mainnet'
       ? fixedMainnetNodeConnection('tex8', 'clearnet')
       : undefined;
   const mainnetOnion = mainnetClearnet
@@ -86,9 +86,10 @@ export function createDefaultNodeConnectionSettings(
   const daemonAddress =
     mainnetOnion?.daemonAddress ??
     `${MFN_DEFAULT_HOST}:${defaultDaemonPortForMode(network, mode)}`;
-  const grpcEndpoint =
-    mainnetClearnet?.grpcEndpoint ??
-    `${MFN_DEFAULT_HOST}:${MFN_GRPC_PORTS[network]}`;
+  const grpcEndpoint = usesMfnGrpc
+    ? mainnetClearnet?.grpcEndpoint ??
+      `${MFN_DEFAULT_HOST}:${MFN_GRPC_PORTS[network]}`
+    : '';
 
   return {
     mode,
@@ -99,7 +100,7 @@ export function createDefaultNodeConnectionSettings(
       useSsl: false,
       username: '',
       password: '',
-      proxyAddress: mainnetOnion?.proxyAddress ?? '127.0.0.1:9050',
+      proxyAddress: mainnetOnion?.proxyAddress ?? (usesMfnGrpc ? '127.0.0.1:9050' : ''),
     },
     grpcEndpoint,
   };
@@ -149,8 +150,8 @@ export async function saveActiveNodeConnectionSettings(
       }
     | undefined;
   await connectivity?.configureConnectivity?.(
-    saved.daemon.address,
-    saved.grpcEndpoint,
+    saved.daemon.proxyAddress?.trim() ? saved.daemon.address : '',
+    saved.mode === 'optimized-grpc' ? saved.grpcEndpoint : '',
   );
   return saved;
 }
@@ -176,7 +177,7 @@ export function nodeConnectionDraftToSettings(
   draft: NodeConnectionDraft,
 ): NodeConnectionSettings {
   return normalizeNodeConnectionSettings({
-    mode: 'optimized-grpc',
+    mode: draft.mode,
     network: draft.network,
     daemon: {
       address: draft.daemonAddress,
@@ -188,7 +189,7 @@ export function nodeConnectionDraftToSettings(
         draft.password.length > 0 || draft.passwordStored
           ? NODE_DAEMON_PASSWORD_SECRET_KEY
           : undefined,
-      proxyAddress: '127.0.0.1:9050',
+      proxyAddress: draft.proxyAddress,
     },
     grpcEndpoint: draft.grpcEndpoint,
   });
@@ -198,7 +199,8 @@ export function normalizeNodeConnectionSettings(
   settings: NodeConnectionSettings,
 ): NodeConnectionSettings {
   const daemon = settings.daemon;
-  const mode: NodeConnectionMode = 'optimized-grpc';
+  const mode: NodeConnectionMode = settings.mode;
+  const usesMfnGrpc = mode === 'optimized-grpc';
   const daemonPort = defaultDaemonPortForMode(settings.network, mode);
   const defaults = createDefaultNodeConnectionSettings(settings.network, mode);
 
@@ -212,12 +214,14 @@ export function normalizeNodeConnectionSettings(
       username: (daemon.username ?? '').trim(),
       password: daemon.password ?? '',
       passwordSecretKey: normalizeSecretKey(daemon.passwordSecretKey),
-      proxyAddress: '127.0.0.1:9050',
+      proxyAddress: (daemon.proxyAddress ?? '').trim(),
     },
-    grpcEndpoint: normalizeEndpointWithDefaultPort(
-      settings.grpcEndpoint || defaults.grpcEndpoint,
-      MFN_GRPC_PORTS[settings.network],
-    ),
+    grpcEndpoint: usesMfnGrpc
+      ? normalizeEndpointWithDefaultPort(
+          settings.grpcEndpoint || defaults.grpcEndpoint,
+          MFN_GRPC_PORTS[settings.network],
+        )
+      : '',
   };
 }
 
@@ -237,6 +241,7 @@ export function applyNodeModeDefaults(
     return {
       ...draft,
       mode,
+      grpcEndpoint: '',
     };
   }
 
@@ -264,7 +269,7 @@ export function applyNodeNetworkDefaults(
 export function fastReceiveScannerUrlForSettings(
   settings: NodeConnectionSettings,
 ): string | undefined {
-  if (settings.mode === 'original-rpc') {
+  if (settings.mode !== 'optimized-grpc') {
     return undefined;
   }
 
@@ -277,6 +282,10 @@ export function fastReceiveScannerUrlForSettings(
   if (/^https?:\/\//i.test(trimmed)) {
     try {
       const url = new URL(trimmed);
+      const host = url.hostname.toLowerCase();
+      if (host === MFN_DEFAULT_HOST || LEGACY_MFN_DEFAULT_HOSTS.includes(host)) {
+        return MFN_SCANNER_DEFAULT_ORIGIN;
+      }
       return `${url.protocol}//${url.host}`;
     } catch {
       return trimmed;
@@ -381,15 +390,15 @@ function parsePersistedSettings(
       defaults.daemon.address,
     );
     const grpcEndpoint =
-      mode === 'original-rpc'
+      mode !== 'optimized-grpc'
         ? ''
         : parseString(parsed.grpcEndpoint, defaults.grpcEndpoint);
-    const migratedDaemonAddress = migrateLegacyDefaultEndpoint(
-      daemonAddress,
-      defaults.daemon.address,
-    );
+    const migratedDaemonAddress =
+      mode === 'optimized-grpc'
+        ? migrateLegacyDefaultEndpoint(daemonAddress, defaults.daemon.address)
+        : daemonAddress;
     const migratedGrpcEndpoint =
-      mode === 'original-rpc'
+      mode !== 'optimized-grpc'
         ? ''
         : migrateLegacyDefaultEndpoint(grpcEndpoint, defaults.grpcEndpoint);
     const persistedProxyAddress = parseString(parsed.daemon.proxyAddress, '');
@@ -453,9 +462,9 @@ function defaultDaemonPortForMode(
   network: MoneroNetwork,
   mode: NodeConnectionMode,
 ): number {
-  return mode === 'original-rpc'
-    ? ORIGINAL_RPC_PORTS[network]
-    : DAEMON_PORTS[network];
+  return mode === 'optimized-grpc'
+    ? DAEMON_PORTS[network]
+    : ORIGINAL_RPC_PORTS[network];
 }
 
 function normalizeEndpointWithDefaultPort(

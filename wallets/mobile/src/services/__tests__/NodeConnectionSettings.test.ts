@@ -70,16 +70,16 @@ describe("NodeConnectionSettings", () => {
     ).toBe("xmr.tex8.com:38091");
   });
 
-  it("keeps the global Tor/Clearnet split when a legacy original mode is requested", () => {
+  it("keeps original Monero RPC free of an MFN gRPC endpoint", () => {
     const original = createDefaultNodeConnectionSettings(
       "testnet",
       "original-rpc",
     );
 
-    expect(original.mode).toBe("optimized-grpc");
-    expect(original.daemon.address).toBe("xmr.tex8.com:28089");
-    expect(original.daemon.proxyAddress).toBe("127.0.0.1:9050");
-    expect(original.grpcEndpoint).toBe("xmr.tex8.com:28091");
+    expect(original.mode).toBe("original-rpc");
+    expect(original.daemon.address).toBe("xmr.tex8.com:28081");
+    expect(original.daemon.proxyAddress).toBe("");
+    expect(original.grpcEndpoint).toBe("");
   });
 
   it("migrates persisted VPN defaults to the fast wallet server domain", async () => {
@@ -160,7 +160,7 @@ describe("NodeConnectionSettings", () => {
     expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
   });
 
-  it("retains Clearnet gRPC when a legacy draft requests original RPC", () => {
+  it("removes gRPC when a draft requests original RPC", () => {
     const draft = nodeConnectionSettingsToDraft(
       createDefaultNodeConnectionSettings("mainnet"),
     );
@@ -169,8 +169,8 @@ describe("NodeConnectionSettings", () => {
     draft.grpcEndpoint = "fast.example.test:18091";
 
     const settings = nodeConnectionDraftToSettings(draft);
-    expect(settings.mode).toBe("optimized-grpc");
-    expect(settings.grpcEndpoint).toBe("fast.example.test:18091");
+    expect(settings.mode).toBe("original-rpc");
+    expect(settings.grpcEndpoint).toBe("");
     expect(settings.daemon.proxyAddress).toBe("127.0.0.1:9050");
   });
 
@@ -188,7 +188,7 @@ describe("NodeConnectionSettings", () => {
     expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
   });
 
-  it("migrates a legacy original-mode draft to the global split routes", () => {
+  it("keeps a user supplied original Monero RPC endpoint", () => {
     const draft = nodeConnectionSettingsToDraft(
       createDefaultNodeConnectionSettings("mainnet", "original-rpc"),
     );
@@ -197,10 +197,9 @@ describe("NodeConnectionSettings", () => {
 
     const settings = nodeConnectionDraftToSettings(draft);
 
-    expect(settings.mode).toBe("optimized-grpc");
-    expect(settings.daemon.address).toBe("node.example.test:18089");
-    expect(settings.daemon.proxyAddress).toBe("127.0.0.1:9050");
-    expect(settings.grpcEndpoint).toBe("xmr.tex8.com:18091");
+    expect(settings.mode).toBe("original-rpc");
+    expect(settings.daemon.address).toBe("node.example.test:18081");
+    expect(settings.grpcEndpoint).toBe("");
   });
 
   it("derives the optimized gRPC endpoint from the daemon host", () => {
@@ -226,10 +225,13 @@ describe("NodeConnectionSettings", () => {
     const custom = applyNodeModeDefaults(draft, "custom");
 
     expect(custom.daemonAddress).toBe("node.example.test:18089");
-    expect(custom.grpcEndpoint).toBe("fast.example.test:18091");
+    expect(custom.grpcEndpoint).toBe("");
   });
 
   it("derives the fast receive scanner URL from the active fast wallet endpoint", () => {
+    const expectedScannerUrl =
+      "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion";
+
     expect(
       fastReceiveScannerUrlForSettings({
         mode: "optimized-grpc",
@@ -240,9 +242,7 @@ describe("NodeConnectionSettings", () => {
         },
         grpcEndpoint: "152.53.133.188:18091",
       }),
-    ).toBe(
-      "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion",
-    );
+    ).toBe(expectedScannerUrl);
 
     expect(
       fastReceiveScannerUrlForSettings({
@@ -254,7 +254,43 @@ describe("NodeConnectionSettings", () => {
         },
         grpcEndpoint: "127.0.0.1:8087",
       }),
-    ).toBe("https://127.0.0.1:8087");
+    ).toBeUndefined();
+
+    expect(
+      fastReceiveScannerUrlForSettings({
+        mode: "optimized-grpc",
+        network: "mainnet",
+        daemon: {
+          address: "152.53.133.188:18089",
+          trusted: true,
+        },
+        grpcEndpoint: "https://xmr.tex8.com",
+      }),
+    ).toBe(expectedScannerUrl);
+
+    expect(
+      fastReceiveScannerUrlForSettings({
+        mode: "optimized-grpc",
+        network: "mainnet",
+        daemon: {
+          address: "152.53.133.188:18089",
+          trusted: true,
+        },
+        grpcEndpoint: "https://xmr.tex8.com:18091/",
+      }),
+    ).toBe(expectedScannerUrl);
+
+    expect(
+      fastReceiveScannerUrlForSettings({
+        mode: "optimized-grpc",
+        network: "mainnet",
+        daemon: {
+          address: "152.53.133.188:18089",
+          trusted: true,
+        },
+        grpcEndpoint: "https://xmr.tex8.com/scanner?tenant=wallet",
+      }),
+    ).toBe(expectedScannerUrl);
   });
 
   it("persists node settings without the daemon password", async () => {

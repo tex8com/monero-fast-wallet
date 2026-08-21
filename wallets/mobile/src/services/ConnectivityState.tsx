@@ -107,8 +107,12 @@ export async function configureNativeConnectivity(
   if (!native) return;
   if (native.configureConnectivity) {
     await native.configureConnectivity(
-      endpointLabel(settings.daemon.address),
-      endpointLabel(settings.grpcEndpoint),
+      settings.daemon.proxyAddress?.trim()
+        ? endpointLabel(settings.daemon.address)
+        : '',
+      settings.mode === 'optimized-grpc'
+        ? endpointLabel(settings.grpcEndpoint)
+        : '',
     );
   }
   await native.startConnectivity?.();
@@ -122,7 +126,12 @@ async function foregroundFallback(
   const route = (
     value: typeof result.tor,
   ): ConnectivityRouteState => ({
-    phase: value.status === 'connected' ? 'connected' : 'error',
+    phase:
+      value.status === 'connected'
+        ? 'connected'
+        : value.status === 'disabled'
+          ? 'idle'
+          : 'error',
     connected: value.status === 'connected',
     endpoint: value.endpoint,
     checkedAtMs,

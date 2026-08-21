@@ -97,7 +97,7 @@ pub fn save(app: &AppHandle, mut profile: NodeProfile) -> Result<NodeProfile, St
 // validated connection fields explicit prevents hidden defaults.
 #[allow(clippy::too_many_arguments)]
 pub fn profile(
-    _mode: String,
+    mode: String,
     network: String,
     daemon_address: String,
     grpc_endpoint: String,
@@ -107,8 +107,9 @@ pub fn profile(
     proxy_address: String,
     password_stored: bool,
 ) -> Result<NodeProfile, String> {
-    let mode = "optimized-grpc".to_owned();
+    let mode = mode.trim().to_owned();
     let network = network.trim().to_owned();
+    validate_mode(&mode)?;
     let mut profile = NodeProfile {
         mode: mode.clone(),
         network: network.clone(),
@@ -124,10 +125,12 @@ pub fn profile(
     if profile.daemon_address.is_empty() {
         profile.daemon_address = format!("xmr.tex8.com:{}", ports(&network, &mode)?.0);
     }
-    if profile.grpc_endpoint.is_empty() {
+    if profile.mode == "optimized-grpc" && profile.grpc_endpoint.is_empty() {
         profile.grpc_endpoint = format!("xmr.tex8.com:{}", ports(&network, &mode)?.1);
     }
-    profile.proxy_address = crate::tor_transport::TOR_SOCKS_ADDRESS.to_owned();
+    if profile.mode != "optimized-grpc" {
+        profile.grpc_endpoint.clear();
+    }
     validate_profile(&profile)?;
     Ok(profile)
 }
@@ -151,8 +154,8 @@ fn normalize(mut settings: NodeSettingsFile) -> Result<NodeSettingsFile, String>
     }
     let mut profiles = Vec::with_capacity(settings.profiles.len());
     for mut profile in settings.profiles.drain(..) {
-        profile.mode = "optimized-grpc".to_owned();
-        if profile.network == "mainnet" {
+        validate_mode(&profile.mode)?;
+        if profile.mode == "optimized-grpc" && profile.network == "mainnet" {
             profile.daemon_address = match profile.daemon_address.as_str() {
                 "xmr.tex8.com:18089" => {
                     "fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion:18089"
@@ -165,13 +168,15 @@ fn normalize(mut settings: NodeSettingsFile) -> Result<NodeSettingsFile, String>
                 _ => profile.daemon_address,
             };
         }
-        if profile.grpc_endpoint.trim().is_empty() {
+        if profile.mode == "optimized-grpc" && profile.grpc_endpoint.trim().is_empty() {
             profile.grpc_endpoint = format!(
                 "xmr.tex8.com:{}",
                 ports(&profile.network, "optimized-grpc")?.1
             );
         }
-        profile.proxy_address = crate::tor_transport::TOR_SOCKS_ADDRESS.to_owned();
+        if profile.mode != "optimized-grpc" {
+            profile.grpc_endpoint.clear();
+        }
         validate_profile(&profile)?;
         if let Some(index) = profiles
             .iter()
@@ -214,12 +219,10 @@ fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn validate_profile(profile: &NodeProfile) -> Result<(), String> {
     validate_network(&profile.network)?;
-    if !matches!(
-        profile.mode.as_str(),
-        "optimized-grpc" | "original-rpc" | "custom"
-    ) || !endpoint(&profile.daemon_address)
-        || (profile.mode != "original-rpc" && !endpoint(&profile.grpc_endpoint))
-        || (profile.mode == "original-rpc" && !profile.grpc_endpoint.is_empty())
+    validate_mode(&profile.mode)?;
+    if !endpoint(&profile.daemon_address)
+        || (profile.mode == "optimized-grpc" && !endpoint(&profile.grpc_endpoint))
+        || (profile.mode != "optimized-grpc" && !profile.grpc_endpoint.is_empty())
         || profile.username.len() > 128
         || profile.proxy_address.len() > 240
         || profile.username.chars().any(char::is_control)
@@ -228,6 +231,14 @@ fn validate_profile(profile: &NodeProfile) -> Result<(), String> {
         return Err("The node settings contain invalid data.".to_owned());
     }
     Ok(())
+}
+
+fn validate_mode(mode: &str) -> Result<(), String> {
+    if matches!(mode, "optimized-grpc" | "original-rpc" | "custom") {
+        Ok(())
+    } else {
+        Err("Unknown node connection mode.".to_owned())
+    }
 }
 
 fn endpoint(value: &str) -> bool {
@@ -249,12 +260,12 @@ fn validate_network(network: &str) -> Result<(), String> {
 fn ports(network: &str, mode: &str) -> Result<(u16, u16), String> {
     validate_network(network)?;
     let daemon = match (network, mode) {
-        ("mainnet", "original-rpc") => 18081,
-        ("testnet", "original-rpc") => 28081,
-        ("stagenet", "original-rpc") => 38081,
-        ("mainnet", _) => 18089,
-        ("testnet", _) => 28089,
-        ("stagenet", _) => 38089,
+        ("mainnet", "optimized-grpc") => 18089,
+        ("testnet", "optimized-grpc") => 28089,
+        ("stagenet", "optimized-grpc") => 38089,
+        ("mainnet", _) => 18081,
+        ("testnet", _) => 28081,
+        ("stagenet", _) => 38081,
         _ => return Err("Unknown node mode.".to_owned()),
     };
     let grpc = match network {
@@ -285,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_original_mode_is_migrated_to_the_global_split_routes() {
+    fn original_rpc_profile_keeps_standard_monero_rpc_and_disables_grpc() {
         let profile = profile(
             "original-rpc".to_owned(),
             "mainnet".to_owned(),
@@ -297,10 +308,30 @@ mod tests {
             String::new(),
             false,
         )
-        .expect("migrated profile");
-        assert_eq!(profile.mode, "optimized-grpc");
-        assert_eq!(profile.daemon_address, "xmr.tex8.com:18089");
-        assert_eq!(profile.grpc_endpoint, "ignored:18091");
+        .expect("original RPC profile");
+        assert_eq!(profile.mode, "original-rpc");
+        assert_eq!(profile.daemon_address, "xmr.tex8.com:18081");
+        assert!(profile.grpc_endpoint.is_empty());
+        assert!(profile.proxy_address.is_empty());
+    }
+
+    #[test]
+    fn custom_profile_never_carries_an_mfn_grpc_endpoint() {
+        let profile = profile(
+            "custom".to_owned(),
+            "mainnet".to_owned(),
+            "node.example:18081".to_owned(),
+            "xmr.tex8.com:18091".to_owned(),
+            false,
+            false,
+            String::new(),
+            "127.0.0.1:9050".to_owned(),
+            false,
+        )
+        .expect("custom profile");
+        assert_eq!(profile.mode, "custom");
+        assert_eq!(profile.daemon_address, "node.example:18081");
+        assert!(profile.grpc_endpoint.is_empty());
         assert_eq!(profile.proxy_address, "127.0.0.1:9050");
     }
 

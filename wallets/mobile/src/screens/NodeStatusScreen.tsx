@@ -39,6 +39,11 @@ const NETWORKS: ReadonlyArray<{value: MoneroNetwork; label: string}> = [
 ];
 const KNOWN_NODE_IDS: ReadonlyArray<FixedNodeId> = ['tex8', 'community'];
 const AUTO_SAVE_DELAY_MS = 550;
+const NODE_MODES = [
+  {value: 'optimized-grpc', label: 'MFN fast sync'},
+  {value: 'original-rpc', label: 'Original RPC'},
+  {value: 'custom', label: 'Custom RPC'},
+] as const;
 
 type SaveState = 'loading' | 'saved' | 'saving' | 'error';
 
@@ -66,7 +71,8 @@ export default function NodeStatusScreen({navigation}: any) {
   );
   const valid =
     resolvedSettings.daemon.address.length > 0 &&
-    resolvedSettings.grpcEndpoint.length > 0;
+    (resolvedSettings.mode !== 'optimized-grpc' ||
+      resolvedSettings.grpcEndpoint.length > 0);
 
   const runDiagnostics = useCallback(async (settings = resolvedSettings) => {
     setDiagnosticsRunning(true);
@@ -138,7 +144,7 @@ export default function NodeStatusScreen({navigation}: any) {
   function setNetwork(network: MoneroNetwork) {
     setDraft(
       nodeConnectionSettingsToDraft(
-        createDefaultNodeConnectionSettings(network, 'optimized-grpc'),
+        createDefaultNodeConnectionSettings(network, draft.mode),
       ),
     );
   }
@@ -149,12 +155,20 @@ export default function NodeStatusScreen({navigation}: any) {
   ) {
     setDraft(current => ({
       ...current,
-      mode: 'optimized-grpc',
       [key]: value,
-      ...(key === 'daemonAddress'
-        ? {proxyAddress: '127.0.0.1:9050'}
-        : undefined),
     }));
+  }
+
+  function chooseMode(mode: NodeConnectionDraft['mode']) {
+    if (mode === 'custom') {
+      setDraft(current => ({...current, mode, grpcEndpoint: ''}));
+      return;
+    }
+    setDraft(
+      nodeConnectionSettingsToDraft(
+        createDefaultNodeConnectionSettings(draft.network, mode),
+      ),
+    );
   }
 
   function choosePreset(node: FixedNodeId, transport: 'clearnet' | 'onion') {
@@ -257,21 +271,29 @@ export default function NodeStatusScreen({navigation}: any) {
           <Text style={s.sectionTitle}>{t('nodeStatus.diagnostics')}</Text>
           <Text style={s.sectionHint}>{t('nodeStatus.diagnosticsHint')}</Text>
           <RouteCard
-            icon="onion"
-            label={t('nodeStatus.torRoute')}
-            hint={t('nodeStatus.torHint')}
+            icon={draft.mode === 'optimized-grpc' ? 'onion' : 'globe'}
+            label={
+              draft.mode === 'optimized-grpc'
+                ? t('nodeStatus.torRoute')
+                : 'Monero daemon'
+            }
+            hint={
+              draft.mode === 'optimized-grpc'
+                ? t('nodeStatus.torHint')
+                : 'Standard Monero RPC. gRPC is disabled.'
+            }
             result={diagnostics?.tor}
             running={diagnosticsRunning}
             t={t}
           />
-          <RouteCard
+          {draft.mode === 'optimized-grpc' ? <RouteCard
             icon="globe"
             label={t('nodeStatus.clearnetRoute')}
             hint={t('nodeStatus.clearnetHint')}
             result={diagnostics?.clearnet}
             running={diagnosticsRunning}
             t={t}
-          />
+          /> : null}
           <TouchableOpacity
             accessibilityRole="button"
             activeOpacity={0.8}
@@ -320,7 +342,25 @@ export default function NodeStatusScreen({navigation}: any) {
           </View>
         </View>
 
-        <RouteSettings
+        <View style={s.section}>
+          <Text style={s.sectionTitle}>Connection</Text>
+          <View style={s.segmented}>
+            {NODE_MODES.map(mode => (
+              <TouchableOpacity
+                accessibilityRole="radio"
+                accessibilityState={{selected: draft.mode === mode.value}}
+                key={mode.value}
+                onPress={() => chooseMode(mode.value)}
+                style={[s.segment, draft.mode === mode.value && s.segmentActive]}
+              >
+                <Text adjustsFontSizeToFit numberOfLines={1} style={[s.segmentText, draft.mode === mode.value && s.segmentTextActive]}>{mode.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text style={s.sectionHint}>{draft.mode === 'optimized-grpc' ? 'MFN uses gRPC only for faster block delivery. Original and custom nodes use standard Monero RPC only.' : 'This wallet uses the original Monero daemon RPC. No gRPC endpoint is used.'}</Text>
+        </View>
+
+        {draft.mode === 'optimized-grpc' ? <><RouteSettings
           icon="globe"
           title={t('settings.clearnetSyncRoute')}
           hint={t('nodeStatus.clearnetHint')}
@@ -354,7 +394,24 @@ export default function NodeStatusScreen({navigation}: any) {
             placeholder="node-address.onion:18089"
             value={draft.daemonAddress}
           />
-        </RouteSettings>
+        </RouteSettings></> : <RouteSettings
+          icon="globe"
+          title="Monero daemon RPC"
+          hint="Use any compatible Monero node. Add a local SOCKS5 proxy for an Onion node."
+        >
+          <EndpointInput
+            label="Daemon endpoint"
+            onChangeText={value => updateEndpoint('daemonAddress', value)}
+            placeholder="node.example:18081"
+            value={draft.daemonAddress}
+          />
+          <EndpointInput
+            label="SOCKS5 proxy (optional for Onion)"
+            onChangeText={value => setDraft(current => ({...current, proxyAddress: value}))}
+            placeholder="127.0.0.1:9050"
+            value={draft.proxyAddress}
+          />
+        </RouteSettings>}
 
         <TouchableOpacity
           accessibilityRole="button"
@@ -364,7 +421,7 @@ export default function NodeStatusScreen({navigation}: any) {
               nodeConnectionSettingsToDraft(
                 createDefaultNodeConnectionSettings(
                   draft.network,
-                  'optimized-grpc',
+                  draft.mode,
                 ),
               ),
             )

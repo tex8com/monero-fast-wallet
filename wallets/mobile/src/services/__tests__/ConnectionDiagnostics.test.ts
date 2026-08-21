@@ -59,6 +59,22 @@ describe('ConnectionDiagnostics', () => {
     expect(result.clearnet.status).toBe('connected');
   });
 
+  it('uses only the selected standard daemon for original RPC', async () => {
+    const settings = createDefaultNodeConnectionSettings('mainnet', 'original-rpc');
+    const probeTcp = jest.fn().mockResolvedValue({connected: true, elapsedMs: 12.2});
+
+    const result = await diagnoseConnectionRoutes(settings, {probeTcp});
+
+    expect(probeTcp).toHaveBeenCalledTimes(1);
+    expect(probeTcp).toHaveBeenCalledWith('xmr.tex8.com', 18081, false, 8_000);
+    expect(result.tor).toEqual({
+      status: 'connected',
+      endpoint: settings.daemon.address,
+      elapsedMs: 12,
+    });
+    expect(result.clearnet).toEqual({status: 'disabled', endpoint: ''});
+  });
+
   it('validates endpoints before probing them', async () => {
     expect(parseConnectionEndpoint('https://xmr.tex8.com:18091/path')).toEqual({
       host: 'xmr.tex8.com',

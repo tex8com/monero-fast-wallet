@@ -2,7 +2,7 @@ import {NativeModules} from 'react-native';
 import type {NodeConnectionSettings} from './NodeConnectionSettings';
 
 export type ConnectionRouteResult = Readonly<{
-  status: 'connected' | 'error';
+  status: 'connected' | 'error' | 'disabled';
   endpoint: string;
   elapsedMs?: number;
   error?: string;
@@ -32,13 +32,17 @@ export async function diagnoseConnectionRoutes(
     const missing = 'The native connection probe is missing from this build.';
     return {
       tor: failure(settings.daemon.address, missing),
-      clearnet: failure(settings.grpcEndpoint, missing),
+      clearnet: settings.mode === 'optimized-grpc'
+        ? failure(settings.grpcEndpoint, missing)
+        : disabled(),
     };
   }
 
   const [tor, clearnet] = await Promise.all([
-    probe(native, settings.daemon.address, true),
-    probe(native, settings.grpcEndpoint, false),
+    probe(native, settings.daemon.address, Boolean(settings.daemon.proxyAddress?.trim())),
+    settings.mode === 'optimized-grpc'
+      ? probe(native, settings.grpcEndpoint, false)
+      : Promise.resolve(disabled()),
   ]);
   return {tor, clearnet};
 }
@@ -106,6 +110,10 @@ function parseEndpoint(value: string): ParsedEndpoint {
 
 function failure(endpoint: string, error: string): ConnectionRouteResult {
   return {status: 'error', endpoint: endpoint.trim(), error};
+}
+
+function disabled(): ConnectionRouteResult {
+  return {status: 'disabled', endpoint: ''};
 }
 
 function errorMessage(error: unknown): string {

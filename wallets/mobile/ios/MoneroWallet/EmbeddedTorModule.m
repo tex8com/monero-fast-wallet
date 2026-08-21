@@ -634,8 +634,8 @@ static NSDictionary<NSString *, id> *MFWConnectivitySnapshot(
  */
 @interface MFWConnectivityRuntime : NSObject
 @property(nonatomic, strong) dispatch_queue_t queue;
-@property(nonatomic, strong) NSDictionary<NSString *, id> *torEndpoint;
-@property(nonatomic, strong) NSDictionary<NSString *, id> *clearnetEndpoint;
+@property(nonatomic, strong, nullable) NSDictionary<NSString *, id> *torEndpoint;
+@property(nonatomic, strong, nullable) NSDictionary<NSString *, id> *clearnetEndpoint;
 @property(nonatomic, strong) NSDictionary<NSString *, id> *torSnapshot;
 @property(nonatomic, strong) NSDictionary<NSString *, id> *clearnetSnapshot;
 @property(nonatomic) BOOL torProbeRunning;
@@ -686,29 +686,37 @@ static NSDictionary<NSString *, id> *MFWConnectivitySnapshot(
 - (BOOL)configureTor:(NSString *)tor
             clearnet:(NSString *)clearnet
                error:(NSError **)error {
-  NSDictionary<NSString *, id> *parsedTor =
-      MFWParseConnectivityEndpoint(tor, YES, error);
-  if (parsedTor == nil) {
+  NSString *trimmedTor = [tor stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSString *trimmedClearnet = [clearnet stringByTrimmingCharactersInSet:
+      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+  NSDictionary<NSString *, id> *parsedTor = nil;
+  if (trimmedTor.length > 0) {
+    parsedTor = MFWParseConnectivityEndpoint(trimmedTor, YES, error);
+  }
+  if (trimmedTor.length > 0 && parsedTor == nil) {
     return NO;
   }
-  NSDictionary<NSString *, id> *parsedClearnet =
-      MFWParseConnectivityEndpoint(clearnet, NO, error);
-  if (parsedClearnet == nil) {
+  NSDictionary<NSString *, id> *parsedClearnet = nil;
+  if (trimmedClearnet.length > 0) {
+    parsedClearnet = MFWParseConnectivityEndpoint(trimmedClearnet, NO, error);
+  }
+  if (trimmedClearnet.length > 0 && parsedClearnet == nil) {
     return NO;
   }
   dispatch_sync(self.queue, ^{
-    BOOL torChanged = ![self.torEndpoint[@"label"] isEqual:parsedTor[@"label"]];
+    BOOL torChanged = ![(self.torEndpoint[@"label"] ?: @"") isEqual:(parsedTor[@"label"] ?: @"")];
     BOOL clearnetChanged =
-        ![self.clearnetEndpoint[@"label"] isEqual:parsedClearnet[@"label"]];
+        ![(self.clearnetEndpoint[@"label"] ?: @"") isEqual:(parsedClearnet[@"label"] ?: @"")];
     self.torEndpoint = parsedTor;
     self.clearnetEndpoint = parsedClearnet;
     if (torChanged) {
       self.torSnapshot = MFWConnectivitySnapshot(
-          @"starting", NO, parsedTor[@"label"], nil, nil);
+          parsedTor ? @"starting" : @"idle", NO, parsedTor[@"label"] ?: @"", nil, nil);
     }
     if (clearnetChanged) {
       self.clearnetSnapshot = MFWConnectivitySnapshot(
-          @"starting", NO, parsedClearnet[@"label"], nil, nil);
+          parsedClearnet ? @"starting" : @"idle", NO, parsedClearnet[@"label"] ?: @"", nil, nil);
     }
   });
   [self recheck];
@@ -727,6 +735,10 @@ static NSDictionary<NSString *, id> *MFWConnectivitySnapshot(
 }
 
 - (void)scheduleTorProbe {
+  if (self.torEndpoint == nil) {
+    self.torSnapshot = MFWConnectivitySnapshot(@"idle", NO, @"", nil, nil);
+    return;
+  }
   if (self.torProbeRunning) {
     return;
   }
@@ -756,6 +768,10 @@ static NSDictionary<NSString *, id> *MFWConnectivitySnapshot(
 }
 
 - (void)scheduleClearnetProbe {
+  if (self.clearnetEndpoint == nil) {
+    self.clearnetSnapshot = MFWConnectivitySnapshot(@"idle", NO, @"", nil, nil);
+    return;
+  }
   if (self.clearnetProbeRunning) {
     return;
   }

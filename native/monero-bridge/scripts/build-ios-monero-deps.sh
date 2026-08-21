@@ -608,6 +608,12 @@ build_unbound() {
         --with-libunbound-only \
         --with-pic \
         ac_cv_func_getentropy=no
+    # Autoconf cannot run malloc(0) while cross-compiling for iOS and therefore
+    # incorrectly adds Unbound's old malloc compatibility object. Xcode 26's
+    # SDK declares the typed allocator, which makes that replacement fail to
+    # compile. Darwin's malloc is standards-compliant, so remove only that
+    # cross-compile fallback from this generated iOS Makefile.
+    perl -0pi -e 's/ \$\{LIBOBJDIR\}malloc\$U\.o//g' Makefile
     perl -0pi -e 's@/\* #undef STDC_HEADERS \*/@#define STDC_HEADERS 1@; s@^#define malloc rpl_malloc_unbound$@/* #undef malloc */@mg' config.h
     make -j "${jobs}" >/dev/null
     make install >/dev/null

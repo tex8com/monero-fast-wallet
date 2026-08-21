@@ -41,7 +41,7 @@ test('desktop node status manages the global Clearnet sync and Tor wallet routes
   assert.doesNotMatch(settings, /load_node_settings|save_node_settings|Node status/);
 });
 
-test('desktop embeds Tor and permits only block synchronization on direct Clearnet', () => {
+test('desktop embeds Tor for Onion profiles and keeps direct RPC available', () => {
   assert.match(torTransport, /arti_client/);
   assert.match(torTransport, /TorClientConfigBuilder::from_directories/);
   assert.match(torTransport, /TorClient::builder\(\)/);
@@ -66,6 +66,27 @@ test('desktop embeds Tor and permits only block synchronization on direct Clearn
   assert.doesNotMatch(tauriConfig, /connect-src[^;]*https:/);
 });
 
+test('desktop reserves gRPC for the Monero Fast Node profile', () => {
+  const nodeSettings = readFileSync(
+    join(desktopRoot, 'src-tauri/src/node_settings.rs'),
+    'utf8',
+  );
+  assert.match(nodeSettings, /profile\.mode == "optimized-grpc" && profile\.grpc_endpoint\.is_empty\(\)/);
+  assert.match(nodeSettings, /profile\.mode != "optimized-grpc" && !profile\.grpc_endpoint\.is_empty\(\)/);
+  assert.match(native, /profile\.mode == "optimized-grpc"/);
+  assert.match(native, /native\.set_grpc_endpoint\(&wallet_id, ""\)/);
+  assert.match(native, /if profile\.mode != "optimized-grpc"/);
+  assert.match(native, /mfn_grpc_enabled: profile\.mode == "optimized-grpc"/);
+  const directDaemonProbe = native.slice(
+    native.indexOf('fn probe_direct_monero_daemon_route'),
+    native.indexOf('fn probe_monero_daemon_api'),
+  );
+  assert.match(directDaemonProbe, /probe_monero_daemon_api/);
+  assert.doesNotMatch(directDaemonProbe, /probe_grpc_transport/);
+  assert.match(app, /mfnGrpcEnabled/);
+  assert.match(app, /daemonUsesTor/);
+});
+
 test('desktop route LEDs require real Onion daemon and gRPC protocol responses', () => {
   assert.match(native, /GET \/get_height HTTP\/1\.1/);
   assert.match(native, /probe_monero_daemon_api/);
@@ -75,7 +96,7 @@ test('desktop route LEDs require real Onion daemon and gRPC protocol responses',
   assert.match(native, /mfw-tor-health-/);
 });
 
-test('desktop supervises Tor and publishes two independent live route states', () => {
+test('desktop supervises its configured daemon route and publishes MFN state separately', () => {
   assert.match(torTransport, /catch_unwind/);
   assert.match(torTransport, /worker-panicked action=restart/);
   assert.match(torTransport, /client\s*\.bootstrap\(\)\s*\.await/);
@@ -84,8 +105,8 @@ test('desktop supervises Tor and publishes two independent live route states', (
   assert.match(native, /fn connectivity_status/);
   assert.match(app, /connectivity_status/);
   assert.match(capability, /allow-connectivity-status/);
-  assert.match(app, />Tor<\/span>/);
-  assert.match(app, />Sync<\/span>/);
+  assert.match(app, /connectivity\?\.daemonUsesTor \? 'Tor' : 'Node'/);
+  assert.match(app, /connectivity\?\.mfnGrpcEnabled/);
 });
 
 test('desktop background checks preserve confirmed routes and refresh retained state on focus', () => {

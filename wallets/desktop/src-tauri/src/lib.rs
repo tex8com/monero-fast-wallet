@@ -799,6 +799,8 @@ struct ConnectivityRouteState {
 struct ConnectivityStatus {
     tor: ConnectivityRouteState,
     clearnet: ConnectivityRouteState,
+    daemon_uses_tor: bool,
+    mfn_grpc_enabled: bool,
 }
 static CLEARNET_CONNECTIVITY: OnceLock<Mutex<HashMap<String, ConnectivityRouteState>>> =
     OnceLock::new();
@@ -5695,7 +5697,11 @@ fn save_node_settings(
         // the unchanged hostname through SOCKS4a, so .onion resolution stays
         // inside the app's embedded Tor transport.
         let daemon_address = profile.daemon_address.clone();
-        let (grpc_endpoint, _) = first_party_endpoint_with_dns_fallback(&profile.grpc_endpoint);
+        let grpc_endpoint = if profile.mode == "optimized-grpc" {
+            first_party_endpoint_with_dns_fallback(&profile.grpc_endpoint).0
+        } else {
+            String::new()
+        };
         let mut password = if profile.password_stored {
             secure_store::load_node_daemon_password(&profile.network)?.unwrap_or_default()
         } else {
@@ -5715,6 +5721,9 @@ fn save_node_settings(
                     password: &password,
                     proxy_address: &profile.proxy_address,
                 })?;
+                // Passing an empty endpoint explicitly tears down a prior MFN
+                // stream when this open wallet is switched back to standard
+                // Monero RPC.
                 native.set_grpc_endpoint(&wallet_id, &grpc_endpoint)
             });
         password.zeroize();
@@ -5731,18 +5740,36 @@ async fn diagnose_connection_routes(
 ) -> Result<ConnectionRoutesDiagnostic, String> {
     require_app_unlocked(&protection)?;
     let profile = node_settings::load(&app, &input.network)?;
-    let tor_endpoint = profile.daemon_address.clone();
-    let clearnet_endpoint = profile.grpc_endpoint.clone();
-    let tor_task = tauri::async_runtime::spawn_blocking(move || probe_tor_route(&tor_endpoint));
-    let clearnet_task =
-        tauri::async_runtime::spawn_blocking(move || probe_clearnet_route(&clearnet_endpoint));
+    let daemon_endpoint = profile.daemon_address.clone();
+    let daemon_uses_tor = !profile.proxy_address.trim().is_empty();
+    let tor_task = tauri::async_runtime::spawn_blocking(move || {
+        if daemon_uses_tor {
+            probe_tor_route(&daemon_endpoint)
+        } else {
+            probe_direct_monero_daemon_route(&daemon_endpoint)
+        }
+    });
     let tor = tor_task
         .await
-        .map_err(|_| "The Tor connection check ended unexpectedly.".to_owned())?;
-    let clearnet = clearnet_task
-        .await
-        .map_err(|_| "The Clearnet connection check ended unexpectedly.".to_owned())?;
+        .map_err(|_| "The daemon connection check ended unexpectedly.".to_owned())?;
+    let clearnet = if profile.mode == "optimized-grpc" {
+        let clearnet_endpoint = profile.grpc_endpoint.clone();
+        tauri::async_runtime::spawn_blocking(move || probe_clearnet_route(&clearnet_endpoint))
+            .await
+            .map_err(|_| "The Clearnet connection check ended unexpectedly.".to_owned())?
+    } else {
+        disabled_connection_route()
+    };
     Ok(ConnectionRoutesDiagnostic { tor, clearnet })
+}
+
+fn disabled_connection_route() -> ConnectionRouteProbe {
+    ConnectionRouteProbe {
+        connected: false,
+        endpoint: String::new(),
+        elapsed_ms: None,
+        error: None,
+    }
 }
 
 fn probe_tor_route(endpoint: &str) -> ConnectionRouteProbe {
@@ -5835,19 +5862,43 @@ fn probe_clearnet_route(endpoint: &str) -> ConnectionRouteProbe {
     })
 }
 
+fn probe_direct_monero_daemon_route(endpoint: &str) -> ConnectionRouteProbe {
+    probe_route(endpoint, |host, port, timeout| {
+        let addresses = (host, port)
+            .to_socket_addrs()
+            .map_err(|error| format!("DNS: {error}"))?;
+        let mut last_error = None;
+        for address in addresses {
+            match TcpStream::connect_timeout(&address, timeout) {
+                Ok(mut stream) => {
+                    stream
+                        .set_read_timeout(Some(timeout))
+                        .map_err(|error| error.to_string())?;
+                    stream
+                        .set_write_timeout(Some(timeout))
+                        .map_err(|error| error.to_string())?;
+                    return probe_monero_daemon_api(&mut stream, host);
+                }
+                Err(error) => last_error = Some(error.to_string()),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "The endpoint has no usable address.".to_owned()))
+    })
+}
+
 fn probe_monero_daemon_api(stream: &mut TcpStream, host: &str) -> Result<(), String> {
     let request = format!(
         "GET /get_height HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
-        .map_err(|error| format!("Tor daemon health request: {error}"))?;
+        .map_err(|error| format!("Daemon health request: {error}"))?;
     let response = read_bounded_response(stream, 32 * 1024)?;
     let text = String::from_utf8_lossy(&response);
     let status_ok = text.starts_with("HTTP/1.1 200 ") || text.starts_with("HTTP/1.0 200 ");
     if !status_ok || !text.contains("\"height\"") {
         return Err(
-            "The selected Onion daemon did not return a valid /get_height response.".to_owned(),
+            "The selected Monero daemon did not return a valid /get_height response.".to_owned(),
         );
     }
     Ok(())
@@ -5973,7 +6024,11 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
                             &tor_network,
                             &profile.daemon_address,
                         );
-                        let probe = probe_tor_route(&profile.daemon_address);
+                        let probe = if profile.proxy_address.trim().is_empty() {
+                            probe_direct_monero_daemon_route(&profile.daemon_address)
+                        } else {
+                            probe_tor_route(&profile.daemon_address)
+                        };
                         set_tor_connectivity(
                             &tor_network,
                             ConnectivityRouteState {
@@ -6021,28 +6076,42 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
                 let profile = node_settings::load(&app, &network);
                 match profile {
                     Ok(profile) => {
-                        mark_connectivity_checking(
-                            connectivity_routes(),
-                            &network,
-                            &profile.grpc_endpoint,
-                        );
-                        let probe = probe_clearnet_route(&profile.grpc_endpoint);
-                        set_clearnet_connectivity(
-                            &network,
-                            ConnectivityRouteState {
-                                phase: if probe.connected {
-                                    "connected"
-                                } else {
-                                    "error"
-                                }
-                                .to_owned(),
-                                connected: probe.connected,
-                                endpoint: probe.endpoint,
-                                checked_at_ms: connectivity_now_ms(),
-                                elapsed_ms: probe.elapsed_ms,
-                                error: probe.error,
-                            },
-                        );
+                        if profile.mode != "optimized-grpc" {
+                            set_clearnet_connectivity(
+                                &network,
+                                ConnectivityRouteState {
+                                    phase: "idle".to_owned(),
+                                    connected: false,
+                                    endpoint: String::new(),
+                                    checked_at_ms: connectivity_now_ms(),
+                                    elapsed_ms: None,
+                                    error: None,
+                                },
+                            );
+                        } else {
+                            mark_connectivity_checking(
+                                connectivity_routes(),
+                                &network,
+                                &profile.grpc_endpoint,
+                            );
+                            let probe = probe_clearnet_route(&profile.grpc_endpoint);
+                            set_clearnet_connectivity(
+                                &network,
+                                ConnectivityRouteState {
+                                    phase: if probe.connected {
+                                        "connected"
+                                    } else {
+                                        "error"
+                                    }
+                                    .to_owned(),
+                                    connected: probe.connected,
+                                    endpoint: probe.endpoint,
+                                    checked_at_ms: connectivity_now_ms(),
+                                    elapsed_ms: probe.elapsed_ms,
+                                    error: probe.error,
+                                },
+                            );
+                        }
                     }
                     Err(error) => set_clearnet_connectivity(
                         &network,
@@ -6073,20 +6142,25 @@ fn connectivity_status(
 ) -> Result<ConnectivityStatus, String> {
     let profile = node_settings::load(&app, &input.network)?;
     let tor_runtime = tor_transport::status_snapshot();
+    let daemon_uses_tor = !profile.proxy_address.trim().is_empty();
     let tor_state = tor_connectivity_routes()
         .lock()
         .ok()
         .and_then(|routes| routes.get(&input.network).cloned())
         .unwrap_or(ConnectivityRouteState {
-            phase: tor_runtime.phase,
+            phase: if daemon_uses_tor {
+                tor_runtime.phase
+            } else {
+                "starting".to_owned()
+            },
             connected: false,
             endpoint: profile.daemon_address,
             checked_at_ms: tor_runtime.checked_at_ms,
             elapsed_ms: None,
-            error: if tor_runtime.worker_alive {
-                tor_runtime.error
+            error: if !daemon_uses_tor || tor_runtime.worker_alive {
+                None
             } else {
-                Some("Embedded Tor worker is not running.".to_owned())
+                tor_runtime.error
             },
         });
     let clearnet = connectivity_routes()
@@ -6094,9 +6168,17 @@ fn connectivity_status(
         .ok()
         .and_then(|routes| routes.get(&input.network).cloned())
         .unwrap_or(ConnectivityRouteState {
-            phase: "starting".to_owned(),
+            phase: if profile.mode == "optimized-grpc" {
+                "starting".to_owned()
+            } else {
+                "idle".to_owned()
+            },
             connected: false,
-            endpoint: profile.grpc_endpoint,
+            endpoint: if profile.mode == "optimized-grpc" {
+                profile.grpc_endpoint
+            } else {
+                String::new()
+            },
             checked_at_ms: 0,
             elapsed_ms: None,
             error: None,
@@ -6104,6 +6186,8 @@ fn connectivity_status(
     Ok(ConnectivityStatus {
         tor: tor_state,
         clearnet,
+        daemon_uses_tor,
+        mfn_grpc_enabled: profile.mode == "optimized-grpc",
     })
 }
 
@@ -8677,8 +8761,11 @@ fn schedule_wallet_sync(app: AppHandle, wallet_id: String, network_name: String)
         // Wallet-operation hostnames must never reach the operating-system
         // resolver. Only the Clearnet gRPC block route may use DNS fallback.
         let daemon_address = profile.daemon_address.clone();
-        let (grpc_endpoint, grpc_dns_fallback) =
-            first_party_endpoint_with_dns_fallback(&profile.grpc_endpoint);
+        let (grpc_endpoint, grpc_dns_fallback) = if profile.mode == "optimized-grpc" {
+            first_party_endpoint_with_dns_fallback(&profile.grpc_endpoint)
+        } else {
+            (String::new(), false)
+        };
         if grpc_dns_fallback {
             diagnostics::record(
                 &app,
@@ -8725,7 +8812,14 @@ fn schedule_wallet_sync(app: AppHandle, wallet_id: String, network_name: String)
                     username: &profile.username,
                     password: &node_password,
                     proxy_address: &profile.proxy_address,
-                })
+                })?;
+                if profile.mode != "optimized-grpc" {
+                    // The coordinator is network-wide. Explicitly clearing an
+                    // existing MFN endpoint prevents a previous wallet choice
+                    // from leaking gRPC into a standard/original node session.
+                    native.set_grpc_endpoint(&wallet_id, "")?;
+                }
+                Ok(())
             });
         node_password.zeroize();
         if configure_result.is_err() {
@@ -8755,7 +8849,7 @@ fn schedule_wallet_sync(app: AppHandle, wallet_id: String, network_name: String)
             ],
         );
 
-        if profile.mode != "original-rpc" && !grpc_endpoint.is_empty() {
+        if profile.mode == "optimized-grpc" && !grpc_endpoint.is_empty() {
             let grpc_started = Instant::now();
             let grpc_result = lock_native_wallet(&app, &state, "grpc-configuration")
                 .and_then(|native| native.set_grpc_endpoint(&wallet_id, &grpc_endpoint));
