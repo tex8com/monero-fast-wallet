@@ -19,7 +19,7 @@ const grpcFailurePatch = read(
 const plan = read('docs/WALLET_SYNC_KEY_IMAGE_IMPLEMENTATION_PLAN_2026-08-06.md');
 
 const ledgerBridge = engine.slice(
-  engine.indexOf('LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet('),
+  engine.indexOf('LedgerKeyImageSyncResult\n  syncLedgerKeyImagesToViewWallet('),
   engine.indexOf('PreparedTransaction prepareTransaction('),
 );
 test('Ledger I/O no longer holds the process-wide wallet registry lock', () => {
@@ -47,7 +47,7 @@ test('Ledger spent-status RPC is initialized once on the trusted view-wallet con
   assert.match(engine, /destination\.import_key_images\(\)/);
   const controlPlane = engine.slice(
     engine.indexOf('void initializeLedgerPostScanControlPlane('),
-    engine.indexOf('LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet('),
+    engine.indexOf('LedgerKeyImageSyncResult\n  syncLedgerKeyImagesToViewWallet('),
   );
   assert.ok(
     controlPlane.indexOf('destinationSession.wallet->init(') <
@@ -59,7 +59,10 @@ test('Ledger spent-status RPC is initialized once on the trusted view-wallet con
   assert.ok(controlPlaneInit >= 0 && controlPlaneInit < keyImageCall);
   assert.match(engine, /it never starts a refresh or owns public block/);
   assert.match(ledgerBridge, /Ledger source and view-only destination use different networks/);
-  assert.match(ledgerBridge, /\*destinationSession, controlPlaneConfig, configurationGeneration/);
+  assert.match(
+    ledgerBridge,
+    /initializeLedgerPostScanControlPlane\(\s*\*destinationSession,\s*controlPlaneConfig,\s*configurationGeneration,/,
+  );
 });
 
 test('all interactive hardware operations use a per-wallet session lock', () => {

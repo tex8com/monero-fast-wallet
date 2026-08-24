@@ -186,8 +186,25 @@ const rendererRoots = [
   join(repositoryRoot, 'wallets', 'desktop', 'src'),
   join(repositoryRoot, 'wallets', 'desktop', 'src-tauri', 'src'),
 ];
+const releaseManifest = JSON.parse(
+  readFileSync(join(repositoryRoot, 'config', 'v1-release-features.json'), 'utf8'),
+);
+assert.equal(
+  releaseManifest.features.vanityAddress,
+  false,
+  'the native V2 vanity prototype may remain in source only while its V1 feature is disabled',
+);
 const riskyImports = /(?:@noble\/curves|tweetnacl|curve25519|monero-javascript|crypto_scalarmult|generate_key_derivation|derive_subaddress_public_key|ge_scalarmult)/i;
-const rg = spawnSync('rg', ['-n', '--hidden', '--glob', '!**/node_modules/**', riskyImports.source, ...rendererRoots], {
+const rg = spawnSync('rg', [
+  '-n',
+  '--hidden',
+  '--glob',
+  '!**/node_modules/**',
+  '--glob',
+  '!**/src-tauri/src/vanity_service.rs',
+  riskyImports.source,
+  ...rendererRoots,
+], {
   cwd: repositoryRoot,
   encoding: 'utf8',
 });

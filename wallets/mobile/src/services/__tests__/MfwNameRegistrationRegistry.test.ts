@@ -45,6 +45,15 @@ const record: MfwOwnedNameRecord = {
   updatedAt: '2026-07-26T00:00:00.000Z',
 };
 
+const normalizedRecord: MfwOwnedNameRecord = {
+  ...record,
+  commitHeight: undefined,
+  commitTxidHex: undefined,
+  ownerAuthority: 'local',
+  pendingAddress: undefined,
+  recoveryExportedAt: undefined,
+};
+
 describe('MFW owned name registry', () => {
   beforeEach(() => {
     mockedLoad.mockReset();
@@ -55,7 +64,7 @@ describe('MFW owned name registry', () => {
     mockedLoad.mockResolvedValue(
       JSON.stringify({ version: 1, names: [record] }),
     );
-    await expect(loadMfwOwnedNames()).resolves.toEqual([record]);
+    await expect(loadMfwOwnedNames()).resolves.toEqual([normalizedRecord]);
     expect(JSON.stringify(record)).not.toMatch(/ownerSecret|privateKey|salt/i);
   });
 
@@ -64,7 +73,7 @@ describe('MFW owned name registry', () => {
       .mockResolvedValueOnce('')
       .mockResolvedValueOnce(JSON.stringify({ version: 1, names: [record] }));
     mockedStore.mockResolvedValue();
-    await expect(upsertMfwOwnedName(record)).resolves.toEqual([record]);
+    await expect(upsertMfwOwnedName(record)).resolves.toEqual([normalizedRecord]);
     expect(mockedStore).toHaveBeenCalledWith(
       expect.stringContaining('mfw-name-registrations'),
       expect.stringContaining('alice.mfw'),

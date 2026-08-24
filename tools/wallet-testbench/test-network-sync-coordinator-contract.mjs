@@ -77,7 +77,7 @@ test('the product contract requires one native coordinator per network', () => {
 test('mobile selection is UI-only once a native refresh has joined', () => {
   assert.match(mobileState, /nativeRefreshWalletIdsRef\.current\.has\(registrationId\)/);
   assert.match(mobileState, /reason: 'alreadyStarted'/);
-  assert.match(mobileState, /ensureRegisteredWalletOpen\(registration, isActive, true\)/);
+  assert.match(mobileState, /ensureRegisteredWalletOpen\(\s*registration,\s*isActive,\s*true,?\s*\)/);
   assert.match(mobileHome, /networkSyncStatus/);
 });
 
@@ -223,7 +223,10 @@ test('one coordinator fetches and decodes once before wallet-private fan-out', (
   assert.match(worker, /coordinator\.status\.prefetchQueueDepth = 0/);
   assert.match(worker, /peakPrefetchedPayloadBytes = std::max/);
   assert.match(worker, /stalledWallets == 0 \? "synced" : "degraded"/);
-  assert.match(worker, /publicAtTip && pendingScans > 0/);
+  assert.match(
+    worker,
+    /publicAtTip\s*&&\s*\(pendingScans > 0 \|\| !temporarilyBusyScanners\.empty\(\)\)/,
+  );
   assert.match(worker, /if \(!atTip && !waitingOnlyForPrivateScans &&[\s\S]*!indeterminateEmptyBatch\)/);
   assert.match(walletEngine, /coordinator\.wake = true;[\s\S]*coordinator\.condition\.notify_one\(\)/);
   assert.match(worker, /coordinator\.wake = true/);

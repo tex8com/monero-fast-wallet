@@ -180,24 +180,29 @@ test('safe V1 feature manifest enables verified local surfaces and fails closed 
     'the pinned development MFW registration flow must be enabled',
   );
   assert.equal(typeof manifest.features.moneroEnthusiastV1, 'boolean');
+  assertCompleteCommunityReleaseConfiguration(
+    manifest.parameters.moneroEnthusiastV1,
+  );
+  assert.equal(
+    manifest.parameters.moneroEnthusiastV1.catalogVerifyingKeyHex,
+    communitySigningKeys.keys.catalog.verifyingKeyHex,
+  );
+  assert.equal(
+    manifest.parameters.moneroEnthusiastV1.advertisingVerifyingKeyHex,
+    communitySigningKeys.keys.advertising.verifyingKeyHex,
+  );
+  assert.equal(
+    manifest.parameters.moneroEnthusiastV1.artifactVerifyingKeyHex,
+    communitySigningKeys.keys.artifact.verifyingKeyHex,
+  );
   if (manifest.features.moneroEnthusiastV1) {
-    assertCompleteCommunityReleaseConfiguration(
-      manifest.parameters.moneroEnthusiastV1,
-    );
-    assert.equal(
-      manifest.parameters.moneroEnthusiastV1.catalogVerifyingKeyHex,
-      communitySigningKeys.keys.catalog.verifyingKeyHex,
-    );
-    assert.equal(
-      manifest.parameters.moneroEnthusiastV1.advertisingVerifyingKeyHex,
-      communitySigningKeys.keys.advertising.verifyingKeyHex,
-    );
-    assert.equal(
-      manifest.parameters.moneroEnthusiastV1.artifactVerifyingKeyHex,
-      communitySigningKeys.keys.artifact.verifyingKeyHex,
-    );
+    assert.equal(manifest.features.legacyCommunity, false);
   } else {
-    assert.equal(manifest.parameters.moneroEnthusiastV1, null);
+    assert.equal(
+      manifest.features.moneroEnthusiastV1,
+      false,
+      'the complete V2 configuration may remain dormant while its V1 surface is hidden',
+    );
   }
 });
 
@@ -307,7 +312,10 @@ test('Monero Enthusiast V1 cannot fall back to the legacy plaintext Community pa
   assert.match(runtimeHeader, /tex8_community_runtime_install_catalog_v1/);
   assert.match(runtimeHeader, /tex8_community_runtime_search_v1/);
   assert.match(runtimeHeader, /normalized lookup keys and embeddings have no FFI export/);
-  assert.match(desktop, /<MoneroEnthusiastV1 \/>/);
+  assert.match(
+    desktop,
+    /section === 'enthusiast' && v1ReleaseFeatures\.moneroEnthusiastV1 && <CommunityComingSoon \/>/,
+  );
   const desktopV1 = desktop.slice(
     desktop.indexOf('function MoneroEnthusiastV1()'),
     desktop.indexOf('function CommunityConversation('),
@@ -579,8 +587,8 @@ test('MFW clients remain release-gated behind purpose-bound native preparation',
   assert.match(nativeService, /\bimportMfwNameRecovery\s*\(/);
   assert.match(android, /\bimportMfwNameRecovery\s*\(/);
   assert.match(ios, /\bimportMfwNameRecovery:/);
-  assert.doesNotMatch(nameScreen, /await walletService\.exportMfwNameRecovery\(/);
-  assert.doesNotMatch(nameScreen, /if \(!recoveryExported\)/);
+  assert.match(nameScreen, /await walletService\.exportMfwNameRecovery\(/);
+  assert.match(nameScreen, /if \(!recoveryExported\)/);
   assert.match(nameScreen, /await walletService\.importMfwNameRecovery\(/);
   assert.match(nameScreen, /resolveConfiguredMfwOwnedNameForImport/);
   for (const operation of ['update', 'renew', 'revoke']) {
@@ -996,7 +1004,7 @@ test('desktop enforces recovery and security gates below the renderer', () => {
   assert.doesNotMatch(notifications, /fallback\s*=\s*now\(\)/);
   // The renderer may explain onboarding and diagnostics, but it must never
   // receive or invoke the raw Ledger private-view-key export boundary.
-  assert.match(renderer, /Fast Wallet hosting/);
+  assert.match(renderer, /A Fast Wallet is an independent software wallet/);
   assert.doesNotMatch(
     renderer,
     /export_hardware_private_view_key|private_view_key|privateViewKey/,
