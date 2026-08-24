@@ -39,6 +39,12 @@ project(":app") {
     }
     dependencyLocking {
         lockAllConfigurations()
+        // The dormant V2 Harrier runtime is feature-gated in app/build.gradle.
+        // Gradle STRICT mode otherwise rejects its pinned lock entry whenever
+        // the V1 release omits that dependency from the graph. Its exact version
+        // and artifact checksums remain pinned by the build file and dependency
+        // verification metadata for a future V2 build.
+        ignoredDependencies.add("org.pytorch:executorch-android")
         lockMode = developmentDependencyLockingLenient
                 ? LockMode.LENIENT
                 : LockMode.STRICT

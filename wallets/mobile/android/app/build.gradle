@@ -412,6 +412,7 @@ android {
         }
         sourceSets {
             main {
+                java.srcDir("src/moneroEnthusiast/java")
                 assets.srcDir(moneroCommunityAssetRoot)
                 jniLibs.srcDir(moneroCommunityHarrierJniLibs)
             }

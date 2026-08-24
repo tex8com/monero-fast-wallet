@@ -31,6 +31,15 @@ assert.match(
   rootGradle,
   /lockMode = developmentDependencyLockingLenient[\s\S]*\? LockMode\.LENIENT[\s\S]*: LockMode\.STRICT/,
 );
+assert.match(
+  rootGradle,
+  /ignoredDependencies\.add\("org\.pytorch:executorch-android"\)/,
+);
+assert.equal(
+  (rootGradle.match(/ignoredDependencies\.add\(/g) ?? []).length,
+  1,
+  'only the exact feature-gated Harrier artifact may bypass the shared lock graph',
+);
 
 const appGradle = read('android/app/build.gradle');
 assert.doesNotMatch(appGradle, /jsc-android:[^'"\n]*\+/);
@@ -38,6 +47,23 @@ assert.match(appGradle, /jsc-android:2026004\.0\.1/);
 assert.match(appGradle, /def enableProguardInReleaseBuilds = true/);
 assert.match(appGradle, /shrinkResources enableProguardInReleaseBuilds/);
 assert.match(appGradle, /info\.guardianproject:tor-android:0\.4\.9\.11/);
+assert.match(
+  appGradle,
+  /if \(moneroEnthusiastV1Enabled\) \{[\s\S]*implementation\("org\.pytorch:executorch-android:1\.3\.1"\)/,
+);
+assert.match(
+  appGradle,
+  /if \(moneroEnthusiastV1Enabled\) \{[\s\S]*java\.srcDir\("src\/moneroEnthusiast\/java"\)/,
+);
+assert.ok(
+  fs.existsSync(
+    path.join(
+      root,
+      'android/app/src/moneroEnthusiast/java/com/monerowallet/CommunityHarrierAndroidBridge.kt',
+    ),
+  ),
+  'the dormant V2 ExecuTorch bridge must remain in its feature-only source set',
+);
 assert.match(appGradle, /Release signing is required/);
 assert.match(
   appGradle,
@@ -277,6 +303,10 @@ assert.match(androidManifestGenerator, /wallet_api ABI mismatch/);
 const verification = read('android/gradle/verification-metadata.xml');
 assert.match(verification, /<verify-metadata>true<\/verify-metadata>/);
 assert.doesNotMatch(verification, /<trusted-artifacts>|<ignored-key/);
+assert.match(
+  verification,
+  /<component group="org\.pytorch" name="executorch-android" version="1\.3\.1">[\s\S]*<sha256 value="[a-f0-9]{64}"/,
+);
 for (const platform of ['linux', 'osx', 'windows']) {
   assert.ok(
     verification.includes(`aapt2-8.12.0-13700139-${platform}.jar`),
@@ -291,6 +321,7 @@ assert.ok(fs.existsSync(lockfile), 'Android dependency lockfile is required');
 const locks = fs.readFileSync(lockfile, 'utf8');
 assert.match(locks, /com\.facebook\.react:react-android:0\.85\.1=/);
 assert.match(locks, /com\.google\.firebase:firebase-messaging:/);
+assert.match(locks, /org\.pytorch:executorch-android:1\.3\.1=/);
 assert.match(locks, /^empty=/m);
 
 assert.ok(
