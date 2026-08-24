@@ -10,8 +10,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::name::{
-    CanonicalName, CommitRecord, LegacyNameRecord, NameOperation, NameProtocolError, NameRecord,
-    Network, PublicAddress,
+    AddressKind, CanonicalName, CommitRecord, LegacyNameRecord, NameOperation, NameProtocolError,
+    NameRecord, Network, PublicAddress,
 };
 
 const INDEX_FILE_VERSION: u8 = 1;
@@ -199,6 +199,7 @@ struct ReplayState {
     commits: BTreeMap<[u8; 32], Vec<CommitEvidence>>,
     consumed_commits: BTreeSet<([u8; 32], u64, [u8; 32])>,
     names: BTreeMap<CanonicalName, NameState>,
+    reverse_names: BTreeMap<(u8, [u8; 32], [u8; 32]), BTreeSet<CanonicalName>>,
     rejected_records: u64,
 }
 
@@ -390,6 +391,38 @@ impl NameIndex {
         Ok(names)
     }
 
+    /// Returns active, finalized names currently resolving to `address`.
+    ///
+    /// Reverse discovery is public metadata only. Callers which need to make a
+    /// payment or restore owner UI state must still exact-resolve every
+    /// returned name and verify its signed record. The hard result bound keeps
+    /// the public resolver response and per-request work predictable.
+    pub fn reverse_names(
+        &self,
+        address: PublicAddress,
+        maximum: usize,
+    ) -> Result<(Vec<String>, bool), NameIndexError> {
+        address.validate()?;
+        if maximum == 0 || maximum > 100 {
+            return Err(NameIndexError::InvalidReverseQuery);
+        }
+
+        let candidates = self.replay.reverse_names.get(&reverse_address_key(address));
+        let mut names = Vec::with_capacity(maximum.min(candidates.map_or(0, BTreeSet::len)));
+        let mut truncated = false;
+        for name in candidates.into_iter().flatten() {
+            let resolution = self.resolve(name.as_str())?;
+            if resolution.is_safe_for_payment() {
+                if names.len() == maximum {
+                    truncated = true;
+                    break;
+                }
+                names.push(name.display_name());
+            }
+        }
+        Ok((names, truncated))
+    }
+
     pub fn save_atomic(&self, path: impl AsRef<Path>) -> Result<(), NameIndexError> {
         let path = path.as_ref();
         let body = PersistedBody {
@@ -465,6 +498,32 @@ impl NameIndex {
         }
         Ok(index)
     }
+}
+
+fn reverse_address_key(address: PublicAddress) -> (u8, [u8; 32], [u8; 32]) {
+    let kind = match address.kind {
+        AddressKind::Standard => 0,
+        AddressKind::Subaddress => 1,
+    };
+    (kind, address.public_spend_key, address.public_view_key)
+}
+
+fn insert_name_state(state: &mut ReplayState, name: CanonicalName, value: NameState) {
+    if let Some(previous) = state.names.get(&name) {
+        let key = reverse_address_key(previous.record.address());
+        if let Some(names) = state.reverse_names.get_mut(&key) {
+            names.remove(&name);
+            if names.is_empty() {
+                state.reverse_names.remove(&key);
+            }
+        }
+    }
+    state
+        .reverse_names
+        .entry(reverse_address_key(value.record.address()))
+        .or_default()
+        .insert(name.clone());
+    state.names.insert(name, value);
 }
 
 fn replay_blocks(
@@ -617,7 +676,8 @@ fn apply_record(
             state
                 .consumed_commits
                 .insert((commitment, commit.height, commit.txid));
-            state.names.insert(
+            insert_name_state(
+                state,
                 record.name.clone(),
                 NameState {
                     signing_owner_public_key: Some(record.owner_public_key),
@@ -675,7 +735,8 @@ fn apply_record(
                 }
                 NameOperation::Claim => unreachable!(),
             };
-            state.names.insert(
+            insert_name_state(
+                state,
                 record.name.clone(),
                 NameState {
                     signing_owner_public_key: Some(predecessor_record.owner_public_key),
@@ -743,7 +804,8 @@ fn apply_legacy_claim(
     state
         .consumed_commits
         .insert((commitment, commit.height, commit.txid));
-    state.names.insert(
+    insert_name_state(
+        state,
         record.name.clone(),
         NameState {
             record: IndexedNameRecord::Legacy(record),
@@ -877,6 +939,8 @@ pub enum NameIndexError {
     UnexpectedRegistryPayment,
     #[error("invalid name suggestion query")]
     InvalidSuggestionQuery,
+    #[error("invalid reverse name query")]
+    InvalidReverseQuery,
     #[error("integer overflow")]
     Overflow,
     #[error("invalid persistence path")]
@@ -999,6 +1063,18 @@ mod tests {
         assert_eq!(resolution.expiry_height, Some(303));
         assert!(resolution.is_safe_for_payment());
         assert_eq!(index.suggest_names("ali", 5).unwrap(), vec!["alice.mfw"]);
+        assert_eq!(
+            index.reverse_names(address(1), 100).unwrap(),
+            (vec!["alice.mfw".to_owned()], false)
+        );
+        assert_eq!(
+            index.reverse_names(address(2), 100).unwrap(),
+            (vec![], false)
+        );
+        assert!(matches!(
+            index.reverse_names(address(1), 0),
+            Err(NameIndexError::InvalidReverseQuery)
+        ));
         assert!(matches!(
             index.suggest_names("al", 5),
             Err(NameIndexError::InvalidSuggestionQuery)
@@ -1289,8 +1365,14 @@ mod tests {
             index.resolve("rollback").unwrap().status,
             ResolutionStatus::Provisional
         );
+        assert!(index.reverse_names(address(10), 100).unwrap().0.is_empty());
+        assert!(index.reverse_names(address(20), 100).unwrap().0.is_empty());
         index.rewind_to(Some(117)).unwrap();
         assert_eq!(index.resolve("rollback").unwrap(), stable);
+        assert_eq!(
+            index.reverse_names(address(10), 100).unwrap().0,
+            vec!["rollback.mfw"]
+        );
 
         index
             .apply_block(block(
@@ -1302,6 +1384,11 @@ mod tests {
         assert_eq!(
             index.resolve("rollback").unwrap().address,
             Some(update.address)
+        );
+        assert!(index.reverse_names(address(10), 100).unwrap().0.is_empty());
+        assert_eq!(
+            index.reverse_names(address(20), 100).unwrap().0,
+            vec!["rollback.mfw"]
         );
     }
 
@@ -1401,8 +1488,17 @@ mod tests {
             index.resolve("lifecycle").unwrap().status,
             ResolutionStatus::Revoked
         );
+        assert!(index
+            .reverse_names(claim.address, 100)
+            .unwrap()
+            .0
+            .is_empty());
         index.rewind_to(Some(132)).unwrap();
         assert_eq!(index.resolve("lifecycle").unwrap(), renewed);
+        assert_eq!(
+            index.reverse_names(claim.address, 100).unwrap().0,
+            vec!["lifecycle.mfw"]
+        );
     }
 
     #[test]

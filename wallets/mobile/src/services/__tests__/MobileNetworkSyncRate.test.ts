@@ -6,7 +6,8 @@ import type { NetworkSyncStatus } from '../NativeMoneroWallet';
 
 const status = (
   overrides: Partial<NetworkSyncStatus> = {},
-): NetworkSyncStatus => ({
+): NetworkSyncStatus => {
+  const base: NetworkSyncStatus = {
   network: 'mainnet',
   state: 'fetching-blocks',
   phase: 'fetching-blocks',
@@ -39,6 +40,7 @@ const status = (
   downloadStartHeight: 3_600_000,
   downloadedHeight: 3_700_000,
   chainHeight: 3_700_000,
+  priorityWalletHeight: 3_700_000,
   targetHeight: 3_733_700,
   transportStarts: 1,
   fetchedBatches: 1,
@@ -61,8 +63,24 @@ const status = (
   prefetchQueueCapacity: 1,
   replayCacheEntries: 0,
   replayCacheCapacity: 1,
-  ...overrides,
-});
+  fullScanMetricsState: 'idle',
+  fullScanMetricsGeneration: 0,
+  fullScanStartHeight: 0,
+  fullScanEndHeight: 0,
+  fullScanPayloadBytes: 0,
+  fullScanActiveTransportUs: 0,
+  fullScanDerivationCount: 0,
+  fullScanActiveDerivationUs: 0,
+  fullScanRetryCount: 0,
+  fullScanRetryWaitUs: 0,
+  fullScanBackpressureUs: 0,
+  fullScanTotalUs: 0,
+  fullScanAverageNetworkMbps: 0,
+  fullScanAverageDerivationsPerSecond: 0,
+  fullScanEndToEndMbps: 0,
+  };
+  return { ...base, ...overrides };
+};
 
 describe('mobile blockchain data rate', () => {
   it('uses advancing gRPC payload bytes even when a stale wire counter exists', () => {

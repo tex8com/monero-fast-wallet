@@ -68,6 +68,23 @@ describe('MFW name availability', () => {
     expect(transport.verifyConsensus).toHaveBeenCalledTimes(1);
   });
 
+  it('propagates resolver errors instead of mapping them to available', async () => {
+    const transport = {
+      resolve: jest.fn(async () => {
+        throw new Error('MFW resolver returned HTTP 503');
+      }),
+      verifyConsensus: jest.fn(),
+    };
+
+    await expect(
+      inspectMfwNameAvailability(
+        { name: 'alice', network: 'mainnet' },
+        transport,
+      ),
+    ).rejects.toThrow('503');
+    expect(transport.verifyConsensus).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['finalized', 'taken'],
     ['provisional', 'pending'],

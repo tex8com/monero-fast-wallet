@@ -1603,6 +1603,301 @@ class WalletEngine::Impl {
 #endif
   }
 
+  void primeHardwareWalletFromViewOnly(
+      const WalletId& hardwareWalletId,
+      const WalletId& viewOnlyWalletId) {
+#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
+    if (hardwareWalletId == viewOnlyWalletId) {
+      throw WalletEngineError(
+          "Ledger signing and view-only sessions must be different");
+    }
+
+    std::shared_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession* hardwareSession = nullptr;
+    WalletSession* viewOnlySession = nullptr;
+    {
+      std::lock_guard<std::mutex> registryLock(mutex_);
+      hardwareSession = &getLocked(hardwareWalletId);
+      viewOnlySession = &getLocked(viewOnlyWalletId);
+      if (hardwareSession->network != viewOnlySession->network) {
+        throw WalletEngineError(
+            "Ledger signing and view-only sessions use different networks");
+      }
+    }
+
+    WalletSession* firstSession = hardwareSession;
+    WalletSession* secondSession = viewOnlySession;
+    if (secondSession->id < firstSession->id) {
+      std::swap(firstSession, secondSession);
+    }
+    std::unique_lock<std::mutex> firstSessionLock(firstSession->mutationMutex);
+    std::unique_lock<std::mutex> secondSessionLock(secondSession->mutationMutex);
+
+    auto* hardware = hardwareSession->wallet;
+    auto* viewOnly = viewOnlySession->wallet;
+    if (hardware == nullptr ||
+        hardware->getDeviceType() != Monero::Wallet::Device_Ledger) {
+      throw WalletEngineError("view-key target is not a Ledger wallet");
+    }
+    if (viewOnly == nullptr ||
+        viewOnly->getDeviceType() != Monero::Wallet::Device_Software ||
+        !viewOnly->watchOnly()) {
+      throw WalletEngineError(
+          "view-key source is not an encrypted view-only wallet");
+    }
+    if (hardware->publicViewKey() != viewOnly->publicViewKey() ||
+        hardware->publicSpendKey() != viewOnly->publicSpendKey()) {
+      throw WalletEngineError(
+          "Ledger signing and view-only sessions belong to different wallets");
+    }
+
+    if (!hardware->prepareHardwareWalletScanFromViewOnly(*viewOnly)) {
+      throwIfWalletFailed(
+          hardware, "primeHardwareWalletFromViewOnly.prepareHardwareWalletScan");
+      throw WalletEngineError(
+          "protected Ledger view key could not prime the signing wallet");
+    }
+    throwIfWalletFailed(
+        hardware, "primeHardwareWalletFromViewOnly.prepareHardwareWalletScan");
+    logEngineDiagnostic(
+        "primeHardwareWalletFromViewOnly.success",
+        {{"network",
+          std::to_string(static_cast<int>(hardwareSession->network))}});
+#else
+    (void)hardwareWalletId;
+    (void)viewOnlyWalletId;
+    throw WalletEngineError(
+        "protected Ledger view-key reuse requires the TEX8 Core extension");
+#endif
+  }
+
+  void rebuildHardwareWalletCacheFromViewOnly(
+      const WalletId& hardwareWalletId,
+      const WalletId& viewOnlyWalletId,
+      uint64_t restoreHeight) {
+#if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
+    if (hardwareWalletId == viewOnlyWalletId) {
+      throw WalletEngineError(
+          "Ledger signing and view-only sessions must be different");
+    }
+
+    // A cache rewind must not race a shared-batch scanner. The unique barrier
+    // waits for any in-flight scan and prevents a new one until every reset
+    // postcondition and the published snapshot have been verified.
+    std::unique_lock<std::shared_timed_mutex> executionLock(
+        coordinatorExecutionMutex_);
+    WalletSession* hardwareSession = nullptr;
+    WalletSession* viewOnlySession = nullptr;
+    {
+      std::lock_guard<std::mutex> registryLock(mutex_);
+      hardwareSession = &getLocked(hardwareWalletId);
+      viewOnlySession = &getLocked(viewOnlyWalletId);
+      if (hardwareSession->network != viewOnlySession->network) {
+        throw WalletEngineError(
+            "Ledger signing and view-only sessions use different networks");
+      }
+    }
+
+    WalletSession* firstSession = hardwareSession;
+    WalletSession* secondSession = viewOnlySession;
+    if (secondSession->id < firstSession->id) {
+      std::swap(firstSession, secondSession);
+    }
+    std::unique_lock<std::mutex> firstSessionLock(firstSession->mutationMutex);
+    std::unique_lock<std::mutex> secondSessionLock(secondSession->mutationMutex);
+
+    auto* hardware = hardwareSession->wallet;
+    auto* viewOnly = viewOnlySession->wallet;
+    if (hardware == nullptr ||
+        hardware->getDeviceType() != Monero::Wallet::Device_Ledger) {
+      throw WalletEngineError("cache rebuild target is not a Ledger wallet");
+    }
+    if (viewOnly == nullptr ||
+        viewOnly->getDeviceType() != Monero::Wallet::Device_Software ||
+        !viewOnly->watchOnly()) {
+      throw WalletEngineError(
+          "cache rebuild source is not an encrypted view-only wallet");
+    }
+    if (hardware->publicViewKey() != viewOnly->publicViewKey() ||
+        hardware->publicSpendKey() != viewOnly->publicSpendKey()) {
+      throw WalletEngineError(
+          "Ledger signing and view-only sessions belong to different wallets");
+    }
+    if (!hardwareSession->pendingTransactions.empty()) {
+      throw WalletEngineError(
+          "cannot rebuild a Ledger cache with a pending transaction");
+    }
+
+    const uint64_t companionHeight = viewOnly->blockChainHeight();
+    const uint64_t companionRefreshHeight =
+        viewOnly->getRefreshFromBlockHeight();
+    throwIfWalletFailed(
+        viewOnly, "rebuildHardwareWalletCacheFromViewOnly.companionState");
+    if (companionHeight <= 1 ||
+        companionRefreshHeight > companionHeight) {
+      throw WalletEngineError(
+          "view-only companion has no safe restore boundary");
+    }
+    if (restoreHeight > companionHeight) {
+      throw WalletEngineError(
+          "requested Ledger restore height exceeds the companion height");
+    }
+
+    // Never substitute the daemon tip. A missing registry height falls back
+    // only to the already verified companion boundary; an earlier valid
+    // registry height remains authoritative and merely scans more history.
+    if (restoreHeight <= 1 && companionRefreshHeight <= 1) {
+      throw WalletEngineError(
+          "missing Ledger restore height has no companion fallback");
+    }
+    const uint64_t effectiveRestoreHeight = restoreHeight <= 1
+        ? companionRefreshHeight
+        : (companionRefreshHeight > 1
+            ? std::min(restoreHeight, companionRefreshHeight)
+            : restoreHeight);
+    if (effectiveRestoreHeight <= 1 ||
+        effectiveRestoreHeight > companionHeight) {
+      throw WalletEngineError("Ledger cache restore boundary is inconsistent");
+    }
+
+    const uint64_t heightBeforeReset = hardware->blockChainHeight();
+    logEngineDiagnostic(
+        "rebuildHardwareWalletCacheFromViewOnly.start",
+        {
+            {"network", std::to_string(
+                static_cast<int>(hardwareSession->network))},
+            {"requestedRestoreHeight", std::to_string(restoreHeight)},
+            {"refreshFromHeight", std::to_string(companionRefreshHeight)},
+            {"restoreHeight", std::to_string(effectiveRestoreHeight)},
+            {"currentHeight", std::to_string(heightBeforeReset)},
+            {"targetHeight", std::to_string(companionHeight)},
+        });
+
+    // This verifies the connected Ledger against both master public keys and
+    // installs only the already protected companion view key in Core memory.
+    // No transaction, transfer, balance, or cursor state crosses sessions.
+    if (!hardware->prepareHardwareWalletScanFromViewOnly(*viewOnly)) {
+      throwIfWalletFailed(
+          hardware,
+          "rebuildHardwareWalletCacheFromViewOnly.prepareHardwareWalletScan");
+      throw WalletEngineError(
+          "protected Ledger view key could not prime the signing wallet");
+    }
+    throwIfWalletFailed(
+        hardware,
+        "rebuildHardwareWalletCacheFromViewOnly.prepareHardwareWalletScan");
+
+    bool cacheMutationStarted = false;
+    try {
+      cacheMutationStarted = true;
+      hardwareSession->cachedSnapshotReady = false;
+      hardwareSession->cacheResetHeight = effectiveRestoreHeight;
+      hardware->setRefreshFromBlockHeight(effectiveRestoreHeight);
+      throwIfWalletFailed(
+          hardware,
+          "rebuildHardwareWalletCacheFromViewOnly.setRefreshFromBlockHeight");
+
+      // Wallet::rescanBlockchain() is intentionally unsuitable here: its
+      // doRefresh() path silently skips the reset when no synced daemon is
+      // attached. Shared sync owns the network transport, so Core must perform
+      // the local reset without a network refresh.
+      if (!hardware->resetBlockchainCacheForSharedSync()) {
+        throwIfWalletFailed(
+            hardware,
+            "rebuildHardwareWalletCacheFromViewOnly.resetBlockchainCache");
+        throw WalletEngineError("Ledger signing cache reset failed");
+      }
+      throwIfWalletFailed(
+          hardware,
+          "rebuildHardwareWalletCacheFromViewOnly.resetBlockchainCache");
+
+      const uint64_t heightAfterReset = hardware->blockChainHeight();
+      const uint64_t cursorAfterReset = hardware->walletSyncCursor();
+      const uint64_t targetAfterReset = hardware->walletSyncTargetCursor();
+      if (hardware->getRefreshFromBlockHeight() != effectiveRestoreHeight ||
+          heightAfterReset != 1 || cursorAfterReset != 1 ||
+          targetAfterReset != effectiveRestoreHeight) {
+        throw WalletEngineError(
+            "Ledger signing cache did not rewind to the verified restore boundary");
+      }
+
+      const auto accountCount = hardware->numSubaddressAccounts();
+      for (std::size_t accountIndex = 0; accountIndex < accountCount;
+           ++accountIndex) {
+        if (hardware->balance(static_cast<uint32_t>(accountIndex)) != 0 ||
+            hardware->unlockedBalance(
+                static_cast<uint32_t>(accountIndex)) != 0) {
+          throw WalletEngineError(
+              "Ledger signing cache retained balance state after reset");
+        }
+      }
+      if (hardware->history() == nullptr || hardware->history()->count() != 0) {
+        throw WalletEngineError(
+            "Ledger signing cache retained transaction history after reset");
+      }
+
+      hardwareSession->cacheResetHeight = 0;
+      updateCachedSnapshot(*hardwareSession, companionHeight);
+      if (!hardwareSession->cachedSnapshotReady ||
+          hardwareSession->cachedSnapshot.walletHeight != 1 ||
+          hardwareSession->cachedSnapshot.refreshFromHeight !=
+              effectiveRestoreHeight ||
+          hardwareSession->cachedSnapshot.balanceAtomic != 0 ||
+          hardwareSession->cachedSnapshot.unlockedBalanceAtomic != 0 ||
+          hardwareSession->cachedSnapshot.daemonTargetHeight !=
+              companionHeight) {
+        throw WalletEngineError(
+            "Ledger signing cache reset snapshot is inconsistent");
+      }
+
+      if (auto* coordinator = findCoordinator(hardwareSession->network)) {
+        {
+          std::lock_guard<std::mutex> coordinatorLock(coordinator->mutex);
+          coordinator->scannerCursors[hardwareWalletId] =
+              effectiveRestoreHeight;
+          coordinator->scannerRetryAfter.erase(hardwareWalletId);
+          coordinator->wake = true;
+        }
+        coordinator->condition.notify_one();
+      }
+      logEngineDiagnostic(
+          "rebuildHardwareWalletCacheFromViewOnly.success",
+          {
+              {"restoreHeight", std::to_string(effectiveRestoreHeight)},
+              {"walletHeight", std::to_string(heightAfterReset)},
+              {"targetHeight", std::to_string(companionHeight)},
+          });
+    } catch (...) {
+      if (cacheMutationStarted) {
+        // Never continue exposing the pre-reset 0.987-XMR snapshot after a
+        // partial or failed destructive operation. Keep the reset marker so a
+        // later join also fails closed until this explicit rebuild succeeds.
+        hardwareSession->cacheResetHeight = effectiveRestoreHeight;
+        try {
+          updateCachedSnapshot(*hardwareSession, companionHeight);
+        } catch (...) {
+          hardwareSession->cachedSnapshotReady = false;
+        }
+      }
+      logEngineDiagnostic(
+          "rebuildHardwareWalletCacheFromViewOnly.failure",
+          {
+              {"restoreHeight", std::to_string(effectiveRestoreHeight)},
+              {"walletHeight", std::to_string(hardware->blockChainHeight())},
+              {"targetHeight", std::to_string(companionHeight)},
+          });
+      throw;
+    }
+#else
+    (void)hardwareWalletId;
+    (void)viewOnlyWalletId;
+    (void)restoreHeight;
+    throw WalletEngineError(
+        "Ledger cache rebuild requires the TEX8 Core extension");
+#endif
+  }
+
   FastReceiveIdentity createFastReceiveIdentity(
       const CreateFastReceiveIdentityRequest& request) {
     if (request.sourceWalletId.empty()) {
@@ -2194,6 +2489,11 @@ class WalletEngine::Impl {
     }
     std::lock_guard<std::mutex> lock(coordinator->mutex);
     auto status = coordinator->status;
+    const auto priorityCursor =
+        coordinator->scannerCursors.find(coordinator->priorityWalletId);
+    if (priorityCursor != coordinator->scannerCursors.end()) {
+      status.priorityWalletHeight = priorityCursor->second;
+    }
     status.providerGeneration = coordinator->configurationGeneration;
     status.phaseElapsedMs = elapsedMilliseconds(coordinator->phaseStarted);
     const uint64_t transportTotal =
@@ -2490,10 +2790,26 @@ class WalletEngine::Impl {
 
   void startRefresh(const WalletId& walletId) {
     NetworkType network;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      network = getLocked(walletId).network;
-    }
+    withSession(walletId, [&](WalletSession& session) {
+      network = session.network;
+      if (session.wallet->getDeviceType() != Monero::Wallet::Device_Ledger) {
+        return;
+      }
+      logEngineDiagnostic(
+          "startRefresh.ledgerViewKey.start",
+          {{"walletId", maskDiagnosticId(walletId)}});
+      if (!session.wallet->prepareHardwareWalletScan()) {
+        throwIfWalletFailed(
+            session.wallet, "startRefresh.prepareHardwareWalletScan");
+        throw WalletEngineError(
+            "Ledger did not authorize fast local wallet scanning");
+      }
+      throwIfWalletFailed(
+          session.wallet, "startRefresh.prepareHardwareWalletScan");
+      logEngineDiagnostic(
+          "startRefresh.ledgerViewKey.success",
+          {{"walletId", maskDiagnosticId(walletId)}});
+    });
     if (findCoordinator(network) != nullptr) {
       joinNetworkSync(walletId);
       return;
@@ -2923,13 +3239,15 @@ class WalletEngine::Impl {
   void initializeLedgerPostScanControlPlane(
       WalletSession& destinationSession,
       const DaemonConfig& config,
-      uint64_t configurationGeneration) {
+      uint64_t configurationGeneration,
+      bool forceReconnect = false) {
     // This method is intentionally called with destinationSession.mutationMutex
     // held and without the registry mutex.  It configures only the small
     // authenticated Core RPC client used by `is_key_image_spent` and optional
     // `gettransactions`; it never starts a refresh or owns public block
     // transport.
-    if (destinationSession.ledgerPostScanControlPlaneInitialized &&
+    if (!forceReconnect &&
+        destinationSession.ledgerPostScanControlPlaneInitialized &&
         destinationSession.ledgerPostScanControlPlaneGeneration ==
             configurationGeneration) {
       logEngineDiagnostic(
@@ -2937,6 +3255,14 @@ class WalletEngine::Impl {
           {{"network", std::to_string(static_cast<int>(destinationSession.network))},
            {"configurationGeneration", std::to_string(configurationGeneration)}});
       return;
+    }
+    if (forceReconnect) {
+      destinationSession.ledgerPostScanControlPlaneInitialized = false;
+      destinationSession.ledgerPostScanControlPlaneGeneration = 0;
+      logEngineDiagnostic(
+          "ledgerPostScanControlPlane.reconnecting",
+          {{"network", std::to_string(static_cast<int>(destinationSession.network))},
+           {"configurationGeneration", std::to_string(configurationGeneration)}});
     }
     if (!config.trusted) {
       throw WalletEngineError(
@@ -3037,11 +3363,17 @@ class WalletEngine::Impl {
 
   LedgerKeyImageSyncResult
   syncLedgerKeyImagesToViewWallet(const WalletId &hardwareWalletId,
-                                  const WalletId &viewOnlyWalletId) {
+                                  const WalletId &viewOnlyWalletId,
+                                  bool fullSpendOutputScan,
+                                  bool nodeOnlyRetry) {
 #if TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS
-    if (hardwareWalletId == viewOnlyWalletId) {
+    if (!nodeOnlyRetry && hardwareWalletId == viewOnlyWalletId) {
       throw WalletEngineError(
           "Ledger source and view-only destination must be different sessions");
+    }
+    if (nodeOnlyRetry && !hardwareWalletId.empty()) {
+      throw WalletEngineError(
+          "Ledger node-only retry must not receive a hardware session");
     }
 
     // Shared execution ownership keeps both session objects alive while still
@@ -3052,15 +3384,17 @@ class WalletEngine::Impl {
     WalletSession* destinationSession = nullptr;
     {
       std::lock_guard<std::mutex> registryLock(mutex_);
-      sourceSession = &getLocked(hardwareWalletId);
       destinationSession = &getLocked(viewOnlyWalletId);
-      if (sourceSession->network != destinationSession->network) {
-        throw WalletEngineError(
-            "Ledger source and view-only destination use different networks");
+      if (!nodeOnlyRetry) {
+        sourceSession = &getLocked(hardwareWalletId);
+        if (sourceSession->network != destinationSession->network) {
+          throw WalletEngineError(
+              "Ledger source and view-only destination use different networks");
+        }
       }
     }
 
-    auto* coordinator = findCoordinator(sourceSession->network);
+    auto* coordinator = findCoordinator(destinationSession->network);
     if (coordinator == nullptr) {
       throw WalletEngineError(
           "Ledger spent-status verification requires configured network sync");
@@ -3081,17 +3415,26 @@ class WalletEngine::Impl {
     // Always lock two sessions in stable wallet-id order. This prevents a
     // concurrent shared-batch scan from mutating either wallet without holding
     // the process-wide registry lock over Ledger I/O or trusted-node RPC.
-    WalletSession* firstSession = sourceSession;
-    WalletSession* secondSession = destinationSession;
-    if (secondSession->id < firstSession->id) {
-      std::swap(firstSession, secondSession);
+    WalletSession* firstSession = destinationSession;
+    WalletSession* secondSession = nullptr;
+    if (sourceSession != nullptr) {
+      firstSession = sourceSession;
+      secondSession = destinationSession;
+      if (secondSession->id < firstSession->id) {
+        std::swap(firstSession, secondSession);
+      }
     }
     std::unique_lock<std::mutex> firstSessionLock(firstSession->mutationMutex);
-    std::unique_lock<std::mutex> secondSessionLock(secondSession->mutationMutex);
+    std::unique_lock<std::mutex> secondSessionLock;
+    if (secondSession != nullptr) {
+      secondSessionLock =
+          std::unique_lock<std::mutex>(secondSession->mutationMutex);
+    }
 
-    auto* source = sourceSession->wallet;
+    auto* source = sourceSession == nullptr ? nullptr : sourceSession->wallet;
     auto* destination = destinationSession->wallet;
-    if (source->getDeviceType() == Monero::Wallet::Device_Software) {
+    if (source != nullptr &&
+        source->getDeviceType() == Monero::Wallet::Device_Software) {
       throw WalletEngineError("key-image source is not a hardware wallet");
     }
     if (destination->getDeviceType() != Monero::Wallet::Device_Software) {
@@ -3104,18 +3447,74 @@ class WalletEngine::Impl {
     // it is not part of the shared gRPC ScanPack downloader and cannot trigger
     // a second block scan.
     initializeLedgerPostScanControlPlane(
-        *destinationSession, controlPlaneConfig, configurationGeneration);
+        *destinationSession,
+        controlPlaneConfig,
+        configurationGeneration,
+        nodeOnlyRetry);
 
     LedgerKeyImageSyncResult result;
     const auto operationStartedAt = std::chrono::steady_clock::now();
     const auto verificationStartedAt = std::chrono::steady_clock::now();
     Monero::LedgerKeyImageSyncStats coreStats;
-    result.importHeight = source->coldKeyImageSyncToWithStats(
-        *destination,
-        result.spentAtomic,
-        result.unspentAtomic,
-        coreStats);
-    throwIfWalletFailed(source, "syncLedgerKeyImagesToViewWallet.source");
+    logEngineDiagnostic(
+        "syncLedgerKeyImagesToViewWallet.start",
+        {{"hardwareWalletId",
+          nodeOnlyRetry ? "none" : maskDiagnosticId(hardwareWalletId)},
+         {"viewOnlyWalletId", maskDiagnosticId(viewOnlyWalletId)},
+         {"mode", nodeOnlyRetry ? "node-only" : "ledger-and-node"},
+         {"fullSpendOutputScan", fullSpendOutputScan ? "true" : "false"}});
+    try {
+      result.importHeight = nodeOnlyRetry
+          ? destination->reconcileCachedKeyImagesWithStats(
+                result.spentAtomic,
+                result.unspentAtomic,
+                coreStats)
+          : source->coldKeyImageSyncToWithStats(
+                *destination,
+                result.spentAtomic,
+                result.unspentAtomic,
+                coreStats,
+                fullSpendOutputScan);
+    } catch (const std::exception& error) {
+      destinationSession->ledgerPostScanControlPlaneInitialized = false;
+      destinationSession->ledgerPostScanControlPlaneGeneration = 0;
+      uint64_t remainingPendingOutputCount = 0;
+      try {
+        remainingPendingOutputCount =
+            destination->pendingOutputKeyImageCount();
+      } catch (...) {
+      }
+      logEngineDiagnostic(
+          "syncLedgerKeyImagesToViewWallet.failure",
+          {{"viewOnlyWalletId", maskDiagnosticId(viewOnlyWalletId)},
+           {"mode", nodeOnlyRetry ? "node-only" : "ledger-and-node"},
+           {"phase", remainingPendingOutputCount == 0
+                ? "node-verification"
+                : "ledger-derivation"},
+           {"remainingPendingOutputCount",
+            std::to_string(remainingPendingOutputCount)},
+           {"error", error.what()}});
+      if (!nodeOnlyRetry && remainingPendingOutputCount == 0) {
+        try {
+          uint64_t authoritativeTargetHeight = 0;
+          {
+            std::lock_guard<std::mutex> coordinatorLock(coordinator->mutex);
+            authoritativeTargetHeight = coordinator->status.targetHeight;
+          }
+          updateCachedSnapshot(
+              *destinationSession,
+              authoritativeTargetHeight);
+        } catch (...) {
+        }
+        throw WalletEngineError(
+            std::string("Ledger key images saved; node verification failed: ") +
+            error.what());
+      }
+      throw;
+    }
+    if (source != nullptr) {
+      throwIfWalletFailed(source, "syncLedgerKeyImagesToViewWallet.source");
+    }
     throwIfWalletFailed(
         destination,
         "syncLedgerKeyImagesToViewWallet.destination");
@@ -3170,8 +3569,11 @@ class WalletEngine::Impl {
         destinationSession->cachedSnapshot.snapshotRevision;
     logEngineDiagnostic(
         "syncLedgerKeyImagesToViewWallet.success",
-        {{"hardwareWalletId", maskDiagnosticId(hardwareWalletId)},
+        {{"hardwareWalletId",
+          nodeOnlyRetry ? "none" : maskDiagnosticId(hardwareWalletId)},
          {"viewOnlyWalletId", maskDiagnosticId(viewOnlyWalletId)},
+         {"mode", nodeOnlyRetry ? "node-only" : "ledger-and-node"},
+         {"fullSpendOutputScan", fullSpendOutputScan ? "true" : "false"},
          {"importHeight", std::to_string(result.importHeight)},
          {"verifiedOutputCount", std::to_string(result.verifiedOutputCount)},
          {"pendingOutputCount", std::to_string(result.pendingOutputCount)},
@@ -3197,6 +3599,8 @@ class WalletEngine::Impl {
 #else
     (void)hardwareWalletId;
     (void)viewOnlyWalletId;
+    (void)fullSpendOutputScan;
+    (void)nodeOnlyRetry;
     throw WalletEngineError(
         "Ledger key-image import requires the TEX8 Core extension");
 #endif
@@ -4559,6 +4963,14 @@ class WalletEngine::Impl {
             lowestCursor = std::min(lowestCursor, inflight.second.cursor);
             highestCursor = std::max(highestCursor, inflight.second.cursor);
           }
+          for (const auto& item : availableSessions) {
+            const auto known = coordinator.scannerCursors.find(item.first);
+            if (known == coordinator.scannerCursors.end()) {
+              continue;
+            }
+            lowestCursor = std::min(lowestCursor, known->second);
+            highestCursor = std::max(highestCursor, known->second);
+          }
         }
         if (lowestCursor == std::numeric_limits<uint64_t>::max()) {
           // Every scanner can be temporarily occupied by a Key-Image
@@ -4581,6 +4993,7 @@ class WalletEngine::Impl {
           // the committed wallet state without blocking the public prefetch.
           uint64_t committedLowest = std::numeric_limits<uint64_t>::max();
           uint64_t committedHighest = 0;
+          size_t committedCursorCount = 0;
           for (const auto& item : availableSessions) {
             std::unique_lock<std::mutex> sessionLock(
                 item.second->mutationMutex, std::try_to_lock);
@@ -4589,10 +5002,12 @@ class WalletEngine::Impl {
             }
             const uint64_t cursor =
                 item.second->wallet->walletSyncCursor();
+            ++committedCursorCount;
             committedLowest = std::min(committedLowest, cursor);
             committedHighest = std::max(committedHighest, cursor);
           }
-          if (committedLowest != std::numeric_limits<uint64_t>::max()) {
+          if (committedCursorCount == availableSessions.size() &&
+              committedLowest != std::numeric_limits<uint64_t>::max()) {
             lowestCursor = committedLowest;
             highestCursor = committedHighest;
           }
@@ -4791,8 +5206,14 @@ class WalletEngine::Impl {
               atTip ? (stalledWallets == 0 ? "synced" : "degraded")
                     : "waiting-next-batch");
         }
+        // A Ledger maintenance operation owns the wallet mutation mutex while
+        // the public chain may already be at tip. Treat that exactly like an
+        // asynchronous private scan: waking the coordinator immediately only
+        // retries the same locked scanner and creates a hot loop until the
+        // Ledger operation releases it.
         const bool waitingOnlyForPrivateScans =
-            publicAtTip && pendingScans > 0;
+            publicAtTip &&
+            (pendingScans > 0 || !temporarilyBusyScanners.empty());
         if (!atTip && !waitingOnlyForPrivateScans &&
             !indeterminateEmptyBatch) {
           {
@@ -5184,6 +5605,33 @@ HardwareViewKeyExport WalletEngine::exportHardwarePrivateViewKey(
   return impl_->exportHardwarePrivateViewKey(walletId);
 #else
   (void)walletId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::primeHardwareWalletFromViewOnly(
+    const WalletId& hardwareWalletId,
+    const WalletId& viewOnlyWalletId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->primeHardwareWalletFromViewOnly(hardwareWalletId, viewOnlyWalletId);
+#else
+  (void)hardwareWalletId;
+  (void)viewOnlyWalletId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+void WalletEngine::rebuildHardwareWalletCacheFromViewOnly(
+    const WalletId& hardwareWalletId,
+    const WalletId& viewOnlyWalletId,
+    uint64_t restoreHeight) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  impl_->rebuildHardwareWalletCacheFromViewOnly(
+      hardwareWalletId, viewOnlyWalletId, restoreHeight);
+#else
+  (void)hardwareWalletId;
+  (void)viewOnlyWalletId;
+  (void)restoreHeight;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }
@@ -5588,14 +6036,20 @@ size_t WalletEngine::reconcileOutputKeyImages(
 
 LedgerKeyImageSyncResult WalletEngine::syncLedgerKeyImagesToViewWallet(
     const WalletId& hardwareWalletId,
-    const WalletId& viewOnlyWalletId) {
+    const WalletId& viewOnlyWalletId,
+    bool fullSpendOutputScan,
+    bool nodeOnlyRetry) {
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
   return impl_->syncLedgerKeyImagesToViewWallet(
       hardwareWalletId,
-      viewOnlyWalletId);
+      viewOnlyWalletId,
+      fullSpendOutputScan,
+      nodeOnlyRetry);
 #else
   (void)hardwareWalletId;
   (void)viewOnlyWalletId;
+  (void)fullSpendOutputScan;
+  (void)nodeOnlyRetry;
   throw WalletEngineError(backendNotLinkedMessage());
 #endif
 }

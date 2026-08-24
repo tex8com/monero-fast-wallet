@@ -165,7 +165,11 @@ for label in "${targets[@]}"; do
     "-DCMAKE_OSX_ARCHITECTURES=${arch}"
     "-DCMAKE_OSX_DEPLOYMENT_TARGET=${ios_deployment_target}"
     -DCMAKE_BUILD_TYPE=Release
-    "-DCMAKE_CXX_FLAGS=-DBOOST_MPL_CFG_NO_NESTED_VALUE_ARITHMETIC -Wno-deprecated-declarations -Wno-deprecated-builtins"
+    # Tor and Monero both export a global C `memwipe` symbol with incompatible
+    # signatures. Namespace Monero's iOS-only copy before the static archives
+    # are linked into the app, so wallet key cleanup cannot enter Tor's code.
+    "-DCMAKE_C_FLAGS=-Dmemwipe=monero_memwipe"
+    "-DCMAKE_CXX_FLAGS=-Dmemwipe=monero_memwipe -DBOOST_MPL_CFG_NO_NESTED_VALUE_ARITHMETIC -Wno-deprecated-declarations -Wno-deprecated-builtins"
     -DBUILD_TESTS=OFF
     -DBUILD_DOCUMENTATION=OFF
     -DBUILD_DEBUG_UTILITIES=OFF

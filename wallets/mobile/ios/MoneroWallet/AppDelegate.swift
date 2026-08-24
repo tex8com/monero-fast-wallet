@@ -104,10 +104,6 @@ class ReactNativeDelegate: RCTDefaultReactNativeFactoryDelegate {
 
   override func bundleURL() -> URL? {
 #if DEBUG
-    if let bundled = Bundle.main.url(forResource: "main", withExtension: "jsbundle") {
-      return bundled
-    }
-
     // Keep the wallet dev server isolated from other local React Native apps.
     let provider = RCTBundleURLProvider.sharedSettings()
     provider.jsLocation = "localhost:9101"

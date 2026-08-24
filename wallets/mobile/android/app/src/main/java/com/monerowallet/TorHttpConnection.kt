@@ -15,6 +15,7 @@ import java.net.URL
  * therefore never performs a local destination DNS lookup.
  */
 internal object TorHttpConnection {
+  private const val MIN_BOOTSTRAP_TIMEOUT_MS = 10_000L
   private const val BOOTSTRAP_TIMEOUT_MS = 120_000L
   private val V3_ONION_HOST = Regex("^[a-z2-7]{56}\\.onion$")
 
@@ -30,13 +31,20 @@ internal object TorHttpConnection {
           V3_ONION_HOST.matches(url.host.lowercase())
       )
 
-  fun open(context: Context, url: URL): HttpURLConnection {
+  fun open(
+    context: Context,
+    url: URL,
+    bootstrapTimeoutMs: Long = BOOTSTRAP_TIMEOUT_MS,
+  ): HttpURLConnection {
     require(isAllowedTarget(url) && url.host.isNotBlank()) {
       "Tor service requests require HTTPS or a Tor v3 Onion target"
     }
+    require(bootstrapTimeoutMs in 100L..BOOTSTRAP_TIMEOUT_MS) {
+      "Tor bootstrap timeout is invalid"
+    }
     val proxyAddress = EmbeddedTorManager.ensureReady(
       context.applicationContext,
-      BOOTSTRAP_TIMEOUT_MS,
+      bootstrapTimeoutMs.coerceAtLeast(MIN_BOOTSTRAP_TIMEOUT_MS),
     )
     val separator = proxyAddress.lastIndexOf(':')
     require(separator > 0) { "Embedded Tor returned an invalid SOCKS address" }

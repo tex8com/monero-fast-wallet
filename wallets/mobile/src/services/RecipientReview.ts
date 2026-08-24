@@ -18,6 +18,7 @@ export type RecipientReviewSource =
   | 'qr-code'
   | 'address-book'
   | 'mfw-name'
+  | 'payment-link'
   | 'private-phone';
 
 /**

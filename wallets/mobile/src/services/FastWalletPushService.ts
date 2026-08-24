@@ -1,4 +1,9 @@
-import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
+import {
+  Linking,
+  NativeModules,
+  PermissionsAndroid,
+  Platform,
+} from 'react-native';
 import { checkNotifications, RESULTS } from 'react-native-permissions';
 
 import {
@@ -9,13 +14,19 @@ import {
 import { logWalletEvent } from './WalletLogger';
 import { requireNativeMoneroWallet } from './NativeMoneroWallet';
 import { withSystemUiInterruption } from './SystemUiInterruption';
+import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 
 declare const require: (moduleName: string) => any;
 
 const EVENT_CONTRACT = 'monero-fast-wallet-push.v3';
 const INCOMING_EVENT_TYPE = 'monero.fast_wallet.incoming';
 const TEST_EVENT_TYPE = 'monero.fast_wallet.test';
-const EVENT_TYPES = new Set([INCOMING_EVENT_TYPE, TEST_EVENT_TYPE]);
+const VANITY_EVENT_TYPE = 'monero.fast_wallet.vanity';
+const EVENT_TYPES = new Set([
+  INCOMING_EVENT_TYPE,
+  TEST_EVENT_TYPE,
+  VANITY_EVENT_TYPE,
+]);
 const SUBSCRIPTION_ID_KEY = 'monero-fast-wallet.push.subscription-id.v1';
 const REGISTRATION_STATE_KEY = 'monero-fast-wallet.push.registration-state.v1';
 const LAST_EVENT_KEY = 'monero-fast-wallet.push.last-event.v2';
@@ -70,9 +81,14 @@ type PushRegistrationState = {
 };
 
 export interface FastWalletPushEvent {
-  type: typeof INCOMING_EVENT_TYPE | typeof TEST_EVENT_TYPE;
+  type:
+    | typeof INCOMING_EVENT_TYPE
+    | typeof TEST_EVENT_TYPE
+    | typeof VANITY_EVENT_TYPE;
   contractVersion: 'monero-fast-wallet-push.v3';
   eventId: string;
+  orderId?: string;
+  deepLink?: string;
 }
 
 export interface FastWalletPushRegistration {
@@ -565,7 +581,13 @@ export function parseFastWalletPushEvent(
   message: any,
 ): FastWalletPushEvent | undefined {
   const data = message?.data;
-  const allowedFields = new Set(['type', 'contractVersion', 'eventId']);
+  const allowedFields = new Set([
+    'type',
+    'contractVersion',
+    'eventId',
+    'orderId',
+    'deepLink',
+  ]);
   if (
     !data ||
     Object.keys(data).some(field => !allowedFields.has(field)) ||
@@ -578,10 +600,27 @@ export function parseFastWalletPushEvent(
     return undefined;
   }
 
+  const vanity = data.type === VANITY_EVENT_TYPE;
+  if (vanity && !v1ReleaseFeatures.vanityAddress) {
+    return undefined;
+  }
+  if (
+    vanity !==
+      (typeof data.orderId === 'string' &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+          data.orderId,
+        ) &&
+        data.deepLink === `mfw://vanity/order/${data.orderId}`) ||
+    (!vanity && (data.orderId !== undefined || data.deepLink !== undefined))
+  ) {
+    return undefined;
+  }
+
   return {
     type: data.type,
     contractVersion: EVENT_CONTRACT,
     eventId: data.eventId,
+    ...(vanity ? { orderId: data.orderId, deepLink: data.deepLink } : {}),
   };
 }
 
@@ -606,6 +645,8 @@ async function showAndroidForegroundNotification(
   const body =
     event.type === TEST_EVENT_TYPE
       ? 'Test notification: notifications are ready.'
+      : event.type === VANITY_EVENT_TYPE
+      ? 'Your Vanity address status changed.'
       : 'Open the app to check for a new payment.';
 
   try {
@@ -620,7 +661,7 @@ async function showAndroidForegroundNotification(
 
 async function handleRemoteMessage(
   message: any,
-  options: { foreground?: boolean } = {},
+  options: { foreground?: boolean; opened?: boolean } = {},
 ): Promise<void> {
   const event = parseFastWalletPushEvent(message);
   if (!event) {
@@ -630,6 +671,9 @@ async function handleRemoteMessage(
     () => null,
   );
   if (previousId === event.eventId) {
+    if (options.opened && event.type === VANITY_EVENT_TYPE && event.deepLink) {
+      await Linking.openURL(event.deepLink).catch(() => undefined);
+    }
     return;
   }
   await Promise.all([
@@ -640,9 +684,14 @@ async function handleRemoteMessage(
   if (options.foreground) {
     await showAndroidForegroundNotification(message, event);
   }
+  if (options.opened && event.type === VANITY_EVENT_TYPE && event.deepLink) {
+    await Linking.openURL(event.deepLink).catch(() => undefined);
+  }
   logWalletEvent(
     'FastWalletPush',
-    event.type === TEST_EVENT_TYPE ? 'testSignal.received' : 'incomingSignal.received',
+    event.type === TEST_EVENT_TYPE
+      ? 'testSignal.received'
+      : 'incomingSignal.received',
   );
 }
 
@@ -705,13 +754,17 @@ function startLifecycle(): () => void {
     );
   }
   if (instance.onNotificationOpenedApp) {
-    unsubscribers.push(instance.onNotificationOpenedApp(handleRemoteMessage));
+    unsubscribers.push(
+      instance.onNotificationOpenedApp((message: any) =>
+        handleRemoteMessage(message, { opened: true }),
+      ),
+    );
   }
   if (instance.getInitialNotification) {
     instance
       .getInitialNotification()
       .then((message: any) =>
-        message ? handleRemoteMessage(message) : undefined,
+        message ? handleRemoteMessage(message, { opened: true }) : undefined,
       )
       .catch(() => undefined);
   }

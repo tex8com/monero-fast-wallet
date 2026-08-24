@@ -14,6 +14,16 @@ describe('MFW name registration UI contract', () => {
   const send = source('src', 'screens', 'SendScreen.tsx');
   const navigation = source('src', 'navigation', 'TabNavigator.tsx');
   const registration = source('src', 'services', 'MfwNameRegistration.ts');
+  const androidNative = source(
+    'android',
+    'app',
+    'src',
+    'main',
+    'java',
+    'com',
+    'monerowallet',
+    'NativeMoneroWalletModule.kt',
+  );
   const manifest = JSON.parse(
     readFileSync(
       resolve(repoRoot, 'config', 'v1-release-features.json'),
@@ -29,6 +39,9 @@ describe('MFW name registration UI contract', () => {
     expect(navigation).toContain('name="MfwNames"');
     expect(manifest.features.mfwNameRegistration).toBe(true);
     expect(manifest.parameters.mfwNameGenesis.network).toBe('mainnet');
+    expect(manifest.parameters.mfwNameGenesis.registryAddress).toBe(
+      '49indexNameRuJZKgFL42yi11NgwYn3pzgf45HvvbEpCZq29KfQknnUM6xaptUokNsjh8TRghjr94ioSN2ZNhePm1vzJLQJ',
+    );
     expect(manifest.parameters.mfwNameGenesis.maximumTermYears).toBe(1_000);
     expect(manifest.parameters.mfwNameResolverOrigins).toEqual([
       'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
@@ -65,6 +78,8 @@ describe('MFW name registration UI contract', () => {
     );
     expect(names).toContain('prepareWithSigningSession');
     expect(names).toContain('await connectLedgerForSigning({');
+    expect(names).toContain('let ledgerHandoffCreated = false');
+    expect(names).toContain('await restoreLedgerViewAfterSigning()');
     expect(names).toContain('<LedgerSigningModal');
     expect(firstPreparation).toBeGreaterThan(
       names.indexOf('const prepareWithSigningSession'),
@@ -113,7 +128,7 @@ describe('MFW name registration UI contract', () => {
       /!registeredWallet\s*\|\|[\s\S]{0,80}!v1ReleaseFeatures\.mfwNameRegistration/,
     );
     expect(names).toContain("availability.value.status !== 'available'");
-    expect(names).toContain("const renewable = stage === 'active'");
+    expect(names).toContain("record.ownerAuthority !== 'recovery-required'");
     expect(names).toContain('beginRenewal(record)');
     expect(names).toContain('continueRenewal');
     expect(names).toContain('beginAddressUpdate(record)');
@@ -142,5 +157,21 @@ describe('MFW name registration UI contract', () => {
     expect(names).toContain('walletService.importMfwNameRecovery');
     expect(names).toContain('resolution.ownerPublicKeyHex');
     expect(names).not.toMatch(/\bbundleHex\b|\bpassphrase\b/);
+  });
+
+  it('backs up new owner authority before commit and restores public names by address', () => {
+    expect(names).toContain('discoverConfiguredMfwNamesForAddresses');
+    expect(names).toContain("ownerAuthority: 'recovery-required'");
+    expect(names).toContain('walletService.exportMfwNameRecovery');
+    expect(names).toContain("throw new Error(t('mfwNames.recoveryRequired'))");
+    expect(androidNative).toContain('Intent.ACTION_CREATE_DOCUMENT');
+    const exportResult = androidNative.slice(
+      androidNative.indexOf('override fun onActivityResult'),
+      androidNative.indexOf('override fun onNewIntent'),
+    );
+    expect(exportResult).toContain('output.write(bytes');
+    expect(exportResult.indexOf('output.write(bytes')).toBeLessThan(
+      exportResult.indexOf('promise.resolve(true)'),
+    );
   });
 });

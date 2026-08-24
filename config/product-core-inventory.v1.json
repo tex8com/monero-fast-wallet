@@ -291,21 +291,24 @@
       "scannerKeyImageSpendAuthority": false,
       "officialWorker": true,
       "privateWorkerPairing": true,
-      "moneroEnthusiastV1": true,
+      "moneroEnthusiastV1": false,
       "legacyCommunity": false,
       "news": true,
       "assistant": false,
       "marketplace": false,
       "mfwNameResolution": true,
       "mfwNameRegistration": true,
+      "vanityAddress": false,
       "deviceContactDiscovery": false,
       "publicLedger": false
     },
     "requiredDisabled": [
       "plaintextFastWalletHosting",
       "scannerKeyImageSpendAuthority",
+      "moneroEnthusiastV1",
       "legacyCommunity",
       "marketplace",
+      "vanityAddress",
       "deviceContactDiscovery",
       "publicLedger"
     ]

@@ -57,6 +57,9 @@ const COMMANDS: &[&str] = &[
     "disable_notification_installation",
     "consume_pending_notification_open",
     "background_notification_agent_config_path",
+    "create_vanity_quote",
+    "vanity_order_status",
+    "export_vanity_recovery",
     "disable_fast_wallet",
     "load_node_settings",
     "save_node_settings",
@@ -71,6 +74,8 @@ const COMMANDS: &[&str] = &[
     "list_mfw_names",
     "resolve_mfw_name_for_payment",
     "check_mfw_name_availability",
+    "suggest_mfw_names",
+    "discover_mfw_names_for_wallet",
     "prepare_mfw_name_registration",
     "prepare_mfw_name_claim",
     "prepare_mfw_name_transition",
@@ -178,6 +183,7 @@ fn verify_monero_source_tree(source_dir: &std::path::Path, expected: &str) {
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest path"));
+    println!("cargo:rerun-if-env-changed=MFW_VANITY_ONION_ORIGIN");
     configure_fast_wallet_release(&manifest_dir);
     configure_community_harrier();
 

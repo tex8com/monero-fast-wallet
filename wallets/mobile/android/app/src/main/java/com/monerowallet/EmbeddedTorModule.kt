@@ -130,7 +130,11 @@ class EmbeddedTorModule(
             target.ref == null
         ) { "Tor HTTP target is invalid" }
 
-        val connection = TorHttpConnection.open(reactApplicationContext, target).apply {
+        val connection = TorHttpConnection.open(
+          reactApplicationContext,
+          target,
+          checkedTimeout,
+        ).apply {
           requestMethod = checkedMethod
           connectTimeout = checkedTimeout.toInt()
           readTimeout = checkedTimeout.toInt()

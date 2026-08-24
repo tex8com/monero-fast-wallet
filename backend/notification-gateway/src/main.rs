@@ -113,11 +113,16 @@ async fn run() -> Result<(), String> {
         100_000,
     )?;
     let private_maximum = env_usize("NOTIFICATION_GATEWAY_PRIVATE_WORKER_MAXIMUM_ASSIGNMENTS", 8)?;
-    let state = state_result?
+    let mut state = state_result?
         .with_relay_control(relay_control)
         .with_official_worker_descriptor(official_worker_descriptor, unix_seconds())?
         .with_worker_admission_directory(worker_directory)
         .with_worker_assignment_limits(official_maximum, private_maximum)?;
+    if let Some(path) = optional_env("NOTIFICATION_GATEWAY_VANITY_SERVICE_AUTH_FILE") {
+        let mut auth = load_secret_file(Path::new(&path))?;
+        state = state.with_vanity_service_auth(auth);
+        auth.zeroize();
+    }
     let listener = TcpListener::bind(bind)
         .await
         .map_err(|_| "notification gateway could not bind".to_owned())?;

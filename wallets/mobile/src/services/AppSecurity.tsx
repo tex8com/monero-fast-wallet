@@ -209,12 +209,12 @@ export function AppSecurityProvider({
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextState => {
-      if (
-        nextState !== 'active' ||
-        (ready && !locked && mode !== 'none')
-      ) {
+      if (nextState !== 'active') {
         return;
       }
+      // Android can revoke the native authorization directly when the device
+      // is locked. React may still hold the previous unlocked state while it
+      // was suspended, so the native status is authoritative on every resume.
       loadProtectionStatus().then(loaded => {
         if (loaded) {
           setReady(true);
@@ -222,7 +222,7 @@ export function AppSecurityProvider({
       });
     });
     return () => subscription.remove();
-  }, [loadProtectionStatus, locked, mode, ready]);
+  }, [loadProtectionStatus]);
 
   useEffect(() => {
     const clearBackgroundLockTimer = () => {

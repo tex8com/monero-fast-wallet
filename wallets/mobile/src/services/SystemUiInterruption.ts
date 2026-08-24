@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import { requireNativeMoneroWallet } from './NativeMoneroWallet';
 
 const DEFAULT_TIMEOUT_MS = 45_000;
@@ -68,6 +69,14 @@ export async function withSystemUiInterruption<T>(
   const end = beginSystemUiInterruption(reason, boundedTimeoutMs);
   let nativeToken: string | undefined;
   try {
+    // The iOS native interruption map is not consulted by the native lock
+    // lifecycle. Awaiting its TurboModule promise can therefore leave a
+    // recovery-seed request waiting forever before its dialog is presented.
+    // The JavaScript guard above already covers the iOS app lifecycle; keep
+    // Android's native guard unchanged for its permission/activity flow.
+    if (Platform.OS === 'ios') {
+      return await operation();
+    }
     nativeToken = await requireNativeMoneroWallet().beginSystemUiInterruption(
       reason,
       boundedTimeoutMs,

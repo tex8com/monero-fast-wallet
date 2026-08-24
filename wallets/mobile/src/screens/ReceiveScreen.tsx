@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   View,
@@ -46,6 +52,23 @@ import {
   sanitizePaymentAmountInput,
   type PaymentAmountCurrency,
 } from '../services/PaymentRequest';
+import {
+  paymentLinkClient,
+  type PaymentLinkRecord,
+} from '../services/PaymentLinkClient';
+
+type PaymentLinkAction = 'copy' | 'share';
+
+type PaymentLinkOperation = {
+  id: number;
+  controller: AbortController;
+  paymentUri: string;
+};
+
+type CachedPaymentLink = {
+  paymentUri: string;
+  record: PaymentLinkRecord;
+};
 
 function QrCode({ value, size }: { value: string; size: number }) {
   return (
@@ -126,6 +149,9 @@ function addressBalanceDetail(
 export default function ReceiveScreen({ navigation, route }: any) {
   const [copied, setCopied] = useState(false);
   const [paymentLinkCopied, setPaymentLinkCopied] = useState(false);
+  const [paymentLinkBusy, setPaymentLinkBusy] =
+    useState<PaymentLinkAction>();
+  const [paymentLinkError, setPaymentLinkError] = useState<string>();
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentAmountCurrency, setPaymentAmountCurrency] =
     useState<PaymentAmountCurrency>('XMR');
@@ -150,6 +176,11 @@ export default function ReceiveScreen({ navigation, route }: any) {
   const [receiveWalletError, setReceiveWalletError] = useState<
     string | undefined
   >();
+  const paymentLinkOperation = useRef<PaymentLinkOperation | undefined>(
+    undefined,
+  );
+  const paymentLinkOperationId = useRef(0);
+  const paymentLinkCache = useRef<CachedPaymentLink | undefined>(undefined);
   const { t } = useI18n();
   const { price: xmrUsdPrice } = useXmrPrice();
   const routeWalletId =
@@ -170,7 +201,6 @@ export default function ReceiveScreen({ navigation, route }: any) {
     session,
     showHardwareWalletAddress,
     snapshot,
-    status,
     transactions,
     walletSnapshots,
   } = useWalletState();
@@ -287,6 +317,20 @@ export default function ReceiveScreen({ navigation, route }: any) {
       : undefined;
 
   useEffect(() => {
+    paymentLinkCache.current = undefined;
+    setPaymentLinkBusy(undefined);
+    setPaymentLinkError(undefined);
+    setPaymentLinkCopied(false);
+    return () => {
+      const operation = paymentLinkOperation.current;
+      if (operation?.paymentUri === paymentUri) {
+        operation.controller.abort();
+        paymentLinkOperation.current = undefined;
+      }
+    };
+  }, [paymentUri]);
+
+  useEffect(() => {
     if (routeWalletId) {
       setSelectedReceiveWalletId(routeWalletId);
     }
@@ -388,20 +432,68 @@ export default function ReceiveScreen({ navigation, route }: any) {
     setPaymentAmountCurrency(next);
   };
 
-  const handleCopyPaymentLink = () => {
-    if (!paymentUri) return;
-    Clipboard.setString(paymentUri);
-    setPaymentLinkCopied(true);
-    setTimeout(() => setPaymentLinkCopied(false), 2000);
+  const runPaymentLinkAction = async (action: PaymentLinkAction) => {
+    const requestedPaymentUri = paymentUri;
+    if (!requestedPaymentUri || paymentLinkOperation.current) return;
+
+    const operation: PaymentLinkOperation = {
+      id: ++paymentLinkOperationId.current,
+      controller: new AbortController(),
+      paymentUri: requestedPaymentUri,
+    };
+    paymentLinkOperation.current = operation;
+    setPaymentLinkBusy(action);
+    setPaymentLinkError(undefined);
+    setPaymentLinkCopied(false);
+
+    try {
+      const cached = paymentLinkCache.current;
+      let record =
+        cached?.paymentUri === requestedPaymentUri &&
+        cached.record.expiresAt > Date.now()
+          ? cached.record
+          : undefined;
+      if (!record) {
+        paymentLinkCache.current = undefined;
+        record = await paymentLinkClient.createPaymentLink(
+          requestedPaymentUri,
+          operation.controller.signal,
+        );
+      }
+      if (paymentLinkOperation.current?.id !== operation.id) return;
+      paymentLinkCache.current = {
+        paymentUri: requestedPaymentUri,
+        record,
+      };
+
+      if (action === 'copy') {
+        Clipboard.setString(record.url);
+        setPaymentLinkCopied(true);
+        setTimeout(() => setPaymentLinkCopied(false), 2000);
+      } else {
+        await Share.share({
+          message: record.url,
+          title: t('receive.paymentLink'),
+        });
+      }
+    } catch {
+      if (
+        paymentLinkOperation.current?.id === operation.id &&
+        !operation.controller.signal.aborted
+      ) {
+        setPaymentLinkError(t('receive.paymentLinkError'));
+      }
+    } finally {
+      if (paymentLinkOperation.current?.id === operation.id) {
+        paymentLinkOperation.current = undefined;
+        setPaymentLinkBusy(undefined);
+      }
+    }
   };
 
-  const handleSharePaymentLink = async () => {
-    if (!paymentUri) return;
-    await Share.share({
-      message: paymentUri,
-      title: t('receive.paymentLink'),
-    });
-  };
+  const handleCopyPaymentLink = () => runPaymentLinkAction('copy');
+
+  const handleSharePaymentLink = () => runPaymentLinkAction('share');
 
   const handleSelectWallet = async (wallet: WalletOption) => {
     if (openingReceiveWalletId) {
@@ -645,16 +737,30 @@ export default function ReceiveScreen({ navigation, route }: any) {
             </View>
             <View style={s.paymentLinkActions}>
               <TouchableOpacity
+                accessibilityState={{
+                  busy: paymentLinkBusy === 'copy',
+                  disabled: Boolean(paymentLinkBusy),
+                }}
                 accessibilityRole="button"
                 activeOpacity={0.78}
+                disabled={Boolean(paymentLinkBusy)}
                 onPress={handleCopyPaymentLink}
-                style={s.paymentLinkSecondary}
+                style={[
+                  s.paymentLinkSecondary,
+                  paymentLinkBusy && s.paymentLinkActionDisabled,
+                ]}
               >
-                <Icon
-                  name={paymentLinkCopied ? 'check' : 'copy'}
-                  size={17}
-                  color={paymentLinkCopied ? colors.success : colors.orange}
-                />
+                {paymentLinkBusy === 'copy' ? (
+                  <ActivityIndicator color={colors.orange} size="small" />
+                ) : (
+                  <Icon
+                    name={paymentLinkCopied ? 'check' : 'copy'}
+                    size={17}
+                    color={
+                      paymentLinkCopied ? colors.success : colors.orange
+                    }
+                  />
+                )}
                 <Text style={s.paymentLinkSecondaryText} numberOfLines={1}>
                   {paymentLinkCopied
                     ? t('receive.paymentLinkCopied')
@@ -662,17 +768,34 @@ export default function ReceiveScreen({ navigation, route }: any) {
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
+                accessibilityState={{
+                  busy: paymentLinkBusy === 'share',
+                  disabled: Boolean(paymentLinkBusy),
+                }}
                 accessibilityRole="button"
                 activeOpacity={0.82}
+                disabled={Boolean(paymentLinkBusy)}
                 onPress={handleSharePaymentLink}
-                style={s.paymentLinkPrimary}
+                style={[
+                  s.paymentLinkPrimary,
+                  paymentLinkBusy && s.paymentLinkActionDisabled,
+                ]}
               >
-                <Icon name="send" size={17} color="#FFF" />
+                {paymentLinkBusy === 'share' ? (
+                  <ActivityIndicator color="#FFF" size="small" />
+                ) : (
+                  <Icon name="send" size={17} color="#FFF" />
+                )}
                 <Text style={s.paymentLinkPrimaryText} numberOfLines={1}>
                   {t('receive.sharePaymentLink')}
                 </Text>
               </TouchableOpacity>
             </View>
+            {paymentLinkError ? (
+              <Text accessibilityRole="alert" style={s.paymentLinkError}>
+                {paymentLinkError}
+              </Text>
+            ) : null}
             {activeReceiveWalletId === registeredWallet?.id && session ? (
               <View style={s.addressToolsContainer}>
                 <TouchableOpacity
@@ -852,16 +975,22 @@ export default function ReceiveScreen({ navigation, route }: any) {
               </View>
             ) : null}
           </View>
+        ) : registeredWallet && !selectedFastBackupPending ? (
+          <View style={s.card}>
+            <View style={s.emptyIcon}>
+              <ActivityIndicator color={colors.orange} size="large" />
+            </View>
+            <Text style={s.emptyTitle}>{t('sync.opening')}</Text>
+            <Text style={s.emptyText}>{t('sync.waitingForStatus')}</Text>
+          </View>
         ) : (
           <View style={s.card}>
             <View style={s.emptyIcon}>
-              <Icon name="lock" size={28} color={colors.orange} />
+              <Icon name="wallet" size={28} color={colors.orange} />
             </View>
             <Text style={s.emptyTitle}>
               {selectedFastBackupPending
                 ? t('receive.backupFastWalletFirst')
-                : status === 'locked'
-                ? t('receive.walletLocked')
                 : t('receive.noWalletOpen')}
             </Text>
             <Text style={s.emptyText}>
@@ -874,17 +1003,12 @@ export default function ReceiveScreen({ navigation, route }: any) {
               onPress={() =>
                 selectedFastBackupPending
                   ? navigation.navigate('Wallets')
-                  : navigation.navigate('WalletSetup', {
-                      mode: 'open',
-                      openRequestId: Date.now(),
-                    })
+                  : navigation.navigate('Welcome')
               }
             >
               <Text style={s.openButtonText}>
                 {selectedFastBackupPending
                   ? t('receive.backupNow')
-                  : status === 'locked'
-                  ? t('action.openWallet')
                   : t('action.createWallet')}
               </Text>
             </TouchableOpacity>
@@ -1183,6 +1307,17 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginTop: 10,
+    width: '100%',
+  },
+  paymentLinkActionDisabled: {
+    opacity: 0.55,
+  },
+  paymentLinkError: {
+    color: colors.error,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 9,
+    textAlign: 'center',
     width: '100%',
   },
   paymentLinkSecondary: {

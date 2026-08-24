@@ -732,6 +732,7 @@ jobject toJavaMap(JNIEnv* env, const NetworkSyncStatus& status) {
   putMapDouble(env, map, putMethod, "downloadStartHeight", status.downloadStartHeight);
   putMapDouble(env, map, putMethod, "downloadedHeight", status.downloadedHeight);
   putMapDouble(env, map, putMethod, "chainHeight", status.chainHeight);
+  putMapDouble(env, map, putMethod, "priorityWalletHeight", status.priorityWalletHeight);
   putMapDouble(env, map, putMethod, "targetHeight", status.targetHeight);
   putMapDouble(env, map, putMethod, "transportStarts", status.transportStarts);
   putMapDouble(env, map, putMethod, "fetchedBatches", status.fetchedBatches);
@@ -3304,18 +3305,54 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeGetOwnedOutputKeyImages(
   }
 }
 
-extern "C" JNIEXPORT jobject JNICALL
-Java_com_monerowallet_NativeMoneroWalletJni_nativeSyncLedgerKeyImagesToViewWallet(
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativePrimeHardwareWalletFromViewOnly(
     JNIEnv* env,
     jclass,
     jstring hardwareWalletId,
     jstring viewOnlyWalletId) {
   try {
+    walletEngine().primeHardwareWalletFromViewOnly(
+        toStdString(env, hardwareWalletId),
+        toStdString(env, viewOnlyWalletId));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeRebuildHardwareWalletCacheFromViewOnly(
+    JNIEnv* env,
+    jclass,
+    jstring hardwareWalletId,
+    jstring viewOnlyWalletId,
+    jdouble restoreHeight) {
+  try {
+    walletEngine().rebuildHardwareWalletCacheFromViewOnly(
+        toStdString(env, hardwareWalletId),
+        toStdString(env, viewOnlyWalletId),
+        toExactUInt64(restoreHeight, "restoreHeight"));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeSyncLedgerKeyImagesToViewWallet(
+    JNIEnv* env,
+    jclass,
+    jstring hardwareWalletId,
+    jstring viewOnlyWalletId,
+    jboolean fullSpendOutputScan,
+    jboolean nodeOnlyRetry) {
+  try {
     return toJavaMap(
         env,
         walletEngine().syncLedgerKeyImagesToViewWallet(
             toStdString(env, hardwareWalletId),
-            toStdString(env, viewOnlyWalletId)));
+            toStdString(env, viewOnlyWalletId),
+            fullSpendOutputScan == JNI_TRUE,
+            nodeOnlyRetry == JNI_TRUE));
   } catch (const std::exception& error) {
     throwJavaError(env, error);
     return nullptr;

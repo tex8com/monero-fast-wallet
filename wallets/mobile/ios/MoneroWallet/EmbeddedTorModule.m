@@ -89,8 +89,10 @@ static NSError *MFWError(NSInteger code, NSString *message) {
   return address;
 }
 
-- (nullable NSURLSessionConfiguration *)readySessionConfiguration:(NSError **)error {
-  NSString *address = [self waitUntilReady:120.0 error:error];
+- (nullable NSURLSessionConfiguration *)
+    readySessionConfigurationWithTimeout:(NSTimeInterval)timeout
+                                    error:(NSError **)error {
+  NSString *address = [self waitUntilReady:timeout error:error];
   if (address.length == 0) {
     return nil;
   }
@@ -127,6 +129,19 @@ static NSError *MFWError(NSInteger code, NSString *message) {
     configuration.cacheDirectory = cacheDirectory;
     configuration.options[@"SocksPort"] = @"auto";
 
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSArray<NSURL *> *staleControlFiles = @[
+      configuration.controlPortFile,
+      [stateDirectory URLByAppendingPathComponent:@"control_auth_cookie"],
+    ];
+    for (NSURL *file in staleControlFiles) {
+      if ([fileManager fileExistsAtPath:file.path] &&
+          ![fileManager removeItemAtURL:file error:&error]) {
+        [self finishWithFailure:error];
+        return;
+      }
+    }
+
     TORThread *thread = [[TORThread alloc] initWithConfiguration:configuration];
     self.thread = thread;
     [thread start];
@@ -139,7 +154,7 @@ static NSError *MFWError(NSInteger code, NSString *message) {
         TORController *candidate =
             [[TORController alloc] initWithControlPortFile:configuration.controlPortFile];
         NSError *connectError = nil;
-        if ([candidate connect:&connectError]) {
+        if (candidate.isConnected || [candidate connect:&connectError]) {
           controller = candidate;
           break;
         }
@@ -163,7 +178,7 @@ static NSError *MFWError(NSInteger code, NSString *message) {
     }];
     if (dispatch_semaphore_wait(
             authenticated,
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC))) != 0 ||
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30.0 * NSEC_PER_SEC))) != 0 ||
         !authenticationSucceeded) {
       [self finishWithFailure:authenticationError ?:
                                   MFWError(7, @"Embedded Tor authentication failed.")];
@@ -367,6 +382,43 @@ static BOOL MFWValidOnionURL(NSURL *url) {
   NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyz234567"];
   NSString *label = [host substringToIndex:56];
   return [label rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
+}
+
+// Keep public HTTPS service traffic purpose-bound. Payment-link creation and
+// resolution contain recipient details, so they still travel through the
+// app-private Tor session, retain normal TLS hostname validation and cannot be
+// redirected to an arbitrary public origin or path.
+static BOOL MFWValidPaymentLinkURL(NSURL *url, NSString *method) {
+  if (url == nil) {
+    return NO;
+  }
+  NSURLComponents *components =
+      [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+  if (components == nil ||
+      ![components.scheme.lowercaseString isEqualToString:@"https"] ||
+      ![components.host.lowercaseString isEqualToString:@"xmr.tex8.com"] ||
+      components.user != nil || components.password != nil ||
+      components.query != nil || components.fragment != nil ||
+      components.port != nil) {
+    return NO;
+  }
+
+  NSString *path = components.percentEncodedPath;
+  if ([method isEqualToString:@"POST"]) {
+    return [path isEqualToString:@"/v1/payment-requests"];
+  }
+  NSString *requestPrefix = @"/v1/payment-requests/";
+  if (![method isEqualToString:@"GET"] || ![path hasPrefix:requestPrefix]) {
+    return NO;
+  }
+  NSString *requestID = [path substringFromIndex:requestPrefix.length];
+  if (requestID.length != 22) {
+    return NO;
+  }
+  NSCharacterSet *base64URL = [NSCharacterSet characterSetWithCharactersInString:
+      @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"];
+  return [requestID rangeOfCharacterFromSet:base64URL.invertedSet].location ==
+         NSNotFound;
 }
 
 static BOOL MFWWriteAll(int socketFd, const uint8_t *bytes, size_t length) {
@@ -888,7 +940,7 @@ RCT_REMAP_METHOD(request,
   NSString *method = methodValue.uppercaseString;
   NSInteger timeout = timeoutMs.integerValue;
   NSInteger maximum = maximumResponseBytes.integerValue;
-  if (!MFWValidOnionURL(url) ||
+  if (!(MFWValidOnionURL(url) || MFWValidPaymentLinkURL(url, method)) ||
       ![@[@"GET", @"POST", @"PUT", @"DELETE"] containsObject:method] ||
       timeout < 100 || timeout > 120000 || maximum < 1 || maximum > 1048576) {
     reject(@"TOR_HTTP_INVALID", @"Tor HTTP request is invalid.", nil);
@@ -925,8 +977,10 @@ RCT_REMAP_METHOD(request,
 
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     NSError *error = nil;
-    NSURLSessionConfiguration *configuration =
-        [[MFWEmbeddedTorRuntime shared] readySessionConfiguration:&error];
+    NSTimeInterval bootstrapTimeout = MAX(timeout / 1000.0, 10.0);
+    NSURLSessionConfiguration *configuration = [[MFWEmbeddedTorRuntime shared]
+        readySessionConfigurationWithTimeout:bootstrapTimeout
+                                        error:&error];
     if (configuration == nil) {
       reject(@"TOR_HTTP_UNAVAILABLE", error.localizedDescription, error);
       return;

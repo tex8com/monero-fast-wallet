@@ -111,6 +111,8 @@ TEX8_FORWARD_RESULT(tex8_desktop_wallet_prepare_mfw_name_transition, (Tex8Deskto
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_commit_transaction, (Tex8DesktopWalletCore* core, const char* wallet_id, const char* pending_id), (core, wallet_id, pending_id))
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_hardware_status, (Tex8DesktopWalletCore* core, const char* wallet_id), (core, wallet_id))
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_reconnect_hardware, (Tex8DesktopWalletCore* core, const char* wallet_id), (core, wallet_id))
+TEX8_FORWARD_RESULT(tex8_desktop_wallet_prime_hardware_from_view_only, (Tex8DesktopWalletCore* core, const char* hardware_wallet_id, const char* view_only_wallet_id), (core, hardware_wallet_id, view_only_wallet_id))
+TEX8_FORWARD_RESULT(tex8_desktop_wallet_rebuild_hardware_wallet_cache_from_view_only, (Tex8DesktopWalletCore* core, const char* hardware_wallet_id, const char* view_only_wallet_id, unsigned long long restore_height), (core, hardware_wallet_id, view_only_wallet_id, restore_height))
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_export_hardware_private_view_key, (Tex8DesktopWalletCore* core, const char* wallet_id), (core, wallet_id))
 TEX8_FORWARD_RESULT(tex8_desktop_wallet_show_hardware_address, (Tex8DesktopWalletCore* core, const char* wallet_id, unsigned int account_index, unsigned int address_index, const char* payment_id), (core, wallet_id, account_index, address_index, payment_id))
 

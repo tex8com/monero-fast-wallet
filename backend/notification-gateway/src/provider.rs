@@ -297,6 +297,7 @@ impl DirectProviderDelivery {
     ) -> Result<ProviderDeliveryResult, String> {
         let bearer = fcm_bearer(config, self.timeout, self.https_only)?;
         let (title, body) = notification_copy(event);
+        let data = provider_data(event);
         let response = self
             .client()?
             .post(endpoint)
@@ -308,11 +309,7 @@ impl DirectProviderDelivery {
                         "title": title,
                         "body": body
                     },
-                    "data": {
-                        "type": event.category,
-                        "contractVersion": crate::CONTRACT_VERSION,
-                        "eventId": event.id
-                    },
+                    "data": data,
                     "android": {
                         "priority": "high",
                         "notification": {
@@ -345,6 +342,25 @@ impl DirectProviderDelivery {
     ) -> Result<ProviderDeliveryResult, String> {
         let bearer = load_rotating_bearer(&config.provider_jwt_file)?;
         let (title, body) = notification_copy(event);
+        let mut payload = serde_json::json!({
+            "aps": {
+                "alert": {
+                    "title": title,
+                    "body": body
+                },
+                "sound": "default"
+            },
+            "type": event.category,
+            "contractVersion": crate::CONTRACT_VERSION,
+            "eventId": event.id
+        });
+        if let Some(order_id) = vanity_order_id(event) {
+            let object = payload
+                .as_object_mut()
+                .ok_or_else(|| "APNs payload could not be prepared".to_owned())?;
+            object.insert("orderId".to_owned(), serde_json::json!(order_id));
+            object.insert("deepLink".to_owned(), serde_json::json!(event.deep_link));
+        }
         let response = self
             .client()?
             .post(format!(
@@ -355,18 +371,7 @@ impl DirectProviderDelivery {
             .header("apns-topic", &config.topic)
             .header("apns-push-type", "alert")
             .header("apns-priority", "10")
-            .json(&serde_json::json!({
-                "aps": {
-                    "alert": {
-                        "title": title,
-                        "body": body
-                    },
-                    "sound": "default"
-                },
-                "type": event.category,
-                "contractVersion": crate::CONTRACT_VERSION,
-                "eventId": event.id
-            }))
+            .json(&payload)
             .send()
             .map_err(|_| "APNs delivery request failed".to_owned())?;
         classify_apns_response(response)
@@ -506,8 +511,35 @@ fn notification_copy(event: &OpaqueNotificationEvent) -> (&'static str, &'static
             "Monero Fast Wallet",
             "Test notification: notifications are ready.",
         )
+    } else if event.category == crate::VANITY_EVENT_CATEGORY {
+        ("Monero Fast Wallet", "Your Vanity address status changed.")
     } else {
         ("Monero Fast Wallet", "Open the app to check a new payment.")
+    }
+}
+
+fn vanity_order_id(event: &OpaqueNotificationEvent) -> Option<&str> {
+    event
+        .deep_link
+        .strip_prefix("mfw://vanity/order/")
+        .filter(|_| event.category == crate::VANITY_EVENT_CATEGORY)
+}
+
+fn provider_data(event: &OpaqueNotificationEvent) -> serde_json::Value {
+    if let Some(order_id) = vanity_order_id(event) {
+        serde_json::json!({
+            "type": event.category,
+            "contractVersion": crate::CONTRACT_VERSION,
+            "eventId": event.id,
+            "orderId": order_id,
+            "deepLink": event.deep_link,
+        })
+    } else {
+        serde_json::json!({
+            "type": event.category,
+            "contractVersion": crate::CONTRACT_VERSION,
+            "eventId": event.id,
+        })
     }
 }
 

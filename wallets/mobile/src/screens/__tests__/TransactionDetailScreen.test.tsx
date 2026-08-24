@@ -45,6 +45,7 @@ jest.mock('../../i18n', () => ({
         'transactions.miningReward': 'Mining reward',
         'transactions.notFound': 'Transaction not found.',
         'transactions.paymentId': 'Payment ID',
+        'transactions.selfTransfer': 'Self transfer',
         'transactions.status': 'Status',
         'transactions.subaddresses': 'Subaddresses',
         'transactions.transactionId': 'Transaction ID',
@@ -180,5 +181,36 @@ describe('TransactionDetailScreen', () => {
         testID: 'transaction-network-fee-trailing-zeros',
       }).props.children,
     ).toBe('000000');
+  });
+
+  it('shows a fee-only self transfer as its real wallet decrease', () => {
+    const selfTransfer = {
+      ...transaction,
+      amountAtomic: '0',
+      feeAtomic: '44440000',
+      transfers: [],
+    };
+    mockedUseWalletState.mockReturnValue({
+      registeredWallet: { walletName: 'primary' },
+      transactions: [selfTransfer],
+    } as unknown as ReturnType<typeof useWalletState>);
+
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    ReactTestRenderer.act(() => {
+      renderer = ReactTestRenderer.create(
+        <TransactionDetailScreen
+          navigation={{ goBack: jest.fn() }}
+          route={{ params: { transaction: selfTransfer, transactionHash: hash } }}
+        />,
+      );
+    });
+
+    const text = renderer!.root
+      .findAllByType(Text)
+      .map(node => node.props.children)
+      .flat(Infinity)
+      .join('');
+    expect(text).toContain('Self transfer');
+    expect(text).toContain('-0.00004444 XMR');
   });
 });

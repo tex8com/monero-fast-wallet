@@ -17,6 +17,7 @@ export type V1ReleaseFeature =
   | "marketplace"
   | "mfwNameResolution"
   | "mfwNameRegistration"
+  | "vanityAddress"
   | "deviceContactDiscovery"
   | "publicLedger";
 
@@ -40,6 +41,7 @@ function readReleaseFeatures(): Readonly<Record<V1ReleaseFeature, boolean>> {
     "marketplace",
     "mfwNameResolution",
     "mfwNameRegistration",
+    "vanityAddress",
     "deviceContactDiscovery",
     "publicLedger",
   ];
@@ -62,6 +64,23 @@ function readReleaseFeatures(): Readonly<Record<V1ReleaseFeature, boolean>> {
  * handlers enforce the same boundary independently.
  */
 export const v1ReleaseFeatures = readReleaseFeatures();
+
+/**
+ * Pinned public origin for opaque payment links. The origin is part of the
+ * release trust contract because its response controls the payment URI shown
+ * to the recipient. Paths, credentials, queries and fragments are rejected.
+ */
+export function paymentLinkReleaseOrigin(): string {
+  const value = (
+    manifest.parameters as {
+      paymentLinkOrigin?: unknown;
+    }
+  ).paymentLinkOrigin;
+  if (!isHttpsOrigin(value)) {
+    throw new Error("Invalid payment link release origin.");
+  }
+  return value;
+}
 
 export type PrivatePhoneEvaluatorReleaseConfig = Readonly<{
   id: string;
@@ -91,7 +110,8 @@ export type MoneroEnthusiastV1ReleaseConfig = Readonly<{
  * invalid release, never a partially working Community mode.
  */
 export function moneroEnthusiastV1ReleaseConfig():
-  MoneroEnthusiastV1ReleaseConfig | undefined {
+  | MoneroEnthusiastV1ReleaseConfig
+  | undefined {
   const value = (
     manifest.parameters as {
       moneroEnthusiastV1?: unknown;
@@ -116,7 +136,7 @@ export type PrivatePhoneDirectoryReleaseConfig = Readonly<{
   }>;
   evaluators: readonly [
     PrivatePhoneEvaluatorReleaseConfig,
-    PrivatePhoneEvaluatorReleaseConfig,
+    PrivatePhoneEvaluatorReleaseConfig
   ];
   snapshot: Readonly<{
     origin: string;
@@ -131,7 +151,8 @@ export type PrivatePhoneDirectoryReleaseConfig = Readonly<{
  * deep links and renderer state cannot replace these origins or public keys.
  */
 export function privatePhoneDirectoryReleaseConfig():
-  PrivatePhoneDirectoryReleaseConfig | undefined {
+  | PrivatePhoneDirectoryReleaseConfig
+  | undefined {
   const value = (
     manifest.parameters as {
       privatePhoneDirectory?: unknown;
@@ -159,13 +180,13 @@ export function privatePhoneDirectoryReleaseConfig():
 export function requireV1ReleaseFeature(feature: V1ReleaseFeature): void {
   if (!v1ReleaseFeatures[feature]) {
     throw new Error(
-      "This feature is not available in the current safe release.",
+      "This feature is not available in the current safe release."
     );
   }
 }
 
 function isPrivatePhoneDirectoryConfig(
-  value: unknown,
+  value: unknown
 ): value is PrivatePhoneDirectoryReleaseConfig {
   if (!value || typeof value !== "object") return false;
   const config = value as {
@@ -198,7 +219,7 @@ function isPrivatePhoneDirectoryConfig(
         evaluator.id.length <= 80 &&
         isHttpsOrigin(evaluator.origin) &&
         typeof evaluator.publicKeyHex === "string" &&
-        HEX_32.test(evaluator.publicKeyHex),
+        HEX_32.test(evaluator.publicKeyHex)
     ) ||
     evaluators[0].id === evaluators[1].id ||
     evaluators[0].origin === evaluators[1].origin ||
@@ -221,7 +242,7 @@ function isPrivatePhoneDirectoryConfig(
 }
 
 function isMoneroEnthusiastV1Config(
-  value: unknown,
+  value: unknown
 ): value is MoneroEnthusiastV1ReleaseConfig {
   if (!value || typeof value !== "object") return false;
   const config = value as Record<string, unknown>;
@@ -230,7 +251,7 @@ function isMoneroEnthusiastV1Config(
     resource.length >= 1 &&
     resource.length <= 256 &&
     !resource.startsWith("/") &&
-    resource.split("/").every(part => part.length > 0 && part !== "..") &&
+    resource.split("/").every((part) => part.length > 0 && part !== "..") &&
     /^[A-Za-z0-9._/-]+$/.test(resource);
   return (
     isPrivateServiceOrigin(config.apiOrigin) &&

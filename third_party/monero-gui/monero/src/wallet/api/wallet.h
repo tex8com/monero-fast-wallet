@@ -124,6 +124,7 @@ public:
     bool refresh() override;
     void refreshAsync() override;
     bool rescanBlockchain() override;
+    bool resetBlockchainCacheForSharedSync() override;
     void rescanBlockchainAsync() override;    
     void setAutoRefreshInterval(int millis) override;
     int autoRefreshInterval() const override;

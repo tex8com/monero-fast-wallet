@@ -10,25 +10,33 @@ export type MoneroNewsItem = {
   publishedAt: string;
   category: MoneroNewsCategory;
   url?: string;
-  imageDataUrl?: string;
+  imageUrl?: string;
 };
 
-type Cache = { items: MoneroNewsItem[]; updatedAt: number };
+type Cache = { items: MoneroNewsItem[]; catalogHash?: string; updatedAt: number };
 
-// Keep desktop on the same TEX8-owned, normalized feed as mobile. The client
-// never presents a third-party market/news provider as a wallet authority.
+// Keep desktop on the same TEX8-owned catalog as mobile. The client never
+// presents a third-party market/news provider as a wallet authority.
 const API_URL = 'Monero Fast Wallet Onion news service';
-const CACHE_KEY = 'tex8-monero-news-v2';
-const CACHE_TTL_MS = 30 * 60 * 1_000;
+const CATALOG_HASH_SERVICE = 'Monero Fast Wallet Onion news catalog hash';
+const CACHE_KEY = 'tex8-monero-news-v3';
+const NEWS_IMAGE_PREFIX = 'https://cdn.tex8.com/tex8-images/monero-fast-wallet/news/v1/';
+const NEWS_IMAGE_URL_PATTERN = /^https:\/\/cdn\.tex8\.com\/tex8-images\/monero-fast-wallet\/news\/v1\/[a-z0-9-]+\/[a-z0-9-]+\.webp$/;
 const RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 5 * 60_000];
 let memoryCache: Cache | null = null;
 
-function isFresh(cache: Cache) {
-  return Date.now() - cache.updatedAt < CACHE_TTL_MS;
-}
-
 function isNewsCategory(value: unknown): value is MoneroNewsCategory {
   return value === 'network' || value === 'wallet' || value === 'ecosystem';
+}
+
+function isCatalogHash(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isNewsImageUrl(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.startsWith(NEWS_IMAGE_PREFIX)
+    && NEWS_IMAGE_URL_PATTERN.test(value);
 }
 
 function parseNews(value: unknown): MoneroNewsItem[] {
@@ -48,10 +56,8 @@ function parseNews(value: unknown): MoneroNewsItem[] {
       && candidate.url.startsWith('https://www.getmonero.org/')
       ? candidate.url
       : undefined;
-    const imageDataUrl = typeof candidate.imageDataUrl === 'string'
-      && candidate.imageDataUrl.startsWith('data:image/jpeg;base64,')
-      && candidate.imageDataUrl.length <= 100_000
-      ? candidate.imageDataUrl
+    const imageUrl = isNewsImageUrl(candidate.imageUrl)
+      ? candidate.imageUrl
       : undefined;
     return [{
       id: candidate.id,
@@ -60,7 +66,7 @@ function parseNews(value: unknown): MoneroNewsItem[] {
       publishedAt: candidate.publishedAt,
       category: candidate.category,
       url,
-      imageDataUrl,
+      imageUrl,
     }];
   }).slice(0, 10);
 }
@@ -74,15 +80,19 @@ function loadCache(): Cache | null {
     if (typeof parsed.updatedAt !== 'number') return null;
     const items = parseNews(parsed.items);
     if (items.length === 0) return null;
-    memoryCache = { items, updatedAt: parsed.updatedAt };
+    memoryCache = {
+      items,
+      catalogHash: isCatalogHash(parsed.catalogHash) ? parsed.catalogHash : undefined,
+      updatedAt: parsed.updatedAt,
+    };
     return memoryCache;
   } catch {
     return null;
   }
 }
 
-function saveCache(items: MoneroNewsItem[]) {
-  const cache = { items, updatedAt: Date.now() };
+function saveCache(items: MoneroNewsItem[], catalogHash?: string) {
+  const cache = { items, catalogHash, updatedAt: Date.now() };
   memoryCache = cache;
   try { window.localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); } catch { /* Cache is optional. */ }
   return cache;
@@ -90,17 +100,36 @@ function saveCache(items: MoneroNewsItem[]) {
 
 async function fetchNews(force = false) {
   const cached = loadCache();
-  if (!force && cached && isFresh(cached)) return cached.items;
+  if (!force && cached?.catalogHash) {
+    try {
+      if ((await fetchCatalogHash()) === cached.catalogHash) return cached.items;
+    } catch {
+      return cached.items;
+    }
+  }
   try {
     const payload = JSON.parse(await invoke<string>('fetch_private_service', {
       input: { kind: 'news' },
-    })) as { items?: unknown };
+    })) as { catalogHash?: unknown; items?: unknown };
     const items = parseNews(payload.items);
     if (items.length === 0) throw new Error(`${API_URL} did not include articles.`);
-    return saveCache(items).items;
+    return saveCache(
+      items,
+      isCatalogHash(payload.catalogHash) ? payload.catalogHash : undefined,
+    ).items;
   } catch (error) {
     throw error;
   }
+}
+
+async function fetchCatalogHash(): Promise<string> {
+  const payload = JSON.parse(await invoke<string>('fetch_private_service', {
+    input: { kind: 'news-catalog-hash' },
+  })) as { catalogHash?: unknown };
+  if (!isCatalogHash(payload.catalogHash)) {
+    throw new Error(`${CATALOG_HASH_SERVICE} did not include a valid hash.`);
+  }
+  return payload.catalogHash;
 }
 
 export function useMoneroNews(enabled = true) {

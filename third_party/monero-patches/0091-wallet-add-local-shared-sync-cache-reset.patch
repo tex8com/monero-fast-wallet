@@ -1,0 +1,76 @@
+From f32b43f7a5b1e7ecc7e6c06f2da82c3930d74518 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 21 Aug 2026 16:10:00 -0500
+Subject: [PATCH] wallet: add local shared-sync cache reset
+
+---
+ src/wallet/api/wallet.cpp    | 20 ++++++++++++++++++++
+ src/wallet/api/wallet.h      |  1 +
+ src/wallet/api/wallet2_api.h |  8 ++++++++
+ 3 files changed, 29 insertions(+)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 003629465..917b73932 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1547,6 +1547,26 @@ bool WalletImpl::rescanBlockchain()
+     return status() == Status_Ok;
+ }
+ 
++bool WalletImpl::resetBlockchainCacheForSharedSync()
++{
++    if (checkBackgroundSync("cannot reset blockchain cache for shared sync"))
++        return false;
++    clearStatus();
++    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
++    try {
++        // rescanBlockchain() routes through doRefresh(), which intentionally
++        // skips both the reset and refresh while no synced daemon is attached.
++        // Shared sync owns its network transport, so reset the local cache
++        // directly and leave all later block delivery to that coordinator.
++        m_wallet->rescan_blockchain(false, false);
++        m_history->refresh();
++        m_synchronized = false;
++    } catch (const std::exception &e) {
++        setStatusError(e.what());
++    }
++    return status() == Status_Ok;
++}
++
+ void WalletImpl::rescanBlockchainAsync()
+ {
+     if (checkBackgroundSync("cannot rescan blockchain"))
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 20e5877e7..e828f2ebf 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -141,6 +141,7 @@ public:
+     bool refresh() override;
+     void refreshAsync() override;
+     bool rescanBlockchain() override;
++    bool resetBlockchainCacheForSharedSync() override;
+     void rescanBlockchainAsync() override;    
+     void setAutoRefreshInterval(int millis) override;
+     int autoRefreshInterval() const override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index e5fe560df..8b42a9971 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -840,6 +840,14 @@ struct Wallet
+      */
+     virtual bool rescanBlockchain() = 0;
+ 
++    /**
++     * @brief resetBlockchainCacheForSharedSync - clears only the local wallet
++     * cache without contacting or refreshing from a daemon. The caller must
++     * set and verify the shared-sync restore height before invoking it.
++     * @return - true if the local cache was reset successfully;
++     */
++    virtual bool resetBlockchainCacheForSharedSync() = 0;
++
+     /**
+      * @brief rescanBlockchainAsync - rescans wallet asynchronously, starting from genesys
+      */
+-- 
+2.50.1 (Apple Git-155)
+

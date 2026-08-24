@@ -16,8 +16,11 @@ describe('Monero Enthusiast V1 app boundary', () => {
     );
 
     expect(navigation).toContain('name="MoneroEnthusiast"');
+    expect(navigation).toContain('v1ReleaseFeatures.moneroEnthusiastV1');
     expect(menu).toContain('"MoneroEnthusiast", IcoCommunity');
+    expect(menu).toContain('v1ReleaseFeatures.moneroEnthusiastV1');
     expect(tabs).toContain('key: "MoneroEnthusiast"');
+    expect(tabs).toContain('v1ReleaseFeatures.moneroEnthusiastV1');
     expect(screen).toContain('getMoneroEnthusiastV1Status');
     expect(screen).toContain('MoneroEnthusiastV1Service.search');
     expect(screen).toContain('submitProductListing');
@@ -60,6 +63,7 @@ describe('Monero Enthusiast V1 app boundary', () => {
     };
 
     expect(typeof manifest.features.moneroEnthusiastV1).toBe('boolean');
+    expect(manifest.features.moneroEnthusiastV1).toBe(false);
     if (manifest.features.moneroEnthusiastV1) {
       expect(manifest.parameters.moneroEnthusiastV1).not.toBeNull();
     }

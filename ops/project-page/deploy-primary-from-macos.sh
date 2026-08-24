@@ -37,6 +37,7 @@ ssh -o BatchMode=yes "$ssh_target" "set -euo pipefail
   sudo -n bash \"$remote_staging/ops/project-page/deploy.sh\" \"$remote_staging\""
 
 curl -fsS https://xmr.tex8.com/healthz >/dev/null
+node "$repository_root/website/scripts/smoke-live-registry.mjs"
 
 secondary_staging="$(ssh -o BatchMode=yes -i "$secondary_identity" "$secondary_target" 'mktemp -d /tmp/mfw-project-page.XXXXXX')"
 [[ "$secondary_staging" =~ ^/tmp/mfw-project-page\.[A-Za-z0-9]+$ ]] || { echo "Unsafe Server 2 staging path." >&2; exit 1; }

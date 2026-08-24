@@ -149,6 +149,20 @@ const FAST_CREDENTIAL_KEY = 'monero.wallet.fast.mainnet.fast-receive-v2-7.v2';
 const FAST_SCANNER_CREDENTIAL_KEY =
   'monero.wallet.fast-scanner.fast-receive-v2-7.v1';
 
+function mockSpendableFastWalletBalance(): void {
+  mockNativeWallet.snapshot.mockResolvedValueOnce({
+    balanceAtomic: '10',
+    unlockedBalanceAtomic: '10',
+    primaryAddress: '48A1fastWalletAddress',
+    walletHeight: 900,
+    daemonHeight: 900,
+    daemonTargetHeight: 900,
+    synchronized: true,
+  });
+  mockNativeWallet.getBalance.mockResolvedValueOnce('10');
+  mockNativeWallet.getUnlockedBalance.mockResolvedValueOnce('10');
+}
+
 describe('WalletService fast receive scanner flow', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -801,6 +815,7 @@ describe('WalletService fast receive scanner flow', () => {
   });
 
   it('uses only the local native wallet when preparing a Fast Wallet send', async () => {
+    mockSpendableFastWalletBalance();
     const fastWallet = await saveRegisteredWallet(
       createRegisteredWallet({
         id: 'fast-receive-v2-7',
@@ -886,6 +901,7 @@ describe('WalletService fast receive scanner flow', () => {
   });
 
   it('lets the locally synchronized Core prepare a Fast Wallet send without a server spend-status dependency', async () => {
+    mockSpendableFastWalletBalance();
     const fastWallet = await saveRegisteredWallet(
       createRegisteredWallet({
         id: 'fast-receive-v2-7',

@@ -25,6 +25,9 @@ import { colors, radius, spacing } from '../theme/colors';
 import { Icon } from '../components/Icon';
 import LedgerSigningModal from '../components/LedgerSigningModal';
 import RecipientQrScanner from '../components/RecipientQrScanner';
+import SendSuccessModal, {
+  type SendSuccessReceipt,
+} from '../components/SendSuccessModal';
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
@@ -64,6 +67,8 @@ import {
   sanitizePaymentAmountInput,
   type PaymentAmountCurrency,
 } from '../services/PaymentRequest';
+import { validatePaymentLinkSendPreset } from '../services/IncomingPaymentLink';
+import { useIncomingPaymentLinkAcknowledgement } from '../services/IncomingPaymentLinkController';
 import {
   mfwNameAutocompletePrefix,
   mfwNameAutocompleteSuggestions,
@@ -72,6 +77,8 @@ import {
   isLedgerSigningCancelledError,
   type LedgerSigningProgress,
 } from '../services/LedgerSigningFlow';
+import { logWalletEvent } from '../services/WalletLogger';
+import { createPendingOutgoingTransaction } from '../services/PendingOutgoingRegistry';
 import {
   fetchConfiguredMfwNameSuggestions,
   isMfwNameCandidate,
@@ -123,6 +130,9 @@ export default function SendScreen({ navigation, route }: any) {
     WalletSession | undefined
   >();
   const [sending, setSending] = useState(false);
+  const [sendSuccessReceipt, setSendSuccessReceipt] = useState<
+    SendSuccessReceipt | undefined
+  >();
   const [ledgerSigningProgress, setLedgerSigningProgress] = useState<
     LedgerSigningProgress | undefined
   >();
@@ -135,6 +145,10 @@ export default function SendScreen({ navigation, route }: any) {
     RecipientReview | undefined
   >();
   const consumedPrivatePhoneFlowId = useRef<string | undefined>(undefined);
+  const consumedPaymentLinkFlowId = useRef<string | undefined>(undefined);
+  const processingPaymentLinkFlow = useRef<
+    { flowId: string; token: symbol } | undefined
+  >(undefined);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [sweepAll, setSweepAll] = useState(false);
   const [recipientContacts, setRecipientContacts] = useState<
@@ -154,14 +168,25 @@ export default function SendScreen({ navigation, route }: any) {
   const [contactLabel, setContactLabel] = useState('');
   const [contactAddress, setContactAddress] = useState('');
   const { dateLocale, t } = useI18n();
+  const acknowledgeIncomingPaymentLink =
+    useIncomingPaymentLinkAcknowledgement();
+  const consumePaymentLinkRoute = useCallback(
+    (flowId: string) => {
+      acknowledgeIncomingPaymentLink(flowId);
+      navigation.setParams?.({ paymentLinkSendPreset: undefined });
+    },
+    [acknowledgeIncomingPaymentLink, navigation],
+  );
   const { price } = useXmrPrice();
   const {
     connectLedgerForSigning,
     isRegisteredWalletOpen,
     openRegisteredWalletById,
+    publishPendingOutgoing,
     reconcileLedgerBalance,
     refreshSnapshot,
     refreshTransactions,
+    restoreLedgerViewAfterSigning,
     registeredWallet,
     registeredWallets,
     session,
@@ -178,7 +203,10 @@ export default function SendScreen({ navigation, route }: any) {
     [],
   );
 
-  const unlockedAtomic = toAtomicBigInt(snapshot?.unlockedBalanceAtomic);
+  // Total Balance can span several Monero accounts, while one Core
+  // transaction spends from exactly one account. WalletService publishes the
+  // richest live account as this fail-closed transaction scope.
+  const unlockedAtomic = toAtomicBigInt(snapshot?.spendUnlockedBalanceAtomic);
   const enteredAmountXmr = paymentXmrAmount(amount, amountCurrency, price);
   const amountAtomic = parseXmrToAtomic(enteredAmountXmr ?? '');
   const hasAmount = amountAtomic !== undefined && amountAtomic > 0n;
@@ -218,10 +246,10 @@ export default function SendScreen({ navigation, route }: any) {
     amountCurrency === 'XMR'
       ? `≈ $${usd} USD`
       : enteredAmountXmr
-        ? `≈ ${enteredAmountXmr} XMR`
-        : price > 0
-          ? '≈ 0.0000 XMR'
-          : t('receive.usdRateUnavailable');
+      ? `≈ ${enteredAmountXmr} XMR`
+      : price > 0
+      ? '≈ 0.0000 XMR'
+      : t('receive.usdRateUnavailable');
   const walletSnapshotMap = useMemo(
     () => ({
       ...walletSnapshots,
@@ -246,6 +274,13 @@ export default function SendScreen({ navigation, route }: any) {
         route?.params?.privatePhoneSendPreset as unknown,
       ),
     [route?.params?.privatePhoneSendPreset],
+  );
+  const routePaymentLinkPreset = useMemo(
+    () =>
+      validatePaymentLinkSendPreset(
+        route?.params?.paymentLinkSendPreset as unknown,
+      ),
+    [route?.params?.paymentLinkSendPreset],
   );
   const mfwAutocomplete = useMemo(
     () => mfwNameAutocompleteSuggestions(address, resolverMfwNames),
@@ -393,6 +428,106 @@ export default function SendScreen({ navigation, route }: any) {
     };
   }, [registeredWallet?.network, routePrivatePhonePreset, session, t]);
 
+  useEffect(() => {
+    const preset = routePaymentLinkPreset;
+    if (
+      !preset ||
+      consumedPaymentLinkFlowId.current === preset.flowId ||
+      processingPaymentLinkFlow.current?.flowId === preset.flowId
+    ) {
+      return;
+    }
+    const network = session?.network ?? registeredWallet?.network;
+    if (!network || !session) {
+      setSendError(t('send.openWalletBeforeSending'));
+      return;
+    }
+    if (preset.expiresAtMs !== undefined && preset.expiresAtMs <= Date.now()) {
+      consumedPaymentLinkFlowId.current = preset.flowId;
+      consumePaymentLinkRoute(preset.flowId);
+      setSendError(t('send.paymentLinkInvalid'));
+      return;
+    }
+
+    let active = true;
+    const token = Symbol(preset.flowId);
+    processingPaymentLinkFlow.current = { flowId: preset.flowId, token };
+    walletService
+      .validateRecipientAddress(preset.address, network)
+      .then(validatedAddress => {
+        if (!active) return;
+        if (
+          preset.expiresAtMs !== undefined &&
+          preset.expiresAtMs <= Date.now()
+        ) {
+          consumedPaymentLinkFlowId.current = preset.flowId;
+          consumePaymentLinkRoute(preset.flowId);
+          setSendError(t('send.paymentLinkInvalid'));
+          return;
+        }
+        const baseReview = createRecipientReview({
+          source: 'payment-link',
+          network,
+          address: validatedAddress,
+          displayName: preset.recipientName,
+          now: Math.floor(preset.resolvedAtMs / 1_000),
+        });
+        consumedPaymentLinkFlowId.current = preset.flowId;
+        setAddress(validatedAddress);
+        setAmountCurrency('XMR');
+        setAmount(preset.amountXmr ?? '');
+        setRecipientReview(
+          preset.expiresAtMs === undefined
+            ? baseReview
+            : Object.freeze({
+                ...baseReview,
+                expiresAt: Math.floor(preset.expiresAtMs / 1_000),
+              }),
+        );
+        setMfwNamePreset(undefined);
+        setPreparedTx(undefined);
+        setPreparedSession(undefined);
+        setSweepAll(false);
+        setSendError(undefined);
+        setSendStatus(undefined);
+        setStep('recipient-review');
+      })
+      .catch(() => {
+        if (active) {
+          consumedPaymentLinkFlowId.current = preset.flowId;
+          consumePaymentLinkRoute(preset.flowId);
+          setSendError(t('send.invalidRecipientForNetwork'));
+        }
+      })
+      .finally(() => {
+        if (processingPaymentLinkFlow.current?.token === token) {
+          processingPaymentLinkFlow.current = undefined;
+        }
+      });
+    return () => {
+      active = false;
+      if (processingPaymentLinkFlow.current?.token === token) {
+        processingPaymentLinkFlow.current = undefined;
+      }
+    };
+  }, [
+    consumePaymentLinkRoute,
+    registeredWallet?.network,
+    routePaymentLinkPreset,
+    session,
+    t,
+  ]);
+
+  useEffect(() => {
+    if (
+      routePaymentLinkPreset &&
+      consumedPaymentLinkFlowId.current === routePaymentLinkPreset.flowId &&
+      recipientReview?.source === 'payment-link'
+    ) {
+      consumePaymentLinkRoute(routePaymentLinkPreset.flowId);
+    }
+  }, [consumePaymentLinkRoute, recipientReview, routePaymentLinkPreset]);
+
   useFocusEffect(
     useCallback(() => {
       let mounted = true;
@@ -479,10 +614,7 @@ export default function SendScreen({ navigation, route }: any) {
     if (opened) {
       return;
     }
-    navigation.navigate('WalletSetup', {
-      mode: 'open',
-      openRequestId: Date.now(),
-    });
+    setSendError(t('send.openWalletBeforeSending'));
   };
 
   const prepareForReview = async () => {
@@ -518,22 +650,19 @@ export default function SendScreen({ navigation, route }: any) {
     setSendError(undefined);
     setSendStatus(undefined);
     let hardwareStatusTimer: ReturnType<typeof setInterval> | undefined;
+    let ledgerHandoffCreated = false;
     try {
-      if (
-        registeredWallet?.kind === 'hardware' &&
-        registeredWallet.role !== 'fast'
-      ) {
-        setSendStatus(t('send.checkingSpendOutputs'));
-        await reconcileLedgerBalance();
-      }
       let signingSession: WalletSession | undefined = session;
-      if (session.readOnly) {
+      if (registeredWallet?.kind === 'hardware') {
         ledgerSigningCancelledRef.current = false;
         setLedgerSigningProgress({ phase: 'searching' });
         signingSession = await connectLedgerForSigning({
           isCancelled: () => ledgerSigningCancelledRef.current,
           onProgress: setLedgerSigningProgress,
         });
+        ledgerHandoffCreated = Boolean(
+          signingSession && !signingSession.readOnly,
+        );
       }
       if (!signingSession) {
         throw new Error(t('send.openWalletBeforeSending'));
@@ -579,6 +708,9 @@ export default function SendScreen({ navigation, route }: any) {
       }
       setStep('confirm');
     } catch (error) {
+      if (ledgerHandoffCreated) {
+        await restoreLedgerViewAfterSigning().catch(() => false);
+      }
       setSendStatus(undefined);
       setLedgerSigningProgress(undefined);
       if (!isLedgerSigningCancelledError(error)) {
@@ -601,6 +733,12 @@ export default function SendScreen({ navigation, route }: any) {
 
     setSending(true);
     setSendError(undefined);
+    let broadcastSucceeded = false;
+    let postBroadcastRefreshPending = false;
+    const recordPostBroadcastFailure = (stage: string, error: unknown) => {
+      postBroadcastRefreshPending = true;
+      logWalletEvent('SendScreen', `postBroadcast.${stage}.error`, { error });
+    };
     try {
       const completedNamePreset = mfwNamePreset;
       const committed = await walletService.commitTransaction(
@@ -612,47 +750,175 @@ export default function SendScreen({ navigation, route }: any) {
           committed.error || t('send.transactionBroadcastFailed'),
         );
       }
+      broadcastSucceeded = true;
 
-      const ledgerCompanionNeedsRefresh =
-        registeredWallet?.kind === 'hardware' &&
-        registeredWallet.role !== 'fast';
-
-      setAddress('');
-      setAmount('');
-      setPreparedTx(undefined);
-      setPreparedSession(undefined);
-      setSweepAll(false);
-      setSendStatus(t('send.transactionBroadcast'));
-      setMfwNamePreset(undefined);
-      setRecipientReview(undefined);
-      setStep('recipient-choice');
       if (!completedNamePreset) {
-        setRecentRecipients(
-          await rememberRecipient(address.trim(), recipientContacts),
-        );
+        const recipientAddress = address.trim();
+        const hardwareWallet = registeredWallet?.kind === 'hardware';
+        const normalLedgerWallet =
+          hardwareWallet && registeredWallet?.role !== 'fast';
+        const transactionId =
+          committed.txIds.length === 1 ? committed.txIds[0] : undefined;
+        const pendingOutgoing = transactionId
+          ? createPendingOutgoingTransaction({
+              hash: transactionId,
+              address: recipientAddress,
+              amountAtomic: committed.amountAtomic,
+              feeAtomic: committed.feeAtomic,
+              subaddrAccount:
+                transactionSession.accountIndex ??
+                committed.subaddrAccounts[0] ??
+                0,
+              subaddrIndices: committed.subaddrIndices,
+            })
+          : undefined;
+        if (pendingOutgoing) {
+          publishPendingOutgoing(pendingOutgoing);
+        }
+
+        // A successful Core commit is the definitive send boundary. Show it
+        // immediately; Ledger companion restoration, spent-output
+        // reconciliation and history refresh are maintenance and must never
+        // keep the Send button in "Working…" or turn a broadcast into an
+        // apparent failure.
+        setSendSuccessReceipt({
+          amountAtomic: committed.amountAtomic,
+          feeAtomic: committed.feeAtomic,
+          transactionId,
+          refreshing: true,
+        });
+        setAddress('');
+        setAmount('');
+        setPreparedTx(undefined);
+        setPreparedSession(undefined);
+        setSweepAll(false);
+        setMfwNamePreset(undefined);
+        setRecipientReview(undefined);
+        setStep('recipient-choice');
+
+        (async () => {
+          try {
+            if (hardwareWallet) {
+              await restoreLedgerViewAfterSigning().catch(error => {
+                recordPostBroadcastFailure('restoreLedgerView', error);
+                return false;
+              });
+            }
+            if (normalLedgerWallet) {
+              await reconcileLedgerBalance().catch(error => {
+                recordPostBroadcastFailure('reconcileLedgerBalance', error);
+              });
+            }
+            await rememberRecipient(recipientAddress, recipientContacts)
+              .then(setRecentRecipients)
+              .catch(error => {
+                recordPostBroadcastFailure('rememberRecipient', error);
+              });
+            await Promise.all([
+              refreshSnapshot().catch(error => {
+                recordPostBroadcastFailure('refreshSnapshot', error);
+              }),
+              refreshTransactions().catch(error => {
+                recordPostBroadcastFailure('refreshTransactions', error);
+              }),
+            ]);
+          } catch (error) {
+            recordPostBroadcastFailure('unexpectedFollowUp', error);
+          } finally {
+            setSendStatus(
+              t(
+                postBroadcastRefreshPending
+                  ? 'send.transactionBroadcastRefreshPending'
+                  : 'send.transactionBroadcast',
+              ),
+            );
+            setSendSuccessReceipt(current => {
+              if (!current || current.transactionId !== transactionId) {
+                return current;
+              }
+              return { ...current, refreshing: false };
+            });
+          }
+        })();
+        return;
       }
-      if (ledgerCompanionNeedsRefresh) {
-        // The payment is already broadcast at this point. Rebuild the local
-        // read-only companion while the Ledger is still available, but never
-        // misreport a successful payment as failed if only this refresh needs
-        // another try from Settings.
-        await reconcileLedgerBalance().catch(() => {
-          setSendStatus(t('send.transactionBroadcastRefreshPending'));
+
+      // The pending transaction belongs to the signing session and can only be
+      // closed after Core has committed it. Reopen and reconcile the companion
+      // while Ledger is still available, but never turn a successful broadcast
+      // into a reported send failure if only this refresh needs a later retry.
+      if (registeredWallet?.kind === 'hardware') {
+        await restoreLedgerViewAfterSigning().catch(error => {
+          recordPostBroadcastFailure('restoreLedgerView', error);
+          return false;
         });
       }
-      await Promise.all([refreshSnapshot(), refreshTransactions()]);
+      if (
+        registeredWallet?.kind === 'hardware' &&
+        registeredWallet.role !== 'fast'
+      ) {
+        await reconcileLedgerBalance().catch(error => {
+          recordPostBroadcastFailure('reconcileLedgerBalance', error);
+        });
+      }
+
+      try {
+        setAddress('');
+        setAmount('');
+        setPreparedTx(undefined);
+        setPreparedSession(undefined);
+        setSweepAll(false);
+        setMfwNamePreset(undefined);
+        setRecipientReview(undefined);
+        setStep('recipient-choice');
+      } catch (error) {
+        recordPostBroadcastFailure('resetSendForm', error);
+      }
+      if (!completedNamePreset) {
+        await rememberRecipient(address.trim(), recipientContacts)
+          .then(setRecentRecipients)
+          .catch(error => {
+            recordPostBroadcastFailure('rememberRecipient', error);
+          });
+      }
+      await Promise.all([
+        refreshSnapshot().catch(error => {
+          recordPostBroadcastFailure('refreshSnapshot', error);
+        }),
+        refreshTransactions().catch(error => {
+          recordPostBroadcastFailure('refreshTransactions', error);
+        }),
+      ]);
+      setSendStatus(
+        t(
+          postBroadcastRefreshPending
+            ? 'send.transactionBroadcastRefreshPending'
+            : 'send.transactionBroadcast',
+        ),
+      );
       if (completedNamePreset) {
-        navigation.navigate('MfwNames', {
-          mfwNameBroadcast: {
-            registrationId: completedNamePreset.registrationId,
-            kind: completedNamePreset.kind,
-            years: completedNamePreset.years,
-            txIds: committed.txIds,
-          },
-        });
+        try {
+          navigation.navigate('MfwNames', {
+            mfwNameBroadcast: {
+              registrationId: completedNamePreset.registrationId,
+              kind: completedNamePreset.kind,
+              years: completedNamePreset.years,
+              txIds: committed.txIds,
+            },
+          });
+        } catch (error) {
+          recordPostBroadcastFailure('navigateMfwNames', error);
+          setSendStatus(t('send.transactionBroadcastRefreshPending'));
+        }
       }
     } catch (error) {
-      setSendError(error instanceof Error ? error.message : String(error));
+      if (broadcastSucceeded) {
+        recordPostBroadcastFailure('unexpectedFollowUp', error);
+        setSendError(undefined);
+        setSendStatus(t('send.transactionBroadcastRefreshPending'));
+      } else {
+        setSendError(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setSending(false);
     }
@@ -793,12 +1059,12 @@ export default function SendScreen({ navigation, route }: any) {
                     mfwNamePreset.kind === 'commit'
                       ? t('mfwNames.commitTitle')
                       : mfwNamePreset.kind === 'update'
-                        ? t('mfwNames.updateTitle')
-                        : mfwNamePreset.kind === 'renew'
-                          ? t('mfwNames.renewTitle')
-                          : mfwNamePreset.kind === 'revoke'
-                            ? t('mfwNames.revokeTitle')
-                            : t('mfwNames.claimTitle')
+                      ? t('mfwNames.updateTitle')
+                      : mfwNamePreset.kind === 'renew'
+                      ? t('mfwNames.renewTitle')
+                      : mfwNamePreset.kind === 'revoke'
+                      ? t('mfwNames.revokeTitle')
+                      : t('mfwNames.claimTitle')
                   }
                 />
                 {mfwNamePreset.kind === 'commit' ||
@@ -881,16 +1147,16 @@ export default function SendScreen({ navigation, route }: any) {
                 {sending
                   ? t('action.working')
                   : mfwNamePreset?.kind === 'commit'
-                    ? t('mfwNames.confirmCommit')
-                    : mfwNamePreset?.kind === 'claim'
-                      ? t('mfwNames.confirmClaim')
-                      : mfwNamePreset?.kind === 'renew'
-                        ? t('mfwNames.confirmRenew')
-                        : mfwNamePreset?.kind === 'update'
-                          ? t('mfwNames.confirmUpdate')
-                          : mfwNamePreset?.kind === 'revoke'
-                            ? t('mfwNames.confirmRevoke')
-                            : t('action.sendNow')}
+                  ? t('mfwNames.confirmCommit')
+                  : mfwNamePreset?.kind === 'claim'
+                  ? t('mfwNames.confirmClaim')
+                  : mfwNamePreset?.kind === 'renew'
+                  ? t('mfwNames.confirmRenew')
+                  : mfwNamePreset?.kind === 'update'
+                  ? t('mfwNames.confirmUpdate')
+                  : mfwNamePreset?.kind === 'revoke'
+                  ? t('mfwNames.confirmRevoke')
+                  : t('action.sendNow')}
               </Text>
             </LinearGradient>
           </TouchableOpacity>
@@ -1072,6 +1338,7 @@ export default function SendScreen({ navigation, route }: any) {
         >
           <Text style={s.title}>{t('send.title')}</Text>
           <Text style={s.subtitle}>{t('send.subtitle')}</Text>
+          {sendStatus ? <Text style={s.statusText}>{sendStatus}</Text> : null}
 
           {step === 'recipient-choice' ? (
             <View style={s.choiceStack}>
@@ -1729,6 +1996,10 @@ export default function SendScreen({ navigation, route }: any) {
           );
         }}
       />
+      <SendSuccessModal
+        receipt={sendSuccessReceipt}
+        onDone={() => setSendSuccessReceipt(undefined)}
+      />
       <LedgerSigningModal
         canCancel={
           ledgerSigningProgress?.phase === 'searching' ||
@@ -1753,6 +2024,8 @@ function recipientSourceKey(source: RecipientReview['source']) {
       return 'send.sourceAddressBook';
     case 'mfw-name':
       return 'send.sourceMfwName';
+    case 'payment-link':
+      return 'send.sourcePaymentLink';
     case 'private-phone':
       return 'send.sourcePrivateContact';
     default:

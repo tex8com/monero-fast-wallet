@@ -2,6 +2,7 @@ import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 import {
   AppState,
+  type AppStateStatus,
   Text,
   TextInput,
   TouchableOpacity,
@@ -111,6 +112,10 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
     });
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('shows Welcome before the one-time protection choice', async () => {
     mockedWalletService.getAppProtectionStatus.mockResolvedValue({
       configured: false,
@@ -197,6 +202,63 @@ describe('AppSecurityProvider onboarding and unlock flow', () => {
     expect(text).not.toContain('Use fingerprint instead');
     expect(text).not.toContain('Use one simple check to open all your wallets');
     expect(renderer!.root.findAllByType(TextInput)).toHaveLength(1);
+  });
+
+  it('honors a native device lock when the app returns to the foreground', async () => {
+    const appStateListeners: Array<{
+      active: boolean;
+      listener: (state: AppStateStatus) => void;
+    }> = [];
+    jest
+      .spyOn(AppState, 'addEventListener')
+      .mockImplementation((_type, listener) => {
+        const entry = { active: true, listener };
+        appStateListeners.push(entry);
+        return {
+          remove: () => {
+            entry.active = false;
+          },
+        };
+      });
+    mockedWalletService.getAppProtectionStatus
+      .mockResolvedValueOnce({
+        configured: true,
+        locked: false,
+        mode: 'password',
+      })
+      .mockResolvedValue({
+        configured: true,
+        locked: true,
+        mode: 'password',
+      });
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <LanguageProvider>
+          <AppSecurityProvider>
+            <View testID="protected-wallet-content" />
+          </AppSecurityProvider>
+        </LanguageProvider>,
+      );
+    });
+
+    expect(
+      renderer!.root.findAllByProps({ testID: 'protected-wallet-content' }),
+    ).not.toHaveLength(0);
+
+    await ReactTestRenderer.act(async () => {
+      appStateListeners
+        .filter(entry => entry.active)
+        .forEach(entry => entry.listener('active'));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    expect(mockedWalletService.getAppProtectionStatus).toHaveBeenCalledTimes(2);
+    expect(
+      renderer!.root.findAllByProps({ testID: 'protected-wallet-content' }),
+    ).toHaveLength(0);
+    expect(visibleText(renderer!)).toContain('Unlock app');
   });
 
   it('remembers skipped protection and opens protected content without a prompt', async () => {

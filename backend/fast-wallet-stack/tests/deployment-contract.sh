@@ -76,6 +76,12 @@ if grep -Eq '^location .*assignments/(sponsor|delete)|^location .*internal/(work
   echo 'internal Fast Wallet endpoint was exposed by Nginx' >&2
   exit 1
 fi
+if grep -q '/debug/v1/test-push' "$nginx"; then
+  echo 'Worker debug endpoint was exposed by Nginx' >&2
+  exit 1
+fi
+grep -q 'FAST_WALLET_WORKER_DEBUG_BIND=127.0.0.1:8097' \
+  "$repo_root/backend/fast-wallet-worker/README.md"
 
 grep -q 'NOTIFICATION_GATEWAY_WORKER_DIRECTORY_ORIGIN=http://127.0.0.1:8096' \
   "$deploy/activate-staged-release.sh"

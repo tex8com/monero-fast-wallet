@@ -23,6 +23,7 @@ export type WalletReadinessPhase =
   | "waiting-ledger"
   | "connecting-ledger"
   | "scanning-spend-outputs"
+  | "retrying-spent-output-node"
   | "persisting-wallet"
   | "recovering-session"
   | "ready"

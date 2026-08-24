@@ -1,3 +1,5 @@
+import type { WalletSnapshot } from '../../../specs/NativeMoneroWallet';
+
 jest.mock('@react-native-async-storage/async-storage', () => {
   const storage = new Map<string, string>();
   const mock = {
@@ -81,8 +83,10 @@ const mockNativeWallet = {
   createViewOnlyWalletFromHardwareWithStoredSecret: jest.fn(async () => ({
     walletId: 'wallet-ledger-view',
   })),
+  primeHardwareWalletFromViewOnly: jest.fn(async () => undefined),
+  rebuildHardwareWalletCacheFromViewOnly: jest.fn(async () => undefined),
   closeWallet: jest.fn(async () => undefined),
-  snapshot: jest.fn(async () => ({
+  snapshot: jest.fn(async (): Promise<WalletSnapshot> => ({
     id: 'wallet-fast',
     path: '/current-container/wallets/mainnet/fast-wallet',
     primaryAddress: '4'.repeat(95),
@@ -101,9 +105,19 @@ const mockNativeWallet = {
   setGrpcEndpoint: jest.fn(async () => undefined),
   startRefresh: jest.fn(async () => undefined),
   stopRefresh: jest.fn(async () => undefined),
-  getAddress: jest.fn(async () => '8'.repeat(95)),
-  getBalance: jest.fn(async () => '0'),
-  getUnlockedBalance: jest.fn(async () => '0'),
+  getAddress: jest.fn(
+    async (
+      _walletId: string,
+      _accountIndex: number,
+      _addressIndex: number,
+    ) => '8'.repeat(95),
+  ),
+  getBalance: jest.fn(
+    async (_walletId: string, _accountIndex: number) => '0',
+  ),
+  getUnlockedBalance: jest.fn(
+    async (_walletId: string, _accountIndex: number) => '0',
+  ),
   createSubaddress: jest.fn(async () => ({
     accountIndex: 0,
     addressIndex: 1,
@@ -143,6 +157,63 @@ const mockNativeWallet = {
     storeDurationMs: 2,
     totalDurationMs: 17,
   })),
+  prepareTransaction: jest.fn(async () => ({
+    id: 'pending-transaction',
+    status: 'ok',
+    error: '',
+    amountAtomic: '1',
+    dustAtomic: '0',
+    feeAtomic: '1',
+    txCount: 1,
+    txIds: [],
+    subaddrAccounts: [],
+    subaddrIndices: [],
+  })),
+  prepareMfwNameRegistration: jest.fn(async () => ({
+    ownerPublicKeyHex: '11'.repeat(32),
+    preparedTransaction: {
+      id: 'pending-mfw-registration',
+      status: 'ok',
+      error: '',
+      amountAtomic: '1',
+      dustAtomic: '0',
+      feeAtomic: '1',
+      txCount: 1,
+      txIds: [],
+      subaddrAccounts: [],
+      subaddrIndices: [],
+    },
+  })),
+  prepareMfwNameClaim: jest.fn(async () => ({
+    ownerPublicKeyHex: '11'.repeat(32),
+    preparedTransaction: {
+      id: 'pending-mfw-claim',
+      status: 'ok',
+      error: '',
+      amountAtomic: '1',
+      dustAtomic: '0',
+      feeAtomic: '1',
+      txCount: 1,
+      txIds: [],
+      subaddrAccounts: [],
+      subaddrIndices: [],
+    },
+  })),
+  prepareMfwNameTransition: jest.fn(async () => ({
+    ownerPublicKeyHex: '11'.repeat(32),
+    preparedTransaction: {
+      id: 'pending-mfw-transition',
+      status: 'ok',
+      error: '',
+      amountAtomic: '1',
+      dustAtomic: '0',
+      feeAtomic: '1',
+      txCount: 1,
+      txIds: [],
+      subaddrAccounts: [],
+      subaddrIndices: [],
+    },
+  })),
   validateRecipientAddress: jest.fn(async (address: string) => address.trim()),
 };
 
@@ -175,6 +246,24 @@ describe('WalletService registered wallet opening', () => {
     mockNativeWallet.walletPathOccupied.mockResolvedValue(false);
     mockNativeWallet.listWalletNames.mockResolvedValue([]);
     mockNativeWallet.walletSecretExists.mockResolvedValue(false);
+    mockNativeWallet.getAddress.mockImplementation(
+      async (_walletId: string, accountIndex: number) =>
+        String(accountIndex + 4).repeat(95),
+    );
+    mockNativeWallet.getBalance.mockResolvedValue('0');
+    mockNativeWallet.getUnlockedBalance.mockResolvedValue('0');
+    mockNativeWallet.getTransactions.mockResolvedValue([]);
+    mockNativeWallet.snapshot.mockResolvedValue({
+      id: 'wallet-fast',
+      path: '/current-container/wallets/mainnet/fast-wallet',
+      primaryAddress: '4'.repeat(95),
+      balanceAtomic: '0',
+      unlockedBalanceAtomic: '0',
+      walletHeight: 100,
+      daemonHeight: 100,
+      daemonTargetHeight: 100,
+      synchronized: true,
+    });
     await AsyncStorage.clear();
   });
 
@@ -189,32 +278,273 @@ describe('WalletService registered wallet opening', () => {
     );
   });
 
-  it('keeps the Core total for a normal wallet and scopes only an explicit account registration', async () => {
+  it('primes a Ledger signing session from its read-only companion without exposing keys', async () => {
+    const service = new WalletService();
+    const hardwareSession = {
+      walletId: 'wallet-ledger-signing',
+      network: 'mainnet' as const,
+      readOnly: false,
+      hardwareDevice: { name: 'Ledger', type: 'ledger' as const },
+    };
+    const viewOnlySession = {
+      walletId: 'wallet-ledger-view',
+      network: 'mainnet' as const,
+      readOnly: true,
+      hardwareDevice: { name: 'Ledger', type: 'ledger' as const },
+    };
+
+    await expect(
+      service.primeHardwareWalletFromViewOnly(
+        hardwareSession,
+        viewOnlySession,
+      ),
+    ).resolves.toBeUndefined();
+    expect(
+      mockNativeWallet.primeHardwareWalletFromViewOnly,
+    ).toHaveBeenCalledWith('wallet-ledger-signing', 'wallet-ledger-view');
+    expect(
+      JSON.stringify(
+        mockNativeWallet.primeHardwareWalletFromViewOnly.mock.calls,
+      ),
+    ).not.toContain('privateViewKey');
+
+    await expect(
+      service.primeHardwareWalletFromViewOnly(hardwareSession, {
+        ...viewOnlySession,
+        network: 'stagenet',
+      }),
+    ).rejects.toThrow('use different networks');
+    expect(
+      mockNativeWallet.primeHardwareWalletFromViewOnly,
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it('rebuilds only a matching Ledger signing session and preserves the native restore-height fallback', async () => {
+    const service = new WalletService();
+    const hardwareSession = {
+      walletId: 'wallet-ledger-signing',
+      network: 'mainnet' as const,
+      readOnly: false,
+      hardwareDevice: { name: 'Ledger', type: 'ledger' as const },
+    };
+    const viewOnlySession = {
+      walletId: 'wallet-ledger-view',
+      network: 'mainnet' as const,
+      readOnly: true,
+      hardwareDevice: { name: 'Ledger', type: 'ledger' as const },
+    };
+
+    await expect(
+      service.rebuildHardwareWalletCacheFromViewOnly(
+        hardwareSession,
+        viewOnlySession,
+        2_500_000,
+      ),
+    ).resolves.toBeUndefined();
+    expect(
+      mockNativeWallet.rebuildHardwareWalletCacheFromViewOnly,
+    ).toHaveBeenCalledWith(
+      'wallet-ledger-signing',
+      'wallet-ledger-view',
+      2_500_000,
+    );
+
+    await expect(
+      service.rebuildHardwareWalletCacheFromViewOnly(
+        hardwareSession,
+        viewOnlySession,
+        0,
+      ),
+    ).resolves.toBeUndefined();
+    expect(
+      mockNativeWallet.rebuildHardwareWalletCacheFromViewOnly,
+    ).toHaveBeenLastCalledWith(
+      'wallet-ledger-signing',
+      'wallet-ledger-view',
+      0,
+    );
+    await expect(
+      service.rebuildHardwareWalletCacheFromViewOnly(
+        hardwareSession,
+        viewOnlySession,
+        1,
+      ),
+    ).resolves.toBeUndefined();
+    expect(
+      mockNativeWallet.rebuildHardwareWalletCacheFromViewOnly,
+    ).toHaveBeenLastCalledWith(
+      'wallet-ledger-signing',
+      'wallet-ledger-view',
+      1,
+    );
+    await expect(
+      service.rebuildHardwareWalletCacheFromViewOnly(
+        hardwareSession,
+        viewOnlySession,
+        -1,
+      ),
+    ).rejects.toThrow('valid scan start height');
+    expect(
+      mockNativeWallet.rebuildHardwareWalletCacheFromViewOnly,
+    ).toHaveBeenCalledTimes(3);
+  });
+
+  it('lets one Ledger readiness snapshot wait past the ordinary 12-second read limit', async () => {
+    jest.useFakeTimers();
+    let resolveNativeSnapshot!: (snapshot: WalletSnapshot) => void;
+    mockNativeWallet.snapshot.mockReturnValueOnce(
+      new Promise<WalletSnapshot>(resolve => {
+        resolveNativeSnapshot = resolve;
+      }),
+    );
+    const service = new WalletService();
+    const deadlineMs = Date.now() + 5 * 60 * 1_000;
+    const readinessSnapshot = service.snapshotForLedgerSigningReadiness(
+      {
+        walletId: 'wallet-ledger-signing-readiness',
+        network: 'mainnet',
+      },
+      deadlineMs,
+    );
+    let settled = false;
+    const observedSnapshot = readinessSnapshot.finally(() => {
+      settled = true;
+    });
+
+    try {
+      await jest.advanceTimersByTimeAsync(12_001);
+      expect(settled).toBe(false);
+      expect(mockNativeWallet.snapshot).toHaveBeenCalledTimes(1);
+
+      resolveNativeSnapshot({
+        id: 'wallet-ledger-signing-readiness',
+        path: '/wallets/ledger-signing-readiness',
+        primaryAddress: '4'.repeat(95),
+        balanceAtomic: '0',
+        unlockedBalanceAtomic: '0',
+        walletHeight: 100,
+        daemonHeight: 100,
+        daemonTargetHeight: 100,
+        synchronized: true,
+      });
+      await expect(observedSnapshot).resolves.toMatchObject({
+        id: 'wallet-ledger-signing-readiness',
+        spendAccountIndex: 0,
+      });
+      expect(mockNativeWallet.snapshot).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the ordinary wallet snapshot timeout at 12 seconds', async () => {
+    jest.useFakeTimers();
+    mockNativeWallet.snapshot.mockReturnValueOnce(
+      new Promise<WalletSnapshot>(() => undefined),
+    );
+    let settled = false;
+    const observedSnapshot = new WalletService()
+      .snapshot({
+        walletId: 'wallet-ordinary-read-timeout',
+        network: 'mainnet',
+      })
+      .then(
+        () => {
+          settled = true;
+          return undefined;
+        },
+        error => {
+          settled = true;
+          return error;
+        },
+      );
+
+    try {
+      await jest.advanceTimersByTimeAsync(11_999);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(observedSnapshot).resolves.toEqual(
+        expect.objectContaining({ message: 'Wallet snapshot timed out' }),
+      );
+      expect(mockNativeWallet.snapshot).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not enqueue a Ledger readiness snapshot after its shared deadline', async () => {
+    const service = new WalletService();
+    await expect(
+      service.snapshotForLedgerSigningReadiness(
+        {
+          walletId: 'wallet-ledger-expired-readiness',
+          network: 'mainnet',
+        },
+        Date.now() - 1,
+      ),
+    ).rejects.toThrow('Ledger signing wallet snapshot timed out');
+    expect(mockNativeWallet.snapshot).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Core total while selecting the richest unlocked account for spending', async () => {
     mockNativeWallet.snapshot.mockResolvedValue({
       id: 'wallet-ledger',
       path: '/current-container/wallets/mainnet/ledger-view',
       primaryAddress: '4'.repeat(95),
-      balanceAtomic: '468600000000',
-      unlockedBalanceAtomic: '468600000000',
+      balanceAtomic: '1000000000000',
+      unlockedBalanceAtomic: '930000000000',
       walletHeight: 100,
       daemonHeight: 100,
       daemonTargetHeight: 100,
+      snapshotRevision: 7,
       synchronized: true,
     });
+    mockNativeWallet.getTransactions.mockResolvedValue([
+      { hash: 'account-zero-in', subaddrAccount: 0 },
+      { hash: 'account-one-in', subaddrAccount: 1 },
+    ]);
+    mockNativeWallet.getBalance.mockImplementation(
+      async (_walletId: string, accountIndex: number) =>
+        accountIndex === 0 ? '100000000000' : '900000000000',
+    );
+    mockNativeWallet.getUnlockedBalance.mockImplementation(
+      async (_walletId: string, accountIndex: number) =>
+        accountIndex === 0 ? '80000000000' : '850000000000',
+    );
 
     const service = new WalletService();
     await expect(
       service.snapshot({ walletId: 'wallet-ledger', network: 'mainnet' }),
     ).resolves.toMatchObject({
-      balanceAtomic: '468600000000',
-      unlockedBalanceAtomic: '468600000000',
+      balanceAtomic: '1000000000000',
+      unlockedBalanceAtomic: '930000000000',
+      spendAccountIndex: 1,
+      spendBalanceAtomic: '900000000000',
+      spendUnlockedBalanceAtomic: '850000000000',
     });
-    expect(mockNativeWallet.getBalance).not.toHaveBeenCalled();
-    expect(mockNativeWallet.getUnlockedBalance).not.toHaveBeenCalled();
+    expect(mockNativeWallet.getTransactions).toHaveBeenCalledWith(
+      'wallet-ledger',
+      0,
+    );
+
+    mockNativeWallet.snapshot.mockResolvedValue({
+      id: 'wallet-ledger',
+      path: '/current-container/wallets/mainnet/ledger-view',
+      primaryAddress: '4'.repeat(95),
+      balanceAtomic: '1000000000000',
+      unlockedBalanceAtomic: '930000000000',
+      walletHeight: 101,
+      daemonHeight: 101,
+      daemonTargetHeight: 101,
+      snapshotRevision: 8,
+      synchronized: true,
+    });
+    await expect(
+      service.snapshot({ walletId: 'wallet-ledger', network: 'mainnet' }),
+    ).resolves.toMatchObject({ spendAccountIndex: 1 });
+    expect(mockNativeWallet.getTransactions).toHaveBeenCalledTimes(1);
 
     mockNativeWallet.getAddress.mockResolvedValueOnce('8'.repeat(95));
-    mockNativeWallet.getBalance.mockResolvedValueOnce('108600000000');
-    mockNativeWallet.getUnlockedBalance.mockResolvedValueOnce('108600000000');
     await expect(
       service.snapshot({
         walletId: 'wallet-ledger',
@@ -223,13 +553,205 @@ describe('WalletService registered wallet opening', () => {
       }),
     ).resolves.toMatchObject({
       primaryAddress: '8'.repeat(95),
-      balanceAtomic: '108600000000',
-      unlockedBalanceAtomic: '108600000000',
+      balanceAtomic: '900000000000',
+      unlockedBalanceAtomic: '850000000000',
+      spendAccountIndex: 1,
     });
     expect(mockNativeWallet.getBalance).toHaveBeenCalledWith(
       'wallet-ledger',
       1,
     );
+  });
+
+  it('refreshes cached account indexes only when an exact aggregate mismatch reveals a funded account', async () => {
+    mockNativeWallet.snapshot
+      .mockResolvedValueOnce({
+        id: 'wallet-growing-account-set',
+        path: '/wallets/growing-account-set',
+        primaryAddress: '4'.repeat(95),
+        balanceAtomic: '100',
+        unlockedBalanceAtomic: '80',
+        walletHeight: 100,
+        daemonHeight: 100,
+        daemonTargetHeight: 100,
+        snapshotRevision: 1,
+        synchronized: true,
+      })
+      .mockResolvedValueOnce({
+        id: 'wallet-growing-account-set',
+        path: '/wallets/growing-account-set',
+        primaryAddress: '4'.repeat(95),
+        balanceAtomic: '1000',
+        unlockedBalanceAtomic: '930',
+        walletHeight: 101,
+        daemonHeight: 101,
+        daemonTargetHeight: 101,
+        snapshotRevision: 2,
+        synchronized: true,
+      });
+    mockNativeWallet.getTransactions
+      .mockResolvedValueOnce([{ hash: 'account-zero-in', subaddrAccount: 0 }])
+      .mockResolvedValueOnce([
+        { hash: 'account-zero-in', subaddrAccount: 0 },
+        { hash: 'account-one-in', subaddrAccount: 1 },
+      ]);
+    mockNativeWallet.getBalance.mockImplementation(
+      async (_walletId: string, accountIndex: number) =>
+        accountIndex === 0 ? '100' : '900',
+    );
+    mockNativeWallet.getUnlockedBalance.mockImplementation(
+      async (_walletId: string, accountIndex: number) =>
+        accountIndex === 0 ? '80' : '850',
+    );
+
+    const service = new WalletService();
+    const session = {
+      walletId: 'wallet-growing-account-set',
+      network: 'mainnet' as const,
+    };
+    await expect(service.snapshot(session)).resolves.toMatchObject({
+      spendAccountIndex: 0,
+    });
+    await expect(service.snapshot(session)).resolves.toMatchObject({
+      spendAccountIndex: 1,
+    });
+    expect(mockNativeWallet.getTransactions).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['lower total', '99', '80'],
+    ['higher total', '101', '80'],
+    ['lower unlocked', '100', '79'],
+    ['higher unlocked', '100', '81'],
+  ])(
+    'fails closed when live account sums have a %s than the aggregate snapshot',
+    async (_caseName, accountBalance, accountUnlocked) => {
+      mockNativeWallet.snapshot.mockResolvedValue({
+        id: 'wallet-scope-mismatch',
+        path: '/wallets/scope-mismatch',
+        primaryAddress: '4'.repeat(95),
+        balanceAtomic: '100',
+        unlockedBalanceAtomic: '80',
+        walletHeight: 100,
+        daemonHeight: 100,
+        daemonTargetHeight: 100,
+        snapshotRevision: 1,
+        synchronized: true,
+      });
+      mockNativeWallet.getBalance.mockResolvedValue(accountBalance);
+      mockNativeWallet.getUnlockedBalance.mockResolvedValue(accountUnlocked);
+
+      await expect(
+        new WalletService().snapshot({
+          walletId: 'wallet-scope-mismatch',
+          network: 'mainnet',
+        }),
+      ).rejects.toThrow(
+        'account balances do not match the current aggregate snapshot',
+      );
+    },
+  );
+
+  it('uses one richest-account scope for Send, sweep-all, and every MFW preparation', async () => {
+    mockNativeWallet.snapshot.mockResolvedValue({
+      id: 'wallet-funded-account-one',
+      path: '/wallets/funded-account-one',
+      primaryAddress: '4'.repeat(95),
+      balanceAtomic: '1000',
+      unlockedBalanceAtomic: '930',
+      walletHeight: 100,
+      daemonHeight: 100,
+      daemonTargetHeight: 100,
+      snapshotRevision: 9,
+      synchronized: true,
+    });
+    mockNativeWallet.getTransactions.mockResolvedValue([
+      { hash: 'account-zero-in', subaddrAccount: 0 },
+      { hash: 'account-one-in', subaddrAccount: 1 },
+    ]);
+    mockNativeWallet.getBalance.mockImplementation(
+      async (_walletId: string, accountIndex: number) =>
+        accountIndex === 0 ? '100' : '900',
+    );
+    mockNativeWallet.getUnlockedBalance.mockImplementation(
+      async (_walletId: string, accountIndex: number) =>
+        accountIndex === 0 ? '80' : '850',
+    );
+
+    const service = new WalletService();
+    const session = {
+      walletId: 'wallet-funded-account-one',
+      network: 'mainnet' as const,
+    };
+    const address = '4'.repeat(95);
+    await service.prepareTransaction(session, {
+      address,
+      amountAtomic: '500',
+    });
+    await service.prepareTransaction(session, { address, sweepAll: true });
+    await service.prepareMfwNameRegistration(session, {
+      registrationId: 'registration-one',
+      name: 'funded.mfw',
+      address,
+      network: 'mainnet',
+      registryAddress: address,
+    });
+    await service.prepareMfwNameClaim(session, {
+      registrationId: 'registration-one',
+      name: 'funded.mfw',
+      address,
+      network: 'mainnet',
+      registryAddress: address,
+      years: 1,
+    });
+    await service.prepareMfwNameTransition(session, {
+      registrationId: 'registration-one',
+      operation: 'renew',
+      name: 'funded.mfw',
+      address,
+      network: 'mainnet',
+      registryAddress: address,
+      years: 1,
+      predecessorRecordHex: 'aa',
+      predecessorSigningOwnerPublicKeyHex: '11'.repeat(32),
+    });
+
+    expect(mockNativeWallet.prepareTransaction).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ accountIndex: 1, amountAtomic: '500' }),
+    );
+    expect(mockNativeWallet.prepareTransaction).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ accountIndex: 1, sweepAll: true }),
+    );
+    expect(mockNativeWallet.prepareMfwNameRegistration).toHaveBeenCalledWith(
+      expect.objectContaining({ accountIndex: 1 }),
+    );
+    expect(mockNativeWallet.prepareMfwNameClaim).toHaveBeenCalledWith(
+      expect.objectContaining({ accountIndex: 1 }),
+    );
+    expect(mockNativeWallet.prepareMfwNameTransition).toHaveBeenCalledWith(
+      expect.objectContaining({ accountIndex: 1 }),
+    );
+  });
+
+  it('never lets an explicit legacy account registration be overridden', async () => {
+    const service = new WalletService();
+    await expect(
+      service.prepareTransaction(
+        {
+          walletId: 'wallet-legacy-account-one',
+          network: 'mainnet',
+          accountIndex: 1,
+        },
+        {
+          address: '4'.repeat(95),
+          amountAtomic: '1',
+          accountIndex: 0,
+        },
+      ),
+    ).rejects.toThrow('restricted to a different Monero account');
+    expect(mockNativeWallet.prepareTransaction).not.toHaveBeenCalled();
   });
 
   it('filters a ledger Fast Wallet account before applying a history limit', async () => {
@@ -332,7 +854,7 @@ describe('WalletService registered wallet opening', () => {
     ]);
   });
 
-  it('keeps the app session alive for the fresh credential check before seed display', async () => {
+  it('shows the iOS recovery-seed confirmation without waiting on unused native interruption bookkeeping', async () => {
     const service = new WalletService();
 
     await expect(
@@ -342,17 +864,12 @@ describe('WalletService registered wallet opening', () => {
       ),
     ).resolves.toBe(true);
 
-    expect(mockNativeWallet.beginSystemUiInterruption).toHaveBeenCalledWith(
-      'recovery-seed-confirmation',
-      45_000,
-    );
+    expect(mockNativeWallet.beginSystemUiInterruption).not.toHaveBeenCalled();
     expect(mockNativeWallet.presentRecoverySeed).toHaveBeenCalledWith(
       'wallet-created',
       'Write these words down offline.',
     );
-    expect(mockNativeWallet.endSystemUiInterruption).toHaveBeenCalledWith(
-      'native-recovery-seed-confirmation',
-    );
+    expect(mockNativeWallet.endSystemUiInterruption).not.toHaveBeenCalled();
   });
 
   it('relocates registered wallet paths when the iOS app container changes', async () => {
@@ -623,7 +1140,7 @@ describe('WalletService registered wallet opening', () => {
     expect(first.invalidatedRegistrationIds).toEqual([registration.id]);
   });
 
-  it('enforces synchronized zero balance below the UI before removing a Fast Wallet', async () => {
+  it('removes a Fast Wallet without requiring open, synchronized, or empty state', async () => {
     const registration = createRegisteredWallet({
       id: 'fast-receive-v2-0-20260709T012217',
       walletName: 'Fast Wallet',
@@ -661,66 +1178,18 @@ describe('WalletService registered wallet opening', () => {
       watchMessageId: '22'.repeat(32),
     });
     const service = new WalletService();
-    await service.openRegisteredWallet();
+    mockNativeWallet.deleteFastWalletAssignment.mockRejectedValueOnce(
+      new Error('offline'),
+    );
 
-    mockNativeWallet.snapshot.mockResolvedValueOnce({
-      id: 'wallet-fast',
-      path: registration.path,
-      primaryAddress: '4'.repeat(95),
-      balanceAtomic: '0',
-      unlockedBalanceAtomic: '0',
-      walletHeight: 99,
-      daemonHeight: 100,
-      daemonTargetHeight: 100,
-      synchronized: false,
-    });
-    await expect(
-      service.removeRegisteredWallet(registration.id),
-    ).rejects.toThrow('local synchronization is complete');
-    expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
-    expect(mockNativeWallet.deleteProtectedWalletFiles).not.toHaveBeenCalled();
-    expect(mockNativeWallet.deleteFastWalletAssignment).not.toHaveBeenCalled();
-
-    mockNativeWallet.snapshot.mockResolvedValueOnce({
-      id: 'wallet-fast',
-      path: registration.path,
-      primaryAddress: '4'.repeat(95),
-      balanceAtomic: '1',
-      unlockedBalanceAtomic: '1',
-      walletHeight: 100,
-      daemonHeight: 100,
-      daemonTargetHeight: 100,
-      synchronized: true,
-    });
-    mockNativeWallet.getBalance.mockResolvedValueOnce('1');
-    mockNativeWallet.getUnlockedBalance.mockResolvedValueOnce('1');
-    await expect(
-      service.removeRegisteredWallet(registration.id),
-    ).rejects.toThrow('still contains Monero');
-    expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
-    expect(mockNativeWallet.deleteProtectedWalletFiles).not.toHaveBeenCalled();
-    expect(mockNativeWallet.deleteFastWalletAssignment).not.toHaveBeenCalled();
-
-    mockNativeWallet.snapshot.mockResolvedValueOnce({
-      id: 'wallet-fast',
-      path: registration.path,
-      primaryAddress: '4'.repeat(95),
-      balanceAtomic: '0',
-      unlockedBalanceAtomic: '0',
-      walletHeight: 100,
-      daemonHeight: 100,
-      daemonTargetHeight: 100,
-      synchronized: true,
-    });
-    mockNativeWallet.getBalance.mockResolvedValueOnce('0');
-    mockNativeWallet.getUnlockedBalance.mockResolvedValueOnce('0');
     await expect(
       service.removeRegisteredWallet(registration.id),
     ).resolves.toEqual([]);
-    expect(mockNativeWallet.deleteEmptyWalletFiles).toHaveBeenCalledWith(
-      'wallet-fast',
+    expect(mockNativeWallet.snapshot).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteEmptyWalletFiles).not.toHaveBeenCalled();
+    expect(mockNativeWallet.deleteProtectedWalletFiles).toHaveBeenCalledWith([
       registration.path,
-    );
+    ]);
     expect(mockNativeWallet.deleteFastWalletAssignment).toHaveBeenCalledWith(
       registration.id,
       '11'.repeat(32),
@@ -753,15 +1222,13 @@ describe('WalletService registered wallet opening', () => {
     });
   });
 
-  it('closes and deletes a backed-up software wallet instead of hiding only its registration', async () => {
+  it('closes and deletes a software wallet without requiring seed backup', async () => {
     const registration = createRegisteredWallet({
       id: 'software-mainnet-remove-completely',
       walletName: 'remove-completely',
       path: '/current-container/wallets/mainnet/remove-completely',
       network: 'mainnet',
       kind: 'software',
-      seedBackupStatus: 'verified',
-      seedBackedUpAt: '2026-08-10T15:00:00.000Z',
       credentialKey: 'monero.wallet.software.mainnet.remove-completely.v1',
       now: '2026-08-10T14:59:00.000Z',
     });
@@ -908,6 +1375,7 @@ describe('WalletService registered wallet opening', () => {
     const result = await service.reconcileLedgerViewOnlyWallet(
       created.registration,
       progress => phases.push(progress.phase),
+      { fullSpendOutputScan: true },
     );
 
     expect(mockNativeWallet.getLedgerTransportStatus).not.toHaveBeenCalled();
@@ -916,8 +1384,17 @@ describe('WalletService registered wallet opening', () => {
     ).not.toHaveBeenCalled();
     expect(mockNativeWallet.startRefresh).not.toHaveBeenCalled();
     expect(
-      mockNativeWallet.syncLedgerKeyImagesToViewWallet,
+      mockNativeWallet.primeHardwareWalletFromViewOnly,
     ).toHaveBeenCalledWith('wallet-ledger', openedView.walletId);
+    expect(
+      mockNativeWallet.primeHardwareWalletFromViewOnly.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockNativeWallet.syncLedgerKeyImagesToViewWallet.mock
+        .invocationCallOrder[0],
+    );
+    expect(
+      mockNativeWallet.syncLedgerKeyImagesToViewWallet,
+    ).toHaveBeenCalledWith('wallet-ledger', openedView.walletId, true, false);
     expect(phases).toEqual([
       'checking-local-scan',
       'connecting-ledger',
@@ -963,10 +1440,18 @@ describe('WalletService registered wallet opening', () => {
       1,
     );
     expect(
+      mockNativeWallet.primeHardwareWalletFromViewOnly,
+    ).toHaveBeenCalledWith(
+      'wallet-ledger-signing',
+      'wallet-ledger-view-reopened',
+    );
+    expect(
       mockNativeWallet.syncLedgerKeyImagesToViewWallet,
     ).toHaveBeenCalledWith(
       'wallet-ledger-signing',
       'wallet-ledger-view-reopened',
+      false,
+      false,
     );
   });
 

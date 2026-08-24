@@ -1016,6 +1016,7 @@ void logNativeEvent(NSString *event, NSDictionary *fields) {
       @"count",
       @"elapsedMs",
       @"failedAttempts",
+      @"fullSpendOutputScan",
       @"queuedMs",
       @"remainingAttempts",
       @"resetTriggered",
@@ -1076,6 +1077,13 @@ uint64_t toHeight(double value, const char *name) {
   }
 
   return static_cast<uint64_t>(value);
+}
+
+uint64_t toExactHeight(double value, const char *name) {
+  if (!std::isfinite(value) || std::floor(value) != value) {
+    throw WalletEngineError(std::string{name} + " must be an exact integer");
+  }
+  return toHeight(value, name);
 }
 
 NSNumber *toNSNumber(uint64_t value) {
@@ -2524,6 +2532,7 @@ NSDictionary *toDictionary(const NetworkSyncStatus &status) {
     @"downloadStartHeight": toNSNumber(status.downloadStartHeight),
     @"downloadedHeight": toNSNumber(status.downloadedHeight),
     @"chainHeight": toNSNumber(status.chainHeight),
+    @"priorityWalletHeight": toNSNumber(status.priorityWalletHeight),
     @"targetHeight": toNSNumber(status.targetHeight),
     @"transportStarts": toNSNumber(status.transportStarts),
     @"fetchedBatches": toNSNumber(status.fetchedBatches),
@@ -9349,6 +9358,8 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 
 - (void)syncLedgerKeyImagesToViewWallet:(NSString *)hardwareWalletId
                        viewOnlyWalletId:(NSString *)viewOnlyWalletId
+                    fullSpendOutputScan:(BOOL)fullSpendOutputScan
+                          nodeOnlyRetry:(BOOL)nodeOnlyRetry
                                  resolve:(RCTPromiseResolveBlock)resolve
                                   reject:(RCTPromiseRejectBlock)reject
 {
@@ -9358,11 +9369,58 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
                   fields:@{
                     @"hardwareWalletId": maskIdentifier(hardwareWalletId),
                     @"viewOnlyWalletId": maskIdentifier(viewOnlyWalletId),
+                    @"fullSpendOutputScan": @(fullSpendOutputScan),
+                    @"nodeOnlyRetry": @(nodeOnlyRetry),
                   }
                     work:^id(WalletEngine &engine) {
     return toDictionary(engine.syncLedgerKeyImagesToViewWallet(
         toStdString(hardwareWalletId),
-        toStdString(viewOnlyWalletId)));
+        toStdString(viewOnlyWalletId),
+        fullSpendOutputScan,
+        nodeOnlyRetry));
+  }];
+}
+
+- (void)primeHardwareWalletFromViewOnly:(NSString *)hardwareWalletId
+                       viewOnlyWalletId:(NSString *)viewOnlyWalletId
+                                resolve:(RCTPromiseResolveBlock)resolve
+                                 reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"primeHardwareWalletFromViewOnly"
+                  fields:@{
+                    @"hardwareWalletId": maskIdentifier(hardwareWalletId),
+                    @"viewOnlyWalletId": maskIdentifier(viewOnlyWalletId),
+                  }
+                    work:^id(WalletEngine &engine) {
+    engine.primeHardwareWalletFromViewOnly(
+        toStdString(hardwareWalletId),
+        toStdString(viewOnlyWalletId));
+    return nil;
+  }];
+}
+
+- (void)rebuildHardwareWalletCacheFromViewOnly:(NSString *)hardwareWalletId
+                              viewOnlyWalletId:(NSString *)viewOnlyWalletId
+                                 restoreHeight:(double)restoreHeight
+                                        resolve:(RCTPromiseResolveBlock)resolve
+                                         reject:(RCTPromiseRejectBlock)reject
+{
+  [self runOnWalletQueue:resolve
+                  reject:reject
+               operation:@"rebuildHardwareWalletCacheFromViewOnly"
+                  fields:@{
+                    @"hardwareWalletId": maskIdentifier(hardwareWalletId),
+                    @"viewOnlyWalletId": maskIdentifier(viewOnlyWalletId),
+                    @"restoreHeight": @(restoreHeight),
+                  }
+                    work:^id(WalletEngine &engine) {
+    engine.rebuildHardwareWalletCacheFromViewOnly(
+        toStdString(hardwareWalletId),
+        toStdString(viewOnlyWalletId),
+        toExactHeight(restoreHeight, "restoreHeight"));
+    return nil;
   }];
 }
 

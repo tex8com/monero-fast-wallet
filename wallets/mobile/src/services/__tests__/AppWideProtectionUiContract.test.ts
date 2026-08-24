@@ -260,16 +260,17 @@ describe('app-wide protection UI contract', () => {
     expect(iosNativeSource).toContain('CCKeyDerivationPBKDF');
   });
 
-  it('reopens a Ledger view companion without forcing the hardware setup flow', () => {
-    expect(appSource).toContain('hardwareNeedsVisibleUnlock');
-    expect(appSource).toContain('!registeredWallet.viewOnlyPath');
-    expect(appSource).toContain('!registeredWallet.viewOnlyCredentialKey');
-    expect(appSource).toContain('softwareNeedsVisibleUnlock');
-    expect(appSource).toContain("status === 'error'");
-    expect(walletStateSource).toContain('const maxAttempts = isActive ? 3 : 2');
+  it('reopens every stored wallet after the single app unlock without a per-wallet unlock screen', () => {
+    expect(appSource).not.toContain('WalletUnlockRedirect');
+    expect(appSource).not.toContain("mode: 'open'");
     expect(walletStateSource).toContain(
-      'autoOpenAttemptedWalletIdsRef.current.delete(registration.id)',
+      'canOpenRegisteredWalletAutomatically',
     );
+    expect(walletStateSource).toContain('const maxAttempts = isActive ? 3 : 2');
+    expect(walletStateSource).toContain("'warmWallet.retryScheduled'");
+    expect(walletStateSource).toContain("'warmWallet.allOpen'");
+    expect(walletStateSource).toContain("return 'opening';");
+    expect(walletStateSource).not.toContain("return 'locked';");
   });
 
   it('does not mistake bounded operating-system permission sheets for leaving the wallet', () => {

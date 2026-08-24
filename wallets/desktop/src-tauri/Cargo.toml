@@ -24,9 +24,11 @@ base64 = "0.22"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 community-matrix-core = { path = "../../../native/community-matrix-core" }
 community-runtime-core = { path = "../../../native/community-runtime-core", features = ["native-harrier"] }
+curve25519-dalek = "4.1.3"
 ed25519-dalek = "2"
 fast-wallet-protocol = { path = "../../../native/fast-wallet-protocol" }
 mfw-product-core = { path = "../../../native/product-core" }
+monero-address = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
 getrandom = "0.2"
 hex = "0.4"
 # Explicitly select real platform credential stores. Without these features

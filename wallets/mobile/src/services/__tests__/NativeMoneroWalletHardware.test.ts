@@ -48,6 +48,8 @@ const mockNativeMoneroWalletTurboModule = {
   createViewOnlyWalletFromHardwareWithStoredSecret: jest.fn(
     async () => "wallet-ledger-view",
   ),
+  primeHardwareWalletFromViewOnly: jest.fn(async () => undefined),
+  rebuildHardwareWalletCacheFromViewOnly: jest.fn(async () => undefined),
   deleteEmptyWalletFiles: jest.fn(async () => undefined),
   deleteProtectedWalletFiles: jest.fn(async () => undefined),
   createFastReceiveIdentity: jest.fn(async () => ({
@@ -316,6 +318,51 @@ describe("NativeMoneroWallet hardware bridge", () => {
       "/tmp/wallet-ledger",
       "/tmp/wallet-ledger-view",
     ]);
+  });
+
+  it("primes Ledger signing from the open companion using only opaque session ids", async () => {
+    const { requireNativeMoneroWallet } =
+      require("../NativeMoneroWallet") as typeof import("../NativeMoneroWallet");
+    const nativeWallet = requireNativeMoneroWallet();
+
+    await expect(
+      nativeWallet.primeHardwareWalletFromViewOnly(
+        "wallet-ledger-signing",
+        "wallet-ledger-view",
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(
+      mockNativeMoneroWalletTurboModule.primeHardwareWalletFromViewOnly,
+    ).toHaveBeenCalledWith("wallet-ledger-signing", "wallet-ledger-view");
+    expect(
+      JSON.stringify(
+        mockNativeMoneroWalletTurboModule.primeHardwareWalletFromViewOnly.mock
+          .calls,
+      ),
+    ).not.toContain("privateViewKey");
+  });
+
+  it("forwards an explicit restore height for a bounded Ledger cache rebuild", async () => {
+    const { requireNativeMoneroWallet } =
+      require("../NativeMoneroWallet") as typeof import("../NativeMoneroWallet");
+    const nativeWallet = requireNativeMoneroWallet();
+
+    await expect(
+      nativeWallet.rebuildHardwareWalletCacheFromViewOnly(
+        "wallet-ledger-signing",
+        "wallet-ledger-view",
+        3_549_388,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(
+      mockNativeMoneroWalletTurboModule.rebuildHardwareWalletCacheFromViewOnly,
+    ).toHaveBeenCalledWith(
+      "wallet-ledger-signing",
+      "wallet-ledger-view",
+      3_549_388,
+    );
   });
 
   it("passes only a secure-store key alias for scanner authorization", async () => {

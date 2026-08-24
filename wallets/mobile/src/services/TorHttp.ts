@@ -56,13 +56,16 @@ export async function torFetch(
   const timeoutMs = init.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maximumResponseBytes =
     init.maximumResponseBytes ?? DEFAULT_MAXIMUM_RESPONSE_BYTES;
-  const result = await native.request(
-    url,
-    method,
-    headers,
-    init.body ?? null,
-    timeoutMs,
-    maximumResponseBytes,
+  const result = await awaitNativeRequest(
+    native.request(
+      url,
+      method,
+      headers,
+      init.body ?? null,
+      timeoutMs,
+      maximumResponseBytes,
+    ),
+    init.signal,
   );
   if (
     !result ||
@@ -79,6 +82,44 @@ export async function torFetch(
     text: async () => result.body,
     json: async () => JSON.parse(result.body),
   };
+}
+
+/**
+ * React callers may stop waiting when their AbortSignal fires. The native
+ * bridge has no per-request cancellation handle, so its connection remains
+ * independently bounded by the exact timeout passed to `native.request`.
+ * Attaching both completion handlers also consumes a late native rejection.
+ */
+function awaitNativeRequest<T>(
+  request: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return request;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      reject(new Error('Tor HTTP request was cancelled'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    request.then(
+      value => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+    if (signal.aborted) onAbort();
+  });
 }
 
 function normalizeHeaders(value: Record<string, string> | undefined): Record<string, string> {

@@ -14,10 +14,11 @@
     "mfwNameSuggestionOnionOrigins": [
       "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion"
     ],
+    "paymentLinkOrigin": "https://xmr.tex8.com",
     "mfwNameGenesis": {
       "version": 1,
       "network": "mainnet",
-      "registryAddress": "41ug1HP8xkQC8Xjveid2BuYVq2BhukF5R7ydb2zXuHgv4BJWFWnXMtf2iQCBEika9z9rETF8kmsj3bCrpZYav1BL9knRzSR",
+      "registryAddress": "49indexNameRuJZKgFL42yi11NgwYn3pzgf45HvvbEpCZq29KfQknnUM6xaptUokNsjh8TRghjr94ioSN2ZNhePm1vzJLQJ",
       "activationHeight": 3727097,
       "maximumTermYears": 1000,
       "commitMaturityBlocks": 15,
@@ -49,13 +50,14 @@
     "scannerKeyImageSpendAuthority": false,
     "officialWorker": true,
     "privateWorkerPairing": true,
-    "moneroEnthusiastV1": true,
+    "moneroEnthusiastV1": false,
     "legacyCommunity": false,
     "news": true,
     "assistant": false,
     "marketplace": false,
     "mfwNameResolution": true,
     "mfwNameRegistration": true,
+    "vanityAddress": false,
     "deviceContactDiscovery": false,
     "publicLedger": false
   }

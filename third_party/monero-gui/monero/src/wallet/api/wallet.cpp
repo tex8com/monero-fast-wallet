@@ -1219,6 +1219,26 @@ bool WalletImpl::rescanBlockchain()
     return status() == Status_Ok;
 }
 
+bool WalletImpl::resetBlockchainCacheForSharedSync()
+{
+    if (checkBackgroundSync("cannot reset blockchain cache for shared sync"))
+        return false;
+    clearStatus();
+    boost::lock_guard<boost::mutex> guard(m_refreshMutex2);
+    try {
+        // rescanBlockchain() routes through doRefresh(), which intentionally
+        // skips both the reset and refresh while no synced daemon is attached.
+        // Shared sync owns its network transport, so reset the local cache
+        // directly and leave all later block delivery to that coordinator.
+        m_wallet->rescan_blockchain(false, false);
+        m_history->refresh();
+        m_synchronized = false;
+    } catch (const std::exception &e) {
+        setStatusError(e.what());
+    }
+    return status() == Status_Ok;
+}
+
 void WalletImpl::rescanBlockchainAsync()
 {
     if (checkBackgroundSync("cannot rescan blockchain"))

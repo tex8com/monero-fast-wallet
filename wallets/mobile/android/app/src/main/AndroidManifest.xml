@@ -49,6 +49,27 @@
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="tex8monero" />
         </intent-filter>
+        <intent-filter android:autoVerify="true">
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data
+                android:scheme="https"
+                android:host="xmr.tex8.com"
+                android:pathPrefix="/pay/" />
+        </intent-filter>
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="monero" />
+        </intent-filter>
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="mfw" android:host="vanity" android:pathPrefix="/order/" />
+        </intent-filter>
       </activity>
       <service
         android:name=".WalletSyncForegroundService"

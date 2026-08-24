@@ -69,16 +69,8 @@ const serverGrpc = read(
 );
 
 test('the authenticated Core retains the measured production patch sequence', () => {
-  assert.equal(series.length, 85);
+  assert.equal(series.length, 93);
   assert.deepEqual(series.slice(-15), [
-    patchName,
-    spanPatchName,
-    '0073-wallet-benchmark-and-report-automatic-derivation-backend.patch',
-    '0074-wallet-remove-hot-path-diagnostic-clocks.patch',
-    persistentLanePatchName,
-    '0076-ledger-hid-read-timeout-fail-closed.patch',
-    '0077-wallet-expose-live-sync-throughput-in-every-client.patch',
-    cleanLaneTipPatchName,
     sixLanePatchName,
     '0080-wallet-spill-public-blockstream-overflow-to-bounded-disk.patch',
     '0081-wallet-cli-select-public-and-private-Fast-Wallet-wor.patch',
@@ -86,15 +78,23 @@ test('the authenticated Core retains the measured production patch sequence', ()
     '0083-wallet-expose-exact-per-subaddress-balances.patch',
     '0084-wallet-cli-dispatch-Community-V1-companion.patch',
     '0085-wallet-initialize-keyless-shared-sync-chain.patch',
+    '0086-wallet-add-explicit-full-ledger-spend-output-scan.patch',
+    '0087-wallet-batch-ledger-history-and-retry-node-only.patch',
+    '0088-wallet-cli-fix-debug-option-prefix-ambiguity.patch',
+    '0089-wallet-prime-ledger-view-key-before-shared-scan.patch',
+    '0090-wallet-prime-ledger-scan-from-view-companion.patch',
+    '0091-wallet-add-local-shared-sync-cache-reset.patch',
+    '0092-wallet-require-ledger-parse-mode-after-companion-prime.patch',
+    '0093-wallet-keep-companion-ledger-derivations-as-device-tokens.patch',
   ]);
-  assert.match(lock, /^previous_patch_count=84$/m);
+  assert.match(lock, /^previous_patch_count=92$/m);
   assert.match(
     lock,
-    /^previous_patched_tree=9d44cc4f95de03b6b9bfe5111a9e6cada0e79510$/m,
+    /^previous_patched_tree=5c0b09ed55682c0f6d60b9cbd4db91d5dacc0388$/m,
   );
   assert.match(
     lock,
-    /^patched_tree=8cf1df4314408a9062a2b1bacd3cf2490ff7a3ff$/m,
+    /^patched_tree=0389d585c9c742eda74b5e9912997d2ba5393503$/m,
   );
   assert.match(hotPathPatch, /^-.*process_new_transaction SLOW txid=/m);
   assert.match(hotPathPatch, /^-.*SLOW_TX[^\n]*\n-.*txid=/m);

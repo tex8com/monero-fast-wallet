@@ -1,6 +1,7 @@
 package com.monerowallet
 
 import android.Manifest
+import android.app.Activity
 import android.app.AlertDialog
 import android.app.Dialog
 import android.app.PendingIntent
@@ -46,6 +47,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.ReactApplicationContext
@@ -89,11 +91,13 @@ import org.json.JSONArray
 
 class NativeMoneroWalletModule(
   reactContext: ReactApplicationContext,
-) : NativeMoneroWalletSpec(reactContext) {
+) : NativeMoneroWalletSpec(reactContext), ActivityEventListener {
   private var pendingLedgerUsbPermissionPromise: Promise? = null
   private var pendingLedgerUsbPermissionReceiver: BroadcastReceiver? = null
   private var pendingLedgerBleScanPromise: Promise? = null
   private var pendingLedgerBleScanCallback: ScanCallback? = null
+  private var pendingLedgerBleScanTimeout: Runnable? = null
+  private var ledgerBleScanGeneration = 0L
   private var pendingBiometricPromise: Promise? = null
   private var pendingBiometricPrompt: AndroidXBiometricPrompt? = null
   private var pendingBiometricTimeout: Runnable? = null
@@ -101,6 +105,8 @@ class NativeMoneroWalletModule(
   private var pendingBiometricCompletion: ((Boolean, String) -> Unit)? = null
   private var pendingPrivatePhoneContactsPromise: Promise? = null
   private var pendingPrivatePhoneConsentPromise: Promise? = null
+  private var pendingMfwRecoveryExportPromise: Promise? = null
+  private var pendingMfwRecoveryExportBytes: ByteArray? = null
   private val mainHandler = Handler(Looper.getMainLooper())
   private var autoLockSeconds = DEFAULT_APP_AUTO_LOCK_SECONDS
   private var lastUserActivityElapsedMs = SystemClock.elapsedRealtime()
@@ -137,20 +143,62 @@ class NativeMoneroWalletModule(
   init {
     activeInstance = WeakReference(this)
     LedgerBleTransport.initialize(reactContext)
+    reactContext.addActivityEventListener(this)
   }
 
   override fun getName(): String = NAME
 
   override fun invalidate() {
     mainHandler.removeCallbacks(nativeAutoLockRunnable)
+    cancelPendingLedgerBleScan()
     walletAppVault.lock()
     nativeWalletExecutor.shutdown()
     ledgerTransportExecutor.shutdown()
+    pendingMfwRecoveryExportBytes?.fill(0)
+    pendingMfwRecoveryExportBytes = null
+    pendingMfwRecoveryExportPromise = null
+    reactApplicationContext.removeActivityEventListener(this)
     if (activeInstance?.get() === this) {
       activeInstance = null
     }
     super.invalidate()
   }
+
+  override fun onActivityResult(
+    activity: Activity,
+    requestCode: Int,
+    resultCode: Int,
+    data: Intent?,
+  ) {
+    if (requestCode != MFW_RECOVERY_EXPORT_REQUEST_CODE) return
+    val promise = pendingMfwRecoveryExportPromise ?: return
+    val bytes = pendingMfwRecoveryExportBytes
+    pendingMfwRecoveryExportPromise = null
+    pendingMfwRecoveryExportBytes = null
+    try {
+      if (resultCode != Activity.RESULT_OK) {
+        promise.resolve(false)
+        return
+      }
+      val uri = data?.data
+        ?: throw IllegalStateException("The MFW recovery destination is unavailable")
+      reactApplicationContext.contentResolver.openOutputStream(uri, "w")?.use { output ->
+        output.write(bytes ?: throw IllegalStateException("The MFW recovery data is unavailable"))
+        output.flush()
+      } ?: throw IllegalStateException("The MFW recovery destination cannot be opened")
+      promise.resolve(true)
+    } catch (error: Exception) {
+      promise.reject(
+        "monero_wallet_android_recovery_export_failed",
+        error.message ?: "MFW recovery export failed",
+        error,
+      )
+    } finally {
+      bytes?.fill(0)
+    }
+  }
+
+  override fun onNewIntent(intent: Intent) = Unit
 
   override fun linkedWithMonero(promise: Promise) {
     // The first reference to NativeMoneroWalletJni loads the complete Monero
@@ -618,7 +666,11 @@ class NativeMoneroWalletModule(
       requestLedgerBlePermissions(promise)
       return
     }
-    if (!baseStatus.available) {
+    if (baseStatus.available && baseStatus.deviceCount > 0) {
+      promise.resolve(ledgerTransportStatusToWritableMap(baseStatus))
+      return
+    }
+    if (bluetoothAdapter()?.isEnabled != true) {
       promise.resolve(ledgerTransportStatusToWritableMap(baseStatus))
       return
     }
@@ -665,7 +717,11 @@ class NativeMoneroWalletModule(
     }
 
     val baseStatus = ledgerBleTransportStatus()
-    if (!baseStatus.supported || !baseStatus.permissionGranted || !baseStatus.available) {
+    if (!baseStatus.supported || !baseStatus.permissionGranted) {
+      promise.resolve(ledgerTransportStatusToWritableMap(baseStatus))
+      return
+    }
+    if (bluetoothAdapter()?.isEnabled != true) {
       promise.resolve(ledgerTransportStatusToWritableMap(baseStatus))
       return
     }
@@ -681,10 +737,17 @@ class NativeMoneroWalletModule(
     }
 
     pendingLedgerBleScanPromise = promise
+    ledgerBleScanGeneration += 1
+    val scanGeneration = ledgerBleScanGeneration
+    val rememberedAddress = rememberedLedgerBleDevice()?.address
+    val matchesLiveLedger: (ScanResult) -> Boolean = { result ->
+      result.matchesLedgerBleService() ||
+        (rememberedAddress != null && result.device.address == rememberedAddress)
+    }
     var selectedResult: ScanResult? = null
     val callback = object : ScanCallback() {
       override fun onScanResult(callbackType: Int, result: ScanResult) {
-        if (selectedResult == null && result.matchesLedgerBleService()) {
+        if (selectedResult == null && matchesLiveLedger(result)) {
           selectedResult = result
         }
       }
@@ -693,11 +756,13 @@ class NativeMoneroWalletModule(
         if (selectedResult != null) {
           return
         }
-        selectedResult = results.firstOrNull { it.matchesLedgerBleService() }
+        selectedResult = results.firstOrNull(matchesLiveLedger)
       }
 
       override fun onScanFailed(errorCode: Int) {
         finishLedgerBleScan(
+          expectedGeneration = scanGeneration,
+          expectedCallback = this,
           status = ledgerBleTransportStatus(
             messageOverride = "Ledger BLE scan failed with Android error $errorCode",
           ),
@@ -714,50 +779,60 @@ class NativeMoneroWalletModule(
       ),
     )
 
-    val filters = LEDGER_BLE_SERVICE_UUIDS.map { uuid ->
+    val filters = LEDGER_BLE_SERVICE_UUIDS.mapTo(mutableListOf()) { uuid ->
       ScanFilter.Builder().setServiceUuid(ParcelUuid(uuid)).build()
+    }
+    if (rememberedAddress != null) {
+      filters += ScanFilter.Builder().setDeviceAddress(rememberedAddress).build()
     }
     val settings = ScanSettings.Builder()
       .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
       .build()
 
-    runCatching {
-      scanner.startScan(filters, settings, callback)
-    }.onFailure { error ->
-      pendingLedgerBleScanCallback = null
-      pendingLedgerBleScanPromise = null
-      promise.resolve(
-        ledgerTransportStatusToWritableMap(
-          ledgerBleTransportStatus(
-            messageOverride =
-              "Ledger BLE scan could not start: ${error.message ?: "unknown error"}",
-          ),
-        ),
-      )
-      return
-    }
-
-    mainHandler.postDelayed({
+    val timeout = Runnable {
+      if (
+        ledgerBleScanGeneration != scanGeneration ||
+        pendingLedgerBleScanCallback !== callback
+      ) {
+        return@Runnable
+      }
       val result = selectedResult
       logNativeEvent(
         if (result != null) {
           "ledgerBle.scan.liveAdvertisement"
         } else {
-          "ledgerBle.scan.rememberedDeviceFallback"
+          "ledgerBle.scan.noLiveAdvertisement"
         },
       )
       finishLedgerBleScan(
+        expectedGeneration = scanGeneration,
+        expectedCallback = callback,
         status = if (result != null) {
           ledgerBleDetectedStatus(result)
         } else {
-          previouslyPairedLedgerBleStatus()
-            ?: ledgerBleTransportStatus(
-              messageOverride =
-                "No Ledger Nano X BLE device found. Unlock it, enable Bluetooth, and open the Monero app.",
-            )
+          ledgerBleTransportStatus(
+            messageOverride =
+              "No live Ledger Nano X BLE device found. Unlock it, enable Bluetooth, and open the Monero app.",
+          )
         },
       )
-    }, LEDGER_BLE_SCAN_TIMEOUT_MS)
+    }
+    pendingLedgerBleScanTimeout = timeout
+    mainHandler.postDelayed(timeout, LEDGER_BLE_SCAN_TIMEOUT_MS)
+
+    runCatching {
+      scanner.startScan(filters, settings, callback)
+    }.onFailure { error ->
+      finishLedgerBleScan(
+        expectedGeneration = scanGeneration,
+        expectedCallback = callback,
+        status = ledgerBleTransportStatus(
+          messageOverride =
+            "Ledger BLE scan could not start: ${error.message ?: "unknown error"}",
+        ),
+      )
+      return
+    }
   }
 
   override fun getBiometricAuthStatus(promise: Promise) {
@@ -4504,6 +4579,8 @@ class NativeMoneroWalletModule(
   override fun syncLedgerKeyImagesToViewWallet(
     hardwareWalletId: String,
     viewOnlyWalletId: String,
+    fullSpendOutputScan: Boolean,
+    nodeOnlyRetry: Boolean,
     promise: Promise,
   ) {
     resolveNativeMap(
@@ -4512,13 +4589,60 @@ class NativeMoneroWalletModule(
       mapOf(
         "hardwareWalletId" to maskIdentifier(hardwareWalletId),
         "viewOnlyWalletId" to maskIdentifier(viewOnlyWalletId),
+        "fullSpendOutputScan" to fullSpendOutputScan,
+        "nodeOnlyRetry" to nodeOnlyRetry,
       ),
     ) {
       ledgerKeyImageSyncResultToWritableMap(
         NativeMoneroWalletJni.syncLedgerKeyImagesToViewWallet(
           hardwareWalletId,
           viewOnlyWalletId,
+          fullSpendOutputScan,
+          nodeOnlyRetry,
         ),
+      )
+    }
+  }
+
+  override fun primeHardwareWalletFromViewOnly(
+    hardwareWalletId: String,
+    viewOnlyWalletId: String,
+    promise: Promise,
+  ) {
+    resolveNativeVoid(
+      promise,
+      "primeHardwareWalletFromViewOnly",
+      mapOf(
+        "hardwareWalletId" to maskIdentifier(hardwareWalletId),
+        "viewOnlyWalletId" to maskIdentifier(viewOnlyWalletId),
+      ),
+    ) {
+      NativeMoneroWalletJni.primeHardwareWalletFromViewOnly(
+        hardwareWalletId,
+        viewOnlyWalletId,
+      )
+    }
+  }
+
+  override fun rebuildHardwareWalletCacheFromViewOnly(
+    hardwareWalletId: String,
+    viewOnlyWalletId: String,
+    restoreHeight: Double,
+    promise: Promise,
+  ) {
+    resolveNativeVoid(
+      promise,
+      "rebuildHardwareWalletCacheFromViewOnly",
+      mapOf(
+        "hardwareWalletId" to maskIdentifier(hardwareWalletId),
+        "viewOnlyWalletId" to maskIdentifier(viewOnlyWalletId),
+        "restoreHeight" to restoreHeight,
+      ),
+    ) {
+      NativeMoneroWalletJni.rebuildHardwareWalletCacheFromViewOnly(
+        hardwareWalletId,
+        viewOnlyWalletId,
+        restoreHeight,
       )
     }
   }
@@ -4845,15 +4969,36 @@ class NativeMoneroWalletModule(
                         "Name: $name\n" +
                         "Network: $network\n" +
                         "Bundle: $bundle"
-                    val share = Intent(Intent.ACTION_SEND).apply {
-                      type = "text/plain"
-                      putExtra(Intent.EXTRA_SUBJECT, "$name owner recovery")
-                      putExtra(Intent.EXTRA_TEXT, recoveryText)
+                    if (pendingMfwRecoveryExportPromise != null) {
+                      promise.reject(
+                        "monero_wallet_android_recovery_export_busy",
+                        "Another MFW recovery export is already active",
+                      )
+                      return@post
                     }
-                    activity.startActivity(
-                      Intent.createChooser(share, "Save encrypted recovery"),
-                    )
-                    promise.resolve(true)
+                    pendingMfwRecoveryExportPromise = promise
+                    pendingMfwRecoveryExportBytes = recoveryText.toByteArray(Charsets.UTF_8)
+                    val save = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                      addCategory(Intent.CATEGORY_OPENABLE)
+                      type = "application/octet-stream"
+                      putExtra(Intent.EXTRA_TITLE, "$name.mfw-owner-recovery")
+                      addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    }
+                    runCatching {
+                      activity.startActivityForResult(
+                        save,
+                        MFW_RECOVERY_EXPORT_REQUEST_CODE,
+                      )
+                    }.onFailure { error ->
+                      pendingMfwRecoveryExportBytes?.fill(0)
+                      pendingMfwRecoveryExportBytes = null
+                      pendingMfwRecoveryExportPromise = null
+                      promise.reject(
+                        "monero_wallet_android_recovery_export_failed",
+                        error.message ?: "MFW recovery export failed",
+                        error,
+                      )
+                    }
                   }
                 }.onFailure { error ->
                   mainHandler.post {
@@ -6936,11 +7081,12 @@ class NativeMoneroWalletModule(
   }
 
   private fun fastWalletRelayTransportOrigin(signedOrigin: String): String {
-    if (signedOrigin == "https://xmr.tex8.com") {
-      return normalizeFastWalletOrigin(BuildConfig.FAST_WALLET_GATEWAY_ORIGIN)
-    }
     val normalized = normalizeFastWalletOrigin(signedOrigin)
     val parsed = URI(normalized)
+    val host = parsed.host?.lowercase()
+    if (host == "xmr.tex8.com") {
+      return normalizeFastWalletOrigin(BuildConfig.FAST_WALLET_GATEWAY_ORIGIN)
+    }
     require(
       parsed.scheme == "http" &&
         parsed.host?.lowercase()?.matches(Regex("^[a-z2-7]{56}\\.onion$")) == true
@@ -7732,6 +7878,7 @@ class NativeMoneroWalletModule(
       putDouble("downloadStartHeight", status.numberValue("downloadStartHeight"))
       putDouble("downloadedHeight", status.numberValue("downloadedHeight"))
       putDouble("chainHeight", status.numberValue("chainHeight"))
+      putDouble("priorityWalletHeight", status.numberValue("priorityWalletHeight"))
       putDouble("targetHeight", status.numberValue("targetHeight"))
       putDouble("transportStarts", status.numberValue("transportStarts"))
       putDouble("fetchedBatches", status.numberValue("fetchedBatches"))
@@ -8313,24 +8460,35 @@ class NativeMoneroWalletModule(
       } else {
         false
       }
+    val transportConnected = bluetoothEnabled && LedgerBleTransport.isConnected()
+    val connectedDeviceName = if (transportConnected) {
+      reactApplicationContext
+        .getSharedPreferences(LEDGER_BLE_PREFERENCES_NAME, Context.MODE_PRIVATE)
+        .getString(LEDGER_BLE_DEVICE_NAME_KEY, "")
+        .orEmpty()
+    } else {
+      ""
+    }
     val message = messageOverride ?: when {
       !permissionsGranted ->
         "Bluetooth permission is required before scanning for Ledger Nano X"
       !bluetoothEnabled ->
         "Turn on Bluetooth to search for Ledger Nano X"
+      transportConnected ->
+        "Ledger Nano is connected. Keep it unlocked with the Monero app open."
       else ->
-        "Ready to scan for Ledger Nano X over Bluetooth"
+        "Unlock the Ledger Nano X and open its Monero app to connect over Bluetooth"
     }
 
     return LedgerTransportStatus(
       platform = "android",
       transport = "ble",
       supported = bluetoothSupported,
-      available = bluetoothEnabled,
+      available = transportConnected,
       permissionGranted = permissionsGranted,
-      requiresUserAction = !permissionsGranted || !bluetoothEnabled,
-      deviceCount = 0,
-      deviceName = "",
+      requiresUserAction = !transportConnected,
+      deviceCount = if (transportConnected) 1 else 0,
+      deviceName = connectedDeviceName,
       message = message,
     )
   }
@@ -8342,34 +8500,12 @@ class NativeMoneroWalletModule(
       platform = "android",
       transport = "ble",
       supported = NativeMoneroWalletJni.linkedWithMonero(),
-      available = true,
+      available = false,
       permissionGranted = missingLedgerBlePermissions().isEmpty(),
       requiresUserAction = false,
       deviceCount = 1,
       deviceName = deviceName,
       message = "Ledger Nano found. Keep it unlocked with the Monero app open.",
-    )
-  }
-
-  /**
-   * Ledger Nano X can stop advertising its Ledger service between sessions
-   * while it remains paired with Android. Reuse the paired device after a
-   * scan misses it instead of reporting a false negative.
-   */
-  private fun previouslyPairedLedgerBleStatus(): LedgerTransportStatus? {
-    val device = rememberedLedgerBleDevice() ?: return null
-    val deviceName = ledgerBleDeviceName(device)
-    LedgerBleTransport.selectDevice(device)
-    return LedgerTransportStatus(
-      platform = "android",
-      transport = "ble",
-      supported = NativeMoneroWalletJni.linkedWithMonero(),
-      available = true,
-      permissionGranted = missingLedgerBlePermissions().isEmpty(),
-      requiresUserAction = false,
-      deviceCount = 1,
-      deviceName = deviceName,
-      message = "Using previously paired Ledger Nano X. Keep it unlocked with the Monero app open.",
     )
   }
 
@@ -8418,11 +8554,23 @@ class NativeMoneroWalletModule(
     return device
   }
 
-  private fun finishLedgerBleScan(status: LedgerTransportStatus) {
+  private fun finishLedgerBleScan(
+    expectedGeneration: Long,
+    expectedCallback: ScanCallback,
+    status: LedgerTransportStatus,
+  ) {
+    if (
+      ledgerBleScanGeneration != expectedGeneration ||
+      pendingLedgerBleScanCallback !== expectedCallback
+    ) {
+      return
+    }
+
+    pendingLedgerBleScanTimeout?.let(mainHandler::removeCallbacks)
+    pendingLedgerBleScanTimeout = null
     val scanner = bluetoothAdapter()?.bluetoothLeScanner
-    val callback = pendingLedgerBleScanCallback
-    if (callback != null && scanner != null && missingLedgerBlePermissions().isEmpty()) {
-      runCatching { scanner.stopScan(callback) }
+    if (scanner != null && missingLedgerBlePermissions().isEmpty()) {
+      runCatching { scanner.stopScan(expectedCallback) }
     }
     pendingLedgerBleScanCallback = null
 
@@ -8451,6 +8599,20 @@ class NativeMoneroWalletModule(
     // Prepare the transport on the serialized native worker first. A status is
     // "available" only when the selected Ledger is actually connected.
     prepareLedgerBleTransport(status, promise)
+  }
+
+  private fun cancelPendingLedgerBleScan() {
+    ledgerBleScanGeneration += 1
+    pendingLedgerBleScanTimeout?.let(mainHandler::removeCallbacks)
+    pendingLedgerBleScanTimeout = null
+
+    val callback = pendingLedgerBleScanCallback
+    pendingLedgerBleScanCallback = null
+    pendingLedgerBleScanPromise = null
+    val scanner = bluetoothAdapter()?.bluetoothLeScanner
+    if (callback != null && scanner != null && missingLedgerBlePermissions().isEmpty()) {
+      runCatching { scanner.stopScan(callback) }
+    }
   }
 
   private fun prepareLedgerBleTransport(
@@ -8663,6 +8825,7 @@ class NativeMoneroWalletModule(
     this[key] as? List<*> ?: emptyList<Any>()
 
   companion object {
+    private const val MFW_RECOVERY_EXPORT_REQUEST_CODE = 0x4D46
     @Volatile
     private var activeInstance: WeakReference<NativeMoneroWalletModule>? = null
 
@@ -8917,6 +9080,7 @@ class NativeMoneroWalletModule(
         "derivationDurationMs",
         "elapsedMs",
         "failedAttempts",
+        "fullSpendOutputScan",
         "httpStatus",
         "importHeight",
         "importedOutputCount",

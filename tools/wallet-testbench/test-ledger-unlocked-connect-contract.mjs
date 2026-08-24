@@ -10,6 +10,9 @@ const read = path => readFileSync(resolve(root, path), 'utf8');
 const series = read('third_party/monero-patches/series');
 const patch = read('third_party/monero-patches/0059-ledger-probe-unlocked-app-before-wallet-connect.patch');
 const hidTimeoutPatch = read('third_party/monero-patches/0076-ledger-hid-read-timeout-fail-closed.patch');
+const fastScanPatch = read('third_party/monero-patches/0089-wallet-prime-ledger-view-key-before-shared-scan.patch');
+const companionScanPatch = read('third_party/monero-patches/0090-wallet-prime-ledger-scan-from-view-companion.patch');
+const companionDeviceTokenPatch = read('third_party/monero-patches/0093-wallet-keep-companion-ledger-derivations-as-device-tokens.patch');
 const bridgeCmake = read('native/monero-bridge/CMakeLists.txt');
 
 test('a Ledger wallet-open preserves an active session and probes without INS_RESET', () => {
@@ -79,6 +82,68 @@ test('rejected Ledger view-key export is retained only as a fixed safe category'
   assert.match(runner, /ledger-view-key-export-rejected/);
   assert.match(runner, /failure: failure\.failureClass/);
   assert.doesNotMatch(runner, /failure: result\.stderr/);
+});
+
+test('a Ledger shared scan primes and validates its local view key first', () => {
+  const engine = read('native/monero-bridge/cpp/WalletEngine.cpp');
+  assert.match(series, /^0089-wallet-prime-ledger-view-key-before-shared-scan\.patch$/m);
+  assert.match(fastScanPatch, /bool WalletImpl::prepareHardwareWalletScan\(\)/);
+  assert.match(fastScanPatch, /device\.get_secret_keys\(fake_view_key, fake_spend_key\)/);
+  assert.match(fastScanPatch, /crypto::secret_key_to_public_key/);
+  assert.match(fastScanPatch, /derived_public_view_key !=[\s\S]*m_account_address\.m_view_public_key/);
+  const startRefresh = engine.slice(
+    engine.indexOf('void startRefresh(const WalletId& walletId)'),
+    engine.indexOf('void startRefreshDirect(const WalletId& walletId)'),
+  );
+  assert.match(startRefresh, /Device_Ledger/);
+  assert.match(startRefresh, /prepareHardwareWalletScan\(\)/);
+  assert.ok(
+    startRefresh.indexOf('prepareHardwareWalletScan()') <
+      startRefresh.indexOf('joinNetworkSync(walletId)'),
+  );
+  assert.doesNotMatch(startRefresh, /hardwarePrivateViewKey\(\)/);
+});
+
+test('an encrypted view companion primes Ledger device-token derivation without exporting again', () => {
+  const engine = read('native/monero-bridge/cpp/WalletEngine.cpp');
+  assert.match(series, /^0090-wallet-prime-ledger-scan-from-view-companion\.patch$/m);
+  assert.match(series, /^0092-wallet-require-ledger-parse-mode-after-companion-prime\.patch$/m);
+  assert.match(series, /^0093-wallet-keep-companion-ledger-derivations-as-device-tokens\.patch$/m);
+  assert.ok(
+    series.indexOf('0092-wallet-require-ledger-parse-mode-after-companion-prime.patch') <
+      series.indexOf('0093-wallet-keep-companion-ledger-derivations-as-device-tokens.patch'),
+  );
+  assert.match(companionScanPatch, /prepareHardwareWalletScanFromViewOnly/);
+  assert.match(companionScanPatch, /view_only->watchOnly\(\)/);
+  assert.match(companionScanPatch, /m_wallet->nettype\(\) != view_only->m_wallet->nettype\(\)/);
+  assert.match(companionScanPatch, /m_view_public_key !=/);
+  assert.match(companionScanPatch, /m_spend_public_key !=/);
+  assert.match(companionScanPatch, /crypto::secret_key_to_public_key/);
+  assert.match(companionScanPatch, /device\.get_public_address\(connected_address\)/);
+  assert.match(companionScanPatch, /Connected Ledger does not match this wallet/);
+  assert.match(companionScanPatch, /memwipe\(private_view_key\.data/);
+  assert.match(companionScanPatch, /memwipe\(this->viewkey\.data/);
+  assert.match(companionScanPatch, /A different Ledger view key is already active/);
+  assert.match(companionDeviceTokenPatch, /opaque TYPE_DERIVATION token/);
+  const deviceTokenMode = companionDeviceTokenPatch.indexOf(
+    'device.set_mode(hw::device::NONE)',
+  );
+  assert.ok(deviceTokenMode >= 0);
+  assert.match(
+    companionDeviceTokenPatch,
+    /device\.get_mode\(\) != hw::device::NONE/,
+  );
+  assert.match(
+    companionDeviceTokenPatch,
+    /Ledger could not enter device-token derivation mode/,
+  );
+  assert.match(engine, /void primeHardwareWalletFromViewOnly\(/);
+  assert.match(engine, /hardware->prepareHardwareWalletScanFromViewOnly\(\*viewOnly\)/);
+  const prime = engine.slice(
+    engine.indexOf('void primeHardwareWalletFromViewOnly('),
+    engine.indexOf('FastReceiveIdentity createFastReceiveIdentity('),
+  );
+  assert.doesNotMatch(prime, /secretViewKey\(|privateViewKey/);
 });
 
 test('an unknown initial hardware-open error remains a safe connection category', () => {

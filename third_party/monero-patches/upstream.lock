@@ -68,11 +68,34 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # while keeping its account uninitialised. Shared gRPC ranges use their exact
 # explicit cursor without a synthetic locator; authenticated bin-RPC fallback
 # retains the valid genesis locator.
+# Patch 0086 preserves the incremental automatic Ledger key-image fast path
+# while adding an explicit full spent-status recheck for the Settings action.
+# Patch 0087 checkpoints successful Ledger key-image derivations before node
+# verification, retries cached key images without hardware, and batches
+# restricted /gettransactions lookups to the node limit of 100 hashes.
+# Patch 0088 keeps the documented product --debug flag working despite the
+# extended --debug-* option family by normalizing it before Boost parses it.
+# Patch 0089 primes the user-approved Ledger private view key once per connected
+# hardware session before shared scanning, so parsing remains local instead of
+# issuing one BLE APDU for every public transaction key.
+# Patch 0090 reuses that already-approved key directly from the encrypted local
+# view-only companion for signing-wallet scans. Both master public keys and the
+# derived public view key must match before the secret is installed in memory.
+# Patch 0091 exposes one local-only soft cache reset for the shared-sync owner.
+# Unlike Wallet::rescanBlockchain(), it cannot silently skip the reset merely
+# because no synced daemon is attached, and it performs no network refresh.
+# Patch 0092 couples a successfully identity-checked companion view-key prime
+# to Ledger transaction-parse mode and fails the scan preparation if that mode
+# cannot be established and verified.
+# Patch 0093 restores device-token derivation after that prime. The targeted
+# Key-Image path must receive Ledger's encrypted TYPE_DERIVATION token; sending
+# a host-clear parse-mode derivation back to the device corrupts the ephemeral
+# output binding even when the APDU itself returns success.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=9d44cc4f95de03b6b9bfe5111a9e6cada0e79510
-previous_patch_count=84
-patched_tree=8cf1df4314408a9062a2b1bacd3cf2490ff7a3ff
+previous_patched_tree=5c0b09ed55682c0f6d60b9cbd4db91d5dacc0388
+previous_patch_count=92
+patched_tree=0389d585c9c742eda74b5e9912997d2ba5393503
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

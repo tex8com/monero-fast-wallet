@@ -1,29 +1,32 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef } from 'react';
 import {
   createBottomTabNavigator,
   type BottomTabBarProps,
-} from "@react-navigation/bottom-tabs";
+} from '@react-navigation/bottom-tabs';
 
-import HomeScreen from "../screens/HomeScreen";
-import SendScreen from "../screens/SendScreen";
-import ReceiveScreen from "../screens/ReceiveScreen";
-import MenuScreen from "../screens/MenuScreen";
-import SettingsScreen from "../screens/SettingsScreen";
-import NodeStatusScreen from "../screens/NodeStatusScreen";
-import Tex8AssistantScreen from "../screens/Tex8AssistantScreen";
-import WelcomeScreen from "../screens/WelcomeScreen";
-import WalletSetupScreen from "../screens/WalletSetupScreen";
-import WalletsScreen from "../screens/WalletsScreen";
-import MfwNamesScreen from "../screens/MfwNamesScreen";
-import CommunityComingSoonScreen from "../screens/CommunityComingSoonScreen";
-import TransactionsScreen from "../screens/TransactionsScreen";
-import TransactionDetailScreen from "../screens/TransactionDetailScreen";
-import ProjectPageScreen from "../screens/ProjectPageScreen";
-import CustomTabBar from "../components/CustomTabBar";
-import { useWalletState } from "../services/WalletState";
-import { useAppSecurity } from "../services/AppSecurity";
-import { logWalletEvent } from "../services/WalletLogger";
-import { v1ReleaseFeatures } from "../../../../packages/wallet-shared/src/v1ReleaseFeatures";
+import HomeScreen from '../screens/HomeScreen';
+import SendScreen from '../screens/SendScreen';
+import ReceiveScreen from '../screens/ReceiveScreen';
+import MenuScreen from '../screens/MenuScreen';
+import SettingsScreen from '../screens/SettingsScreen';
+import NodeStatusScreen from '../screens/NodeStatusScreen';
+import Tex8AssistantScreen from '../screens/Tex8AssistantScreen';
+import WelcomeScreen from '../screens/WelcomeScreen';
+import WalletSetupScreen from '../screens/WalletSetupScreen';
+import WalletsScreen from '../screens/WalletsScreen';
+import MfwNamesScreen from '../screens/MfwNamesScreen';
+import VanityAddressScreen from '../screens/VanityAddressScreen';
+import VanityPaymentScreen from '../screens/VanityPaymentScreen';
+import VanityOrderStatusScreen from '../screens/VanityOrderStatusScreen';
+import CommunityComingSoonScreen from '../screens/CommunityComingSoonScreen';
+import TransactionsScreen from '../screens/TransactionsScreen';
+import TransactionDetailScreen from '../screens/TransactionDetailScreen';
+import ProjectPageScreen from '../screens/ProjectPageScreen';
+import CustomTabBar from '../components/CustomTabBar';
+import { useWalletState } from '../services/WalletState';
+import { useAppSecurity } from '../services/AppSecurity';
+import { logWalletEvent } from '../services/WalletLogger';
+import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 
 const Tab = createBottomTabNavigator();
 
@@ -43,11 +46,11 @@ export default function TabNavigator() {
   const walletStateReadyLoggedRef = useRef(false);
 
   useEffect(() => {
-    if (status !== "loading" && !walletStateReadyLoggedRef.current) {
+    if (status !== 'loading' && !walletStateReadyLoggedRef.current) {
       walletStateReadyLoggedRef.current = true;
-      logWalletEvent("AppNavigation", "walletState.ready", {
+      logWalletEvent('AppNavigation', 'walletState.ready', {
         elapsedMs:
-          typeof initialProtectionTransitionStartedAtMs === "number"
+          typeof initialProtectionTransitionStartedAtMs === 'number'
             ? Date.now() - initialProtectionTransitionStartedAtMs
             : Date.now() - walletStateLoadStartedAtMsRef.current,
         status,
@@ -55,12 +58,11 @@ export default function TabNavigator() {
     }
     if (
       !appSecurityLocked &&
-      status !== "loading" &&
-      typeof initialProtectionTransitionStartedAtMs === "number"
+      status !== 'loading' &&
+      typeof initialProtectionTransitionStartedAtMs === 'number'
     ) {
       logWalletEvent("AppNavigation", "walletScreen.presented", {
-        elapsedMs:
-          Date.now() - initialProtectionTransitionStartedAtMs,
+        elapsedMs: Date.now() - initialProtectionTransitionStartedAtMs,
         initialSetup: initialProtectionSetupCompleted,
         status,
       });
@@ -74,7 +76,7 @@ export default function TabNavigator() {
     status,
   ]);
 
-  if (status === "loading") {
+  if (status === 'loading') {
     return null;
   }
 
@@ -96,13 +98,21 @@ export default function TabNavigator() {
       <Tab.Screen name="Send" component={SendScreen} />
       <Tab.Screen name="Receive" component={ReceiveScreen} />
       {v1ReleaseFeatures.legacyCommunity ? (
-        <Tab.Screen name="FindEnthusiasts" component={CommunityComingSoonScreen} />
+        <Tab.Screen
+          name="FindEnthusiasts"
+          component={CommunityComingSoonScreen}
+        />
       ) : null}
-      <Tab.Screen name="MoneroEnthusiast" component={CommunityComingSoonScreen} />
+      {v1ReleaseFeatures.moneroEnthusiastV1 ? (
+        <Tab.Screen name="MoneroEnthusiast" component={CommunityComingSoonScreen} />
+      ) : null}
       <Tab.Screen name="Menu" component={MenuScreen} />
       {/* Hidden screens — accessible via Menu */}
       {v1ReleaseFeatures.legacyCommunity ? (
-        <Tab.Screen name="EnthusiastChat" component={CommunityComingSoonScreen} />
+        <Tab.Screen
+          name="EnthusiastChat"
+          component={CommunityComingSoonScreen}
+        />
       ) : null}
       <Tab.Screen name="Settings" component={SettingsScreen} />
       <Tab.Screen name="NodeStatus" component={NodeStatusScreen} />
@@ -114,8 +124,21 @@ export default function TabNavigator() {
       {v1ReleaseFeatures.mfwNameRegistration ? (
         <Tab.Screen name="MfwNames" component={MfwNamesScreen} />
       ) : null}
+      {v1ReleaseFeatures.vanityAddress ? (
+        <>
+          <Tab.Screen name="VanityAddress" component={VanityAddressScreen} />
+          <Tab.Screen name="VanityPayment" component={VanityPaymentScreen} />
+          <Tab.Screen
+            name="VanityOrderStatus"
+            component={VanityOrderStatusScreen}
+          />
+        </>
+      ) : null}
       <Tab.Screen name="Transactions" component={TransactionsScreen} />
-      <Tab.Screen name="TransactionDetail" component={TransactionDetailScreen} />
+      <Tab.Screen
+        name="TransactionDetail"
+        component={TransactionDetailScreen}
+      />
       <Tab.Screen name="Welcome" component={WelcomeScreen} />
       <Tab.Screen name="WalletSetup" component={WalletSetupScreen} />
     </Tab.Navigator>

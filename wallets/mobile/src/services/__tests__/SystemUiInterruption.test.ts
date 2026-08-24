@@ -10,6 +10,7 @@ jest.mock('../NativeMoneroWallet', () => ({
   }),
 }));
 
+import { Platform } from 'react-native';
 import {
   activeSystemUiInterruptionDeadlineMs,
   beginSystemUiInterruption,
@@ -19,6 +20,11 @@ import {
 } from '../SystemUiInterruption';
 
 describe('SystemUiInterruption', () => {
+  const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(
+    Platform,
+    'OS',
+  );
+
   beforeEach(() => {
     resetSystemUiInterruptionsForTests();
     mockNativeBeginSystemUiInterruption.mockClear();
@@ -29,6 +35,7 @@ describe('SystemUiInterruption', () => {
   afterEach(() => {
     resetSystemUiInterruptionsForTests();
     jest.restoreAllMocks();
+    Object.defineProperty(Platform, 'OS', originalPlatformDescriptor!);
   });
 
   it('tracks nested operating-system UI with a bounded latest deadline', () => {
@@ -68,34 +75,30 @@ describe('SystemUiInterruption', () => {
     expect(recentlyCompletedSystemUiInterruption(21_001)).toBe(false);
   });
 
-  it('always releases the guard after success or failure', async () => {
+  it('does not wait for iOS native interruption bookkeeping', async () => {
     await expect(
       withSystemUiInterruption('permission', async () => 'ok'),
     ).resolves.toBe('ok');
-    expect(mockNativeBeginSystemUiInterruption).toHaveBeenCalledWith(
-      'permission',
-      45_000,
-    );
-    expect(mockNativeEndSystemUiInterruption).toHaveBeenCalledWith(
-      'native-permission',
-    );
+    expect(mockNativeBeginSystemUiInterruption).not.toHaveBeenCalled();
+    expect(mockNativeEndSystemUiInterruption).not.toHaveBeenCalled();
     expect(activeSystemUiInterruptionDeadlineMs()).toBeUndefined();
 
-    mockNativeBeginSystemUiInterruption.mockClear();
-    mockNativeEndSystemUiInterruption.mockClear();
     await expect(
       withSystemUiInterruption('permission', async () => {
         throw new Error('denied');
       }),
     ).rejects.toThrow('denied');
-    expect(mockNativeBeginSystemUiInterruption).toHaveBeenCalledTimes(1);
-    expect(mockNativeEndSystemUiInterruption).toHaveBeenCalledWith(
-      'native-permission',
-    );
+    expect(mockNativeBeginSystemUiInterruption).not.toHaveBeenCalled();
+    expect(mockNativeEndSystemUiInterruption).not.toHaveBeenCalled();
     expect(activeSystemUiInterruptionDeadlineMs()).toBeUndefined();
   });
 
-  it('caps native and JavaScript protection at the security timeout', async () => {
+  it('keeps Android native interruption protection unchanged', async () => {
+    Object.defineProperty(Platform, 'OS', {
+      configurable: true,
+      value: 'android',
+    });
+
     await withSystemUiInterruption(
       'camera',
       async () => undefined,
@@ -105,6 +108,9 @@ describe('SystemUiInterruption', () => {
     expect(mockNativeBeginSystemUiInterruption).toHaveBeenCalledWith(
       'camera',
       45_000,
+    );
+    expect(mockNativeEndSystemUiInterruption).toHaveBeenCalledWith(
+      'native-camera',
     );
   });
 });

@@ -6,6 +6,7 @@ import type {
   NetworkSyncStatus,
   WalletSnapshot,
 } from '../services/NativeMoneroWallet';
+import type { ConnectivityRouteState } from '../services/ConnectivityState';
 import type { WalletRuntimeStatus } from '../services/WalletState';
 import {
   networkSyncFailureCode,
@@ -19,9 +20,6 @@ import {
   type WalletSyncEtaState,
 } from '../../../../packages/wallet-shared/src/walletSync';
 import {
-  completedFullScanMetrics,
-  formatFullScanDuration,
-  formatNetworkSyncRate,
   formatSyncPercent,
   formatWalletDerivationRate,
   normalizeSyncPercent,
@@ -46,6 +44,7 @@ type SyncStatusBarProps = {
   syncStartHeight?: number;
   status: WalletRuntimeStatus;
   subtitle?: string;
+  torStatus?: ConnectivityRouteState;
   walletName?: string;
 };
 
@@ -61,6 +60,7 @@ export default function SyncStatusBar({
   syncStartHeight,
   status,
   subtitle,
+  torStatus,
   walletName,
 }: SyncStatusBarProps) {
   const { dateLocale, t } = useI18n();
@@ -69,12 +69,11 @@ export default function SyncStatusBar({
     networkStatus,
   );
   const presentationStartHeight =
-    syncStartHeight ?? networkStatus?.downloadStartHeight;
+    syncStartHeight ?? snapshot?.walletHeight;
   const presentation = presentWalletSync(presentationSnapshot, {
-    // On a cold start, the native coordinator can begin scanning before the
-    // first coherent wallet snapshot is readable. Its authenticated download
-    // cursor is the exact start of that visible run and keeps percentage
-    // progress live without changing persisted wallet state.
+    // A shared downloader may serve wallets with different restore heights.
+    // Only the selected wallet's own first snapshot is a valid fallback
+    // baseline for its percentage.
     startHeight: presentationStartHeight,
   });
   const network = presentNetworkSync(networkStatus);
@@ -86,29 +85,53 @@ export default function SyncStatusBar({
     Boolean(networkStatus && !network.ready && !network.failed && network.busy),
   );
   const hasSyncError = status === 'error' || Boolean(error) || network.failed;
-  const walletProgress = presentation.coreConfirmed
-    ? 100
-    : presentation.phase === 'finalizing'
-    ? undefined
-    : snapshot
-    ? presentation.progress ?? 0
-    : progress ?? 0;
+  const walletHeightProgress = blockHeightProgress(
+    presentation.walletHeight,
+    presentation.targetHeight,
+  );
+  const spendOutputPhase =
+    readinessPhase === 'scanning-spend-outputs' ||
+    readinessPhase === 'retrying-spent-output-node';
+  const walletProgress =
+    spendOutputPhase
+      ? undefined
+      : presentation.coreConfirmed
+      ? 100
+      : presentation.phase === 'finalizing'
+      ? 100
+      : snapshot
+      ? walletHeightProgress ?? presentation.progress ?? 0
+      : progress ?? 0;
   // A wallet cache at the tip does not prove that the one process-wide
   // downloader has finished an older shared range. Keep these two progress
   // sources independent on mobile just as on desktop.
-  const blockchainProgress = network.ready ? 100 : network.progress ?? 0;
   const blockchainCurrent =
     network.downloadedHeight && network.downloadedHeight > 0
       ? network.downloadedHeight
       : network.chainHeight;
-  const connected = network.ready || network.connected;
-  const connecting = !connected && !network.failed && network.busy;
+  const blockchainProgress = network.ready
+    ? 100
+    : blockHeightProgress(blockchainCurrent, network.targetHeight) ??
+      network.progress ??
+      0;
+  const blockchainConnected = network.ready || network.connected;
+  const torReady = !torStatus || torStatus.connected;
+  const torConnecting = Boolean(
+    torStatus && !torStatus.connected && torStatus.phase !== 'error',
+  );
+  const connected = blockchainConnected && torReady;
+  const connecting =
+    torConnecting || (!blockchainConnected && !network.failed && network.busy);
   const walletOpened =
     Boolean(snapshot) && (status === 'open' || status === 'syncing');
-  const showWalletSync = connected && walletOpened;
+  const showWalletSync = blockchainConnected && walletOpened;
   const walletDetail =
-    readinessPhase === 'scanning-spend-outputs'
+    readinessPhase === 'retrying-spent-output-node'
+      ? t('sync.spendOutputsNodeRetry')
+      : readinessPhase === 'scanning-spend-outputs'
       ? t('sync.spendOutputsChecking')
+      : readinessPhase === 'waiting-ledger'
+      ? t('sync.waitingLedger')
       : readinessPhase === 'connecting-ledger'
       ? t('sync.connectingLedger')
       : readinessPhase === 'persisting-wallet'
@@ -134,7 +157,7 @@ export default function SyncStatusBar({
         })
       : network.phase === 'selecting-provider' ||
         network.phase === 'initializing-transport'
-      ? t("sync.startingConnectionElapsed", {
+      ? t('sync.startingConnectionElapsed', {
           seconds: connectionElapsedSeconds,
         })
       : undefined;
@@ -142,11 +165,15 @@ export default function SyncStatusBar({
     presentation.phase === 'syncing' ? formatSyncEta(etaSeconds, t) : undefined;
   const fullySynced =
     showWalletSync &&
+    (readinessPhase === undefined || readinessPhase === 'ready') &&
     presentation.coreConfirmed &&
     (networkStatus ? network.ready : true) &&
+    torReady &&
     !hasSyncError;
   const walletIdentity = snapshot?.id ?? walletName ?? 'wallet';
-  const [internalExpanded, setInternalExpanded] = React.useState(() => !fullySynced);
+  const [internalExpanded, setInternalExpanded] = React.useState(
+    () => !fullySynced,
+  );
   const expanded = controlledExpanded ?? internalExpanded;
   const updateExpanded = React.useCallback(
     (nextExpanded: boolean) => {
@@ -164,6 +191,10 @@ export default function SyncStatusBar({
         ? t('sync.failureServerResponseShort')
         : t(networkSyncFailureTranslationKey(networkFailure))
       : t('sync.error')
+    : torConnecting
+    ? t('topBar.connectingTor')
+    : spendOutputPhase
+    ? walletDetail
     : fullySynced
     ? t('sync.synced')
     : !networkStatus || network.ready
@@ -217,15 +248,19 @@ export default function SyncStatusBar({
           </Text>
           <View
             accessibilityLabel={
-              connected
-                ? t('sync.connected')
+              torConnecting
+                ? t('topBar.connectingTor')
+                : fullySynced
+                ? t('sync.synced')
+                : connected
+                ? compactStatus
                 : connecting
                 ? t('sync.connectingNode')
                 : t('sync.nodeOffline')
             }
             style={[
               s.statusLed,
-              connected && s.statusLedReady,
+              fullySynced && s.statusLedReady,
               !connected && !connecting && s.statusLedOffline,
             ]}
             testID="sync-connection-led"
@@ -241,9 +276,13 @@ export default function SyncStatusBar({
             extra={blockchainExtra}
             label={t('sync.blockchainData')}
             percent={blockchainProgress}
-            rate={networkRate === undefined ? undefined : t('sync.networkRate', {
-              rate: formatMobileNetworkSyncRate(networkRate, dateLocale),
-            })}
+            rate={
+              networkRate === undefined
+                ? undefined
+                : t('sync.networkRate', {
+                    rate: formatMobileNetworkSyncRate(networkRate, dateLocale),
+                  })
+            }
             target={network.targetHeight}
             testID="blockchain-progress"
             variant="blockchain"
@@ -260,14 +299,21 @@ export default function SyncStatusBar({
                     : walletEta
                 }
                 label={
-                  readinessPhase === 'scanning-spend-outputs'
+                  spendOutputPhase
                     ? t('sync.spendOutputs')
                     : t('sync.wallet')
                 }
                 percent={walletProgress}
-                rate={walletDerivationRate === undefined ? undefined : t('sync.derivationRate', {
-                  rate: formatWalletDerivationRate(walletDerivationRate, dateLocale),
-                })}
+                rate={
+                  walletDerivationRate === undefined
+                    ? undefined
+                    : t('sync.derivationRate', {
+                        rate: formatWalletDerivationRate(
+                          walletDerivationRate,
+                          dateLocale,
+                        ),
+                      })
+                }
                 target={presentation.targetHeight}
                 testID="wallet-progress"
                 variant="wallet"
@@ -287,9 +333,9 @@ export default function SyncStatusBar({
 
 /**
  * Native shared sync owns the Monero wallet while blocks are scanned, so a
- * live snapshot can legitimately lag behind. The native chainHeight is the
- * conservative scan frontier already delivered to every joined wallet. Use
- * it for presentation only; persisted wallet state remains Core-owned.
+ * live snapshot can legitimately lag behind. Use only the selected wallet's
+ * committed cursor for presentation; the shared chain cursor can belong to a
+ * different restore range. Persisted wallet state remains Core-owned.
  */
 export function snapshotWithNetworkScanProgress(
   snapshot: WalletSnapshot | undefined,
@@ -299,24 +345,29 @@ export function snapshotWithNetworkScanProgress(
     !snapshot ||
     !networkStatus ||
     networkStatus.joinedWallets < 1 ||
-    networkStatus.chainHeight <= snapshot.walletHeight ||
     !['fetching-blocks', 'fanout', 'scanning'].includes(networkStatus.state)
   ) {
     return snapshot;
   }
 
+  const walletHeight = Math.max(
+    snapshot.walletHeight,
+    networkStatus.priorityWalletHeight,
+  );
+  const daemonTargetHeight = Math.max(
+    snapshot.daemonTargetHeight,
+    networkStatus.targetHeight,
+  );
+
   return {
     ...snapshot,
-    walletHeight: networkStatus.chainHeight,
+    walletHeight,
     daemonHeight: Math.max(
       snapshot.daemonHeight,
       networkStatus.downloadedHeight,
     ),
-    daemonTargetHeight: Math.max(
-      snapshot.daemonTargetHeight,
-      networkStatus.targetHeight,
-    ),
-    synchronized: false,
+    daemonTargetHeight,
+    synchronized: snapshot.synchronized && walletHeight >= daemonTargetHeight,
   };
 }
 
@@ -511,6 +562,20 @@ function formatBlockCount(value?: number) {
   return typeof value === 'number' && Number.isFinite(value)
     ? value.toLocaleString()
     : '–';
+}
+
+/** Keep the visible percentage consistent with "Block current of target". */
+export function blockHeightProgress(current?: number, target?: number) {
+  if (
+    current === undefined ||
+    target === undefined ||
+    !Number.isFinite(current) ||
+    !Number.isFinite(target) ||
+    target <= 0
+  ) {
+    return undefined;
+  }
+  return normalizeSyncPercent((Math.max(0, Math.min(current, target)) / target) * 100);
 }
 
 function formatSyncEta(

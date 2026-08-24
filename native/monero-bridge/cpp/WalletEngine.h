@@ -44,6 +44,18 @@ class WalletEngine {
   WalletId createWalletFromDevice(const CreateWalletFromDeviceRequest& request);
   WalletId createViewOnlyWallet(const CreateViewOnlyWalletRequest& request);
   HardwareViewKeyExport exportHardwarePrivateViewKey(const WalletId& walletId);
+  // Reuses the already-approved private view key held by an open encrypted
+  // view-only companion. The key never crosses the native WalletEngine API.
+  void primeHardwareWalletFromViewOnly(
+      const WalletId& hardwareWalletId,
+      const WalletId& viewOnlyWalletId);
+  // Destructively rebuilds only the open Ledger signing cache from an
+  // authenticated restore boundary. The companion remains an independent
+  // watch-only wallet and contributes no cached transactions or balances.
+  void rebuildHardwareWalletCacheFromViewOnly(
+      const WalletId& hardwareWalletId,
+      const WalletId& viewOnlyWalletId,
+      uint64_t restoreHeight);
   FastReceiveIdentity createFastReceiveIdentity(
       const CreateFastReceiveIdentityRequest& request);
   FastReceiveRegistrationPayload fastReceiveRegistrationPayload(
@@ -144,7 +156,9 @@ class WalletEngine {
       uint64_t checkedHeight);
   LedgerKeyImageSyncResult syncLedgerKeyImagesToViewWallet(
       const WalletId& hardwareWalletId,
-      const WalletId& viewOnlyWalletId);
+      const WalletId& viewOnlyWalletId,
+      bool fullSpendOutputScan = false,
+      bool nodeOnlyRetry = false);
   PreparedTransaction prepareTransaction(
       const PrepareTransactionRequest& request);
   PreparedTransaction commitTransaction(

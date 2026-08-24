@@ -359,14 +359,16 @@ fn show_notification(
     config: &AgentConfig,
     event: &NotificationEvent,
 ) -> Result<(), String> {
-    if event.category != "monero.fast_wallet.incoming"
-        || !event.deep_link.starts_with("tex8://notification/")
-    {
+    if !valid_supported_event(event) {
         return Ok(());
     }
     let handle = notify_rust::Notification::new()
         .summary("Monero Fast Wallet")
-        .body("New private activity. Open the wallet to refresh.")
+        .body(if event.category == "monero.fast_wallet.vanity" {
+            "Your Vanity address status changed."
+        } else {
+            "New private activity. Open the wallet to refresh."
+        })
         .appname("Monero Fast Wallet")
         .action("open", "Open wallet")
         .show()
@@ -396,10 +398,7 @@ fn open_wallet_for_event(
     config_and_command: &(String, String),
     event: &NotificationEvent,
 ) -> Result<(), String> {
-    if !is_opaque_event_id(&event.id)
-        || event.category != "monero.fast_wallet.incoming"
-        || !event.deep_link.starts_with("tex8://notification/")
-    {
+    if !is_opaque_event_id(&event.id) || !valid_supported_event(event) {
         return Err("notification event is invalid".to_owned());
     }
     let config_path = Path::new(&config_and_command.0);
@@ -434,6 +433,27 @@ fn open_wallet_for_event(
         .spawn()
         .map_err(|_| "wallet app could not be opened".to_owned())?;
     Ok(())
+}
+
+fn valid_supported_event(event: &NotificationEvent) -> bool {
+    (event.category == "monero.fast_wallet.incoming"
+        && event.deep_link.starts_with("tex8://notification/"))
+        || (event.category == "monero.fast_wallet.vanity"
+            && valid_vanity_deep_link(&event.deep_link))
+}
+
+fn valid_vanity_deep_link(value: &str) -> bool {
+    let Some(order_id) = value.strip_prefix("mfw://vanity/order/") else {
+        return false;
+    };
+    order_id.len() == 36
+        && order_id.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+            }
+        })
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]

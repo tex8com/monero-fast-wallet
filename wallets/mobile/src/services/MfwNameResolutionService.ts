@@ -62,13 +62,73 @@ export async function fetchConfiguredMfwNameSuggestions(
   // embedded Tor transport; never tunnel this lookup to a Clearnet hostname.
   // Exact payment resolution below retains its independent quorum and native
   // validation boundary.
-  return (
-    await new MfwNameResolverQuorum(suggestionOrigins).suggest(prefix)
-  ).names;
+  return (await new MfwNameResolverQuorum(suggestionOrigins).suggest(prefix))
+    .names;
 }
 
 export function isMfwNameCandidate(value: string): boolean {
   return value.trim().toLowerCase().endsWith('.mfw');
+}
+
+export interface DiscoveredMfwOwnedName {
+  resolution: MfwNameResolution;
+  address: string;
+}
+
+/**
+ * Finds public Registry names for restored wallet addresses. Reverse results
+ * are discovery hints only: every name is exact-resolved through a fresh
+ * quorum, its signed record is verified natively, and its address must match
+ * the queried wallet address before it is returned.
+ */
+export async function discoverConfiguredMfwNamesForAddresses(input: {
+  addresses: readonly string[];
+  network: MoneroNetwork;
+}): Promise<DiscoveredMfwOwnedName[]> {
+  requireV1ReleaseFeature('mfwNameRegistration');
+  const origins: readonly string[] = manifest.parameters.mfwNameResolverOrigins;
+  if (
+    !v1ReleaseFeatures.mfwNameRegistration ||
+    origins.length < 1 ||
+    origins.some(origin => !/^http:\/\/[a-z2-7]{56}\.onion$/.test(origin))
+  ) {
+    throw new Error('Private MFW reverse discovery is not configured');
+  }
+  if (input.addresses.length > 100) {
+    throw new Error('Too many wallet addresses for MFW reverse discovery');
+  }
+
+  const addresses = [
+    ...new Set(
+      await Promise.all(
+        input.addresses.map(address =>
+          walletService.validateRecipientAddress(address, input.network),
+        ),
+      ),
+    ),
+  ];
+  const discovered = new Map<string, DiscoveredMfwOwnedName>();
+  for (const address of addresses) {
+    const reverse = await new MfwNameResolverQuorum(origins).reverse(address);
+    if (reverse.network !== input.network || reverse.truncated) {
+      throw new Error(
+        'MFW reverse discovery is incomplete or on another network',
+      );
+    }
+    for (const name of reverse.names) {
+      const exact = await resolveConfiguredMfwOwnedNameForImport({
+        name,
+        network: input.network,
+      });
+      if (exact.address !== address) {
+        throw new Error('MFW reverse discovery changed the verified address');
+      }
+      discovered.set(name, exact);
+    }
+  }
+  return [...discovered.values()].sort((left, right) =>
+    left.resolution.canonicalName.localeCompare(right.resolution.canonicalName),
+  );
 }
 
 export async function resolveConfiguredMfwOwnedNameForImport(input: {

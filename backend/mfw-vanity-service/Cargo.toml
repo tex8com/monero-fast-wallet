@@ -1,0 +1,30 @@
+[package]
+name = "mfw-vanity-service"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["form", "http1", "json", "tokio"], default-features = false }
+curve25519-dalek = "4.1.3"
+hex = "0.4"
+mfw-recipient-protocol = { path = "../../native/mfw-recipient-protocol" }
+monero-address = { git = "https://github.com/monero-oxide/monero-oxide.git", rev = "7c288b058ae7f1e3d36600a2af11b3176102bcfc" }
+rand = "0.8"
+rayon = "1"
+reqwest = { version = "0.12", features = ["json"], default-features = false }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sha3 = "0.10"
+subtle = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "time"], default-features = false }
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -100,3 +100,31 @@ against the unpatched upstream dependency.
 The service account must have a sufficient locked-memory limit (for example
 `LimitMEMLOCK=infinity` in a dedicated Linux systemd unit). Startup fails
 before credentials are read when memory locking is unavailable.
+
+## Local test-push endpoint
+
+For an operator-controlled end-to-end test, the Worker can expose a local-only
+debug endpoint. It is disabled unless both variables are configured:
+
+```text
+FAST_WALLET_WORKER_DEBUG_BIND=127.0.0.1:8097
+FAST_WALLET_WORKER_DEBUG_TOKEN_FILE=/etc/monero-fast-wallet/worker-debug-token.key
+```
+
+The token file uses the same private 32-byte lowercase-hex format as the other
+Worker credential files. The bind address must be loopback and must never be
+proxied by Nginx. An authenticated request selects only an already registered
+address and sends a distinct `monero.fast_wallet.test` event through the real
+Worker-signature, Gateway and push-provider path:
+
+```http
+POST /debug/v1/test-push
+x-fast-wallet-debug-token: <64 lowercase hex characters>
+content-type: application/json
+
+{"address":"<registered Monero public address>"}
+```
+
+No fake output or transaction is inserted into the Worker database. If the
+same address has multiple active registrations, each registration receives its
+own test wake.

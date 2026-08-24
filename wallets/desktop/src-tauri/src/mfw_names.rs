@@ -27,6 +27,8 @@ pub struct OwnedNameRecord {
     pub stage: String,
     pub term_years: u32,
     pub sequence: u64,
+    #[serde(default = "default_owner_authority")]
+    pub owner_authority: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_public_key_hex: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,6 +143,7 @@ pub fn new_record(
         stage: "commit-pending".to_owned(),
         term_years,
         sequence: 0,
+        owner_authority: default_owner_authority(),
         owner_public_key_hex: Some(owner_public_key_hex),
         commit_txid_hex: None,
         commit_height: None,
@@ -451,7 +454,10 @@ fn normalize_record(mut record: OwnedNameRecord) -> Result<OwnedNameRecord, Stri
     record.canonical_name = canonical_name(&record.canonical_name)?;
     record.network = validate_network(&record.network)?.to_owned();
     record.address = validate_address(&record.address)?.to_owned();
-    if record.term_years == 0
+    if !matches!(
+        record.owner_authority.as_str(),
+        "local" | "recovery-required"
+    ) || record.term_years == 0
         || record.term_years > MAX_TERM_YEARS
         || !matches!(
             record.stage.as_str(),
@@ -483,6 +489,10 @@ fn normalize_record(mut record: OwnedNameRecord) -> Result<OwnedNameRecord, Stri
         *address = validate_address(address)?.to_owned();
     }
     Ok(record)
+}
+
+fn default_owner_authority() -> String {
+    "local".to_owned()
 }
 
 fn validate_owner_state(state: &OwnerState) -> Result<(), String> {

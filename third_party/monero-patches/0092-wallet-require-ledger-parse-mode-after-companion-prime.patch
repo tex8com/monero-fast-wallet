@@ -1,0 +1,37 @@
+From e2f35aab6cd7f10ec1402a6073b2f6303718e63e Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 21 Aug 2026 17:05:00 -0500
+Subject: [PATCH] wallet: require Ledger parse mode after companion prime
+
+---
+ src/wallet/api/wallet.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 917b73932..889bb0de6 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1118,16 +1118,21 @@ bool WalletImpl::prepareHardwareWalletScanFromViewOnly(
+             setStatusError(tr("Connected Ledger does not match this wallet"));
+             return false;
+         }
+         const bool installed = device.prime_view_key_for_scan(private_view_key);
+         if (!installed) {
+             setStatusError(tr("Protected Ledger private view key could not be installed"));
+             return false;
+         }
++        if (!device.set_mode(hw::device::TRANSACTION_PARSE) ||
++            device.get_mode() != hw::device::TRANSACTION_PARSE) {
++            setStatusError(tr("Ledger could not enter transaction parse mode"));
++            return false;
++        }
+         return true;
+     } catch (const std::exception &e) {
+         setStatusError(e.what());
+         return false;
+     }
+ #else
+     (void)viewOnlyWallet;
+     setStatusError(tr("Ledger support is unavailable in this build"));
+-- 
+2.50.1 (Apple Git-155)

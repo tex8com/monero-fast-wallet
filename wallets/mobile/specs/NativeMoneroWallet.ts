@@ -16,6 +16,15 @@ export type WalletSnapshot = {
   pendingOutputKeyImageCount?: number;
   /** Monotonic within the current native session. */
   snapshotRevision?: number;
+  /**
+   * JavaScript-only transaction scope selected from the wallet-wide Core
+   * snapshot. Native bridges may omit these fields; WalletService adds them
+   * only after the account history and live balances form a complete scope.
+   */
+  spendAccountIndex?: number;
+  spendPrimaryAddress?: string;
+  spendBalanceAtomic?: string;
+  spendUnlockedBalanceAtomic?: string;
   synchronized: boolean;
 };
 
@@ -83,6 +92,7 @@ export type NetworkSyncStatus = {
   downloadStartHeight: number;
   downloadedHeight: number;
   chainHeight: number;
+  priorityWalletHeight: number;
   targetHeight: number;
   transportStarts: number;
   fetchedBatches: number;
@@ -794,9 +804,26 @@ export interface Spec extends TurboModule {
     limit: number,
   ): Promise<WalletTransaction[]>;
 
+  /**
+   * Primes an open Ledger signing wallet from an already-open encrypted local
+   * companion. Only opaque native session identifiers cross React Native.
+   */
+  primeHardwareWalletFromViewOnly(
+    hardwareWalletId: string,
+    viewOnlyWalletId: string,
+  ): Promise<void>;
+
+  rebuildHardwareWalletCacheFromViewOnly(
+    hardwareWalletId: string,
+    viewOnlyWalletId: string,
+    restoreHeight: number,
+  ): Promise<void>;
+
   syncLedgerKeyImagesToViewWallet(
     hardwareWalletId: string,
     viewOnlyWalletId: string,
+    fullSpendOutputScan: boolean,
+    nodeOnlyRetry: boolean,
   ): Promise<LedgerKeyImageSyncResult>;
 
   prepareTransaction(

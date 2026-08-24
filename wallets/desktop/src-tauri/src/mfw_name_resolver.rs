@@ -1,9 +1,12 @@
 use crate::{mfw_names, release_features};
 use reqwest::{blocking::Client, redirect::Policy, Url};
 use serde::{Deserialize, Serialize};
-use std::{io::Read, time::Duration};
+use std::{collections::HashSet, io::Read, time::Duration};
 
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
+const MAX_SUGGESTION_RESPONSE_BYTES: u64 = 4 * 1024;
+const MAX_NAME_SUGGESTIONS: usize = 5;
+const MAX_REVERSE_NAMES: usize = 100;
 const MIN_CONFIRMATIONS: u64 = 15;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -40,6 +43,31 @@ pub struct Availability {
     pub expiry_height: Option<u64>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SuggestionResponse {
+    pub prefix: String,
+    pub names: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReverseResponse {
+    address: String,
+    network: String,
+    names: Vec<String>,
+    truncated: bool,
+    chain_tip_height: u64,
+    chain_tip_hash_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReverseOwnedName {
+    pub resolution: Resolution,
+    pub address: String,
+}
+
 pub fn resolve(name: &str) -> Result<Resolution, String> {
     let canonical_name = mfw_names::canonical_name(name)?;
     let origins = release_features::mfw_name_resolver_origins()
@@ -55,6 +83,46 @@ pub fn resolve_payment(name: &str, network: &str) -> Result<String, String> {
     let resolution = resolve(name)?;
     validate_active(&resolution, name, network, None)?;
     verify_record_address(&resolution, name, network)
+}
+
+pub fn suggest(prefix: &str) -> Result<SuggestionResponse, String> {
+    release_features::require(
+        "mfwNameResolution",
+        "MFW name suggestions are not enabled in this release.",
+    )?;
+    let prefix = normalize_suggestion_prefix(prefix)?;
+    let origins = release_features::mfw_name_suggestion_onion_origins()
+        .ok_or_else(|| "MFW suggestion resolver is not configured for this release.".to_owned())?;
+    suggest_with_origins(&prefix, &origins)
+}
+
+pub fn reverse_for_wallet(address: &str, network: &str) -> Result<Vec<ReverseOwnedName>, String> {
+    release_features::require(
+        "mfwNameRegistration",
+        "MFW name reverse discovery is not enabled in this release.",
+    )?;
+    let origins = release_features::mfw_name_resolver_origins()
+        .ok_or_else(|| "MFW resolver quorum is not configured for this release.".to_owned())?;
+    let reverse = reverse_with_origins(address, network, &origins)?;
+    if reverse.truncated {
+        return Err("MFW reverse discovery returned more than 100 names.".to_owned());
+    }
+    reverse
+        .names
+        .iter()
+        .map(|name| {
+            let resolution = resolve_with_origins(name, &origins)?;
+            validate_active(&resolution, name, network, None)?;
+            let verified = verify_record_address(&resolution, name, network)?;
+            if verified != reverse.address {
+                return Err("MFW reverse discovery changed the verified address.".to_owned());
+            }
+            Ok(ReverseOwnedName {
+                resolution,
+                address: verified,
+            })
+        })
+        .collect()
 }
 
 pub fn resolve_predecessor(
@@ -205,6 +273,193 @@ fn resolve_with_origins(canonical_name: &str, origins: &[String]) -> Result<Reso
         return Err("Independent MFW resolvers disagree.".to_owned());
     }
     Ok(first)
+}
+
+fn suggest_with_origins(prefix: &str, origins: &[String]) -> Result<SuggestionResponse, String> {
+    if origins.is_empty() || origins.len() > 4 {
+        return Err("MFW name suggestions require one to four Onion resolvers.".to_owned());
+    }
+    let client = Client::builder()
+        .timeout(Duration::from_secs(8))
+        .redirect(Policy::none())
+        .proxy(crate::tor_transport::proxy()?)
+        .build()
+        .map_err(|_| "MFW suggestion transport is unavailable.".to_owned())?;
+    let mut answers = Vec::with_capacity(origins.len());
+    for origin in origins {
+        let origin = validate_origin(origin)?;
+        if !origin.ends_with(".onion") {
+            return Err("MFW suggestions require direct Onion resolver origins.".to_owned());
+        }
+        let endpoint = format!(
+            "{}/v1/mfw/name-suggestions/{}",
+            origin.trim_end_matches('/'),
+            prefix
+        );
+        let mut response = client
+            .get(endpoint)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .map_err(|_| "The MFW suggestion resolver could not be reached.".to_owned())?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(format!(
+                "The MFW suggestion resolver returned HTTP {}.",
+                response.status().as_u16()
+            ));
+        }
+        let mut body = Vec::new();
+        response
+            .by_ref()
+            .take(MAX_SUGGESTION_RESPONSE_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|_| "The MFW suggestion response could not be read.".to_owned())?;
+        if body.is_empty() || body.len() as u64 > MAX_SUGGESTION_RESPONSE_BYTES {
+            return Err("The MFW suggestion response has an invalid size.".to_owned());
+        }
+        let answer: SuggestionResponse = serde_json::from_slice(&body)
+            .map_err(|_| "The MFW suggestion response is malformed.".to_owned())?;
+        validate_suggestion_response(&answer, prefix)?;
+        answers.push(answer);
+    }
+    let first = answers
+        .first()
+        .cloned()
+        .ok_or_else(|| "MFW suggestion resolver quorum is empty.".to_owned())?;
+    if answers.iter().any(|answer| answer != &first) {
+        return Err("Independent MFW suggestion resolvers disagree.".to_owned());
+    }
+    Ok(first)
+}
+
+fn reverse_with_origins(
+    address: &str,
+    network: &str,
+    origins: &[String],
+) -> Result<ReverseResponse, String> {
+    let address = address.trim();
+    if address.len() != 95 || !address.bytes().all(is_monero_base58) {
+        return Err("MFW reverse address is invalid.".to_owned());
+    }
+    if !matches!(network, "mainnet" | "testnet" | "stagenet")
+        || origins.is_empty()
+        || origins.len() > 4
+    {
+        return Err("MFW reverse discovery is not configured.".to_owned());
+    }
+    let client = Client::builder()
+        .timeout(Duration::from_secs(8))
+        .redirect(Policy::none())
+        .proxy(crate::tor_transport::proxy()?)
+        .build()
+        .map_err(|_| "MFW reverse transport is unavailable.".to_owned())?;
+    let mut answers = Vec::with_capacity(origins.len());
+    for origin in origins {
+        let origin = validate_origin(origin)?;
+        if !origin.ends_with(".onion") {
+            return Err("MFW reverse discovery requires direct Onion resolver origins.".to_owned());
+        }
+        let endpoint = format!(
+            "{}/v1/mfw/addresses/{}/names",
+            origin.trim_end_matches('/'),
+            address
+        );
+        let mut response = client
+            .get(endpoint)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .map_err(|_| "An MFW reverse resolver could not be reached.".to_owned())?;
+        if response.status() != reqwest::StatusCode::OK {
+            return Err(format!(
+                "An MFW reverse resolver returned HTTP {}.",
+                response.status().as_u16()
+            ));
+        }
+        let mut body = Vec::new();
+        response
+            .by_ref()
+            .take(MAX_RESPONSE_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|_| "An MFW reverse response could not be read.".to_owned())?;
+        if body.is_empty() || body.len() as u64 > MAX_RESPONSE_BYTES {
+            return Err("An MFW reverse response has an invalid size.".to_owned());
+        }
+        let answer: ReverseResponse = serde_json::from_slice(&body)
+            .map_err(|_| "An MFW reverse response is malformed.".to_owned())?;
+        validate_reverse_response(&answer, address, network)?;
+        answers.push(answer);
+    }
+    let first = answers
+        .first()
+        .cloned()
+        .ok_or_else(|| "MFW reverse resolver quorum is empty.".to_owned())?;
+    if answers.iter().any(|answer| answer != &first) {
+        return Err("Independent MFW reverse resolvers disagree.".to_owned());
+    }
+    Ok(first)
+}
+
+fn validate_reverse_response(
+    response: &ReverseResponse,
+    expected_address: &str,
+    expected_network: &str,
+) -> Result<(), String> {
+    if response.address != expected_address
+        || response.network != expected_network
+        || response.names.len() > MAX_REVERSE_NAMES
+        || !is_hex(&response.chain_tip_hash_hex, 32)
+    {
+        return Err("The MFW reverse response is malformed.".to_owned());
+    }
+    let mut previous: Option<&str> = None;
+    let mut unique = HashSet::new();
+    for name in &response.names {
+        if mfw_names::canonical_name(name).as_deref() != Ok(name.as_str())
+            || previous.is_some_and(|value| value >= name.as_str())
+            || !unique.insert(name)
+        {
+            return Err("The MFW reverse response is malformed.".to_owned());
+        }
+        previous = Some(name);
+    }
+    Ok(())
+}
+
+fn is_monero_base58(byte: u8) -> bool {
+    b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(&byte)
+}
+
+fn normalize_suggestion_prefix(value: &str) -> Result<String, String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.len() < 3
+        || normalized.len() > 63
+        || normalized.starts_with('-')
+        || normalized.ends_with('-')
+        || !normalized
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err("MFW suggestion prefix is invalid.".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn validate_suggestion_response(
+    response: &SuggestionResponse,
+    expected_prefix: &str,
+) -> Result<(), String> {
+    if response.prefix != expected_prefix || response.names.len() > MAX_NAME_SUGGESTIONS {
+        return Err("The MFW suggestion response is malformed.".to_owned());
+    }
+    let mut unique = HashSet::new();
+    for name in &response.names {
+        if mfw_names::canonical_name(name).as_deref() != Ok(name.as_str())
+            || !name.starts_with(expected_prefix)
+            || !unique.insert(name)
+        {
+            return Err("The MFW suggestion response is malformed.".to_owned());
+        }
+    }
+    Ok(())
 }
 
 fn validate_origin(value: &str) -> Result<String, String> {
@@ -391,7 +646,11 @@ fn is_bounded_hex(value: &str, minimum_bytes: usize, maximum_bytes: usize) -> bo
 
 #[cfg(test)]
 mod tests {
-    use super::{require_empty_record, validate_origin, validate_shape, Resolution};
+    use super::{
+        normalize_suggestion_prefix, require_empty_record, validate_origin,
+        validate_reverse_response, validate_shape, validate_suggestion_response, Resolution,
+        ReverseResponse, SuggestionResponse,
+    };
 
     fn empty_resolution() -> Resolution {
         Resolution {
@@ -455,5 +714,38 @@ mod tests {
         assert!(require_empty_record(&value).is_ok());
         value.owner_public_key_hex = "22".repeat(32);
         assert!(require_empty_record(&value).is_err());
+    }
+
+    #[test]
+    fn suggestion_prefix_and_response_are_strict() {
+        assert_eq!(normalize_suggestion_prefix(" TeX ").unwrap(), "tex");
+        assert!(normalize_suggestion_prefix("te").is_err());
+        assert!(normalize_suggestion_prefix("tex.mfw").is_err());
+        let response = SuggestionResponse {
+            prefix: "tex".to_owned(),
+            names: vec!["tex8.mfw".to_owned()],
+        };
+        assert!(validate_suggestion_response(&response, "tex").is_ok());
+        let duplicate = SuggestionResponse {
+            prefix: "tex".to_owned(),
+            names: vec!["tex8.mfw".to_owned(), "tex8.mfw".to_owned()],
+        };
+        assert!(validate_suggestion_response(&duplicate, "tex").is_err());
+    }
+
+    #[test]
+    fn reverse_response_is_exact_sorted_and_tip_bound() {
+        let address = "49indexNameRuJZKgFL42yi11NgwYn3pzgf45HvvbEpCZq29KfQknnUM6xaptUokNsjh8TRghjr94ioSN2ZNhePm1vzJLQJ";
+        let mut response = ReverseResponse {
+            address: address.to_owned(),
+            network: "mainnet".to_owned(),
+            names: vec!["alice.mfw".to_owned(), "shop.mfw".to_owned()],
+            truncated: false,
+            chain_tip_height: 100,
+            chain_tip_hash_hex: "11".repeat(32),
+        };
+        assert!(validate_reverse_response(&response, address, "mainnet").is_ok());
+        response.names.reverse();
+        assert!(validate_reverse_response(&response, address, "mainnet").is_err());
     }
 }

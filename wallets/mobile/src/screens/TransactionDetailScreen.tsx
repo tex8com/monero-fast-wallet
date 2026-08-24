@@ -52,7 +52,14 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
   }
 
   const incoming = transaction.direction === 'in';
-  const amount = formatAtomicXmr(transaction.amountAtomic, {
+  const selfTransfer =
+    !incoming &&
+    transaction.amountAtomic === '0' &&
+    transaction.feeAtomic !== '0';
+  const summaryAtomic = selfTransfer
+    ? transaction.feeAtomic
+    : transaction.amountAtomic;
+  const amount = formatAtomicXmr(summaryAtomic, {
     maxFractionDigits: 12,
     minFractionDigits: 2,
   });
@@ -104,7 +111,11 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
             />
           </View>
           <Text style={s.summaryDirection}>
-            {incoming ? t('home.received') : t('home.sent')}
+            {incoming
+              ? t('home.received')
+              : selfTransfer
+              ? t('transactions.selfTransfer')
+              : t('home.sent')}
           </Text>
           <Text
             adjustsFontSizeToFit
@@ -169,7 +180,13 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
           <DetailRow label={t('transactions.status')} value={status} />
           <DetailRow
             label={t('transactions.direction')}
-            value={incoming ? t('home.received') : t('home.sent')}
+            value={
+              incoming
+                ? t('home.received')
+                : selfTransfer
+                ? t('transactions.selfTransfer')
+                : t('home.sent')
+            }
           />
           <AtomicXmrDetailRow
             atomicValue={transaction.amountAtomic}

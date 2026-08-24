@@ -7,6 +7,7 @@ use fast_wallet_scanner_core::{
     ScannerWorker, WatchStore,
 };
 use fast_wallet_worker::{
+    debug::{router as debug_router, validate_loopback_bind},
     harden_worker_process, load_secret_file, load_worker_descriptor_file, CommunityDirectoryClient,
     CommunityWorkerMetadata, GatewayWakeNotificationSink, HttpRelayClient, OutboundRelayWorker,
     WorkerAdmissionGate, WorkerWatchAcceptor,
@@ -134,6 +135,7 @@ fn main() -> Result<()> {
         gateway,
         Duration::from_millis(env_u64("FAST_WALLET_WORKER_HTTP_TIMEOUT_MS", 10_000)?),
     )?);
+    let debug_thread = start_debug_endpoint(store.clone(), wake_sink.clone(), running.clone())?;
 
     let derivation_workers = env_usize(
         "FAST_WALLET_WORKER_DERIVATION_WORKERS",
@@ -276,7 +278,62 @@ fn main() -> Result<()> {
     dispatch_thread
         .join()
         .map_err(|_| anyhow::anyhow!("wake dispatcher thread panicked"))?;
+    if let Some(debug_thread) = debug_thread {
+        debug_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("debug endpoint thread panicked"))??;
+    }
     Ok(())
+}
+
+fn start_debug_endpoint(
+    store: Arc<dyn WatchStore>,
+    wake_sink: Arc<GatewayWakeNotificationSink>,
+    running: Arc<AtomicBool>,
+) -> Result<Option<thread::JoinHandle<Result<()>>>> {
+    let bind = optional_env("FAST_WALLET_WORKER_DEBUG_BIND");
+    let token_file = optional_env("FAST_WALLET_WORKER_DEBUG_TOKEN_FILE");
+    if bind.is_empty() && token_file.is_empty() {
+        return Ok(None);
+    }
+    if bind.is_empty() || token_file.is_empty() {
+        bail!(
+            "FAST_WALLET_WORKER_DEBUG_BIND and FAST_WALLET_WORKER_DEBUG_TOKEN_FILE must be configured together"
+        );
+    }
+    let bind = validate_loopback_bind(&bind)?;
+    let token = load_secret_file(&PathBuf::from(token_file))?;
+    let listener = std::net::TcpListener::bind(bind)
+        .with_context(|| format!("could not bind Worker debug endpoint to {bind}"))?;
+    listener
+        .set_nonblocking(true)
+        .context("could not configure Worker debug listener")?;
+    let app = debug_router(store, wake_sink, token);
+    eprintln!(
+        "FAST_WALLET_DIAGNOSTICS service=fast-wallet-worker event=debug-endpoint.enabled bind={bind}"
+    );
+    let thread = thread::Builder::new()
+        .name("fast-wallet-debug".to_owned())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .context("could not start Worker debug runtime")?;
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener)
+                    .context("could not adopt Worker debug listener")?;
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(async move {
+                        while running.load(Ordering::Acquire) {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    })
+                    .await
+                    .context("Worker debug endpoint failed")
+            })
+        })?;
+    Ok(Some(thread))
 }
 
 struct AdmissionBlockSource {

@@ -12,26 +12,33 @@ export type MoneroNewsItem = {
   publishedAt: string;
   category: MoneroNewsCategory;
   url?: string;
-  imageDataUrl?: string;
+  imageUrl?: string;
 };
 
-type Cache = { items: MoneroNewsItem[]; updatedAt: number };
+type Cache = { items: MoneroNewsItem[]; catalogHash?: string; updatedAt: number };
 
-// The phone only talks to the TEX8 feed.  The server normalises and caches
-// official Monero sources, so a provider change never requires a mobile app
-// release and the app does not expose a third-party API integration.
+// The phone only talks to the TEX8-owned catalog. Its signed-infra hash keeps
+// app-start traffic small and a catalog update never requires an app release.
 const API_URL = `${PRIMARY_PRIVATE_SERVICE_ORIGIN}/news/v1/news?limit=10`;
-const CACHE_KEY = '@tex8/monero/news-v2';
-const CACHE_TTL_MS = 30 * 60 * 1_000;
+const CATALOG_HASH_URL = `${PRIMARY_PRIVATE_SERVICE_ORIGIN}/news/v1/news/catalog-hash`;
+const CACHE_KEY = '@tex8/monero/news-v3';
+const NEWS_IMAGE_PREFIX = 'https://cdn.tex8.com/tex8-images/monero-fast-wallet/news/v1/';
+const NEWS_IMAGE_URL_PATTERN = /^https:\/\/cdn\.tex8\.com\/tex8-images\/monero-fast-wallet\/news\/v1\/[a-z0-9-]+\/[a-z0-9-]+\.webp$/;
 const RETRY_DELAYS_MS = [15_000, 30_000, 60_000, 5 * 60_000];
 let memoryCache: Cache | null = null;
 
-function isFresh(cache: Cache) {
-  return Date.now() - cache.updatedAt < CACHE_TTL_MS;
-}
-
 function isNewsCategory(value: unknown): value is MoneroNewsCategory {
   return value === 'network' || value === 'wallet' || value === 'ecosystem';
+}
+
+function isCatalogHash(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isNewsImageUrl(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.startsWith(NEWS_IMAGE_PREFIX)
+    && NEWS_IMAGE_URL_PATTERN.test(value);
 }
 
 function parseNews(value: unknown): MoneroNewsItem[] {
@@ -56,12 +63,9 @@ function parseNews(value: unknown): MoneroNewsItem[] {
       candidate.url.startsWith('https://www.getmonero.org/')
         ? candidate.url
         : undefined;
-    const imageDataUrl =
-      typeof candidate.imageDataUrl === 'string' &&
-      candidate.imageDataUrl.startsWith('data:image/jpeg;base64,') &&
-      candidate.imageDataUrl.length <= 100_000
-        ? candidate.imageDataUrl
-        : undefined;
+    const imageUrl = isNewsImageUrl(candidate.imageUrl)
+      ? candidate.imageUrl
+      : undefined;
 
     return [{
       id: candidate.id,
@@ -70,7 +74,7 @@ function parseNews(value: unknown): MoneroNewsItem[] {
       publishedAt: candidate.publishedAt,
       category: candidate.category,
       url,
-      imageDataUrl,
+      imageUrl,
     }];
   }).slice(0, 10);
 }
@@ -84,15 +88,19 @@ async function loadCache(): Promise<Cache | null> {
     if (typeof parsed.updatedAt !== 'number') return null;
     const items = parseNews(parsed.items);
     if (items.length === 0) return null;
-    memoryCache = { items, updatedAt: parsed.updatedAt };
+    memoryCache = {
+      items,
+      catalogHash: isCatalogHash(parsed.catalogHash) ? parsed.catalogHash : undefined,
+      updatedAt: parsed.updatedAt,
+    };
     return memoryCache;
   } catch {
     return null;
   }
 }
 
-async function saveCache(items: MoneroNewsItem[]) {
-  const cache = { items, updatedAt: Date.now() };
+async function saveCache(items: MoneroNewsItem[], catalogHash?: string) {
+  const cache = { items, catalogHash, updatedAt: Date.now() };
   memoryCache = cache;
   try {
     await AsyncStorage.setItem(CACHE_KEY, JSON.stringify(cache));
@@ -104,7 +112,13 @@ async function saveCache(items: MoneroNewsItem[]) {
 
 async function fetchNews(force = false) {
   const cached = await loadCache();
-  if (!force && cached && isFresh(cached)) return cached.items;
+  if (!force && cached?.catalogHash) {
+    try {
+      if ((await fetchCatalogHash()) === cached.catalogHash) return cached.items;
+    } catch {
+      return cached.items;
+    }
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
@@ -115,10 +129,31 @@ async function fetchNews(force = false) {
       maximumResponseBytes: 1_048_576,
     });
     if (!response.ok) throw new Error(`News feed unavailable (${response.status}).`);
-    const payload = (await response.json()) as { items?: unknown };
+    const payload = (await response.json()) as { catalogHash?: unknown; items?: unknown };
     const items = parseNews(payload.items);
     if (items.length === 0) throw new Error('News feed did not include articles.');
-    return (await saveCache(items)).items;
+    return (await saveCache(
+      items,
+      isCatalogHash(payload.catalogHash) ? payload.catalogHash : undefined,
+    )).items;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchCatalogHash(): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const response = await torFetch(CATALOG_HASH_URL, {
+      signal: controller.signal,
+      timeoutMs: 8_000,
+      maximumResponseBytes: 4_096,
+    });
+    if (!response.ok) throw new Error(`News hash unavailable (${response.status}).`);
+    const payload = (await response.json()) as { catalogHash?: unknown };
+    if (!isCatalogHash(payload.catalogHash)) throw new Error('News hash was invalid.');
+    return payload.catalogHash;
   } finally {
     clearTimeout(timeout);
   }

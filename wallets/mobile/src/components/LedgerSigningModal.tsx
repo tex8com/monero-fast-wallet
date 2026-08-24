@@ -27,30 +27,39 @@ export default function LedgerSigningModal({
     return null;
   }
 
+  const cancellationAllowed =
+    canCancel && progress.phase !== 'synchronizing-wallet';
   const connected =
+    progress.phase === 'synchronizing-wallet' ||
     progress.phase === 'connected' ||
     progress.phase === 'preparing-request' ||
     progress.phase === 'awaiting-confirmation';
   const title = connected
     ? t('ledgerSigning.connectedTitle')
     : t('ledgerSigning.connectTitle');
+  const instructions =
+    progress.phase === 'synchronizing-wallet'
+      ? t('ledgerSigning.synchronizingInstructions')
+      : t('ledgerSigning.instructions');
   const message =
     progress.detail ||
     (progress.phase === 'searching'
       ? t('ledgerSigning.searching')
       : progress.phase === 'connecting'
-        ? t('ledgerSigning.connecting')
-        : progress.phase === 'connected'
-          ? t('ledgerSigning.connected')
-          : progress.phase === 'preparing-request'
-            ? t('ledgerSigning.preparingRequest')
-            : t('ledgerSigning.awaitingConfirmation'));
+      ? t('ledgerSigning.connecting')
+      : progress.phase === 'synchronizing-wallet'
+      ? t('ledgerSigning.synchronizingWallet')
+      : progress.phase === 'connected'
+      ? t('ledgerSigning.connected')
+      : progress.phase === 'preparing-request'
+      ? t('ledgerSigning.preparingRequest')
+      : t('ledgerSigning.awaitingConfirmation'));
 
   return (
     <Modal
       animationType="fade"
       onRequestClose={() => {
-        if (canCancel) {
+        if (cancellationAllowed) {
           onCancel();
         }
       }}
@@ -69,9 +78,7 @@ export default function LedgerSigningModal({
             </View>
             <View style={s.copy}>
               <Text style={s.title}>{title}</Text>
-              <Text style={s.instructions}>
-                {t('ledgerSigning.instructions')}
-              </Text>
+              <Text style={s.instructions}>{instructions}</Text>
             </View>
           </View>
 
@@ -97,7 +104,7 @@ export default function LedgerSigningModal({
             </Text>
           ) : null}
 
-          {canCancel ? (
+          {cancellationAllowed ? (
             <TouchableOpacity
               accessibilityRole="button"
               onPress={onCancel}

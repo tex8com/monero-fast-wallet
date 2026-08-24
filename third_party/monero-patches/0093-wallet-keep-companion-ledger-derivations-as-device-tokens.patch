@@ -1,0 +1,37 @@
+From 2206cdd54fb83ae0a9fc78c706e176eee12ff571 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 21 Aug 2026 15:48:20 -0500
+Subject: [PATCH] wallet: keep companion Ledger derivations as device tokens
+
+The targeted owned-output path immediately sends its derivation back to the
+Ledger with DERIVE_SECRET_KEY.  The Ledger application expects that argument
+to be the opaque TYPE_DERIVATION token returned by GEN_KEY_DERIVATION.
+
+TRANSACTION_PARSE instead computes a clear derivation on the host.  Feeding
+that clear value into DERIVE_SECRET_KEY lets the device decrypt unrelated
+bytes and can still return success, but the resulting ephemeral public key
+fails the wallet's owned-output binding check.  Restore NONE after installing
+the protected companion view key so the device produces the required opaque
+token without asking the user to export the view key again.
+
+---
+ src/wallet/api/wallet.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 889bb0d..7af4788 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1123,9 +1123,9 @@ bool WalletImpl::prepareHardwareWalletScanFromViewOnly(
+             setStatusError(tr("Protected Ledger private view key could not be installed"));
+             return false;
+         }
+-        if (!device.set_mode(hw::device::TRANSACTION_PARSE) ||
+-            device.get_mode() != hw::device::TRANSACTION_PARSE) {
+-            setStatusError(tr("Ledger could not enter transaction parse mode"));
++        if (!device.set_mode(hw::device::NONE) ||
++            device.get_mode() != hw::device::NONE) {
++            setStatusError(tr("Ledger could not enter device-token derivation mode"));
+             return false;
+         }
+         return true;

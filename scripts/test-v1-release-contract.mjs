@@ -21,6 +21,29 @@ const communitySigningKeys = JSON.parse(
   read('config/community-v1-signing-public-keys.json'),
 );
 
+test('payment links use one exact versioned HTTPS release origin', () => {
+  const origin = manifest.parameters.paymentLinkOrigin;
+  const parsed = new URL(origin);
+  const releaseFeatures = read(
+    'packages/wallet-shared/src/v1ReleaseFeatures.ts',
+  );
+  const client = read(
+    'wallets/mobile/src/services/PaymentLinkClient.ts',
+  );
+
+  assert.equal(origin, 'https://xmr.tex8.com');
+  assert.equal(parsed.origin, origin);
+  assert.equal(parsed.protocol, 'https:');
+  assert.equal(parsed.pathname, '/');
+  assert.equal(parsed.search, '');
+  assert.equal(parsed.hash, '');
+  assert.equal(parsed.username, '');
+  assert.equal(parsed.password, '');
+  assert.match(releaseFeatures, /paymentLinkReleaseOrigin/);
+  assert.match(releaseFeatures, /isHttpsOrigin\(value\)/);
+  assert.match(client, /record\.url !== `\$\{origin\}\/pay\/\$\{record\.id\}`/);
+});
+
 test('Community V1 production signing trust anchors are valid and independent', () => {
   assert.equal(communitySigningKeys.schemaVersion, 1);
   assert.equal(communitySigningKeys.profile, 'community-v1-production');
@@ -44,7 +67,7 @@ test('Community V1 production signing trust anchors are valid and independent', 
 
 test('completed search-term contribution is default-on, user-disableable and privacy filtered', () => {
   const mobileContribution = read(
-    'wallets/mobile/src/backend/CommunityQueryContribution.ts',
+    'wallets/mobile/src/services/CommunityQueryContribution.ts',
   );
   const mobileWelcome = read('wallets/mobile/src/screens/WelcomeScreen.tsx');
   const mobileSettings = read('wallets/mobile/src/screens/SettingsScreen.tsx');
@@ -223,7 +246,7 @@ test('Monero Enthusiast V1 cannot fall back to the legacy plaintext Community pa
   );
   const communityRuntime = read('native/community-runtime-core/src/lib.rs');
   const mobileCommunityService = read(
-    'wallets/mobile/src/backend/MoneroEnthusiastV1Service.ts',
+    'wallets/mobile/src/services/MoneroEnthusiastV1Service.ts',
   );
   const commonQueryPublisher = read(
     'packages/community-search-core/src/bin/publish_query_catalog.rs',
@@ -480,7 +503,7 @@ test('Harrier release evidence accepts only the pinned A8W8 result', () => {
 
 test('MFW clients remain release-gated behind purpose-bound native preparation', () => {
   const nativeSpec = read('wallets/mobile/specs/NativeMoneroWallet.ts');
-  const nativeService = read('wallets/mobile/src/backend/NativeMoneroWallet.ts');
+  const nativeService = read('wallets/mobile/src/services/NativeMoneroWallet.ts');
   const bridge = read('native/monero-bridge/cpp/FastWalletProtocolBridge.h');
   const protocol = read('native/fast-wallet-protocol/src/lib.rs');
   const android = read(
@@ -491,11 +514,11 @@ test('MFW clients remain release-gated behind purpose-bound native preparation',
   );
   const nameScreen = read('wallets/mobile/src/screens/MfwNamesScreen.tsx');
   const nameRegistry = read(
-    'wallets/mobile/src/backend/MfwNameRegistrationRegistry.ts',
+    'wallets/mobile/src/services/MfwNameRegistrationRegistry.ts',
   );
   const sendScreen = read('wallets/mobile/src/screens/SendScreen.tsx');
   const resolverClient = read(
-    'wallets/mobile/src/backend/MfwNameResolverClient.ts',
+    'wallets/mobile/src/services/MfwNameResolverClient.ts',
   );
   const cuprateRpc = read(
     'node/mfn-monero-fast-node/binaries/cuprated/src/rpc/server.rs',
@@ -514,6 +537,10 @@ test('MFW clients remain release-gated behind purpose-bound native preparation',
   assert.equal(manifest.features.mfwNameResolution, true);
   assert.equal(manifest.features.mfwNameRegistration, true);
   assert.equal(manifest.parameters.mfwNameGenesis.network, 'mainnet');
+  assert.equal(
+    manifest.parameters.mfwNameGenesis.registryAddress,
+    '49indexNameRuJZKgFL42yi11NgwYn3pzgf45HvvbEpCZq29KfQknnUM6xaptUokNsjh8TRghjr94ioSN2ZNhePm1vzJLQJ',
+  );
   assert.deepEqual(manifest.parameters.mfwNameResolverOrigins, [
     'http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion',
     'http://quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion',
@@ -616,9 +643,9 @@ test('MFW clients remain release-gated behind purpose-bound native preparation',
 
 test('private phone discovery keeps cryptographic state and identity below React', () => {
   const nativeSpec = read('wallets/mobile/specs/NativeMoneroWallet.ts');
-  const nativeService = read('wallets/mobile/src/backend/NativeMoneroWallet.ts');
+  const nativeService = read('wallets/mobile/src/services/NativeMoneroWallet.ts');
   const packagedClient = read(
-    'wallets/mobile/src/backend/PrivatePhoneDirectoryClient.ts',
+    'wallets/mobile/src/services/PrivatePhoneDirectoryClient.ts',
   );
   const bridge = read('native/monero-bridge/cpp/FastWalletProtocolBridge.h');
   const protocolHeader = read(
@@ -671,16 +698,16 @@ test('private phone discovery keeps cryptographic state and identity below React
 test('private phone network trust and complete snapshots remain below React', () => {
   const nativeSpec = read('wallets/mobile/specs/NativeMoneroWallet.ts');
   const packagedClient = read(
-    'wallets/mobile/src/backend/PrivatePhoneDirectoryClient.ts',
+    'wallets/mobile/src/services/PrivatePhoneDirectoryClient.ts',
   );
   const consent = read(
-    'wallets/mobile/src/backend/PrivatePhoneConsentRegistry.ts',
+    'wallets/mobile/src/services/PrivatePhoneConsentRegistry.ts',
   );
   const deviceContacts = read(
-    'wallets/mobile/src/backend/PrivatePhoneDeviceContacts.ts',
+    'wallets/mobile/src/services/PrivatePhoneDeviceContacts.ts',
   );
   const resolver = read(
-    'wallets/mobile/src/backend/PrivateRecipientResolution.ts',
+    'wallets/mobile/src/services/PrivateRecipientResolution.ts',
   );
   const androidBuild = read('wallets/mobile/android/app/build.gradle');
   const android = read(
@@ -797,14 +824,14 @@ test('private phone publication is signed monotone durable and has no lookup ora
 
 test('wallet-side private contact sharing is purpose-bound durable and gated', () => {
   const nativeSpec = read('wallets/mobile/specs/NativeMoneroWallet.ts');
-  const nativeService = read('wallets/mobile/src/backend/NativeMoneroWallet.ts');
+  const nativeService = read('wallets/mobile/src/services/NativeMoneroWallet.ts');
   const sharing = read(
-    'wallets/mobile/src/backend/PrivatePhoneSharingService.ts',
+    'wallets/mobile/src/services/PrivatePhoneSharingService.ts',
   );
   const screen = read('wallets/mobile/src/screens/PrivateContactsScreen.tsx');
   const send = read('wallets/mobile/src/screens/SendScreen.tsx');
   const recipientReview = read(
-    'wallets/mobile/src/backend/RecipientReview.ts',
+    'wallets/mobile/src/services/RecipientReview.ts',
   );
   const navigation = read('wallets/mobile/src/navigation/TabNavigator.tsx');
   const android = read(
@@ -889,7 +916,7 @@ test('wallet-side private contact sharing is purpose-bound durable and gated', (
 test('retired device-contact discovery is unrouted, permissionless, and fail-closed', () => {
   const nativeSpec = read('wallets/mobile/specs/NativeMoneroWallet.ts');
   const packagedProvider = read(
-    'wallets/mobile/src/backend/PrivatePhoneDeviceContacts.ts',
+    'wallets/mobile/src/services/PrivatePhoneDeviceContacts.ts',
   );
   const androidManifest = read(
     'wallets/mobile/android/app/src/main/AndroidManifest.xml',
@@ -942,9 +969,9 @@ test('retired device-contact discovery is unrouted, permissionless, and fail-clo
 
 test('mobile treats Fast Wallet as a recoverable local wallet', () => {
   const preference = read('packages/wallet-shared/src/fastWalletPreference.ts');
-  const service = read('wallets/mobile/src/backend/WalletService.ts');
-  const registry = read('wallets/mobile/src/backend/WalletRegistry.ts');
-  const state = read('wallets/mobile/src/backend/WalletState.tsx');
+  const service = read('wallets/mobile/src/services/WalletService.ts');
+  const registry = read('wallets/mobile/src/services/WalletRegistry.ts');
+  const state = read('wallets/mobile/src/services/WalletState.tsx');
 
   assert.match(preference, /defaultFastWalletPreference[^=]*=\s*'disabled'/);
   assert.match(service, /restoreFastReceiveIdentityWithNativeSeed/);
@@ -1110,7 +1137,7 @@ test('Community V1 Nginx installer inserts exactly one validated HTTPS include',
 });
 
 test('mobile installation identifiers come only from native secure randomness', () => {
-  const push = read('wallets/mobile/src/backend/FastWalletPushService.ts');
+  const push = read('wallets/mobile/src/services/FastWalletPushService.ts');
   const android = read(
     'wallets/mobile/android/app/src/main/java/com/monerowallet/NativeMoneroWalletModule.kt',
   );

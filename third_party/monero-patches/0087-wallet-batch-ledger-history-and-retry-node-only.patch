@@ -1,0 +1,315 @@
+From a3ed3151253fc1c07cfc66a231349babec05e23d Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 20 Aug 2026 18:03:10 -0500
+Subject: [PATCH] wallet: batch Ledger history lookup and retain key images
+
+Keep successful Ledger key-image derivations as a durable checkpoint before
+trusted-node spent-status and outgoing-history RPCs. A node failure can then
+retry entirely from the encrypted view wallet without reopening the hardware.
+
+Restricted Monero nodes accept at most 100 transaction hashes per
+/gettransactions request. Split deferred outgoing-history candidates into
+bounded batches, merge their replies, and retain the existing complete
+membership validation.
+
+---
+ src/wallet/api/wallet.cpp    |  18 ++++
+ src/wallet/api/wallet.h      |   1 +
+ src/wallet/api/wallet2_api.h |   4 +
+ src/wallet/wallet2.cpp       | 159 ++++++++++++++++++++++++++++++-----
+ src/wallet/wallet2.h         |   1 +
+ 5 files changed, 162 insertions(+), 21 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 76b899bc6..f5f318bda 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -3246,6 +3246,24 @@ uint64_t WalletImpl::coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &
+     return height;
+ }
+ 
++uint64_t WalletImpl::reconcileCachedKeyImagesWithStats(uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats)
++{
++    tools::ledger_key_image_sync_stats core_stats;
++    const uint64_t height = m_wallet->reconcile_cached_key_images(spent, unspent, core_stats);
++    stats.pendingOutputCount = core_stats.pending_output_count;
++    stats.importedOutputCount = core_stats.imported_output_count;
++    stats.derivedOutputCount = core_stats.derived_output_count;
++    stats.spentStatusUnspentOutputCount = core_stats.spent_status_unspent_output_count;
++    stats.spentStatusBlockchainOutputCount = core_stats.spent_status_blockchain_output_count;
++    stats.spentStatusPoolOutputCount = core_stats.spent_status_pool_output_count;
++    stats.derivationDurationMs = core_stats.derivation_duration_ms;
++    stats.spentStatusRpcDurationMs = core_stats.spent_status_rpc_duration_ms;
++    stats.outgoingRpcDurationMs = core_stats.outgoing_rpc_duration_ms;
++    stats.stateUpdateDurationMs = core_stats.state_update_duration_ms;
++    stats.storeDurationMs = core_stats.store_duration_ms;
++    return height;
++}
++
+ void WalletImpl::setDeferredSpendTracking(bool enabled)
+ {
+     clearStatus();
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 6e136a370..137a5154c 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -263,6 +263,7 @@ public:
+     virtual uint64_t coldKeyImageSync(uint64_t &spent, uint64_t &unspent) override;
+     virtual uint64_t coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, uint64_t &unspent) override;
+     virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats, bool fullSpendOutputScan = false) override;
++    virtual uint64_t reconcileCachedKeyImagesWithStats(uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats) override;
+     virtual void setDeferredSpendTracking(bool enabled) override;
+     virtual void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) override;
+     virtual bool reconnectDevice() override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 53d6ba04e..36b3247f3 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -1283,6 +1283,10 @@ struct Wallet
+     //! Ledger key-image sync with optional full spent-status recheck
+     virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats, bool fullSpendOutputScan = false) = 0;
+ 
++    //! Retry spent-status and outgoing-history reconstruction using only
++    //! key images already stored in this local view-only wallet.
++    virtual uint64_t reconcileCachedKeyImagesWithStats(uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats) = 0;
++
+     //! Retains only candidate spending transaction identifiers while scanning.
+     //! A view-only wallet uses these candidates after a later hardware
+     //! key-image reconciliation to recover outbound history without fetching
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 4d6e15532..0cd4a067c 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -32,6 +32,7 @@
+ #include <cerrno>
+ #include <chrono>
+ #include <cstdlib>
++#include <iterator>
+ #include <thread>
+ #include <numeric>
+ #include <tuple>
+@@ -13785,6 +13786,8 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+       "Failed to stage the view-only wallet before key-image reconciliation");
+   i_wallet2_callback *destination_callback = destination.m_callback;
+   destination.m_callback = nullptr;
++  std::string key_image_checkpoint;
++  bool key_image_checkpoint_durable = false;
+ 
+   try
+   {
+@@ -13799,6 +13802,18 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+       destination.m_pub_keys[destination_transfer.get_public_key()] = pending.first;
+     }
+ 
++    // A successful Ledger operation is a separate durable phase from the
++    // trusted-node verification. If either RPC fails, retain these locally
++    // bound key images so a retry never asks the hardware to derive them again.
++    CHECK_AND_ASSERT_THROW_MES(
++        ::serialization::dump_binary(destination, key_image_checkpoint),
++        "Failed to checkpoint Ledger-derived key images");
++    const auto checkpoint_store_started_at = std::chrono::steady_clock::now();
++    destination.store();
++    stats.store_duration_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - checkpoint_store_started_at).count();
++    key_image_checkpoint_durable = true;
++
+     // The key images came directly from authenticated hardware operations and
+     // were each bound above to the locally discovered output public key.
+     // Existing complete entries in the contiguous tail are reused without a
+@@ -13826,7 +13841,7 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+     destination.m_device_last_key_image_sync = completed_at;
+     const auto store_started_at = std::chrono::steady_clock::now();
+     destination.store();
+-    stats.store_duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++    stats.store_duration_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
+         std::chrono::steady_clock::now() - store_started_at).count();
+ 
+     m_device_last_key_image_sync = completed_at;
+@@ -13837,7 +13852,7 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+   {
+     const std::exception_ptr failure = std::current_exception();
+     const bool restored = ::serialization::parse_binary(
+-        destination_snapshot,
++        key_image_checkpoint_durable ? key_image_checkpoint : destination_snapshot,
+         destination);
+     destination.m_callback = destination_callback;
+     CHECK_AND_ASSERT_THROW_MES(
+@@ -13847,6 +13862,85 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+   }
+ }
+ //----------------------------------------------------------------------------------------------------
++uint64_t wallet2::reconcile_cached_key_images(uint64_t &spent, uint64_t &unspent, ledger_key_image_sync_stats &stats) {
++  stats = {};
++  CHECK_AND_ASSERT_THROW_MES(
++      watch_only(),
++      "Cached Ledger spent-state destination is not view-only");
++  CHECK_AND_ASSERT_THROW_MES(
++      is_trusted_daemon(),
++      "Cached Ledger spent-state verification requires a trusted daemon");
++
++  std::vector<std::pair<crypto::key_image, crypto::signature>> cached_key_images;
++  cached_key_images.reserve(m_transfers.size());
++  for (size_t index = 0; index < m_transfers.size(); ++index)
++  {
++    const transfer_details &transfer = m_transfers[index];
++    CHECK_AND_ASSERT_THROW_MES(
++        transfer.m_key_image_known && !transfer.m_key_image_partial,
++        "Cached Ledger spent-state retry is missing key image " +
++            std::to_string(index));
++    cached_key_images.emplace_back(transfer.m_key_image, crypto::signature{});
++  }
++  stats.imported_output_count = cached_key_images.size();
++
++  if (cached_key_images.empty())
++  {
++    spent = 0;
++    unspent = 0;
++    return 0;
++  }
++
++  std::string destination_snapshot;
++  CHECK_AND_ASSERT_THROW_MES(
++      ::serialization::dump_binary(*this, destination_snapshot),
++      "Failed to stage cached Ledger key images before node verification");
++  i_wallet2_callback *destination_callback = m_callback;
++  m_callback = nullptr;
++
++  try
++  {
++    const auto update_started_at = std::chrono::steady_clock::now();
++    const uint64_t import_height = import_key_images(
++        cached_key_images,
++        0,
++        spent,
++        unspent,
++        true,
++        &stats.spent_status_rpc_duration_ms,
++        &stats.outgoing_rpc_duration_ms,
++        &stats.spent_status_unspent_output_count,
++        &stats.spent_status_blockchain_output_count,
++        &stats.spent_status_pool_output_count);
++    const uint64_t update_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - update_started_at).count();
++    const uint64_t rpc_total_ms =
++        stats.spent_status_rpc_duration_ms + stats.outgoing_rpc_duration_ms;
++    stats.state_update_duration_ms =
++        update_total_ms > rpc_total_ms ? update_total_ms - rpc_total_ms : 0;
++
++    m_device_last_key_image_sync = time(NULL);
++    const auto store_started_at = std::chrono::steady_clock::now();
++    store();
++    stats.store_duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
++        std::chrono::steady_clock::now() - store_started_at).count();
++    m_callback = destination_callback;
++    return import_height;
++  }
++  catch (...)
++  {
++    const std::exception_ptr failure = std::current_exception();
++    const bool restored = ::serialization::parse_binary(
++        destination_snapshot,
++        *this);
++    m_callback = destination_callback;
++    CHECK_AND_ASSERT_THROW_MES(
++        restored,
++        "Cached Ledger node verification failed and wallet state could not be restored");
++    std::rethrow_exception(failure);
++  }
++}
++//----------------------------------------------------------------------------------------------------
+ void wallet2::device_show_address(uint32_t account_index, uint32_t address_index, const boost::optional<crypto::hash8> &payment_id)
+ {
+   if (!key_on_device())
+@@ -15981,26 +16075,49 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+   if (check_spent)
+   {
+     // query outgoing txes
+-    COMMAND_RPC_GET_TRANSACTIONS::request gettxs_req;
+-    COMMAND_RPC_GET_TRANSACTIONS::response gettxs_res;
+-    gettxs_req.decode_as_json = false;
+-    gettxs_req.prune = true;
+-    gettxs_req.txs_hashes.reserve(spent_txids.size());
+-    for (const crypto::hash& spent_txid : spent_txids)
+-      gettxs_req.txs_hashes.push_back(epee::string_tools::pod_to_hex(spent_txid));
+-
+-
+     PERF_TIMER_START(import_key_images_E);
+     const auto outgoing_rpc_started_at = std::chrono::steady_clock::now();
+-    {
+-      const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
+-      gettxs_req.client = get_client_signature();
+-      uint64_t pre_call_credits = m_rpc_payment_state.credits;
+-      bool r = epee::net_utils::invoke_http_json("/gettransactions", gettxs_req, gettxs_res, *m_http_client, rpc_timeout);
+-      THROW_ON_RPC_RESPONSE_ERROR_GENERIC(r, {}, gettxs_res, "gettransactions");
+-      THROW_WALLET_EXCEPTION_IF(gettxs_res.txs.size() != spent_txids.size(), error::wallet_internal_error,
+-        "daemon returned wrong response for gettransactions, wrong count = " + std::to_string(gettxs_res.txs.size()) + ", expected " + std::to_string(spent_txids.size()));
+-      check_rpc_cost("/gettransactions", gettxs_res.credits, pre_call_credits, spent_txids.size() * COST_PER_TX);
++    constexpr size_t restricted_gettransactions_batch_size = 100;
++    std::vector<COMMAND_RPC_GET_TRANSACTIONS::entry> outgoing_entries;
++    outgoing_entries.reserve(spent_txids.size());
++    auto next_spent_txid = spent_txids.begin();
++    const size_t outgoing_batch_count =
++        (spent_txids.size() + restricted_gettransactions_batch_size - 1) /
++        restricted_gettransactions_batch_size;
++    size_t outgoing_batch_index = 0;
++    while (next_spent_txid != spent_txids.end())
++    {
++      COMMAND_RPC_GET_TRANSACTIONS::request gettxs_req;
++      COMMAND_RPC_GET_TRANSACTIONS::response gettxs_res;
++      gettxs_req.decode_as_json = false;
++      gettxs_req.prune = true;
++      gettxs_req.txs_hashes.reserve(restricted_gettransactions_batch_size);
++      while (next_spent_txid != spent_txids.end() &&
++          gettxs_req.txs_hashes.size() < restricted_gettransactions_batch_size)
++      {
++        gettxs_req.txs_hashes.push_back(
++            epee::string_tools::pod_to_hex(*next_spent_txid));
++        ++next_spent_txid;
++      }
++
++      ++outgoing_batch_index;
++      MINFO("Ledger outgoing transaction node lookup batch " <<
++          outgoing_batch_index << "/" << outgoing_batch_count <<
++          ", count " << gettxs_req.txs_hashes.size());
++      {
++        const boost::lock_guard<boost::recursive_mutex> lock{m_daemon_rpc_mutex};
++        gettxs_req.client = get_client_signature();
++        uint64_t pre_call_credits = m_rpc_payment_state.credits;
++        bool r = epee::net_utils::invoke_http_json("/gettransactions", gettxs_req, gettxs_res, *m_http_client, rpc_timeout);
++        THROW_ON_RPC_RESPONSE_ERROR_GENERIC(r, {}, gettxs_res, "gettransactions");
++        THROW_WALLET_EXCEPTION_IF(gettxs_res.txs.size() != gettxs_req.txs_hashes.size(), error::wallet_internal_error,
++          "daemon returned wrong response for gettransactions batch, wrong count = " + std::to_string(gettxs_res.txs.size()) + ", expected " + std::to_string(gettxs_req.txs_hashes.size()));
++        check_rpc_cost("/gettransactions", gettxs_res.credits, pre_call_credits, gettxs_req.txs_hashes.size() * COST_PER_TX);
++      }
++      outgoing_entries.insert(
++          outgoing_entries.end(),
++          std::make_move_iterator(gettxs_res.txs.begin()),
++          std::make_move_iterator(gettxs_res.txs.end()));
+     }
+     if (outgoing_rpc_duration_ms)
+       *outgoing_rpc_duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+@@ -16011,7 +16128,7 @@ uint64_t wallet2::import_key_images(const std::vector<std::pair<crypto::key_imag
+     PERF_TIMER_START(import_key_images_F);
+     hw::device &hwdev =  m_account.get_device();
+     std::unordered_set<crypto::hash> returned_spent_txids;
+-    for (const COMMAND_RPC_GET_TRANSACTIONS::entry& e : gettxs_res.txs)
++    for (const COMMAND_RPC_GET_TRANSACTIONS::entry& e : outgoing_entries)
+     {
+       THROW_WALLET_EXCEPTION_IF(e.in_pool, error::wallet_internal_error, "spent tx isn't supposed to be in txpool");
+ 
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index a8261bd33..4e4946411 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1279,6 +1279,7 @@ private:
+     uint64_t cold_key_image_sync(uint64_t &spent, uint64_t &unspent);
+     uint64_t cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent);
+     uint64_t cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent, ledger_key_image_sync_stats &stats, bool full_spend_output_scan = false);
++    uint64_t reconcile_cached_key_images(uint64_t &spent, uint64_t &unspent, ledger_key_image_sync_stats &stats);
+     void device_show_address(uint32_t account_index, uint32_t address_index, const boost::optional<crypto::hash8> &payment_id);
+     bool parse_multisig_tx_from_str(std::string multisig_tx_st, multisig_tx_set &exported_txs) const;
+     bool load_multisig_tx(cryptonote::blobdata blob, multisig_tx_set &exported_txs, std::function<bool(const multisig_tx_set&)> accept_func = NULL);
+-- 
+2.50.1 (Apple Git-155)
+
+

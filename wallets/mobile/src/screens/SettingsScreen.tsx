@@ -329,7 +329,7 @@ export default function SettingsScreen({ navigation }: any) {
     }
     setIsRecheckingLedger(true);
     try {
-      await reconcileLedgerBalance();
+      await reconcileLedgerBalance(true);
       Alert.alert(
         t('settings.ledgerBalanceVerification'),
         t('settings.ledgerBalanceVerified'),

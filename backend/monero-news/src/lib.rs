@@ -1,8 +1,7 @@
 //! A small server-owned news feed for the wallet dashboard.
 //!
-//! The mobile clients never scrape a third party.  This service retrieves the
-//! public Monero blog, normalises the small response contract, caches it, and
-//! only returns official getmonero.org article links.
+//! The wallet clients retrieve a small server-owned catalog and only accept
+//! immutable WebP covers from the TEX8 CDN.
 
 mod ads;
 
@@ -14,13 +13,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::{DateTime, NaiveDate, Utc};
-use image::{
-    codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, GenericImageView, Rgb, RgbImage,
-};
-use scraper::{Html, Selector};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -30,13 +25,10 @@ use tokio::sync::{Mutex, RwLock};
 
 pub use ads::AdConfig;
 
-const SOURCE_URL: &str = "https://www.getmonero.org/blog/";
+const CURATED_CATALOG_IMAGE_CDN: &str =
+    "https://cdn.tex8.com/tex8-images/monero-fast-wallet/news/v1/2026-08-20";
 const CACHE_FOR: Duration = Duration::from_secs(15 * 60);
 const NEWS_CATALOG_LIMIT: usize = 10;
-const NEWS_IMAGE_WIDTH: u32 = 960;
-const NEWS_IMAGE_HEIGHT: u32 = 540;
-const NEWS_IMAGE_SOURCE_LIMIT: usize = 4 * 1024 * 1024;
-const NEWS_IMAGE_JPEG_LIMIT: usize = 64 * 1024;
 const MARKET_QUOTE_CACHE_FOR: Duration = Duration::from_secs(60);
 const MARKET_CHART_CACHE_FOR: Duration = Duration::from_secs(5 * 60);
 const COINGECKO_BASE: &str = "https://api.coingecko.com/api/v3";
@@ -46,6 +38,7 @@ const BITFINEX_BASE: &str = "https://api-pub.bitfinex.com/v2";
 pub struct NewsState {
     client: reqwest::Client,
     cache: Arc<RwLock<Option<CachedFeed>>>,
+    catalog_hash: String,
     market_quote_cache: Arc<RwLock<Option<CachedMarketQuote>>>,
     market_chart_cache: Arc<RwLock<HashMap<String, CachedMarketChart>>>,
     market_quote_refresh: Arc<Mutex<()>>,
@@ -80,7 +73,7 @@ pub struct NewsItem {
     pub published_at: String,
     pub category: NewsCategory,
     pub url: String,
-    pub image_data_url: String,
+    pub image_url: String,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -94,7 +87,14 @@ pub enum NewsCategory {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NewsResponse {
+    catalog_hash: String,
     items: Vec<NewsItem>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogHashResponse {
+    catalog_hash: String,
 }
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
@@ -149,6 +149,7 @@ impl NewsState {
         Ok(Self {
             client,
             cache: Arc::new(RwLock::new(None)),
+            catalog_hash: catalog_hash(&curated_catalog()),
             market_quote_cache: Arc::new(RwLock::new(None)),
             market_chart_cache: Arc::new(RwLock::new(HashMap::new())),
             market_quote_refresh: Arc::new(Mutex::new(())),
@@ -164,56 +165,12 @@ impl NewsState {
             }
         }
 
-        let body = self
-            .client
-            .get(SOURCE_URL)
-            .send()
-            .await
-            .map_err(|_| ApiError::Unavailable)?
-            .error_for_status()
-            .map_err(|_| ApiError::Unavailable)?
-            .text()
-            .await
-            .map_err(|_| ApiError::Unavailable)?;
-        let mut items = parse_blog(&body);
-        if items.is_empty() {
-            return Err(ApiError::Unavailable);
-        }
-        items.truncate(NEWS_CATALOG_LIMIT);
-        self.load_catalog_images(&mut items).await;
+        let items = curated_catalog();
         *self.cache.write().await = Some(CachedFeed {
             fetched_at: Instant::now(),
             items: items.clone(),
         });
         Ok(items)
-    }
-
-    async fn load_catalog_images(&self, items: &mut [NewsItem]) {
-        let mut tasks = tokio::task::JoinSet::new();
-        for (index, item) in items.iter().enumerate() {
-            let client = self.client.clone();
-            let article_url = item.url.clone();
-            let fallback = item.image_data_url.clone();
-            tasks.spawn(async move {
-                let image = tokio::time::timeout(
-                    Duration::from_secs(6),
-                    fetch_article_image(&client, &article_url),
-                )
-                .await
-                .ok()
-                .flatten()
-                .and_then(|bytes| normalise_news_image(&bytes))
-                .unwrap_or(fallback);
-                (index, image)
-            });
-        }
-        while let Some(result) = tasks.join_next().await {
-            if let Ok((index, image)) = result {
-                if let Some(item) = items.get_mut(index) {
-                    item.image_data_url = image;
-                }
-            }
-        }
     }
 
     async fn market_quote(&self) -> Result<MarketQuote, ApiError> {
@@ -357,6 +314,7 @@ pub fn router(state: NewsState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/news", get(news))
+        .route("/v1/news/catalog-hash", get(catalog_hash_endpoint))
         .route("/v1/market/quote", get(market_quote))
         .route("/v1/market/chart", get(market_chart))
         .route("/v1/ads/catalog", get(ads::public_catalog))
@@ -395,12 +353,22 @@ async fn news(
         .limit
         .unwrap_or(NEWS_CATALOG_LIMIT)
         .clamp(1, NEWS_CATALOG_LIMIT);
+    let catalog_hash = state.catalog_hash.clone();
     let mut items = state.feed().await?;
     if let Some(category) = query.category {
         items.retain(|item| item.category == category);
     }
     items.truncate(limit);
-    Ok(Json(NewsResponse { items }))
+    Ok(Json(NewsResponse {
+        catalog_hash,
+        items,
+    }))
+}
+
+async fn catalog_hash_endpoint(State(state): State<NewsState>) -> Json<CatalogHashResponse> {
+    Json(CatalogHashResponse {
+        catalog_hash: state.catalog_hash.clone(),
+    })
 }
 
 async fn market_quote(State(state): State<NewsState>) -> Result<Json<MarketQuote>, ApiError> {
@@ -517,181 +485,84 @@ fn normalise_market_points(points: impl Iterator<Item = MarketPoint>) -> Option<
     )
 }
 
-fn parse_blog(body: &str) -> Vec<NewsItem> {
-    let document = Html::parse_document(body);
-    let post = Selector::parse(".post-lead").expect("static CSS selector");
-    let title = Selector::parse("h3 a").expect("static CSS selector");
-    let paragraph = Selector::parse("p").expect("static CSS selector");
-    let category = Selector::parse("small a").expect("static CSS selector");
+fn curated_catalog() -> Vec<NewsItem> {
+    let image_url = |name: &str| format!("{CURATED_CATALOG_IMAGE_CDN}/{name}.webp");
+    vec![
+        NewsItem {
+            id: "2026-08-20-nano-ledger".to_string(),
+            title: "Nano Ledger: Monero sicher signieren".to_string(),
+            summary: "Der Spend Key bleibt auf dem Hardware-Gerät. Prüfe Empfänger, Betrag und Gebühr immer auf dem Display, bevor du die Signatur freigibst.".to_string(),
+            published_at: "2026-08-20T15:00:00Z".to_string(),
+            category: NewsCategory::Wallet,
+            url: "https://www.getmonero.org/resources/user-guides/ledger-wallet-cli.html".to_string(),
+            image_url: image_url("nano-ledger"),
+        },
+        NewsItem {
+            id: "2026-08-20-monero".to_string(),
+            title: "Monero: Private Zahlungen ohne öffentliche Kontostände".to_string(),
+            summary: "Ring-Signaturen, Stealth-Adressen und vertrauliche Beträge schützen die Zahlungsdaten auf Protokollebene.".to_string(),
+            published_at: "2026-08-20T14:00:00Z".to_string(),
+            category: NewsCategory::Network,
+            url: "https://www.getmonero.org/get-started/what-is-monero/".to_string(),
+            image_url: image_url("monero"),
+        },
+        NewsItem {
+            id: "2026-08-20-monero-fast-wallet".to_string(),
+            title: "Monero Fast Wallet: Schneller Sync, Schlüssel lokal".to_string(),
+            summary: "Die Wallet nutzt den gemeinsamen Monero-Core, beschleunigt den Blockabruf und lässt Seed sowie Signaturen auf deinem Gerät.".to_string(),
+            published_at: "2026-08-20T13:00:00Z".to_string(),
+            category: NewsCategory::Wallet,
+            url: "https://www.getmonero.org/resources/user-guides/".to_string(),
+            image_url: image_url("monero-fast-wallet"),
+        },
+        NewsItem {
+            id: "2026-08-20-monero-fast-node".to_string(),
+            title: "Monero Fast Node: Privater Zugang zur Blockchain".to_string(),
+            summary: "Monero Fast Node stellt Wallets einen zuverlässigen Node-Zugang bereit und bleibt mit dem Monero-Netzwerk kompatibel.".to_string(),
+            published_at: "2026-08-20T12:00:00Z".to_string(),
+            category: NewsCategory::Network,
+            url: "https://www.getmonero.org/resources/moneropedia/node.html".to_string(),
+            image_url: image_url("monero-fast-node"),
+        },
+        NewsItem {
+            id: "2026-08-20-global-privacy".to_string(),
+            title: "Globale Privacy: Weniger Datenspuren im Alltag".to_string(),
+            summary: "Lokale Schlüssel, verschlüsselte Verbindungen und datensparsame Dienste sind praktische Bausteine digitaler Selbstbestimmung.".to_string(),
+            published_at: "2026-08-20T11:00:00Z".to_string(),
+            category: NewsCategory::Ecosystem,
+            url: "https://www.getmonero.org/get-started/what-is-monero/".to_string(),
+            image_url: image_url("privacy"),
+        },
+    ]
+}
 
-    document
-        .select(&post)
-        .filter_map(|element| {
-            let title_link = element.select(&title).next()?;
-            let relative_url = title_link.value().attr("href")?;
-            if !relative_url.starts_with('/') || relative_url.contains("..") {
-                return None;
-            }
-            let title = text(&title_link);
-            let paragraphs: Vec<String> =
-                element.select(&paragraph).map(|item| text(&item)).collect();
-            let metadata = paragraphs.get(1)?;
-            let published_at = parse_published_at(metadata)?;
-            let categories: Vec<String> = element
-                .select(&category)
-                .map(|item| text(&item).to_lowercase())
-                .collect();
-            let category = classify(&title, &categories);
-            let summary = paragraphs
-                .first()
-                .filter(|summary| !summary.is_empty())
-                .cloned()
-                .unwrap_or_else(|| title.clone());
-            let url = format!("https://www.getmonero.org{relative_url}");
-            let image_data_url = fallback_news_image(&title, category);
-            Some(NewsItem {
-                id: relative_url.trim_start_matches('/').replace('/', "-"),
-                title,
-                summary,
-                published_at,
-                category,
-                url,
-                image_data_url,
-            })
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogHashItem<'a> {
+    id: &'a str,
+    title: &'a str,
+    summary: &'a str,
+    published_at: &'a str,
+    category: NewsCategory,
+    url: &'a str,
+    image_url: &'a str,
+}
+
+fn catalog_hash(items: &[NewsItem]) -> String {
+    let fingerprint: Vec<_> = items
+        .iter()
+        .map(|item| CatalogHashItem {
+            id: &item.id,
+            title: &item.title,
+            summary: &item.summary,
+            published_at: &item.published_at,
+            category: item.category,
+            url: &item.url,
+            image_url: &item.image_url,
         })
-        .collect()
-}
-
-async fn fetch_article_image(client: &reqwest::Client, article_url: &str) -> Option<Vec<u8>> {
-    let article = client
-        .get(article_url)
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .text()
-        .await
-        .ok()?;
-    let image_url = parse_article_image_url(&article)?;
-    let response = client
-        .get(image_url)
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > NEWS_IMAGE_SOURCE_LIMIT as u64)
-    {
-        return None;
-    }
-    let bytes = response.bytes().await.ok()?;
-    (bytes.len() <= NEWS_IMAGE_SOURCE_LIMIT).then(|| bytes.to_vec())
-}
-
-fn parse_article_image_url(body: &str) -> Option<String> {
-    let document = Html::parse_document(body);
-    let selector = Selector::parse(r#"meta[property="og:image"]"#).ok()?;
-    let value = document
-        .select(&selector)
-        .find_map(|element| element.value().attr("content"))?;
-    let base = url::Url::parse(SOURCE_URL).ok()?;
-    let parsed = base.join(value).ok()?;
-    if parsed.scheme() != "https" || parsed.host_str() != Some("www.getmonero.org") {
-        return None;
-    }
-    Some(parsed.to_string())
-}
-
-fn normalise_news_image(bytes: &[u8]) -> Option<String> {
-    let image = image::load_from_memory(bytes).ok()?;
-    let (width, height) = image.dimensions();
-    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > 40_000_000 {
-        return None;
-    }
-    let resized = image
-        .resize_to_fill(NEWS_IMAGE_WIDTH, NEWS_IMAGE_HEIGHT, FilterType::Triangle)
-        .to_rgb8();
-    encode_catalog_jpeg(&resized)
-}
-
-fn fallback_news_image(title: &str, category: NewsCategory) -> String {
-    let seed = title.bytes().fold(0_u32, |value, byte| {
-        value.wrapping_mul(33).wrapping_add(u32::from(byte))
-    });
-    let accent = match category {
-        NewsCategory::Network => (242_u8, 104_u8, 34_u8),
-        NewsCategory::Wallet => (244_u8, 189_u8, 85_u8),
-        NewsCategory::Ecosystem => (0_u8, 214_u8, 143_u8),
-    };
-    let image = RgbImage::from_fn(NEWS_IMAGE_WIDTH, NEWS_IMAGE_HEIGHT, |x, y| {
-        let horizontal = x as f32 / NEWS_IMAGE_WIDTH as f32;
-        let vertical = y as f32 / NEWS_IMAGE_HEIGHT as f32;
-        let glow_x = ((seed % NEWS_IMAGE_WIDTH) as f32 - x as f32).abs() / NEWS_IMAGE_WIDTH as f32;
-        let glow = (1.0 - glow_x).max(0.0) * (1.0 - vertical * 0.55);
-        let stripe = if (x + y + seed) % 173 < 5 { 0.13 } else { 0.0 };
-        let mix = (horizontal * 0.18 + glow * 0.32 + stripe).clamp(0.0, 0.58);
-        Rgb([
-            (13.0 + f32::from(accent.0) * mix) as u8,
-            (10.0 + f32::from(accent.1) * mix) as u8,
-            (22.0 + f32::from(accent.2) * mix) as u8,
-        ])
-    });
-    encode_catalog_jpeg(&image).expect("generated news image is encodable")
-}
-
-fn encode_catalog_jpeg(image: &RgbImage) -> Option<String> {
-    for quality in [72_u8, 60, 48, 36] {
-        let mut encoded = Vec::new();
-        JpegEncoder::new_with_quality(&mut encoded, quality)
-            .encode_image(&DynamicImage::ImageRgb8(image.clone()))
-            .ok()?;
-        if encoded.len() <= NEWS_IMAGE_JPEG_LIMIT {
-            return Some(format!(
-                "data:image/jpeg;base64,{}",
-                STANDARD.encode(encoded)
-            ));
-        }
-    }
-    None
-}
-
-fn text(element: &scraper::ElementRef<'_>) -> String {
-    element
-        .text()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn parse_published_at(metadata: &str) -> Option<String> {
-    let date = metadata
-        .split("| ")
-        .nth(1)?
-        .split("Category:")
-        .next()?
-        .trim();
-    let date = NaiveDate::parse_from_str(date, "%d %B %Y").ok()?;
-    let timestamp = date.and_hms_opt(0, 0, 0)?;
-    Some(DateTime::<Utc>::from_naive_utc_and_offset(timestamp, Utc).to_rfc3339())
-}
-
-fn classify(title: &str, categories: &[String]) -> NewsCategory {
-    let haystack = format!("{} {}", title.to_lowercase(), categories.join(" "));
-    if haystack.contains("wallet") || haystack.contains("gui") || haystack.contains("ledger") {
-        NewsCategory::Wallet
-    } else if haystack.contains("community")
-        || haystack.contains("meeting")
-        || haystack.contains("ecosystem")
-    {
-        NewsCategory::Ecosystem
-    } else {
-        NewsCategory::Network
-    }
+        .collect();
+    let encoded = serde_json::to_vec(&fingerprint).expect("catalog fingerprint serializes");
+    hex::encode(Sha256::digest(encoded))
 }
 
 enum ApiError {
@@ -714,51 +585,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_and_classifies_official_blog_posts() {
-        let html = r#"
-          <div class="post-lead">
-            <h3><a href="/2026/07/21/monero-GUI-released.html">Monero GUI released</a></h3>
-            <p>Release fixing wallet generation.</p>
-            <p><small>Posted by alice | 21 July 2026<br>Category: <a href="/blog/tags/releases.html">releases</a></small></p>
-          </div>
-          <div class="post-lead">
-            <h3><a href="/2026/07/20/community.html">Community meeting</a></h3>
-            <p>People met privately.</p>
-            <p><small>Posted by bob | 20 July 2026<br>Category: <a href="/blog/tags/community.html">community</a></small></p>
-          </div>"#;
-        let news = parse_blog(html);
-        assert_eq!(news.len(), 2);
-        assert_eq!(news[0].category, NewsCategory::Wallet);
-        assert_eq!(news[1].category, NewsCategory::Ecosystem);
+    fn serves_the_curated_tex8_catalog() {
+        let news = curated_catalog();
+        assert_eq!(news.len(), 5);
         assert!(news
             .iter()
             .all(|item| item.url.starts_with("https://www.getmonero.org/")));
-        assert!(news
-            .iter()
-            .all(|item| item.image_data_url.starts_with("data:image/jpeg;base64,")));
+        assert!(news.iter().all(|item| {
+            item.image_url.starts_with(CURATED_CATALOG_IMAGE_CDN)
+                && item.image_url.ends_with(".webp")
+        }));
+        let encoded = serde_json::to_value(&news[0]).expect("catalog serializes");
+        assert!(encoded["imageUrl"].as_str().is_some());
+        assert_eq!(encoded.as_object().map(|item| item.len()), Some(7));
     }
 
     #[test]
-    fn catalog_images_have_a_fixed_private_payload() {
-        let data_url = fallback_news_image("Private Monero news", NewsCategory::Network);
-        let encoded = data_url
-            .strip_prefix("data:image/jpeg;base64,")
-            .expect("JPEG data URL");
-        let bytes = STANDARD.decode(encoded).expect("base64 image");
-        assert!(bytes.len() <= NEWS_IMAGE_JPEG_LIMIT);
-        let decoded = image::load_from_memory(&bytes).expect("catalog image");
-        assert_eq!(decoded.dimensions(), (NEWS_IMAGE_WIDTH, NEWS_IMAGE_HEIGHT));
-    }
-
-    #[test]
-    fn accepts_only_official_monero_article_images() {
-        let relative = r#"<meta property="og:image" content="/press-kit/images/monero-logo.png">"#;
-        assert_eq!(
-            parse_article_image_url(relative).as_deref(),
-            Some("https://www.getmonero.org/press-kit/images/monero-logo.png")
-        );
-        let external = r#"<meta property="og:image" content="https://tracker.example/image.jpg">"#;
-        assert!(parse_article_image_url(external).is_none());
+    fn catalog_hash_changes_with_catalog_content() {
+        let catalog = curated_catalog();
+        let original = catalog_hash(&catalog);
+        assert_eq!(original.len(), 64);
+        let mut changed = catalog.clone();
+        changed[0].title.push('!');
+        assert_ne!(original, catalog_hash(&changed));
     }
 
     #[test]

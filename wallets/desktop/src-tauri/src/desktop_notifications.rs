@@ -26,8 +26,10 @@ const CONTRACT_VERSION: u8 = 5;
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn tex8_desktop_apns_register() -> c_int;
+    fn tex8_desktop_apns_install_handler() -> c_int;
     fn tex8_desktop_apns_device_token() -> *const c_char;
     fn tex8_desktop_apns_status() -> *const c_char;
+    fn tex8_desktop_apns_take_pending_event() -> *const c_char;
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -335,6 +337,14 @@ pub fn disable_installation(app: &AppHandle) -> Result<NotificationInstallationS
 }
 
 pub fn consume_pending_open(app: &AppHandle) -> Result<Option<NotificationEvent>, String> {
+    if let Some(raw) = macos_apns_pending_event() {
+        let event = serde_json::from_str::<NotificationEvent>(&raw)
+            .map_err(|_| "Pending notification event is invalid.".to_owned())?;
+        if !valid_open_event(&event) {
+            return Err("Pending notification event is invalid.".to_owned());
+        }
+        return Ok(Some(event));
+    }
     let path = pending_open_path(app)?;
     let raw = match fs::read_to_string(&path) {
         Ok(value) => value,
@@ -343,8 +353,62 @@ pub fn consume_pending_open(app: &AppHandle) -> Result<Option<NotificationEvent>
     };
     let event = serde_json::from_str::<NotificationEvent>(&raw)
         .map_err(|_| "Pending notification event is invalid.".to_owned())?;
+    if !valid_open_event(&event) {
+        return Err("Pending notification event is invalid.".to_owned());
+    }
     let _ = fs::remove_file(path);
     Ok(Some(event))
+}
+
+pub fn initialize_notification_open_handler() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        let _ = tex8_desktop_apns_install_handler();
+    }
+}
+
+fn valid_open_event(event: &NotificationEvent) -> bool {
+    if !event.opened {
+        return false;
+    }
+    let opaque_id = ((event.id.len() == 68
+        && (event.id.starts_with("evt_") || event.id.starts_with("sig_")))
+        || (event.id.len() == 39 && event.id.starts_with("fwpush_")))
+        && event.id[event.id.find('_').unwrap_or(0) + 1..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+    if !opaque_id {
+        return false;
+    }
+    if event.category == "monero.fast_wallet.incoming" {
+        return event.deep_link == "tex8://notification/incoming";
+    }
+    if event.category != "monero.fast_wallet.vanity" {
+        return false;
+    }
+    let Some(order_id) = event.deep_link.strip_prefix("mfw://vanity/order/") else {
+        return false;
+    };
+    order_id.len() == 36
+        && order_id.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+            }
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_apns_pending_event() -> Option<String> {
+    unsafe { c_string(tex8_desktop_apns_take_pending_event()) }
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_apns_pending_event() -> Option<String> {
+    None
 }
 
 pub fn background_agent_config_path(app: &AppHandle) -> Result<Option<String>, String> {
@@ -732,7 +796,9 @@ fn now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{delivery, provider_status, NotificationInstallation};
+    use super::{
+        delivery, provider_status, valid_open_event, NotificationEvent, NotificationInstallation,
+    };
 
     fn installation(provider: &str, endpoint: &str, background: bool) -> NotificationInstallation {
         NotificationInstallation {
@@ -787,5 +853,39 @@ mod tests {
         let mut apns = installation("apns", "", false);
         apns.provider_status = provider_status(&apns);
         assert_eq!(apns.provider_status, "not-configured");
+    }
+
+    #[test]
+    fn vanity_open_requires_an_explicit_open_and_strict_deep_link() {
+        let mut event = NotificationEvent {
+            id: format!("evt_{}", "a".repeat(64)),
+            category: "monero.fast_wallet.vanity".to_owned(),
+            deep_link: "mfw://vanity/order/550e8400-e29b-41d4-a716-446655440000".to_owned(),
+            received_at: "1".to_owned(),
+            opened: true,
+        };
+        assert!(valid_open_event(&event));
+        event.opened = false;
+        assert!(!valid_open_event(&event));
+        event.opened = true;
+        event.deep_link = "https://example.invalid".to_owned();
+        assert!(!valid_open_event(&event));
+    }
+
+    #[test]
+    fn incoming_open_keeps_existing_opaque_id_formats() {
+        for id in [
+            format!("evt_{}", "b".repeat(64)),
+            format!("sig_{}", "c".repeat(64)),
+            format!("fwpush_{}", "d".repeat(32)),
+        ] {
+            assert!(valid_open_event(&NotificationEvent {
+                id,
+                category: "monero.fast_wallet.incoming".to_owned(),
+                deep_link: "tex8://notification/incoming".to_owned(),
+                received_at: "1".to_owned(),
+                opened: true,
+            }));
+        }
     }
 }

@@ -37,6 +37,8 @@ export interface MfwOwnedNameRecord {
   stage: MfwOwnedNameStage;
   termYears: number;
   sequence: number;
+  /** Public-only reverse discovery cannot authorize owner transitions. */
+  ownerAuthority?: 'local' | 'recovery-required';
   ownerPublicKeyHex?: string;
   commitTxidHex?: string;
   commitHeight?: number;
@@ -44,6 +46,7 @@ export interface MfwOwnedNameRecord {
   pendingAddress?: string;
   expiryHeight?: number;
   lastChainTipHeight?: number;
+  recoveryExportedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -260,8 +263,7 @@ export function estimateMfwNameExpiryTimestampMs(
     return undefined;
   }
   const estimatedAtMs =
-    observedAtMs +
-    (expiryHeight - chainTipHeight) * MFW_TARGET_BLOCK_TIME_MS;
+    observedAtMs + (expiryHeight - chainTipHeight) * MFW_TARGET_BLOCK_TIME_MS;
   return Number.isFinite(estimatedAtMs) &&
     estimatedAtMs >= -8_640_000_000_000_000 &&
     estimatedAtMs <= 8_640_000_000_000_000
@@ -329,6 +331,10 @@ function normalizeRecord(value: MfwOwnedNameRecord): MfwOwnedNameRecord {
     stage: value.stage,
     termYears: value.termYears,
     sequence: value.sequence,
+    ownerAuthority:
+      value.ownerAuthority === 'recovery-required'
+        ? 'recovery-required'
+        : 'local',
     ownerPublicKeyHex: optionalHex(value.ownerPublicKeyHex),
     commitTxidHex: optionalHex(value.commitTxidHex),
     commitHeight: optionalHeight(value.commitHeight),
@@ -336,10 +342,22 @@ function normalizeRecord(value: MfwOwnedNameRecord): MfwOwnedNameRecord {
     pendingAddress: optional(value.pendingAddress),
     expiryHeight: optionalHeight(value.expiryHeight),
     lastChainTipHeight: optionalHeight(value.lastChainTipHeight),
+    recoveryExportedAt: optionalTimestamp(value.recoveryExportedAt),
     createdAt: required(value.createdAt, 'created timestamp'),
     updatedAt: required(value.updatedAt, 'updated timestamp'),
   };
   return record;
+}
+
+function optionalTimestamp(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const timestamp = value.trim();
+  if (!timestamp || !Number.isFinite(Date.parse(timestamp))) {
+    throw new Error('MFW name recovery timestamp is invalid');
+  }
+  return timestamp;
 }
 
 function requiredHex32(value: string, label: string): string {

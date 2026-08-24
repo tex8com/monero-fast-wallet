@@ -463,9 +463,20 @@ export interface NativeMoneroWalletModule {
     walletId: string,
     limit?: number,
   ): Promise<WalletTransaction[]>;
+  primeHardwareWalletFromViewOnly(
+    hardwareWalletId: string,
+    viewOnlyWalletId: string,
+  ): Promise<void>;
+  rebuildHardwareWalletCacheFromViewOnly(
+    hardwareWalletId: string,
+    viewOnlyWalletId: string,
+    restoreHeight: number,
+  ): Promise<void>;
   syncLedgerKeyImagesToViewWallet(
     hardwareWalletId: string,
     viewOnlyWalletId: string,
+    fullSpendOutputScan: boolean,
+    nodeOnlyRetry: boolean,
   ): Promise<LedgerKeyImageSyncResult>;
   prepareTransaction(
     input: PrepareTransactionInput,
@@ -871,10 +882,35 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       snapshot: walletId => turboModule.snapshot(walletId),
       getTransactions: (walletId, limit = 25) =>
         turboModule.getTransactions(walletId, limit),
-      syncLedgerKeyImagesToViewWallet: (hardwareWalletId, viewOnlyWalletId) =>
+      primeHardwareWalletFromViewOnly: (
+        hardwareWalletId,
+        viewOnlyWalletId,
+      ) =>
+        turboModule.primeHardwareWalletFromViewOnly(
+          hardwareWalletId,
+          viewOnlyWalletId,
+        ),
+      rebuildHardwareWalletCacheFromViewOnly: (
+        hardwareWalletId,
+        viewOnlyWalletId,
+        restoreHeight,
+      ) =>
+        turboModule.rebuildHardwareWalletCacheFromViewOnly(
+          hardwareWalletId,
+          viewOnlyWalletId,
+          restoreHeight,
+        ),
+      syncLedgerKeyImagesToViewWallet: (
+        hardwareWalletId,
+        viewOnlyWalletId,
+        fullSpendOutputScan,
+        nodeOnlyRetry,
+      ) =>
         turboModule.syncLedgerKeyImagesToViewWallet(
           hardwareWalletId,
           viewOnlyWalletId,
+          fullSpendOutputScan,
+          nodeOnlyRetry,
         ),
       prepareTransaction: input =>
         turboModule.prepareTransaction(

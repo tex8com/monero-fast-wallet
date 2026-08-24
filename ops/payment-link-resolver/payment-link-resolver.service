@@ -1,0 +1,29 @@
+[Unit]
+Description=Monero Fast Wallet payment-link resolver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=server
+Group=server
+WorkingDirectory=/srv/monero-fast-wallet/monero-fast-wallet-runtime
+EnvironmentFile=/srv/monero-fast-wallet/monero-fast-wallet-runtime/payment-link-resolver.env
+ExecStart=/srv/monero-fast-wallet/monero-fast-wallet-runtime/bin/payment-link-resolver
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/monero-fast-wallet/monero-fast-wallet-runtime
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

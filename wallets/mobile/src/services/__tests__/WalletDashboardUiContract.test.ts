@@ -32,6 +32,16 @@ describe('Wallet dashboard interaction contract', () => {
     'monerowallet',
     'NativeMoneroWalletModule.kt',
   );
+  const ledgerBleTransport = source(
+    'android',
+    'app',
+    'src',
+    'main',
+    'java',
+    'com',
+    'monerowallet',
+    'LedgerBleTransport.kt',
+  );
   const nativeAndroidJni = source(
     'android',
     'app',
@@ -44,11 +54,21 @@ describe('Wallet dashboard interaction contract', () => {
     resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletEngine.cpp'),
     'utf8',
   );
+  const ledgerNodeRetryPatch = readFileSync(
+    resolve(
+      repoRoot,
+      'third_party',
+      'monero-patches',
+      '0087-wallet-batch-ledger-history-and-retry-node-only.patch',
+    ),
+    'utf8',
+  );
 
   it('forwards every native shared-download cursor and throughput metric through Android', () => {
     const requiredFields = [
       'downloadStartHeight',
       'downloadedHeight',
+      'priorityWalletHeight',
       'lastNonEmptyBlockFetchMs',
       'lastNonEmptyBlockCount',
       'lastNonEmptyNetworkBytes',
@@ -104,7 +124,7 @@ describe('Wallet dashboard interaction contract', () => {
     }
   });
 
-  it('checks Ledger spend outputs before signing and refreshes the companion after broadcast', () => {
+  it('reconciles only a normal Ledger wallet before and after sending', () => {
     const prepareFlow = send.slice(
       send.indexOf('const prepareForReview = async'),
       send.indexOf('const handleSend = async'),
@@ -113,20 +133,86 @@ describe('Wallet dashboard interaction contract', () => {
       send.indexOf('const handleSend = async'),
       send.indexOf('const validateRecipientAndContinue'),
     );
-    expect(prepareFlow.indexOf('await reconcileLedgerBalance()')).toBeLessThan(
-      prepareFlow.indexOf('await connectLedgerForSigning({'),
-    );
+    expect(prepareFlow).toContain("registeredWallet?.kind === 'hardware'");
+    expect(
+      prepareFlow.match(/registeredWallet\?\.kind === 'hardware'/g),
+    ).toHaveLength(1);
+    expect(prepareFlow).not.toContain('if (session.readOnly)');
+    expect(prepareFlow).not.toContain('await reconcileLedgerBalance()');
     expect(prepareFlow).toContain(
       "setLedgerSigningProgress({ phase: 'searching' })",
     );
     expect(prepareFlow).toContain("phase: 'awaiting-confirmation'");
+    expect(prepareFlow).toContain('let ledgerHandoffCreated = false');
+    expect(prepareFlow).toContain('await restoreLedgerViewAfterSigning()');
     expect(send).toContain('<LedgerSigningModal');
+    expect(commitFlow).toContain('await walletService.commitTransaction');
+    expect(commitFlow).toContain('await restoreLedgerViewAfterSigning()');
     expect(
       commitFlow.indexOf('await walletService.commitTransaction'),
-    ).toBeLessThan(commitFlow.indexOf('await reconcileLedgerBalance()'));
-    expect(commitFlow).toContain(
-      "setSendStatus(t('send.transactionBroadcastRefreshPending'))",
+    ).toBeLessThan(
+      commitFlow.indexOf('await restoreLedgerViewAfterSigning()'),
     );
+    expect(commitFlow).toContain('await reconcileLedgerBalance().catch');
+    expect(
+      commitFlow.indexOf('await restoreLedgerViewAfterSigning()'),
+    ).toBeLessThan(commitFlow.indexOf('await reconcileLedgerBalance().catch'));
+    expect(commitFlow).toContain('send.transactionBroadcastRefreshPending');
+    expect(commitFlow).toContain('if (broadcastSucceeded)');
+  });
+
+  it('does not expose a new Ledger signing session before sync and account proof', () => {
+    const connectStart = walletState.indexOf(
+      'const connectLedgerForSigning = useCallback',
+    );
+    const connectFlow = walletState.slice(
+      connectStart,
+      walletState.indexOf('const reconcileLedgerBalance', connectStart),
+    );
+    expect(connectFlow).toContain(
+      'const referenceSnapshot = await walletService.snapshot(activeSession)',
+    );
+    expect(connectFlow).toContain('await walletService.startRefresh(');
+    expect(connectFlow).toContain(
+      'await waitForLedgerSigningSpendReadyWithSingleRebuild({',
+    );
+    expect(connectFlow).toContain(
+      'walletService.snapshotForLedgerSigningReadiness(',
+    );
+    expect(connectFlow).toContain(
+      'const readSigningSnapshot = (',
+    );
+    expect(connectFlow).toContain('readSnapshot: readSigningSnapshot');
+    expect(connectFlow).toContain('accountIndex: expectedAccountIndex');
+    expect(connectFlow).toContain('const spendScopedSigningSession = {');
+    expect(
+      connectFlow.indexOf('await walletService.startRefresh('),
+    ).toBeLessThan(
+      connectFlow.indexOf(
+        'await waitForLedgerSigningSpendReadyWithSingleRebuild({',
+      ),
+    );
+    expect(
+      connectFlow.indexOf(
+        'await waitForLedgerSigningSpendReadyWithSingleRebuild({',
+      ),
+    ).toBeLessThan(connectFlow.indexOf('return spendScopedSigningSession'));
+    expect(connectFlow).toContain(
+      '.closeWallet(openedSigningSession, true)',
+    );
+    expect(connectFlow).toContain('refreshReferenceAfterMismatch:');
+    expect(connectFlow).toContain('await waitForWalletSnapshotAtHeight({');
+    expect(connectFlow).toContain(
+      'await walletService.rebuildHardwareWalletCacheFromViewOnly(',
+    );
+    expect(
+      connectFlow.match(/rebuildHardwareWalletCacheFromViewOnly/g),
+    ).toHaveLength(1);
+    expect(
+      connectFlow.indexOf(
+        'await waitForLedgerSigningSpendReadyWithSingleRebuild({',
+      ),
+    ).toBeLessThan(connectFlow.lastIndexOf('await closeReadOnlyCompanion()'));
   });
 
   it('connects the session-local transaction control plane before Core prepares a transfer', () => {
@@ -159,6 +245,12 @@ describe('Wallet dashboard interaction contract', () => {
     );
   });
 
+  it('does not hot-loop shared sync while Ledger owns a scanner session', () => {
+    expect(walletEngine).toContain(
+      '(pendingScans > 0 || !temporarilyBusyScanners.empty())',
+    );
+  });
+
   it('selects a software wallet immediately while a cold local open finishes behind Home', () => {
     expect(home).toContain('openRegisteredWalletById(walletId)');
     expect(home).toContain("if (wallet.kind !== 'hardware')");
@@ -188,14 +280,16 @@ describe('Wallet dashboard interaction contract', () => {
     expect(wallets).toContain("navigation.navigate('Home')");
   });
 
-  it('offers seed backup only for locally seeded wallets before removal', () => {
-    expect(wallets).toContain('findPendingSeedBackupForRemoval');
-    expect(wallets).toContain('backUpSeedBeforeRemoval');
+  it('keeps seed backup optional and never blocks confirmed removal', () => {
     expect(wallets).toContain('backupRegisteredWalletSeed(');
-    expect(wallets).toContain('walletRequiresRecoverySeedBackup(candidate)');
     expect(wallets).toContain('const needsSeedBackup =');
-    expect(wallets).toContain("t('settings.showBackupSeed')");
-    expect(wallets).toContain('confirmRemoveWallet(latestTarget, refreshed)');
+    expect(wallets).toContain(
+      'onRemove={() => showRemoveWalletConfirmation(wallet)}',
+    );
+    expect(wallets).not.toContain('findPendingSeedBackupForRemoval');
+    expect(wallets).not.toContain('backUpSeedBeforeRemoval');
+    expect(walletServiceSource).not.toContain('requireFastWalletSafeToRemove');
+    expect(walletServiceSource).not.toContain("reason: 'seed-backup-required'");
   });
 
   it('cleans every in-memory session removed by a cascading Ledger deletion', () => {
@@ -284,8 +378,9 @@ describe('Wallet dashboard interaction contract', () => {
     expect(walletState).toContain(
       'Fast Wallets are independent, recoverable local wallets.',
     );
+    expect(walletState).toContain('await ensureRegisteredWalletOpen(');
     expect(walletState).toContain(
-      'ensureRegisteredWalletOpen(registration, isActive, true)',
+      'registration,\n                    isActive,',
     );
     expect(walletState).toContain("registration.kind === 'fast'");
     expect(selector).toContain("? t('walletSelector.fast')");
@@ -367,18 +462,24 @@ describe('Wallet dashboard interaction contract', () => {
     expect(syncStatus).toContain('testID="wallet-progress"');
     expect(syncStatus).toContain('const blockchainProgress =');
     expect(syncStatus).toContain('const walletProgress =');
-    expect(syncStatus).not.toContain(
-      "presentation.phase === 'finalizing'\n    ? 99",
+    expect(syncStatus).toContain(
+      "presentation.phase === 'finalizing'\n      ? 100",
     );
     expect(syncStatus).toContain('const blockchainCurrent =');
-    expect(syncStatus).toContain('network.ready ? 100 : network.progress ?? 0');
+    expect(syncStatus).toContain('blockHeightProgress(blockchainCurrent, network.targetHeight)');
+    expect(syncStatus).toContain('walletHeightProgress ?? presentation.progress ?? 0');
     expect(syncStatus).toContain('network.downloadedHeight');
     expect(syncStatus).toContain(': network.chainHeight');
     expect(syncStatus).toContain('target={network.targetHeight}');
     expect(syncStatus).toContain('useAggregateNetworkRate(networkStatus)');
     expect(syncStatus).toContain('updateMobileNetworkSyncRateWindow(');
     expect(syncStatus).toContain(
-      'syncStartHeight ?? networkStatus?.downloadStartHeight',
+      'syncStartHeight ?? snapshot?.walletHeight',
+    );
+    expect(syncStatus).toContain('networkStatus.priorityWalletHeight,');
+    expect(syncStatus).toContain('networkStatus.targetHeight,');
+    expect(syncStatus).toContain(
+      'snapshot.synchronized && walletHeight >= daemonTargetHeight',
     );
     expect(syncStatus).toContain(
       'walletSyncDerivationsPerSecond(networkStatus)',
@@ -389,7 +490,7 @@ describe('Wallet dashboard interaction contract', () => {
     expect(syncStatus).toContain('variant="wallet"');
     expect(syncStatus).toContain('s.fillBlockchain');
     expect(syncStatus).toContain('s.fillWallet');
-    expect(syncStatus).toContain('t("sync.startingConnectionElapsed"');
+    expect(syncStatus).toContain("t('sync.startingConnectionElapsed'");
     expect(syncStatus).toContain('seconds: connectionElapsedSeconds');
     expect(syncStatus).toContain(
       'const connectionElapsedSeconds = useElapsedSeconds(',
@@ -398,7 +499,7 @@ describe('Wallet dashboard interaction contract', () => {
     expect(syncStatus).toContain("t('sync.blockHeight'");
     expect(syncStatus).toContain('style={s.metricsPrimary}');
     expect(syncStatus).toContain(
-      'const showWalletSync = connected && walletOpened',
+      'const showWalletSync = blockchainConnected && walletOpened',
     );
     expect(syncStatus).toContain('{showWalletSync ? (');
   });
@@ -411,23 +512,32 @@ describe('Wallet dashboard interaction contract', () => {
       'next.balanceAtomic = wallet->balance(0)',
     );
     expect(walletServiceSource).toContain(
-      'if (session.accountIndex === undefined)',
+      'session.accountIndex === undefined || !spendScope',
+    );
+    expect(walletServiceSource).toContain(
+      'const spendScope = await this.resolveSpendAccountScope',
+    );
+    const snapshotStart = walletServiceSource.indexOf(
+      'private async snapshotWithKnownAccountHistory(',
     );
     const snapshotMethod = walletServiceSource.slice(
-      walletServiceSource.indexOf('async snapshot(session: WalletSession)'),
+      snapshotStart,
       walletServiceSource.indexOf(
         'async getTransactions(',
-        walletServiceSource.indexOf('async snapshot(session: WalletSession)'),
+        snapshotStart,
       ),
     );
     expect(snapshotMethod).not.toContain(
       'const accountIndex = session.accountIndex ?? 0;',
     );
+    expect(snapshotMethod).toContain('spendAccountIndex: spendScope.accountIndex');
+    expect(walletServiceSource).toContain(
+      'accountIndex: spendScope.accountIndex',
+    );
+    expect(send).toContain('snapshot?.spendUnlockedBalanceAtomic');
     expect(home).toContain('const activeWalletSnapshot = registeredWallet');
     expect(home).toContain('walletSnapshotMap[registeredWallet.id]');
-    expect(home).toContain(
-      'const totalBalanceAtomic = toAtomicBigInt(activeWalletSnapshot?.balanceAtomic)',
-    );
+    expect(home).toContain('const totalBalanceAtomic = toAtomicBigInt(');
     expect(home).toContain('activeWalletSnapshot?.pendingOutputKeyImageCount');
     expect(walletServiceSource).toContain('enableLedgerReadOnlyCompanion');
     expect(walletState).toContain(
@@ -456,7 +566,7 @@ describe('Wallet dashboard interaction contract', () => {
 
   it('opens sync details by default while working and collapses after completion', () => {
     expect(syncStatus).toContain('const fullySynced =');
-    expect(syncStatus).toContain('React.useState(() => !fullySynced)');
+    expect(syncStatus).toContain('() => !fullySynced');
     expect(syncStatus).toContain('!previous.fullySynced && fullySynced');
     expect(syncStatus).toContain('updateExpanded(false)');
     expect(syncStatus).toContain('testID="sync-status-toggle"');
@@ -474,6 +584,26 @@ describe('Wallet dashboard interaction contract', () => {
     expect(home).toContain('onExpandedChange={setSyncStatusExpanded}');
   });
 
+  it('shows distinct Ledger, spend-output, and node-retry phases', () => {
+    expect(home).toContain('const connectivity = useConnectivityState()');
+    expect(home).toContain('torStatus={connectivity.tor}');
+    expect(syncStatus).toContain("torStatus.phase !== 'error'");
+    expect(syncStatus).toContain("t('topBar.connectingTor')");
+    expect(syncStatus).toContain("readinessPhase === 'scanning-spend-outputs'");
+    expect(syncStatus).toContain("t('sync.spendOutputsChecking')");
+    expect(syncStatus).toContain(
+      "readinessPhase === 'retrying-spent-output-node'",
+    );
+    expect(syncStatus).toContain("t('sync.spendOutputsNodeRetry')");
+    expect(syncStatus).toContain("? t('sync.spendOutputs')");
+    expect(syncStatus).toContain("readinessPhase === 'waiting-ledger'");
+    expect(syncStatus).toContain("t('sync.waitingLedger')");
+    expect(syncStatus).toContain(
+      "readinessPhase === undefined || readinessPhase === 'ready'",
+    );
+    expect(syncStatus).toContain('fullySynced && s.statusLedReady');
+  });
+
   it('performs only the initial Ledger reconciliation automatically with bounded discovery', () => {
     expect(walletState).toContain("'ledgerAutoVerification.start'");
     expect(walletState).toContain(
@@ -482,7 +612,22 @@ describe('Wallet dashboard interaction contract', () => {
     expect(walletState).toContain(
       'await walletService.requestLedgerTransportAccess()',
     );
-    expect(walletState).toContain('await reconcileLedgerBalance(true)');
+    expect(walletState).toContain(
+      "setLedgerReconciliationProgress({ phase: 'connecting-ledger' })",
+    );
+    expect(walletState).toContain(
+      'ledgerNodeRetryRegistrationId === registration.id',
+    );
+    expect(walletState).toContain("? 'retrying-spent-output-node'");
+    expect(walletState).toContain(
+      'await reconcileLedgerBalance(true, true, progress =>',
+    );
+    expect(walletState).toContain('let derivationStarted = false');
+    expect(walletState).toContain('derivationStarted = true');
+    expect(walletState).toContain(
+      'const retryAllowed = !derivationStarted || nodeVerificationFailed',
+    );
+    expect(walletState).toContain('if (retryAllowed) {');
     expect(walletState).toContain('ledgerInitialVerificationAttemptedRef');
     expect(walletState).toContain(
       'ledgerInitialVerificationAttemptedRef.current.add(registrationId)',
@@ -498,6 +643,9 @@ describe('Wallet dashboard interaction contract', () => {
     expect(walletState).toContain("reason: 'active-wallet-changed'");
     expect(walletState).toContain("reason: 'effect-invalidated'");
     expect(walletState).toContain('ledgerAutoVerificationReady');
+    expect(walletState).toContain(
+      'ledgerNodeRetryRegistrationIdRef.current !== registrationId',
+    );
     expect(walletState).toContain('scheduleRetry(15_000)');
     const autoVerificationEffect = walletState.slice(
       walletState.indexOf('const ledgerAutoVerificationRegistrationId'),
@@ -508,6 +656,43 @@ describe('Wallet dashboard interaction contract', () => {
     );
     expect(autoVerificationEffect).not.toContain(
       'registeredWallet,\n    snapshot,\n    walletSnapshots',
+    );
+    const effectInvalidatedStart = autoVerificationEffect.indexOf(
+      'if (cancelled) {',
+    );
+    const effectInvalidatedEnd = autoVerificationEffect.indexOf(
+      'if (registeredWalletRef.current?.id !== registrationId)',
+      effectInvalidatedStart,
+    );
+    const effectInvalidatedBranch = autoVerificationEffect.slice(
+      effectInvalidatedStart,
+      effectInvalidatedEnd,
+    );
+    expect(effectInvalidatedBranch).toContain(
+      'ledgerInitialVerificationNextAttemptAtRef.current.set(',
+    );
+    expect(effectInvalidatedBranch).toContain("reason: 'effect-invalidated'");
+    const failedAttemptStart = autoVerificationEffect.indexOf(
+      'const nodeVerificationFailed = isLedgerNodeVerificationError(reason)',
+    );
+    const failedAttemptEnd = autoVerificationEffect.indexOf(
+      '} finally {',
+      failedAttemptStart,
+    );
+    const failedAttempt = autoVerificationEffect.slice(
+      failedAttemptStart,
+      failedAttemptEnd,
+    );
+    expect(failedAttempt.indexOf('if (retryAllowed) {')).toBeLessThan(
+      failedAttempt.indexOf(
+        'ledgerInitialVerificationAttemptedRef.current.delete(registrationId)',
+      ),
+    );
+    expect(autoVerificationEffect).toContain(
+      'if (progress.phase === \'deriving-owned-output-key-images\')',
+    );
+    expect(autoVerificationEffect).not.toContain(
+      "requiresLedgerVerification\n                ? 'waiting-ledger'",
     );
     expect(walletState).toContain('available: transport.available');
     expect(walletState).toContain('deviceCount: transport.deviceCount');
@@ -527,11 +712,50 @@ describe('Wallet dashboard interaction contract', () => {
     expect(settings).not.toContain('verifyLedgerBalance');
     expect(settings).toContain('settings.ledgerBalanceVerification');
     expect(settings).toContain('recheckLedgerSpendOutputs');
+    expect(settings).toContain('reconcileLedgerBalance(true)');
+    expect(walletServiceSource).toContain('fullSpendOutputScan?: boolean');
+    expect(walletServiceSource).toContain(
+      'Boolean(options?.fullSpendOutputScan)',
+    );
+    expect(walletState).toContain('!registration.ledgerKeyImagesVerifiedAt');
+    expect(walletState).not.toContain('pendingOutputCount === 0');
     expect(walletState).toContain(
       'await walletService.getTransactionsForAllAccounts(activeSession, 0)',
     );
     expect(walletState).toContain("'ledgerReconciliation.stateRefreshed'");
     expect(walletState).toContain('outgoingTransactionCount:');
+    expect(nativeAndroidBridge).toContain(
+      '"ledgerBle.scan.noLiveAdvertisement"',
+    );
+    expect(nativeAndroidBridge).not.toContain(
+      'previouslyPairedLedgerBleStatus()',
+    );
+    expect(nativeAndroidBridge).toContain(
+      'bluetoothEnabled && LedgerBleTransport.isConnected()',
+    );
+    expect(nativeAndroidBridge).toContain(
+      'result.matchesLedgerBleService() ||',
+    );
+    expect(ledgerBleTransport).toContain('diagnostic("connect.timeout")');
+  });
+
+  it('batches Ledger history RPCs and retries cached key images without hardware', () => {
+    expect(ledgerNodeRetryPatch).toContain(
+      'restricted_gettransactions_batch_size = 100',
+    );
+    expect(ledgerNodeRetryPatch).toContain(
+      'key_image_checkpoint_durable = true',
+    );
+    expect(ledgerNodeRetryPatch).toContain('reconcile_cached_key_images');
+    expect(walletServiceSource).toContain(
+      "'reconcileLedgerViewOnlyWallet.ledgerCompleteNodeRetry'",
+    );
+    expect(walletServiceSource).toContain(
+      "nodeOnlyRetry ? '' : hardwareSession!.walletId",
+    );
+    expect(walletEngine).toContain(
+      'destination->reconcileCachedKeyImagesWithStats(',
+    );
   });
 
   it('shows the complete wallet-container history instead of only Ledger account 0', () => {
@@ -555,13 +779,19 @@ describe('Wallet dashboard interaction contract', () => {
     expect(walletState).toContain('transactions: sample?.transactions ?? []');
   });
 
-  it('shows discovered Ledger receives during restore without exposing provisional spends or balance', () => {
+  it('shows discovered Ledger receives during restore and observes only coherent samples', () => {
     expect(walletState).toContain('const visibleTransactions = useMemo');
     expect(walletState).toContain("transaction.direction === 'in'");
     expect(walletState).toContain('transactions: [...visibleTransactions]');
     expect(walletState).toContain('snapshot: publishedSnapshot');
-    expect(walletState).toContain('announceInitial:');
-    expect(walletState).not.toContain('suppressNotices: !wasLedgerVerified');
+    expect(walletState).toContain(
+      'await observeTransactionSample(registration, sample)',
+    );
+    expect(walletState).toContain(
+      'historicalScanComplete: sample.snapshot.synchronized',
+    );
+    expect(walletState).not.toContain('announceInitial:');
+    expect(walletState).not.toContain('suppressNotices:');
   });
 
   it('never wakes an inactive Ledger in the background and exposes an explicit settings action', () => {
@@ -571,7 +801,7 @@ describe('Wallet dashboard interaction contract', () => {
       'setInterval(() => void attempt(), 15_000)',
     );
     expect(settings).toContain('recheckLedgerSpendOutputs');
-    expect(settings).toContain('reconcileLedgerBalance()');
+    expect(settings).toContain('reconcileLedgerBalance(true)');
     expect(walletState).toContain(
       'await walletService.openRegisteredWalletRegistration(\n            activeRegistration,',
     );

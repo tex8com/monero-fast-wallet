@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { StatusBar, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Linking, StatusBar, StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
@@ -12,60 +12,26 @@ import { WalletDiagnosticsController } from './src/services/WalletDiagnosticsCon
 import { FastWalletPushService } from './src/services/FastWalletPushService';
 import { AppSecurityProvider } from './src/services/AppSecurity';
 import { WalletStateProvider } from './src/services/WalletState';
-import { useWalletState } from './src/services/WalletState';
 import IncomingPaymentNotice from './src/components/IncomingPaymentNotice';
 import AppTopBar from './src/components/AppTopBar';
 import MfwNameTicker from './src/components/MfwNameTicker';
 import { logStartupEvent } from './src/services/WalletLogger';
 import { v1ReleaseFeatures } from '../../packages/wallet-shared/src/v1ReleaseFeatures';
 import { ConnectivityProvider } from './src/services/ConnectivityState';
+import {
+  incomingPaymentIntentsEqual,
+  parseIncomingPaymentIntent,
+} from './src/services/IncomingPaymentLink';
+import {
+  incomingPaymentFlowId,
+  IncomingPaymentLinkAcknowledgementProvider,
+  IncomingPaymentLinkController,
+  type PendingIncomingPayment,
+} from './src/services/IncomingPaymentLinkController';
+import { parseVanityOrderDeepLink } from './src/services/VanityServiceClient';
 
 const navigationRef = createNavigationContainerRef<any>();
 const jsModuleLoadedAtMs = Date.now();
-
-function WalletUnlockRedirect({ ready }: { ready: boolean }) {
-  const { registeredWallet, session, status, unlockRequestId } =
-    useWalletState();
-  const presentedUnlockKeyRef = useRef<string | undefined>(undefined);
-
-  useEffect(() => {
-    if (!ready || !registeredWallet || session) {
-      presentedUnlockKeyRef.current = undefined;
-      return;
-    }
-
-    // A Ledger registration with an encrypted local view-only companion can
-    // reopen after the one app-wide authorization without waking the device.
-    // Only a hardware registration that has no such companion needs the
-    // visible Ledger open flow.
-    const hardwareNeedsVisibleUnlock =
-      registeredWallet.kind === 'hardware' &&
-      (!registeredWallet.viewOnlyPath ||
-        !registeredWallet.viewOnlyCredentialKey);
-    const softwareNeedsVisibleUnlock =
-      registeredWallet.kind !== 'hardware' && !registeredWallet.credentialKey;
-    const requiresVisibleUnlock =
-      hardwareNeedsVisibleUnlock ||
-      softwareNeedsVisibleUnlock ||
-      status === 'error';
-    const unlockKey = `${registeredWallet.id}:${unlockRequestId ?? 'initial'}`;
-    if (
-      !requiresVisibleUnlock ||
-      presentedUnlockKeyRef.current === unlockKey ||
-      !navigationRef.isReady()
-    ) {
-      return;
-    }
-
-    presentedUnlockKeyRef.current = unlockKey;
-    navigationRef.navigate('WalletSetup', {
-      mode: 'open',
-      openRequestId: Date.now(),
-    });
-  }, [ready, registeredWallet, session, status, unlockRequestId]);
-
-  return null;
-}
 
 function App() {
   useEffect(() => {
@@ -96,10 +62,102 @@ function App() {
       });
     }
   }, []);
-  const [navigationReady, setNavigationReady] = useState(false);
+  const incomingPaymentSequenceRef = useRef(0);
+  const pendingIncomingPaymentRef = useRef<PendingIncomingPayment | undefined>(
+    undefined,
+  );
+  const [pendingIncomingPayment, setPendingIncomingPayment] = useState<
+    PendingIncomingPayment | undefined
+  >(undefined);
+  const [navigationReadyEpoch, setNavigationReadyEpoch] = useState(0);
+  const [pendingVanityOrderId, setPendingVanityOrderId] = useState<
+    string | undefined
+  >();
   const [mfwTickerVisible, setMfwTickerVisible] = useState(
     v1ReleaseFeatures.mfwNameRegistration,
   );
+
+  const queueIncomingPaymentUrl = useCallback((url: string | null) => {
+    const vanityOrderId = v1ReleaseFeatures.vanityAddress
+      ? parseVanityOrderDeepLink(url)
+      : undefined;
+    if (vanityOrderId) {
+      setPendingVanityOrderId(vanityOrderId);
+      return;
+    }
+    const intent = parseIncomingPaymentIntent(url);
+    if (!intent) return;
+    if (
+      pendingIncomingPaymentRef.current &&
+      incomingPaymentIntentsEqual(
+        pendingIncomingPaymentRef.current.intent,
+        intent,
+      )
+    ) {
+      return;
+    }
+    incomingPaymentSequenceRef.current += 1;
+    const pending = {
+      sequence: incomingPaymentSequenceRef.current,
+      intent,
+    };
+    pendingIncomingPaymentRef.current = pending;
+    setPendingIncomingPayment(pending);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    Linking.getInitialURL()
+      .then(url => {
+        if (active) queueIncomingPaymentUrl(url);
+      })
+      .catch(() => undefined);
+    const subscription = Linking.addEventListener('url', event => {
+      queueIncomingPaymentUrl(event.url);
+    });
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [queueIncomingPaymentUrl]);
+
+  useEffect(() => {
+    if (
+      !v1ReleaseFeatures.vanityAddress ||
+      !pendingVanityOrderId ||
+      navigationReadyEpoch < 1 ||
+      !navigationRef.isReady()
+    ) {
+      return;
+    }
+    navigationRef.navigate('VanityOrderStatus', {
+      orderId: pendingVanityOrderId,
+    });
+    setPendingVanityOrderId(undefined);
+  }, [navigationReadyEpoch, pendingVanityOrderId]);
+
+  const consumeIncomingPayment = useCallback((sequence: number) => {
+    if (pendingIncomingPaymentRef.current?.sequence === sequence) {
+      pendingIncomingPaymentRef.current = undefined;
+    }
+    setPendingIncomingPayment(current =>
+      current?.sequence === sequence ? undefined : current,
+    );
+  }, []);
+  const acknowledgeIncomingPayment = useCallback((flowId: string) => {
+    if (
+      pendingIncomingPaymentRef.current &&
+      incomingPaymentFlowId(pendingIncomingPaymentRef.current.sequence) ===
+        flowId
+    ) {
+      pendingIncomingPaymentRef.current = undefined;
+    }
+    setPendingIncomingPayment(current =>
+      current && incomingPaymentFlowId(current.sequence) === flowId
+        ? undefined
+        : current,
+    );
+  }, []);
 
   const navigateWhenReady = (screen: 'Home' | 'MfwNames' | 'NodeStatus') => {
     if (navigationRef.isReady()) {
@@ -114,37 +172,47 @@ function App() {
         <LanguageProvider>
           <AppSecurityProvider>
             <ConnectivityProvider>
-              <WalletStateProvider>
-                <WalletDiagnosticsController />
-                <View style={styles.app}>
-                  {v1ReleaseFeatures.mfwNameRegistration && mfwTickerVisible ? (
-                    <MfwNameTicker
-                      onDismiss={() => setMfwTickerVisible(false)}
-                      onPress={() => navigateWhenReady('MfwNames')}
+              <IncomingPaymentLinkAcknowledgementProvider
+                onAcknowledged={acknowledgeIncomingPayment}
+              >
+                <WalletStateProvider>
+                  <WalletDiagnosticsController />
+                  <View style={styles.app}>
+                    {v1ReleaseFeatures.mfwNameRegistration &&
+                    mfwTickerVisible ? (
+                      <MfwNameTicker
+                        onDismiss={() => setMfwTickerVisible(false)}
+                        onPress={() => navigateWhenReady('MfwNames')}
+                      />
+                    ) : null}
+                    <AppTopBar
+                      safeAreaHandledByTicker={mfwTickerVisible}
+                      onLogoPress={() => navigateWhenReady('Home')}
+                      onStatusPress={() => navigateWhenReady('NodeStatus')}
                     />
-                  ) : null}
-                  <AppTopBar
-                    safeAreaHandledByTicker={mfwTickerVisible}
-                    onLogoPress={() => navigateWhenReady('Home')}
-                    onStatusPress={() => navigateWhenReady('NodeStatus')}
-                  />
-                  <View style={styles.navigation}>
-                    <NavigationContainer
-                      onReady={() => {
-                        logStartupEvent('AppStartup', 'navigation.ready', {
-                          elapsedMs: Date.now() - jsModuleLoadedAtMs,
-                        });
-                        setNavigationReady(true);
-                      }}
-                      ref={navigationRef}
-                    >
-                      <TabNavigator />
-                    </NavigationContainer>
+                    <View style={styles.navigation}>
+                      <NavigationContainer
+                        onReady={() => {
+                          logStartupEvent('AppStartup', 'navigation.ready', {
+                            elapsedMs: Date.now() - jsModuleLoadedAtMs,
+                          });
+                          setNavigationReadyEpoch(current => current + 1);
+                        }}
+                        ref={navigationRef}
+                      >
+                        <TabNavigator />
+                      </NavigationContainer>
+                    </View>
                   </View>
-                </View>
-                <WalletUnlockRedirect ready={navigationReady} />
-                <IncomingPaymentNotice />
-              </WalletStateProvider>
+                  <IncomingPaymentLinkController
+                    navigation={navigationRef}
+                    navigationReady={navigationReadyEpoch}
+                    onConsumed={consumeIncomingPayment}
+                    pending={pendingIncomingPayment}
+                  />
+                  <IncomingPaymentNotice />
+                </WalletStateProvider>
+              </IncomingPaymentLinkAcknowledgementProvider>
             </ConnectivityProvider>
           </AppSecurityProvider>
         </LanguageProvider>

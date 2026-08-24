@@ -1025,6 +1025,29 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_reconnect_hardware(
   });
 }
 
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prime_hardware_from_view_only(
+    Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
+    const char* view_only_wallet_id) noexcept {
+  return invoke(core, [&] {
+    core->engine.primeHardwareWalletFromViewOnly(
+        input(hardware_wallet_id), input(view_only_wallet_id));
+    return std::string{};
+  });
+}
+
+extern "C" Tex8DesktopResult tex8_desktop_wallet_rebuild_hardware_wallet_cache_from_view_only(
+    Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
+    const char* view_only_wallet_id,
+    unsigned long long restore_height) noexcept {
+  return invoke(core, [&] {
+    core->engine.rebuildHardwareWalletCacheFromViewOnly(
+        input(hardware_wallet_id),
+        input(view_only_wallet_id),
+        static_cast<uint64_t>(restore_height));
+    return std::string{};
+  });
+}
+
 extern "C" Tex8DesktopResult tex8_desktop_wallet_export_hardware_private_view_key(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept {
   return invoke(core, [&] {

@@ -177,6 +177,13 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_hardware_status(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_reconnect_hardware(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_prime_hardware_from_view_only(
+    Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
+    const char* view_only_wallet_id) noexcept;
+extern "C" Tex8DesktopResult tex8_desktop_wallet_rebuild_hardware_wallet_cache_from_view_only(
+    Tex8DesktopWalletCore* core, const char* hardware_wallet_id,
+    const char* view_only_wallet_id,
+    unsigned long long restore_height) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_export_hardware_private_view_key(
     Tex8DesktopWalletCore* core, const char* wallet_id) noexcept;
 extern "C" Tex8DesktopResult tex8_desktop_wallet_show_hardware_address(
@@ -188,5 +195,7 @@ extern "C" Tex8DesktopResult tex8_desktop_wallet_show_hardware_address(
 // token is an Apple device token for this signed bundle only; it is not a
 // wallet identifier and must never contain wallet data.
 extern "C" int tex8_desktop_apns_register() noexcept;
+extern "C" int tex8_desktop_apns_install_handler() noexcept;
 extern "C" const char* tex8_desktop_apns_device_token() noexcept;
 extern "C" const char* tex8_desktop_apns_status() noexcept;
+extern "C" const char* tex8_desktop_apns_take_pending_event() noexcept;

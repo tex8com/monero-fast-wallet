@@ -29,6 +29,7 @@ import {
 } from '../services/WalletAddressRegistry';
 import { configuredMfwNameGenesis } from '../services/MfwNameGenesisConfig';
 import {
+  discoverConfiguredMfwNamesForAddresses,
   resolveConfiguredMfwOwnedNameForImport,
   resolveConfiguredMfwNameTransitionPredecessor,
   resolveConfiguredMfwOwnedNameFinalization,
@@ -57,6 +58,7 @@ import {
   type MfwNameBroadcastResult,
   type MfwOwnedNameRecord,
 } from '../services/MfwNameRegistrationRegistry';
+import { logWalletEvent } from '../services/WalletLogger';
 import { walletDisplayName } from '../services/WalletRegistry';
 import { formatAtomicXmr } from '../services/WalletFormat';
 import { walletService, type WalletSession } from '../services/WalletService';
@@ -86,6 +88,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     connectLedgerForSigning,
     isRegisteredWalletOpen,
     openRegisteredWalletById,
+    restoreLedgerViewAfterSigning,
     registeredWallet,
     registeredWallets,
     session,
@@ -125,6 +128,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     LedgerSigningProgress | undefined
   >();
   const ledgerSigningCancelledRef = useRef(false);
+  const reverseDiscoveryKeyRef = useRef<string | undefined>(undefined);
 
   useEffect(
     () => () => {
@@ -141,6 +145,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     }
 
     let hardwareStatusTimer: ReturnType<typeof setInterval> | undefined;
+    let ledgerHandoffCreated = false;
     try {
       let signingSession: WalletSession | undefined = session;
       if (session.readOnly) {
@@ -150,6 +155,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           isCancelled: () => ledgerSigningCancelledRef.current,
           onProgress: setLedgerSigningProgress,
         });
+        ledgerHandoffCreated = Boolean(
+          signingSession && !signingSession.readOnly,
+        );
       }
       if (!signingSession) {
         throw new Error(t('mfwNames.openWalletFirst'));
@@ -168,6 +176,11 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         }, 500);
       }
       return await prepare(signingSession);
+    } catch (error) {
+      if (ledgerHandoffCreated) {
+        await restoreLedgerViewAfterSigning().catch(() => false);
+      }
+      throw error;
     } finally {
       if (hardwareStatusTimer) {
         clearInterval(hardwareStatusTimer);
@@ -185,9 +198,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     }),
     [registeredWallet, snapshot, walletSnapshots],
   );
-  const genesis = registeredWallet
-    ? configuredMfwNameGenesis(registeredWallet.network)
-    : undefined;
+  const genesis = configuredMfwNameGenesis(
+    registeredWallet?.network ?? 'mainnet',
+  );
   const maxYears = genesis?.maximumTermYears ?? MFW_NAME_MAX_TERM_YEARS;
   const visibleTerms = TERM_OPTIONS.filter(term => term <= maxYears);
   const years = Number(yearsInput);
@@ -376,6 +389,94 @@ export default function MfwNamesScreen({ navigation, route }: any) {
   }, [route?.params?.mfwNameBroadcast, t]);
 
   useEffect(() => {
+    const wallet = registeredWallet;
+    if (
+      !wallet ||
+      loadingAddresses ||
+      loadingOwnedNames ||
+      addresses.length === 0
+    ) {
+      return;
+    }
+    const discoveryKey = `${wallet.id}:${wallet.network}:${addresses
+      .map(record => record.address)
+      .sort()
+      .join(',')}`;
+    if (reverseDiscoveryKeyRef.current === discoveryKey) {
+      return;
+    }
+    reverseDiscoveryKeyRef.current = discoveryKey;
+    let active = true;
+    discoverConfiguredMfwNamesForAddresses({
+      addresses: addresses.map(record => record.address),
+      network: wallet.network,
+    })
+      .then(async discovered => {
+        if (!active || discovered.length === 0) {
+          return;
+        }
+        let records = await loadMfwOwnedNames();
+        const now = new Date().toISOString();
+        for (const { resolution, address } of discovered) {
+          const existing = records.find(
+            record =>
+              record.walletRegistrationId === wallet.id &&
+              record.network === wallet.network &&
+              record.canonicalName === resolution.canonicalName,
+          );
+          if (existing && existing.ownerAuthority !== 'recovery-required') {
+            continue;
+          }
+          const addressRecord = addresses.find(
+            candidate => candidate.address === address,
+          );
+          records = await upsertMfwOwnedName({
+            version: 1,
+            id:
+              existing?.id ??
+              `mfw-discovered:${wallet.id}:${resolution.sourceTxidHex}`,
+            canonicalName: resolution.canonicalName,
+            walletRegistrationId: wallet.id,
+            walletAddressId:
+              addressRecord?.id ?? `mfw-discovered:${resolution.sourceTxidHex}`,
+            address,
+            network: wallet.network,
+            stage: 'active',
+            termYears: Math.max(
+              1,
+              Math.ceil(
+                (resolution.expiryHeight - resolution.recordHeight) /
+                  MFW_NAME_PROTOCOL_YEAR_BLOCKS,
+              ),
+            ),
+            sequence: resolution.sequence,
+            ownerAuthority: 'recovery-required',
+            ownerPublicKeyHex: resolution.ownerPublicKeyHex,
+            sourceTxidHex: resolution.sourceTxidHex,
+            expiryHeight: resolution.expiryHeight,
+            lastChainTipHeight: resolution.chainTipHeight,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          });
+        }
+        if (active) {
+          setOwnedNames(records);
+        }
+      })
+      .catch(error => {
+        reverseDiscoveryKeyRef.current = undefined;
+        logWalletEvent('MfwNameRegistry', 'reverse-discovery.failed', {
+          failure:
+            error instanceof Error ? error.name : 'unknown-reverse-failure',
+          walletKind: wallet.kind,
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [addresses, loadingAddresses, loadingOwnedNames, registeredWallet]);
+
+  useEffect(() => {
     let active = true;
     if (!session || !registeredWallet || !genesis || ownedNames.length === 0) {
       return () => {
@@ -543,10 +644,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
 
     const opened = await openRegisteredWalletById(wallet.id);
     if (!opened) {
-      navigation.navigate('WalletSetup', {
-        mode: 'open',
-        openRequestId: Date.now(),
-      });
+      setMessage(t('mfwNames.openWalletFirst'));
     }
   };
 
@@ -638,6 +736,15 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           priority: 'low',
         }),
       );
+      const recoveryExported = await walletService.exportMfwNameRecovery(
+        draft.id,
+        draft.name,
+        draft.network,
+      );
+      if (!recoveryExported) {
+        throw new Error(t('mfwNames.recoveryRequired'));
+      }
+      const recoveryExportedAt = new Date().toISOString();
       const record: MfwOwnedNameRecord = {
         version: 1,
         id: draft.id,
@@ -649,7 +756,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         stage: 'commit-pending',
         termYears: draft.years,
         sequence: 0,
+        ownerAuthority: 'local',
         ownerPublicKeyHex: prepared.ownerPublicKeyHex,
+        recoveryExportedAt,
         createdAt: draft.createdAt,
         updatedAt: draft.createdAt,
       };
@@ -803,10 +912,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     setYearsInput('1');
     setMessage(undefined);
     if (!isRegisteredWalletOpen(record.walletRegistrationId)) {
-      navigation.navigate('WalletSetup', {
-        mode: 'open',
-        openRequestId: Date.now(),
-      });
+      await openRegisteredWalletById(record.walletRegistrationId);
     }
   };
 
@@ -834,10 +940,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     setUpdatingNameId(record.id);
     setMessage(undefined);
     if (!isRegisteredWalletOpen(record.walletRegistrationId)) {
-      navigation.navigate('WalletSetup', {
-        mode: 'open',
-        openRequestId: Date.now(),
-      });
+      await openRegisteredWalletById(record.walletRegistrationId);
     }
   };
 
@@ -1074,10 +1177,12 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           stage: 'active',
           termYears: estimatedTermYears,
           sequence: resolution.sequence,
+          ownerAuthority: 'local',
           ownerPublicKeyHex,
           sourceTxidHex: resolution.sourceTxidHex,
           expiryHeight: resolution.expiryHeight,
           lastChainTipHeight: resolution.chainTipHeight,
+          recoveryExportedAt: now,
           createdAt: existingRecord?.createdAt ?? now,
           updatedAt: now,
         }),
@@ -1131,7 +1236,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                 const wallet = registeredWallets.find(
                   candidate => candidate.id === record.walletRegistrationId,
                 );
-                const renewable = stage === 'active';
+                const renewable =
+                  stage === 'active' &&
+                  record.ownerAuthority !== 'recovery-required';
                 const canClaim = stage === 'reveal-ready';
                 const canRestart = stage === 'expired' || stage === 'revoked';
 
@@ -1361,6 +1468,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
             style={s.recoveryButton}
             onPress={() => {
               setImportingRecovery(true);
+              setRecoveryName(
+                selectedOwnedName.canonicalName.replace(/\.mfw$/i, ''),
+              );
               setRenewingNameId(undefined);
               setUpdatingNameId(undefined);
               setMessage(undefined);
@@ -1710,7 +1820,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
 
             {registrationStep === 1 ? (
               <>
-                <View style={s.nameInputRow}>
+                <View style={[s.nameInputRow, s.registrationNameInput]}>
                   <TextInput
                     accessibilityLabel={t('mfwNames.name')}
                     style={s.nameInput}
@@ -2687,6 +2797,7 @@ const s = StyleSheet.create({
     backgroundColor: colors.bgInput,
     overflow: 'hidden',
   },
+  registrationNameInput: { marginTop: 20 },
   nameInput: {
     flex: 1,
     color: colors.textPrimary,

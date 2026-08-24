@@ -171,6 +171,7 @@ curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/v1/mfw-site/
 grep -q '"schema":1' "$validation_dir/releases.json" || { rollback; exit 1; }
 curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/v1/mfw/names/tex8.mfw -o "$validation_dir/tex8-mfw.json" || { rollback; exit 1; }
 grep -q '"canonicalName":"tex8.mfw"' "$validation_dir/tex8-mfw.json" || { rollback; exit 1; }
+grep -q '"status":"finalized"' "$validation_dir/tex8-mfw.json" || { rollback; exit 1; }
 curl -fsS --resolve xmr.tex8.com:443:127.0.0.1 https://xmr.tex8.com/v1/mfw/name-suggestions/tex -o "$validation_dir/tex-mfw-suggestions.json" || { rollback; exit 1; }
 grep -q '"names":\["tex8.mfw"\]' "$validation_dir/tex-mfw-suggestions.json" || { rollback; exit 1; }
 

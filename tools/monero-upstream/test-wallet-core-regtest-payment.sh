@@ -121,7 +121,7 @@ create_wallet() {
       --password '' \
       --offline \
       --mnemonic-language English \
-      --debug \
+      --debug-output "${work_dir}/${label}-diagnostics" \
       --log-file /dev/null \
       --command exit \
       >"${work_dir}/${label}-create.stdout" \
@@ -199,7 +199,7 @@ run_timed_wallet_command() {
       --daemon-address "${daemon_address}" \
       --trusted-daemon \
       --allow-mismatched-daemon-version \
-      --debug \
+      --debug-output "${work_dir}/${label}-diagnostics" \
       --log-file /dev/null \
       --command "$@" \
       >"${work_dir}/${label}.out" 2>&1

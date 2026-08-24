@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path, Line } from "react-native-svg";
 import { useI18n } from "../i18n";
 import { colors } from "../theme/colors";
+import { v1ReleaseFeatures } from "../../../../packages/wallet-shared/src/v1ReleaseFeatures";
 
 function IconHome({ color }: { color: string }) {
   return (<Svg width={22} height={22} viewBox="0 0 24 24" fill="none"><Path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z" stroke={color} strokeWidth={1.8} strokeLinejoin="round" /><Path d="M9 21V13h6v8" stroke={color} strokeWidth={1.8} strokeLinejoin="round" /></Svg>);
@@ -25,7 +26,7 @@ const TABS = [
   { key: "Home",        labelKey: "tabs.home",    Icon: IconHome },
   { key: "Send",        labelKey: "tabs.send",    Icon: IconSend },
   { key: "Receive",     labelKey: "tabs.receive", Icon: IconReceive },
-  { key: "MoneroEnthusiast", labelKey: "tabs.community", Icon: IconCommunity },
+  ...(v1ReleaseFeatures.moneroEnthusiastV1 ? [{ key: "MoneroEnthusiast", labelKey: "tabs.community", Icon: IconCommunity } as const] : []),
   { key: "Menu",        labelKey: "tabs.menu",    Icon: IconMenu },
 ] as const;
 

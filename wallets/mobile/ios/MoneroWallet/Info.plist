@@ -24,6 +24,22 @@
 				<string>$(MONERO_WALLET_URL_SCHEME)</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER).payment</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>monero</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER).vanity</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>mfw</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>

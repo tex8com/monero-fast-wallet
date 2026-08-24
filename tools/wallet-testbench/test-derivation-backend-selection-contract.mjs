@@ -22,7 +22,7 @@ const manualBenchmarkPatch = read(
 );
 const desktopBridge = read('native/desktop-bridge/cpp/DesktopWalletCore.cpp');
 const walletEngine = read('native/monero-bridge/cpp/WalletEngine.cpp');
-const mobileService = read('wallets/mobile/src/backend/DerivationPerformance.ts');
+const mobileService = read('wallets/mobile/src/services/DerivationPerformance.ts');
 const proofMain = read('native/monero-bridge/proof/main.cpp');
 
 test('automatic backend selection uses one bounded public-vector benchmark', () => {

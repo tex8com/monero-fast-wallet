@@ -18,8 +18,9 @@ use axum::{
     Json, Router,
 };
 use fast_wallet_protocol::{
-    gateway_wake_auth_body, WorkerAdmissionCertificate, WorkerAuthPurpose, WorkerDescriptor,
-    WorkerRequestAuth, WORKER_ADMISSION_CERTIFICATE_SIZE, WORKER_AUTH_SIZE,
+    gateway_test_wake_auth_body, gateway_wake_auth_body, WorkerAdmissionCertificate,
+    WorkerAuthPurpose, WorkerDescriptor, WorkerRequestAuth, WORKER_ADMISSION_CERTIFICATE_SIZE,
+    WORKER_AUTH_SIZE,
 };
 use fs2::FileExt;
 use futures_util::StreamExt;
@@ -42,7 +43,7 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use tokio::sync::{broadcast, Mutex};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -53,6 +54,7 @@ pub const EVENT_CATEGORY: &str = "monero.fast_wallet.incoming";
 /// distinct from an incoming-payment wake so a test can never be mistaken for
 /// a payment by the app or by the user.
 pub const TEST_EVENT_CATEGORY: &str = "monero.fast_wallet.test";
+pub const VANITY_EVENT_CATEGORY: &str = "monero.fast_wallet.vanity";
 const STORE_VERSION: u8 = 5;
 const MAX_EVENTS_PER_INSTALLATION: usize = 32;
 const MAX_INSTALLATIONS: usize = 20_000;
@@ -74,6 +76,7 @@ pub struct GatewayState {
     worker_directory: Option<Arc<dyn WorkerAdmissionDirectory>>,
     official_worker_maximum_assignments: usize,
     private_worker_maximum_assignments: usize,
+    vanity_service_auth_hash: Option<[u8; 32]>,
 }
 
 struct ProviderAdapter {
@@ -303,6 +306,7 @@ impl GatewayState {
             worker_directory: None,
             official_worker_maximum_assignments: MAX_ASSIGNMENTS,
             private_worker_maximum_assignments: 8,
+            vanity_service_auth_hash: None,
         })
     }
 
@@ -330,11 +334,18 @@ impl GatewayState {
             worker_directory: None,
             official_worker_maximum_assignments: MAX_ASSIGNMENTS,
             private_worker_maximum_assignments: 8,
+            vanity_service_auth_hash: None,
         })
     }
 
     pub fn with_relay_control(mut self, relay_control: Arc<dyn RelayControl>) -> Self {
         self.relay_control = Some(relay_control);
+        self
+    }
+
+    pub fn with_vanity_service_auth(mut self, mut auth: [u8; 32]) -> Self {
+        self.vanity_service_auth_hash = Some(Sha256::digest(auth).into());
+        zeroize::Zeroize::zeroize(&mut auth);
         self
     }
 
@@ -618,8 +629,86 @@ pub fn router(state: GatewayState) -> Router {
         )
         .route("/api/v1/workers/wake", post(accept_worker_wake))
         .route("/api/v1/internal/worker-wake", post(accept_worker_wake))
+        .route("/api/v1/internal/vanity-event", post(accept_vanity_event))
         .route("/api/v1/notifications/stream", get(stream_events))
         .with_state(state)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VanityEventInput {
+    installation_id: String,
+    event_id: String,
+    order_id: String,
+    category: String,
+    deep_link: String,
+    platform: String,
+}
+
+async fn accept_vanity_event(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(input): Json<VanityEventInput>,
+) -> Result<(StatusCode, Json<AcceptedResponse>), ApiError> {
+    let expected = state
+        .vanity_service_auth_hash
+        .ok_or(ApiError::Unavailable)?;
+    let supplied = headers
+        .get("x-mfw-vanity-service-auth")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        .ok_or(ApiError::Unauthorized)?;
+    let mut supplied_secret: [u8; 32] = hex::decode(supplied)
+        .ok()
+        .and_then(|value| value.try_into().ok())
+        .ok_or(ApiError::Unauthorized)?;
+    let supplied_hash: [u8; 32] = Sha256::digest(supplied_secret).into();
+    supplied_secret.zeroize();
+    if !bool::from(supplied_hash.ct_eq(&expected))
+        || !valid_installation_id(&input.installation_id)
+        || !valid_event_id(&input.event_id)
+        || !valid_vanity_order_id(&input.order_id)
+        || input.category != VANITY_EVENT_CATEGORY
+        || input.deep_link != format!("mfw://vanity/order/{}", input.order_id)
+        || !matches!(input.platform.as_str(), "android" | "ios" | "desktop")
+    {
+        return Err(ApiError::Unauthorized);
+    }
+    let event = OpaqueNotificationEvent {
+        id: input.event_id,
+        category: input.category,
+        deep_link: input.deep_link,
+        received_at: unix_seconds().to_string(),
+        opened: false,
+    };
+    let new_event = state
+        .store
+        .lock()
+        .await
+        .enqueue_trusted_installation_event(&input.installation_id, event.clone())?;
+    if new_event {
+        let _ = state.signals.send(DeliverySignal {
+            installation_id: input.installation_id.clone(),
+            event: event.clone(),
+        });
+        if let Some(adapter) = &state.provider_adapter {
+            adapter
+                .store
+                .lock()
+                .await
+                .enqueue(&input.installation_id, event, unix_seconds())
+                .map_err(|_| ApiError::Storage)?;
+        }
+    }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(AcceptedResponse { accepted: true }),
+    ))
 }
 
 async fn official_worker_descriptor(
@@ -1038,14 +1127,27 @@ async fn accept_worker_wake(
     let auth_bytes = decode_fixed::<WORKER_AUTH_SIZE>(&input.worker_auth)?;
     let auth = WorkerRequestAuth::decode(&auth_bytes).map_err(|_| ApiError::Unauthorized)?;
     let now = unix_seconds();
-    let body = wake_auth_body(&assignment_handle, input.assignment_epoch, &input.event_id)?;
+    let test = input.signal == "test";
+    let body = if test {
+        test_wake_auth_body(&assignment_handle, input.assignment_epoch, &input.event_id)?
+    } else {
+        wake_auth_body(&assignment_handle, input.assignment_epoch, &input.event_id)?
+    };
     auth.verify(&descriptor, WorkerAuthPurpose::Wake, &body, now)
         .map_err(|_| ApiError::Unauthorized)?;
 
     let event = OpaqueNotificationEvent {
         id: input.event_id,
-        category: EVENT_CATEGORY.to_owned(),
-        deep_link: "tex8://notification/incoming".to_owned(),
+        category: if test {
+            TEST_EVENT_CATEGORY.to_owned()
+        } else {
+            EVENT_CATEGORY.to_owned()
+        },
+        deep_link: if test {
+            "tex8://notification/test".to_owned()
+        } else {
+            "tex8://notification/incoming".to_owned()
+        },
         received_at: now.to_string(),
         opened: false,
     };
@@ -1323,7 +1425,7 @@ struct WorkerWakeInput {
 impl WorkerWakeInput {
     fn validate(&self) -> Result<(), ApiError> {
         if self.contract_version != CONTRACT_VERSION
-            || self.signal != "incoming_transaction"
+            || !matches!(self.signal.as_str(), "incoming_transaction" | "test")
             || !valid_event_id(&self.event_id)
             || self.assignment_epoch == 0
         {
@@ -1611,6 +1713,30 @@ impl EventStore {
         event: OpaqueNotificationEvent,
     ) -> Result<bool, ApiError> {
         self.authenticate_installation(installation_id, auth_secret)?;
+        if !self.delivery_enabled(installation_id)? {
+            return Ok(false);
+        }
+        let queue = self
+            .disk
+            .events
+            .entry(installation_id.to_owned())
+            .or_default();
+        if queue.iter().any(|existing| existing.id == event.id) {
+            return Ok(false);
+        }
+        queue.push_back(event);
+        while queue.len() > MAX_EVENTS_PER_INSTALLATION {
+            queue.pop_front();
+        }
+        self.persist().map_err(|_| ApiError::Storage)?;
+        Ok(true)
+    }
+
+    fn enqueue_trusted_installation_event(
+        &mut self,
+        installation_id: &str,
+        event: OpaqueNotificationEvent,
+    ) -> Result<bool, ApiError> {
         if !self.delivery_enabled(installation_id)? {
             return Ok(false);
         }
@@ -2023,6 +2149,15 @@ pub fn wake_auth_body(
         .map_err(|_| ApiError::BadRequest)
 }
 
+pub fn test_wake_auth_body(
+    assignment_handle: &[u8; 32],
+    assignment_epoch: u64,
+    event_id: &str,
+) -> Result<Vec<u8>, ApiError> {
+    gateway_test_wake_auth_body(assignment_handle, assignment_epoch, event_id)
+        .map_err(|_| ApiError::BadRequest)
+}
+
 fn installation_auth(headers: &HeaderMap) -> Result<(String, Zeroizing<[u8; 32]>), ApiError> {
     let installation_id = headers
         .get("x-fast-wallet-installation-id")
@@ -2087,6 +2222,17 @@ fn valid_event_id(value: &str) -> bool {
     value.len() == 68
         && value.starts_with("evt_")
         && value[4..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_vanity_order_id(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+            }
+        })
 }
 
 fn validate_internal_origin(value: &str, label: &str) -> Result<String, String> {
@@ -2451,6 +2597,20 @@ mod tests {
         (auth, body)
     }
 
+    fn signed_test_wake(fixture: &Fixture, event_id: &str) -> (WorkerRequestAuth, Vec<u8>) {
+        let body = test_wake_auth_body(&HANDLE, 1, event_id).expect("test wake body");
+        let auth = WorkerRequestAuth::sign(
+            &fixture.descriptor,
+            &fixture.online,
+            WorkerAuthPurpose::Wake,
+            &body,
+            fixture.now,
+            fixture.now + 30,
+        )
+        .expect("test wake auth");
+        (auth, body)
+    }
+
     #[derive(Default)]
     struct RecordingProvider {
         events: StdMutex<Vec<(ProviderKind, String)>>,
@@ -2640,6 +2800,109 @@ mod tests {
             .accept_worker_wake(&fixture.descriptor, HANDLE, 1, &auth, event, fixture.now)
             .expect_err("replay");
         assert!(matches!(replay, ApiError::Replay));
+    }
+
+    #[tokio::test]
+    async fn authenticated_vanity_event_carries_only_order_routing_data() {
+        let vanity_auth = [5_u8; 32];
+        let state = GatewayState::open(storage())
+            .unwrap()
+            .with_vanity_service_auth(vanity_auth);
+        state
+            .register_installation(INSTALLATION, &AUTH)
+            .await
+            .unwrap();
+        let order_id = "12345678-1234-1234-1234-123456789abc";
+        let body = serde_json::json!({
+            "installationId": INSTALLATION,
+            "eventId": EVENT,
+            "orderId": order_id,
+            "category": VANITY_EVENT_CATEGORY,
+            "deepLink": format!("mfw://vanity/order/{order_id}"),
+            "platform": "desktop"
+        });
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/internal/vanity-event")
+                    .header("content-type", "application/json")
+                    .header("x-mfw-vanity-service-auth", hex::encode(vanity_auth))
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let pending = state.store.lock().await.pending(INSTALLATION);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, EVENT);
+        assert_eq!(pending[0].category, VANITY_EVENT_CATEGORY);
+        assert_eq!(
+            pending[0].deep_link,
+            format!("mfw://vanity/order/{order_id}")
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_test_wake_is_labelled_test_and_domain_separated() {
+        let fixture = fixture().await;
+        let (auth, _) = signed_test_wake(&fixture, EVENT);
+        let wake = serde_json::json!({
+            "contractVersion": CONTRACT_VERSION,
+            "eventId": EVENT,
+            "assignmentHandle": hex::encode(HANDLE),
+            "assignmentEpoch": 1,
+            "signal": "test",
+            "workerDescriptor": hex::encode(fixture.descriptor.encode().unwrap()),
+            "workerAuth": hex::encode(auth.encode()),
+        });
+        let response = router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/workers/wake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(wake.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            fixture.state.store.lock().await.pending(INSTALLATION),
+            vec![OpaqueNotificationEvent {
+                id: EVENT.to_owned(),
+                category: TEST_EVENT_CATEGORY.to_owned(),
+                deep_link: "tex8://notification/test".to_owned(),
+                received_at: fixture.now.to_string(),
+                opened: false,
+            }]
+        );
+
+        let other_event = format!("evt_{}", "b".repeat(64));
+        let (incoming_auth, _) = signed_wake(&fixture, &other_event);
+        let forged_test = serde_json::json!({
+            "contractVersion": CONTRACT_VERSION,
+            "eventId": other_event,
+            "assignmentHandle": hex::encode(HANDLE),
+            "assignmentEpoch": 1,
+            "signal": "test",
+            "workerDescriptor": hex::encode(fixture.descriptor.encode().unwrap()),
+            "workerAuth": hex::encode(incoming_auth.encode()),
+        });
+        let response = router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v1/workers/wake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(forged_test.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

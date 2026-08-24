@@ -1,6 +1,6 @@
 use fast_wallet_protocol::{
-    worker_receipt_body, Network, WorkerAdmissionCertificate, WorkerAuthPurpose,
-    WorkerDescriptor, WorkerRequestAuth, WATCH_ENVELOPE_SIZE, WORKER_AUTH_SIZE,
+    worker_receipt_body, Network, WorkerAdmissionCertificate, WorkerAuthPurpose, WorkerDescriptor,
+    WorkerRequestAuth, WATCH_ENVELOPE_SIZE, WORKER_AUTH_SIZE,
 };
 use reqwest::{header, redirect::Policy, Client, Response, Url};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -489,9 +489,9 @@ pub async fn submit_watch(worker: &TrustedWorker, envelope_hex: &str) -> Result<
         )
         .await?;
         if receipt.status == "accepted" {
-            let receipt_hex = receipt.receipt.ok_or_else(|| {
-                "The scan-service Worker returned an invalid receipt.".to_owned()
-            })?;
+            let receipt_hex = receipt
+                .receipt
+                .ok_or_else(|| "The scan-service Worker returned an invalid receipt.".to_owned())?;
             if !canonical_hex(&receipt_hex, WORKER_AUTH_SIZE) {
                 return Err("The scan-service Worker returned an invalid receipt.".to_owned());
             }
@@ -499,7 +499,8 @@ pub async fn submit_watch(worker: &TrustedWorker, envelope_hex: &str) -> Result<
                 .map_err(|_| "The scan-service Worker returned an invalid receipt.".to_owned())?;
             let receipt = WorkerRequestAuth::decode(&receipt_bytes)
                 .map_err(|_| "The scan-service Worker returned an invalid receipt.".to_owned())?;
-            let receipt_body = worker_receipt_body(&worker.descriptor.worker_root_id(), &message_id);
+            let receipt_body =
+                worker_receipt_body(&worker.descriptor.worker_root_id(), &message_id);
             receipt
                 .verify(
                     &worker.descriptor,

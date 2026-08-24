@@ -33,12 +33,17 @@ import {
   useXmrChart,
   xmrToUsd,
 } from '../data/priceService';
-import { type MoneroNewsCategory, useMoneroNews } from '../data/moneroNews';
+import {
+  type MoneroNewsCategory,
+  type MoneroNewsItem,
+  useMoneroNews,
+} from '../data/moneroNews';
 import MoneroCoinBg from '../components/MoneroCoinBg';
 import { useLocalAdvertisement } from '../data/advertisements';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 import { useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
+import { useConnectivityState } from '../services/ConnectivityState';
 import {
   ledgerBalanceNeedsVerification,
   walletDisplayName,
@@ -268,6 +273,26 @@ function AdvertisementCard({
 }
 
 /* ── Home Screen ─────────────────────────────────────────────────────── */
+function NewsCatalogImage({ item }: { item: MoneroNewsItem }) {
+  const [failed, setFailed] = useState(false);
+  if (!item.imageUrl || failed) {
+    return (
+      <View style={s.newsImageFallback}>
+        <MoneroCoinBg size={92} />
+      </View>
+    );
+  }
+  return (
+    <Image
+      accessibilityLabel={item.title}
+      onError={() => setFailed(true)}
+      resizeMode="cover"
+      source={{ uri: item.imageUrl }}
+      style={s.newsImage}
+    />
+  );
+}
+
 export default function HomeScreen({ navigation }: any) {
   const [tf, setTf] = useState('24H');
   const [syncStatusExpanded, setSyncStatusExpanded] = useState(true);
@@ -278,6 +303,7 @@ export default function HomeScreen({ navigation }: any) {
   const [newsSlideIndex, setNewsSlideIndex] = useState(0);
   const newsSliderRef = useRef<ScrollView>(null);
   const { dateLocale, t } = useI18n();
+  const connectivity = useConnectivityState();
   const {
     price,
     change24h,
@@ -322,17 +348,17 @@ export default function HomeScreen({ navigation }: any) {
     tf === '24H'
       ? change24h >= 0
       : points.length >= 2
-        ? points[points.length - 1].price >= points[0].price
-        : true;
+      ? points[points.length - 1].price >= points[0].price
+      : true;
 
   const changePercent =
     tf === '24H'
       ? change24h
       : points.length >= 2
-        ? ((points[points.length - 1].price - points[0].price) /
-            points[0].price) *
-          100
-        : 0;
+      ? ((points[points.length - 1].price - points[0].price) /
+          points[0].price) *
+        100
+      : 0;
 
   const changeUsd = price > 0 ? Math.abs((changePercent / 100) * price) : 0;
   const walletSnapshotMap = useMemo(
@@ -353,14 +379,16 @@ export default function HomeScreen({ navigation }: any) {
     : snapshot;
   const activeLedgerNeedsVerification = Boolean(
     registeredWallet &&
-    ledgerBalanceNeedsVerification(
-      registeredWallet,
-      activeWalletSnapshot?.pendingOutputKeyImageCount,
-      transactions.length,
-    ),
+      ledgerBalanceNeedsVerification(
+        registeredWallet,
+        activeWalletSnapshot?.pendingOutputKeyImageCount,
+        transactions.length,
+      ),
   );
 
-  const totalBalanceAtomic = toAtomicBigInt(activeWalletSnapshot?.balanceAtomic);
+  const totalBalanceAtomic = toAtomicBigInt(
+    activeWalletSnapshot?.balanceAtomic,
+  );
   const totalUnlockedAtomic = activeLedgerNeedsVerification
     ? 0n
     : toAtomicBigInt(activeWalletSnapshot?.unlockedBalanceAtomic);
@@ -400,23 +428,14 @@ export default function HomeScreen({ navigation }: any) {
     () => registeredWallets,
     [registeredWallets],
   );
-  const openWalletSetup = () =>
-    navigation.navigate(
-      registeredWallet ? 'WalletSetup' : 'Welcome',
-      registeredWallet
-        ? { mode: 'open', openRequestId: Date.now() }
-        : undefined,
-    );
+  const openWalletSetup = () => navigation.navigate('Welcome');
   const openWalletRoute = (screen: string) => {
     if (registeredWallet) {
       navigation.navigate(screen);
       return;
     }
 
-    navigation.navigate('WalletSetup', {
-      mode: 'open',
-      openRequestId: Date.now(),
-    });
+    navigation.navigate('Welcome');
   };
   const selectWallet = (wallet: WalletOption) => {
     const walletId = wallet.id;
@@ -434,14 +453,7 @@ export default function HomeScreen({ navigation }: any) {
       // changes in this JavaScript turn while an uncommon cold local-file open
       // completes in the native worker. Sync is always deferred.
       openRegisteredWalletById(walletId)
-        .then(opened => {
-          if (!opened) {
-            navigation.navigate('WalletSetup', {
-              mode: 'open',
-              openRequestId: Date.now(),
-            });
-          }
-        })
+        .then(() => undefined)
         .catch(() => undefined);
       return;
     }
@@ -449,14 +461,7 @@ export default function HomeScreen({ navigation }: any) {
     if (openingWalletId) return;
     setOpeningWalletId(walletId);
     openRegisteredWalletById(walletId)
-      .then(opened => {
-        if (!opened) {
-          navigation.navigate('WalletSetup', {
-            mode: 'open',
-            openRequestId: Date.now(),
-          });
-        }
-      })
+      .then(() => undefined)
       .catch(() => undefined)
       .finally(() => setOpeningWalletId(undefined));
   };
@@ -468,7 +473,6 @@ export default function HomeScreen({ navigation }: any) {
         contentContainerStyle={s.scroll}
         showsVerticalScrollIndicator={false}
       >
-
         {registeredWallet ? (
           <View style={s.syncStatusWrap}>
             <SyncStatusBar
@@ -480,6 +484,7 @@ export default function HomeScreen({ navigation }: any) {
               snapshot={workingSnapshot}
               syncStartHeight={syncStartHeight}
               status={status}
+              torStatus={connectivity.tor}
               walletName={walletDisplayName(registeredWallet)}
             />
           </View>
@@ -602,12 +607,10 @@ export default function HomeScreen({ navigation }: any) {
               </Text>
             </View>
           )}
-          {!hasOpenWallet ? (
+          {registeredWallets.length === 0 ? (
             <TouchableOpacity style={s.balOpenButton} onPress={openWalletSetup}>
               <Text style={s.balOpenButtonText}>
-                {registeredWallet
-                  ? t('action.openWallet')
-                  : t('home.createOrImport')}
+                {t('home.createOrImport')}
               </Text>
             </TouchableOpacity>
           ) : null}
@@ -656,10 +659,10 @@ export default function HomeScreen({ navigation }: any) {
                       {category === 'all'
                         ? t('home.newsAll')
                         : category === 'network'
-                          ? t('home.newsNetwork')
-                          : category === 'wallet'
-                            ? t('home.newsWallet')
-                            : t('home.newsEcosystem')}
+                        ? t('home.newsNetwork')
+                        : category === 'wallet'
+                        ? t('home.newsWallet')
+                        : t('home.newsEcosystem')}
                     </Text>
                   </TouchableOpacity>
                 ),
@@ -679,76 +682,67 @@ export default function HomeScreen({ navigation }: any) {
             ) : (
               <>
                 <ScrollView
-                horizontal
-                decelerationRate="fast"
-                snapToInterval={NEWS_CARD_W + NEWS_CARD_GAP}
-                snapToAlignment="start"
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={s.newsPages}
-                ref={newsSliderRef}
-                onMomentumScrollEnd={event => {
-                  const index = Math.round(
-                    event.nativeEvent.contentOffset.x /
-                      (NEWS_CARD_W + NEWS_CARD_GAP),
-                  );
-                  setNewsSlideIndex(
-                    Math.max(0, Math.min(index, displayedNews.length - 1)),
-                  );
-                }}
-              >
-                {displayedNews.map(item => (
-                  <View key={item.id} style={s.newsPage}>
-                    <View style={s.newsImageFrame}>
-                      {item.imageDataUrl ? (
-                        <Image
-                          accessibilityLabel={item.title}
-                          resizeMode="cover"
-                          source={{ uri: item.imageDataUrl }}
-                          style={s.newsImage}
-                        />
-                      ) : (
-                        <View style={s.newsImageFallback}>
-                          <MoneroCoinBg size={92} />
-                        </View>
-                      )}
-                    </View>
-                    <View style={s.newsPageBody}>
-                      <Text style={s.newsCategory}>
-                        {item.category === 'network'
-                          ? t('home.newsNetwork')
-                          : item.category === 'wallet'
+                  horizontal
+                  decelerationRate="fast"
+                  snapToInterval={NEWS_CARD_W + NEWS_CARD_GAP}
+                  snapToAlignment="start"
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={s.newsPages}
+                  ref={newsSliderRef}
+                  onMomentumScrollEnd={event => {
+                    const index = Math.round(
+                      event.nativeEvent.contentOffset.x /
+                        (NEWS_CARD_W + NEWS_CARD_GAP),
+                    );
+                    setNewsSlideIndex(
+                      Math.max(0, Math.min(index, displayedNews.length - 1)),
+                    );
+                  }}
+                >
+                  {displayedNews.map(item => (
+                    <View key={item.id} style={s.newsPage}>
+                      <View style={s.newsImageFrame}>
+                        <NewsCatalogImage item={item} />
+                      </View>
+                      <View style={s.newsPageBody}>
+                        <Text style={s.newsCategory}>
+                          {item.category === 'network'
+                            ? t('home.newsNetwork')
+                            : item.category === 'wallet'
                             ? t('home.newsWallet')
                             : t('home.newsEcosystem')}
-                      </Text>
-                      <Text numberOfLines={2} style={s.newsItemTitle}>
-                        {item.title}
-                      </Text>
-                      <Text numberOfLines={3} style={s.newsSummary}>
-                        {item.summary}
-                      </Text>
-                      <View style={s.newsFooter}>
-                        <Text style={s.newsDate}>
-                          {new Intl.DateTimeFormat(dateLocale, {
-                            dateStyle: 'medium',
-                          }).format(new Date(item.publishedAt))}
                         </Text>
-                        {item.url ? (
-                          <TouchableOpacity
-                            accessibilityRole="link"
-                            onPress={() =>
-                              Linking.openURL(item.url!).catch(() => undefined)
-                            }
-                            style={s.newsOpenButton}
-                          >
-                            <Text style={s.newsOpenButtonText}>
-                              {t('home.newsReadMore')} ↗
-                            </Text>
-                          </TouchableOpacity>
-                        ) : null}
+                        <Text numberOfLines={2} style={s.newsItemTitle}>
+                          {item.title}
+                        </Text>
+                        <Text numberOfLines={3} style={s.newsSummary}>
+                          {item.summary}
+                        </Text>
+                        <View style={s.newsFooter}>
+                          <Text style={s.newsDate}>
+                            {new Intl.DateTimeFormat(dateLocale, {
+                              dateStyle: 'medium',
+                            }).format(new Date(item.publishedAt))}
+                          </Text>
+                          {item.url ? (
+                            <TouchableOpacity
+                              accessibilityRole="link"
+                              onPress={() =>
+                                Linking.openURL(item.url!).catch(
+                                  () => undefined,
+                                )
+                              }
+                              style={s.newsOpenButton}
+                            >
+                              <Text style={s.newsOpenButtonText}>
+                                {t('home.newsReadMore')} ↗
+                              </Text>
+                            </TouchableOpacity>
+                          ) : null}
+                        </View>
                       </View>
                     </View>
-                  </View>
-                ))}
+                  ))}
                 </ScrollView>
                 <View style={s.newsDots}>
                   {displayedNews.map((item, index) => (
@@ -846,11 +840,15 @@ export default function HomeScreen({ navigation }: any) {
             <Text style={s.emptyTxTitle}>
               {hasOpenWallet
                 ? t('home.noTransactions')
+                : registeredWallet
+                ? t('sync.opening')
                 : t('home.walletNotOpen')}
             </Text>
             <Text style={s.emptyTxText}>
               {hasOpenWallet
                 ? t('home.noTransactionsText')
+                : registeredWallet
+                ? t('sync.waitingForStatus')
                 : t('home.openWalletToLoad')}
             </Text>
           </View>

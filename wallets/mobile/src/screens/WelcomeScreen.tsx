@@ -34,9 +34,8 @@ export default function WelcomeScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
   const { t } = useI18n();
   const {
-    isRegisteredWalletOpen,
+    openRegisteredWalletById,
     registeredWallets,
-    setActiveRegisteredWallet,
   } = useWalletState();
   const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
   const [shareCommunitySearches, setShareCommunitySearches] = useState(true);
@@ -95,27 +94,17 @@ export default function WelcomeScreen({ navigation }: any) {
       if (openingWalletId) return;
       setOpeningWalletId(walletId);
       try {
-        const wallet = await setActiveRegisteredWallet(walletId);
-        if (
-          isFastWalletRegistration(wallet) ||
-          isRegisteredWalletOpen(walletId)
-        ) {
+        if (await openRegisteredWalletById(walletId)) {
           navigation.navigate('Home');
-          return;
         }
-        navigation.navigate('WalletSetup', {
-          mode: 'open',
-          openRequestId: Date.now(),
-        });
       } finally {
         setOpeningWalletId(undefined);
       }
     },
     [
-      isRegisteredWalletOpen,
       navigation,
+      openRegisteredWalletById,
       openingWalletId,
-      setActiveRegisteredWallet,
     ],
   );
 

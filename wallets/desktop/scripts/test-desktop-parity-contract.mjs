@@ -23,6 +23,8 @@ const desktopRecipientScannerSource = readFileSync(resolve(desktopRoot, 'src', '
 const desktopInfoPlist = readFileSync(resolve(desktopRoot, 'src-tauri', 'Info.plist'), 'utf8');
 const ledgerCorePatch = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'patches', 'monero-ledger-view-key-api.patch'), 'utf8');
 const nativeWalletSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'native_wallet.rs'), 'utf8');
+const paymentLinksSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'payment_links.rs'), 'utf8');
+const releaseFeaturesManifest = readFileSync(resolve(repoRoot, 'config', 'v1-release-features.json'), 'utf8');
 const desktopBridgeHeader = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'include', 'DesktopWalletCore.h'), 'utf8');
 const desktopBridgeSource = readFileSync(resolve(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopWalletCore.cpp'), 'utf8');
 const walletEngineSource = readFileSync(resolve(repoRoot, 'native', 'monero-bridge', 'cpp', 'WalletEngine.cpp'), 'utf8');
@@ -52,7 +54,7 @@ test('desktop primary navigation matches the mobile bottom menu contract', () =>
   assert.deepEqual(icons, ['home', 'send', 'receive', 'community-tab', 'menu']);
   assert.doesNotMatch(primaryMatch[1], /[⌂↑↓◎☰]/, 'platform-dependent text glyphs are not navigation icons');
   assert.match(appSource, /active=\{primaryNavigationSection\(section\)\}/);
-  assert.match(appSource, /new Set\(\['wallets', 'mfw', 'assistant', 'settings', 'project', 'node'\]\)/);
+  assert.match(appSource, /new Set\(\['wallets', 'mfw', 'vanity', 'assistant', 'settings', 'project', 'node'\]\)/);
   for (const icon of ['home', 'send', 'receive', 'community-tab', 'menu']) {
     assert.match(desktopIconSource, new RegExp(`case '${icon}'`));
   }
@@ -171,8 +173,11 @@ test('desktop Menu exposes release-ready destinations and gates unfinished modul
   }
   assert.doesNotMatch(menuSource, /[◈＠◎⚙✦◌]/, 'desktop menu must use the mobile SVG icon family');
   assert.match(menuSource, /v1ReleaseFeatures\.mfwNameRegistration/);
+  assert.match(menuSource, /v1ReleaseFeatures\.vanityAddress/);
+  assert.match(menuSource, /v1ReleaseFeatures\.moneroEnthusiastV1/);
   assert.match(menuSource, /v1ReleaseFeatures\.assistant/);
   assert.match(appSource, /section === 'mfw' && v1ReleaseFeatures\.mfwNameRegistration && <MfwNames/);
+  assert.match(appSource, /section === 'vanity' && v1ReleaseFeatures\.vanityAddress && <Vanity/);
   assert.match(appSource, /section === 'assistant' && v1ReleaseFeatures\.assistant && <Assistant/);
 });
 
@@ -189,7 +194,7 @@ test('desktop Monero Enthusiast publishes and searches in the selected app langu
 });
 
 test('desktop Community is locked behind the shared coming-soon preview', () => {
-  assert.match(appSource, /section === 'enthusiast' && <CommunityComingSoon \/>/);
+  assert.match(appSource, /section === 'enthusiast' && v1ReleaseFeatures\.moneroEnthusiastV1 && <CommunityComingSoon \/>/);
   assert.doesNotMatch(appSource, /section === 'enthusiast' && <MoneroEnthusiastV1 \/>/);
   const preview = appSource.slice(
     appSource.indexOf('function CommunityComingSoon()'),
@@ -236,8 +241,9 @@ test('desktop parity document records closed-app notification preparation truthf
 
 test('desktop Send keeps the same simple recipient-first flow as mobile', () => {
   const sendSource = appSource.slice(appSource.indexOf('function Send('), appSource.indexOf('function Receive('));
-  assert.match(appSource, /type SendStep = 'recipient-choice' \| 'manual-recipient' \| 'address-book' \| 'amount' \| 'review'/);
+  assert.match(appSource, /type SendStep = 'recipient-choice' \| 'manual-recipient' \| 'address-book' \| 'recipient-review' \| 'amount' \| 'review'/);
   assert.match(sendSource, /priority: 'low'/);
+  assert.match(sendSource, /setStep\('recipient-review'\)/);
   assert.match(sendSource, /setStep\('review'\)/);
   assert.match(sendSource, /saveRecipientContacts/);
   assert.match(sendSource, /recentContacts\.map/);
@@ -247,13 +253,42 @@ test('desktop Send keeps the same simple recipient-first flow as mobile', () => 
   assert.match(sendSource, /validateAndUseRecipient/);
   assert.match(sendSource, /send-choice-card primary-choice/);
   assert.match(sendSource, /setScannerOpen\(true\)/);
+  const choiceUi = sendSource.slice(sendSource.indexOf("step === 'recipient-choice'"));
   assert.ok(
-    sendSource.indexOf('send-choice-card primary-choice') < sendSource.indexOf("setStep('manual-recipient')"),
+    choiceUi.indexOf('send-choice-card primary-choice') < choiceUi.indexOf("setStep('manual-recipient')"),
     'QR scanning must be the first, primary recipient choice like mobile',
   );
   assert.match(sendSource, /send-keypad/);
+  assert.match(sendSource, /recipient-review-card/);
+  assert.match(sendSource, /send\.checkRecipientHint/);
+  assert.match(sendSource, /send-success-overlay/);
+  assert.match(sendSource, /playPaymentSuccessSound/);
   assert.equal(/priority-choice/.test(sendSource), false, 'fee priority must not be a primary send choice');
   assert.equal(/RecentTransactions/.test(sendSource), false, 'recent activity must not distract from the send journey');
+});
+
+test('desktop keeps a confirmed broadcast successful when local follow-up work fails', () => {
+  const sendSource = appSource.slice(appSource.indexOf('function Send('), appSource.indexOf('function Receive('));
+  const commitSource = sendSource.slice(
+    sendSource.indexOf('const commit = async () => {'),
+    sendSource.indexOf('const useMaximum ='),
+  );
+  const postBroadcastStart = commitSource.indexOf('const runPostBroadcastStep = async');
+  assert.notEqual(postBroadcastStart, -1);
+
+  const broadcastBoundary = commitSource.slice(0, postBroadcastStart);
+  const postBroadcastSource = commitSource.slice(postBroadcastStart);
+  assert.match(broadcastBoundary, /commit_transaction/);
+  assert.match(broadcastBoundary, /send\.broadcastFailed/);
+  assert.match(broadcastBoundary, /catch \(reason\)[\s\S]*setBusy\(false\);[\s\S]*return;/);
+  assert.doesNotMatch(postBroadcastSource, /send\.broadcastFailed/);
+  assert.match(postBroadcastSource, /MONERO_DESKTOP_POST_BROADCAST_FAILED/);
+  assert.match(postBroadcastSource, /runPostBroadcastStep\(\s*'ledger-reconciliation'/);
+  assert.match(postBroadcastSource, /runPostBroadcastStep\('wallet-list-refresh', onWalletsChanged\)/);
+  assert.match(postBroadcastSource, /runPostBroadcastStep\('send-form-reset'[\s\S]*setMessage\(t\('send\.sent'\)\)/);
+  assert.match(postBroadcastSource, /runPostBroadcastStep\('recipient-history'[\s\S]*rememberRecipient/);
+  assert.match(postBroadcastSource, /runPostBroadcastStep\('recipient-reset'[\s\S]*setAddress\(''\)/);
+  assert.match(postBroadcastSource, /runPostBroadcastStep\('snapshot-refresh'[\s\S]*loadSnapshot\(true\)/);
 });
 
 test('desktop recipient scanning uses the Mac webcam without depending on BarcodeDetector', () => {
@@ -346,14 +381,14 @@ test('desktop news uses the same TEX8 feed and categories as mobile', () => {
   assert.match(hostSource, /news\/v1\/news\?limit=10/);
   assert.doesNotMatch(newsSource, /https:\/\/xmr\.tex8\.com/);
   assert.match(newsSource, /'network' \| 'wallet' \| 'ecosystem'/);
-  assert.match(newsSource, /imageDataUrl\?: string/);
-  assert.match(newsSource, /tex8-monero-news-v2/);
+  assert.match(newsSource, /imageUrl\?: string/);
+  assert.match(newsSource, /tex8-monero-news-v3/);
   assert.doesNotMatch(appSource, /api\.github\.com\/repos\/monero-project/);
   assert.match(appSource, /const \[newsCategory, setNewsCategory\]/);
   assert.match(appSource, /home\.newsSource/);
   assert.match(appSource, /official-news-slider/);
   assert.match(appSource, /displayedNews = visibleNews\.slice\(0, 10\)/);
-  assert.match(appSource, /item\.imageDataUrl/);
+  assert.match(appSource, /item\.imageUrl/);
   assert.match(appSource, /home\.newsReadMore/);
   assert.match(stylesSource, /aspect-ratio: 16 \/ 9/);
   assert.match(stylesSource, /scroll-snap-type: x mandatory/);
@@ -407,7 +442,7 @@ test('desktop presents private and Fast Wallets in one mobile-parity wallet list
   const walletsSource = appSource.slice(appSource.indexOf('function Wallets('), appSource.indexOf('function LedgerReadOnlySetup('));
   const receiveSource = appSource.slice(appSource.indexOf('function Receive('), appSource.indexOf('function HardwareWalletCard('));
   assert.doesNotMatch(walletsSource, /<FastWallets/);
-  assert.match(appSource, /<FastWalletReceive appProtection=\{appProtection\} \/>/);
+  assert.doesNotMatch(appSource, /<FastWalletReceive appProtection=\{appProtection\} \/>/);
   assert.match(receiveSource, /function FastWalletReceive/);
   assert.match(receiveSource, /fastReceive\.title/);
   assert.match(receiveSource, /receive\.copied/);
@@ -421,6 +456,18 @@ test('desktop presents private and Fast Wallets in one mobile-parity wallet list
   assert.match(walletsSource, /fast-wallet-badge/);
   assert.doesNotMatch(appSource, /Independent local wallets|Independent wallets|FastWalletPreview|FastWalletWalletRows/);
   assert.doesNotMatch(appSource, /Ledger Fast Wallet is not available yet/);
+});
+
+test('desktop shares opaque HTTPS payment links instead of raw Monero URIs', () => {
+  const receiveSource = appSource.slice(appSource.indexOf('function Receive('), appSource.indexOf('function HardwareWalletCard('));
+  assert.match(releaseFeaturesManifest, /"paymentLinkOrigin":\s*"https:\/\/xmr\.tex8\.com"/);
+  assert.match(receiveSource, /invoke<PaymentLinkRecord>\('create_payment_link'/);
+  assert.match(receiveSource, /navigator\.share\(\{ title: t\('receive\.paymentLink'\), text: created\.url, url: created\.url \}\)/);
+  assert.match(receiveSource, /navigator\.clipboard\.writeText\(created\.url\)/);
+  assert.doesNotMatch(receiveSource, /navigator\.clipboard\.writeText\(paymentUri\)/);
+  assert.match(paymentLinksSource, /\.post\(format!\("\{origin\}\/v1\/payment-requests"\)\)/);
+  assert.match(paymentLinksSource, /tor_transport::proxy/);
+  assert.match(paymentLinksSource, /\/v1\/payment-requests/);
 });
 
 test('desktop uses the same two-row sync status structure as React Native', () => {
@@ -489,7 +536,7 @@ test('Ledger read-only setup and spent-output reconciliation are reachable throu
   assert.match(appSource, /sentLedgerRefreshPending/);
   assert.match(
     appSource,
-    /Broadcasting already succeeded[\s\S]*Never turn a post-send companion[\s\S]*duplicate/,
+    /native Core has confirmed the broadcast[\s\S]*Every local[\s\S]*never present a successful payment as failed/,
     'a failed post-send Ledger refresh must never present a successful broadcast as failed',
   );
   assert.match(
@@ -520,6 +567,20 @@ test('desktop Ledger wallet creation cannot block the AppKit main thread', () =>
   assert.match(commandSource, /spawn_blocking/);
   assert.match(commandSource, /\.await/);
   assert.match(commandSource, /require_app_unlocked/);
+});
+
+test('transaction preparation and Ledger reconciliation never block the AppKit main thread', () => {
+  const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  for (const command of ['prepare_transaction', 'reconcile_ledger_balance']) {
+    const commandSource = rustFunction(hostSource, command);
+    assert.match(hostSource, new RegExp(`async fn ${command}\\(`));
+    assert.match(commandSource, /spawn_blocking/);
+    assert.match(commandSource, /\.await/);
+    assert.match(commandSource, /require_app_unlocked/);
+  }
+  assert.match(appSource, /className="transaction-preparing"/);
+  assert.match(appSource, /className="mfw-inline-spinner"/);
+  assert.match(appSource, /aria-busy=\{busy\}/);
 });
 
 test('macOS Ledger BLE prepares the protocol before reporting the device ready', () => {
@@ -1077,12 +1138,40 @@ test('global unlock warms local and Ledger view-only sessions, then schedules ev
   assert.ok(openSource.indexOf('warm-session-activated') < openSource.indexOf('native.open'));
 });
 
+test('an unlocked desktop app always activates a real wallet and prefers the highest known balance', () => {
+  const startupSelectionSource = appSource.slice(
+    appSource.indexOf('function preferredStartupWallet'),
+    appSource.indexOf('function formatAtomicXmr'),
+  );
+  const automaticOpenSource = appSource.slice(
+    appSource.indexOf('openSavedWalletRef.current = openSavedWallet'),
+    appSource.indexOf('const createFastWalletAfterBackup ='),
+  );
+  const switcherSource = appSource.slice(
+    appSource.indexOf('function DesktopWalletSwitcher'),
+    appSource.indexOf('function DesktopNodeStatus'),
+  );
+  const leanSettingsSource = appSource.slice(
+    appSource.indexOf('function LeanSettings'),
+    appSource.indexOf('function SensitiveAuthorizationOverlay'),
+  );
+
+  assert.match(startupSelectionSource, /wallet => wallet\.isActive/);
+  assert.match(startupSelectionSource, /balance > highestKnownBalance/);
+  assert.match(automaticOpenSource, /automaticWalletSelectionRef\.current = true/);
+  assert.match(automaticOpenSource, /openSavedWalletRef\.current\(fallback\)/);
+  assert.match(automaticOpenSource, /registered_wallet_snapshots/);
+  assert.match(switcherSource, /const selected = activeWallet;/);
+  assert.doesNotMatch(switcherSource, /wallets\.find\(\(wallet\) => wallet\.isActive\)/);
+  assert.doesNotMatch(leanSettingsSource, /onCloseWallet|settings\.closeWallet/);
+});
+
 test('optimized desktop sync passes the configured gRPC endpoint into Monero Core', () => {
   for (const source of [nativeWalletSource, desktopBridgeHeader, desktopBridgeSource, windowsExports]) {
     assert.match(source, /tex8_desktop_wallet_set_grpc_endpoint/);
   }
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');
-  assert.match(hostSource, /profile\.mode != "original-rpc"/);
+  assert.match(hostSource, /profile\.mode == "optimized-grpc" && !grpc_endpoint\.is_empty\(\)/);
   assert.match(hostSource, /native\.set_grpc_endpoint\(&wallet_id, &grpc_endpoint\)/);
   assert.match(hostSource, /wallet\.grpc-configured/);
 });

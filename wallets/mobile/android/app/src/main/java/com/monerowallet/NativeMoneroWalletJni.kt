@@ -1223,6 +1223,27 @@ internal object NativeMoneroWalletJni {
     return nativeGetTransactions(walletId, limit)
   }
 
+  fun primeHardwareWalletFromViewOnly(
+    hardwareWalletId: String,
+    viewOnlyWalletId: String,
+  ) {
+    requireLoaded()
+    nativePrimeHardwareWalletFromViewOnly(hardwareWalletId, viewOnlyWalletId)
+  }
+
+  fun rebuildHardwareWalletCacheFromViewOnly(
+    hardwareWalletId: String,
+    viewOnlyWalletId: String,
+    restoreHeight: Double,
+  ) {
+    requireLoaded()
+    nativeRebuildHardwareWalletCacheFromViewOnly(
+      hardwareWalletId,
+      viewOnlyWalletId,
+      restoreHeight,
+    )
+  }
+
   /**
    * Returns key images already known by this wallet. This is intentionally an
    * Android-internal helper for the app-private transaction audit; it is not
@@ -1236,11 +1257,15 @@ internal object NativeMoneroWalletJni {
   fun syncLedgerKeyImagesToViewWallet(
     hardwareWalletId: String,
     viewOnlyWalletId: String,
+    fullSpendOutputScan: Boolean,
+    nodeOnlyRetry: Boolean,
   ): Map<String, Any> {
     requireLoaded()
     return nativeSyncLedgerKeyImagesToViewWallet(
       hardwareWalletId,
       viewOnlyWalletId,
+      fullSpendOutputScan,
+      nodeOnlyRetry,
     )
   }
 
@@ -1889,6 +1914,17 @@ internal object NativeMoneroWalletJni {
     limit: Double,
   ): List<Map<String, Any>>
 
+  @JvmStatic private external fun nativePrimeHardwareWalletFromViewOnly(
+    hardwareWalletId: String,
+    viewOnlyWalletId: String,
+  )
+
+  @JvmStatic private external fun nativeRebuildHardwareWalletCacheFromViewOnly(
+    hardwareWalletId: String,
+    viewOnlyWalletId: String,
+    restoreHeight: Double,
+  )
+
   @JvmStatic private external fun nativeGetOwnedOutputKeyImages(
     walletId: String,
   ): List<String>
@@ -1896,6 +1932,8 @@ internal object NativeMoneroWalletJni {
   @JvmStatic private external fun nativeSyncLedgerKeyImagesToViewWallet(
     hardwareWalletId: String,
     viewOnlyWalletId: String,
+    fullSpendOutputScan: Boolean,
+    nodeOnlyRetry: Boolean,
   ): Map<String, Any>
 
   @JvmStatic private external fun nativePrepareTransaction(

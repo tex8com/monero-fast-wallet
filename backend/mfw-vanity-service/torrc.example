@@ -1,0 +1,4 @@
+# Tor forwards only the local MFW Vanity Studio listener.
+# Do not expose the loopback listener through any Clearnet reverse proxy.
+HiddenServiceDir /var/lib/tor/mfw-vanity-service/
+HiddenServicePort 80 127.0.0.1:8098

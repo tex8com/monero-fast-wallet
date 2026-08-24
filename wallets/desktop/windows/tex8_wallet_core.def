@@ -35,4 +35,6 @@ EXPORTS
   tex8_desktop_wallet_commit_transaction
   tex8_desktop_wallet_hardware_status
   tex8_desktop_wallet_reconnect_hardware
+  tex8_desktop_wallet_prime_hardware_from_view_only
+  tex8_desktop_wallet_rebuild_hardware_wallet_cache_from_view_only
   tex8_desktop_wallet_show_hardware_address

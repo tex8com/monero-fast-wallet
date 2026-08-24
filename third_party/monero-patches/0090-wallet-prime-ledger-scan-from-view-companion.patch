@@ -1,0 +1,197 @@
+From 8ecf8f5cb0d5ea8d8d6542c1666c9dc7e0cde0d0 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 21 Aug 2026 13:20:00 -0500
+Subject: [PATCH] wallet: prime Ledger scan from view companion
+
+---
+ src/device/device_ledger.cpp | 14 ++++++++++
+ src/device/device_ledger.hpp |  4 +++
+ src/wallet/api/wallet.cpp    | 78 ++++++++++++++++++++++++++++++++++++++++++++
+ src/wallet/api/wallet.h      |  2 ++
+ src/wallet/api/wallet2_api.h | 11 +++++++--
+ 5 files changed, 107 insertions(+), 2 deletions(-)
+
+diff --git a/src/device/device_ledger.cpp b/src/device/device_ledger.cpp
+index 2e5db9c..9d1cb9a 100644
+--- a/src/device/device_ledger.cpp
++++ b/src/device/device_ledger.cpp
+@@ -680,7 +680,10 @@ namespace hw {
+     }
+ 
+     bool device_ledger::disconnect() {
++      AUTO_LOCK_CMD();
+       transport_disconnect();
++      memwipe(this->viewkey.data, sizeof(this->viewkey.data));
++      this->has_view_key = false;
+       return true;
+     }
+ 
+@@ -779,6 +782,17 @@ namespace hw {
+         return true;
+     }
+ 
++    bool device_ledger::prime_view_key_for_scan(const crypto::secret_key &in) {
++        AUTO_LOCK_CMD();
++        CHECK_AND_ASSERT_THROW_MES(!is_fake_view_key(in), "Invalid Ledger view key.");
++        CHECK_AND_ASSERT_THROW_MES(
++            !this->has_view_key || this->viewkey == in,
++            "A different Ledger view key is already active.");
++        this->viewkey = in;
++        this->has_view_key = true;
++        return true;
++    }
++
+     bool  device_ledger::generate_chacha_key(const cryptonote::account_keys &keys, crypto::chacha_key &key, uint64_t kdf_rounds) {
+         AUTO_LOCK_CMD();
+ 
+diff --git a/src/device/device_ledger.hpp b/src/device/device_ledger.hpp
+index 76e925d..5c68b0a 100644
+--- a/src/device/device_ledger.hpp
++++ b/src/device/device_ledger.hpp
+@@ -257,6 +257,10 @@ namespace hw {
+             out = viewkey;
+             return true;
+         }
++        // Installs a locally protected view key that was already approved by
++        // this Ledger when an encrypted view-only companion was created. The
++        // caller must verify wallet identity before invoking this method.
++        bool prime_view_key_for_scan(const crypto::secret_key &in);
+         bool  generate_chacha_key(const cryptonote::account_keys &keys, crypto::chacha_key &key, uint64_t kdf_rounds) override;
+         void  display_address(const cryptonote::subaddress_index& index, const boost::optional<crypto::hash8> &payment_id) override;
+ 
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 72dae06..0036294 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1028,6 +1028,10 @@ bool WalletImpl::prepareHardwareWalletScan()
+         auto& device = static_cast<hw::ledger::device_ledger&>(
+             m_wallet->get_account().get_device());
+         crypto::secret_key private_view_key;
++        const auto wipe_private_view_key =
++            epee::misc_utils::create_scope_leave_handler([&]() {
++                memwipe(private_view_key.data, sizeof(private_view_key.data));
++            });
+         if (!device.exported_view_key(private_view_key)) {
+             crypto::secret_key fake_view_key;
+             crypto::secret_key fake_spend_key;
+@@ -1057,6 +1061,80 @@ bool WalletImpl::prepareHardwareWalletScan()
+ #endif
+ }
+ 
++bool WalletImpl::prepareHardwareWalletScanFromViewOnly(
++    const Wallet &viewOnlyWallet)
++{
++    clearStatus();
++#ifdef WITH_DEVICE_LEDGER
++    if (m_wallet->get_device_type() != hw::device::LEDGER) {
++        setStatusError(tr("Hardware scan preparation requires a Ledger wallet"));
++        return false;
++    }
++
++    const auto *view_only = dynamic_cast<const WalletImpl*>(&viewOnlyWallet);
++    if (view_only == nullptr || !view_only->watchOnly() ||
++        view_only->m_wallet->get_device_type() != hw::device::SOFTWARE) {
++        setStatusError(tr("Hardware scan source must be a local view-only wallet"));
++        return false;
++    }
++    if (m_wallet->nettype() != view_only->m_wallet->nettype()) {
++        setStatusError(tr("Ledger and view-only wallets use different networks"));
++        return false;
++    }
++    const auto &hardware_address =
++        m_wallet->get_account().get_keys().m_account_address;
++    const auto &view_only_keys = view_only->m_wallet->get_account().get_keys();
++    if (hardware_address.m_view_public_key !=
++            view_only_keys.m_account_address.m_view_public_key ||
++        hardware_address.m_spend_public_key !=
++            view_only_keys.m_account_address.m_spend_public_key) {
++        setStatusError(tr("View-only wallet does not match this Ledger wallet"));
++        return false;
++    }
++
++    crypto::secret_key private_view_key = view_only_keys.m_view_secret_key;
++    const auto wipe_private_view_key =
++        epee::misc_utils::create_scope_leave_handler([&]() {
++            memwipe(private_view_key.data, sizeof(private_view_key.data));
++        });
++    try {
++        crypto::public_key derived_public_view_key;
++        if (!crypto::secret_key_to_public_key(
++                private_view_key, derived_public_view_key) ||
++            derived_public_view_key !=
++                m_wallet->get_account().get_keys().m_account_address.m_view_public_key) {
++            setStatusError(tr("Protected private view key does not match this Ledger wallet"));
++            return false;
++        }
++
++        auto& device = static_cast<hw::ledger::device_ledger&>(
++            m_wallet->get_account().get_device());
++        cryptonote::account_public_address connected_address;
++        if (!device.get_public_address(connected_address) ||
++            connected_address.m_view_public_key !=
++                hardware_address.m_view_public_key ||
++            connected_address.m_spend_public_key !=
++                hardware_address.m_spend_public_key) {
++            setStatusError(tr("Connected Ledger does not match this wallet"));
++            return false;
++        }
++        const bool installed = device.prime_view_key_for_scan(private_view_key);
++        if (!installed) {
++            setStatusError(tr("Protected Ledger private view key could not be installed"));
++            return false;
++        }
++        return true;
++    } catch (const std::exception &e) {
++        setStatusError(e.what());
++        return false;
++    }
++#else
++    (void)viewOnlyWallet;
++    setStatusError(tr("Ledger support is unavailable in this build"));
++    return false;
++#endif
++}
++
+ std::string WalletImpl::publicViewKey() const
+ {
+     return epee::string_tools::pod_to_hex(m_wallet->get_account().get_keys().m_account_address.m_view_public_key);
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 40ebff4..20e5877 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -98,6 +98,8 @@ public:
+     std::string secretViewKey() const override;
+     std::string hardwarePrivateViewKey() const override;
+     bool prepareHardwareWalletScan() override;
++    bool prepareHardwareWalletScanFromViewOnly(
++        const Wallet &viewOnlyWallet) override;
+     std::string publicViewKey() const override;
+     std::string secretSpendKey() const override;
+     std::string publicSpendKey() const override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index cd5b806..e5fe560 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -550,11 +550,18 @@ struct Wallet
+      */
+     virtual std::string hardwarePrivateViewKey() const = 0;
+     /*!
+-     * \brief prepareHardwareWalletScan - asks a Ledger once per process
+-     * session to export its private view key for local blockchain scanning.
++     * \brief prepareHardwareWalletScan - asks a Ledger once per connected
++     * hardware session to export its private view key for local scanning.
+      * The key remains inside Core and is verified against the wallet address.
+      */
+     virtual bool prepareHardwareWalletScan() = 0;
++    /*!
++     * \brief prepareHardwareWalletScanFromViewOnly - primes a Ledger scanner
++     * from an already-approved, encrypted local view-only wallet. The private
++     * view key never leaves the native Wallet implementation.
++     */
++    virtual bool prepareHardwareWalletScanFromViewOnly(
++        const Wallet &viewOnlyWallet) = 0;
+ 
+    /*!
+     * \brief publicViewKey     - returns public view key
+-- 
+2.50.1

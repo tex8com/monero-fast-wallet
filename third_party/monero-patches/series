@@ -84,3 +84,11 @@
 0083-wallet-expose-exact-per-subaddress-balances.patch
 0084-wallet-cli-dispatch-Community-V1-companion.patch
 0085-wallet-initialize-keyless-shared-sync-chain.patch
+0086-wallet-add-explicit-full-ledger-spend-output-scan.patch
+0087-wallet-batch-ledger-history-and-retry-node-only.patch
+0088-wallet-cli-fix-debug-option-prefix-ambiguity.patch
+0089-wallet-prime-ledger-view-key-before-shared-scan.patch
+0090-wallet-prime-ledger-scan-from-view-companion.patch
+0091-wallet-add-local-shared-sync-cache-reset.patch
+0092-wallet-require-ledger-parse-mode-after-companion-prime.patch
+0093-wallet-keep-companion-ledger-derivations-as-device-tokens.patch

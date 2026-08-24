@@ -39,6 +39,7 @@ const WATCH_AAD_MAGIC: &[u8; 8] = b"TX8WA001";
 const WATCH_PLAINTEXT_MAGIC: &[u8; 8] = b"TX8WP001";
 const WORKER_AUTH_MAGIC: &[u8; 8] = b"TX8AU001";
 const GATEWAY_WAKE_MAGIC: &[u8; 8] = b"TX8GW001";
+const GATEWAY_TEST_WAKE_MAGIC: &[u8; 8] = b"TX8GT001";
 const DIRECTORY_REGISTRATION_MAGIC: &[u8; 8] = b"TX8DR001";
 const HPKE_INFO: &[u8] = b"TEX8 Fast Wallet watch-envelope.v1";
 const WATCH_PURPOSE: u8 = 1;
@@ -974,6 +975,35 @@ pub fn gateway_wake_auth_body(
     assignment_epoch: u64,
     event_id: &str,
 ) -> Result<Vec<u8>, ProtocolError> {
+    gateway_signal_auth_body(
+        GATEWAY_WAKE_MAGIC,
+        assignment_handle,
+        assignment_epoch,
+        event_id,
+    )
+}
+
+/// Canonical, domain-separated body for an operator-triggered delivery test.
+/// It deliberately cannot authorize a real incoming-payment wake.
+pub fn gateway_test_wake_auth_body(
+    assignment_handle: &[u8; 32],
+    assignment_epoch: u64,
+    event_id: &str,
+) -> Result<Vec<u8>, ProtocolError> {
+    gateway_signal_auth_body(
+        GATEWAY_TEST_WAKE_MAGIC,
+        assignment_handle,
+        assignment_epoch,
+        event_id,
+    )
+}
+
+fn gateway_signal_auth_body(
+    magic: &[u8; 8],
+    assignment_handle: &[u8; 32],
+    assignment_epoch: u64,
+    event_id: &str,
+) -> Result<Vec<u8>, ProtocolError> {
     let valid_event_id = event_id.len() == 68
         && event_id.starts_with("evt_")
         && event_id[4..].bytes().all(|byte| byte.is_ascii_hexdigit());
@@ -981,7 +1011,7 @@ pub fn gateway_wake_auth_body(
         return Err(ProtocolError::InvalidAssignment);
     }
     let mut body = Vec::with_capacity(8 + 32 + 8 + 2 + event_id.len());
-    body.extend_from_slice(GATEWAY_WAKE_MAGIC);
+    body.extend_from_slice(magic);
     body.extend_from_slice(assignment_handle);
     body.extend_from_slice(&assignment_epoch.to_be_bytes());
     body.extend_from_slice(&(event_id.len() as u16).to_be_bytes());
@@ -5615,6 +5645,17 @@ mod tests {
             hex::encode(descriptor.worker_root_id()),
             vector["worker_root_id_hex"].as_str().unwrap()
         );
+    }
+
+    #[test]
+    fn test_wake_signature_body_is_distinct_from_incoming_wake() {
+        let handle = [9_u8; 32];
+        let event_id = format!("evt_{}", "a".repeat(64));
+        let incoming = gateway_wake_auth_body(&handle, 1, &event_id).unwrap();
+        let test = gateway_test_wake_auth_body(&handle, 1, &event_id).unwrap();
+        assert_ne!(incoming, test);
+        assert_eq!(&incoming[..8], GATEWAY_WAKE_MAGIC);
+        assert_eq!(&test[..8], GATEWAY_TEST_WAKE_MAGIC);
     }
 
     #[test]

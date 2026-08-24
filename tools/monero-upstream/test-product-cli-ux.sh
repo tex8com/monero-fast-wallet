@@ -48,6 +48,38 @@ startup="$({ printf ''; } | "${short_cli}" 2>&1 || true)"
 [[ "${startup}" == *"OPEN OR CREATE A WALLET"* ]] || fail "open/create prompt is missing"
 [[ "${startup}" == *"Tutorial: ./fast-wallet-cli quickstart"* ]] || fail "startup tutorial command is missing"
 
+debug_root="$(mktemp -d /tmp/mfw-product-cli-debug.XXXXXX)"
+chmod 0700 "${debug_root}"
+cleanup_debug_root() {
+  case "${debug_root}" in
+    /tmp/mfw-product-cli-debug.*)
+      [[ ! -e "${debug_root}" ]] || find "${debug_root}" -depth -delete
+      ;;
+    *)
+      echo "Refusing unsafe debug fixture cleanup: ${debug_root}" >&2
+      ;;
+  esac
+}
+trap cleanup_debug_root EXIT INT TERM
+
+# --debug is the documented switch. Its output stays in this private temporary
+# fixture because wallet creation writes a recovery seed to stdout.
+if ! (
+  cd "${debug_root}"
+  "${short_cli}" \
+    --generate-new-wallet "${debug_root}/debug-wallet" \
+    --password '' \
+    --offline \
+    --mnemonic-language English \
+    --debug \
+    --log-file /dev/null \
+    --command exit >"${debug_root}/debug.stdout" 2>"${debug_root}/debug.stderr"
+); then
+  fail "documented --debug switch could not create local diagnostics"
+fi
+[[ -f "${debug_root}/debug-wallet.keys" ]] || fail "debug fixture wallet was not created"
+[[ -d "${debug_root}/mfw-debug" ]] || fail "--debug did not create local diagnostics"
+
 original_startup="$({ printf ''; } | "${original_cli}" 2>&1 || true)"
 [[ "${original_startup}" != *"FAST-WALLET-CLI BY TEX8"* ]] || fail "official CLI was rebranded"
 [[ "${original_startup}" == *"This is the command line monero wallet"* ]] || fail "official startup changed"

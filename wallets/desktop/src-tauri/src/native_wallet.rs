@@ -199,6 +199,17 @@ unsafe extern "C" {
         core: *mut RawCore,
         wallet_id: *const c_char,
     ) -> RawResult;
+    fn tex8_desktop_wallet_prime_hardware_from_view_only(
+        core: *mut RawCore,
+        hardware_wallet_id: *const c_char,
+        view_only_wallet_id: *const c_char,
+    ) -> RawResult;
+    fn tex8_desktop_wallet_rebuild_hardware_wallet_cache_from_view_only(
+        core: *mut RawCore,
+        hardware_wallet_id: *const c_char,
+        view_only_wallet_id: *const c_char,
+        restore_height: u64,
+    ) -> RawResult;
     fn tex8_desktop_wallet_export_hardware_private_view_key(
         core: *mut RawCore,
         wallet_id: *const c_char,
@@ -828,6 +839,40 @@ impl NativeWallet {
         self.result(unsafe {
             tex8_desktop_wallet_reconnect_hardware(self.core.as_ptr(), wallet_id.as_ptr())
         })
+    }
+    pub fn prime_hardware_from_view_only(
+        &self,
+        hardware_wallet_id: &str,
+        view_only_wallet_id: &str,
+    ) -> Result<(), String> {
+        let hardware_wallet_id = c(hardware_wallet_id)?;
+        let view_only_wallet_id = c(view_only_wallet_id)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_prime_hardware_from_view_only(
+                self.core.as_ptr(),
+                hardware_wallet_id.as_ptr(),
+                view_only_wallet_id.as_ptr(),
+            )
+        })
+        .map(|_| ())
+    }
+    pub fn rebuild_hardware_wallet_cache_from_view_only(
+        &self,
+        hardware_wallet_id: &str,
+        view_only_wallet_id: &str,
+        restore_height: u64,
+    ) -> Result<(), String> {
+        let hardware_wallet_id = c(hardware_wallet_id)?;
+        let view_only_wallet_id = c(view_only_wallet_id)?;
+        self.result(unsafe {
+            tex8_desktop_wallet_rebuild_hardware_wallet_cache_from_view_only(
+                self.core.as_ptr(),
+                hardware_wallet_id.as_ptr(),
+                view_only_wallet_id.as_ptr(),
+                restore_height,
+            )
+        })
+        .map(|_| ())
     }
     pub fn export_hardware_private_view_key(&self, wallet_id: &str) -> Result<String, String> {
         let wallet_id = c(wallet_id)?;

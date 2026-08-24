@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 20 Aug 2026 19:00:00 -0500
+Subject: [PATCH] wallet cli: fix product debug option prefix ambiguity
+
+Keep the documented --debug switch for local Product-Core diagnostics. Boost
+option parsing treats it ambiguously beside the --debug-* configuration flags,
+so normalize the short form before parsing and store it under an unambiguous
+internal option name.
+
+---
+ src/simplewallet/simplewallet.cpp | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/src/simplewallet/simplewallet.cpp b/src/simplewallet/simplewallet.cpp
+index 1410dbc646a6b31a26d09992af05860870536a6e..bcae69940c8871fbd23bbd7c9e91bc719b7072e6 100644
+--- a/src/simplewallet/simplewallet.cpp
++++ b/src/simplewallet/simplewallet.cpp
+@@ -43,6 +43,7 @@
+ #include <iostream>
+ #include <sstream>
+ #include <fstream>
++#include <vector>
+ #include <ctype.h>
+ #include <boost/lexical_cast.hpp>
+ #include <boost/program_options.hpp>
+@@ -199,7 +200,7 @@ namespace
+ 
+   const command_line::arg_descriptor< std::vector<std::string> > arg_command = {"command", ""};
+ #ifdef MONERO_FAST_WALLET_PRODUCT_CLI
+-  const command_line::arg_descriptor<bool> arg_product_debug = {"debug", sw::tr("Enable local structured performance diagnostics"), false};
++  const command_line::arg_descriptor<bool> arg_product_debug = {"debug-enabled", sw::tr("Enable local structured performance diagnostics"), false};
+   const command_line::arg_descriptor<std::string> arg_product_debug_level = {"debug-level", sw::tr("Debug detail: summary, detailed, or trace"), "detailed"};
+   const command_line::arg_descriptor<std::string> arg_product_debug_output = {"debug-output", sw::tr("Directory for local debug artifacts"), ""};
+   const command_line::arg_descriptor<std::string> arg_product_debug_format = {"debug-format", sw::tr("Debug format: text, jsonl, or both"), "both"};
+@@ -11084,6 +11085,16 @@ int main(int argc, char* argv[])
+ 
+   const auto product_process_started = std::chrono::steady_clock::now();
+ #ifdef MONERO_FAST_WALLET_PRODUCT_CLI
++  // Keep the documented short form while avoiding Boost's ambiguous-prefix
++  // handling for --debug together with the --debug-* configuration options.
++  char product_debug_enabled[] = "--debug-enabled";
++  std::vector<char*> product_argv(argv, argv + argc);
++  for (int index = 1; index < argc; ++index)
++  {
++    if (std::string(product_argv[index]) == "--debug")
++      product_argv[index] = product_debug_enabled;
++  }
++  argv = product_argv.data();
+   int early_exit_code = 0;
+   if (mfw_cli::handle_early_product_command(argc, argv, early_exit_code))
+     return early_exit_code;
+-- 
+2.50.1 (Apple Git-155)

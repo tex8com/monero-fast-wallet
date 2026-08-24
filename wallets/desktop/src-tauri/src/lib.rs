@@ -13,11 +13,13 @@ mod mfw_name_resolver;
 mod mfw_names;
 mod native_wallet;
 mod node_settings;
+mod payment_links;
 mod platform_auth;
 mod release_features;
 mod secure_store;
 mod security_settings;
 pub mod tor_transport;
+mod vanity_service;
 mod wallet_core;
 mod wallet_registry;
 mod windows_notification_agent;
@@ -72,6 +74,15 @@ struct FastWalletDiagnosticIntegrity {
     hosted_count: usize,
     missing_credential_count: usize,
     invalid_assignment_count: usize,
+}
+
+#[tauri::command]
+async fn create_payment_link(
+    protection: State<'_, AppProtectionState>,
+    input: payment_links::CreatePaymentLinkInput,
+) -> Result<payment_links::PaymentLinkRecord, String> {
+    require_app_unlocked(&protection)?;
+    payment_links::create(&input.uri).await
 }
 
 struct NativeWalletState(Mutex<native_wallet::NativeWallet>);
@@ -283,6 +294,29 @@ fn ledger_hardware_session_key(source_registration_id: &str) -> String {
     format!("__ledger-signing-session:{source_registration_id}")
 }
 
+fn ledger_view_only_companion_session_id(
+    registry: &wallet_registry::WalletRegistry,
+    open_sessions: &HashMap<String, String>,
+    source_registration_id: &str,
+) -> Result<Option<String>, String> {
+    let Some(companion) = registry.wallets.iter().find(|wallet| {
+        wallet.kind == "view-only"
+            && wallet.source_wallet_id.as_deref() == Some(source_registration_id)
+    }) else {
+        // Older Ledger registrations without an encrypted companion retain
+        // the existing one-time device-export fallback.
+        return Ok(None);
+    };
+    open_sessions
+        .get(&companion.id)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            "The encrypted Ledger viewing wallet is not open. Open the wallet again before sending."
+                .to_owned()
+        })
+}
+
 fn bind_ledger_session_ids(
     open_sessions: &mut HashMap<String, String>,
     registry: &wallet_registry::WalletRegistry,
@@ -326,6 +360,39 @@ fn physical_registration_id(registration: &wallet_registry::RegisteredWallet) ->
     } else {
         &registration.id
     }
+}
+
+fn ledger_signing_source_registration(
+    registry: &wallet_registry::WalletRegistry,
+    registration: &wallet_registry::RegisteredWallet,
+) -> Result<wallet_registry::RegisteredWallet, String> {
+    let source_id = physical_registration_id(registration);
+    registry
+        .wallets
+        .iter()
+        .find(|wallet| {
+            wallet.id == source_id
+                && wallet.kind == "hardware"
+                && wallet.role.as_deref().unwrap_or("standard") == "standard"
+        })
+        .cloned()
+        .ok_or_else(|| {
+            "The linked Ledger wallet is missing. Remove this wallet and add the Ledger again."
+                .to_owned()
+        })
+}
+
+fn verified_registration_account_index(
+    registration: &wallet_registry::RegisteredWallet,
+    requested_account_index: u32,
+) -> Result<u32, String> {
+    let expected_account_index = registration.account_index.unwrap_or(0);
+    if requested_account_index != expected_account_index {
+        return Err(
+            "The selected transaction account changed. Review the payment again.".to_owned(),
+        );
+    }
+    Ok(expected_account_index)
 }
 
 /// Resolve a process-local native handle by physical wallet container, not by
@@ -595,6 +662,21 @@ struct ResolveMfwNameInput {
 struct CheckMfwNameAvailabilityInput {
     name: String,
     network: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SuggestMfwNamesInput {
+    prefix: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoverMfwNamesInput {
+    wallet_id: String,
+    wallet_registration_id: String,
+    network: String,
+    account_index: Option<u32>,
+    address_index: Option<u32>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -956,6 +1038,64 @@ fn background_notification_agent_config_path(
 ) -> Result<Option<String>, String> {
     require_app_unlocked(&protection)?;
     desktop_notifications::background_agent_config_path(&app)
+}
+
+#[tauri::command]
+async fn create_vanity_quote(
+    app: AppHandle,
+    state: State<'_, NativeWalletState>,
+    sessions: State<'_, WalletSessionState>,
+    protection: State<'_, AppProtectionState>,
+    input: vanity_service::CreateVanityQuoteInput,
+) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
+    let source = wallet_registry::list(&app)?
+        .wallets
+        .into_iter()
+        .find(|wallet| wallet.id == input.source_wallet_registration_id)
+        .ok_or_else(|| "The source wallet is not saved on this device.".to_owned())?;
+    if source.kind != "software" || source.network != "mainnet" {
+        return Err("Vanity generation requires an open mainnet software wallet.".to_owned());
+    }
+    let wallet_id = wallet_session_id(&sessions, &source.id)?
+        .ok_or_else(|| "Open the source wallet before creating the Vanity quote.".to_owned())?;
+    let account_index = checked_account_index(input.account_index)?;
+    let address_index = checked_account_index(input.address_index)?;
+    let native_address = state
+        .0
+        .lock()
+        .map_err(|_| "Native wallet is busy.".to_owned())?
+        .address(&wallet_id, account_index, address_index)?;
+    if native_address != input.public_address || account_index != 0 || address_index != 0 {
+        return Err("The Vanity source does not match the selected wallet.".to_owned());
+    }
+    vanity_service::create_quote(input).await
+}
+
+#[tauri::command]
+fn latest_vanity_order_id(
+    protection: State<'_, AppProtectionState>,
+) -> Result<Option<String>, String> {
+    require_app_unlocked(&protection)?;
+    vanity_service::latest_order_id()
+}
+
+#[tauri::command]
+async fn vanity_order_status(
+    protection: State<'_, AppProtectionState>,
+    order_id: String,
+) -> Result<String, String> {
+    require_app_unlocked(&protection)?;
+    vanity_service::order_status(order_id).await
+}
+
+#[tauri::command]
+fn export_vanity_recovery(
+    protection: State<'_, AppProtectionState>,
+    order_id: String,
+) -> Result<(), String> {
+    require_app_unlocked(&protection)?;
+    vanity_service::export_recovery(order_id)
 }
 
 #[tauri::command]
@@ -2797,6 +2937,377 @@ fn synchronized_wallet_height(raw: &str) -> Result<u64, String> {
         .ok_or_else(|| "The Ledger wallet height could not be verified.".to_owned())
 }
 
+fn wallet_snapshot_height_and_sync(raw: &str) -> Result<(u64, bool), String> {
+    let snapshot: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|_| "The Ledger signing snapshot could not be verified.".to_owned())?;
+    let height = snapshot
+        .get("walletHeight")
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        })
+        .ok_or_else(|| "The Ledger signing height could not be verified.".to_owned())?;
+    let synchronized = snapshot
+        .get("synchronized")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Ok((height, synchronized))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LedgerSigningAccountState {
+    address: String,
+    balance: String,
+    unlocked: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LedgerSigningAccountComparison {
+    Match,
+    IdentityMismatch,
+    SpendStateMismatch,
+}
+
+fn compare_ledger_signing_account_state(
+    companion: &LedgerSigningAccountState,
+    hardware: &LedgerSigningAccountState,
+) -> LedgerSigningAccountComparison {
+    if hardware.address != companion.address {
+        return LedgerSigningAccountComparison::IdentityMismatch;
+    }
+    if hardware.balance != companion.balance || hardware.unlocked != companion.unlocked {
+        return LedgerSigningAccountComparison::SpendStateMismatch;
+    }
+    LedgerSigningAccountComparison::Match
+}
+
+fn safe_ledger_rebuild_restore_height(restore_height: Option<u64>) -> u64 {
+    // Zero delegates the fallback boundary to the native rebuild contract,
+    // which derives it from the already identity-checked open companion and
+    // fails closed if that wallet has no usable refresh height.
+    restore_height.unwrap_or(0)
+}
+
+fn ledger_signing_account_states(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    companion_wallet_id: &str,
+    hardware_wallet_id: &str,
+    account_index: u32,
+) -> Result<(LedgerSigningAccountState, LedgerSigningAccountState), String> {
+    let native = lock_native_wallet(app, state, "ledger-signing-scope-verify")?;
+    let companion = LedgerSigningAccountState {
+        address: native.address(companion_wallet_id, account_index, 0)?,
+        balance: native.balance(companion_wallet_id, account_index, false)?,
+        unlocked: native.balance(companion_wallet_id, account_index, true)?,
+    };
+    let hardware = LedgerSigningAccountState {
+        address: native.address(hardware_wallet_id, account_index, 0)?,
+        balance: native.balance(hardware_wallet_id, account_index, false)?,
+        unlocked: native.balance(hardware_wallet_id, account_index, true)?,
+    };
+    Ok((companion, hardware))
+}
+
+fn synchronize_ledger_hardware_to_height(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    hardware_wallet_id: &str,
+    companion_height: u64,
+) -> Result<(), String> {
+    lock_native_wallet(app, state, "ledger-signing-refresh-start")?
+        .start_refresh(hardware_wallet_id)?;
+    let deadline = Instant::now() + Duration::from_secs(5 * 60);
+    let ready = (|| loop {
+        let raw = lock_native_wallet(app, state, "ledger-signing-readiness")?
+            .snapshot(hardware_wallet_id)?;
+        let (height, _) = wallet_snapshot_height_and_sync(&raw)?;
+        if height >= companion_height {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("The Ledger signing wallet did not synchronize in time.".to_owned());
+        }
+        std::thread::sleep(Duration::from_millis(750));
+    })();
+    let stop_result = lock_native_wallet(app, state, "ledger-signing-refresh-stop")
+        .and_then(|native| native.stop_refresh(hardware_wallet_id));
+    ready?;
+    stop_result
+}
+
+fn ledger_wallet_height(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    wallet_id: &str,
+    operation: &'static str,
+) -> Result<u64, String> {
+    let raw = lock_native_wallet(app, state, operation)?.snapshot(wallet_id)?;
+    wallet_snapshot_height_and_sync(&raw).map(|(height, _)| height)
+}
+
+fn synchronize_ledger_companion_to_height(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    companion_wallet_id: &str,
+    target_height: u64,
+) -> Result<(), String> {
+    // The viewing companion is the normal continuously synchronized session.
+    // Starting it is idempotent; unlike the temporary hardware session, leave
+    // it running after it catches up.
+    lock_native_wallet(app, state, "ledger-signing-companion-refresh-start")?
+        .start_refresh(companion_wallet_id)?;
+    let deadline = Instant::now() + Duration::from_secs(5 * 60);
+    loop {
+        let height = ledger_wallet_height(
+            app,
+            state,
+            companion_wallet_id,
+            "ledger-signing-companion-readiness",
+        )?;
+        if height >= target_height {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                "The encrypted Ledger viewing companion did not synchronize in time.".to_owned(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(750));
+    }
+}
+
+fn ledger_signing_account_states_at_shared_height(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    companion_wallet_id: &str,
+    hardware_wallet_id: &str,
+    account_index: u32,
+) -> Result<(LedgerSigningAccountState, LedgerSigningAccountState), String> {
+    let deadline = Instant::now() + Duration::from_secs(5 * 60);
+    loop {
+        let companion_height = ledger_wallet_height(
+            app,
+            state,
+            companion_wallet_id,
+            "ledger-signing-companion-height",
+        )?;
+        let hardware_height = ledger_wallet_height(
+            app,
+            state,
+            hardware_wallet_id,
+            "ledger-signing-hardware-height",
+        )?;
+        if companion_height < hardware_height {
+            // A candidate ahead of the reference is not a spend-state
+            // mismatch. Refresh the companion without Ledger, then re-read.
+            synchronize_ledger_companion_to_height(
+                app,
+                state,
+                companion_wallet_id,
+                hardware_height,
+            )?;
+        } else if hardware_height < companion_height {
+            synchronize_ledger_hardware_to_height(
+                app,
+                state,
+                hardware_wallet_id,
+                companion_height,
+            )?;
+        } else {
+            let states = ledger_signing_account_states(
+                app,
+                state,
+                companion_wallet_id,
+                hardware_wallet_id,
+                account_index,
+            )?;
+            // The companion normally remains live. Accept the values only if
+            // neither wallet advanced while the account fields were read.
+            let companion_after = ledger_wallet_height(
+                app,
+                state,
+                companion_wallet_id,
+                "ledger-signing-companion-height-confirm",
+            )?;
+            let hardware_after = ledger_wallet_height(
+                app,
+                state,
+                hardware_wallet_id,
+                "ledger-signing-hardware-height-confirm",
+            )?;
+            if companion_after == companion_height && hardware_after == hardware_height {
+                return Ok(states);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                "The Ledger signing wallet and encrypted companion did not reach a common scan height in time."
+                    .to_owned(),
+            );
+        }
+    }
+}
+
+fn prime_ledger_hardware_from_open_companion(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    sessions: &WalletSessionState,
+    source: &wallet_registry::RegisteredWallet,
+    hardware_wallet_id: &str,
+    diagnostic_flow: &str,
+) -> Result<Option<String>, String> {
+    let registry = wallet_registry::list(app)?;
+    let companion_wallet_id = {
+        let open_sessions = sessions
+            .0
+            .lock()
+            .map_err(|_| "Wallet session state is busy.".to_owned())?;
+        ledger_view_only_companion_session_id(&registry, &open_sessions, &source.id)?
+    };
+    let Some(companion_wallet_id) = companion_wallet_id else {
+        return Ok(None);
+    };
+    if companion_wallet_id == hardware_wallet_id {
+        return Err("Ledger signing and viewing sessions must be separate.".to_owned());
+    }
+    lock_native_wallet(app, state, "ledger-signing-prime-from-companion")?
+        .prime_hardware_from_view_only(hardware_wallet_id, &companion_wallet_id)
+        .map_err(|error| {
+            format!("The encrypted Ledger viewing wallet does not match this Ledger. {error}")
+        })?;
+    diagnostics::record(
+        app,
+        "ledger.hardware-session-primed-from-companion",
+        &[("flow", diagnostic_flow.to_owned())],
+    );
+    Ok(Some(companion_wallet_id))
+}
+
+fn synchronize_and_verify_ledger_signing_session(
+    app: &AppHandle,
+    state: &NativeWalletState,
+    sessions: &WalletSessionState,
+    source: &wallet_registry::RegisteredWallet,
+    hardware_wallet_id: &str,
+    account_index: u32,
+    diagnostic_flow: &str,
+) -> Result<(), String> {
+    // Prime again immediately before every signing refresh. This is
+    // intentionally idempotent and prevents startRefresh from falling back to
+    // another Ledger view-key export when an encrypted companion exists.
+    let companion_wallet_id = prime_ledger_hardware_from_open_companion(
+        app,
+        state,
+        sessions,
+        source,
+        hardware_wallet_id,
+        diagnostic_flow,
+    )?
+    .ok_or_else(|| {
+        "This Ledger wallet has no open encrypted viewing companion. Open and synchronize its companion before sending."
+            .to_owned()
+    })?;
+    let companion_height = {
+        let raw = lock_native_wallet(app, state, "ledger-signing-companion-snapshot")?
+            .snapshot(&companion_wallet_id)?;
+        synchronized_wallet_height(&raw)?
+    };
+
+    // The common path remains incremental. A healthy signing cache reaches the
+    // companion height and proves the exact account spend state without any
+    // destructive rebuild.
+    synchronize_ledger_hardware_to_height(app, state, hardware_wallet_id, companion_height)?;
+    let (companion_state, hardware_state) = ledger_signing_account_states_at_shared_height(
+        app,
+        state,
+        &companion_wallet_id,
+        hardware_wallet_id,
+        account_index,
+    )?;
+    match compare_ledger_signing_account_state(&companion_state, &hardware_state) {
+        LedgerSigningAccountComparison::Match => {}
+        LedgerSigningAccountComparison::IdentityMismatch => {
+            return Err(
+                "The connected Ledger does not match the selected wallet account.".to_owned(),
+            );
+        }
+        LedgerSigningAccountComparison::SpendStateMismatch => {
+            // Only an authenticated identity match with a divergent spend state
+            // may rebuild. The refresh above is already stopped, and this branch
+            // executes at most once per signing request.
+            let restore_height = safe_ledger_rebuild_restore_height(source.restore_height);
+            diagnostics::record(
+                app,
+                "ledger.hardware-signing-cache-rebuild-started",
+                &[("flow", diagnostic_flow.to_owned())],
+            );
+            lock_native_wallet(app, state, "ledger-signing-cache-rebuild")?
+                .rebuild_hardware_wallet_cache_from_view_only(
+                    hardware_wallet_id,
+                    &companion_wallet_id,
+                    restore_height,
+                )?;
+            diagnostics::record(
+                app,
+                "ledger.hardware-signing-cache-rebuild-complete",
+                &[("flow", diagnostic_flow.to_owned())],
+            );
+
+            // Re-read the synchronized companion after the potentially long
+            // rebuild so a newly observed block cannot be mistaken for parity.
+            let rebuilt_target_height = {
+                let raw = lock_native_wallet(
+                    app,
+                    state,
+                    "ledger-signing-companion-snapshot-after-rebuild",
+                )?
+                .snapshot(&companion_wallet_id)?;
+                synchronized_wallet_height(&raw)?
+            };
+            synchronize_ledger_hardware_to_height(
+                app,
+                state,
+                hardware_wallet_id,
+                rebuilt_target_height,
+            )?;
+            let (companion_after_rebuild, hardware_after_rebuild) =
+                ledger_signing_account_states_at_shared_height(
+                    app,
+                    state,
+                    &companion_wallet_id,
+                    hardware_wallet_id,
+                    account_index,
+                )?;
+            match compare_ledger_signing_account_state(
+                &companion_after_rebuild,
+                &hardware_after_rebuild,
+            ) {
+                LedgerSigningAccountComparison::Match => {}
+                LedgerSigningAccountComparison::IdentityMismatch => {
+                    return Err(
+                        "The connected Ledger does not match the selected wallet account."
+                            .to_owned(),
+                    );
+                }
+                LedgerSigningAccountComparison::SpendStateMismatch => {
+                    return Err(
+                        "The Ledger signing wallet spend state still does not match its encrypted companion after one safe rebuild."
+                            .to_owned(),
+                    );
+                }
+            }
+        }
+    }
+    diagnostics::record(
+        app,
+        "ledger.hardware-signing-session-ready",
+        &[("flow", diagnostic_flow.to_owned())],
+    );
+    Ok(())
+}
+
 fn ensure_ledger_hardware_session(
     app: &AppHandle,
     state: &NativeWalletState,
@@ -2815,6 +3326,14 @@ fn ensure_ledger_hardware_session(
             .and_then(|value| value.get("connected").and_then(serde_json::Value::as_bool))
             == Some(true);
         if connected {
+            prime_ledger_hardware_from_open_companion(
+                app,
+                state,
+                sessions,
+                source,
+                &wallet_id,
+                diagnostic_flow,
+            )?;
             return Ok(wallet_id);
         }
         let reconnect = if status
@@ -2829,7 +3348,17 @@ fn ensure_ledger_hardware_session(
                 .map(|_| ())
         };
         match reconnect {
-            Ok(()) => return Ok(wallet_id),
+            Ok(()) => {
+                prime_ledger_hardware_from_open_companion(
+                    app,
+                    state,
+                    sessions,
+                    source,
+                    &wallet_id,
+                    diagnostic_flow,
+                )?;
+                return Ok(wallet_id);
+            }
             Err(error) if native_wallet::is_session_stale(&error) => {
                 let mut open_sessions = sessions
                     .0
@@ -2879,6 +3408,23 @@ fn ensure_ledger_hardware_session(
             "Connect and unlock the Ledger, then open the Monero app on it. {error}"
         ));
     }
+    if let Err(error) = prime_ledger_hardware_from_open_companion(
+        app,
+        state,
+        sessions,
+        source,
+        &wallet_id,
+        diagnostic_flow,
+    ) {
+        let _ = lock_native_wallet(app, state, "ledger-hardware-session-prime-cleanup")?
+            .close(&wallet_id, false);
+        diagnostics::record(
+            app,
+            "ledger.hardware-session-reopen-failed",
+            &[("flow", diagnostic_flow.to_owned())],
+        );
+        return Err(error);
+    }
 
     let existing = {
         let mut open_sessions = sessions
@@ -2912,94 +3458,101 @@ fn ensure_ledger_hardware_session(
 /// by the companion, then queries spent state once. The hardware wallet never
 /// needs to repeat the historical blockchain scan.
 #[tauri::command]
-fn reconcile_ledger_balance(
+async fn reconcile_ledger_balance(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, WalletSessionState>,
     protection: State<'_, AppProtectionState>,
     input: ReconcileLedgerBalanceInput,
 ) -> Result<String, String> {
     require_app_unlocked(&protection)?;
-    let registry = wallet_registry::list(&app)?;
-    let mut source = registry
-        .wallets
-        .iter()
-        .find(|wallet| wallet.id == input.source_registration_id)
-        .cloned()
-        .ok_or_else(|| "The selected Ledger wallet is no longer saved.".to_owned())?;
-    if source.kind != "hardware" || source.role.as_deref().unwrap_or("standard") != "standard" {
-        return Err("Choose the normal Ledger wallet to verify its balance.".to_owned());
-    }
-    let mut companion = registry
-        .wallets
-        .iter()
-        .find(|wallet| {
-            wallet.kind == "view-only"
-                && wallet.source_wallet_id.as_deref() == Some(source.id.as_str())
-        })
-        .cloned()
-        .ok_or_else(|| "Create the local Ledger read-only copy first.".to_owned())?;
-    let view_only_wallet_id = {
-        let sessions = sessions
-            .0
-            .lock()
-            .map_err(|_| "Wallet session state is busy.".to_owned())?;
-        sessions.get(&companion.id).cloned().ok_or_else(|| {
-            "Open the local Ledger read-only copy before verifying its balance.".to_owned()
-        })?
-    };
-    // The in-memory signing handle intentionally disappears when the process
-    // exits. If the first key-image import was interrupted, recreate only the
-    // hardware session from the encrypted wallet file and ask the already
-    // connected Ledger to authorize it. The historical scan remains in the
-    // local view-only companion and is never repeated on the hardware device.
-    let hardware_wallet_id = ensure_ledger_hardware_session(
-        &app,
-        &state,
-        &sessions,
-        &source,
-        "key-image-reconciliation",
-    )?;
-    if hardware_wallet_id == view_only_wallet_id {
-        return Err("Ledger signing and read-only sessions must be separate.".to_owned());
-    }
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Ledger I/O can wait for the device and the native wallet mutex can
+        // legitimately be occupied by sync. Neither wait may run on AppKit's
+        // WebView IPC thread or macOS will report the entire app as hung.
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let state = background_app.state::<NativeWalletState>();
+        let sessions = background_app.state::<WalletSessionState>();
+        let registry = wallet_registry::list(&background_app)?;
+        let mut source = registry
+            .wallets
+            .iter()
+            .find(|wallet| wallet.id == input.source_registration_id)
+            .cloned()
+            .ok_or_else(|| "The selected Ledger wallet is no longer saved.".to_owned())?;
+        if source.kind != "hardware" || source.role.as_deref().unwrap_or("standard") != "standard" {
+            return Err("Choose the normal Ledger wallet to verify its balance.".to_owned());
+        }
+        let mut companion = registry
+            .wallets
+            .iter()
+            .find(|wallet| {
+                wallet.kind == "view-only"
+                    && wallet.source_wallet_id.as_deref() == Some(source.id.as_str())
+            })
+            .cloned()
+            .ok_or_else(|| "Create the local Ledger read-only copy first.".to_owned())?;
+        let view_only_wallet_id = {
+            let sessions = sessions
+                .0
+                .lock()
+                .map_err(|_| "Wallet session state is busy.".to_owned())?;
+            sessions.get(&companion.id).cloned().ok_or_else(|| {
+                "Open the local Ledger read-only copy before verifying its balance.".to_owned()
+            })?
+        };
+        // The in-memory signing handle intentionally disappears when the process
+        // exits. If the first key-image import was interrupted, recreate only the
+        // hardware session from the encrypted wallet file and ask the already
+        // connected Ledger to authorize it. The historical scan remains in the
+        // local view-only companion and is never repeated on the hardware device.
+        let hardware_wallet_id = ensure_ledger_hardware_session(
+            &background_app,
+            &state,
+            &sessions,
+            &source,
+            "key-image-reconciliation",
+        )?;
+        if hardware_wallet_id == view_only_wallet_id {
+            return Err("Ledger signing and read-only sessions must be separate.".to_owned());
+        }
 
-    diagnostics::record(&app, "ledger.key-images-started", &[]);
-    let native = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?;
-    let view_height = synchronized_wallet_height(&native.snapshot(&view_only_wallet_id)?)?;
-    let result = native.sync_ledger_key_images(&hardware_wallet_id, &view_only_wallet_id)?;
-    drop(native);
+        diagnostics::record(&background_app, "ledger.key-images-started", &[]);
+        let native = lock_native_wallet(&background_app, &state, "ledger-key-images")?;
+        let view_height = synchronized_wallet_height(&native.snapshot(&view_only_wallet_id)?)?;
+        let result = native.sync_ledger_key_images(&hardware_wallet_id, &view_only_wallet_id)?;
+        drop(native);
 
-    companion.ledger_key_images_verified_at = Some(now());
-    companion.ledger_key_images_verified_height = Some(view_height);
-    source.ledger_key_images_verified_at = companion.ledger_key_images_verified_at;
-    source.ledger_key_images_verified_height = Some(view_height);
-    wallet_registry::upsert_inactive(&app, source.clone())?;
-    wallet_registry::upsert_inactive(&app, companion.clone())?;
-    // Key images are now durable in the encrypted companion. The physical
-    // Ledger session is no longer needed for viewing and can be closed without
-    // affecting balance reads or future background scans.
-    bind_ledger_read_session(
-        &app,
-        &state,
-        &sessions,
-        &source,
-        &companion,
-        &view_only_wallet_id,
-        Some(&hardware_wallet_id),
-    )?;
-    diagnostics::record(
-        &app,
-        "ledger.key-images-complete",
-        &[
-            ("walletHeight", view_height.to_string()),
-            ("flow", "owned-outputs-only".to_owned()),
-        ],
-    );
-    Ok(result)
+        companion.ledger_key_images_verified_at = Some(now());
+        companion.ledger_key_images_verified_height = Some(view_height);
+        source.ledger_key_images_verified_at = companion.ledger_key_images_verified_at;
+        source.ledger_key_images_verified_height = Some(view_height);
+        wallet_registry::upsert_inactive(&background_app, source.clone())?;
+        wallet_registry::upsert_inactive(&background_app, companion.clone())?;
+        // Key images are now durable in the encrypted companion. The physical
+        // Ledger session is no longer needed for viewing and can be closed without
+        // affecting balance reads or future background scans.
+        bind_ledger_read_session(
+            &background_app,
+            &state,
+            &sessions,
+            &source,
+            &companion,
+            &view_only_wallet_id,
+            Some(&hardware_wallet_id),
+        )?;
+        diagnostics::record(
+            &background_app,
+            "ledger.key-images-complete",
+            &[
+                ("walletHeight", view_height.to_string()),
+                ("flow", "owned-outputs-only".to_owned()),
+            ],
+        );
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "The Ledger balance worker stopped unexpectedly.".to_owned())?
 }
 
 /// Uses an already-open hardware session only long enough to request the
@@ -6453,12 +7006,72 @@ fn check_mfw_name_availability(
     mfw_name_resolver::availability(&input.name, &input.network)
 }
 
+#[tauri::command]
+fn suggest_mfw_names(
+    protection: State<'_, AppProtectionState>,
+    input: SuggestMfwNamesInput,
+) -> Result<mfw_name_resolver::SuggestionResponse, String> {
+    require_app_unlocked(&protection)?;
+    mfw_name_resolver::suggest(&input.prefix)
+}
+
+#[tauri::command]
+fn discover_mfw_names_for_wallet(
+    app: AppHandle,
+    state: State<'_, NativeWalletState>,
+    protection: State<'_, AppProtectionState>,
+    input: DiscoverMfwNamesInput,
+) -> Result<Vec<mfw_names::OwnedNameRecord>, String> {
+    require_app_unlocked(&protection)?;
+    release_features::require(
+        "mfwNameRegistration",
+        "MFW name reverse discovery is not enabled in this release.",
+    )?;
+    let account_index = checked_account_index(input.account_index)?;
+    let address_index = checked_account_index(input.address_index)?;
+    let address = state
+        .0
+        .lock()
+        .map_err(|_| "Native wallet is busy.".to_owned())?
+        .address(&input.wallet_id, account_index, address_index)?;
+    let discovered = mfw_name_resolver::reverse_for_wallet(&address, &input.network)?;
+    for candidate in discovered {
+        let resolution = candidate.resolution;
+        let name_id =
+            mfw_names::identity_id(&input.wallet_registration_id, &resolution.canonical_name)?;
+        if let Ok(existing) = mfw_names::get(&app, &name_id) {
+            if existing.owner_authority == "local" {
+                continue;
+            }
+        }
+        let mut record = mfw_names::new_record(
+            name_id,
+            resolution.canonical_name,
+            input.wallet_registration_id.clone(),
+            format!("{account_index}-{address_index}"),
+            candidate.address,
+            input.network.clone(),
+            mfw_names::estimated_term_years(resolution.record_height, resolution.expiry_height)?,
+            resolution.owner_public_key_hex,
+        )?;
+        record.stage = "active".to_owned();
+        record.sequence = resolution.sequence;
+        record.owner_authority = "recovery-required".to_owned();
+        record.source_txid_hex = Some(resolution.source_txid_hex);
+        record.expiry_height = Some(resolution.expiry_height);
+        record.last_chain_tip_height = Some(resolution.chain_tip_height);
+        mfw_names::upsert(&app, record)?;
+    }
+    mfw_names::list(&app)
+}
+
 fn mfw_transaction_wallet_id(
     app: &AppHandle,
     state: &NativeWalletState,
     sessions: &WalletSessionState,
     wallet_registration_id: &str,
     current_wallet_id: &str,
+    account_index: u32,
     diagnostic_flow: &str,
 ) -> Result<String, String> {
     require_wallet_session(sessions, wallet_registration_id, current_wallet_id)?;
@@ -6469,325 +7082,379 @@ fn mfw_transaction_wallet_id(
         .find(|wallet| wallet.id == wallet_registration_id)
         .cloned()
         .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
-    if registration.kind == "hardware"
-        && registration.role.as_deref().unwrap_or("standard") == "standard"
-    {
-        ensure_ledger_hardware_session(app, state, sessions, &registration, diagnostic_flow)
+    if registration.kind == "hardware" {
+        let account_index = verified_registration_account_index(&registration, account_index)?;
+        let source = ledger_signing_source_registration(&registry, &registration)?;
+        let hardware_wallet_id =
+            ensure_ledger_hardware_session(app, state, sessions, &source, diagnostic_flow)?;
+        synchronize_and_verify_ledger_signing_session(
+            app,
+            state,
+            sessions,
+            &source,
+            &hardware_wallet_id,
+            account_index,
+            diagnostic_flow,
+        )?;
+        Ok(hardware_wallet_id)
     } else {
         Ok(current_wallet_id.to_owned())
     }
 }
 
 #[tauri::command]
-fn prepare_mfw_name_registration(
+async fn prepare_mfw_name_registration(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, WalletSessionState>,
-    approvals: State<'_, PendingTransactionApprovalState>,
     protection: State<'_, AppProtectionState>,
     input: PrepareMfwNameRegistrationInput,
 ) -> Result<MfwPreparedResponse, String> {
     require_app_unlocked(&protection)?;
-    release_features::require(
-        "mfwNameRegistration",
-        "MFW name registration is not enabled in this release.",
-    )?;
-    require_wallet_session(&sessions, &input.wallet_registration_id, &input.wallet_id)?;
-    let genesis = release_features::mfw_name_genesis(&input.network)
-        .ok_or_else(|| "MFW genesis parameters are not configured for this network.".to_owned())?;
-    if input.years == 0 || input.years > genesis.maximum_term_years {
-        return Err("The selected MFW registration term is not supported.".to_owned());
-    }
-    let canonical_name = mfw_names::canonical_name(&input.name)?;
-    let snapshot_raw = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .snapshot(&input.wallet_id)?;
-    let snapshot: serde_json::Value = serde_json::from_str(&snapshot_raw)
-        .map_err(|_| "The native wallet snapshot was invalid.".to_owned())?;
-    if snapshot
-        .get("synchronized")
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-    {
-        return Err("Synchronize the owner wallet before registering an MFW name.".to_owned());
-    }
-    let availability = mfw_name_resolver::availability(&canonical_name, &input.network)?;
-    if !matches!(
-        availability.status.as_str(),
-        "available" | "available-again"
-    ) {
-        return Err(format!(
-            "{} is not available for registration ({status}).",
-            canonical_name,
-            status = availability.status
-        ));
-    }
-    let network_code = network(&input.network)?;
-    let account_index = checked_account_index(input.account_index)?;
-    let address_index = checked_account_index(input.address_index)?;
-    // The open wallet owns and pays for the name. Its published receive
-    // address may deliberately point to any valid Monero address, including
-    // one held on another device or in another wallet.
-    let address = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .validate_recipient_address(input.address.trim(), network_code)?;
-    let transaction_wallet_id = mfw_transaction_wallet_id(
-        &app,
-        &state,
-        &sessions,
-        &input.wallet_registration_id,
-        &input.wallet_id,
-        "mfw-name-registration",
-    )?;
-    let mut raw = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .prepare_mfw_name_registration(
-            &transaction_wallet_id,
-            &canonical_name,
-            &address,
-            network_code,
-            &genesis.registry_address,
-            input.priority.as_deref().unwrap_or("low"),
-            account_index,
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Ledger transport and the signing-wallet catch-up can legitimately take
+        // minutes. Keep all three MFW preparation paths off the WebView IPC thread.
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let state = background_app.state::<NativeWalletState>();
+        let sessions = background_app.state::<WalletSessionState>();
+        let approvals = background_app.state::<PendingTransactionApprovalState>();
+        let app = background_app.clone();
+        release_features::require(
+            "mfwNameRegistration",
+            "MFW name registration is not enabled in this release.",
         )?;
-    let mut prepared: NativeMfwPrepared = serde_json::from_str(&raw)
-        .map_err(|_| "The native MFW registration review was invalid.".to_owned())?;
-    raw.zeroize();
-    let name_id = mfw_names::identity_id(&input.wallet_registration_id, &canonical_name)?;
-    let result = (|| {
-        require_hex(&prepared.owner_private_key_hex, 32, "MFW owner private key")?;
-        require_hex(&prepared.owner_public_key_hex, 32, "MFW owner public key")?;
-        require_hex(&prepared.commit_salt_hex, 16, "MFW commit salt")?;
-        let owner_state = mfw_names::OwnerState {
-            version: 1,
-            canonical_name: canonical_name.clone(),
-            network: input.network.clone(),
-            owner_private_key_hex: prepared.owner_private_key_hex.clone(),
-            owner_public_key_hex: prepared.owner_public_key_hex.clone(),
-            commit_salt_hex: prepared.commit_salt_hex.clone(),
-        };
-        let record = mfw_names::new_record(
-            name_id.clone(),
-            canonical_name.clone(),
-            input.wallet_registration_id.clone(),
-            format!("{account_index}-{address_index}"),
-            address,
-            input.network,
-            input.years,
-            prepared.owner_public_key_hex.clone(),
-        )?;
-        let encoded_owner = mfw_names::encode_owner_state(&owner_state)?;
-        secure_store::store_mfw_name_owner_state(&name_id, encoded_owner)?;
-        if let Err(error) = mfw_names::upsert(&app, record) {
-            let _ = secure_store::delete_mfw_name_owner_state(&name_id);
-            return Err(error);
+        require_wallet_session(&sessions, &input.wallet_registration_id, &input.wallet_id)?;
+        let genesis = release_features::mfw_name_genesis(&input.network).ok_or_else(|| {
+            "MFW genesis parameters are not configured for this network.".to_owned()
+        })?;
+        if input.years == 0 || input.years > genesis.maximum_term_years {
+            return Err("The selected MFW registration term is not supported.".to_owned());
         }
-        if let Err(error) = register_mfw_approval(
-            &approvals,
-            &transaction_wallet_id,
-            &genesis.registry_address,
-            &prepared.prepared_transaction,
-            MfwPendingApproval {
-                record_id: name_id.clone(),
+        let canonical_name = mfw_names::canonical_name(&input.name)?;
+        let snapshot_raw = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .snapshot(&input.wallet_id)?;
+        let snapshot: serde_json::Value = serde_json::from_str(&snapshot_raw)
+            .map_err(|_| "The native wallet snapshot was invalid.".to_owned())?;
+        if snapshot
+            .get("synchronized")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            return Err("Synchronize the owner wallet before registering an MFW name.".to_owned());
+        }
+        let availability = mfw_name_resolver::availability(&canonical_name, &input.network)?;
+        if !matches!(
+            availability.status.as_str(),
+            "available" | "available-again"
+        ) {
+            return Err(format!(
+                "{} is not available for registration ({status}).",
+                canonical_name,
+                status = availability.status
+            ));
+        }
+        let network_code = network(&input.network)?;
+        let account_index = checked_account_index(input.account_index)?;
+        let address_index = checked_account_index(input.address_index)?;
+        // The open wallet owns and pays for the name. Its published receive
+        // address may deliberately point to any valid Monero address, including
+        // one held on another device or in another wallet.
+        let address = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .validate_recipient_address(input.address.trim(), network_code)?;
+        let transaction_wallet_id = mfw_transaction_wallet_id(
+            &app,
+            &state,
+            &sessions,
+            &input.wallet_registration_id,
+            &input.wallet_id,
+            account_index,
+            "mfw-name-registration",
+        )?;
+        let mut raw = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .prepare_mfw_name_registration(
+                &transaction_wallet_id,
+                &canonical_name,
+                &address,
+                network_code,
+                &genesis.registry_address,
+                input.priority.as_deref().unwrap_or("low"),
+                account_index,
+            )?;
+        let mut prepared: NativeMfwPrepared = serde_json::from_str(&raw)
+            .map_err(|_| "The native MFW registration review was invalid.".to_owned())?;
+        raw.zeroize();
+        let name_id = mfw_names::identity_id(&input.wallet_registration_id, &canonical_name)?;
+        let result = (|| {
+            require_hex(&prepared.owner_private_key_hex, 32, "MFW owner private key")?;
+            require_hex(&prepared.owner_public_key_hex, 32, "MFW owner public key")?;
+            require_hex(&prepared.commit_salt_hex, 16, "MFW commit salt")?;
+            let owner_state = mfw_names::OwnerState {
+                version: 1,
+                canonical_name: canonical_name.clone(),
+                network: input.network.clone(),
+                owner_private_key_hex: prepared.owner_private_key_hex.clone(),
+                owner_public_key_hex: prepared.owner_public_key_hex.clone(),
+                commit_salt_hex: prepared.commit_salt_hex.clone(),
+            };
+            let record = mfw_names::new_record(
+                name_id.clone(),
+                canonical_name.clone(),
+                input.wallet_registration_id.clone(),
+                format!("{account_index}-{address_index}"),
+                address,
+                input.network,
+                input.years,
+                prepared.owner_public_key_hex.clone(),
+            )?;
+            let encoded_owner = mfw_names::encode_owner_state(&owner_state)?;
+            secure_store::store_mfw_name_owner_state(&name_id, encoded_owner)?;
+            if let Err(error) = mfw_names::upsert(&app, record) {
+                let _ = secure_store::delete_mfw_name_owner_state(&name_id);
+                return Err(error);
+            }
+            if let Err(error) = register_mfw_approval(
+                &approvals,
+                &transaction_wallet_id,
+                &genesis.registry_address,
+                &prepared.prepared_transaction,
+                MfwPendingApproval {
+                    record_id: name_id.clone(),
+                    kind: "commit".to_owned(),
+                    years: input.years,
+                },
+            ) {
+                let _ = mfw_names::remove(&app, &name_id);
+                let _ = secure_store::delete_mfw_name_owner_state(&name_id);
+                return Err(error);
+            }
+            Ok(MfwPreparedResponse {
+                name_id,
+                canonical_name,
                 kind: "commit".to_owned(),
                 years: input.years,
-            },
-        ) {
-            let _ = mfw_names::remove(&app, &name_id);
-            let _ = secure_store::delete_mfw_name_owner_state(&name_id);
-            return Err(error);
-        }
-        Ok(MfwPreparedResponse {
-            name_id,
-            canonical_name,
-            kind: "commit".to_owned(),
-            years: input.years,
-            recovery_export_required: true,
-            prepared_transaction: prepared.prepared_transaction.clone(),
-        })
-    })();
-    prepared.owner_private_key_hex.zeroize();
-    prepared.commit_salt_hex.zeroize();
-    result
+                recovery_export_required: true,
+                prepared_transaction: prepared.prepared_transaction.clone(),
+            })
+        })();
+        prepared.owner_private_key_hex.zeroize();
+        prepared.commit_salt_hex.zeroize();
+        result
+    })
+    .await
+    .map_err(|_| "The MFW registration preparation worker stopped unexpectedly.".to_owned())?
 }
 
 #[tauri::command]
-fn prepare_mfw_name_claim(
+async fn prepare_mfw_name_claim(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, WalletSessionState>,
-    approvals: State<'_, PendingTransactionApprovalState>,
     protection: State<'_, AppProtectionState>,
     input: PrepareMfwNameClaimInput,
 ) -> Result<MfwPreparedResponse, String> {
     require_app_unlocked(&protection)?;
-    release_features::require(
-        "mfwNameRegistration",
-        "MFW name registration is not enabled in this release.",
-    )?;
-    require_wallet_session(&sessions, &input.wallet_registration_id, &input.wallet_id)?;
-    let record = mfw_names::get(&app, &input.name_id)?;
-    if record.wallet_registration_id != input.wallet_registration_id
-        || record.stage != "reveal-ready"
-    {
-        return Err("This MFW name is not ready to reveal.".to_owned());
-    }
-    let genesis = release_features::mfw_name_genesis(&record.network)
-        .ok_or_else(|| "MFW genesis parameters are not configured for this network.".to_owned())?;
-    require_mfw_commit_window(&state, &input.wallet_id, &record, &genesis)?;
-    let network_code = network(&record.network)?;
-    let transaction_wallet_id = mfw_transaction_wallet_id(
-        &app,
-        &state,
-        &sessions,
-        &input.wallet_registration_id,
-        &input.wallet_id,
-        "mfw-name-claim",
-    )?;
-    let mut owner = load_mfw_owner_state(&record)?;
-    let raw = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .prepare_mfw_name_claim(
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let state = background_app.state::<NativeWalletState>();
+        let sessions = background_app.state::<WalletSessionState>();
+        let approvals = background_app.state::<PendingTransactionApprovalState>();
+        let app = background_app.clone();
+        release_features::require(
+            "mfwNameRegistration",
+            "MFW name registration is not enabled in this release.",
+        )?;
+        require_wallet_session(&sessions, &input.wallet_registration_id, &input.wallet_id)?;
+        let record = mfw_names::get(&app, &input.name_id)?;
+        if record.wallet_registration_id != input.wallet_registration_id
+            || record.stage != "reveal-ready"
+        {
+            return Err("This MFW name is not ready to reveal.".to_owned());
+        }
+        let genesis = release_features::mfw_name_genesis(&record.network).ok_or_else(|| {
+            "MFW genesis parameters are not configured for this network.".to_owned()
+        })?;
+        require_mfw_commit_window(&state, &input.wallet_id, &record, &genesis)?;
+        let network_code = network(&record.network)?;
+        let account_index = checked_account_index(input.account_index)?;
+        let transaction_wallet_id = mfw_transaction_wallet_id(
+            &app,
+            &state,
+            &sessions,
+            &input.wallet_registration_id,
+            &input.wallet_id,
+            account_index,
+            "mfw-name-claim",
+        )?;
+        let mut owner = load_mfw_owner_state(&record)?;
+        let raw = state
+            .0
+            .lock()
+            .map_err(|_| "Native wallet is busy.".to_owned())?
+            .prepare_mfw_name_claim(
+                &transaction_wallet_id,
+                &record.canonical_name,
+                &record.address,
+                network_code,
+                &genesis.registry_address,
+                record.term_years,
+                input.priority.as_deref().unwrap_or("low"),
+                account_index,
+                &owner.owner_private_key_hex,
+                &owner.commit_salt_hex,
+            );
+        owner.zeroize();
+        prepare_existing_mfw_response(
+            raw?,
+            &approvals,
             &transaction_wallet_id,
-            &record.canonical_name,
-            &record.address,
-            network_code,
             &genesis.registry_address,
+            &record,
+            "claim",
             record.term_years,
-            input.priority.as_deref().unwrap_or("low"),
-            checked_account_index(input.account_index)?,
-            &owner.owner_private_key_hex,
-            &owner.commit_salt_hex,
-        );
-    owner.zeroize();
-    prepare_existing_mfw_response(
-        raw?,
-        &approvals,
-        &transaction_wallet_id,
-        &genesis.registry_address,
-        &record,
-        "claim",
-        record.term_years,
-    )
+        )
+    })
+    .await
+    .map_err(|_| "The MFW claim preparation worker stopped unexpectedly.".to_owned())?
 }
 
 #[tauri::command]
-fn prepare_mfw_name_transition(
+async fn prepare_mfw_name_transition(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, WalletSessionState>,
-    approvals: State<'_, PendingTransactionApprovalState>,
     protection: State<'_, AppProtectionState>,
     input: PrepareMfwNameTransitionInput,
 ) -> Result<MfwPreparedResponse, String> {
     require_app_unlocked(&protection)?;
-    release_features::require(
-        "mfwNameRegistration",
-        "MFW name registration is not enabled in this release.",
-    )?;
-    require_wallet_session(&sessions, &input.wallet_registration_id, &input.wallet_id)?;
-    if !matches!(input.operation.as_str(), "update" | "renew" | "revoke") {
-        return Err("Unsupported MFW transition.".to_owned());
-    }
-    let mut record = mfw_names::get(&app, &input.name_id)?;
-    let original_record = record.clone();
-    if record.wallet_registration_id != input.wallet_registration_id || record.stage != "active" {
-        return Err("Only an active MFW name owned by the open wallet can be changed.".to_owned());
-    }
-    let genesis = release_features::mfw_name_genesis(&record.network)
-        .ok_or_else(|| "MFW genesis parameters are not configured for this network.".to_owned())?;
-    let years = input.years.unwrap_or(record.term_years);
-    if years == 0 || years > genesis.maximum_term_years {
-        return Err("The selected MFW renewal term is not supported.".to_owned());
-    }
-    let mut owner = load_mfw_owner_state(&record)?;
-    let predecessor = mfw_name_resolver::resolve_predecessor(
-        &record.canonical_name,
-        &record.network,
-        &owner.owner_public_key_hex,
-    )?;
-    let network_code = network(&record.network)?;
-    let address = if input.operation == "update" {
-        let requested = input
-            .address
-            .as_deref()
-            .ok_or_else(|| "Choose a new Monero address for this MFW name.".to_owned())?;
-        let validated = state
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let state = background_app.state::<NativeWalletState>();
+        let sessions = background_app.state::<WalletSessionState>();
+        let approvals = background_app.state::<PendingTransactionApprovalState>();
+        let app = background_app.clone();
+        release_features::require(
+            "mfwNameRegistration",
+            "MFW name registration is not enabled in this release.",
+        )?;
+        require_wallet_session(&sessions, &input.wallet_registration_id, &input.wallet_id)?;
+        if !matches!(input.operation.as_str(), "update" | "renew" | "revoke") {
+            return Err("Unsupported MFW transition.".to_owned());
+        }
+        let mut record = mfw_names::get(&app, &input.name_id)?;
+        let original_record = record.clone();
+        if record.wallet_registration_id != input.wallet_registration_id || record.stage != "active"
+        {
+            return Err(
+                "Only an active MFW name owned by the open wallet can be changed.".to_owned(),
+            );
+        }
+        let genesis = release_features::mfw_name_genesis(&record.network).ok_or_else(|| {
+            "MFW genesis parameters are not configured for this network.".to_owned()
+        })?;
+        let years = input.years.unwrap_or(record.term_years);
+        if years == 0 || years > genesis.maximum_term_years {
+            return Err("The selected MFW renewal term is not supported.".to_owned());
+        }
+        let mut owner = load_mfw_owner_state(&record)?;
+        let predecessor = mfw_name_resolver::resolve_predecessor(
+            &record.canonical_name,
+            &record.network,
+            &owner.owner_public_key_hex,
+        )?;
+        let network_code = network(&record.network)?;
+        let address = if input.operation == "update" {
+            let requested = input
+                .address
+                .as_deref()
+                .ok_or_else(|| "Choose a new Monero address for this MFW name.".to_owned())?;
+            let validated = state
+                .0
+                .lock()
+                .map_err(|_| "Native wallet is busy.".to_owned())?
+                .validate_recipient_address(requested.trim(), network_code)?;
+            if validated == record.address {
+                return Err("The new MFW address must differ from the current address.".to_owned());
+            }
+            record.pending_address = Some(validated.clone());
+            validated
+        } else {
+            record.address.clone()
+        };
+        let destination = if input.operation == "renew" {
+            genesis.registry_address.clone()
+        } else {
+            address.clone()
+        };
+        let account_index = match checked_account_index(input.account_index) {
+            Ok(account_index) => account_index,
+            Err(error) => {
+                owner.zeroize();
+                return Err(error);
+            }
+        };
+        let transaction_wallet_id = match mfw_transaction_wallet_id(
+            &app,
+            &state,
+            &sessions,
+            &input.wallet_registration_id,
+            &input.wallet_id,
+            account_index,
+            "mfw-name-transition",
+        ) {
+            Ok(wallet_id) => wallet_id,
+            Err(error) => {
+                owner.zeroize();
+                return Err(error);
+            }
+        };
+        let raw = state
             .0
             .lock()
             .map_err(|_| "Native wallet is busy.".to_owned())?
-            .validate_recipient_address(requested.trim(), network_code)?;
-        if validated == record.address {
-            return Err("The new MFW address must differ from the current address.".to_owned());
+            .prepare_mfw_name_transition(
+                &transaction_wallet_id,
+                &input.operation,
+                &record.canonical_name,
+                &address,
+                network_code,
+                &genesis.registry_address,
+                years,
+                input.priority.as_deref().unwrap_or("low"),
+                account_index,
+                &owner.owner_private_key_hex,
+                &predecessor.record_payload_hex,
+                &predecessor.signing_owner_public_key_hex,
+            );
+        owner.zeroize();
+        let raw = raw?;
+        if input.operation == "update" {
+            mfw_names::upsert(&app, record.clone())?;
         }
-        record.pending_address = Some(validated.clone());
-        validated
-    } else {
-        record.address.clone()
-    };
-    let destination = if input.operation == "renew" {
-        genesis.registry_address.clone()
-    } else {
-        address.clone()
-    };
-    let transaction_wallet_id = match mfw_transaction_wallet_id(
-        &app,
-        &state,
-        &sessions,
-        &input.wallet_registration_id,
-        &input.wallet_id,
-        "mfw-name-transition",
-    ) {
-        Ok(wallet_id) => wallet_id,
-        Err(error) => {
-            owner.zeroize();
-            return Err(error);
-        }
-    };
-    let raw = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .prepare_mfw_name_transition(
+        let result = prepare_existing_mfw_response(
+            raw,
+            &approvals,
             &transaction_wallet_id,
+            &destination,
+            &record,
             &input.operation,
-            &record.canonical_name,
-            &address,
-            network_code,
-            &genesis.registry_address,
             years,
-            input.priority.as_deref().unwrap_or("low"),
-            checked_account_index(input.account_index)?,
-            &owner.owner_private_key_hex,
-            &predecessor.record_payload_hex,
-            &predecessor.signing_owner_public_key_hex,
         );
-    owner.zeroize();
-    let raw = raw?;
-    if input.operation == "update" {
-        mfw_names::upsert(&app, record.clone())?;
-    }
-    let result = prepare_existing_mfw_response(
-        raw,
-        &approvals,
-        &transaction_wallet_id,
-        &destination,
-        &record,
-        &input.operation,
-        years,
-    );
-    if result.is_err() && input.operation == "update" {
-        let _ = mfw_names::upsert(&app, original_record);
-    }
-    result
+        if result.is_err() && input.operation == "update" {
+            let _ = mfw_names::upsert(&app, original_record);
+        }
+        result
+    })
+    .await
+    .map_err(|_| "The MFW transition preparation worker stopped unexpectedly.".to_owned())?
 }
 
 #[tauri::command]
@@ -7561,117 +8228,169 @@ async fn registered_wallet_transactions(
     try_lock_native_wallet(&app, &state, "registered-wallet-transactions")?.transactions(&wallet_id)
 }
 #[tauri::command]
-fn prepare_transaction(
+async fn prepare_transaction(
     app: AppHandle,
-    state: State<'_, NativeWalletState>,
-    sessions: State<'_, WalletSessionState>,
-    approvals: State<'_, PendingTransactionApprovalState>,
     protection: State<'_, AppProtectionState>,
     input: PrepareTransactionInput,
 ) -> Result<String, String> {
     require_app_unlocked(&protection)?;
-    let account_index = checked_account_index(input.account_index)?;
-    let transaction_wallet_id = if let Some(registration_id) = input.registration_id.as_deref() {
-        let registry = wallet_registry::list(&app)?;
-        let registration = registry
-            .wallets
-            .iter()
-            .find(|wallet| wallet.id == registration_id)
-            .cloned()
-            .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
-        let current_read_session = wallet_session_id(&sessions, &registration.id)?
-            .ok_or_else(|| "The selected wallet session is not open yet.".to_owned())?;
-        if current_read_session != input.wallet_id {
-            return Err(
-                "The selected wallet session changed. Open it again before sending.".to_owned(),
-            );
-        }
-        if registration.kind == "hardware"
-            && registration.role.as_deref().unwrap_or("standard") == "standard"
-        {
-            if registration.ledger_key_images_verified_at.is_none() {
-                return Err("Check spend outputs with Ledger before sending.".to_owned());
-            }
-            let snapshot_raw = try_lock_native_wallet(&app, &state, "ledger-send-readiness")?
-                .snapshot(&current_read_session)?;
-            let snapshot: serde_json::Value = serde_json::from_str(&snapshot_raw)
-                .map_err(|_| "The Ledger wallet snapshot could not be verified.".to_owned())?;
-            if snapshot
-                .get("synchronized")
-                .and_then(serde_json::Value::as_bool)
-                != Some(true)
-                || snapshot
-                    .get("pendingOutputKeyImageCount")
-                    .and_then(|value| {
-                        value
-                            .as_u64()
-                            .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
-                    })
-                    .unwrap_or(u64::MAX)
-                    != 0
+    let background_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Transaction construction can perform daemon I/O and, for hardware
+        // wallets, wait for Ledger transport. Keep the WebView event loop free
+        // so the spinner, Cancel/Back controls and window remain responsive.
+        let started = Instant::now();
+        let protection = background_app.state::<AppProtectionState>();
+        require_app_unlocked(&protection)?;
+        let state = background_app.state::<NativeWalletState>();
+        let sessions = background_app.state::<WalletSessionState>();
+        let approvals = background_app.state::<PendingTransactionApprovalState>();
+        diagnostics::record(
+            &background_app,
+            "wallet.transaction-prepare-started",
+            &[(
+                "kind",
+                if input.registration_id.is_some() {
+                    "registered"
+                } else {
+                    "direct"
+                }
+                .to_owned(),
+            )],
+        );
+        let result = (|| {
+            let account_index = checked_account_index(input.account_index)?;
+            let transaction_wallet_id = if let Some(registration_id) =
+                input.registration_id.as_deref()
             {
-                return Err(
-                    "Check all pending spend outputs with Ledger before sending.".to_owned(),
-                );
-            }
-            ensure_ledger_hardware_session(
-                &app,
-                &state,
-                &sessions,
-                &registration,
-                "transaction-signing",
-            )?
-        } else {
-            current_read_session
-        }
-    } else {
-        input.wallet_id.clone()
-    };
-    let raw = state
-        .0
-        .lock()
-        .map_err(|_| "Native wallet is busy.".to_owned())?
-        .prepare_transaction(
-            &transaction_wallet_id,
-            &input.address,
-            &input.amount_atomic,
-            input.payment_id.as_deref().unwrap_or(""),
-            input.priority.as_deref().unwrap_or("low"),
-            account_index,
-        )?;
-    let prepared: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|_| "The native transaction review was invalid.".to_owned())?;
-    let pending_id = prepared
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "The native transaction review has no pending ID.".to_owned())?;
-    let amount_atomic = prepared
-        .get("amountAtomic")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "The native transaction review has no amount.".to_owned())?;
-    let fee_atomic = prepared
-        .get("feeAtomic")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| "The native transaction review has no fee.".to_owned())?;
-    let mut pending = approvals
-        .0
-        .lock()
-        .map_err(|_| "Transaction approval state is busy.".to_owned())?;
-    let current_time = now();
-    pending.retain(|_, approval| approval.expires_at > current_time);
-    pending.insert(
-        pending_id.to_owned(),
-        PendingTransactionApproval {
-            wallet_id: transaction_wallet_id,
-            address: input.address,
-            amount_atomic: amount_atomic.to_owned(),
-            fee_atomic: fee_atomic.to_owned(),
-            expires_at: current_time.saturating_add(120),
-            mfw: None,
-        },
-    );
-    Ok(raw)
+                let registry = wallet_registry::list(&background_app)?;
+                let registration = registry
+                    .wallets
+                    .iter()
+                    .find(|wallet| wallet.id == registration_id)
+                    .cloned()
+                    .ok_or_else(|| "Saved wallet was not found.".to_owned())?;
+                let current_read_session = wallet_session_id(&sessions, &registration.id)?
+                    .ok_or_else(|| "The selected wallet session is not open yet.".to_owned())?;
+                if current_read_session != input.wallet_id {
+                    return Err(
+                        "The selected wallet session changed. Open it again before sending."
+                            .to_owned(),
+                    );
+                }
+                if registration.kind == "hardware" {
+                    let account_index =
+                        verified_registration_account_index(&registration, account_index)?;
+                    let signing_source =
+                        ledger_signing_source_registration(&registry, &registration)?;
+                    if signing_source.ledger_key_images_verified_at.is_none() {
+                        return Err("Check spend outputs with Ledger before sending.".to_owned());
+                    }
+                    let snapshot_raw =
+                        lock_native_wallet(&background_app, &state, "ledger-send-readiness")?
+                            .snapshot(&current_read_session)?;
+                    let snapshot: serde_json::Value =
+                        serde_json::from_str(&snapshot_raw).map_err(|_| {
+                            "The Ledger wallet snapshot could not be verified.".to_owned()
+                        })?;
+                    if snapshot
+                        .get("synchronized")
+                        .and_then(serde_json::Value::as_bool)
+                        != Some(true)
+                        || snapshot
+                            .get("pendingOutputKeyImageCount")
+                            .and_then(|value| {
+                                value.as_u64().or_else(|| {
+                                    value.as_str().and_then(|text| text.parse::<u64>().ok())
+                                })
+                            })
+                            .unwrap_or(u64::MAX)
+                            != 0
+                    {
+                        return Err(
+                            "Check all pending spend outputs with Ledger before sending."
+                                .to_owned(),
+                        );
+                    }
+                    let hardware_wallet_id = ensure_ledger_hardware_session(
+                        &background_app,
+                        &state,
+                        &sessions,
+                        &signing_source,
+                        "transaction-signing",
+                    )?;
+                    synchronize_and_verify_ledger_signing_session(
+                        &background_app,
+                        &state,
+                        &sessions,
+                        &signing_source,
+                        &hardware_wallet_id,
+                        account_index,
+                        "transaction-signing",
+                    )?;
+                    hardware_wallet_id
+                } else {
+                    current_read_session
+                }
+            } else {
+                input.wallet_id.clone()
+            };
+            let raw = lock_native_wallet(&background_app, &state, "transaction-prepare")?
+                .prepare_transaction(
+                    &transaction_wallet_id,
+                    &input.address,
+                    &input.amount_atomic,
+                    input.payment_id.as_deref().unwrap_or(""),
+                    input.priority.as_deref().unwrap_or("low"),
+                    account_index,
+                )?;
+            let prepared: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|_| "The native transaction review was invalid.".to_owned())?;
+            let pending_id = prepared
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "The native transaction review has no pending ID.".to_owned())?;
+            let amount_atomic = prepared
+                .get("amountAtomic")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "The native transaction review has no amount.".to_owned())?;
+            let fee_atomic = prepared
+                .get("feeAtomic")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "The native transaction review has no fee.".to_owned())?;
+            let mut pending = approvals
+                .0
+                .lock()
+                .map_err(|_| "Transaction approval state is busy.".to_owned())?;
+            let current_time = now();
+            pending.retain(|_, approval| approval.expires_at > current_time);
+            pending.insert(
+                pending_id.to_owned(),
+                PendingTransactionApproval {
+                    wallet_id: transaction_wallet_id,
+                    address: input.address,
+                    amount_atomic: amount_atomic.to_owned(),
+                    fee_atomic: fee_atomic.to_owned(),
+                    expires_at: current_time.saturating_add(120),
+                    mfw: None,
+                },
+            );
+            Ok(raw)
+        })();
+        diagnostics::record(
+            &background_app,
+            if result.is_ok() {
+                "wallet.transaction-prepare-complete"
+            } else {
+                "wallet.transaction-prepare-failed"
+            },
+            &[("elapsedMs", started.elapsed().as_millis().to_string())],
+        );
+        result
+    })
+    .await
+    .map_err(|_| "The transaction preparation worker stopped unexpectedly.".to_owned())?
 }
 #[tauri::command]
 async fn commit_transaction(
@@ -7689,14 +8408,30 @@ async fn commit_transaction(
         "Approve this Monero transaction",
     )
     .await?;
-    let approval = approvals
-        .0
-        .lock()
-        .map_err(|_| "Transaction approval state is busy.".to_owned())?
-        .remove(&input.pending_id)
-        .ok_or_else(|| {
+    let approval = {
+        let mut pending = approvals
+            .0
+            .lock()
+            .map_err(|_| "Transaction approval state is busy.".to_owned())?;
+        let approval = pending.get(&input.pending_id).cloned().ok_or_else(|| {
             "This transaction review is missing, expired, or was already used.".to_owned()
         })?;
+        if let Some(mfw) = approval.mfw.as_ref() {
+            if mfw.kind == "commit"
+                && mfw_names::get(&app, &mfw.record_id)?
+                    .recovery_exported_at
+                    .is_none()
+            {
+                return Err(
+                    "Save the encrypted MFW owner recovery before broadcasting the commit."
+                        .to_owned(),
+                );
+            }
+        }
+        pending.remove(&input.pending_id).ok_or_else(|| {
+            "This transaction review is missing, expired, or was already used.".to_owned()
+        })?
+    };
     let transaction_wallet_id = if let Some(registration_id) = input.registration_id.as_deref() {
         let registry = wallet_registry::list(&app)?;
         let registration = registry
@@ -7711,11 +8446,10 @@ async fn commit_transaction(
                 "The selected wallet session changed. Prepare the transaction again.".to_owned(),
             );
         }
-        if registration.kind == "hardware"
-            && registration.role.as_deref().unwrap_or("standard") == "standard"
-        {
+        if registration.kind == "hardware" {
+            let signing_source = ledger_signing_source_registration(&registry, registration)?;
             let signing_wallet_id =
-                wallet_session_id(&sessions, &ledger_hardware_session_key(&registration.id))?
+                wallet_session_id(&sessions, &ledger_hardware_session_key(&signing_source.id))?
                     .ok_or_else(|| {
                         "Reconnect Ledger and prepare the transaction again.".to_owned()
                     })?;
@@ -8361,6 +9095,7 @@ fn private_service_url(kind: &str, timeframe: Option<&str>) -> Result<String, St
     const BASE: &str = "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion";
     match (kind, timeframe) {
         ("news", None) => Ok(format!("{BASE}/news/v1/news?limit=10")),
+        ("news-catalog-hash", None) => Ok(format!("{BASE}/news/v1/news/catalog-hash")),
         ("quote", None) => Ok(format!("{BASE}/api/v1/market/quote")),
         ("chart", Some(value)) if matches!(value, "24H" | "7D" | "1M" | "1Y" | "Max") => {
             Ok(format!("{BASE}/api/v1/market/chart?timeframe={value}"))
@@ -9096,6 +9831,7 @@ pub fn run() {
         )
         .manage(community::CommunityState::new().expect("Community client initialization"))
         .setup(|app| {
+            desktop_notifications::initialize_notification_open_handler();
             // Tor initializes on its own runtime. Bootstrapping must never
             // delay the first desktop frame or opening a saved wallet.
             tor_transport::start_embedded_tor(
@@ -9306,6 +10042,7 @@ pub fn run() {
             auto_lock_settings,
             set_auto_lock_timeout,
             fetch_private_service,
+            create_payment_link,
             wallet_ui_diagnostic,
             ledger_transport_status,
             store_wallet_password,
@@ -9347,6 +10084,10 @@ pub fn run() {
             disable_notification_installation,
             consume_pending_notification_open,
             background_notification_agent_config_path,
+            create_vanity_quote,
+            latest_vanity_order_id,
+            vanity_order_status,
+            export_vanity_recovery,
             disable_fast_wallet,
             load_node_settings,
             save_node_settings,
@@ -9362,6 +10103,8 @@ pub fn run() {
             list_mfw_names,
             resolve_mfw_name_for_payment,
             check_mfw_name_availability,
+            suggest_mfw_names,
+            discover_mfw_names_for_wallet,
             prepare_mfw_name_registration,
             prepare_mfw_name_claim,
             prepare_mfw_name_transition,
@@ -9440,12 +10183,14 @@ fn desktop_updates_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        bind_ledger_session_ids, ledger_hardware_session_key, mark_connectivity_checking,
-        require_app_unlocked, serialized_transactions_for_account,
-        shared_native_session_for_physical_registration, validate_fast_wallet_removal_snapshot,
+        bind_ledger_session_ids, compare_ledger_signing_account_state, ledger_hardware_session_key,
+        ledger_signing_source_registration, ledger_view_only_companion_session_id,
+        mark_connectivity_checking, require_app_unlocked, safe_ledger_rebuild_restore_height,
+        serialized_transactions_for_account, shared_native_session_for_physical_registration,
+        validate_fast_wallet_removal_snapshot, verified_registration_account_index,
         wallet_file_path_is_available, wallet_session_id, AppProtectionState,
-        ConnectivityRouteState, WalletSessionRecoveryClaim, WalletSessionRecoveryState,
-        WalletSessionState,
+        ConnectivityRouteState, LedgerSigningAccountComparison, LedgerSigningAccountState,
+        WalletSessionRecoveryClaim, WalletSessionRecoveryState, WalletSessionState,
     };
     use std::{
         collections::HashMap,
@@ -9642,6 +10387,133 @@ mod tests {
                 .as_deref(),
             Some("native-view-only")
         );
+    }
+
+    #[test]
+    fn ledger_signing_requires_an_open_companion_when_one_is_registered() {
+        let standard = crate::wallet_registry::hardware_wallet(
+            "ledger-1",
+            "mainnet",
+            Some(3_500_000),
+            Some(0),
+            Some("standard"),
+            None,
+        );
+        let companion = crate::wallet_registry::ledger_read_only_wallet(
+            "ledger-read-1",
+            "mainnet",
+            Some(3_500_000),
+            &standard.id,
+        );
+        let registry = crate::wallet_registry::WalletRegistry {
+            version: 1,
+            active_wallet_id: Some(standard.id.clone()),
+            wallets: vec![standard.clone(), companion.clone()],
+        };
+
+        assert!(
+            ledger_view_only_companion_session_id(&registry, &HashMap::new(), &standard.id,)
+                .is_err()
+        );
+        assert_eq!(
+            ledger_view_only_companion_session_id(
+                &registry,
+                &HashMap::from([(companion.id, "native-view-only".to_owned())]),
+                &standard.id,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("native-view-only")
+        );
+    }
+
+    fn ledger_account_state(
+        address: &str,
+        balance: &str,
+        unlocked: &str,
+    ) -> LedgerSigningAccountState {
+        LedgerSigningAccountState {
+            address: address.to_owned(),
+            balance: balance.to_owned(),
+            unlocked: unlocked.to_owned(),
+        }
+    }
+
+    #[test]
+    fn ledger_signing_comparison_never_reclassifies_identity_as_spend_state() {
+        let companion = ledger_account_state("account-a", "900", "800");
+        let wrong_ledger = ledger_account_state("account-b", "0", "0");
+
+        assert_eq!(
+            compare_ledger_signing_account_state(&companion, &wrong_ledger),
+            LedgerSigningAccountComparison::IdentityMismatch
+        );
+    }
+
+    #[test]
+    fn ledger_signing_comparison_requires_exact_balance_and_unlocked_parity() {
+        let companion = ledger_account_state("account-a", "900", "800");
+        assert_eq!(
+            compare_ledger_signing_account_state(
+                &companion,
+                &ledger_account_state("account-a", "900", "800"),
+            ),
+            LedgerSigningAccountComparison::Match
+        );
+        for candidate in [
+            ledger_account_state("account-a", "0", "800"),
+            ledger_account_state("account-a", "900", "0"),
+        ] {
+            assert_eq!(
+                compare_ledger_signing_account_state(&companion, &candidate),
+                LedgerSigningAccountComparison::SpendStateMismatch
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_cache_rebuild_delegates_a_missing_boundary_to_native_core() {
+        assert_eq!(
+            safe_ledger_rebuild_restore_height(Some(3_500_000)),
+            3_500_000
+        );
+        assert_eq!(safe_ledger_rebuild_restore_height(None), 0);
+        assert_eq!(safe_ledger_rebuild_restore_height(Some(0)), 0);
+        assert_eq!(safe_ledger_rebuild_restore_height(Some(1)), 1);
+    }
+
+    #[test]
+    fn ledger_fast_account_uses_its_standard_hardware_signing_source() {
+        let standard = crate::wallet_registry::hardware_wallet(
+            "ledger-1",
+            "mainnet",
+            Some(3_500_000),
+            Some(0),
+            Some("standard"),
+            None,
+        );
+        let fast = crate::wallet_registry::hardware_wallet(
+            "ledger-fast-1",
+            "mainnet",
+            Some(3_500_000),
+            Some(1),
+            Some("fast"),
+            Some(&standard.id),
+        );
+        let registry = crate::wallet_registry::WalletRegistry {
+            version: 1,
+            active_wallet_id: Some(fast.id.clone()),
+            wallets: vec![standard.clone(), fast.clone()],
+        };
+
+        assert_eq!(
+            ledger_signing_source_registration(&registry, &fast)
+                .unwrap()
+                .id,
+            standard.id
+        );
+        assert_eq!(verified_registration_account_index(&fast, 1).unwrap(), 1);
+        assert!(verified_registration_account_index(&fast, 0).is_err());
     }
 
     #[test]

@@ -829,6 +829,53 @@ pub fn delete_node_daemon_password(network: &str) -> Result<(), String> {
     delete_secret("node-daemon-password", network, "node password")
 }
 
+pub fn store_vanity_order_status_token(order_id: &str, token: String) -> Result<(), String> {
+    store_secret(
+        "vanity-order-status",
+        order_id,
+        token,
+        "Vanity order status credential",
+    )
+}
+
+pub fn load_vanity_order_status_token(order_id: &str) -> Result<Option<String>, String> {
+    load_secret(
+        "vanity-order-status",
+        order_id,
+        "Vanity order status credential",
+    )
+}
+
+pub fn store_latest_vanity_order_id(order_id: String) -> Result<(), String> {
+    store_secret(
+        "vanity-latest-order",
+        "latest",
+        order_id,
+        "latest Vanity order ID",
+    )
+}
+
+pub fn load_latest_vanity_order_id() -> Result<Option<String>, String> {
+    load_secret("vanity-latest-order", "latest", "latest Vanity order ID")
+}
+
+pub fn store_vanity_order_recovery_state(order_id: &str, state: String) -> Result<(), String> {
+    store_secret(
+        "vanity-order-recovery",
+        order_id,
+        state,
+        "Vanity order recovery state",
+    )
+}
+
+pub fn load_vanity_order_recovery_state(order_id: &str) -> Result<Option<String>, String> {
+    load_secret(
+        "vanity-order-recovery",
+        order_id,
+        "Vanity order recovery state",
+    )
+}
+
 /// Community access tokens are anonymous profile credentials, not wallet
 /// credentials. They still stay in the OS keychain so the renderer never owns
 /// or persists a bearer token.

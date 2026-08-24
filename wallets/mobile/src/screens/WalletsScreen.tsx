@@ -17,7 +17,6 @@ import { useI18n } from '../i18n';
 import type { FastWalletStatusTone } from '../services/FastWalletStatus';
 import {
   isFastWalletRegistration,
-  walletRegistrationIsRemovedWithTarget,
   walletRequiresRecoverySeedBackup,
   walletDisplayName,
   type RegisteredWallet,
@@ -133,76 +132,6 @@ export default function WalletsScreen({ navigation }: any) {
         },
       ],
     );
-  };
-
-  const findPendingSeedBackupForRemoval = (
-    wallet: RegisteredWallet,
-    wallets = registeredWallets,
-  ): RegisteredWallet | undefined =>
-    wallets.find(
-      candidate =>
-        walletRegistrationIsRemovedWithTarget(candidate, wallet) &&
-        walletRequiresRecoverySeedBackup(candidate) &&
-        candidate.seedBackupStatus !== 'verified',
-    );
-
-  const backUpSeedBeforeRemoval = (
-    removalTarget: RegisteredWallet,
-    seedWallet: RegisteredWallet,
-  ) => {
-    Alert.alert(
-      t('wallets.removeBackupTitle'),
-      t('wallets.removeBackupDescription', {
-        name: walletDisplayName(seedWallet),
-      }),
-      [
-        { text: t('action.cancel'), style: 'cancel' },
-        {
-          text: t('settings.showBackupSeed'),
-          onPress: async () => {
-            try {
-              const confirmed = await backupRegisteredWalletSeed(
-                seedWallet.id,
-                t('settings.recoverySeedWarning'),
-              );
-              if (!confirmed) {
-                return;
-              }
-              await reloadRegisteredWallets();
-              // Reload before retrying so UI and service evaluate the same
-              // current registry state and the service-side deletion guard is
-              // never bypassed.
-              const refreshed = await walletService.loadRegisteredWallets();
-              const latestTarget = refreshed.find(
-                candidate => candidate.id === removalTarget.id,
-              );
-              if (latestTarget) {
-                confirmRemoveWallet(latestTarget, refreshed);
-              }
-            } catch (error) {
-              Alert.alert(
-                t('wallets.removeFailedTitle'),
-                error instanceof Error
-                  ? error.message
-                  : t('wallets.removeFailed'),
-              );
-            }
-          },
-        },
-      ],
-    );
-  };
-
-  const confirmRemoveWallet = (
-    wallet: RegisteredWallet,
-    wallets = registeredWallets,
-  ) => {
-    const walletNeedingBackup = findPendingSeedBackupForRemoval(wallet, wallets);
-    if (walletNeedingBackup) {
-      backUpSeedBeforeRemoval(wallet, walletNeedingBackup);
-      return;
-    }
-    showRemoveWalletConfirmation(wallet);
   };
 
   const startRenameWallet = (wallet: RegisteredWallet) => {
@@ -392,7 +321,7 @@ export default function WalletsScreen({ navigation }: any) {
                         ? undefined
                         : () => manageWalletAddresses(wallet)
                     }
-                    onRemove={() => confirmRemoveWallet(wallet)}
+                    onRemove={() => showRemoveWalletConfirmation(wallet)}
                   />
                   {renamingWalletId === wallet.id ? (
                     <View style={s.renameBox}>

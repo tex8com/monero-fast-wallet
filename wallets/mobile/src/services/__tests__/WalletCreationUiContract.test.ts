@@ -205,6 +205,49 @@ describe('Wallet creation and existing-wallet UI contract', () => {
     );
   });
 
+  it('prevents an old Ledger BLE timeout from completing a newer scan', () => {
+    const scanStart = android.indexOf(
+      'private fun scanLedgerBleDevices(promise: Promise)',
+    );
+    const scanEnd = android.indexOf(
+      'override fun getBiometricAuthStatus',
+      scanStart,
+    );
+    const scanFlow = android.slice(scanStart, scanEnd);
+    const finishStart = android.indexOf('private fun finishLedgerBleScan(');
+    const finishEnd = android.indexOf(
+      'private fun prepareLedgerBleTransport(',
+      finishStart,
+    );
+    const finishFlow = android.slice(finishStart, finishEnd);
+
+    expect(scanStart).toBeGreaterThan(0);
+    expect(scanEnd).toBeGreaterThan(scanStart);
+    expect(finishStart).toBeGreaterThan(0);
+    expect(finishEnd).toBeGreaterThan(finishStart);
+    expect(android).toContain('private var pendingLedgerBleScanTimeout: Runnable?');
+    expect(android).toContain('private var ledgerBleScanGeneration = 0L');
+    expect(scanFlow).toContain('val scanGeneration = ledgerBleScanGeneration');
+    expect(scanFlow).toContain('expectedGeneration = scanGeneration');
+    expect(scanFlow).toContain('expectedCallback = callback');
+    expect(scanFlow).toContain('ledgerBleScanGeneration != scanGeneration');
+    expect(scanFlow).toContain(
+      'pendingLedgerBleScanCallback !== callback',
+    );
+    expect(finishFlow).toContain(
+      'ledgerBleScanGeneration != expectedGeneration',
+    );
+    expect(finishFlow).toContain(
+      'pendingLedgerBleScanCallback !== expectedCallback',
+    );
+    expect(finishFlow).toContain(
+      'pendingLedgerBleScanTimeout?.let(mainHandler::removeCallbacks)',
+    );
+    expect(android).toContain('override fun invalidate()');
+    expect(android).toContain('cancelPendingLedgerBleScan()');
+    expect(android).toContain('private fun cancelPendingLedgerBleScan()');
+  });
+
   it('requires an explicit Ledger scan date like the CLI reference flow', () => {
     expect(setup).toContain('ledgerRestoreStartDate.trim().length > 0');
     expect(setup).toContain("'setup.ledgerScanDateHint'");
@@ -235,7 +278,9 @@ describe('Wallet creation and existing-wallet UI contract', () => {
       createFlow.indexOf('reloadRegisteredWallets()'),
     );
     expect(walletState).toContain("'ledgerAutoVerification.start'");
-    expect(walletState).toContain('await reconcileLedgerBalance(true)');
+    expect(walletState).toContain(
+      'await reconcileLedgerBalance(true, true, progress =>',
+    );
     expect(setup).not.toContain(
       'onValueChange={changePersistLedgerViewOnly}',
     );

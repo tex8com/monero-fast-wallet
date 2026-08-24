@@ -1,0 +1,92 @@
+From 3ff0e212da48359675e10c6e7825f03334d22a61 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Fri, 21 Aug 2026 12:05:00 -0500
+Subject: [PATCH] wallet: prime Ledger view key before shared scan
+
+---
+ src/wallet/api/wallet.cpp    | 41 ++++++++++++++++++++++++++++++++++++
+ src/wallet/api/wallet.h      |  1 +
+ src/wallet/api/wallet2_api.h |  6 ++++++
+ 3 files changed, 48 insertions(+)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index f5f318b..72dae06 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -1016,6 +1016,47 @@ std::string WalletImpl::hardwarePrivateViewKey() const
+ #endif
+ }
+ 
++bool WalletImpl::prepareHardwareWalletScan()
++{
++    clearStatus();
++#ifdef WITH_DEVICE_LEDGER
++    if (m_wallet->get_device_type() != hw::device::LEDGER) {
++        setStatusError(tr("Hardware scan preparation requires a Ledger wallet"));
++        return false;
++    }
++    try {
++        auto& device = static_cast<hw::ledger::device_ledger&>(
++            m_wallet->get_account().get_device());
++        crypto::secret_key private_view_key;
++        if (!device.exported_view_key(private_view_key)) {
++            crypto::secret_key fake_view_key;
++            crypto::secret_key fake_spend_key;
++            if (!device.get_secret_keys(fake_view_key, fake_spend_key) ||
++                !device.exported_view_key(private_view_key)) {
++                setStatusError(tr("Ledger did not export its private view key"));
++                return false;
++            }
++        }
++
++        crypto::public_key derived_public_view_key;
++        if (!crypto::secret_key_to_public_key(
++                private_view_key, derived_public_view_key) ||
++            derived_public_view_key !=
++                m_wallet->get_account().get_keys().m_account_address.m_view_public_key) {
++            setStatusError(tr("Ledger private view key does not match this wallet"));
++            return false;
++        }
++        return true;
++    } catch (const std::exception &e) {
++        setStatusError(e.what());
++        return false;
++    }
++#else
++    setStatusError(tr("Ledger support is unavailable in this build"));
++    return false;
++#endif
++}
++
+ std::string WalletImpl::publicViewKey() const
+ {
+     return epee::string_tools::pod_to_hex(m_wallet->get_account().get_keys().m_account_address.m_view_public_key);
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index 137a515..40ebff4 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -97,6 +97,7 @@ public:
+     std::string integratedAddress(const std::string &payment_id) const override;
+     std::string secretViewKey() const override;
+     std::string hardwarePrivateViewKey() const override;
++    bool prepareHardwareWalletScan() override;
+     std::string publicViewKey() const override;
+     std::string secretSpendKey() const override;
+     std::string publicSpendKey() const override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 36b3247..cd5b806 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -549,6 +549,12 @@ struct Wallet
+      * exposes a spend key and returns an empty value for unsupported devices.
+      */
+     virtual std::string hardwarePrivateViewKey() const = 0;
++    /*!
++     * \brief prepareHardwareWalletScan - asks a Ledger once per process
++     * session to export its private view key for local blockchain scanning.
++     * The key remains inside Core and is verified against the wallet address.
++     */
++    virtual bool prepareHardwareWalletScan() = 0;
+ 
+    /*!
+     * \brief publicViewKey     - returns public view key

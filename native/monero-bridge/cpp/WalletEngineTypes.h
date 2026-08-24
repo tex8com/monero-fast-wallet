@@ -244,6 +244,7 @@ struct NetworkSyncStatus {
   uint64_t downloadStartHeight{0};
   uint64_t downloadedHeight{0};
   uint64_t chainHeight{0};
+  uint64_t priorityWalletHeight{0};
   uint64_t targetHeight{0};
   uint64_t transportStarts{0};
   uint64_t fetchedBatches{0};

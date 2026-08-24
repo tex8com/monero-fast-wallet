@@ -768,6 +768,14 @@ struct Wallet
     virtual bool rescanBlockchain() = 0;
 
     /**
+     * @brief resetBlockchainCacheForSharedSync - clears only the local wallet
+     * cache without contacting or refreshing from a daemon. The caller must
+     * set and verify the shared-sync restore height before invoking it.
+     * @return - true if the local cache was reset successfully;
+     */
+    virtual bool resetBlockchainCacheForSharedSync() = 0;
+
+    /**
      * @brief rescanBlockchainAsync - rescans wallet asynchronously, starting from genesys
      */
     virtual void rescanBlockchainAsync() = 0;

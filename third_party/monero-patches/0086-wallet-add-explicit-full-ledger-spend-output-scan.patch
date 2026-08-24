@@ -1,0 +1,125 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Thu, 20 Aug 2026 12:00:00 -0500
+Subject: [PATCH] wallet: add explicit full Ledger spend-output scan
+
+Keep the incremental key-image pass as the automatic fast path, but allow an
+explicit Settings action to recheck the spent status of every locally known
+owned output. Existing durable key images are reused and only missing key
+images touch the Ledger.
+
+---
+ src/wallet/api/wallet.cpp    |  4 ++--
+ src/wallet/api/wallet.h      |  2 +-
+ src/wallet/api/wallet2_api.h |  4 ++--
+ src/wallet/wallet2.cpp       | 17 ++++++++++-------
+ src/wallet/wallet2.h         |  2 +-
+ 5 files changed, 16 insertions(+), 13 deletions(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 7fca7acc7..76b899bc6 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -3225,13 +3225,13 @@ uint64_t WalletImpl::coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, ui
+     return m_wallet->cold_key_image_sync_to(*destination_impl->m_wallet, spent, unspent);
+ }
+ 
+-uint64_t WalletImpl::coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats)
++uint64_t WalletImpl::coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats, bool fullSpendOutputScan)
+ {
+     auto *destination_impl = dynamic_cast<WalletImpl *>(&destination);
+     if (destination_impl == nullptr)
+         throw runtime_error("Cold key-image destination is not a compatible wallet");
+     tools::ledger_key_image_sync_stats core_stats;
+-    const uint64_t height = m_wallet->cold_key_image_sync_to(*destination_impl->m_wallet, spent, unspent, core_stats);
++    const uint64_t height = m_wallet->cold_key_image_sync_to(*destination_impl->m_wallet, spent, unspent, core_stats, fullSpendOutputScan);
+     stats.pendingOutputCount = core_stats.pending_output_count;
+     stats.importedOutputCount = core_stats.imported_output_count;
+     stats.derivedOutputCount = core_stats.derived_output_count;
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index f7c45f820..6e136a370 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -262,7 +262,7 @@ public:
+     virtual bool isKeysFileLocked() override;
+     virtual uint64_t coldKeyImageSync(uint64_t &spent, uint64_t &unspent) override;
+     virtual uint64_t coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, uint64_t &unspent) override;
+-    virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats) override;
++    virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats, bool fullSpendOutputScan = false) override;
+     virtual void setDeferredSpendTracking(bool enabled) override;
+     virtual void deviceShowAddress(uint32_t accountIndex, uint32_t addressIndex, const std::string &paymentId) override;
+     virtual bool reconnectDevice() override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 43bc449bb..53d6ba04e 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -1280,8 +1280,8 @@ struct Wallet
+     //! cold-device protocol key image sync into an equivalent view-only wallet
+     virtual uint64_t coldKeyImageSyncTo(Wallet &destination, uint64_t &spent, uint64_t &unspent) = 0;
+ 
+-    //! incremental Ledger key-image sync with isolated performance telemetry
+-    virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats) = 0;
++    //! Ledger key-image sync with optional full spent-status recheck
++    virtual uint64_t coldKeyImageSyncToWithStats(Wallet &destination, uint64_t &spent, uint64_t &unspent, LedgerKeyImageSyncStats &stats, bool fullSpendOutputScan = false) = 0;
+ 
+     //! Retains only candidate spending transaction identifiers while scanning.
+     //! A view-only wallet uses these candidates after a later hardware
+diff --git a/src/wallet/wallet2.cpp b/src/wallet/wallet2.cpp
+index 0853b1c9c..4d6e15532 100644
+--- a/src/wallet/wallet2.cpp
++++ b/src/wallet/wallet2.cpp
+@@ -13635,10 +13635,10 @@ uint64_t wallet2::cold_key_image_sync(uint64_t &spent, uint64_t &unspent) {
+ //----------------------------------------------------------------------------------------------------
+ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent) {
+   ledger_key_image_sync_stats stats;
+-  return cold_key_image_sync_to(destination, spent, unspent, stats);
++  return cold_key_image_sync_to(destination, spent, unspent, stats, false);
+ }
+ //----------------------------------------------------------------------------------------------------
+-uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent, ledger_key_image_sync_stats &stats) {
++uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent, ledger_key_image_sync_stats &stats, bool full_spend_output_scan) {
+   stats = {};
+   // Keep this API name for wallet-api ABI compatibility. Ledger does not
+   // implement device_cold::ki_sync. The view-only destination has already
+@@ -13661,7 +13661,9 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+       "Key-image cache destination is not view-only");
+ 
+   auto &hwdev = get_account().get_device();
+-  size_t import_offset = destination.m_transfers.size();
++  size_t import_offset = full_spend_output_scan
++      ? 0
++      : destination.m_transfers.size();
+   for (size_t index = 0; index < destination.m_transfers.size(); ++index)
+   {
+     const transfer_details &transfer = destination.m_transfers[index];
+@@ -13672,10 +13674,11 @@ uint64_t wallet2::cold_key_image_sync_to(wallet2 &destination, uint64_t &spent,
+     }
+   }
+ 
+-  // A second run is intentionally a no-op: no Ledger prompts, no daemon RPC,
+-  // and no wallet-cache rewrite. This is the common fast path after the view
+-  // wallet has already reconciled every owned output.
+-  if (stats.pending_output_count == 0)
++  // Automatic follow-up calls remain no-ops after the initial pass. An
++  // explicit full scan starts at output zero so every durable key image is
++  // checked again without re-deriving key images already known locally.
++  if (stats.pending_output_count == 0 &&
++      (!full_spend_output_scan || destination.m_transfers.empty()))
+   {
+     spent = 0;
+     unspent = 0;
+diff --git a/src/wallet/wallet2.h b/src/wallet/wallet2.h
+index 09deec450..a8261bd33 100644
+--- a/src/wallet/wallet2.h
++++ b/src/wallet/wallet2.h
+@@ -1278,7 +1278,7 @@ private:
+     void cold_sign_tx(const std::vector<pending_tx>& ptx_vector, signed_tx_set &exported_txs, std::vector<cryptonote::address_parse_info> &dsts_info, std::vector<std::string> & tx_device_aux);
+     uint64_t cold_key_image_sync(uint64_t &spent, uint64_t &unspent);
+     uint64_t cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent);
+-    uint64_t cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent, ledger_key_image_sync_stats &stats);
++    uint64_t cold_key_image_sync_to(wallet2 &destination, uint64_t &spent, uint64_t &unspent, ledger_key_image_sync_stats &stats, bool full_spend_output_scan = false);
+     void device_show_address(uint32_t account_index, uint32_t address_index, const boost::optional<crypto::hash8> &payment_id);
+     bool parse_multisig_tx_from_str(std::string multisig_tx_st, multisig_tx_set &exported_txs) const;
+     bool load_multisig_tx(cryptonote::blobdata blob, multisig_tx_set &exported_txs, std::function<bool(const multisig_tx_set&)> accept_func = NULL);
+-- 
+2.50.1 (Apple Git-155)

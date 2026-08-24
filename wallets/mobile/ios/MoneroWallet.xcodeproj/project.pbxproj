@@ -449,8 +449,6 @@
 					"-lsqlite3",
 					"-lz",
 					"-lresolv",
-					"-force_load",
-					"$(PODS_XCFRAMEWORKS_BUILD_DIR)/Tor/CTor/tor.framework/tor",
 				);
 				PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED = NO;
 				PRIVATE_PHONE_DIRECTORY_ORIGIN = "";
@@ -543,8 +541,6 @@
 					"-lsqlite3",
 					"-lz",
 					"-lresolv",
-					"-force_load",
-					"$(PODS_XCFRAMEWORKS_BUILD_DIR)/Tor/CTor/tor.framework/tor",
 				);
 				PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED = NO;
 				PRIVATE_PHONE_DIRECTORY_ORIGIN = "";

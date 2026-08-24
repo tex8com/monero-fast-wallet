@@ -3,11 +3,13 @@
 //! There is deliberately no HTTP registration handler in this crate. A watch
 //! can enter only as a fixed-size HPKE envelope addressed to this exact Worker.
 
+pub mod debug;
+
 use anyhow::Context;
 use fast_wallet_protocol::{
-    gateway_wake_auth_body, key_id, worker_receipt_body, HpkePrivateKey,
-    Network as ProtocolNetwork, SigningKeyMaterial, WatchEnvelope, WorkerAuthPurpose,
-    WorkerDescriptor, WorkerRequestAuth,
+    gateway_test_wake_auth_body, gateway_wake_auth_body, key_id, worker_receipt_body,
+    HpkePrivateKey, Network as ProtocolNetwork, SigningKeyMaterial, WatchEnvelope,
+    WorkerAuthPurpose, WorkerDescriptor, WorkerRequestAuth,
 };
 use fast_wallet_relay::{
     ack_auth_body, pull_auth_body, RelayAcceptanceReceipt, RelayMailbox, RelayPullBatch,
@@ -21,7 +23,7 @@ use std::{
     io::Read,
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -189,6 +191,8 @@ pub struct GatewayWakeNotificationSink {
     agent: ureq::Agent,
 }
 
+static TEST_WAKE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 impl GatewayWakeNotificationSink {
     pub fn new(
         worker: Arc<OutboundRelayWorker>,
@@ -202,31 +206,59 @@ impl GatewayWakeNotificationSink {
             agent: ureq::AgentBuilder::new().timeout(timeout).build(),
         })
     }
-}
 
-impl NotificationSink for GatewayWakeNotificationSink {
-    fn send(&self, watch: &WatchRegistration, output: &MatchedOutput) -> anyhow::Result<()> {
+    /// Sends an explicitly labelled delivery test through the same
+    /// Worker-signature, Gateway and provider path as a real wake. No matched
+    /// output is created or persisted.
+    pub fn send_test(&self, watch: &WatchRegistration) -> anyhow::Result<()> {
+        let now = unix_seconds();
+        let counter = TEST_WAKE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut material = Vec::with_capacity(32 + watch.identity_id.len() + 16);
+        material.extend_from_slice(b"monero-fast-wallet-worker-test-v1\0");
+        material.extend_from_slice(&self.worker.descriptor.worker_root_id());
+        material.extend_from_slice(watch.identity_id.as_bytes());
+        material.extend_from_slice(&now.to_be_bytes());
+        material.extend_from_slice(&counter.to_be_bytes());
+        let event_id = format!("evt_{}", hex::encode(key_id(&material)));
+        self.send_gateway_wake(watch, &event_id, "test", true, now)
+    }
+
+    fn send_gateway_wake(
+        &self,
+        watch: &WatchRegistration,
+        event_id: &str,
+        signal: &'static str,
+        test: bool,
+        now: u64,
+    ) -> anyhow::Result<()> {
         let assignment_handle = assignment_handle_from_id(&watch.identity_id)?;
         let assignment_epoch = watch
             .worker_assignment_epoch
             .filter(|epoch| *epoch > 0)
             .context("Worker watch has no assignment epoch")?;
-        if output.id.len() != 68
-            || !output.id.starts_with("evt_")
-            || !output.id[4..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        if event_id.len() != 68
+            || !event_id.starts_with("evt_")
+            || !event_id[4..].bytes().all(|byte| byte.is_ascii_hexdigit())
         {
             anyhow::bail!("Worker event identifier is invalid");
         }
-        let now = unix_seconds();
-        let auth =
+        let auth = if test {
+            self.worker.sign_gateway_test_wake(
+                &assignment_handle,
+                assignment_epoch,
+                event_id,
+                now,
+            )?
+        } else {
             self.worker
-                .sign_gateway_wake(&assignment_handle, assignment_epoch, &output.id, now)?;
+                .sign_gateway_wake(&assignment_handle, assignment_epoch, event_id, now)?
+        };
         let request = GatewayWakeRequest {
             contract_version: "monero-fast-wallet-push.v3",
-            event_id: output.id.to_ascii_lowercase(),
+            event_id: event_id.to_ascii_lowercase(),
             assignment_handle: hex::encode(assignment_handle),
             assignment_epoch,
-            signal: "incoming_transaction",
+            signal,
             worker_descriptor: hex::encode(self.worker.descriptor.encode()?),
             worker_auth: hex::encode(auth.encode()),
         };
@@ -236,6 +268,13 @@ impl NotificationSink for GatewayWakeNotificationSink {
             .send_json(&request)
             .map_err(|error| anyhow::anyhow!("Gateway rejected generic Worker wake: {error}"))?;
         Ok(())
+    }
+}
+
+impl NotificationSink for GatewayWakeNotificationSink {
+    fn send(&self, watch: &WatchRegistration, output: &MatchedOutput) -> anyhow::Result<()> {
+        let now = unix_seconds();
+        self.send_gateway_wake(watch, &output.id, "incoming_transaction", false, now)
     }
 }
 
@@ -625,6 +664,26 @@ impl OutboundRelayWorker {
             now.saturating_add(30),
         )
         .map_err(|error| anyhow::anyhow!("could not authenticate Gateway wake: {error}"))
+    }
+
+    pub fn sign_gateway_test_wake(
+        &self,
+        assignment_handle: &[u8; 32],
+        assignment_epoch: u64,
+        event_id: &str,
+        now: u64,
+    ) -> anyhow::Result<WorkerRequestAuth> {
+        let body = gateway_test_wake_auth_body(assignment_handle, assignment_epoch, event_id)
+            .map_err(|error| anyhow::anyhow!("invalid Gateway test wake: {error}"))?;
+        WorkerRequestAuth::sign(
+            &self.descriptor,
+            &self.online_signing_key,
+            WorkerAuthPurpose::Wake,
+            &body,
+            now,
+            now.saturating_add(30),
+        )
+        .map_err(|error| anyhow::anyhow!("could not authenticate Gateway test wake: {error}"))
     }
 }
 

@@ -20,6 +20,7 @@ set password_prompt_ms 0
 
 log_user 1
 log_file -noappend $transcript_file
+set debug_output "${transcript_file}.diagnostics"
 spawn /usr/bin/time -lp -o $timing_file -- \
   $product_cli \
   --wallet-file $wallet_file \
@@ -27,7 +28,7 @@ spawn /usr/bin/time -lp -o $timing_file -- \
   --daemon-address $daemon_address \
   --trusted-daemon \
   --allow-mismatched-daemon-version \
-  --debug \
+  --debug-output $debug_output \
   --log-file /dev/null \
   --command send $recipient $amount
 

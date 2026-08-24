@@ -17,7 +17,11 @@ struct Parameters {
     #[serde(default)]
     mfw_name_resolver_origins: Vec<String>,
     #[serde(default)]
+    mfw_name_suggestion_onion_origins: Vec<String>,
+    #[serde(default)]
     mfw_name_genesis: Option<MfwNameGenesisConfig>,
+    #[serde(default)]
+    payment_link_origin: Option<String>,
     monero_enthusiast_v1: Option<MoneroEnthusiastV1Config>,
 }
 
@@ -92,12 +96,39 @@ pub fn mfw_name_resolver_origins() -> Option<Vec<String>> {
     })
 }
 
+pub fn mfw_name_suggestion_onion_origins() -> Option<Vec<String>> {
+    if !enabled("mfwNameResolution") {
+        return None;
+    }
+    let origins = &manifest()?.parameters.mfw_name_suggestion_onion_origins;
+    validate_mfw_suggestion_onion_origins(origins).then(|| {
+        origins
+            .iter()
+            .map(|origin| origin.trim_end_matches('/').to_owned())
+            .collect()
+    })
+}
+
 pub fn mfw_name_genesis(network: &str) -> Option<MfwNameGenesisConfig> {
     if !enabled("mfwNameRegistration") {
         return None;
     }
     let config = manifest()?.parameters.mfw_name_genesis.clone()?;
     (config.network == network && validate_mfw_genesis(&config)).then_some(config)
+}
+
+pub fn payment_link_origin() -> Option<String> {
+    let origin = manifest()?.parameters.payment_link_origin.as_deref()?;
+    let url = Url::parse(origin).ok()?;
+    (url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && origin == url.origin().ascii_serialization())
+    .then(|| origin.to_owned())
 }
 
 fn validate_mfw_resolver_origins(origins: &[String]) -> bool {
@@ -118,6 +149,16 @@ fn validate_mfw_resolver_origins(origins: &[String]) -> bool {
             && url.path() == "/";
         valid && normalized.insert(url.origin().ascii_serialization().to_ascii_lowercase())
     })
+}
+
+fn validate_mfw_suggestion_onion_origins(origins: &[String]) -> bool {
+    validate_mfw_resolver_origins(origins)
+        && origins.iter().all(|origin| {
+            Url::parse(origin).is_ok_and(|url| {
+                url.scheme() == "http"
+                    && url.host_str().is_some_and(|host| host.ends_with(".onion"))
+            })
+        })
 }
 
 fn validate_mfw_genesis(config: &MfwNameGenesisConfig) -> bool {
@@ -235,8 +276,9 @@ fn private_service_origin(url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        enabled, mfw_name_genesis, mfw_name_resolver_origins, monero_enthusiast_v1_config,
-        validate_enthusiast_config, validate_mfw_genesis, validate_mfw_resolver_origins,
+        enabled, mfw_name_genesis, mfw_name_resolver_origins, mfw_name_suggestion_onion_origins,
+        monero_enthusiast_v1_config, payment_link_origin, validate_enthusiast_config,
+        validate_mfw_genesis, validate_mfw_resolver_origins, validate_mfw_suggestion_onion_origins,
         MfwNameGenesisConfig, MoneroEnthusiastV1Config,
     };
 
@@ -251,11 +293,16 @@ mod tests {
         assert!(enabled("mfwNameResolution"));
         assert!(enabled("mfwNameRegistration"));
         assert_eq!(mfw_name_resolver_origins().unwrap().len(), 2);
+        assert_eq!(mfw_name_suggestion_onion_origins().unwrap().len(), 1);
         assert!(mfw_name_genesis("mainnet").is_some());
         let community = monero_enthusiast_v1_config()
             .expect("the signed Community V1 test release must have a valid configuration");
-        assert_eq!(community.api_origin, "https://xmr.tex8.com");
+        assert!(community.api_origin.ends_with(".onion"));
         assert_eq!(community.catalog_scope, "global-v1");
+        assert_eq!(
+            payment_link_origin().as_deref(),
+            Some("https://xmr.tex8.com")
+        );
     }
 
     #[test]
@@ -274,6 +321,12 @@ mod tests {
         assert!(!validate_mfw_resolver_origins(&[
             "http://mfw-a.example/".to_owned(),
             "https://mfw-b.example/path".to_owned(),
+        ]));
+        assert!(validate_mfw_suggestion_onion_origins(&[
+            "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion/".to_owned(),
+        ]));
+        assert!(!validate_mfw_suggestion_onion_origins(&[
+            "https://mfw-a.example/".to_owned(),
         ]));
 
         let mut genesis = MfwNameGenesisConfig {
