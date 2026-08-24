@@ -257,6 +257,10 @@ assert.match(
 );
 assert.match(androidCmake, /MONERO_WALLET_API_HEADER_SHA256/);
 assert.match(androidCmake, /MONERO_WALLET_API_LIBRARY_SHA256/);
+assert.match(
+  androidCmake,
+  /if\(MONERO_ENTHUSIAST_V1_ENABLED AND[\s\S]*MONERO_COMMUNITY_MATRIX_LIBRARY AND MONERO_COMMUNITY_HARRIER_LIBRARY\)/,
+);
 assert.match(androidCmake, /BOOST_NO_CXX98_FUNCTION_BASE=1/);
 assert.match(
   androidCmake,
