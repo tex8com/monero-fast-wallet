@@ -243,11 +243,11 @@ const en = {
   'sync.error': 'Sync error',
   'sync.connectingNode': 'Connecting securely to the Monero node',
   'sync.selectingSource': 'Selecting sync source',
-  'sync.startingConnection': 'Starting the shared blockchain connection',
+  'sync.startingConnection': 'Connecting to the selected sync node',
   'sync.startingConnectionHint':
-    'Preparing the encrypted wallet and choosing the fastest available node. The app remains usable.',
+    'Using the selected sync node. The app remains usable.',
   'sync.startingConnectionElapsed':
-    '{seconds}s elapsed · Preparing the encrypted wallet and choosing the fastest available node. The app remains usable.',
+    '{seconds}s elapsed · Connecting directly to the selected sync node. The app remains usable.',
   'sync.showDetails': 'Show sync details',
   'sync.hideDetails': 'Hide sync details',
   'sync.downloadingBlocks': 'Downloading blocks',
@@ -1790,11 +1790,11 @@ const de: Record<keyof typeof en, string> = {
   'sync.error': 'Sync-Fehler',
   'sync.connectingNode': 'Sichere Verbindung zum Monero-Node wird hergestellt',
   'sync.selectingSource': 'Sync-Quelle auswählen',
-  'sync.startingConnection': 'Gemeinsame Blockchain-Verbindung wird gestartet',
+  'sync.startingConnection': 'Verbindung zum gewählten Sync-Node wird hergestellt',
   'sync.startingConnectionHint':
-    'Die verschlüsselte Wallet wird vorbereitet und der schnellste verfügbare Node gewählt. Die App bleibt bedienbar.',
+    'Der gewählte Sync-Node wird direkt verwendet. Die App bleibt bedienbar.',
   'sync.startingConnectionElapsed':
-    '{seconds} Sek. · Die verschlüsselte Wallet wird vorbereitet und der schnellste verfügbare Node gewählt. Die App bleibt bedienbar.',
+    '{seconds} Sek. · Direkte Verbindung zum gewählten Sync-Node. Die App bleibt bedienbar.',
   'sync.showDetails': 'Sync-Details anzeigen',
   'sync.hideDetails': 'Sync-Details ausblenden',
   'sync.downloadingBlocks': 'Blöcke herunterladen',

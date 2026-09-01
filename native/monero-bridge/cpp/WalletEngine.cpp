@@ -4339,39 +4339,6 @@ class WalletEngine::Impl {
             throwIfWalletFailed(provider, "publicSyncTransport.init");
             throw WalletEngineError("public sync transport init failed");
           }
-          // Wallet::init configures RPC but does not guarantee that a
-          // keyless provider has performed its first daemon connection. A
-          // normal wallet reaches it through refresh(), whereas this public
-          // transport fetches a shared batch directly. Establish
-          // that one shared connection here so no individual wallet opens its
-          // own transport and no fetch fails with "no connection to daemon".
-          const auto daemonConnectStarted = std::chrono::steady_clock::now();
-          failureStage = "connecting-daemon";
-          if (!provider->connectToDaemon()) {
-            throwIfWalletFailed(provider, "publicSyncTransport.connectToDaemon");
-            throw WalletEngineError("public sync transport daemon connection failed");
-          }
-          throwIfWalletFailed(provider, "publicSyncTransport.connectToDaemon");
-          const uint64_t connectedDaemonHeight =
-              provider->daemonBlockChainHeight();
-          throwIfWalletFailed(
-              provider, "publicSyncTransport.daemonBlockChainHeight");
-          if (connectedDaemonHeight > 0) {
-            std::lock_guard<std::mutex> lock(coordinator.mutex);
-            coordinator.status.targetHeight =
-                network_fanout::mergeAuthenticatedTargetHeight(
-                    coordinator.status.targetHeight,
-                    connectedDaemonHeight);
-          }
-          logEngineDiagnostic(
-              "networkSync.providerTipReady",
-              {{"targetHeight", std::to_string(connectedDaemonHeight)}});
-          logEngineDiagnostic(
-              "networkSync.providerDaemonConnected",
-              {{"elapsedMs", std::to_string(
-                  std::chrono::duration_cast<std::chrono::milliseconds>(
-                      std::chrono::steady_clock::now() - daemonConnectStarted)
-                      .count())}});
           bool applyGrpcEndpoint = false;
           {
             std::lock_guard<std::mutex> lock(coordinator.mutex);
@@ -4381,6 +4348,51 @@ class WalletEngine::Impl {
           }
           if (applyGrpcEndpoint) {
             provider->setGrpcStreamEndpoint(grpcEndpoint);
+          }
+          // The selected optimized route already supplies a dedicated
+          // Clearnet gRPC endpoint for public blocks. Apply it before any
+          // daemon work and let the first authenticated batch provide the
+          // chain tip. Waiting here for the separate Onion daemon made every
+          // optimized startup pay Tor latency even though that connection is
+          // only needed later for private wallet operations and the pool.
+          // Standard nodes have no gRPC endpoint and keep the established
+          // eager daemon bootstrap unchanged.
+          if (grpcEndpoint.empty()) {
+            const auto daemonConnectStarted =
+                std::chrono::steady_clock::now();
+            failureStage = "connecting-daemon";
+            if (!provider->connectToDaemon()) {
+              throwIfWalletFailed(
+                  provider, "publicSyncTransport.connectToDaemon");
+              throw WalletEngineError(
+                  "public sync transport daemon connection failed");
+            }
+            throwIfWalletFailed(
+                provider, "publicSyncTransport.connectToDaemon");
+            const uint64_t connectedDaemonHeight =
+                provider->daemonBlockChainHeight();
+            throwIfWalletFailed(
+                provider, "publicSyncTransport.daemonBlockChainHeight");
+            if (connectedDaemonHeight > 0) {
+              std::lock_guard<std::mutex> lock(coordinator.mutex);
+              coordinator.status.targetHeight =
+                  network_fanout::mergeAuthenticatedTargetHeight(
+                      coordinator.status.targetHeight,
+                      connectedDaemonHeight);
+            }
+            logEngineDiagnostic(
+                "networkSync.providerTipReady",
+                {{"targetHeight", std::to_string(connectedDaemonHeight)}});
+            logEngineDiagnostic(
+                "networkSync.providerDaemonConnected",
+                {{"elapsedMs", std::to_string(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - daemonConnectStarted)
+                        .count())}});
+          } else {
+            logEngineDiagnostic(
+                "networkSync.providerDaemonDeferred",
+                {{"reason", "dedicated-grpc-block-transport"}});
           }
           {
             std::lock_guard<std::mutex> lock(coordinator.mutex);
@@ -4409,6 +4421,9 @@ class WalletEngine::Impl {
                   {"grpcEndpointAction", applyGrpcEndpoint
                       ? "configured"
                       : "preserved-core-session-state"},
+                  {"transportMode", grpcEndpoint.empty()
+                      ? "daemon-rpc"
+                      : "dedicated-grpc"},
               });
         }
 
