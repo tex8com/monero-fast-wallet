@@ -114,6 +114,7 @@ function shortAddress(value: string, fallback: string) {
 
 export default function SendScreen({ navigation, route }: any) {
   const [address, setAddress] = useState('');
+  const [addressInputHeight, setAddressInputHeight] = useState(58);
   const [amount, setAmount] = useState('');
   const [amountCurrency, setAmountCurrency] =
     useState<PaymentAmountCurrency>('XMR');
@@ -1457,7 +1458,7 @@ export default function SendScreen({ navigation, route }: any) {
               <Text style={s.fieldLabel}>{t('send.recipient')}</Text>
               <View style={s.addressInputRow}>
                 <TextInput
-                  style={s.addressInput}
+                  style={[s.addressInput, { height: addressInputHeight }]}
                   placeholder={t('send.pasteAddress')}
                   placeholderTextColor={colors.textMuted}
                   value={address}
@@ -1470,6 +1471,14 @@ export default function SendScreen({ navigation, route }: any) {
                     setRecipientReview(undefined);
                     setSendError(undefined);
                     clearPreparedTransaction();
+                  }}
+                  onContentSizeChange={event => {
+                    setAddressInputHeight(
+                      Math.max(
+                        58,
+                        Math.min(132, event.nativeEvent.contentSize.height + 28),
+                      ),
+                    );
                   }}
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -2404,11 +2413,16 @@ const s = StyleSheet.create({
     flex: 1,
     minHeight: 58,
     color: colors.textPrimary,
+    fontFamily: Platform.select({
+      android: 'monospace',
+      default: 'monospace',
+      ios: 'Menlo',
+    }),
     fontSize: 15,
     lineHeight: 21,
     paddingHorizontal: 13,
     paddingVertical: 14,
-    textAlignVertical: 'center',
+    textAlignVertical: 'top',
   },
   addressInputRow: {
     backgroundColor: 'rgba(7,5,12,0.34)',

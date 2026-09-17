@@ -355,6 +355,10 @@ function RestoreStartDateField({
 
   const year = calendarMonth.getFullYear();
   const month = calendarMonth.getMonth();
+  const quickYears = Array.from(
+    { length: 3 },
+    (_, index) => new Date().getFullYear() - index,
+  );
   const firstDayOffset = (new Date(year, month, 1, 12).getDay() + 6) % 7;
   const daysInMonth = new Date(year, month + 1, 0, 12).getDate();
   const days = Array.from(
@@ -437,6 +441,31 @@ function RestoreStartDateField({
             >
               <Text style={s.restoreCalendarNavText}>›</Text>
             </TouchableOpacity>
+          </View>
+          <View style={s.restoreQuickYears}>
+            {quickYears.map(quickYear => (
+              <TouchableOpacity
+                key={quickYear}
+                onPress={() =>
+                  setCalendarMonth(
+                    new Date(quickYear, Math.min(month, 11), 1, 12),
+                  )
+                }
+                style={[
+                  s.restoreQuickYear,
+                  year === quickYear && s.restoreQuickYearSelected,
+                ]}
+              >
+                <Text
+                  style={[
+                    s.restoreQuickYearText,
+                    year === quickYear && s.restoreQuickYearTextSelected,
+                  ]}
+                >
+                  {quickYear}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </View>
           <View style={s.restoreCalendarGrid}>
             {weekdays.map((weekday, index) => (
@@ -2389,6 +2418,31 @@ const s = StyleSheet.create({
     fontWeight: '800',
     textAlign: 'center',
   },
+  restoreQuickYears: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  restoreQuickYear: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.10)',
+    borderRadius: 8,
+    borderWidth: 1,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 32,
+  },
+  restoreQuickYearSelected: {
+    backgroundColor: 'rgba(242,104,34,0.18)',
+    borderColor: colors.orange,
+  },
+  restoreQuickYearText: {
+    color: 'rgba(255,255,255,0.72)',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  restoreQuickYearTextSelected: { color: '#FFF' },
   restoreCalendarGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   restoreWeekday: {
     width: '14.2857%',

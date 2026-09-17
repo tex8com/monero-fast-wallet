@@ -45,9 +45,11 @@ export default function TransactionRow({
     : transaction.pending
     ? t('status.pending')
     : transaction.confirmations > 0
-    ? t('transactions.confirmationsShort', {
-        count: transaction.confirmations,
-      })
+    ? transaction.confirmations > 10
+      ? t('transactions.confirmed')
+      : t('transactions.confirmationsShort', {
+          count: transaction.confirmations,
+        })
     : t('status.unconfirmed');
   const date = transaction.timestamp
     ? new Date(transaction.timestamp * 1000).toLocaleDateString(dateLocale, {

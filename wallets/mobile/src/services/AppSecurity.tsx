@@ -1068,7 +1068,7 @@ function AppSecurityLockScreen({
                 secureTextEntry={!showPassword}
                 autoCapitalize="none"
                 autoCorrect={false}
-                style={styles.input}
+                style={[styles.input, styles.passwordInput]}
               />
             </>
           ) : null}
@@ -1107,7 +1107,7 @@ function AppSecurityLockScreen({
                 secureTextEntry={!showPassword}
                 autoCapitalize="none"
                 autoCorrect={false}
-                style={styles.input}
+                style={[styles.input, styles.passwordInput]}
               />
             </>
           ) : null}
@@ -1134,7 +1134,9 @@ function AppSecurityLockScreen({
               </Text>
             </>
           ) : null}
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          <View style={styles.errorSlot}>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+          </View>
           <TouchableOpacity
             accessibilityRole="button"
             testID="app-security-primary"
@@ -1414,6 +1416,14 @@ const styles = StyleSheet.create({
     minHeight: 50,
     paddingHorizontal: 14,
   },
+  passwordInput: {
+    fontFamily: Platform.select({
+      android: 'monospace',
+      default: 'monospace',
+      ios: 'Menlo',
+    }),
+  },
+  errorSlot: { justifyContent: 'center', minHeight: 19 },
   error: { color: colors.error, fontSize: 13, lineHeight: 19 },
   fieldLabel: { color: colors.textPrimary, fontSize: 14, fontWeight: '700' },
   passwordHelp: { color: colors.textSecondary, fontSize: 13, lineHeight: 19 },

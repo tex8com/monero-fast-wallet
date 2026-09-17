@@ -15,6 +15,7 @@ jest.mock('../../i18n', () => ({
         'status.failed': 'Failed',
         'status.pending': 'Pending',
         'status.unconfirmed': 'Unconfirmed',
+        'transactions.confirmed': 'Confirmed',
         'transactions.openDetails': 'Open transaction details',
       };
       if (key === 'transactions.confirmationsShort') {
@@ -67,6 +68,27 @@ describe('TransactionRow', () => {
       .join(' ');
     expect(text).toContain('aaaaaa...aaaa');
     expect(text).toContain('Received');
+    expect(text).toContain('Confirmed');
+  });
+
+  it('keeps the confirmation count while it still helps the user', () => {
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+
+    ReactTestRenderer.act(() => {
+      renderer = ReactTestRenderer.create(
+        <TransactionRow
+          transaction={{ ...transaction, confirmations: 10 }}
+          onPress={jest.fn()}
+        />,
+      );
+    });
+
+    const text = renderer!.root
+      .findAllByType(Text)
+      .map(node => node.props.children)
+      .flat(Infinity)
+      .join(' ');
+    expect(text).toContain('10 conf.');
   });
 
   it('keeps wallet perspectives distinct in list keys', () => {

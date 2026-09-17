@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import {
   AccessibilityInfo,
+  ActivityIndicator,
   Modal,
   StyleSheet,
   Text,
@@ -8,6 +9,8 @@ import {
   Vibration,
   View,
 } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
+import QRCode from 'react-native-qrcode-svg';
 
 import { useI18n } from '../i18n';
 import { formatAtomicXmr } from '../services/WalletFormat';
@@ -91,15 +94,35 @@ export default function SendSuccessModal({
                 <Text selectable style={s.transactionId}>
                   {receipt.transactionId}
                 </Text>
+                <TouchableOpacity
+                  accessibilityLabel={t('transactions.copyId')}
+                  accessibilityRole="button"
+                  onPress={() => Clipboard.setString(receipt.transactionId!)}
+                  style={s.copyIdButton}
+                >
+                  <Text style={s.copyIdText}>{t('transactions.copyId')}</Text>
+                </TouchableOpacity>
+                <View style={s.transactionQr}>
+                  <QRCode
+                    backgroundColor="#FFFFFF"
+                    color={colors.bg}
+                    ecl="M"
+                    quietZone={8}
+                    size={136}
+                    value={receipt.transactionId}
+                  />
+                </View>
               </>
             ) : null}
           </View>
         ) : null}
 
         <View style={s.statusRow}>
-          <View
-            style={[s.statusDot, !receipt?.refreshing && s.statusDotDone]}
-          />
+          {receipt?.refreshing ? (
+            <ActivityIndicator color={colors.orange} size="small" />
+          ) : (
+            <View style={s.statusDotDone} />
+          )}
           <Text style={s.statusText}>
             {receipt?.refreshing
               ? t('send.successRefreshing')
@@ -190,19 +213,27 @@ const s = StyleSheet.create({
     lineHeight: 18,
     marginTop: spacing.xs,
   },
+  copyIdButton: {
+    alignSelf: 'flex-start',
+    marginTop: spacing.sm,
+    minHeight: 36,
+    justifyContent: 'center',
+  },
+  copyIdText: { color: colors.orangeLight, fontSize: 13, fontWeight: '800' },
+  transactionQr: {
+    alignItems: 'center',
+    marginTop: spacing.md,
+  },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: spacing.lg,
     gap: spacing.sm,
   },
-  statusDot: {
+  statusDotDone: {
     width: 9,
     height: 9,
     borderRadius: 5,
-    backgroundColor: colors.orange,
-  },
-  statusDotDone: {
     backgroundColor: colors.success,
   },
   statusText: {

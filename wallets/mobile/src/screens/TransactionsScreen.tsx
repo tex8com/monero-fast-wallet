@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
+  FlatList,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -32,6 +33,8 @@ export default function TransactionsScreen({ navigation, route }: any) {
     transactions,
   } = useWalletState();
   const [refreshing, setRefreshing] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(Boolean(session));
+  const [historyFailed, setHistoryFailed] = useState(false);
   const [allTransactions, setAllTransactions] = useState<WalletTransaction[]>(
     transactions,
   );
@@ -64,27 +67,38 @@ export default function TransactionsScreen({ navigation, route }: any) {
 
   useEffect(() => {
     setAllTransactions([]);
+    setHistoryLoading(Boolean(session));
+    setHistoryFailed(false);
   }, [
     addressFilter?.accountIndex,
     addressFilter?.addressIndex,
+    session,
     session?.walletId,
   ]);
 
   const refresh = useCallback(async () => {
     if (!session) {
       setAllTransactions([]);
+      setHistoryLoading(false);
+      setHistoryFailed(false);
       return;
     }
 
     setRefreshing(true);
+    setHistoryLoading(true);
+    setHistoryFailed(false);
     try {
       const [, nextTransactions] = await Promise.all([
         refreshSnapshot(),
         walletService.getTransactionsForAllAccounts(session, 0),
       ]);
       setAllTransactions(nextTransactions);
+    } catch (error) {
+      setHistoryFailed(true);
+      throw error;
     } finally {
       setRefreshing(false);
+      setHistoryLoading(false);
     }
   }, [refreshSnapshot, session]);
 
@@ -127,11 +141,27 @@ export default function TransactionsScreen({ navigation, route }: any) {
         </View>
       </View>
 
-      <ScrollView
+      <FlatList
         contentContainerStyle={[
           s.scroll,
           { paddingBottom: Math.max(insets.bottom + 24, 40) },
         ]}
+        data={visibleTransactions}
+        keyExtractor={transactionRowKey}
+        ListHeaderComponent={
+          historyFailed && visibleTransactions.length > 0 ? (
+            <View style={s.refreshFailure}>
+              <Text style={s.refreshFailureText}>{t('action.retry')}</Text>
+              <TouchableOpacity
+                accessibilityRole="button"
+                onPress={() => refresh().catch(() => undefined)}
+                style={s.refreshRetryButton}
+              >
+                <Text style={s.retryText}>{t('action.retry')}</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null
+        }
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -139,33 +169,48 @@ export default function TransactionsScreen({ navigation, route }: any) {
             tintColor={colors.orange}
           />
         }
-      >
-        {visibleTransactions.length > 0 ? (
-          visibleTransactions.map(transaction => (
-            <TransactionRow
-              key={transactionRowKey(transaction)}
-              transaction={transaction}
-              onPress={() => openTransaction(transaction)}
-            />
-          ))
-        ) : (
-          <View style={s.empty}>
-            <View style={s.emptyIcon}>
-              <Icon name="file" size={28} color={colors.orange} />
-            </View>
-            <Text style={s.emptyTitle}>
-              {session
-                ? t('home.noTransactions')
-                : t('home.walletNotOpen')}
-            </Text>
-            <Text style={s.emptyText}>
-              {session
-                ? t('home.noTransactionsText')
-                : t('home.openWalletToLoad')}
-            </Text>
-          </View>
+        renderItem={({ item: transaction }) => (
+          <TransactionRow
+            transaction={transaction}
+            onPress={() => openTransaction(transaction)}
+          />
         )}
-      </ScrollView>
+        ListEmptyComponent={
+          historyLoading ? (
+            <View style={s.loading}>
+              <ActivityIndicator color={colors.orange} size="large" />
+              <Text style={s.loadingText}>{t('sync.updatingHistory')}</Text>
+            </View>
+          ) : (
+            <View style={s.empty}>
+              <View style={s.emptyIcon}>
+                <Icon name="file" size={28} color={colors.orange} />
+              </View>
+              <Text style={s.emptyTitle}>
+                {session
+                  ? t('home.noTransactions')
+                  : t('home.walletNotOpen')}
+              </Text>
+              <Text style={s.emptyText}>
+                {historyFailed
+                  ? t('action.retry')
+                  : session
+                    ? t('home.noTransactionsText')
+                    : t('home.openWalletToLoad')}
+              </Text>
+              {historyFailed ? (
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  onPress={() => refresh().catch(() => undefined)}
+                  style={s.retryButton}
+                >
+                  <Text style={s.retryText}>{t('action.retry')}</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          )
+        }
+      />
     </View>
   );
 }
@@ -192,6 +237,31 @@ const s = StyleSheet.create({
   title: { color: colors.textPrimary, fontSize: 24, fontWeight: '900' },
   subtitle: { color: colors.textSecondary, fontSize: 13, marginTop: 2 },
   scroll: { padding: spacing.lg },
+  loading: {
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingTop: 64,
+  },
+  loadingText: { color: colors.textSecondary, fontSize: 14 },
+  refreshFailure: {
+    alignItems: 'center',
+    backgroundColor: colors.bgCard,
+    borderColor: colors.border,
+    borderRadius: 10,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  refreshFailureText: { color: colors.textSecondary, fontSize: 13 },
+  refreshRetryButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 32,
+    paddingHorizontal: spacing.sm,
+  },
   empty: {
     alignItems: 'center',
     paddingHorizontal: spacing.xl,
@@ -219,4 +289,15 @@ const s = StyleSheet.create({
     textAlign: 'center',
     marginTop: 7,
   },
+  retryButton: {
+    alignItems: 'center',
+    borderColor: colors.orange,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginTop: spacing.lg,
+    minHeight: 42,
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+  },
+  retryText: { color: colors.orange, fontSize: 14, fontWeight: '800' },
 });

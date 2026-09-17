@@ -395,6 +395,11 @@ function SyncProgressRow({
   const { t } = useI18n();
   const normalizedPercent =
     percent === undefined ? undefined : normalizeSyncPercent(percent);
+  const complete = normalizedPercent === 100;
+  const blocksRemaining =
+    current !== undefined && target !== undefined
+      ? Math.max(target - current, 0)
+      : undefined;
   const fillWidth = `${normalizedPercent ?? 0}%` as `${number}%`;
   return (
     <View style={s.progressSection} testID={testID}>
@@ -422,14 +427,13 @@ function SyncProgressRow({
           ]}
         />
       </View>
-      {target !== undefined || rate || extra ? (
+      {!complete && (blocksRemaining !== undefined || rate || extra) ? (
         <View style={s.metrics}>
           <View style={s.metricsPrimary}>
-            {target !== undefined ? (
+            {blocksRemaining !== undefined ? (
               <Text style={s.metric} numberOfLines={1}>
-                {t('sync.blockHeight', {
-                  current: formatBlockCount(current),
-                  target: formatBlockCount(target),
+                {t('sync.blocksRemaining', {
+                  count: formatBlockCount(blocksRemaining),
                 })}
               </Text>
             ) : null}
@@ -564,7 +568,7 @@ function formatBlockCount(value?: number) {
     : '–';
 }
 
-/** Keep the visible percentage consistent with "Block current of target". */
+/** Keep the visible percentage consistent with the tracked target height. */
 export function blockHeightProgress(current?: number, target?: number) {
   if (
     current === undefined ||

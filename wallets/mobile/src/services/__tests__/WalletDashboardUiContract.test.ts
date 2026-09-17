@@ -496,7 +496,8 @@ describe('Wallet dashboard interaction contract', () => {
       'const connectionElapsedSeconds = useElapsedSeconds(',
     );
     expect(syncStatus).toContain('extra={blockchainExtra}');
-    expect(syncStatus).toContain("t('sync.blockHeight'");
+    expect(syncStatus).toContain('const blocksRemaining =');
+    expect(syncStatus).toContain("t('sync.blocksRemaining'");
     expect(syncStatus).toContain('style={s.metricsPrimary}');
     expect(syncStatus).toContain(
       'const showWalletSync = blockchainConnected && walletOpened',

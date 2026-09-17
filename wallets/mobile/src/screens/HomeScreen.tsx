@@ -18,7 +18,7 @@ import Svg, {
   Stop,
   Circle,
 } from 'react-native-svg';
-import { colors } from '../theme/colors';
+import { colors, radius } from '../theme/colors';
 import SyncStatusBar from '../components/SyncStatusBar';
 import TransactionRow, {
   transactionRowKey,
@@ -768,16 +768,6 @@ export default function HomeScreen({ navigation }: any) {
         <View style={s.actRow}>
           <TouchableOpacity
             style={s.actBtn}
-            onPress={() => openWalletRoute('Send')}
-            activeOpacity={0.7}
-          >
-            <View style={s.actCircle}>
-              <IcoUp c="#FFF" />
-            </View>
-            <Text style={s.actLabel}>{t('tabs.send')}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={s.actBtn}
             onPress={() => openWalletRoute('Receive')}
             activeOpacity={0.7}
           >
@@ -785,6 +775,16 @@ export default function HomeScreen({ navigation }: any) {
               <IcoDown c="#FFF" />
             </View>
             <Text style={s.actLabel}>{t('tabs.receive')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={s.actBtn}
+            onPress={() => openWalletRoute('Send')}
+            activeOpacity={0.7}
+          >
+            <View style={s.actCircle}>
+              <IcoUp c="#FFF" />
+            </View>
+            <Text style={s.actLabel}>{t('tabs.send')}</Text>
           </TouchableOpacity>
         </View>
 
@@ -930,7 +930,16 @@ const s = StyleSheet.create({
   changeText: { fontSize: 16, fontWeight: '700' },
   changeUsd: { fontSize: 15, fontWeight: '500' },
 
-  chartWrap: { paddingHorizontal: 20, marginBottom: 4 },
+  chartWrap: {
+    borderRadius: radius.md,
+    elevation: 4,
+    marginBottom: 4,
+    paddingHorizontal: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+  },
   chartLoading: {
     height: CHART_H,
     justifyContent: 'center',
