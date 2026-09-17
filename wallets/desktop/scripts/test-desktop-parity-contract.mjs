@@ -369,7 +369,15 @@ test('desktop computes sync percentage from the wallet restore range, never the 
   const homeSource = appSource.slice(appSource.indexOf('function Home('), appSource.indexOf('function RecentTransactions('));
   assert.match(homeSource, /syncStartHeightForWallet\(\s*wallet\?\.restoreHeight,/);
   assert.match(homeSource, /presentWalletSync\(selectedSnapshot, \{ startHeight: syncStartHeight \}\)/);
-  assert.match(appSource, /sync\.phase === 'finalizing' \? 99/);
+  assert.match(appSource, /sync\.coreConfirmed \|\| sync\.phase === 'finalizing' \? 100/);
+  assert.match(appSource, /t\('home\.syncRemaining'/);
+});
+
+test('desktop mirrors the current alpha transaction and address UX', () => {
+  assert.match(appSource, /recipientAddressRef/);
+  assert.match(appSource, /setSuccessQrCode/);
+  assert.match(appSource, /send\.transactionReference/);
+  assert.match(appSource, /transactionListStatus/);
 });
 
 test('desktop news uses the same TEX8 feed and categories as mobile', () => {

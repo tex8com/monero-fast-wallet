@@ -44,7 +44,8 @@ test('desktop node status manages the global Clearnet sync and Tor wallet routes
 test('desktop embeds Tor for Onion profiles and keeps direct RPC available', () => {
   assert.match(torTransport, /arti_client/);
   assert.match(torTransport, /TorClientConfigBuilder::from_directories/);
-  assert.match(torTransport, /TorClient::builder\(\)/);
+  assert.match(torTransport, /TorClient::with_runtime\(runtime\)/);
+  assert.match(torTransport, /create_unbootstrapped_async\(\)/);
   assert.match(torTransport, /start_embedded_tor/);
   assert.match(torTransport, /copy_bidirectional/);
   assert.match(torTransport, /read_socks4_request/);

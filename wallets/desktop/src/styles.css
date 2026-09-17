@@ -471,7 +471,7 @@ h2 { letter-spacing: -0.65px; }
 .subaddress-list em { flex: 0 0 auto; align-self: center; color: #f4bd55; font-size: 11px; font-style: normal; font-weight: 850; }
 .recipient-address-input { display: flex; overflow: hidden; border: 1px solid #3e354b; border-radius: 10px; background: #0d0b14; }
 .recipient-address-input:focus-within { border-color: #fa671c; box-shadow: 0 0 0 3px rgb(250 103 28 / 13%); }
-.recipient-address-input input { min-width: 0; flex: 1; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; }
+.recipient-address-input textarea { min-width: 0; min-height: 58px; max-height: 132px; flex: 1; border: 0 !important; border-radius: 0 !important; padding: 14px 13px; color: #f7f4fa; background: transparent; box-shadow: none !important; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 15px; line-height: 21px; resize: none; }
 .recipient-qr-button { width: 48px; flex: 0 0 auto; border: 0; border-left: 1px solid #3e354b; color: #f68a4a; background: #18121f; cursor: pointer; font-size: 24px; line-height: 1; }
 .recipient-qr-button:hover { color: #fff; background: #48241d; }
 .camera-scanner-overlay { position: fixed; z-index: 100; inset: 0; overflow-y: auto; padding: 18px; background: #08060d; }
@@ -972,6 +972,9 @@ html[dir="rtl"] textarea { text-align: right; }
 .app-protection-card form { display: grid; gap: 12px; }
 .app-protection-card label { display: grid; gap: 7px; color: #ded8e8; font-weight: 700; }
 .app-protection-card input { width: 100%; border: 1px solid #4c405c; border-radius: 10px; padding: 12px; color: #fff; background: #0d0a13; font: inherit; }
+.app-protection-card input[type="password"] { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.protection-error-slot { display: grid; min-height: 21px; align-items: center; }
+.protection-error-slot .setup-message { margin: 0; }
 .app-protection-card small { color: #948aa4; }
 .app-welcome-gate { overflow: hidden; background: radial-gradient(
     circle at 50% -10%,
@@ -1180,7 +1183,7 @@ html[dir="rtl"] textarea { text-align: right; }
 .market-change { display: flex; gap: 13px; margin: 9px 0 0; font-size: 15px; font-weight: 850; }
 .market-change.positive { color: #00d68f; }
 .market-change.negative { color: #ff5c76; }
-.market-chart-wrap { height: 248px; margin: 8px -8px 0; }
+.market-chart-wrap { height: 248px; margin: 8px -8px 0; border-radius: 14px; box-shadow: 0 10px 24px rgb(0 0 0 / 22%); }
 .market-chart-interactive { position: relative; height: 100%; }
 .market-chart { display: block; width: 100%; height: 100%; overflow: visible; }
 .market-chart-empty { display: grid; height: 100%; place-content: center; justify-items: center; gap: 10px; color: #9991ad; font-size: 13px; font-weight: 700; }
@@ -1605,6 +1608,10 @@ html[dir="rtl"] textarea { text-align: right; }
 .send-success-card dt { color: #9991a5; font-size: 10px; font-weight: 800; text-transform: uppercase; }
 .send-success-card dd { overflow-wrap: anywhere; margin: 0; color: #f5edf7; font-size: 12px; font-weight: 800; }
 .send-success-card dl > div:last-child:nth-child(3) { grid-column: 1 / -1; }
+.send-success-transaction-reference dd { display: grid; justify-items: center; gap: 10px; }
+.send-success-transaction-reference code { max-width: 100%; overflow-wrap: anywhere; color: #f8d2bb; }
+.send-success-transaction-reference .quiet-button { margin: 0; color: #ffae7a; }
+.send-success-transaction-reference img { width: 154px; height: 154px; padding: 7px; border-radius: 10px; background: #fff; image-rendering: pixelated; }
 .send-success-refresh { display: flex; align-items: center; gap: 8px; color: #aeb7b3 !important; font-size: 12px; }
 .send-success-dot { width: 8px; height: 8px; border-radius: 50%; background: #26d39a; }
 .send-success-card .primary { width: 100%; margin: 2px 0 0; }

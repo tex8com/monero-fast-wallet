@@ -167,6 +167,8 @@ const baseMessages = {
     "send.successRefreshing": "Refreshing your wallet in the background…",
     "send.successReady": "Wallet updated",
     "send.successDone": "Done",
+    "send.copyTransactionId": "Copy transaction ID",
+    "send.transactionReference": "Transaction reference",
     "send.ledgerHint":
       "Keep the Ledger unlocked and confirm the transaction on its display.",
     "send.checkingSpendOutputs":
@@ -1225,6 +1227,8 @@ const baseMessages = {
     "send.successRefreshing": "Deine Wallet wird im Hintergrund aktualisiert…",
     "send.successReady": "Wallet aktualisiert",
     "send.successDone": "Fertig",
+    "send.copyTransactionId": "Transaktions-ID kopieren",
+    "send.transactionReference": "Transaktionsreferenz",
     "send.ledgerHint":
       "Lass den Ledger entsperrt und bestätige die Transaktion auf dem Gerät.",
     "send.checkingSpendOutputs":
