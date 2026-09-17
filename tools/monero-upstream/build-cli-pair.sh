@@ -38,6 +38,8 @@ product_core_target_dir="${MFW_PRODUCT_CORE_TARGET_DIR:-${product_core_root}/tar
 fast_wallet_protocol_root="${repo_root}/native/fast-wallet-protocol"
 community_cli_root="${repo_root}/wallets/cli"
 community_cli_target_dir="${MFW_COMMUNITY_CLI_TARGET_DIR:-${patched_build}/community-cli-target}"
+tui_root="${repo_root}/wallets/tui"
+tui_target_dir="${MFW_TUI_TARGET_DIR:-${patched_build}/tui-target}"
 
 for source in "${official_source}" "${patched_source}"; do
   git -C "${source}" rev-parse --git-dir >/dev/null 2>&1 || {
@@ -139,6 +141,16 @@ cargo build --release --locked \
 community_cli_binary="${community_cli_target_dir}/release/monero-fast-wallet-community"
 [[ -f "${community_cli_binary}" ]] || {
   echo "Community CLI companion is missing: ${community_cli_binary}" >&2
+  exit 65
+}
+
+cargo test --locked --manifest-path "${tui_root}/Cargo.toml" --target-dir "${tui_target_dir}"
+cargo build --release --locked \
+  --manifest-path "${tui_root}/Cargo.toml" \
+  --target-dir "${tui_target_dir}"
+tui_binary="${tui_target_dir}/release/fast-wallet-cli"
+[[ -f "${tui_binary}" ]] || {
+  echo "TUI launcher is missing: ${tui_binary}" >&2
   exit 65
 }
 
@@ -304,7 +316,7 @@ configured_openssl_prefix="$(cache_value _OPENSSL_PREFIX)"
 mkdir -p "${output_dir}"
 install -m 0755 "${official_build}/bin/monero-wallet-cli" "${output_dir}/monero-wallet-cli-original"
 install -m 0755 "${patched_build}/bin/monero-fast-wallet-cli" "${output_dir}/monero-fast-wallet-cli"
-install -m 0755 "${patched_build}/bin/monero-fast-wallet-cli" "${output_dir}/fast-wallet-cli"
+install -m 0755 "${tui_binary}" "${output_dir}/fast-wallet-cli"
 install -m 0755 "${community_cli_binary}" "${output_dir}/monero-fast-wallet-community"
 install -m 0755 "${product_core_library}" "${output_dir}/${product_core_runtime_name}"
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -323,8 +335,13 @@ official_sha="$(shasum -a 256 "${output_dir}/monero-wallet-cli-original" | awk '
 product_sha="$(shasum -a 256 "${output_dir}/monero-fast-wallet-cli" | awk '{print $1}')"
 shortcut_sha="$(shasum -a 256 "${output_dir}/fast-wallet-cli" | awk '{print $1}')"
 community_cli_sha="$(shasum -a 256 "${output_dir}/monero-fast-wallet-community" | awk '{print $1}')"
-[[ "${shortcut_sha}" == "${product_sha}" ]] || {
-  echo "Short CLI launcher differs from the authenticated product binary" >&2
+[[ "${shortcut_sha}" != "${product_sha}" ]] || {
+  echo "TUI launcher must not be a copy of the C++ product CLI" >&2
+  exit 65
+}
+tui_identity="$("${output_dir}/fast-wallet-cli" --tui-version)"
+[[ "${tui_identity}" == *'"product":"fast-wallet-tui"'* ]] || {
+  echo "fast-wallet-cli did not report the TUI identity" >&2
   exit 65
 }
 product_core_runtime_sha="$(shasum -a 256 "${output_dir}/${product_core_runtime_name}" | awk '{print $1}')"

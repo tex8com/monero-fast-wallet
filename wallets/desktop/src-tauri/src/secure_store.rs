@@ -1359,8 +1359,7 @@ fn delete_secret(prefix: &str, identifier: &str, label: &str) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        account_name, account_name_with_prefix, constant_time_match, delete_wallet_password,
-        hash_app_protection_password, load_wallet_password_current, store_wallet_password,
+        account_name, account_name_with_prefix, constant_time_match, hash_app_protection_password,
         verify_app_protection_hash, SessionSecretCache, SessionSecretCacheEntry,
         APP_PASSWORD_ARGON2_PREFIX,
     };
@@ -1470,13 +1469,37 @@ mod tests {
 
     #[test]
     #[ignore = "requires the current platform's real secure credential store"]
-    fn wallet_credential_round_trip_uses_the_platform_secure_store() {
+    fn platform_credential_round_trip_uses_the_real_secure_store() {
+        struct TestCredentialCleanup(String);
+
+        impl Drop for TestCredentialCleanup {
+            fn drop(&mut self) {
+                let _ = super::platform_delete_secret(&self.0);
+            }
+        }
+
         let identifier = format!("secure-store-test-{}", std::process::id());
-        let password = "test-device-held-credential".to_owned();
-        store_wallet_password(&identifier, password).expect("store and verification must succeed");
-        assert!(load_wallet_password_current(&identifier)
-            .expect("secure store must be readable")
-            .is_some());
-        delete_wallet_password(&identifier).expect("test credential cleanup must succeed");
+        let account = account_name_with_prefix("platform-secure-store-test", &identifier)
+            .expect("test credential account must be valid");
+        let cleanup = TestCredentialCleanup(account.clone());
+
+        // This test intentionally bypasses AppVault. AppVault lifecycle and
+        // encryption have their own unit tests; this ignored integration test
+        // verifies the real operating-system credential backend itself.
+        super::platform_delete_secret(&account)
+            .expect("stale test credential cleanup must succeed");
+        super::platform_store_secret(&account, "test-device-held-credential")
+            .expect("platform credential write must succeed");
+        assert_eq!(
+            super::platform_load_current_secret(&account)
+                .expect("platform credential read must succeed")
+                .as_deref(),
+            Some("test-device-held-credential")
+        );
+        super::platform_delete_secret(&account).expect("test credential cleanup must succeed");
+        assert!(super::platform_load_current_secret(&account)
+            .expect("platform credential deletion must be verifiable")
+            .is_none());
+        drop(cleanup);
     }
 }

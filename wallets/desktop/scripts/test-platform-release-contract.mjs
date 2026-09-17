@@ -16,12 +16,22 @@ const bundleScript = read(desktopRoot, 'scripts', 'build-bundle.sh');
 const signScript = read(desktopRoot, 'scripts', 'sign-macos-app.sh');
 const packageScript = read(desktopRoot, 'scripts', 'package-macos-signed.sh');
 const releaseScript = read(desktopRoot, 'scripts', 'release-macos-signed.sh');
+const linuxCoreScript = read(desktopRoot, 'scripts', 'prepare-linux-monero-core.sh');
 const mobilePlayScript = read(repoRoot, 'wallets', 'mobile', 'scripts', 'android-play-bundle.sh');
+const mobileSigningScript = read(repoRoot, 'wallets', 'mobile', 'scripts', 'android-release-signing.sh');
 const platformAuth = read(desktopRoot, 'src-tauri', 'src', 'platform_auth.rs');
 const hostSource = read(desktopRoot, 'src-tauri', 'src', 'lib.rs');
+const nativeBuild = read(desktopRoot, 'src-tauri', 'build.rs');
 const appSource = read(desktopRoot, 'src', 'App.tsx');
 const macAuth = read(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopPlatformAuthMac.mm');
 const windowsAuth = read(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopPlatformAuthWindows.cpp');
+const windowsCoreProxy = read(
+  repoRoot,
+  'native',
+  'desktop-bridge',
+  'cpp',
+  'DesktopWalletCoreWindowsProxy.cpp',
+);
 
 test('desktop selects real platform credential stores for macOS, Windows, and Linux', () => {
   assert.match(cargo, /apple-native/);
@@ -60,12 +70,54 @@ test('Windows and Linux release packages carry their closed-app notification hel
   assert.match(bundleScript, /nsis\)[\s\S]*Windows/);
   assert.match(bundleScript, /appimage\)[\s\S]*Linux/);
   assert.match(bundleScript, /DESKTOP_REQUIRE_MONERO=1/);
+  assert.match(bundleScript, /TAURI_CONFIG='\{"bundle":\{"resources":\[\]\}\}'/);
+  assert.match(bundleScript, /notification_agent=.*monero-fast-walletd/);
+  assert.match(bundleScript, /\[\[ ! -s "\$\{notification_agent\}" \]\]/);
+});
+
+test('Linux links the authenticated Product Core and Fast Wallet protocol', () => {
+  assert.match(linuxCoreScript, /MFW_PRODUCT_CORE_ROOT/);
+  assert.match(linuxCoreScript, /MFW_PRODUCT_CORE_LIBRARY/);
+  assert.match(linuxCoreScript, /MFW_FAST_WALLET_PROTOCOL_ROOT/);
+  assert.match(linuxCoreScript, /MFW_FAST_WALLET_PROTOCOL_LIBRARY/);
+  assert.match(linuxCoreScript, /--features mobile-fast-crypto/);
+  assert.doesNotMatch(linuxCoreScript, /export PKG_CONFIG_LIBDIR/);
+  assert.match(linuxCoreScript, /PKG_CONFIG_LIBDIR="\$\{grpc_pkg_config_libdir\}" PKG_CONFIG_PATH=""[\s\\]+cmake/);
+  assert.doesNotMatch(linuxCoreScript, /'-lcrypto'\s+'-lprotobuf'/);
+  assert.match(linuxCoreScript, /pkg-config --libs --static grpc\+\+ grpc protobuf/);
+  assert.match(linuxCoreScript, /link_args=\('-Wl,--start-group'\)/);
+  assert.match(linuxCoreScript, /"\$\{grpc_sdk_prefix\}\/lib\/libprotobuf\.a"/);
+  assert.match(linuxCoreScript, /'-Wl,--end-group'/);
+  assert.match(linuxCoreScript, /-lstdc\+\+,-lgcc,-latomic,-lc/);
+});
+
+test('Windows packages the authenticated Core and its private runtime closure', () => {
+  for (const resource of [
+    'tex8_wallet_core.dll',
+    'tex8_wallet_core.tree',
+    'fast_wallet_protocol.dll',
+    'libc++.dll',
+    'libunwind.dll',
+    'libwinpthread-1.dll',
+  ]) {
+    assert.ok(windowsConfig.includes(resource), `Windows bundle is missing ${resource}`);
+  }
+  assert.match(
+    windowsCoreProxy,
+    /tex8_desktop_wallet_configure_public_block_spool/,
+    'Windows must forward the public block spool configuration to the packaged Core',
+  );
+  assert.ok(
+    (nativeBuild.match(/DesktopWalletCoreWindowsProxy\.cpp/g) ?? []).length >= 2,
+    'Cargo must rebuild the Windows Core proxy whenever its source changes',
+  );
 });
 
 test('Android Play signing works with protected environment credentials outside macOS', () => {
-  assert.match(mobilePlayScript, /provided_count > 0 && provided_count < \$\{#required_variables\[@\]\}/);
-  assert.match(mobilePlayScript, /Missing Android release signing credentials\. Set all MONERO_UPLOAD_\* variables/);
-  assert.match(mobilePlayScript, /if \[\[ "\$\(uname -s\)" != "Darwin" \]\]/);
+  assert.match(mobilePlayScript, /android-release-signing\.sh/);
+  assert.match(mobileSigningScript, /provided_count > 0 && provided_count < \$\{#required_variables\[@\]\}/);
+  assert.match(mobileSigningScript, /Missing Android release signing credentials\. Set all MONERO_UPLOAD_\* variables/);
+  assert.match(mobileSigningScript, /elif \[\[ "\$\(uname -s\)" == "Darwin" \]\]/);
 });
 
 test('macOS packages seal the app before creating the DMG and notarize the exact artifact', () => {

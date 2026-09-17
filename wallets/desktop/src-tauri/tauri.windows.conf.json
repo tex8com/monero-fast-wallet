@@ -3,6 +3,12 @@
   "bundle": {
     "resources": {
       "target/release/monero-fast-walletd.exe": "target/release/monero-fast-walletd.exe",
+      "../native-libs/tex8_wallet_core.dll": "tex8_wallet_core.dll",
+      "../native-libs/tex8_wallet_core.tree": "tex8_wallet_core.tree",
+      "../native-libs/fast_wallet_protocol.dll": "fast_wallet_protocol.dll",
+      "../native-libs/libc++.dll": "libc++.dll",
+      "../native-libs/libunwind.dll": "libunwind.dll",
+      "../native-libs/libwinpthread-1.dll": "libwinpthread-1.dll",
       "../../../build/community-v1-release-assets/artifact-manifest.json": "artifact-manifest.json",
       "../../../build/community-v1-release-assets/harrier-v1.pte": "harrier-v1.pte",
       "../../../build/community-v1-release-assets/tokenizer.json": "tokenizer.json",

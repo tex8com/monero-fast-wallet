@@ -35,6 +35,9 @@ CARGO_TARGET_DIR="$cargo_target_dir" cargo test --locked \
   --manifest-path "${repo_root}/wallets/cli/Cargo.toml" \
   --test full_testbench --no-fail-fast
 
+CARGO_TARGET_DIR="${cargo_target_dir}-tui" cargo test --locked \
+  --manifest-path "${repo_root}/wallets/tui/Cargo.toml" --no-fail-fast
+
 printf '%s\n' \
   'PASS system_smoke' \
   'product_cli_version=pass' \

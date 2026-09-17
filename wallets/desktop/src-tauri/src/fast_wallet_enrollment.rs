@@ -796,7 +796,7 @@ mod tests {
             "https://alerts.example"
         );
         assert!(fixed_private_origin(
-            "http://abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwxyz23.onion"
+            "http://fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion"
         )
         .is_ok());
         assert!(fixed_private_origin("http://alerts.example").is_err());

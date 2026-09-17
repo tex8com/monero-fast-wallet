@@ -137,6 +137,7 @@ const harrierSentencePiecePatch = read(
 const tauriBase = read(desktopRoot, 'src-tauri', 'tauri.conf.json');
 const tauriBaseConfig = JSON.parse(tauriBase);
 const tauriLinux = read(desktopRoot, 'src-tauri', 'tauri.linux.conf.json');
+const tauriLinuxCuda = read(desktopRoot, 'src-tauri', 'tauri.linux-cuda.conf.json');
 const tauriBuild = read(desktopRoot, 'src-tauri', 'build.rs');
 
 function listedPatches(series) {
@@ -201,13 +202,13 @@ test('the Monero patch series carries the CPU batch through Rust and wallet2', (
   assert.match(moneroNamePatch, /canonical varint/);
   assert.match(
     moneroLock,
-    /^patched_tree=2d767f4c2abf1fc0bcc94d2e8883aea3029b3bb6$/m,
+    /^patched_tree=0389d585c9c742eda74b5e9912997d2ba5393503$/m,
   );
   assert.match(
     moneroLock,
-    /^previous_patched_tree=21f6b377e1acbd83a7b5da34164dca12e6dcbbab$/m,
+    /^previous_patched_tree=5c0b09ed55682c0f6d60b9cbd4db91d5dacc0388$/m,
   );
-  assert.match(moneroLock, /^previous_patch_count=77$/m);
+  assert.match(moneroLock, /^previous_patch_count=92$/m);
   assert.match(prepareMac, /-DMFW_MONERO_PATCH_COUNT="\$\{monero_patch_count\}"/);
   assert.match(prepareMac, /-DMFW_PRODUCT_COMMIT="\$\{product_commit\}"/);
   assert.match(prepareMac, /-DMFW_PRODUCT_DIRTY="\$\{product_dirty\}"/);
@@ -241,9 +242,9 @@ test('CUDA C7 is a verified optional product backend with an unconditional CPU f
   assert.match(moneroPerformancePatch, /Derivation benchmark correctness check failed/);
   assert.match(desktopBridge, /tex8_desktop_wallet_set_compute_backend/);
   assert.match(tauriHost, /compute_preferences::save/);
-  assert.match(desktopUi, /'auto', t\('settings\.computeAuto'\)/);
-  assert.match(desktopUi, /'cpu', t\('settings\.computeCpu'\)/);
-  assert.match(desktopUi, /'gpu', t\('settings\.computeGpu'\)/);
+  assert.match(desktopUi, /\(\['cpu', 'metal', 'cuda'\] as const\)/);
+  assert.match(desktopUi, /backend === 'cpu' \? 'CPU' : backend === 'metal' \? 'Metal' : 'CUDA'/);
+  assert.match(desktopUi, /backend === 'cpu' \|\| Boolean\(computeStatus\?\.gpuAvailable && computeStatus\.selfTestPassed && computeStatus\.gpuKind === backend\)/);
 });
 
 test('both wallet UIs cache and show separate verified CPU, Metal, and CUDA rates', () => {
@@ -256,13 +257,16 @@ test('both wallet UIs cache and show separate verified CPU, Metal, and CUDA rate
   assert.match(desktopUi, /\['Metal', derivationPerformance\?\.metal\]/);
   assert.match(desktopUi, /\['CUDA', derivationPerformance\?\.cuda\]/);
   assert.match(mobileSpec, /benchmarkDerivationPerformance\(\): Promise<string>/);
-  assert.match(mobilePerformance, /monero-fast-wallet\.derivation-performance\.v1/);
+  assert.match(mobilePerformance, /monero-fast-wallet\.derivation-performance\.v3/);
   assert.match(mobilePerformance, /loadProtectedMetadata/);
   assert.match(
     mobileAndroidModule,
     /benchmarkDerivationPerformance[\s\S]*nativeWalletExecutor\.execute/,
   );
-  assert.match(mobileSettings, /\['CPU', derivationPerformance\?\.cpu\]/);
+  assert.match(
+    mobileSettings,
+    /derivationPerformance\?\.neonCapable[\s\S]*derivationPerformance\?\.cpu/,
+  );
   assert.match(mobileSettings, /\['Metal', derivationPerformance\?\.metal\]/);
   assert.match(mobileSettings, /\['CUDA', derivationPerformance\?\.cuda\]/);
 });
@@ -371,7 +375,9 @@ test('macOS links gRPC and Harrier against one pinned dependency graph with a ma
 test('desktop bundles the shared runtime backend without exposing keys to Tauri', () => {
   assert.match(tauriBase, /libmonero_fast_crypto\.dylib/);
   assert.match(tauriLinux, /libmonero_fast_crypto\.so/);
-  assert.match(tauriLinux, /libtex8_wallet_cuda\.so/);
+  assert.doesNotMatch(tauriLinux, /libtex8_wallet_cuda\.so/);
+  assert.match(tauriLinuxCuda, /libtex8_wallet_cuda\.so/);
+  assert.match(prepareLinux, /MONERO_BUILD_CUDA:-auto/);
   assert.match(prepareMac, /install_name_tool -id '@rpath\/libmonero_fast_crypto\.dylib'/);
   assert.match(tauriBuild, /DESKTOP_MONERO_FAST_CRYPTO_LIBRARY/);
   assert.doesNotMatch(tauriBuild, /COMMANDS[\s\S]*generate_key_derivation/);

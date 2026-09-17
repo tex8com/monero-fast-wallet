@@ -41,6 +41,9 @@ if [[ "${bundle}" == "appimage" ]]; then
   # Produces and stages the Linux shared Rust library, then exports the full
   # static libwallet_api link graph for a real AppImage wallet build.
   source "${script_dir}/prepare-linux-monero-core.sh"
+  if [[ "${DESKTOP_LINUX_CUDA_AVAILABLE:-0}" == 1 ]]; then
+    tauri_config_args=(--config src-tauri/tauri.linux-cuda.conf.json)
+  fi
 fi
 
 for required in DESKTOP_MONERO_SOURCE_DIR DESKTOP_MONERO_WALLET_API_LIBRARY; do
@@ -65,7 +68,29 @@ export DESKTOP_MONERO_FAST_CRYPTO_LIBRARY="${fast_crypto_library}"
 # Ship the unprivileged Linux notification agent alongside the desktop host.
 # It is harmless on non-Linux targets and lets the app install a per-user
 # service only after the user explicitly enables Fast Wallet signals.
-cargo build --manifest-path src-tauri/Cargo.toml --release --bin monero-fast-walletd
+# The platform bundle config lists this helper as a resource.  A clean build
+# cannot validate that resource before Cargo has produced it, so clear bundle
+# resources only for this bootstrap command.  The following Tauri build runs
+# with the complete platform config and packages the freshly built binary.
+TAURI_CONFIG='{"bundle":{"resources":[]}}' \
+  cargo build --manifest-path src-tauri/Cargo.toml --release --bin monero-fast-walletd
+if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+  cargo_target_dir="${CARGO_TARGET_DIR}"
+else
+  cargo_target_dir="$(
+    cargo metadata \
+      --manifest-path src-tauri/Cargo.toml \
+      --no-deps \
+      --format-version 1 \
+      | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));'
+  )"
+fi
+notification_agent="${cargo_target_dir}/release/monero-fast-walletd"
+[[ "${bundle}" == "nsis" ]] && notification_agent="${notification_agent}.exe"
+if [[ ! -s "${notification_agent}" ]]; then
+  echo "The closed-app notification helper was not built: ${notification_agent}" >&2
+  exit 1
+fi
 tauri_build_args=(--bundles "${bundle}")
 if (( ${#tauri_config_args[@]} > 0 )); then
   tauri_build_args+=("${tauri_config_args[@]}")

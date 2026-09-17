@@ -148,6 +148,7 @@ h2 { letter-spacing: -0.65px; }
 .action-card p,
 .empty-state p { margin-bottom: 0; color: #ada6b8; line-height: 1.55; }
 .recipient-picker { display: grid; gap: 12px; margin: -2px 0 4px; }
+.recipient-picker:empty { display: none; margin: 0; }
 .recipient-recents { margin-top: 18px; }
 .recipient-picker > div { display: grid; gap: 7px; }
 .recipient-picker > div > strong { color: #c9bfce; font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
@@ -359,6 +360,7 @@ h2 { letter-spacing: -0.65px; }
 .mfw-name-suggestion:focus-visible { border-color: #ff7b3f; background: rgb(255 103 28 / 16%); }
 .mfw-name-suggestion > span { color: #ff7b3f; font-size: 17px; }
 .mfw-name-suggestion > b { font-size: 13px; }
+.send-recipient-continue { margin-top: 2px; }
 .mfw-name-lookup,
 .mfw-resolved-recipient { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 38px; color: var(--muted); font-size: 12px; }
 .mfw-inline-spinner { display: inline-block; flex: 0 0 auto; width: 17px; height: 17px; border: 2px solid rgb(255 123 63 / 25%); border-top-color: #ff7b3f; border-radius: 50%; animation: spin 0.75s linear infinite; }
@@ -415,10 +417,10 @@ h2 { letter-spacing: -0.65px; }
 .receive-currency-toggle { display: flex; gap: 3px; padding: 3px; border: 1px solid #39324a; border-radius: 999px; background: #08070d; }
 .receive-currency-toggle button { min-width: 54px; min-height: 30px; padding: 0 12px; border: 0; border-radius: 999px; color: #aaa1b4; background: transparent; cursor: pointer; font-size: 11px; font-weight: 900; }
 .receive-currency-toggle button.active { color: #fff; background: #fa671c; }
-.receive-amount-field { display: flex; overflow: hidden; min-height: 58px; align-items: center; border: 1px solid #3d354d; border-radius: 11px; background: #100d18; }
+.transaction-form label.receive-amount-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; overflow: hidden; min-height: 58px; align-items: stretch; gap: 0; border: 1px solid #3d354d; border-radius: 11px; background: #100d18; }
 .receive-amount-field:focus-within { border-color: #fa671c; box-shadow: 0 0 0 3px rgb(250 103 28 / 13%); }
-.receive-amount-field input { min-width: 0; flex: 1; padding: 12px 14px; border: 0 !important; color: #f6f1f8; background: transparent; box-shadow: none !important; font-size: 24px; font-weight: 800; }
-.receive-amount-field span { display: grid; align-self: stretch; place-items: center; padding: 0 14px; border-left: 1px solid #3d354d; color: #fa762f; font-size: 13px; font-weight: 900; }
+.transaction-form .receive-amount-field input { min-width: 0; width: 100%; padding: 12px 14px; border: 0 !important; color: #f6f1f8; background: transparent; box-shadow: none !important; font-size: 24px; font-weight: 800; }
+.transaction-form .receive-amount-field > span { display: grid; align-self: stretch; place-items: center; padding: 0 14px; border-left: 1px solid #3d354d; color: #fa762f; font-size: 13px; font-weight: 900; }
 .receive-payment-composer > small { padding: 0 2px; color: #aaa1b4; font-size: 12px; }
 .receive-payment-composer > small.unavailable { color: #f4bd55; }
 .receive-payment-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 9px; width: min(100%, 390px); }
@@ -989,7 +991,9 @@ html[dir="rtl"] textarea { text-align: right; }
 .app-welcome-language { min-width: 0; margin-top: 11px; padding: 17px 13px 14px; border: 1px solid rgb(255 255 255 / 10%); border-radius: 18px; background: rgb(8 7 15 / 62%); }
 .app-welcome-language > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 10px 12px; }
 .app-welcome-language > header strong { color: #a9a0b7; font-size: 11px; font-weight: 850; letter-spacing: 0.09em; text-transform: uppercase; }
-.app-welcome-language > header span { color: #fff; font-size: 14px; font-weight: 750; }
+.app-welcome-language > header span { display: inline-flex; align-items: center; gap: 7px; color: #fff; font-size: 14px; font-weight: 750; }
+.app-welcome-language .language-flag { display: block; width: 30px; height: 20px; object-fit: cover; border-radius: 3px; box-shadow: 0 1px 4px rgb(0 0 0 / 32%); }
+.app-welcome-language > header .language-flag { width: 21px; height: 14px; }
 .app-welcome-carousel { display: grid; grid-template-columns: 38px minmax(0, 1fr) 38px; align-items: center; }
 .app-welcome-language-arrow { display: grid; width: 34px; height: 70px; place-items: center; padding: 0; border: 0; color: #fa671c; background: transparent; cursor: pointer; font: 300 35px/1 system-ui,
     sans-serif; }
@@ -1000,7 +1004,6 @@ html[dir="rtl"] textarea { text-align: right; }
 .app-welcome-language-strip > button { display: grid; flex: 0 0 130px; min-width: 0; height: 76px; place-items: center; align-content: center; gap: 3px; padding: 8px 9px; border: 1px solid rgb(255 255 255 / 8%); border-radius: 13px; color: #b5adbe; background: rgb(255 255 255 / 3%); cursor: pointer; scroll-snap-align: center; }
 .app-welcome-language-strip > button:hover { border-color: rgb(250 103 28 / 52%); background: rgb(250 103 28 / 7%); }
 .app-welcome-language-strip > button.selected { border-color: #fa671c; color: #fff; background: rgb(250 103 28 / 13%); box-shadow: inset 0 0 0 1px rgb(250 103 28 / 12%); }
-.app-welcome-language-strip > button span { font-size: 25px; line-height: 1.1; }
 .app-welcome-language-strip > button strong { overflow: hidden; max-width: 100%; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .app-welcome-card .app-welcome-start { width: 100%; min-height: 54px; margin: 7px 0 0; border-radius: 13px; font-size: 16px; }
 .app-welcome-card .app-welcome-privacy { justify-self: center; max-width: 520px; text-align: center; line-height: 1.45; }

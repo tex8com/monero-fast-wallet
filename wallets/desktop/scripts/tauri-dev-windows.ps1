@@ -42,6 +42,11 @@ if ([string]::IsNullOrWhiteSpace($expectedCoreTree) -or $actualCoreTree -ne $exp
 $runtimeDirectory = Join-Path $env:CARGO_TARGET_DIR 'debug'
 New-Item -ItemType Directory -Force -Path $runtimeDirectory | Out-Null
 Copy-Item -LiteralPath $core -Destination (Join-Path $runtimeDirectory 'tex8_wallet_core.dll') -Force
+$fastWalletProtocol = Join-Path $desktopDirectory 'native-libs\fast_wallet_protocol.dll'
+if (-not (Test-Path -LiteralPath $fastWalletProtocol)) {
+  throw "Native Fast Wallet protocol DLL is missing: $fastWalletProtocol"
+}
+Copy-Item -LiteralPath $fastWalletProtocol -Destination (Join-Path $runtimeDirectory 'fast_wallet_protocol.dll') -Force
 
 $llvmMingw = 'C:\Users\rolandkohlhuber\AppData\Local\Microsoft\WinGet\Packages\MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\llvm-mingw-20260616-ucrt-aarch64\bin'
 foreach ($runtimeDll in @('libc++.dll', 'libunwind.dll', 'libwinpthread-1.dll')) {

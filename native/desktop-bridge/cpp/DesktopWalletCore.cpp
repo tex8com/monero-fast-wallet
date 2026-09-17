@@ -47,7 +47,7 @@ tex8_desktop_wallet_configure_public_block_spool(
     const auto space = std::filesystem::space(directory, error);
     if (error) return 0;
     const uint64_t available = space.available;
-    const uint64_t reserved = std::min(kReserve, available / 2ULL);
+    const uint64_t reserved = std::min(kReserve, available / uint64_t{2});
     const uint64_t limit = std::min(kMaximum, available - reserved);
     if (limit < kMinimum) return 0;
     const std::string limitString = std::to_string(limit);

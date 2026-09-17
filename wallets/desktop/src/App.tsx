@@ -24,7 +24,7 @@ import {
   presentNetworkSync,
   walletSyncDerivationsPerSecond,
 } from '../../../packages/wallet-shared/src/networkSync';
-import { languageFlags, languageNames, supportedLanguages, useI18n } from './i18n';
+import { languageNames, supportedLanguages, useI18n } from './i18n';
 import { type MarketPoint, type MarketTimeframe, useXmrChart, useXmrPrice } from './marketData';
 import { type MoneroNewsCategory, type MoneroNewsItem, useMoneroNews } from './moneroNews';
 import { restoreHeightFromStartDate, todayRestoreDate } from './restoreStart';
@@ -38,6 +38,7 @@ import Vanity, { type VanityOrder } from './Vanity';
 import { createDesktopNotificationClient } from './fastWalletNotifications';
 import { loadFastWalletPreference, saveFastWalletPreference } from './fastWalletPreference';
 import DesktopIcon, { type DesktopIconName } from './DesktopIcon';
+import LanguageFlag from './LanguageFlag';
 import {
   deriveAppVaultPresentation,
   validateRecoveryPassword,
@@ -77,6 +78,7 @@ type Network = 'mainnet' | 'testnet' | 'stagenet';
 type SetupMode = 'create' | 'restore' | 'ledger';
 type WalletCoreStatus = { linked: boolean; releaseReady: boolean; coreTree: string; backend: string; message: string; productCoreAbi: number; productCoreSchemaSha256: string; diagnosticRegistrySha256: string; appVaultStateSchemaSha256: string };
 type ComputeBackendPreference = 'auto' | 'cpu' | 'gpu';
+type ComputeBackendChoice = 'cpu' | 'metal' | 'cuda';
 type ComputeBackendStatus = { preference: ComputeBackendPreference; activeBackend: string; gpuAvailable: boolean; gpuKind: string; deviceName: string; deviceCount: number; selfTestPassed: boolean; cpuFallback: boolean; lastError: string };
 type BackendPerformance = { available: boolean; verified: boolean; derivationsPerSecond: number; sampleCount: number; elapsedMs: number; error: string };
 type DerivationPerformance = { schemaVersion: number; cpuWorkers: number; cpu: BackendPerformance; metal: BackendPerformance; cuda: BackendPerformance };
@@ -1107,7 +1109,7 @@ export default function App() {
     </aside>
     <section className={v1ReleaseFeatures.mfwNameRegistration && mfwTickerVisible ? 'content has-mfw-name-ticker' : 'content'}>
       {v1ReleaseFeatures.mfwNameRegistration && mfwTickerVisible && <div aria-label={t('mfwNames.ticker')} className="mfw-name-ticker" role="region"><button className="mfw-name-ticker-link" onClick={() => setSection('mfw')} type="button"><span aria-hidden="true">◆</span><span className="mfw-name-ticker-lane"><b>{t('mfwNames.ticker')} · {t('mfwNames.ticker')} · {t('mfwNames.ticker')} · {t('mfwNames.ticker')} · </b></span><strong aria-hidden="true">›</strong></button><button aria-label={t('common.close')} className="mfw-name-ticker-close" onClick={() => setMfwTickerVisible(false)} type="button">×</button></div>}
-      {section !== 'setup' && section !== 'onboarding' && <header className="topbar"><div><p className="eyebrow">{section === 'project' ? t('settings.projectPage') : section === 'vanity' ? 'Monero Vanity' : active?.label ?? t('common.wallet')}</p><h1>{section === 'project' ? t('projectPage.title') : section === 'home' ? t('shell.homeTitle') : section === 'vanity' ? 'Vanity Address' : active?.label}</h1></div><div className="topbar-actions"><DesktopWalletSwitcher wallets={managedWallets} activeWallet={activeWallet} onSelect={openSavedWallet} onManage={() => setSection('wallets')} /><button aria-label="Open connection status" className="topbar-connection" onClick={() => setSection('node')} type="button"><span className={`route-status ${connectivityTone(connectivity?.tor)}`}><i />{connectivity?.daemonUsesTor ? 'Tor' : 'Node'}</span>{connectivity?.mfnGrpcEnabled && <span className={`route-status ${connectivityTone(connectivity?.clearnet)}`}><i />MFN</span>}</button></div></header>}
+      {section !== 'setup' && section !== 'onboarding' && <header className="topbar"><div><p className="eyebrow">{section === 'project' ? t('settings.projectPage') : section === 'vanity' ? 'Monero Vanity' : active?.label ?? t('common.wallet')}</p><h1>{section === 'project' ? t('projectPage.title') : section === 'home' ? t('shell.homeTitle') : section === 'vanity' ? 'Vanity Address' : active?.label}</h1></div><div className="topbar-actions"><DesktopWalletSwitcher wallets={managedWallets} activeWallet={activeWallet} onSelect={openSavedWallet} onManage={() => setSection('wallets')} /><button aria-label="Open connection status" className="topbar-connection" onClick={() => setSection('node')} type="button"><span className={`route-status ${connectivityTone(connectivity?.tor)}`}><i />{connectivity?.daemonUsesTor ? 'Tor' : 'Node'}</span>{connectivity?.mfnGrpcEnabled && <span className={`route-status ${connectivityTone(connectivity?.clearnet)}`}><i />Sync</span>}</button></div></header>}
       {!linked && <section className="notice" role="status"><div className="notice-icon"><img src="/monero-mark.png" alt="" /></div><div><h2>{t('shell.noticeEngineTitle')}</h2><p>{error ?? status?.message ?? t('shell.noticeEngineVerifying')}</p></div></section>}
       {linked && error && !isBackgroundWalletWork(error) && <section className="notice compact-notice" role="alert"><div><h2>{t('shell.noticeActionNeeded')}</h2><p>{error}</p></div></section>}
       {section === 'home' && <Home linked={linked} walletId={activeWalletId} wallet={activeWallet} savedWallets={managedWallets} networkSync={networkSync} onSetup={startSetup} onWallets={() => setSection('wallets')} onSelectWallet={openSavedWallet} onBackup={() => void revealRecoverySeed()} onLock={() => void lockDesktopApp()} onSend={() => setSection('send')} onReceive={() => setSection('receive')} onActivity={() => setSection('activity')} onWalletsChanged={reloadWallets} onRecoverSession={recoverWalletSession} />}
@@ -1139,6 +1141,7 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
   const welcomeLanguageStripRef = useRef<HTMLDivElement>(null);
   const welcomeLanguageDragStartRef = useRef({ left: 0, x: 0 });
   const welcomeLanguageDragMovedRef = useRef(false);
+  const welcomeLanguageDragPointerRef = useRef<number | null>(null);
   const [welcomeAcknowledged, setWelcomeAcknowledged] = useState(!setup);
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -1236,7 +1239,7 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
       <section className="app-welcome-language" aria-label={t('settings.language')}>
         <header>
           <strong>{t('settings.language')}</strong>
-          <span>{languageFlags[language]} {languageNames[language]}</span>
+          <span><LanguageFlag code={language} /> {languageNames[language]}</span>
         </header>
         <div className="app-welcome-carousel">
           <button aria-label="Previous language" className="app-welcome-language-arrow" onClick={() => chooseWelcomeLanguage(selectedLanguageIndex - 1)} type="button">‹</button>
@@ -1245,20 +1248,24 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
             onPointerDown={(event) => {
               const strip = welcomeLanguageStripRef.current;
               if (!strip) return;
+              welcomeLanguageDragPointerRef.current = event.pointerId;
               welcomeLanguageDragMovedRef.current = false;
               welcomeLanguageDragStartRef.current = { left: strip.scrollLeft, x: event.clientX };
-              strip.setPointerCapture(event.pointerId);
             }}
             onPointerMove={(event) => {
               const strip = welcomeLanguageStripRef.current;
-              if (!strip || !strip.hasPointerCapture(event.pointerId)) return;
+              if (!strip || welcomeLanguageDragPointerRef.current !== event.pointerId) return;
               const delta = event.clientX - welcomeLanguageDragStartRef.current.x;
-              if (Math.abs(delta) > 5) welcomeLanguageDragMovedRef.current = true;
+              if (Math.abs(delta) > 5) {
+                welcomeLanguageDragMovedRef.current = true;
+                event.preventDefault();
+              }
               strip.scrollLeft = welcomeLanguageDragStartRef.current.left - delta;
             }}
             onPointerUp={(event) => {
-              welcomeLanguageStripRef.current?.releasePointerCapture(event.pointerId);
+              if (welcomeLanguageDragPointerRef.current === event.pointerId) welcomeLanguageDragPointerRef.current = null;
             }}
+            onPointerCancel={() => { welcomeLanguageDragPointerRef.current = null; }}
             ref={welcomeLanguageStripRef}
             role="list"
           >
@@ -1274,10 +1281,18 @@ function AppProtectionGate({ status, onUnlocked }: { status: AppProtectionStatus
                 }
                 chooseWelcomeLanguage(index);
               }}
+              onPointerUp={() => {
+                // WebKitGTK can suppress the subsequent click for controls
+                // inside a horizontally scrollable pointer-drag region.
+                // Commit a stationary pointer selection here as well.
+                if (!welcomeLanguageDragMovedRef.current) {
+                  chooseWelcomeLanguage(index);
+                }
+              }}
               role="listitem"
               type="button"
             >
-              <span>{languageFlags[code]}</span>
+              <LanguageFlag code={code} />
               <strong>{languageNames[code]}</strong>
             </button>)}
           </div>
@@ -3185,7 +3200,7 @@ function Send({ linked, walletId, wallet, appProtection, onWalletsChanged, payme
   if (!linked || !walletId) return <WalletFeature linked={linked} title={t('send.title')} text={t('send.openWallet')} />;
   return <section className="transaction-form transaction-page">
     {step === 'recipient-choice' && <><header className="send-screen-header"><p className="eyebrow">{t('send.from')}</p><h2>{t('send.title')}</h2><p>{t('send.subtitle')}</p></header><section className="send-choice-stack"><button className="send-choice-card primary-choice" onClick={() => setScannerOpen(true)} type="button"><span className="send-choice-icon" aria-hidden="true">⌗</span><span><strong>{t('send.scanAddress')}</strong><small>{t('send.scanHint')}</small></span><b aria-hidden="true">›</b></button><div className="send-choice-or"><span />{t('send.or')}<span /></div><button className="send-choice-card" onClick={() => setStep('manual-recipient')} type="button"><span className="send-choice-icon" aria-hidden="true">✎</span><span><strong>{t('send.manualRecipient')}</strong><small>{t('send.manualRecipientHint')}</small></span><b aria-hidden="true">›</b></button><button className="send-choice-card" onClick={() => setStep('address-book')} type="button"><span className="send-choice-icon" aria-hidden="true">◎</span><span><strong>{t('send.addressBook')}</strong><small>{t('send.savedRecipientHint')}</small></span><b aria-hidden="true">›</b></button>{recentContacts.length > 0 && <section className="send-quick-recipients"><header><strong>{t('send.recentContacts')}</strong><button className="quiet-button" onClick={() => setStep('address-book')} type="button">{t('send.viewMore')}</button></header><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></section>}</section></>}
-    {step === 'manual-recipient' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.recipient')}</h2><p>{t('send.manualRecipientHint')}</p></header><label>{t('send.recipient')}<span className="recipient-address-input"><input value={address} onChange={(event) => { const value = event.target.value; setMfwLookupPending(Boolean(mfwNameAutocompletePrefix(value))); setAddress(value); setReview(null); setMessage(null); }} placeholder={t('send.recipientPlaceholder')} autoComplete="off" spellCheck="false" /><button className="paste-button" onClick={() => void pasteRecipient()} type="button">{t('common.paste')}</button></span></label>{mfwAutocomplete.length > 0 && <div className="mfw-name-suggestions">{mfwAutocomplete.map((suggestion) => <button aria-label={t('send.useMfwSuggestion', { name: suggestion })} className="mfw-name-suggestion" key={suggestion} onClick={() => { setMfwLookupPending(true); setAddress(suggestion); setReview(null); setMessage(null); }} type="button"><span aria-hidden="true">⌁</span><b>{suggestion}</b><span aria-hidden="true">›</span></button>)}</div>}{recipientLookupPending ? <div aria-live="polite" aria-busy="true" className="mfw-name-lookup" role="status"><span className="mfw-inline-spinner" /><span>{t('send.resolvingMfwName')}</span></div> : resolvedMfwRecipient ? <div className="mfw-resolved-recipient"><span aria-hidden="true">✓</span><div><b>{t('send.resolvedMfwAddress')}</b><code>{resolvedMfwRecipient.address}</code></div></div> : null}<section className="recipient-picker" aria-label={t('send.addressBook')}>{contacts.length > 0 && <div><strong>{t('send.addressBook')}</strong><div className="recipient-chips">{contacts.slice(0, 3).map((contact) => <button className={contact.donor ? 'recipient-chip donor' : 'recipient-chip'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div><button className="quiet-button address-book-link" onClick={() => setStep('address-book')} type="button">{t('send.viewMore')} ›</button></div>}{recentContacts.length > 0 && <div><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}</section><button aria-busy={recipientLookupPending} className="primary" disabled={mfwLookupPending || recipientValidationPending} onClick={() => { if (!address.trim()) { setMessage(t('send.recipientRequired')); return; } void validateAndUseRecipient(address); }} type="button">{t('common.continue')}</button></>}
+    {step === 'manual-recipient' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.recipient')}</h2><p>{t('send.manualRecipientHint')}</p></header><label>{t('send.recipient')}<span className="recipient-address-input"><input value={address} onChange={(event) => { const value = event.target.value; setMfwLookupPending(Boolean(mfwNameAutocompletePrefix(value))); setAddress(value); setReview(null); setMessage(null); }} placeholder={t('send.recipientPlaceholder')} autoComplete="off" spellCheck="false" /><button className="paste-button" onClick={() => void pasteRecipient()} type="button">{t('common.paste')}</button></span></label>{mfwAutocomplete.length > 0 && <div className="mfw-name-suggestions">{mfwAutocomplete.map((suggestion) => <button aria-label={t('send.useMfwSuggestion', { name: suggestion })} className="mfw-name-suggestion" key={suggestion} onClick={() => { setMfwLookupPending(true); setAddress(suggestion); setReview(null); setMessage(null); }} type="button"><span aria-hidden="true">⌁</span><b>{suggestion}</b><span aria-hidden="true">›</span></button>)}</div>}{recipientLookupPending ? <div aria-live="polite" aria-busy="true" className="mfw-name-lookup" role="status"><span className="mfw-inline-spinner" /><span>{t('send.resolvingMfwName')}</span></div> : resolvedMfwRecipient ? <div className="mfw-resolved-recipient"><span aria-hidden="true">✓</span><div><b>{t('send.resolvedMfwAddress')}</b><code>{resolvedMfwRecipient.address}</code></div></div> : null}<section className="recipient-picker" aria-label={t('send.addressBook')}>{contacts.length > 0 && <div><strong>{t('send.addressBook')}</strong><div className="recipient-chips">{contacts.slice(0, 3).map((contact) => <button className={contact.donor ? 'recipient-chip donor' : 'recipient-chip'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div><button className="quiet-button address-book-link" onClick={() => setStep('address-book')} type="button">{t('send.viewMore')} ›</button></div>}{recentContacts.length > 0 && <div><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}</section><button aria-busy={recipientLookupPending} className="primary send-recipient-continue" disabled={mfwLookupPending || recipientValidationPending} onClick={() => { if (!address.trim()) { setMessage(t('send.recipientRequired')); return; } void validateAndUseRecipient(address); }} type="button">{t('common.continue')}</button></>}
     {step === 'address-book' && <><button className="quiet-button step-back" onClick={() => { setMessage(null); setStep('recipient-choice'); }} type="button">‹ {t('common.back')}</button><header><h2>{t('send.addressBook')}</h2><p>{t('send.addressBookHint')}</p></header><section className="address-book-panel">{contacts.length > 0 ? <div className="address-book-list">{contacts.map((contact) => <button className={contact.donor ? 'address-book-entry donor' : 'address-book-entry'} key={contact.id} onClick={() => selectRecipient(contact)} type="button"><span>{contact.donor ? '♥' : '◎'}</span><div><strong>{contact.label}</strong><small>{shortHash(contact.address)}</small></div><b>›</b></button>)}</div> : <p className="community-empty">{t('send.noSavedAddresses')}</p>}{recentContacts.length > 0 && <div className="address-book-recents"><strong>{t('send.recentContacts')}</strong><div className="recipient-chips">{recentContacts.map((contact) => <button className="recipient-chip" key={contact.id} onClick={() => selectRecipient(contact)} type="button"><b>{contact.label}</b><small>{shortHash(contact.address)}</small></button>)}</div></div>}<div className="address-book-add"><strong>{t('send.addAddress')}</strong><label>{t('send.contactName')}<input value={contactLabel} onChange={(event) => setContactLabel(event.target.value)} maxLength={80} /></label><label>{t('send.recipient')}<input value={contactAddress} onChange={(event) => setContactAddress(event.target.value)} autoComplete="off" spellCheck="false" placeholder={t('send.recipientPlaceholder')} /></label><button className="secondary" onClick={saveContact} type="button">{t('send.saveAddress')}</button></div></section></>}
     {step === 'recipient-review' && recipientReview && <><button className="quiet-button step-back" onClick={returnFromRecipientReview} type="button">‹ {t('common.back')}</button><header className="send-screen-header"><h2>{t('send.checkRecipientTitle')}</h2><p>{t('send.checkRecipientDescription')}</p></header><section className="recipient-review-card">{recipientReview.displayName && <div className="recipient-review-name"><span>⌁</span><strong>{recipientReview.displayName}</strong></div>}<div><span>{t('send.fullAddress')}</span><code>{recipientReview.address}</code></div><dl><div><dt>{t('send.addressFingerprint')}</dt><dd>{recipientFingerprint}</dd></div><div><dt>{t('send.resolutionSource')}</dt><dd>{recipientSourceLabel}</dd></div></dl><p className="transaction-note">✓ {t('send.checkRecipientHint')}</p></section><button className="primary send-review-button" onClick={() => { setMessage(null); setStep('amount'); }} type="button">{t('send.useThisRecipient')}</button></>}
     {step === 'amount' && <><button className="quiet-button step-back" disabled={busy} onClick={() => setStep('recipient-review')} type="button">‹ {t('common.back')}</button><header className="send-screen-header"><h2>{t('send.title')}</h2><p>{t('send.available')}: {snapshot ? `${formatAtomicXmr(snapshot.unlockedBalanceAtomic, 12)} XMR` : t('common.loading')}</p></header><section className="recipient-summary"><span>{t('send.recipient')}</span><strong>{recipientReview?.displayName ?? shortHash(address.trim())}</strong><button className="quiet-button" disabled={busy} onClick={() => setStep('manual-recipient')} type="button">{t('common.change')}</button></section><section className="send-amount-card"><header><strong>{t('send.amount')}</strong><button className="quiet-button" disabled={!snapshot || busy} onClick={useMaximum} type="button">{t('send.max')}</button></header><output>{amount || '0.0000'}</output><b>XMR</b><div className="send-keypad">{['1', '2', '3', '4', '5', '6', '7', '8', '.', '9', '0', 'backspace'].map(key => <button aria-label={key === 'backspace' ? t('send.deleteKey') : key} disabled={busy} key={key} onClick={() => enterAmountKey(key)} type="button">{key === 'backspace' ? '⌫' : key}</button>)}</div></section>{sweepAll && <p className="transaction-note">{t('send.sweepAll')}</p>}{busy && <div aria-busy="true" aria-live="polite" className="transaction-preparing" role="status"><span className="mfw-inline-spinner" /><div><strong>{message || t('send.preparing')}</strong>{wallet?.kind === 'hardware' && <small>{t('send.ledgerHint')}</small>}</div></div>}<button aria-busy={busy} className="primary send-review-button" disabled={busy} onClick={() => void prepare()} type="button">{busy ? t('send.preparing') : t('send.review')}</button></>}
@@ -4277,10 +4292,15 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onWalletsChanged
       setMessage(errorMessage(reason, t('settings.shareSearchesFailed')));
     }
   };
-  const updateComputeBackend = async (preference: ComputeBackendPreference) => {
+  const updateComputeBackend = async (backend: ComputeBackendChoice) => {
+    const preference: ComputeBackendPreference = backend === 'cpu' ? 'cpu' : 'gpu';
     setComputeBusy(true); setMessage(null);
     try {
-      setComputeStatus(await invoke<ComputeBackendStatus>('set_compute_backend', { preference }));
+      const updated = await invoke<ComputeBackendStatus>('set_compute_backend', { preference });
+      if (backend !== 'cpu' && updated.gpuKind !== backend) {
+        throw new Error(t('settings.computeUnavailable'));
+      }
+      setComputeStatus(updated);
     } catch (reason) {
       setMessage(errorMessage(reason, t('settings.computeSaveFailed')));
     } finally {
@@ -4366,7 +4386,13 @@ function LeanSettings({ status, walletId, wallet, onRevealSeed, onWalletsChanged
       <article className="settings-panel settings-language"><label htmlFor="settings-language"><span>{t('settings.language')}</span><select id="settings-language" onChange={(event) => setLanguage(event.target.value as typeof language)} value={language}>{supportedLanguages.map(code => <option key={code} lang={code} value={code}>{languageNames[code]}</option>)}</select></label></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.performance')}</h3><small>{computeBusy ? t('settings.computeChecking') : computeStatus?.gpuAvailable ? t('settings.computeGpuReady') : t('settings.computeCpuReady')}</small></header>
-      <article className="settings-panel"><div><strong>{t('settings.computeBackend')}</strong><p>{t('settings.computeHint')}</p></div><div className="node-mode">{([['auto', t('settings.computeAuto')], ['cpu', t('settings.computeCpu')], ['gpu', t('settings.computeGpu')]] as const).map(([preference, label]) => <button className={computeStatus?.preference === preference ? 'selected' : ''} disabled={computeBusy} onClick={() => void updateComputeBackend(preference)} key={preference} type="button">{label}</button>)}</div><p>{computeStatus?.gpuAvailable ? t('settings.computeDevice', { device: computeStatus.deviceName || computeStatus.gpuKind.toUpperCase() }) : t('settings.computeFallback')}</p></article>
+      <article className="settings-panel"><div><strong>{t('settings.computeBackend')}</strong><p>{t('settings.computeHint')}</p></div><div className="node-mode">{(['cpu', 'metal', 'cuda'] as const).map((backend) => {
+        const available = backend === 'cpu' || Boolean(computeStatus?.gpuAvailable && computeStatus.selfTestPassed && computeStatus.gpuKind === backend);
+        const activeBackend: ComputeBackendChoice = computeStatus?.preference === 'cpu' || computeStatus?.activeBackend.startsWith('cpu')
+          ? 'cpu'
+          : computeStatus?.gpuKind === 'metal' ? 'metal' : computeStatus?.gpuKind === 'cuda' ? 'cuda' : 'cpu';
+        return <button className={activeBackend === backend ? 'selected' : ''} disabled={computeBusy || !available} onClick={() => void updateComputeBackend(backend)} key={backend} type="button">{backend === 'cpu' ? 'CPU' : backend === 'metal' ? 'Metal' : 'CUDA'}</button>;
+      })}</div><p>{computeStatus?.gpuAvailable ? t('settings.computeDevice', { device: computeStatus.deviceName || computeStatus.gpuKind.toUpperCase() }) : t('settings.computeFallback')}</p></article>
       <article className="settings-panel"><div><strong>{t('settings.scanPerformance')}</strong><p>{t('settings.scanPerformanceHint')}</p></div><div className="settings-diagnostics">{([['CPU', derivationPerformance?.cpu], ['Metal', derivationPerformance?.metal], ['CUDA', derivationPerformance?.cuda]] as const).map(([label, measured]) => <div key={label}><span>{label}</span><strong className={measured?.verified ? 'good' : 'neutral'}>{performanceMeasuring ? t('settings.performanceMeasuring') : measured?.verified ? t('settings.derivationsPerSecond', { rate: new Intl.NumberFormat(dateLocale).format(measured.derivationsPerSecond) }) : t('settings.performanceUnavailable')}</strong></div>)}</div></article>
     </section>
     <section className="settings-section"><header><h3>{t('settings.communityPrivacy')}</h3><small>{shareCommunitySearches ? t('settings.notificationsReady') : t('settings.notificationsOff')}</small></header>

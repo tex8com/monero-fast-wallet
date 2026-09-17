@@ -6574,19 +6574,68 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
         let tor_thread_name = format!("mfw-tor-health-{network}");
         if let Err(error) = std::thread::Builder::new()
             .name(tor_thread_name)
-            .spawn(move || loop {
-                match node_settings::load(&tor_app, &tor_network) {
+            .spawn(move || {
+                let mut last_logged_result: Option<(bool, Option<String>)> = None;
+                loop {
+                    match node_settings::load(&tor_app, &tor_network) {
                     Ok(profile) => {
-                        mark_connectivity_checking(
-                            tor_connectivity_routes(),
-                            &tor_network,
-                            &profile.daemon_address,
-                        );
+                        let has_previous_result = tor_connectivity_routes()
+                            .lock()
+                            .ok()
+                            .map(|routes| routes.contains_key(&tor_network))
+                            .unwrap_or(false);
+                        if !has_previous_result {
+                            mark_connectivity_checking(
+                                tor_connectivity_routes(),
+                                &tor_network,
+                                &profile.daemon_address,
+                            );
+                        }
                         let probe = if profile.proxy_address.trim().is_empty() {
                             probe_direct_monero_daemon_route(&profile.daemon_address)
                         } else {
                             probe_tor_route(&profile.daemon_address)
                         };
+                        let current_result = (probe.connected, probe.error.clone());
+                        if last_logged_result.as_ref() != Some(&current_result) {
+                            eprintln!(
+                                "MONERO_DESKTOP_CONNECTIVITY route=tor network={} connected={} elapsed_ms={} error={}",
+                                tor_network,
+                                probe.connected,
+                                probe
+                                    .elapsed_ms
+                                    .map(|value| value.to_string())
+                                    .unwrap_or_else(|| "none".to_owned()),
+                                probe.error.as_deref().unwrap_or("none")
+                            );
+                            diagnostics::record(
+                                &tor_app,
+                                "connectivity.tor",
+                                &[
+                                    ("network", tor_network.clone()),
+                                    (
+                                        "phase",
+                                        if probe.connected { "connected" } else { "error" }
+                                            .to_owned(),
+                                    ),
+                                    (
+                                        "elapsedMs",
+                                        probe
+                                            .elapsed_ms
+                                            .map(|value| value.to_string())
+                                            .unwrap_or_else(|| "none".to_owned()),
+                                    ),
+                                    (
+                                        "error",
+                                        probe
+                                            .error
+                                            .clone()
+                                            .unwrap_or_else(|| "none".to_owned()),
+                                    ),
+                                ],
+                            );
+                            last_logged_result = Some(current_result);
+                        }
                         set_tor_connectivity(
                             &tor_network,
                             ConnectivityRouteState {
@@ -6604,19 +6653,40 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
                             },
                         );
                     }
-                    Err(error) => set_tor_connectivity(
-                        &tor_network,
-                        ConnectivityRouteState {
-                            phase: "error".to_owned(),
-                            connected: false,
-                            endpoint: String::new(),
-                            checked_at_ms: connectivity_now_ms(),
-                            elapsed_ms: None,
-                            error: Some(error),
-                        },
-                    ),
+                    Err(error) => {
+                        let current_result = (false, Some(error.clone()));
+                        if last_logged_result.as_ref() != Some(&current_result) {
+                            eprintln!(
+                                "MONERO_DESKTOP_CONNECTIVITY route=tor network={} connected=false elapsed_ms=none error={}",
+                                tor_network, error
+                            );
+                            diagnostics::record(
+                                &tor_app,
+                                "connectivity.tor",
+                                &[
+                                    ("network", tor_network.clone()),
+                                    ("phase", "error".to_owned()),
+                                    ("elapsedMs", "none".to_owned()),
+                                    ("error", error.clone()),
+                                ],
+                            );
+                            last_logged_result = Some(current_result);
+                        }
+                        set_tor_connectivity(
+                            &tor_network,
+                            ConnectivityRouteState {
+                                phase: "error".to_owned(),
+                                connected: false,
+                                endpoint: String::new(),
+                                checked_at_ms: connectivity_now_ms(),
+                                elapsed_ms: None,
+                                error: Some(error),
+                            },
+                        );
+                    }
+                    }
+                    std::thread::sleep(Duration::from_secs(15));
                 }
-                std::thread::sleep(Duration::from_secs(15));
             })
         {
             eprintln!(
@@ -6630,11 +6700,14 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
         let thread_name = format!("mfw-clearnet-{network}");
         if let Err(error) = std::thread::Builder::new()
             .name(thread_name)
-            .spawn(move || loop {
-                let profile = node_settings::load(&app, &network);
-                match profile {
+            .spawn(move || {
+                let mut last_logged_result: Option<(bool, Option<String>)> = None;
+                loop {
+                    let profile = node_settings::load(&app, &network);
+                    match profile {
                     Ok(profile) => {
                         if profile.mode != "optimized-grpc" {
+                            last_logged_result = Some((false, None));
                             set_clearnet_connectivity(
                                 &network,
                                 ConnectivityRouteState {
@@ -6647,12 +6720,59 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
                                 },
                             );
                         } else {
-                            mark_connectivity_checking(
-                                connectivity_routes(),
-                                &network,
-                                &profile.grpc_endpoint,
-                            );
+                            let has_previous_result = connectivity_routes()
+                                .lock()
+                                .ok()
+                                .map(|routes| routes.contains_key(&network))
+                                .unwrap_or(false);
+                            if !has_previous_result {
+                                mark_connectivity_checking(
+                                    connectivity_routes(),
+                                    &network,
+                                    &profile.grpc_endpoint,
+                                );
+                            }
                             let probe = probe_clearnet_route(&profile.grpc_endpoint);
+                            let current_result = (probe.connected, probe.error.clone());
+                            if last_logged_result.as_ref() != Some(&current_result) {
+                                eprintln!(
+                                    "MONERO_DESKTOP_CONNECTIVITY route=sync network={} connected={} elapsed_ms={} error={}",
+                                    network,
+                                    probe.connected,
+                                    probe
+                                        .elapsed_ms
+                                        .map(|value| value.to_string())
+                                        .unwrap_or_else(|| "none".to_owned()),
+                                    probe.error.as_deref().unwrap_or("none")
+                                );
+                                diagnostics::record(
+                                    &app,
+                                    "connectivity.sync",
+                                    &[
+                                        ("network", network.clone()),
+                                        (
+                                            "phase",
+                                            if probe.connected { "connected" } else { "error" }
+                                                .to_owned(),
+                                        ),
+                                        (
+                                            "elapsedMs",
+                                            probe
+                                                .elapsed_ms
+                                                .map(|value| value.to_string())
+                                                .unwrap_or_else(|| "none".to_owned()),
+                                        ),
+                                        (
+                                            "error",
+                                            probe
+                                                .error
+                                                .clone()
+                                                .unwrap_or_else(|| "none".to_owned()),
+                                        ),
+                                    ],
+                                );
+                                last_logged_result = Some(current_result);
+                            }
                             set_clearnet_connectivity(
                                 &network,
                                 ConnectivityRouteState {
@@ -6671,19 +6791,40 @@ fn start_desktop_connectivity_monitor(app: AppHandle) {
                             );
                         }
                     }
-                    Err(error) => set_clearnet_connectivity(
-                        &network,
-                        ConnectivityRouteState {
-                            phase: "error".to_owned(),
-                            connected: false,
-                            endpoint: String::new(),
-                            checked_at_ms: connectivity_now_ms(),
-                            elapsed_ms: None,
-                            error: Some(error),
-                        },
-                    ),
+                    Err(error) => {
+                        let current_result = (false, Some(error.clone()));
+                        if last_logged_result.as_ref() != Some(&current_result) {
+                            eprintln!(
+                                "MONERO_DESKTOP_CONNECTIVITY route=sync network={} connected=false elapsed_ms=none error={}",
+                                network, error
+                            );
+                            diagnostics::record(
+                                &app,
+                                "connectivity.sync",
+                                &[
+                                    ("network", network.clone()),
+                                    ("phase", "error".to_owned()),
+                                    ("elapsedMs", "none".to_owned()),
+                                    ("error", error.clone()),
+                                ],
+                            );
+                            last_logged_result = Some(current_result);
+                        }
+                        set_clearnet_connectivity(
+                            &network,
+                            ConnectivityRouteState {
+                                phase: "error".to_owned(),
+                                connected: false,
+                                endpoint: String::new(),
+                                checked_at_ms: connectivity_now_ms(),
+                                elapsed_ms: None,
+                                error: Some(error),
+                            },
+                        );
+                    }
+                    }
+                    std::thread::sleep(Duration::from_secs(15));
                 }
-                std::thread::sleep(Duration::from_secs(15));
             })
         {
             eprintln!(

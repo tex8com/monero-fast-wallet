@@ -1,8 +1,11 @@
 # Monero Fast Wallet CLI
 
+Interactive `fast-wallet-cli` with no arguments opens the Ratatui TUI from
+`wallets/tui`. The C++ product binary remains `monero-fast-wallet-cli`.
+
 The internal `monero-fast-wallet-community` companion exposes the Community V1
 automation surface as JSON commands. Product builds package it beside
-`monero-fast-wallet-cli`; the user-facing entry point is:
+`monero-fast-wallet-cli`; the Community entry point is:
 
 ```sh
 monero-fast-wallet-cli community --state-dir /private/path identity create

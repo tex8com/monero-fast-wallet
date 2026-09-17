@@ -1112,7 +1112,7 @@ mod tests {
             let subaddress = wallet.create_subaddress(&wallet_id, 0, "desktop smoke")?;
             assert!(subaddress.contains("address"));
 
-            let fast_identity_id = "fast-receive-v2-0-desktop-smoke";
+            let fast_identity_id = "fast-receive-v2-1-desktop-smoke";
             let fast_path = root.join(fast_identity_id).to_string_lossy().into_owned();
             let fast_identity = wallet.create_fast_receive_identity(FastReceiveIdentityCreate {
                 source_wallet_id: &wallet_id,
@@ -1121,7 +1121,7 @@ mod tests {
                 password: "independent-fast-password",
                 label: "Fast Wallet",
                 restore_height: 0,
-                derivation_index: 0,
+                derivation_index: 1,
             })?;
             assert!(fast_identity.contains(fast_identity_id));
             assert!(fast_identity.contains("\"address\":\"4"));

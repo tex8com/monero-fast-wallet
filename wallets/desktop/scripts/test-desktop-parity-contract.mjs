@@ -628,8 +628,18 @@ test('Ledger setup explicitly offers encrypted local private-view-key storage', 
 
 test('desktop native bridge enables the authenticated TEX8 Ledger extension', () => {
   const buildSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'build.rs'), 'utf8');
+  const windowsCoreSource = readFileSync(resolve(desktopRoot, 'windows', 'monero-bridge-inject.cmake'), 'utf8');
+  const windowsProxySource = readFileSync(
+    resolve(repoRoot, 'native', 'desktop-bridge', 'cpp', 'DesktopWalletCoreWindowsProxy.cpp'),
+    'utf8',
+  );
   assert.match(buildSource, /contains\("hardwarePrivateViewKey"\)/);
   assert.match(buildSource, /TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS", Some\("1"\)/);
+  assert.match(windowsCoreSource, /TEX8_WALLET_BRIDGE_WITH_GRPC_STREAM=1/);
+  assert.match(windowsCoreSource, /TEX8_WALLET_BRIDGE_WITH_TEX8_EXTENSIONS=1/);
+  assert.match(windowsCoreSource, /hardwarePrivateViewKey/);
+  assert.match(windowsCoreSource, /createTransactionWithExtraNonce/);
+  assert.match(windowsProxySource, /LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR/);
 });
 
 test('legacy plaintext scanner registration fails closed before producing credentials', () => {

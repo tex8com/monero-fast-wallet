@@ -43,6 +43,9 @@ tutorial="$(${short_cli} tutorial)"
 [[ "${quickstart}" == *"send <address> <xmr>"* ]] || fail "safe send shortcut is missing"
 [[ "${quickstart}" == *"never paste a seed into a command argument"* ]] || fail "seed warning is missing"
 
+tui_identity="$("${short_cli}" --tui-version)"
+[[ "${tui_identity}" == *'"product":"fast-wallet-tui"'* ]] || fail "short launcher is not the TUI"
+
 startup="$({ printf ''; } | "${short_cli}" 2>&1 || true)"
 [[ "${startup}" == *"FAST-WALLET-CLI BY TEX8"* ]] || fail "startup brand is missing"
 [[ "${startup}" == *"OPEN OR CREATE A WALLET"* ]] || fail "open/create prompt is missing"

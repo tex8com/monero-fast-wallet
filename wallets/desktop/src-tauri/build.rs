@@ -283,6 +283,7 @@ fn main() {
         desktop_bridge_dir.join("cpp/DesktopLedgerBleMac.mm"),
         desktop_bridge_dir.join("cpp/DesktopPlatformAuthMac.mm"),
         desktop_bridge_dir.join("cpp/DesktopPlatformAuthWindows.cpp"),
+        desktop_bridge_dir.join("cpp/DesktopWalletCoreWindowsProxy.cpp"),
         desktop_bridge_dir.join("include/DesktopWalletCore.h"),
         desktop_bridge_dir.join("include/DesktopLedgerBle.h"),
         desktop_bridge_dir.join("include/DesktopPlatformAuth.h"),
@@ -319,6 +320,7 @@ fn main() {
         // The Windows host uses MSVC while the real Monero core is a separate
         // GNU/ARM64 DLL. Keep this host on the stable C ABI proxy only.
         native
+            .flag_if_supported("/EHsc")
             .file(desktop_bridge_dir.join("cpp/DesktopWalletCoreWindowsProxy.cpp"))
             .file(desktop_bridge_dir.join("cpp/DesktopPlatformAuthWindows.cpp"));
         println!("cargo:rustc-link-lib=runtimeobject");

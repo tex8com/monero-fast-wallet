@@ -25,7 +25,15 @@ HMODULE coreModule() noexcept {
                                          L"_up_\\native-libs\\tex8_wallet_core.dll",
                                          L"resources\\tex8_wallet_core.dll"}) {
           const std::wstring path = sibling + candidate;
-          if (auto loaded = LoadLibraryW(path.c_str())) return loaded;
+          // Load dependencies from the same verified resource directory as
+          // the GNU/ARM64 Core DLL. This keeps libc++, unwind, and winpthread
+          // out of PATH and makes installed NSIS builds deterministic.
+          if (auto loaded = LoadLibraryExW(
+                  path.c_str(), nullptr,
+                  LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
+                      LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)) {
+            return loaded;
+          }
         }
       }
     }
@@ -58,6 +66,15 @@ extern "C" int tex8_desktop_wallet_core_linked_with_monero() noexcept {
   using Function = int (*)();
   const auto function = resolve<Function>("tex8_desktop_wallet_core_linked_with_monero");
   return function == nullptr ? 0 : function();
+}
+
+extern "C" unsigned long long
+tex8_desktop_wallet_configure_public_block_spool(
+    const char* directory) noexcept {
+  using Function = unsigned long long (*)(const char*);
+  const auto function = resolve<Function>(
+      "tex8_desktop_wallet_configure_public_block_spool");
+  return function == nullptr ? 0 : function(directory);
 }
 
 extern "C" Tex8DesktopWalletCore* tex8_desktop_wallet_core_new() noexcept {

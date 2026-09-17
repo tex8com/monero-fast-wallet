@@ -218,7 +218,7 @@ const baseMessages = {
     "settings.performance": "Performance",
     "settings.computeBackend": "Wallet scanning",
     "settings.computeHint":
-      "Automatic is recommended. The app uses the fastest verified option for larger scans and always falls back to the CPU if the GPU is unavailable or fails a safety check.",
+      "Choose an available verified implementation. CPU remains the safe fallback if Metal or CUDA is unavailable or fails a safety check.",
     "settings.computeAuto": "Automatic",
     "settings.computeCpu": "CPU only",
     "settings.computeGpu": "Prefer GPU",
@@ -229,6 +229,7 @@ const baseMessages = {
     "settings.computeFallback": "No verified GPU accelerator is currently available. The wallet safely uses the CPU.",
     "settings.computeLoadFailed": "The performance setting could not be loaded.",
     "settings.computeSaveFailed": "The performance setting could not be saved.",
+    "settings.computeUnavailable": "This implementation is not available on this device.",
     "settings.scanPerformance": "Scan performance",
     "settings.scanPerformanceHint":
       "A short one-time device test using public sample data. It does not open a wallet or use wallet keys.",
@@ -1276,7 +1277,7 @@ const baseMessages = {
     "settings.performance": "Leistung",
     "settings.computeBackend": "Wallet durchsuchen",
     "settings.computeHint":
-      "Automatisch wird empfohlen. Die App verwendet bei größeren Suchläufen die schnellste geprüfte Möglichkeit und wechselt bei fehlender GPU oder einer fehlgeschlagenen Sicherheitsprüfung immer sicher zur CPU.",
+      "Wähle eine verfügbare, geprüfte Implementierung. CPU bleibt der sichere Rückfall, falls Metal oder CUDA nicht verfügbar ist oder die Sicherheitsprüfung fehlschlägt.",
     "settings.computeAuto": "Automatisch",
     "settings.computeCpu": "Nur CPU",
     "settings.computeGpu": "GPU bevorzugen",
@@ -1287,6 +1288,7 @@ const baseMessages = {
     "settings.computeFallback": "Derzeit ist keine geprüfte GPU-Beschleunigung verfügbar. Die Wallet verwendet sicher die CPU.",
     "settings.computeLoadFailed": "Die Leistungseinstellung konnte nicht geladen werden.",
     "settings.computeSaveFailed": "Die Leistungseinstellung konnte nicht gespeichert werden.",
+    "settings.computeUnavailable": "Diese Implementierung ist auf diesem Gerät nicht verfügbar.",
     "settings.scanPerformance": "Scan-Leistung",
     "settings.scanPerformanceHint":
       "Ein kurzer, einmaliger Gerätetest mit öffentlichen Beispieldaten. Dabei wird keine Wallet geöffnet und kein Wallet-Schlüssel verwendet.",

@@ -17,6 +17,8 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 use tor_rtcompat::PreferredRuntime;
+#[cfg(target_os = "windows")]
+use tor_rtcompat::{tokio::TokioNativeTlsRuntime, ToplevelBlockOn};
 
 /// Desktop service traffic is fail-closed through the app's embedded Arti Tor
 /// client. The native Monero Fast Node gRPC block provider is intentionally
@@ -57,6 +59,11 @@ fn set_status(next: TorStatus) {
 /// Start Tor on its own runtime and return immediately. Nothing in this path
 /// may delay the Tauri window or wallet startup.
 pub fn start_embedded_tor(data_dir: PathBuf) {
+    // Arti's persistent directory format is not a stable cross-version
+    // contract. Windows deliberately uses the proven 0.43 runtime, so keep
+    // it separate from state previously written by 0.44 builds.
+    #[cfg(target_os = "windows")]
+    let data_dir = data_dir.join("arti-043");
     TOR_STARTED.get_or_init(|| {
         set_status(TorStatus::Starting);
         let spawn_result = std::thread::Builder::new()
@@ -66,6 +73,20 @@ pub fn start_embedded_tor(data_dir: PathBuf) {
                 loop {
                     set_status(TorStatus::Starting);
                     let attempt = panic::catch_unwind(AssertUnwindSafe(|| {
+                        #[cfg(target_os = "windows")]
+                        {
+                            // Match the runtime used by the official Arti binary on
+                            // Windows. A raw Tokio runtime stalled while fetching the
+                            // first consensus on Windows ARM64.
+                            let runtime = TokioNativeTlsRuntime::create()
+                                .map_err(|error| format!("Tor runtime: {error}"))?;
+                            return runtime.block_on(run_embedded_tor(
+                                data_dir.clone(),
+                                runtime.clone(),
+                            ));
+                        }
+                        #[cfg(not(target_os = "windows"))]
+                        {
                         let runtime = tokio::runtime::Builder::new_multi_thread()
                             .worker_threads(2)
                             .thread_name("mfw-tor-runtime")
@@ -73,6 +94,7 @@ pub fn start_embedded_tor(data_dir: PathBuf) {
                             .build()
                             .map_err(|error| format!("Tor runtime: {error}"))?;
                         runtime.block_on(run_embedded_tor(data_dir.clone()))
+                        }
                     }));
                     match attempt {
                         Ok(Ok(())) => {
@@ -102,7 +124,25 @@ pub fn start_embedded_tor(data_dir: PathBuf) {
     });
 }
 
+#[cfg(not(target_os = "windows"))]
 async fn run_embedded_tor(data_dir: PathBuf) -> Result<(), String> {
+    let runtime = PreferredRuntime::current()
+        .map_err(|error| format!("Tor runtime handle: {error}"))?;
+    run_embedded_tor_with_runtime(data_dir, runtime).await
+}
+
+#[cfg(target_os = "windows")]
+async fn run_embedded_tor(
+    data_dir: PathBuf,
+    runtime: TokioNativeTlsRuntime,
+) -> Result<(), String> {
+    run_embedded_tor_with_runtime(data_dir, runtime).await
+}
+
+async fn run_embedded_tor_with_runtime(
+    data_dir: PathBuf,
+    runtime: PreferredRuntime,
+) -> Result<(), String> {
     let state_dir = data_dir.join("state");
     let cache_dir = data_dir.join("cache");
     fs::create_dir_all(&state_dir).map_err(|error| format!("Tor state directory: {error}"))?;
@@ -116,17 +156,28 @@ async fn run_embedded_tor(data_dir: PathBuf) -> Result<(), String> {
     let config = TorClientConfigBuilder::from_directories(state_dir, cache_dir)
         .build()
         .map_err(|error| format!("Embedded Tor configuration: {error}"))?;
-    let client = TorClient::builder()
+    let client = TorClient::with_runtime(runtime)
         .config(config)
         .create_unbootstrapped_async()
         .await
         .map_err(|error| format!("Embedded Tor client: {error}"))?;
 
     set_status(TorStatus::Bootstrapping);
-    client
-        .bootstrap()
-        .await
-        .map_err(|error| format!("Tor bootstrap: {error}"))?;
+    let status_client = client.clone();
+    let status_logger = tokio::spawn(async move {
+        let mut previous = String::new();
+        loop {
+            let current = status_client.bootstrap_status().to_string();
+            if current != previous {
+                eprintln!("MONERO_DESKTOP_TOR bootstrap-status detail={current}");
+                previous = current;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+    let bootstrap_result = client.bootstrap().await;
+    status_logger.abort();
+    bootstrap_result.map_err(|error| format!("Tor bootstrap: {error}"))?;
     set_status(TorStatus::Ready);
     eprintln!("MONERO_DESKTOP_TOR embedded-ready");
 

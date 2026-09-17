@@ -567,6 +567,8 @@ This repository is the product and integration monorepo:
 wallets/
   mobile/                         React Native for iOS and Android
   desktop/                        React + Tauri 2 for desktop
+  cli/                            Community companion for the product CLI
+  tui/                            Ratatui TUI; `fast-wallet-cli` with no args
 
 native/
   monero-bridge/                  C++ WalletEngine, iOS, and Android bridges

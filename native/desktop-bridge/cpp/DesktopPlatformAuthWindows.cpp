@@ -245,7 +245,7 @@ extern "C" int tex8_desktop_system_authenticate(
     IAsyncOperation<UserConsentVerificationResult> operation{nullptr};
     winrt::check_hresult(interop->RequestVerificationForWindowAsync(
         hwnd,
-        winrt::get_abi(prompt),
+        static_cast<HSTRING>(winrt::get_abi(prompt)),
         winrt::guid_of<decltype(operation)>(),
         winrt::put_abi(operation)));
     return operation.get() == UserConsentVerificationResult::Verified ? 1 : 0;
@@ -268,7 +268,7 @@ extern "C" int tex8_desktop_prompt_recovery_seed(
     WNDCLASSW windowClass{};
     windowClass.lpfnWndProc = recoveryPromptWindowProc;
     windowClass.hInstance = instance;
-    windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    windowClass.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
     windowClass.hbrBackground =
         reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     windowClass.lpszClassName = className;

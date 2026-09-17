@@ -276,10 +276,10 @@ fn private_service_origin(url: &Url) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        enabled, mfw_name_genesis, mfw_name_resolver_origins, mfw_name_suggestion_onion_origins,
-        monero_enthusiast_v1_config, payment_link_origin, validate_enthusiast_config,
-        validate_mfw_genesis, validate_mfw_resolver_origins, validate_mfw_suggestion_onion_origins,
-        MfwNameGenesisConfig, MoneroEnthusiastV1Config,
+        enabled, manifest, mfw_name_genesis, mfw_name_resolver_origins,
+        mfw_name_suggestion_onion_origins, monero_enthusiast_v1_config, payment_link_origin,
+        validate_enthusiast_config, validate_mfw_genesis, validate_mfw_resolver_origins,
+        validate_mfw_suggestion_onion_origins, MfwNameGenesisConfig, MoneroEnthusiastV1Config,
     };
 
     #[test]
@@ -295,8 +295,14 @@ mod tests {
         assert_eq!(mfw_name_resolver_origins().unwrap().len(), 2);
         assert_eq!(mfw_name_suggestion_onion_origins().unwrap().len(), 1);
         assert!(mfw_name_genesis("mainnet").is_some());
-        let community = monero_enthusiast_v1_config()
-            .expect("the signed Community V1 test release must have a valid configuration");
+        // Community remains deliberately gated as "Coming soon", while its
+        // signed configuration and native modules must still ship validly.
+        assert!(!enabled("moneroEnthusiastV1"));
+        assert!(monero_enthusiast_v1_config().is_none());
+        let community = manifest()
+            .and_then(|manifest| manifest.parameters.monero_enthusiast_v1.as_ref())
+            .expect("the signed Community V1 release must carry a configuration");
+        assert!(validate_enthusiast_config(community));
         assert!(community.api_origin.ends_with(".onion"));
         assert_eq!(community.catalog_scope, "global-v1");
         assert_eq!(
