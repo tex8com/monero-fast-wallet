@@ -20,7 +20,7 @@ bridge_build="${BRIDGE_BUILD_DIR:-${build_root}/wallet-testbench/multiwallet-acc
 rpc="${CUPRATE_RPC:-xmr.tex8.com:18089}"
 grpc="${CUPRATE_GRPC:-xmr.tex8.com:18091}"
 timeout="${MULTIWALLET_ACCEPTANCE_TIMEOUT_SECONDS:-900}"
-evidence_dir="${MULTIWALLET_ACCEPTANCE_EVIDENCE_DIR:-${repo_root}/docs/benchmark-evidence/$(date -u +%F)/checkpoint-restart-r1}"
+evidence_dir="${MULTIWALLET_ACCEPTANCE_EVIDENCE_DIR:-${MFW_BENCHMARK_EVIDENCE_DIR:-${repo_root}/.mfw-test-evidence}/$(date -u +%F)/checkpoint-restart-r1}"
 
 for required in \
   "${monero_build}/lib/libwallet_api.a" \

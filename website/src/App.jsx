@@ -711,7 +711,7 @@ function Enthusiast({ text }) {
           <div className="enthusiast-points">
             {text.enthusiastPoints.map(([title, body], index) => <article key={title}><span aria-hidden="true">{icons[index]}</span><div><h3>{title}</h3><p>{body}</p></div></article>)}
           </div>
-          <div className="enthusiast-actions"><a className="button primary" href="#downloads">{text.enthusiastDownload} ↓</a><a className="button" href={`${repositoryUrl}/blob/main/docs/PRIVACY_MODEL.md`}>{text.enthusiastPrivacyLink} ↗</a></div>
+          <div className="enthusiast-actions"><a className="button primary" href="#downloads">{text.enthusiastDownload} ↓</a><a className="button" href={`${repositoryUrl}/blob/main/docs/PRIVACY.md`}>{text.enthusiastPrivacyLink} ↗</a></div>
           <p className="enthusiast-status"><i />{text.enthusiastStatus}</p>
         </div>
         <div className="community-preview" aria-label={text.enthusiastPreviewLabel}>

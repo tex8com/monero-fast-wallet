@@ -1039,12 +1039,11 @@ test('retired legacy scanner has no server runtime or plaintext API', () => {
 });
 
 test('V1 documents local sync as the only spend-state authority', () => {
-  const privacy = read('docs/PRIVACY_MODEL.md');
-  const executionPlan = read('docs/V1_EXECUTION_PLAN.md');
+  const privacy = read('docs/PRIVACY.md');
 
   assert.match(privacy, /No wallet key images or\s+server-side key-image status are used/);
-  assert.match(executionPlan, /client does not upload key images/);
-  assert.doesNotMatch(executionPlan, /WalletService\.checkFastReceiveKeyImages/);
+  assert.match(privacy, /client does\s+not upload key images/i);
+  assert.doesNotMatch(privacy, /WalletService\.checkFastReceiveKeyImages/);
 });
 
 test('notification gateway rejects the legacy shared-token trust boundary', () => {

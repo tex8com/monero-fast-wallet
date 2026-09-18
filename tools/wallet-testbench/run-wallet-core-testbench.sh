@@ -120,10 +120,7 @@ gate_pin_files() {
     [[ "${patch_count}" -gt 0 ]] &&
     grep -q "${upstream_commit}" "${repo_root}/third_party/README.md" &&
     grep -q "${patched_tree}" "${repo_root}/third_party/README.md" &&
-    grep -q "contains ${patch_count} patches" "${repo_root}/third_party/README.md" &&
-    grep -q "${upstream_commit}" "${repo_root}/docs/SOURCES.md" &&
-    grep -q "${patched_tree}" "${repo_root}/docs/SOURCES.md" &&
-    grep -q "ordered ${patch_count}-patch series" "${repo_root}/docs/SOURCES.md"
+    grep -q "contains ${patch_count} patches" "${repo_root}/third_party/README.md"
 }
 
 gate_product_core_abi() {

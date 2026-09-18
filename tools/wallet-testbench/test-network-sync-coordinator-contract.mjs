@@ -8,7 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const read = path => readFileSync(resolve(repoRoot, path), 'utf8');
 
-const plan = read('docs/V1_EXECUTION_PLAN.md');
+const architecture = read('docs/ARCHITECTURE.md');
 const mobileState = read('wallets/mobile/src/services/WalletState.tsx');
 const mobileService = read('wallets/mobile/src/services/WalletService.ts');
 const mobileHome = read('wallets/mobile/src/screens/HomeScreen.tsx');
@@ -65,13 +65,8 @@ const bridgeConfigure = read(
 );
 
 test('the product contract requires one native coordinator per network', () => {
-  assert.match(plan, /one native `NetworkSyncCoordinator` for each active network/);
-  assert.match(plan, /Node handshakes equal active networks, not wallet count/);
-  assert.match(plan, /wallet_sync_cursor\(wallet_id\)/);
-  assert.match(plan, /consume_shared_block_batch\(wallet_id, immutable_batch\)/);
-  assert.match(plan, /consume_shared_pool_snapshot\(wallet_id, immutable_snapshot\)/);
-  assert.match(plan, /detach_wallet_to_height\(wallet_id, height, expected_hash\)/);
-  assert.match(plan, /checkpoint_wallet_scan\(wallet_id\)/);
+  assert.match(architecture, /one native `NetworkSyncCoordinator` for each active network/);
+  assert.match(architecture, /node handshakes equal active networks, not wallet count/i);
 });
 
 test('mobile selection is UI-only once a native refresh has joined', () => {

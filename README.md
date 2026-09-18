@@ -54,10 +54,8 @@ gates before release.
 > **Development status:** The source code is advanced, but it is **not yet
 > approved for a public mainnet release**. Signed release artifacts, physical
 > platform and Ledger validation, an independent security review, and several
-> operational and recovery tests remain open release gates. See the
-> [V1 Execution Plan](docs/V1_EXECUTION_PLAN.md),
-> [Release Gate Matrix](docs/RELEASE_GATE_MATRIX.md) and
-> [Security Audit](docs/SECURITY_AUDIT_2026-07-24.md) for details.
+> operational and recovery tests remain open release gates. See the public
+> [security and release status](docs/SECURITY.md) for the applicable gates.
 >
 > **V1 scope:** The first public version is planned to include complete `.mfw`
 > registration and resolution through the **Monero Fast Wallet Registry**, plus
@@ -225,13 +223,9 @@ The Relay **never** receives plaintext wallet keys. The selected Worker receives
 only the isolated Fast Wallet view key; no server component receives a seed,
 private spend key, or primary-wallet view key, and no Worker receives a raw
 FCM/APNs token. The broader signed public Directory, Community Worker,
-capacity-reservation, and validator architecture is deliberately post-V1. See
-the
-[`V1 Execution Plan`](docs/V1_EXECUTION_PLAN.md),
-[`FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md`](docs/FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md)
-and
-[`PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md`](docs/PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md)
-for the minimal and later target contracts.
+capacity-reservation, and validator architecture is deliberately post-V1.
+The public [architecture overview](docs/ARCHITECTURE.md) describes the
+published security boundary without operational deployment details.
 
 Notification paths:
 
@@ -307,14 +301,8 @@ open-source implementation discards details and stores only opaque events, but
 this is still a software-based trust boundary. Users who do not want to accept
 that boundary can use the normal local-wallet mode.
 
-Learn more:
-[Privacy Model](docs/PRIVACY_MODEL.md) ·
-[Decentralized Private View-Key Hosting](docs/DECENTRALIZED_PRIVATE_VIEW_KEY_HOSTING.md) ·
-[Fast Wallet Slot, Recovery, And Private Workers](docs/FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md) ·
-[Public Service Directory, Relay, And Mempool](docs/PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md) ·
-[Directory/Relay/Worker Architecture Audit](docs/DIRECTORY_RELAY_WORKER_ARCHITECTURE_AUDIT_2026-07-26.md) ·
-[Threat Model](docs/THREAT_MODEL.md) ·
-[Security Policy](SECURITY.md)
+Learn more: [Privacy](docs/PRIVACY.md) ·
+[Architecture](docs/ARCHITECTURE.md) · [Security Policy](SECURITY.md)
 
 ## Performance and benchmarks
 
@@ -486,16 +474,13 @@ in [Zero to Monero, chapter 4](https://www.getmonero.org/library/Zero-to-Monero-
 
 ### Reproducibility and complete results
 
-- [Testbench Index](docs/WALLET_ACCELERATION_TESTBENCH_INDEX.md)
-- [CPU: M4 and EPYC](docs/WALLET_CRYPTO_CPU_TESTBENCH_RESULTS.md)
 - [M4 CPU: Final Batch Path](tools/wallet-derivation-cpu-testbench/M4_CPU_RESULTS_20260725.md)
-- [Apple Metal](docs/WALLET_CRYPTO_METAL_TESTBENCH_RESULTS.md)
-- [Metal Product Integration](docs/DESKTOP_METAL_BACKEND_PACKAGING_2026-07-25.md)
 - [Pixel 8 Pro CPU and Vulkan](tools/wallet-mobile-acceleration-testbench/PIXEL_8_PRO_RESULTS.md)
 - [RTX 3090 and RTX 5090 CUDA](tools/wallet-cuda-testbench/RESULTS-2026-07-25.md)
-- [Hosted Scanner on EPYC](docs/HOSTED_VIEW_KEY_SCANPACK_EPYC_2026-07-25.md)
-- [Mainnet Synchronization and ScanPack](docs/WALLET_SYNC_BENCHMARK_RESULTS.md)
-- [Raw Artifacts](docs/benchmark-evidence/2026-07-25)
+
+Internal benchmark evidence, host logs and raw test artifacts are intentionally
+not published. Public contributors can reproduce the relevant checks from the
+testbenches in this repository.
 
 All accepted cryptographic runs compare their output byte-for-byte against a
 reference, validate the error path for invalid points, and use no real wallet
@@ -525,9 +510,8 @@ and its primary address; address reads, validation, and subaddress generation
 are below 1 ms. UI, AppVault, registry, and network time are measured
 separately from this native Core budget.
 
-The precise, auditable status is documented in
-[Platform Integration Status](docs/PLATFORM_INTEGRATION_STATUS.md) and the
-[Desktop/Mobile Parity Matrix](docs/DESKTOP_PARITY_MATRIX.md).
+The public architecture and supported development paths are documented in
+[Architecture](docs/ARCHITECTURE.md) and [Building](docs/BUILDING.md).
 
 ## Security
 
@@ -554,10 +538,8 @@ therefore explicitly **MAINNET NO-GO**.
 Documents:
 
 - [SECURITY.md](SECURITY.md)
-- [Threat Model](docs/THREAT_MODEL.md)
-- [Security Audit](docs/SECURITY_AUDIT_2026-07-24.md)
-- [Secure Release Checklist](docs/SECURE_RELEASE_CHECKLIST.md)
-- [Incident Response](docs/SECURITY_INCIDENT_RESPONSE.md)
+- [Public security and release status](docs/SECURITY.md)
+- [Privacy](docs/PRIVACY.md)
 
 ## Monorepo layout
 
@@ -627,10 +609,8 @@ this product. Patch reproduction verifies the expected source tree before a
 core is built. Generated dependencies, wallet files, secrets, logs, and build
 outputs do not belong in Git.
 
-Learn more:
-[Sources](docs/SOURCES.md) ·
-[Repository Strategy](docs/REPOSITORY_STRATEGY.md) ·
-[Local Consolidation Record](docs/LOCAL_WORKTREE_CLEANUP_2026-07-26.md)
+See [Architecture](docs/ARCHITECTURE.md), [Building](docs/BUILDING.md), and
+[Contributing](docs/CONTRIBUTING.md) for public project guidance.
 
 ## Local development and testing
 
@@ -723,18 +703,12 @@ current state of a later modified working copy.
 
 ## Documentation
 
-- [V1 Execution Plan](docs/V1_EXECUTION_PLAN.md)
+- [Documentation overview](docs/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Native Wallet Bridge](docs/NATIVE_WALLET_BRIDGE.md)
-- [Desktop/Mobile Parity](docs/DESKTOP_PARITY_MATRIX.md)
-- [Backend Testing](docs/BACKEND_TESTING.md)
-- [Release Gates](docs/RELEASE_GATE_MATRIX.md)
-- [Benchmark Index](docs/WALLET_ACCELERATION_TESTBENCH_INDEX.md)
-- [Open Source And Sustainable Funding](docs/OPEN_SOURCE_AND_SUSTAINABILITY.md)
-- [Decentralized Private View-Key Hosting](docs/DECENTRALIZED_PRIVATE_VIEW_KEY_HOSTING.md)
-- [Fast Wallet Slot, Recovery, And Private Workers](docs/FAST_WALLET_SLOT_RECOVERY_AND_PRIVATE_WORKERS.md)
-- [Public Service Directory, Relay, And Mempool](docs/PUBLIC_SERVICE_DIRECTORY_RELAY_AND_MEMPOOL.md)
-- [Directory/Relay/Worker Architecture Audit](docs/DIRECTORY_RELAY_WORKER_ARCHITECTURE_AUDIT_2026-07-26.md)
+- [Building](docs/BUILDING.md)
+- [Privacy](docs/PRIVACY.md)
+- [Security and release status](docs/SECURITY.md)
+- [Contributing](docs/CONTRIBUTING.md)
 
 ## Project principles
 

@@ -9,6 +9,7 @@ target/
 .env.*
 !.env.example
 secrets/
+.mfw-test-evidence/
 
 # Local screenshots and compiled benchmark executables are not source.
 .codex-*.png

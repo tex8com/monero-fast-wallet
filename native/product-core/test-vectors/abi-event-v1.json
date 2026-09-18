@@ -4,7 +4,7 @@
   "schemaSha256": "8d0aa094c9ef98e94c6df928d91301288fde0f05067dd35ab57198c0d443d538",
   "diagnosticRegistrySha256": "5a9d9f1053ef8ada13ea5c08b76368034e1d200131502775fba15ec9bee0b4ac",
   "diagnosticResultSchemaSha256": "21d8919c60fc55a06f65698b304dfe0c2fd738e2d9b241da87f468a8fba94fdf",
-  "diagnosticAdaptersSha256": "30a09c9b331289175014ccb1e5a4b6882115ab931b28cfcd4a2e6525c7d30d53",
+  "diagnosticAdaptersSha256": "9eb7c5a50c8525a8012e844f9bf335d6f3c7fac91e92a60685339a509e4abbba",
   "appVaultStateSchemaSha256": "7e2049872d2060476ebebd5a9fab9f4e3a39a5df4e07d0cde482df6b57bd6356",
   "walletLifecycleSchemaSha256": "ed8219a323a34c90084a189c2087dd3a417886b79f1d9677afd4ded2aa215f16",
   "encoding": "mfw-event-v1-little-endian",

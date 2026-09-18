@@ -215,7 +215,7 @@ bounded exact-range cache from the still stricter V1 requirement: one native
 node handshake, block transport, parser and mempool feed per active network.
 The final test remains an explicit TODO until the WalletEngine exposes the
 cursor, immutable-batch consumption, detach and checkpoint operations listed
-in `docs/V1_EXECUTION_PLAN.md`. The main `full` runner treats that TODO as a
+in the public [architecture overview](../../docs/ARCHITECTURE.md). The main `full` runner treats that TODO as a
 failing release gate.
 
 Funded wallet terminal control:

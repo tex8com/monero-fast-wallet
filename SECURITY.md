@@ -7,8 +7,8 @@ for production use. Only test environments and test funds are supported. No
 current build is approved for Mainnet, public beta distribution, or custody of
 real funds.
 
-The hard release gates are defined in
-[`docs/SECURE_RELEASE_CHECKLIST.md`](docs/SECURE_RELEASE_CHECKLIST.md).
+The public release status and high-level release gates are in
+[`docs/SECURITY.md`](docs/SECURITY.md).
 
 ## Reporting A Vulnerability
 
@@ -45,9 +45,8 @@ These are response targets while the project is in development:
   users or operators have had a reasonable opportunity to act.
 
 If a report indicates active theft, signing-key compromise, exposed wallet
-secrets, or a reversible parent/child secret relationship, follow
-[`docs/SECURITY_INCIDENT_RESPONSE.md`](docs/SECURITY_INCIDENT_RESPONSE.md)
-immediately.
+secrets, or a reversible parent/child secret relationship, use the private
+reporting channel immediately and do not disclose details publicly.
 
 ## Scope
 

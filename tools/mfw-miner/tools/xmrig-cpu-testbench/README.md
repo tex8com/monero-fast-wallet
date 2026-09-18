@@ -233,22 +233,22 @@ ssh root@SERVER \
    --bench=100K -a rx/0 --no-color'
 ```
 
-Copy each completed result directory back into
-`docs/benchmark-evidence/YYYY-MM-DD/xmrig-cpu/`. Never edit source files
+Store completed result directories outside the repository, for example under
+`$MFW_BENCHMARK_EVIDENCE_DIR/YYYY-MM-DD/xmrig-cpu/`. Never edit source files
 directly on a rented benchmark host.
 
 Verify the copied evidence before using it in a result table:
 
 ```bash
 python3 verify-evidence.py --json \
-  ../../docs/benchmark-evidence/2026-07-29/xmrig-cpu/overnight/results-v19e-v31
+  "$MFW_BENCHMARK_EVIDENCE_DIR/2026-07-29/xmrig-cpu/overnight/results-v19e-v31"
 ```
 
 For dual-CCD results, validate and sum the two child processes separately:
 
 ```bash
 python3 aggregate-dual-ccd.py \
-  ../../docs/benchmark-evidence/2026-07-29/xmrig-cpu/overnight/results-v32plus
+  "$MFW_BENCHMARK_EVIDENCE_DIR/2026-07-29/xmrig-cpu/overnight/results-v32plus"
 ```
 
 One V34 orchestrator is intentionally reported invalid because it preserves

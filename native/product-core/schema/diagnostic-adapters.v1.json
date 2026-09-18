@@ -12,6 +12,6 @@
     {"id":"shell.fast-receive","kind":"shell","entry":"tools/wallet-testbench/run-fast-receive-e2e.sh","arguments":[]},
     {"id":"shell.mfw-recipient","kind":"shell","entry":"tools/wallet-testbench/run-mfw-recipient-security-testbench.sh","arguments":[]},
     {"id":"platform.wallet-diagnostics","kind":"platform","entry":"packages/wallet-shared/src/diagnosticTestbench.ts","arguments":[]},
-    {"id":"platform.release-package","kind":"platform","entry":"docs/RELEASE_GATE_MATRIX.md","arguments":[]}
+    {"id":"platform.release-package","kind":"platform","entry":"docs/SECURITY.md","arguments":[]}
   ]
 }
