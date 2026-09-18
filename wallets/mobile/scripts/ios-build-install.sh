@@ -90,15 +90,17 @@ if [ "$PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED" = "YES" ] && \
   exit 1
 fi
 
-if [ -z "$DERIVED_DATA_PATH" ] && [ -d "/Volumes/4TB/monero-fast-wallet-build" ]; then
-  DERIVED_DATA_PATH="/Volumes/4TB/monero-fast-wallet-build/ios-derived-data"
-fi
-
 if [ -z "$MONERO_IOS_BUILD_ROOT" ] && [ -d "/Volumes/4TB/monero-fast-wallet-build" ]; then
   MONERO_IOS_BUILD_ROOT="/Volumes/4TB/monero-fast-wallet-build"
 fi
 if [ -z "$MONERO_IOS_BUILD_ROOT" ]; then
   MONERO_IOS_BUILD_ROOT="$REPO_ROOT/build"
+fi
+# Keep Xcode intermediates with the selected native-Core artifacts.  Reusing
+# an unrelated legacy derived-data directory can silently mix pod products
+# from a different React Native setup into a newly built app.
+if [ -z "$DERIVED_DATA_PATH" ]; then
+  DERIVED_DATA_PATH="$MONERO_IOS_BUILD_ROOT/ios-derived-data"
 fi
 if [ "$SHELL_MODE" != "1" ]; then
   # The external build root may have been cleaned after producing the static
