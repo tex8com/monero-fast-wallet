@@ -35,6 +35,7 @@ wallets/desktop/.node_modules-root-owned-backup/
 coverage/
 .nyc_output/
 benchmark-results/
+tools/mfw-miner/benchmarks/hosts/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake

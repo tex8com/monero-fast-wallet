@@ -28,7 +28,7 @@ import { getActiveNodeConnectionSettings } from "../services/NodeConnectionSetti
 import { formatAtomicXmr } from "../services/WalletFormat";
 import { useWalletState } from "../services/WalletState";
 import { walletDisplayName } from "../services/WalletRegistry";
-import type { AppControlCommand } from "../../../../../tex8/products/mobile-platform/shared-app/src/core/chat/appControlCommands";
+import type { AppControlCommand } from "../services/AppControlCommands";
 
 type ChatMessage = {
   id: string;

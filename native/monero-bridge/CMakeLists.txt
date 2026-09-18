@@ -51,7 +51,7 @@ set(
   MONERO_SOURCE_DIR
   ""
   CACHE PATH
-  "Path to the forked Monero source checkout, for example $HOME/Documents/Projects/monero-gui/monero"
+  "Path to the forked Monero source checkout, for example /path/to/monero"
 )
 
 set(

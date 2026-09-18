@@ -263,8 +263,8 @@ cd wallets/mobile/android
 ./gradlew :app:externalNativeBuildDebug \
   -PreactNativeArchitectures=arm64-v8a \
   -PmoneroWalletBridgeWithMonero=true \
-  -PmoneroSourceDir=$HOME/Documents/Projects/monero-gui/monero \
-  -PmoneroWalletLinkRoot=$HOME/Documents/Projects/monero-fast-wallet/build/android-monero-link-manifests
+  -PmoneroSourceDir=/path/to/monero \
+  -PmoneroWalletLinkRoot=/path/to/mfw/build/android-monero-link-manifests
 ```
 
 Verified Android runtime-smoke APK build:
@@ -274,8 +274,8 @@ cd wallets/mobile/android
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest \
   -PreactNativeArchitectures=arm64-v8a \
   -PmoneroWalletBridgeWithMonero=true \
-  -PmoneroSourceDir=$HOME/Documents/Projects/monero-gui/monero \
-  -PmoneroWalletLinkRoot=$HOME/Documents/Projects/monero-fast-wallet/build/android-monero-link-manifests
+  -PmoneroSourceDir=/path/to/monero \
+  -PmoneroWalletLinkRoot=/path/to/mfw/build/android-monero-link-manifests
 ```
 
 Run it on a connected arm64 device/emulator:
@@ -286,8 +286,8 @@ PATH=/opt/homebrew/share/android-commandlinetools/platform-tools:$PATH \
   ./gradlew :app:connectedDebugAndroidTest \
     -PreactNativeArchitectures=arm64-v8a \
     -PmoneroWalletBridgeWithMonero=true \
-    -PmoneroSourceDir=$HOME/Documents/Projects/monero-gui/monero \
-    -PmoneroWalletLinkRoot=$HOME/Documents/Projects/monero-fast-wallet/build/android-monero-link-manifests
+    -PmoneroSourceDir=/path/to/monero \
+    -PmoneroWalletLinkRoot=/path/to/mfw/build/android-monero-link-manifests
 ```
 
 Android Monero builds default `RANDOMX_ENABLE_JIT=OFF` in

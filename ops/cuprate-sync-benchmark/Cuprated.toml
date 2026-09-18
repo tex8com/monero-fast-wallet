@@ -36,14 +36,14 @@ enable = false
 
 [rpc.restricted]
 advertise = false
-# Access is restricted by the host firewall to the benchmark Mac's WireGuard
-# address. The service is separated from existing Cuprate instances by ports.
-address = "private-node-ip"
+# Safe public-repository default: loopback only. Deployers that need WireGuard
+# access must provide a private local config with their own bind address.
+address = "127.0.0.1"
 port = 48089
 enable = true
 
 [rpc.grpc]
-address = "private-node-ip"
+address = "127.0.0.1"
 port = 48091
 enable = true
 i_know_what_im_doing_allow_public_grpc = false
@@ -56,10 +56,10 @@ max_txpool_byte_size = 25_000_000
 maximum_age_secs = 86400
 
 [fs]
-data_directory = "/srv/monero-fast-wallet/cuprate-sync-benchmark/data"
-cache_directory = "/srv/monero-fast-wallet/cuprate-sync-benchmark/cache"
+data_directory = "/srv/mfw-cuprate-sync-benchmark/data"
+cache_directory = "/srv/mfw-cuprate-sync-benchmark/cache"
 
 [tor.arti]
-directory_path = "/srv/monero-fast-wallet/cuprate-sync-benchmark/arti"
+directory_path = "/srv/mfw-cuprate-sync-benchmark/arti"
 isolated_circuit = false
 onion_service_pow = false

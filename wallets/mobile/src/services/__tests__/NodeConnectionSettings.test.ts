@@ -89,13 +89,13 @@ describe("NodeConnectionSettings", () => {
         mode: "optimized-grpc",
         network: "mainnet",
         daemon: {
-          address: "private-node-ip:18089",
+          address: "10.0.0.1:18089",
           trusted: true,
           useSsl: false,
           username: "",
           proxyAddress: "",
         },
-        grpcEndpoint: "private-node-ip:18091",
+        grpcEndpoint: "10.0.0.1:18091",
       }),
     );
 
@@ -115,13 +115,13 @@ describe("NodeConnectionSettings", () => {
         mode: "optimized-grpc",
         network: "mainnet",
         daemon: {
-          address: "private-node-ip:18081",
+          address: "192.168.0.1:18081",
           trusted: true,
           useSsl: false,
           username: "",
           proxyAddress: "",
         },
-        grpcEndpoint: "private-node-ip:18091",
+        grpcEndpoint: "192.168.0.1:18091",
       }),
     );
 

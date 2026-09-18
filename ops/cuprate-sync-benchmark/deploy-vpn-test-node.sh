@@ -11,7 +11,7 @@ remote_root="${CUPRATE_BENCHMARK_ROOT:-/home/${remote_user}/cuprate-sync-benchma
 remote_source="${remote_root}/source"
 remote_binary="${remote_root}/bin/cuprated"
 remote_config="${remote_root}/Cuprated.toml"
-bind_address="private-node-ip"
+bind_address="${CUPRATE_BENCHMARK_BIND_ADDRESS:-127.0.0.1}"
 
 command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 127; }
 command -v rsync >/dev/null || { echo "rsync is required" >&2; exit 127; }

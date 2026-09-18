@@ -35,8 +35,6 @@ const MFN_DEFAULT_HOST = 'xmr.tex8.com';
 const MFN_SCANNER_DEFAULT_ORIGIN = PRIMARY_PRIVATE_SERVICE_ORIGIN;
 const LEGACY_MFN_DEFAULT_HOSTS = [
   '152.53.133.188',
-  'private-node-ip',
-  'private-node-ip',
 ];
 const LEGACY_MONEROD_RPC_PORT_BY_MFN_PORT: Record<string, string> = {
   '18089': '18081',
@@ -449,13 +447,28 @@ function migrateLegacyDefaultEndpoint(
     return defaultEndpoint;
   }
   if (
-    LEGACY_MFN_DEFAULT_HOSTS.includes(host) &&
+    (LEGACY_MFN_DEFAULT_HOSTS.includes(host) || isPrivateIpv4Host(host)) &&
     (port === defaultPort || port === legacyRpcPort)
   ) {
     return defaultEndpoint;
   }
 
   return endpoint;
+}
+
+function isPrivateIpv4Host(host: string): boolean {
+  const parts = host.split('.').map(part => Number(part));
+  if (
+    parts.length !== 4 ||
+    parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
+    return false;
+  }
+  return (
+    parts[0] === 10 ||
+    (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+    (parts[0] === 192 && parts[1] === 168)
+  );
 }
 
 function defaultDaemonPortForMode(

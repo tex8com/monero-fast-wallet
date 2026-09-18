@@ -1,11 +1,11 @@
-import type { AppControlCommand } from "../../../../../tex8/products/mobile-platform/shared-app/src/core/chat/appControlCommands";
 import {
   extractAppControlCommandsFromPayload,
   parseAssistantControlPayload,
-} from "../../../../../tex8/products/mobile-platform/shared-app/src/core/chat/appControlCommands";
+} from "./AppControlCommands";
+import type { AppControlCommand } from "./AppControlCommands";
 
 export const TEX8_SHARED_APP_CONTROL_SOURCE =
-  "$HOME/Documents/Projects/tex8/products/mobile-platform/shared-app/src/core/chat/appControlCommands.ts";
+  "wallets/mobile/src/services/AppControlCommands.ts";
 
 export type MoneroSharedElementType =
   | "monero_wallet"

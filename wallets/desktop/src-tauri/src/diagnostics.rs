@@ -197,7 +197,7 @@ mod tests {
             ("registrationId", "hardware-mainnet-private".to_owned()),
             (
                 "error",
-                "Ledger failed while opening /Users/private/wallet.keys".to_owned(),
+                "Ledger failed while opening a private wallet file".to_owned(),
             ),
             ("sessionGeneration", "3".to_owned()),
         ]);

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 primary_target="${MFW_PRIMARY_SSH_TARGET:-private-ssh-host}"
-secondary_target="${MFW_SECONDARY_SSH_TARGET:-tex8@199.30.65.42}"
-secondary_identity="${MFW_SECONDARY_SSH_IDENTITY:-$HOME/.ssh/id_ed25519_tex8}"
+secondary_target="${MFW_SECONDARY_SSH_TARGET:?Set MFW_SECONDARY_SSH_TARGET}"
+secondary_identity="${MFW_SECONDARY_SSH_IDENTITY:-$HOME/.ssh/id_ed25519_mfw_secondary}"
 gateway="/usr/local/libexec/mfw-download-gateway"
 database="/var/lib/mfw-download-gateway/metrics.sqlite3"
 

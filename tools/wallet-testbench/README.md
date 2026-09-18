@@ -317,9 +317,9 @@ when any required gate is missing.
 ## Important Environment
 
 ```text
-MONERO_SOURCE_DIR=$HOME/Documents/Projects/monero-gui/monero
+MONERO_SOURCE_DIR=<path-to-monero-source>
 MONERO_BUILD_DIR=/Volumes/4TB/monero-gui-build/tex8-wallet-api
-BRIDGE_BUILD_DIR=$HOME/Documents/Projects/monero-fast-wallet/build/native-bridge-monero
+BRIDGE_BUILD_DIR=<path-to-mfw>/build/native-bridge-monero
 
 CUPRATE_RPC=xmr.tex8.com:18089
 CUPRATE_GRPC=xmr.tex8.com:18091

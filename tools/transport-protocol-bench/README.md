@@ -34,7 +34,7 @@ Run the public, three-sample gRPC matrix (15 connection/stream cells per
 direction, 1–256 active streams):
 
 ```bash
-cd $HOME/Documents/Projects/monero-fast-wallet/tools/transport-protocol-bench
+cd tools/transport-protocol-bench
 TRANSPORT_BENCH_DURATION=20s TRANSPORT_BENCH_REPETITIONS=3 ./run-public-matrix.sh
 ```
 

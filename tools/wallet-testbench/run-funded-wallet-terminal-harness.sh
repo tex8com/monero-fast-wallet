@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-wallet_dir="${FUNDED_WALLET_DIR:-$HOME/Documents/Monero/tex8-send-tests}"
+wallet_dir="${FUNDED_WALLET_DIR:-$HOME/Monero/mfw-send-tests}"
 wallet_cli="${MONERO_WALLET_CLI:-/Volumes/4TB/monero-gui-build/release/bin/monero-wallet-cli}"
 proof_runner="${BRIDGE_RUNNER:-${repo_root}/build/native-bridge-monero/monero_wallet_bridge_smoke}"
 network="${FUNDED_WALLET_NETWORK:-mainnet}"
