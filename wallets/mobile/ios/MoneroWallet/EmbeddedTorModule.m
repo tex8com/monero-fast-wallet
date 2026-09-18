@@ -804,9 +804,12 @@ static NSDictionary<NSString *, id> *MFWConnectivitySnapshot(
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
     NSError *error = nil;
+    // A fresh onion rendezvous circuit can legitimately take longer than a
+    // clearnet TCP probe. Eight seconds produced false-negative red UI state
+    // even though the embedded Tor runtime was healthy.
     BOOL connected = MFWProbeEndpoint(endpoint[@"host"],
                                       [endpoint[@"port"] unsignedShortValue],
-                                      YES, 8.0, &error);
+                                      YES, 30.0, &error);
     NSNumber *elapsed = @((CFAbsoluteTimeGetCurrent() - started) * 1000.0);
     dispatch_async(self.queue, ^{
       self.torSnapshot = connected

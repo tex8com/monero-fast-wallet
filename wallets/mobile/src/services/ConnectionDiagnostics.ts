@@ -22,7 +22,8 @@ type NativeConnectionProbe = {
   ): Promise<{connected: boolean; elapsedMs: number}>;
 };
 
-const PROBE_TIMEOUT_MS = 8_000;
+const CLEARNET_PROBE_TIMEOUT_MS = 8_000;
+const TOR_PROBE_TIMEOUT_MS = 30_000;
 
 export async function diagnoseConnectionRoutes(
   settings: NodeConnectionSettings,
@@ -58,7 +59,7 @@ async function probe(
       endpoint.host,
       endpoint.port,
       throughTor,
-      PROBE_TIMEOUT_MS,
+      throughTor ? TOR_PROBE_TIMEOUT_MS : CLEARNET_PROBE_TIMEOUT_MS,
     );
     if (!result?.connected || !Number.isFinite(result.elapsedMs)) {
       throw new Error('The connection probe returned an invalid response.');

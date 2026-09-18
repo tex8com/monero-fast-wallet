@@ -31,7 +31,7 @@ describe('ConnectionDiagnostics', () => {
       settings.daemon.address.split(':')[0],
       18089,
       true,
-      8_000,
+      30_000,
     );
     expect(probeTcp).toHaveBeenNthCalledWith(
       2,
