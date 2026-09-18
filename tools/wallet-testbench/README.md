@@ -81,9 +81,8 @@ that the original binary has no product debug flags, rejects invalid debug
 levels and exercises a controlled failed wallet-open. The latter must write
 `debug-environment.json`, `debug-manifest.json`, `debug-summary.json`,
 `debug-events.jsonl` and `debug-text.log` without wallet secrets. The command
-is included in the integrated wallet-Core testbench. The first measured macOS
-bootstrap result is documented in
-`docs/MONERO_FAST_WALLET_CLI_BOOTSTRAP_TEST_RESULTS_2026-08-06.md`.
+is included in the integrated wallet-Core testbench. Raw measured results stay
+outside the source repository in the configured evidence directory.
 
 Exercise guarded wallet-file removal without any network or real funds:
 
@@ -97,8 +96,8 @@ separate gate. With both `MFW_CLI_PAIR_DIR` and
 `MFW_REGTEST_MONEROD_BINARY`, it also creates a private 82-block Regtest
 chain, pays 1 XMR and 2 XMR into two accounts, proves aggregate/history
 parity, and removes only a copied positive-balance wallet fixture. The
-complete evidence is documented in
-`docs/FAST_WALLET_CLI_WALLET_REMOVAL_TEST_RESULTS_2026-08-06.md`.
+complete evidence must be kept outside the source repository in the configured
+evidence directory.
 
 Verify the local, pinned-Worker HPKE boundary without hardware, network or
 funds:
@@ -402,14 +401,13 @@ export TESTBENCH_SYNC_GRPC_D=<cuprate-host:port>
 tools/wallet-testbench/run-sync-benchmark.sh restore all
 ```
 
-For the isolated TEX8 Stagenet node, use `private-node-ip:48089` (RPC) and
-`private-node-ip:48091` (gRPC) for profile C. Do not use an SSH proxy.
+For an isolated Stagenet node, supply the operator-approved RPC and gRPC
+endpoints through the environment. Do not publish private network addresses.
 
 This is stage one only. Resume, concurrent-wallet, restart, reorg/cache, and
 Ledger scenarios require controlled test infrastructure and must be recorded
-as separate runs rather than substituted with a restore result. See
-`docs/WALLET_SYNC_EVALUATION_2026-07-23.md` for the decision gate and privacy
-constraints.
+as separate runs rather than substituted with a restore result. Keep their raw
+evidence outside the source repository.
 
 `summary.tsv` names the implementation and records elapsed time, blocks/s,
 authoritative gRPC payload MiB/s (from the one stream-close record), gRPC
@@ -659,8 +657,7 @@ bash tools/wallet-testbench/run-raw-grpc-payload-mainnet.sh <unique-run-id>
 spool. `fanout` snapshots a tip and drains disjoint streams concurrently,
 without an order, spool, parser or scanner; it is a transport ceiling test
 only. Neither mode belongs in the Original/Fast/ScanPack Wallet comparison
-table. The full D6 results and their artifact hashes are in
-`docs/WALLET_SYNC_BENCHMARK_RESULTS.md`.
+table. Keep full results and artifact hashes outside the source repository.
 
 ## Shared Product-Core gate
 

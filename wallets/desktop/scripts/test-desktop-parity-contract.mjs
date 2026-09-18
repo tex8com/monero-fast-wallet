@@ -12,7 +12,6 @@ const appSource = readFileSync(resolve(desktopRoot, 'src', 'App.tsx'), 'utf8');
 const desktopIconSource = readFileSync(resolve(desktopRoot, 'src', 'DesktopIcon.tsx'), 'utf8');
 const i18nSource = readFileSync(resolve(desktopRoot, 'src', 'i18n.tsx'), 'utf8');
 const stylesSource = readFileSync(resolve(desktopRoot, 'src', 'styles.css'), 'utf8');
-const parityDoc = readFileSync(resolve(repoRoot, 'docs', 'DESKTOP_PARITY_MATRIX.md'), 'utf8');
 const tauriBuild = readFileSync(resolve(desktopRoot, 'src-tauri', 'build.rs'), 'utf8');
 const tauriCapability = readFileSync(resolve(desktopRoot, 'src-tauri', 'capabilities', 'main.json'), 'utf8');
 const secureStoreSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'secure_store.rs'), 'utf8');
@@ -229,14 +228,18 @@ test('desktop does not expose removed Modules or standalone Fast navigation', ()
   assert.ok(primaryMatch);
   assert.equal(/id: 'fast'/.test(primaryMatch[1]), false);
   assert.equal(/id: 'modules'/.test(primaryMatch[1]), false);
-  assert.equal(/\bModules\b/.test(parityDoc), false);
-  assert.equal(/\|\s*Fast Wallet\s*\|\s*Fast\s*\|/.test(parityDoc), false);
+  assert.doesNotMatch(appSource, /section === 'fast'/);
+  assert.doesNotMatch(appSource, /section === 'modules'/);
 });
 
-test('desktop parity document records closed-app notification preparation truthfully', () => {
-  assert.match(parityDoc, /APNs and private Windows\/Linux background-agent adapters/);
-  assert.match(parityDoc, /live closed-app delivery remain release gates/);
-  assert.equal(/while app is open implemented; APNs closed-app delivery remains/.test(parityDoc), false);
+test('desktop prepares the platform-specific closed-app notification adapters', () => {
+  assert.match(desktopNotificationsSource, /macOS uses APNs\. Windows and Linux use the private background agent/);
+  assert.match(desktopNotificationsSource, /tex8_desktop_apns_register/);
+  assert.match(desktopNotificationsSource, /crate::linux_notification_agent::reconcile/);
+  assert.match(desktopNotificationsSource, /crate::windows_notification_agent::reconcile/);
+  assert.match(desktopNotificationsSource, /"closed-app-apns"/);
+  assert.match(desktopNotificationsSource, /"background-windows-agent"/);
+  assert.match(desktopNotificationsSource, /"background-linux-agent"/);
 });
 
 test('desktop Send keeps the same simple recipient-first flow as mobile', () => {

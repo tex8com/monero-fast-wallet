@@ -7,7 +7,7 @@ exact coordinate.
 This README documents the currently implemented V1 service. The planned V2
 architecture for confirmed map selection, rich profiles, local semantic
 search, private on-device personalization, and Matrix E2EE lives in
-[`../../docs/MONERO_ENTHUSIAST_V2_PRIVATE_DISCOVERY.md`](../../docs/MONERO_ENTHUSIAST_V2_PRIVATE_DISCOVERY.md).
+[`../../docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
 V2 is a design record, not evidence that these features are already available.
 
 The service stores only:

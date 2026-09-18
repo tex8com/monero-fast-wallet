@@ -352,8 +352,8 @@ cd wallets/mobile/android
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest \
   -PreactNativeArchitectures=arm64-v8a \
   -PmoneroWalletBridgeWithMonero=true \
-  -PmoneroSourceDir=$HOME/Documents/Projects/monero-gui/monero \
-  -PmoneroWalletLinkRoot=$HOME/Documents/Projects/monero-fast-wallet/build/android-monero-link-manifests
+  -PmoneroSourceDir=<path-to-pinned-monero-source> \
+  -PmoneroWalletLinkRoot=<path-to-local-link-manifests>
 ```
 
 Run it on a connected arm64 device/emulator:
@@ -364,8 +364,8 @@ PATH=/opt/homebrew/share/android-commandlinetools/platform-tools:$PATH \
   ./gradlew :app:connectedDebugAndroidTest \
     -PreactNativeArchitectures=arm64-v8a \
     -PmoneroWalletBridgeWithMonero=true \
-    -PmoneroSourceDir=$HOME/Documents/Projects/monero-gui/monero \
-    -PmoneroWalletLinkRoot=$HOME/Documents/Projects/monero-fast-wallet/build/android-monero-link-manifests
+    -PmoneroSourceDir=<path-to-pinned-monero-source> \
+    -PmoneroWalletLinkRoot=<path-to-local-link-manifests>
 ```
 
 ## Native Bridge Contract
@@ -373,7 +373,7 @@ PATH=/opt/homebrew/share/android-commandlinetools/platform-tools:$PATH \
 The bridge contract is documented in:
 
 ```text
-../../docs/NATIVE_WALLET_BRIDGE.md
+../../docs/ARCHITECTURE.md
 ```
 
 React Native should receive sanitized DTOs and events only. Seed words, private

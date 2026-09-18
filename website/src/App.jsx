@@ -732,12 +732,12 @@ function Benchmark({ text }) {
       <div className="benchmark">
         <div className="benchmark-metric"><strong><span className="benchmark-value">13.03</span><span className="benchmark-times" aria-label="times">×</span></strong><span>{text.faster}</span><small>{text.benchmarkPending}</small></div>
         <div className="benchmark-bars">{text.benchmarkRows.map(([label, value, width], index) => <div className="benchmark-row" key={label}><div><b>{label}</b><span>{value}</span></div><i><em style={{ width }} className={`tone-${index}`} /></i></div>)}</div>
-        <footer><p><b>{text.important}:</b> {text.benchmarkNote}</p><a href={`${repositoryUrl}/blob/main/docs/WALLET_SYNC_BENCHMARK_RESULTS.md`}>{text.method} ↗</a></footer>
+        <footer><p><b>{text.important}:</b> {text.benchmarkNote}</p><a href={`${repositoryUrl}/blob/main/tools/wallet-testbench/README.md`}>{text.method} ↗</a></footer>
       </div>
       <div className="acceleration">
         <header><div><p className="eyebrow">{text.derivationEyebrow}</p><h3>{text.derivationTitle}</h3></div><p>{text.derivationBody}</p></header>
         <div className="acceleration-grid">{text.derivationRows.map((item) => <article key={item.title} className={`acceleration-card ${item.kind}`}><div><span>{item.platform}</span><small>{item.status}</small></div><h4>{item.title}</h4><strong>{item.rate}</strong><p>{text.derivationUnit}</p><em>{item.comparison}</em></article>)}</div>
-        <footer><p>{text.derivationNote}</p><a href={`${repositoryUrl}/blob/main/docs/WALLET_ACCELERATION_TESTBENCH_INDEX.md`}>{text.derivationMethod} ↗</a></footer>
+        <footer><p>{text.derivationNote}</p><a href={`${repositoryUrl}/blob/main/tools/xmrig-cpu-testbench/README.md`}>{text.derivationMethod} ↗</a></footer>
       </div>
     </section>
   );

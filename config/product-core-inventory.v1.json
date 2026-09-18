@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "planPhaseCount": 14,
-  "sourceOfTruth": "docs/MONERO_FAST_WALLET_CLI_AND_SHARED_PRODUCT_CORE_MASTER_PLAN_2026-08-06.md",
+  "sourceOfTruth": "docs/ARCHITECTURE.md",
   "surfaces": [
     {
       "id": "mobile-screens",
@@ -320,9 +320,9 @@
     ]
   },
   "baselineVariants": [
-    {"id": "original-monero-wallet", "evidence": "docs/WALLET_SYNC_BENCHMARK_RESULTS.md"},
-    {"id": "monero-fast-wallet", "evidence": "docs/WALLET_SYNC_BENCHMARK_RESULTS.md"},
-    {"id": "fast-wallet-scanpack", "evidence": "docs/WALLET_SYNC_NETWORK_MEASUREMENT.md"}
+    {"id": "original-monero-wallet", "evidence": "tools/wallet-testbench/README.md"},
+    {"id": "monero-fast-wallet", "evidence": "tools/wallet-testbench/README.md"},
+    {"id": "fast-wallet-scanpack", "evidence": "tools/wallet-testbench/README.md"}
   ],
   "requiredComparisonMetrics": [
     "sync_duration",

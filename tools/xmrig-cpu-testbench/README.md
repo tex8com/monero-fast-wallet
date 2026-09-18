@@ -38,9 +38,9 @@ Four alternating official 250K pairs measured:
 
 All eight runs matched `7D6054757BB08A63`. V32-V37 subsequently combined
 cache QoS, CCD affinity, dual processes, and 31/32 workers; none beat V31 in
-its interleaved control window. See
-`docs/XMRIG_CPU_OPTIMIZATION_2026-07-29.md` for Original, V1-V37, profiler
-evidence, and every rejected hypothesis.
+its interleaved control window. Keep raw benchmark outputs outside the source
+repository via `MFW_BENCHMARK_EVIDENCE_DIR`; this repository retains only the
+reproducible testbench and its methodology.
 
 ## What is measured
 

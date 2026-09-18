@@ -10,7 +10,9 @@ const read = path => readFileSync(resolve(root, path), 'utf8');
 const proof = read('native/monero-bridge/proof/main.cpp');
 const engine = read('native/monero-bridge/cpp/WalletEngine.cpp');
 const types = read('native/monero-bridge/cpp/WalletEngineTypes.h');
-const plan = read('docs/WALLET_SYNC_KEY_IMAGE_IMPLEMENTATION_PLAN_2026-08-06.md');
+const ledgerPatch = read(
+  'third_party/monero-patches/0047-wallet-incremental-ledger-key-image-reconciliation.patch',
+);
 const runner = read('tools/wallet-testbench/run-ledger-key-image-benchmark.sh');
 const restartRunner = read('tools/wallet-testbench/run-ledger-view-wallet-restart-gate.sh');
 const referenceRunner = read('tools/wallet-testbench/run-official-ledger-cli-reference-sync.mjs');
@@ -360,9 +362,9 @@ test('the runner preserves evidence and rejects incomplete acceptance', () => {
   assert.match(runner, /pending_outputs.*derived_outputs/s);
 });
 
-test('the implementation plan contains explicit correctness and performance gates', () => {
-  assert.match(plan, /No application integration is accepted/);
-  assert.match(plan, /commit the delta atomically/);
-  assert.match(plan, /Release immediately after the last required native wallet cursor/i);
-  assert.match(plan, /Original Monero Wallet, Monero Fast Wallet and Fast Wallet with ScanPack/);
+test('the native benchmark contract retains explicit correctness and performance gates', () => {
+  assert.match(ledgerPatch, /destination\.store\(\)/);
+  assert.match(runner, /benchmark_key_image_second_run_noop=true/);
+  assert.match(runner, /benchmark_key_image_real_derivation_required=true/);
+  assert.match(runner, /benchmark_key_image_shared_sync_accepted/);
 });

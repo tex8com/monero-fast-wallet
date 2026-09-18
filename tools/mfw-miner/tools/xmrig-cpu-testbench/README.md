@@ -38,9 +38,9 @@ Four alternating official 250K pairs measured:
 
 All eight runs matched `7D6054757BB08A63`. V32-V37 subsequently combined
 cache QoS, CCD affinity, dual processes, and 31/32 workers; none beat V31 in
-its interleaved control window. See
-`docs/XMRIG_CPU_OPTIMIZATION_2026-07-29.md` for Original, V1-V37, profiler
-evidence, and every rejected hypothesis.
+its interleaved control window. Keep raw benchmark outputs outside the source
+repository via `MFW_BENCHMARK_EVIDENCE_DIR`; this repository retains only the
+reproducible testbench and its methodology.
 
 ## What is measured
 
@@ -193,8 +193,8 @@ The 10-worker candidate retained **3,846.7 H/s** over the official 250K
 validation size and produced `7D6054757BB08A63`. The short sweep is a
 screening result, not a final energy-efficiency decision: macOS `powermetrics`
 requires privileges unavailable to the unprivileged harness, so exact H/s/W
-is still open. See `docs/XMRIG_M4_OPTIMIZATION_2026-08-15.md` for candidate
-selection, rejected measurements, thermal caveats, and the next paired gates.
+is still open. Keep candidate selection, rejected measurements, thermal
+caveats and paired-gate records in the external evidence archive.
 
 The durable result ledger is `m4-results-2026-08-15.json`. It contains every
 captured M4 run, including failed and thermally invalid measurements, with a

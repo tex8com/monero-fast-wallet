@@ -35,10 +35,8 @@ ABBA/BAAB-Lauf ihn bestätigt.
 - RandomX-Upstream `v2.0.1`, Commit
   `aaafe716b4f8855186c5069b9212863686732a1e`, sowie der lokale aktuelle
   Upstream-Stand `7c761cf007c758056dcb6eb438a32f780f81bdbd`.
-- Bisherige Ergebnisse und verworfene Varianten aus
-  `docs/XMRIG_M4_OPTIMIZATION_2026-08-15.md`,
-  `docs/XMRIG_CPU_OPTIMIZATION_2026-07-29.md` und
-  `tools/xmrig-cpu-testbench/README.md`.
+- Bisherige Ergebnisse und verworfene Varianten im externen
+  Benchmark-Artefaktarchiv sowie in `tools/xmrig-cpu-testbench/README.md`.
 - Aktueller TEX8-Hostbefund aus
   `MFW-Miner/benchmarks/hosts/community-tex8-2026-08-15.md`.
 
@@ -513,4 +511,3 @@ Primärquellen:
 - [XMRig GPLv3-Lizenz](https://github.com/xmrig/xmrig/blob/b2ca72480c58d197e18c885d9fc1a0c8d517e60a/LICENSE)
 - [AMD EPYC 9634: Kerne, L3 und Speicherkanäle](https://www.amd.com/en/products/processors/server/epyc/4th-generation-9004-and-8004-series/amd-epyc-9634.html)
 - [AMD Software Optimization Guide for Zen 4](https://www.amd.com/content/dam/amd/en/documents/processor-tech-docs/software-optimization-guides/57647.zip)
-

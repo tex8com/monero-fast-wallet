@@ -16,7 +16,6 @@ const ledgerPatch = read(
 const grpcFailurePatch = read(
   'third_party/monero-patches/0048-wallet-retain-bin-rpc-after-hard-grpc-failure.patch',
 );
-const plan = read('docs/WALLET_SYNC_KEY_IMAGE_IMPLEMENTATION_PLAN_2026-08-06.md');
 
 const ledgerBridge = engine.slice(
   engine.indexOf('LedgerKeyImageSyncResult\n  syncLedgerKeyImagesToViewWallet('),
@@ -146,7 +145,7 @@ test('Core stages, durably stores, and restores the destination on every failure
   const restore = ledgerPatch.indexOf('parse_binary(');
   assert.ok(snapshot >= 0 && mutation > snapshot && store > mutation && restore > store);
   assert.match(ledgerPatch, /destination\.m_callback = nullptr/);
-  assert.match(plan, /commit the delta atomically/);
+  assert.match(ledgerPatch, /destination\.store\(\)/);
 });
 
 test('spent-state and outgoing RPC timings are isolated and retained', () => {
