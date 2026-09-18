@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-primary_target="${MFW_PRIMARY_SSH_TARGET:-private-ssh-host}"
+primary_target="${MFW_PRIMARY_SSH_TARGET:?Set MFW_PRIMARY_SSH_TARGET}"
 secondary_target="${MFW_SECONDARY_SSH_TARGET:?Set MFW_SECONDARY_SSH_TARGET}"
 secondary_identity="${MFW_SECONDARY_SSH_IDENTITY:-$HOME/.ssh/id_ed25519_mfw_secondary}"
 gateway="/usr/local/libexec/mfw-download-gateway"

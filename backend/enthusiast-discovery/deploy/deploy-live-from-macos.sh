@@ -4,7 +4,7 @@
 # the caller's Terminal; no password is read or stored by this script.
 set -euo pipefail
 
-REMOTE_HOST="${REMOTE_HOST:-private-ssh-host}"
+REMOTE_HOST="${REMOTE_HOST:?Set REMOTE_HOST}"
 REMOTE_USER="${REMOTE_USER:-server}"
 REMOTE_STAGE="/home/${REMOTE_USER}/monero-fast-wallet-community-deploy-$(date -u +%Y%m%dT%H%M%SZ)"
 SERVICE_NAME="enthusiast-discovery"

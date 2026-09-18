@@ -5,7 +5,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-remote_host="${CUPRATE_BENCHMARK_HOST:-private-ssh-host}"
+remote_host="${CUPRATE_BENCHMARK_HOST:?Set CUPRATE_BENCHMARK_HOST}"
 remote_user="${CUPRATE_BENCHMARK_USER:-server}"
 remote_root="${CUPRATE_BENCHMARK_ROOT:-/home/${remote_user}/cuprate-sync-benchmark}"
 remote_source="${remote_root}/source"

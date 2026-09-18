@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
-remote_host="${REMOTE_HOST:-private-ssh-host}"
+remote_host="${REMOTE_HOST:?Set REMOTE_HOST}"
 remote_user="${REMOTE_USER:-server}"
 remote_stage="/home/${remote_user}/monero-enthusiast-v1-$(date -u +%Y%m%dT%H%M%SZ)"
 secret_root="${TEX8_COMMUNITY_SIGNING_KEY_ROOT:-${HOME}/Library/Application Support/Monero Fast Wallet/production-secrets/community-v1}"

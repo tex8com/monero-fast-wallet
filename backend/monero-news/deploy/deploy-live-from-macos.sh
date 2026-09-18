@@ -3,7 +3,7 @@
 # in the operator's Terminal; credentials never enter this repository.
 set -euo pipefail
 
-REMOTE_HOST="${REMOTE_HOST:-private-ssh-host}"
+REMOTE_HOST="${REMOTE_HOST:?Set REMOTE_HOST}"
 REMOTE_USER="${REMOTE_USER:-server}"
 REMOTE_STAGE="/home/${REMOTE_USER}/monero-fast-wallet-news-$(date -u +%Y%m%dT%H%M%SZ)"
 SERVICE_DIR="backend/monero-news"
