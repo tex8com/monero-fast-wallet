@@ -1424,6 +1424,8 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
   const [saveState, setSaveState] = useState<'loading' | 'saving' | 'saved' | 'error'>('loading');
   const [diagnostics, setDiagnostics] = useState<ConnectionRoutesDiagnostic | null>(null);
   const [diagnosing, setDiagnosing] = useState(false);
+  const [spoolLimitMib, setSpoolLimitMib] = useState(1024);
+  const [spoolPreferenceSaved, setSpoolPreferenceSaved] = useState(false);
   const editRevision = useRef(0);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
 
@@ -1459,6 +1461,16 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
       .catch(() => { if (mounted) setSaveState('error'); });
     return () => { mounted = false; };
   }, [network]);
+
+  useEffect(() => {
+    let mounted = true;
+    void invoke<number>('get_public_block_spool_preference')
+      .then(limit => {
+        if (mounted && (limit === 512 || limit === 1024 || limit === 2048)) setSpoolLimitMib(limit);
+      })
+      .catch(() => undefined);
+    return () => { mounted = false; };
+  }, []);
 
   useEffect(() => {
     if (!profile || !savedProfile || settingsProfileSignature(profile) === settingsProfileSignature(savedProfile)) return;
@@ -1529,6 +1541,15 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
     });
   };
 
+  const chooseSpoolLimit = (maximumMib: number) => {
+    void invoke<number>('set_public_block_spool_preference', { maximumMib })
+      .then(limit => {
+        setSpoolLimitMib(limit);
+        setSpoolPreferenceSaved(true);
+      })
+      .catch(() => undefined);
+  };
+
   const routeCard = (kind: 'tor' | 'clearnet', icon: DesktopIconName, title: string, hint: string) => {
     const result = diagnostics?.[kind];
     return <article className={`node-route-card ${result?.connected ? 'connected' : result ? 'failed' : ''}`}>
@@ -1554,6 +1575,11 @@ function DesktopNodeStatus({ walletId, wallet }: { walletId: string | null; wall
         {profile.mode === 'optimized-grpc' ? <><div className="settings-field"><span>{t('nodeStatus.clearnetSync')}</span><small className="settings-field-help">{t('nodeStatus.clearnetHint')}</small>{network === 'mainnet' && <div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).map(node => { const preset = fixedMainnetNodeConnection(node, 'clearnet'); const selected = profile.grpcEndpoint === preset.grpcEndpoint; return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`clearnet-${node}`} onClick={() => choosePreset(node, 'clearnet')} type="button"><span className="settings-choice-icon"><DesktopIcon name="globe" size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{preset.grpcEndpoint}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>; })}</div>}<div className="settings-form-grid single"><label>{t('nodeStatus.grpcEndpoint')}<input value={profile.grpcEndpoint} onChange={event => setProfile({ ...profile, grpcEndpoint: event.target.value })} autoComplete="off" /></label></div></div><div className="settings-field"><span>{t('nodeStatus.torOperations')}</span><small className="settings-field-help">{t('nodeStatus.torHint')}</small>{network === 'mainnet' && <div className="node-preset-grid">{(['tex8', 'community'] as FixedNodeId[]).map(node => { const preset = fixedMainnetNodeConnection(node, 'onion'); const selected = profile.daemonAddress === preset.daemonAddress; return <button className={`settings-choice-card node-preset-card ${selected ? 'selected' : ''}`} key={`onion-${node}`} onClick={() => choosePreset(node, 'onion')} type="button"><span className="settings-choice-icon"><DesktopIcon name="key" size={19} /></span><span className="settings-choice-copy"><strong>{node === 'tex8' ? t('settings.tex8Node') : t('settings.communityNode')}</strong><small>{preset.daemonAddress}</small></span>{selected && <span className="settings-choice-check">✓</span>}</button>; })}</div>}<div className="settings-form-grid single"><label>{t('nodeStatus.daemonEndpoint')}<input value={profile.daemonAddress} onChange={event => setProfile({ ...profile, daemonAddress: event.target.value })} autoComplete="off" /></label></div></div></> : <div className="settings-form-grid"><label>Monero daemon RPC<input value={profile.daemonAddress} onChange={event => setProfile({ ...profile, daemonAddress: event.target.value })} placeholder="node.example:18081" autoComplete="off" /></label><label>SOCKS5 proxy <small>Optional for Onion</small><input value={profile.proxyAddress} onChange={event => setProfile({ ...profile, proxyAddress: event.target.value })} placeholder="127.0.0.1:9050" autoComplete="off" /></label></div>}
         <div className="settings-actions"><button className="secondary" onClick={() => setProfile(defaultNodeProfile(network, profile.mode))} type="button">{t('settings.resetDefaults')}</button></div>
       </>}
+    </article></section>
+    <section className="settings-section"><header><h3>{t('nodeStatus.syncStorage')}</h3><small>{spoolLimitMib === 512 ? '512 MiB' : `${spoolLimitMib / 1024} GiB`}</small></header><article className="settings-panel node-settings">
+      <p>{t('nodeStatus.syncStorageHint')}</p>
+      <div className="settings-field"><div className="node-mode">{([512, 1024, 2048] as const).map(limit => <button className={spoolLimitMib === limit ? 'selected' : ''} key={limit} onClick={() => chooseSpoolLimit(limit)} type="button">{limit === 512 ? '512 MiB' : `${limit / 1024} GiB`}</button>)}</div></div>
+      {spoolPreferenceSaved && <p className="settings-field-help">{t('nodeStatus.syncStorageRestart')}</p>}
     </article></section>
   </section>;
 }

@@ -410,6 +410,14 @@ export interface Spec extends TurboModule {
 
   deleteProtectedMetadata(key: string): Promise<void>;
 
+  /**
+   * Public-only sync buffer preference. It is applied before the next app
+   * launch, before Core starts a BlockStream transport.
+   */
+  getPublicBlockSpoolPreferenceMiB(): Promise<number>;
+
+  setPublicBlockSpoolPreferenceMiB(maximumMiB: number): Promise<void>;
+
   defaultWalletPath(walletName: string, network: string): Promise<string>;
 
   /**

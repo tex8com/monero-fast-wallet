@@ -295,6 +295,8 @@ export interface NativeMoneroWalletModule {
   storeProtectedMetadata(key: string, value: string): Promise<void>;
   loadProtectedMetadata(key: string): Promise<string>;
   deleteProtectedMetadata(key: string): Promise<void>;
+  getPublicBlockSpoolPreferenceMiB(): Promise<number>;
+  setPublicBlockSpoolPreferenceMiB(maximumMiB: number): Promise<void>;
   defaultWalletPath(
     walletName: string,
     network: MoneroNetwork,
@@ -558,6 +560,10 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
         turboModule.storeProtectedMetadata(key, value),
       loadProtectedMetadata: key => turboModule.loadProtectedMetadata(key),
       deleteProtectedMetadata: key => turboModule.deleteProtectedMetadata(key),
+      getPublicBlockSpoolPreferenceMiB: () =>
+        turboModule.getPublicBlockSpoolPreferenceMiB(),
+      setPublicBlockSpoolPreferenceMiB: maximumMiB =>
+        turboModule.setPublicBlockSpoolPreferenceMiB(maximumMiB),
       defaultWalletPath: (walletName, network) =>
         turboModule.defaultWalletPath(walletName, network),
       walletPathOccupied: path => turboModule.walletPathOccupied(path),

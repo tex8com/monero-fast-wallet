@@ -1162,6 +1162,10 @@ const en = {
   'nodeStatus.autoSaved': 'Saved automatically',
   'nodeStatus.autoSaving': 'Saving…',
   'nodeStatus.autoSaveError': 'Check entries',
+  'nodeStatus.syncStorage': 'Sync storage',
+  'nodeStatus.syncStorageHint':
+    'Temporary public blocks are removed as soon as they are scanned. A smaller limit can make the first sync slower.',
+  'nodeStatus.syncStorageRestart': 'Saved. Restart the app before the next sync to apply it.',
   'menu.sharedAiModule': 'Tex8 Assistant',
   'assistant.kicker': 'Tex8 Shared',
   'assistant.title': 'AI Assistant',
@@ -2743,6 +2747,10 @@ const de: Record<keyof typeof en, string> = {
   'nodeStatus.autoSaved': 'Automatisch gespeichert',
   'nodeStatus.autoSaving': 'Wird gespeichert…',
   'nodeStatus.autoSaveError': 'Eingaben prüfen',
+  'nodeStatus.syncStorage': 'Sync-Speicher',
+  'nodeStatus.syncStorageHint':
+    'Temporäre öffentliche Blöcke werden nach dem Scannen gelöscht. Ein kleineres Limit kann den ersten Sync verlangsamen.',
+  'nodeStatus.syncStorageRestart': 'Gespeichert. Starte die App vor dem nächsten Sync neu.',
   'menu.sharedAiModule': 'Tex8-Assistent',
   'assistant.kicker': 'Tex8 Shared',
   'assistant.title': 'KI-Assistent',

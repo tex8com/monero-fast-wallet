@@ -24,13 +24,20 @@ describe('bounded public BlockStream spool', () => {
       'wallets/mobile/android/app/src/main/java/com/monerowallet/MainApplication.kt',
     );
     expect(application).toContain('File(noBackupFilesDir, "public-block-spool")');
-    expect(application).toContain('SPOOL_MAX_BYTES = 8L * GIB');
+    expect(application).toContain('SPOOL_MAX_BYTES = 2L * GIB');
+    expect(application).toContain('PublicBlockSpoolPreferences.maximumMib(this) * MIB');
     expect(application).toContain('SPOOL_FREE_SPACE_RESERVE_BYTES = 2L * GIB');
     expect(application).toContain('mfw-public-block-spool-');
     expect(application.indexOf('loadReactNative(this)')).toBeLessThan(
       application.indexOf('configurePublicBlockSpool()'),
     );
     expect(application).not.toContain('walletId');
+
+    const preferences = read(
+      'wallets/mobile/android/app/src/main/java/com/monerowallet/PublicBlockSpoolPreferences.kt',
+    );
+    expect(preferences).toContain('512L, 1024L, 2048L');
+    expect(preferences).toContain('DEFAULT_MIB = 1024L');
   });
 
   test('Android keeps active data sync alive without bypassing app lock', () => {

@@ -35,11 +35,12 @@ extern "C" int tex8_desktop_wallet_core_linked_with_monero() noexcept {
 
 extern "C" unsigned long long
 tex8_desktop_wallet_configure_public_block_spool(
-    const char* directory) noexcept {
+    const char* directory,
+    unsigned long long requestedMaximumBytes) noexcept {
   constexpr uint64_t kMiB = 1024ULL * 1024ULL;
   constexpr uint64_t kGiB = 1024ULL * kMiB;
   constexpr uint64_t kMinimum = 512ULL * kMiB;
-  constexpr uint64_t kMaximum = 8ULL * kGiB;
+  constexpr uint64_t kMaximum = 2ULL * kGiB;
   constexpr uint64_t kReserve = 2ULL * kGiB;
   try {
     if (directory == nullptr || directory[0] == '\0') return 0;
@@ -48,7 +49,10 @@ tex8_desktop_wallet_configure_public_block_spool(
     if (error) return 0;
     const uint64_t available = space.available;
     const uint64_t reserved = std::min(kReserve, available / uint64_t{2});
-    const uint64_t limit = std::min(kMaximum, available - reserved);
+    const uint64_t requested = requestedMaximumBytes == 0
+        ? 1024ULL * kMiB
+        : static_cast<uint64_t>(requestedMaximumBytes);
+    const uint64_t limit = std::min({kMaximum, requested, available - reserved});
     if (limit < kMinimum) return 0;
     const std::string limitString = std::to_string(limit);
 #if defined(_WIN32)

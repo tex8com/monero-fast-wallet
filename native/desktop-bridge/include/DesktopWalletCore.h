@@ -9,7 +9,8 @@ extern "C" int tex8_desktop_wallet_core_linked_with_monero() noexcept;
 // the platform must retain the existing RAM backpressure behavior.
 extern "C" unsigned long long
 tex8_desktop_wallet_configure_public_block_spool(
-    const char* directory) noexcept;
+    const char* directory,
+    unsigned long long requested_maximum_bytes) noexcept;
 
 struct Tex8DesktopWalletCore;
 

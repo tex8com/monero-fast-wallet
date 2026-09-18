@@ -33,6 +33,8 @@ jest.mock('react-native-safe-area-context', () => ({
 jest.mock('../../services/NativeMoneroWallet', () => ({
   requireNativeMoneroWallet: () => ({
     deleteDaemonPassword: jest.fn(async () => undefined),
+    getPublicBlockSpoolPreferenceMiB: jest.fn(async () => 1024),
+    setPublicBlockSpoolPreferenceMiB: jest.fn(async () => undefined),
     storeDaemonPassword: jest.fn(async () => undefined),
   }),
 }));

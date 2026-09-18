@@ -70,11 +70,12 @@ extern "C" int tex8_desktop_wallet_core_linked_with_monero() noexcept {
 
 extern "C" unsigned long long
 tex8_desktop_wallet_configure_public_block_spool(
-    const char* directory) noexcept {
-  using Function = unsigned long long (*)(const char*);
+    const char* directory,
+    unsigned long long requestedMaximumBytes) noexcept {
+  using Function = unsigned long long (*)(const char*, unsigned long long);
   const auto function = resolve<Function>(
       "tex8_desktop_wallet_configure_public_block_spool");
-  return function == nullptr ? 0 : function(directory);
+  return function == nullptr ? 0 : function(directory, requestedMaximumBytes);
 }
 
 extern "C" Tex8DesktopWalletCore* tex8_desktop_wallet_core_new() noexcept {

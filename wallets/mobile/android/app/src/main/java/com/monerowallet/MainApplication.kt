@@ -79,6 +79,7 @@ class MainApplication : Application(), ReactApplication {
     val reservedBytes = minOf(SPOOL_FREE_SPACE_RESERVE_BYTES, availableBytes / 2L)
     val maxBytes = minOf(
       SPOOL_MAX_BYTES,
+      PublicBlockSpoolPreferences.maximumMib(this) * MIB,
       (availableBytes - reservedBytes).coerceAtLeast(0L),
     )
     if (maxBytes < SPOOL_MIN_BYTES ||
@@ -120,7 +121,7 @@ class MainApplication : Application(), ReactApplication {
     const val MIB = 1024L * 1024L
     const val GIB = 1024L * MIB
     const val SPOOL_MIN_BYTES = 512L * MIB
-    const val SPOOL_MAX_BYTES = 8L * GIB
+    const val SPOOL_MAX_BYTES = 2L * GIB
     const val SPOOL_FREE_SPACE_RESERVE_BYTES = 2L * GIB
   }
 }

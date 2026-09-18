@@ -24,7 +24,10 @@ struct RawResult {
 }
 
 unsafe extern "C" {
-    fn tex8_desktop_wallet_configure_public_block_spool(directory: *const c_char) -> u64;
+    fn tex8_desktop_wallet_configure_public_block_spool(
+        directory: *const c_char,
+        requested_maximum_bytes: u64,
+    ) -> u64;
     fn tex8_desktop_wallet_core_new() -> *mut RawCore;
     fn tex8_desktop_wallet_core_free(core: *mut RawCore);
     fn tex8_desktop_result_free(result: *mut RawResult);
@@ -988,7 +991,13 @@ fn configure_public_block_spool() {
         eprintln!("MONERO_DESKTOP_SPOOL enabled=false reason=path");
         return;
     };
-    let limit = unsafe { tex8_desktop_wallet_configure_public_block_spool(directory.as_ptr()) };
+    let requested_maximum_bytes = crate::spool_preferences::load_for_native();
+    let limit = unsafe {
+        tex8_desktop_wallet_configure_public_block_spool(
+            directory.as_ptr(),
+            requested_maximum_bytes,
+        )
+    };
     if limit == 0 {
         eprintln!(
             "MONERO_DESKTOP_SPOOL enabled=false reason=capacity orphan_files_removed={removed_orphans}"

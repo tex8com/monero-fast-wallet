@@ -18,6 +18,7 @@ mod platform_auth;
 mod release_features;
 mod secure_store;
 mod security_settings;
+mod spool_preferences;
 pub mod tor_transport;
 mod vanity_service;
 mod wallet_core;
@@ -1177,6 +1178,25 @@ fn set_compute_backend(
         &[("preference", preference)],
     );
     Ok(status)
+}
+
+#[tauri::command]
+fn get_public_block_spool_preference(
+    protection: State<'_, AppProtectionState>,
+    app: AppHandle,
+) -> Result<u64, String> {
+    require_app_unlocked(&protection)?;
+    spool_preferences::load(&app)
+}
+
+#[tauri::command]
+fn set_public_block_spool_preference(
+    protection: State<'_, AppProtectionState>,
+    app: AppHandle,
+    maximum_mib: u64,
+) -> Result<u64, String> {
+    require_app_unlocked(&protection)?;
+    spool_preferences::save(&app, maximum_mib)
 }
 
 #[tauri::command]
@@ -10167,6 +10187,8 @@ pub fn run() {
             wallet_core_status,
             compute_backend_status,
             set_compute_backend,
+            get_public_block_spool_preference,
+            set_public_block_spool_preference,
             derivation_performance,
             diagnostic_derivation_performance,
             diagnostic_secure_storage_roundtrip,

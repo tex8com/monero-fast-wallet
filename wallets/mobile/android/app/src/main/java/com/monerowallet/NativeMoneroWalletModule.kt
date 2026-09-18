@@ -1677,6 +1677,36 @@ class NativeMoneroWalletModule(
       }
   }
 
+  override fun getPublicBlockSpoolPreferenceMiB(promise: Promise) {
+    if (!requireAppAuthorized(promise)) {
+      return
+    }
+    promise.resolve(PublicBlockSpoolPreferences.maximumMib(reactApplicationContext).toDouble())
+  }
+
+  override fun setPublicBlockSpoolPreferenceMiB(maximumMiB: Double, promise: Promise) {
+    if (!requireAppAuthorized(promise)) {
+      return
+    }
+    runCatching {
+      require(maximumMiB.isFinite() && maximumMiB == kotlin.math.floor(maximumMiB)) {
+        "Unsupported sync storage limit"
+      }
+      PublicBlockSpoolPreferences.saveMaximumMib(
+        reactApplicationContext,
+        maximumMiB.toLong(),
+      )
+    }
+      .onSuccess { promise.resolve(null) }
+      .onFailure { error ->
+        promise.reject(
+          "monero_wallet_android_sync_storage_error",
+          error.message ?: "Failed to save sync storage preference",
+          error,
+        )
+      }
+  }
+
   override fun defaultWalletPath(walletName: String, network: String, promise: Promise) {
     if (!requireAppAuthorized(promise)) {
       return

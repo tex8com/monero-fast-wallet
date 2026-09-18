@@ -11,7 +11,10 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {Icon} from '../components/Icon';
 import {useI18n} from '../i18n';
 import {colors, radius, spacing} from '../theme/colors';
-import type {MoneroNetwork} from '../services/NativeMoneroWallet';
+import {
+  requireNativeMoneroWallet,
+  type MoneroNetwork,
+} from '../services/NativeMoneroWallet';
 import {
   createDefaultNodeConnectionSettings,
   getActiveNodeConnectionSettings,
@@ -39,6 +42,7 @@ const NETWORKS: ReadonlyArray<{value: MoneroNetwork; label: string}> = [
 ];
 const KNOWN_NODE_IDS: ReadonlyArray<FixedNodeId> = ['tex8', 'community'];
 const AUTO_SAVE_DELAY_MS = 550;
+const SPOOL_LIMITS_MIB = [512, 1024, 2048] as const;
 const NODE_MODES = [
   {value: 'optimized-grpc', label: 'MFN fast sync'},
   {value: 'original-rpc', label: 'Original RPC'},
@@ -58,6 +62,8 @@ export default function NodeStatusScreen({navigation}: any) {
   const [diagnostics, setDiagnostics] =
     useState<ConnectionDiagnosticsResult | null>(null);
   const [diagnosticsRunning, setDiagnosticsRunning] = useState(false);
+  const [spoolLimitMib, setSpoolLimitMib] = useState(1024);
+  const [spoolPreferenceSaved, setSpoolPreferenceSaved] = useState(false);
   const editRevision = useRef(0);
   const saveQueue = useRef(Promise.resolve());
 
@@ -107,6 +113,21 @@ export default function NodeStatusScreen({navigation}: any) {
       mounted = false;
     };
   }, []); // Deliberately load the one global profile only once.
+
+  useEffect(() => {
+    let mounted = true;
+    requireNativeMoneroWallet()
+      .getPublicBlockSpoolPreferenceMiB()
+      .then(value => {
+        if (mounted && SPOOL_LIMITS_MIB.includes(value as 512 | 1024 | 2048)) {
+          setSpoolLimitMib(value);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!persistedFingerprint || currentFingerprint === persistedFingerprint) {
@@ -186,6 +207,16 @@ export default function NodeStatusScreen({navigation}: any) {
             useSsl: false,
           }),
     }));
+  }
+
+  function chooseSpoolLimit(maximumMiB: number) {
+    requireNativeMoneroWallet()
+      .setPublicBlockSpoolPreferenceMiB(maximumMiB)
+      .then(() => {
+        setSpoolLimitMib(maximumMiB);
+        setSpoolPreferenceSaved(true);
+      })
+      .catch(() => undefined);
   }
 
   function renderPreset(node: FixedNodeId, transport: 'clearnet' | 'onion') {
@@ -412,6 +443,27 @@ export default function NodeStatusScreen({navigation}: any) {
             value={draft.proxyAddress}
           />
         </RouteSettings>}
+
+        <View style={s.section}>
+          <Text style={s.sectionTitle}>{t('nodeStatus.syncStorage')}</Text>
+          <Text style={s.sectionHint}>{t('nodeStatus.syncStorageHint')}</Text>
+          <View style={s.segmented}>
+            {SPOOL_LIMITS_MIB.map(limit => (
+              <TouchableOpacity
+                accessibilityRole="radio"
+                accessibilityState={{selected: spoolLimitMib === limit}}
+                key={limit}
+                onPress={() => chooseSpoolLimit(limit)}
+                style={[s.segment, spoolLimitMib === limit && s.segmentActive]}
+              >
+                <Text numberOfLines={1} style={[s.segmentText, spoolLimitMib === limit && s.segmentTextActive]}>
+                  {limit === 512 ? '512 MiB' : `${limit / 1024} GiB`}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {spoolPreferenceSaved ? <Text style={s.sectionHint}>{t('nodeStatus.syncStorageRestart')}</Text> : null}
+        </View>
 
         <TouchableOpacity
           accessibilityRole="button"

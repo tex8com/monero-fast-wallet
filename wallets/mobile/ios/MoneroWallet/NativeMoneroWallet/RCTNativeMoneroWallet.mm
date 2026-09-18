@@ -52,6 +52,7 @@ static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
 
 #include <algorithm>
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -68,11 +69,21 @@ namespace {
 constexpr uint32_t kMfwNameMaximumTermYears = 1000;
 constexpr uint64_t kMfwNameAnnualFeeAtomic = 10000000000ULL;
 
+NSString *const kMfwPublicBlockSpoolPreferenceKey = @"mfw.publicBlockSpool.maximumMiB";
+
+unsigned long long publicBlockSpoolPreferenceMiB() {
+  const NSInteger value = [[NSUserDefaults standardUserDefaults]
+      integerForKey:kMfwPublicBlockSpoolPreferenceKey];
+  return value == 512 || value == 1024 || value == 2048
+      ? static_cast<unsigned long long>(value)
+      : 1024ULL;
+}
+
 void configurePublicBlockSpool() {
   constexpr unsigned long long kMiB = 1024ULL * 1024ULL;
   constexpr unsigned long long kGiB = 1024ULL * kMiB;
   constexpr unsigned long long kMinimum = 512ULL * kMiB;
-  constexpr unsigned long long kMaximum = 8ULL * kGiB;
+  constexpr unsigned long long kMaximum = 2ULL * kGiB;
   constexpr unsigned long long kReserve = 2ULL * kGiB;
   NSFileManager *fileManager = [NSFileManager defaultManager];
   NSURL *applicationSupport = [fileManager
@@ -116,7 +127,8 @@ void configurePublicBlockSpool() {
   const unsigned long long available =
       [attributes[NSFileSystemFreeSize] unsignedLongLongValue];
   const unsigned long long reserved = std::min(kReserve, available / 2ULL);
-  const unsigned long long limit = std::min(kMaximum, available - reserved);
+  const unsigned long long requested = publicBlockSpoolPreferenceMiB() * kMiB;
+  const unsigned long long limit = std::min({kMaximum, requested, available - reserved});
   if (limit < kMinimum) {
     NSLog(@"MONERO_WALLET_SPOOL enabled=false reason=capacity orphan_files_removed=%lu",
           (unsigned long)removedOrphans);
@@ -5978,6 +5990,33 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
   } catch (const std::exception &error) {
     rejectWithException(reject, error);
   }
+}
+
+- (void)getPublicBlockSpoolPreferenceMiB:(RCTPromiseResolveBlock)resolve
+                                  reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  resolve(@(publicBlockSpoolPreferenceMiB()));
+}
+
+- (void)setPublicBlockSpoolPreferenceMiB:(double)maximumMiB
+                                  resolve:(RCTPromiseResolveBlock)resolve
+                                   reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  const long long value = static_cast<long long>(maximumMiB);
+  if (!std::isfinite(maximumMiB) || maximumMiB != static_cast<double>(value) ||
+      (value != 512 && value != 1024 && value != 2048)) {
+    reject(@"monero_wallet_ios_sync_storage_error", @"Unsupported sync storage limit", nil);
+    return;
+  }
+  [[NSUserDefaults standardUserDefaults] setInteger:value
+                                            forKey:kMfwPublicBlockSpoolPreferenceKey];
+  resolve([NSNull null]);
 }
 
 - (void)deleteEmptyWalletFiles:(NSString *)walletId
