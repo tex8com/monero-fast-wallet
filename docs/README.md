@@ -10,6 +10,7 @@ test-environment metadata.
 - [Privacy](PRIVACY.md)
 - [Security and release status](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
+- [Open-source compliance](OPEN_SOURCE_COMPLIANCE.md)
 
 For component-specific instructions, start with the README in that component's
 directory. The root [license](../LICENSE) and `LICENSES/` directory define the

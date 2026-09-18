@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Sicherheitslücke privat melden
+    url: https://github.com/tex8com/monero-fast-wallet/security/advisories/new
+    about: Bitte keine Sicherheitslücken, Wallet-Geheimnisse oder Zugangsdaten in öffentlichen Issues veröffentlichen.

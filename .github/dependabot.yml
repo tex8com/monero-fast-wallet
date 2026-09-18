@@ -38,26 +38,26 @@ updates:
       interval: weekly
 
   - package-ecosystem: cargo
-    directory: /node/cuprate
+    directory: /node/mfn-monero-fast-node
     schedule:
       interval: weekly
 
   - package-ecosystem: cargo
-    directory: /services/enthusiast-discovery
+    directory: /backend/enthusiast-discovery
     schedule:
       interval: weekly
 
   - package-ecosystem: cargo
-    directory: /services/monero-news
+    directory: /backend/monero-news
     schedule:
       interval: weekly
 
   - package-ecosystem: cargo
-    directory: /services/notification-gateway
+    directory: /backend/notification-gateway
     schedule:
       interval: weekly
 
   - package-ecosystem: cargo
-    directory: /services/fast-wallet-scanner-core
+    directory: /backend/fast-wallet-worker/scanner-core
     schedule:
       interval: weekly
