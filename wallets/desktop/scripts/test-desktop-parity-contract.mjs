@@ -338,8 +338,10 @@ test('desktop keeps the balance summary and separate collapsible blockchain and 
   assert.match(appSource, /data-testid="sync-status-popup"/);
   assert.match(appSource, /const blockchainCurrent =/);
   assert.doesNotMatch(appSource, /walletProvesCurrentDownload/);
-  assert.match(appSource, /const blockchainPercent = network\.ready \? 100 : network\.progress \?\? 0/);
-  assert.match(appSource, /blockchainPercent === 100 \? t\('home\.syncComplete'\)/);
+  assert.match(appSource, /const blockchainPercent = displaySyncPercent\(/);
+  assert.match(appSource, /const blockchainDetail = network\.ready \? t\('home\.syncComplete'\)/);
+  assert.match(appSource, /complete=\{network\.ready\}/);
+  assert.match(appSource, /complete=\{sync\.coreConfirmed\}/);
   assert.match(appSource, /home\.blockchainData/);
   assert.match(appSource, /home\.walletScan/);
   assert.match(appSource, /className="sync-refresh"/);
@@ -372,7 +374,8 @@ test('desktop computes sync percentage from the wallet restore range, never the 
   const homeSource = appSource.slice(appSource.indexOf('function Home('), appSource.indexOf('function RecentTransactions('));
   assert.match(homeSource, /syncStartHeightForWallet\(\s*wallet\?\.restoreHeight,/);
   assert.match(homeSource, /presentWalletSync\(selectedSnapshot, \{ startHeight: syncStartHeight \}\)/);
-  assert.match(appSource, /sync\.coreConfirmed \|\| sync\.phase === 'finalizing' \? 100/);
+  assert.match(appSource, /sync\.phase === 'finalizing'[\s\S]*\? undefined/);
+  assert.match(appSource, /displaySyncPercent\(sync\.progress \?\? 0, false\)/);
   assert.match(appSource, /t\('home\.syncRemaining'/);
 });
 

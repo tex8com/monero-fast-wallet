@@ -253,6 +253,19 @@ export function formatSyncPercent(value: number): string {
     : normalized.toFixed(1);
 }
 
+/**
+ * Never present a rounded 100% before the authoritative native state confirms
+ * completion. Near-tip block ratios can otherwise round from 99.999... to 100.
+ */
+export function displaySyncPercent(
+  value: number | undefined,
+  confirmedComplete: boolean,
+): number | undefined {
+  if (value === undefined) return undefined;
+  const normalized = normalizeSyncPercent(value);
+  return !confirmedComplete && normalized === 100 ? 99.9 : normalized;
+}
+
 function nonNegativeInteger(value: number): number | undefined {
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
 }

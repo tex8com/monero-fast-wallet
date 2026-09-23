@@ -463,7 +463,14 @@ describe('Wallet dashboard interaction contract', () => {
     expect(syncStatus).toContain('const blockchainProgress =');
     expect(syncStatus).toContain('const walletProgress =');
     expect(syncStatus).toContain(
-      "presentation.phase === 'finalizing'\n      ? 100",
+      "presentation.phase === 'finalizing'\n      ? undefined",
+    );
+    expect(syncStatus).toContain('confirmedComplete={network.ready}');
+    expect(syncStatus).toContain(
+      'confirmedComplete={presentation.coreConfirmed}',
+    );
+    expect(syncStatus).toContain(
+      'displaySyncPercent(percent, confirmedComplete)',
     );
     expect(syncStatus).toContain('const blockchainCurrent =');
     expect(syncStatus).toContain('blockHeightProgress(blockchainCurrent, network.targetHeight)');

@@ -1,5 +1,6 @@
 import {
   completedFullScanMetrics,
+  displaySyncPercent,
   formatFullScanDuration,
   formatNetworkSyncRate,
   formatWalletDerivationRate,
@@ -24,6 +25,13 @@ const status = (overrides = {}) => ({
 });
 
 describe('presentNetworkSync', () => {
+  it('never displays rounded 100% before native completion', () => {
+    const nearTip = (3_766_295 / 3_766_297) * 100;
+    expect(displaySyncPercent(nearTip, false)).toBe(99.9);
+    expect(displaySyncPercent(100, false)).toBe(99.9);
+    expect(displaySyncPercent(100, true)).toBe(100);
+  });
+
   it('calculates transport and wallet derivation rates from native batch counters', () => {
     expect(networkSyncMegabitsPerSecond(status({
       lastNonEmptyBlockFetchMs: 2_000,

@@ -13,6 +13,7 @@ import {
 } from '../../../packages/wallet-shared/src/walletSync';
 import {
   completedFullScanMetrics,
+  displaySyncPercent,
   formatFullScanDuration,
   formatNetworkSyncRate,
   formatSyncPercent,
@@ -20,7 +21,6 @@ import {
   networkSyncByteSample,
   networkSyncMegabitsPerSecond,
   networkSyncWindowMegabitsPerSecond,
-  normalizeSyncPercent,
   presentNetworkSync,
   walletSyncDerivationsPerSecond,
 } from '../../../packages/wallet-shared/src/networkSync';
@@ -1672,15 +1672,22 @@ function DesktopSyncProgress({ locale, network, networkStatus, onRefresh, readin
   // process-wide downloader is filling an older shared range for another
   // wallet. Wallet synchronization therefore cannot promote blockchain data
   // to 100%; only the authoritative shared-download cursors may do that.
-  const blockchainPercent = network.ready ? 100 : network.progress ?? 0;
+  const blockchainPercent = displaySyncPercent(
+    network.ready ? 100 : network.progress ?? 0,
+    network.ready,
+  ) ?? 0;
   const blockchainCurrent = network.downloadedHeight && network.downloadedHeight > 0 ? network.downloadedHeight : network.chainHeight;
-  const blockchainDetail = blockchainPercent === 100 ? t('home.syncComplete') : networkSyncPhaseLabel(networkStatus, t);
+  const blockchainDetail = network.ready ? t('home.syncComplete') : networkSyncPhaseLabel(networkStatus, t);
   const networkRate = useAggregateNetworkRate(networkStatus);
   const walletDerivationRate = walletSyncDerivationsPerSecond(networkStatus);
   const fullScanMetrics = completedFullScanMetrics(networkStatus);
-  const walletPercent = sync.coreConfirmed || sync.phase === 'finalizing' ? 100 : sync.progress ?? 0;
+  const walletPercent = sync.coreConfirmed
+    ? 100
+    : sync.phase === 'finalizing'
+      ? undefined
+      : displaySyncPercent(sync.progress ?? 0, false);
   const blockchainRemaining =
-    blockchainPercent === 100 || network.targetHeight === undefined
+    network.ready || network.targetHeight === undefined
       ? undefined
       : t('home.syncRemaining', {
           count: formatSyncBlockCount(
@@ -1689,7 +1696,7 @@ function DesktopSyncProgress({ locale, network, networkStatus, onRefresh, readin
           ),
         });
   const walletRemaining =
-    walletPercent === 100 || sync.targetHeight === undefined
+    sync.coreConfirmed || sync.targetHeight === undefined
       ? undefined
       : t('home.syncRemaining', {
           count: formatSyncBlockCount(
@@ -1760,8 +1767,8 @@ function DesktopSyncProgress({ locale, network, networkStatus, onRefresh, readin
       </button>
     </header>
     {expanded && <div className="primary-wallet-sync" data-testid="sync-status-details">
-        <DesktopSyncProgressRow detail={blockchainDetail} extra={connectionDetail} label={t('home.blockchainData')} percent={blockchainPercent} rate={networkRate === undefined ? undefined : t('home.syncNetworkRate', { rate: formatNetworkSyncRate(networkRate, locale) })} remaining={blockchainRemaining} testId="blockchain-progress" />
-        {showWalletSync && <DesktopSyncProgressRow detail={readinessPhase === 'recovering-session' ? t('home.sessionRecovering') : readinessPhase === 'recoverable-error' ? t('home.sessionRecoveryFailed') : readinessPhase === 'scanning-spend-outputs' ? t('home.spendOutputsChecking') : sync.phase === 'synchronized' ? t('home.syncComplete') : sync.phase === 'finalizing' ? t('home.syncVerifying') : sync.phase === 'waiting-for-node' ? t('home.syncUpdating') : t('home.syncScanning')} extra={sync.phase === 'finalizing' ? t('home.syncConfirming') : sync.phase === 'syncing' ? formatDesktopSyncEta(syncEtaSeconds, t) : undefined} label={readinessPhase === 'scanning-spend-outputs' ? t('home.spendOutputs') : t('home.walletScan')} onRefresh={onRefresh} percent={readinessPhase === 'scanning-spend-outputs' || readinessPhase === 'recovering-session' || readinessPhase === 'recoverable-error' ? undefined : walletPercent} rate={walletDerivationRate === undefined ? undefined : t('home.syncDerivationRate', { rate: formatWalletDerivationRate(walletDerivationRate, locale) })} remaining={walletRemaining} testId="wallet-progress" />}
+        <DesktopSyncProgressRow complete={network.ready} detail={blockchainDetail} extra={connectionDetail} label={t('home.blockchainData')} percent={blockchainPercent} rate={networkRate === undefined ? undefined : t('home.syncNetworkRate', { rate: formatNetworkSyncRate(networkRate, locale) })} remaining={blockchainRemaining} testId="blockchain-progress" />
+        {showWalletSync && <DesktopSyncProgressRow complete={sync.coreConfirmed} detail={readinessPhase === 'recovering-session' ? t('home.sessionRecovering') : readinessPhase === 'recoverable-error' ? t('home.sessionRecoveryFailed') : readinessPhase === 'scanning-spend-outputs' ? t('home.spendOutputsChecking') : sync.phase === 'synchronized' ? t('home.syncComplete') : sync.phase === 'finalizing' ? t('home.syncVerifying') : sync.phase === 'waiting-for-node' ? t('home.syncUpdating') : t('home.syncScanning')} extra={sync.phase === 'finalizing' ? t('home.syncConfirming') : sync.phase === 'syncing' ? formatDesktopSyncEta(syncEtaSeconds, t) : undefined} label={readinessPhase === 'scanning-spend-outputs' ? t('home.spendOutputs') : t('home.walletScan')} onRefresh={onRefresh} percent={readinessPhase === 'scanning-spend-outputs' || readinessPhase === 'recovering-session' || readinessPhase === 'recoverable-error' ? undefined : walletPercent} rate={walletDerivationRate === undefined ? undefined : t('home.syncDerivationRate', { rate: formatWalletDerivationRate(walletDerivationRate, locale) })} remaining={walletRemaining} testId="wallet-progress" />}
         {fullScanMetrics && <section className="desktop-full-scan-metrics" data-testid="full-scan-metrics">
           <strong>{t('home.fullScanResult')}</strong>
           <span>{t('home.fullScanAverageNetwork', { rate: formatNetworkSyncRate(fullScanMetrics.averageNetworkMbps, locale) })}</span>
@@ -1774,10 +1781,9 @@ function DesktopSyncProgress({ locale, network, networkStatus, onRefresh, readin
   </section>;
 }
 
-function DesktopSyncProgressRow({ detail, extra, label, onRefresh, percent, rate, remaining, testId }: { detail: string; extra?: string; label: string; onRefresh?: () => void; percent?: number; rate?: string; remaining?: string; testId: string }) {
+function DesktopSyncProgressRow({ complete, detail, extra, label, onRefresh, percent, rate, remaining, testId }: { complete: boolean; detail: string; extra?: string; label: string; onRefresh?: () => void; percent?: number; rate?: string; remaining?: string; testId: string }) {
   const { t } = useI18n();
-  const normalized = percent === undefined ? undefined : normalizeSyncPercent(percent);
-  const complete = normalized === 100;
+  const normalized = displaySyncPercent(percent, complete);
   return <section className="desktop-sync-progress" data-testid={testId}><div className="sync-reading"><strong><b>{label}</b><small>{detail}</small></strong>{onRefresh && <button className="sync-refresh" aria-label={t('common.refresh')} onClick={onRefresh} title={t('common.refresh')} type="button">↻</button>}<em className={complete ? 'ready' : ''}>{normalized === undefined ? '—' : `${formatSyncPercent(normalized)}%`}</em></div><div className="sync-track"><span className={complete ? 'ready' : ''} style={{ width: `${normalized ?? 0}%` }} /></div>{!complete && (remaining || rate || extra) && <div className="sync-metrics"><div className="sync-metrics-primary">{remaining && <span>{remaining}</span>}{rate && <span>{rate}</span>}</div>{extra && <span className="sync-metrics-extra">{extra}</span>}</div>}</section>;
 }
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
+  displaySyncPercent,
   networkSyncMegabitsPerSecond,
   walletSyncDerivationsPerSecond,
 } from '../../../packages/wallet-shared/src/networkSync.ts';
@@ -12,6 +13,13 @@ import {
   updateWalletSyncEta,
   walletIsSpendReady,
 } from '../../../packages/wallet-shared/src/walletSync.ts';
+
+test('rounded progress cannot display 100% before native completion', () => {
+  const nearTip = (3_766_295 / 3_766_297) * 100;
+  assert.equal(displaySyncPercent(nearTip, false), 99.9);
+  assert.equal(displaySyncPercent(100, false), 99.9);
+  assert.equal(displaySyncPercent(100, true), 100);
+});
 
 test('a Ledger working snapshot cannot publish an intermediate incoming-only balance', () => {
   const intermediate = {

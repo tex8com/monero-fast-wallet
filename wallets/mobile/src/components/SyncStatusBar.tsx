@@ -20,9 +20,9 @@ import {
   type WalletSyncEtaState,
 } from '../../../../packages/wallet-shared/src/walletSync';
 import {
+  displaySyncPercent,
   formatSyncPercent,
   formatWalletDerivationRate,
-  normalizeSyncPercent,
   presentNetworkSync,
   walletSyncDerivationsPerSecond,
 } from '../../../../packages/wallet-shared/src/networkSync';
@@ -98,7 +98,7 @@ export default function SyncStatusBar({
       : presentation.coreConfirmed
       ? 100
       : presentation.phase === 'finalizing'
-      ? 100
+      ? undefined
       : snapshot
       ? walletHeightProgress ?? presentation.progress ?? 0
       : progress ?? 0;
@@ -273,6 +273,7 @@ export default function SyncStatusBar({
           <SyncProgressRow
             current={blockchainCurrent}
             detail={blockchainDetail}
+            confirmedComplete={network.ready}
             extra={blockchainExtra}
             label={t('sync.blockchainData')}
             percent={blockchainProgress}
@@ -292,6 +293,7 @@ export default function SyncStatusBar({
               <View style={s.divider} />
               <SyncProgressRow
                 current={presentation.walletHeight}
+                confirmedComplete={presentation.coreConfirmed}
                 detail={walletDetail}
                 extra={
                   presentation.phase === 'finalizing'
@@ -372,6 +374,7 @@ export function snapshotWithNetworkScanProgress(
 }
 
 function SyncProgressRow({
+  confirmedComplete,
   current,
   detail,
   extra,
@@ -382,6 +385,7 @@ function SyncProgressRow({
   testID,
   variant,
 }: {
+  confirmedComplete: boolean;
   current?: number;
   detail: string;
   extra?: string;
@@ -393,9 +397,8 @@ function SyncProgressRow({
   variant: 'blockchain' | 'wallet';
 }) {
   const { t } = useI18n();
-  const normalizedPercent =
-    percent === undefined ? undefined : normalizeSyncPercent(percent);
-  const complete = normalizedPercent === 100;
+  const normalizedPercent = displaySyncPercent(percent, confirmedComplete);
+  const complete = confirmedComplete;
   const blocksRemaining =
     current !== undefined && target !== undefined
       ? Math.max(target - current, 0)
@@ -579,7 +582,11 @@ export function blockHeightProgress(current?: number, target?: number) {
   ) {
     return undefined;
   }
-  return normalizeSyncPercent((Math.max(0, Math.min(current, target)) / target) * 100);
+  const clampedCurrent = Math.max(0, Math.min(current, target));
+  return displaySyncPercent(
+    (clampedCurrent / target) * 100,
+    clampedCurrent >= target,
+  );
 }
 
 function formatSyncEta(
