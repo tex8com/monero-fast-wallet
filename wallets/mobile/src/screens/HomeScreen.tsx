@@ -23,6 +23,7 @@ import SyncStatusBar from '../components/SyncStatusBar';
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
+import TransactionLoadMoreButton from '../components/TransactionLoadMoreButton';
 import WalletSelector, {
   type WalletOption,
   type WalletSelectorItem,
@@ -818,23 +819,30 @@ export default function HomeScreen({ navigation }: any) {
         </View>
 
         {hasOpenWallet && transactions.length > 0 ? (
-          transactions.slice(0, 3).map(transaction => (
-            <TransactionRow
-              key={transactionRowKey(transaction)}
-              style={s.transactionRow}
-              transaction={transaction}
+          <>
+            {transactions.slice(0, 3).map(transaction => (
+              <TransactionRow
+                key={transactionRowKey(transaction)}
+                style={s.transactionRow}
+                transaction={transaction}
+                onPress={() =>
+                  navigation.navigate('TransactionDetail', {
+                    transaction,
+                    transactionHash: transaction.hash,
+                    walletId: registeredWallet?.id,
+                    walletName: registeredWallet
+                      ? walletDisplayName(registeredWallet)
+                      : undefined,
+                  })
+                }
+              />
+            ))}
+            <TransactionLoadMoreButton
               onPress={() =>
-                navigation.navigate('TransactionDetail', {
-                  transaction,
-                  transactionHash: transaction.hash,
-                  walletId: registeredWallet?.id,
-                  walletName: registeredWallet
-                    ? walletDisplayName(registeredWallet)
-                    : undefined,
-                })
+                navigation.navigate('Transactions', { addressFilter: null })
               }
             />
-          ))
+          </>
         ) : (
           <View style={s.emptyTxCard}>
             <Text style={s.emptyTxTitle}>

@@ -31,6 +31,7 @@ import SendSuccessModal, {
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
+import TransactionLoadMoreButton from '../components/TransactionLoadMoreButton';
 import WalletSelector, {
   type WalletOption,
   type WalletSelectorItem,
@@ -1972,22 +1973,29 @@ export default function SendScreen({ navigation, route }: any) {
         </View>
 
         {transactions.length > 0 ? (
-          transactions.slice(0, 3).map(transaction => (
-            <TransactionRow
-              key={transactionRowKey(transaction)}
-              transaction={transaction}
+          <>
+            {transactions.slice(0, 3).map(transaction => (
+              <TransactionRow
+                key={transactionRowKey(transaction)}
+                transaction={transaction}
+                onPress={() =>
+                  navigation.navigate('TransactionDetail', {
+                    transaction,
+                    transactionHash: transaction.hash,
+                    walletId: registeredWallet?.id,
+                    walletName: registeredWallet
+                      ? walletDisplayName(registeredWallet)
+                      : undefined,
+                  })
+                }
+              />
+            ))}
+            <TransactionLoadMoreButton
               onPress={() =>
-                navigation.navigate('TransactionDetail', {
-                  transaction,
-                  transactionHash: transaction.hash,
-                  walletId: registeredWallet?.id,
-                  walletName: registeredWallet
-                    ? walletDisplayName(registeredWallet)
-                    : undefined,
-                })
+                navigation.navigate('Transactions', { addressFilter: null })
               }
             />
-          ))
+          </>
         ) : (
           <View style={s.emptyTxCard}>
             <Text style={s.emptyTxTitle}>{t('send.noRecent')}</Text>

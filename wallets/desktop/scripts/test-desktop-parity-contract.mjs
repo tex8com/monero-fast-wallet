@@ -386,6 +386,19 @@ test('desktop mirrors the current alpha transaction and address UX', () => {
   assert.match(appSource, /transactionListStatus/);
 });
 
+test('desktop recent transaction lists include the matching load-more action', () => {
+  const recentTransactionsSource = appSource.slice(
+    appSource.indexOf('function RecentTransactions('),
+    appSource.indexOf('function Wallets('),
+  );
+  assert.match(
+    recentTransactionsSource,
+    /className="transaction-load-more" onClick=\{onActivity\}/,
+  );
+  assert.match(recentTransactionsSource, /t\('home\.loadMore'\)/);
+  assert.match(stylesSource, /\.transaction-load-more \{/);
+});
+
 test('desktop news uses the same TEX8 feed and categories as mobile', () => {
   const newsSource = readFileSync(resolve(desktopRoot, 'src', 'moneroNews.ts'), 'utf8');
   const hostSource = readFileSync(resolve(desktopRoot, 'src-tauri', 'src', 'lib.rs'), 'utf8');

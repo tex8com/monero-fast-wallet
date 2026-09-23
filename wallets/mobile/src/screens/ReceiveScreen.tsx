@@ -24,6 +24,7 @@ import { Icon } from '../components/Icon';
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
+import TransactionLoadMoreButton from '../components/TransactionLoadMoreButton';
 import type { WalletOption } from '../components/WalletSelector';
 import { resolveWalletOption } from '../components/WalletSelector';
 import { type TranslationKey, useI18n } from '../i18n';
@@ -1043,22 +1044,37 @@ export default function ReceiveScreen({ navigation, route }: any) {
         </View>
 
         {showsActiveWalletHistory && selectedAddressTransactions.length > 0 ? (
-          selectedAddressTransactions.slice(0, 3).map(transaction => (
-            <TransactionRow
-              key={transactionRowKey(transaction)}
-              transaction={transaction}
+          <>
+            {selectedAddressTransactions.slice(0, 3).map(transaction => (
+              <TransactionRow
+                key={transactionRowKey(transaction)}
+                transaction={transaction}
+                onPress={() =>
+                  navigation.navigate('TransactionDetail', {
+                    transaction,
+                    transactionHash: transaction.hash,
+                    walletId: registeredWallet?.id,
+                    walletName: registeredWallet
+                      ? walletDisplayName(registeredWallet)
+                      : undefined,
+                  })
+                }
+              />
+            ))}
+            <TransactionLoadMoreButton
               onPress={() =>
-                navigation.navigate('TransactionDetail', {
-                  transaction,
-                  transactionHash: transaction.hash,
-                  walletId: registeredWallet?.id,
-                  walletName: registeredWallet
-                    ? walletDisplayName(registeredWallet)
+                navigation.navigate('Transactions', {
+                  addressFilter: selectedAddress
+                    ? {
+                        accountIndex: selectedAddress.accountIndex,
+                        addressIndex: selectedAddress.addressIndex,
+                        label: selectedAddress.label,
+                      }
                     : undefined,
                 })
               }
             />
-          ))
+          </>
         ) : (
           <View style={s.transactionsEmpty}>
             <Text style={s.transactionsEmptyTitle}>

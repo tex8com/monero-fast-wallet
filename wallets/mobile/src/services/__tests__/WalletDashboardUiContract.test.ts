@@ -11,6 +11,11 @@ describe('Wallet dashboard interaction contract', () => {
   const setup = source('src', 'screens', 'WalletSetupScreen.tsx');
   const wallets = source('src', 'screens', 'WalletsScreen.tsx');
   const receive = source('src', 'screens', 'ReceiveScreen.tsx');
+  const transactionLoadMoreButton = source(
+    'src',
+    'components',
+    'TransactionLoadMoreButton.tsx',
+  );
   const selector = source('src', 'components', 'WalletSelector.tsx');
   const settings = source('src', 'screens', 'SettingsScreen.tsx');
   const send = source('src', 'screens', 'SendScreen.tsx');
@@ -63,6 +68,39 @@ describe('Wallet dashboard interaction contract', () => {
     ),
     'utf8',
   );
+
+  it('adds the same transaction-history action below every recent list', () => {
+    for (const screen of [home, wallets, send, receive]) {
+      expect(screen).toContain(
+        "import TransactionLoadMoreButton from '../components/TransactionLoadMoreButton';",
+      );
+      expect(screen).toContain('<TransactionLoadMoreButton');
+    }
+
+    expect(transactionLoadMoreButton).toContain("t('transactions.loadMore')");
+    expect(transactionLoadMoreButton).toContain(
+      'borderColor: colors.borderLight',
+    );
+    expect(transactionLoadMoreButton).toContain(
+      'backgroundColor: colors.tabBar',
+    );
+    expect(
+      home.match(
+        /navigation\.navigate\('Transactions', \{ addressFilter: null \}\)/g,
+      ),
+    ).toHaveLength(2);
+    expect(
+      wallets.match(
+        /navigation\.navigate\('Transactions', \{ addressFilter: null \}\)/g,
+      ),
+    ).toHaveLength(2);
+    expect(
+      send.match(
+        /navigation\.navigate\('Transactions', \{ addressFilter: null \}\)/g,
+      ),
+    ).toHaveLength(2);
+    expect(receive.match(/addressFilter: selectedAddress/g)).toHaveLength(2);
+  });
 
   it('forwards every native shared-download cursor and throughput metric through Android', () => {
     const requiredFields = [

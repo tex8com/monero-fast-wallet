@@ -13,6 +13,7 @@ import { Icon } from '../components/Icon';
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
+import TransactionLoadMoreButton from '../components/TransactionLoadMoreButton';
 import { useI18n } from '../i18n';
 import type { FastWalletStatusTone } from '../services/FastWalletStatus';
 import {
@@ -392,22 +393,29 @@ export default function WalletsScreen({ navigation }: any) {
             </TouchableOpacity>
           </View>
           {session && transactions.length > 0 ? (
-            transactions.slice(0, 3).map(transaction => (
-              <TransactionRow
-                key={transactionRowKey(transaction)}
-                transaction={transaction}
+            <>
+              {transactions.slice(0, 3).map(transaction => (
+                <TransactionRow
+                  key={transactionRowKey(transaction)}
+                  transaction={transaction}
+                  onPress={() =>
+                    navigation.navigate('TransactionDetail', {
+                      transaction,
+                      transactionHash: transaction.hash,
+                      walletId: registeredWallet?.id,
+                      walletName: registeredWallet
+                        ? walletDisplayName(registeredWallet)
+                        : undefined,
+                    })
+                  }
+                />
+              ))}
+              <TransactionLoadMoreButton
                 onPress={() =>
-                  navigation.navigate('TransactionDetail', {
-                    transaction,
-                    transactionHash: transaction.hash,
-                    walletId: registeredWallet?.id,
-                    walletName: registeredWallet
-                      ? walletDisplayName(registeredWallet)
-                      : undefined,
-                  })
+                  navigation.navigate('Transactions', { addressFilter: null })
                 }
               />
-            ))
+            </>
           ) : (
             <EmptyCard
               text={

@@ -1342,6 +1342,9 @@ html[dir="rtl"] textarea { text-align: right; }
 .home-empty .primary { margin: 0; }
 .home-empty .secondary { margin: 0; }
 .home-transaction-list { margin-top: 16px; overflow: hidden; border: 1px solid #302a40; border-radius: 12px; }
+.transaction-load-more { display: block; min-height: 36px; margin: 12px auto 0; padding: 7px 18px; border: 1px solid #51475f; border-radius: 999px; color: #f6f3f8; background: #0d0b14; cursor: pointer; font-size: 13px; font-weight: 700; }
+.transaction-load-more:hover { border-color: #766985; background: #171321; }
+.transaction-load-more:focus-visible { outline: 2px solid #fa671c; outline-offset: 2px; }
 .home-transaction-row { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; width: 100%; gap: 12px; align-items: center; padding: 13px 14px; border: 0; border-bottom: 1px solid #2b263a; color: inherit; background: #0d0b14; cursor: pointer; text-align: left; }
 .home-transaction-row:last-child { border-bottom: 0; }
 .home-transaction-row:hover { background: #181322; }
