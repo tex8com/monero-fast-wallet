@@ -1,6 +1,6 @@
 repository=https://github.com/tex8com/cuprate.git
 branch=agent/secure-fast-wallet-scanpacks
-commit=8185b337ab5e26d93a61f2c231d52a573ae97bc1
+commit=d301d4e806c9a82ed4387badfca82507c3ac60df
 legacy_scanpack_cache=true
 mfw_name_index=true
 signed_worker_scanpacks=true
