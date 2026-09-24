@@ -8,6 +8,7 @@ import type {
 } from '../services/NativeMoneroWallet';
 import type { ConnectivityRouteState } from '../services/ConnectivityState';
 import type { WalletRuntimeStatus } from '../services/WalletState';
+import { walletSnapshotIsSynchronized } from '../services/WalletSynchronization';
 import {
   networkSyncFailureCode,
   networkSyncFailureTranslationKey,
@@ -349,7 +350,12 @@ export function snapshotWithNetworkScanProgress(
     networkStatus.joinedWallets < 1 ||
     !['fetching-blocks', 'fanout', 'scanning'].includes(networkStatus.state)
   ) {
-    return snapshot;
+    return snapshot
+      ? {
+          ...snapshot,
+          synchronized: walletSnapshotIsSynchronized(snapshot),
+        }
+      : snapshot;
   }
 
   const walletHeight = Math.max(
@@ -369,7 +375,15 @@ export function snapshotWithNetworkScanProgress(
       networkStatus.downloadedHeight,
     ),
     daemonTargetHeight,
-    synchronized: snapshot.synchronized && walletHeight >= daemonTargetHeight,
+    synchronized: walletSnapshotIsSynchronized({
+      ...snapshot,
+      walletHeight,
+      daemonHeight: Math.max(
+        snapshot.daemonHeight,
+        networkStatus.downloadedHeight,
+      ),
+      daemonTargetHeight,
+    }),
   };
 }
 
@@ -611,7 +625,7 @@ function resolveDetail(
   if (hasSyncError) {
     return t('sync.error');
   }
-  if (snapshot?.synchronized) {
+  if (walletSnapshotIsSynchronized(snapshot)) {
     return t('sync.synced');
   }
   if (phase === 'finalizing') {

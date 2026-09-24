@@ -40,6 +40,7 @@ import type {
   BiometricAuthStatus,
   LedgerTransportStatus,
 } from '../services/NativeMoneroWallet';
+import { ledgerCoreDeviceName } from '../services/NativeMoneroWallet';
 import {
   isFastWalletRegistration,
   walletDisplayName,
@@ -1413,8 +1414,7 @@ export default function WalletSetupScreen({ navigation, route }: any) {
         throw new Error(transportStatus.message);
       }
 
-      const deviceName =
-        transportStatus.transport === 'ble' ? 'Ledger:ble' : 'Ledger';
+      const deviceName = ledgerCoreDeviceName(transportStatus);
       // This is the sole native request for the private view key. Keep the
       // Ledger approval instruction visible until that request resolves.
       setLedgerViewKeyExportPending(persistLedgerViewOnly);

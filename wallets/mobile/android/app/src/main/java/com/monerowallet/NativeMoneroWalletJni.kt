@@ -247,14 +247,14 @@ internal object NativeMoneroWalletJni {
     return runCatching { nativeInstallLedgerBleTransport() }.getOrDefault(false)
   }
 
-  @JvmStatic fun ledgerBleConnect(): Boolean = LedgerBleTransport.connect()
+  @JvmStatic fun ledgerBleConnect(): Boolean = LedgerAndroidTransport.connect()
 
-  @JvmStatic fun ledgerBleDisconnect() = LedgerBleTransport.disconnect()
+  @JvmStatic fun ledgerBleDisconnect() = LedgerAndroidTransport.disconnect()
 
-  @JvmStatic fun ledgerBleConnected(): Boolean = LedgerBleTransport.isConnected()
+  @JvmStatic fun ledgerBleConnected(): Boolean = LedgerAndroidTransport.isConnected()
 
   @JvmStatic fun ledgerBleExchange(command: ByteArray, userInput: Boolean): ByteArray =
-    LedgerBleTransport.exchange(command, userInput)
+    LedgerAndroidTransport.exchange(command, userInput)
 
   fun createWallet(
     path: String,

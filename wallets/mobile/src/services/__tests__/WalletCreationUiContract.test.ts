@@ -224,10 +224,12 @@ describe('Wallet creation and existing-wallet UI contract', () => {
     expect(statusEnd).toBeGreaterThan(statusStart);
     expect(accessEnd).toBeGreaterThan(statusEnd);
     expect(statusFlow).toContain('val bleStatus = ledgerBleTransportStatus()');
-    expect(statusFlow).toContain('bleStatus.available -> bleStatus');
-    expect(statusFlow).toContain('usbStatus.available -> usbStatus');
-    expect(statusFlow.indexOf('bleStatus.available -> bleStatus')).toBeLessThan(
-      statusFlow.indexOf('usbStatus.available -> usbStatus'),
+    expect(statusFlow).toContain('bleStatus.available -> {');
+    expect(statusFlow).toContain('usbStatus.available -> {');
+    expect(statusFlow).toContain('LedgerAndroidTransport.selectBle()');
+    expect(statusFlow).toContain('LedgerAndroidTransport::selectUsb');
+    expect(statusFlow.indexOf('bleStatus.available -> {')).toBeLessThan(
+      statusFlow.indexOf('usbStatus.available -> {'),
     );
     expect(accessFlow).toContain('if (bleStatus.available)');
     expect(accessFlow).toContain(

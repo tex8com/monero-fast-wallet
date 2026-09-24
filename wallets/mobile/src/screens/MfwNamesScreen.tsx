@@ -44,6 +44,7 @@ import {
   type MfwNameSendPreset,
 } from '../services/MfwNameRegistration';
 import {
+  LedgerSigningCancelledError,
   isLedgerSigningCancelledError,
   type LedgerSigningProgress,
 } from '../services/LedgerSigningFlow';
@@ -144,17 +145,28 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       throw new Error(t('mfwNames.openWalletFirst'));
     }
 
+    ledgerSigningCancelledRef.current = false;
+    const ensureNotCancelled = () => {
+      if (ledgerSigningCancelledRef.current) {
+        throw new LedgerSigningCancelledError();
+      }
+    };
+    const publishProgress = (progress: LedgerSigningProgress) => {
+      if (!ledgerSigningCancelledRef.current) {
+        setLedgerSigningProgress(progress);
+      }
+    };
     let hardwareStatusTimer: ReturnType<typeof setInterval> | undefined;
     let ledgerHandoffCreated = false;
     try {
       let signingSession: WalletSession | undefined = session;
       if (session.readOnly) {
-        ledgerSigningCancelledRef.current = false;
         setLedgerSigningProgress({ phase: 'searching' });
         signingSession = await connectLedgerForSigning({
           isCancelled: () => ledgerSigningCancelledRef.current,
-          onProgress: setLedgerSigningProgress,
+          onProgress: publishProgress,
         });
+        ensureNotCancelled();
         ledgerHandoffCreated = Boolean(
           signingSession && !signingSession.readOnly,
         );
@@ -163,19 +175,25 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         throw new Error(t('mfwNames.openWalletFirst'));
       }
       if (signingSession.hardwareDevice) {
-        setLedgerSigningProgress({ phase: 'preparing-request' });
+        ensureNotCancelled();
+        publishProgress({ phase: 'preparing-request' });
         hardwareStatusTimer = setInterval(() => {
           walletService
             .getHardwareWalletStatus(signingSession)
             .then(status => {
-              if (status.requiresUserAction) {
-                setLedgerSigningProgress({ phase: 'awaiting-confirmation' });
+              if (
+                !ledgerSigningCancelledRef.current &&
+                status.requiresUserAction
+              ) {
+                publishProgress({ phase: 'awaiting-confirmation' });
               }
             })
             .catch(() => undefined);
         }, 500);
       }
-      return await prepare(signingSession);
+      const prepared = await prepare(signingSession);
+      ensureNotCancelled();
+      return prepared;
     } catch (error) {
       if (ledgerHandoffCreated) {
         await restoreLedgerViewAfterSigning().catch(() => false);
@@ -2295,11 +2313,6 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         ) : null}
       </ScrollView>
       <LedgerSigningModal
-        canCancel={
-          ledgerSigningProgress?.phase === 'searching' ||
-          ledgerSigningProgress?.phase === 'connecting' ||
-          ledgerSigningProgress?.phase === 'synchronizing-wallet'
-        }
         progress={ledgerSigningProgress}
         onCancel={() => {
           ledgerSigningCancelledRef.current = true;

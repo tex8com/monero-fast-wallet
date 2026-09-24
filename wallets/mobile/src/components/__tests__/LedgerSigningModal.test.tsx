@@ -60,7 +60,7 @@ describe('LedgerSigningModal', () => {
     expect(text).toContain('Synchronizing the signing wallet');
     expect(text).toContain('Approve view-key export');
     expect(text).toContain('BLE · 97A0');
-    expect(renderer!.root.findAllByType(ActivityIndicator)).toHaveLength(0);
+    expect(renderer!.root.findAllByType(ActivityIndicator)).toHaveLength(1);
     expect(renderer!.root.findAllByType(TouchableOpacity)).toHaveLength(1);
     ReactTestRenderer.act(() =>
       renderer!.root.findByType(TouchableOpacity).props.onPress(),

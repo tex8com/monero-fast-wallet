@@ -559,9 +559,7 @@ describe('Wallet dashboard interaction contract', () => {
     );
     expect(syncStatus).toContain('networkStatus.priorityWalletHeight,');
     expect(syncStatus).toContain('networkStatus.targetHeight,');
-    expect(syncStatus).toContain(
-      'snapshot.synchronized && walletHeight >= daemonTargetHeight',
-    );
+    expect(syncStatus).toContain('walletSnapshotIsSynchronized({');
     expect(syncStatus).toContain(
       'walletSyncDerivationsPerSecond(networkStatus)',
     );
@@ -655,10 +653,12 @@ describe('Wallet dashboard interaction contract', () => {
     expect(syncStatus).toContain('accessibilityState={{ expanded }}');
     expect(syncStatus).toContain('testID="sync-status-details"');
     expect(appTopBar).toContain('useConnectivityState');
-    expect(appTopBar).toContain("{ label: 'Tor', route: connectivity.tor }");
+    expect(appTopBar).toContain('useWalletState');
     expect(appTopBar).toContain(
-      "{ label: 'Sync', route: connectivity.clearnet }",
+      'visual: appTopBarConnectionVisual(connectivity.tor)',
     );
+    expect(appTopBar).toContain("{ label: 'Sync', visual: syncVisual }");
+    expect(appTopBar).toContain('walletSnapshotIsSynchronized(snapshot)');
     expect(appTopBar).toContain("stateLabel: 'connected'");
     expect(appTopBar).toContain('<MoneroLogo size={27} />');
     expect(home).not.toContain('testID="header-sync-status-toggle"');

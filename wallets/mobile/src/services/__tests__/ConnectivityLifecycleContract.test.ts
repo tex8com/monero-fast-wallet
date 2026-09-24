@@ -71,7 +71,7 @@ describe('process-wide connectivity lifecycle', () => {
     expect(activity).toContain('ConnectivityForegroundService.start(this)');
   });
 
-  it('renders two native route LEDs instead of inferring Online from wallet sync', () => {
+  it('keeps Tor native while deriving Sync from the selected wallet', () => {
     const state = source('src', 'services', 'ConnectivityState.tsx');
     const topBar = source('src', 'components', 'AppTopBar.tsx');
 
@@ -83,7 +83,8 @@ describe('process-wide connectivity lifecycle', () => {
       "tor: {...current.tor, phase: 'checking', connected: false}",
     );
     expect(topBar).toContain('connectivity.tor');
-    expect(topBar).toContain('connectivity.clearnet');
+    expect(topBar).toContain('walletSnapshotIsSynchronized(snapshot)');
+    expect(topBar).not.toContain('connectivity.clearnet');
     expect(topBar).not.toContain('nodeConnectionStatus');
   });
 

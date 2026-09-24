@@ -219,6 +219,12 @@ const mockNativeWallet = {
 
 jest.mock('../NativeMoneroWallet', () => {
   return {
+    ledgerCoreDeviceName: jest.fn(
+      (status: { platform: string; transport: string }) =>
+        status.platform === 'android' || status.transport === 'ble'
+          ? 'Ledger:ble'
+          : 'Ledger',
+    ),
     requireNativeMoneroWallet: jest.fn(() => mockNativeWallet),
   };
 });
@@ -735,6 +741,45 @@ describe('WalletService registered wallet opening', () => {
     );
   });
 
+  it('allows Ledger preparation at proven tip height while the Core flag catches up', async () => {
+    mockNativeWallet.snapshot.mockResolvedValue({
+      id: 'wallet-ledger-tip',
+      path: '/wallets/ledger-tip',
+      primaryAddress: '4'.repeat(95),
+      balanceAtomic: '1000',
+      unlockedBalanceAtomic: '900',
+      walletHeight: 100,
+      daemonHeight: 100,
+      daemonTargetHeight: 100,
+      snapshotRevision: 10,
+      synchronized: false,
+    });
+    mockNativeWallet.getAddress.mockResolvedValue('4'.repeat(95));
+    mockNativeWallet.getBalance.mockResolvedValue('1000');
+    mockNativeWallet.getUnlockedBalance.mockResolvedValue('900');
+
+    const service = new WalletService();
+    await service.prepareMfwNameRegistration(
+      {
+        walletId: 'wallet-ledger-tip',
+        network: 'mainnet',
+        accountIndex: 0,
+        hardwareDevice: { name: 'Ledger:ble' },
+      },
+      {
+        registrationId: 'registration-tip',
+        name: 'tip.mfw',
+        address: '4'.repeat(95),
+        network: 'mainnet',
+        registryAddress: '4'.repeat(95),
+      },
+    );
+
+    expect(mockNativeWallet.prepareMfwNameRegistration).toHaveBeenCalledWith(
+      expect.objectContaining({ accountIndex: 0, name: 'tip.mfw' }),
+    );
+  });
+
   it('never lets an explicit legacy account registration be overridden', async () => {
     const service = new WalletService();
     await expect(
@@ -1137,7 +1182,7 @@ describe('WalletService registered wallet opening', () => {
       path: registration.path,
       secretKey: registration.credentialKey,
       network: registration.network,
-      deviceName: 'Ledger',
+      deviceName: 'Ledger:ble',
     });
     expect(
       mockNativeWallet.requestLedgerTransportAccess,

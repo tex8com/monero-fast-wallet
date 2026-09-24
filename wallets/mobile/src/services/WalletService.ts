@@ -1,4 +1,8 @@
-import { requireNativeMoneroWallet } from './NativeMoneroWallet';
+import {
+  ledgerCoreDeviceName,
+  requireNativeMoneroWallet,
+} from './NativeMoneroWallet';
+import { walletSnapshotIsSynchronized } from './WalletSynchronization';
 import {
   daemonRequiresEmbeddedTor,
   prepareDaemonForConnection,
@@ -3874,7 +3878,7 @@ export class WalletService {
     // scan batches. Do not publish a transaction scope until Core declares the
     // wallet caught up; Send then fails closed while Total Balance remains
     // available for the dashboard.
-    if (!walletSnapshot.synchronized) {
+    if (!walletSnapshotIsSynchronized(walletSnapshot)) {
       return undefined;
     }
 
@@ -4012,7 +4016,7 @@ export class WalletService {
         ? { ...session, accountIndex: explicitAccountIndex }
         : session;
     const snapshot = await this.snapshot(scopedSession);
-    if (!snapshot.synchronized) {
+    if (!walletSnapshotIsSynchronized(snapshot)) {
       throw new Error('Wait for wallet synchronization before sending.');
     }
     return this.spendAccountScopeFromSnapshot(snapshot);
@@ -4897,8 +4901,7 @@ export class WalletService {
     ) {
       throw new Error(transportStatus.message);
     }
-    const deviceName =
-      transportStatus.transport === 'ble' ? 'Ledger:ble' : 'Ledger';
+    const deviceName = ledgerCoreDeviceName(transportStatus);
     // A restore height is an import/creation setting, never an open setting.
     // Passing it again to an existing Ledger wallet can make the native core
     // discard its persisted cache and rescan from that original height.

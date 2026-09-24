@@ -140,7 +140,7 @@ class NativeMoneroWalletModule(
 
   init {
     activeInstance = WeakReference(this)
-    LedgerBleTransport.initialize(reactContext)
+    LedgerAndroidTransport.initialize(reactContext)
     // Register the Core callbacks for every native-module lifecycle. Waiting
     // until a fresh BLE scan leaves an already connected/open Ledger session
     // without a Core transport after React Native recreates this module.
@@ -548,25 +548,30 @@ class NativeMoneroWalletModule(
   override fun getLedgerTransportStatus(promise: Promise) {
     val usbStatus = ledgerUsbTransportStatus()
     val bleStatus = ledgerBleTransportStatus()
+    val selectedStatus = when {
+      // A live GATT session is already proven end-to-end. Keep using it when
+      // the same Nano is attached over USB as well.
+      bleStatus.available -> {
+        LedgerAndroidTransport.selectBle()
+        bleStatus
+      }
+      usbStatus.available -> {
+        if (usbStatus.permissionGranted) {
+          firstLedgerUsbDevice()?.let(LedgerAndroidTransport::selectUsb)
+        }
+        usbStatus
+      }
+      else -> bleStatus
+    }
     promise.resolve(
-      ledgerTransportStatusToWritableMap(
-        when {
-          // A live GATT session is already proven end-to-end and Core can use
-          // it through the installed callback transport. Do not replace it
-          // merely because the same Nano is also visible over USB: Android's
-          // Java USB permission does not prove that hidapi can open the
-          // device, and choosing it here strands signing with a NULL device.
-          bleStatus.available -> bleStatus
-          usbStatus.available -> usbStatus
-          else -> bleStatus
-        },
-      ),
+      ledgerTransportStatusToWritableMap(selectedStatus),
     )
   }
 
   override fun requestLedgerTransportAccess(promise: Promise) {
     val bleStatus = ledgerBleTransportStatus()
     if (bleStatus.available) {
+      LedgerAndroidTransport.selectBle()
       promise.resolve(ledgerTransportStatusToWritableMap(bleStatus))
       return
     }
@@ -614,7 +619,12 @@ class NativeMoneroWalletModule(
     status: LedgerTransportStatus,
     promise: Promise,
   ) {
-    if (!status.supported || status.permissionGranted) {
+    if (!status.supported) {
+      promise.resolve(ledgerTransportStatusToWritableMap(status))
+      return
+    }
+    if (status.permissionGranted) {
+      firstLedgerUsbDevice()?.let(LedgerAndroidTransport::selectUsb)
       promise.resolve(ledgerTransportStatusToWritableMap(status))
       return
     }
@@ -654,8 +664,12 @@ class NativeMoneroWalletModule(
         unregisterLedgerUsbPermissionReceiver()
         val pendingPromise = pendingLedgerUsbPermissionPromise
         pendingLedgerUsbPermissionPromise = null
+        val nextStatus = ledgerUsbTransportStatus()
+        if (nextStatus.permissionGranted) {
+          firstLedgerUsbDevice()?.let(LedgerAndroidTransport::selectUsb)
+        }
         pendingPromise?.resolve(
-          ledgerTransportStatusToWritableMap(ledgerUsbTransportStatus()),
+          ledgerTransportStatusToWritableMap(nextStatus),
         )
       }
     }

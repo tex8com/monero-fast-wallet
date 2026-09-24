@@ -6,6 +6,8 @@ import {
   useConnectivityState,
   type ConnectivityRouteState,
 } from '../services/ConnectivityState';
+import { useWalletState } from '../services/WalletState';
+import { walletSnapshotIsSynchronized } from '../services/WalletSynchronization';
 import { colors } from '../theme/colors';
 import MoneroLogo from './MoneroLogo';
 
@@ -41,9 +43,20 @@ export default function AppTopBar({
 }) {
   const insets = useSafeAreaInsets();
   const connectivity = useConnectivityState();
-  const routes = [
-    { label: 'Tor', route: connectivity.tor },
-    { label: 'Sync', route: connectivity.clearnet },
+  const { snapshot, status } = useWalletState();
+  const syncVisual: ConnectionVisual = walletSnapshotIsSynchronized(snapshot)
+    ? { color: colors.success, stateLabel: 'synchronized' }
+    : status === 'error'
+    ? { color: colors.error, stateLabel: 'failed' }
+    : snapshot || status === 'opening' || status === 'syncing'
+    ? { color: colors.warning, stateLabel: 'synchronizing' }
+    : { color: colors.textSecondary, stateLabel: 'idle' };
+  const statuses = [
+    {
+      label: 'Tor',
+      visual: appTopBarConnectionVisual(connectivity.tor),
+    },
+    { label: 'Sync', visual: syncVisual },
   ] as const;
   const safeAreaStyle = {
     paddingTop: safeAreaHandledByTicker ? 0 : insets.top,
@@ -68,10 +81,9 @@ export default function AppTopBar({
         </TouchableOpacity>
 
         <TouchableOpacity
-          accessibilityLabel={routes
-            .map(
-              ({ label: routeLabel, route }) =>
-                `${routeLabel}: ${appTopBarConnectionVisual(route).stateLabel}`,
+          accessibilityLabel={statuses
+            .map(({ label: routeLabel, visual }) =>
+              `${routeLabel}: ${visual.stateLabel}`,
             )
             .join(', ')}
           accessibilityRole="button"
@@ -79,8 +91,7 @@ export default function AppTopBar({
           onPress={onStatusPress}
           style={s.statusGroup}
         >
-          {routes.map(({ label: routeLabel, route }) => {
-            const visual = appTopBarConnectionVisual(route);
+          {statuses.map(({ label: routeLabel, visual }) => {
             return (
               <View
                 key={routeLabel}

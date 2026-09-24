@@ -15,6 +15,7 @@ import type {
   WalletTransaction,
   WalletSnapshot,
 } from './NativeMoneroWallet';
+import { walletSnapshotIsSynchronized } from './WalletSynchronization';
 import {
   ledgerInitialVerificationCanStart,
   walletDisplayName,
@@ -3303,7 +3304,7 @@ export function WalletStateProvider({
     }
 
     if (session && snapshot) {
-      return snapshot.synchronized ? 'open' : 'syncing';
+      return walletSnapshotIsSynchronized(snapshot) ? 'open' : 'syncing';
     }
 
     if (session) {

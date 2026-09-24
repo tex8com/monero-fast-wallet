@@ -51,6 +51,7 @@ import {
 import { useWalletState } from '../services/WalletState';
 import { walletDisplayName } from '../services/WalletRegistry';
 import { walletService, type WalletSession } from '../services/WalletService';
+import { walletSnapshotIsSynchronized } from '../services/WalletSynchronization';
 import {
   loadRecentRecipients,
   loadRecipientContacts,
@@ -75,6 +76,7 @@ import {
   mfwNameAutocompleteSuggestions,
 } from '../services/MfwNameAutocomplete';
 import {
+  LedgerSigningCancelledError,
   isLedgerSigningCancelledError,
   type LedgerSigningProgress,
 } from '../services/LedgerSigningFlow';
@@ -219,8 +221,9 @@ export default function SendScreen({ navigation, route }: any) {
     amountAtomic <= unlockedAtomic;
   const usd =
     hasAmount && price > 0 ? (amountNumber * price).toFixed(2) : '0.00';
+  const walletSynchronized = walletSnapshotIsSynchronized(snapshot);
   const sendEnabled =
-    Boolean(snapshot?.synchronized && session) &&
+    Boolean(walletSynchronized && session) &&
     address.trim().length > 0 &&
     (sweepAll ? unlockedAtomic > 0n : amountAvailable);
   const preparedFee = preparedTx
@@ -624,7 +627,7 @@ export default function SendScreen({ navigation, route }: any) {
       setSendError(t('send.openWalletBeforeSending'));
       return;
     }
-    if (!snapshot?.synchronized) {
+    if (!walletSynchronized) {
       setSendError(t('send.waitForSync'));
       return;
     }
@@ -651,17 +654,28 @@ export default function SendScreen({ navigation, route }: any) {
     setSending(true);
     setSendError(undefined);
     setSendStatus(undefined);
+    ledgerSigningCancelledRef.current = false;
+    const ensureNotCancelled = () => {
+      if (ledgerSigningCancelledRef.current) {
+        throw new LedgerSigningCancelledError();
+      }
+    };
+    const publishProgress = (progress: LedgerSigningProgress) => {
+      if (!ledgerSigningCancelledRef.current) {
+        setLedgerSigningProgress(progress);
+      }
+    };
     let hardwareStatusTimer: ReturnType<typeof setInterval> | undefined;
     let ledgerHandoffCreated = false;
     try {
       let signingSession: WalletSession | undefined = session;
       if (registeredWallet?.kind === 'hardware') {
-        ledgerSigningCancelledRef.current = false;
         setLedgerSigningProgress({ phase: 'searching' });
         signingSession = await connectLedgerForSigning({
           isCancelled: () => ledgerSigningCancelledRef.current,
-          onProgress: setLedgerSigningProgress,
+          onProgress: publishProgress,
         });
+        ensureNotCancelled();
         ledgerHandoffCreated = Boolean(
           signingSession && !signingSession.readOnly,
         );
@@ -670,13 +684,17 @@ export default function SendScreen({ navigation, route }: any) {
         throw new Error(t('send.openWalletBeforeSending'));
       }
       if (signingSession.hardwareDevice) {
-        setLedgerSigningProgress({ phase: 'preparing-request' });
+        ensureNotCancelled();
+        publishProgress({ phase: 'preparing-request' });
         hardwareStatusTimer = setInterval(() => {
           walletService
             .getHardwareWalletStatus(signingSession)
             .then(status => {
-              if (status.requiresUserAction) {
-                setLedgerSigningProgress({ phase: 'awaiting-confirmation' });
+              if (
+                !ledgerSigningCancelledRef.current &&
+                status.requiresUserAction
+              ) {
+                publishProgress({ phase: 'awaiting-confirmation' });
               }
             })
             .catch(() => undefined);
@@ -691,6 +709,7 @@ export default function SendScreen({ navigation, route }: any) {
           sweepAll,
         },
       );
+      ensureNotCancelled();
       if (nextTransaction.status !== 'ok' || !nextTransaction.id) {
         throw new Error(
           nextTransaction.error || t('send.transactionPreparationFailed'),
@@ -1927,7 +1946,7 @@ export default function SendScreen({ navigation, route }: any) {
         {sendError ? <Text style={s.errorText}>{sendError}</Text> : null}
         {!snapshot ? (
           <Text style={s.errorText}>{t('send.openWalletBeforePreparing')}</Text>
-        ) : !snapshot.synchronized ? (
+        ) : !walletSynchronized ? (
           <Text style={s.errorText}>{t('send.waitForSync')}</Text>
         ) : hasAmount && !amountAvailable ? (
           <Text style={s.errorText}>{t('send.amountAboveBalance')}</Text>
@@ -2018,11 +2037,6 @@ export default function SendScreen({ navigation, route }: any) {
         onDone={() => setSendSuccessReceipt(undefined)}
       />
       <LedgerSigningModal
-        canCancel={
-          ledgerSigningProgress?.phase === 'searching' ||
-          ledgerSigningProgress?.phase === 'connecting' ||
-          ledgerSigningProgress?.phase === 'synchronizing-wallet'
-        }
         progress={ledgerSigningProgress}
         onCancel={() => {
           ledgerSigningCancelledRef.current = true;

@@ -82,11 +82,11 @@ export default function LedgerSigningModal({
           </View>
 
           <View style={s.statusRow}>
-            {connected ? (
-              <View style={s.connectedDot} />
-            ) : (
-              <ActivityIndicator color={colors.orange} size="small" />
-            )}
+            <ActivityIndicator
+              color={connected ? colors.success : colors.orange}
+              size="small"
+              testID="ledger-signing-spinner"
+            />
             <Text
               accessibilityLiveRegion="polite"
               style={s.statusText}
@@ -170,12 +170,6 @@ const s = StyleSheet.create({
     gap: spacing.sm,
     minHeight: 58,
     paddingHorizontal: spacing.md,
-  },
-  connectedDot: {
-    backgroundColor: colors.success,
-    borderRadius: 6,
-    height: 12,
-    width: 12,
   },
   statusText: {
     color: colors.textPrimary,

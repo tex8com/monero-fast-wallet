@@ -263,6 +263,17 @@ export type {
   WalletSnapshot,
 };
 
+export function ledgerCoreDeviceName(
+  status: LedgerTransportStatus,
+): 'Ledger' | 'Ledger:ble' {
+  // Android owns both BLE and USB through the same audited callback bridge.
+  // `Ledger:ble` is the Core callback-device identifier; the Android router
+  // still preserves and reports the real physical transport to the UI.
+  return status.platform === 'android' || status.transport === 'ble'
+    ? 'Ledger:ble'
+    : 'Ledger';
+}
+
 export interface NativeMoneroWalletModule {
   derivationBackendStatus(): Promise<string>;
   benchmarkDerivationPerformance(): Promise<string>;
