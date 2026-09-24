@@ -291,6 +291,25 @@ assert.match(androidCoreBuilder, /MFW_PRODUCT_CORE_LIBRARY/);
 const iosCoreBuilder = read('scripts/ios-build-simulator-core.sh');
 assert.match(iosCoreBuilder, /native\/product-core\/build-mobile\.sh/);
 assert.match(iosCoreBuilder, /MFW_PRODUCT_CORE_LIBRARY/);
+const externalCacheBuildRoot =
+  '/Volumes/4TB/CACHE/monero-fast-wallet-build';
+for (const buildScript of [
+  androidBuild,
+  androidBuildInstall,
+  androidMainnetBenchmark,
+  androidCoreBuilder,
+  iosBuildInstall,
+  iosCoreBuilder,
+]) {
+  assert.ok(
+    buildScript.includes(externalCacheBuildRoot),
+    'external build defaults must stay inside the 4TB CACHE directory',
+  );
+  assert.ok(
+    !buildScript.includes('/Volumes/4TB/monero-fast-wallet-build'),
+    'external builds must not recreate a cache directory at the 4TB root',
+  );
+}
 const androidManifestGenerator = read(
   '../../native/monero-bridge/scripts/generate-android-monero-link-manifests.sh',
 );

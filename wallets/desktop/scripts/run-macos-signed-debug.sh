@@ -13,7 +13,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 desktop_dir="$(cd "${script_dir}/.." && pwd)"
-build_root="${MONERO_DESKTOP_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
+build_root="${MONERO_DESKTOP_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/CACHE/monero-fast-wallet-build}"
 
 [[ -d "${build_root}" ]] || {
   echo "External Monero build directory is unavailable: ${build_root}" >&2

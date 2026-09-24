@@ -185,7 +185,7 @@ native/monero-bridge/scripts/build-android-monero-core-external.sh
 ```
 
 It stores dependencies, fast crypto, `wallet_api`, and generated link manifests
-under `/Volumes/4TB/monero-fast-wallet-build`. Once complete,
+under `/Volumes/4TB/CACHE/monero-fast-wallet-build`. Once complete,
 `wallets/mobile/scripts/android-build.sh` discovers that manifest automatically;
 `MONERO_WALLET_LINK_ROOT` still overrides the location for CI and other hosts.
 

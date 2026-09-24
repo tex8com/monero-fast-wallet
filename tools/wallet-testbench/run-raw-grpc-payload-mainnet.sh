@@ -10,8 +10,8 @@ run_id="${1:?usage: $0 <unique-run-id>}"
 base="${repo_root}/build/wallet-testbench/jan-2026-mainnet"
 result_dir="${base}/${run_id}"
 remote_dir="/srv/monero-fast-wallet/benchmark-logs/${run_id}"
-source_root="/Volumes/4TB/monero-fast-wallet-build/monero-v0.18.4.6-tex8-full"
-binary="${RAW_GRPC_BINARY:-/Volumes/4TB/monero-fast-wallet-build/monero-v0.18.4.6-tex8-full-wallet-api/src/wallet/grpc_stream/cuprate_grpc_stream_test}"
+source_root="/Volumes/4TB/CACHE/monero-fast-wallet-build/monero-v0.18.4.6-tex8-full"
+binary="${RAW_GRPC_BINARY:-/Volumes/4TB/CACHE/monero-fast-wallet-build/monero-v0.18.4.6-tex8-full-wallet-api/src/wallet/grpc_stream/cuprate_grpc_stream_test}"
 # The E2E runner restored at 3,577,876 and correctly requested the inclusive
 # preceding chain height 3,577,875 from BlockStream. Use that identical wire
 # start here so the diagnostic drains the same real range.

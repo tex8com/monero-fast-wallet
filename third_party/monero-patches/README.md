@@ -14,14 +14,14 @@ hand and silently continue.
 
 ```sh
 tools/monero-upstream/prepare-patched-core.sh \
-  /Volumes/4TB/monero-fast-wallet-build/monero-v0.18.4.6-tex8
+  /Volumes/4TB/CACHE/monero-fast-wallet-build/monero-v0.18.4.6-tex8
 ```
 
 Then build it explicitly through the normal wallet build script:
 
 ```sh
-MONERO_SOURCE_DIR=/Volumes/4TB/monero-fast-wallet-build/monero-v0.18.4.6-tex8 \
-MONERO_BUILD_DIR=/Volumes/4TB/monero-fast-wallet-build/monero-wallet-api-grpc-macos12 \
+MONERO_SOURCE_DIR=/Volumes/4TB/CACHE/monero-fast-wallet-build/monero-v0.18.4.6-tex8 \
+MONERO_BUILD_DIR=/Volumes/4TB/CACHE/monero-fast-wallet-build/monero-wallet-api-grpc-macos12 \
 MONERO_DEPENDS_PREFIX=/path/to/monero-depends-prefix \
 PROTOC_PATH=/path/to/monero-depends-prefix/native/bin/protoc \
 native/monero-bridge/scripts/build-local-monero-wallet-api.sh

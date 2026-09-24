@@ -16,8 +16,8 @@ if [[ ! "${monero_common_expected_tree}" =~ ^[0-9a-f]{40}$ ]]; then
 fi
 
 monero_common_build_root="${MONERO_COMMON_CORE_BUILD_ROOT:-}"
-if [[ -z "${monero_common_build_root}" && -d "/Volumes/4TB/monero-fast-wallet-build" ]]; then
-  monero_common_build_root="/Volumes/4TB/monero-fast-wallet-build"
+if [[ -z "${monero_common_build_root}" && -d "/Volumes/4TB/CACHE/monero-fast-wallet-build" ]]; then
+  monero_common_build_root="/Volumes/4TB/CACHE/monero-fast-wallet-build"
 fi
 monero_common_build_root="${monero_common_build_root:-${monero_common_repo_root}/build}"
 export MONERO_COMMON_CORE_BUILD_ROOT="${monero_common_build_root}"

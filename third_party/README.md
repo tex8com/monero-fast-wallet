@@ -13,7 +13,7 @@ To materialize a buildable Core checkout:
 
 ```sh
 tools/monero-upstream/prepare-patched-core.sh \
-  /Volumes/4TB/monero-fast-wallet-build/monero-v0.18.4.6-tex8
+  /Volumes/4TB/CACHE/monero-fast-wallet-build/monero-v0.18.4.6-tex8
 ```
 
 The command refuses to overwrite an existing directory and stops on the first

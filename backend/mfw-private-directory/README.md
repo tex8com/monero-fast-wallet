@@ -86,8 +86,8 @@ payloads outside the directory process. The gateway contract is:
 Run the repeatable source and process testbench with:
 
 ```sh
-TMPDIR=/Volumes/4TB/monero-fast-wallet-build/tmp \
-CARGO_TARGET_DIR=/Volumes/4TB/monero-fast-wallet-build/mfw-private-directory-target \
+TMPDIR=/Volumes/4TB/CACHE/monero-fast-wallet-build/tmp \
+CARGO_TARGET_DIR=/Volumes/4TB/CACHE/monero-fast-wallet-build/mfw-private-directory-target \
 cargo test --locked --offline --manifest-path \
   backend/mfw-private-directory/Cargo.toml --all-targets
 ```

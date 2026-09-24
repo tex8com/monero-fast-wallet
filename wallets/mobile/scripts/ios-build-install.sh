@@ -90,8 +90,8 @@ if [ "$PRIVATE_PHONE_DEVICE_CONTACTS_ENABLED" = "YES" ] && \
   exit 1
 fi
 
-if [ -z "$MONERO_IOS_BUILD_ROOT" ] && [ -d "/Volumes/4TB/monero-fast-wallet-build" ]; then
-  MONERO_IOS_BUILD_ROOT="/Volumes/4TB/monero-fast-wallet-build"
+if [ -z "$MONERO_IOS_BUILD_ROOT" ] && [ -d "/Volumes/4TB/CACHE/monero-fast-wallet-build" ]; then
+  MONERO_IOS_BUILD_ROOT="/Volumes/4TB/CACHE/monero-fast-wallet-build"
 fi
 if [ -z "$MONERO_IOS_BUILD_ROOT" ]; then
   MONERO_IOS_BUILD_ROOT="$REPO_ROOT/build"

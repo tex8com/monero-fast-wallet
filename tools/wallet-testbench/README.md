@@ -53,7 +53,7 @@ closure (no Cuprate build or deployment):
 
 ```sh
 bash tools/wallet-testbench/build-original-restore-benchmark.sh \
-  /Volumes/4TB/monero-fast-wallet-build/native-bridge-monero-upstream-instrumented-static
+  /Volumes/4TB/CACHE/monero-fast-wallet-build/native-bridge-monero-upstream-instrumented-static
 ```
 
 The generated `strict-summary.json` is derived exclusively from immutable raw

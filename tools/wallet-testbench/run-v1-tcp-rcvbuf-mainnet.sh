@@ -9,7 +9,7 @@ run_id="${1:?usage: $0 <unique-run-id>}"
 base="${repo_root}/build/wallet-testbench/jan-2026-mainnet"
 result_dir="${base}/${run_id}"
 remote_dir="/srv/monero-fast-wallet/benchmark-logs/${run_id}"
-runner="${V1_RUNNER:-/Volumes/4TB/monero-fast-wallet-build/native-bridge-monero-upstream-patched-full/monero_wallet_bridge_smoke}"
+runner="${V1_RUNNER:-/Volumes/4TB/CACHE/monero-fast-wallet-build/native-bridge-monero-upstream-patched-full/monero_wallet_bridge_smoke}"
 password_file="${V1_PASSWORD_FILE:-${base}/password.txt}"
 restore_height="${V1_RESTORE_HEIGHT:-3577876}"
 rpc="${V1_RPC:-152.53.133.188:18089}"
@@ -78,9 +78,9 @@ umask 077
   printf 'runner_path=%s\n' "$runner"
   shasum -a 256 "$runner"
   printf 'password_source=local testbench file (not printed)\n'
-  printf 'wallet_source_commit=%s\n' "$(git -C /Volumes/4TB/monero-fast-wallet-build/monero-v0.18.4.6-tex8-full rev-parse HEAD)"
+  printf 'wallet_source_commit=%s\n' "$(git -C /Volumes/4TB/CACHE/monero-fast-wallet-build/monero-v0.18.4.6-tex8-full rev-parse HEAD)"
   printf 'wallet_grpc_client_source_sha256='
-  shasum -a 256 /Volumes/4TB/monero-fast-wallet-build/monero-v0.18.4.6-tex8-full/src/wallet/grpc_stream/grpc_block_stream_client.cpp
+  shasum -a 256 /Volumes/4TB/CACHE/monero-fast-wallet-build/monero-v0.18.4.6-tex8-full/src/wallet/grpc_stream/grpc_block_stream_client.cpp
   printf 'product_repo_commit=%s\n' "$(git -C "$repo_root" rev-parse HEAD)"
   printf 'client_tcp_sysctl:\n'
   sysctl kern.ipc.maxsockbuf net.inet.tcp.recvspace net.inet.tcp.autorcvbufmax net.inet.tcp.sendspace net.inet.tcp.autosndbufmax net.inet.tcp.win_scale_factor

@@ -233,7 +233,7 @@ without requiring a connected device.
 
 For this Mac, the supported full-core command is
 `native/monero-bridge/scripts/build-android-monero-core-external.sh`. It keeps
-the large native artifacts on `/Volumes/4TB/monero-fast-wallet-build`; the
+the large native artifacts on `/Volumes/4TB/CACHE/monero-fast-wallet-build`; the
 Android build script discovers the resulting manifest automatically. Set
 `MONERO_WALLET_LINK_ROOT` to use a different artifact location.
 `android:diagnostics` uses the `monerowallet://diagnostics/run` deep link and

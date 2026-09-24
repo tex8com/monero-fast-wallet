@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$APP_ROOT/../.." && pwd)"
-BUILD_ROOT="${MONERO_IOS_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
+BUILD_ROOT="${MONERO_IOS_BUILD_ROOT:-/Volumes/4TB/CACHE/monero-fast-wallet-build}"
 
 if [ ! -d "$BUILD_ROOT" ]; then
   BUILD_ROOT="$REPO_ROOT/build"

@@ -12,7 +12,7 @@ run_id="${1:?usage: $0 <unique-run-id>}"
   exit 2
 }
 
-external_root="${MONERO_WALLET_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
+external_root="${MONERO_WALLET_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/CACHE/monero-fast-wallet-build}"
 MONERO_COMMON_CORE_BUILD_ROOT="${external_root}" \
   source "${REPO_ROOT}/native/monero-bridge/scripts/prepare-common-monero-core.sh"
 result_root="${MONERO_ANDROID_BENCHMARK_RESULT_ROOT:-${external_root}/mobile-mainnet-benchmarks}"

@@ -7,7 +7,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../../.." && pwd)"
-build_root="${MONERO_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/monero-fast-wallet-build}"
+build_root="${MONERO_ANDROID_EXTERNAL_BUILD_ROOT:-/Volumes/4TB/CACHE/monero-fast-wallet-build}"
 target="${MONERO_WALLET_ANDROID_TARGET:-android-arm64}"
 cmake_bin="${ANDROID_HOME:-${HOME}/Library/Android/sdk}/cmake/3.22.1/bin"
 patched_source_dir="${MONERO_ANDROID_SOURCE_DIR:-}"

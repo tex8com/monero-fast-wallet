@@ -582,8 +582,8 @@ gate_android_runtime() {
   fi
   local link_root="${MONERO_WALLET_LINK_ROOT:-${repo_root}/build/android-monero-link-manifests}"
   if [[ ! -f "${link_root}/android-arm64/link.cmake" &&
-        -f "/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests/android-arm64/link.cmake" ]]; then
-    link_root="/Volumes/4TB/monero-fast-wallet-build/android-monero-link-manifests"
+        -f "/Volumes/4TB/CACHE/monero-fast-wallet-build/android-monero-link-manifests/android-arm64/link.cmake" ]]; then
+    link_root="/Volumes/4TB/CACHE/monero-fast-wallet-build/android-monero-link-manifests"
   fi
   (cd "${repo_root}/wallets/mobile/android" &&
     ./gradlew :app:connectedDebugAndroidTest \
