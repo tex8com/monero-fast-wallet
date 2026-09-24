@@ -6577,6 +6577,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 - (void)openWallet:(NSString *)path
           password:(NSString *)password
            network:(NSString *)network
+        deviceName:(NSString *)deviceName
      restoreHeight:(double)restoreHeight
            resolve:(RCTPromiseResolveBlock)resolve
             reject:(RCTPromiseRejectBlock)reject
@@ -6594,6 +6595,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     request.path = toStdString(path);
     request.password = toStdString(password);
     request.network = toNetworkType(network);
+    request.deviceName = toStdString(deviceName);
     request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
     return toNSString(engine.openWallet(request));
   }];
@@ -6602,6 +6604,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
 - (void)openWalletWithStoredSecret:(NSString *)path
                          secretKey:(NSString *)secretKey
                            network:(NSString *)network
+                        deviceName:(NSString *)deviceName
                      restoreHeight:(double)restoreHeight
                            resolve:(RCTPromiseResolveBlock)resolve
                             reject:(RCTPromiseRejectBlock)reject
@@ -6620,6 +6623,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     request.path = toStdString(path);
     request.password = toStdString(readRequiredKeychainSecret(secretKey));
     request.network = toNetworkType(network);
+    request.deviceName = toStdString(deviceName);
     request.restoreHeight = toHeight(restoreHeight, "restoreHeight");
     return toNSString(engine.openWallet(request));
   }];

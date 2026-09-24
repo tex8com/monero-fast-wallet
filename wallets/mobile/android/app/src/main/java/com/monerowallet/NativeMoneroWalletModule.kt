@@ -136,13 +136,16 @@ class NativeMoneroWalletModule(
   private val walletAppVault by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
     MobileWalletAppVault(reactApplicationContext)
   }
-  private val ledgerBleJniTransportInstalled by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-    NativeMoneroWalletJni.initializeLedgerBleTransport()
-  }
+  private val ledgerBleJniTransportInstalled: Boolean
 
   init {
     activeInstance = WeakReference(this)
     LedgerBleTransport.initialize(reactContext)
+    // Register the Core callbacks for every native-module lifecycle. Waiting
+    // until a fresh BLE scan leaves an already connected/open Ledger session
+    // without a Core transport after React Native recreates this module.
+    ledgerBleJniTransportInstalled =
+      NativeMoneroWalletJni.initializeLedgerBleTransport()
     reactContext.addActivityEventListener(this)
   }
 
@@ -1987,6 +1990,7 @@ class NativeMoneroWalletModule(
     path: String,
     password: String,
     network: String,
+    deviceName: String,
     restoreHeight: Double,
     promise: Promise,
   ) {
@@ -1995,7 +1999,7 @@ class NativeMoneroWalletModule(
       "openWallet",
       walletPathFields(path, network) + mapOf("restoreHeight" to restoreHeight),
     ) {
-      NativeMoneroWalletJni.openWallet(path, password, network, restoreHeight)
+      NativeMoneroWalletJni.openWallet(path, password, network, deviceName, restoreHeight)
     }
   }
 
@@ -2003,6 +2007,7 @@ class NativeMoneroWalletModule(
     path: String,
     secretKey: String,
     network: String,
+    deviceName: String,
     restoreHeight: Double,
     promise: Promise,
   ) {
@@ -2022,6 +2027,7 @@ class NativeMoneroWalletModule(
           "openWalletWithStoredSecret",
         ),
         network,
+        deviceName,
         restoreHeight,
       )
     }

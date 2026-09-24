@@ -253,6 +253,42 @@ describe('Wallet dashboard interaction contract', () => {
     ).toBeLessThan(connectFlow.lastIndexOf('await closeReadOnlyCompanion()'));
   });
 
+  it('reinstalls and reconnects Ledger BLE before every hardware signing flow', () => {
+    const connectStart = walletState.indexOf(
+      'const connectLedgerForSigning = useCallback',
+    );
+    const connectFlow = walletState.slice(
+      connectStart,
+      walletState.indexOf('const reconcileLedgerBalance', connectStart),
+    );
+    const alreadyOpenBranch = connectFlow.slice(
+      connectFlow.indexOf('if (!activeSession.readOnly)'),
+      connectFlow.indexOf(
+        "if (activeRegistration.kind !== 'hardware')",
+      ),
+    );
+    expect(alreadyOpenBranch).toContain(
+      "if (activeRegistration.kind === 'hardware')",
+    );
+    expect(alreadyOpenBranch).toContain('await waitForLedgerTransport({');
+    expect(alreadyOpenBranch).toContain(
+      'requestAccess: () => walletService.requestLedgerTransportAccess()',
+    );
+    expect(nativeAndroidBridge).toContain(
+      'private val ledgerBleJniTransportInstalled: Boolean',
+    );
+    expect(nativeAndroidBridge).not.toContain(
+      'ledgerBleJniTransportInstalled by lazy',
+    );
+    expect(
+      nativeAndroidBridge.indexOf('LedgerBleTransport.initialize(reactContext)'),
+    ).toBeLessThan(
+      nativeAndroidBridge.indexOf(
+        'NativeMoneroWalletJni.initializeLedgerBleTransport()',
+      ),
+    );
+  });
+
   it('connects the session-local transaction control plane before Core prepares a transfer', () => {
     const prepareStart = walletEngine.indexOf(
       'prepareTransaction(const PrepareTransactionRequest',

@@ -4880,6 +4880,25 @@ export class WalletService {
         registration.walletName,
         registration.network,
       );
+    let transportStatus = await this.getLedgerTransportStatus();
+    if (
+      !transportStatus.supported ||
+      !transportStatus.available ||
+      !transportStatus.permissionGranted ||
+      transportStatus.deviceCount < 1
+    ) {
+      transportStatus = await this.requestLedgerTransportAccess();
+    }
+    if (
+      !transportStatus.supported ||
+      !transportStatus.available ||
+      !transportStatus.permissionGranted ||
+      transportStatus.deviceCount < 1
+    ) {
+      throw new Error(transportStatus.message);
+    }
+    const deviceName =
+      transportStatus.transport === 'ble' ? 'Ledger:ble' : 'Ledger';
     // A restore height is an import/creation setting, never an open setting.
     // Passing it again to an existing Ledger wallet can make the native core
     // discard its persisted cache and rescan from that original height.
@@ -4887,6 +4906,7 @@ export class WalletService {
       path: registration.path,
       secretKey: credentialKey,
       network: registration.network,
+      deviceName,
     });
     const hardwareDevice = hardwareDeviceFromRegistration(registration);
     const registeredSession = hardwareDevice

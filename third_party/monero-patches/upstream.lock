@@ -91,11 +91,14 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # Key-Image path must receive Ledger's encrypted TYPE_DERIVATION token; sending
 # a host-clear parse-mode derivation back to the device corrupts the ephemeral
 # output binding even when the APDU itself returns success.
+# Patch 0094 lets mobile clients select the currently connected Ledger USB or
+# BLE transport before an existing hardware wallet initializes. The encrypted
+# wallet identity and device-address verification remain unchanged.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=5c0b09ed55682c0f6d60b9cbd4db91d5dacc0388
-previous_patch_count=92
-patched_tree=0389d585c9c742eda74b5e9912997d2ba5393503
+previous_patched_tree=0389d585c9c742eda74b5e9912997d2ba5393503
+previous_patch_count=93
+patched_tree=dd34fc6f8bb43ef3b28c0889fb289963bdda3c23
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

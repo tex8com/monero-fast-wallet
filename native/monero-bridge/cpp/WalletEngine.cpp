@@ -1404,14 +1404,26 @@ class WalletEngine::Impl {
     if (isLegacyFastReceiveWalletPath(request.path)) {
       throw WalletEngineError(legacyFastReceiveDisabledMessage());
     }
+    if (!request.deviceName.empty() &&
+        request.deviceName != "Ledger" &&
+        request.deviceName != "Ledger:ble") {
+      throw WalletEngineError("Unsupported hardware wallet transport override");
+    }
 
     const auto managerStartedAt = std::chrono::steady_clock::now();
     logEngineDiagnostic("openWallet.manager.start", {});
-    auto* wallet = manager_->openWallet(
-        request.path,
-        request.password,
-        toMoneroNetwork(request.network),
-        request.kdfRounds);
+    auto* wallet = request.deviceName.empty()
+        ? manager_->openWallet(
+              request.path,
+              request.password,
+              toMoneroNetwork(request.network),
+              request.kdfRounds)
+        : manager_->openWalletWithDeviceName(
+              request.path,
+              request.password,
+              toMoneroNetwork(request.network),
+              request.deviceName,
+              request.kdfRounds);
     logEngineDiagnostic(
         "openWallet.manager.success",
         {{"elapsedMs",

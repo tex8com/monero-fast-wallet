@@ -1106,6 +1106,44 @@ describe('WalletService registered wallet opening', () => {
     );
   });
 
+  it('opens an existing Ledger signing wallet with the currently connected USB transport', async () => {
+    const registration = createRegisteredWallet({
+      id: 'hardware-mainnet-ledger-usb',
+      walletName: 'ledger-usb',
+      path: '/current-container/wallets/mainnet/ledger-usb',
+      credentialKey: 'monero.wallet.hardware.mainnet.ledger-usb.v1',
+      network: 'mainnet',
+      kind: 'hardware',
+      now: '2026-09-23T19:15:00.000Z',
+    });
+    mockNativeWallet.getLedgerTransportStatus.mockResolvedValueOnce({
+      available: true,
+      deviceCount: 1,
+      deviceName: 'Nano X',
+      message: 'Android USB permission is granted for the Ledger device',
+      permissionGranted: true,
+      platform: 'android',
+      productId: 0x0004,
+      requiresUserAction: false,
+      supported: true,
+      transport: 'usb',
+      vendorId: 0x2c97,
+    });
+    const service = new WalletService();
+
+    await service.openHardwareWalletForSigning(registration);
+
+    expect(mockNativeWallet.openWalletWithStoredSecret).toHaveBeenCalledWith({
+      path: registration.path,
+      secretKey: registration.credentialKey,
+      network: registration.network,
+      deviceName: 'Ledger',
+    });
+    expect(
+      mockNativeWallet.requestLedgerTransportAccess,
+    ).not.toHaveBeenCalled();
+  });
+
   it('atomically reopens one stale physical container for concurrent owners', async () => {
     const registration = createRegisteredWallet({
       id: 'software-mainnet-session-recovery',
@@ -1435,7 +1473,9 @@ describe('WalletService registered wallet opening', () => {
 
     await service.reconcileLedgerViewOnlyWallet(created.registration);
 
-    expect(mockNativeWallet.getLedgerTransportStatus).toHaveBeenCalledTimes(1);
+    // Reconciliation discovers the device, then the central hardware-wallet
+    // opener rechecks the live transport before Core initializes the wallet.
+    expect(mockNativeWallet.getLedgerTransportStatus).toHaveBeenCalledTimes(2);
     expect(mockNativeWallet.requestLedgerTransportAccess).toHaveBeenCalledTimes(
       1,
     );

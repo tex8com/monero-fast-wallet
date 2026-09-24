@@ -2395,7 +2395,19 @@ export function WalletStateProvider({
         return undefined;
       }
       if (!activeSession.readOnly) {
-        control?.onProgress?.({ phase: 'connected' });
+        if (activeRegistration.kind === 'hardware') {
+          const transport = await waitForLedgerTransport({
+            getStatus: () => walletService.getLedgerTransportStatus(),
+            requestAccess: () => walletService.requestLedgerTransportAccess(),
+            control,
+          });
+          if (control?.isCancelled?.()) {
+            throw new LedgerSigningCancelledError();
+          }
+          control?.onProgress?.({ phase: 'connected', transport });
+        } else {
+          control?.onProgress?.({ phase: 'connected' });
+        }
         return activeSession;
       }
       if (activeRegistration.kind !== 'hardware') {

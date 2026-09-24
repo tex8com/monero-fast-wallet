@@ -2021,12 +2021,14 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeOpenWallet(
     jstring path,
     jstring password,
     jstring network,
+    jstring deviceName,
     jdouble restoreHeight) {
   try {
     OpenWalletRequest request;
     request.path = toStdString(env, path);
     request.password = toStdString(env, password);
     request.network = parseNetwork(toStdString(env, network));
+    request.deviceName = toStdString(env, deviceName);
     request.restoreHeight = toUInt64(restoreHeight, "restoreHeight");
     return toJavaString(env, walletEngine().openWallet(request));
   } catch (const std::exception& error) {

@@ -462,6 +462,7 @@ export interface Spec extends TurboModule {
     path: string,
     password: string,
     network: string,
+    deviceName: string,
     restoreHeight: number,
   ): Promise<string>;
 
@@ -469,6 +470,7 @@ export interface Spec extends TurboModule {
     path: string,
     secretKey: string,
     network: string,
+    deviceName: string,
     restoreHeight: number,
   ): Promise<string>;
 

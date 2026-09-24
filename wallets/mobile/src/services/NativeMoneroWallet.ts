@@ -44,6 +44,7 @@ export interface OpenWalletInput {
   path: string;
   password: string;
   network: MoneroNetwork;
+  deviceName?: string;
   restoreHeight?: number;
 }
 
@@ -51,6 +52,7 @@ export interface OpenWalletWithStoredSecretInput {
   path: string;
   secretKey: string;
   network: MoneroNetwork;
+  deviceName?: string;
   restoreHeight?: number;
 }
 
@@ -597,6 +599,7 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.path,
           input.password,
           input.network,
+          input.deviceName ?? '',
           input.restoreHeight ?? 0,
         ),
       }),
@@ -605,6 +608,7 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
           input.path,
           input.secretKey,
           input.network,
+          input.deviceName ?? '',
           input.restoreHeight ?? 0,
         ),
       }),

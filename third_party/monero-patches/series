@@ -92,3 +92,4 @@
 0091-wallet-add-local-shared-sync-cache-reset.patch
 0092-wallet-require-ledger-parse-mode-after-companion-prime.patch
 0093-wallet-keep-companion-ledger-derivations-as-device-tokens.patch
+0094-wallet-api-select-connected-Ledger-transport-on-open.patch

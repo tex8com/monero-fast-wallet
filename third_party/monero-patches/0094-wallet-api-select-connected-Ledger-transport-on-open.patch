@@ -1,0 +1,105 @@
+From 82ba1879e3de8de620e9dbea652e1447ccfc1733 Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Wed, 23 Sep 2026 19:22:24 -0500
+Subject: [PATCH] wallet api: select connected Ledger transport on open
+
+---
+ src/wallet/api/wallet.cpp         | 9 +++++++++
+ src/wallet/api/wallet.h           | 2 ++
+ src/wallet/api/wallet2_api.h      | 1 +
+ src/wallet/api/wallet_manager.cpp | 7 ++++++-
+ src/wallet/api/wallet_manager.h   | 1 +
+ 5 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/src/wallet/api/wallet.cpp b/src/wallet/api/wallet.cpp
+index 7af4788ca..abc60b7b8 100644
+--- a/src/wallet/api/wallet.cpp
++++ b/src/wallet/api/wallet.cpp
+@@ -806,6 +806,12 @@ Wallet::Device WalletImpl::getDeviceType() const
+ }
+ 
+ bool WalletImpl::open(const std::string &path, const std::string &password)
++{
++    return open(path, password, "");
++}
++
++bool WalletImpl::open(const std::string &path, const std::string &password,
++                      const std::string &device_name)
+ {
+     clearStatus();
+     m_recoveringFromSeed = false;
+@@ -821,6 +827,9 @@ bool WalletImpl::open(const std::string &path, const std::string &password)
+             m_rebuildWalletCache = true;
+         }
+         m_wallet->set_ring_database(get_default_ringdb_path(m_wallet->nettype()));
++        if (!device_name.empty()) {
++            m_wallet->device_name(device_name);
++        }
+         m_wallet->load(path, password);
+ 
+         m_password = password;
+diff --git a/src/wallet/api/wallet.h b/src/wallet/api/wallet.h
+index e828f2ebf..25e038bf2 100644
+--- a/src/wallet/api/wallet.h
++++ b/src/wallet/api/wallet.h
+@@ -60,6 +60,8 @@ public:
+     bool createWatchOnly(const std::string &path, const std::string &password,
+                             const std::string &language) const override;
+     bool open(const std::string &path, const std::string &password);
++    bool open(const std::string &path, const std::string &password,
++              const std::string &device_name);
+     bool recover(const std::string &path,const std::string &password,
+                             const std::string &seed, const std::string &seed_offset = {});
+     bool recoverFromKeysWithPassword(const std::string &path,
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 8b42a9971..01b04f697 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -1369,6 +1369,7 @@ struct WalletManager
+      * \return                Wallet instance (Wallet::status() needs to be called to check if opened successfully)
+      */
+     virtual Wallet * openWallet(const std::string &path, const std::string &password, NetworkType nettype, uint64_t kdf_rounds = 1, WalletListener * listener = nullptr) = 0;
++    virtual Wallet * openWalletWithDeviceName(const std::string &path, const std::string &password, NetworkType nettype, const std::string &deviceName, uint64_t kdf_rounds = 1, WalletListener * listener = nullptr) = 0;
+     Wallet * openWallet(const std::string &path, const std::string &password, bool testnet = false)     // deprecated
+     {
+         return openWallet(path, password, testnet ? TESTNET : MAINNET);
+diff --git a/src/wallet/api/wallet_manager.cpp b/src/wallet/api/wallet_manager.cpp
+index 845132e22..31c2075e9 100644
+--- a/src/wallet/api/wallet_manager.cpp
++++ b/src/wallet/api/wallet_manager.cpp
+@@ -76,6 +76,11 @@ Wallet *WalletManagerImpl::createWallet(const std::string &path, const std::stri
+ }
+ 
+ Wallet *WalletManagerImpl::openWallet(const std::string &path, const std::string &password, NetworkType nettype, uint64_t kdf_rounds, WalletListener * listener)
++{
++    return openWalletWithDeviceName(path, password, nettype, "", kdf_rounds, listener);
++}
++
++Wallet *WalletManagerImpl::openWalletWithDeviceName(const std::string &path, const std::string &password, NetworkType nettype, const std::string &deviceName, uint64_t kdf_rounds, WalletListener * listener)
+ {
+     WalletImpl * wallet = new WalletImpl(nettype, kdf_rounds);
+     wallet->setListener(listener);
+@@ -83,7 +88,7 @@ Wallet *WalletManagerImpl::openWallet(const std::string &path, const std::string
+         listener->onSetWallet(wallet);
+     }
+ 
+-    wallet->open(path, password);
++    wallet->open(path, password, deviceName);
+     //Refresh addressBook
+     wallet->addressBook()->refresh(); 
+     return wallet;
+diff --git a/src/wallet/api/wallet_manager.h b/src/wallet/api/wallet_manager.h
+index 413f7468a..1bb5650e0 100644
+--- a/src/wallet/api/wallet_manager.h
++++ b/src/wallet/api/wallet_manager.h
+@@ -43,6 +43,7 @@ public:
+     Wallet * createWallet(const std::string &path, const std::string &password,
+                           const std::string &language, NetworkType nettype, uint64_t kdf_rounds = 1) override;
+     Wallet * openWallet(const std::string &path, const std::string &password, NetworkType nettype, uint64_t kdf_rounds = 1, WalletListener * listener = nullptr) override;
++    Wallet * openWalletWithDeviceName(const std::string &path, const std::string &password, NetworkType nettype, const std::string &deviceName, uint64_t kdf_rounds = 1, WalletListener * listener = nullptr) override;
+     virtual Wallet * recoveryWallet(const std::string &path,
+                                        const std::string &password,
+                                        const std::string &mnemonic,
+-- 
+2.50.1 (Apple Git-155)
+

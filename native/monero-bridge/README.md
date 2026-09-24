@@ -33,6 +33,8 @@ natively with Ledger's `0x05` BLE framing and route complete APDU responses back
 into the existing `device_ledger` state machine. Raw APDUs never cross the
 React Native boundary and are never logged. The fork, shared bridge, Android
 Kotlin/JNI path, and iOS Objective-C++ path build with BLE enabled. Connected
+wallets are reopened with the currently verified USB or BLE transport instead
+of remaining pinned to the transport used during their original setup.
 Nano X address-confirmation and signing acceptance still require a physical,
 unlocked Ledger running the Monero app.
 

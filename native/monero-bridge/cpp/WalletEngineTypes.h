@@ -68,6 +68,9 @@ struct OpenWalletRequest {
   std::string path;
   std::string password;
   NetworkType network{NetworkType::Stagenet};
+  // Optional hardware transport override for an existing device wallet.
+  // Empty preserves the device name stored in the encrypted keys file.
+  std::string deviceName;
   uint64_t restoreHeight{0};
   uint64_t kdfRounds{1};
 

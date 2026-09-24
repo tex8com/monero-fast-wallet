@@ -289,10 +289,11 @@ internal object NativeMoneroWalletJni {
     path: String,
     password: String,
     network: String,
+    deviceName: String,
     restoreHeight: Double,
   ): String {
     requireLoaded()
-    return nativeOpenWallet(path, password, network, restoreHeight)
+    return nativeOpenWallet(path, password, network, deviceName, restoreHeight)
   }
 
   fun createWalletFromDevice(
@@ -1555,6 +1556,7 @@ internal object NativeMoneroWalletJni {
     path: String,
     password: String,
     network: String,
+    deviceName: String,
     restoreHeight: Double,
   ): String
 
