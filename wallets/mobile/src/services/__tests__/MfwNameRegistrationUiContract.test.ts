@@ -11,6 +11,22 @@ describe('MFW name registration UI contract', () => {
   const ticker = source('src', 'components', 'MfwNameTicker.tsx');
   const menu = source('src', 'screens', 'MenuScreen.tsx');
   const names = source('src', 'screens', 'MfwNamesScreen.tsx');
+  const app = source('App.tsx');
+  const lifecycleBanner = source(
+    'src',
+    'components',
+    'MfwNameLifecycleBanner.tsx',
+  );
+  const localNotification = source(
+    'android',
+    'app',
+    'src',
+    'main',
+    'java',
+    'com',
+    'monerowallet',
+    'LocalPushNotificationModule.kt',
+  );
   const send = source('src', 'screens', 'SendScreen.tsx');
   const navigation = source('src', 'navigation', 'TabNavigator.tsx');
   const registration = source('src', 'services', 'MfwNameRegistration.ts');
@@ -70,6 +86,14 @@ describe('MFW name registration UI contract', () => {
     expect(send).toContain("setStep('confirm')");
     expect(send).toContain("mfwNamePreset.kind === 'commit'");
     expect(send).toContain("mfwNamePreset?.kind === 'claim'");
+    expect(names).toContain('getTransactionsForAllAccounts(session, 0)');
+    expect(names).toContain("t('mfwNames.stepOneComplete')");
+    expect(names).toContain("t('mfwNames.stepTwoReady')");
+    expect(app).toContain('<MfwNameLifecycleBanner');
+    expect(lifecycleBanner).toContain('scheduleMfwNameClaimReminder');
+    expect(lifecycleBanner).toContain('notifyMfwNameClaimReady');
+    expect(localNotification).toContain('fun schedule(');
+    expect(localNotification).toContain('MfwClaimReminderReceiver');
   });
 
   it('opens the shared Ledger signing flow before native name preparation', () => {

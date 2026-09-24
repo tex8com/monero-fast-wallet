@@ -47,6 +47,7 @@ const record: MfwOwnedNameRecord = {
 
 const normalizedRecord: MfwOwnedNameRecord = {
   ...record,
+  commitBroadcastAt: undefined,
   commitHeight: undefined,
   commitTxidHex: undefined,
   ownerAuthority: 'local',
@@ -147,8 +148,12 @@ describe('MFW owned name registry', () => {
         [{ ...transaction, confirmations: 14 }],
         15,
         720,
-      ).stage,
-    ).toBe('commit-pending');
+      ),
+    ).toMatchObject({
+      stage: 'commit-pending',
+      commitHeight: 3_727_100,
+      lastChainTipHeight: 3_727_113,
+    });
     expect(
       reconcileMfwNameTransactionState(
         committed,

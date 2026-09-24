@@ -83,5 +83,8 @@
           android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
           android:value="Maintains the embedded Tor route and public block-sync connectivity while the wallet is backgrounded." />
       </service>
+      <receiver
+        android:name=".MfwClaimReminderReceiver"
+        android:exported="false" />
     </application>
 </manifest>

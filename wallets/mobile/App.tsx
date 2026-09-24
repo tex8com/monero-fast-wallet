@@ -15,6 +15,7 @@ import { WalletStateProvider } from './src/services/WalletState';
 import IncomingPaymentNotice from './src/components/IncomingPaymentNotice';
 import AppTopBar from './src/components/AppTopBar';
 import MfwNameTicker from './src/components/MfwNameTicker';
+import MfwNameLifecycleBanner from './src/components/MfwNameLifecycleBanner';
 import { logStartupEvent } from './src/services/WalletLogger';
 import { v1ReleaseFeatures } from '../../packages/wallet-shared/src/v1ReleaseFeatures';
 import { ConnectivityProvider } from './src/services/ConnectivityState';
@@ -73,11 +74,16 @@ function App() {
   const [pendingVanityOrderId, setPendingVanityOrderId] = useState<
     string | undefined
   >();
+  const [pendingMfwClaim, setPendingMfwClaim] = useState(false);
   const [mfwTickerVisible, setMfwTickerVisible] = useState(
     v1ReleaseFeatures.mfwNameRegistration,
   );
 
   const queueIncomingPaymentUrl = useCallback((url: string | null) => {
+    if (url?.toLowerCase().startsWith('tex8monero://mfw-claim')) {
+      setPendingMfwClaim(true);
+      return;
+    }
     const vanityOrderId = v1ReleaseFeatures.vanityAddress
       ? parseVanityOrderDeepLink(url)
       : undefined;
@@ -136,6 +142,18 @@ function App() {
     setPendingVanityOrderId(undefined);
   }, [navigationReadyEpoch, pendingVanityOrderId]);
 
+  useEffect(() => {
+    if (
+      !pendingMfwClaim ||
+      navigationReadyEpoch < 1 ||
+      !navigationRef.isReady()
+    ) {
+      return;
+    }
+    navigationRef.navigate('MfwNames', { focusPendingClaim: true });
+    setPendingMfwClaim(false);
+  }, [navigationReadyEpoch, pendingMfwClaim]);
+
   const consumeIncomingPayment = useCallback((sequence: number) => {
     if (pendingIncomingPaymentRef.current?.sequence === sequence) {
       pendingIncomingPaymentRef.current = undefined;
@@ -190,6 +208,16 @@ function App() {
                       onLogoPress={() => navigateWhenReady('Home')}
                       onStatusPress={() => navigateWhenReady('NodeStatus')}
                     />
+                    {v1ReleaseFeatures.mfwNameRegistration ? (
+                      <MfwNameLifecycleBanner
+                        onPress={() =>
+                          navigationRef.isReady() &&
+                          navigationRef.navigate('MfwNames', {
+                            focusPendingClaim: true,
+                          })
+                        }
+                      />
+                    ) : null}
                     <View style={styles.navigation}>
                       <NavigationContainer
                         onReady={() => {

@@ -9,6 +9,7 @@ test-environment metadata.
 - [Building](BUILDING.md)
 - [Privacy](PRIVACY.md)
 - [Security and release status](SECURITY.md)
+- [Roadmap](ROADMAP.md)
 - [Contributing](CONTRIBUTING.md)
 - [Open-source compliance](OPEN_SOURCE_COMPLIANCE.md)
 

@@ -41,6 +41,7 @@ export interface MfwOwnedNameRecord {
   ownerAuthority?: 'local' | 'recovery-required';
   ownerPublicKeyHex?: string;
   commitTxidHex?: string;
+  commitBroadcastAt?: string;
   commitHeight?: number;
   sourceTxidHex?: string;
   pendingAddress?: string;
@@ -62,6 +63,17 @@ type RegistryState = {
   version: 1;
   names: MfwOwnedNameRecord[];
 };
+
+type RegistryListener = (names: MfwOwnedNameRecord[]) => void;
+
+const registryListeners = new Set<RegistryListener>();
+
+export function subscribeMfwOwnedNames(
+  listener: RegistryListener,
+): () => void {
+  registryListeners.add(listener);
+  return () => registryListeners.delete(listener);
+}
 
 export async function loadMfwOwnedNames(): Promise<MfwOwnedNameRecord[]> {
   const value = await loadProtectedMetadata(MFW_NAME_REGISTRATION_STORAGE_KEY);
@@ -128,6 +140,9 @@ export function applyMfwNameBroadcast(
         ...record,
         stage: 'commit-pending',
         commitTxidHex: txid,
+        commitBroadcastAt: now,
+        commitHeight: undefined,
+        lastChainTipHeight: undefined,
         updatedAt: now,
       });
     case 'claim':
@@ -201,16 +216,65 @@ export function reconcileMfwNameTransactionState(
       ? normalizeRecord({ ...record, stage: 'failed', updatedAt: now })
       : record;
   }
-  if (transaction.confirmations < commitMaturityBlocks) {
+  const commitHeight = transaction.blockHeight;
+  const lastChainTipHeight =
+    transaction.blockHeight + transaction.confirmations - 1;
+  const stage =
+    transaction.confirmations < commitMaturityBlocks
+      ? 'commit-pending'
+      : 'reveal-ready';
+  if (
+    record.stage === stage &&
+    record.commitHeight === commitHeight &&
+    record.lastChainTipHeight === lastChainTipHeight
+  ) {
     return record;
   }
   return normalizeRecord({
     ...record,
-    stage: 'reveal-ready',
-    commitHeight: transaction.blockHeight,
-    lastChainTipHeight: transaction.blockHeight + transaction.confirmations - 1,
+    stage,
+    commitHeight,
+    lastChainTipHeight,
     updatedAt: now,
   });
+}
+
+export function mfwNameCommitBlocksRemaining(
+  record: MfwOwnedNameRecord,
+  commitMaturityBlocks: number,
+  chainTipHeight = record.lastChainTipHeight,
+): number | undefined {
+  if (
+    !Number.isSafeInteger(commitMaturityBlocks) ||
+    commitMaturityBlocks < 1 ||
+    record.commitHeight === undefined ||
+    chainTipHeight === undefined ||
+    !validHeight(record.commitHeight) ||
+    !validHeight(chainTipHeight)
+  ) {
+    return undefined;
+  }
+  const confirmations = Math.max(0, chainTipHeight - record.commitHeight + 1);
+  return Math.max(0, commitMaturityBlocks - confirmations);
+}
+
+export function mfwNameClaimWindowBlocksRemaining(
+  record: MfwOwnedNameRecord,
+  commitRevealWindowBlocks: number,
+  chainTipHeight = record.lastChainTipHeight,
+): number | undefined {
+  if (
+    !Number.isSafeInteger(commitRevealWindowBlocks) ||
+    commitRevealWindowBlocks < 1 ||
+    record.commitHeight === undefined ||
+    chainTipHeight === undefined ||
+    !validHeight(record.commitHeight) ||
+    !validHeight(chainTipHeight)
+  ) {
+    return undefined;
+  }
+  const confirmations = Math.max(0, chainTipHeight - record.commitHeight + 1);
+  return Math.max(0, commitRevealWindowBlocks - confirmations);
 }
 
 export function mfwNameRemainingBlocks(
@@ -288,10 +352,14 @@ async function save(state: RegistryState): Promise<void> {
   state.names
     .map(normalizeRecord)
     .forEach(record => byId.set(record.id, record));
+  const names = Array.from(byId.values()).sort((left, right) =>
+    left.canonicalName.localeCompare(right.canonicalName),
+  );
   await storeProtectedMetadata(
     MFW_NAME_REGISTRATION_STORAGE_KEY,
-    JSON.stringify({ version: 1, names: Array.from(byId.values()) }),
+    JSON.stringify({ version: 1, names }),
   );
+  registryListeners.forEach(listener => listener(names));
 }
 
 function parseRecord(value: unknown): MfwOwnedNameRecord | undefined {
@@ -337,6 +405,7 @@ function normalizeRecord(value: MfwOwnedNameRecord): MfwOwnedNameRecord {
         : 'local',
     ownerPublicKeyHex: optionalHex(value.ownerPublicKeyHex),
     commitTxidHex: optionalHex(value.commitTxidHex),
+    commitBroadcastAt: optionalTimestamp(value.commitBroadcastAt),
     commitHeight: optionalHeight(value.commitHeight),
     sourceTxidHex: optionalHex(value.sourceTxidHex),
     pendingAddress: optional(value.pendingAddress),

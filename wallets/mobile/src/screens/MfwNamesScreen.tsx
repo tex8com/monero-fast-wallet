@@ -53,8 +53,11 @@ import {
   estimateMfwNameExpiryTimestampMs,
   effectiveMfwOwnedNameStage,
   loadMfwOwnedNames,
+  mfwNameClaimWindowBlocksRemaining,
+  mfwNameCommitBlocksRemaining,
   mfwNameRemainingDays,
   reconcileMfwNameTransactionState,
+  subscribeMfwOwnedNames,
   upsertMfwOwnedName,
   type MfwNameBroadcastResult,
   type MfwOwnedNameRecord,
@@ -238,6 +241,23 @@ export default function MfwNamesScreen({ navigation, route }: any) {
   const selectedOwnedName = ownedNames.find(
     record => record.id === selectedOwnedNameId,
   );
+  const enteredCanonicalName = useMemo(() => {
+    try {
+      return name.trim() ? canonicalMfwName(name) : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [name]);
+  const localEnteredNameRecord = enteredCanonicalName
+    ? ownedNames.find(
+        record =>
+          record.canonicalName === enteredCanonicalName &&
+          record.network === (registeredWallet?.network ?? 'mainnet') &&
+          (record.stage === 'commit-pending' ||
+            record.stage === 'reveal-ready' ||
+            record.stage === 'claim-pending'),
+      )
+    : undefined;
   const recentOwnedNames = useMemo(
     () =>
       [...ownedNames]
@@ -367,6 +387,8 @@ export default function MfwNamesScreen({ navigation, route }: any) {
 
   useEffect(() => {
     let mounted = true;
+    let broadcastRecordId: string | undefined;
+    let broadcastKind: MfwNameBroadcastResult['kind'] | undefined;
     setLoadingOwnedNames(true);
     const load = async () => {
       let records = await loadMfwOwnedNames();
@@ -378,9 +400,10 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           record => record.id === broadcast.registrationId,
         );
         if (target) {
-          records = await upsertMfwOwnedName(
-            applyMfwNameBroadcast(target, broadcast),
-          );
+          const updated = applyMfwNameBroadcast(target, broadcast);
+          records = await upsertMfwOwnedName(updated);
+          broadcastRecordId = updated.id;
+          broadcastKind = broadcast.kind;
         }
       }
       return records;
@@ -389,6 +412,17 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       .then(records => {
         if (mounted) {
           setOwnedNames(records);
+          if (broadcastRecordId) {
+            setSelectedOwnedNameId(broadcastRecordId);
+            setMessage(
+              broadcastKind === 'commit'
+                ? t('mfwNames.commitBroadcastMessage')
+                : broadcastKind === 'claim'
+                ? t('mfwNames.claimBroadcastMessage')
+                : undefined,
+            );
+            navigation.setParams({ mfwNameBroadcast: undefined });
+          }
         }
       })
       .catch(() => {
@@ -404,7 +438,39 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     return () => {
       mounted = false;
     };
-  }, [route?.params?.mfwNameBroadcast, t]);
+  }, [navigation, route?.params?.mfwNameBroadcast, t]);
+
+  useEffect(
+    () =>
+      subscribeMfwOwnedNames(records => {
+        setOwnedNames(records);
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    if (!route?.params?.focusPendingClaim || ownedNames.length === 0) return;
+    const pending = [...ownedNames]
+      .filter(record =>
+        ['reveal-ready', 'commit-pending', 'claim-pending'].includes(
+          record.stage,
+        ),
+      )
+      .sort((left, right) => {
+        const priority = (record: MfwOwnedNameRecord) =>
+          record.stage === 'reveal-ready'
+            ? 0
+            : record.stage === 'commit-pending'
+            ? 1
+            : 2;
+        return priority(left) - priority(right);
+      })[0];
+    if (pending) {
+      setSelectedOwnedNameId(pending.id);
+      setMessage(undefined);
+    }
+    navigation.setParams({ focusPendingClaim: undefined });
+  }, [navigation, ownedNames, route?.params?.focusPendingClaim]);
 
   useEffect(() => {
     const wallet = registeredWallet;
@@ -523,7 +589,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       };
     }
     walletService
-      .getTransactions(session, 100)
+      .getTransactionsForAllAccounts(session, 0)
       .then(async transactions => {
         let next = ownedNames;
         for (const record of commitCandidates) {
@@ -708,6 +774,11 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       setMessage(t('mfwNames.termRange', { max: maxYears }));
       return;
     }
+    if (localEnteredNameRecord) {
+      setSelectedOwnedNameId(localEnteredNameRecord.id);
+      setMessage(t('mfwNames.localRegistrationPending'));
+      return;
+    }
     try {
       canonicalMfwName(name);
     } catch {
@@ -812,6 +883,11 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       }
       if (!genesis) {
         setMessage(t('mfwNames.activationPending'));
+        return;
+      }
+      if (localEnteredNameRecord) {
+        setSelectedOwnedNameId(localEnteredNameRecord.id);
+        setMessage(t('mfwNames.localRegistrationPending'));
         return;
       }
       if (
@@ -1259,6 +1335,33 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                   record.ownerAuthority !== 'recovery-required';
                 const canClaim = stage === 'reveal-ready';
                 const canRestart = stage === 'expired' || stage === 'revoked';
+                const recordGenesis = configuredMfwNameGenesis(record.network);
+                const commitBlocksRemaining = recordGenesis
+                  ? mfwNameCommitBlocksRemaining(
+                      record,
+                      recordGenesis.commitMaturityBlocks,
+                      chainTip,
+                    )
+                  : undefined;
+                const claimWindowBlocksRemaining = recordGenesis
+                  ? mfwNameClaimWindowBlocksRemaining(
+                      record,
+                      recordGenesis.commitRevealWindowBlocks,
+                      chainTip,
+                    )
+                  : undefined;
+                const maturityHeight =
+                  recordGenesis && record.commitHeight !== undefined
+                    ? record.commitHeight +
+                      recordGenesis.commitMaturityBlocks -
+                      1
+                    : undefined;
+                const claimDeadlineHeight =
+                  recordGenesis && record.commitHeight !== undefined
+                    ? record.commitHeight +
+                      recordGenesis.commitRevealWindowBlocks -
+                      1
+                    : undefined;
 
                 return (
                   <View key={record.id} style={s.ownedNameCard}>
@@ -1297,6 +1400,81 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                         </Text>
                       </View>
                     </View>
+                    {stage === 'commit-pending' ||
+                    stage === 'reveal-ready' ||
+                    stage === 'claim-pending' ? (
+                      <View style={s.registrationProgressCard}>
+                        <Text style={s.registrationProgressTitle}>
+                          {stage === 'claim-pending'
+                            ? t('mfwNames.stepTwoSent')
+                            : stage === 'reveal-ready'
+                            ? t('mfwNames.stepTwoReady')
+                            : t('mfwNames.stepOneComplete')}
+                        </Text>
+                        <View style={s.registrationProgressStep}>
+                          <View style={s.registrationProgressNumberDone}>
+                            <Text style={s.registrationProgressNumberText}>
+                              1
+                            </Text>
+                          </View>
+                          <View style={s.registrationProgressCopy}>
+                            <Text style={s.registrationProgressLabel}>
+                              {t('mfwNames.commitTitle')}
+                            </Text>
+                            <Text style={s.registrationProgressText}>
+                              {t('mfwNames.stepOneSentDescription')}
+                            </Text>
+                          </View>
+                        </View>
+                        <View style={s.registrationProgressLine} />
+                        <View style={s.registrationProgressStep}>
+                          <View
+                            style={[
+                              s.registrationProgressNumber,
+                              stage !== 'commit-pending' &&
+                                s.registrationProgressNumberReady,
+                            ]}
+                          >
+                            <Text style={s.registrationProgressNumberText}>
+                              2
+                            </Text>
+                          </View>
+                          <View style={s.registrationProgressCopy}>
+                            <Text style={s.registrationProgressLabel}>
+                              {t('mfwNames.claimTitle')}
+                            </Text>
+                            <Text style={s.registrationProgressText}>
+                              {stage === 'claim-pending'
+                                ? t('mfwNames.stepTwoSentDescription')
+                                : stage === 'reveal-ready'
+                                ? t('mfwNames.stepTwoReadyDescription', {
+                                    blocks:
+                                      claimWindowBlocksRemaining ?? '—',
+                                  })
+                                : commitBlocksRemaining === undefined
+                                ? t('mfwNames.commitWaitingBanner')
+                                : t('mfwNames.commitBlocksBanner', {
+                                    blocks: commitBlocksRemaining,
+                                  })}
+                            </Text>
+                          </View>
+                        </View>
+                        {maturityHeight !== undefined ? (
+                          <Text style={s.registrationProgressMeta}>
+                            {t('mfwNames.maturityHeight', {
+                              height: formatHeight(maturityHeight),
+                            })}
+                          </Text>
+                        ) : null}
+                        {claimDeadlineHeight !== undefined ? (
+                          <Text style={s.registrationProgressMeta}>
+                            {t('mfwNames.claimDeadlineHeight', {
+                              height: formatHeight(claimDeadlineHeight),
+                            })}
+                          </Text>
+                        ) : null}
+                      </View>
+                    ) : null}
                     <Text style={s.ownedNameAddress}>
                       {shortAddress(record.address)}
                     </Text>
@@ -1875,7 +2053,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                     <View style={[s.availabilityRow, s.availabilityBlockRow]}>
                       <Icon
                         name={
-                          availability.value.status === 'available'
+                          localEnteredNameRecord
+                            ? 'clock'
+                            : availability.value.status === 'available'
                             ? 'check'
                             : availability.value.status === 'pending'
                             ? 'clock'
@@ -1883,7 +2063,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                         }
                         size={16}
                         color={
-                          availability.value.status === 'available'
+                          localEnteredNameRecord
+                            ? colors.warning
+                            : availability.value.status === 'available'
                             ? colors.success
                             : availability.value.status === 'pending'
                             ? colors.warning
@@ -1892,14 +2074,18 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                       />
                       <Text
                         style={
-                          availability.value.status === 'available'
+                          localEnteredNameRecord
+                            ? s.availabilityWarning
+                            : availability.value.status === 'available'
                             ? s.availabilitySuccess
                             : availability.value.status === 'pending'
                             ? s.availabilityWarning
                             : s.availabilityStatusError
                         }
                       >
-                        {availability.value.status === 'available'
+                        {localEnteredNameRecord
+                          ? t('mfwNames.availabilityLocalPending')
+                          : availability.value.status === 'available'
                           ? availability.value.previousStatus
                             ? t('mfwNames.availabilityAvailableAgain')
                             : t('mfwNames.availabilityAvailable')
@@ -2506,6 +2692,77 @@ const s = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.bgCard,
     padding: 15,
+  },
+  registrationProgressCard: {
+    backgroundColor: colors.bgInput,
+    borderColor: colors.borderLight,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    marginTop: 14,
+    padding: 14,
+  },
+  registrationProgressTitle: {
+    color: colors.orange,
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 12,
+  },
+  registrationProgressStep: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    gap: 10,
+  },
+  registrationProgressNumber: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.borderLight,
+    borderRadius: 15,
+    borderWidth: 1,
+    height: 30,
+    justifyContent: 'center',
+    width: 30,
+  },
+  registrationProgressNumberDone: {
+    alignItems: 'center',
+    backgroundColor: colors.success,
+    borderRadius: 15,
+    height: 30,
+    justifyContent: 'center',
+    width: 30,
+  },
+  registrationProgressNumberReady: {
+    backgroundColor: colors.orange,
+    borderColor: colors.orange,
+  },
+  registrationProgressNumberText: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  registrationProgressCopy: { flex: 1 },
+  registrationProgressLabel: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  registrationProgressText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  registrationProgressMeta: {
+    color: colors.textMuted,
+    fontFamily: 'monospace',
+    fontSize: 10,
+    marginTop: 8,
+  },
+  registrationProgressLine: {
+    backgroundColor: colors.borderLight,
+    height: 14,
+    marginLeft: 14,
+    marginVertical: 3,
+    width: 2,
   },
   ownedNameHeader: {
     flexDirection: 'row',

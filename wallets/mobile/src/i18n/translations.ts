@@ -938,9 +938,27 @@ const en = {
   'mfwNames.claimText':
     'After the commit matures, review a second prefilled transaction that publishes the signed name and pays the selected term.',
   'mfwNames.claimTitle': 'Claim and pay',
+  'mfwNames.claimBroadcastMessage':
+    'Step 2 of 2 was sent. The name becomes active after blockchain confirmation.',
+  'mfwNames.claimPendingBanner':
+    'The final transaction was sent. Waiting for blockchain confirmation.',
+  'mfwNames.claimReadyBanner':
+    'Approve the final transaction now. About {blocks} blocks remain in the claim window.',
+  'mfwNames.claimDeadlineHeight': 'Claim deadline: block {height}',
   'mfwNames.commitText':
     'Review a prefilled commitment transaction. It hides the name from mempool observers.',
   'mfwNames.commitTitle': 'Commit the name',
+  'mfwNames.commitBlocksBanner':
+    'Step 2 becomes available in about {blocks} block(s). We will remind you locally.',
+  'mfwNames.commitBroadcastMessage':
+    'Step 1 of 2 was sent. Step 2 becomes available after 15 blocks; the app will remind you.',
+  'mfwNames.commitWaitingBanner':
+    'Waiting for the commit to be mined. Step 2 normally follows after about 30 minutes.',
+  'mfwNames.availabilityLocalPending':
+    'Step 1 is already pending on this device. Complete step 2 instead of registering again.',
+  'mfwNames.localRegistrationPending':
+    'This registration is already in progress. Continue with its next step.',
+  'mfwNames.maturityHeight': 'Step 2 available from block {height}',
   'mfwNames.confirmClaim': 'Confirm claim',
   'mfwNames.confirmCommit': 'Confirm commit',
   'mfwNames.confirmRenew': 'Confirm renewal',
@@ -1031,6 +1049,20 @@ const en = {
   'mfwNames.statusUpdatePending': 'Address change pending',
   'mfwNames.statusRevealReady': 'Ready to claim',
   'mfwNames.statusRevoked': 'Revoked',
+  'mfwNames.stepOneComplete': 'Step 1 of 2 completed',
+  'mfwNames.stepOneSentDescription':
+    'The private commitment was sent to the blockchain.',
+  'mfwNames.stepTwoReady': 'Step 2 of 2 is ready',
+  'mfwNames.stepTwoReadyDescription':
+    'Approve the claim and registry payment now. About {blocks} blocks remain.',
+  'mfwNames.stepTwoSent': 'Step 2 of 2 sent',
+  'mfwNames.stepTwoSentDescription':
+    'The claim and registry payment are waiting for blockchain confirmation.',
+  'mfwNames.notificationTitle': 'Monero Fast Wallet name',
+  'mfwNames.notificationCheckStepTwo':
+    'Open the app to check whether step 2 of 2 is ready.',
+  'mfwNames.notificationStepTwoReady':
+    'Step 2 of 2 is ready. Open the app to complete your name registration.',
   'mfwNames.term': 'Registration term',
   'mfwNames.termValue': '{count} protocol year(s)',
   'mfwNames.title': 'Your Address Names',
@@ -2519,9 +2551,27 @@ const de: Record<keyof typeof en, string> = {
   'mfwNames.claimText':
     'Nach Ablauf der Commit-Reifezeit prüfst du eine zweite vorausgefüllte Transaktion. Sie veröffentlicht den signierten Namen und bezahlt die gewählte Laufzeit.',
   'mfwNames.claimTitle': 'Namen registrieren und bezahlen',
+  'mfwNames.claimBroadcastMessage':
+    'Schritt 2 von 2 wurde gesendet. Der Name wird nach der Blockchain-Bestätigung aktiv.',
+  'mfwNames.claimPendingBanner':
+    'Die letzte Transaktion wurde gesendet. Die Blockchain-Bestätigung steht noch aus.',
+  'mfwNames.claimReadyBanner':
+    'Bestätige jetzt die letzte Transaktion. Im Claim-Fenster bleiben etwa {blocks} Blöcke.',
+  'mfwNames.claimDeadlineHeight': 'Claim-Frist: Block {height}',
   'mfwNames.commitText':
     'Prüfe eine vorausgefüllte Commit-Transaktion. Sie verbirgt den Namen vor Beobachtern des Mempools.',
   'mfwNames.commitTitle': 'Namen vormerken',
+  'mfwNames.commitBlocksBanner':
+    'Schritt 2 wird in etwa {blocks} Block bzw. Blöcken möglich. Wir erinnern dich lokal.',
+  'mfwNames.commitBroadcastMessage':
+    'Schritt 1 von 2 wurde gesendet. Schritt 2 ist nach 15 Blöcken möglich; die App erinnert dich.',
+  'mfwNames.commitWaitingBanner':
+    'Der Commit wartet auf den ersten Block. Schritt 2 folgt normalerweise nach etwa 30 Minuten.',
+  'mfwNames.availabilityLocalPending':
+    'Schritt 1 ist auf diesem Gerät bereits ausstehend. Schließe Schritt 2 ab, statt erneut zu registrieren.',
+  'mfwNames.localRegistrationPending':
+    'Diese Registrierung läuft bereits. Fahre mit dem nächsten Schritt fort.',
+  'mfwNames.maturityHeight': 'Schritt 2 möglich ab Block {height}',
   'mfwNames.confirmClaim': 'Registrierung bestätigen',
   'mfwNames.confirmCommit': 'Commit bestätigen',
   'mfwNames.confirmRenew': 'Verlängerung bestätigen',
@@ -2615,6 +2665,20 @@ const de: Record<keyof typeof en, string> = {
   'mfwNames.statusUpdatePending': 'Adressänderung ausstehend',
   'mfwNames.statusRevealReady': 'Bereit zum Claim',
   'mfwNames.statusRevoked': 'Widerrufen',
+  'mfwNames.stepOneComplete': 'Schritt 1 von 2 abgeschlossen',
+  'mfwNames.stepOneSentDescription':
+    'Die private Vormerkung wurde an die Blockchain gesendet.',
+  'mfwNames.stepTwoReady': 'Schritt 2 von 2 ist bereit',
+  'mfwNames.stepTwoReadyDescription':
+    'Bestätige jetzt Claim und Registry-Zahlung. Es bleiben etwa {blocks} Blöcke.',
+  'mfwNames.stepTwoSent': 'Schritt 2 von 2 gesendet',
+  'mfwNames.stepTwoSentDescription':
+    'Claim und Registry-Zahlung warten auf die Blockchain-Bestätigung.',
+  'mfwNames.notificationTitle': 'Monero Fast Wallet Name',
+  'mfwNames.notificationCheckStepTwo':
+    'Öffne die App und prüfe, ob Schritt 2 von 2 bereit ist.',
+  'mfwNames.notificationStepTwoReady':
+    'Schritt 2 von 2 ist bereit. Öffne die App und schließe die Namensregistrierung ab.',
   'mfwNames.term': 'Laufzeit',
   'mfwNames.termValue': '{count} Protokolljahr(e)',
   'mfwNames.title': 'Deine Adressnamen',

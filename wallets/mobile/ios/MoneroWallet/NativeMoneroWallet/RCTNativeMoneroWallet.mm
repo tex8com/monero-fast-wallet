@@ -44,6 +44,7 @@ static_assert(MFW_PRODUCT_CORE_ABI_VERSION == 1u,
 #import <React/RCTBridgeModule.h>
 #import <Security/Security.h>
 #import <UIKit/UIKit.h>
+#import <UserNotifications/UserNotifications.h>
 #import <libPhoneNumber_iOS/NBPhoneNumber.h>
 #import <libPhoneNumber_iOS/NBPhoneNumberUtil.h>
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
@@ -591,6 +592,126 @@ NSArray<NSData *> *ledgerBleFrames(NSData *command) {
   _connectionError = message ?: @"Ledger BLE connection failed";
   [_condition broadcast];
   [_condition unlock];
+}
+
+@end
+
+@interface RCTMoneroLocalNotification : NSObject <RCTBridgeModule>
+@end
+
+@implementation RCTMoneroLocalNotification
+
+RCT_EXPORT_MODULE(MoneroLocalNotification)
+
++ (BOOL)requiresMainQueueSetup
+{
+  return NO;
+}
+
+- (void)scheduleTitle:(NSString *)title
+                  body:(NSString *)body
+               eventId:(NSString *)eventId
+             deepLink:(NSString *)deepLink
+            triggerAt:(NSTimeInterval)triggerAtMs
+               resolve:(RCTPromiseResolveBlock)resolve
+                reject:(RCTPromiseRejectBlock)reject
+{
+  UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+  [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert |
+                                           UNAuthorizationOptionSound)
+                        completionHandler:^(BOOL granted, NSError *error) {
+    if (error != nil || !granted) {
+      reject(@"NOTIFICATION_PERMISSION_DENIED",
+             @"Notification permission is not granted",
+             error);
+      return;
+    }
+    UNMutableNotificationContent *content = [[UNMutableNotificationContent alloc] init];
+    content.title = title;
+    content.body = body;
+    content.sound = [UNNotificationSound defaultSound];
+    if (deepLink.length > 0) {
+      content.userInfo = @{ @"deepLink": deepLink };
+    }
+    UNNotificationTrigger *trigger = nil;
+    if (triggerAtMs > 0) {
+      NSTimeInterval delay = MAX(1.0, triggerAtMs / 1000.0 - NSDate.date.timeIntervalSince1970);
+      trigger = [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:delay repeats:NO];
+    }
+    UNNotificationRequest *request =
+        [UNNotificationRequest requestWithIdentifier:eventId
+                                              content:content
+                                              trigger:trigger];
+    [center addNotificationRequest:request withCompletionHandler:^(NSError *addError) {
+      if (addError != nil) {
+        reject(@"NOTIFICATION_SCHEDULE_FAILED", addError.localizedDescription, addError);
+      } else {
+        resolve(nil);
+      }
+    }];
+  }];
+}
+
+RCT_REMAP_METHOD(show,
+                 showWithTitle:(NSString *)title
+                 body:(NSString *)body
+                 eventId:(NSString *)eventId
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+  [self scheduleTitle:title
+                  body:body
+               eventId:eventId
+              deepLink:nil
+             triggerAt:0
+               resolve:resolve
+                reject:reject];
+}
+
+RCT_REMAP_METHOD(showDeepLink,
+                 showDeepLinkWithTitle:(NSString *)title
+                 body:(NSString *)body
+                 eventId:(NSString *)eventId
+                 deepLink:(NSString *)deepLink
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+  [self scheduleTitle:title
+                  body:body
+               eventId:eventId
+              deepLink:deepLink
+             triggerAt:0
+               resolve:resolve
+                reject:reject];
+}
+
+RCT_REMAP_METHOD(schedule,
+                 scheduleWithTitle:(NSString *)title
+                 body:(NSString *)body
+                 eventId:(NSString *)eventId
+                 triggerAtMs:(double)triggerAtMs
+                 deepLink:(NSString *)deepLink
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+  [self scheduleTitle:title
+                  body:body
+               eventId:eventId
+              deepLink:deepLink
+             triggerAt:triggerAtMs
+               resolve:resolve
+                reject:reject];
+}
+
+RCT_REMAP_METHOD(cancel,
+                 cancelWithEventId:(NSString *)eventId
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+  UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+  [center removePendingNotificationRequestsWithIdentifiers:@[ eventId ]];
+  [center removeDeliveredNotificationsWithIdentifiers:@[ eventId ]];
+  resolve(nil);
 }
 
 @end

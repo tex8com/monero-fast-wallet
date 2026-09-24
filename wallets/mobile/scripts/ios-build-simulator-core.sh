@@ -14,6 +14,11 @@ if [ ! -d "$BUILD_ROOT" ]; then
 fi
 
 export PATH="$HOME/Library/Python/3.9/bin:$PATH"
+# Host-only helper projects created by Monero's CMake build (for example the
+# translation-header generator) must use Xcode's matching macOS SDK. Without
+# this explicit SDKROOT, CMake can fall back to a newer standalone Command Line
+# Tools SDK while the iOS target itself uses the selected Xcode toolchain.
+export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
 export TARGETS="${MONERO_IOS_TARGETS:-ios-sim-arm64}"
 export CLEAN_AFTER_INSTALL=1
 export JOBS="${JOBS:-8}"
