@@ -764,7 +764,7 @@ describe('WalletService registered wallet opening', () => {
         walletId: 'wallet-ledger-tip',
         network: 'mainnet',
         accountIndex: 0,
-        hardwareDevice: { name: 'Ledger:ble' },
+        hardwareDevice: { name: 'Ledger:ble', type: 'ledger' },
       },
       {
         registrationId: 'registration-tip',
