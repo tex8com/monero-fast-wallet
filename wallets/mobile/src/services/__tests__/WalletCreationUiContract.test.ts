@@ -205,6 +205,36 @@ describe('Wallet creation and existing-wallet UI contract', () => {
     );
   });
 
+  it('keeps an established Ledger BLE session when USB is attached too', () => {
+    const statusStart = android.indexOf(
+      'override fun getLedgerTransportStatus(promise: Promise)',
+    );
+    const statusEnd = android.indexOf(
+      'override fun requestLedgerTransportAccess(promise: Promise)',
+      statusStart,
+    );
+    const accessEnd = android.indexOf(
+      'override fun beginSystemUiInterruption',
+      statusEnd,
+    );
+    const statusFlow = android.slice(statusStart, statusEnd);
+    const accessFlow = android.slice(statusEnd, accessEnd);
+
+    expect(statusStart).toBeGreaterThan(0);
+    expect(statusEnd).toBeGreaterThan(statusStart);
+    expect(accessEnd).toBeGreaterThan(statusEnd);
+    expect(statusFlow).toContain('val bleStatus = ledgerBleTransportStatus()');
+    expect(statusFlow).toContain('bleStatus.available -> bleStatus');
+    expect(statusFlow).toContain('usbStatus.available -> usbStatus');
+    expect(statusFlow.indexOf('bleStatus.available -> bleStatus')).toBeLessThan(
+      statusFlow.indexOf('usbStatus.available -> usbStatus'),
+    );
+    expect(accessFlow).toContain('if (bleStatus.available)');
+    expect(accessFlow).toContain(
+      'promise.resolve(ledgerTransportStatusToWritableMap(bleStatus))',
+    );
+  });
+
   it('prevents an old Ledger BLE timeout from completing a newer scan', () => {
     const scanStart = android.indexOf(
       'private fun scanLedgerBleDevices(promise: Promise)',

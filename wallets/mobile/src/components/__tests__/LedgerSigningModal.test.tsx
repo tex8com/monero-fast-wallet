@@ -21,7 +21,7 @@ jest.mock('../../i18n', () => ({
 }));
 
 describe('LedgerSigningModal', () => {
-  it('shows wallet synchronization as connected without a false cancel action', () => {
+  it('keeps wallet synchronization cancellable after Ledger connects', () => {
     const onCancel = jest.fn();
     let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
 
@@ -61,10 +61,14 @@ describe('LedgerSigningModal', () => {
     expect(text).toContain('Approve view-key export');
     expect(text).toContain('BLE · 97A0');
     expect(renderer!.root.findAllByType(ActivityIndicator)).toHaveLength(0);
-    expect(renderer!.root.findAllByType(TouchableOpacity)).toHaveLength(0);
+    expect(renderer!.root.findAllByType(TouchableOpacity)).toHaveLength(1);
+    ReactTestRenderer.act(() =>
+      renderer!.root.findByType(TouchableOpacity).props.onPress(),
+    );
+    expect(onCancel).toHaveBeenCalledTimes(1);
     ReactTestRenderer.act(() =>
       renderer!.root.findByType(Modal).props.onRequestClose(),
     );
-    expect(onCancel).not.toHaveBeenCalled();
+    expect(onCancel).toHaveBeenCalledTimes(2);
   });
 });

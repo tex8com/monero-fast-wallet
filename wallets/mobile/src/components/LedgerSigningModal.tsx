@@ -27,8 +27,7 @@ export default function LedgerSigningModal({
     return null;
   }
 
-  const cancellationAllowed =
-    canCancel && progress.phase !== 'synchronizing-wallet';
+  const cancellationAllowed = canCancel;
   const connected =
     progress.phase === 'synchronizing-wallet' ||
     progress.phase === 'connected' ||

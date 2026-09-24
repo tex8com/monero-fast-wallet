@@ -2020,7 +2020,8 @@ export default function SendScreen({ navigation, route }: any) {
       <LedgerSigningModal
         canCancel={
           ledgerSigningProgress?.phase === 'searching' ||
-          ledgerSigningProgress?.phase === 'connecting'
+          ledgerSigningProgress?.phase === 'connecting' ||
+          ledgerSigningProgress?.phase === 'synchronizing-wallet'
         }
         progress={ledgerSigningProgress}
         onCancel={() => {

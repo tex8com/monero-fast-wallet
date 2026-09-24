@@ -547,14 +547,30 @@ class NativeMoneroWalletModule(
 
   override fun getLedgerTransportStatus(promise: Promise) {
     val usbStatus = ledgerUsbTransportStatus()
+    val bleStatus = ledgerBleTransportStatus()
     promise.resolve(
       ledgerTransportStatusToWritableMap(
-        if (usbStatus.available) usbStatus else ledgerBleTransportStatus(),
+        when {
+          // A live GATT session is already proven end-to-end and Core can use
+          // it through the installed callback transport. Do not replace it
+          // merely because the same Nano is also visible over USB: Android's
+          // Java USB permission does not prove that hidapi can open the
+          // device, and choosing it here strands signing with a NULL device.
+          bleStatus.available -> bleStatus
+          usbStatus.available -> usbStatus
+          else -> bleStatus
+        },
       ),
     )
   }
 
   override fun requestLedgerTransportAccess(promise: Promise) {
+    val bleStatus = ledgerBleTransportStatus()
+    if (bleStatus.available) {
+      promise.resolve(ledgerTransportStatusToWritableMap(bleStatus))
+      return
+    }
+
     val status = ledgerUsbTransportStatus()
     if (status.available) {
       requestLedgerUsbTransportAccess(status, promise)
