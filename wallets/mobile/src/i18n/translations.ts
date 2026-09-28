@@ -369,7 +369,7 @@ const en = {
   'ledgerSigning.searching': 'Looking for your Ledger…',
   'ledgerSigning.connecting': 'Connecting securely to Ledger…',
   'ledgerSigning.synchronizingInstructions':
-    'Keep the Ledger unlocked with the Monero app open. Approve view-key export if the Ledger asks.',
+    'Please be patient. The wallet checks new blocks and spendable coins with your Ledger before it can sign safely. Keep the Ledger unlocked with the Monero app open.',
   'ledgerSigning.synchronizingWallet':
     'Ledger connected. Synchronizing the signing wallet…',
   'ledgerSigning.connected': 'Ledger is connected.',
@@ -1970,7 +1970,7 @@ const de: Record<keyof typeof en, string> = {
   'ledgerSigning.searching': 'Ledger wird gesucht…',
   'ledgerSigning.connecting': 'Ledger wird sicher verbunden…',
   'ledgerSigning.synchronizingInstructions':
-    'Lass den Ledger entsperrt und die Monero-App geöffnet. Bestätige den View-Key-Export, falls der Ledger danach fragt.',
+    'Bitte etwas Geduld. Die Wallet gleicht neue Blöcke und ausgebbare Coins mit deinem Ledger ab, damit sicher signiert werden kann. Lass den Ledger entsperrt und die Monero-App geöffnet.',
   'ledgerSigning.synchronizingWallet':
     'Ledger verbunden. Signing-Wallet wird synchronisiert…',
   'ledgerSigning.connected': 'Ledger ist verbunden.',
