@@ -219,6 +219,58 @@ describe('WalletRegistry', () => {
     await AsyncStorage.clear();
   });
 
+  it('persists the verified Ledger signing-cache height', async () => {
+    const readyAt = '2026-09-28T21:35:15.000Z';
+    const ledger = createRegisteredWallet({
+      walletName: 'ledger-spend-ready',
+      path: '/app/wallets/mainnet/ledger-spend-ready',
+      network: 'mainnet',
+      kind: 'hardware',
+      viewOnlyPath: '/app/wallets/mainnet/ledger-spend-ready-view',
+      viewOnlyCredentialKey: 'ledger-spend-ready-view-secret',
+      ledgerSigningReadyAt: readyAt,
+      ledgerSigningReadyHeight: 3_772_631,
+      now: '2026-09-28T21:30:00.000Z',
+    });
+
+    await saveRegisteredWallet(ledger);
+
+    const stored = (await loadRegisteredWallets()).find(
+      wallet => wallet.id === ledger.id,
+    );
+    expect(stored?.ledgerSigningReadyAt).toBe(readyAt);
+    expect(stored?.ledgerSigningReadyHeight).toBe(3_772_631);
+  });
+
+  it('does not let a stale wallet touch erase Ledger signing readiness', async () => {
+    const ledger = createRegisteredWallet({
+      walletName: 'ledger-signing-race',
+      path: '/app/wallets/mainnet/ledger-signing-race',
+      network: 'mainnet',
+      kind: 'hardware',
+      viewOnlyPath: '/app/wallets/mainnet/ledger-signing-race-view',
+      viewOnlyCredentialKey: 'ledger-signing-race-view-secret',
+      now: '2026-09-28T21:30:00.000Z',
+    });
+    await saveRegisteredWallet(ledger);
+
+    await Promise.all([
+      upsertRegisteredWallet({
+        ...ledger,
+        ledgerSigningReadyAt: '2026-09-28T21:35:15.000Z',
+        ledgerSigningReadyHeight: 3_772_631,
+      }),
+      saveRegisteredWallet(
+        touchRegisteredWallet(ledger, '2026-09-28T21:36:00.000Z'),
+      ),
+    ]);
+
+    const stored = (await loadRegisteredWallets()).find(
+      wallet => wallet.id === ledger.id,
+    );
+    expect(stored?.ledgerSigningReadyHeight).toBe(3_772_631);
+  });
+
   it('does not let a stale wallet touch erase completed Ledger verification', async () => {
     const ledger = createRegisteredWallet({
       walletName: 'ledger-race',

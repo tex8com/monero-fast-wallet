@@ -35,6 +35,9 @@ export interface RegisteredWallet {
   /** Last successful Ledger-signed key-image import into the local companion. */
   ledgerKeyImagesVerifiedAt?: string;
   ledgerKeyImagesVerifiedHeight?: number;
+  /** Last height where the Ledger signing cache matched the viewing wallet. */
+  ledgerSigningReadyAt?: string;
+  ledgerSigningReadyHeight?: number;
   restoreHeight?: number;
   /**
    * A legacy wallet registration can intentionally operate from another
@@ -247,6 +250,18 @@ export async function upsertRegisteredWallet(
           existing.ledgerKeyImagesVerifiedHeight,
       };
     }
+    if (
+      existing?.ledgerSigningReadyAt &&
+      (existing.ledgerSigningReadyHeight ?? 0) >
+        (wallet.ledgerSigningReadyHeight ?? 0) &&
+      options?.preserveLedgerVerification !== false
+    ) {
+      merged = {
+        ...merged,
+        ledgerSigningReadyAt: existing.ledgerSigningReadyAt,
+        ledgerSigningReadyHeight: existing.ledgerSigningReadyHeight,
+      };
+    }
     // Opening an existing wallet recreates technical metadata. Keep a label
     // the owner has chosen instead of silently replacing it with the default.
     const normalized = normalizeRegisteredWallet(
@@ -290,6 +305,8 @@ export function createRegisteredWallet(input: {
   viewOnlyEnabledAt?: string;
   ledgerKeyImagesVerifiedAt?: string;
   ledgerKeyImagesVerifiedHeight?: number;
+  ledgerSigningReadyAt?: string;
+  ledgerSigningReadyHeight?: number;
   restoreHeight?: number;
   accountIndex?: number;
   addressIndex?: number;
@@ -326,6 +343,8 @@ export function createRegisteredWallet(input: {
     viewOnlyEnabledAt: input.viewOnlyEnabledAt,
     ledgerKeyImagesVerifiedAt: input.ledgerKeyImagesVerifiedAt,
     ledgerKeyImagesVerifiedHeight: input.ledgerKeyImagesVerifiedHeight,
+    ledgerSigningReadyAt: input.ledgerSigningReadyAt,
+    ledgerSigningReadyHeight: input.ledgerSigningReadyHeight,
     restoreHeight: input.restoreHeight,
     accountIndex: input.accountIndex,
     addressIndex: input.addressIndex,
@@ -555,6 +574,12 @@ function normalizeRegisteredWallet(wallet: RegisteredWallet): RegisteredWallet {
         wallet.ledgerKeyImagesVerifiedHeight,
       );
     }
+    if (wallet.ledgerSigningReadyAt?.trim()) {
+      normalized.ledgerSigningReadyAt = wallet.ledgerSigningReadyAt.trim();
+      normalized.ledgerSigningReadyHeight = normalizeRestoreHeight(
+        wallet.ledgerSigningReadyHeight,
+      );
+    }
   }
 
   if (kind === 'fast' || wallet.restoreHeight !== undefined) {
@@ -676,6 +701,10 @@ function parseRegisteredWalletRecord(
   const ledgerKeyImagesVerifiedHeight = parseNumber(
     value.ledgerKeyImagesVerifiedHeight,
   );
+  const ledgerSigningReadyAt = parseString(value.ledgerSigningReadyAt);
+  const ledgerSigningReadyHeight = parseNumber(
+    value.ledgerSigningReadyHeight,
+  );
   const restoreHeight = parseNumber(value.restoreHeight);
   const accountIndex = parseNumber(value.accountIndex);
   const addressIndex = parseNumber(value.addressIndex);
@@ -725,6 +754,8 @@ function parseRegisteredWalletRecord(
     viewOnlyEnabledAt,
     ledgerKeyImagesVerifiedAt,
     ledgerKeyImagesVerifiedHeight,
+    ledgerSigningReadyAt,
+    ledgerSigningReadyHeight,
     restoreHeight,
     accountIndex,
     addressIndex,

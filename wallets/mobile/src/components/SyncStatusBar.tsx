@@ -42,6 +42,7 @@ type SyncStatusBarProps = {
   networkStatus?: NetworkSyncStatus;
   onExpandedChange?: (expanded: boolean) => void;
   snapshot?: WalletSnapshot;
+  spendReady?: boolean;
   syncStartHeight?: number;
   status: WalletRuntimeStatus;
   subtitle?: string;
@@ -58,6 +59,7 @@ export default function SyncStatusBar({
   networkStatus,
   onExpandedChange,
   snapshot,
+  spendReady = true,
   syncStartHeight,
   status,
   subtitle,
@@ -166,6 +168,7 @@ export default function SyncStatusBar({
     presentation.phase === 'syncing' ? formatSyncEta(etaSeconds, t) : undefined;
   const fullySynced =
     showWalletSync &&
+    spendReady &&
     (readinessPhase === undefined || readinessPhase === 'ready') &&
     presentation.coreConfirmed &&
     (networkStatus ? network.ready : true) &&
@@ -196,6 +199,8 @@ export default function SyncStatusBar({
     ? t('topBar.connectingTor')
     : spendOutputPhase
     ? walletDetail
+    : walletSnapshotIsSynchronized(snapshot) && !spendReady
+    ? t('sync.ledgerSigningPreparationRequired')
     : fullySynced
     ? t('sync.synced')
     : !networkStatus || network.ready

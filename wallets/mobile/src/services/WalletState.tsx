@@ -15,9 +15,13 @@ import type {
   WalletTransaction,
   WalletSnapshot,
 } from './NativeMoneroWallet';
-import { walletSnapshotIsSynchronized } from './WalletSynchronization';
+import {
+  walletIsSpendReady,
+  walletSnapshotIsSynchronized,
+} from './WalletSynchronization';
 import {
   ledgerInitialVerificationCanStart,
+  saveRegisteredWallet,
   walletDisplayName,
   type RegisteredWallet,
 } from './WalletRegistry';
@@ -109,6 +113,7 @@ interface WalletStateValue {
   snapshot: WalletSnapshot | undefined;
   workingSnapshot: WalletSnapshot | undefined;
   walletReadinessPhase: WalletReadinessPhase | undefined;
+  spendReady: boolean;
   transactions: WalletTransaction[];
   incomingTransactionNotice: IncomingTransactionNotice | undefined;
   nodeConnectionStatus: NodeConnectionStatus;
@@ -2656,6 +2661,20 @@ export function WalletStateProvider({
           },
         );
         setPublicationTick(current => current + 1);
+        const signingReadyRegistration = await saveRegisteredWallet({
+          ...activeRegistration,
+          ledgerSigningReadyAt: new Date().toISOString(),
+          ledgerSigningReadyHeight: readySnapshot.walletHeight,
+        });
+        registeredWalletRef.current = signingReadyRegistration;
+        registeredWalletsRef.current = registeredWalletsRef.current.map(
+          wallet =>
+            wallet.id === signingReadyRegistration.id
+              ? signingReadyRegistration
+              : wallet,
+        );
+        setRegisteredWallet(signingReadyRegistration);
+        setRegisteredWallets([...registeredWalletsRef.current]);
         saveWalletSnapshot(activeRegistration.id, readySnapshot).catch(
           cacheError => {
             logWalletEvent('WalletState', 'ledgerSigning.cacheError', {
@@ -3330,6 +3349,16 @@ export function WalletStateProvider({
   const networkSyncStatus = registeredWallet
     ? networkSyncStatuses[registeredWallet.network]
     : undefined;
+  const spendReady = useMemo(() => {
+    return walletIsSpendReady({
+      snapshot: publishedSnapshot,
+      hardwareWallet:
+        registeredWallet?.kind === 'hardware' &&
+        registeredWallet.role !== 'fast',
+      readOnlySession: session?.readOnly !== false,
+      ledgerSigningReadyHeight: registeredWallet?.ledgerSigningReadyHeight,
+    });
+  }, [publishedSnapshot, registeredWallet, session?.readOnly]);
 
   const isRegisteredWalletOpen = useCallback(
     (walletId: string) => sessionsByRegistrationRef.current.has(walletId),
@@ -3347,6 +3376,7 @@ export function WalletStateProvider({
       snapshot: publishedSnapshot,
       workingSnapshot: snapshot,
       walletReadinessPhase: publicationState.activePublication?.phase,
+      spendReady,
       transactions: [...visibleTransactions],
       incomingTransactionNotice,
       nodeConnectionStatus,
@@ -3411,6 +3441,7 @@ export function WalletStateProvider({
       showHardwareWalletAddress,
       snapshot,
       status,
+      spendReady,
       publishedSnapshot,
       visibleTransactions,
       dismissIncomingTransactionNotice,

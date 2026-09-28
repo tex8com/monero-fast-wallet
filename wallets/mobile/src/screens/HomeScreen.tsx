@@ -336,6 +336,7 @@ export default function HomeScreen({ navigation }: any) {
     session,
     setActiveRegisteredWallet,
     snapshot,
+    spendReady,
     workingSnapshot,
     walletReadinessPhase,
     status,
@@ -483,6 +484,7 @@ export default function HomeScreen({ navigation }: any) {
               networkStatus={networkSyncStatus}
               readinessPhase={walletReadinessPhase}
               snapshot={workingSnapshot}
+              spendReady={spendReady}
               syncStartHeight={syncStartHeight}
               status={status}
               torStatus={connectivity.tor}

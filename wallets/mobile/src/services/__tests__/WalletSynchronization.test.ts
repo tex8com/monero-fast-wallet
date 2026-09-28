@@ -1,4 +1,7 @@
-import { walletSnapshotIsSynchronized } from '../WalletSynchronization';
+import {
+  walletIsSpendReady,
+  walletSnapshotIsSynchronized,
+} from '../WalletSynchronization';
 
 const snapshot = {
   id: 'wallet',
@@ -31,6 +34,47 @@ describe('walletSnapshotIsSynchronized', () => {
         daemonHeight: 0,
         daemonTargetHeight: 0,
         synchronized: true,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe('walletIsSpendReady', () => {
+  it('does not call a Ledger viewing wallet spend-ready without a matching signing cache', () => {
+    expect(
+      walletIsSpendReady({
+        snapshot,
+        hardwareWallet: true,
+        readOnlySession: true,
+        ledgerSigningReadyHeight: 99,
+      }),
+    ).toBe(false);
+  });
+
+  it('accepts a Ledger signing cache verified at the current target height', () => {
+    expect(
+      walletIsSpendReady({
+        snapshot,
+        hardwareWallet: true,
+        readOnlySession: true,
+        ledgerSigningReadyHeight: 100,
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps synchronized software and active signing sessions ready', () => {
+    expect(
+      walletIsSpendReady({
+        snapshot,
+        hardwareWallet: false,
+        readOnlySession: false,
+      }),
+    ).toBe(true);
+    expect(
+      walletIsSpendReady({
+        snapshot,
+        hardwareWallet: true,
+        readOnlySession: false,
       }),
     ).toBe(true);
   });
