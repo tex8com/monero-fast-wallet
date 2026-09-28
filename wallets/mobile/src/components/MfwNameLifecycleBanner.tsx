@@ -58,7 +58,8 @@ export default function MfwNameLifecycleBanner({ onPress }: Props) {
     const candidates = records.filter(
       record =>
         record.walletRegistrationId === registeredWallet.id &&
-        record.stage === 'commit-pending' &&
+        (record.stage === 'commit-pending' ||
+          record.stage === 'reveal-ready') &&
         record.commitTxidHex,
     );
     if (candidates.length === 0) return;

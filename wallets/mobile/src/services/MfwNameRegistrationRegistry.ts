@@ -17,6 +17,7 @@ export const MFW_TARGET_BLOCK_TIME_MS = 2 * 60 * 1000;
 export type MfwOwnedNameStage =
   | 'commit-pending'
   | 'reveal-ready'
+  | 'claim-expired'
   | 'claim-pending'
   | 'active'
   | 'update-pending'
@@ -196,7 +197,10 @@ export function reconcileMfwNameTransactionState(
   ) {
     throw new Error('MFW name commit window is invalid');
   }
-  if (record.stage !== 'commit-pending' || !record.commitTxidHex) {
+  if (
+    (record.stage !== 'commit-pending' && record.stage !== 'reveal-ready') ||
+    !record.commitTxidHex
+  ) {
     return record;
   }
   const transaction = transactions.find(
@@ -213,7 +217,7 @@ export function reconcileMfwNameTransactionState(
     transaction.blockHeight <= 0
   ) {
     return transaction.confirmations > commitRevealWindowBlocks
-      ? normalizeRecord({ ...record, stage: 'failed', updatedAt: now })
+      ? normalizeRecord({ ...record, stage: 'claim-expired', updatedAt: now })
       : record;
   }
   const commitHeight = transaction.blockHeight;
@@ -474,6 +478,7 @@ function isStage(value: unknown): value is MfwOwnedNameStage {
   return (
     value === 'commit-pending' ||
     value === 'reveal-ready' ||
+    value === 'claim-expired' ||
     value === 'claim-pending' ||
     value === 'active' ||
     value === 'update-pending' ||

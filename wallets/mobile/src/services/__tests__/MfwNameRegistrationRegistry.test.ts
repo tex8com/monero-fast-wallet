@@ -161,7 +161,15 @@ describe('MFW owned name registry', () => {
         15,
         720,
       ).stage,
-    ).toBe('failed');
+    ).toBe('claim-expired');
+    expect(
+      reconcileMfwNameTransactionState(
+        { ...committed, stage: 'reveal-ready' },
+        [{ ...transaction, confirmations: 721 }],
+        15,
+        720,
+      ).stage,
+    ).toBe('claim-expired');
   });
 
   it('rejects ambiguous multi-transaction name broadcasts', () => {

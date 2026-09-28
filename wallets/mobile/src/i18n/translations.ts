@@ -1056,6 +1056,9 @@ const en = {
   'mfwNames.statusRevokePending': 'Revocation pending',
   'mfwNames.statusUpdatePending': 'Address change pending',
   'mfwNames.statusRevealReady': 'Ready to claim',
+  'mfwNames.statusClaimExpired': 'Claim window expired',
+  'mfwNames.claimExpiredDescription':
+    'Step 2 was not broadcast within the claim window. Start the registration again with a new commit.',
   'mfwNames.statusRevoked': 'Revoked',
   'mfwNames.stepOneComplete': 'Step 1 of 2 completed',
   'mfwNames.stepOneSentDescription':
@@ -2683,6 +2686,9 @@ const de: Record<keyof typeof en, string> = {
   'mfwNames.statusRevokePending': 'Widerruf ausstehend',
   'mfwNames.statusUpdatePending': 'Adressänderung ausstehend',
   'mfwNames.statusRevealReady': 'Bereit zum Claim',
+  'mfwNames.statusClaimExpired': 'Claim-Zeitfenster abgelaufen',
+  'mfwNames.claimExpiredDescription':
+    'Schritt 2 wurde nicht innerhalb des Claim-Zeitfensters gesendet. Starte die Registrierung mit einem neuen Commit erneut.',
   'mfwNames.statusRevoked': 'Widerrufen',
   'mfwNames.stepOneComplete': 'Schritt 1 von 2 abgeschlossen',
   'mfwNames.stepOneSentDescription':

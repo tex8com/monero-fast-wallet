@@ -306,6 +306,8 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         return t('mfwNames.statusCommitPending');
       case 'reveal-ready':
         return t('mfwNames.statusRevealReady');
+      case 'claim-expired':
+        return t('mfwNames.statusClaimExpired');
       case 'claim-pending':
         return t('mfwNames.statusClaimPending');
       case 'active':
@@ -583,7 +585,8 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     const commitCandidates = ownedNames.filter(
       record =>
         record.walletRegistrationId === registeredWallet.id &&
-        record.stage === 'commit-pending' &&
+        (record.stage === 'commit-pending' ||
+          record.stage === 'reveal-ready') &&
         record.commitTxidHex,
     );
     const finalizationCandidates = ownedNames.filter(
@@ -1347,7 +1350,11 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                   stage === 'active' &&
                   record.ownerAuthority !== 'recovery-required';
                 const canClaim = stage === 'reveal-ready';
-                const canRestart = stage === 'expired' || stage === 'revoked';
+                const canRestart =
+                  stage === 'claim-expired' ||
+                  stage === 'expired' ||
+                  stage === 'revoked' ||
+                  stage === 'failed';
                 const recordGenesis = configuredMfwNameGenesis(record.network);
                 const commitBlocksRemaining = recordGenesis
                   ? mfwNameCommitBlocksRemaining(
@@ -1394,6 +1401,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                           s.stageBadge,
                           stage === 'active' && s.stageBadgeActive,
                           (stage === 'expired' ||
+                            stage === 'claim-expired' ||
                             stage === 'revoked' ||
                             stage === 'failed') &&
                             s.stageBadgeProblem,
@@ -1404,6 +1412,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                             s.stageText,
                             stage === 'active' && s.stageTextActive,
                             (stage === 'expired' ||
+                              stage === 'claim-expired' ||
                               stage === 'revoked' ||
                               stage === 'failed') &&
                               s.stageTextProblem,
@@ -1486,6 +1495,11 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                           </Text>
                         ) : null}
                       </View>
+                    ) : null}
+                    {stage === 'claim-expired' ? (
+                      <Text style={s.claimExpiredText}>
+                        {t('mfwNames.claimExpiredDescription')}
+                      </Text>
                     ) : null}
                     <Text style={s.ownedNameAddress}>
                       {shortAddress(record.address)}
@@ -2800,6 +2814,12 @@ const s = StyleSheet.create({
   stageText: { color: colors.warning, fontSize: 10, fontWeight: '800' },
   stageTextActive: { color: colors.success },
   stageTextProblem: { color: colors.error },
+  claimExpiredText: {
+    color: colors.error,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 12,
+  },
   ownedNameAddress: {
     color: colors.textSecondary,
     fontFamily: 'monospace',
