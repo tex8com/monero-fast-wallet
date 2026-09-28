@@ -41,10 +41,7 @@ type SyncStatusBarProps = {
   readinessPhase?: WalletReadinessPhase;
   networkStatus?: NetworkSyncStatus;
   onExpandedChange?: (expanded: boolean) => void;
-  onPrepareLedger?: () => void;
-  prepareLedgerError?: string;
   snapshot?: WalletSnapshot;
-  spendReady?: boolean;
   syncStartHeight?: number;
   status: WalletRuntimeStatus;
   subtitle?: string;
@@ -60,10 +57,7 @@ export default function SyncStatusBar({
   readinessPhase,
   networkStatus,
   onExpandedChange,
-  onPrepareLedger,
-  prepareLedgerError,
   snapshot,
-  spendReady = true,
   syncStartHeight,
   status,
   subtitle,
@@ -170,7 +164,6 @@ export default function SyncStatusBar({
     presentation.phase === 'syncing' ? formatSyncEta(etaSeconds, t) : undefined;
   const fullySynced =
     showWalletSync &&
-    spendReady &&
     (readinessPhase === undefined || readinessPhase === 'ready') &&
     presentation.coreConfirmed &&
     (networkStatus ? network.ready : true) &&
@@ -201,16 +194,11 @@ export default function SyncStatusBar({
     ? t('topBar.connectingTor')
     : spendOutputPhase
     ? walletDetail
-    : walletSnapshotIsSynchronized(snapshot) && !spendReady
-    ? t('sync.ledgerSigningPreparationRequired')
     : fullySynced
     ? t('sync.synced')
     : !networkStatus || network.ready
     ? walletDetail
     : blockchainDetail;
-  const ledgerPreparationRequired =
-    walletSnapshotIsSynchronized(snapshot) && !spendReady;
-
   React.useEffect(() => {
     const previous = previousSyncState.current;
     if (previous.walletIdentity !== walletIdentity) {
@@ -334,37 +322,6 @@ export default function SyncStatusBar({
             <Text style={s.subtitle} numberOfLines={2}>
               {subtitle}
             </Text>
-          ) : null}
-          {ledgerPreparationRequired && onPrepareLedger ? (
-            <View
-              style={s.ledgerPreparation}
-              testID="ledger-preparation-required"
-            >
-              <Text style={s.ledgerPreparationTitle}>
-                {t('sync.ledgerSigningPreparationRequired')}
-              </Text>
-              <Text style={s.ledgerPreparationExplanation}>
-                {t('sync.ledgerSigningPreparationExplanation')}
-              </Text>
-              {prepareLedgerError ? (
-                <Text style={s.ledgerPreparationError}>
-                  {prepareLedgerError}
-                </Text>
-              ) : null}
-              <Pressable
-                accessibilityRole="button"
-                onPress={onPrepareLedger}
-                style={({ pressed }) => [
-                  s.ledgerPreparationButton,
-                  pressed && s.ledgerPreparationButtonPressed,
-                ]}
-                testID="prepare-ledger-button"
-              >
-                <Text style={s.ledgerPreparationButtonText}>
-                  {t('sync.prepareLedgerNow')}
-                </Text>
-              </Pressable>
-            </View>
           ) : null}
         </View>
       ) : null}
@@ -883,46 +840,6 @@ const s = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     marginTop: 8,
-  },
-  ledgerPreparation: {
-    backgroundColor: `${colors.warning}0D`,
-    borderColor: `${colors.warning}55`,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    gap: 7,
-    marginTop: 12,
-    padding: 12,
-  },
-  ledgerPreparationTitle: {
-    color: colors.warning,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  ledgerPreparationExplanation: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  ledgerPreparationError: {
-    color: colors.error,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  ledgerPreparationButton: {
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: colors.orange,
-    borderRadius: radius.md,
-    justifyContent: 'center',
-    marginTop: 3,
-    minHeight: 42,
-    paddingHorizontal: 14,
-  },
-  ledgerPreparationButtonPressed: { opacity: 0.8 },
-  ledgerPreparationButtonText: {
-    color: '#FFF',
-    fontSize: 13,
-    fontWeight: '900',
   },
   readyWrap: {
     marginBottom: 14,

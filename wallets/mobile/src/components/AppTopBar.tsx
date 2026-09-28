@@ -43,9 +43,9 @@ export default function AppTopBar({
 }) {
   const insets = useSafeAreaInsets();
   const connectivity = useConnectivityState();
-  const { snapshot, spendReady, status } = useWalletState();
+  const { snapshot, status } = useWalletState();
   const syncVisual: ConnectionVisual =
-    walletSnapshotIsSynchronized(snapshot) && spendReady
+    walletSnapshotIsSynchronized(snapshot)
     ? { color: colors.success, stateLabel: 'synchronized' }
     : status === 'error'
     ? { color: colors.error, stateLabel: 'failed' }

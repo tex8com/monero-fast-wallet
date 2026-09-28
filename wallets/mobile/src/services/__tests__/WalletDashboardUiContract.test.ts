@@ -102,13 +102,12 @@ describe('Wallet dashboard interaction contract', () => {
     expect(receive.match(/addressFilter: selectedAddress/g)).toHaveLength(2);
   });
 
-  it('separates idle Ledger preparation from real progress', () => {
-    expect(syncStatus).toContain('sync.ledgerSigningPreparationExplanation');
-    expect(syncStatus).toContain('testID="prepare-ledger-button"');
-    expect(home).toContain('const prepareLedgerForSending = async () =>');
-    expect(home).toContain('<LedgerSigningModal');
-    expect(home).toContain('await connectLedgerForSigning({');
-    expect(home).toContain('await restoreLedgerViewAfterSigning()');
+  it('keeps Ledger preparation out of Home and inside sending', () => {
+    expect(syncStatus).not.toContain('testID="prepare-ledger-button"');
+    expect(home).not.toContain('prepareLedgerForSending');
+    expect(home).not.toContain('<LedgerSigningModal');
+    expect(send).toContain('await connectLedgerForSigning({');
+    expect(send).toContain('<LedgerSigningModal');
   });
 
   it('forwards every native shared-download cursor and throughput metric through Android', () => {
