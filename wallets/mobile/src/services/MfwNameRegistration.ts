@@ -202,6 +202,9 @@ function isPreparedTransaction(value: unknown): value is PreparedTransaction {
   return (
     typeof value.id === 'string' &&
     value.id.length > 0 &&
+    (value.approvalExpiresAtMs === undefined ||
+      (typeof value.approvalExpiresAtMs === 'number' &&
+        Number.isFinite(value.approvalExpiresAtMs))) &&
     typeof value.status === 'string' &&
     typeof value.error === 'string' &&
     typeof value.amountAtomic === 'string' &&

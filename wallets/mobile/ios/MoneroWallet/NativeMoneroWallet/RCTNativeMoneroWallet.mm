@@ -1117,6 +1117,11 @@ uint64_t diagnosticNowMs() {
       [[NSProcessInfo processInfo] systemUptime] * 1000.0);
 }
 
+uint64_t wallClockNowMs() {
+  return static_cast<uint64_t>(
+      [[NSDate date] timeIntervalSince1970] * 1000.0);
+}
+
 NSString *walletFileName(NSString *path) {
   return path.length == 0 ? @"" : [path lastPathComponent];
 }
@@ -9624,6 +9629,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
               : prepared.error);
     }
     NSString *preparedId = toNSString(prepared.id);
+    NSNumber *approvalExpiresAtMs = @(wallClockNowMs() + 120000);
     [_pendingTransactionApprovals removeAllObjects];
     _pendingTransactionApprovals[preparedId] = @{
       @"walletId": walletId,
@@ -9633,7 +9639,9 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
       @"feeAtomic": toNSString(std::to_string(prepared.feeAtomic)),
       @"expiresAtMs": @(diagnosticNowMs() + 120000),
     };
-    return toDictionary(prepared);
+    NSMutableDictionary *result = [toDictionary(prepared) mutableCopy];
+    result[@"approvalExpiresAtMs"] = approvalExpiresAtMs;
+    return result;
   }];
 }
 
@@ -9714,6 +9722,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     storeKeychainSecret(mfwNameStateKey(registrationId), encodedState);
 
     NSString *preparedId = toNSString(prepared.id);
+    NSNumber *approvalExpiresAtMs = @(wallClockNowMs() + 120000);
     [_pendingTransactionApprovals removeAllObjects];
     _pendingTransactionApprovals[preparedId] = @{
       @"walletId": walletId,
@@ -9725,6 +9734,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     };
     NSMutableDictionary *result = [toDictionary(prepared) mutableCopy];
     result[@"ownerPublicKeyHex"] = ownerPublicKeyHex;
+    result[@"approvalExpiresAtMs"] = approvalExpiresAtMs;
     return result;
   }];
 }
@@ -9792,6 +9802,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     }
 
     NSString *preparedId = toNSString(prepared.id);
+    NSNumber *approvalExpiresAtMs = @(wallClockNowMs() + 120000);
     [_pendingTransactionApprovals removeAllObjects];
     _pendingTransactionApprovals[preparedId] = @{
       @"walletId": walletId,
@@ -9803,6 +9814,7 @@ typedef void (^SensitiveAuthorizationCompletion)(BOOL success, NSString *message
     };
     NSMutableDictionary *result = [toDictionary(prepared) mutableCopy];
     result[@"ownerPublicKeyHex"] = state[@"ownerPublicKeyHex"];
+    result[@"approvalExpiresAtMs"] = approvalExpiresAtMs;
     return result;
   }];
 }
@@ -9899,6 +9911,7 @@ predecessorSigningOwnerPublicKeyHex:
     }
 
     NSString *preparedId = toNSString(prepared.id);
+    NSNumber *approvalExpiresAtMs = @(wallClockNowMs() + 120000);
     [_pendingTransactionApprovals removeAllObjects];
     _pendingTransactionApprovals[preparedId] = @{
       @"walletId": walletId,
@@ -9910,6 +9923,7 @@ predecessorSigningOwnerPublicKeyHex:
     };
     NSMutableDictionary *result = [toDictionary(prepared) mutableCopy];
     result[@"ownerPublicKeyHex"] = state[@"ownerPublicKeyHex"];
+    result[@"approvalExpiresAtMs"] = approvalExpiresAtMs;
     return result;
   }];
 }

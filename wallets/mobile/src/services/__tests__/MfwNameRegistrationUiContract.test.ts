@@ -30,6 +30,7 @@ describe('MFW name registration UI contract', () => {
   const send = source('src', 'screens', 'SendScreen.tsx');
   const navigation = source('src', 'navigation', 'TabNavigator.tsx');
   const registration = source('src', 'services', 'MfwNameRegistration.ts');
+  const nativeSpec = source('specs', 'NativeMoneroWallet.ts');
   const androidNative = source(
     'android',
     'app',
@@ -94,6 +95,18 @@ describe('MFW name registration UI contract', () => {
     expect(lifecycleBanner).toContain('notifyMfwNameClaimReady');
     expect(localNotification).toContain('fun schedule(');
     expect(localNotification).toContain('MfwClaimReminderReceiver');
+  });
+
+  it('expires stale approvals instead of leaving an unusable claim button', () => {
+    expect(nativeSpec).toContain('approvalExpiresAtMs?: number');
+    expect(androidNative).toContain('putDouble("approvalExpiresAtMs"');
+    expect(send).toContain('const mfwApprovalExpired = Boolean(');
+    expect(send).toContain("t('mfwNames.approvalExpiresIn'");
+    expect(send).toContain("t('mfwNames.prepareApprovalAgain')");
+    expect(send).toContain(
+      'mfwApprovalExpired ? prepareMfwApprovalAgain : handleSend',
+    );
+    expect(names).toContain('route?.params?.approvalExpired');
   });
 
   it('opens the shared Ledger signing flow before native name preparation', () => {

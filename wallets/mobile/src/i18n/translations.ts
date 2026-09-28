@@ -308,7 +308,10 @@ const en = {
   'sync.updatingHistory': 'Updating history',
   'sync.waiting': 'Waiting',
   'sync.waitingForStatus': 'Preparing',
-  'sync.ledgerSigningPreparationRequired': 'Prepare Ledger for sending',
+  'sync.ledgerSigningPreparationRequired': 'Ledger preparation required',
+  'sync.ledgerSigningPreparationExplanation':
+    'Blockchain and viewing wallet are synchronized. Nothing is running in the background. Connect and unlock your Ledger, open its Monero app, then start preparation.',
+  'sync.prepareLedgerNow': 'Prepare Ledger now',
   'sync.wallet': 'Wallet sync',
   'sync.spendOutputs': 'Spend outputs',
   'sync.spendOutputsChecking': 'Checking spent outputs',
@@ -962,6 +965,10 @@ const en = {
   'mfwNames.maturityHeight': 'Step 2 available from block {height}',
   'mfwNames.confirmClaim': 'Confirm claim',
   'mfwNames.confirmCommit': 'Confirm commit',
+  'mfwNames.approvalExpiresIn': 'Transaction approval expires in {seconds}s.',
+  'mfwNames.approvalExpired':
+    'Transaction approval expired. Prepare it again before confirming.',
+  'mfwNames.prepareApprovalAgain': 'Prepare approval again',
   'mfwNames.confirmRenew': 'Confirm renewal',
   'mfwNames.confirmRevoke': 'Confirm revocation',
   'mfwNames.confirmUpdate': 'Confirm address change',
@@ -1199,7 +1206,8 @@ const en = {
   'nodeStatus.syncStorage': 'Sync storage',
   'nodeStatus.syncStorageHint':
     'Temporary public blocks are removed as soon as they are scanned. A smaller limit can make the first sync slower.',
-  'nodeStatus.syncStorageRestart': 'Saved. Restart the app before the next sync to apply it.',
+  'nodeStatus.syncStorageRestart':
+    'Saved. Restart the app before the next sync to apply it.',
   'menu.sharedAiModule': 'Tex8 Assistant',
   'assistant.kicker': 'Tex8 Shared',
   'assistant.title': 'AI Assistant',
@@ -1828,7 +1836,8 @@ const de: Record<keyof typeof en, string> = {
   'sync.error': 'Sync-Fehler',
   'sync.connectingNode': 'Sichere Verbindung zum Monero-Node wird hergestellt',
   'sync.selectingSource': 'Sync-Quelle auswählen',
-  'sync.startingConnection': 'Verbindung zum gewählten Sync-Node wird hergestellt',
+  'sync.startingConnection':
+    'Verbindung zum gewählten Sync-Node wird hergestellt',
   'sync.startingConnectionHint':
     'Der gewählte Sync-Node wird direkt verwendet. Die App bleibt bedienbar.',
   'sync.startingConnectionElapsed':
@@ -1895,7 +1904,10 @@ const de: Record<keyof typeof en, string> = {
   'sync.updatingHistory': 'Verlauf aktualisieren',
   'sync.waiting': 'Warten',
   'sync.waitingForStatus': 'Vorbereiten',
-  'sync.ledgerSigningPreparationRequired': 'Ledger zum Senden vorbereiten',
+  'sync.ledgerSigningPreparationRequired': 'Ledger-Vorbereitung erforderlich',
+  'sync.ledgerSigningPreparationExplanation':
+    'Blockchain und Ansichts-Wallet sind synchronisiert. Im Hintergrund läuft gerade nichts. Verbinde und entsperre den Ledger, öffne darauf die Monero-App und starte dann die Vorbereitung.',
+  'sync.prepareLedgerNow': 'Ledger jetzt vorbereiten',
   'sync.wallet': 'Wallet-Sync',
   'sync.spendOutputs': 'Spend-Outputs',
   'sync.spendOutputsChecking': 'Ausgegebene Outputs werden geprüft',
@@ -2576,6 +2588,11 @@ const de: Record<keyof typeof en, string> = {
   'mfwNames.maturityHeight': 'Schritt 2 möglich ab Block {height}',
   'mfwNames.confirmClaim': 'Registrierung bestätigen',
   'mfwNames.confirmCommit': 'Commit bestätigen',
+  'mfwNames.approvalExpiresIn':
+    'Die Transaktionsfreigabe läuft in {seconds} s ab.',
+  'mfwNames.approvalExpired':
+    'Die Transaktionsfreigabe ist abgelaufen. Bereite sie vor der Bestätigung erneut vor.',
+  'mfwNames.prepareApprovalAgain': 'Freigabe erneut vorbereiten',
   'mfwNames.confirmRenew': 'Verlängerung bestätigen',
   'mfwNames.confirmRevoke': 'Widerruf bestätigen',
   'mfwNames.confirmUpdate': 'Adressänderung bestätigen',
@@ -2818,7 +2835,8 @@ const de: Record<keyof typeof en, string> = {
   'nodeStatus.syncStorage': 'Sync-Speicher',
   'nodeStatus.syncStorageHint':
     'Temporäre öffentliche Blöcke werden nach dem Scannen gelöscht. Ein kleineres Limit kann den ersten Sync verlangsamen.',
-  'nodeStatus.syncStorageRestart': 'Gespeichert. Starte die App vor dem nächsten Sync neu.',
+  'nodeStatus.syncStorageRestart':
+    'Gespeichert. Starte die App vor dem nächsten Sync neu.',
   'menu.sharedAiModule': 'Tex8-Assistent',
   'assistant.kicker': 'Tex8 Shared',
   'assistant.title': 'KI-Assistent',

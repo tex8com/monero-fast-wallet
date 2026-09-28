@@ -159,6 +159,7 @@ export type WalletTransaction = {
 
 export type PreparedTransaction = {
   id: string;
+  approvalExpiresAtMs?: number;
   status: string;
   error: string;
   amountAtomic: string;
@@ -177,6 +178,7 @@ export type PreparedTransaction = {
 export type MfwNamePreparedTransaction = {
   ownerPublicKeyHex: string;
   id: string;
+  approvalExpiresAtMs?: number;
   status: string;
   error: string;
   amountAtomic: string;

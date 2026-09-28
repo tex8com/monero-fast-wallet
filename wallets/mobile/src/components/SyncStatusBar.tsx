@@ -41,6 +41,8 @@ type SyncStatusBarProps = {
   readinessPhase?: WalletReadinessPhase;
   networkStatus?: NetworkSyncStatus;
   onExpandedChange?: (expanded: boolean) => void;
+  onPrepareLedger?: () => void;
+  prepareLedgerError?: string;
   snapshot?: WalletSnapshot;
   spendReady?: boolean;
   syncStartHeight?: number;
@@ -58,6 +60,8 @@ export default function SyncStatusBar({
   readinessPhase,
   networkStatus,
   onExpandedChange,
+  onPrepareLedger,
+  prepareLedgerError,
   snapshot,
   spendReady = true,
   syncStartHeight,
@@ -71,8 +75,7 @@ export default function SyncStatusBar({
     snapshot,
     networkStatus,
   );
-  const presentationStartHeight =
-    syncStartHeight ?? snapshot?.walletHeight;
+  const presentationStartHeight = syncStartHeight ?? snapshot?.walletHeight;
   const presentation = presentWalletSync(presentationSnapshot, {
     // A shared downloader may serve wallets with different restore heights.
     // Only the selected wallet's own first snapshot is a valid fallback
@@ -95,16 +98,15 @@ export default function SyncStatusBar({
   const spendOutputPhase =
     readinessPhase === 'scanning-spend-outputs' ||
     readinessPhase === 'retrying-spent-output-node';
-  const walletProgress =
-    spendOutputPhase
-      ? undefined
-      : presentation.coreConfirmed
-      ? 100
-      : presentation.phase === 'finalizing'
-      ? undefined
-      : snapshot
-      ? walletHeightProgress ?? presentation.progress ?? 0
-      : progress ?? 0;
+  const walletProgress = spendOutputPhase
+    ? undefined
+    : presentation.coreConfirmed
+    ? 100
+    : presentation.phase === 'finalizing'
+    ? undefined
+    : snapshot
+    ? walletHeightProgress ?? presentation.progress ?? 0
+    : progress ?? 0;
   // A wallet cache at the tip does not prove that the one process-wide
   // downloader has finished an older shared range. Keep these two progress
   // sources independent on mobile just as on desktop.
@@ -206,6 +208,8 @@ export default function SyncStatusBar({
     : !networkStatus || network.ready
     ? walletDetail
     : blockchainDetail;
+  const ledgerPreparationRequired =
+    walletSnapshotIsSynchronized(snapshot) && !spendReady;
 
   React.useEffect(() => {
     const previous = previousSyncState.current;
@@ -307,9 +311,7 @@ export default function SyncStatusBar({
                     : walletEta
                 }
                 label={
-                  spendOutputPhase
-                    ? t('sync.spendOutputs')
-                    : t('sync.wallet')
+                  spendOutputPhase ? t('sync.spendOutputs') : t('sync.wallet')
                 }
                 percent={walletProgress}
                 rate={
@@ -332,6 +334,37 @@ export default function SyncStatusBar({
             <Text style={s.subtitle} numberOfLines={2}>
               {subtitle}
             </Text>
+          ) : null}
+          {ledgerPreparationRequired && onPrepareLedger ? (
+            <View
+              style={s.ledgerPreparation}
+              testID="ledger-preparation-required"
+            >
+              <Text style={s.ledgerPreparationTitle}>
+                {t('sync.ledgerSigningPreparationRequired')}
+              </Text>
+              <Text style={s.ledgerPreparationExplanation}>
+                {t('sync.ledgerSigningPreparationExplanation')}
+              </Text>
+              {prepareLedgerError ? (
+                <Text style={s.ledgerPreparationError}>
+                  {prepareLedgerError}
+                </Text>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                onPress={onPrepareLedger}
+                style={({ pressed }) => [
+                  s.ledgerPreparationButton,
+                  pressed && s.ledgerPreparationButtonPressed,
+                ]}
+                testID="prepare-ledger-button"
+              >
+                <Text style={s.ledgerPreparationButtonText}>
+                  {t('sync.prepareLedgerNow')}
+                </Text>
+              </Pressable>
+            </View>
           ) : null}
         </View>
       ) : null}
@@ -850,6 +883,46 @@ const s = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     marginTop: 8,
+  },
+  ledgerPreparation: {
+    backgroundColor: `${colors.warning}0D`,
+    borderColor: `${colors.warning}55`,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    gap: 7,
+    marginTop: 12,
+    padding: 12,
+  },
+  ledgerPreparationTitle: {
+    color: colors.warning,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  ledgerPreparationExplanation: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  ledgerPreparationError: {
+    color: colors.error,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  ledgerPreparationButton: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: colors.orange,
+    borderRadius: radius.md,
+    justifyContent: 'center',
+    marginTop: 3,
+    minHeight: 42,
+    paddingHorizontal: 14,
+  },
+  ledgerPreparationButtonPressed: { opacity: 0.8 },
+  ledgerPreparationButtonText: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '900',
   },
   readyWrap: {
     marginBottom: 14,

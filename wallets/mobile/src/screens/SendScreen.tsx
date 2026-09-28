@@ -144,6 +144,8 @@ export default function SendScreen({ navigation, route }: any) {
   const [mfwNamePreset, setMfwNamePreset] = useState<
     MfwNameSendPreset | undefined
   >();
+  const [mfwApprovalInvalid, setMfwApprovalInvalid] = useState(false);
+  const [approvalNowMs, setApprovalNowMs] = useState(() => Date.now());
   const consumedMfwFlowId = useRef<string | undefined>(undefined);
   const [recipientReview, setRecipientReview] = useState<
     RecipientReview | undefined
@@ -273,6 +275,17 @@ export default function SendScreen({ navigation, route }: any) {
       validateMfwNameSendPreset(route?.params?.mfwNameSendPreset as unknown),
     [route?.params?.mfwNameSendPreset],
   );
+  const mfwApprovalExpiresAtMs =
+    mfwNamePreset?.preparedTransaction.approvalExpiresAtMs;
+  const mfwApprovalExpired = Boolean(
+    mfwNamePreset &&
+      (mfwApprovalInvalid ||
+        mfwApprovalExpiresAtMs === undefined ||
+        mfwApprovalExpiresAtMs <= approvalNowMs),
+  );
+  const mfwApprovalSecondsRemaining = mfwApprovalExpiresAtMs
+    ? Math.max(0, Math.ceil((mfwApprovalExpiresAtMs - approvalNowMs) / 1_000))
+    : 0;
   const routePrivatePhonePreset = useMemo(
     () =>
       validatePrivatePhoneSendPreset(
@@ -355,6 +368,8 @@ export default function SendScreen({ navigation, route }: any) {
     }
 
     consumedMfwFlowId.current = preset.flowId;
+    setMfwApprovalInvalid(false);
+    setApprovalNowMs(Date.now());
     setMfwNamePreset(preset);
     setAddress(preset.destinationAddress);
     setAmountCurrency('XMR');
@@ -376,6 +391,13 @@ export default function SendScreen({ navigation, route }: any) {
     setActiveRegisteredWallet,
     t,
   ]);
+
+  useEffect(() => {
+    if (!mfwNamePreset) return;
+    setApprovalNowMs(Date.now());
+    const interval = setInterval(() => setApprovalNowMs(Date.now()), 1_000);
+    return () => clearInterval(interval);
+  }, [mfwNamePreset]);
 
   useEffect(() => {
     const preset = routePrivatePhonePreset;
@@ -745,6 +767,19 @@ export default function SendScreen({ navigation, route }: any) {
     }
   };
 
+  const prepareMfwApprovalAgain = () => {
+    setPreparedTx(undefined);
+    setPreparedSession(undefined);
+    setMfwNamePreset(undefined);
+    setMfwApprovalInvalid(false);
+    setSendError(undefined);
+    navigation.setParams?.({ mfwNameSendPreset: undefined });
+    navigation.navigate('MfwNames', {
+      focusPendingClaim: true,
+      approvalExpired: true,
+    });
+  };
+
   const handleSend = async () => {
     const transactionSession = preparedSession ?? session;
     if (!transactionSession || !preparedTx) {
@@ -756,12 +791,12 @@ export default function SendScreen({ navigation, route }: any) {
     setSendError(undefined);
     let broadcastSucceeded = false;
     let postBroadcastRefreshPending = false;
+    const completedNamePreset = mfwNamePreset;
     const recordPostBroadcastFailure = (stage: string, error: unknown) => {
       postBroadcastRefreshPending = true;
       logWalletEvent('SendScreen', `postBroadcast.${stage}.error`, { error });
     };
     try {
-      const completedNamePreset = mfwNamePreset;
       const committed = await walletService.commitTransaction(
         transactionSession,
         preparedTx.id,
@@ -937,6 +972,9 @@ export default function SendScreen({ navigation, route }: any) {
         recordPostBroadcastFailure('unexpectedFollowUp', error);
         setSendError(undefined);
         setSendStatus(t('send.transactionBroadcastRefreshPending'));
+      } else if (completedNamePreset && transactionApprovalIsMissing(error)) {
+        setMfwApprovalInvalid(true);
+        setSendError(t('mfwNames.approvalExpired'));
       } else {
         setSendError(error instanceof Error ? error.message : String(error));
       }
@@ -1150,12 +1188,32 @@ export default function SendScreen({ navigation, route }: any) {
             <Text style={s.privacyText}>{t('send.privacyDetails')}</Text>
           </View>
 
+          {mfwNamePreset ? (
+            <Text
+              accessibilityLiveRegion="polite"
+              style={[
+                s.approvalCountdown,
+                mfwApprovalExpired && s.approvalCountdownExpired,
+              ]}
+            >
+              {mfwApprovalExpired
+                ? t('mfwNames.approvalExpired')
+                : t('mfwNames.approvalExpiresIn', {
+                    seconds: mfwApprovalSecondsRemaining,
+                  })}
+            </Text>
+          ) : null}
+
           {sendError ? <Text style={s.errorText}>{sendError}</Text> : null}
 
           <TouchableOpacity
-            accessibilityLabel={t('action.sendNow')}
+            accessibilityLabel={
+              mfwApprovalExpired
+                ? t('mfwNames.prepareApprovalAgain')
+                : t('action.sendNow')
+            }
             accessibilityRole="button"
-            onPress={handleSend}
+            onPress={mfwApprovalExpired ? prepareMfwApprovalAgain : handleSend}
             activeOpacity={0.86}
             disabled={sending}
           >
@@ -1167,6 +1225,8 @@ export default function SendScreen({ navigation, route }: any) {
               <Text style={s.primaryBtnText}>
                 {sending
                   ? t('action.working')
+                  : mfwApprovalExpired
+                  ? t('mfwNames.prepareApprovalAgain')
                   : mfwNamePreset?.kind === 'commit'
                   ? t('mfwNames.confirmCommit')
                   : mfwNamePreset?.kind === 'claim'
@@ -1496,7 +1556,10 @@ export default function SendScreen({ navigation, route }: any) {
                     setAddressInputHeight(
                       Math.max(
                         58,
-                        Math.min(132, event.nativeEvent.contentSize.height + 28),
+                        Math.min(
+                          132,
+                          event.nativeEvent.contentSize.height + 28,
+                        ),
                       ),
                     );
                   }}
@@ -2063,6 +2126,17 @@ function recipientSourceKey(source: RecipientReview['source']) {
     default:
       return 'send.sourceManual';
   }
+}
+
+function transactionApprovalIsMissing(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  return (
+    candidate.code === 'monero_wallet_android_transaction_approval_missing' ||
+    candidate.code === 'monero_wallet_ios_transaction_approval_missing' ||
+    (typeof candidate.message === 'string' &&
+      candidate.message.includes('Transaction approval is missing'))
+  );
 }
 
 function ReviewRow({
@@ -2782,6 +2856,14 @@ const s = StyleSheet.create({
     lineHeight: 19,
     marginBottom: 14,
   },
+  approvalCountdown: {
+    color: colors.warning,
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 19,
+    marginBottom: 14,
+  },
+  approvalCountdownExpired: { color: colors.error },
   errorText: {
     color: colors.error,
     fontSize: 13,

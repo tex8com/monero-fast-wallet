@@ -4748,8 +4748,9 @@ class NativeMoneroWalletModule(
           "Native transaction preparation did not return an approval id"
         }
       }
-      registerNativeTransactionApproval(walletId, address, prepared)
-      preparedTransactionToWritableMap(prepared)
+      val approvalExpiresAtMs =
+        registerNativeTransactionApproval(walletId, address, prepared)
+      preparedTransactionToWritableMap(prepared, approvalExpiresAtMs)
     }
   }
 
@@ -4818,8 +4819,13 @@ class NativeMoneroWalletModule(
           "Native MFW COMMIT preparation did not return an approval id"
         }
       }
-      registerNativeTransactionApproval(walletId, registryAddress, prepared)
-      mfwNamePreparedTransactionToWritableMap(prepared, ownerPublicKeyHex)
+      val approvalExpiresAtMs =
+        registerNativeTransactionApproval(walletId, registryAddress, prepared)
+      mfwNamePreparedTransactionToWritableMap(
+        prepared,
+        ownerPublicKeyHex,
+        approvalExpiresAtMs,
+      )
     }
   }
 
@@ -4874,8 +4880,13 @@ class NativeMoneroWalletModule(
           "Native MFW CLAIM preparation did not return an approval id"
         }
       }
-      registerNativeTransactionApproval(walletId, registryAddress, prepared)
-      mfwNamePreparedTransactionToWritableMap(prepared, ownerPublicKeyHex)
+      val approvalExpiresAtMs =
+        registerNativeTransactionApproval(walletId, registryAddress, prepared)
+      mfwNamePreparedTransactionToWritableMap(
+        prepared,
+        ownerPublicKeyHex,
+        approvalExpiresAtMs,
+      )
     }
   }
 
@@ -4940,10 +4951,12 @@ class NativeMoneroWalletModule(
         }
       }
       val destination = if (operation == "renew") registryAddress else address
-      registerNativeTransactionApproval(walletId, destination, prepared)
+      val approvalExpiresAtMs =
+        registerNativeTransactionApproval(walletId, destination, prepared)
       mfwNamePreparedTransactionToWritableMap(
         prepared,
         state.getString("ownerPublicKeyHex"),
+        approvalExpiresAtMs,
       )
     }
   }
@@ -8055,9 +8068,13 @@ class NativeMoneroWalletModule(
 
   private fun preparedTransactionToWritableMap(
     transaction: Map<String, Any>,
+    approvalExpiresAtMs: Long? = null,
   ): WritableMap =
     Arguments.createMap().apply {
       putString("id", transaction.stringValue("id"))
+      approvalExpiresAtMs?.let {
+        putDouble("approvalExpiresAtMs", it.toDouble())
+      }
       putString("status", transaction.stringValue("status"))
       putString("error", transaction.stringValue("error"))
       putString("amountAtomic", transaction.stringValue("amountAtomic"))
@@ -8072,8 +8089,9 @@ class NativeMoneroWalletModule(
   private fun mfwNamePreparedTransactionToWritableMap(
     transaction: Map<String, Any>,
     ownerPublicKeyHex: String,
+    approvalExpiresAtMs: Long,
   ): WritableMap =
-    preparedTransactionToWritableMap(transaction).apply {
+    preparedTransactionToWritableMap(transaction, approvalExpiresAtMs).apply {
       putString("ownerPublicKeyHex", ownerPublicKeyHex)
     }
 
@@ -8081,11 +8099,12 @@ class NativeMoneroWalletModule(
     walletId: String,
     address: String,
     prepared: Map<String, Any>,
-  ) {
+  ): Long {
     val pendingId = prepared.stringValue("id")
     require(pendingId.isNotBlank()) {
       "Native transaction preparation did not return an approval id"
     }
+    val expiresAtMs = System.currentTimeMillis() + TRANSACTION_APPROVAL_TTL_MS
     NativeSensitiveApprovalState.put(
       NativeTransactionApproval(
         walletId = walletId,
@@ -8093,9 +8112,10 @@ class NativeMoneroWalletModule(
         address = address,
         amountAtomic = prepared.stringValue("amountAtomic"),
         feeAtomic = prepared.stringValue("feeAtomic"),
-        expiresAtMs = System.currentTimeMillis() + TRANSACTION_APPROVAL_TTL_MS,
+        expiresAtMs = expiresAtMs,
       ),
     )
+    return expiresAtMs
   }
 
   private fun stringListToWritableArray(values: List<*>): WritableArray =

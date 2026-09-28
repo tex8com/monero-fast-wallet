@@ -20,6 +20,7 @@ import Svg, {
 } from 'react-native-svg';
 import { colors, radius } from '../theme/colors';
 import SyncStatusBar from '../components/SyncStatusBar';
+import LedgerSigningModal from '../components/LedgerSigningModal';
 import TransactionRow, {
   transactionRowKey,
 } from '../components/TransactionRow';
@@ -45,6 +46,10 @@ import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1Rele
 import { useI18n } from '../i18n';
 import { useWalletState } from '../services/WalletState';
 import { useConnectivityState } from '../services/ConnectivityState';
+import {
+  type LedgerSigningProgress,
+  isLedgerSigningCancelledError,
+} from '../services/LedgerSigningFlow';
 import {
   ledgerBalanceNeedsVerification,
   walletDisplayName,
@@ -298,6 +303,13 @@ export default function HomeScreen({ navigation }: any) {
   const [tf, setTf] = useState('24H');
   const [syncStatusExpanded, setSyncStatusExpanded] = useState(true);
   const [openingWalletId, setOpeningWalletId] = useState<string | undefined>();
+  const [ledgerPreparationError, setLedgerPreparationError] = useState<
+    string | undefined
+  >();
+  const [ledgerSigningProgress, setLedgerSigningProgress] = useState<
+    LedgerSigningProgress | undefined
+  >();
+  const ledgerSigningCancelledRef = useRef(false);
   const [newsCategory, setNewsCategory] = useState<'all' | MoneroNewsCategory>(
     'all',
   );
@@ -328,11 +340,13 @@ export default function HomeScreen({ navigation }: any) {
     v1ReleaseFeatures.moneroEnthusiastV1 && v1ReleaseFeatures.news,
   );
   const {
+    connectLedgerForSigning,
     registeredWallet,
     registeredWallets,
     isRegisteredWalletOpen,
     networkSyncStatus,
     openRegisteredWalletById,
+    restoreLedgerViewAfterSigning,
     session,
     setActiveRegisteredWallet,
     snapshot,
@@ -468,6 +482,49 @@ export default function HomeScreen({ navigation }: any) {
       .finally(() => setOpeningWalletId(undefined));
   };
 
+  useEffect(
+    () => () => {
+      ledgerSigningCancelledRef.current = true;
+    },
+    [],
+  );
+
+  const prepareLedgerForSending = async () => {
+    if (
+      ledgerSigningProgress ||
+      registeredWallet?.kind !== 'hardware' ||
+      !session
+    ) {
+      return;
+    }
+
+    ledgerSigningCancelledRef.current = false;
+    setLedgerPreparationError(undefined);
+    setLedgerSigningProgress({ phase: 'searching' });
+    try {
+      const signingSession = await connectLedgerForSigning({
+        isCancelled: () => ledgerSigningCancelledRef.current,
+        onProgress: progress => {
+          if (!ledgerSigningCancelledRef.current) {
+            setLedgerSigningProgress(progress);
+          }
+        },
+      });
+      if (!signingSession || signingSession.readOnly) {
+        throw new Error(t('sync.ledgerSigningPreparationRequired'));
+      }
+      await restoreLedgerViewAfterSigning();
+    } catch (reason) {
+      if (!isLedgerSigningCancelledError(reason)) {
+        setLedgerPreparationError(
+          reason instanceof Error ? reason.message : String(reason),
+        );
+      }
+    } finally {
+      setLedgerSigningProgress(undefined);
+    }
+  };
+
   return (
     <View style={s.container}>
       <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
@@ -483,6 +540,14 @@ export default function HomeScreen({ navigation }: any) {
               progress={syncProgress}
               networkStatus={networkSyncStatus}
               readinessPhase={walletReadinessPhase}
+              onPrepareLedger={
+                registeredWallet.kind === 'hardware'
+                  ? () => {
+                      prepareLedgerForSending().catch(() => undefined);
+                    }
+                  : undefined
+              }
+              prepareLedgerError={ledgerPreparationError}
               snapshot={workingSnapshot}
               spendReady={spendReady}
               syncStartHeight={syncStartHeight}
@@ -865,6 +930,13 @@ export default function HomeScreen({ navigation }: any) {
         )}
         <View style={s.bottomSpacer} />
       </ScrollView>
+      <LedgerSigningModal
+        progress={ledgerSigningProgress}
+        onCancel={() => {
+          ledgerSigningCancelledRef.current = true;
+          setLedgerSigningProgress(undefined);
+        }}
+      />
     </View>
   );
 }

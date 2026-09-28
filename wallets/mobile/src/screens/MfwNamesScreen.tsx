@@ -467,10 +467,23 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       })[0];
     if (pending) {
       setSelectedOwnedNameId(pending.id);
-      setMessage(undefined);
+      setMessage(
+        route?.params?.approvalExpired
+          ? t('mfwNames.approvalExpired')
+          : undefined,
+      );
     }
-    navigation.setParams({ focusPendingClaim: undefined });
-  }, [navigation, ownedNames, route?.params?.focusPendingClaim]);
+    navigation.setParams({
+      approvalExpired: undefined,
+      focusPendingClaim: undefined,
+    });
+  }, [
+    navigation,
+    ownedNames,
+    route?.params?.approvalExpired,
+    route?.params?.focusPendingClaim,
+    t,
+  ]);
 
   useEffect(() => {
     const wallet = registeredWallet;
@@ -1448,8 +1461,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                                 ? t('mfwNames.stepTwoSentDescription')
                                 : stage === 'reveal-ready'
                                 ? t('mfwNames.stepTwoReadyDescription', {
-                                    blocks:
-                                      claimWindowBlocksRemaining ?? '—',
+                                    blocks: claimWindowBlocksRemaining ?? '—',
                                   })
                                 : commitBlocksRemaining === undefined
                                 ? t('mfwNames.commitWaitingBanner')
