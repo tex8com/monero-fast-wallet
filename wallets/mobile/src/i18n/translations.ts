@@ -1026,6 +1026,10 @@ const en = {
   'mfwNames.recoveryNativePrompt':
     'The encrypted bundle and password stay inside the protected native screen.',
   'mfwNames.registerAgain': 'Register again',
+  'mfwNames.removeExpiredTitle': 'Delete expired entry?',
+  'mfwNames.removeExpiredDescription':
+    'This removes only the expired entry from this device. It does not change the blockchain.',
+  'mfwNames.removeExpiredFailed': 'The expired entry could not be deleted.',
   'mfwNames.registeredTerm': 'Term',
   'mfwNames.renew': 'Renew',
   'mfwNames.renewDescription':
@@ -2656,6 +2660,11 @@ const de: Record<keyof typeof en, string> = {
   'mfwNames.recoveryNativePrompt':
     'Das verschlüsselte Paket und das Passwort bleiben im geschützten nativen Dialog.',
   'mfwNames.registerAgain': 'Erneut registrieren',
+  'mfwNames.removeExpiredTitle': 'Abgelaufenen Eintrag löschen?',
+  'mfwNames.removeExpiredDescription':
+    'Dies entfernt nur den abgelaufenen Eintrag von diesem Gerät. Die Blockchain wird nicht verändert.',
+  'mfwNames.removeExpiredFailed':
+    'Der abgelaufene Eintrag konnte nicht gelöscht werden.',
   'mfwNames.registeredTerm': 'Laufzeit',
   'mfwNames.renew': 'Verlängern',
   'mfwNames.renewDescription':

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -57,6 +58,7 @@ import {
   mfwNameCommitBlocksRemaining,
   mfwNameRemainingDays,
   reconcileMfwNameTransactionState,
+  removeMfwOwnedNameLocalRecord,
   subscribeMfwOwnedNames,
   upsertMfwOwnedName,
   type MfwNameBroadcastResult,
@@ -1071,7 +1073,30 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     setName(record.canonicalName.replace(/\.mfw$/i, ''));
     setYearsInput('1');
     setRegistrationStep(1);
+    setSelectedOwnedNameId(undefined);
     setMessage(undefined);
+  };
+
+  const removeExpiredRegistration = (record: MfwOwnedNameRecord) => {
+    Alert.alert(
+      t('mfwNames.removeExpiredTitle'),
+      t('mfwNames.removeExpiredDescription'),
+      [
+        { text: t('action.cancel'), style: 'cancel' },
+        {
+          text: t('action.delete'),
+          style: 'destructive',
+          onPress: () => {
+            removeMfwOwnedNameLocalRecord(record.id)
+              .then(() => {
+                setSelectedOwnedNameId(undefined);
+                setMessage(undefined);
+              })
+              .catch(() => setMessage(t('mfwNames.removeExpiredFailed')));
+          },
+        },
+      ],
+    );
   };
 
   const continueRenewal = async () => {
@@ -1600,20 +1625,34 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                         </TouchableOpacity>
                       </View>
                     ) : canRestart ? (
-                      <TouchableOpacity
-                        accessibilityRole="button"
-                        style={s.nameAction}
-                        onPress={() => restartRegistration(record)}
-                      >
-                        <Icon
-                          name="arrow-right"
-                          size={16}
-                          color={colors.orange}
-                        />
-                        <Text style={s.nameActionText}>
-                          {t('mfwNames.registerAgain')}
-                        </Text>
-                      </TouchableOpacity>
+                      <View style={s.nameActionRow}>
+                        <TouchableOpacity
+                          accessibilityRole="button"
+                          style={s.nameAction}
+                          onPress={() => restartRegistration(record)}
+                        >
+                          <Icon
+                            name="arrow-right"
+                            size={16}
+                            color={colors.orange}
+                          />
+                          <Text style={s.nameActionText}>
+                            {t('mfwNames.registerAgain')}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          accessibilityRole="button"
+                          style={[s.nameAction, s.nameActionDanger]}
+                          onPress={() => removeExpiredRegistration(record)}
+                        >
+                          <Icon name="trash" size={16} color={colors.error} />
+                          <Text
+                            style={[s.nameActionText, s.nameActionTextDanger]}
+                          >
+                            {t('action.delete')}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
                     ) : null}
                   </View>
                 );
