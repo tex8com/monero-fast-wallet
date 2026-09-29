@@ -23,7 +23,7 @@ private const val EXTRA_BODY = "body"
 private const val EXTRA_EVENT_ID = "event_id"
 private const val EXTRA_DEEP_LINK = "deep_link"
 
-private fun showLocalNotification(
+internal fun showLocalNotification(
   context: Context,
   title: String,
   body: String,
@@ -155,6 +155,34 @@ class LocalPushNotificationModule(
     }
     NotificationManagerCompat.from(reactApplicationContext).cancel(eventId.hashCode())
     promise.resolve(null)
+  }
+
+  @ReactMethod
+  fun scheduleMfwClaimBroadcast(
+    registrationId: String,
+    name: String,
+    commitTxid: String,
+    claimTxid: String,
+    rawTxHex: String,
+    daemonAddress: String,
+    useSsl: Boolean,
+    useTor: Boolean,
+    promise: Promise,
+  ) {
+    runCatching {
+      MfwDelayedClaimRelay.schedule(
+        reactApplicationContext,
+        registrationId,
+        name,
+        commitTxid,
+        claimTxid,
+        rawTxHex,
+        daemonAddress,
+        useSsl,
+        useTor,
+      )
+    }.onSuccess { promise.resolve(null) }
+      .onFailure { promise.reject("MFW_DELAYED_CLAIM_FAILED", it.message, it) }
   }
 
   private fun reminderIntent(

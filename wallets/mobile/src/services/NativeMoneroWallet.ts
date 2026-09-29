@@ -521,6 +521,10 @@ export interface NativeMoneroWalletModule {
     walletId: string,
     pendingId: string,
   ): Promise<PreparedTransaction>;
+  exportPendingTransaction(
+    walletId: string,
+    pendingId: string,
+  ): Promise<PreparedTransaction>;
   getHardwareWalletStatus(walletId: string): Promise<HardwareWalletStatus>;
   reconnectHardwareWallet(walletId: string): Promise<HardwareWalletStatus>;
   showHardwareWalletAddress(
@@ -1004,6 +1008,8 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
         ),
       commitTransaction: (walletId, pendingId) =>
         turboModule.commitTransaction(walletId, pendingId),
+      exportPendingTransaction: (walletId, pendingId) =>
+        turboModule.exportPendingTransaction(walletId, pendingId),
       getHardwareWalletStatus: walletId =>
         turboModule.getHardwareWalletStatus(walletId),
       reconnectHardwareWallet: walletId =>

@@ -3743,6 +3743,33 @@ class WalletEngine::Impl {
     });
   }
 
+  PreparedTransaction exportPendingTransaction(const WalletId &walletId,
+                                                const std::string &pendingId) {
+    if (pendingId.empty()) {
+      throw WalletEngineError("pending transaction id must not be empty");
+    }
+
+    return withSession(walletId, [&](WalletSession &session) {
+      auto it = session.pendingTransactions.find(pendingId);
+      if (it == session.pendingTransactions.end()) {
+        throw WalletEngineError("unknown pending transaction id: " + pendingId);
+      }
+
+      auto *pending = it->second;
+      auto result = toPreparedTransaction(pendingId, *pending);
+      result.rawTxHex = pending->rawTxHex();
+      if (result.status != "ok" || result.rawTxHex.empty() ||
+          result.rawTxHex.size() != result.txCount) {
+        throw WalletEngineError("signed transaction export failed");
+      }
+
+      session.wallet->disposeTransaction(pending);
+      session.pendingTransactions.erase(it);
+      updateCachedSnapshot(session, session.cachedSnapshot.daemonTargetHeight);
+      return result;
+    });
+  }
+
   HardwareWalletStatus getHardwareWalletStatus(const WalletId &walletId) const {
     return withSession(walletId, [&](WalletSession &session) {
       updateHardwareStatusFromWallet(session);
@@ -6096,6 +6123,18 @@ PreparedTransaction WalletEngine::commitTransaction(
     const std::string& pendingId) {
 #if TEX8_WALLET_BRIDGE_WITH_MONERO
   return impl_->commitTransaction(walletId, pendingId);
+#else
+  (void)walletId;
+  (void)pendingId;
+  throw WalletEngineError(backendNotLinkedMessage());
+#endif
+}
+
+PreparedTransaction WalletEngine::exportPendingTransaction(
+    const WalletId& walletId,
+    const std::string& pendingId) {
+#if TEX8_WALLET_BRIDGE_WITH_MONERO
+  return impl_->exportPendingTransaction(walletId, pendingId);
 #else
   (void)walletId;
   (void)pendingId;

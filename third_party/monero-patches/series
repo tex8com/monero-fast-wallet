@@ -93,3 +93,4 @@
 0092-wallet-require-ledger-parse-mode-after-companion-prime.patch
 0093-wallet-keep-companion-ledger-derivations-as-device-tokens.patch
 0094-wallet-api-select-connected-Ledger-transport-on-open.patch
+0095-wallet-api-export-signed-raw-transactions.patch

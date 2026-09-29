@@ -169,6 +169,7 @@ export type PreparedTransaction = {
   txIds: string[];
   subaddrAccounts: number[];
   subaddrIndices: number[];
+  rawTxHex?: string[];
 };
 
 /**
@@ -900,6 +901,11 @@ export interface Spec extends TurboModule {
   ): Promise<string>;
 
   commitTransaction(
+    walletId: string,
+    pendingId: string,
+  ): Promise<PreparedTransaction>;
+
+  exportPendingTransaction(
     walletId: string,
     pendingId: string,
   ): Promise<PreparedTransaction>;

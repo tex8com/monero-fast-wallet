@@ -164,6 +164,9 @@ class WalletEngine {
   PreparedTransaction commitTransaction(
       const WalletId& walletId,
       const std::string& pendingId);
+  PreparedTransaction exportPendingTransaction(
+      const WalletId& walletId,
+      const std::string& pendingId);
   HardwareWalletStatus getHardwareWalletStatus(const WalletId& walletId) const;
   HardwareWalletStatus reconnectHardwareWallet(const WalletId& walletId);
   HardwareWalletStatus showHardwareWalletAddress(

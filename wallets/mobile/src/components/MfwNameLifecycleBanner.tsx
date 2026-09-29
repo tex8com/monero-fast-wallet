@@ -8,6 +8,8 @@ import {
   scheduleMfwNameClaimReminder,
 } from '../services/MfwNameClaimReminderService';
 import { configuredMfwNameGenesis } from '../services/MfwNameGenesisConfig';
+import { resolveConfiguredMfwOwnedNameFinalization } from '../services/MfwNameResolutionService';
+import { MFW_NAME_MIN_CONFIRMATIONS } from '../services/MfwNameRegistration';
 import {
   MFW_TARGET_BLOCK_TIME_MS,
   loadMfwOwnedNames,
@@ -62,7 +64,15 @@ export default function MfwNameLifecycleBanner({ onPress }: Props) {
           record.stage === 'reveal-ready') &&
         record.commitTxidHex,
     );
-    if (candidates.length === 0) return;
+    const scheduledClaims = records.filter(
+      record =>
+        record.walletRegistrationId === registeredWallet.id &&
+        record.stage === 'claim-pending' &&
+        record.claimScheduledAt !== undefined &&
+        record.sourceTxidHex &&
+        record.ownerPublicKeyHex,
+    );
+    if (candidates.length === 0 && scheduledClaims.length === 0) return;
     let cancelled = false;
     walletService
       .getTransactionsForAllAccounts(session, 0)
@@ -78,6 +88,39 @@ export default function MfwNameLifecycleBanner({ onPress }: Props) {
           if (reconciled !== record) {
             await upsertMfwOwnedName(reconciled);
           }
+        }
+        for (const record of scheduledClaims) {
+          if (cancelled) return;
+          const transaction = transactions.find(
+            candidate => candidate.hash.toLowerCase() === record.sourceTxidHex,
+          );
+          if (!transaction || transaction.pending) continue;
+          if (transaction.failed) {
+            await upsertMfwOwnedName({
+              ...record,
+              stage: 'failed',
+              updatedAt: new Date().toISOString(),
+            });
+            continue;
+          }
+          if (transaction.confirmations < MFW_NAME_MIN_CONFIRMATIONS) continue;
+          const resolution = await resolveConfiguredMfwOwnedNameFinalization({
+            name: record.canonicalName,
+            network: record.network,
+            expectedAddress: record.address,
+            expectedOwnerPublicKeyHex: record.ownerPublicKeyHex!,
+            expectedSourceTxidHex: record.sourceTxidHex!,
+            expectedSequence: 0,
+            expectedStatus: 'finalized',
+          });
+          await upsertMfwOwnedName({
+            ...record,
+            stage: 'active',
+            sequence: resolution.sequence,
+            expiryHeight: resolution.expiryHeight,
+            lastChainTipHeight: resolution.chainTipHeight,
+            updatedAt: new Date().toISOString(),
+          });
         }
       })
       .catch(() => undefined);
@@ -171,6 +214,7 @@ export default function MfwNameLifecycleBanner({ onPress }: Props) {
     : undefined;
   const ready = record.stage === 'reveal-ready';
   const claimPending = record.stage === 'claim-pending';
+  const claimScheduled = claimPending && record.claimScheduledAt !== undefined;
 
   return (
     <TouchableOpacity
@@ -181,21 +225,33 @@ export default function MfwNameLifecycleBanner({ onPress }: Props) {
     >
       <View style={styles.icon}>
         <Icon
-          name={ready ? 'arrow-right' : claimPending ? 'check' : 'clock'}
+          name={
+            ready
+              ? 'arrow-right'
+              : claimScheduled
+              ? 'clock'
+              : claimPending
+              ? 'check'
+              : 'clock'
+          }
           size={18}
           color={ready ? colors.orange : colors.textSecondary}
         />
       </View>
       <View style={styles.copy}>
         <Text style={styles.eyebrow}>
-          {claimPending
+          {claimScheduled
+            ? t('mfwNames.stepTwoScheduled')
+            : claimPending
             ? t('mfwNames.stepTwoSent')
             : ready
             ? t('mfwNames.stepTwoReady')
             : t('mfwNames.stepOneComplete')}
         </Text>
         <Text style={styles.text} numberOfLines={2}>
-          {claimPending
+          {claimScheduled
+            ? t('mfwNames.stepTwoScheduledDescription')
+            : claimPending
             ? t('mfwNames.claimPendingBanner')
             : ready
             ? t('mfwNames.claimReadyBanner', {

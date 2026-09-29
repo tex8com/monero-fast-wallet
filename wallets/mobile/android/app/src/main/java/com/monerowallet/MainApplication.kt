@@ -36,6 +36,7 @@ class MainApplication : Application(), ReactApplication {
     startupLog("application.onCreate.afterSuper")
     createTransactionNotificationChannel()
     startupLog("application.notificationChannel.ready")
+    MfwDelayedClaimRelay.rescheduleAll(applicationContext)
     loadReactNative(this)
     startupLog("application.reactNative.loadRequested")
     // React Native/Fabric must own native-runtime initialization order. Loading

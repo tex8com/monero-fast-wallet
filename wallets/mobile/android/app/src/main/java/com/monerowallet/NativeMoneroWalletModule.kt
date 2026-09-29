@@ -5321,6 +5321,78 @@ class NativeMoneroWalletModule(
     }
   }
 
+  override fun exportPendingTransaction(walletId: String, pendingId: String, promise: Promise) {
+    if (!requireAppAuthorized(promise) || !requireLinked(promise)) {
+      return
+    }
+    val approval = NativeSensitiveApprovalState.consume(walletId, pendingId)
+    if (approval == null) {
+      promise.reject(
+        "monero_wallet_android_transaction_approval_missing",
+        "Transaction approval is missing, expired, or already used. Prepare it again.",
+      )
+      return
+    }
+    mainHandler.post {
+      val activity = reactApplicationContext.currentActivity as? FragmentActivity
+      if (activity == null || activity.isFinishing ||
+        !NativeAppAuthorization.isAuthorized()
+      ) {
+        promise.reject(
+          "monero_wallet_android_transaction_dialog_unavailable",
+          "Transaction confirmation requires an active, unlocked app screen",
+        )
+        return@post
+      }
+      val confirmation =
+        "Recipient\n${approval.address}\n\n" +
+          "Amount\n${formatAtomicXmr(approval.amountAtomic)} " +
+          "(${approval.amountAtomic} atomic units)\n\n" +
+          "Network fee\n${formatAtomicXmr(approval.feeAtomic)} " +
+          "(${approval.feeAtomic} atomic units)"
+      AlertDialog.Builder(activity)
+        .setTitle("Confirm delayed transaction")
+        .setMessage(confirmation)
+        .setPositiveButton("Authorize and schedule") { _, _ ->
+          requestFreshAuthorization(
+            "Authorize the delayed transaction shown in the previous system dialog.",
+          ) { authorized, message ->
+            if (!authorized) {
+              promise.reject(
+                "monero_wallet_android_transaction_auth_failed",
+                message,
+              )
+              return@requestFreshAuthorization
+            }
+            Thread {
+              runCatching {
+                check(NativeAppAuthorization.isAuthorized()) {
+                  "The native app session was locked"
+                }
+                NativeMoneroWalletJni.exportPendingTransaction(walletId, pendingId)
+              }
+                .onSuccess { exported ->
+                  mainHandler.post {
+                    promise.resolve(preparedTransactionToWritableMap(exported))
+                  }
+                }
+                .onFailure { error ->
+                  mainHandler.post { rejectNativeError(promise, error) }
+                }
+            }.start()
+          }
+        }
+        .setNegativeButton("Cancel") { _, _ ->
+          promise.reject(
+            "monero_wallet_android_transaction_cancelled",
+            "Transaction cancelled",
+          )
+        }
+        .setCancelable(false)
+        .show()
+    }
+  }
+
   override fun getHardwareWalletStatus(walletId: String, promise: Promise) {
     resolveNativeMap(
       promise,
@@ -8084,6 +8156,9 @@ class NativeMoneroWalletModule(
       putArray("txIds", stringListToWritableArray(transaction.listValue("txIds")))
       putArray("subaddrAccounts", numberListToWritableArray(transaction.listValue("subaddrAccounts")))
       putArray("subaddrIndices", numberListToWritableArray(transaction.listValue("subaddrIndices")))
+      if (transaction.containsKey("rawTxHex")) {
+        putArray("rawTxHex", stringListToWritableArray(transaction.listValue("rawTxHex")))
+      }
     }
 
   private fun mfwNamePreparedTransactionToWritableMap(

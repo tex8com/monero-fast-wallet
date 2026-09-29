@@ -41,6 +41,7 @@ import {
 import type { NodeConnectionSettings } from './NodeConnectionSettings';
 import { logWalletEvent } from './WalletLogger';
 import { loadFastWalletWorkerSelection } from './FastWalletWorkerSettings';
+import { loadMfwOwnedNames } from './MfwNameRegistrationRegistry';
 import {
   createRegisteredWallet,
   isFastWalletRegistration,
@@ -4168,6 +4169,17 @@ export class WalletService {
     input: PrepareWalletTransactionInput,
   ): Promise<PreparedTransaction> {
     this.requireSigningSession(session);
+    const heldClaim = (await loadMfwOwnedNames()).find(
+      record =>
+        record.walletRegistrationId === session.registrationId &&
+        record.stage === 'claim-pending' &&
+        record.claimScheduledAt !== undefined,
+    );
+    if (heldClaim) {
+      throw new Error(
+        `The final transaction for ${heldClaim.canonicalName} is scheduled. Wait until it is broadcast before sending other funds from this wallet.`,
+      );
+    }
     const spendScope = await this.requireTransactionSpendAccountScope(
       session,
       input.accountIndex,
@@ -4365,6 +4377,26 @@ export class WalletService {
     );
     this.spendAccountScopeCache.delete(session.walletId);
     return committed;
+  }
+
+  async exportPendingTransaction(
+    session: WalletSession,
+    pendingId: string,
+  ): Promise<PreparedTransaction> {
+    const exported = await traceWalletOperation(
+      'exportPendingTransaction',
+      {
+        pendingId: maskIdentifier(pendingId),
+        ...sessionLogFields(session),
+      },
+      () =>
+        requireNativeMoneroWallet().exportPendingTransaction(
+          session.walletId,
+          pendingId,
+        ),
+    );
+    this.spendAccountScopeCache.delete(session.walletId);
+    return exported;
   }
 
   async getHardwareWalletStatus(

@@ -896,6 +896,12 @@ jobject toJavaMap(JNIEnv* env, const PreparedTransaction& transaction) {
   putMapObject(env, map, putMethod, "txIds", txIds);
   env->DeleteLocalRef(txIds);
 
+  if (!transaction.rawTxHex.empty()) {
+    jobject rawTxHex = toJavaStringList(env, transaction.rawTxHex);
+    putMapObject(env, map, putMethod, "rawTxHex", rawTxHex);
+    env->DeleteLocalRef(rawTxHex);
+  }
+
   jobject subaddrAccounts = toJavaDoubleList(env, transaction.subaddrAccounts);
   putMapObject(env, map, putMethod, "subaddrAccounts", subaddrAccounts);
   env->DeleteLocalRef(subaddrAccounts);
@@ -3650,6 +3656,24 @@ Java_com_monerowallet_NativeMoneroWalletJni_nativeCommitTransaction(
     return toJavaMap(
         env,
         walletEngine().commitTransaction(
+            toStdString(env, walletId),
+            toStdString(env, pendingId)));
+  } catch (const std::exception& error) {
+    throwJavaError(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_monerowallet_NativeMoneroWalletJni_nativeExportPendingTransaction(
+    JNIEnv* env,
+    jclass,
+    jstring walletId,
+    jstring pendingId) {
+  try {
+    return toJavaMap(
+        env,
+        walletEngine().exportPendingTransaction(
             toStdString(env, walletId),
             toStdString(env, pendingId)));
   } catch (const std::exception& error) {

@@ -51,6 +51,7 @@ import {
 } from '../services/LedgerSigningFlow';
 import {
   applyMfwNameBroadcast,
+  applyMfwNameScheduledClaim,
   estimateMfwNameExpiryTimestampMs,
   effectiveMfwOwnedNameStage,
   loadMfwOwnedNames,
@@ -62,6 +63,7 @@ import {
   subscribeMfwOwnedNames,
   upsertMfwOwnedName,
   type MfwNameBroadcastResult,
+  type MfwNameScheduledClaimResult,
   type MfwOwnedNameRecord,
 } from '../services/MfwNameRegistrationRegistry';
 import { logWalletEvent } from '../services/WalletLogger';
@@ -393,6 +395,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     let mounted = true;
     let broadcastRecordId: string | undefined;
     let broadcastKind: MfwNameBroadcastResult['kind'] | undefined;
+    let scheduledClaimRecorded = false;
     setLoadingOwnedNames(true);
     const load = async () => {
       let records = await loadMfwOwnedNames();
@@ -410,6 +413,21 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           broadcastKind = broadcast.kind;
         }
       }
+      const scheduled = parseMfwNameScheduledClaim(
+        route?.params?.mfwNameScheduledClaim as unknown,
+      );
+      if (scheduled) {
+        const target = records.find(
+          record => record.id === scheduled.registrationId,
+        );
+        if (target) {
+          const updated = applyMfwNameScheduledClaim(target, scheduled);
+          records = await upsertMfwOwnedName(updated);
+          broadcastRecordId = updated.id;
+          broadcastKind = 'claim';
+          scheduledClaimRecorded = true;
+        }
+      }
       return records;
     };
     load()
@@ -419,13 +437,18 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           if (broadcastRecordId) {
             setSelectedOwnedNameId(broadcastRecordId);
             setMessage(
-              broadcastKind === 'commit'
+              scheduledClaimRecorded
+                ? t('mfwNames.stepTwoScheduledDescription')
+                : broadcastKind === 'commit'
                 ? t('mfwNames.commitBroadcastMessage')
                 : broadcastKind === 'claim'
                 ? t('mfwNames.claimBroadcastMessage')
                 : undefined,
             );
-            navigation.setParams({ mfwNameBroadcast: undefined });
+            navigation.setParams({
+              mfwNameBroadcast: undefined,
+              mfwNameScheduledClaim: undefined,
+            });
           }
         }
       })
@@ -442,7 +465,12 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     return () => {
       mounted = false;
     };
-  }, [navigation, route?.params?.mfwNameBroadcast, t]);
+  }, [
+    navigation,
+    route?.params?.mfwNameBroadcast,
+    route?.params?.mfwNameScheduledClaim,
+    t,
+  ]);
 
   useEffect(
     () =>
@@ -876,6 +904,8 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         registrationId: draft.id,
         walletRegistrationId: draft.walletRegistrationId,
         name: draft.name,
+        address: draft.address,
+        network: draft.network,
         years: draft.years,
         kind: 'commit',
         destinationAddress: genesis.registryAddress,
@@ -978,6 +1008,8 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         registrationId: record.id,
         walletRegistrationId: record.walletRegistrationId,
         name: record.canonicalName,
+        address: record.address,
+        network: record.network,
         years: record.termYears,
         kind: 'claim',
         destinationAddress: genesis.registryAddress,
@@ -1238,6 +1270,8 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         registrationId: record.id,
         walletRegistrationId: record.walletRegistrationId,
         name: record.canonicalName,
+        address: nextAddress,
+        network: record.network,
         years: operationYears,
         kind: operation,
         destinationAddress:
@@ -1453,7 +1487,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                       <View style={s.registrationProgressCard}>
                         <Text style={s.registrationProgressTitle}>
                           {stage === 'claim-pending'
-                            ? t('mfwNames.stepTwoSent')
+                            ? record.claimScheduledAt
+                              ? t('mfwNames.stepTwoScheduled')
+                              : t('mfwNames.stepTwoSent')
                             : stage === 'reveal-ready'
                             ? t('mfwNames.stepTwoReady')
                             : t('mfwNames.stepOneComplete')}
@@ -1492,7 +1528,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                             </Text>
                             <Text style={s.registrationProgressText}>
                               {stage === 'claim-pending'
-                                ? t('mfwNames.stepTwoSentDescription')
+                                ? record.claimScheduledAt
+                                  ? t('mfwNames.stepTwoScheduledDescription')
+                                  : t('mfwNames.stepTwoSentDescription')
                                 : stage === 'reveal-ready'
                                 ? t('mfwNames.stepTwoReadyDescription', {
                                     blocks: claimWindowBlocksRemaining ?? '—',
@@ -2614,6 +2652,31 @@ function parseMfwNameBroadcast(
     kind: candidate.kind,
     years: candidate.years,
     txIds: candidate.txIds,
+  };
+}
+
+function parseMfwNameScheduledClaim(
+  value: unknown,
+): MfwNameScheduledClaimResult | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as {
+    registrationId?: unknown;
+    txId?: unknown;
+    scheduledAt?: unknown;
+  };
+  if (
+    typeof candidate.registrationId !== 'string' ||
+    typeof candidate.txId !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(candidate.txId) ||
+    typeof candidate.scheduledAt !== 'string' ||
+    !Number.isFinite(Date.parse(candidate.scheduledAt))
+  ) {
+    return undefined;
+  }
+  return {
+    registrationId: candidate.registrationId,
+    txId: candidate.txId.toLowerCase(),
+    scheduledAt: candidate.scheduledAt,
   };
 }
 

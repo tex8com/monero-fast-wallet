@@ -1403,6 +1403,11 @@ internal object NativeMoneroWalletJni {
     return nativeCommitTransaction(walletId, pendingId)
   }
 
+  fun exportPendingTransaction(walletId: String, pendingId: String): Map<String, Any> {
+    requireLoaded()
+    return nativeExportPendingTransaction(walletId, pendingId)
+  }
+
   fun getHardwareWalletStatus(walletId: String): Map<String, Any> {
     requireLoaded()
     return nativeGetHardwareWalletStatus(walletId)
@@ -2000,6 +2005,11 @@ internal object NativeMoneroWalletJni {
   ): Map<String, Any>
 
   @JvmStatic private external fun nativeCommitTransaction(
+    walletId: String,
+    pendingId: String,
+  ): Map<String, Any>
+
+  @JvmStatic private external fun nativeExportPendingTransaction(
     walletId: String,
     pendingId: String,
   ): Map<String, Any>

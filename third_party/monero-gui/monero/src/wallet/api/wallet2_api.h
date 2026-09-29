@@ -112,6 +112,8 @@ struct PendingTransaction
     virtual uint64_t dust() const = 0;
     virtual uint64_t fee() const = 0;
     virtual std::vector<std::string> txid() const = 0;
+    // Fully signed canonical wire transactions without broadcasting them.
+    virtual std::vector<std::string> rawTxHex() const = 0;
     /*!
      * \brief txCount - number of transactions current transaction will be splitted to
      * \return

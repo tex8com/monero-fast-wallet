@@ -338,6 +338,8 @@ struct PreparedTransaction {
   std::vector<std::string> txIds;
   std::vector<uint32_t> subaddrAccounts;
   std::vector<uint32_t> subaddrIndices;
+  // Present only after an explicit export-for-delayed-relay operation.
+  std::vector<std::string> rawTxHex;
 };
 
 struct FastReceiveIdentity {

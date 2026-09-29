@@ -45,6 +45,7 @@ export interface MfwOwnedNameRecord {
   commitBroadcastAt?: string;
   commitHeight?: number;
   sourceTxidHex?: string;
+  claimScheduledAt?: string;
   pendingAddress?: string;
   expiryHeight?: number;
   lastChainTipHeight?: number;
@@ -58,6 +59,12 @@ export interface MfwNameBroadcastResult {
   kind: MfwNameTransactionKind;
   years: number;
   txIds: string[];
+}
+
+export interface MfwNameScheduledClaimResult {
+  registrationId: string;
+  txId: string;
+  scheduledAt: string;
 }
 
 type RegistryState = {
@@ -180,6 +187,22 @@ export function applyMfwNameBroadcast(
         updatedAt: now,
       });
   }
+}
+
+export function applyMfwNameScheduledClaim(
+  record: MfwOwnedNameRecord,
+  scheduled: MfwNameScheduledClaimResult,
+): MfwOwnedNameRecord {
+  if (scheduled.registrationId !== record.id) {
+    throw new Error('Scheduled MFW claim does not match the registration');
+  }
+  return normalizeRecord({
+    ...record,
+    stage: 'claim-pending',
+    sourceTxidHex: requiredHex32(scheduled.txId, 'scheduled claim transaction id'),
+    claimScheduledAt: requiredTimestamp(scheduled.scheduledAt),
+    updatedAt: scheduled.scheduledAt,
+  });
 }
 
 export function reconcileMfwNameTransactionState(
@@ -412,6 +435,7 @@ function normalizeRecord(value: MfwOwnedNameRecord): MfwOwnedNameRecord {
     commitBroadcastAt: optionalTimestamp(value.commitBroadcastAt),
     commitHeight: optionalHeight(value.commitHeight),
     sourceTxidHex: optionalHex(value.sourceTxidHex),
+    claimScheduledAt: optionalTimestamp(value.claimScheduledAt),
     pendingAddress: optional(value.pendingAddress),
     expiryHeight: optionalHeight(value.expiryHeight),
     lastChainTipHeight: optionalHeight(value.lastChainTipHeight),
@@ -420,6 +444,14 @@ function normalizeRecord(value: MfwOwnedNameRecord): MfwOwnedNameRecord {
     updatedAt: required(value.updatedAt, 'updated timestamp'),
   };
   return record;
+}
+
+function requiredTimestamp(value: string): string {
+  const timestamp = value.trim();
+  if (!timestamp || !Number.isFinite(Date.parse(timestamp))) {
+    throw new Error('MFW name timestamp is invalid');
+  }
+  return timestamp;
 }
 
 function optionalTimestamp(value: string | undefined): string | undefined {

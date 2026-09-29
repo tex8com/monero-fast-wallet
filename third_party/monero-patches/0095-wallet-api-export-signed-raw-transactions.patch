@@ -1,0 +1,60 @@
+From 07c633451160ecd771e37a20654094c34fa66e4f Mon Sep 17 00:00:00 2001
+From: TEX8 Monero Patch Integrator <monero-patches@tex8.local>
+Date: Mon, 28 Sep 2026 19:14:39 -0500
+Subject: [PATCH] wallet api export signed raw transactions
+
+---
+ src/wallet/api/pending_transaction.cpp | 10 ++++++++++
+ src/wallet/api/pending_transaction.h   |  1 +
+ src/wallet/api/wallet2_api.h           |  2 ++
+ 3 files changed, 13 insertions(+)
+
+diff --git a/src/wallet/api/pending_transaction.cpp b/src/wallet/api/pending_transaction.cpp
+index 70a7027..d452be6 100644
+--- a/src/wallet/api/pending_transaction.cpp
++++ b/src/wallet/api/pending_transaction.cpp
+@@ -78,6 +78,16 @@ std::vector<std::string> PendingTransactionImpl::txid() const
+     return txid;
+ }
+ 
++std::vector<std::string> PendingTransactionImpl::rawTxHex() const
++{
++    std::vector<std::string> transactions;
++    transactions.reserve(m_pending_tx.size());
++    for (const auto &pt: m_pending_tx)
++        transactions.push_back(epee::string_tools::buff_to_hex_nodelimer(
++            cryptonote::tx_to_blob(pt.tx)));
++    return transactions;
++}
++
+ bool PendingTransactionImpl::commit(const std::string &filename, bool overwrite)
+ {
+ 
+diff --git a/src/wallet/api/pending_transaction.h b/src/wallet/api/pending_transaction.h
+index 0a9779c..05d9a1f 100644
+--- a/src/wallet/api/pending_transaction.h
++++ b/src/wallet/api/pending_transaction.h
+@@ -50,6 +50,7 @@ public:
+     uint64_t dust() const override;
+     uint64_t fee() const override;
+     std::vector<std::string> txid() const override;
++    std::vector<std::string> rawTxHex() const override;
+     uint64_t txCount() const override;
+     std::vector<uint32_t> subaddrAccount() const override;
+     std::vector<std::set<uint32_t>> subaddrIndices() const override;
+diff --git a/src/wallet/api/wallet2_api.h b/src/wallet/api/wallet2_api.h
+index 01b04f6..9c7d91d 100644
+--- a/src/wallet/api/wallet2_api.h
++++ b/src/wallet/api/wallet2_api.h
+@@ -128,6 +128,8 @@ struct PendingTransaction
+     virtual uint64_t dust() const = 0;
+     virtual uint64_t fee() const = 0;
+     virtual std::vector<std::string> txid() const = 0;
++    // Fully signed canonical wire transactions without broadcasting them.
++    virtual std::vector<std::string> rawTxHex() const = 0;
+     /*!
+      * \brief txCount - number of transactions current transaction will be splitted to
+      * \return
+-- 
+2.54.0 (Apple Git-157)
+

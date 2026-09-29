@@ -1,5 +1,6 @@
 import {
   applyMfwNameBroadcast,
+  applyMfwNameScheduledClaim,
   estimateMfwNameExpiryTimestampMs,
   effectiveMfwOwnedNameStage,
   loadMfwOwnedNames,
@@ -181,6 +182,25 @@ describe('MFW owned name registry', () => {
         txIds: ['a'.repeat(64), 'b'.repeat(64)],
       }),
     ).toThrow('does not match');
+  });
+
+  it('records an encrypted claim that is scheduled for delayed relay', () => {
+    const scheduledAt = '2026-07-27T00:01:00.000Z';
+    expect(
+      applyMfwNameScheduledClaim(
+        { ...record, stage: 'commit-pending', sourceTxidHex: undefined },
+        {
+          registrationId: record.id,
+          txId: 'e'.repeat(64),
+          scheduledAt,
+        },
+      ),
+    ).toMatchObject({
+      stage: 'claim-pending',
+      sourceTxidHex: 'e'.repeat(64),
+      claimScheduledAt: scheduledAt,
+      updatedAt: scheduledAt,
+    });
   });
 
   it('tracks owner-signed address updates and revocations separately', () => {

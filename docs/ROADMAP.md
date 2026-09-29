@@ -5,7 +5,7 @@ not describe finished functionality.
 
 ## `.mfw` registration and Ledger transaction flow
 
-### Verified current state (2026-09-24)
+### Verified current state (2026-09-28)
 
 - [x] A first-stage name commitment was broadcast, mined and indexed on
   Mainnet.
@@ -23,9 +23,12 @@ in this public roadmap.
 - [x] Guide the two-transaction journey persistently. After the first approval,
   explain the maturity wait and keep the second approval as the next required
   action; never present the commitment as a completed registration.
-- [ ] Where the wallet can safely construct the claim from independent unlocked
-  inputs, collect both explicit approvals consecutively, keep the signed claim
-  encrypted on the device and broadcast it only after commitment maturity.
+- [x] On Android, where the wallet can safely construct the claim from
+  independent unlocked inputs, collect both explicit approvals consecutively,
+  keep the signed claim
+  encrypted with Android Keystore on the device and broadcast it only after
+  15 commitment confirmations. Re-arm the local relay after reboot, force-stop
+  and the next app start.
 - [x] If safe pre-signing is not possible, for example because the claim needs
   change from the commitment, show this before the first approval and retain a
   prominent `Step 1 of 2 complete - second approval required` state.
@@ -51,9 +54,10 @@ in this public roadmap.
   can miss the required second step.
   before expiry. Never describe the registration as complete after only the
   commitment.
-- [ ] Never upload a held signed claim or owner secret to a server. Delayed
-  broadcast remains device-controlled, with an explicit retry when Android or
-  iOS background execution is unavailable.
+- [x] Never upload the Android held signed claim or owner secret to a server.
+  Delayed broadcast is device-controlled and retries through the selected
+  official, HTTPS or Tor v3 node route.
+- [ ] Add equivalent encrypted delayed-broadcast handling for iOS and desktop.
 - [x] Reconcile a pending commitment against its transaction ID in the complete
   wallet container history, including Ledger transactions outside the currently
   displayed account.

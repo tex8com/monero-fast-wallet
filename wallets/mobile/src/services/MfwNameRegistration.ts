@@ -26,6 +26,8 @@ export interface MfwNameSendPreset {
   registrationId: string;
   walletRegistrationId: string;
   name: string;
+  address: string;
+  network: MoneroNetwork;
   years: number;
   kind: MfwNameTransactionKind;
   destinationAddress: string;
@@ -159,6 +161,10 @@ export function validateMfwNameSendPreset(
     typeof value.registrationId !== 'string' ||
     typeof value.walletRegistrationId !== 'string' ||
     typeof value.name !== 'string' ||
+    typeof value.address !== 'string' ||
+    (value.network !== 'mainnet' &&
+      value.network !== 'testnet' &&
+      value.network !== 'stagenet') ||
     typeof value.years !== 'number' ||
     (value.kind !== 'commit' &&
       value.kind !== 'claim' &&
@@ -182,6 +188,8 @@ export function validateMfwNameSendPreset(
         'wallet registration',
       ),
       name,
+      address: required(value.address, 'Monero receive address'),
+      network: value.network,
       years: value.years,
       kind: value.kind,
       destinationAddress: required(

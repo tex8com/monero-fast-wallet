@@ -27,6 +27,16 @@ describe('MFW name registration UI contract', () => {
     'monerowallet',
     'LocalPushNotificationModule.kt',
   );
+  const delayedClaimRelay = source(
+    'android',
+    'app',
+    'src',
+    'main',
+    'java',
+    'com',
+    'monerowallet',
+    'MfwDelayedClaimRelay.kt',
+  );
   const send = source('src', 'screens', 'SendScreen.tsx');
   const navigation = source('src', 'navigation', 'TabNavigator.tsx');
   const registration = source('src', 'services', 'MfwNameRegistration.ts');
@@ -95,6 +105,12 @@ describe('MFW name registration UI contract', () => {
     expect(lifecycleBanner).toContain('notifyMfwNameClaimReady');
     expect(localNotification).toContain('fun schedule(');
     expect(localNotification).toContain('MfwClaimReminderReceiver');
+    expect(send).toContain('exportPendingTransaction');
+    expect(send).toContain('scheduleMfwClaimBroadcast');
+    expect(delayedClaimRelay).toContain('MIN_CONFIRMATIONS = 15L');
+    expect(delayedClaimRelay).toContain('AndroidKeyStore');
+    expect(delayedClaimRelay).toContain('"/send_raw_transaction"');
+    expect(delayedClaimRelay).not.toContain('payload.getString("name")');
   });
 
   it('expires stale approvals instead of leaving an unusable claim button', () => {

@@ -1073,6 +1073,9 @@ const en = {
   'mfwNames.stepTwoSent': 'Step 2 of 2 sent',
   'mfwNames.stepTwoSentDescription':
     'The claim and registry payment are waiting for blockchain confirmation.',
+  'mfwNames.stepTwoScheduled': 'Both approvals completed',
+  'mfwNames.stepTwoScheduledDescription':
+    'The final transaction is protected on this device and will be sent automatically after 15 blocks.',
   'mfwNames.notificationTitle': 'Monero Fast Wallet name',
   'mfwNames.notificationCheckStepTwo':
     'Open the app to check whether step 2 of 2 is ready.',
@@ -2708,6 +2711,9 @@ const de: Record<keyof typeof en, string> = {
   'mfwNames.stepTwoSent': 'Schritt 2 von 2 gesendet',
   'mfwNames.stepTwoSentDescription':
     'Claim und Registry-Zahlung warten auf die Blockchain-Bestätigung.',
+  'mfwNames.stepTwoScheduled': 'Beide Freigaben abgeschlossen',
+  'mfwNames.stepTwoScheduledDescription':
+    'Die letzte Transaktion liegt geschützt auf diesem Gerät und wird nach 15 Blöcken automatisch gesendet.',
   'mfwNames.notificationTitle': 'Monero Fast Wallet Name',
   'mfwNames.notificationCheckStepTwo':
     'Öffne die App und prüfe, ob Schritt 2 von 2 bereit ist.',

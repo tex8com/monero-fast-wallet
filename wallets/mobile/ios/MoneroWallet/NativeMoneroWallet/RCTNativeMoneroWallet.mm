@@ -2818,7 +2818,7 @@ NSArray *toTransactionArray(const std::vector<WalletTransaction> &transactions) 
 }
 
 NSDictionary *toDictionary(const PreparedTransaction &transaction) {
-  return @{
+  NSMutableDictionary *result = [@{
     @"id": toNSString(transaction.id),
     @"status": toNSString(transaction.status),
     @"error": toNSString(transaction.error),
@@ -2829,7 +2829,11 @@ NSDictionary *toDictionary(const PreparedTransaction &transaction) {
     @"txIds": toNSArray(transaction.txIds),
     @"subaddrAccounts": toNSArray(transaction.subaddrAccounts),
     @"subaddrIndices": toNSArray(transaction.subaddrIndices),
-  };
+  } mutableCopy];
+  if (!transaction.rawTxHex.empty()) {
+    result[@"rawTxHex"] = toNSArray(transaction.rawTxHex);
+  }
+  return result;
 }
 
 NSString *biometryTypeName(LAContext *context) {
@@ -10350,6 +10354,82 @@ predecessorSigningOwnerPublicKeyHex:
                   toStdString(walletId),
                   toStdString(pendingId));
               resolve(toDictionary(committed));
+            } catch (const std::exception &error) {
+              rejectWithException(reject, error);
+            }
+          });
+        }];
+      }]];
+      [controller presentViewController:alert animated:YES completion:nil];
+    });
+  });
+}
+
+- (void)exportPendingTransaction:(NSString *)walletId
+                       pendingId:(NSString *)pendingId
+                         resolve:(RCTPromiseResolveBlock)resolve
+                          reject:(RCTPromiseRejectBlock)reject
+{
+  if (![self requireAppAuthorized:reject]) {
+    return;
+  }
+  dispatch_async(_walletQueue, ^{
+    NSDictionary *approval = _pendingTransactionApprovals[pendingId];
+    [_pendingTransactionApprovals removeObjectForKey:pendingId];
+    if (approval == nil ||
+        ![approval[@"walletId"] isEqualToString:walletId] ||
+        [approval[@"expiresAtMs"] unsignedLongLongValue] < diagnosticNowMs()) {
+      reject(
+          @"monero_wallet_ios_transaction_approval_missing",
+          @"Transaction approval is missing, expired, or already used. Prepare it again.",
+          nil);
+      return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      UIViewController *controller = activeViewController();
+      if (controller == nil || !_appAuthorized.load()) {
+        reject(@"monero_wallet_ios_transaction_dialog_unavailable",
+               @"Transaction confirmation requires an active, unlocked app screen",
+               nil);
+        return;
+      }
+      NSString *confirmation = [NSString stringWithFormat:
+          @"Recipient\n%@\n\nAmount\n%@ (%@ atomic units)\n\n"
+           "Network fee\n%@ (%@ atomic units)",
+          approval[@"address"] ?: @"",
+          formatAtomicXmr(approval[@"amountAtomic"] ?: @"0"),
+          approval[@"amountAtomic"] ?: @"0",
+          formatAtomicXmr(approval[@"feeAtomic"] ?: @"0"),
+          approval[@"feeAtomic"] ?: @"0"];
+      UIAlertController *alert =
+          [UIAlertController alertControllerWithTitle:@"Confirm delayed transaction"
+                                              message:confirmation
+                                       preferredStyle:UIAlertControllerStyleAlert];
+      [alert addAction:
+          [UIAlertAction actionWithTitle:@"Cancel"
+                                   style:UIAlertActionStyleCancel
+                                 handler:^(__unused UIAlertAction *action) {
+        reject(@"monero_wallet_ios_transaction_cancelled", @"Transaction cancelled", nil);
+      }]];
+      [alert addAction:
+          [UIAlertAction actionWithTitle:@"Authorize and schedule"
+                                   style:UIAlertActionStyleDefault
+                                 handler:^(__unused UIAlertAction *action) {
+        [self requestFreshAuthorization:
+                  @"Authorize the delayed transaction shown in the previous system dialog."
+                                 completion:^(BOOL authorized, NSString *message) {
+          if (!authorized) {
+            reject(@"monero_wallet_ios_transaction_auth_failed", message, nil);
+            return;
+          }
+          dispatch_async(_walletQueue, ^{
+            if (!_engine || !_appAuthorized.load()) {
+              reject(@"monero_wallet_ios_app_locked", @"The native app session was locked", nil);
+              return;
+            }
+            try {
+              resolve(toDictionary(_engine->exportPendingTransaction(
+                  toStdString(walletId), toStdString(pendingId))));
             } catch (const std::exception &error) {
               rejectWithException(reject, error);
             }

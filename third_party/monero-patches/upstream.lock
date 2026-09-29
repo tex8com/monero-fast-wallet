@@ -94,11 +94,14 @@ upstream_tree=c592d864569be294d2bdca25b674cd17f78614e5
 # Patch 0094 lets mobile clients select the currently connected Ledger USB or
 # BLE transport before an existing hardware wallet initializes. The encrypted
 # wallet identity and device-address verification remain unchanged.
+# Patch 0095 exposes canonical signed transaction bytes only from an already
+# prepared in-memory transaction so the app can hold an explicitly approved
+# MFW claim locally until its commit reaches protocol maturity.
 # A cache at a prior verified tree may advance in place; a fresh checkout must
 # apply the complete series and reach `patched_tree` below.
-previous_patched_tree=0389d585c9c742eda74b5e9912997d2ba5393503
-previous_patch_count=93
-patched_tree=dd34fc6f8bb43ef3b28c0889fb289963bdda3c23
+previous_patched_tree=dd34fc6f8bb43ef3b28c0889fb289963bdda3c23
+previous_patch_count=94
+patched_tree=aa2eb0294cdd1b9aa0b7c50ae6079071624dc670
 
 # The applied patch files in series are the source of truth. `git am` creates
 # a new local integration commit on every fresh checkout, so its SHA must not

@@ -78,6 +78,16 @@ std::vector<std::string> PendingTransactionImpl::txid() const
     return txid;
 }
 
+std::vector<std::string> PendingTransactionImpl::rawTxHex() const
+{
+    std::vector<std::string> transactions;
+    transactions.reserve(m_pending_tx.size());
+    for (const auto &pt: m_pending_tx)
+        transactions.push_back(epee::string_tools::buff_to_hex_nodelimer(
+            cryptonote::tx_to_blob(pt.tx)));
+    return transactions;
+}
+
 bool PendingTransactionImpl::commit(const std::string &filename, bool overwrite)
 {
 

@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
+  NativeModules,
   Platform,
   ScrollView,
   StatusBar,
@@ -81,6 +82,7 @@ import {
   type LedgerSigningProgress,
 } from '../services/LedgerSigningFlow';
 import { logWalletEvent } from '../services/WalletLogger';
+import { loadActiveNodeConnectionSettings } from '../services/NodeConnectionSettings';
 import { createPendingOutgoingTransaction } from '../services/PendingOutgoingRegistry';
 import {
   fetchConfiguredMfwNameSuggestions,
@@ -790,6 +792,7 @@ export default function SendScreen({ navigation, route }: any) {
     setSending(true);
     setSendError(undefined);
     let broadcastSucceeded = false;
+    let scheduledClaimTxId: string | undefined;
     let postBroadcastRefreshPending = false;
     const completedNamePreset = mfwNamePreset;
     const recordPostBroadcastFailure = (stage: string, error: unknown) => {
@@ -807,6 +810,74 @@ export default function SendScreen({ navigation, route }: any) {
         );
       }
       broadcastSucceeded = true;
+
+      if (
+        completedNamePreset?.kind === 'commit' &&
+        committed.txIds.length === 1 &&
+        Platform.OS === 'android'
+      ) {
+        try {
+          setLedgerSigningProgress({ phase: 'preparing-request' });
+          const preparedClaim = await walletService.prepareMfwNameClaim(
+            transactionSession,
+            {
+              registrationId: completedNamePreset.registrationId,
+              name: completedNamePreset.name,
+              address: completedNamePreset.address,
+              network: completedNamePreset.network,
+              registryAddress: completedNamePreset.destinationAddress,
+              years: completedNamePreset.years,
+              priority: 'low',
+            },
+          );
+          const heldClaim = await walletService.exportPendingTransaction(
+            transactionSession,
+            preparedClaim.preparedTransaction.id,
+          );
+          if (
+            heldClaim.status !== 'ok' ||
+            heldClaim.txIds.length !== 1 ||
+            heldClaim.rawTxHex?.length !== 1
+          ) {
+            throw new Error('The signed claim could not be held for automatic relay.');
+          }
+          const settings = await loadActiveNodeConnectionSettings(
+            completedNamePreset.network,
+          );
+          const delayedRelay = NativeModules.MoneroLocalNotification as
+            | {
+                scheduleMfwClaimBroadcast?(
+                  registrationId: string,
+                  name: string,
+                  commitTxid: string,
+                  claimTxid: string,
+                  rawTxHex: string,
+                  daemonAddress: string,
+                  useSsl: boolean,
+                  useTor: boolean,
+                ): Promise<void>;
+              }
+            | undefined;
+          if (!delayedRelay?.scheduleMfwClaimBroadcast) {
+            throw new Error('Automatic delayed claim relay is unavailable.');
+          }
+          await delayedRelay.scheduleMfwClaimBroadcast(
+            completedNamePreset.registrationId,
+            completedNamePreset.name,
+            committed.txIds[0],
+            heldClaim.txIds[0],
+            heldClaim.rawTxHex[0],
+            settings.daemon.address,
+            settings.daemon.useSsl === true,
+            Boolean(settings.daemon.proxyAddress?.trim()),
+          );
+          scheduledClaimTxId = heldClaim.txIds[0];
+        } catch (error) {
+          recordPostBroadcastFailure('scheduleMfwClaim', error);
+        } finally {
+          setLedgerSigningProgress(undefined);
+        }
+      }
 
       if (!completedNamePreset) {
         const recipientAddress = address.trim();
@@ -961,6 +1032,13 @@ export default function SendScreen({ navigation, route }: any) {
               years: completedNamePreset.years,
               txIds: committed.txIds,
             },
+            mfwNameScheduledClaim: scheduledClaimTxId
+              ? {
+                  registrationId: completedNamePreset.registrationId,
+                  txId: scheduledClaimTxId,
+                  scheduledAt: new Date().toISOString(),
+                }
+              : undefined,
           });
         } catch (error) {
           recordPostBroadcastFailure('navigateMfwNames', error);
