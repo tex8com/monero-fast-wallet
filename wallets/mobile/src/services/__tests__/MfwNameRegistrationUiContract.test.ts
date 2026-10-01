@@ -112,6 +112,7 @@ describe('MFW name registration UI contract', () => {
     expect(names).toContain('const schedulePendingClaim');
     expect(names).toContain('scheduleServerMfwClaim');
     expect(names).toContain("t('mfwNames.approveAndScheduleClaim')");
+    expect(names).not.toContain("setMessage(t('mfwNames.relayCheckStatus'))");
     expect(delayedClaimRelay).toContain('MIN_CONFIRMATIONS = 15L');
     expect(delayedClaimRelay).toContain('AndroidKeyStore');
     expect(delayedClaimRelay).toContain('"/send_raw_transaction"');

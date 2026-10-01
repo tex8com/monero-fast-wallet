@@ -455,7 +455,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
             );
             setMessage(
               scheduledClaimRecorded || updatedRecord?.claimRelayJobId
-                ? t('mfwNames.relayCheckStatus')
+                ? undefined
                 : broadcastKind === 'commit'
                 ? t('mfwNames.relayManualFallback')
                 : broadcastKind === 'claim'
@@ -1126,7 +1126,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       );
       setOwnedNames(await loadMfwOwnedNames());
       setSelectedOwnedNameId(record.id);
-      setMessage(t('mfwNames.relayCheckStatus'));
+      setMessage(undefined);
     } catch (error) {
       if (!isLedgerSigningCancelledError(error)) {
         setMessage(error instanceof Error ? error.message : String(error));
