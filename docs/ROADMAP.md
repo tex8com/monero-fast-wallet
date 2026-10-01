@@ -72,8 +72,11 @@ See [the delayed claim relay contract](../backend/mfw-claim-relay/README.md).
   with the app terminated; a local timed reminder is not proof of maturity.
 - [ ] Implement the equivalent desktop native export and server handoff.
 - [ ] Device-test the shared mobile integration on Android and iOS.
-  Android build/install is currently blocked by the disconnected 4-TB volume
-  containing the SDK/native build caches. No new Pixel installation is claimed.
+  Android release 1.0.94 (95), built from `5313dc40`, was installed as a
+  data-preserving update on the Pixel 8 Pro on 2026-10-01. APK v2 signature and
+  16-KB alignment passed; the installed APK hash matches the build artifact:
+  `ee64fd18417bfff9f364008f415282180215aceb6939738d8152dc9511ffe32e`.
+  Physical Ledger/claim/push acceptance still requires the user's test.
   Latest automated checks: 92 mobile suites / 601 tests, TypeScript and scoped
   ESLint; 14 relay and 22 notification-gateway tests on the Linux server.
 - [x] Reconcile a pending commitment against its transaction ID in the complete
