@@ -213,6 +213,24 @@ describe('MFW name registration UI contract', () => {
     expect(names).not.toMatch(/\bbundleHex\b|\bpassphrase\b/);
   });
 
+  it('cannot strand first approval when the required recovery dialog disappears', () => {
+    expect(androidNative).toContain('dialog.setCancelable(true)');
+    expect(androidNative).toContain('dialog.setCanceledOnTouchOutside(true)');
+    expect(androidNative).toContain('dialog.setOnCancelListener');
+    expect(androidNative).toContain('dialog.setOnDismissListener');
+    expect(androidNative).toContain('resolveRecoveryCancelled()');
+  });
+
+  it('does not show a consumed approval as expired while native sending is active', () => {
+    expect(send).toContain('mfwNamePreset && !sending');
+    expect(send).toContain("t('send.secureSubmissionProgress'");
+    expect(send).toContain("t('send.submitting'");
+    expect(send).toContain("'transactionSubmission.start'");
+    expect(send).toContain("'transactionSubmission.result'");
+    expect(androidNative).toContain('"commitTransaction.approval.consumed"');
+    expect(androidNative).toContain('timedNativeOperation("commitTransaction.native")');
+  });
+
   it('backs up new owner authority before commit and restores public names by address', () => {
     expect(names).toContain('discoverConfiguredMfwNamesForAddresses');
     expect(names).toContain("ownerAuthority: 'recovery-required'");

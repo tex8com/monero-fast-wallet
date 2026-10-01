@@ -5001,6 +5001,15 @@ class NativeMoneroWalletModule(
         addView(passphrase)
         addView(confirmation)
       }
+      val recoveryFlowSettled = AtomicBoolean(false)
+      var handedOffToDocumentPicker = false
+      fun resolveRecoveryCancelled() {
+        if (recoveryFlowSettled.compareAndSet(false, true)) {
+          passphrase.text?.clear()
+          confirmation.text?.clear()
+          promise.resolve(false)
+        }
+      }
       val dialog = AlertDialog.Builder(activity)
         .setTitle("Protect .mfw owner recovery")
         .setMessage(
@@ -5008,9 +5017,20 @@ class NativeMoneroWalletModule(
             "and this password to recover control of $name.",
         )
         .setView(fields)
-        .setNegativeButton("Cancel") { _, _ -> promise.resolve(false) }
+        .setNegativeButton("Cancel") { _, _ -> resolveRecoveryCancelled() }
         .setPositiveButton("Encrypt and export", null)
         .create()
+      // Cancelling the required backup must return control to React instead
+      // of stranding the first-approval spinner. The transaction is not
+      // continued without a recovery file, but the user can retry normally.
+      dialog.setCancelable(true)
+      dialog.setCanceledOnTouchOutside(true)
+      dialog.setOnCancelListener { resolveRecoveryCancelled() }
+      dialog.setOnDismissListener {
+        if (!handedOffToDocumentPicker) {
+          resolveRecoveryCancelled()
+        }
+      }
       dialog.setOnShowListener {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
           val passwordValue = passphrase.text?.toString().orEmpty()
@@ -5042,21 +5062,24 @@ class NativeMoneroWalletModule(
                   mainHandler.post {
                     passphrase.text?.clear()
                     confirmation.text?.clear()
-                    dialog.dismiss()
                     val recoveryText =
                       "MFW name recovery v1\n" +
                         "Name: $name\n" +
                         "Network: $network\n" +
                         "Bundle: $bundle"
                     if (pendingMfwRecoveryExportPromise != null) {
+                      recoveryFlowSettled.set(true)
                       promise.reject(
                         "monero_wallet_android_recovery_export_busy",
                         "Another MFW recovery export is already active",
                       )
+                      dialog.dismiss()
                       return@post
                     }
+                    handedOffToDocumentPicker = true
                     pendingMfwRecoveryExportPromise = promise
                     pendingMfwRecoveryExportBytes = recoveryText.toByteArray(Charsets.UTF_8)
+                    dialog.dismiss()
                     val save = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                       addCategory(Intent.CATEGORY_OPENABLE)
                       type = "application/octet-stream"
@@ -5072,21 +5095,25 @@ class NativeMoneroWalletModule(
                       pendingMfwRecoveryExportBytes?.fill(0)
                       pendingMfwRecoveryExportBytes = null
                       pendingMfwRecoveryExportPromise = null
+                      if (recoveryFlowSettled.compareAndSet(false, true)) {
+                        promise.reject(
+                          "monero_wallet_android_recovery_export_failed",
+                          error.message ?: "MFW recovery export failed",
+                          error,
+                        )
+                      }
+                    }
+                  }
+                }.onFailure { error ->
+                  mainHandler.post {
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
+                    if (recoveryFlowSettled.compareAndSet(false, true)) {
                       promise.reject(
                         "monero_wallet_android_recovery_export_failed",
                         error.message ?: "MFW recovery export failed",
                         error,
                       )
                     }
-                  }
-                }.onFailure { error ->
-                  mainHandler.post {
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
-                    promise.reject(
-                      "monero_wallet_android_recovery_export_failed",
-                      error.message ?: "MFW recovery export failed",
-                      error,
-                    )
                     dialog.dismiss()
                   }
                 }
@@ -5095,7 +5122,15 @@ class NativeMoneroWalletModule(
           }
         }
       }
-      dialog.show()
+      runCatching { dialog.show() }.onFailure { error ->
+        if (recoveryFlowSettled.compareAndSet(false, true)) {
+          promise.reject(
+            "monero_wallet_android_recovery_ui_unavailable",
+            error.message ?: "The MFW recovery screen is unavailable",
+            error,
+          )
+        }
+      }
     }
   }
 
@@ -5248,22 +5283,40 @@ class NativeMoneroWalletModule(
   }
 
   override fun commitTransaction(walletId: String, pendingId: String, promise: Promise) {
+    val requestedAt = SystemClock.elapsedRealtime()
+    logNativeEvent("commitTransaction.requested")
     if (!requireAppAuthorized(promise) || !requireLinked(promise)) {
+      logNativeEvent(
+        "commitTransaction.precondition.error",
+        mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
+      )
       return
     }
     val approval = NativeSensitiveApprovalState.consume(walletId, pendingId)
     if (approval == null) {
+      logNativeEvent(
+        "commitTransaction.approval.error",
+        mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
+      )
       promise.reject(
         "monero_wallet_android_transaction_approval_missing",
         "Transaction approval is missing, expired, or already used. Prepare it again.",
       )
       return
     }
+    logNativeEvent(
+      "commitTransaction.approval.consumed",
+      mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
+    )
     mainHandler.post {
       val activity = reactApplicationContext.currentActivity as? FragmentActivity
       if (activity == null || activity.isFinishing ||
         !NativeAppAuthorization.isAuthorized()
       ) {
+        logNativeEvent(
+          "commitTransaction.dialog.error",
+          mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
+        )
         promise.reject(
           "monero_wallet_android_transaction_dialog_unavailable",
           "Transaction confirmation requires an active, unlocked app screen",
@@ -5276,26 +5329,48 @@ class NativeMoneroWalletModule(
           "(${approval.amountAtomic} atomic units)\n\n" +
           "Network fee\n${formatAtomicXmr(approval.feeAtomic)} " +
           "(${approval.feeAtomic} atomic units)"
-      AlertDialog.Builder(activity)
+      val dialog = AlertDialog.Builder(activity)
         .setTitle("Confirm transaction")
         .setMessage(confirmation)
         .setPositiveButton("Authorize and send") { _, _ ->
+          logNativeEvent(
+            "commitTransaction.dialog.approved",
+            mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
+          )
+          val authorizationStartedAt = SystemClock.elapsedRealtime()
+          logNativeEvent("commitTransaction.authorization.start")
           requestFreshAuthorization(
             "Authorize the transaction shown in the previous system dialog.",
           ) { authorized, message ->
             if (!authorized) {
+              logNativeEvent(
+                "commitTransaction.authorization.error",
+                mapOf(
+                  "elapsedMs" to
+                    (SystemClock.elapsedRealtime() - authorizationStartedAt),
+                ),
+              )
               promise.reject(
                 "monero_wallet_android_transaction_auth_failed",
                 message,
               )
               return@requestFreshAuthorization
             }
+            logNativeEvent(
+              "commitTransaction.authorization.success",
+              mapOf(
+                "elapsedMs" to
+                  (SystemClock.elapsedRealtime() - authorizationStartedAt),
+              ),
+            )
             Thread {
               runCatching {
                 check(NativeAppAuthorization.isAuthorized()) {
                   "The native app session was locked"
                 }
-                NativeMoneroWalletJni.commitTransaction(walletId, pendingId)
+                timedNativeOperation("commitTransaction.native") {
+                  NativeMoneroWalletJni.commitTransaction(walletId, pendingId)
+                }
               }
                 .onSuccess { committed ->
                   mainHandler.post {
@@ -5311,13 +5386,24 @@ class NativeMoneroWalletModule(
           }
         }
         .setNegativeButton("Cancel") { _, _ ->
+          logNativeEvent(
+            "commitTransaction.dialog.cancelled",
+            mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
+          )
           promise.reject(
             "monero_wallet_android_transaction_cancelled",
             "Transaction cancelled",
           )
         }
         .setCancelable(false)
-        .show()
+        .create()
+      dialog.setOnShowListener {
+        logNativeEvent(
+          "commitTransaction.dialog.shown",
+          mapOf("elapsedMs" to (SystemClock.elapsedRealtime() - requestedAt)),
+        )
+      }
+      dialog.show()
     }
   }
 

@@ -149,6 +149,9 @@ export default function SendScreen({ navigation, route }: any) {
   >();
   const [mfwApprovalInvalid, setMfwApprovalInvalid] = useState(false);
   const [approvalNowMs, setApprovalNowMs] = useState(() => Date.now());
+  const [activeSendStartedAtMs, setActiveSendStartedAtMs] = useState<
+    number | undefined
+  >();
   const consumedMfwFlowId = useRef<string | undefined>(undefined);
   const [recipientReview, setRecipientReview] = useState<
     RecipientReview | undefined
@@ -281,13 +284,16 @@ export default function SendScreen({ navigation, route }: any) {
   const mfwApprovalExpiresAtMs =
     mfwNamePreset?.preparedTransaction.approvalExpiresAtMs;
   const mfwApprovalExpired = Boolean(
-    mfwNamePreset &&
+    mfwNamePreset && !sending &&
       (mfwApprovalInvalid ||
         mfwApprovalExpiresAtMs === undefined ||
         mfwApprovalExpiresAtMs <= approvalNowMs),
   );
   const mfwApprovalSecondsRemaining = mfwApprovalExpiresAtMs
     ? Math.max(0, Math.ceil((mfwApprovalExpiresAtMs - approvalNowMs) / 1_000))
+    : 0;
+  const activeSendElapsedSeconds = activeSendStartedAtMs
+    ? Math.max(0, Math.floor((approvalNowMs - activeSendStartedAtMs) / 1_000))
     : 0;
   const routePrivatePhonePreset = useMemo(
     () =>
@@ -396,11 +402,11 @@ export default function SendScreen({ navigation, route }: any) {
   ]);
 
   useEffect(() => {
-    if (!mfwNamePreset) return;
+    if (!mfwNamePreset && !sending) return;
     setApprovalNowMs(Date.now());
     const interval = setInterval(() => setApprovalNowMs(Date.now()), 1_000);
     return () => clearInterval(interval);
-  }, [mfwNamePreset]);
+  }, [mfwNamePreset, sending]);
 
   useEffect(() => {
     const preset = routePrivatePhonePreset;
@@ -677,6 +683,8 @@ export default function SendScreen({ navigation, route }: any) {
     }
 
     setSending(true);
+    const preparationStartedAt = Date.now();
+    let ledgerPhaseSequence = 0;
     setSendError(undefined);
     setSendStatus(undefined);
     ledgerSigningCancelledRef.current = false;
@@ -687,6 +695,11 @@ export default function SendScreen({ navigation, route }: any) {
     };
     const publishProgress = (progress: LedgerSigningProgress) => {
       if (!ledgerSigningCancelledRef.current) {
+        ledgerPhaseSequence += 1;
+        logWalletEvent('SendScreen', `ledger.${progress.phase}`, {
+          elapsedMs: Date.now() - preparationStartedAt,
+          phaseSequence: ledgerPhaseSequence,
+        });
         setLedgerSigningProgress(progress);
       }
     };
@@ -695,7 +708,7 @@ export default function SendScreen({ navigation, route }: any) {
     try {
       let signingSession: WalletSession | undefined = session;
       if (registeredWallet?.kind === 'hardware') {
-        setLedgerSigningProgress({ phase: 'searching' });
+        publishProgress({ phase: 'searching' });
         signingSession = await connectLedgerForSigning({
           isCancelled: () => ledgerSigningCancelledRef.current,
           onProgress: publishProgress,
@@ -791,6 +804,12 @@ export default function SendScreen({ navigation, route }: any) {
     }
 
     setSending(true);
+    const sendStartedAt = Date.now();
+    setActiveSendStartedAtMs(sendStartedAt);
+    setSendStatus(t('send.secureSubmissionProgress', { seconds: 0 }));
+    logWalletEvent('SendScreen', 'transactionSubmission.start', {
+      elapsedMs: 0,
+    });
     setSendError(undefined);
     ledgerSigningCancelledRef.current = false;
     const ensureAutomaticClaimNotCancelled = () => {
@@ -809,6 +828,11 @@ export default function SendScreen({ navigation, route }: any) {
         transactionSession,
         preparedTx.id,
       );
+      logWalletEvent('SendScreen', 'transactionSubmission.result', {
+        elapsedMs: Date.now() - sendStartedAt,
+        status: committed.status,
+        txCount: committed.txIds.length,
+      });
       if (committed.status !== 'ok') {
         throw new Error(
           committed.error || t('send.transactionBroadcastFailed'),
@@ -1049,6 +1073,10 @@ export default function SendScreen({ navigation, route }: any) {
         }
       }
     } catch (error) {
+      logWalletEvent('SendScreen', 'transactionSubmission.error', {
+        elapsedMs: Date.now() - sendStartedAt,
+        error,
+      });
       if (broadcastSucceeded) {
         recordPostBroadcastFailure('unexpectedFollowUp', error);
         setSendError(undefined);
@@ -1061,6 +1089,7 @@ export default function SendScreen({ navigation, route }: any) {
       }
     } finally {
       setSending(false);
+      setActiveSendStartedAtMs(undefined);
     }
   };
 
@@ -1269,7 +1298,16 @@ export default function SendScreen({ navigation, route }: any) {
             <Text style={s.privacyText}>{t('send.privacyDetails')}</Text>
           </View>
 
-          {mfwNamePreset ? (
+          {sending ? (
+            <View style={s.submissionProgress}>
+              <ActivityIndicator color={colors.orange} size="small" />
+              <Text accessibilityLiveRegion="polite" style={s.submissionProgressText}>
+                {t('send.secureSubmissionProgress', {
+                  seconds: activeSendElapsedSeconds,
+                })}
+              </Text>
+            </View>
+          ) : mfwNamePreset ? (
             <Text
               accessibilityLiveRegion="polite"
               style={[
@@ -1305,7 +1343,9 @@ export default function SendScreen({ navigation, route }: any) {
               <Icon name="send" size={20} color="#FFF" strokeWidth={2} />
               <Text style={s.primaryBtnText}>
                 {sending
-                  ? t('action.working')
+                  ? t('send.submitting', {
+                      seconds: activeSendElapsedSeconds,
+                    })
                   : mfwApprovalExpired
                   ? t('mfwNames.prepareApprovalAgain')
                   : mfwNamePreset?.kind === 'commit'
@@ -2936,6 +2976,24 @@ const s = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     marginBottom: 14,
+  },
+  submissionProgress: {
+    alignItems: 'center',
+    backgroundColor: colors.bgCard,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 14,
+    padding: spacing.md,
+  },
+  submissionProgressText: {
+    color: colors.textSecondary,
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 19,
   },
   approvalCountdown: {
     color: colors.warning,

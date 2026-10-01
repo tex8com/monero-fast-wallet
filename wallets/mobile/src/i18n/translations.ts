@@ -734,6 +734,9 @@ const en = {
   'send.transactionBroadcast': 'Transaction broadcast.',
   'send.transactionBroadcastFailed': 'Transaction broadcast failed',
   'send.transactionPreparationFailed': 'Transaction preparation failed',
+  'send.secureSubmissionProgress':
+    'Securely authorizing and sending through your Monero node… {seconds}s elapsed. Keep Ledger unlocked and do not retry while this is running.',
+  'send.submitting': 'Sending… {seconds}s',
   'send.successTitle': 'Transaction sent',
   'send.successSubtitle':
     'Your transaction was signed and broadcast to the Monero network.',
@@ -2369,6 +2372,9 @@ const de: Record<keyof typeof en, string> = {
   'send.transactionBroadcastFailed': 'Transaktion konnte nicht gesendet werden',
   'send.transactionPreparationFailed':
     'Transaktion konnte nicht vorbereitet werden',
+  'send.secureSubmissionProgress':
+    'Sichere Freigabe und Versand über deinen Monero-Node… seit {seconds}s. Lass den Ledger entsperrt und starte nicht erneut.',
+  'send.submitting': 'Wird gesendet… {seconds}s',
   'send.successTitle': 'Transaktion gesendet',
   'send.successSubtitle':
     'Deine Transaktion wurde signiert und an das Monero-Netzwerk gesendet.',

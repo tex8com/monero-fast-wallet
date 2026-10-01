@@ -3620,6 +3620,10 @@ class WalletEngine::Impl {
 
   PreparedTransaction
   prepareTransaction(const PrepareTransactionRequest &request) {
+    const auto preparationStartedAt = std::chrono::steady_clock::now();
+    logEngineDiagnostic(
+        "prepareTransaction.start",
+        {{"accountIndex", std::to_string(request.accountIndex)}});
     if (request.walletId.empty()) {
       throw WalletEngineError("wallet id must not be empty");
     }
@@ -3657,15 +3661,33 @@ class WalletEngine::Impl {
       controlPlaneConfig = coordinator->config;
       configurationGeneration = coordinator->configurationGeneration;
     }
+    const auto sessionWaitStartedAt = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> sessionLock(session->mutationMutex);
+    logEngineDiagnostic(
+        "prepareTransaction.sessionLock.acquired",
+        {{"elapsedMs",
+          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() -
+                             sessionWaitStartedAt)
+                             .count())}});
+    const auto controlPlaneStartedAt = std::chrono::steady_clock::now();
     initializeTransactionControlPlane(*session, controlPlaneConfig,
                                       configurationGeneration);
+    logEngineDiagnostic(
+        "prepareTransaction.controlPlane.ready",
+        {{"elapsedMs",
+          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() -
+                             controlPlaneStartedAt)
+                             .count())}});
 
     Monero::optional<uint64_t> optionalAmount;
     if (!request.amountAtomic.empty()) {
       optionalAmount = parseAtomicAmount(request.amountAtomic);
     }
     Monero::PendingTransaction *pending = nullptr;
+    const auto coreStartedAt = std::chrono::steady_clock::now();
+    logEngineDiagnostic("prepareTransaction.core.start", {});
     if (request.mfwNameExtraNonce.empty()) {
       pending = session->wallet->createTransaction(
           request.address, request.paymentId, optionalAmount,
@@ -3692,6 +3714,12 @@ class WalletEngine::Impl {
     if (pending == nullptr) {
       throw WalletEngineError("Monero returned a null pending transaction");
     }
+    logEngineDiagnostic(
+        "prepareTransaction.core.complete",
+        {{"elapsedMs",
+          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - coreStartedAt)
+                             .count())}});
 
     const auto pendingId = nextPendingTransactionId();
     auto result = toPreparedTransaction(pendingId, *pending);
@@ -3712,6 +3740,14 @@ class WalletEngine::Impl {
     }
 
     session->pendingTransactions.emplace(pendingId, pending);
+    logEngineDiagnostic(
+        "prepareTransaction.success",
+        {{"elapsedMs",
+          std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() -
+                             preparationStartedAt)
+                             .count())},
+         {"transactionCount", std::to_string(result.txCount)}});
     return result;
   }
 
@@ -3722,6 +3758,8 @@ class WalletEngine::Impl {
     }
 
     return withSession(walletId, [&](WalletSession &session) {
+      const auto commitStartedAt = std::chrono::steady_clock::now();
+      logEngineDiagnostic("commitTransaction.start", {});
       auto it = session.pendingTransactions.find(pendingId);
       if (it == session.pendingTransactions.end()) {
         throw WalletEngineError("unknown pending transaction id: " + pendingId);
@@ -3729,7 +3767,16 @@ class WalletEngine::Impl {
 
       auto *pending = it->second;
       auto result = toPreparedTransaction(pendingId, *pending);
+      const auto relayStartedAt = std::chrono::steady_clock::now();
+      logEngineDiagnostic("commitTransaction.relay.start", {});
       const bool committed = pending->commit();
+      logEngineDiagnostic(
+          "commitTransaction.relay.complete",
+          {{"elapsedMs",
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - relayStartedAt)
+                               .count())},
+           {"status", committed ? "success" : "failed"}});
       result.status = pendingTransactionStatusName(pending->status());
       result.error = pending->errorString();
       if (!committed && result.error.empty()) {
@@ -3738,7 +3785,23 @@ class WalletEngine::Impl {
 
       session.wallet->disposeTransaction(pending);
       session.pendingTransactions.erase(it);
+      const auto snapshotStartedAt = std::chrono::steady_clock::now();
+      logEngineDiagnostic("commitTransaction.snapshot.start", {});
       updateCachedSnapshot(session, session.cachedSnapshot.daemonTargetHeight);
+      logEngineDiagnostic(
+          "commitTransaction.snapshot.complete",
+          {{"elapsedMs",
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() -
+                               snapshotStartedAt)
+                               .count())}});
+      logEngineDiagnostic(
+          "commitTransaction.success",
+          {{"elapsedMs",
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - commitStartedAt)
+                               .count())},
+           {"transactionCount", std::to_string(result.txCount)}});
       return result;
     });
   }
