@@ -287,6 +287,7 @@ export interface NativeMoneroWalletModule {
   createSecureRandomIdentifier(prefix: string): Promise<string>;
   getLedgerTransportStatus(): Promise<LedgerTransportStatus>;
   requestLedgerTransportAccess(): Promise<LedgerTransportStatus>;
+  cancelLedgerOperation(): Promise<void>;
   beginSystemUiInterruption(
     reason: string,
     timeoutMs: number,
@@ -553,6 +554,7 @@ const nativeModule: NativeMoneroWalletModule | undefined = turboModule
       getLedgerTransportStatus: () => turboModule.getLedgerTransportStatus(),
       requestLedgerTransportAccess: () =>
         turboModule.requestLedgerTransportAccess(),
+      cancelLedgerOperation: () => turboModule.cancelLedgerOperation(),
       beginSystemUiInterruption: (reason, timeoutMs) =>
         turboModule.beginSystemUiInterruption(reason, timeoutMs),
       endSystemUiInterruption: token =>

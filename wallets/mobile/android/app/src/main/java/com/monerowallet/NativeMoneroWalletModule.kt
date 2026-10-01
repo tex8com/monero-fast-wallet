@@ -585,6 +585,11 @@ class NativeMoneroWalletModule(
     requestLedgerBleTransportAccess(promise)
   }
 
+  override fun cancelLedgerOperation(promise: Promise) {
+    LedgerAndroidTransport.cancelActiveExchange()
+    promise.resolve(null)
+  }
+
   override fun beginSystemUiInterruption(
     reason: String,
     timeoutMs: Double,

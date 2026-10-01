@@ -237,6 +237,9 @@ describe('MFW name registration UI contract', () => {
     );
     expect(names).toContain("message !== t('mfwNames.approvalExpired')");
     expect(names).toContain("currentStage === 'reveal-ready'");
+    expect(names).toContain('walletService.cancelLedgerOperation()');
+    expect(send).toContain('walletService.cancelLedgerOperation()');
+    expect(androidNative).toContain('LedgerAndroidTransport.cancelActiveExchange()');
   });
 
   it('backs up new owner authority before commit and restores public names by address', () => {

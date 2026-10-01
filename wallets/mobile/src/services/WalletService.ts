@@ -454,6 +454,10 @@ export class WalletService {
     );
   }
 
+  async cancelLedgerOperation(): Promise<void> {
+    return requireNativeMoneroWallet().cancelLedgerOperation();
+  }
+
   async getBiometricAuthStatus(): Promise<BiometricAuthStatus> {
     return traceWalletOperation('getBiometricAuthStatus', {}, () =>
       requireNativeMoneroWallet().getBiometricAuthStatus(),

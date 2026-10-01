@@ -100,7 +100,6 @@ internal object LedgerUsbTransport {
   private const val LOG_TAG = "LedgerUsbTransport"
   private const val WRITE_TIMEOUT_MS = 5_000
   private const val RESPONSE_TIMEOUT_MS = 30_000
-  private const val USER_INPUT_TIMEOUT_MS = 180_000
   private const val MAX_RESPONSE_SIZE = 0xffff
   private const val MAX_RESPONSE_PACKETS = 1_200
   private val exchangeLock = Any()
@@ -174,6 +173,12 @@ internal object LedgerUsbTransport {
     closeConnection()
   }
 
+  fun cancelActiveExchange() {
+    diagnostic("exchange.cancelled")
+    connectionError = "Ledger operation cancelled"
+    closeConnection()
+  }
+
   @JvmStatic fun isConnected(): Boolean = ready && connection != null
 
   fun lastConnectionError(): String? = connectionError
@@ -192,10 +197,13 @@ internal object LedgerUsbTransport {
       }
 
       val decoder = LedgerUsbHidFraming.Decoder(channel, MAX_RESPONSE_SIZE)
-      val timeoutMs = if (userInput) USER_INPUT_TIMEOUT_MS else RESPONSE_TIMEOUT_MS
       repeat(MAX_RESPONSE_PACKETS) {
         val response = decoder.accept(
-          readPacket(activeConnection, activeInput, timeoutMs),
+          readPacket(
+            activeConnection,
+            activeInput,
+            if (userInput) null else RESPONSE_TIMEOUT_MS,
+          ),
         )
         if (response != null) {
           diagnostic("exchange.complete", "userInput=$userInput")
@@ -230,7 +238,7 @@ internal object LedgerUsbTransport {
   private fun readPacket(
     activeConnection: UsbDeviceConnection,
     endpoint: UsbEndpoint,
-    timeoutMs: Int,
+    timeoutMs: Int?,
   ): ByteArray {
     val request = UsbRequest()
     check(request.initialize(activeConnection, endpoint)) {
@@ -251,10 +259,27 @@ internal object LedgerUsbTransport {
   private fun awaitRequest(
     activeConnection: UsbDeviceConnection,
     request: UsbRequest,
-    timeoutMs: Int,
+    timeoutMs: Int?,
   ): Boolean {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      if (timeoutMs == null) {
+        var waitedSeconds = 0
+        while (ready && connection === activeConnection) {
+          if (activeConnection.requestWait(1_000L) === request) {
+            return true
+          }
+          waitedSeconds += 1
+          if (waitedSeconds % 15 == 0) {
+            diagnostic("response.stillWaiting", "userInput=true")
+          }
+        }
+        return false
+      }
       return activeConnection.requestWait(timeoutMs.toLong()) === request
+    }
+
+    if (timeoutMs == null) {
+      return activeConnection.requestWait() === request
     }
 
     val timedOut = AtomicBoolean(false)
@@ -374,6 +399,11 @@ internal object LedgerAndroidTransport {
   @JvmStatic fun disconnect() = when (mode) {
     Mode.BLE -> LedgerBleTransport.disconnect()
     Mode.USB -> LedgerUsbTransport.disconnect()
+  }
+
+  fun cancelActiveExchange() = when (mode) {
+    Mode.BLE -> LedgerBleTransport.cancelActiveExchange()
+    Mode.USB -> LedgerUsbTransport.cancelActiveExchange()
   }
 
   @JvmStatic fun isConnected(): Boolean = when (mode) {

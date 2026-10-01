@@ -369,6 +369,8 @@ export interface Spec extends TurboModule {
 
   requestLedgerTransportAccess(): Promise<LedgerTransportStatus>;
 
+  cancelLedgerOperation(): Promise<void>;
+
   /**
    * Marks a bounded, app-initiated operating-system UI transition. Android
    * must not mistake permission or hardware-access sheets for the user

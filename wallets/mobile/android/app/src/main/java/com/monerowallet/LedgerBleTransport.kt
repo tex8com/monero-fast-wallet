@@ -83,11 +83,6 @@ internal object LedgerBleTransport {
   private const val LOG_TAG = "LedgerBleTransport"
   private const val CONNECT_TIMEOUT_SECONDS = 20L
   private const val EXCHANGE_TIMEOUT_SECONDS = 30L
-  // Monero transaction construction on a Nano X can continue doing protected
-  // device work for several minutes after the user has approved the visible
-  // prompts. Treat that time as part of the active signing operation instead
-  // of aborting a valid transaction after only three minutes.
-  private const val USER_INPUT_TIMEOUT_SECONDS = 900L
   private const val MAX_RESPONSE_SIZE = 262
   private const val LEDGER_GATT_MTU = 156
   private const val LEDGER_MAX_FRAME_SIZE = LEDGER_GATT_MTU - 3
@@ -171,6 +166,12 @@ internal object LedgerBleTransport {
     closeGatt()
   }
 
+  fun cancelActiveExchange() {
+    diagnostic("exchange.cancelled")
+    exchangeError = "Ledger operation cancelled"
+    closeGatt()
+  }
+
   @JvmStatic fun isConnected(): Boolean = ready && gatt != null
 
   /**
@@ -224,11 +225,23 @@ internal object LedgerBleTransport {
         diagnostic("write.complete")
       }
 
-      val timeout = if (userInput) USER_INPUT_TIMEOUT_SECONDS else EXCHANGE_TIMEOUT_SECONDS
       diagnostic("response.wait", "userInput=$userInput")
-      check(pendingResponse.await(timeout, TimeUnit.SECONDS)) {
-        diagnostic("response.timeout", "userInput=$userInput")
-        "Ledger BLE response timed out"
+      if (userInput) {
+        var waitedSeconds = 0
+        while (!pendingResponse.await(1, TimeUnit.SECONDS)) {
+          check(ready && gatt === activeGatt) {
+            exchangeError ?: "Ledger BLE device disconnected"
+          }
+          waitedSeconds += 1
+          if (waitedSeconds % 15 == 0) {
+            diagnostic("response.stillWaiting", "userInput=true")
+          }
+        }
+      } else {
+        check(pendingResponse.await(EXCHANGE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+          diagnostic("response.timeout", "userInput=false")
+          "Ledger BLE response timed out"
+        }
       }
       exchangeError?.let { error(it) }
       (response ?: error("Ledger BLE response was empty")).also {

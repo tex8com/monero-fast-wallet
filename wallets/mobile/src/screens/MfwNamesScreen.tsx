@@ -2788,6 +2788,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
         onCancel={() => {
           ledgerSigningCancelledRef.current = true;
           setLedgerSigningProgress(undefined);
+          walletService.cancelLedgerOperation().catch(() => undefined);
         }}
       />
     </View>

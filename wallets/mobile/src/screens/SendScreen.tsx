@@ -2265,6 +2265,7 @@ export default function SendScreen({ navigation, route }: any) {
           ledgerSigningCancelledRef.current = true;
           setLedgerSigningProgress(undefined);
           setSendStatus(undefined);
+          walletService.cancelLedgerOperation().catch(() => undefined);
         }}
       />
     </KeyboardAvoidingView>
