@@ -21,6 +21,7 @@ import {
   type MfwOwnedNameRecord,
 } from '../services/MfwNameRegistrationRegistry';
 import { walletService } from '../services/WalletService';
+import { refreshMfwClaimRelayJobs } from '../services/MfwClaimRelayService';
 import { useWalletState } from '../services/WalletState';
 import { colors, radius, spacing } from '../theme/colors';
 import { Icon } from './Icon';
@@ -36,6 +37,14 @@ export default function MfwNameLifecycleBanner({ onPress }: Props) {
     walletSnapshots,
   } = useWalletState();
   const [records, setRecords] = useState<MfwOwnedNameRecord[]>([]);
+
+  useEffect(() => {
+    if (!session) return;
+    const refresh = () => { refreshMfwClaimRelayJobs().catch(() => undefined); };
+    refresh();
+    const timer = setInterval(refresh, 15_000);
+    return () => clearInterval(timer);
+  }, [session]);
 
   useEffect(() => {
     let active = true;
@@ -215,6 +224,15 @@ export default function MfwNameLifecycleBanner({ onPress }: Props) {
   const ready = record.stage === 'reveal-ready';
   const claimPending = record.stage === 'claim-pending';
   const claimScheduled = claimPending && record.claimScheduledAt !== undefined;
+  const deliveryMessage = record.claimRelayState === 'uploading'
+    ? t('mfwNames.relayUploading')
+    : record.claimRelayState === 'waiting'
+    ? t('mfwNames.relayAccepted')
+    : record.claimRelayState === 'relaying'
+    ? t('mfwNames.relayTransmitting')
+    : record.claimRelayState === 'broadcast' || record.claimRelayState === 'confirmed'
+    ? t('mfwNames.stepTwoSentDescription')
+    : t('mfwNames.stepTwoScheduledDescription');
 
   return (
     <TouchableOpacity
@@ -250,7 +268,7 @@ export default function MfwNameLifecycleBanner({ onPress }: Props) {
         </Text>
         <Text style={styles.text} numberOfLines={2}>
           {claimScheduled
-            ? t('mfwNames.stepTwoScheduledDescription')
+            ? deliveryMessage
             : claimPending
             ? t('mfwNames.claimPendingBanner')
             : ready

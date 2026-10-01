@@ -42,6 +42,7 @@ import type { NodeConnectionSettings } from './NodeConnectionSettings';
 import { logWalletEvent } from './WalletLogger';
 import { loadFastWalletWorkerSelection } from './FastWalletWorkerSettings';
 import { loadMfwOwnedNames } from './MfwNameRegistrationRegistry';
+import { assertNoHeldMfwClaim } from './MfwClaimRelayService';
 import {
   createRegisteredWallet,
   isFastWalletRegistration,
@@ -4169,6 +4170,7 @@ export class WalletService {
     input: PrepareWalletTransactionInput,
   ): Promise<PreparedTransaction> {
     this.requireSigningSession(session);
+    await assertNoHeldMfwClaim(session.registrationId);
     const heldClaim = (await loadMfwOwnedNames()).find(
       record =>
         record.walletRegistrationId === session.registrationId &&
@@ -4232,6 +4234,7 @@ export class WalletService {
     input: Omit<PrepareMfwNameRegistrationInput, 'walletId' | 'accountIndex'>,
   ): Promise<MfwNameNativePreparation> {
     this.requireSigningSession(session);
+    await assertNoHeldMfwClaim(session.registrationId);
     const spendScope = await this.requireTransactionSpendAccountScope(session);
     return traceWalletOperation(
       'prepareMfwNameRegistration',
@@ -4255,6 +4258,7 @@ export class WalletService {
     input: Omit<PrepareMfwNameClaimInput, 'walletId' | 'accountIndex'>,
   ): Promise<MfwNameNativePreparation> {
     this.requireSigningSession(session);
+    await assertNoHeldMfwClaim(session.registrationId);
     const spendScope = await this.requireTransactionSpendAccountScope(session);
     return traceWalletOperation(
       'prepareMfwNameClaim',
@@ -4279,6 +4283,7 @@ export class WalletService {
     input: Omit<PrepareMfwNameTransitionInput, 'walletId' | 'accountIndex'>,
   ): Promise<MfwNameNativePreparation> {
     this.requireSigningSession(session);
+    await assertNoHeldMfwClaim(session.registrationId);
     const spendScope = await this.requireTransactionSpendAccountScope(session);
     return traceWalletOperation(
       'prepareMfwNameTransition',
@@ -4363,6 +4368,7 @@ export class WalletService {
     session: WalletSession,
     pendingId: string,
   ): Promise<PreparedTransaction> {
+    await assertNoHeldMfwClaim(session.registrationId);
     const committed = await traceWalletOperation(
       'commitTransaction',
       {

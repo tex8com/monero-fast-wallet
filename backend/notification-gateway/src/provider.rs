@@ -513,6 +513,8 @@ fn notification_copy(event: &OpaqueNotificationEvent) -> (&'static str, &'static
         )
     } else if event.category == crate::VANITY_EVENT_CATEGORY {
         ("Monero Fast Wallet", "Your Vanity address status changed.")
+    } else if event.category == crate::MFW_CLAIM_EVENT_CATEGORY {
+        ("Monero Fast Wallet", "Your name registration status changed. Open the app to check.")
     } else {
         ("Monero Fast Wallet", "Open the app to check a new payment.")
     }
@@ -526,7 +528,15 @@ fn vanity_order_id(event: &OpaqueNotificationEvent) -> Option<&str> {
 }
 
 fn provider_data(event: &OpaqueNotificationEvent) -> serde_json::Value {
-    if let Some(order_id) = vanity_order_id(event) {
+    if event.category == crate::MFW_CLAIM_EVENT_CATEGORY {
+        serde_json::json!({
+            "type": event.category,
+            "contractVersion": crate::CONTRACT_VERSION,
+            "eventId": event.id,
+            "jobId": event.deep_link.strip_prefix("tex8monero://mfw-claim/"),
+            "deepLink": event.deep_link,
+        })
+    } else if let Some(order_id) = vanity_order_id(event) {
         serde_json::json!({
             "type": event.category,
             "contractVersion": crate::CONTRACT_VERSION,
@@ -1395,6 +1405,18 @@ mod tests {
             received_at: "1800000000".to_owned(),
             opened: false,
         }
+    }
+
+    #[test]
+    fn claim_push_contains_only_opaque_routing_data() {
+        let mut event=event("evt_test");
+        event.category=crate::MFW_CLAIM_EVENT_CATEGORY.to_owned();
+        event.deep_link=format!("tex8monero://mfw-claim/{}","ab".repeat(24));
+        let data=provider_data(&event);
+        assert_eq!(data.as_object().unwrap().len(),5);
+        assert_eq!(data["jobId"],"ab".repeat(24));
+        assert_eq!(data["deepLink"],event.deep_link);
+        assert_eq!(notification_copy(&event).1,"Your name registration status changed. Open the app to check.");
     }
 
     #[test]

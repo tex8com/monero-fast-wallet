@@ -22,10 +22,12 @@ const EVENT_CONTRACT = 'monero-fast-wallet-push.v3';
 const INCOMING_EVENT_TYPE = 'monero.fast_wallet.incoming';
 const TEST_EVENT_TYPE = 'monero.fast_wallet.test';
 const VANITY_EVENT_TYPE = 'monero.fast_wallet.vanity';
+const CLAIM_EVENT_TYPE = 'monero.fast_wallet.mfw-claim';
 const EVENT_TYPES = new Set([
   INCOMING_EVENT_TYPE,
   TEST_EVENT_TYPE,
   VANITY_EVENT_TYPE,
+  CLAIM_EVENT_TYPE,
 ]);
 const SUBSCRIPTION_ID_KEY = 'monero-fast-wallet.push.subscription-id.v1';
 const REGISTRATION_STATE_KEY = 'monero-fast-wallet.push.registration-state.v1';
@@ -84,10 +86,12 @@ export interface FastWalletPushEvent {
   type:
     | typeof INCOMING_EVENT_TYPE
     | typeof TEST_EVENT_TYPE
-    | typeof VANITY_EVENT_TYPE;
+    | typeof VANITY_EVENT_TYPE
+    | typeof CLAIM_EVENT_TYPE;
   contractVersion: 'monero-fast-wallet-push.v3';
   eventId: string;
   orderId?: string;
+  jobId?: string;
   deepLink?: string;
 }
 
@@ -586,6 +590,7 @@ export function parseFastWalletPushEvent(
     'contractVersion',
     'eventId',
     'orderId',
+    'jobId',
     'deepLink',
   ]);
   if (
@@ -601,6 +606,13 @@ export function parseFastWalletPushEvent(
   }
 
   const vanity = data.type === VANITY_EVENT_TYPE;
+  const claim = data.type === CLAIM_EVENT_TYPE;
+  if (claim) {
+    if (data.orderId !== undefined || typeof data.jobId !== 'string' || !/^[0-9a-f]{48}$/.test(data.jobId)
+        || data.deepLink !== `tex8monero://mfw-claim/${data.jobId}`) return undefined;
+    return {type: CLAIM_EVENT_TYPE, contractVersion: EVENT_CONTRACT, eventId: data.eventId, jobId: data.jobId, deepLink: data.deepLink};
+  }
+  if (data.jobId !== undefined) return undefined;
   if (vanity && !v1ReleaseFeatures.vanityAddress) {
     return undefined;
   }
@@ -647,6 +659,8 @@ async function showAndroidForegroundNotification(
       ? 'Test notification: notifications are ready.'
       : event.type === VANITY_EVENT_TYPE
       ? 'Your Vanity address status changed.'
+      : event.type === CLAIM_EVENT_TYPE
+      ? 'Your name registration status changed. Open the app to check.'
       : 'Open the app to check for a new payment.';
 
   try {
@@ -671,7 +685,7 @@ async function handleRemoteMessage(
     () => null,
   );
   if (previousId === event.eventId) {
-    if (options.opened && event.type === VANITY_EVENT_TYPE && event.deepLink) {
+    if (options.opened && (event.type === VANITY_EVENT_TYPE || event.type === CLAIM_EVENT_TYPE) && event.deepLink) {
       await Linking.openURL(event.deepLink).catch(() => undefined);
     }
     return;
@@ -684,7 +698,7 @@ async function handleRemoteMessage(
   if (options.foreground) {
     await showAndroidForegroundNotification(message, event);
   }
-  if (options.opened && event.type === VANITY_EVENT_TYPE && event.deepLink) {
+  if (options.opened && (event.type === VANITY_EVENT_TYPE || event.type === CLAIM_EVENT_TYPE) && event.deepLink) {
     await Linking.openURL(event.deepLink).catch(() => undefined);
   }
   logWalletEvent(

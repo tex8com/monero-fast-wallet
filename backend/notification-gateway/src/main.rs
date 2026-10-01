@@ -123,6 +123,11 @@ async fn run() -> Result<(), String> {
         state = state.with_vanity_service_auth(auth);
         auth.zeroize();
     }
+    if let Some(path) = optional_env("NOTIFICATION_GATEWAY_CLAIM_SERVICE_AUTH_FILE") {
+        let mut auth = load_secret_file(Path::new(&path))?;
+        state = state.with_claim_service_auth(auth);
+        auth.zeroize();
+    }
     let listener = TcpListener::bind(bind)
         .await
         .map_err(|_| "notification gateway could not bind".to_owned())?;

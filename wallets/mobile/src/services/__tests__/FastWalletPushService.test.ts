@@ -1,6 +1,14 @@
 import { parseFastWalletPushEvent } from '../FastWalletPushService';
 
 describe('FastWalletPushService', () => {
+  it('accepts only an opaque claim job route, never a name or transaction payload', () => {
+    const data = {contractVersion:'monero-fast-wallet-push.v3',type:'monero.fast_wallet.mfw-claim',
+      eventId:`evt_${'ab'.repeat(32)}`,jobId:'cd'.repeat(24),deepLink:`tex8monero://mfw-claim/${'cd'.repeat(24)}`};
+    expect(parseFastWalletPushEvent({data})).toEqual(data);
+    expect(parseFastWalletPushEvent({data:{...data,name:'private.mfw'}})).toBeUndefined();
+    expect(parseFastWalletPushEvent({data:{...data,txId:'ab'.repeat(32)}})).toBeUndefined();
+    expect(parseFastWalletPushEvent({data:{...data,deepLink:'https://evil.example'}})).toBeUndefined();
+  });
   it('parses the privacy-preserving Fast Wallet event contract', () => {
     expect(
       parseFastWalletPushEvent({

@@ -71,6 +71,7 @@ import { walletDisplayName } from '../services/WalletRegistry';
 import { formatAtomicXmr } from '../services/WalletFormat';
 import { walletService, type WalletSession } from '../services/WalletService';
 import { useWalletState } from '../services/WalletState';
+import { cancelServerMfwClaim } from '../services/MfwClaimRelayService';
 import { colors, radius, spacing } from '../theme/colors';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 
@@ -132,6 +133,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     state: 'idle',
   });
   const [message, setMessage] = useState<string | undefined>();
+  const [cancellingRelayId, setCancellingRelayId] = useState<string | undefined>();
   const [ledgerSigningProgress, setLedgerSigningProgress] = useState<
     LedgerSigningProgress | undefined
   >();
@@ -436,11 +438,12 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           setOwnedNames(records);
           if (broadcastRecordId) {
             setSelectedOwnedNameId(broadcastRecordId);
+            const updatedRecord = records.find(item => item.id === broadcastRecordId);
             setMessage(
-              scheduledClaimRecorded
-                ? t('mfwNames.stepTwoScheduledDescription')
+              scheduledClaimRecorded || updatedRecord?.claimRelayJobId
+                ? t('mfwNames.relayCheckStatus')
                 : broadcastKind === 'commit'
-                ? t('mfwNames.commitBroadcastMessage')
+                ? t('mfwNames.relayManualFallback')
                 : broadcastKind === 'claim'
                 ? t('mfwNames.claimBroadcastMessage')
                 : undefined,
@@ -1528,7 +1531,15 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                             </Text>
                             <Text style={s.registrationProgressText}>
                               {stage === 'claim-pending'
-                                ? record.claimScheduledAt
+                                ? record.claimRelayState === 'uploading'
+                                  ? t('mfwNames.relayUploading')
+                                  : record.claimRelayState === 'waiting'
+                                  ? t('mfwNames.relayAccepted')
+                                  : record.claimRelayState === 'relaying'
+                                  ? t('mfwNames.relayTransmitting')
+                                  : record.claimRelayState === 'broadcast' || record.claimRelayState === 'confirmed'
+                                  ? t('mfwNames.stepTwoSentDescription')
+                                  : record.claimScheduledAt
                                   ? t('mfwNames.stepTwoScheduledDescription')
                                   : t('mfwNames.stepTwoSentDescription')
                                 : stage === 'reveal-ready'
@@ -1543,6 +1554,22 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                             </Text>
                           </View>
                         </View>
+                        {record.claimRelayJobId && (record.claimRelayState === 'waiting' || record.claimRelayState === 'uploading') ? (
+                          <TouchableOpacity
+                            accessibilityRole="button"
+                            disabled={cancellingRelayId !== undefined}
+                            onPress={async () => {
+                              setCancellingRelayId(record.id);
+                              try {
+                                await cancelServerMfwClaim(record.id);
+                                setMessage(t('mfwNames.relayManualFallback'));
+                              } catch (error) {
+                                setMessage(error instanceof Error ? error.message : String(error));
+                              } finally { setCancellingRelayId(undefined); }
+                            }}>
+                            <Text style={s.registrationProgressMeta}>{cancellingRelayId === record.id ? t('mfwNames.relayCancelling') : t('mfwNames.relayCancel')}</Text>
+                          </TouchableOpacity>
+                        ) : null}
                         {maturityHeight !== undefined ? (
                           <Text style={s.registrationProgressMeta}>
                             {t('mfwNames.maturityHeight', {

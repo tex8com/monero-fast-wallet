@@ -55,6 +55,7 @@ pub const EVENT_CATEGORY: &str = "monero.fast_wallet.incoming";
 /// a payment by the app or by the user.
 pub const TEST_EVENT_CATEGORY: &str = "monero.fast_wallet.test";
 pub const VANITY_EVENT_CATEGORY: &str = "monero.fast_wallet.vanity";
+pub const MFW_CLAIM_EVENT_CATEGORY: &str = "monero.fast_wallet.mfw-claim";
 const STORE_VERSION: u8 = 5;
 const MAX_EVENTS_PER_INSTALLATION: usize = 32;
 const MAX_INSTALLATIONS: usize = 20_000;
@@ -77,6 +78,7 @@ pub struct GatewayState {
     official_worker_maximum_assignments: usize,
     private_worker_maximum_assignments: usize,
     vanity_service_auth_hash: Option<[u8; 32]>,
+    claim_service_auth_hash: Option<[u8; 32]>,
 }
 
 struct ProviderAdapter {
@@ -307,6 +309,7 @@ impl GatewayState {
             official_worker_maximum_assignments: MAX_ASSIGNMENTS,
             private_worker_maximum_assignments: 8,
             vanity_service_auth_hash: None,
+            claim_service_auth_hash: None,
         })
     }
 
@@ -335,6 +338,7 @@ impl GatewayState {
             official_worker_maximum_assignments: MAX_ASSIGNMENTS,
             private_worker_maximum_assignments: 8,
             vanity_service_auth_hash: None,
+            claim_service_auth_hash: None,
         })
     }
 
@@ -346,6 +350,12 @@ impl GatewayState {
     pub fn with_vanity_service_auth(mut self, mut auth: [u8; 32]) -> Self {
         self.vanity_service_auth_hash = Some(Sha256::digest(auth).into());
         zeroize::Zeroize::zeroize(&mut auth);
+        self
+    }
+
+    pub fn with_claim_service_auth(mut self, mut auth: [u8; 32]) -> Self {
+        self.claim_service_auth_hash = Some(Sha256::digest(auth).into());
+        auth.zeroize();
         self
     }
 
@@ -630,6 +640,7 @@ pub fn router(state: GatewayState) -> Router {
         .route("/api/v1/workers/wake", post(accept_worker_wake))
         .route("/api/v1/internal/worker-wake", post(accept_worker_wake))
         .route("/api/v1/internal/vanity-event", post(accept_vanity_event))
+        .route("/api/v1/internal/mfw-claim-event", post(accept_claim_event))
         .route("/api/v1/notifications/stream", get(stream_events))
         .with_state(state)
 }
@@ -643,6 +654,50 @@ struct VanityEventInput {
     category: String,
     deep_link: String,
     platform: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ClaimEventInput {
+    installation_id: String,
+    event_id: String,
+    job_id: String,
+}
+
+async fn accept_claim_event(
+    State(state): State<GatewayState>,
+    headers: HeaderMap,
+    Json(input): Json<ClaimEventInput>,
+) -> Result<(StatusCode, Json<AcceptedResponse>), ApiError> {
+    let expected = state.claim_service_auth_hash.ok_or(ApiError::Unavailable)?;
+    let mut supplied: [u8; 32] = headers.get("x-mfw-claim-service-auth")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| hex::decode(v).ok())
+        .and_then(|v| v.try_into().ok()).ok_or(ApiError::Unauthorized)?;
+    let hash: [u8;32] = Sha256::digest(supplied).into();
+    supplied.zeroize();
+    if !bool::from(hash.ct_eq(&expected))
+        || !valid_installation_id(&input.installation_id)
+        || !valid_event_id(&input.event_id)
+        || input.job_id.len() != 48
+        || !input.job_id.bytes().all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v)) {
+        return Err(ApiError::Unauthorized);
+    }
+    let event = OpaqueNotificationEvent {
+        id: input.event_id,
+        category: MFW_CLAIM_EVENT_CATEGORY.to_owned(),
+        deep_link: format!("tex8monero://mfw-claim/{}", input.job_id),
+        received_at: unix_seconds().to_string(), opened: false,
+    };
+    // Provider storage first: retry after a crash must not lose the push
+    // merely because the websocket/event-store enqueue already succeeded.
+    if let Some(adapter) = &state.provider_adapter {
+        adapter.store.lock().await.enqueue(&input.installation_id, event.clone(), unix_seconds()).map_err(|_| ApiError::Storage)?;
+    }
+    if state.store.lock().await.enqueue_trusted_installation_event(&input.installation_id, event.clone())? {
+        let _ = state.signals.send(DeliverySignal { installation_id: input.installation_id, event });
+    }
+    Ok((StatusCode::ACCEPTED, Json(AcceptedResponse { accepted: true })))
 }
 
 async fn accept_vanity_event(
@@ -2842,6 +2897,29 @@ mod tests {
             pending[0].deep_link,
             format!("mfw://vanity/order/{order_id}")
         );
+    }
+
+    #[tokio::test]
+    async fn claim_event_requires_separate_service_auth_and_opaque_job_id() {
+        let auth = [7;32];
+        let state = GatewayState::open(storage()).unwrap().with_claim_service_auth(auth);
+        state.register_installation(INSTALLATION, &AUTH).await.unwrap();
+        let body = serde_json::json!({"installationId":INSTALLATION,"eventId":EVENT,"jobId":"cd".repeat(24)});
+        for (key, payload, expected) in [
+            ([0;32], body.clone(), StatusCode::UNAUTHORIZED),
+            (auth, serde_json::json!({"installationId":INSTALLATION,"eventId":EVENT,"jobId":"cd".repeat(24),"name":"private.mfw"}), StatusCode::UNPROCESSABLE_ENTITY),
+            (auth, body.clone(), StatusCode::ACCEPTED),
+            (auth, body, StatusCode::ACCEPTED),
+        ] {
+            let response=router(state.clone()).oneshot(Request::builder().method(Method::POST)
+                .uri("/api/v1/internal/mfw-claim-event").header("content-type","application/json")
+                .header("x-mfw-claim-service-auth",hex::encode(key)).body(Body::from(payload.to_string())).unwrap()).await.unwrap();
+            assert_eq!(response.status(),expected);
+        }
+        let pending=state.store.lock().await.pending(INSTALLATION);
+        assert_eq!(pending.len(),1);
+        assert_eq!(pending[0].category,MFW_CLAIM_EVENT_CATEGORY);
+        assert_eq!(pending[0].deep_link,format!("tex8monero://mfw-claim/{}","cd".repeat(24)));
     }
 
     #[tokio::test]

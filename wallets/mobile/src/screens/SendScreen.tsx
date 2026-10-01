@@ -9,7 +9,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
-  NativeModules,
   Platform,
   ScrollView,
   StatusBar,
@@ -82,7 +81,9 @@ import {
   type LedgerSigningProgress,
 } from '../services/LedgerSigningFlow';
 import { logWalletEvent } from '../services/WalletLogger';
-import { loadActiveNodeConnectionSettings } from '../services/NodeConnectionSettings';
+import { canUseMfwClaimRelay, scheduleServerMfwClaim } from '../services/MfwClaimRelayService';
+import { applyMfwNameBroadcast, loadMfwOwnedNames, upsertMfwOwnedName } from '../services/MfwNameRegistrationRegistry';
+import { FastWalletPushService } from '../services/FastWalletPushService';
 import { createPendingOutgoingTransaction } from '../services/PendingOutgoingRegistry';
 import {
   fetchConfiguredMfwNameSuggestions,
@@ -791,6 +792,10 @@ export default function SendScreen({ navigation, route }: any) {
 
     setSending(true);
     setSendError(undefined);
+    ledgerSigningCancelledRef.current = false;
+    const ensureAutomaticClaimNotCancelled = () => {
+      if (ledgerSigningCancelledRef.current) throw new LedgerSigningCancelledError();
+    };
     let broadcastSucceeded = false;
     let scheduledClaimTxId: string | undefined;
     let postBroadcastRefreshPending = false;
@@ -811,13 +816,28 @@ export default function SendScreen({ navigation, route }: any) {
       }
       broadcastSucceeded = true;
 
+      // Persist the first receipt before hardware work or navigation. If the
+      // app is terminated here, the pending commit and manual fallback survive.
+      if (completedNamePreset) {
+        const record = (await loadMfwOwnedNames()).find(item => item.id === completedNamePreset.registrationId);
+        if (record) await upsertMfwOwnedName(applyMfwNameBroadcast(record, {
+          registrationId: record.id, kind: completedNamePreset.kind,
+          years: completedNamePreset.years, txIds: committed.txIds,
+        }));
+      }
+
       if (
         completedNamePreset?.kind === 'commit' &&
         committed.txIds.length === 1 &&
-        Platform.OS === 'android'
+        transactionSession.registrationId &&
+        await canUseMfwClaimRelay(completedNamePreset.network)
       ) {
         try {
-          setLedgerSigningProgress({ phase: 'preparing-request' });
+          ensureAutomaticClaimNotCancelled();
+          if (transactionSession.hardwareDevice) {
+            setLedgerSigningProgress({phase: 'preparing-request', detail: t('mfwNames.relayApproveSecond')});
+          }
+          setSendStatus(t('mfwNames.relayApproveSecond'));
           const preparedClaim = await walletService.prepareMfwNameClaim(
             transactionSession,
             {
@@ -830,10 +850,12 @@ export default function SendScreen({ navigation, route }: any) {
               priority: 'low',
             },
           );
+          ensureAutomaticClaimNotCancelled();
           const heldClaim = await walletService.exportPendingTransaction(
             transactionSession,
             preparedClaim.preparedTransaction.id,
           );
+          ensureAutomaticClaimNotCancelled();
           if (
             heldClaim.status !== 'ok' ||
             heldClaim.txIds.length !== 1 ||
@@ -841,39 +863,20 @@ export default function SendScreen({ navigation, route }: any) {
           ) {
             throw new Error('The signed claim could not be held for automatic relay.');
           }
-          const settings = await loadActiveNodeConnectionSettings(
-            completedNamePreset.network,
-          );
-          const delayedRelay = NativeModules.MoneroLocalNotification as
-            | {
-                scheduleMfwClaimBroadcast?(
-                  registrationId: string,
-                  name: string,
-                  commitTxid: string,
-                  claimTxid: string,
-                  rawTxHex: string,
-                  daemonAddress: string,
-                  useSsl: boolean,
-                  useTor: boolean,
-                ): Promise<void>;
-              }
-            | undefined;
-          if (!delayedRelay?.scheduleMfwClaimBroadcast) {
-            throw new Error('Automatic delayed claim relay is unavailable.');
-          }
-          await delayedRelay.scheduleMfwClaimBroadcast(
-            completedNamePreset.registrationId,
-            completedNamePreset.name,
-            committed.txIds[0],
-            heldClaim.txIds[0],
-            heldClaim.rawTxHex[0],
-            settings.daemon.address,
-            settings.daemon.useSsl === true,
-            Boolean(settings.daemon.proxyAddress?.trim()),
-          );
+          // Hardware cancellation ends here. Once handed over, cancellation
+          // must be acknowledged by the durable relay (available on Names).
+          setLedgerSigningProgress(undefined);
+          setSendStatus(t('mfwNames.relayUploading'));
+          await scheduleServerMfwClaim({
+            registrationId: completedNamePreset.registrationId,
+            walletRegistrationId: transactionSession.registrationId,
+            commitTxid: committed.txIds[0], claimTxid: heldClaim.txIds[0],
+            rawTxHex: heldClaim.rawTxHex[0],
+            installationId: await FastWalletPushService.getStoredSubscriptionId().catch(() => undefined),
+          });
           scheduledClaimTxId = heldClaim.txIds[0];
         } catch (error) {
-          recordPostBroadcastFailure('scheduleMfwClaim', error);
+          if (!isLedgerSigningCancelledError(error)) recordPostBroadcastFailure('scheduleMfwClaim', error);
         } finally {
           setLedgerSigningProgress(undefined);
         }

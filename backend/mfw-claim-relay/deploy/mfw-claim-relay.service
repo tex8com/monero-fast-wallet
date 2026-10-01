@@ -1,0 +1,36 @@
+[Unit]
+Description=Monero Fast Wallet durable delayed claim relay
+Wants=network-online.target
+After=network-online.target monero-fast-node.service notification-gateway.service
+
+[Service]
+Type=simple
+User=mfw-claim-relay
+Group=mfw-claim-relay
+EnvironmentFile=/etc/monero-fast-wallet/mfw-claim-relay.env
+ExecStart=/opt/monero-fast-wallet/bin/mfw-claim-relay
+StateDirectory=mfw-claim-relay
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+LimitCORE=0
+MemoryMax=512M
+TasksMax=128
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

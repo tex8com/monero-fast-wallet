@@ -46,6 +46,8 @@ export interface MfwOwnedNameRecord {
   commitHeight?: number;
   sourceTxidHex?: string;
   claimScheduledAt?: string;
+  claimRelayJobId?: string;
+  claimRelayState?: 'uploading' | 'waiting' | 'relaying' | 'broadcast' | 'confirmed' | 'expired' | 'rejected' | 'cancelled';
   pendingAddress?: string;
   expiryHeight?: number;
   lastChainTipHeight?: number;
@@ -144,12 +146,19 @@ export function applyMfwNameBroadcast(
   const txid = requiredHex32(broadcast.txIds[0], 'transaction id');
   switch (broadcast.kind) {
     case 'commit':
+      // Navigation/restart may deliver the same receipt again after the claim
+      // was queued. Never downgrade a durable second-step state.
+      if (record.commitTxidHex === txid) return record;
       return normalizeRecord({
         ...record,
         stage: 'commit-pending',
         commitTxidHex: txid,
         commitBroadcastAt: now,
         commitHeight: undefined,
+        sourceTxidHex: undefined,
+        claimScheduledAt: undefined,
+        claimRelayJobId: undefined,
+        claimRelayState: undefined,
         lastChainTipHeight: undefined,
         updatedAt: now,
       });
@@ -436,6 +445,8 @@ function normalizeRecord(value: MfwOwnedNameRecord): MfwOwnedNameRecord {
     commitHeight: optionalHeight(value.commitHeight),
     sourceTxidHex: optionalHex(value.sourceTxidHex),
     claimScheduledAt: optionalTimestamp(value.claimScheduledAt),
+    claimRelayJobId: typeof value.claimRelayJobId === 'string' && /^[0-9a-f]{48}$/.test(value.claimRelayJobId) ? value.claimRelayJobId : undefined,
+    claimRelayState: ['uploading', 'waiting', 'relaying', 'broadcast', 'confirmed', 'expired', 'rejected', 'cancelled'].includes(String(value.claimRelayState)) ? value.claimRelayState as MfwOwnedNameRecord['claimRelayState'] : undefined,
     pendingAddress: optional(value.pendingAddress),
     expiryHeight: optionalHeight(value.expiryHeight),
     lastChainTipHeight: optionalHeight(value.lastChainTipHeight),

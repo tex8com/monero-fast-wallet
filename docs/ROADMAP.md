@@ -20,18 +20,23 @@ in this public roadmap.
 
 ### Required fixes
 
+Implementation update (2026-10-01): the new server delivery service is deployed
+and its actual onion ingress is verified. Mobile integration passes automated
+tests but is not a physical-device or public-release signoff.
+See [the delayed claim relay contract](../backend/mfw-claim-relay/README.md).
+
 - [x] Guide the two-transaction journey persistently. After the first approval,
   explain the maturity wait and keep the second approval as the next required
   action; never present the commitment as a completed registration.
-- [x] On Android, where the wallet can safely construct the claim from
-  independent unlocked inputs, collect both explicit approvals consecutively,
-  keep the signed claim
-  encrypted with Android Keystore on the device and broadcast it only after
-  15 commitment confirmations. Re-arm the local relay after reboot, force-stop
-  and the next app start.
-- [x] If safe pre-signing is not possible, for example because the claim needs
-  change from the commitment, show this before the first approval and retain a
-  prominent `Step 1 of 2 complete - second approval required` state.
+- [x] Implement consecutive approvals for the official-node mobile flow when
+  independent unlocked inputs exist. Persist locally before handing the signed
+  claim to an encrypted, idempotent server queue; distinguish upload uncertainty,
+  durable server receipt, transmission, observation and registry finality.
+- [x] Keep manual approval/reminder/banner for custom nodes, unavailable relay
+  or failed second preparation. Never discard the successfully sent commitment.
+- [ ] Preflight the actual independent input availability before the first
+  approval, not merely the account balance. Current second preparation can
+  still fall back to the manual flow after the commitment has been sent.
 - [x] After the commitment reaches protocol maturity, send a privacy-preserving
   local device notification such as `Your second .mfw approval is ready` and
   deep-link directly to the matching claim flow. The notification must not
@@ -54,10 +59,23 @@ in this public roadmap.
   can miss the required second step.
   before expiry. Never describe the registration as complete after only the
   commitment.
-- [x] Never upload the Android held signed claim or owner secret to a server.
-  Delayed broadcast is device-controlled and retries through the selected
-  official, HTTPS or Tor v3 node route.
-- [ ] Add equivalent encrypted delayed-broadcast handling for iOS and desktop.
+- [x] Document the new approved trust model: upload only the signed claim to
+  the selected official service, never owner secrets. The relay learns the
+  reveal early and is trusted not to release it early. Retain old device-only
+  Android jobs without migration or duplicate broadcast scheduling.
+- [x] Implement opaque job-status pushes through the existing gateway; payloads
+  contain no name, wallet address, amount or transaction ID.
+- [x] Deploy the relay and gateway; verify actual onion capabilities, denied
+  unauthenticated job access, private notification ingress and service health.
+  The service runs under its own unprivileged account; keys stay outside Git.
+- [ ] Verify notification registration/permission and delivery on the Pixel
+  with the app terminated; a local timed reminder is not proof of maturity.
+- [ ] Implement the equivalent desktop native export and server handoff.
+- [ ] Device-test the shared mobile integration on Android and iOS.
+  Android build/install is currently blocked by the disconnected 4-TB volume
+  containing the SDK/native build caches. No new Pixel installation is claimed.
+  Latest automated checks: 92 mobile suites / 601 tests, TypeScript and scoped
+  ESLint; 14 relay and 22 notification-gateway tests on the Linux server.
 - [x] Reconcile a pending commitment against its transaction ID in the complete
   wallet container history, including Ledger transactions outside the currently
   displayed account.

@@ -106,7 +106,8 @@ describe('MFW name registration UI contract', () => {
     expect(localNotification).toContain('fun schedule(');
     expect(localNotification).toContain('MfwClaimReminderReceiver');
     expect(send).toContain('exportPendingTransaction');
-    expect(send).toContain('scheduleMfwClaimBroadcast');
+    expect(send).toContain('scheduleServerMfwClaim');
+    expect(send).toContain('canUseMfwClaimRelay');
     expect(delayedClaimRelay).toContain('MIN_CONFIRMATIONS = 15L');
     expect(delayedClaimRelay).toContain('AndroidKeyStore');
     expect(delayedClaimRelay).toContain('"/send_raw_transaction"');
