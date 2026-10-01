@@ -107,7 +107,11 @@ describe('MFW name registration UI contract', () => {
     expect(localNotification).toContain('MfwClaimReminderReceiver');
     expect(send).toContain('exportPendingTransaction');
     expect(send).toContain('scheduleServerMfwClaim');
-    expect(send).toContain('canUseMfwClaimRelay');
+    expect(send).toContain('mfwClaimRelayReadiness');
+    expect(send).toContain("claimRelayReadiness === 'ready'");
+    expect(names).toContain('const schedulePendingClaim');
+    expect(names).toContain('scheduleServerMfwClaim');
+    expect(names).toContain("t('mfwNames.approveAndScheduleClaim')");
     expect(delayedClaimRelay).toContain('MIN_CONFIRMATIONS = 15L');
     expect(delayedClaimRelay).toContain('AndroidKeyStore');
     expect(delayedClaimRelay).toContain('"/send_raw_transaction"');
@@ -228,7 +232,11 @@ describe('MFW name registration UI contract', () => {
     expect(send).toContain("'transactionSubmission.start'");
     expect(send).toContain("'transactionSubmission.result'");
     expect(androidNative).toContain('"commitTransaction.approval.consumed"');
-    expect(androidNative).toContain('timedNativeOperation("commitTransaction.native")');
+    expect(androidNative).toContain(
+      'timedNativeOperation("commitTransaction.native")',
+    );
+    expect(names).toContain("message !== t('mfwNames.approvalExpired')");
+    expect(names).toContain("currentStage === 'reveal-ready'");
   });
 
   it('backs up new owner authority before commit and restores public names by address', () => {

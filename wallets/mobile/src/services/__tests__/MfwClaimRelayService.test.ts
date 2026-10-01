@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   canUseMfwClaimRelay,
+  mfwClaimRelayReadiness,
   scheduleServerMfwClaim,
   refreshMfwClaimRelayJobs,
   assertNoHeldMfwClaim,
@@ -81,8 +82,29 @@ it('uses manual fallback for custom nodes without contacting TEX8', async () => 
     daemon: { address: 'https://private.example:18081' },
   });
   expect(await canUseMfwClaimRelay('mainnet')).toBe(false);
+  expect(await mfwClaimRelayReadiness('mainnet')).toBe('manual-custom-node');
   expect(await canUseMfwClaimRelay('stagenet')).toBe(false);
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it('recognizes the legacy TEX8 host and retries a transient capability failure', async () => {
+  (loadActiveNodeConnectionSettings as jest.Mock).mockResolvedValue({
+    daemon: { address: '152.53.133.188:18089' },
+  });
+  fetchMock
+    .mockRejectedValueOnce(new Error('new Tor circuit'))
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        version: 1,
+        network: 'mainnet',
+        durable: true,
+        commitMaturityBlocks: 15,
+        commitRevealWindowBlocks: 720,
+      }),
+    });
+  expect(await mfwClaimRelayReadiness('mainnet')).toBe('ready');
+  expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 
 it('only accepts the matching durable relay capability', async () => {

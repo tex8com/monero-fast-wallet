@@ -18,6 +18,7 @@ import {
 const STORAGE = 'monero-fast-wallet.mfw-claim-relay.v1';
 const ORIGIN = PRIMARY_PRIVATE_SERVICE_ORIGIN;
 const PATH = '/v1/mfw/claim-relay';
+const LEGACY_TEX8_HOSTS = new Set(['152.53.133.188']);
 const ID = /^[0-9a-f]{48}$/;
 const HASH = /^[0-9a-f]{64}$/;
 type RemoteState =
@@ -118,8 +119,15 @@ async function saveJob(job: Job): Promise<void> {
 }
 
 /** No silent contact with our relay when the user selected a different node. */
-export async function canUseMfwClaimRelay(network: string): Promise<boolean> {
-  if (network !== 'mainnet') return false;
+export type MfwClaimRelayReadiness =
+  | 'ready'
+  | 'manual-custom-node'
+  | 'temporarily-unavailable';
+
+export async function mfwClaimRelayReadiness(
+  network: string,
+): Promise<MfwClaimRelayReadiness> {
+  if (network !== 'mainnet') return 'manual-custom-node';
   const settings = await loadActiveNodeConnectionSettings('mainnet');
   const authority = settings.daemon.address
     .replace(/^https?:\/\//, '')
@@ -127,26 +135,37 @@ export async function canUseMfwClaimRelay(network: string): Promise<boolean> {
   const host = authority.split(':')[0];
   if (
     host !== FIXED_MAINNET_NODES.tex8.clearnetHost &&
-    host !== FIXED_MAINNET_NODES.tex8.onionHost
+    host !== FIXED_MAINNET_NODES.tex8.onionHost &&
+    !LEGACY_TEX8_HOSTS.has(host)
   )
-    return false;
-  try {
-    const response = await torFetch(`${ORIGIN}${PATH}/capabilities`, {
-      timeoutMs: 8_000,
-      maximumResponseBytes: 4096,
-    });
-    const value = await response.json();
-    return (
-      response.ok &&
-      value.version === 1 &&
-      value.network === 'mainnet' &&
-      value.durable === true &&
-      value.commitMaturityBlocks === 15 &&
-      value.commitRevealWindowBlocks === 720
-    );
-  } catch {
-    return false;
+    return 'manual-custom-node';
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await torFetch(`${ORIGIN}${PATH}/capabilities`, {
+        timeoutMs: 8_000,
+        maximumResponseBytes: 4096,
+      });
+      const value = await response.json();
+      if (
+        response.ok &&
+        value.version === 1 &&
+        value.network === 'mainnet' &&
+        value.durable === true &&
+        value.commitMaturityBlocks === 15 &&
+        value.commitRevealWindowBlocks === 720
+      ) {
+        return 'ready';
+      }
+    } catch {
+      // A second bounded attempt avoids silently falling back after a
+      // short-lived Tor circuit failure.
+    }
   }
+  return 'temporarily-unavailable';
+}
+
+export async function canUseMfwClaimRelay(network: string): Promise<boolean> {
+  return (await mfwClaimRelayReadiness(network)) === 'ready';
 }
 
 async function identifier(): Promise<string> {

@@ -81,8 +81,16 @@ import {
   type LedgerSigningProgress,
 } from '../services/LedgerSigningFlow';
 import { logWalletEvent } from '../services/WalletLogger';
-import { canUseMfwClaimRelay, scheduleServerMfwClaim } from '../services/MfwClaimRelayService';
-import { applyMfwNameBroadcast, loadMfwOwnedNames, upsertMfwOwnedName } from '../services/MfwNameRegistrationRegistry';
+import {
+  mfwClaimRelayReadiness,
+  scheduleServerMfwClaim,
+  type MfwClaimRelayReadiness,
+} from '../services/MfwClaimRelayService';
+import {
+  applyMfwNameBroadcast,
+  loadMfwOwnedNames,
+  upsertMfwOwnedName,
+} from '../services/MfwNameRegistrationRegistry';
 import { FastWalletPushService } from '../services/FastWalletPushService';
 import { createPendingOutgoingTransaction } from '../services/PendingOutgoingRegistry';
 import {
@@ -284,7 +292,8 @@ export default function SendScreen({ navigation, route }: any) {
   const mfwApprovalExpiresAtMs =
     mfwNamePreset?.preparedTransaction.approvalExpiresAtMs;
   const mfwApprovalExpired = Boolean(
-    mfwNamePreset && !sending &&
+    mfwNamePreset &&
+      !sending &&
       (mfwApprovalInvalid ||
         mfwApprovalExpiresAtMs === undefined ||
         mfwApprovalExpiresAtMs <= approvalNowMs),
@@ -813,17 +822,27 @@ export default function SendScreen({ navigation, route }: any) {
     setSendError(undefined);
     ledgerSigningCancelledRef.current = false;
     const ensureAutomaticClaimNotCancelled = () => {
-      if (ledgerSigningCancelledRef.current) throw new LedgerSigningCancelledError();
+      if (ledgerSigningCancelledRef.current)
+        throw new LedgerSigningCancelledError();
     };
     let broadcastSucceeded = false;
     let scheduledClaimTxId: string | undefined;
     let postBroadcastRefreshPending = false;
     const completedNamePreset = mfwNamePreset;
+    let claimRelayReadiness: MfwClaimRelayReadiness | undefined;
     const recordPostBroadcastFailure = (stage: string, error: unknown) => {
       postBroadcastRefreshPending = true;
       logWalletEvent('SendScreen', `postBroadcast.${stage}.error`, { error });
     };
     try {
+      if (completedNamePreset?.kind === 'commit') {
+        claimRelayReadiness = await mfwClaimRelayReadiness(
+          completedNamePreset.network,
+        );
+        if (claimRelayReadiness === 'temporarily-unavailable') {
+          throw new Error(t('mfwNames.relayUnavailableBeforeCommit'));
+        }
+      }
       const committed = await walletService.commitTransaction(
         transactionSession,
         preparedTx.id,
@@ -843,23 +862,33 @@ export default function SendScreen({ navigation, route }: any) {
       // Persist the first receipt before hardware work or navigation. If the
       // app is terminated here, the pending commit and manual fallback survive.
       if (completedNamePreset) {
-        const record = (await loadMfwOwnedNames()).find(item => item.id === completedNamePreset.registrationId);
-        if (record) await upsertMfwOwnedName(applyMfwNameBroadcast(record, {
-          registrationId: record.id, kind: completedNamePreset.kind,
-          years: completedNamePreset.years, txIds: committed.txIds,
-        }));
+        const record = (await loadMfwOwnedNames()).find(
+          item => item.id === completedNamePreset.registrationId,
+        );
+        if (record)
+          await upsertMfwOwnedName(
+            applyMfwNameBroadcast(record, {
+              registrationId: record.id,
+              kind: completedNamePreset.kind,
+              years: completedNamePreset.years,
+              txIds: committed.txIds,
+            }),
+          );
       }
 
       if (
         completedNamePreset?.kind === 'commit' &&
         committed.txIds.length === 1 &&
         transactionSession.registrationId &&
-        await canUseMfwClaimRelay(completedNamePreset.network)
+        claimRelayReadiness === 'ready'
       ) {
         try {
           ensureAutomaticClaimNotCancelled();
           if (transactionSession.hardwareDevice) {
-            setLedgerSigningProgress({phase: 'preparing-request', detail: t('mfwNames.relayApproveSecond')});
+            setLedgerSigningProgress({
+              phase: 'preparing-request',
+              detail: t('mfwNames.relayApproveSecond'),
+            });
           }
           setSendStatus(t('mfwNames.relayApproveSecond'));
           const preparedClaim = await walletService.prepareMfwNameClaim(
@@ -885,7 +914,9 @@ export default function SendScreen({ navigation, route }: any) {
             heldClaim.txIds.length !== 1 ||
             heldClaim.rawTxHex?.length !== 1
           ) {
-            throw new Error('The signed claim could not be held for automatic relay.');
+            throw new Error(
+              'The signed claim could not be held for automatic relay.',
+            );
           }
           // Hardware cancellation ends here. Once handed over, cancellation
           // must be acknowledged by the durable relay (available on Names).
@@ -894,13 +925,18 @@ export default function SendScreen({ navigation, route }: any) {
           await scheduleServerMfwClaim({
             registrationId: completedNamePreset.registrationId,
             walletRegistrationId: transactionSession.registrationId,
-            commitTxid: committed.txIds[0], claimTxid: heldClaim.txIds[0],
+            commitTxid: committed.txIds[0],
+            claimTxid: heldClaim.txIds[0],
             rawTxHex: heldClaim.rawTxHex[0],
-            installationId: await FastWalletPushService.getStoredSubscriptionId().catch(() => undefined),
+            installationId:
+              await FastWalletPushService.getStoredSubscriptionId().catch(
+                () => undefined,
+              ),
           });
           scheduledClaimTxId = heldClaim.txIds[0];
         } catch (error) {
-          if (!isLedgerSigningCancelledError(error)) recordPostBroadcastFailure('scheduleMfwClaim', error);
+          if (!isLedgerSigningCancelledError(error))
+            recordPostBroadcastFailure('scheduleMfwClaim', error);
         } finally {
           setLedgerSigningProgress(undefined);
         }
@@ -1301,7 +1337,10 @@ export default function SendScreen({ navigation, route }: any) {
           {sending ? (
             <View style={s.submissionProgress}>
               <ActivityIndicator color={colors.orange} size="small" />
-              <Text accessibilityLiveRegion="polite" style={s.submissionProgressText}>
+              <Text
+                accessibilityLiveRegion="polite"
+                style={s.submissionProgressText}
+              >
                 {t('send.secureSubmissionProgress', {
                   seconds: activeSendElapsedSeconds,
                 })}

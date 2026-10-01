@@ -71,7 +71,12 @@ import { walletDisplayName } from '../services/WalletRegistry';
 import { formatAtomicXmr } from '../services/WalletFormat';
 import { walletService, type WalletSession } from '../services/WalletService';
 import { useWalletState } from '../services/WalletState';
-import { cancelServerMfwClaim } from '../services/MfwClaimRelayService';
+import {
+  cancelServerMfwClaim,
+  mfwClaimRelayReadiness,
+  scheduleServerMfwClaim,
+} from '../services/MfwClaimRelayService';
+import { FastWalletPushService } from '../services/FastWalletPushService';
 import { colors, radius, spacing } from '../theme/colors';
 import { v1ReleaseFeatures } from '../../../../packages/wallet-shared/src/v1ReleaseFeatures';
 
@@ -133,7 +138,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     state: 'idle',
   });
   const [message, setMessage] = useState<string | undefined>();
-  const [cancellingRelayId, setCancellingRelayId] = useState<string | undefined>();
+  const [cancellingRelayId, setCancellingRelayId] = useState<
+    string | undefined
+  >();
   const [ledgerSigningProgress, setLedgerSigningProgress] = useState<
     LedgerSigningProgress | undefined
   >();
@@ -149,6 +156,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
 
   const prepareWithSigningSession = async <T,>(
     prepare: (signingSession: WalletSession) => Promise<T>,
+    options?: { restoreAfterSuccess?: boolean },
   ): Promise<T> => {
     if (!session) {
       throw new Error(t('mfwNames.openWalletFirst'));
@@ -202,6 +210,10 @@ export default function MfwNamesScreen({ navigation, route }: any) {
       }
       const prepared = await prepare(signingSession);
       ensureNotCancelled();
+      if (options?.restoreAfterSuccess && ledgerHandoffCreated) {
+        await restoreLedgerViewAfterSigning().catch(() => false);
+        ledgerHandoffCreated = false;
+      }
       return prepared;
     } catch (error) {
       if (ledgerHandoffCreated) {
@@ -438,7 +450,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
           setOwnedNames(records);
           if (broadcastRecordId) {
             setSelectedOwnedNameId(broadcastRecordId);
-            const updatedRecord = records.find(item => item.id === broadcastRecordId);
+            const updatedRecord = records.find(
+              item => item.id === broadcastRecordId,
+            );
             setMessage(
               scheduledClaimRecorded || updatedRecord?.claimRelayJobId
                 ? t('mfwNames.relayCheckStatus')
@@ -519,6 +533,25 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     route?.params?.focusPendingClaim,
     t,
   ]);
+
+  useEffect(() => {
+    if (
+      !selectedOwnedName ||
+      message !== t('mfwNames.approvalExpired')
+    ) {
+      return;
+    }
+    const chainTip =
+      walletSnapshotMap[selectedOwnedName.walletRegistrationId]
+        ?.daemonHeight ?? selectedOwnedName.lastChainTipHeight;
+    const currentStage = effectiveMfwOwnedNameStage({
+      ...selectedOwnedName,
+      lastChainTipHeight: chainTip,
+    });
+    if (currentStage === 'reveal-ready' || currentStage === 'claim-pending') {
+      setMessage(undefined);
+    }
+  }, [message, selectedOwnedName, t, walletSnapshotMap]);
 
   useEffect(() => {
     const wallet = registeredWallet;
@@ -1027,6 +1060,82 @@ export default function MfwNamesScreen({ navigation, route }: any) {
     }
   };
 
+  const schedulePendingClaim = async (record: MfwOwnedNameRecord) => {
+    if (!registeredWallet || !session || !genesis || !record.commitTxidHex) {
+      setMessage(t('mfwNames.openWalletFirst'));
+      return;
+    }
+    if (
+      registeredWallet.id !== record.walletRegistrationId ||
+      session.registrationId !== record.walletRegistrationId ||
+      registeredWallet.network !== record.network
+    ) {
+      setMessage(t('mfwNames.openSelectedWallet'));
+      return;
+    }
+    setPreparingNameId(record.id);
+    setMessage(undefined);
+    try {
+      const readiness = await mfwClaimRelayReadiness(record.network);
+      if (readiness === 'manual-custom-node') {
+        setMessage(t('mfwNames.relayCustomNodeManual'));
+        return;
+      }
+      if (readiness !== 'ready') {
+        setMessage(t('mfwNames.relayUnavailableTryAgain'));
+        return;
+      }
+      await prepareWithSigningSession(
+        async signingSession => {
+          const prepared = await walletService.prepareMfwNameClaim(
+            signingSession,
+            {
+              registrationId: record.id,
+              name: record.canonicalName,
+              address: record.address,
+              network: record.network,
+              registryAddress: genesis.registryAddress,
+              years: record.termYears,
+              priority: 'low',
+            },
+          );
+          const held = await walletService.exportPendingTransaction(
+            signingSession,
+            prepared.preparedTransaction.id,
+          );
+          if (
+            held.status !== 'ok' ||
+            held.txIds.length !== 1 ||
+            held.rawTxHex?.length !== 1
+          ) {
+            throw new Error(t('mfwNames.relayPreparationFailed'));
+          }
+          await scheduleServerMfwClaim({
+            registrationId: record.id,
+            walletRegistrationId: record.walletRegistrationId,
+            commitTxid: record.commitTxidHex!,
+            claimTxid: held.txIds[0],
+            rawTxHex: held.rawTxHex[0],
+            installationId:
+              await FastWalletPushService.getStoredSubscriptionId().catch(
+                () => undefined,
+              ),
+          });
+        },
+        { restoreAfterSuccess: true },
+      );
+      setOwnedNames(await loadMfwOwnedNames());
+      setSelectedOwnedNameId(record.id);
+      setMessage(t('mfwNames.relayCheckStatus'));
+    } catch (error) {
+      if (!isLedgerSigningCancelledError(error)) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setPreparingNameId(undefined);
+    }
+  };
+
   const beginRenewal = async (record: MfwOwnedNameRecord) => {
     if (
       !registeredWallets.some(
@@ -1397,7 +1506,7 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                 const chainTip =
                   walletSnapshotMap[record.walletRegistrationId]
                     ?.daemonHeight ?? record.lastChainTipHeight;
-                const stage = effectiveMfwOwnedNameStage({
+                const storedStage = effectiveMfwOwnedNameStage({
                   ...record,
                   lastChainTipHeight: chainTip,
                 });
@@ -1408,15 +1517,6 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                 const wallet = registeredWallets.find(
                   candidate => candidate.id === record.walletRegistrationId,
                 );
-                const renewable =
-                  stage === 'active' &&
-                  record.ownerAuthority !== 'recovery-required';
-                const canClaim = stage === 'reveal-ready';
-                const canRestart =
-                  stage === 'claim-expired' ||
-                  stage === 'expired' ||
-                  stage === 'revoked' ||
-                  stage === 'failed';
                 const recordGenesis = configuredMfwNameGenesis(record.network);
                 const commitBlocksRemaining = recordGenesis
                   ? mfwNameCommitBlocksRemaining(
@@ -1425,6 +1525,23 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                       chainTip,
                     )
                   : undefined;
+                const stage =
+                  storedStage === 'commit-pending' &&
+                  commitBlocksRemaining === 0
+                    ? 'reveal-ready'
+                    : storedStage;
+                const renewable =
+                  stage === 'active' &&
+                  record.ownerAuthority !== 'recovery-required';
+                const canClaim = stage === 'reveal-ready';
+                const canScheduleClaim =
+                  (stage === 'commit-pending' || stage === 'reveal-ready') &&
+                  !record.claimRelayJobId;
+                const canRestart =
+                  stage === 'claim-expired' ||
+                  stage === 'expired' ||
+                  stage === 'revoked' ||
+                  stage === 'failed';
                 const claimWindowBlocksRemaining = recordGenesis
                   ? mfwNameClaimWindowBlocksRemaining(
                       record,
@@ -1537,7 +1654,8 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                                   ? t('mfwNames.relayAccepted')
                                   : record.claimRelayState === 'relaying'
                                   ? t('mfwNames.relayTransmitting')
-                                  : record.claimRelayState === 'broadcast' || record.claimRelayState === 'confirmed'
+                                  : record.claimRelayState === 'broadcast' ||
+                                    record.claimRelayState === 'confirmed'
                                   ? t('mfwNames.stepTwoSentDescription')
                                   : record.claimScheduledAt
                                   ? t('mfwNames.stepTwoScheduledDescription')
@@ -1554,7 +1672,9 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                             </Text>
                           </View>
                         </View>
-                        {record.claimRelayJobId && (record.claimRelayState === 'waiting' || record.claimRelayState === 'uploading') ? (
+                        {record.claimRelayJobId &&
+                        (record.claimRelayState === 'waiting' ||
+                          record.claimRelayState === 'uploading') ? (
                           <TouchableOpacity
                             accessibilityRole="button"
                             disabled={cancellingRelayId !== undefined}
@@ -1564,10 +1684,21 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                                 await cancelServerMfwClaim(record.id);
                                 setMessage(t('mfwNames.relayManualFallback'));
                               } catch (error) {
-                                setMessage(error instanceof Error ? error.message : String(error));
-                              } finally { setCancellingRelayId(undefined); }
-                            }}>
-                            <Text style={s.registrationProgressMeta}>{cancellingRelayId === record.id ? t('mfwNames.relayCancelling') : t('mfwNames.relayCancel')}</Text>
+                                setMessage(
+                                  error instanceof Error
+                                    ? error.message
+                                    : String(error),
+                                );
+                              } finally {
+                                setCancellingRelayId(undefined);
+                              }
+                            }}
+                          >
+                            <Text style={s.registrationProgressMeta}>
+                              {cancellingRelayId === record.id
+                                ? t('mfwNames.relayCancelling')
+                                : t('mfwNames.relayCancel')}
+                            </Text>
                           </TouchableOpacity>
                         ) : null}
                         {maturityHeight !== undefined ? (
@@ -1630,6 +1761,30 @@ export default function MfwNamesScreen({ navigation, route }: any) {
                     <Text style={s.expiryHint}>
                       {t('mfwNames.expiryEstimate')}
                     </Text>
+                    {canScheduleClaim ? (
+                      <TouchableOpacity
+                        accessibilityRole="button"
+                        style={s.nameAction}
+                        disabled={preparingNameId === record.id}
+                        onPress={() => schedulePendingClaim(record)}
+                      >
+                        {preparingNameId === record.id ? (
+                          <ActivityIndicator
+                            size="small"
+                            color={colors.orange}
+                          />
+                        ) : (
+                          <Icon
+                            name="arrow-right"
+                            size={16}
+                            color={colors.orange}
+                          />
+                        )}
+                        <Text style={s.nameActionText}>
+                          {t('mfwNames.approveAndScheduleClaim')}
+                        </Text>
+                      </TouchableOpacity>
+                    ) : null}
                     {canClaim ? (
                       <TouchableOpacity
                         accessibilityRole="button"

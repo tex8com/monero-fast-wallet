@@ -83,7 +83,11 @@ internal object LedgerBleTransport {
   private const val LOG_TAG = "LedgerBleTransport"
   private const val CONNECT_TIMEOUT_SECONDS = 20L
   private const val EXCHANGE_TIMEOUT_SECONDS = 30L
-  private const val USER_INPUT_TIMEOUT_SECONDS = 180L
+  // Monero transaction construction on a Nano X can continue doing protected
+  // device work for several minutes after the user has approved the visible
+  // prompts. Treat that time as part of the active signing operation instead
+  // of aborting a valid transaction after only three minutes.
+  private const val USER_INPUT_TIMEOUT_SECONDS = 900L
   private const val MAX_RESPONSE_SIZE = 262
   private const val LEDGER_GATT_MTU = 156
   private const val LEDGER_MAX_FRAME_SIZE = LEDGER_GATT_MTU - 3

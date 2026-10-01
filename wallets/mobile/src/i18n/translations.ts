@@ -1077,14 +1077,29 @@ const en = {
   'mfwNames.stepTwoSentDescription':
     'The claim and registry payment are waiting for blockchain confirmation.',
   'mfwNames.stepTwoScheduled': 'Both approvals completed',
-  'mfwNames.relayUploading': 'Both transactions signed. Connecting to the delivery service — keep the app open until the server confirms receipt.',
-  'mfwNames.relayAccepted': 'The server has saved step 2 and will send it after 15 blocks, even with the app closed. Notification requires notifications to be enabled.',
-  'mfwNames.relayCheckStatus': 'Both transactions signed. Check the delivery status above before closing the app.',
-  'mfwNames.relayTransmitting': 'The server is delivering step 2. Waiting for the transaction to appear on the network.',
+  'mfwNames.relayUploading':
+    'Both transactions signed. Connecting to the delivery service — keep the app open until the server confirms receipt.',
+  'mfwNames.relayAccepted':
+    'The server has saved step 2 and will send it after 15 blocks, even with the app closed. Notification requires notifications to be enabled.',
+  'mfwNames.relayCheckStatus':
+    'Both transactions signed. Check the delivery status above before closing the app.',
+  'mfwNames.relayTransmitting':
+    'The server is delivering step 2. Waiting for the transaction to appear on the network.',
   'mfwNames.relayCancel': 'Stop automatic delivery · complete step 2 manually',
   'mfwNames.relayCancelling': 'Waiting for cancellation confirmation…',
-  'mfwNames.relayApproveSecond': 'Step 2 of 2: approve the claim and payment now. It will be handed to the server for delayed delivery.',
-  'mfwNames.relayManualFallback': 'Automatic step 2 was unavailable. Confirm it here once the commit is ready. Enable notifications for a reminder; a reminder is not a confirmation of blockchain maturity.',
+  'mfwNames.relayApproveSecond':
+    'Step 2 of 2: approve the claim and payment now. It will be handed to the server for delayed delivery.',
+  'mfwNames.relayManualFallback':
+    'Automatic step 2 was unavailable. Confirm it here once the commit is ready. Enable notifications for a reminder; a reminder is not a confirmation of blockchain maturity.',
+  'mfwNames.relayUnavailableBeforeCommit':
+    'Automatic delivery is temporarily unavailable. Step 1 was not sent. Try again so both approvals can be completed together.',
+  'mfwNames.relayUnavailableTryAgain':
+    'Automatic delivery is temporarily unavailable. No new transaction was sent. Try again shortly.',
+  'mfwNames.relayCustomNodeManual':
+    'A custom or community node is selected. Step 2 must be confirmed manually after the commit matures.',
+  'mfwNames.relayPreparationFailed':
+    'Step 2 could not be signed and stored safely.',
+  'mfwNames.approveAndScheduleClaim': 'Approve and schedule step 2',
   'mfwNames.stepTwoScheduledDescription':
     'The final transaction is protected on this device and will be sent automatically after 15 blocks.',
   'mfwNames.notificationTitle': 'Monero Fast Wallet name',
@@ -2726,14 +2741,29 @@ const de: Record<keyof typeof en, string> = {
   'mfwNames.stepTwoSentDescription':
     'Claim und Registry-Zahlung warten auf die Blockchain-Bestätigung.',
   'mfwNames.stepTwoScheduled': 'Beide Freigaben abgeschlossen',
-  'mfwNames.relayUploading': 'Beide Transaktionen signiert. Verbindung zum Sendedienst wird hergestellt – App offen lassen, bis der Server den Empfang bestätigt.',
-  'mfwNames.relayAccepted': 'Der Server hat Schritt 2 gespeichert und sendet ihn nach 15 Blöcken, auch bei geschlossener App. Für die Benachrichtigung müssen Mitteilungen aktiviert sein.',
-  'mfwNames.relayCheckStatus': 'Beide Transaktionen signiert. Prüfe oben den Übertragungsstatus, bevor du die App schließt.',
-  'mfwNames.relayTransmitting': 'Der Server überträgt Schritt 2. Die Bestätigung aus dem Netzwerk steht noch aus.',
+  'mfwNames.relayUploading':
+    'Beide Transaktionen signiert. Verbindung zum Sendedienst wird hergestellt – App offen lassen, bis der Server den Empfang bestätigt.',
+  'mfwNames.relayAccepted':
+    'Der Server hat Schritt 2 gespeichert und sendet ihn nach 15 Blöcken, auch bei geschlossener App. Für die Benachrichtigung müssen Mitteilungen aktiviert sein.',
+  'mfwNames.relayCheckStatus':
+    'Beide Transaktionen signiert. Prüfe oben den Übertragungsstatus, bevor du die App schließt.',
+  'mfwNames.relayTransmitting':
+    'Der Server überträgt Schritt 2. Die Bestätigung aus dem Netzwerk steht noch aus.',
   'mfwNames.relayCancel': 'Automatik stoppen · Schritt 2 selbst bestätigen',
   'mfwNames.relayCancelling': 'Abbruchbestätigung wird abgewartet…',
-  'mfwNames.relayApproveSecond': 'Schritt 2 von 2: Bestätige jetzt Namen und Zahlung. Danach wird die Transaktion zum späteren Senden an den Server übergeben.',
-  'mfwNames.relayManualFallback': 'Der automatische zweite Schritt war nicht verfügbar. Bestätige ihn hier, sobald der Commit bereit ist. Aktiviere Mitteilungen für eine Erinnerung; diese bestätigt noch nicht die Blockchain-Reife.',
+  'mfwNames.relayApproveSecond':
+    'Schritt 2 von 2: Bestätige jetzt Namen und Zahlung. Danach wird die Transaktion zum späteren Senden an den Server übergeben.',
+  'mfwNames.relayManualFallback':
+    'Der automatische zweite Schritt war nicht verfügbar. Bestätige ihn hier, sobald der Commit bereit ist. Aktiviere Mitteilungen für eine Erinnerung; diese bestätigt noch nicht die Blockchain-Reife.',
+  'mfwNames.relayUnavailableBeforeCommit':
+    'Die automatische Übertragung ist vorübergehend nicht erreichbar. Schritt 1 wurde nicht gesendet. Versuche es erneut, damit beide Freigaben gemeinsam abgeschlossen werden.',
+  'mfwNames.relayUnavailableTryAgain':
+    'Die automatische Übertragung ist vorübergehend nicht erreichbar. Es wurde keine neue Transaktion gesendet. Versuche es in Kürze erneut.',
+  'mfwNames.relayCustomNodeManual':
+    'Ein eigener oder Community-Node ist ausgewählt. Schritt 2 muss nach der Commit-Reife manuell bestätigt werden.',
+  'mfwNames.relayPreparationFailed':
+    'Schritt 2 konnte nicht sicher signiert und gespeichert werden.',
+  'mfwNames.approveAndScheduleClaim': 'Schritt 2 bestätigen und einplanen',
   'mfwNames.stepTwoScheduledDescription':
     'Die letzte Transaktion liegt geschützt auf diesem Gerät und wird nach 15 Blöcken automatisch gesendet.',
   'mfwNames.notificationTitle': 'Monero Fast Wallet Name',
