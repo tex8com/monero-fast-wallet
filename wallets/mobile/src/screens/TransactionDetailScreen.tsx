@@ -12,7 +12,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '../components/Icon';
 import { useI18n } from '../i18n';
 import type { WalletTransaction } from '../services/NativeMoneroWallet';
-import { formatAtomicXmr } from '../services/WalletFormat';
+import {
+  formatAtomicXmr,
+  normalizedTransactionAmountAtomic,
+} from '../services/WalletFormat';
 import { useWalletState } from '../services/WalletState';
 import { walletDisplayName } from '../services/WalletRegistry';
 import { colors, radius, spacing } from '../theme/colors';
@@ -52,13 +55,14 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
   }
 
   const incoming = transaction.direction === 'in';
+  const normalizedAmountAtomic = normalizedTransactionAmountAtomic(transaction);
   const selfTransfer =
     !incoming &&
-    transaction.amountAtomic === '0' &&
+    normalizedAmountAtomic === '0' &&
     transaction.feeAtomic !== '0';
   const summaryAtomic = selfTransfer
     ? transaction.feeAtomic
-    : transaction.amountAtomic;
+    : normalizedAmountAtomic;
   const amount = formatAtomicXmr(summaryAtomic, {
     maxFractionDigits: 12,
     minFractionDigits: 2,
@@ -189,7 +193,7 @@ export default function TransactionDetailScreen({ navigation, route }: any) {
             }
           />
           <AtomicXmrDetailRow
-            atomicValue={transaction.amountAtomic}
+            atomicValue={normalizedAmountAtomic}
             label={t('transactions.amount')}
             testID="transaction-amount"
           />

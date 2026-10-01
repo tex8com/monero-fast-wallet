@@ -1,6 +1,7 @@
 import {
   atomicXmrToNumber,
   formatAtomicXmr,
+  normalizedTransactionAmountAtomic,
   parseXmrToAtomic,
   subtractAtomic,
 } from "../WalletFormat";
@@ -35,5 +36,32 @@ describe("WalletFormat", () => {
 
   it("converts atomic values to numbers for fiat estimates", () => {
     expect(atomicXmrToNumber("1500000000000")).toBe(1.5);
+  });
+
+  it("repairs an unsigned Ledger history underflow from its recipient total", () => {
+    expect(
+      normalizedTransactionAmountAtomic({
+        amountAtomic: "18446743927874251388",
+        direction: "out",
+        transfers: [{ amountAtomic: "1" }],
+      }),
+    ).toBe("1");
+  });
+
+  it("keeps normal and fee-only transaction amounts unchanged", () => {
+    expect(
+      normalizedTransactionAmountAtomic({
+        amountAtomic: "3000000000",
+        direction: "out",
+        transfers: [{ amountAtomic: "3000000000" }],
+      }),
+    ).toBe("3000000000");
+    expect(
+      normalizedTransactionAmountAtomic({
+        amountAtomic: "0",
+        direction: "out",
+        transfers: [{ amountAtomic: "2000000000" }],
+      }),
+    ).toBe("0");
   });
 });

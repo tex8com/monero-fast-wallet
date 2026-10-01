@@ -10,7 +10,10 @@ import {
 
 import { useI18n } from '../i18n';
 import type { WalletTransaction } from '../services/NativeMoneroWallet';
-import { formatAtomicXmr } from '../services/WalletFormat';
+import {
+  formatAtomicXmr,
+  normalizedTransactionAmountAtomic,
+} from '../services/WalletFormat';
 import { colors, radius } from '../theme/colors';
 import { Icon } from './Icon';
 
@@ -36,10 +39,13 @@ export default function TransactionRow({
 }: TransactionRowProps) {
   const { dateLocale, t } = useI18n();
   const incoming = transaction.direction === 'in';
-  const amount = formatAtomicXmr(transaction.amountAtomic, {
-    maxFractionDigits: 12,
-    minFractionDigits: 2,
-  });
+  const amount = formatAtomicXmr(
+    normalizedTransactionAmountAtomic(transaction),
+    {
+      maxFractionDigits: 12,
+      minFractionDigits: 2,
+    },
+  );
   const status = transaction.failed
     ? t('status.failed')
     : transaction.pending

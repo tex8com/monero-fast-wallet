@@ -661,7 +661,7 @@ WalletTransaction toWalletTransaction(const Monero::TransactionInfo& source) {
   result.pending = source.isPending();
   result.failed = source.isFailed();
   result.coinbase = source.isCoinbase();
-  result.amountAtomic = source.amount();
+  const uint64_t reportedAmountAtomic = source.amount();
   result.feeAtomic = source.fee();
   result.blockHeight = source.blockHeight();
   result.confirmations = source.confirmations();
@@ -676,6 +676,27 @@ WalletTransaction toWalletTransaction(const Monero::TransactionInfo& source) {
     item.amountAtomic = transfer.amount;
     item.address = transfer.address;
     result.transfers.push_back(std::move(item));
+  }
+
+  result.amountAtomic = reportedAmountAtomic;
+  if (result.direction == "out" && !result.transfers.empty()) {
+    uint64_t transferTotalAtomic = 0;
+    bool transferTotalValid = true;
+    for (const auto& transfer : result.transfers) {
+      if (transfer.amountAtomic >
+          std::numeric_limits<uint64_t>::max() - transferTotalAtomic) {
+        transferTotalValid = false;
+        break;
+      }
+      transferTotalAtomic += transfer.amountAtomic;
+    }
+
+    // Ledger view wallets can temporarily report an unknown change value.
+    // Monero's unsigned `amount_in - change - fee` then wraps close to
+    // UINT64_MAX. The explicit destination total remains authoritative.
+    if (transferTotalValid && reportedAmountAtomic > transferTotalAtomic) {
+      result.amountAtomic = transferTotalAtomic;
+    }
   }
 
   return result;

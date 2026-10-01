@@ -213,4 +213,37 @@ describe('TransactionDetailScreen', () => {
     expect(text).toContain('Self transfer');
     expect(text).toContain('-0.00004444 XMR');
   });
+
+  it('shows the recipient amount instead of a wrapped Ledger history value', () => {
+    const wrappedLedgerTransaction = {
+      ...transaction,
+      amountAtomic: '18446743927874251388',
+      feeAtomic: '45220000',
+      transfers: [{ amountAtomic: '1', address: '4'.repeat(95) }],
+    };
+    mockedUseWalletState.mockReturnValue({
+      registeredWallet: { walletName: 'ledger' },
+      transactions: [wrappedLedgerTransaction],
+    } as unknown as ReturnType<typeof useWalletState>);
+
+    let renderer: ReactTestRenderer.ReactTestRenderer | undefined;
+    ReactTestRenderer.act(() => {
+      renderer = ReactTestRenderer.create(
+        <TransactionDetailScreen
+          navigation={{ goBack: jest.fn() }}
+          route={{
+            params: {
+              transaction: wrappedLedgerTransaction,
+              transactionHash: hash,
+            },
+          }}
+        />,
+      );
+    });
+
+    const amount = renderer!.root
+      .findAllByType(Text)
+      .find(node => node.props.testID === 'transaction-amount');
+    expect(amount?.props.accessibilityLabel).toBe('0.000000000001 XMR');
+  });
 });

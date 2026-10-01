@@ -6,6 +6,33 @@ export interface FormatXmrOptions {
   trimTrailingZeros?: boolean;
 }
 
+interface TransactionAmountSource {
+  amountAtomic: string;
+  direction: string;
+  transfers: ReadonlyArray<{ amountAtomic: string }>;
+}
+
+export function normalizedTransactionAmountAtomic(
+  transaction: TransactionAmountSource,
+): string {
+  if (transaction.direction !== "out" || transaction.transfers.length === 0) {
+    return transaction.amountAtomic;
+  }
+
+  try {
+    const reported = BigInt(transaction.amountAtomic);
+    const transferTotal = transaction.transfers.reduce(
+      (total, transfer) => total + BigInt(transfer.amountAtomic),
+      0n,
+    );
+    return reported > transferTotal
+      ? transferTotal.toString()
+      : transaction.amountAtomic;
+  } catch {
+    return transaction.amountAtomic;
+  }
+}
+
 export function formatAtomicXmr(
   atomicValue: bigint | number | string | undefined,
   options: FormatXmrOptions = {},
