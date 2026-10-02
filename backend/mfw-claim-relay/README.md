@@ -1,7 +1,9 @@
 # Delayed `.mfw` claim delivery
 
-A separate delivery service alongside Monero Fast Node, **not a consensus
-change** and not the existing ciphertext `fast-wallet-relay`.
+A delayed-delivery component integrated into the Monero Fast Node process,
+**not a consensus change** and not the existing ciphertext
+`fast-wallet-relay`. The former standalone binary remains only as a controlled
+migration and rollback path.
 
 ## Contract and trust boundary
 
@@ -90,20 +92,24 @@ should be established before a broad public launch.
 
 1. `cargo test --locked --manifest-path backend/mfw-claim-relay/Cargo.toml` and
    the notification gateway tests. Build both with `--release --locked`.
-2. Create a dedicated unprivileged service account, private state directory,
-   and distinct random storage and gateway-auth keys. Never rotate the storage
-   key without migrating the encrypted database. Back up DB **with WAL** and
-   the key securely; never overwrite a populated queue during deployment.
-3. Install `deploy/mfw-claim-relay.service`, prepare an external environment
-   from the example, and set the real canonical-node origin. Port 8101 avoids
-   existing worker-debug/vanity ports. No public daemon port is opened.
+2. Run Monero Fast Node under its existing unprivileged account. Configure the
+   integrated component with `CUPRATE_MFW_CLAIM_DATABASE`,
+   `CUPRATE_MFW_CLAIM_STORAGE_KEY_FILE`, `CUPRATE_MFW_CLAIM_DAEMON_ORIGIN` and,
+   when notifications are enabled, both `CUPRATE_MFW_CLAIM_GATEWAY_ORIGIN` and
+   `CUPRATE_MFW_CLAIM_NOTIFICATION_KEY_FILE`. No second listener is opened.
+3. When migrating from the standalone service, stop it first, back up the
+   database **with WAL** and the storage key, then transfer ownership to the
+   Monero Fast Node account. Never run both writers against one queue, rotate
+   the storage key, or overwrite a populated database. Keep the old binary and
+   configuration as a rollback path until restart durability is verified.
 4. Configure `NOTIFICATION_GATEWAY_CLAIM_SERVICE_AUTH_FILE` with a separate
    owner-readable copy of the shared notification key, update the gateway
    binary and restart it with a rollback copy retained.
 5. Include the rate-limit snippet in Nginx `http` and the route snippet in the
    primary onion server. Run `nginx -t` before reload. Do not proxy the
    `/api/v1/internal/mfw-claim-event` route externally.
-6. Verify loopback + onion capabilities, authenticated job denial, durable
+6. Point the existing Nginx claim-relay route at the node's loopback RPC, then
+   verify loopback + onion capabilities, authenticated job denial, durable
    restart, RPC field shapes, correct block boundary, and actual push delivery.
    A real Ledger commit/claim cycle requires the owner's explicit approvals;
    tests must never silently spend wallet funds.

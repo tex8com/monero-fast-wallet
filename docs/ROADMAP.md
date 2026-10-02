@@ -5,13 +5,14 @@ not describe finished functionality.
 
 ## `.mfw` registration and Ledger transaction flow
 
-### Verified current state (2026-09-28)
+### Verified current state (2026-10-01)
 
 - [x] A first-stage name commitment was broadcast, mined and indexed on
   Mainnet.
-- [ ] The second-stage claim-and-pay transaction has not been observed in the
-  canonical index. Until it is mined and independently resolved, the name is
-  not registered.
+- [x] A complete two-stage registration was mined and the resulting name was
+  shown as active with an authoritative expiry height. This proves that one
+  physical Android/Ledger registration succeeded; it is not the complete
+  release acceptance matrix.
 - [x] A local pending registration now overrides a public `Available` result;
   the app opens the existing two-step flow instead of starting a duplicate.
 
@@ -72,11 +73,11 @@ See [the delayed claim relay contract](../backend/mfw-claim-relay/README.md).
   with the app terminated; a local timed reminder is not proof of maturity.
 - [ ] Implement the equivalent desktop native export and server handoff.
 - [ ] Device-test the shared mobile integration on Android and iOS.
-  Android release 1.0.94 (95), built from `5313dc40`, was installed as a
-  data-preserving update on the Pixel 8 Pro on 2026-10-01. APK v2 signature and
-  16-KB alignment passed; the installed APK hash matches the build artifact:
-  `ee64fd18417bfff9f364008f415282180215aceb6939738d8152dc9511ffe32e`.
-  Physical Ledger/claim/push acceptance still requires the user's test.
+  Android release 1.0.99 (100) is installed on the Pixel 8 Pro. A cold start,
+  biometric unlock, stored-wallet opening, optimized-node startup and push
+  registration were verified through ADB on 2026-10-01 without a crash.
+  Physical Ledger USB/BLE, send, closed-app push and interruption acceptance
+  still require explicit user interaction.
   Latest automated checks: 92 mobile suites / 601 tests, TypeScript and scoped
   ESLint; 14 relay and 22 notification-gateway tests on the Linux server.
 - [x] Reconcile a pending commitment against its transaction ID in the complete
@@ -111,4 +112,7 @@ See [the delayed claim relay contract](../backend/mfw-claim-relay/README.md).
   direct canonical-node evidence.
 - [ ] Confirm that restart and reconnection during every stage resume to the
   correct action without duplicate payment.
-- [ ] Repeat the same state and UI checks in the desktop application.
+- [ ] Recruit a volunteer with a physical iPhone for wallet, Ledger BLE, APNs,
+  lifecycle and accessibility acceptance. Simulator success is not sufficient.
+- [ ] Repeat the same state and UI checks in the desktop application. Desktop
+  is explicitly excluded from the first release and is not release-ready.

@@ -42,6 +42,7 @@ mod commands;
 mod config;
 mod constants;
 mod logging;
+mod mfw_claim_relay;
 mod mfw_name_index;
 mod p2p;
 mod rpc;
@@ -123,6 +124,12 @@ fn main() {
         )
         .expect("invalid or unsafe MFW name-index configuration");
 
+        // Optional durable delayed-claim delivery is part of this process.
+        // Operators do not need a second daemon; its encrypted queue remains
+        // an isolated sidecar so it can be backed up and migrated safely.
+        let mfw_claim_relay = mfw_claim_relay::start_from_environment(config.network())
+            .expect("invalid or unsafe MFW claim-relay configuration");
+
         // Start the context service and the block/tx verifier.
         let context_svc =
             blockchain::init_consensus(blockchain_read_handle.clone(), config.context_config())
@@ -191,6 +198,7 @@ fn main() {
             txpool_read_handle.clone(),
             tx_handler.clone(),
             mfw_name_index,
+            mfw_claim_relay,
         );
 
         // Start Tor P2P zone after sync completes.

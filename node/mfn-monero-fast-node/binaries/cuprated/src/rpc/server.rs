@@ -56,6 +56,7 @@ pub fn init_rpc_servers(
     txpool_read: TxpoolReadHandle,
     tx_handler: IncomingTxHandler,
     mfw_name_index: Option<SharedNameIndex>,
+    mfw_claim_relay: Option<mfw_claim_relay::Service>,
 ) {
     for ((enable, addr, port, request_byte_limit), restricted) in [
         (
@@ -105,11 +106,13 @@ pub fn init_rpc_servers(
             tx_handler.clone(),
         );
         let resolver_index = mfw_name_index.clone();
+        let claim_relay = mfw_claim_relay.clone();
 
         tokio::task::spawn(async move {
             run_rpc_server(
                 rpc_handler,
                 resolver_index,
+                claim_relay,
                 restricted,
                 SocketAddr::new(addr, port),
                 request_byte_limit,
@@ -249,6 +252,7 @@ fn set_grpc_tcp_congestion_control(
 async fn run_rpc_server(
     rpc_handler: CupratedRpcHandler,
     mfw_name_index: Option<SharedNameIndex>,
+    mfw_claim_relay: Option<mfw_claim_relay::Service>,
     restricted: bool,
     address: SocketAddr,
     request_byte_limit: usize,
@@ -322,6 +326,13 @@ async fn run_rpc_server(
         )
         .with_state(mfw_name_index);
     let router = router.merge(resolver_router);
+    let router = if let Some(claim_relay) = mfw_claim_relay {
+        // The relay owns only these explicit routes. Its body limit and
+        // no-store/nosniff headers remain scoped to the merged sub-router.
+        router.merge(mfw_claim_relay::router(claim_relay))
+    } else {
+        router
+    };
 
     // Add restrictive layers if restricted RPC.
     //

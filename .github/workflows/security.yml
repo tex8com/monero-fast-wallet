@@ -136,6 +136,8 @@ jobs:
             manifest: backend/notification-gateway/Cargo.toml
           - name: notification-registration-adapter
             manifest: backend/notification-registration-adapter/Cargo.toml
+          - name: mfw-claim-relay
+            manifest: backend/mfw-claim-relay/Cargo.toml
           - name: fast-wallet-scanner-core
             manifest: backend/fast-wallet-worker/scanner-core/Cargo.toml
     steps:
@@ -144,6 +146,9 @@ jobs:
         run: |
           rustup toolchain install 1.97.0 --profile minimal
           rustup default 1.97.0
+      - name: Install protobuf compiler for scanner build
+        if: matrix.name == 'fast-wallet-scanner-core'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: cargo test --locked --manifest-path ${{ matrix.manifest }}
 
   community-live-matrix:

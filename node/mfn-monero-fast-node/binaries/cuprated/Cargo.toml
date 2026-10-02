@@ -102,6 +102,7 @@ fs2                   = { version = "0.4" }
 libc                  = { version = "0.2" }
 scanpack-format       = { path = "../../../../native/scanpack-format" }
 mfw-recipient-protocol = { path = "../../../../native/mfw-recipient-protocol" }
+mfw-claim-relay       = { path = "../../../../backend/mfw-claim-relay" }
 zeroize               = { version = "1" }
 
 [dev-dependencies]

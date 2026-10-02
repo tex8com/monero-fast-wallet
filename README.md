@@ -494,11 +494,11 @@ automatically mean that an end-user artifact has been released.
 
 | Platform | Current status | Still required before release |
 | --- | --- | --- |
-| iOS | React Native app, native Monero core build path, native recovery input, app protection, BLE transport, and push contract are present | Physical wallet, Ledger, APNs, lifecycle, accessibility, and App Store validation |
-| Android | React Native app, JNI/core, USB/HID, BLE, Keystore, native recovery input, and release build path are present | Physical wallet, Ledger, FCM, device, accessibility, and Google Play validation |
-| macOS | Tauri 2 app with locally linked core; create/open/seed/subaddress tested; Metal backend packaged | Sign, notarize, staple, and repeat wallet, Ledger, and push validation for the exact app |
-| Windows | UI, Rust host, protection contracts, and notification-agent contracts are present | Build and load the native core as a DLL, then complete wallet, Ledger, push, and installer validation |
-| Linux | ARM64 AppImage assembled locally with the core; DBus agent contract is present | Clean-user, real-node, Ledger, notification, and package validation |
+| iOS | **Not release-ready.** React Native app, native Monero core build path, native recovery input, app protection, BLE transport, and push contract are present | A volunteer with a physical iPhone must validate wallet, Ledger, APNs, lifecycle and accessibility before any iOS release |
+| Android | **Release candidate, not yet approved.** React Native app, JNI/core, USB/HID, BLE, Keystore, native recovery input, and release build path are present | Complete the physical Pixel acceptance matrix below, then signing and Google Play validation |
+| macOS | **Not release-ready and excluded from the first release.** Tauri 2 app with locally linked core; create/open/seed/subaddress tested; Metal backend packaged | Sign, notarize, staple, and repeat wallet, Ledger, push and update validation for the exact app |
+| Windows | **Not release-ready and excluded from the first release.** UI, Rust host, protection contracts, and notification-agent contracts are present | Build and load the native core as a DLL, then complete wallet, Ledger, push, update and installer validation |
+| Linux | **Not release-ready and excluded from the first release.** ARM64 AppImage assembled locally with the core; DBus agent contract is present | Clean-user, real-node, Ledger, notification, update and package validation |
 | Services | Scanner, Gateway, Monero Fast Node, and the replacement Monero Enthusiast V1 service stack exist as separate components; V1 API, private Synapse and signed sequence-1 catalogs are live and smoke-tested | Validate backups, rotation, restore, load, abuse operations, reorganization handling, provider delivery, and monitoring |
 
 All five app targets are built from one authenticated Monero Core patch tree.
