@@ -4436,7 +4436,7 @@ class NativeMoneroWalletModule(
   }
 
   /**
-   * Shows the recovery words in a native, full-screen secure window.  The
+   * Shows the recovery words in a native, full-screen secure window. The
    * words deliberately never cross into React Native: a JS modal would make
    * them available to the bridge, dev tooling, and the renderer heap.
    */
@@ -4577,6 +4577,12 @@ class NativeMoneroWalletModule(
     dialog.setContentView(root)
     dialog.window?.apply {
       setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+      // Keep normal application screenshots available for diagnostics, but
+      // make the only screen that renders recovery words non-capturable.
+      setFlags(
+        WindowManager.LayoutParams.FLAG_SECURE,
+        WindowManager.LayoutParams.FLAG_SECURE,
+      )
     }
     dialog.show()
     dialog.window?.setLayout(

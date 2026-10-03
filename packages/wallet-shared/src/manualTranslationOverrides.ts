@@ -5,6 +5,11 @@ export type ManualTranslationLocale =
 type TranslationMap = Readonly<Record<string, string>>;
 
 const es: TranslationMap = {
+  'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.':
+    'Use rutas optimizadas separadas: sincronización rápida de la cadena de bloques por Clearnet y el resto del tráfico del daemon por Onion.',
+  'Lock all wallets': 'Bloquear todas las wallets',
+  'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.':
+    '¿Eliminar permanentemente los datos locales de {name}? Sin sus palabras de recuperación o Ledger, no se podrá restaurar el acceso.',
   'Monero Fast Wallet Registry price': 'Precio del registro de Monero Fast Wallet',
   '{amount} XMR incoming': '{amount} XMR recibidos',
   '{amount} XMR spent': '{amount} XMR gastados',
@@ -498,6 +503,11 @@ const es: TranslationMap = {
 };
 
 const ptBR: TranslationMap = {
+  'Lock all wallets': 'Bloquear todas as wallets',
+  'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.':
+    'Use rotas otimizadas separadas: sincronização rápida da blockchain pela Clearnet e o restante do tráfego do daemon pela Onion.',
+  'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.':
+    'Remover permanentemente os dados locais de {name}? Sem as palavras de recuperação ou o Ledger, o acesso não poderá ser restaurado.',
   'Monero Fast Wallet Registry price': 'Preço do registro de Monero Fast Wallet',
   Back: 'Voltar',
   Cancel: 'Cancelar',
@@ -901,6 +911,11 @@ const ptBR: TranslationMap = {
 };
 
 const ru: TranslationMap = {
+  'AI Assistant': 'ИИ-ассистент',
+  'Tex8 Assistant': 'Tex8 Assistant',
+  'Lock all wallets': 'Заблокировать все кошельки',
+  'Using the selected sync node. The app remains usable.':
+    'Используется выбранный узел синхронизации. Приложение остаётся доступным.',
   Back: 'Назад',
   Delete: 'Удалить',
   Copied: 'Скопировано',
@@ -3338,23 +3353,115 @@ const additionalManualTranslationOverrides: Readonly<Partial<Record<ManualTransl
   },
 };
 
+// Security-relevant and destructive-action copy must never silently fall back
+// to an unreviewed machine translation.
+const releaseSafetyTranslationOverrides: Readonly<Partial<Record<ManualTranslationLocale, TranslationMap>>> = {
+  ru: {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'Используйте отдельные оптимизированные маршруты: быстрая синхронизация блокчейна через Clearnet, а остальной трафик демона — через Onion.',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': 'Удалить локальные данные {name} навсегда? Без слов восстановления или Ledger доступ восстановить нельзя.',
+  },
+  vi: {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'Dùng các tuyến tối ưu riêng: đồng bộ blockchain nhanh qua Clearnet và lưu lượng daemon còn lại qua Onion.',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': 'Xóa vĩnh viễn dữ liệu cục bộ của {name}? Không có cụm từ khôi phục hoặc Ledger, không thể khôi phục quyền truy cập.',
+    'AI Assistant': 'Trợ lý AI',
+    'Lock all wallets': 'Khóa tất cả ví',
+  },
+  id: {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'Gunakan rute terpisah yang dioptimalkan: sinkronisasi blockchain cepat melalui Clearnet dan sisa lalu lintas daemon melalui Onion.',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': 'Hapus data lokal {name} secara permanen? Tanpa kata pemulihan atau Ledger, akses tidak dapat dipulihkan.',
+    'Lock all wallets': 'Kunci semua wallet',
+    'Manage wallets': 'Kelola wallet',
+  },
+  uk: {
+    'Using the selected sync node. The app remains usable.': 'Використовується вибраний вузол синхронізації. Застосунок залишається доступним.',
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'Використовуйте окремі оптимізовані маршрути: швидка синхронізація блокчейна через Clearnet, а решта трафіку демона — через Onion.',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': 'Назавжди видалити локальні дані {name}? Без слів відновлення або Ledger доступ неможливо відновити.',
+    'AI Assistant': 'ШІ-помічник',
+    'Lock all wallets': 'Заблокувати всі гаманці',
+  },
+  tr: {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'Ayrı optimize edilmiş yollar kullanın: Clearnet üzerinden hızlı blok zinciri eşitlemesi ve kalan daemon trafiği için Onion.',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': '{name} için yerel veriler kalıcı olarak silinsin mi? Kurtarma sözcükleri veya Ledger olmadan erişim geri getirilemez.',
+    'Lock all wallets': 'Tüm cüzdanları kilitle',
+    'AI Assistant': 'Yapay zekâ asistanı',
+    'Node Status': 'Düğüm durumu',
+  },
+  hi: {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'अलग अनुकूलित मार्गों का उपयोग करें: Clearnet पर तेज़ ब्लॉकचेन सिंक और शेष डेमन ट्रैफ़िक Onion पर।',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': '{name} का स्थानीय डेटा स्थायी रूप से हटाएँ? रिकवरी शब्दों या Ledger के बिना पहुँच बहाल नहीं की जा सकती।',
+    'Lock all wallets': 'सभी वॉलेट लॉक करें',
+  },
+  ur: {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'الگ بہتر راستے استعمال کریں: Clearnet پر تیز بلاک چین ہم آہنگی اور باقی daemon ٹریفک Onion پر۔',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': '{name} کا مقامی ڈیٹا مستقل طور پر حذف کریں؟ ریکوری الفاظ یا Ledger کے بغیر رسائی بحال نہیں ہو سکتی۔',
+    'AI Assistant': 'اے آئی اسسٹنٹ',
+    'Lock all wallets': 'تمام والیٹس لاک کریں',
+  },
+  fr: {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'Utilisez des itinéraires optimisés distincts : synchronisation rapide de la blockchain via Clearnet et le reste du trafic du démon via Onion.',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': 'Supprimer définitivement les données locales de {name} ? Sans ses mots de récupération ou Ledger, l’accès ne peut pas être restauré.',
+    'AI Assistant': 'Assistant IA',
+    'Lock all wallets': 'Verrouiller tous les portefeuilles',
+  },
+  fil: {
+    'Using the selected sync node. The app remains usable.': 'Ginagamit ang napiling sync node. Magagamit pa rin ang app.',
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'Gumamit ng magkahiwalay na naka-optimize na ruta: mabilis na blockchain sync sa Clearnet at ang natitirang daemon traffic sa Onion.',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': 'Permanenteng alisin ang lokal na data para sa {name}? Kung walang recovery words o Ledger, hindi na maibabalik ang access.',
+    'Lock all wallets': 'I-lock ang lahat ng wallet',
+    'AI Assistant': 'AI Assistant',
+    'Choose an available verified implementation. CPU remains the safe fallback if Metal or CUDA is unavailable or fails a safety check.': 'Pumili ng available na napatunayang implementation. Ang CPU ang ligtas na fallback kung hindi available ang Metal o CUDA o bumagsak ito sa safety check.',
+  },
+  ja: {
+    'Times and days are estimates at the two-minute block target; the expiry block is authoritative.': '時間と日数は二分のブロック目標に基づく推定です。有効期限ブロックが正確な基準です。',
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': '最適化された経路を分けます。高速なブロックチェーン同期はClearnetで、残りのデーモントラフィックはOnionで行います。',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': '{name} のローカルデータを完全に削除しますか？リカバリーワードまたは Ledger がなければ、アクセスは復元できません。',
+    'AI Assistant': 'AIアシスタント',
+    'Lock all wallets': 'すべてのウォレットをロック',
+  },
+  ko: {
+    'Times and days are estimates at the two-minute block target; the expiry block is authoritative.': '시간과 일수는 이분 블록 목표의 추정치입니다. 만료 블록이 정확한 기준입니다.',
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': '최적화된 경로를 분리합니다. 빠른 블록체인 동기화는 Clearnet으로, 나머지 데몬 트래픽은 Onion으로 처리합니다.',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': '{name}의 로컬 데이터를 영구 삭제할까요? 복구 단어 또는 Ledger가 없으면 접근을 복원할 수 없습니다.',
+    'Manage wallets': '지갑 관리',
+    'Lock all wallets': '모든 지갑 잠금',
+  },
+  ar: {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': 'استخدم مسارات محسّنة منفصلة: مزامنة سريعة للبلوك تشين عبر Clearnet وبقية حركة daemon عبر Onion.',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': 'هل تريد حذف البيانات المحلية لـ {name} نهائياً؟ لا يمكن استعادة الوصول من دون كلمات الاسترداد أو Ledger.',
+    'AI Assistant': 'مساعد الذكاء الاصطناعي',
+    'Lock all wallets': 'قفل جميع المحافظ',
+  },
+  'zh-CN': {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': '使用独立的优化路由：通过 Clearnet 快速同步区块链，其余守护进程流量通过 Onion。',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': '永久删除 {name} 的本地数据？没有恢复词或 Ledger，将无法恢复访问权限。',
+    'AI Assistant': 'AI 助手',
+    'Lock all wallets': '锁定所有钱包',
+  },
+  'zh-TW': {
+    'Use separate optimized routes: fast blockchain sync over Clearnet and the remaining daemon traffic over Onion.': '使用獨立的最佳化路由：透過 Clearnet 快速同步區塊鏈，其餘守護程式流量透過 Onion。',
+    'Permanently remove the local data for {name}? Without its recovery words or Ledger, access cannot be restored.': '永久刪除 {name} 的本機資料？沒有恢復詞或 Ledger，將無法恢復存取權。',
+    'AI Assistant': 'AI 助手',
+    'Lock all wallets': '鎖定所有錢包',
+  },
+};
+
 export const manualTranslationOverrides: Readonly<Partial<Record<ManualTranslationLocale, TranslationMap>>> = {
-  es: { ...es, ...additionalManualTranslationOverrides.es, ...nativeTranslationOverrides.es },
-  'pt-BR': { ...ptBR, ...additionalManualTranslationOverrides['pt-BR'], ...nativeTranslationOverrides['pt-BR'] },
-  ru: { ...ru, ...nativeTranslationOverrides.ru },
-  vi: { ...vi, ...nativeTranslationOverrides.vi },
-  id: { ...id, ...nativeTranslationOverrides.id },
-  'zh-CN': { ...zhCN, ...additionalManualTranslationOverrides['zh-CN'], ...nativeTranslationOverrides['zh-CN'] },
-  'zh-TW': { ...zhTW, ...additionalManualTranslationOverrides['zh-TW'], ...nativeTranslationOverrides['zh-TW'] },
-  ko: { ...ko, ...additionalManualTranslationOverrides.ko, ...nativeTranslationOverrides.ko },
-  ja: { ...ja, ...additionalManualTranslationOverrides.ja, ...nativeTranslationOverrides.ja },
-  ar: { ...ar, ...nativeTranslationOverrides.ar },
-  ur: { ...ur, ...nativeTranslationOverrides.ur },
-  hi: { ...hi, ...nativeTranslationOverrides.hi },
-  uk: { ...uk, ...nativeTranslationOverrides.uk },
-  tr: { ...tr, ...nativeTranslationOverrides.tr },
-  fr: { ...fr, ...nativeTranslationOverrides.fr },
-  fil: { ...fil, ...nativeTranslationOverrides.fil },
+  es: { ...es, ...additionalManualTranslationOverrides.es, ...releaseSafetyTranslationOverrides.es, ...nativeTranslationOverrides.es },
+  'pt-BR': { ...ptBR, ...additionalManualTranslationOverrides['pt-BR'], ...releaseSafetyTranslationOverrides['pt-BR'], ...nativeTranslationOverrides['pt-BR'] },
+  ru: { ...ru, ...releaseSafetyTranslationOverrides.ru, ...nativeTranslationOverrides.ru },
+  vi: { ...vi, ...releaseSafetyTranslationOverrides.vi, ...nativeTranslationOverrides.vi },
+  id: { ...id, ...releaseSafetyTranslationOverrides.id, ...nativeTranslationOverrides.id },
+  'zh-CN': { ...zhCN, ...additionalManualTranslationOverrides['zh-CN'], ...releaseSafetyTranslationOverrides['zh-CN'], ...nativeTranslationOverrides['zh-CN'] },
+  'zh-TW': { ...zhTW, ...additionalManualTranslationOverrides['zh-TW'], ...releaseSafetyTranslationOverrides['zh-TW'], ...nativeTranslationOverrides['zh-TW'] },
+  ko: { ...ko, ...additionalManualTranslationOverrides.ko, ...releaseSafetyTranslationOverrides.ko, ...nativeTranslationOverrides.ko },
+  ja: { ...ja, ...additionalManualTranslationOverrides.ja, ...releaseSafetyTranslationOverrides.ja, ...nativeTranslationOverrides.ja },
+  ar: { ...ar, ...releaseSafetyTranslationOverrides.ar, ...nativeTranslationOverrides.ar },
+  ur: { ...ur, ...releaseSafetyTranslationOverrides.ur, ...nativeTranslationOverrides.ur },
+  hi: { ...hi, ...releaseSafetyTranslationOverrides.hi, ...nativeTranslationOverrides.hi },
+  uk: { ...uk, ...releaseSafetyTranslationOverrides.uk, ...nativeTranslationOverrides.uk },
+  tr: { ...tr, ...releaseSafetyTranslationOverrides.tr, ...nativeTranslationOverrides.tr },
+  fr: { ...fr, ...releaseSafetyTranslationOverrides.fr, ...nativeTranslationOverrides.fr },
+  fil: { ...fil, ...releaseSafetyTranslationOverrides.fil, ...nativeTranslationOverrides.fil },
 };
 
 export function hasDuplicatedAdjacentWord(value: string): boolean {

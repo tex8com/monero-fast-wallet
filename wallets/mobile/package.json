@@ -20,6 +20,7 @@
     "ios:build-simulator-core": "bash scripts/ios-build-simulator-core.sh",
     "ios:diagnostics": "bash scripts/ios-diagnostics.sh",
     "ios:logs": "bash scripts/ios-logs.sh",
+    "postinstall": "node scripts/patch-metro-image-size.js",
     "ios:metro": "bash scripts/ios-ensure-metro.sh",
     "firebase:check": "node scripts/check-firebase-config.js",
     "test:build-integrity": "node scripts/test-build-integrity-contract.js",
@@ -94,11 +95,13 @@
     "node": ">= 22.11.0"
   },
   "overrides": {
-    "brace-expansion": "$brace-expansion"
+    "brace-expansion": "$brace-expansion",
+    "@grpc/grpc-js": "1.14.5",
+    "image-size": "2.0.4"
   },
   "allowScripts": {
-    "@firebase/util@1.14.0": true,
-    "protobufjs@7.6.5": true,
+    "@firebase/util@1.15.1": true,
+    "protobufjs@7.6.6": true,
     "fsevents": false
   }
 }

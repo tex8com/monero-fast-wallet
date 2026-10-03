@@ -16,7 +16,7 @@ fn manifest() -> Option<&'static Manifest> {
     MANIFEST
         .get_or_init(|| {
             serde_json::from_str::<Manifest>(include_str!(
-                "../../../config/v1-release-features.json"
+                "../../../../config/v1-release-features.json"
             ))
             .ok()
             .filter(|manifest| manifest.schema_version == 1 && manifest.profile == "safe-wallet-v1")

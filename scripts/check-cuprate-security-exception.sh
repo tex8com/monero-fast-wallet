@@ -57,6 +57,7 @@ audit_command=(
   cargo audit
   --file "${lockfile}"
   --ignore "${exception_id}"
+  --no-yanked
   --json
 )
 if [[ "${CARGO_AUDIT_NO_FETCH:-0}" == "1" ]]; then

@@ -51,8 +51,8 @@ zeroize = { version = "1.8", features = ["derive"] }
 unicode-normalization = "0.1"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
-arti-client = { version = "0.44", default-features = false, features = ["compression", "onion-service-client", "rustls", "tokio"] }
-tor-rtcompat = { version = "0.44", default-features = false, features = ["rustls", "tokio"] }
+arti-client = { version = "0.47", default-features = false, features = ["compression", "onion-service-client", "rustls", "tokio"] }
+tor-rtcompat = { version = "0.47", default-features = false, features = ["rustls", "tokio"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Apple recommends SecItem + the Data Protection Keychain for current macOS
@@ -70,10 +70,10 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 zbus = "5.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-arti-client = { version = "0.43", default-features = false, features = ["compression", "native-tls", "onion-service-client", "tokio"] }
+arti-client = { version = "0.47", default-features = false, features = ["compression", "native-tls", "onion-service-client", "tokio"] }
 notify-rust = "4.11"
 raw-window-handle = "0.6"
-tor-rtcompat = { version = "0.43", default-features = false, features = ["native-tls", "tokio"] }
+tor-rtcompat = { version = "0.47", default-features = false, features = ["native-tls", "tokio"] }
 
 [[bin]]
 name = "monero-fast-walletd"

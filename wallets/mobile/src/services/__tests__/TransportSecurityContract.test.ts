@@ -76,6 +76,7 @@ describe('mobile transport security contract', () => {
     expect(androidNetworkSecurity).toContain(
       'quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion',
     );
+    expect(androidNetworkSecurity).not.toContain('xmr.tex8.com');
     expect(iosInfoPlist).toMatch(
       /<key>NSAllowsArbitraryLoads<\/key>\s*<false\/>/,
     );

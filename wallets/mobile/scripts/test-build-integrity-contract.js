@@ -6,6 +6,10 @@ const root = path.join(__dirname, '..');
 const android = path.join(root, 'android');
 const read = relativePath =>
   fs.readFileSync(path.join(root, relativePath), 'utf8');
+const packageJson = read('package.json');
+
+assert.match(packageJson, /"image-size": "2\.0\.4"/u, 'image-size must remain on the patched security release');
+assert.match(packageJson, /"postinstall": "node scripts\/patch-metro-image-size\.js"/u, 'Metro compatibility patch must run after install');
 
 const wrapper = read('android/gradle/wrapper/gradle-wrapper.properties');
 assert.match(wrapper, /distributionUrl=https\\:\/\/services\.gradle\.org\/distributions\/gradle-8\.14\.3-bin\.zip/);
@@ -122,7 +126,11 @@ assert.match(
   /applyScreenCapturePolicy\(\)[\s\S]*clearFlags\(WindowManager\.LayoutParams\.FLAG_SECURE\)/,
 );
 assert.doesNotMatch(mainActivity, /setFlags\([\s\S]*FLAG_SECURE/);
-assert.doesNotMatch(nativeWalletModule, /FLAG_SECURE/);
+assert.match(
+  nativeWalletModule,
+  /showRecoverySeedBackupScreen[\s\S]*setFlags\([\s\S]*WindowManager\.LayoutParams\.FLAG_SECURE/,
+  'only the native recovery-word window may block screenshots',
+);
 assert.match(
   proguardRules,
   /-keep class org\.torproject\.jni\.TorService \{ \*; \}/,

@@ -185,9 +185,7 @@ describe('Wallet dashboard interaction contract', () => {
     ).toHaveLength(1);
     expect(prepareFlow).not.toContain('if (session.readOnly)');
     expect(prepareFlow).not.toContain('await reconcileLedgerBalance()');
-    expect(prepareFlow).toContain(
-      "setLedgerSigningProgress({ phase: 'searching' })",
-    );
+    expect(prepareFlow).toContain("publishProgress({ phase: 'searching' })");
     expect(prepareFlow).toContain("phase: 'awaiting-confirmation'");
     expect(prepareFlow).toContain('let ledgerHandoffCreated = false');
     expect(prepareFlow).toContain('await restoreLedgerViewAfterSigning()');

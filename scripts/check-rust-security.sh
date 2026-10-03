@@ -32,9 +32,9 @@ run_clean_audit() {
   fi
 }
 
-run_clean_audit --file "${clean_lockfiles[0]}" --deny warnings
+run_clean_audit --no-yanked --file "${clean_lockfiles[0]}" --deny warnings
 for lockfile in "${clean_lockfiles[@]:1}"; do
-  run_clean_audit --no-fetch --file "${lockfile}" --deny warnings
+  run_clean_audit --no-fetch --no-yanked --file "${lockfile}" --deny warnings
 done
 
 CARGO_AUDIT_NO_FETCH=1 "${script_dir}/check-desktop-security-warnings.sh"

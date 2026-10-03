@@ -110,7 +110,8 @@ describe('sensitive native boundary contract', () => {
     expect(walletSetupScreen).toContain('walletService.presentRecoverySeed(');
     expect(walletSetupScreen).not.toContain('seedModal');
     expect(androidWalletModule).toContain('showRecoverySeedBackupScreen(');
-    expect(androidWalletModule).not.toContain('WindowManager.LayoutParams.FLAG_SECURE');
+    expect(androidWalletModule).toContain('WindowManager.LayoutParams.FLAG_SECURE');
+    expect(androidWalletModule).toContain('make the only screen that renders recovery words non-capturable');
     expect(androidWalletModule).toContain('words deliberately never cross into React Native');
     expect(androidWalletModule).not.toContain('.setTitle("Recovery seed")');
     expect(iosWalletModule).toContain(

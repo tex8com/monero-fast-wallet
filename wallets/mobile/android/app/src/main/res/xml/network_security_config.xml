@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
+    <!-- Tor v3 services are intentionally plain HTTP inside the encrypted
+         Tor circuit. Clearnet endpoints must always use HTTPS. -->
     <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">xmr.tex8.com</domain>
         <domain includeSubdomains="false">fastrelayrpcf3hbc4qvykjgbpwpmcuq5dpcsdxoe7gwfh2zxdib3eid.onion</domain>
         <domain includeSubdomains="false">quietportrpccujodzxhwcfefbmhftof5i6oiq7rrx5tnzna7rxirhqd.onion</domain>
     </domain-config>
