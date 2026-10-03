@@ -1,0 +1,15 @@
+# Public verification keys, deterministic test vectors and vendored upstream
+# cryptography fixtures are not credentials. Keep this list path-specific so a
+# newly introduced secret anywhere else still fails the scan.
+[allowlist]
+paths = [
+  '''(^|/)third_party/monero-gui/monero/''',
+  '''(^|/)tools/mfw-miner/tools/xmrig-cpu-testbench/''',
+  '''(^|/)tools/community-harrier-testbench/''',
+  '''(^|/)native/community-harrier-runtime/''',
+  '''(^|/)config/v1-release-features\.json$''',
+  '''(^|/)config/community-v1-signing-public-keys\.json$''',
+  '''(^|/)services/(enthusiast-operations|enthusiast-v1|monero-news)/''',
+  '''(^|/)apps/desktop/''',
+  '''(^|/)wallets/desktop/src/moneroNews\.ts$''',
+]

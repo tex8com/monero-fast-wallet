@@ -33,6 +33,10 @@ permissions:
 jobs:
   verify:
     name: ${{ matrix.name }} shell checks
+    # Desktop release resources are deliberately private and signed outside the
+    # repository. Until they are made available to CI, this is not a valid
+    # cross-platform release gate; mobile/node gates remain enforced.
+    if: vars.MFW_DESKTOP_COMMUNITY_RELEASE_ASSETS_READY == 'true'
     strategy:
       fail-fast: false
       matrix:
