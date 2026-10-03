@@ -9,7 +9,9 @@ const read = relativePath =>
 const packageJson = read('package.json');
 
 assert.match(packageJson, /"image-size": "2\.0\.4"/u, 'image-size must remain on the patched security release');
-assert.match(packageJson, /"postinstall": "node scripts\/patch-metro-image-size\.js"/u, 'Metro compatibility patch must run after install');
+assert.match(packageJson, /"postinstall": "node scripts\/patch-metro-image-size\.js && node scripts\/patch-braces-depth\.js"/u, 'security compatibility patches must run after install');
+assert.match(packageJson, /patch-braces-depth\.js/u, 'braces depth mitigation must run after install');
+assert.match(packageJson, /"audit:security": "node scripts\/audit-security\.js"/u);
 
 const wrapper = read('android/gradle/wrapper/gradle-wrapper.properties');
 assert.match(wrapper, /distributionUrl=https\\:\/\/services\.gradle\.org\/distributions\/gradle-8\.14\.3-bin\.zip/);

@@ -10,7 +10,7 @@ community-chat-report-core = { path = "../../packages/community-chat-report-core
 community-notification-core = { path = "../../packages/community-notification-core" }
 community-publication-core = { path = "../../packages/community-publication-core" }
 hex = "0.4"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"], default-features = false }
 zeroize = "1"
 

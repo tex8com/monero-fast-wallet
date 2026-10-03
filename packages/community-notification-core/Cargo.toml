@@ -9,7 +9,7 @@ license = "AGPL-3.0-only"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 hex = "0.4"
 reqwest = { version = "0.12", features = ["blocking", "http2", "json", "rustls-tls"], default-features = false }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

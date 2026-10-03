@@ -20,7 +20,7 @@ const appNodeModules = path.resolve(__dirname, 'node_modules');
 
 const config = {
   watchFolders: [
-    tex8SharedAppRoot,
+    ...(require('fs').existsSync(tex8SharedAppRoot) ? [tex8SharedAppRoot] : []),
     moneroSharedWalletRoot,
     moneroAppUpdateRoot,
     moneroReleaseConfigRoot,

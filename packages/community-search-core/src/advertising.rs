@@ -223,10 +223,12 @@ impl AdvertisingCatalogCore {
                 "SELECT generation, payload_sha256
                  FROM advertising_catalog WHERE scope = ?1",
                 [&scope],
-                |row| Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?)),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
-            .map_err(|error| storage("read active advertising generation", error))?;
+            .map_err(|error| storage("read active advertising generation", error))?
+            .map(|(generation, hash)| Ok((sqlite_u64(generation, "advertising generation")?, hash)))
+            .transpose()?;
         if let Some((generation, current_hash)) = current {
             if generation == catalog.generation && current_hash == payload_hash {
                 return Ok(generation);
@@ -236,6 +238,7 @@ impl AdvertisingCatalogCore {
             }
         }
 
+        let generation = sqlite_i64(catalog.generation, "advertising generation")?;
         transaction
             .execute(
                 "DELETE FROM advertising_campaign WHERE scope = ?1",
@@ -243,6 +246,12 @@ impl AdvertisingCatalogCore {
             )
             .map_err(|error| storage("replace advertising campaigns", error))?;
         for campaign in &catalog.campaigns {
+            let starts_at_ms = sqlite_i64(
+                timestamp_ms(&campaign.starts_at)?,
+                "advertising campaign start",
+            )?;
+            let ends_at_ms =
+                sqlite_i64(timestamp_ms(&campaign.ends_at)?, "advertising campaign end")?;
             transaction
                 .execute(
                     "INSERT INTO advertising_campaign(
@@ -252,8 +261,8 @@ impl AdvertisingCatalogCore {
                     params![
                         scope,
                         campaign.campaign_id,
-                        timestamp_ms(&campaign.starts_at)?,
-                        timestamp_ms(&campaign.ends_at)?,
+                        starts_at_ms,
+                        ends_at_ms,
                         campaign.placement_weight,
                         campaign.frequency_cap,
                         serde_json::to_string(campaign).map_err(|error| {
@@ -265,6 +274,14 @@ impl AdvertisingCatalogCore {
                 )
                 .map_err(|error| storage("store advertising campaign", error))?;
         }
+        let generated_at_ms = sqlite_i64(
+            timestamp_ms(&catalog.generated_at)?,
+            "advertising catalog generation time",
+        )?;
+        let expires_at_ms = sqlite_i64(
+            timestamp_ms(&catalog.expires_at)?,
+            "advertising catalog expiry",
+        )?;
         transaction
             .execute(
                 "INSERT INTO advertising_catalog(
@@ -279,9 +296,9 @@ impl AdvertisingCatalogCore {
                    payload_sha256 = excluded.payload_sha256",
                 params![
                     scope,
-                    catalog.generation,
-                    timestamp_ms(&catalog.generated_at)?,
-                    timestamp_ms(&catalog.expires_at)?,
+                    generation,
+                    generated_at_ms,
+                    expires_at_ms,
                     catalog.policy_version,
                     payload_hash,
                 ],
@@ -320,11 +337,12 @@ impl AdvertisingCatalogCore {
             .query_row(
                 "SELECT expires_at_ms FROM advertising_catalog WHERE scope = ?1",
                 [&scope],
-                |row| row.get::<_, u64>(0),
+                |row| row.get::<_, i64>(0),
             )
             .optional()
             .map_err(|error| storage("read advertising catalog expiry", error))?
-            .ok_or(CommunitySearchError::NoActiveGeneration)?;
+            .ok_or(CommunitySearchError::NoActiveGeneration)
+            .and_then(|value| sqlite_u64(value, "advertising catalog expiry"))?;
         if now_ms >= expires_at_ms {
             return Err(CommunitySearchError::PolicyExpired);
         }
@@ -335,8 +353,9 @@ impl AdvertisingCatalogCore {
                  WHERE scope = ?1 AND starts_at_ms <= ?2 AND ends_at_ms > ?2",
             )
             .map_err(|error| storage("query eligible advertising campaigns", error))?;
+        let now_ms_sql = sqlite_i64(now_ms, "advertising selection timestamp")?;
         let rows = statement
-            .query_map(params![scope, now_ms], |row| {
+            .query_map(params![scope, now_ms_sql], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, u16>(1)?,
@@ -399,10 +418,17 @@ impl AdvertisingCatalogCore {
                 "SELECT window_start_ms, view_count FROM advertising_view
                  WHERE scope = ?1 AND campaign_id = ?2",
                 params![scope, campaign_id],
-                |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()
             .map_err(|error| storage("read local advertising frequency", error))?
+            .map(|(window, count)| {
+                Ok((
+                    sqlite_u64(window, "advertising view window")?,
+                    sqlite_u64(count, "advertising view count")?,
+                ))
+            })
+            .transpose()?
             .map(|(window, count)| {
                 if now_ms.saturating_sub(window) >= DAY_MS {
                     (now_ms, 0)
@@ -414,6 +440,8 @@ impl AdvertisingCatalogCore {
         if count >= u64::from(campaign.frequency_cap) {
             return Ok(false);
         }
+        let window_start_ms_sql = sqlite_i64(window_start_ms, "advertising view window")?;
+        let next_count_sql = sqlite_i64(count + 1, "advertising view count")?;
         transaction
             .execute(
                 "INSERT INTO advertising_view(scope, campaign_id, window_start_ms, view_count)
@@ -421,7 +449,7 @@ impl AdvertisingCatalogCore {
                  ON CONFLICT(scope, campaign_id) DO UPDATE SET
                    window_start_ms = excluded.window_start_ms,
                    view_count = excluded.view_count",
-                params![scope, campaign_id, window_start_ms, count + 1],
+                params![scope, campaign_id, window_start_ms_sql, next_count_sql],
             )
             .map_err(|error| storage("store local advertising frequency", error))?;
         transaction
@@ -610,6 +638,7 @@ fn load_active_campaign(
     campaign_id: &str,
     now_ms: u64,
 ) -> Result<Option<AdvertisingCampaign>> {
+    let now_ms = sqlite_i64(now_ms, "advertising lookup timestamp")?;
     let campaign_json = transaction
         .query_row(
             "SELECT campaign_json FROM advertising_campaign
@@ -639,10 +668,17 @@ fn current_views(
             "SELECT window_start_ms, view_count FROM advertising_view
              WHERE scope = ?1 AND campaign_id = ?2",
             params![scope, campaign_id],
-            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
         .optional()
-        .map_err(|error| storage("read advertising view count", error))?;
+        .map_err(|error| storage("read advertising view count", error))?
+        .map(|(window, count)| {
+            Ok((
+                sqlite_u64(window, "advertising view window")?,
+                sqlite_u64(count, "advertising view count")?,
+            ))
+        })
+        .transpose()?;
     Ok(state
         .filter(|(window, _)| now_ms.saturating_sub(*window) < DAY_MS)
         .map(|(_, count)| count)
@@ -667,6 +703,14 @@ fn timestamp_ms(value: &str) -> Result<u64> {
         .with_timezone(&Utc)
         .timestamp_millis();
     u64::try_from(timestamp).map_err(|_| invalid_error("advertising timestamp is invalid"))
+}
+
+fn sqlite_i64(value: u64, field: &str) -> Result<i64> {
+    i64::try_from(value).map_err(|_| invalid_error(format!("{field} exceeds SQLite range")))
+}
+
+fn sqlite_u64(value: i64, field: &str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| invalid_error(format!("{field} is negative")))
 }
 
 fn open_database(path: &Path) -> Result<Connection> {

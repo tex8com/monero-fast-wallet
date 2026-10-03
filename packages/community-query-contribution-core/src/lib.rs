@@ -3,7 +3,7 @@ use community_search_core::{
     QueryCatalogPayload, CATALOG_SCHEMA_VERSION, QUERY_NORMALIZATION_VERSION,
     V1_EMBEDDING_DIMENSION,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -271,7 +271,7 @@ impl QueryContributionStore {
             .query_row(
                 "SELECT independent_contributors FROM query_term WHERE query_id = ?1",
                 [&query_id],
-                |row| row.get(0),
+                |row| row_u64(row, 0),
             )
             .map_err(|_| QueryContributionError::Storage)?;
         transaction
@@ -317,10 +317,10 @@ impl QueryContributionStore {
                         query_id: row.get(0)?,
                         normalized_text: row.get(1)?,
                         language: row.get(2)?,
-                        independent_contributors: row.get(3)?,
-                        total_submissions: row.get(4)?,
-                        first_seen_at_ms: row.get(5)?,
-                        last_seen_at_ms: row.get(6)?,
+                        independent_contributors: row_u64(row, 3)?,
+                        total_submissions: row_u64(row, 4)?,
+                        first_seen_at_ms: row_u64(row, 5)?,
+                        last_seen_at_ms: row_u64(row, 6)?,
                     })
                 },
             )
@@ -426,8 +426,8 @@ impl QueryContributionStore {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
-                        row.get::<_, u64>(3)?,
-                        row.get::<_, u64>(4)?,
+                        row_u64(row, 3)?,
+                        row_u64(row, 4)?,
                         row.get::<_, String>(5)?,
                     ))
                 },
@@ -683,6 +683,11 @@ fn exists(connection: &Connection, query_id: &str) -> Result<bool> {
 fn to_sql_i64(value: u64) -> Result<i64> {
     i64::try_from(value)
         .map_err(|_| QueryContributionError::Invalid("timestamp is invalid".to_owned()))
+}
+
+fn row_u64(row: &Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value = row.get::<_, i64>(index)?;
+    u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
 
 fn invalid<T>(message: &str) -> Result<T> {

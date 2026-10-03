@@ -11,7 +11,7 @@ community-search-core = { path = "../community-search-core" }
 ed25519-dalek = "2"
 hex = "0.4"
 rand = "0.8"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
