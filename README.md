@@ -51,10 +51,13 @@ safe: every core-adjacent change remains security-sensitive, is kept narrow and
 versioned, and must pass the applicable build, compatibility and security
 gates before release.
 
-> **Development status:** The source code is advanced, but it is **not yet
-> approved for a public mainnet release**. Signed release artifacts, physical
-> platform and Ledger validation, an independent security review, and several
-> operational and recovery tests remain open release gates. See the public
+> **Development status (October 2026):** The source repository is public and
+> the Android application has completed a real Mainnet registration flow with
+> a physical Pixel and Ledger Nano X. This is still **alpha software, not a
+> production release approval**. The exact final Android artifact, macOS
+> acceptance and notarization, iOS hardware testing, Windows/Linux packaging,
+> an independent security review, and several operational and recovery tests
+> remain open release gates. See the public
 > [security and release status](docs/SECURITY.md) for the applicable gates.
 >
 > **V1 scope:** The first public version is planned to include complete `.mfw`
@@ -105,8 +108,17 @@ transactions, spending rules, or consensus.
 The public `.mfw` name layer is called the **Monero Fast Wallet Registry**. It
 maps a human-readable name such as `alice.mfw` to a Monero receive address
 through blockchain-anchored records that wallets verify before payment. It is
-an application naming protocol, not ICANN DNS, and remains release-gated until
-its production genesis parameters and independent review are complete.
+an application naming protocol, not ICANN DNS. Its Mainnet commit/claim path
+has completed a physical Android/Ledger registration cycle, while broader
+release acceptance and independent review remain open.
+
+Registration still requires two explicit Ledger or wallet approvals. The
+optional delayed-claim relay is integrated into Monero Fast Node: after the
+wallet broadcasts the commitment and uploads only the separately signed claim,
+the node stores that encrypted transaction and relays it at the protocol-defined
+block maturity even if the app is closed. Seeds, spend keys and name-owner
+private keys never leave the wallet. Nodes without this capability retain the
+manual second-step fallback.
 
 ## Key benefits
 
@@ -119,7 +131,7 @@ its production genesis parameters and independent review are complete.
 | **Fast but optional payment signals** | Fast Receive uses a separate receiving identity. The server cannot spend funds and sends only an opaque signal; the amount and transaction details are verified locally. |
 | **Mobile and desktop in one product repository** | React Native for iOS and Android and Tauri 2 for macOS, Windows, and Linux share wallet rules, native-core contracts, services, tests, and release documentation. |
 | **Verifiable optimizations** | CPU, Metal, Vulkan, CUDA, transport, and mainnet synchronization testbenches plus **1,678 text-based raw artifacts** are stored in this repository. Successful and rejected experiments are both documented. |
-| **Ledger support is included in the design** | USB/HID and mobile BLE transport paths exist in the source code. The seed and signing authority remain on the device; complete physical release validation is still pending. |
+| **Ledger support is included in the design** | USB/HID and mobile BLE transport paths exist in the source code. A Pixel/Nano X Mainnet registration has exercised both approval stages; exact-final-build, desktop and iOS acceptance remain pending. The seed and signing authority remain on the device. |
 
 ## Features
 
@@ -495,11 +507,11 @@ automatically mean that an end-user artifact has been released.
 | Platform | Current status | Still required before release |
 | --- | --- | --- |
 | iOS | **Not release-ready.** React Native app, native Monero core build path, native recovery input, app protection, BLE transport, and push contract are present | A volunteer with a physical iPhone must validate wallet, Ledger, APNs, lifecycle and accessibility before any iOS release |
-| Android | **Release candidate, not yet approved.** React Native app, JNI/core, USB/HID, BLE, Keystore, native recovery input, and release build path are present | Complete the physical Pixel acceptance matrix below, then signing and Google Play validation |
-| macOS | **Not release-ready and excluded from the first release.** Tauri 2 app with locally linked core; create/open/seed/subaddress tested; Metal backend packaged | Sign, notarize, staple, and repeat wallet, Ledger, push and update validation for the exact app |
-| Windows | **Not release-ready and excluded from the first release.** UI, Rust host, protection contracts, and notification-agent contracts are present | Build and load the native core as a DLL, then complete wallet, Ledger, push, update and installer validation |
-| Linux | **Not release-ready and excluded from the first release.** ARM64 AppImage assembled locally with the core; DBus agent contract is present | Clean-user, real-node, Ledger, notification, update and package validation |
-| Services | Scanner, Gateway, Monero Fast Node, and the replacement Monero Enthusiast V1 service stack exist as separate components; V1 API, private Synapse and signed sequence-1 catalogs are live and smoke-tested | Validate backups, rotation, restore, load, abuse operations, reorganization handling, provider delivery, and monitoring |
+| Android | **Alpha candidate, not production-approved.** React Native app, JNI/core, USB/HID, BLE, Keystore, native recovery input, APK/AAB release paths, and a physical Pixel/Nano X Mainnet registration cycle are present | Rebuild and repeat the acceptance matrix on the exact final APK/AAB, complete Google Play validation and close the independent-review gates |
+| macOS | **Alpha candidate under active acceptance.** Tauri 2 app with locally linked core and packaged Metal backend; a Developer ID-signed DMG exists | Rebuild from the final source, validate wallet removal, Tor/node switching, complete sync, send/receive, Ledger, push and updates, then notarize and staple the exact DMG |
+| Windows | **Deferred until macOS acceptance.** UI, Rust host, protection contracts, and notification-agent contracts are present | Build and load the native core as a DLL under Windows, then complete wallet, Ledger, push, update and installer validation |
+| Linux | **Deferred until macOS acceptance.** ARM64 AppImage assembled locally with the core; DBus agent contract is present | Clean-user, real-node, Ledger, notification, update and package validation |
+| Services | Scanner, Gateway, Monero Fast Node, integrated durable delayed-claim relay, Monero News, and the replacement Monero Enthusiast V1 service stack exist. MFN RPC/gRPC, name resolution and relay capability are live on the first-party and Community Node paths | Complete backup/restore, rotation, sustained-load, abuse, provider-delivery and monitoring acceptance; repeat a physical delayed-claim cycle for each release route where required |
 
 All five app targets are built from one authenticated Monero Core patch tree.
 Mobile link manifests carry the exact tree identity, Unix desktop builds verify
@@ -696,6 +708,8 @@ bash native/product-core/scripts/run-testbench.sh
 | Legacy Community live check | 11/11 historical contract checks passed; this is not Monero Enthusiast V1 acceptance |
 | Native bridge | ASan and UBSan smoke/hostile-input checks passed |
 | Supply chain | npm audits found no known vulnerabilities; Rust exceptions are explicit and time-limited |
+| Delayed claim relay | 14/14 state-machine, encryption, restart, authorization, maturity and reorganization tests passed; the integrated live capability and denial paths were verified |
+| Public repository gate | The published commit passed secret scanning, dependency and supply-chain checks, Rust advisories, mobile/desktop security contracts, Android compilation, native sanitizers, Cuprate compilation and repository SBOM generation |
 | Benchmarks | Accepted CPU, Metal, Vulkan, and CUDA output was validated byte-for-byte |
 
 These numbers describe the documented audit revision, not automatically the
