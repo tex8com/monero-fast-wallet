@@ -10,7 +10,11 @@ for (const [label, source] of [
   ['Windows interactive task, safe migration ownership, Unicode and update identity', 'windows_notification_task.rs'],
   ['Linux transitive ldd closure, stable paths and systemd argument escaping', 'linux_notification_install.rs'],
 ]) {
-  test(label, () => {
+  test(label, {
+    skip: process.platform === 'win32' && source === 'linux_notification_install.rs'
+      ? 'POSIX paths require Unix std::path semantics; this suite is not applicable on Windows.'
+      : false,
+  }, () => {
     const temporary = mkdtempSync(join(tmpdir(), 'mfw-agent-contract-'));
     try {
       const binary = join(temporary, process.platform === 'win32' ? 'contract.exe' : 'contract');
