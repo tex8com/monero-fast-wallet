@@ -1,11 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+test('Tauri binary discovery contains executable entrypoints rather than module directories', () => {
+  const binaries = resolve(root, 'src-tauri/src/bin');
+  for (const entry of readdirSync(binaries, { withFileTypes: true })) {
+    assert.ok(
+      (entry.isFile() && entry.name.endsWith('.rs'))
+        || (entry.isDirectory() && existsSync(join(binaries, entry.name, 'main.rs'))),
+      `${entry.name} is not an executable entrypoint; keep private Rust modules outside src/bin`,
+    );
+  }
+});
 for (const [label, source] of [
   ['Windows interactive task, safe migration ownership, Unicode and update identity', 'windows_notification_task.rs'],
   ['Linux transitive ldd closure, stable paths and systemd argument escaping', 'linux_notification_install.rs'],

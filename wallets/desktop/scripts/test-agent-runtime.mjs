@@ -34,7 +34,7 @@ const source=readFileSync(join(desktop,'src-tauri/src/bin/monero-fast-walletd.rs
   .replaceAll('#[cfg(target_os = "linux")]','#[cfg(any(target_os = "linux", agent_fixture))]')
   .replace('#[cfg(target_os = "windows")]\nfn open_saved_notification','#[cfg(any(target_os = "windows", agent_fixture))]\nfn open_saved_notification')
   .replaceAll('#[cfg(target_os = "windows")]','#[cfg(any())]')
-  .replace('mod agent_runtime;',`#[path=${JSON.stringify(join(desktop,'src-tauri/src/bin/agent_runtime/mod.rs'))}] mod agent_runtime;`);
+  .replace('#[path = "../agent_runtime/mod.rs"]\nmod agent_runtime;',`#[path=${JSON.stringify(join(desktop,'src-tauri/src/agent_runtime/mod.rs'))}] mod agent_runtime;`);
 const fixture=String.raw`
 #![allow(unexpected_cfgs,dead_code)]
 mod keyring {

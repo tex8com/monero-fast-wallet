@@ -25,10 +25,12 @@ use tungstenite::{
 };
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use zeroize::Zeroize;
+#[path = "../agent_runtime/mod.rs"]
 mod agent_runtime;
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use agent_runtime::{AgentLog, DeliveryStage, Health, InstanceGuard, Journal};
 #[cfg(target_os = "windows")]
+#[path = "../windows_agent_toast/mod.rs"]
 mod windows_agent_toast;
 
 #[derive(Clone, Debug, Deserialize)]
